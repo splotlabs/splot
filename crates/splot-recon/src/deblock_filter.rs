@@ -43,7 +43,7 @@ use core::num::NonZeroUsize;
 mod edges;
 
 pub use edges::{
-    DeblockEdge, deblock_horizontal_edges, deblock_vertical_edge_column, deblock_vertical_edges,
+    DeblockEdge, deblock_horizontal_edges, deblock_vertical_edge_band, deblock_vertical_edges,
 };
 
 /// AV2 § 3 `DF_SHIFT`: the deblocking-filter ramp shift

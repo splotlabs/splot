@@ -8,8 +8,6 @@
 //! § 7.17.7.2 width choice of every segment becomes lane masks and the
 //! § 7.17.7.1 ramp applies to all sixteen lines at once: no per-edge branch.
 
-use core::num::NonZeroUsize;
-
 use fearless_simd::{Bytes, Level, Simd, SimdBase, SimdInto, dispatch, i16x16, u32x8, u64x4};
 use splot_core::tables::conversion::{Q_FIRST, Q_THRESH_MULTS, W_MULT};
 
@@ -237,20 +235,36 @@ pub fn deblock_vertical_edges<T: ReconSample>(
     edges: &[DeblockEdge],
     bit_depth: BitDepth,
 ) -> Result<()> {
-    deblock_vertical_edge_column(samples, stride, first, edges, NonZeroUsize::MIN, bit_depth)
+    deblock_vertical_edge_band(
+        samples,
+        stride,
+        first,
+        edges,
+        (edges.len(), 1),
+        &[true],
+        bit_depth,
+    )
 }
 
-/// [`deblock_vertical_edges`] over the segments `edges[k * edge_stride]`,
-/// so that a column can be read out of a row-major edge grid.
+/// [`deblock_vertical_edges`] over `live.len()` columns 4 samples apart
+/// whose edges are interleaved row by row: with `(segments, edge_stride)` =
+/// `runs`, segment `k` of column `c` is `edges[c + k * edge_stride]`, its
+/// first row's `q0` is `first + 4 * c + 4 * k * stride`, and the column
+/// filters only when `live[c]`. Columns filter left to right within each
+/// row of segments, as § 7.17.1 orders them.
 ///
 /// # Errors
-/// As [`deblock_vertical_edges`].
-pub fn deblock_vertical_edge_column<T: ReconSample>(
+/// As [`deblock_vertical_edges`], for every column, and
+/// [`ReconError::DeblockFilterLineTooShort`] when `edges` holds fewer
+/// segments than the columns name or a row of `live` columns overlaps the
+/// next (`edge_stride < live.len()` with more than one segment).
+pub fn deblock_vertical_edge_band<T: ReconSample>(
     samples: &mut [T],
     stride: usize,
     first: usize,
     edges: &[DeblockEdge],
-    edge_stride: NonZeroUsize,
+    (segments, edge_stride): (usize, usize),
+    live: &[bool],
     bit_depth: BitDepth,
 ) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
@@ -260,33 +274,69 @@ pub fn deblock_vertical_edge_column<T: ReconSample>(
             storage_width: ROWS,
         });
     }
+    let span = LINES * live.len().saturating_sub(1);
     let column = first % stride;
-    let end = (segments(edges, edge_stride.get()) * LINES)
+    let end = (segments * LINES)
         .checked_sub(1)
         .and_then(|last| last.checked_mul(stride))
-        .and_then(|offset| first.checked_add(offset + REACH));
-    let fits =
-        column >= REACH && column + REACH <= stride && end.is_none_or(|end| end <= samples.len());
+        .and_then(|offset| first.checked_add(offset + span + REACH));
+    let last = segments
+        .checked_sub(1)
+        .and_then(|row| row.checked_mul(edge_stride))
+        .and_then(|row| row.checked_add(live.len()));
+    let fits = column >= REACH
+        && column + span + REACH <= stride
+        && end.is_none_or(|end| end <= samples.len())
+        && (segments <= 1 || edge_stride >= live.len())
+        && last.is_none_or(|last| live.is_empty() || last <= edges.len());
     if !fits {
         return Err(too_short(first, samples.len()));
     }
+    if segments == 0 {
+        return Ok(());
+    }
     let max_sample = bit_depth.max_sample() as i16;
-    let run_edges = (edges, edge_stride.get());
+    let runs = (edges, segments, edge_stride);
     if let Some(samples) = T::u8_slice_mut(samples) {
-        run_u8::<true>(samples, stride, first, run_edges, max_sample);
+        #[cfg(target_arch = "x86_64")]
+        if let Some(token) = Level::baseline().as_avx2() {
+            avx2_u8::band(token, samples, stride, first, runs, live);
+            return Ok(());
+        }
+        band::<u8>(samples, stride, first, runs, live, max_sample);
     } else if let Some(samples) = T::u16_slice_mut(samples) {
-        run::<u16, true>(samples, stride, first, run_edges, max_sample);
+        band::<u16>(samples, stride, first, runs, live, max_sample);
     } else {
         return Err(too_short(first, samples.len()));
     }
     Ok(())
 }
 
-/// How many segments `edges[k * edge_stride]` there are.
-const fn segments(edges: &[DeblockEdge], edge_stride: usize) -> usize {
-    match edges.len() {
-        0 => 0,
-        len => (len - 1) / edge_stride + 1,
+/// Segments one [`band`] call gathers per column at a time: a multiple of
+/// [`SEGMENTS`], so only a column's last piece ends in a partial chunk.
+const BAND_PIECE: usize = 16 * SEGMENTS;
+
+/// [`deblock_vertical_edge_band`] through [`run`], one live column at a
+/// time, its segments gathered in pieces.
+fn band<E: Chunk>(
+    samples: &mut [E],
+    stride: usize,
+    first: usize,
+    (edges, segments, edge_stride): (&[DeblockEdge], usize, usize),
+    live: &[bool],
+    max_sample: i16,
+) {
+    let mut run_edges = [DeblockEdge::NONE; BAND_PIECE];
+    for (column, _) in live.iter().enumerate().filter(|(_, live)| **live) {
+        for piece in (0..segments).step_by(BAND_PIECE) {
+            let len = (segments - piece).min(BAND_PIECE);
+            for (k, slot) in run_edges[..len].iter_mut().enumerate() {
+                let at = column + (piece + k) * edge_stride;
+                *slot = edges.get(at).copied().unwrap_or_default();
+            }
+            let first = first + LINES * column + piece * LINES * stride;
+            run::<E, true>(samples, stride, first, &run_edges[..len], max_sample);
+        }
     }
 }
 
@@ -321,9 +371,9 @@ pub fn deblock_horizontal_edges<T: ReconSample>(
     }
     let max_sample = bit_depth.max_sample() as i16;
     if let Some(samples) = T::u8_slice_mut(samples) {
-        run_u8::<false>(samples, stride, first, (edges, 1), max_sample);
+        run_u8(samples, stride, first, edges, max_sample);
     } else if let Some(samples) = T::u16_slice_mut(samples) {
-        run::<u16, false>(samples, stride, first, (edges, 1), max_sample);
+        run::<u16, false>(samples, stride, first, edges, max_sample);
     } else {
         return Err(too_short(first, samples.len()));
     }
@@ -366,35 +416,30 @@ impl EdgeSample for u16 {
     }
 }
 
-/// [`run`] over 8-bit samples, through the eight-segment kernels where the
-/// level has them.
-fn run_u8<const VERTICAL: bool>(
-    samples: &mut [u8],
-    stride: usize,
-    first: usize,
-    edges: (&[DeblockEdge], usize),
-    max_sample: i16,
-) {
+/// [`run`] over 8-bit horizontal edges, through the eight-segment kernels
+/// where the level has them.
+#[inline]
+fn run_u8(samples: &mut [u8], stride: usize, first: usize, edges: &[DeblockEdge], max_sample: i16) {
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = Level::baseline().as_avx2() {
-        return avx2_u8::run::<VERTICAL>(token, samples, stride, first, edges);
+        return avx2_u8::horizontal_run(token, samples, stride, first, edges);
     }
-    run::<u8, VERTICAL>(samples, stride, first, edges, max_sample);
+    run::<u8, false>(samples, stride, first, edges, max_sample);
 }
 
-/// Runs the validated segments `edges.0[k * edges.1]` in chunks of
+/// Runs the validated segments `edges` in chunks of
 /// [`SEGMENTS`]. A last partial chunk filters a copy of its window, so no
 /// load or store leaves the run.
 fn run<E: Chunk, const VERTICAL: bool>(
     samples: &mut [E],
     stride: usize,
     first: usize,
-    (edges, edge_stride): (&[DeblockEdge], usize),
+    edges: &[DeblockEdge],
     max_sample: i16,
 ) {
     let step = if VERTICAL { LANES * stride } else { LANES };
-    let count = segments(edges, edge_stride);
-    let segment = |k: usize| edges.get(k * edge_stride).copied().unwrap_or_default();
+    let count = edges.len();
+    let segment = |k: usize| edges.get(k).copied().unwrap_or_default();
     let chunks = count / SEGMENTS;
     for index in 0..chunks {
         let chunk: [DeblockEdge; SEGMENTS] =

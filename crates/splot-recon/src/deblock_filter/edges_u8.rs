@@ -15,7 +15,7 @@ use core::arch::x86_64::*;
 
 use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x16, kernel, u8x16, u8x32};
 
-use super::{CLAMP, DeblockEdge, Q_FIRST, RAMP, REACH, segments};
+use super::{CLAMP, DeblockEdge, Q_FIRST, RAMP, REACH};
 
 /// Segments, and lines, one chunk filters.
 const SEGMENTS: usize = 8;
@@ -73,39 +73,70 @@ const CLAMP_LANES: [i16; 16] = {
     table
 };
 
-/// Filters the validated segments `edges[k * edge_stride]` of one run. Each
+/// Filters the validated horizontal-edge segments `edges` of one run. Each
 /// chunk covers eight segments; a run's last chunk ends at its last segment
 /// and skips those an earlier chunk filtered, and a run of fewer than eight
 /// filters a copy of its window.
-pub(super) fn run<const VERTICAL: bool>(
+pub(super) fn horizontal_run(
     token: Avx2,
     samples: &mut [u8],
     stride: usize,
     first: usize,
-    (edges, edge_stride): (&[DeblockEdge], usize),
+    edges: &[DeblockEdge],
 ) {
-    let count = segments(edges, edge_stride);
-    if count < SEGMENTS {
-        window::<VERTICAL>(token, samples, stride, first, (edges, edge_stride), count);
-    } else if VERTICAL {
-        vertical(token, samples, stride, first, edges, edge_stride, count);
+    if edges.len() < SEGMENTS {
+        window::<false>(token, samples, stride, first, edges);
     } else {
-        horizontal(token, samples, stride, first, edges, count);
+        horizontal(token, samples, stride, first, edges);
     }
 }
 
-/// Filters the `count < 8` segments at `first` through a copy of their
-/// window, so that no load or store leaves their lines.
+/// Filters the validated vertical-edge band of
+/// [`super::deblock_vertical_edge_band`]; a band of fewer than eight rows of
+/// segments filters each live column through a copy of its window.
+pub(super) fn band(
+    token: Avx2,
+    samples: &mut [u8],
+    stride: usize,
+    first: usize,
+    (edges, segments, edge_stride): (&[DeblockEdge], usize, usize),
+    live: &[bool],
+) {
+    if segments >= SEGMENTS {
+        return vertical(
+            token,
+            samples,
+            stride,
+            first,
+            (edges, segments, edge_stride),
+            live,
+        );
+    }
+    for (column, _) in live.iter().enumerate().filter(|(_, live)| **live) {
+        let mut run = [DeblockEdge::NONE; SEGMENTS];
+        for (k, slot) in run.iter_mut().take(segments).enumerate() {
+            *slot = edges
+                .get(column + k * edge_stride)
+                .copied()
+                .unwrap_or_default();
+        }
+        let first = first + 4 * column;
+        window::<true>(token, samples, stride, first, &run[..segments]);
+    }
+}
+
+/// Filters the `edges.len() < 8` segments at `first` through a copy of
+/// their window, so that no load or store leaves their lines.
 fn window<const VERTICAL: bool>(
     token: Avx2,
     samples: &mut [u8],
     stride: usize,
     first: usize,
-    (edges, edge_stride): (&[DeblockEdge], usize),
-    count: usize,
+    edges: &[DeblockEdge],
 ) {
+    let count = edges.len();
     let mut padded = [DeblockEdge::NONE; SEGMENTS];
-    for (lane, edge) in padded.iter_mut().zip(edges.iter().step_by(edge_stride)) {
+    for (lane, edge) in padded.iter_mut().zip(edges) {
         *lane = *edge;
     }
     if padded.iter().all(|edge| edge.is_none()) {
@@ -128,24 +159,10 @@ fn window<const VERTICAL: bool>(
         copy[..len].copy_from_slice(&samples[start..start + len]); // splot-copy-ok: stage a short run's window
     }
     if VERTICAL {
-        vertical(
-            token,
-            &mut window,
-            window_stride,
-            REACH,
-            &padded,
-            1,
-            SEGMENTS,
-        );
+        let runs = (&padded[..], SEGMENTS, 1);
+        vertical(token, &mut window, window_stride, REACH, runs, &[true]);
     } else {
-        horizontal(
-            token,
-            &mut window,
-            window_stride,
-            REACH * LINES,
-            &padded,
-            SEGMENTS,
-        );
+        horizontal(token, &mut window, window_stride, REACH * LINES, &padded);
     }
     for (index, copy) in window.chunks_exact(window_stride).take(copies).enumerate() {
         let start = origin + index * stride;
@@ -157,27 +174,21 @@ fn window<const VERTICAL: bool>(
 /// loops prove their trip count.
 const MAX_STRIDE: usize = 1 << 24;
 
-/// Runs `$body` for each chunk of a run of `count >= 8` segments
-/// `edges[k * edge_stride]` that filters something, with `$start` its first
-/// segment, `$low` and `$high` the packed words of its edges (`qThr |
-/// sideThr << 16` and `maxWidthPos | maxWidthNeg << 8 | flags << 16`, four
-/// edges per 128-bit lane) and `$widest` their largest `maxWidthPos`.
+/// Runs `$body` for each chunk of a run of `edges.len() >= 8` segments that
+/// filters something, with `$start` its first segment, `$low` and `$high`
+/// the packed words of its edges (`qThr | sideThr << 16` and `maxWidthPos |
+/// maxWidthNeg << 8 | flags << 16`, four edges per 128-bit lane) and
+/// `$widest` their largest `maxWidthPos`.
 macro_rules! for_chunks {
-    ($token:ident, $edges:ident, $edge_stride:ident, $count:ident,
-     |$start:ident, $low:ident, $high:ident, $widest:ident| $body:block) => {
-        for chunk in 0..$count.div_ceil(SEGMENTS) {
-            let $start = (chunk * SEGMENTS).min($count - SEGMENTS);
+    ($token:ident, $edges:ident, |$start:ident, $low:ident, $high:ident, $widest:ident| $body:block) => {
+        let count = $edges.len();
+        for chunk in 0..count.div_ceil(SEGMENTS) {
+            let $start = (chunk * SEGMENTS).min(count - SEGMENTS);
             let done = chunk * SEGMENTS - $start;
-            let lanes: [i64; SEGMENTS] = if $edge_stride == 1 {
-                $edges
-                    .get($start..)
-                    .and_then(<[DeblockEdge]>::first_chunk::<SEGMENTS>)
-                    .map_or([0; SEGMENTS], |run| run.map(|edge| edge.0 as i64))
-            } else {
-                let column = $edges.get($start * $edge_stride..).unwrap_or_default();
-                let edge = |lane: usize| column.get(lane * $edge_stride).map_or(0, |edge| edge.0 as i64);
-                core::array::from_fn(edge)
-            };
+            let lanes: [i64; SEGMENTS] = $edges
+                .get($start..)
+                .and_then(<[DeblockEdge]>::first_chunk::<SEGMENTS>)
+                .map_or([0; SEGMENTS], |run| run.map(|edge| edge.0 as i64));
             let ($low, $high, $widest) = pack($token, lanes, done as i32);
             if $widest != 0 $body
         }
@@ -392,7 +403,8 @@ macro_rules! filter_chunk {
 }
 
 kernel!(
-    /// Filters the horizontal edges of the `count >= 8` segments at `first`.
+    /// Filters the horizontal edges of the `edges.len() >= 8` segments at
+    /// `first`.
     #[inline]
     fn horizontal(
         token: Avx2,
@@ -400,63 +412,55 @@ kernel!(
         stride: usize,
         first: usize,
         edges: &[DeblockEdge],
-        count: usize,
     ) {
         if stride < LINES {
             return;
         }
-        let edge_stride = 1;
-        for_chunks!(
-            token,
-            edges,
-            edge_stride,
-            count,
-            |start, low, high, widest| {
-                let first = first + 4 * start;
-                let mut rows = [_mm256_setzero_si256(); 2 * REACH];
-                macro_rules! band {
-                    ($reach:literal, $row:ident, $vector:ident, $body:block) => {{
-                        let origin = first - $reach * stride;
-                        let span = (2 * $reach - 1) * stride;
-                        if let Some(band) = samples.get_mut(origin..origin + span + LINES) {
-                            let (head, last) = band.split_at_mut(span);
-                            let (vectors, tail) =
-                                rows[REACH - $reach..REACH + $reach].split_at_mut(2 * $reach - 1);
-                            let mut lines = head.chunks_exact_mut(stride);
-                            for $vector in vectors {
-                                if let Some($row) = lines.next() {
-                                    let $row = &mut $row[..LINES];
-                                    $body
-                                }
-                            }
-                            if let Some($vector) = tail.first_mut() {
-                                let $row = &mut last[..LINES];
+        for_chunks!(token, edges, |start, low, high, widest| {
+            let first = first + 4 * start;
+            let mut rows = [_mm256_setzero_si256(); 2 * REACH];
+            macro_rules! band {
+                ($reach:literal, $row:ident, $vector:ident, $body:block) => {{
+                    let origin = first - $reach * stride;
+                    let span = (2 * $reach - 1) * stride;
+                    if let Some(band) = samples.get_mut(origin..origin + span + LINES) {
+                        let (head, last) = band.split_at_mut(span);
+                        let (vectors, tail) =
+                            rows[REACH - $reach..REACH + $reach].split_at_mut(2 * $reach - 1);
+                        let mut lines = head.chunks_exact_mut(stride);
+                        for $vector in vectors {
+                            if let Some($row) = lines.next() {
+                                let $row = &mut $row[..LINES];
                                 $body
                             }
                         }
-                    }};
-                }
-                macro_rules! rows {
-                    ($class:literal, $reach:literal) => {{
-                        band!($reach, row, vector, {
-                            *vector = u8x32::from_slice(token, row).into();
-                        });
-                        if filter_chunk!(token, rows, low, high, $class) {
-                            band!($class, row, vector, {
-                                u8x32::simd_from(token, *vector).store_slice(row);
-                            });
+                        if let Some($vector) = tail.first_mut() {
+                            let $row = &mut last[..LINES];
+                            $body
                         }
-                    }};
-                }
-                match widest {
-                    1 => rows!(1, 3),
-                    3 => rows!(3, 4),
-                    4 => rows!(4, 5),
-                    6 => rows!(6, 7),
-                    _ => rows!(8, 8),
-                }
+                    }
+                }};
             }
-        );
+            macro_rules! rows {
+                ($class:literal, $reach:literal) => {{
+                    band!($reach, row, vector, {
+                        *vector = u8x32::from_slice(token, row).into();
+                    });
+                    if filter_chunk!(token, rows, low, high, $class) {
+                        band!($class, row, vector, {
+                            u8x32::simd_from(token, *vector).store_slice(row);
+                        });
+                    }
+                }};
+            }
+            match widest {
+                1 => rows!(1, 3),
+                3 => rows!(3, 4),
+                4 => rows!(4, 5),
+                6 => rows!(6, 7),
+                _ => rows!(8, 8),
+            }
+        });
     }
 );
 
@@ -501,7 +505,9 @@ macro_rules! each {
 }
 
 kernel!(
-    /// Filters the vertical edges of the `count >= 8` segments at `first`:
+    /// Filters the vertical edges of a band of `segments >= 8` rows of
+    /// segments, `edges[c + k * edge_stride]` for column `c` and row `k`,
+    /// chunk row by chunk row and the `live` columns of each left to right:
     /// bytes `s[-4..4]` of each line for chunks no wider than 3, `s[-8..8]`
     /// otherwise. Lines pass through a stack copy of exact-stride rows,
     /// which folds into direct loads without per-line bounds checks.
@@ -511,19 +517,31 @@ kernel!(
         samples: &mut [u8],
         stride: usize,
         first: usize,
-        edges: &[DeblockEdge],
-        edge_stride: usize,
-        count: usize,
+        runs: (&[DeblockEdge], usize, usize),
+        live: &[bool],
     ) {
-        if !(2 * REACH..=MAX_STRIDE).contains(&stride) {
+        let (edges, segments, edge_stride) = runs;
+        if !(2 * REACH..=MAX_STRIDE).contains(&stride) || segments < SEGMENTS {
             return;
         }
-        for_chunks!(
-            token,
-            edges,
-            edge_stride,
-            count,
-            |start, low, high, widest| {
+        let columns = live.len();
+        for chunk in 0..segments.div_ceil(SEGMENTS) {
+            let start = (chunk * SEGMENTS).min(segments - SEGMENTS);
+            let done = chunk * SEGMENTS - start;
+            let rows: [&[DeblockEdge]; SEGMENTS] = core::array::from_fn(|lane| {
+                let row = (start + lane) * edge_stride;
+                edges.get(row..row + columns).unwrap_or_default()
+            });
+            if rows.iter().any(|row| row.len() != columns) {
+                return;
+            }
+            for (column, _) in live.iter().enumerate().filter(|(_, live)| **live) {
+                let lanes = rows.map(|row| row.get(column).map_or(0, |edge| edge.0 as i64));
+                let (low, high, widest) = pack(token, lanes, done as i32);
+                if widest == 0 {
+                    continue;
+                }
+                let first = first + 4 * column;
                 let origin = first + 4 * start * stride - REACH;
                 let span = (LINES - 1) * stride;
                 let Some(block) = samples.get_mut(origin..origin + span + 2 * REACH) else {
@@ -633,6 +651,6 @@ kernel!(
                     _ => wide!(8),
                 }
             }
-        );
+        }
     }
 );

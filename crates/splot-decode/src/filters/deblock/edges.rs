@@ -6,12 +6,10 @@
 //! kernels then filter whole columns (vertical edges) and rows (horizontal
 //! edges) of them.
 
-use core::num::NonZeroUsize;
-
 use splot_core::tables::conversion::{Q_THRESH_MULTS, W_MULT};
 use splot_recon::{
     BitDepth, DeblockEdge, DeblockSampleFilter, ReconSample, deblock_horizontal_edges,
-    deblock_vertical_edge_column, deblock_vertical_edges,
+    deblock_vertical_edge_band, deblock_vertical_edges,
 };
 
 use fearless_simd::{Simd, prelude::*, u32x8};
@@ -397,7 +395,38 @@ impl PassEdges {
         } else {
             (self.rows, self.cols)
         };
-        let cols = NonZeroUsize::new(self.cols).ok_or(DeblockError::Workspace)?;
+        let band = if PASS == 0 {
+            let columns = (GATHER_HALF / MI_SIZE).min(outer)
+                ..(width.saturating_sub(GATHER_HALF) / MI_SIZE + 1).min(outer);
+            let full = lines(inner, self.first_row, height);
+            let columns = if full == 0 { 0..0 } else { columns };
+            if !columns.is_empty() {
+                let (samples, stride) = ctx.rows.contiguous_mut();
+                let first =
+                    (self.first_row * MI_SIZE - y_origin) * stride + columns.start * MI_SIZE;
+                let edges = self
+                    .edges
+                    .get(columns.start..)
+                    .ok_or(DeblockError::Workspace)?;
+                let live = self
+                    .live
+                    .get(columns.clone())
+                    .ok_or(DeblockError::Workspace)?;
+                deblock_vertical_edge_band::<T>(
+                    samples,
+                    stride,
+                    first,
+                    edges,
+                    (full, self.cols),
+                    live,
+                    bit_depth,
+                )
+                .map_err(|_| DeblockError::SampleFilter)?;
+            }
+            (columns, full)
+        } else {
+            (0..0, 0)
+        };
         for line in 0..outer {
             if !self.live.get(line).copied().unwrap_or(true) {
                 continue;
@@ -416,36 +445,22 @@ impl PassEdges {
                 (0, (self.first_row + line) * MI_SIZE)
             };
             let full = if PASS == 0 {
-                let fits = x_p >= GATHER_HALF && x_p + GATHER_HALF <= width;
-                if fits {
-                    lines(inner, self.first_row, height)
-                } else {
-                    0
-                }
+                if band.0.contains(&line) { band.1 } else { 0 }
             } else {
                 let fits = y_p >= y_origin + GATHER_HALF && y_p + GATHER_HALF <= height;
-                if fits { lines(inner, 0, width) } else { 0 }
-            };
-            if full > 0 {
-                let (samples, stride) = ctx.rows.contiguous_mut();
-                let first = (y_p - y_origin) * stride + x_p;
-                let filtered = if PASS == 0 {
-                    let column = self
-                        .edges
-                        .get(line..line + (full - 1) * self.cols + 1)
-                        .ok_or(DeblockError::Workspace)?;
-                    deblock_vertical_edge_column::<T>(
-                        samples, stride, first, column, cols, bit_depth,
-                    )
-                } else {
+                let full = if fits { lines(inner, 0, width) } else { 0 };
+                if full > 0 {
+                    let (samples, stride) = ctx.rows.contiguous_mut();
+                    let first = (y_p - y_origin) * stride + x_p;
                     let row = self
                         .edges
                         .get(line * self.cols..line * self.cols + full)
                         .ok_or(DeblockError::Workspace)?;
                     deblock_horizontal_edges::<T>(samples, stride, first, row, bit_depth)
-                };
-                filtered.map_err(|_| DeblockError::SampleFilter)?;
-            }
+                        .map_err(|_| DeblockError::SampleFilter)?;
+                }
+                full
+            };
             for k in full..inner {
                 let edge = edge_at(k);
                 if edge.is_none() {
