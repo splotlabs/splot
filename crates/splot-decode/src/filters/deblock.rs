@@ -126,11 +126,21 @@ impl ChromaDeblockRecords {
         self.blocks.push(ChromaDeblockBlock { block, planes });
     }
 
-    /// Pushes V's `block`, or marks the U-only record `twin` as V's too when
-    /// it is the same record, so that a block's U and V records pair up
-    /// without a second copy. Returns the next record a V record may pair
-    /// with.
-    pub(crate) fn push_v(&mut self, twin: Option<usize>, block: DeblockBlock) -> Option<usize> {
+    /// Pushes one block's record of plane `plane` (0 for U), pairing the
+    /// block's U and V records without a second copy: `twin` is the block's
+    /// next U record, which a V record that is the same record marks as V's
+    /// too.
+    #[inline]
+    pub(crate) fn push_paired(
+        &mut self,
+        plane: usize,
+        twin: &mut Option<usize>,
+        block: DeblockBlock,
+    ) {
+        if plane == 0 {
+            twin.get_or_insert(self.blocks.len());
+            return self.push(0, block);
+        }
         match twin.and_then(|at| self.blocks.get_mut(at)) {
             Some(record) if record.planes == Self::U && record.block == block => {
                 record.planes = Self::U | Self::V;
@@ -138,7 +148,7 @@ impl ChromaDeblockRecords {
             }
             _ => self.push(1, block),
         }
-        twin.map(|at| at + 1)
+        *twin = twin.map(|at| at + 1);
     }
 
     pub(crate) fn push_both(&mut self, block: DeblockBlock) {
@@ -730,7 +740,7 @@ impl FrameDeblock {
         let fresh = blocks.get(self.laid_out[0]..).unwrap_or_default();
         if sub_pu {
             self.grid.fill(blocks, self.laid_out[0], self.mi_rows)?;
-        } else if !self.facts[0].keys.is_empty() {
+        } else if self.filter.apply_deblocking_filter[..2] != [false; 2] {
             self.facts[0].paint_luma(fresh, extent);
         }
         self.laid_out[0] = blocks.len();

@@ -332,12 +332,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         sub_pu_size,
                         inherited_chroma_metadata,
                     );
-                    if plane_index == 0 {
-                        v_twin.get_or_insert(chroma_deblock_blocks.len());
-                        chroma_deblock_blocks.push(0, record);
-                    } else {
-                        v_twin = chroma_deblock_blocks.push_v(v_twin, record);
-                    }
+                    chroma_deblock_blocks.push_paired(plane_index, &mut v_twin, record);
                 }
             }
         }

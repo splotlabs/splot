@@ -361,28 +361,23 @@ fn write_wienerns_lr_tx_skip_record(
     populated: &mut usize,
 ) -> ReconResult<()> {
     let (start, end_row, width) = wienerns_lr_tx_skip_record_span(rows, cols, record)?;
-    let rows = (start, cols, end_row - record.row);
+    let run = (start, cols, end_row - record.row);
     match width {
-        1 => write_tx_skip_rows::<1>(values, rows, value, populated),
-        2 => write_tx_skip_rows::<2>(values, rows, value, populated),
-        4 => write_tx_skip_rows::<4>(values, rows, value, populated),
-        8 => write_tx_skip_rows::<8>(values, rows, value, populated),
-        16 => write_tx_skip_rows::<16>(values, rows, value, populated),
-        _ => {
-            let mut cells = start..start + width;
-            for _ in 0..rows.2 {
-                let actual = values.len();
-                let slots = values.get_mut(cells.clone()).ok_or_else(|| {
-                    ReconError::BufferLengthMismatch {
-                        expected: cells.start.max(actual).saturating_add(1),
-                        actual,
-                    }
+        1 => write_tx_skip_rows::<1>(values, run, value, populated),
+        2 => write_tx_skip_rows::<2>(values, run, value, populated),
+        4 => write_tx_skip_rows::<4>(values, run, value, populated),
+        8 => write_tx_skip_rows::<8>(values, run, value, populated),
+        16 => write_tx_skip_rows::<16>(values, run, value, populated),
+        _ => for_each_wienerns_lr_tx_skip_record_row(rows, cols, record, |cells| {
+            let actual = values.len();
+            let slots = values
+                .get_mut(cells.clone())
+                .ok_or(ReconError::BufferLengthMismatch {
+                    expected: cells.start.max(actual).saturating_add(1),
+                    actual,
                 })?;
-                write_tx_skip_slots(slots, value, populated)?;
-                cells = cells.start + cols..cells.end + cols;
-            }
-            Ok(())
-        }
+            write_tx_skip_slots(slots, value, populated)
+        }),
     }
 }
 

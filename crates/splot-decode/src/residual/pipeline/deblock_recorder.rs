@@ -38,12 +38,8 @@ impl DeblockRecorder<'_> {
                 self.lossless,
             )
         {
-            if plane_index == 0 {
-                self.v_twin.get_or_insert(self.chroma_blocks.len());
-                self.chroma_blocks.push(0, record);
-            } else {
-                self.v_twin = self.chroma_blocks.push_v(self.v_twin, record);
-            }
+            self.chroma_blocks
+                .push_paired(plane_index, &mut self.v_twin, record);
         }
     }
 

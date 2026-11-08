@@ -14,7 +14,7 @@ use splot_recon::{
 
 use fearless_simd::{Simd, mask16x16, prelude::*, u8x32, u16x16};
 
-use super::facts::{COVERED, EDGE_H, EDGE_V, LOSSLESS, PlaneFacts, SKIP};
+use super::facts::{COVERED, EDGE_H, EDGE_V, LOSSLESS, PlaneFacts, SKIP, padded_stride};
 use super::grid::MiGrid;
 use super::{
     DeblockError, EdgeContext, GATHER_HALF, MAX_WIDTHS, MI_SIZE, PerpLine, PlaneCtx, PlanePass,
@@ -233,7 +233,7 @@ impl PassEdges {
         self.first_row = first >> sub_y;
         self.rows = end.saturating_sub(first).div_ceil(row_step);
         self.cols = geometry.mi_cols.div_ceil(1 << sub_x);
-        self.stride = self.cols.next_multiple_of(GROUP) + GROUP;
+        self.stride = padded_stride(self.cols);
         let len = self.rows * self.stride;
         if self.edges.len() < len {
             self.edges
@@ -254,9 +254,6 @@ impl PassEdges {
         );
         if !plane_pass.allow_df_sub_pu {
             let facts = grid.facts.ok_or(DeblockError::Workspace)?;
-            if facts.stride != self.stride {
-                return Err(DeblockError::Workspace);
-            }
             return self
                 .build_from_facts::<PLANE, PASS>(facts, plane_pass, geometry, first, &strengths);
         }

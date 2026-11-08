@@ -38,6 +38,12 @@ const fn key(row: u32, col: u32) -> u16 {
     ((row & 0xff) << 8 | col & 0xff) as u16
 }
 
+/// Cells per row of a plane `cols` cells wide: padded so that a sixteen-lane
+/// group from any cell of the row stays inside it.
+pub(super) const fn padded_stride(cols: usize) -> usize {
+    cols.next_multiple_of(16) + 16
+}
+
 /// `log2 - 1` of a § 7.17.4 size, kept to three bits.
 const fn size_code(log: i32) -> u16 {
     (if log < 1 {
@@ -107,7 +113,7 @@ impl PlaneFacts {
         (rows, cols): (usize, usize),
         plane: splot_recon::PlaneId,
     ) -> Result<(), DeblockError> {
-        self.stride = cols.next_multiple_of(16) + 16;
+        self.stride = padded_stride(cols);
         let len = rows
             .checked_mul(self.stride)
             .ok_or(DeblockError::Workspace)?;
@@ -343,7 +349,9 @@ fn paint_span(
         fill_mi_run(keys, paint.key);
         fill_mi_run(infos, paint.codes | bits);
         fill_mi_run(qindexes, paint.qindex);
-        fill_mi_run(layers, paint.layer);
+        if paint.layer != 0 {
+            fill_mi_run(layers, paint.layer);
+        }
         if let Some(info) = edge_col.and_then(|col| infos.get_mut(col)) {
             *info |= EDGE_V;
         }
