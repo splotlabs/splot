@@ -139,9 +139,10 @@ proptest! {
         prop_assert_eq!(validated.checkpoint(), trusted.checkpoint());
     }
 
-    /// `read_trusted` must decode, adapt and advance exactly like the checked
-    /// read on well-formed rows of every arity, in both update modes, over a
-    /// run of reads that keeps adapting the same row.
+    /// `read_trusted` and, in trusted validation mode, `read_trusted_row` must
+    /// decode, adapt and advance exactly like the checked read on well-formed
+    /// rows of every arity, in both update modes, over a run of reads that
+    /// keeps adapting the same row.
     #[test]
     fn read_trusted_matches_checked_reads(
         n in MIN_SYMBOLS..=MAX_SYMBOLS,
@@ -163,7 +164,10 @@ proptest! {
         let config = SymbolDecoderConfig::new().with_cdf_update_mode(mode);
         let mut checked = SymbolDecoder::with_config(&data, config).unwrap();
         let mut trusted = SymbolDecoder::with_config(&data, config).unwrap();
-        let (mut checked_row, mut trusted_row) = (row, row);
+        let row_config = config.with_cdf_validation_mode(CdfValidationMode::Trusted);
+        let mut row_reader = SymbolDecoder::with_config(&data, row_config).unwrap();
+        let (mut checked_row, mut trusted_row, mut sliced_row) = (row, row, row);
+        prop_assert_eq!(checked.read_trusted_row(&mut sliced_row[..=n]), None);
         for _ in 0..12 {
             let expected = checked.read_symbol_u16(&mut checked_row[..=n]).unwrap();
             let got = match (n, update) {
@@ -185,6 +189,9 @@ proptest! {
             prop_assert_eq!(u32::from(expected.get()), got);
             prop_assert_eq!(checked_row, trusted_row);
             prop_assert_eq!(checked.checkpoint(), trusted.checkpoint());
+            prop_assert_eq!(row_reader.read_trusted_row(&mut sliced_row[..=n]), Some(got));
+            prop_assert_eq!(sliced_row, trusted_row);
+            prop_assert_eq!(row_reader.checkpoint(), trusted.checkpoint());
         }
     }
 

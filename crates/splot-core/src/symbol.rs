@@ -1031,14 +1031,36 @@ impl<'a> SymbolDecoder<'a> {
     #[inline(always)]
     pub fn read_trusted<const L: usize, const UPDATE: bool>(&mut self, cdf: &mut [u16; L]) -> u32 {
         match L {
-            3 => self.read_trusted_arity::<2, UPDATE>(cdf),
-            4 => self.read_trusted_arity::<3, UPDATE>(cdf),
-            5 => self.read_trusted_arity::<4, UPDATE>(cdf),
-            6 => self.read_trusted_arity::<5, UPDATE>(cdf),
-            7 => self.read_trusted_arity::<6, UPDATE>(cdf),
-            8 => self.read_trusted_arity::<7, UPDATE>(cdf),
-            _ => self.read_trusted_arity::<8, UPDATE>(cdf),
+            3 => self.read_trusted_arity::<2>(cdf, UPDATE),
+            4 => self.read_trusted_arity::<3>(cdf, UPDATE),
+            5 => self.read_trusted_arity::<4>(cdf, UPDATE),
+            6 => self.read_trusted_arity::<5>(cdf, UPDATE),
+            7 => self.read_trusted_arity::<6>(cdf, UPDATE),
+            8 => self.read_trusted_arity::<7>(cdf, UPDATE),
+            _ => self.read_trusted_arity::<8>(cdf, UPDATE),
         }
+    }
+
+    /// [`Self::read_trusted`] of a slice row in the configured update mode.
+    /// `None`, for the checked read, under [`CdfValidationMode::Validated`]
+    /// or for a length no arity has.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    pub fn read_trusted_row(&mut self, cdf: &mut [u16]) -> Option<u32> {
+        if self.config.cdf_validation == CdfValidationMode::Validated {
+            return None;
+        }
+        let update = self.config.cdf_update == CdfUpdateMode::Enabled;
+        Some(match cdf.len() {
+            3 => self.read_trusted_arity::<2>(cdf, update),
+            4 => self.read_trusted_arity::<3>(cdf, update),
+            5 => self.read_trusted_arity::<4>(cdf, update),
+            6 => self.read_trusted_arity::<5>(cdf, update),
+            7 => self.read_trusted_arity::<6>(cdf, update),
+            8 => self.read_trusted_arity::<7>(cdf, update),
+            9 => self.read_trusted_arity::<8>(cdf, update),
+            _ => return None,
+        })
     }
 
     /// [`Self::read_bool`] without its unreachable error path, for hot loops.
@@ -1113,7 +1135,7 @@ impl<'a> SymbolDecoder<'a> {
 
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
-    fn read_trusted_arity<const N: usize, const UPDATE: bool>(&mut self, cdf: &mut [u16]) -> u32 {
+    fn read_trusted_arity<const N: usize>(&mut self, cdf: &mut [u16], update: bool) -> u32 {
         if cdf.len() <= N {
             return 0;
         }
@@ -1123,7 +1145,7 @@ impl<'a> SymbolDecoder<'a> {
         if N > 2
             && let Some(token) = Level::baseline().as_avx2()
         {
-            return self.read_trusted_lanes_avx2::<N, UPDATE>(token, cdf, symbol_value);
+            return self.read_trusted_lanes_avx2::<N>(token, cdf, symbol_value, update);
         }
         let (symbol, cur, prev) = if N == 2 {
             let f = CDF_PROB_SCALE.saturating_sub(u32::from(cdf[0]));
@@ -1137,7 +1159,7 @@ impl<'a> SymbolDecoder<'a> {
             multi_symbol_search::<u16, N>(cdf, symbol_value, self.symbol_range)
         };
         self.consume(cur, prev);
-        if UPDATE {
+        if update {
             let count = cdf[N];
             let rate = trusted_rate::<N>(cdf);
             u16::adapt_probabilities(cdf, N, rate, symbol);
@@ -1151,16 +1173,17 @@ impl<'a> SymbolDecoder<'a> {
     #[cfg(target_arch = "x86_64")]
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
-    fn read_trusted_lanes_avx2<const N: usize, const UPDATE: bool>(
+    fn read_trusted_lanes_avx2<const N: usize>(
         &mut self,
         token: Avx2,
         cdf: &mut [u16],
         symbol_value: u32,
+        update: bool,
     ) -> u32 {
         let (symbol, cur, prev, value, below) =
             lanes_search_avx2::<N>(token, cdf, symbol_value, self.symbol_range);
         self.consume(cur, prev);
-        if UPDATE {
+        if update {
             let count = cdf[N];
             adapt_lanes_avx2::<N>(token, cdf, value, below, trusted_rate::<N>(cdf));
             cdf[N] = count + u16::from(count < MAX_CDF_COUNT as u16);
