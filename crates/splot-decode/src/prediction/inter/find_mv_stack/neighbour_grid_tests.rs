@@ -325,3 +325,81 @@ fn the_direct_index_matches_the_window_row_mapping() {
         }
     }
 }
+
+/// A logging grid keeps only edge lines, and reads the same immediate and
+/// superblock-border probes as a grid that keeps the plane, for leaves of
+/// every shape published in partition order, odd columns on a superblock
+/// row's top included.
+#[test]
+fn edge_lines_read_the_probes_of_the_plane() {
+    let mut plane = NeighbourMvGrid::default();
+    plane.reset_for_tile(0..16, 0..16, 8).unwrap();
+    let mut edges = NeighbourMvGrid::default();
+    edges.reset_for_tile(0..16, 0..16, 8).unwrap();
+    edges.track_edges().unwrap();
+    edges.log_flags();
+    let leaves = [
+        (0, 0, 4, 4),
+        (0, 4, 4, 4),
+        (4, 0, 4, 4),
+        (4, 4, 2, 2),
+        (4, 6, 2, 2),
+        (6, 4, 2, 2),
+        (6, 6, 2, 2),
+        (0, 8, 4, 8),
+        (0, 12, 4, 8),
+        (8, 0, 1, 1),
+        (8, 1, 1, 1),
+        (9, 0, 1, 1),
+        (9, 1, 1, 1),
+        (8, 2, 2, 2),
+        (10, 0, 2, 2),
+        (10, 2, 2, 2),
+        (8, 4, 4, 4),
+        (12, 0, 8, 4),
+        (8, 8, 1, 4),
+        (8, 9, 1, 4),
+        (8, 10, 2, 4),
+        (8, 12, 4, 4),
+        (12, 8, 8, 4),
+    ];
+    let motion_modes = [
+        MotionMode::Simple,
+        MotionMode::InterIntra,
+        MotionMode::LocalWarp,
+        MotionMode::DeltaWarp,
+        MotionMode::ExtendWarp,
+    ];
+    for (index, (r, c, n4w, n4h)) in leaves.into_iter().enumerate() {
+        assert_eq!(
+            plane.immediate_flags(r, c, n4w, n4h),
+            edges.immediate_flags(r, c, n4w, n4h),
+            "immediate probes of leaf {index}"
+        );
+        if r % 8 == 0 {
+            let up = r.wrapping_sub(1);
+            for cols in [
+                [c.wrapping_sub(1), c],
+                [c + n4w - 1, c + n4w.saturating_sub(2)],
+            ] {
+                assert_eq!(
+                    plane.sb_border_flags(c, up, cols),
+                    edges.sb_border_flags(c, up, cols),
+                    "border probes of leaf {index}"
+                );
+            }
+        }
+        let syntax = NeighbourFlagSyntax {
+            is_inter: index % 4 != 3,
+            ref_frame0: (index % 7) as i8,
+            ref_frame1: (index % 3 == 0).then_some(6),
+            skip: index % 2 == 0,
+            interp_filter: (index % 3) as u8,
+            motion_mode: motion_modes[index % 5],
+            ..NON_INTER_FLAG_SYNTAX
+        };
+        plane.record_flags(r, c, n4w, n4h, syntax);
+        edges.record_flags(r, c, n4w, n4h, syntax);
+    }
+    assert!(!plane.window_violated() && !edges.window_violated());
+}

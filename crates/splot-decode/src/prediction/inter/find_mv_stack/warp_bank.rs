@@ -54,7 +54,7 @@ impl WarpParamBank {
             if cell.flags.is_warp()
                 && let Some(params) = cell.motion.warp_params()
             {
-                self.update(cell.flags.ref_frame0, params);
+                self.update(cell.flags.ref_frame0(), params);
             }
         });
     }

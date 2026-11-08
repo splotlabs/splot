@@ -2385,7 +2385,7 @@ fn compound_warp_cells_expose_the_first_model_and_per_list_sub_mvs() {
     );
 
     let cell = grid.get(1, 1).unwrap();
-    assert_eq!(cell.flags.motion_mode, MotionMode::LocalWarp);
+    assert!(cell.flags.is_local_warp());
     assert_eq!(cell.motion.warp_params(), Some(model0));
     assert_eq!(cell.motion.sub_mv, warp_sub_mv_at(model0, 0, 0, 1, 1));
     assert_eq!(cell.motion.sub_mv1, warp_sub_mv_at(model1, 0, 0, 1, 1));
