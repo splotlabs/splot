@@ -360,38 +360,82 @@ fn write_wienerns_lr_tx_skip_record(
     values: &mut [u8],
     populated: &mut usize,
 ) -> ReconResult<()> {
-    for_each_wienerns_lr_tx_skip_record_row(rows, cols, record, |cells| {
-        let actual = values.len();
-        let Some(slots) = values.get_mut(cells.clone()) else {
-            return Err(ReconError::BufferLengthMismatch {
-                expected: cells.start.max(actual).saturating_add(1),
-                actual,
-            });
-        };
-        let unwritten = if mi_run_is(slots, WIENERNS_LR_TX_SKIP_UNWRITTEN) {
-            crate::support::fill_mi_run(slots, value);
-            slots.len()
-        } else {
-            let mut unwritten = 0;
-            for slot in slots {
-                if *slot == WIENERNS_LR_TX_SKIP_UNWRITTEN {
-                    *slot = value;
-                    unwritten += 1;
-                } else if *slot != value {
-                    return Err(ReconError::PcWienerInvalidBounds {
-                        field: "LrTxSkip conflicting transform records",
-                    });
-                }
+    let (start, end_row, width) = wienerns_lr_tx_skip_record_span(rows, cols, record)?;
+    let rows = (start, cols, end_row - record.row);
+    match width {
+        1 => write_tx_skip_rows::<1>(values, rows, value, populated),
+        2 => write_tx_skip_rows::<2>(values, rows, value, populated),
+        4 => write_tx_skip_rows::<4>(values, rows, value, populated),
+        8 => write_tx_skip_rows::<8>(values, rows, value, populated),
+        16 => write_tx_skip_rows::<16>(values, rows, value, populated),
+        _ => {
+            let mut cells = start..start + width;
+            for _ in 0..rows.2 {
+                let actual = values.len();
+                let slots = values.get_mut(cells.clone()).ok_or_else(|| {
+                    ReconError::BufferLengthMismatch {
+                        expected: cells.start.max(actual).saturating_add(1),
+                        actual,
+                    }
+                })?;
+                write_tx_skip_slots(slots, value, populated)?;
+                cells = cells.start + cols..cells.end + cols;
             }
-            unwritten
-        };
-        *populated = populated
-            .checked_add(unwritten)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "LrTxSkip populated sample count",
+            Ok(())
+        }
+    }
+}
+
+/// Writes `value` over `N` slots from `start` in each of `count` rows `cols`
+/// apart.
+#[allow(clippy::inline_always, reason = "one fixed-width run per row")]
+#[inline(always)]
+fn write_tx_skip_rows<const N: usize>(
+    values: &mut [u8],
+    (start, cols, count): (usize, usize, usize),
+    value: u8,
+    populated: &mut usize,
+) -> ReconResult<()> {
+    let mut at = start;
+    for _ in 0..count {
+        let actual = values.len();
+        let slots = values
+            .get_mut(at..)
+            .and_then(<[u8]>::first_chunk_mut::<N>)
+            .ok_or_else(|| ReconError::BufferLengthMismatch {
+                expected: at.max(actual).saturating_add(1),
+                actual,
             })?;
-        Ok(())
-    })
+        if *slots == [WIENERNS_LR_TX_SKIP_UNWRITTEN; N] {
+            *slots = [value; N];
+            *populated += N;
+        } else {
+            write_tx_skip_slots(slots, value, populated)?;
+        }
+        at += cols;
+    }
+    Ok(())
+}
+
+/// Writes `value` over the unwritten `slots`, failing on a slot another
+/// record wrote differently.
+fn write_tx_skip_slots(slots: &mut [u8], value: u8, populated: &mut usize) -> ReconResult<()> {
+    if mi_run_is(slots, WIENERNS_LR_TX_SKIP_UNWRITTEN) {
+        crate::support::fill_mi_run(slots, value);
+        *populated += slots.len();
+        return Ok(());
+    }
+    for slot in slots {
+        if *slot == WIENERNS_LR_TX_SKIP_UNWRITTEN {
+            *slot = value;
+            *populated += 1;
+        } else if *slot != value {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "LrTxSkip conflicting transform records",
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Whether every slot of `run` is `value`, read like
@@ -415,6 +459,21 @@ fn for_each_wienerns_lr_tx_skip_record_row(
     record: &WienerNsLrTxSkipTransformRecord,
     mut visit: impl FnMut(core::ops::Range<usize>) -> ReconResult<()>,
 ) -> ReconResult<()> {
+    let (mut start, end_row, width) = wienerns_lr_tx_skip_record_span(rows, cols, record)?;
+    for _ in record.row..end_row {
+        visit(start..start + width)?;
+        start += cols;
+    }
+    Ok(())
+}
+
+/// The first grid index, the clipped end row and the clipped width of
+/// `record`.
+fn wienerns_lr_tx_skip_record_span(
+    rows: usize,
+    cols: usize,
+    record: &WienerNsLrTxSkipTransformRecord,
+) -> ReconResult<(usize, usize, usize)> {
     if record.rows == 0 || record.cols == 0 {
         return Err(ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip transform record dimensions",
@@ -441,12 +500,8 @@ fn for_each_wienerns_lr_tx_skip_record_row(
     }
     let end_row = nominal_end_row.min(rows);
     let width = nominal_end_col.min(cols) - record.col;
-    let mut start = wienerns_lr_tx_skip_grid_index(record.row, record.col, cols)?;
-    for _ in record.row..end_row {
-        visit(start..start + width)?;
-        start += cols;
-    }
-    Ok(())
+    let start = wienerns_lr_tx_skip_grid_index(record.row, record.col, cols)?;
+    Ok((start, end_row, width))
 }
 
 pub(crate) fn fixed_largest_420_chroma_tx_size_from_luma_4x4(
