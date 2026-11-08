@@ -154,14 +154,8 @@ impl DeblockEdge {
         };
         let (a, b) = edges(low, high);
         let (c, d) = edges(low_high, high_high);
-        core::array::from_fn(|lane| {
-            Self(match lane / 4 {
-                0 => a[lane],
-                1 => b[lane - 4],
-                2 => c[lane - 8],
-                _ => d[lane - 12],
-            })
-        })
+        let quads = [a, b, c, d];
+        core::array::from_fn(|lane| Self(quads[lane / 4][lane % 4]))
     }
 
     /// Whether the edge filters nothing.

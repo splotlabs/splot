@@ -71,12 +71,6 @@ struct Side<S: Simd> {
     qindex: u16x16<S>,
 }
 
-/// The `len` cells from `from` of each of a facts row's arrays.
-fn window(cells: [&[u16]; 3], from: usize, len: usize) -> Option<[&[u16]; 3]> {
-    let [keys, info, qindex] = cells.map(|cells| cells.get(from..from + len));
-    Some([keys?, info?, qindex?])
-}
-
 /// The § 7.17.5 `qThr` and `side` of the `qindex` of each lane, remembering
 /// the last `qindex` met: a frame without delta-q costs two compares per
 /// lane group. Each is kept to 15 bits, so that the 16-bit sum of two sides
@@ -312,18 +306,15 @@ impl PassEdges {
             self.marks.resize(stride, 0);
         }
         let offset = usize::from(PASS == 0);
+        let span = cols.saturating_sub(offset).div_ceil(GROUP) * GROUP;
         baseline_simd!(simd => {
             let lane = u16x16::from_slice(simd, &LANE_INDEX);
             for row_index in 0..rows {
                 let cell_row = self.first_row + row_index;
                 let r = first + row_index * plane_pass.row_step;
                 let uncovered = || DeblockError::UncoveredMi { row: r, col: 0 };
-                let curr = facts.row(cell_row).ok_or_else(uncovered)?;
-                let prev = if PASS == 0 {
-                    curr
-                } else {
-                    facts.row(cell_row - 1).ok_or_else(uncovered)?
-                };
+                let curr = facts.row(cell_row, offset, span).ok_or_else(uncovered)?;
+                let prev = facts.row(cell_row - PASS, 0, span).ok_or_else(uncovered)?;
                 let row_control = if PASS == 1 {
                     let tile = starts_tile(geometry.tile_starts, r);
                     control(
@@ -338,10 +329,6 @@ impl PassEdges {
                 let out = row_index * stride;
                 self.edges[out] = DeblockEdge::NONE;
                 let mut row_marks = u16x16::splat(simd, 0);
-                let span = (cols - offset).div_ceil(GROUP) * GROUP;
-                let (curr, prev) = window(curr, offset, span)
-                    .zip(window(prev, 0, span))
-                    .ok_or(DeblockError::Workspace)?;
                 let controls = if PASS == 0 {
                     self.controls.get(offset..offset + span)
                 } else {

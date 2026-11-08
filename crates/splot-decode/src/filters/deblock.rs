@@ -723,13 +723,12 @@ impl FrameDeblock {
     fn lay_out(&mut self) -> Result<(), DeblockError> {
         let extent = (self.mi_rows, self.grid.mi_cols);
         let sub_pu = self.filter.allow_df_sub_pu;
+        let luma_facts = !sub_pu && self.filter.apply_deblocking_filter[..2] != [false; 2];
         if !self.grids_reset {
-            if sub_pu || self.filter.apply_deblocking_filter[..2] != [false; 2] {
-                if sub_pu {
-                    self.grid.reset(self.mi_rows)?;
-                } else {
-                    self.facts[0].reset(extent, splot_recon::PlaneId::Y)?;
-                }
+            if sub_pu {
+                self.grid.reset(self.mi_rows)?;
+            } else if luma_facts {
+                self.facts[0].reset(extent, splot_recon::PlaneId::Y)?;
             }
             for plane in 0..2 {
                 self.reset_chroma(plane)?;
@@ -737,10 +736,10 @@ impl FrameDeblock {
             self.grids_reset = true;
         }
         let blocks = &self.records.blocks;
-        let fresh = blocks.get(self.laid_out[0]..).unwrap_or_default();
         if sub_pu {
             self.grid.fill(blocks, self.laid_out[0], self.mi_rows)?;
-        } else if self.filter.apply_deblocking_filter[..2] != [false; 2] {
+        } else if luma_facts {
+            let fresh = blocks.get(self.laid_out[0]..).unwrap_or_default();
             self.facts[0].paint_luma(fresh, extent);
         }
         self.laid_out[0] = blocks.len();

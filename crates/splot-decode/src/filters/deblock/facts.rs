@@ -44,23 +44,12 @@ pub(super) const fn padded_stride(cols: usize) -> usize {
     cols.next_multiple_of(16) + 16
 }
 
-/// `log2 - 1` of a § 7.17.4 size, kept to three bits.
-const fn size_code(log: i32) -> u16 {
-    (if log < 1 {
-        0
-    } else if log > 8 {
-        7
-    } else {
-        log - 1
-    }) as u16
-}
-
-/// The size codes of every transform size.
+/// The size codes (`log2 - 1`) of every transform size.
 const SIZE_CODES_BY_TX: [u16; TX_WIDTH_LOG2.len()] = {
     let mut codes = [0; TX_WIDTH_LOG2.len()];
     let mut tx = 0;
     while tx < codes.len() {
-        codes[tx] = size_code(TX_WIDTH_LOG2[tx]) | size_code(TX_HEIGHT_LOG2[tx]) << 3;
+        codes[tx] = (TX_WIDTH_LOG2[tx] - 1) as u16 | ((TX_HEIGHT_LOG2[tx] - 1) as u16) << 3;
         tx += 1;
     }
     codes
@@ -117,21 +106,18 @@ impl PlaneFacts {
         let len = rows
             .checked_mul(self.stride)
             .ok_or(DeblockError::Workspace)?;
-        let chroma = if plane == splot_recon::PlaneId::Y {
-            0
-        } else {
-            len
-        };
         reset(&mut self.keys, len, 0, plane)?;
         reset(&mut self.info, len, 0, plane)?;
         reset(&mut self.qindex, len, 0, plane)?;
-        reset(&mut self.layers, chroma, 0, plane)
+        let chroma = plane != splot_recon::PlaneId::Y;
+        reset(&mut self.layers, if chroma { len } else { 0 }, 0, plane)
     }
 
-    /// The keys, info and `qindex` of cell row `row` with its padding.
-    pub(super) fn row(&self, row: usize) -> Option<[&[u16]; 3]> {
-        let start = row.checked_mul(self.stride)?;
-        let cells = start..start.checked_add(self.stride)?;
+    /// The keys, info and `qindex` of the `len` cells from column `from` of
+    /// cell row `row`.
+    pub(super) fn row(&self, row: usize, from: usize, len: usize) -> Option<[&[u16]; 3]> {
+        let start = row.checked_mul(self.stride)?.checked_add(from)?;
+        let cells = start..start.checked_add(len)?;
         Some([
             self.keys.get(cells.clone())?,
             self.info.get(cells.clone())?,
@@ -184,9 +170,9 @@ impl PlaneFacts {
         let mut at = rect.at;
         for row in rect.rows {
             let (Some(keys), Some(infos), Some(qindexes)) = (
-                cells::<N>(&mut self.keys, at),
-                cells::<N>(&mut self.info, at),
-                cells::<N>(&mut self.qindex, at),
+                cells::<_, N>(&mut self.keys, at),
+                cells::<_, N>(&mut self.info, at),
+                cells::<_, N>(&mut self.qindex, at),
             ) else {
                 return;
             };
@@ -311,19 +297,37 @@ impl PlaneFacts {
     #[allow(clippy::inline_always, reason = "fixed-width stores per span")]
     #[inline(always)]
     fn paint_fixed<const N: usize>(&mut self, paint: &Paint, at: (usize, usize), cell: usize) {
-        let layers = self
-            .layers
-            .get_mut(cell..)
-            .and_then(<[u8]>::first_chunk_mut::<N>);
         let (Some(layers), Some(keys), Some(infos), Some(qindexes)) = (
-            layers,
-            cells::<N>(&mut self.keys, cell),
-            cells::<N>(&mut self.info, cell),
-            cells::<N>(&mut self.qindex, cell),
+            cells::<_, N>(&mut self.layers, cell),
+            cells::<_, N>(&mut self.keys, cell),
+            cells::<_, N>(&mut self.info, cell),
+            cells::<_, N>(&mut self.qindex, cell),
         ) else {
             return;
         };
         paint_span(paint, at, [keys, infos, qindexes], layers);
+    }
+
+    /// Writes the transform-only record `block`'s base and size over cells
+    /// `cells`.
+    fn paint_transform(&mut self, block: &DeblockBlock, cells: core::ops::Range<usize>) {
+        let key = key(block.chroma_base_r, block.chroma_base_c);
+        let codes = block.chroma_tx.map(size_codes);
+        for cell in cells {
+            let (Some(layer), Some(info), Some(cell_key)) = (
+                self.layers.get_mut(cell),
+                self.info.get_mut(cell),
+                self.keys.get_mut(cell),
+            ) else {
+                return;
+            };
+            *cell_key = key;
+            *layer |= TX_KEY;
+            if let Some(codes) = codes {
+                *info = *info & !SIZE_CODES | codes;
+                *layer |= TX_CODE;
+            }
+        }
     }
 }
 
@@ -349,9 +353,7 @@ fn paint_span(
         fill_mi_run(keys, paint.key);
         fill_mi_run(infos, paint.codes | bits);
         fill_mi_run(qindexes, paint.qindex);
-        if paint.layer != 0 {
-            fill_mi_run(layers, paint.layer);
-        }
+        fill_mi_run(layers, paint.layer);
         if let Some(info) = edge_col.and_then(|col| infos.get_mut(col)) {
             *info |= EDGE_V;
         }
@@ -380,32 +382,8 @@ fn paint_span(
     }
 }
 
-impl PlaneFacts {
-    /// Writes the transform-only record `block`'s base and size over cells
-    /// `cells`.
-    fn paint_transform(&mut self, block: &DeblockBlock, cells: core::ops::Range<usize>) {
-        let key = key(block.chroma_base_r, block.chroma_base_c);
-        let codes = block.chroma_tx.map(size_codes);
-        for cell in cells {
-            let (Some(layer), Some(info), Some(cell_key)) = (
-                self.layers.get_mut(cell),
-                self.info.get_mut(cell),
-                self.keys.get_mut(cell),
-            ) else {
-                return;
-            };
-            *cell_key = key;
-            *layer |= TX_KEY;
-            if let Some(codes) = codes {
-                *info = *info & !SIZE_CODES | codes;
-                *layer |= TX_CODE;
-            }
-        }
-    }
-}
-
 /// The `N` cells of `cells` from `at`.
-fn cells<const N: usize>(cells: &mut [u16], at: usize) -> Option<&mut [u16; N]> {
+fn cells<T, const N: usize>(cells: &mut [T], at: usize) -> Option<&mut [T; N]> {
     cells.get_mut(at..)?.first_chunk_mut::<N>()
 }
 
