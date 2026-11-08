@@ -819,7 +819,6 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
             let delta = splot_recon::optflow_unit_8x8_u8(
                 [&windows[0], &windows[1]],
                 [start(dx, dy), start(-dx, -dy)],
-                PREDICTION_SIZE,
                 distances,
                 block.optflow_sad_threshold,
             )?;

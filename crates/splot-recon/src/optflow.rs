@@ -363,8 +363,8 @@ fn strided_sample_out_of_range(
 }
 
 /// The § 7.13.3.8 refinement of an eight-bit 8x8 optical-flow unit whose two
-/// predictions are the eight-sample rows of `preds` from `starts` at
-/// `stride`: `None` when their SAD is below `sad_threshold`, else the
+/// predictions are the eight-sample rows of `preds` from `starts`, 16 bytes
+/// apart: `None` when their SAD is below `sad_threshold`, else the
 /// § 7.13.3.12 delta of [`derive_optflow_mv_delta_8x8_strided_into`].
 ///
 /// # Errors
@@ -375,22 +375,21 @@ fn strided_sample_out_of_range(
 pub fn optflow_unit_8x8_u8(
     preds: [&[u8]; 2],
     starts: [usize; 2],
-    stride: usize,
     distances: [i32; 2],
     sad_threshold: Option<u32>,
 ) -> Result<Option<[[i32; 2]; 2]>> {
+    const SPAN: usize = 7 * 16 + 8;
     let mut rows = [[0u64; 8]; 2];
     for ((rows, pred), start) in rows.iter_mut().zip(preds).zip(starts) {
-        let end = stride
-            .checked_mul(7)
-            .and_then(|span| span.checked_add(start + 8))
-            .filter(|&end| stride >= 8 && end <= pred.len())
+        let span = pred
+            .get(start..)
+            .and_then(<[u8]>::first_chunk::<SPAN>)
             .ok_or(ReconError::BufferLengthMismatch {
-                expected: start.saturating_add(stride.saturating_mul(7)) + 8,
+                expected: start.saturating_add(SPAN),
                 actual: pred.len(),
             })?;
-        for (row, bytes) in rows.iter_mut().zip(pred[start..end].chunks(stride)) {
-            if let Some(bytes) = bytes.first_chunk::<8>() {
+        for (index, row) in rows.iter_mut().enumerate() {
+            if let Some(bytes) = span[16 * index..].first_chunk::<8>() {
                 *row = u64::from_le_bytes(*bytes);
             }
         }
@@ -1203,7 +1202,7 @@ mod tests {
         let distance_pairs = [1i32, -1, 3, -4, 0]
             .into_iter()
             .flat_map(|near| [1, -1, 2, -3].map(|far| [near, far]));
-        let stride = 13;
+        let stride = 16;
         let fills: [fn(usize) -> u8; 4] = [
             |i| ((i * 73 + i / 13 * 29 + (i * i) % 7) % 256) as u8,
             |i| if (i + i / 13) % 3 == 0 { 255 } else { 0 },
@@ -1241,14 +1240,9 @@ mod tests {
                 for threshold in [None, Some(sad), Some(sad + 1)] {
                     let expected =
                         (threshold.is_none_or(|threshold| sad >= threshold)).then_some(delta);
-                    let actual = optflow_unit_8x8_u8(
-                        [&preds[0], &preds[1]],
-                        starts,
-                        stride,
-                        distances,
-                        threshold,
-                    )
-                    .unwrap();
+                    let actual =
+                        optflow_unit_8x8_u8([&preds[0], &preds[1]], starts, distances, threshold)
+                            .unwrap();
                     assert_eq!(
                         actual, expected,
                         "{distances:?} {first}/{second} {threshold:?}"
@@ -1256,7 +1250,7 @@ mod tests {
                 }
             }
         }
-        assert!(optflow_unit_8x8_u8([&[0; 64], &[0; 63]], [0, 0], 8, [1, 1], None).is_err());
+        assert!(optflow_unit_8x8_u8([&[0; 120], &[0; 119]], [0, 0], [1, 1], None).is_err());
     }
 
     /// The `i16` lane sums match the stored `i32`-rounded gradient planes for
