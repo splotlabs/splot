@@ -890,7 +890,6 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     let mut end = 0;
     let mut run = symbols.bypass_run();
     let mut level_sum = 0u32;
-    // One scan index; the high- and low-frequency loops differ in maxLevel.
     macro_rules! sign_step {
         ($scan_index:expr, $max_level:expr) => {{
             let (scan_index, max_level) = ($scan_index, $max_level);
