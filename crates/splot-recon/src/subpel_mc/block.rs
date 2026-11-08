@@ -164,7 +164,7 @@ pub(super) struct Taps {
 
 /// The first tap and the even tap count, 2, 4, 6 or 8, of a filter row's
 /// nonzero span, so a pass has a whole number of tap pairs.
-const fn even_tap_span(row: &[i32; NUM_TAPS]) -> (usize, usize) {
+pub(super) const fn even_tap_span(row: &[i32; NUM_TAPS]) -> (usize, usize) {
     let mut start = 0;
     while start < NUM_TAPS && row[start] == 0 {
         start += 1;

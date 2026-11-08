@@ -22,6 +22,7 @@ mod search_window;
 mod sixteen_bit;
 mod tip_overlap;
 use block::Sink;
+pub use cell::CompoundCells;
 pub use copy::{
     blend_compound_average_equal, blend_compound_average_weighted,
     blend_compound_average_weighted_sample,
@@ -1050,6 +1051,36 @@ pub fn subpel_compound_cell_u8<T: ReconSample>(
             output,
             stride,
         )
+}
+
+/// Runs a [`CompoundCells`] program of eight-bit `size`-square cells into
+/// `output` rows `stride` apart. Each cell that [`subpel_compound_cell_u8`]
+/// would store from its position and placements is stored the same way and
+/// sets its bit in the returned mask; every other cell is left unwritten for
+/// the caller to predict.
+#[doc(hidden)]
+#[inline]
+pub fn subpel_compound_cells_u8<T: ReconSample>(
+    references: [&ReferencePlaneView<'_, T>; 2],
+    interp: InterpolationFilter,
+    size: usize,
+    cells: &CompoundCells,
+    cwp_weight: i16,
+    output: &mut [u8],
+    stride: usize,
+) -> u64 {
+    let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) else {
+        return 0;
+    };
+    cell::compound_program(
+        [&first, &second],
+        interp,
+        size,
+        cells,
+        i32::from(cwp_weight),
+        output,
+        stride,
+    )
 }
 
 /// Whether both blocks have one unscaled shape in `1..=MAX_BLOCK_DIM`, one

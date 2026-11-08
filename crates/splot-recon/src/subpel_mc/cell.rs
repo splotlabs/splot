@@ -12,10 +12,10 @@
 //! halved taps, and a two-pass vertical rounds the intermediates. Every other
 //! block takes the general path.
 
-use super::block::{TAPS, Taps};
+use super::block::{TAPS, Taps, even_tap_span};
 use super::{
-    CellPlacement, InterpolationFilter, ReferencePlaneView, SCALE_SUBPEL_BITS, SUBPEL_MASK,
-    SubpelPredictParams,
+    CellPlacement, InterpolationFilter, NUM_FILTER_TYPES, NUM_PHASES, ReferencePlaneView,
+    SCALE_SUBPEL_BITS, SUBPEL_FILTERS, SUBPEL_MASK, SubpelPredictParams,
 };
 
 /// One reference of a cell: window row `r` starts at `origin + r * stride`,
@@ -134,6 +134,16 @@ pub(super) fn put_cell<'a>(
 }
 
 impl<'a> Cell<'a> {
+    /// The tap-pair counts of the horizontal and vertical passes, zero for
+    /// a skipped pass.
+    #[inline]
+    fn counts(&self) -> [usize; 2] {
+        [
+            self.horizontal.map_or(0, |taps| taps.count),
+            self.vertical.map_or(0, |taps| taps.count),
+        ]
+    }
+
     /// This cell read from `source`, storage of the same geometry.
     pub(super) fn with_source(&self, source: &'a [u8]) -> Self {
         Self { source, ..*self }
@@ -223,12 +233,172 @@ fn compound_cells(
     false
 }
 
+/// The most cells one [`CompoundCells`] program holds.
+const PROGRAM_CELLS: usize = 64;
+
+/// A program of unscaled compound cells of one grid plane that share a
+/// size and filter: each cell's `[row, col]` output position and both
+/// references' [`CellPlacement`], stored field by field so that a run sets
+/// up eight cells at a time.
+#[derive(Clone)]
+pub struct CompoundCells {
+    len: usize,
+    positions: [[u32; 2]; PROGRAM_CELLS],
+    starts: [[[i32; PROGRAM_CELLS]; 2]; 2],
+    bounds: [[[i32; PROGRAM_CELLS]; 4]; 2],
+}
+
+impl Default for CompoundCells {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            positions: [[0; 2]; PROGRAM_CELLS],
+            starts: [[[0; PROGRAM_CELLS]; 2]; 2],
+            bounds: [[[0; PROGRAM_CELLS]; 4]; 2],
+        }
+    }
+}
+
+impl CompoundCells {
+    /// Appends a cell at output `[row, col]`, or returns `false` without
+    /// storing it when the program is full.
+    #[inline]
+    pub fn push(&mut self, [row, col]: [usize; 2], placements: [CellPlacement; 2]) -> bool {
+        let index = self.len;
+        let (Ok(row), Ok(col)) = (u32::try_from(row), u32::try_from(col)) else {
+            return false;
+        };
+        if index >= PROGRAM_CELLS {
+            return false;
+        }
+        self.positions[index] = [row, col];
+        for (reference, ([x, y], bounds)) in placements.into_iter().enumerate() {
+            self.starts[reference][0][index] = x;
+            self.starts[reference][1][index] = y;
+            for (field, value) in bounds.into_iter().enumerate() {
+                self.bounds[reference][field][index] = value;
+            }
+        }
+        self.len = index + 1;
+        true
+    }
+
+    /// The number of cells.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the program holds no cell.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Removes every cell.
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// The output position and placements of cell `index`.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<([usize; 2], [CellPlacement; 2])> {
+        (index < self.len.min(PROGRAM_CELLS)).then(|| {
+            let [row, col] = self.positions[index];
+            (
+                [row as usize, col as usize],
+                [0, 1].map(|reference| self.placement(index, reference)),
+            )
+        })
+    }
+
+    fn placement(&self, index: usize, reference: usize) -> CellPlacement {
+        let field = |values: &[i32; PROGRAM_CELLS]| values.get(index).copied().unwrap_or(0);
+        let (starts, bounds) = (&self.starts[reference & 1], &self.bounds[reference & 1]);
+        (
+            [field(&starts[0]), field(&starts[1])],
+            [
+                field(&bounds[0]),
+                field(&bounds[1]),
+                field(&bounds[2]),
+                field(&bounds[3]),
+            ],
+        )
+    }
+}
+
+/// Per filter type and phase, the window of a pass packed as the column
+/// offset `start - 3` of its first tap (low byte, signed), its extent
+/// `span - 1` (second byte) and its tap-pair count (third byte); zero for a
+/// skipped pass.
+static WINDOWS: [[i32; NUM_PHASES]; NUM_FILTER_TYPES] = {
+    let mut table = [[0; NUM_PHASES]; NUM_FILTER_TYPES];
+    let mut filter = 0;
+    while filter < NUM_FILTER_TYPES {
+        let mut phase = 1;
+        while phase < NUM_PHASES {
+            let (start, taps) = even_tap_span(&SUBPEL_FILTERS[filter][phase]);
+            table[filter][phase] =
+                ((start as i32 - 3) & 0xff) | ((taps as i32 - 1) << 8) | ((taps as i32 / 2) << 16);
+            phase += 1;
+        }
+        filter += 1;
+    }
+    table
+};
+
+/// Runs a [`CompoundCells`] program of `size`-square cells, 4 or 8, into
+/// `output` rows `stride` apart: each cell that [`compound_at`] admits and
+/// `output` holds gets its COMPOUND_AVERAGE and its bit in the returned
+/// mask; no other cell is written.
+pub(super) fn compound_program(
+    references: [&ReferencePlaneView<'_, u8>; 2],
+    interp: InterpolationFilter,
+    size: usize,
+    cells: &CompoundCells,
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) -> u64 {
+    if (size != 4 && size != 8) || stride < size {
+        return 0;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
+        return avx2::program(
+            token, references, interp, size, cells, forward, output, stride,
+        );
+    }
+    let _ = (references, interp, cells, forward, output);
+    0
+}
+
+/// [`compound_at`] of program cell `index`, out of the program's loop.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn program_cell(
+    references: [&ReferencePlaneView<'_, u8>; 2],
+    interp: InterpolationFilter,
+    size: usize,
+    cells: &CompoundCells,
+    index: usize,
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    let placements = [cells.placement(index, 0), cells.placement(index, 1)];
+    compound_at(
+        references, interp, size, placements, forward, output, stride,
+    )
+}
+
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
-    use super::Cell;
+    use super::{Cell, CompoundCells, PROGRAM_CELLS, TAPS, WINDOWS};
     use crate::subpel_mc::eight_bit::avx2::{Horizontal, average, store_bytes, tap_bytes};
+    use crate::subpel_mc::{InterpolationFilter, ReferencePlaneView};
     use core::arch::x86_64::*;
-    use fearless_simd::{Avx2, SimdBase, u8x32};
+    use fearless_simd::{Avx2, SimdBase, SimdFrom, i32x8, u8x32};
 
     /// The 16 predictors of each group of a cell; a 4x4 cell has one.
     type Groups = [__m256i; 4];
@@ -320,6 +490,35 @@ mod avx2 {
         };
     }
 
+    /// Calls `$f::<8, H, V, false, false>` for the kernel class `5 * H + V`
+    /// of an unclamped 8x8 cell.
+    macro_rules! by_class {
+        ($class:expr, $f:ident($($arg:expr),*)) => {
+            by_class!(@ $class, $f($($arg),*), [
+                0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 5 1 0, 6 1 1, 7 1 2, 8 1 3, 9 1 4,
+                10 2 0, 11 2 1, 12 2 2, 13 2 3, 14 2 4, 15 3 0, 16 3 1, 17 3 2, 18 3 3,
+                19 3 4, 20 4 0, 21 4 1, 22 4 2, 23 4 3
+            ], 4 4, 8)
+        };
+        (@ $class:expr, $f:ident $args:tt, [$($c:literal $h:literal $v:literal),*], $lh:literal $lv:literal, $w:literal) => {
+            match $class {
+                $($c => $f::<$w, $h, $v, false, false> $args,)*
+                _ => $f::<$w, $lh, $lv, false, false> $args,
+            }
+        };
+    }
+
+    /// [`by_class`] of an unclamped 4x4 cell, whose horizontal pass has at
+    /// most two tap pairs.
+    macro_rules! by_narrow_class {
+        ($class:expr, $f:ident($($arg:expr),*)) => {
+            by_class!(@ $class, $f($($arg),*), [
+                0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 5 1 0, 6 1 1, 7 1 2, 8 1 3, 9 1 4,
+                10 2 0, 11 2 1, 12 2 2, 13 2 3
+            ], 2 4, 4)
+        };
+    }
+
     fearless_simd::kernel!(
         #[inline]
         pub(super) fn compound(
@@ -330,13 +529,7 @@ mod avx2 {
             output: &mut [u8],
             stride: usize,
         ) {
-            let counts = |cell: &Cell<'_>| {
-                (
-                    cell.horizontal.map_or(0, |taps| taps.count),
-                    cell.vertical.map_or(0, |taps| taps.count),
-                )
-            };
-            let ([h0, v0], [h1, v1]) = (counts(cells[0]).into(), counts(cells[1]).into());
+            let ([h0, v0], [h1, v1]) = (cells[0].counts(), cells[1].counts());
             if size == 4 {
                 let first = by_narrow_taps!(
                     false,
@@ -378,11 +571,221 @@ mod avx2 {
         }
     );
 
+    /// The kernel inputs of eight program cells of one reference: window
+    /// origins, tap phases per pass, the kernel class `5 * H + V` of their
+    /// tap-pair counts, and a bit per cell whose window lies inside its clip
+    /// bounds and storage and that the kernels of its size cover.
+    struct Lanes {
+        origin: [i32; 8],
+        phases: [[i32; 8]; 2],
+        classes: [i32; 8],
+        inside: u32,
+    }
+
+    /// The [`Lanes`] of `reference` for program cells `batch..batch + 8`:
+    /// [`Cell::at`] of eight cells at once, keeping only the unclamped
+    /// windows; every other cell has no bit.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn lanes(
+        t: Avx2,
+        view: &ReferencePlaneView<'_, u8>,
+        windows: [__m256i; 2],
+        size: usize,
+        cells: &CompoundCells,
+        reference: usize,
+        batch: usize,
+    ) -> Lanes {
+        let zero = _mm256_setzero_si256();
+        let mut lanes = Lanes {
+            origin: [0; 8],
+            phases: [[0; 8]; 2],
+            classes: [0; 8],
+            inside: 0,
+        };
+        let (Ok(len), Ok(stride), Ok(width), Ok(rows)) = (
+            i32::try_from(view.samples.len()),
+            i32::try_from(view.stride),
+            i32::try_from(view.width),
+            i32::try_from(view.readable_rows),
+        ) else {
+            return lanes;
+        };
+        if i64::from(rows) * i64::from(stride) + i64::from(width) + 16 > i64::from(i32::MAX) {
+            return lanes;
+        }
+        let load = |values: &[i32; PROGRAM_CELLS]| -> __m256i {
+            values
+                .get(batch..)
+                .and_then(<[i32]>::first_chunk::<8>)
+                .map_or(zero, |values| i32x8::simd_from(t, *values).into())
+        };
+        let array = |values: __m256i| -> [i32; 8] { *i32x8::<Avx2>::simd_from(t, values) };
+        let (starts, bounds) = (&cells.starts[reference & 1], &cells.bounds[reference & 1]);
+        let (x, y) = (load(&starts[0]), load(&starts[1]));
+        let fifteen = _mm256_set1_epi32(15);
+        let phases = [
+            _mm256_and_si256(_mm256_srai_epi32::<6>(x), fifteen),
+            _mm256_and_si256(_mm256_srai_epi32::<6>(y), fifteen),
+        ];
+        let window = |phase: __m256i| {
+            let low = _mm256_permutevar8x32_epi32(windows[0], phase);
+            let high = _mm256_permutevar8x32_epi32(windows[1], phase);
+            _mm256_castps_si256(_mm256_blendv_ps(
+                _mm256_castsi256_ps(low),
+                _mm256_castsi256_ps(high),
+                _mm256_castsi256_ps(_mm256_slli_epi32::<28>(phase)),
+            ))
+        };
+        let (wx, wy) = (window(phases[0]), window(phases[1]));
+        let reach = _mm256_set1_epi32(size as i32);
+        let span = |base: __m256i, window: __m256i| {
+            let first = _mm256_add_epi32(
+                base,
+                _mm256_srai_epi32::<24>(_mm256_slli_epi32::<24>(window)),
+            );
+            let extent = _mm256_and_si256(_mm256_srli_epi32::<8>(window), _mm256_set1_epi32(0xff));
+            (
+                first,
+                _mm256_add_epi32(first, _mm256_add_epi32(reach, extent)),
+            )
+        };
+        let (column, column_end) = span(_mm256_srai_epi32::<10>(x), wx);
+        let (row, row_end) = span(_mm256_srai_epi32::<10>(y), wy);
+        let bound = |values: &[i32; PROGRAM_CELLS], last: i32| {
+            _mm256_min_epi32(
+                _mm256_max_epi32(load(values), zero),
+                _mm256_set1_epi32(last),
+            )
+        };
+        let one = _mm256_set1_epi32(1);
+        let [first_x, first_y] = [bound(&bounds[0], width - 1), bound(&bounds[1], rows - 1)];
+        let last_x = _mm256_add_epi32(bound(&bounds[2], width - 1), one);
+        let last_y = _mm256_add_epi32(bound(&bounds[3], rows - 1), one);
+        let stride = _mm256_set1_epi32(stride);
+        let end = _mm256_add_epi32(
+            _mm256_mullo_epi32(_mm256_sub_epi32(row_end, one), stride),
+            _mm256_add_epi32(column, _mm256_set1_epi32(16)),
+        );
+        let [horizontal, vertical] = [_mm256_srli_epi32::<16>(wx), _mm256_srli_epi32::<16>(wy)];
+        let narrow = _mm256_set1_epi32(if size == 4 { 2 } else { 4 });
+        let outside = _mm256_or_si256(
+            _mm256_or_si256(
+                _mm256_or_si256(
+                    _mm256_cmpgt_epi32(first_x, column),
+                    _mm256_cmpgt_epi32(column_end, last_x),
+                ),
+                _mm256_cmpgt_epi32(horizontal, narrow),
+            ),
+            _mm256_or_si256(
+                _mm256_or_si256(
+                    _mm256_cmpgt_epi32(first_y, row),
+                    _mm256_cmpgt_epi32(row_end, last_y),
+                ),
+                _mm256_cmpgt_epi32(end, _mm256_set1_epi32(len)),
+            ),
+        );
+        lanes.origin = array(_mm256_add_epi32(_mm256_mullo_epi32(row, stride), column));
+        lanes.phases = [array(phases[0]), array(phases[1])];
+        lanes.classes = array(_mm256_add_epi32(
+            _mm256_add_epi32(_mm256_slli_epi32::<2>(horizontal), horizontal),
+            vertical,
+        ));
+        lanes.inside = !(_mm256_movemask_ps(_mm256_castsi256_ps(outside)) as u32) & 0xff;
+        lanes
+    }
+
+    fearless_simd::kernel!(
+        #[inline(never)]
+        pub(super) fn program(
+            t: Avx2,
+            views: [&ReferencePlaneView<'_, u8>; 2],
+            interp: InterpolationFilter,
+            size: usize,
+            cells: &CompoundCells,
+            forward: i32,
+            output: &mut [u8],
+            stride: usize,
+        ) -> u64 {
+            let filter = interp.pass_index(size as u32) as usize;
+            let (filters, windows) = (&TAPS[filter], &WINDOWS[filter]);
+            let half = |half: usize| -> __m256i {
+                windows
+                    .get(8 * half..)
+                    .and_then(<[i32]>::first_chunk::<8>)
+                    .map_or(_mm256_setzero_si256(), |values| {
+                        i32x8::simd_from(t, *values).into()
+                    })
+            };
+            let windows = [half(0), half(1)];
+            let len = cells.len.min(PROGRAM_CELLS);
+            let mut written = 0u64;
+            for batch in (0..len).step_by(8) {
+                let lanes = [0, 1].map(|reference| {
+                    lanes(t, views[reference], windows, size, cells, reference, batch)
+                });
+                let inside = lanes[0].inside & lanes[1].inside;
+                for lane in 0..(len - batch).min(8) {
+                    let index = batch + lane;
+                    let [row, col] = cells.positions[index];
+                    let at = row as usize * stride + col as usize;
+                    let Some(output) = output
+                        .get_mut(at..)
+                        .filter(|output| (size - 1) * stride + size <= output.len())
+                    else {
+                        continue;
+                    };
+                    if inside >> lane & 1 == 0 {
+                        let stored = super::program_cell(
+                            views, interp, size, cells, index, forward, output, stride,
+                        );
+                        written |= u64::from(stored) << index;
+                        continue;
+                    }
+                    let cell = |reference: usize| {
+                        let (view, lanes) = (views[reference], &lanes[reference]);
+                        let taps =
+                            |pass: usize| filters[lanes.phases[pass][lane] as usize & 15].as_ref();
+                        Cell {
+                            source: view.samples,
+                            origin: lanes.origin[lane] as usize,
+                            stride: view.stride,
+                            horizontal: taps(0),
+                            vertical: taps(1),
+                            clamped: None,
+                        }
+                    };
+                    let (first, second) = (cell(0), cell(1));
+                    let classes = [lanes[0].classes[lane], lanes[1].classes[lane]];
+                    if size == 4 {
+                        let first = by_narrow_class!(classes[0], predicted(t, &first));
+                        let second = by_narrow_class!(classes[1], predicted(t, &second));
+                        store_bytes::<4>(
+                            t,
+                            output,
+                            0,
+                            stride,
+                            average(first[0], second[0], forward),
+                        );
+                    } else {
+                        let first = by_class!(classes[0], predicted(t, &first));
+                        let second = by_class!(classes[1], predicted(t, &second));
+                        for (group, (&first, &second)) in first.iter().zip(&second).enumerate() {
+                            let blended = average(first, second, forward);
+                            store_bytes::<8>(t, output, 2 * group * stride, stride, blended);
+                        }
+                    }
+                    written |= 1 << index;
+                }
+            }
+            written
+        }
+    );
+
     fearless_simd::kernel!(
         #[inline]
         pub(super) fn put(t: Avx2, cell: &Cell<'_>, size: usize, output: &mut [u8], stride: usize) {
-            let h = cell.horizontal.map_or(0, |taps| taps.count);
-            let v = cell.vertical.map_or(0, |taps| taps.count);
+            let [h, v] = cell.counts();
             if size == 4 {
                 by_narrow_taps!(
                     true,
