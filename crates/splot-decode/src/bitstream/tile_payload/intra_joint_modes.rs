@@ -336,6 +336,8 @@ impl IntraFacts {
     const DIP: u8 = 1 << 3;
     const MRL: u8 = 1 << 4;
     const MRL_SECONDARY: u8 = 1 << 5;
+    /// Marks [`Self::ABSENT`], which no flag test reads as set.
+    const ABSENT_BIT: u8 = 1 << 7;
 
     /// A position no intra leaf has published.
     pub(crate) const NONE: Self = Self {
@@ -344,6 +346,12 @@ impl IntraFacts {
         y_mode: IntraYMode::Dc,
         angle_delta_y: 0,
         bits: 0,
+    };
+
+    /// A position outside the tile.
+    const ABSENT: Self = Self {
+        bits: Self::ABSENT_BIT,
+        ..Self::NONE
     };
 
     pub(crate) fn luma(
@@ -399,9 +407,10 @@ impl IntraFacts {
 #[derive(Clone, Copy)]
 pub(crate) struct IntraNeighbours {
     joint: [IntraJointMode; 2],
-    npos: [IntraFacts; 2],
-    above: IntraFacts,
-    left: IntraFacts,
+    /// The OR and the AND of the flag bits at the first two `NPos` positions.
+    npos_any: u8,
+    npos_both: u8,
+    above_left_bits: [u8; 2],
 }
 
 impl IntraNeighbours {
@@ -414,7 +423,7 @@ impl IntraNeighbours {
     }
 
     const fn npos_sum(&self, bit: u8) -> usize {
-        self.npos[0].bit(bit) + self.npos[1].bit(bit)
+        (self.npos_any & bit != 0) as usize + (self.npos_both & bit != 0) as usize
     }
 
     pub(crate) const fn fsc_mode_ctx(&self) -> usize {
@@ -436,8 +445,8 @@ impl IntraNeighbours {
     /// `(above, left)` smoothness of the luma neighbours.
     pub(crate) const fn smoothness(&self) -> (bool, bool) {
         (
-            self.above.bits & IntraFacts::SMOOTH != 0,
-            self.left.bits & IntraFacts::SMOOTH != 0,
+            self.above_left_bits[0] & IntraFacts::SMOOTH != 0,
+            self.above_left_bits[1] & IntraFacts::SMOOTH != 0,
         )
     }
 }
@@ -477,36 +486,36 @@ impl TileIntraFactsState {
     pub(crate) fn neighbours(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> IntraNeighbours {
         let bottom = r.saturating_add(n4h.saturating_sub(1));
         let right = c.saturating_add(n4w.saturating_sub(1));
-        let left_col = c.checked_sub(1);
-        let above_row = r.checked_sub(1);
-        let left_bottom = left_col.and_then(|col| self.grid.cell(bottom, col));
-        let above_right = above_row.and_then(|row| self.grid.cell(row, right));
-        let left_top = left_col.and_then(|col| self.grid.cell(r, col));
-        let above_left = above_row.and_then(|row| self.grid.cell(row, c));
+        let at = |row: Option<usize>, col: Option<usize>| {
+            row.zip(col)
+                .and_then(|(row, col)| self.grid.cell(row, col))
+                .unwrap_or(IntraFacts::ABSENT)
+        };
+        let (left, above) = (c.checked_sub(1), r.checked_sub(1));
+        let left_bottom = at(Some(bottom), left);
+        let above_right = at(above, Some(right));
+        let left_top = at(Some(r), left);
+        let above_left = at(above, Some(c));
         let same_row = |row: usize| crate::tile::same_superblock_row(r, row, self.sb_size4);
-        let above_same_row = above_row.is_some_and(same_row);
-        let mut npos = [IntraFacts::NONE; 2];
-        let mut len = 0;
+        let above_in_row = above.is_some_and(same_row);
+        let (mut npos_any, mut npos_both, mut len) = (0, 0, 0);
         for (facts, in_row) in [
             (left_bottom, same_row(bottom)),
-            (above_right, above_same_row),
+            (above_right, above_in_row),
             (left_top, true),
-            (above_left, above_same_row),
+            (above_left, above_in_row),
         ] {
-            if let (true, Some(facts), Some(slot)) = (in_row, facts, npos.get_mut(len)) {
-                *slot = facts;
+            if in_row && facts.bits & IntraFacts::ABSENT_BIT == 0 && len < 2 {
+                npos_both = npos_any & facts.bits;
+                npos_any |= facts.bits;
                 len += 1;
             }
         }
-        let or_none = |facts: Option<IntraFacts>| facts.unwrap_or(IntraFacts::NONE);
         IntraNeighbours {
-            joint: [
-                or_none(left_bottom).joint_mode,
-                or_none(above_right).joint_mode,
-            ],
-            npos,
-            above: or_none(above_left),
-            left: or_none(left_top),
+            joint: [left_bottom.joint_mode, above_right.joint_mode],
+            npos_any,
+            npos_both,
+            above_left_bits: [above_left.bits, left_top.bits],
         }
     }
 
