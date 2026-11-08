@@ -144,7 +144,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
         }
         Ok(())
     };
-    if predict_intra_in_frame(
+    predict_intra_block(
         workspace,
         block,
         plane_id,
@@ -157,31 +157,6 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
         None,
         bit_depth,
         predict_dc,
-    )? {
-        return Ok(());
-    }
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        dc,
-    )?;
-    if ibp_dc {
-        apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, &mut prediction, width)?;
-    }
-    write_intra_prediction_block(
-        workspace,
-        block,
-        prediction,
-        plane_id,
-        x,
-        y,
-        block_size,
-        qindex,
-        use_tcq,
-        luma_context,
-        None,
-        bit_depth,
     )
 }
 
@@ -453,6 +428,62 @@ pub(crate) fn predict_intra_in_frame<T: ReconSample>(
         )?;
     }
     Ok(true)
+}
+
+/// [`predict_intra_in_frame`], or for a block it declines, `predict` into a
+/// staging buffer that [`write_intra_prediction_block`] commits.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_intra_block<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: CoeffBlock<'_>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    block_size: IntraRectBlockSize,
+    qindex: u32,
+    use_tcq: bool,
+    luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
+    bit_depth: BitDepth,
+    predict: impl Fn(&mut [T], usize) -> core::result::Result<(), GeneralIntraResidualError>,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    if predict_intra_in_frame(
+        workspace,
+        block,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+        &predict,
+    )? {
+        return Ok(());
+    }
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        block_size.sample_count(),
+        T::default(),
+    )?;
+    predict(&mut prediction, block_size.width())?;
+    write_intra_prediction_block(
+        workspace,
+        block,
+        prediction,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+    )
 }
 
 /// Commits one intra block's prediction and residual into the current frame.

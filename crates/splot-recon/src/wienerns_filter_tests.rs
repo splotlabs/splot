@@ -77,15 +77,23 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
                 let mut reference = vec![0u16; width * height];
                 wiener_ns_filter_luma_block(&mut reference, &params, source_at).unwrap();
                 let mut actual = vec![0u16; width * height];
-                let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-                wiener_ns_filter_luma_block_padded(&mut actual, &params, &source).unwrap();
+                let source_lines: Vec<_> = padded.chunks(stride).collect();
+                let source =
+                    WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
+                wiener_ns_filter_luma_block_padded_into(
+                    &mut actual,
+                    &params,
+                    &source,
+                    &mut WienerNsLumaScratch::default(),
+                )
+                .unwrap();
                 assert_eq!(actual, reference, "{bit_depth:?} {width}x{height}");
             }
         }
     }
 }
 
-fn packed_and_strided_u16_luma_match<T: ReconSample>(
+fn packed_and_strided_luma_match<T: ReconSample>(
     bit_depth: BitDepth,
     width: usize,
     height: usize,
@@ -109,8 +117,8 @@ fn packed_and_strided_u16_luma_match<T: ReconSample>(
             .unwrap()
         })
         .collect();
-    let source =
-        WienerNsLumaPaddedSource::new(&source_samples, source_stride, width, height).unwrap();
+    let source_lines: Vec<_> = source_samples.chunks(source_stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let cells: Vec<u8> = (0..width.div_ceil(4) * height.div_ceil(4))
         .map(|index| (index % class_count) as u8)
         .collect();
@@ -167,10 +175,11 @@ fn packed_and_strided_u16_luma_match<T: ReconSample>(
 
     let output_stride = width + 11;
     let direct_params = params(width, height, output_stride, bit_depth, &coeffs, None);
-    let mut direct = vec![u16::MAX; output_stride * height];
+    let sentinel = T::try_from_u16(0xa5).unwrap();
+    let mut direct = vec![sentinel; output_stride * height];
     let mut direct_scratch = WienerNsLumaScratch::default();
     if class_count == 1 {
-        wiener_ns_filter_luma_block_padded_u16_into(
+        wiener_ns_filter_luma_block_padded_into(
             &mut direct,
             &direct_params,
             &source,
@@ -178,7 +187,7 @@ fn packed_and_strided_u16_luma_match<T: ReconSample>(
         )
         .unwrap();
     } else {
-        wiener_ns_filter_luma_block_padded_cells_u16_into(
+        wiener_ns_filter_luma_block_padded_cells_into(
             &mut direct,
             &direct_params,
             &source,
@@ -189,25 +198,23 @@ fn packed_and_strided_u16_luma_match<T: ReconSample>(
     }
 
     for row in 0..height {
-        assert_eq!(
-            &direct[row * output_stride..row * output_stride + width],
-            &packed[row * width..(row + 1) * width]
+        let line = &direct[row * output_stride..(row + 1) * output_stride];
+        assert!(
+            line[..width]
                 .iter()
                 .map(|sample| sample.to_u16())
-                .collect::<Vec<_>>(),
+                .eq(packed[row * width..(row + 1) * width]
+                    .iter()
+                    .map(|sample| sample.to_u16())),
             "{} {bit_depth:?} {width}x{height} classes={class_count}",
             T::TYPE_NAME,
         );
-        assert!(
-            direct[row * output_stride + width..(row + 1) * output_stride]
-                .iter()
-                .all(|&sample| sample == u16::MAX)
-        );
+        assert!(line[width..].iter().all(|sample| sample.to_u16() == 0xa5));
     }
 }
 
 #[test]
-fn packed_and_strided_u16_luma_match_runtime_class_counts_and_shapes() {
+fn packed_and_strided_luma_match_runtime_class_counts_and_shapes() {
     let class_counts = [1, 2, 3, 4, 6, 8, 12, 16];
     let shapes = [
         (1, 1),
@@ -223,15 +230,15 @@ fn packed_and_strided_u16_luma_match_runtime_class_counts_and_shapes() {
     ];
     for class_count in class_counts {
         for &(width, height) in &shapes {
-            packed_and_strided_u16_luma_match::<u8>(BitDepth::Eight, width, height, class_count);
-            packed_and_strided_u16_luma_match::<u16>(BitDepth::Eight, width, height, class_count);
-            packed_and_strided_u16_luma_match::<u16>(BitDepth::Ten, width, height, class_count);
+            packed_and_strided_luma_match::<u8>(BitDepth::Eight, width, height, class_count);
+            packed_and_strided_luma_match::<u16>(BitDepth::Eight, width, height, class_count);
+            packed_and_strided_luma_match::<u16>(BitDepth::Ten, width, height, class_count);
         }
     }
 }
 
 #[test]
-fn direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes() {
+fn direct_u8_output_matches_runtime_class_counts_and_shapes() {
     for class_count in [1, 2, 4, 8, 16] {
         for (width, height) in [(1, 1), (3, 3), (31, 8), (37, 63), (128, 56)] {
             let coeffs: Vec<_> = (0..class_count)
@@ -244,27 +251,27 @@ fn direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes() {
             let source_samples: Vec<u8> = (0..source_stride * source_rows)
                 .map(|index| ((index * 37 + index / source_stride * 53 + 17) % 256) as u8)
                 .collect();
+            let source_lines: Vec<_> = source_samples.chunks(source_stride).collect();
             let source =
-                WienerNsLumaPaddedSource::new(&source_samples, source_stride, width, height)
-                    .unwrap();
+                WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
             let source_samples_u16: Vec<u16> = source_samples
                 .iter()
                 .map(|&sample| u16::from(sample))
                 .collect();
+            let source_u16_lines: Vec<_> = source_samples_u16.chunks(source_stride).collect();
             let source_u16 =
-                WienerNsLumaPaddedSource::new(&source_samples_u16, source_stride, width, height)
-                    .unwrap();
+                WienerNsLumaPaddedSource::from_rows(&source_u16_lines, 0, width, height).unwrap();
             let cells: Vec<u8> = (0..width.div_ceil(4) * height.div_ceil(4))
                 .map(|index| (index % class_count) as u8)
                 .collect();
             let output_stride = width + 5;
             let params = params(width, height, output_stride, BitDepth::Eight, &coeffs, None);
-            let mut staged = vec![u16::MAX; output_stride * height];
+            let mut packed = vec![0xa5; output_stride * height];
             let mut direct = vec![0xa5; output_stride * height];
             let mut direct_from_u16 = vec![0xa5; output_stride * height];
             if class_count == 1 {
-                wiener_ns_filter_luma_block_padded_u16_into(
-                    &mut staged,
+                wiener_ns_filter_luma_block_padded_into(
+                    &mut packed,
                     &params,
                     &source,
                     &mut WienerNsLumaScratch::default(),
@@ -285,8 +292,8 @@ fn direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes() {
                 )
                 .unwrap();
             } else {
-                wiener_ns_filter_luma_block_padded_cells_u16_into(
-                    &mut staged,
+                wiener_ns_filter_luma_block_padded_cells_into(
+                    &mut packed,
                     &params,
                     &source,
                     &cells,
@@ -310,15 +317,8 @@ fn direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes() {
                 )
                 .unwrap();
             }
+            assert_eq!(direct, packed, "{width}x{height} classes={class_count}");
             for row in 0..height {
-                assert_eq!(
-                    &direct[row * output_stride..row * output_stride + width],
-                    &staged[row * output_stride..row * output_stride + width]
-                        .iter()
-                        .map(|&sample| sample as u8)
-                        .collect::<Vec<_>>(),
-                    "{width}x{height} classes={class_count}",
-                );
                 assert_eq!(
                     &direct_from_u16[row * output_stride..row * output_stride + width],
                     &direct[row * output_stride..row * output_stride + width],
@@ -340,7 +340,7 @@ fn direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes() {
 }
 
 #[test]
-fn u8_source_strided_u16_simd_has_a_mutation_sensitive_oracle() {
+fn u8_source_strided_simd_has_a_mutation_sensitive_oracle() {
     let width = 32;
     let height = 1;
     let source_stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
@@ -348,26 +348,13 @@ fn u8_source_strided_u16_simd_has_a_mutation_sensitive_oracle() {
     let mut samples = vec![100u8; source_stride * source_rows];
     let center_row = WIENER_NS_LUMA_TAP_RADIUS;
     samples[(center_row + 1) * source_stride + WIENER_NS_LUMA_TAP_RADIUS] = 120;
-    let source = WienerNsLumaPaddedSource::new(&samples, source_stride, width, height).unwrap();
+    let source_lines: Vec<_> = samples.chunks(source_stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let mut class = ZERO;
     class[0] = 4;
     let coeffs = [class];
     let output_stride = width + 7;
     let params = params(width, height, output_stride, BitDepth::Eight, &coeffs, None);
-    let mut output = vec![u16::MAX; output_stride];
-
-    wiener_ns_filter_luma_block_padded_u16_into(
-        &mut output,
-        &params,
-        &source,
-        &mut WienerNsLumaScratch::default(),
-    )
-    .unwrap();
-
-    assert_eq!(output[0], 101);
-    assert!(output[1..width].iter().all(|&sample| sample == 100));
-    assert!(output[width..].iter().all(|&sample| sample == u16::MAX));
-
     let mut direct = vec![0xa5; output_stride];
     wiener_ns_filter_luma_block_padded_u8_into(
         &mut direct,
@@ -382,26 +369,25 @@ fn u8_source_strided_u16_simd_has_a_mutation_sensitive_oracle() {
 }
 
 #[test]
-fn strided_u16_luma_validates_every_input_before_writing() {
+fn strided_u8_luma_validates_every_input_before_writing() {
     let width = 2;
     let height = 2;
     let source_stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
     let source_rows = height + 2 * WIENER_NS_LUMA_TAP_RADIUS;
     let samples = vec![0u8; source_stride * source_rows];
+    let valid_source_lines: Vec<_> = samples.chunks(source_stride).collect();
     let valid_source =
-        WienerNsLumaPaddedSource::new(&samples, source_stride, width, height).unwrap();
+        WienerNsLumaPaddedSource::from_rows(&valid_source_lines, 0, width, height).unwrap();
+    let short_lines: Vec<_> = samples[..samples.len() - 1].chunks(source_stride).collect();
     let short_source = WienerNsLumaPaddedSource {
-        rows: PaddedRows::Strided {
-            samples: &samples[..samples.len() - 1],
-            stride: source_stride,
-        },
+        rows: PaddedRows::table(&short_lines, 0),
     };
     let coeffs = [ZERO];
     let short_cells: [u8; 0] = [];
 
-    let mut output = [77u16; 8];
+    let mut output = [77u8; 8];
     let invalid_stride_params = params(width, height, 1, BitDepth::Eight, &coeffs, None);
-    let error = wiener_ns_filter_luma_block_padded_cells_u16_into(
+    let error = wiener_ns_filter_luma_block_padded_cells_u8_into(
         &mut output,
         &invalid_stride_params,
         &short_source,
@@ -419,8 +405,8 @@ fn strided_u16_luma_validates_every_input_before_writing() {
     assert_eq!(output, [77; 8]);
 
     let params = params(width, height, 4, BitDepth::Eight, &coeffs, None);
-    let mut output = [77u16; 5];
-    let error = wiener_ns_filter_luma_block_padded_cells_u16_into(
+    let mut output = [77u8; 5];
+    let error = wiener_ns_filter_luma_block_padded_cells_u8_into(
         &mut output,
         &params,
         &short_source,
@@ -437,8 +423,8 @@ fn strided_u16_luma_validates_every_input_before_writing() {
     );
     assert_eq!(output, [77; 5]);
 
-    let mut output = [77u16; 8];
-    let error = wiener_ns_filter_luma_block_padded_cells_u16_into(
+    let mut output = [77u8; 8];
+    let error = wiener_ns_filter_luma_block_padded_cells_u8_into(
         &mut output,
         &params,
         &valid_source,
@@ -456,7 +442,7 @@ fn strided_u16_luma_validates_every_input_before_writing() {
     assert_eq!(output, [77; 8]);
 
     let cells = [0u8];
-    let error = wiener_ns_filter_luma_block_padded_cells_u16_into(
+    let error = wiener_ns_filter_luma_block_padded_cells_u8_into(
         &mut output,
         &params,
         &short_source,
@@ -467,8 +453,8 @@ fn strided_u16_luma_validates_every_input_before_writing() {
     assert_eq!(
         error,
         ReconError::WienerNsFilterOutputTooSmall {
-            expected: source_stride * source_rows,
-            actual: samples.len() - 1,
+            expected: source_stride,
+            actual: 0,
         }
     );
     assert_eq!(output, [77; 8]);
@@ -483,12 +469,13 @@ fn strided_luma_u16_source_errors_are_fail_atomic() {
     let mut samples = vec![23u16; source_stride * source_rows];
     let invalid = (source_rows - 1) * source_stride + WIENER_NS_LUMA_TAP_RADIUS;
     samples[invalid] = 1024;
-    let source = WienerNsLumaPaddedSource::new(&samples, source_stride, width, height).unwrap();
+    let source_lines: Vec<_> = samples.chunks(source_stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let coeffs = [ZERO];
     let ten_bit_params = params(width, height, 4, BitDepth::Ten, &coeffs, None);
     let mut output = [77u16; 8];
 
-    let error = wiener_ns_filter_luma_block_padded_u16_into(
+    let error = wiener_ns_filter_luma_block_padded_into(
         &mut output,
         &ten_bit_params,
         &source,
@@ -527,8 +514,9 @@ fn strided_luma_u16_source_errors_are_fail_atomic() {
     let mut eight_bit_samples = vec![23u16; source_stride * source_rows];
     let center = WIENER_NS_LUMA_TAP_RADIUS * source_stride + WIENER_NS_LUMA_TAP_RADIUS;
     eight_bit_samples[center] = 256;
+    let eight_bit_source_lines: Vec<_> = eight_bit_samples.chunks(source_stride).collect();
     let eight_bit_source =
-        WienerNsLumaPaddedSource::new(&eight_bit_samples, source_stride, width, height).unwrap();
+        WienerNsLumaPaddedSource::from_rows(&eight_bit_source_lines, 0, width, height).unwrap();
     let eight_bit_params = params(width, height, 4, BitDepth::Eight, &coeffs, None);
     let error = wiener_ns_filter_luma_block_padded_u8_into(
         &mut direct,
@@ -579,8 +567,15 @@ fn padded_and_callback_filters_match_bit_exactly() {
     wiener_ns_filter_luma_block(&mut callback_output, &params, source_at).unwrap();
 
     let mut padded_output = vec![0u16; (height - 1) * (width + 3) + width];
-    let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-    wiener_ns_filter_luma_block_padded(&mut padded_output, &params, &source).unwrap();
+    let source_lines: Vec<_> = padded.chunks(stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
+    wiener_ns_filter_luma_block_padded_into(
+        &mut padded_output,
+        &params,
+        &source,
+        &mut WienerNsLumaScratch::default(),
+    )
+    .unwrap();
 
     assert_eq!(callback_output, padded_output);
 }
@@ -616,8 +611,15 @@ fn padded_and_callback_filters_match_bit_exactly_eight_bit_wide_block() {
     wiener_ns_filter_luma_block(&mut callback_output, &params, source_at).unwrap();
 
     let mut padded_output = vec![0u8; width * height];
-    let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-    wiener_ns_filter_luma_block_padded(&mut padded_output, &params, &source).unwrap();
+    let source_lines: Vec<_> = padded.chunks(stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
+    wiener_ns_filter_luma_block_padded_into(
+        &mut padded_output,
+        &params,
+        &source,
+        &mut WienerNsLumaScratch::default(),
+    )
+    .unwrap();
 
     assert_eq!(callback_output, padded_output);
 }
@@ -644,7 +646,8 @@ fn cell_subclasses_match_per_sample_expansion() {
         .collect();
     let source_at = |x: isize, y: isize| -> u8 { ((x * 11 + y * 19 + 120).rem_euclid(256)) as u8 };
     let padded: Vec<u8> = padded_from(height, stride, source_at);
-    let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+    let source_lines: Vec<_> = padded.chunks(stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let per_sample = params(
         width,
         height,
@@ -698,36 +701,17 @@ fn out_of_range_sample_in_unread_window_corner_still_filters() {
     wiener_ns_filter_luma_block(&mut expected, &params, source_at).unwrap();
 
     let mut padded_output = vec![0u16; width * height];
-    let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-    wiener_ns_filter_luma_block_padded(&mut padded_output, &params, &source).unwrap();
+    let source_lines: Vec<_> = padded.chunks(stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
+    wiener_ns_filter_luma_block_padded_into(
+        &mut padded_output,
+        &params,
+        &source,
+        &mut WienerNsLumaScratch::default(),
+    )
+    .unwrap();
 
     assert_eq!(expected, padded_output);
-}
-
-#[test]
-fn padded_source_rejects_short_buffer() {
-    let padded = vec![0u16; 10];
-    let err = WienerNsLumaPaddedSource::new(&padded, 9, 1, 1).unwrap_err();
-    assert_eq!(
-        err,
-        ReconError::WienerNsFilterOutputTooSmall {
-            expected: 8 * 9 + 9,
-            actual: 10,
-        }
-    );
-}
-
-#[test]
-fn padded_source_rejects_narrow_stride() {
-    let padded = vec![0u16; 100];
-    let err = WienerNsLumaPaddedSource::new(&padded, 8, 1, 1).unwrap_err();
-    assert_eq!(
-        err,
-        ReconError::WienerNsFilterOutputStrideTooSmall {
-            stride_samples: 8,
-            width: 9,
-        }
-    );
 }
 
 #[test]
@@ -741,7 +725,8 @@ fn padded_scratch_recovers_after_source_sample_error() {
     padded[invalid_sample] = 1024;
     let coeffs = [ZERO];
     let params = params(width, height, width, BitDepth::Ten, &coeffs, None);
-    let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+    let source_lines: Vec<_> = padded.chunks(stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let mut scratch = WienerNsLumaScratch::default();
     let mut output = [77u16; 4];
 
@@ -760,7 +745,8 @@ fn padded_scratch_recovers_after_source_sample_error() {
     assert_eq!(output, [77; 4]);
 
     padded[invalid_sample] = 23;
-    let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+    let source_lines: Vec<_> = padded.chunks(stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     wiener_ns_filter_luma_block_padded_into(&mut output, &params, &source, &mut scratch).unwrap();
     assert_eq!(output, [23; 4]);
 }
@@ -772,7 +758,8 @@ fn padded_into_reuses_maximum_restoration_stripe_scratch() {
     let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
     let mut padded = vec![91u16; stride * (height + 2 * WIENER_NS_LUMA_TAP_RADIUS)];
     padded[0] = 1024;
-    let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+    let source_lines: Vec<_> = padded.chunks(stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let coeffs = [ZERO];
     let large_params = params(width, height, width, BitDepth::Ten, &coeffs, None);
     let mut scratch = WienerNsLumaScratch::default();
@@ -792,7 +779,8 @@ fn padded_into_reuses_maximum_restoration_stripe_scratch() {
     let height = 2;
     let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
     let padded = vec![37u16; stride * (height + 2 * WIENER_NS_LUMA_TAP_RADIUS)];
-    let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+    let source_lines: Vec<_> = padded.chunks(stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let params = params(width, height, width, BitDepth::Ten, &coeffs, None);
     let mut output = [u16::MAX; 4];
     wiener_ns_filter_luma_block_padded_into(&mut output, &params, &source, &mut scratch).unwrap();
@@ -833,7 +821,8 @@ fn padded_cells_partial_cell_rows_match_the_callback_reference() {
         let mut reference = vec![0u16; width * height];
         wiener_ns_filter_luma_block(&mut reference, &reference_params, source_at).unwrap();
         let cell_params = params(width, height, width, BitDepth::Ten, &coeffs, None);
-        let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+        let source_lines: Vec<_> = padded.chunks(stride).collect();
+        let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
         let mut actual = vec![0u16; width * height];
         wiener_ns_filter_luma_block_padded_cells_into(
             &mut actual,
@@ -863,8 +852,15 @@ fn padded_center_scale_outside_i16_matches_the_callback_reference() {
     let mut reference = vec![0u16; width * height];
     wiener_ns_filter_luma_block(&mut reference, &params, source_at).unwrap();
     let mut actual = vec![0u16; width * height];
-    let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-    wiener_ns_filter_luma_block_padded(&mut actual, &params, &source).unwrap();
+    let source_lines: Vec<_> = padded.chunks(stride).collect();
+    let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
+    wiener_ns_filter_luma_block_padded_into(
+        &mut actual,
+        &params,
+        &source,
+        &mut WienerNsLumaScratch::default(),
+    )
+    .unwrap();
     assert_eq!(actual, reference);
 }
 
@@ -1170,7 +1166,8 @@ fn eight_bit_byte_lanes_match_the_callback_reference() {
         let radius = WIENER_NS_LUMA_TAP_RADIUS as isize;
         let source_at =
             |x: isize, y: isize| padded[((y + radius) as usize) * stride + (x + radius) as usize];
-        let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+        let source_lines: Vec<_> = padded.chunks(stride).collect();
+        let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
         for layout in 0..2 {
             let subclasses = (layout == 1).then_some(expanded.as_slice());
             let used = if layout == 1 {

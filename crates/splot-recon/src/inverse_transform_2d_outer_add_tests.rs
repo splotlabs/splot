@@ -4,7 +4,8 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use crate::dequant_process::dequantize_block;
+use crate::dequant_process::{DequantBlockParams, dequantize_block};
+use crate::inverse_transform_2d_8bit::{FlatDequant, InverseTransformAdd8};
 
 /// A small deterministic generator for coefficient and sample patterns.
 struct Lcg(u64);
@@ -26,7 +27,6 @@ impl Lcg {
 #[test]
 fn fused_add_matches_residual_path() {
     let mut rng = Lcg(7);
-    let mut fused_any = false;
     for (log2_w, log2_h, tx_type, use_ddt) in (0..4 * 4 * 16 * 2).map(|i| {
         (
             2 + i / 128,
@@ -96,33 +96,12 @@ fn fused_add_matches_residual_path() {
             if let Some(value) = table.flat_residual(&quant, flat) {
                 assert!(tx_type == 0 && residual.iter().all(|&r| r == value));
             }
-            for quantized in [true, false] {
-                let mut dst = pred.clone();
-                let (input, with) = if quantized {
-                    (&quant[..], Some(&dq))
-                } else {
-                    (&dequant[..coded], None)
-                };
-                let fused = inverse_transform_2d_outer_add_u8(
-                    &params,
-                    input,
-                    with,
-                    &mut dst,
-                    stride,
-                    &mut scratch,
-                )
-                .unwrap();
-                if fused {
-                    fused_any = true;
-                    assert_eq!(
-                        dst, expected,
-                        "{w}x{h} type {tx_type} trial {trial} quantized {quantized}"
-                    );
-                } else {
-                    assert_eq!(dst, pred);
-                }
-            }
+            let mut dst = pred.clone();
+            assert!(table.add(&dequant[..coded], None, &mut dst, stride, &mut scratch));
+            assert_eq!(
+                dst, expected,
+                "{w}x{h} type {tx_type} trial {trial} dequantized"
+            );
         }
     }
-    assert!(fused_any);
 }

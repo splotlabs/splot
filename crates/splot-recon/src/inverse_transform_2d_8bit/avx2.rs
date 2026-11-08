@@ -471,19 +471,6 @@ impl<const N: usize> Staged<'_, N> {
             _mm_setzero_si128()
         }
     }
-
-    /// The four inputs of row `r` (`N == 4`).
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn x4(self, r: usize) -> __m128i {
-        let at = r * 2;
-        match self.rows.get(at..at + 2) {
-            Some(&[low, high]) if r < self.coded => {
-                _mm_cvtsi64_si128(i64::from(low as u32) | i64::from(high) << 32)
-            }
-            _ => _mm_setzero_si128(),
-        }
-    }
 }
 
 /// Packs rows `a` and `b` (four outputs per lane) as eight column pairs in
@@ -510,7 +497,7 @@ const IDENTITY: u8 = 0;
 const SPLIT: u8 = 1;
 const DENSE: u8 = 2;
 
-/// The row pass of an `N`-wide block (`H = N / 2`) over the column `pairs`
+/// The row pass of a 16- or 32-wide block (`H = N / 2`) over the column `pairs`
 /// with the `KIND` transform on the pair `kernel` or the identity `scale`:
 /// writes pair `q` at `scratch[q * N..][..N]` and returns the written pairs.
 #[inline(never)]
@@ -537,40 +524,19 @@ fn row_pass<const N: usize, const H: usize, const KIND: u8>(
         let Some(out) = scratch.get_mut(q * N..q * N + N) else {
             break;
         };
-        let written = match (KIND, N) {
-            (IDENTITY, 4) => {
-                let x = _mm256_set_m128i(rows.x4(b), rows.x4(a));
-                let v = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(_mm256_permute4x64_epi64::<
-                    0x08,
-                >(x)));
-                let v = round.apply(_mm256_mullo_epi32(v, _mm256_set1_epi32(scale)));
-                store4(t, out, 0, unpack4(v));
-                !is_zero(x)
+        let written = if KIND == IDENTITY {
+            let mut any = _mm256_setzero_si256();
+            let scale = _mm256_set1_epi32(scale);
+            for c in 0..N / 8 {
+                let (xa, xb) = (rows.x8(t, a, 8 * c), rows.x8(t, b, 8 * c));
+                any = _mm256_or_si256(any, _mm256_set_m128i(xa, xb));
+                let va = round.apply(_mm256_mullo_epi32(_mm256_cvtepi16_epi32(xa), scale));
+                let vb = round.apply(_mm256_mullo_epi32(_mm256_cvtepi16_epi32(xb), scale));
+                store8(t, out, 8 * c, pair_columns(t, va, vb, &INTERLEAVE));
             }
-            (IDENTITY, _) => {
-                let mut any = _mm256_setzero_si256();
-                let scale = _mm256_set1_epi32(scale);
-                for c in 0..N / 8 {
-                    let (xa, xb) = (rows.x8(t, a, 8 * c), rows.x8(t, b, 8 * c));
-                    any = _mm256_or_si256(any, _mm256_set_m128i(xa, xb));
-                    let va = round.apply(_mm256_mullo_epi32(_mm256_cvtepi16_epi32(xa), scale));
-                    let vb = round.apply(_mm256_mullo_epi32(_mm256_cvtepi16_epi32(xb), scale));
-                    store8(t, out, 8 * c, pair_columns(t, va, vb, &INTERLEAVE));
-                }
-                !is_zero(any)
-            }
-            (_, 4) => row4(
-                t,
-                _mm256_set_m128i(rows.x4(b), rows.x4(a)),
-                kernel.as_flattened(),
-                round,
-                out,
-            ),
-            (_, 8) => {
-                let x = _mm256_set_m128i(rows.x8(t, b, 0), rows.x8(t, a, 0));
-                row8::<KIND>(t, x, kernel.as_flattened(), round, out)
-            }
-            _ => row_wide::<N, H>(t, rows, (a, b), kernel, KIND == SPLIT, round, out),
+            !is_zero(any)
+        } else {
+            row_wide::<N, H>(t, rows, (a, b), kernel, KIND == SPLIT, round, out)
         };
         mask |= u32::from(written) << q;
     }
@@ -1337,24 +1303,15 @@ fn rows(
         };
     }
     match shape.passes.0 {
-        Pass::Identity4 => pass!(4, 2, IDENTITY, &DCT4, 128),
-        Pass::Identity8 => pass!(8, 4, IDENTITY, &DCT8, 181),
         Pass::Identity16 => pass!(16, 8, IDENTITY, &DCT16, 256),
         Pass::Identity32 => pass!(32, 16, IDENTITY, &DCT32, 362),
-        Pass::Dct4 => pass!(4, 2, DENSE, &DCT4, 0),
-        Pass::Adst4 => pass!(4, 2, DENSE, &ADST4, 0),
-        Pass::Fdst4 => pass!(4, 2, DENSE, &FDST4, 0),
-        Pass::Dct8 => pass!(8, 4, SPLIT, &DCT8_SPLIT, 0),
-        Pass::Adst8 => pass!(8, 4, DENSE, &ADST8, 0),
-        Pass::Fdst8 => pass!(8, 4, DENSE, &FDST8, 0),
-        Pass::Ddtx8 => pass!(8, 4, DENSE, &DDTX8, 0),
-        Pass::Fddt8 => pass!(8, 4, DENSE, &FDDT8, 0),
         Pass::Dct16 => pass!(16, 8, SPLIT, &DCT16_SPLIT, 0),
         Pass::Adst16 => pass!(16, 8, DENSE, &ADST16, 0),
         Pass::Fdst16 => pass!(16, 8, DENSE, &FDST16, 0),
         Pass::Ddtx16 => pass!(16, 8, DENSE, &DDTX16, 0),
         Pass::Fddt16 => pass!(16, 8, DENSE, &FDDT16, 0),
         Pass::Dct32 => pass!(32, 16, SPLIT, &DCT32_SPLIT, 0),
+        _ => 0,
     }
 }
 
@@ -1390,18 +1347,12 @@ fn rows_direct(
                 }
                 _ => row_pass_direct::<8, 4, DENSE, $dq, $rs>(t, input, p.0, (p.1, scale), k, out),
             };
-            match shape.passes.0 {
-                Pass::Identity4 => pass4(IDENTITY, &DCT4, 128, scratch),
-                Pass::Dct4 => pass4(DENSE, &DCT4, 0, scratch),
-                Pass::Adst4 => pass4(DENSE, &ADST4, 0, scratch),
-                Pass::Fdst4 => pass4(DENSE, &FDST4, 0, scratch),
-                Pass::Identity8 => pass8(IDENTITY, &DCT8, 181, scratch),
-                Pass::Dct8 => pass8(SPLIT, &DCT8_SPLIT, 0, scratch),
-                Pass::Adst8 => pass8(DENSE, &ADST8, 0, scratch),
-                Pass::Fdst8 => pass8(DENSE, &FDST8, 0, scratch),
-                Pass::Ddtx8 => pass8(DENSE, &DDTX8, 0, scratch),
-                Pass::Fddt8 => pass8(DENSE, &FDDT8, 0, scratch),
-                _ => 0,
+            if let Some((kind, k, scale)) = row_spec4(shape.passes.0) {
+                pass4(kind, k, scale, scratch)
+            } else if let Some((kind, k, scale)) = row_spec8(shape.passes.0) {
+                pass8(kind, k, scale, scratch)
+            } else {
+                0
             }
         }};
     }

@@ -35,24 +35,10 @@ thread_local! {
         std::cell::RefCell::new(PcWienerClassifyScratch::default());
     static WIENER_NS_LUMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
         const { std::cell::Cell::new(None) };
-    static WIENER_NS_CHROMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
-        const { std::cell::Cell::new(None) };
+    static WIENER_NS_CHROMA_SCRATCH: std::cell::RefCell<WienerNsChromaScratch> =
+        std::cell::RefCell::new(WienerNsChromaScratch::default());
     static LR_SOURCE_SCRATCH: std::cell::Cell<Option<Box<LrSourceScratch>>> =
         const { std::cell::Cell::new(None) };
-}
-
-fn with_wiener_ns_chroma_scratch<T: ReconSample, R>(
-    f: impl FnOnce(&mut WienerNsChromaScratch<T>) -> R,
-) -> R {
-    WIENER_NS_CHROMA_SCRATCH.with(|slot| {
-        let mut scratch = slot
-            .take()
-            .and_then(|scratch| scratch.downcast::<WienerNsChromaScratch<T>>().ok())
-            .unwrap_or_default();
-        let result = f(&mut scratch);
-        slot.set(Some(scratch));
-        result
-    })
 }
 
 const MAX_RETAINED_WIENER_NS_LUMA_SAMPLES: usize = 512 * 64;
@@ -1672,7 +1658,7 @@ impl StripeChain<'_> {
                     )
                 }
                 .map_err(|error| lr_plane_window_error(&error, plane_id))?;
-                with_wiener_ns_chroma_scratch::<u16, _>(|scratch| match &mut output {
+                with_reusable_scratch(&WIENER_NS_CHROMA_SCRATCH, |scratch| match &mut output {
                     LrDestination::U16(output) => wiener_ns_filter_chroma_block_padded_u16_into(
                         output,
                         &params,

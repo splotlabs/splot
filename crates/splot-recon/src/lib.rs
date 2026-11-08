@@ -89,9 +89,8 @@ pub use cdef_filter::{
     CdefSegmentBlock, CdefSegmentOutput, CdefStrengths, CdefTap, cdef_constrain, cdef_direction,
     cdef_direction_padded, cdef_direction_segment, cdef_filter_block_boundary_to_valid_stride,
     cdef_filter_block_chroma_pair, cdef_filter_block_chroma_pair_segment,
-    cdef_filter_block_interior, cdef_filter_block_interior_to,
-    cdef_filter_block_interior_to_valid_stride, cdef_filter_block_segment, cdef_filter_sample,
-    cdef_filter_segment,
+    cdef_filter_block_interior_to, cdef_filter_block_interior_to_valid_stride,
+    cdef_filter_block_segment, cdef_filter_sample, cdef_filter_segment,
 };
 pub use coefficient_scan::{
     TransformClass, coefficient_scan_order, coefficient_scan_position, coefficient_scan_slice,
@@ -160,8 +159,7 @@ pub use inverse_transform_2d::{InverseTransform2d, InverseTransform2dDim, invers
 pub use inverse_transform_2d_8bit::{FlatDequant, InverseTransformAdd8};
 pub use inverse_transform_2d_outer::{
     DpcmDirection, InverseTransform2dOuter, inverse_transform_2d_outer,
-    inverse_transform_2d_outer_add_u8, inverse_transform_2d_outer_adjusted,
-    inverse_transform_2d_outer_with_scratch,
+    inverse_transform_2d_outer_adjusted, inverse_transform_2d_outer_with_scratch,
 };
 pub use loop_restoration::{
     LoopRestorationPlaneBounds, LoopRestorationSource, LoopRestorationSourceBounds,
@@ -177,10 +175,10 @@ pub use pc_wiener::{
     PC_WIENER_FULL_CLASSES, PC_WIENER_LUT_CLASSES, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES,
     PcWienerClassification, PcWienerClassifyPaddedSource, PcWienerClassifyParams,
     PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PcWienerTxSkipLookup,
-    PcWienerTxSkipRun, pc_wiener_classify, pc_wiener_classify_grid, pc_wiener_classify_grid_padded,
+    PcWienerTxSkipRun, pc_wiener_classify, pc_wiener_classify_grid,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_classify_grid_padded_into,
-    pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_block_padded_u16_into,
-    pc_wiener_filter_set_index, pc_wiener_subclass_table,
+    pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_set_index,
+    pc_wiener_subclass_table,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
@@ -228,17 +226,14 @@ pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAPS,
     WIENER_NS_CONFIG_UV, WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch,
     wiener_ns_chroma_luma_plane, wiener_ns_filter_chroma_block,
-    wiener_ns_filter_chroma_block_padded_into, wiener_ns_filter_chroma_block_padded_u8_into,
-    wiener_ns_filter_chroma_block_padded_u16_into,
+    wiener_ns_filter_chroma_block_padded_u8_into, wiener_ns_filter_chroma_block_padded_u16_into,
 };
 pub use wienerns_filter::{
     WIENER_NS_CONFIG_Y_PAIRS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
     WIENER_NS_LUMA_TAPS, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
-    wiener_ns_filter_luma_block, wiener_ns_filter_luma_block_padded,
-    wiener_ns_filter_luma_block_padded_cells_into,
-    wiener_ns_filter_luma_block_padded_cells_u8_into,
-    wiener_ns_filter_luma_block_padded_cells_u16_into, wiener_ns_filter_luma_block_padded_into,
-    wiener_ns_filter_luma_block_padded_u8_into, wiener_ns_filter_luma_block_padded_u16_into,
+    wiener_ns_filter_luma_block, wiener_ns_filter_luma_block_padded_cells_into,
+    wiener_ns_filter_luma_block_padded_cells_u8_into, wiener_ns_filter_luma_block_padded_into,
+    wiener_ns_filter_luma_block_padded_u8_into,
 };
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRect, CurrentFrameRect,

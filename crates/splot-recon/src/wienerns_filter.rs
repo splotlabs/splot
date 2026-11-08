@@ -228,64 +228,25 @@ where
         let src_end = src_start + params.width;
         let dst_start = row_index * params.output_stride;
         let dst_end = dst_start + params.width;
-        // splot-copy-ok: publish fail-atomic Wiener NS scratch row into caller output
-        output[dst_start..dst_end].copy_from_slice(&filtered[src_start..src_end]);
+        output[dst_start..dst_end].copy_from_slice(&filtered[src_start..src_end]); // splot-copy-ok: publish fail-atomic Wiener NS scratch row into caller output
     }
 
     Ok(())
 }
 
-/// § 7.20.2-pre-resolved source samples for [`wiener_ns_filter_luma_block_padded`].
+/// § 7.20.2-pre-resolved source samples for [`wiener_ns_filter_luma_block_padded_into`].
 ///
-/// Row-major samples covering the output block extended by
-/// [`WIENER_NS_LUMA_TAP_RADIUS`] on every side: index `0` is the sample at
-/// block-relative `(-WIENER_NS_LUMA_TAP_RADIUS, -WIENER_NS_LUMA_TAP_RADIUS)`.
+/// Rows covering the output block extended by [`WIENER_NS_LUMA_TAP_RADIUS`]
+/// on every side: sample `0` of row `0` is at block-relative
+/// `(-WIENER_NS_LUMA_TAP_RADIUS, -WIENER_NS_LUMA_TAP_RADIUS)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WienerNsLumaPaddedSource<'a, T> {
     rows: PaddedRows<'a, T>,
 }
 
 impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
-    /// Wraps a padded source buffer for a `width` x `height` output block.
-    ///
-    /// `stride` is the distance in samples between adjacent padded rows.
-    ///
-    /// # Errors
-    /// Returns typed [`ReconError`] values when the stride or length cannot
-    /// cover the block plus the § 7.20.3 luma tap reach.
-    pub fn new(samples: &'a [T], stride: usize, width: usize, height: usize) -> Result<Self> {
-        let padded_width = width.checked_add(2 * WIENER_NS_LUMA_TAP_RADIUS).ok_or(
-            ReconError::ArithmeticOverflow {
-                context: "Wiener NS padded source width",
-            },
-        )?;
-        if stride < padded_width {
-            return Err(ReconError::WienerNsFilterOutputStrideTooSmall {
-                stride_samples: stride,
-                width: padded_width,
-            });
-        }
-        let required = height
-            .checked_add(2 * WIENER_NS_LUMA_TAP_RADIUS)
-            .and_then(|rows| rows.checked_sub(1))
-            .and_then(|prefix_rows| prefix_rows.checked_mul(stride))
-            .and_then(|prefix| prefix.checked_add(padded_width))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "Wiener NS padded source length",
-            })?;
-        if samples.len() < required {
-            return Err(ReconError::WienerNsFilterOutputTooSmall {
-                expected: required,
-                actual: samples.len(),
-            });
-        }
-        Ok(Self {
-            rows: PaddedRows::Strided { samples, stride },
-        })
-    }
-
     /// Wraps padded rows: padded row `i` starts at column `col` of
-    /// `rows[i]`. Filtering checks the sample range as for [`Self::new`].
+    /// `rows[i]`. Filtering checks the sample range.
     ///
     /// # Errors
     /// Returns a typed error when a row cannot cover the block plus the
@@ -312,48 +273,21 @@ impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
     }
 
     fn validate_cover(&self, width: usize, height: usize) -> Result<()> {
-        match self.rows {
-            PaddedRows::Strided { samples, stride } => {
-                Self::new(samples, stride, width, height).map(drop)
-            }
-            rows @ PaddedRows::Table { .. } => Self::check_table(rows, width, height).map(drop),
-        }
+        Self::check_table(self.rows, width, height).map(drop)
     }
 }
 
 /// Applies AV2 § 7.20.3 luma non-separable Wiener filtering from a padded
-/// pre-resolved source.
-///
-/// Identical filter math and output as [`wiener_ns_filter_luma_block`]; the
-/// § 7.20.2 source-sample process is resolved by the caller into `source`
-/// instead of a per-tap callback. Tap positions are precomputed relative to
-/// the padded block origin — `(dy + radius) * stride + dx + radius` is
-/// non-negative for every config tap — so the tap loop is pure index addition
-/// off each output sample's padded-row base.
-///
-/// # Errors
-/// Returns the same typed [`ReconError`] values as
-/// [`wiener_ns_filter_luma_block`], including source samples outside the
-/// active bit-depth range.
-#[inline]
-pub fn wiener_ns_filter_luma_block_padded<T: ReconSample>(
-    output: &mut [T],
-    params: &WienerNsLumaFilter<'_>,
-    source: &WienerNsLumaPaddedSource<'_, T>,
-) -> Result<()> {
-    let mut scratch = WienerNsLumaScratch::default();
-    wiener_ns_filter_luma_block_padded_into(output, params, source, &mut scratch)
-}
-
-/// Applies padded luma Wiener NS filtering with reusable working storage.
+/// pre-resolved source, with the output and errors of
+/// [`wiener_ns_filter_luma_block`].
 ///
 /// `scratch` retains its allocations between calls, and `output` is not
 /// modified unless filtering succeeds.
 ///
 /// # Errors
-/// Returns the same errors as [`wiener_ns_filter_luma_block_padded`], plus a
-/// typed allocation error when the scratch buffers cannot reserve enough
-/// storage.
+/// Returns the callback filter's errors, including source samples outside
+/// the active bit-depth range, plus a typed allocation error when the
+/// scratch buffers cannot reserve enough storage.
 #[inline]
 pub fn wiener_ns_filter_luma_block_padded_into<T: ReconSample>(
     output: &mut [T],
@@ -385,55 +319,6 @@ pub fn wiener_ns_filter_luma_block_padded_cells_into<T: ReconSample>(
     scratch: &mut WienerNsLumaScratch<T>,
 ) -> Result<()> {
     wiener_ns_filter_luma_block_padded_layout_into(
-        output,
-        params,
-        source,
-        LumaSubclassLayout::Cells {
-            values: cell_subclasses,
-            cols: params.width.div_ceil(4),
-        },
-        scratch,
-    )
-}
-
-/// Applies padded luma Wiener NS filtering directly into strided `u16` storage.
-///
-/// Both supported source storage types share the same SIMD arithmetic and may
-/// write an exact rectangle within a wider destination. Output geometry,
-/// source geometry, subclass selection, and every fallible allocation are
-/// validated before the first destination write.
-///
-/// # Errors
-/// Returns the same parameter, source-range, output-shape, subclass, and
-/// allocation errors as [`wiener_ns_filter_luma_block_padded_into`].
-#[inline]
-pub fn wiener_ns_filter_luma_block_padded_u16_into<T: ReconSample>(
-    output: &mut [u16],
-    params: &WienerNsLumaFilter<'_>,
-    source: &WienerNsLumaPaddedSource<'_, T>,
-    scratch: &mut WienerNsLumaScratch<T>,
-) -> Result<()> {
-    let subclasses = params
-        .subclasses
-        .map_or(LumaSubclassLayout::Uniform, LumaSubclassLayout::Samples);
-    wiener_ns_filter_luma_block_padded_layout_u16_into(output, params, source, subclasses, scratch)
-}
-
-/// Applies padded luma Wiener NS filtering with one subclass per 4x4 cell
-/// directly into strided `u16` storage.
-///
-/// # Errors
-/// Returns the same errors as
-/// [`wiener_ns_filter_luma_block_padded_cells_into`].
-#[inline]
-pub fn wiener_ns_filter_luma_block_padded_cells_u16_into<T: ReconSample>(
-    output: &mut [u16],
-    params: &WienerNsLumaFilter<'_>,
-    source: &WienerNsLumaPaddedSource<'_, T>,
-    cell_subclasses: &[u8],
-    scratch: &mut WienerNsLumaScratch<T>,
-) -> Result<()> {
-    wiener_ns_filter_luma_block_padded_layout_u16_into(
         output,
         params,
         source,
@@ -519,8 +404,7 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
         let src_end = src_start + params.width;
         let dst_start = row_index * params.output_stride;
         let dst_end = dst_start + params.width;
-        // splot-copy-ok: publish fail-atomic Wiener NS scratch row into caller output
-        output[dst_start..dst_end].copy_from_slice(&scratch.filtered[src_start..src_end]);
+        output[dst_start..dst_end].copy_from_slice(&scratch.filtered[src_start..src_end]); // splot-copy-ok: publish fail-atomic Wiener NS scratch row into caller output
     }
 
     Ok(())
@@ -625,34 +509,6 @@ fn prepare_luma_padded<T: ReconSample>(
         direct,
         eight_bit,
     })
-}
-
-fn wiener_ns_filter_luma_block_padded_layout_u16_into<T: ReconSample>(
-    output: &mut [u16],
-    params: &WienerNsLumaFilter<'_>,
-    source: &WienerNsLumaPaddedSource<'_, T>,
-    subclasses: LumaSubclassLayout<'_>,
-    scratch: &mut WienerNsLumaScratch<T>,
-) -> Result<()> {
-    if let Some(output) = T::from_u16_slice_mut(output) {
-        return wiener_ns_filter_luma_block_padded_layout_into(
-            output, params, source, subclasses, scratch,
-        );
-    }
-
-    let context = prepare_luma_padded(output.len(), params, source, subclasses, scratch)?;
-    filter_padded_luma_rows_simd(
-        output,
-        params.output_stride,
-        source.rows,
-        T::u8_slice,
-        0..params.height,
-        params,
-        &scratch.prepared_classes,
-        subclasses,
-        context.max_sample,
-        None,
-    )
 }
 
 fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(

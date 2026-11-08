@@ -5,14 +5,11 @@
 //!
 //! Feature tracking: `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`.
 
-use core::ops::{Deref, DerefMut};
-
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection,
     IntraDirectionalAngleEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraMiddleDirectionalAngleIdifMrlEdges,
-    IntraPredictionScratchBuffer, IntraRectBlockSize, PlaneId, ReconSample,
-    predict_intra_cardinal_directional_rect_into,
+    IntraRectBlockSize, PlaneId, ReconSample, predict_intra_cardinal_directional_rect_into,
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_idif_mrl_into,
     predict_intra_middle_directional_angle_rect_into,
@@ -23,7 +20,7 @@ use super::one_sided::{
 };
 use super::sink::{
     IntraEdgeAvailability, build_mrl_luma_prediction, invalid_directional_edge_state,
-    noneighbour_above, noneighbour_corner, noneighbour_left, predict_intra_in_frame,
+    noneighbour_above, noneighbour_corner, noneighbour_left, predict_intra_block,
     write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
@@ -33,36 +30,7 @@ use crate::pipeline::general_intra::RecycledIntraSamples;
 
 const TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY: usize = 128 + 3 + 4;
 
-struct TwoSidedMiddleIdifEdge<T: ReconSample> {
-    samples: [T; TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY],
-    len: usize,
-}
-
-impl<T: ReconSample> TwoSidedMiddleIdifEdge<T> {
-    fn new(len: usize) -> core::result::Result<Self, GeneralIntraResidualError> {
-        if len > TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY {
-            return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
-        }
-        Ok(Self {
-            samples: [T::default(); TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY],
-            len,
-        })
-    }
-}
-
-impl<T: ReconSample> Deref for TwoSidedMiddleIdifEdge<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        &self.samples[..self.len]
-    }
-}
-
-impl<T: ReconSample> DerefMut for TwoSidedMiddleIdifEdge<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.samples[..self.len]
-    }
-}
+type TwoSidedMiddleIdifEdge<T> = super::one_sided::IdifEdge<T, TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY>;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TwoSidedMiddleEdgeFilters {
@@ -146,7 +114,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
         }
         Ok(())
     };
-    if predict_intra_in_frame(
+    predict_intra_block(
         workspace,
         block,
         plane_id,
@@ -159,29 +127,6 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
         None,
         bit_depth,
         predict,
-    )? {
-        return Ok(());
-    }
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        side * side,
-        T::default(),
-    )?;
-    predict(&mut prediction, side)?;
-    write_intra_prediction_block(
-        workspace,
-        block,
-        prediction,
-        plane_id,
-        x,
-        y,
-        block_size,
-        qindex,
-        use_tcq,
-        luma_context,
-        None,
-        bit_depth,
     )
 }
 
@@ -292,7 +237,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         }
         Ok(())
     };
-    if predict_intra_in_frame(
+    predict_intra_block(
         workspace,
         block,
         plane_id,
@@ -305,29 +250,6 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         dpcm,
         bit_depth,
         predict,
-    )? {
-        return Ok(());
-    }
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        T::default(),
-    )?;
-    predict(&mut prediction, width)?;
-    write_intra_prediction_block(
-        workspace,
-        block,
-        prediction,
-        plane_id,
-        x,
-        y,
-        block_size,
-        qindex,
-        use_tcq,
-        luma_context,
-        dpcm,
-        bit_depth,
     )
 }
 
@@ -732,7 +654,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
         )
         .map_err(Into::into)
     };
-    if predict_intra_in_frame(
+    predict_intra_block(
         workspace,
         block,
         plane_id,
@@ -745,29 +667,6 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
         dpcm,
         bit_depth,
         predict,
-    )? {
-        return Ok(());
-    }
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        T::default(),
-    )?;
-    predict(&mut prediction, width)?;
-    write_intra_prediction_block(
-        workspace,
-        block,
-        prediction,
-        plane_id,
-        x,
-        y,
-        block_size,
-        qindex,
-        use_tcq,
-        luma_context,
-        dpcm,
-        bit_depth,
     )
 }
 

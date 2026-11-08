@@ -4,14 +4,12 @@
 //! Smooth intra prediction entries, edge assembly, and sentinel resolution.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraPredictionScratchBuffer, IntraRectBlockSize,
-    IntraSmoothEdges, IntraSmoothFrameRequest, IntraSmoothMode, PlaneId, ReconSample,
-    predict_intra_smooth_rect_into,
+    BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothFrameRequest,
+    IntraSmoothMode, PlaneId, ReconSample, predict_intra_smooth_rect_into,
 };
 
 use super::sink::{
-    IntraEdgeAvailability, noneighbour_above, noneighbour_left, predict_intra_in_frame,
-    write_intra_prediction_block,
+    IntraEdgeAvailability, noneighbour_above, noneighbour_left, predict_intra_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedNonDcLumaMode,
@@ -163,7 +161,7 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
         bit_depth,
     };
     let edges = smooth_prediction_edges(workspace, request)?;
-    if predict_intra_in_frame(
+    predict_intra_block(
         workspace,
         block,
         plane_id,
@@ -176,29 +174,6 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
         None,
         bit_depth,
         |output, stride| predict_smooth_from_edges(request, &edges, output, stride),
-    )? {
-        return Ok(());
-    }
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        block_size.width() * block_size.height(),
-        T::default(),
-    )?;
-    predict_smooth_from_edges(request, &edges, &mut prediction, block_size.width())?;
-    write_intra_prediction_block(
-        workspace,
-        block,
-        prediction,
-        plane_id,
-        x,
-        y,
-        block_size,
-        qindex,
-        use_tcq,
-        luma_context,
-        None,
-        bit_depth,
     )
 }
 

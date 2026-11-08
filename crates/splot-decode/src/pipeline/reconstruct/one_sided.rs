@@ -3,19 +3,19 @@
 
 //! One-sided directional, MRL, and cardinal-MRL intra entries with idif edge builders.
 
-use core::ops::Deref;
+use core::ops::{Deref, DerefMut};
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection, IntraDirectionalAngle,
-    IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges, IntraPredictionScratchBuffer,
-    IntraRectBlockSize, PlaneId, PlaneRect, ReconError, ReconSample, apply_intra_edge_filter,
-    filter_intra_edge_corner, predict_intra_directional_angle_rect_into,
+    IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges, IntraRectBlockSize, PlaneId,
+    PlaneRect, ReconError, ReconSample, apply_intra_edge_filter, filter_intra_edge_corner,
+    predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_mrl_into,
 };
 
 use super::sink::{
     IntraEdgeAvailability, build_mrl_luma_prediction, invalid_directional_edge_state,
-    noneighbour_above, noneighbour_corner, noneighbour_left, predict_intra_in_frame,
+    noneighbour_above, noneighbour_corner, noneighbour_left, predict_intra_block,
     write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
@@ -24,28 +24,37 @@ use crate::bitstream::tile_payload::{
 
 const ONE_SIDED_IDIF_EDGE_CAPACITY: usize = 138;
 
-pub(crate) struct OneSidedIdifEdge<T: ReconSample> {
-    samples: [T; ONE_SIDED_IDIF_EDGE_CAPACITY],
+/// An IDIF reference edge of `len` samples held inline, at most `N`.
+pub(crate) struct IdifEdge<T: ReconSample, const N: usize> {
+    samples: [T; N],
     len: usize,
 }
 
-impl<T: ReconSample> OneSidedIdifEdge<T> {
-    fn new(len: usize) -> core::result::Result<Self, GeneralIntraResidualError> {
-        if len > ONE_SIDED_IDIF_EDGE_CAPACITY {
+pub(crate) type OneSidedIdifEdge<T> = IdifEdge<T, ONE_SIDED_IDIF_EDGE_CAPACITY>;
+
+impl<T: ReconSample, const N: usize> IdifEdge<T, N> {
+    pub(crate) fn new(len: usize) -> core::result::Result<Self, GeneralIntraResidualError> {
+        if len > N {
             return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
         }
         Ok(Self {
-            samples: [T::default(); ONE_SIDED_IDIF_EDGE_CAPACITY],
+            samples: [T::default(); N],
             len,
         })
     }
 }
 
-impl<T: ReconSample> Deref for OneSidedIdifEdge<T> {
+impl<T: ReconSample, const N: usize> Deref for IdifEdge<T, N> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
         &self.samples[..self.len]
+    }
+}
+
+impl<T: ReconSample, const N: usize> DerefMut for IdifEdge<T, N> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.samples[..self.len]
     }
 }
 
@@ -128,7 +137,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         }
         Ok(())
     };
-    if predict_intra_in_frame(
+    predict_intra_block(
         workspace,
         block,
         plane_id,
@@ -141,29 +150,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         dpcm,
         bit_depth,
         predict,
-    )? {
-        return Ok(());
-    }
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        T::default(),
-    )?;
-    predict(&mut prediction, width)?;
-    write_intra_prediction_block(
-        workspace,
-        block,
-        prediction,
-        plane_id,
-        x,
-        y,
-        block_size,
-        qindex,
-        use_tcq,
-        luma_context,
-        dpcm,
-        bit_depth,
     )
 }
 
@@ -634,7 +620,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         }
         Ok(())
     };
-    if predict_intra_in_frame(
+    predict_intra_block(
         workspace,
         block,
         plane_id,
@@ -647,29 +633,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         dpcm,
         bit_depth,
         predict,
-    )? {
-        return Ok(());
-    }
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        T::default(),
-    )?;
-    predict(&mut prediction, width)?;
-    write_intra_prediction_block(
-        workspace,
-        block,
-        prediction,
-        plane_id,
-        x,
-        y,
-        block_size,
-        qindex,
-        use_tcq,
-        luma_context,
-        dpcm,
-        bit_depth,
     )
 }
 

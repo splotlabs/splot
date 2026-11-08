@@ -331,23 +331,15 @@ fn storage_plane_size(info: DecodedFrameInfo, plane: PlaneId) -> Result<PlaneSiz
     }
 }
 
-/// Rows of a padded § 7.20.2 source window.
-///
-/// Row `i` either starts at `samples[i * stride]` or at column `col` of
-/// `rows[i]`, so a caller can borrow plane rows instead of copying them into
-/// one contiguous window. A table also keeps `width`, the shortest row's
-/// length past `col`.
+/// Rows of a padded § 7.20.2 source window: row `i` starts at column `col`
+/// of `rows[i]`, so a caller can borrow plane rows instead of copying them
+/// into one contiguous window. `width` is the shortest row's length past
+/// `col`.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) enum PaddedRows<'a, T> {
-    Strided {
-        samples: &'a [T],
-        stride: usize,
-    },
-    Table {
-        rows: &'a [&'a [T]],
-        col: usize,
-        width: usize,
-    },
+pub(crate) struct PaddedRows<'a, T> {
+    rows: &'a [&'a [T]],
+    col: usize,
+    width: usize,
 }
 
 impl<T> Clone for PaddedRows<'_, T> {
@@ -366,50 +358,27 @@ impl<'a, T> PaddedRows<'a, T> {
             .map(|row| row.len().saturating_sub(col))
             .min()
             .unwrap_or(0);
-        Self::Table { rows, col, width }
+        Self { rows, col, width }
     }
 
     /// The first `width` samples of row `index`.
     #[inline]
     pub(crate) fn row(self, index: usize, width: usize) -> Option<&'a [T]> {
-        let row = match self {
-            Self::Strided { samples, stride } => samples.get(index.checked_mul(stride)?..)?,
-            Self::Table { rows, col, .. } => rows.get(index)?.get(col..)?,
-        };
-        row.get(..width)
+        self.rows.get(index)?.get(self.col..)?.get(..width)
     }
 
     /// The window whose first sample is row `dy`, column `dx` of this one.
     pub(crate) fn offset(self, dy: usize, dx: usize) -> Option<Self> {
-        Some(match self {
-            Self::Strided { samples, stride } => Self::Strided {
-                samples: samples.get(dy.checked_mul(stride)?.checked_add(dx)?..)?,
-                stride,
-            },
-            Self::Table { rows, col, width } => Self::Table {
-                rows: rows.get(dy..)?,
-                col: col.checked_add(dx)?,
-                width: width.checked_sub(dx)?,
-            },
+        Some(Self {
+            rows: self.rows.get(dy..)?,
+            col: self.col.checked_add(dx)?,
+            width: self.width.checked_sub(dx)?,
         })
     }
 
     /// Whether each of rows `0..rows` holds at least `width` samples.
     pub(crate) fn covers(self, rows: usize, width: usize) -> bool {
-        let Some(last) = rows.checked_sub(1) else {
-            return true;
-        };
-        match self {
-            Self::Strided { samples, stride } => last
-                .checked_mul(stride)
-                .and_then(|start| start.checked_add(width))
-                .is_some_and(|end| end <= samples.len()),
-            Self::Table {
-                rows: table,
-                width: shortest,
-                ..
-            } => table.len() >= rows && shortest >= width,
-        }
+        rows == 0 || (self.rows.len() >= rows && self.width >= width)
     }
 }
 

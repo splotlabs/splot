@@ -428,23 +428,6 @@ impl<T: SplitSample> SplitFrame<T> {
         Ok(())
     }
 
-    /// Runs one filter stripe; the frame's first stripe error fails its output.
-    fn filter_stripe(&self, stripe: usize) -> Result<()> {
-        let job = self
-            .filter_jobs
-            .lock()
-            .get_mut(stripe)
-            .and_then(Option::take)
-            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        if let Err(error) = job.run() {
-            let mut owed = self.filter_error.lock();
-            if owed.is_none() {
-                *owed = Some(error);
-            }
-        }
-        Ok(())
-    }
-
     fn output(&self) -> Result<()> {
         if let Some(error) = self.filter_error.lock().take() {
             return Err(error);
@@ -566,7 +549,8 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 COMMIT => self.commit(claim.row).map(|()| true),
                 FRONTIER => self.frontier(claim.row).map(|()| true),
                 PRECOMPUTE => self.precompute(claim.row).map(|()| true),
-                FILTER => self.filter_stripe(claim.row).map(|()| true),
+                FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row)
+                    .map(|()| true),
                 _ => self.output().map(|()| true),
             };
             match claim.stage {
@@ -1097,22 +1081,6 @@ impl<T: SplitSample> FinishFrame<T> {
         Ok(())
     }
 
-    fn filter_stripe(&self, stripe: usize) -> Result<()> {
-        let job = self
-            .filter_jobs
-            .lock()
-            .get_mut(stripe)
-            .and_then(Option::take)
-            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        if let Err(error) = job.run() {
-            let mut owed = self.filter_error.lock();
-            if owed.is_none() {
-                *owed = Some(error);
-            }
-        }
-        Ok(())
-    }
-
     fn output(&self) -> Result<()> {
         if let Some(error) = self.filter_error.lock().take() {
             return Err(error);
@@ -1176,7 +1144,7 @@ impl<T: SplitSample> FrameWork for FinishFrame<T> {
         let outcome = match claim.stage {
             FINISH_INIT => self.init(),
             FINISH_ADVANCE => self.advance(claim.row),
-            FINISH_FILTER => self.filter_stripe(claim.row),
+            FINISH_FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row),
             _ => self.output(),
         };
         if claim.stage == FINISH_FILTER {
@@ -1357,6 +1325,24 @@ impl RowPools {
         self.eight.drain(rows);
         self.ten.drain(rows);
     }
+}
+
+/// Runs filter stripe `stripe` of `jobs`; the first stripe error is kept in
+/// `error` to fail the frame's output.
+fn run_filter_stripe<T: SplitSample>(
+    jobs: &Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
+    error: &Mutex<Option<DecodeError>>,
+    stripe: usize,
+) -> Result<()> {
+    let job = jobs
+        .lock()
+        .get_mut(stripe)
+        .and_then(Option::take)
+        .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+    if let Err(failure) = job.run() {
+        error.lock().get_or_insert(failure);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

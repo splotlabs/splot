@@ -3,6 +3,18 @@
 
 use super::*;
 
+fn classify_padded<T: ReconSample>(
+    params: &PcWienerClassifyParams,
+    cell_cols: usize,
+    cell_rows: usize,
+    source: &PcWienerClassifyPaddedSource<'_, T>,
+    tx_skip: impl FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+) -> Result<Vec<PcWienerClassification>> {
+    let mut scratch = PcWienerClassifyScratch::default();
+    pc_wiener_classify_grid_padded_into(params, cell_cols, cell_rows, source, tx_skip, &mut scratch)
+        .map(<[_]>::to_vec)
+}
+
 #[test]
 fn classify_read_radius_covers_lead_lag_neighborhood() {
     assert_eq!(
@@ -415,7 +427,9 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
                         )
                     })
                     .collect();
-                let source = PcWienerPaddedSource::new(&padded, stride, width, height).unwrap();
+                let source_lines: Vec<_> = padded.chunks(stride).collect();
+                let source =
+                    PcWienerPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
                 let mut actual = vec![0u16; width * height];
                 pc_wiener_filter_block_padded(&mut actual, &params, &source).unwrap();
                 assert_eq!(
@@ -480,7 +494,9 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
                         Ok(padded[y as usize * stride + x as usize])
                     })
                     .unwrap();
-                    let source = PcWienerPaddedSource::new(&padded, stride, width, height).unwrap();
+                    let source_lines: Vec<_> = padded.chunks(stride).collect();
+                    let source =
+                        PcWienerPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
                     let mut actual = vec![0u16; width * height];
                     pc_wiener_filter_block_padded(&mut actual, &params, &source).unwrap();
                     assert_eq!(
@@ -539,13 +555,17 @@ fn padded_flat_chunks_match_the_callback_reference() {
                     .iter()
                     .map(|&value| value % (bit_depth.max_sample() + 1))
                     .collect();
-                let source = PcWienerPaddedSource::new(&narrowed, stride, width, height).unwrap();
+                let source_lines: Vec<_> = narrowed.chunks(stride).collect();
+                let source =
+                    PcWienerPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
                 let mut actual = vec![0u16; width * height];
                 pc_wiener_filter_block_padded(&mut actual, &params, &source).unwrap();
                 assert_eq!(actual, reference, "{width}x{height} set {filter_set_index}");
                 if bit_depth == BitDepth::Eight {
                     let bytes: Vec<u8> = narrowed.iter().map(|&value| value as u8).collect();
-                    let source = PcWienerPaddedSource::new(&bytes, stride, width, height).unwrap();
+                    let source_lines: Vec<_> = bytes.chunks(stride).collect();
+                    let source =
+                        PcWienerPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
                     let mut actual = vec![0u8; width * height];
                     pc_wiener_filter_block_padded(&mut actual, &params, &source).unwrap();
                     let actual: Vec<u16> = actual.into_iter().map(u16::from).collect();
@@ -572,7 +592,8 @@ fn packed_and_strided_pc_wiener_match<T: ReconSample>(
         .map(|index| T::try_from_u16(((index * 37 + index / source_stride * 19) % max) as u16))
         .collect::<Result<_>>()
         .unwrap();
-    let source = PcWienerPaddedSource::new(&source_values, source_stride, width, height).unwrap();
+    let source_lines: Vec<_> = source_values.chunks(source_stride).collect();
+    let source = PcWienerPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let subclass_cols = width.div_ceil(PC_WIENER_BLOCK_SIZE);
     let subclass_rows = height.div_ceil(PC_WIENER_BLOCK_SIZE);
     let subclasses: Vec<u8> = (0..subclass_cols * subclass_rows)
@@ -597,8 +618,9 @@ fn packed_and_strided_pc_wiener_match<T: ReconSample>(
             output_stride,
             ..packed_params
         };
-        let mut strided = vec![u16::MAX; output_stride * height];
-        pc_wiener_filter_block_padded_u16_into(&mut strided, &strided_params, &source).unwrap();
+        let sentinel = T::try_from_u16(0xa5).unwrap();
+        let mut strided = vec![sentinel; output_stride * height];
+        pc_wiener_filter_block_padded(&mut strided, &strided_params, &source).unwrap();
 
         for row in 0..height {
             let expected = &packed[row * width..(row + 1) * width];
@@ -607,14 +629,14 @@ fn packed_and_strided_pc_wiener_match<T: ReconSample>(
                 actual
                     .iter()
                     .zip(expected)
-                    .all(|(&actual, &expected)| actual == expected.to_u16()),
+                    .all(|(actual, expected)| actual.to_u16() == expected.to_u16()),
                 "{} {bit_depth:?} {width}x{height} set {filter_set_index}",
                 T::TYPE_NAME,
             );
             assert!(
                 strided[row * output_stride + width..(row + 1) * output_stride]
                     .iter()
-                    .all(|&sample| sample == u16::MAX),
+                    .all(|sample| sample.to_u16() == 0xa5),
                 "destination padding changed"
             );
         }
@@ -659,7 +681,8 @@ fn strided_pc_wiener_validates_all_geometry_and_samples_before_writing() {
     let source_rows = height + 2 * radius;
     let mut source_values = vec![0u16; source_stride * source_rows];
     source_values[(source_rows - 1) * source_stride + width + 2 * radius - 1] = 256;
-    let source = PcWienerPaddedSource::new(&source_values, source_stride, width, height).unwrap();
+    let source_lines: Vec<_> = source_values.chunks(source_stride).collect();
+    let source = PcWienerPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let subclasses = vec![0; width.div_ceil(4) * height.div_ceil(4)];
     let params = PcWienerFilter {
         width,
@@ -672,18 +695,19 @@ fn strided_pc_wiener_validates_all_geometry_and_samples_before_writing() {
     };
     let mut output = vec![77u16; params.output_stride * height];
 
-    pc_wiener_filter_block_padded_u16_into(&mut output, &params, &source).unwrap();
+    pc_wiener_filter_block_padded(&mut output, &params, &source).unwrap();
     assert_ne!(output[0], 77);
 
     let used_index = (height - 1 + radius) * source_stride + radius + width - 1;
     source_values[used_index] = 256;
-    let source = PcWienerPaddedSource::new(&source_values, source_stride, width, height).unwrap();
+    let source_lines: Vec<_> = source_values.chunks(source_stride).collect();
+    let source = PcWienerPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     output.fill(77);
-    assert!(pc_wiener_filter_block_padded_u16_into(&mut output, &params, &source).is_err());
+    assert!(pc_wiener_filter_block_padded(&mut output, &params, &source).is_err());
     assert!(output.iter().all(|&sample| sample == 77));
 
     let mut short_output = vec![91u16; (height - 1) * params.output_stride + width - 1];
-    assert!(pc_wiener_filter_block_padded_u16_into(&mut short_output, &params, &source).is_err());
+    assert!(pc_wiener_filter_block_padded(&mut short_output, &params, &source).is_err());
     assert!(short_output.iter().all(|&sample| sample == 91));
 }
 
@@ -696,7 +720,8 @@ fn u8_source_strided_pc_wiener_simd_has_a_mutation_sensitive_oracle() {
     let source_rows = height + 2 * radius;
     let mut samples = vec![100u8; source_stride * source_rows];
     samples[(radius + 1) * source_stride + radius] = 120;
-    let source = PcWienerPaddedSource::new(&samples, source_stride, width, height).unwrap();
+    let source_lines: Vec<_> = samples.chunks(source_stride).collect();
+    let source = PcWienerPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let output_stride = width + 7;
     let params = PcWienerFilter {
         width,
@@ -707,13 +732,13 @@ fn u8_source_strided_pc_wiener_simd_has_a_mutation_sensitive_oracle() {
         subclass_block_size: PC_WIENER_BLOCK_SIZE,
         subclasses: &[0; 16],
     };
-    let mut output = vec![u16::MAX; output_stride];
+    let mut output = vec![0xa5u8; output_stride];
 
-    pc_wiener_filter_block_padded_u16_into(&mut output, &params, &source).unwrap();
+    pc_wiener_filter_block_padded(&mut output, &params, &source).unwrap();
 
     assert_eq!(&output[..2], &[111, 95]);
     assert!(output[2..width].iter().all(|&sample| sample == 100));
-    assert!(output[width..].iter().all(|&sample| sample == u16::MAX));
+    assert!(output[width..].iter().all(|&sample| sample == 0xa5));
 }
 
 #[test]
@@ -750,7 +775,8 @@ fn padded_and_callback_filters_match_bit_exactly() {
             ));
         }
     }
-    let source = PcWienerPaddedSource::new(&padded, stride, width, height).unwrap();
+    let source_lines: Vec<_> = padded.chunks(stride).collect();
+    let source = PcWienerPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let mut padded_output = vec![0u16; width * height];
     pc_wiener_filter_block_padded(&mut padded_output, &params, &source).unwrap();
     assert_eq!(callback_output, padded_output);
@@ -766,7 +792,8 @@ fn cell_subclasses_match_expanded_subclasses() {
     let source_values: Vec<u16> = (0..stride * rows)
         .map(|index| ((index * 37 + 29) % 1024) as u16)
         .collect();
-    let source = PcWienerPaddedSource::new(&source_values, stride, width, height).unwrap();
+    let source_lines: Vec<_> = source_values.chunks(stride).collect();
+    let source = PcWienerPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
     let cell_subclasses = [1, 3, 4, 2];
     let expanded_subclasses: Vec<u8> = (0..height)
         .flat_map(|row| {
@@ -829,7 +856,8 @@ fn padded_filter_preserves_out_of_range_error_order_and_output() {
     for (index, x, y) in [(radius * stride + radius, 0, 0), (radius * stride, -3, 0)] {
         let mut padded = vec![0_u16; stride * rows];
         padded[index] = 256;
-        let source = PcWienerPaddedSource::new(&padded, stride, width, height).unwrap();
+        let source_lines: Vec<_> = padded.chunks(stride).collect();
+        let source = PcWienerPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
         let mut output = [77_u16];
         let error = pc_wiener_filter_block_padded(&mut output, &params, &source).unwrap_err();
 
@@ -867,28 +895,18 @@ fn padded_and_callback_classify_grids_match_bit_exactly() {
     .unwrap();
 
     let (buffer, stride, origin_x, origin_y) = padded_classify_fixture(&params);
-    let source = PcWienerClassifyPaddedSource::new(&buffer, stride, origin_x, origin_y);
-    let padded = pc_wiener_classify_grid_padded::<u16, _>(
-        &params,
-        cell_cols,
-        cell_rows,
-        &source,
-        alternating_tx_skip,
+    let source_lines: Vec<_> = buffer.chunks(stride).collect();
+    let source = PcWienerClassifyPaddedSource::from_rows(
+        &source_lines,
+        0,
+        origin_x,
+        origin_y,
+        params.bit_depth,
     )
     .unwrap();
-    let mut scratch = PcWienerClassifyScratch::default();
-    let reused = pc_wiener_classify_grid_padded_into::<u16, _>(
-        &params,
-        cell_cols,
-        cell_rows,
-        &source,
-        alternating_tx_skip,
-        &mut scratch,
-    )
-    .unwrap();
-
+    let padded =
+        classify_padded(&params, cell_cols, cell_rows, &source, alternating_tx_skip).unwrap();
     assert_eq!(callback, padded);
-    assert_eq!(padded, reused);
 
     let shifted: Vec<Vec<u16>> = buffer
         .chunks(stride)
@@ -898,14 +916,8 @@ fn padded_and_callback_classify_grids_match_bit_exactly() {
     let source =
         PcWienerClassifyPaddedSource::from_rows(&table, 2, origin_x, origin_y, BitDepth::Ten)
             .unwrap();
-    let from_table = pc_wiener_classify_grid_padded::<u16, _>(
-        &params,
-        cell_cols,
-        cell_rows,
-        &source,
-        alternating_tx_skip,
-    )
-    .unwrap();
+    let from_table =
+        classify_padded(&params, cell_cols, cell_rows, &source, alternating_tx_skip).unwrap();
     assert_eq!(callback, from_table);
 
     let mut out_of_range = shifted.clone();
@@ -916,13 +928,7 @@ fn padded_and_callback_classify_grids_match_bit_exactly() {
     let source =
         PcWienerClassifyPaddedSource::from_rows(&table, 2, origin_x, origin_y, BitDepth::Ten)
             .unwrap();
-    let rejected = pc_wiener_classify_grid_padded::<u16, _>(
-        &params,
-        cell_cols,
-        cell_rows,
-        &source,
-        alternating_tx_skip,
-    );
+    let rejected = classify_padded(&params, cell_cols, cell_rows, &source, alternating_tx_skip);
     assert!(matches!(
         rejected,
         Err(ReconError::PcWienerSourceSampleOutOfRange { value: 1024, .. })
@@ -973,9 +979,16 @@ fn classes_from_tx_skip_runs_match_per_lookup_classifications() {
     params.base_q_idx = 96;
     let (cell_cols, cell_rows, mut scratch) = (5, 3, PcWienerClassifyScratch::default());
     let (buffer, stride, origin_x, origin_y) = padded_classify_fixture(&params);
-    let source = PcWienerClassifyPaddedSource::new(&buffer, stride, origin_x, origin_y);
-    let grid =
-        pc_wiener_classify_grid_padded(&params, cell_cols, cell_rows, &source, alternating_tx_skip);
+    let source_lines: Vec<_> = buffer.chunks(stride).collect();
+    let source = PcWienerClassifyPaddedSource::from_rows(
+        &source_lines,
+        0,
+        origin_x,
+        origin_y,
+        params.bit_depth,
+    )
+    .unwrap();
+    let grid = classify_padded(&params, cell_cols, cell_rows, &source, alternating_tx_skip);
     let expected: Vec<u8> = grid.unwrap().iter().map(|cell| cell.class).collect();
     let tx_skip_grid: Vec<u8> = (0..64 * 64)
         .map(|i| ((i / 64 * 3 + i % 64) & 1) as u8)
@@ -1081,7 +1094,15 @@ fn tx_skip_sums_match_scalar_cells_at_every_clip() {
                 )
             })
             .collect();
-        let source = PcWienerClassifyPaddedSource::new(&padded, stride, origin_x, origin_y);
+        let source_lines: Vec<_> = padded.chunks(stride).collect();
+        let source = PcWienerClassifyPaddedSource::from_rows(
+            &source_lines,
+            0,
+            origin_x,
+            origin_y,
+            params.bit_depth,
+        )
+        .unwrap();
         let mut scratch = PcWienerClassifyScratch::default();
         let classes = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
             &params,
@@ -1137,7 +1158,15 @@ fn padded_into_reuses_capacity_from_large_to_small_grid() {
     params.y = 24;
     let (buffer, stride, origin_x, origin_y) = padded_classify_fixture(&params);
     let buffer: Vec<u8> = buffer.into_iter().map(|value| value as u8).collect();
-    let source = PcWienerClassifyPaddedSource::new(&buffer, stride, origin_x, origin_y);
+    let source_lines: Vec<_> = buffer.chunks(stride).collect();
+    let source = PcWienerClassifyPaddedSource::from_rows(
+        &source_lines,
+        0,
+        origin_x,
+        origin_y,
+        params.bit_depth,
+    )
+    .unwrap();
     let mut scratch = PcWienerClassifyScratch::default();
     let large_output_ptr = pc_wiener_classify_grid_padded_into::<u8, _>(
         &params,
@@ -1189,7 +1218,15 @@ fn padded_into_clears_output_after_error_and_empty_grid() {
     params.x = 40;
     params.y = 24;
     let (buffer, stride, origin_x, origin_y) = padded_classify_fixture(&params);
-    let source = PcWienerClassifyPaddedSource::new(&buffer, stride, origin_x, origin_y);
+    let source_lines: Vec<_> = buffer.chunks(stride).collect();
+    let source = PcWienerClassifyPaddedSource::from_rows(
+        &source_lines,
+        0,
+        origin_x,
+        origin_y,
+        params.bit_depth,
+    )
+    .unwrap();
     let mut scratch = PcWienerClassifyScratch::default();
     pc_wiener_classify_grid_padded_into::<u16, _>(
         &params,
@@ -1244,15 +1281,19 @@ fn classify_padded_source_rejects_origin_past_region() {
     let mut params = params(BitDepth::Ten);
     params.x = 40;
     params.y = 24;
-    let buffer = vec![0u16; 64];
-    let source = PcWienerClassifyPaddedSource::new(&buffer, 8, params.x + 100, params.y + 100);
-    let err = pc_wiener_classify_grid_padded::<u16, _>(
-        &params,
-        2,
-        2,
-        &source,
-        |lookup: PcWienerTxSkipLookup| Ok(i32::from((lookup.row + lookup.col) as u8 & 1)),
+    let buffer = [0u16; 64];
+    let source_lines: Vec<_> = buffer.chunks(8).collect();
+    let source = PcWienerClassifyPaddedSource::from_rows(
+        &source_lines,
+        0,
+        params.x + 100,
+        params.y + 100,
+        params.bit_depth,
     )
+    .unwrap();
+    let err = classify_padded(&params, 2, 2, &source, |lookup: PcWienerTxSkipLookup| {
+        Ok(i32::from((lookup.row + lookup.col) as u8 & 1))
+    })
     .unwrap_err();
     assert!(matches!(err, ReconError::PcWienerInvalidBounds { .. }));
 }

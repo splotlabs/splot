@@ -190,9 +190,8 @@ impl<'a, T: ReconSample> WienerNsChromaPaddedSource<'a, T> {
 
 /// Reusable storage for contiguous padded chroma Wiener NS filtering.
 #[derive(Debug, Default)]
-pub struct WienerNsChromaScratch<T> {
+pub struct WienerNsChromaScratch {
     luma_ds: Vec<u16>,
-    filtered: Vec<T>,
 }
 
 /// Padded-window shape for a chroma block scaled by per-axis subsampling:
@@ -299,71 +298,9 @@ where
         let src_end = src_start + params.width;
         let dst_start = row_index * params.output_stride;
         let dst_end = dst_start + params.width;
-        // splot-copy-ok: publish fail-atomic Wiener NS scratch row into caller output
-        output[dst_start..dst_end].copy_from_slice(&filtered[src_start..src_end]);
+        output[dst_start..dst_end].copy_from_slice(&filtered[src_start..src_end]); // splot-copy-ok: publish fail-atomic Wiener NS scratch row into caller output
     }
 
-    Ok(())
-}
-
-/// Applies chroma Wiener NS filtering from contiguous padded source windows.
-///
-/// This is bit-identical to [`wiener_ns_filter_chroma_block`] when the caller's
-/// callbacks read the same pre-resolved windows. `scratch` retains allocations
-/// between calls and the output remains fail-atomic.
-///
-/// # Errors
-/// Returns the same parameter, source-range, output-shape, and allocation
-/// errors as the callback-based filter.
-pub fn wiener_ns_filter_chroma_block_padded_into<T: ReconSample>(
-    output: &mut [T],
-    params: &WienerNsChromaFilter<'_>,
-    source: &WienerNsChromaPaddedSource<'_, T>,
-    scratch: &mut WienerNsChromaScratch<T>,
-) -> Result<()> {
-    let context = prepare_chroma_padded(output.len(), params, source, scratch)?;
-    let max_sample = params.bit_depth.max_sample();
-
-    if let (Some(chroma), Some(output)) = (
-        T::u16_slice(source.chroma_samples),
-        T::u16_slice_mut(output),
-    ) {
-        filter_chroma_padded_simd(
-            output,
-            params,
-            chroma,
-            source.chroma_stride,
-            &scratch.luma_ds,
-            params.width + 2 * WIENER_NS_CHROMA_TAP_RADIUS,
-            max_sample,
-        );
-        return Ok(());
-    }
-
-    scratch.filtered.clear();
-    scratch
-        .filtered
-        .try_reserve(context.sample_count)
-        .map_err(|_| ReconError::WorkspaceAllocationFailed {
-            plane: PlaneId::U,
-            context: "Wiener NS chroma filtered scratch",
-        })?;
-    scratch.filtered.resize(context.sample_count, T::default());
-    filter_chroma_padded_scalar(
-        &mut scratch.filtered,
-        params,
-        source.chroma_samples,
-        source.chroma_stride,
-        &scratch.luma_ds,
-        params.width + 2 * WIENER_NS_CHROMA_TAP_RADIUS,
-        max_sample,
-    )?;
-
-    for row in 0..params.height {
-        let src = row * params.width;
-        let dst = row * params.output_stride;
-        output[dst..dst + params.width].copy_from_slice(&scratch.filtered[src..src + params.width]); // splot-copy-ok: publish fail-atomic padded chroma Wiener NS row
-    }
     Ok(())
 }
 
@@ -376,12 +313,12 @@ pub fn wiener_ns_filter_chroma_block_padded_into<T: ReconSample>(
 ///
 /// # Errors
 /// Returns the same parameter, source-range, output-shape, and allocation
-/// errors as [`wiener_ns_filter_chroma_block_padded_into`].
+/// errors as [`wiener_ns_filter_chroma_block`].
 pub fn wiener_ns_filter_chroma_block_padded_u16_into<T: ReconSample>(
     output: &mut [u16],
     params: &WienerNsChromaFilter<'_>,
     source: &WienerNsChromaPaddedSource<'_, T>,
-    scratch: &mut WienerNsChromaScratch<T>,
+    scratch: &mut WienerNsChromaScratch,
 ) -> Result<()> {
     prepare_chroma_padded(output.len(), params, source, scratch)?;
     filter_chroma_padded_output(output, params, source, scratch);
@@ -402,7 +339,7 @@ pub fn wiener_ns_filter_chroma_block_padded_u8_into<T: ReconSample>(
     output: &mut [u8],
     params: &WienerNsChromaFilter<'_>,
     source: &WienerNsChromaPaddedSource<'_, T>,
-    scratch: &mut WienerNsChromaScratch<T>,
+    scratch: &mut WienerNsChromaScratch,
 ) -> Result<()> {
     validate_sample_type::<u8>(params.bit_depth)?;
     prepare_chroma_padded(output.len(), params, source, scratch)?;
@@ -414,7 +351,7 @@ fn filter_chroma_padded_output<O: ChromaOutputSample, T: ReconSample>(
     output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
     source: &WienerNsChromaPaddedSource<'_, T>,
-    scratch: &WienerNsChromaScratch<T>,
+    scratch: &WienerNsChromaScratch,
 ) {
     let max_sample = params.bit_depth.max_sample();
     let luma_stride = params.width + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
@@ -455,7 +392,7 @@ fn prepare_chroma_padded<T: ReconSample>(
     output_len: usize,
     params: &WienerNsChromaFilter<'_>,
     source: &WienerNsChromaPaddedSource<'_, T>,
-    scratch: &mut WienerNsChromaScratch<T>,
+    scratch: &mut WienerNsChromaScratch,
 ) -> Result<ChromaFilterContext> {
     validate_sample_type::<T>(params.bit_depth)?;
     let context = validate_chroma_params(output_len, params)?;
@@ -1194,33 +1131,6 @@ fn filter_chroma_padded_u16_scalar<O: ChromaOutputSample, T: ReconSample>(
             ));
         }
     }
-}
-
-fn filter_chroma_padded_scalar<T: ReconSample>(
-    filtered: &mut [T],
-    params: &WienerNsChromaFilter<'_>,
-    chroma: &[T],
-    chroma_stride: usize,
-    luma_ds: &[u16],
-    luma_stride: usize,
-    max_sample: u16,
-) -> Result<()> {
-    for r in 0..params.height {
-        for c in 0..params.width {
-            let value = filter_chroma_padded_sample(
-                params,
-                chroma,
-                chroma_stride,
-                luma_ds,
-                luma_stride,
-                r,
-                c,
-                max_sample,
-            );
-            filtered[r * params.width + c] = T::try_from_u16(value)?;
-        }
-    }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
