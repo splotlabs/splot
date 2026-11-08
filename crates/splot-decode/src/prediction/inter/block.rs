@@ -1293,7 +1293,12 @@ fn decode_block<T: ReconSample>(
     };
 
     let comp_ref_allowed = is_comp_ref_allowed(n4w, n4h);
-    let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
+    let general_intra = leaf_uses_general_intra(
+        core.frame_is_intra == Some(true),
+        frontier.is_luma_part(),
+        frontier.is_chroma_part(),
+    );
+    let neighbour_ctx = (!general_intra).then(|| block_neighbour_ctx(mv_grid, &block_ctx));
     let seg_pre_skip = core
         .segmentation_params
         .as_ref()
@@ -1334,16 +1339,12 @@ fn decode_block<T: ReconSample>(
                 .is_some_and(|tail| tail.skip_mode_present),
             frontier,
             comp_ref_allowed,
-            neighbour_ctx.skip_mode_ctx,
+            neighbour_ctx.map_or(0, |ctx| ctx.skip_mode_ctx),
             tile_offset,
         )?
     };
 
-    let is_inter = if leaf_uses_general_intra(
-        core.frame_is_intra == Some(true),
-        frontier.is_luma_part(),
-        frontier.is_chroma_part(),
-    ) {
+    let is_inter = if general_intra {
         0
     } else if skip_mode == 1 || segment_globalmv || frontier.shared_mixed_chroma_ref_forces_inter()
     {
@@ -1352,7 +1353,7 @@ fn decode_block<T: ReconSample>(
         let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
         cdfs.read_block_symbol_trace(
             TileCdfSelector::IsInter {
-                ctx: neighbour_ctx.is_inter_ctx,
+                ctx: neighbour_ctx.map_or(0, |ctx| ctx.is_inter_ctx),
             },
             symbols,
         )
@@ -1579,6 +1580,8 @@ fn decode_block<T: ReconSample>(
             },
         ));
     }
+    let neighbour_ctx =
+        neighbour_ctx.unwrap_or_else(|| block_neighbour_ctx(mv_grid, &block_ctx));
     if num_total_refs == 0 {
         return Err(crate::pipeline::malformed_tile_payload(
             tile_offset,
