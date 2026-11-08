@@ -6,8 +6,152 @@
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
 
+use super::tile::TileFilterRecords;
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::support::decode_buffers::fit_list;
+
+/// One inter leaf's deblock and tx-skip geometry, which the parse queues and
+/// the in-order resolve expands, so the record building leaves the parse.
+pub(super) struct InterDeblockLeaf {
+    frontier: DecodeBlockFrontier,
+    residual: Option<InterResidual>,
+    sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
+    block_size4: (u16, u16),
+    qindex: u32,
+    lossless: bool,
+    /// The unit's luma, chroma and tx-skip record counts when the leaf was
+    /// parsed, which place its records among the ones built during the parse.
+    marks: [u32; 3],
+}
+
+impl TileFilterRecords {
+    fn marks(&self) -> [u32; 3] {
+        [
+            self.deblock_blocks.len() as u32,
+            self.chroma_deblock_blocks.len() as u32,
+            self.tx_skip_records.len() as u32,
+        ]
+    }
+
+    /// Queues an inter leaf's geometry for [`Self::publish_into`].
+    pub(super) fn defer_inter_leaf(
+        &mut self,
+        frontier: &DecodeBlockFrontier,
+        (n4w, n4h): (usize, usize),
+        residual: Option<&InterResidual>,
+        sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
+        qindex: u32,
+        lossless: bool,
+    ) {
+        let marks = self.marks();
+        self.inter_leaves.push(InterDeblockLeaf {
+            frontier: *frontier,
+            residual: residual.cloned(),
+            sub_pu_size,
+            block_size4: (n4w as u16, n4h as u16),
+            qindex,
+            lossless,
+            marks,
+        });
+    }
+
+    /// Moves the unit's records onto the end of `target`'s lists in leaf
+    /// order, expanding the queued inter leaves between the records the parse
+    /// built, and leaves these lists empty with their capacity.
+    pub(super) fn publish_into(
+        &mut self,
+        deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
+        chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
+        tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+        residual_blocks: &[InterResidualBlock],
+        chroma_format: ChromaFormatIdc,
+    ) -> Result<()> {
+        let marks = self.marks();
+        self.published = [
+            marks[0] as usize,
+            marks[1] as usize,
+            marks[2] as usize,
+            self.inter_leaves.len(),
+        ];
+        let mut published = [0; 3];
+        for leaf in &self.inter_leaves {
+            self.copy_parsed(
+                published..leaf.marks,
+                deblock_blocks,
+                chroma_deblock_blocks,
+                tx_skip_records,
+            );
+            published = leaf.marks;
+            record_inter_deblock_geometry(
+                deblock_blocks,
+                chroma_deblock_blocks,
+                tx_skip_records,
+                &leaf.frontier,
+                (
+                    usize::from(leaf.block_size4.0),
+                    usize::from(leaf.block_size4.1),
+                ),
+                chroma_format,
+                leaf.residual.as_ref(),
+                residual_blocks,
+                leaf.sub_pu_size,
+                leaf.qindex,
+                leaf.lossless,
+            )?;
+        }
+        if published == [0; 3] {
+            deblock_blocks.append(&mut self.deblock_blocks);
+            chroma_deblock_blocks.append(&mut self.chroma_deblock_blocks);
+            tx_skip_records.append(&mut self.tx_skip_records);
+        } else {
+            self.copy_parsed(
+                published..marks,
+                deblock_blocks,
+                chroma_deblock_blocks,
+                tx_skip_records,
+            );
+            self.deblock_blocks.clear();
+            self.chroma_deblock_blocks.clear();
+            self.tx_skip_records.clear();
+        }
+        self.inter_leaves.clear();
+        Ok(())
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.deblock_blocks.clear();
+        self.chroma_deblock_blocks.clear();
+        self.tx_skip_records.clear();
+        self.inter_leaves.clear();
+    }
+
+    /// Sizes the emptied lists to the decode's typical unit; see
+    /// [`fit_list`].
+    pub(super) fn fit(&mut self, [luma, chroma, tx_skip, leaves]: [usize; 4]) {
+        fit_list(&mut self.deblock_blocks, luma);
+        self.chroma_deblock_blocks.fit(chroma);
+        fit_list(&mut self.tx_skip_records, tx_skip);
+        fit_list(&mut self.inter_leaves, leaves);
+    }
+
+    fn copy_parsed(
+        &self,
+        range: core::ops::Range<[u32; 3]>,
+        deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
+        chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
+        tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    ) {
+        let span = |index: usize| range.start[index] as usize..range.end[index] as usize;
+        if let Some(blocks) = self.deblock_blocks.get(span(0)) {
+            deblock_blocks.extend_from_slice(blocks);
+        }
+        chroma_deblock_blocks.extend_from_range(&self.chroma_deblock_blocks, span(1));
+        if let Some(records) = self.tx_skip_records.get(span(2)) {
+            tx_skip_records.extend_from_slice(records);
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_inter_deblock_geometry(
@@ -339,5 +483,99 @@ mod tests {
             assert!(record.skip);
             assert_eq!(record.qindex, 200);
         }
+    }
+
+    #[test]
+    fn deferred_inter_leaves_publish_in_leaf_order_between_parsed_records() {
+        let chroma = ChromaFormatIdc::Yuv420;
+        let size = BlockSize::new(BLOCK_8X8).unwrap();
+        let leaves = [
+            DecodeBlockFrontier::shared_leaf(0, 0, size),
+            DecodeBlockFrontier::shared_leaf(2, 4, size),
+        ];
+        let parsed = |records: &mut TileFilterRecords, r: u32| {
+            let (_, block) = crate::filters::wienerns_lr::chroma_transform_deblock_block(
+                PlaneId::V,
+                0,
+                0,
+                0,
+                None,
+                (1, 1),
+                r,
+                false,
+            )
+            .unwrap();
+            records.deblock_blocks.push(block);
+            records.chroma_deblock_blocks.push(1, block);
+            records.tx_skip_records.push(
+                crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
+                    row: r as usize,
+                    col: 0,
+                    rows: 1,
+                    cols: 1,
+                    skip_flag: false,
+                    eob: 1,
+                },
+            );
+        };
+        let mut unit = TileFilterRecords::default();
+        let mut expected = TileFilterRecords::default();
+        for (index, leaf) in leaves.iter().enumerate() {
+            parsed(&mut unit, 90 + index as u32);
+            parsed(&mut expected, 90 + index as u32);
+            unit.defer_inter_leaf(leaf, (2, 2), None, None, 40, false);
+            record_inter_deblock_geometry(
+                &mut expected.deblock_blocks,
+                &mut expected.chroma_deblock_blocks,
+                &mut expected.tx_skip_records,
+                leaf,
+                (2, 2),
+                chroma,
+                None,
+                &[],
+                None,
+                40,
+                false,
+            )
+            .unwrap();
+        }
+        parsed(&mut unit, 99);
+        parsed(&mut expected, 99);
+
+        let mut frame = TileFilterRecords::default();
+        parsed(&mut frame, 7);
+        let mut want = TileFilterRecords::default();
+        parsed(&mut want, 7);
+        want.deblock_blocks.append(&mut expected.deblock_blocks);
+        want.chroma_deblock_blocks
+            .append(&mut expected.chroma_deblock_blocks);
+        want.tx_skip_records.append(&mut expected.tx_skip_records);
+        let capacity = unit.deblock_blocks.capacity();
+        unit.publish_into(
+            &mut frame.deblock_blocks,
+            &mut frame.chroma_deblock_blocks,
+            &mut frame.tx_skip_records,
+            &[],
+            chroma,
+        )
+        .unwrap();
+
+        assert_eq!(frame.deblock_blocks, want.deblock_blocks);
+        assert_eq!(frame.tx_skip_records, want.tx_skip_records);
+        for plane in 0..2 {
+            assert!(
+                frame
+                    .chroma_deblock_blocks
+                    .iter_plane(plane)
+                    .map(|(_, record)| record)
+                    .eq(want
+                        .chroma_deblock_blocks
+                        .iter_plane(plane)
+                        .map(|(_, record)| record))
+            );
+        }
+        assert!(unit.deblock_blocks.is_empty() && unit.inter_leaves.is_empty());
+        assert!(unit.chroma_deblock_blocks.is_empty() && unit.tx_skip_records.is_empty());
+        assert_eq!(unit.deblock_blocks.capacity(), capacity);
     }
 }

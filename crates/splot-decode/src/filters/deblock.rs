@@ -136,6 +136,24 @@ impl ChromaDeblockRecords {
         self.single += core::mem::take(&mut other.single);
     }
 
+    /// Copies `other`'s records `range` onto the end of this list.
+    pub(crate) fn extend_from_range(&mut self, other: &Self, range: core::ops::Range<usize>) {
+        let Some(blocks) = other.blocks.get(range) else {
+            return;
+        };
+        self.single += blocks
+            .iter()
+            .filter(|record| record.planes != Self::U | Self::V)
+            .count();
+        self.blocks.extend_from_slice(blocks);
+    }
+
+    /// Sizes the emptied list to `typical` records; see
+    /// [`fit_list`](crate::support::decode_buffers::fit_list).
+    pub(crate) fn fit(&mut self, typical: usize) {
+        crate::support::decode_buffers::fit_list(&mut self.blocks, typical);
+    }
+
     /// The record capacity this list is holding.
     pub(crate) fn capacity(&self) -> usize {
         self.blocks.capacity()
@@ -155,7 +173,7 @@ impl ChromaDeblockRecords {
         self.blocks.is_empty()
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.blocks.len()
     }
 

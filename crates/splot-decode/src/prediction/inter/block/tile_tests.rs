@@ -65,6 +65,7 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
         temporal: Vec::new(),
         flag_log: Vec::new(),
         residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
+        filter_records: TileFilterRecords::default(),
         motion_folded: false,
         failure: ReconRowFailure::Terminal(malformed_tile_error(offset)),
     };
@@ -271,35 +272,27 @@ fn corrupted_multi_tile_payload_has_the_same_error_across_worker_widths() {
 }
 
 #[test]
-fn frame_slots_retain_their_row_payloads_across_reset() {
+fn committed_unit_buffers_return_to_the_decode_pool() {
     use crate::support::decode_buffers::DecodeBuffers;
 
-    let mut decoding = super::ParseProgress::default();
-    let other_decode = super::ParseProgress::default();
-    let mut retained = Vec::new();
-    for capacity in [4096, 8192] {
-        let mut spent = super::ReconRowBuffers::default();
-        spent.residual_coeffs.reserve(capacity);
-        retained.push(spent.residual_coeffs.as_ptr());
-        decoding.row_buffers.get_mut().push(Some(spent));
+    let buffers = DecodeBuffers::new();
+    let mut frames = [
+        super::ParseProgress::default(),
+        super::ParseProgress::default(),
+    ];
+    for frame in &mut frames {
+        assert!(frame.reset(&buffers));
     }
-    for _ in 0..128 {
-        decoding.reset(&DecodeBuffers::new());
-        assert!(other_decode.take_row_buffers(0).is_err());
-        assert!(decoding.take_row_buffers(2).is_err());
-        assert!(
-            decoding
-                .return_row_buffers(0, super::ReconRowBuffers::default())
-                .is_err()
-        );
-        for index in [1, 0] {
-            let payload = decoding.take_row_buffers(index).expect("retained row slot");
-            assert_eq!(payload.residual_coeffs.as_ptr(), retained[index]);
-            assert!(decoding.take_row_buffers(index).is_err());
-            decoding
-                .return_row_buffers(index, payload)
-                .expect("vacant row slot");
-        }
+    let mut spent = super::ReconRowBuffers::default();
+    spent.residual_coeffs.reserve_exact(1024);
+    let retained = spent.residual_coeffs.as_ptr();
+    frames[0].return_row_buffers(spent);
+    for cycle in 0..128 {
+        let frame = &frames[cycle % 2];
+        let unit = frame.take_row_buffers();
+        assert_eq!(unit.residual_coeffs.as_ptr(), retained);
+        assert!(buffers.take_unit_buffers().is_none());
+        frame.return_row_buffers(unit);
     }
 }
 
@@ -317,12 +310,12 @@ fn failed_frame_rows_left_unclaimed_do_not_pin_the_parse_slot() {
         temporal: Vec::new(),
         flag_log: Vec::new(),
         residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
+        filter_records: TileFilterRecords::default(),
         motion_folded: false,
         failure: ReconRowFailure::None,
     };
-    let mut records = TileFilterRecords::default();
-    progress.publish_row(row(0), &mut records);
-    progress.publish_row(row(1), &mut records);
+    progress.publish_row(row(0));
+    progress.publish_row(row(1));
     let claimed = progress.take_row(0).expect("published row");
     assert!(progress.reset(&buffers));
     drop(claimed);
@@ -440,7 +433,7 @@ fn superblock_coefficients_reserve_plane_coverage_once() {
 }
 
 #[test]
-fn frame_filter_publication_returns_producer_capacity_before_row_replay() {
+fn resolved_record_publication_keeps_the_unit_capacity() {
     let mut progress = ParseProgress::default();
     let buffers = crate::support::decode_buffers::DecodeBuffers::new();
     let mut records = TileFilterRecords::default();
@@ -469,10 +462,16 @@ fn frame_filter_publication_returns_producer_capacity_before_row_replay() {
             temporal: Vec::new(),
             flag_log: Vec::new(),
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
+            filter_records: core::mem::take(&mut records),
             motion_folded: false,
             failure: ReconRowFailure::None,
         };
-        progress.publish_row(row, &mut records);
+        let mut row = row;
+        progress
+            .publish_records(&mut row, ChromaFormatIdc::Yuv420)
+            .expect("publish records");
+        records = core::mem::take(&mut row.filter_records);
+        progress.publish_row(row);
         assert!(records.tx_skip_records.is_empty());
         assert_eq!(records.tx_skip_records.as_ptr(), storage);
         assert!(records.deblock_blocks.capacity() >= 32);
