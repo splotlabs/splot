@@ -560,23 +560,21 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     #[inline]
     pub fn u8_rect_mut(&mut self, plane: PlaneId, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
         if let Self::Frame(workspace) = self {
-            let target = workspace.plane_mut(plane).ok()?;
-            let (stride, storage) = (target.stride, target.storage_size);
-            let (right, bottom) = (
-                rect.x().saturating_add(rect.width()),
-                rect.y().saturating_add(rect.height()),
-            );
-            let local_y = rect.y().checked_sub(target.origin_y)?;
-            let rows = (bottom - target.origin_y).saturating_mul(stride);
-            if right > storage.width() || bottom > storage.height() || rows > target.samples.len() {
-                return None;
-            }
-            let base = local_y * stride + rect.x();
-            let samples = T::u8_slice_mut(&mut target.samples[..])?;
-            return Some((samples.get_mut(base..rows - stride + right)?, stride));
+            return workspace.plane_mut(plane).ok()?.u8_rect_mut(rect);
         }
         let (samples, stride) = self.contiguous_rect(plane, rect).ok()??;
         Some((T::u8_slice_mut(samples)?, stride))
+    }
+
+    /// The [`Self::u8_rect_mut`] targets of `rect` in both chroma planes of
+    /// a whole-frame surface, or `None` wherever either is `None`.
+    #[inline]
+    pub fn u8_chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [u8], usize); 2]> {
+        let Self::Frame(workspace) = self else {
+            return None;
+        };
+        let (u, v) = (workspace.u.as_mut()?, workspace.v.as_mut()?);
+        Some([u.u8_rect_mut(rect)?, v.u8_rect_mut(rect)?])
     }
 
     /// The samples of the exact in-storage `rect` of `plane`, from its
@@ -1505,6 +1503,27 @@ pub struct CurrentFramePlane<T: ReconSample> {
     stride: usize,
     samples: crate::PlaneBuf<T>,
     pool: Option<Arc<crate::PlanePool>>,
+}
+
+impl<T: ReconSample> CurrentFramePlane<T> {
+    /// The in-storage `rect` of this plane from its top-left sample through
+    /// its last row, and their row stride, for eight-bit samples.
+    #[inline]
+    fn u8_rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
+        let (stride, storage) = (self.stride, self.storage_size);
+        let (right, bottom) = (
+            rect.x().saturating_add(rect.width()),
+            rect.y().saturating_add(rect.height()),
+        );
+        let local_y = rect.y().checked_sub(self.origin_y)?;
+        let rows = (bottom - self.origin_y).saturating_mul(stride);
+        if right > storage.width() || bottom > storage.height() || rows > self.samples.len() {
+            return None;
+        }
+        let base = local_y * stride + rect.x();
+        let samples = T::u8_slice_mut(&mut self.samples[..])?;
+        Some((samples.get_mut(base..rows - stride + right)?, stride))
+    }
 }
 
 /// Returns a retired workspace plane's storage to the pool the next workspace

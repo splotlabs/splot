@@ -356,7 +356,38 @@ pub(super) fn put_u8(
     output: &mut [u8],
     stride: usize,
 ) -> bool {
+    put_u8_planes([view], params, [(output, stride)])
+}
+
+/// [`put_u8`] of `N` planes of one geometry that share `params`, each into
+/// its own output: `false` without writing any of them when one declines.
+pub(super) fn put_u8_planes<const N: usize>(
+    views: [&ReferencePlaneView<'_, u8>; N],
+    params: &SubpelPredictParams,
+    mut outputs: [(&mut [u8], usize); N],
+) -> bool {
     let (w, h) = (params.w, params.h);
+    let fits = |(output, stride): &(&mut [u8], usize)| {
+        *stride >= w
+            && (h - 1)
+                .checked_mul(*stride)
+                .and_then(|end| end.checked_add(w))
+                .is_some_and(|end| end <= output.len())
+    };
+    let view = views[0];
+    let geometry = |other: &&ReferencePlaneView<'_, u8>| {
+        (
+            other.stride,
+            other.width,
+            other.readable_rows,
+            other.samples.len(),
+        ) == (
+            view.stride,
+            view.width,
+            view.readable_rows,
+            view.samples.len(),
+        )
+    };
     let admitted = params.bit_depth == crate::format::BitDepth::Eight
         && params.step_x == 1 << SCALE_SUBPEL_BITS
         && params.step_y == 1 << SCALE_SUBPEL_BITS
@@ -368,15 +399,15 @@ pub(super) fn put_u8(
             .start_x
             .checked_add((w as i32 - 1) << SCALE_SUBPEL_BITS)
             .is_some()
-        && stride >= w
-        && (h - 1)
-            .checked_mul(stride)
-            .and_then(|end| end.checked_add(w))
-            .is_some_and(|end| end <= output.len());
+        && outputs.iter().all(fits)
+        && views.iter().all(geometry);
     if !admitted {
         return false;
     }
-    if super::cell::put(view, params, output, stride) {
+    if let Some(cell) = super::cell::put_cell(view, params) {
+        for (view, (output, stride)) in views.into_iter().zip(&mut outputs) {
+            cell.with_source(view.samples).put(w, output, *stride);
+        }
         return true;
     }
     let params = plane_bounded(view, params);
@@ -384,11 +415,17 @@ pub(super) fn put_u8(
     let Some(block) = layout.in_place(view, &params) else {
         return false;
     };
+    let mut put = |stage: &mut [i16]| {
+        for (view, (output, stride)) in views.into_iter().zip(&mut outputs) {
+            if !super::eight_bit::put(&block.with_source(view.samples), stage, output, *stride) {
+                return false;
+            }
+        }
+        true
+    };
     match stage_len(layout.rows, w, layout.vertical) {
-        0 => super::eight_bit::put(&block, &mut [], output, stride),
-        len => with_subpel_intermediate(len, |stage| {
-            super::eight_bit::put(&block, stage, output, stride)
-        }),
+        0 => put(&mut []),
+        len => with_subpel_intermediate(len, put),
     }
 }
 

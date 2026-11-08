@@ -28,7 +28,7 @@ pub use copy::{
 };
 pub use fullpel_u8::{
     subpel_predict_block_compound_average_fullpel_strided_into_u8,
-    subpel_predict_block_strided_into_u8, subpel_put_u8_in_place,
+    subpel_predict_block_strided_into_u8, subpel_put_u8_in_place, subpel_put_u8_pair_in_place,
 };
 pub use search_window::{
     refinemv_window_sads_u8, subpel_predict_bilinear_8x8_u8,
@@ -487,6 +487,17 @@ pub struct SubpelPredictParams {
     /// also be above the maximum.
     pub bit_depth: BitDepth,
 }
+
+impl SubpelPredictParams {
+    /// `[firstX, firstY, lastX, lastY]`.
+    const fn bounds(&self) -> [i32; 4] {
+        [self.first_x, self.first_y, self.last_x, self.last_y]
+    }
+}
+
+/// An unscaled block's § 7.13.3.18 1/1024-sample start `[x, y]` and clip
+/// bounds `[firstX, firstY, lastX, lastY]`.
+pub type CellPlacement = ([i32; 2], [i32; 4]);
 
 /// The maximum supported block dimension (the AV2 256x256 super-block side).
 const MAX_BLOCK_DIM: usize = 256;
@@ -1004,6 +1015,41 @@ pub fn subpel_predict_block_compound_average_fast_pair_into<T: ReconSample, O: R
         second_stride,
     );
     Ok(usize::from(first) + usize::from(first && second))
+}
+
+/// The eight-bit COMPOUND_AVERAGE of one unscaled `size`-square cell, 4 or
+/// 8, from each reference's [`CellPlacement`] into `output` rows `stride`
+/// apart, as [`subpel_predict_block_compound_average_fast_validated_strided_into`]
+/// stores it; `false` without writing for a cell outside the register-cell
+/// subset or an output that cannot hold it.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub fn subpel_compound_cell_u8<T: ReconSample>(
+    references: [&ReferencePlaneView<'_, T>; 2],
+    interp: InterpolationFilter,
+    size: usize,
+    placements: [CellPlacement; 2],
+    cwp_weight: i16,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) else {
+        return false;
+    };
+    stride >= size
+        && size
+            .checked_sub(1)
+            .is_some_and(|rows| rows * stride + size <= output.len())
+        && cell::compound_at(
+            [&first, &second],
+            interp,
+            size,
+            placements,
+            i32::from(cwp_weight),
+            output,
+            stride,
+        )
 }
 
 /// Whether both blocks have one unscaled shape in `1..=MAX_BLOCK_DIM`, one

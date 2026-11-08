@@ -13,20 +13,28 @@
 //! block takes the general path.
 
 use super::block::{TAPS, Taps};
-use super::{ReferencePlaneView, SCALE_SUBPEL_BITS, SUBPEL_MASK, SubpelPredictParams};
+use super::{
+    CellPlacement, InterpolationFilter, ReferencePlaneView, SCALE_SUBPEL_BITS, SUBPEL_MASK,
+    SubpelPredictParams,
+};
 
-/// One reference of a cell: window row `r` starts at `origin + r * stride`.
+/// One reference of a cell: window row `r` starts at `origin + r * stride`,
+/// or, for a window that crosses its clip bounds, at the bounded row
+/// `Clip3(clamped[1], clamped[2], clamped[0] + r)` and window column `c`
+/// at `Clip3(0, clamped[4], c + clamped[3])` from `origin`.
+#[derive(Clone, Copy)]
 pub(super) struct Cell<'a> {
     source: &'a [u8],
     origin: usize,
     stride: usize,
     horizontal: Option<&'static Taps>,
     vertical: Option<&'static Taps>,
+    clamped: Option<[i32; 5]>,
 }
 
 impl<'a> Cell<'a> {
-    /// The cell of a `size`-square block, or `None` when its window leaves
-    /// the plane-bounded clip range or the storage of 16 bytes per row.
+    /// The cell of a `size`-square block, or `None` when its clip range is
+    /// empty or its window leaves the storage of 16 bytes per row.
     #[allow(clippy::inline_always, reason = "measured compound cell hot path")]
     #[inline(always)]
     fn new(
@@ -34,9 +42,27 @@ impl<'a> Cell<'a> {
         params: &SubpelPredictParams,
         size: usize,
     ) -> Option<Self> {
-        let filters = &TAPS[params.interp.pass_index(size as u32) as usize];
+        Self::at(
+            view,
+            params.interp,
+            size,
+            ([params.start_x, params.start_y], params.bounds()),
+        )
+    }
+
+    /// [`Self::new`] of a cell at 1/1024-sample `[x, y]` with clip bounds
+    /// `[firstX, firstY, lastX, lastY]`.
+    #[allow(clippy::inline_always, reason = "measured compound cell hot path")]
+    #[inline(always)]
+    fn at(
+        view: &ReferencePlaneView<'a, u8>,
+        interp: InterpolationFilter,
+        size: usize,
+        ([start_x, start_y], bounds): CellPlacement,
+    ) -> Option<Self> {
+        let filters = &TAPS[interp.pass_index(size as u32) as usize];
         let taps = |start: i32| filters[((start >> 6) & SUBPEL_MASK) as usize].as_ref();
-        let (horizontal, vertical) = (taps(params.start_x), taps(params.start_y));
+        let (horizontal, vertical) = (taps(start_x), taps(start_y));
         let window = |start: i32, taps: Option<&Taps>| {
             let base = start >> SCALE_SUBPEL_BITS;
             taps.map_or((base, size as i32), |taps| {
@@ -46,56 +72,82 @@ impl<'a> Cell<'a> {
                 )
             })
         };
-        let ((column, columns), (row, rows)) = (
-            window(params.start_x, horizontal),
-            window(params.start_y, vertical),
-        );
+        let ((column, columns), (row, rows)) =
+            (window(start_x, horizontal), window(start_y, vertical));
         let bound = |value: i32, last: usize| value.max(0).min(last as i32 - 1);
         let (width, height) = (view.width, view.readable_rows);
-        let inside = column >= bound(params.first_x, width)
-            && column + columns <= bound(params.last_x, width) + 1
-            && row >= bound(params.first_y, height)
-            && row + rows <= bound(params.last_y, height) + 1;
-        if !inside {
+        let [first_x, last_x] = [bound(bounds[0], width), bound(bounds[2], width)];
+        let [first_y, last_y] = [bound(bounds[1], height), bound(bounds[3], height)];
+        if first_x > last_x || first_y > last_y {
             return None;
         }
-        let origin = row as usize * view.stride + column as usize;
-        (origin + (rows as usize - 1) * view.stride + 16 <= view.samples.len()).then_some(Self {
+        let inside = column >= first_x
+            && column + columns <= last_x + 1
+            && row >= first_y
+            && row + rows <= last_y + 1;
+        let fits = |row: i32, column: i32| {
+            row as usize * view.stride + column as usize + 16 <= view.samples.len()
+        };
+        let cell = |origin: usize, clamped| Self {
             source: view.samples,
             origin,
             stride: view.stride,
             horizontal,
             vertical,
+            clamped,
+        };
+        if inside {
+            return fits(row + rows - 1, column)
+                .then(|| cell(row as usize * view.stride + column as usize, None));
+        }
+        let base = column.max(first_x).min(last_x);
+        let columns = [(column - base).max(-16), (last_x - base).min(15)];
+        fits((row + rows - 1).max(first_y).min(last_y), base).then(|| {
+            cell(
+                base as usize,
+                Some([row, first_y, last_y, columns[0], columns[1]]),
+            )
         })
     }
 }
 
-/// Stores the `Clip1` single-reference prediction of a 4x4 or 8x8 block, or
-/// returns `false` without writing outside the subset.
+/// The cell of a 4x4 or 8x8 single-reference block that [`Cell::put`]
+/// stores, or `None` outside that subset.
 #[inline]
-pub(super) fn put(
-    reference: &ReferencePlaneView<'_, u8>,
+pub(super) fn put_cell<'a>(
+    reference: &ReferencePlaneView<'a, u8>,
     params: &SubpelPredictParams,
-    output: &mut [u8],
-    stride: usize,
-) -> bool {
+) -> Option<Cell<'a>> {
     let size = params.w;
     if params.h != size || (size != 4 && size != 8) {
-        return false;
+        return None;
     }
-    let Some(cell) = Cell::new(reference, params, size) else {
-        return false;
-    };
+    let cell = Cell::new(reference, params, size)?;
     if size == 4 && cell.horizontal.is_some_and(|taps| taps.count > 2) {
-        return false;
+        return None;
     }
     #[cfg(target_arch = "x86_64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
-        avx2::put(token, &cell, size, output, stride);
-        return true;
+    if fearless_simd::Level::baseline().as_avx2().is_some() {
+        return Some(cell);
     }
-    let _ = (cell, output, stride);
-    false
+    None
+}
+
+impl<'a> Cell<'a> {
+    /// This cell read from `source`, storage of the same geometry.
+    pub(super) fn with_source(&self, source: &'a [u8]) -> Self {
+        Self { source, ..*self }
+    }
+
+    /// Stores the `Clip1` single-reference prediction of this `size`-square
+    /// cell of [`put_cell`].
+    pub(super) fn put(&self, size: usize, output: &mut [u8], stride: usize) {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
+            avx2::put(token, self, size, output, stride);
+        }
+        let _ = (size, output, stride);
+    }
 }
 
 /// Predicts both references of a 4x4 or 8x8 cell and stores their
@@ -108,15 +160,53 @@ pub(super) fn compound(
     stride: usize,
 ) -> bool {
     let size = params[0].w;
-    if params[0].h != size || (size != 4 && size != 8) {
-        return false;
-    }
-    let (Some(first), Some(second)) = (
-        Cell::new(references[0], params[0], size),
-        Cell::new(references[1], params[1], size),
-    ) else {
-        return false;
-    };
+    params[0].h == size
+        && (size == 4 || size == 8)
+        && match (
+            Cell::new(references[0], params[0], size),
+            Cell::new(references[1], params[1], size),
+        ) {
+            (Some(first), Some(second)) => {
+                compound_cells([first, second], size, forward, output, stride)
+            }
+            _ => false,
+        }
+}
+
+/// [`compound`] of a `size`-square cell whose references share `interp`,
+/// from each reference's [`CellPlacement`].
+#[inline]
+pub(super) fn compound_at(
+    references: [&ReferencePlaneView<'_, u8>; 2],
+    interp: InterpolationFilter,
+    size: usize,
+    placements: [CellPlacement; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    (size == 4 || size == 8)
+        && match (
+            Cell::at(references[0], interp, size, placements[0]),
+            Cell::at(references[1], interp, size, placements[1]),
+        ) {
+            (Some(first), Some(second)) => {
+                compound_cells([first, second], size, forward, output, stride)
+            }
+            _ => false,
+        }
+}
+
+/// Stores the COMPOUND_AVERAGE of two `size`-square cells, or returns
+/// `false` without writing for a 4x4 cell outside the narrow kernel.
+#[inline]
+fn compound_cells(
+    [first, second]: [Cell<'_>; 2],
+    size: usize,
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
     if size == 4
         && [&first, &second]
             .iter()
@@ -158,35 +248,43 @@ mod avx2 {
         out
     };
 
-    /// Calls `$f::<$w, H, V>` for the tap-pair counts of a cell's passes.
+    /// Calls `$f::<$w, H, V, $put, CLAMPED>` for the tap-pair counts of a
+    /// cell's passes and whether its window is clamped.
     macro_rules! by_taps {
-        ($w:literal, $put:literal, $h:expr, $v:expr, $f:ident($($arg:expr),*)) => {
+        ($w:literal, $put:literal, $h:expr, $v:expr, $clamped:expr, $f:ident($($arg:expr),*)) => {
+            if $clamped {
+                by_taps!(@ $w, $put, true, $h, $v, $f($($arg),*))
+            } else {
+                by_taps!(@ $w, $put, false, $h, $v, $f($($arg),*))
+            }
+        };
+        (@ $w:literal, $put:literal, $c:literal, $h:expr, $v:expr, $f:ident($($arg:expr),*)) => {
             match ($h, $v) {
-                (0, 0) => $f::<$w, 0, 0, $put>($($arg),*),
-                (0, 1) => $f::<$w, 0, 1, $put>($($arg),*),
-                (0, 2) => $f::<$w, 0, 2, $put>($($arg),*),
-                (0, 3) => $f::<$w, 0, 3, $put>($($arg),*),
-                (0, _) => $f::<$w, 0, 4, $put>($($arg),*),
-                (1, 0) => $f::<$w, 1, 0, $put>($($arg),*),
-                (1, 1) => $f::<$w, 1, 1, $put>($($arg),*),
-                (1, 2) => $f::<$w, 1, 2, $put>($($arg),*),
-                (1, 3) => $f::<$w, 1, 3, $put>($($arg),*),
-                (1, _) => $f::<$w, 1, 4, $put>($($arg),*),
-                (2, 0) => $f::<$w, 2, 0, $put>($($arg),*),
-                (2, 1) => $f::<$w, 2, 1, $put>($($arg),*),
-                (2, 2) => $f::<$w, 2, 2, $put>($($arg),*),
-                (2, 3) => $f::<$w, 2, 3, $put>($($arg),*),
-                (2, _) => $f::<$w, 2, 4, $put>($($arg),*),
-                (3, 0) => $f::<$w, 3, 0, $put>($($arg),*),
-                (3, 1) => $f::<$w, 3, 1, $put>($($arg),*),
-                (3, 2) => $f::<$w, 3, 2, $put>($($arg),*),
-                (3, 3) => $f::<$w, 3, 3, $put>($($arg),*),
-                (3, _) => $f::<$w, 3, 4, $put>($($arg),*),
-                (_, 0) => $f::<$w, 4, 0, $put>($($arg),*),
-                (_, 1) => $f::<$w, 4, 1, $put>($($arg),*),
-                (_, 2) => $f::<$w, 4, 2, $put>($($arg),*),
-                (_, 3) => $f::<$w, 4, 3, $put>($($arg),*),
-                (_, _) => $f::<$w, 4, 4, $put>($($arg),*),
+                (0, 0) => $f::<$w, 0, 0, $put, $c>($($arg),*),
+                (0, 1) => $f::<$w, 0, 1, $put, $c>($($arg),*),
+                (0, 2) => $f::<$w, 0, 2, $put, $c>($($arg),*),
+                (0, 3) => $f::<$w, 0, 3, $put, $c>($($arg),*),
+                (0, _) => $f::<$w, 0, 4, $put, $c>($($arg),*),
+                (1, 0) => $f::<$w, 1, 0, $put, $c>($($arg),*),
+                (1, 1) => $f::<$w, 1, 1, $put, $c>($($arg),*),
+                (1, 2) => $f::<$w, 1, 2, $put, $c>($($arg),*),
+                (1, 3) => $f::<$w, 1, 3, $put, $c>($($arg),*),
+                (1, _) => $f::<$w, 1, 4, $put, $c>($($arg),*),
+                (2, 0) => $f::<$w, 2, 0, $put, $c>($($arg),*),
+                (2, 1) => $f::<$w, 2, 1, $put, $c>($($arg),*),
+                (2, 2) => $f::<$w, 2, 2, $put, $c>($($arg),*),
+                (2, 3) => $f::<$w, 2, 3, $put, $c>($($arg),*),
+                (2, _) => $f::<$w, 2, 4, $put, $c>($($arg),*),
+                (3, 0) => $f::<$w, 3, 0, $put, $c>($($arg),*),
+                (3, 1) => $f::<$w, 3, 1, $put, $c>($($arg),*),
+                (3, 2) => $f::<$w, 3, 2, $put, $c>($($arg),*),
+                (3, 3) => $f::<$w, 3, 3, $put, $c>($($arg),*),
+                (3, _) => $f::<$w, 3, 4, $put, $c>($($arg),*),
+                (_, 0) => $f::<$w, 4, 0, $put, $c>($($arg),*),
+                (_, 1) => $f::<$w, 4, 1, $put, $c>($($arg),*),
+                (_, 2) => $f::<$w, 4, 2, $put, $c>($($arg),*),
+                (_, 3) => $f::<$w, 4, 3, $put, $c>($($arg),*),
+                (_, _) => $f::<$w, 4, 4, $put, $c>($($arg),*),
             }
         };
     }
@@ -194,23 +292,30 @@ mod avx2 {
     /// [`by_taps`] of a 4x4 cell, whose horizontal pass has at most two
     /// tap pairs.
     macro_rules! by_narrow_taps {
-        ($put:literal, $h:expr, $v:expr, $f:ident($($arg:expr),*)) => {
+        ($put:literal, $h:expr, $v:expr, $clamped:expr, $f:ident($($arg:expr),*)) => {
+            if $clamped {
+                by_narrow_taps!(@ $put, true, $h, $v, $f($($arg),*))
+            } else {
+                by_narrow_taps!(@ $put, false, $h, $v, $f($($arg),*))
+            }
+        };
+        (@ $put:literal, $c:literal, $h:expr, $v:expr, $f:ident($($arg:expr),*)) => {
             match ($h, $v) {
-                (0, 0) => $f::<4, 0, 0, $put>($($arg),*),
-                (0, 1) => $f::<4, 0, 1, $put>($($arg),*),
-                (0, 2) => $f::<4, 0, 2, $put>($($arg),*),
-                (0, 3) => $f::<4, 0, 3, $put>($($arg),*),
-                (0, _) => $f::<4, 0, 4, $put>($($arg),*),
-                (1, 0) => $f::<4, 1, 0, $put>($($arg),*),
-                (1, 1) => $f::<4, 1, 1, $put>($($arg),*),
-                (1, 2) => $f::<4, 1, 2, $put>($($arg),*),
-                (1, 3) => $f::<4, 1, 3, $put>($($arg),*),
-                (1, _) => $f::<4, 1, 4, $put>($($arg),*),
-                (_, 0) => $f::<4, 2, 0, $put>($($arg),*),
-                (_, 1) => $f::<4, 2, 1, $put>($($arg),*),
-                (_, 2) => $f::<4, 2, 2, $put>($($arg),*),
-                (_, 3) => $f::<4, 2, 3, $put>($($arg),*),
-                (_, _) => $f::<4, 2, 4, $put>($($arg),*),
+                (0, 0) => $f::<4, 0, 0, $put, $c>($($arg),*),
+                (0, 1) => $f::<4, 0, 1, $put, $c>($($arg),*),
+                (0, 2) => $f::<4, 0, 2, $put, $c>($($arg),*),
+                (0, 3) => $f::<4, 0, 3, $put, $c>($($arg),*),
+                (0, _) => $f::<4, 0, 4, $put, $c>($($arg),*),
+                (1, 0) => $f::<4, 1, 0, $put, $c>($($arg),*),
+                (1, 1) => $f::<4, 1, 1, $put, $c>($($arg),*),
+                (1, 2) => $f::<4, 1, 2, $put, $c>($($arg),*),
+                (1, 3) => $f::<4, 1, 3, $put, $c>($($arg),*),
+                (1, _) => $f::<4, 1, 4, $put, $c>($($arg),*),
+                (_, 0) => $f::<4, 2, 0, $put, $c>($($arg),*),
+                (_, 1) => $f::<4, 2, 1, $put, $c>($($arg),*),
+                (_, 2) => $f::<4, 2, 2, $put, $c>($($arg),*),
+                (_, 3) => $f::<4, 2, 3, $put, $c>($($arg),*),
+                (_, _) => $f::<4, 2, 4, $put, $c>($($arg),*),
             }
         };
     }
@@ -233,13 +338,39 @@ mod avx2 {
             };
             let ([h0, v0], [h1, v1]) = (counts(cells[0]).into(), counts(cells[1]).into());
             if size == 4 {
-                let first = by_narrow_taps!(false, h0, v0, predicted(t, cells[0]));
-                let second = by_narrow_taps!(false, h1, v1, predicted(t, cells[1]));
+                let first = by_narrow_taps!(
+                    false,
+                    h0,
+                    v0,
+                    cells[0].clamped.is_some(),
+                    predicted(t, cells[0])
+                );
+                let second = by_narrow_taps!(
+                    false,
+                    h1,
+                    v1,
+                    cells[1].clamped.is_some(),
+                    predicted(t, cells[1])
+                );
                 store_bytes::<4>(t, output, 0, stride, average(first[0], second[0], forward));
                 return;
             }
-            let first = by_taps!(8, false, h0, v0, predicted(t, cells[0]));
-            let second = by_taps!(8, false, h1, v1, predicted(t, cells[1]));
+            let first = by_taps!(
+                8,
+                false,
+                h0,
+                v0,
+                cells[0].clamped.is_some(),
+                predicted(t, cells[0])
+            );
+            let second = by_taps!(
+                8,
+                false,
+                h1,
+                v1,
+                cells[1].clamped.is_some(),
+                predicted(t, cells[1])
+            );
             for (group, (&first, &second)) in first.iter().zip(&second).enumerate() {
                 let blended = average(first, second, forward);
                 store_bytes::<8>(t, output, 2 * group * stride, stride, blended);
@@ -253,9 +384,22 @@ mod avx2 {
             let h = cell.horizontal.map_or(0, |taps| taps.count);
             let v = cell.vertical.map_or(0, |taps| taps.count);
             if size == 4 {
-                by_narrow_taps!(true, h, v, put_cell(t, cell, output, stride));
+                by_narrow_taps!(
+                    true,
+                    h,
+                    v,
+                    cell.clamped.is_some(),
+                    put_cell(t, cell, output, stride)
+                );
             } else {
-                by_taps!(8, true, h, v, put_cell(t, cell, output, stride));
+                by_taps!(
+                    8,
+                    true,
+                    h,
+                    v,
+                    cell.clamped.is_some(),
+                    put_cell(t, cell, output, stride)
+                );
             }
         }
     );
@@ -263,13 +407,19 @@ mod avx2 {
     /// Stores the [`predict`] put of one cell.
     #[inline(never)]
     #[target_feature(enable = "avx2")]
-    fn put_cell<const W: usize, const H: usize, const V: usize, const PUT: bool>(
+    fn put_cell<
+        const W: usize,
+        const H: usize,
+        const V: usize,
+        const PUT: bool,
+        const CLAMPED: bool,
+    >(
         t: Avx2,
         cell: &Cell<'_>,
         output: &mut [u8],
         stride: usize,
     ) {
-        let groups = predict::<W, H, V, PUT>(t, cell);
+        let groups = predict::<W, H, V, PUT, CLAMPED>(t, cell);
         if W == 4 {
             store_bytes::<4>(t, output, 0, stride, groups[0]);
             return;
@@ -282,25 +432,63 @@ mod avx2 {
     /// [`predict`] out of line, for the two references of a compound cell.
     #[inline(never)]
     #[target_feature(enable = "avx2")]
-    fn predicted<const W: usize, const H: usize, const V: usize, const PUT: bool>(
+    fn predicted<
+        const W: usize,
+        const H: usize,
+        const V: usize,
+        const PUT: bool,
+        const CLAMPED: bool,
+    >(
         t: Avx2,
         cell: &Cell<'_>,
     ) -> Groups {
-        predict::<W, H, V, PUT>(t, cell)
+        predict::<W, H, V, PUT, CLAMPED>(t, cell)
     }
 
     /// The compound predictors of one `W`-square cell whose passes have `H`
     /// and `V` tap pairs, none for a skipped pass.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn predict<const W: usize, const H: usize, const V: usize, const PUT: bool>(
+    fn predict<
+        const W: usize,
+        const H: usize,
+        const V: usize,
+        const PUT: bool,
+        const CLAMPED: bool,
+    >(
         t: Avx2,
         cell: &Cell<'_>,
     ) -> Groups {
         let per = 16 / W;
         let rows = if V > 0 { W + 2 * V - 1 } else { W };
         let zero = _mm256_setzero_si256();
-        let start = |row: usize| cell.origin + row.min(rows - 1) * cell.stride;
+        let (bounds, remap) = match cell.clamped.filter(|_| CLAMPED) {
+            Some(bounds) => {
+                let lanes = _mm_add_epi8(
+                    _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+                    _mm_set1_epi8(bounds[3] as i8),
+                );
+                let limit = _mm_set1_epi8(bounds[4] as i8);
+                (
+                    bounds,
+                    Some(_mm_min_epi8(
+                        _mm_max_epi8(lanes, _mm_setzero_si128()),
+                        limit,
+                    )),
+                )
+            }
+            None => ([0; 5], None),
+        };
+        let start = |row: usize| {
+            if CLAMPED {
+                let row = (bounds[0] + row.min(rows - 1) as i32)
+                    .max(bounds[1])
+                    .min(bounds[2]);
+                cell.origin + row as usize * cell.stride
+            } else {
+                cell.origin + row.min(rows - 1) * cell.stride
+            }
+        };
         let filter = match cell.horizontal {
             Some(taps) if H > 0 => Some(Horizontal::new::<W, H>(t, taps)),
             _ => None,
@@ -310,7 +498,7 @@ mod avx2 {
         for (group, line) in lines.iter_mut().enumerate().take(rows.div_ceil(per)) {
             let row = group * per;
             let starts = [start(row), start(row + 1), start(row + 2), start(row + 3)];
-            let Some(bytes) = tap_bytes::<W>(t, cell.source, starts, None) else {
+            let Some(bytes) = tap_bytes::<W>(t, cell.source, starts, remap) else {
                 return [zero; 4];
             };
             *line = match &filter {

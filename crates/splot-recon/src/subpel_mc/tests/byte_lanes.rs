@@ -213,3 +213,196 @@ fn byte_bilinear_8x8_matches_the_general_path() {
         &mut output
     ));
 }
+
+/// 4x4 and 8x8 put and compound cells whose windows cross tighter clip
+/// bounds on each side against the § 7.13.3.18 oracle.
+#[test]
+fn clamped_cells_match_the_oracle() {
+    let (ref_w, ref_h) = (40usize, 32usize);
+    let texture = (0..ref_w * ref_h)
+        .map(|i| ((i * 73 + i / ref_w * 29) % 256) as u16)
+        .collect::<Vec<_>>();
+    let bytes = texture.iter().map(|&s| s as u8).collect::<Vec<_>>();
+    let view = ReferencePlaneView::new(&bytes, ref_w, ref_h).unwrap();
+    for size in [4usize, 8] {
+        for (dx, dy) in [(-3, 0), (4, 0), (0, -2), (0, 5), (-1, 3), (2, -4)] {
+            for phase in [0, 5, 8, 80, 133, 255] {
+                let interp = [
+                    InterpolationFilter::EightTap,
+                    InterpolationFilter::EightTapSharp,
+                ][phase % 2];
+                let (x, y) = (12 + dx, 10 + dy);
+                let params = SubpelPredictParams {
+                    interp,
+                    start_x: (x << 10) + ((phase as i32 % 16) << 6),
+                    start_y: (y << 10) + ((phase as i32 / 16) << 6),
+                    first_x: 12 - 3,
+                    first_y: 10 - 3,
+                    last_x: 12 + size as i32 + 3,
+                    last_y: 10 + size as i32 + 3,
+                    ..full_pel_params(interp, size, size, 0, 0, ref_w as i32, ref_h as i32)
+                };
+                let label = format!("{size} at {dx},{dy} phase {phase}");
+                let put = reference_subpel(&texture, ref_w, ref_h, &params);
+                let mut actual = vec![0u8; size * size];
+                subpel_predict_block_strided_into_u8(&view, &params, &mut actual, size).unwrap();
+                assert!(actual.iter().map(|&s| u16::from(s)).eq(put), "put {label}");
+                let other = SubpelPredictParams {
+                    start_x: params.start_y,
+                    start_y: params.start_x,
+                    ..params
+                };
+                let [pred0, pred1] = [&params, &other]
+                    .map(|params| reference_subpel_compound(&texture, ref_w, ref_h, params));
+                let mut actual = vec![0u8; size * size];
+                assert_eq!(
+                    subpel_predict_block_compound_average_unscaled_strided_into(
+                        &view,
+                        &params,
+                        &view,
+                        &other,
+                        8,
+                        &mut actual,
+                        size,
+                    ),
+                    Ok(true)
+                );
+                let want = pred0.iter().zip(&pred1).map(|(&a, &b)| {
+                    blend_compound_average_weighted_sample(a, b, BitDepth::Eight, 8)
+                });
+                assert!(
+                    actual.iter().map(|&s| u16::from(s)).eq(want),
+                    "average {label}"
+                );
+            }
+        }
+    }
+}
+
+/// The paired chroma put writes what two single puts write, for cell,
+/// staged and copied shapes, and declines planes of differing geometry.
+#[test]
+fn paired_put_matches_two_single_puts() {
+    let (ref_w, ref_h) = (40usize, 32usize);
+    let planes = [3usize, 11].map(|seed| {
+        (0..ref_w * ref_h)
+            .map(|i| ((i * 73 + i / ref_w * 29 + seed * 17) % 256) as u8)
+            .collect::<Vec<_>>()
+    });
+    let views = planes
+        .each_ref()
+        .map(|plane| ReferencePlaneView::new(plane, ref_w, ref_h).unwrap());
+    for (w, h, phase) in [(4, 4, 37), (8, 8, 0), (8, 8, 133), (16, 8, 90), (2, 4, 5)] {
+        let interp = InterpolationFilter::EightTap;
+        let params = SubpelPredictParams {
+            start_x: (9 << 10) + ((phase % 16) << 6),
+            start_y: (7 << 10) + ((phase / 16) << 6),
+            ..full_pel_params(interp, w, h, 0, 0, ref_w as i32, ref_h as i32)
+        };
+        let mut want = [vec![0u8; w * h], vec![0u8; w * h]];
+        let single = views
+            .iter()
+            .zip(&mut want)
+            .all(|(view, out)| subpel_put_u8_in_place(view, &params, out, w));
+        let mut got = [vec![1u8; w * h], vec![1u8; w * h]];
+        let [first, second] = &mut got;
+        let paired =
+            subpel_put_u8_pair_in_place([&views[0], &views[1]], &params, [(first, w), (second, w)]);
+        assert_eq!(paired, single, "{w}x{h} phase {phase}");
+        if paired {
+            assert_eq!(got, want, "{w}x{h} phase {phase}");
+        } else {
+            assert!(got.iter().flatten().all(|&s| s == 1));
+        }
+    }
+    let narrow = ReferencePlaneView::new(&planes[1][..ref_w * 16], ref_w, 16).unwrap();
+    let params = full_pel_params(InterpolationFilter::EightTap, 8, 8, 0, 0, ref_w as i32, 16);
+    let mut got = [vec![1u8; 64], vec![1u8; 64]];
+    let [first, second] = &mut got;
+    assert!(!subpel_put_u8_pair_in_place(
+        [&views[0], &narrow],
+        &params,
+        [(first, 8), (second, 8)]
+    ));
+    assert!(got.iter().flatten().all(|&s| s == 1));
+}
+
+/// The placement entry of a compound cell stores what the validated
+/// compound entry stores for the same parameters, inside and across its
+/// clip bounds, and declines shapes outside the register cells.
+#[test]
+fn placed_compound_cells_match_the_compound_entry() {
+    let (ref_w, ref_h) = (40usize, 32usize);
+    let bytes = (0..ref_w * ref_h)
+        .map(|i| ((i * 73 + i / ref_w * 29) % 256) as u8)
+        .collect::<Vec<_>>();
+    let view = ReferencePlaneView::new(&bytes, ref_w, ref_h).unwrap();
+    let interp = InterpolationFilter::EightTapSharp;
+    for size in [4usize, 8] {
+        for (case, (x, y)) in [(12, 10), (9, 13), (16, 7), (1, 1)].into_iter().enumerate() {
+            let placement = |phase: i32| -> CellPlacement {
+                (
+                    [
+                        (x << 10) + ((phase % 16) << 6),
+                        (y << 10) + ((phase / 16) << 6),
+                    ],
+                    [
+                        10,
+                        9,
+                        10 + size as i32 + 4,
+                        9 + size as i32 + 3 * case as i32,
+                    ],
+                )
+            };
+            let placements = [placement(37), placement(200)];
+            let params =
+                placements.map(
+                    |([start_x, start_y], [fx, fy, lx, ly])| SubpelPredictParams {
+                        start_x,
+                        start_y,
+                        first_x: fx,
+                        first_y: fy,
+                        last_x: lx,
+                        last_y: ly,
+                        ..full_pel_params(interp, size, size, 0, 0, ref_w as i32, ref_h as i32)
+                    },
+                );
+            let mut want = vec![0u8; size * size];
+            subpel_predict_block_compound_average_unscaled_strided_into(
+                &view, &params[0], &view, &params[1], 11, &mut want, size,
+            )
+            .unwrap();
+            let mut got = vec![0u8; size * size];
+            assert!(subpel_compound_cell_u8(
+                [&view, &view],
+                interp,
+                size,
+                placements,
+                11,
+                &mut got,
+                size
+            ));
+            assert_eq!(got, want, "{size} at {x},{y}");
+        }
+    }
+    let placement = ([8 << 10, 8 << 10], [0, 0, 39, 31]);
+    let mut out = vec![0u8; 256];
+    assert!(!subpel_compound_cell_u8(
+        [&view, &view],
+        interp,
+        16,
+        [placement; 2],
+        8,
+        &mut out,
+        16
+    ));
+    assert!(!subpel_compound_cell_u8(
+        [&view, &view],
+        interp,
+        8,
+        [placement; 2],
+        8,
+        &mut out[..60],
+        8
+    ));
+}

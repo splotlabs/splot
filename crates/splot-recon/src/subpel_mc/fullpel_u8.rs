@@ -46,6 +46,21 @@ pub fn subpel_put_u8_in_place<T: ReconSample>(
         .is_some_and(|view| block::put_u8(&view, params, output, output_stride))
 }
 
+/// [`subpel_put_u8_in_place`] of the two chroma planes of one block, which
+/// share `params`, into their outputs: `false` without writing either when
+/// the planes differ in geometry or the first would decline.
+#[inline]
+pub fn subpel_put_u8_pair_in_place<T: ReconSample>(
+    references: [&ReferencePlaneView<'_, T>; 2],
+    params: &SubpelPredictParams,
+    outputs: [(&mut [u8], usize); 2],
+) -> bool {
+    let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) else {
+        return false;
+    };
+    block::put_u8_planes([&first, &second], params, outputs)
+}
+
 fn validate_subpel_u8_output(
     params: &SubpelPredictParams,
     output: &[u8],
