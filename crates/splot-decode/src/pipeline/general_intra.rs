@@ -1055,6 +1055,7 @@ fn parse_general_intra_residual_plan(
         chroma_subsampling: block_ctx.chroma().subsampling(PlaneId::U),
         qindex,
         lossless,
+        v_twin: None,
     };
     let residual = arena
         .parse(

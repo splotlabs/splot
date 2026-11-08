@@ -14,6 +14,8 @@ pub(crate) struct DeblockRecorder<'a> {
     pub(crate) chroma_subsampling: (u32, u32),
     pub(crate) qindex: u32,
     pub(crate) lossless: bool,
+    /// The block's next U record a V record may pair with.
+    pub(crate) v_twin: Option<usize>,
 }
 
 impl DeblockRecorder<'_> {
@@ -36,7 +38,12 @@ impl DeblockRecorder<'_> {
                 self.lossless,
             )
         {
-            self.chroma_blocks.push(plane_index, record);
+            if plane_index == 0 {
+                self.v_twin.get_or_insert(self.chroma_blocks.len());
+                self.chroma_blocks.push(0, record);
+            } else {
+                self.v_twin = self.chroma_blocks.push_v(self.v_twin, record);
+            }
         }
     }
 

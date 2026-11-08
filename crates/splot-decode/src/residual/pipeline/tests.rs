@@ -192,6 +192,7 @@ fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
         chroma_subsampling: (1, 0),
         qindex: 37,
         lossless: true,
+        v_twin: None,
     };
 
     recorder.record_chroma_unit(PlaneId::U, 0, 8, tx_8x8);
@@ -1037,6 +1038,7 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
         chroma_subsampling: (1, 1),
         qindex: 0,
         lossless: false,
+        v_twin: None,
     };
 
     let mut units = Vec::new();

@@ -126,6 +126,21 @@ impl ChromaDeblockRecords {
         self.blocks.push(ChromaDeblockBlock { block, planes });
     }
 
+    /// Pushes V's `block`, or marks the U-only record `twin` as V's too when
+    /// it is the same record, so that a block's U and V records pair up
+    /// without a second copy. Returns the next record a V record may pair
+    /// with.
+    pub(crate) fn push_v(&mut self, twin: Option<usize>, block: DeblockBlock) -> Option<usize> {
+        match twin.and_then(|at| self.blocks.get_mut(at)) {
+            Some(record) if record.planes == Self::U && record.block == block => {
+                record.planes = Self::U | Self::V;
+                self.single -= 1;
+            }
+            _ => self.push(1, block),
+        }
+        twin.map(|at| at + 1)
+    }
+
     pub(crate) fn push_both(&mut self, block: DeblockBlock) {
         self.blocks.push(ChromaDeblockBlock {
             block,
