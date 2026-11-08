@@ -182,8 +182,8 @@ pub(crate) fn read_inter_residual(
             .luma_tx_types
             .reset(frontier.r, frontier.c, n4h, n4w)?;
 
-        for start_chunk_y in (0..height_chunks).step_by(2) {
-            for start_chunk_x in (0..width_chunks).step_by(2) {
+        for start_chunk_y in (0..height_chunks.div_ceil(2)).map(|group| 2 * group) {
+            for start_chunk_x in (0..width_chunks.div_ceil(2)).map(|group| 2 * group) {
                 let group_end_y = (start_chunk_y + 2).min(height_chunks);
                 let group_end_x = (start_chunk_x + 2).min(width_chunks);
                 for chunk_y in start_chunk_y..group_end_y {

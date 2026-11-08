@@ -360,6 +360,7 @@ impl ResidualPlanePlan {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     fn parse_lossless_transform_units(
         &self,
         unit_tx_size: usize,
@@ -431,6 +432,7 @@ impl ResidualPlanePlan {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     fn parse_partitioned_luma(
         &self,
         work_unit: &mut DecodeTileWorkUnit,
