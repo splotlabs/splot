@@ -12,8 +12,8 @@ use crate::bitstream::tile_payload::{
     CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
     LumaTransformPartitionContext, LumaTransformPartitionUnits, LumaTransformTypeContext,
     PlaneCoeffBlock, PositionedLumaCoeffBlock, TileBlockDecodedState, TileCoeffContextState,
-    TransformToolResidualPolicy, decode_general_intra_luma_partition_coeffs,
-    decode_general_intra_plane_coeffs,
+    TransformToolResidualPolicy, current_segment_lossless,
+    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
 };
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
@@ -185,6 +185,7 @@ impl ResidualPlaneArena {
     ) -> core::result::Result<ParsedGeneralIntraResidual, GeneralIntraResidualError> {
         let mut u_nonzero = false;
         let mut pending_u = false;
+        let segment_lossless = current_segment_lossless(work_unit);
         let Self { planes, units } = self;
         let range = planned.0.start as usize..planned.0.end as usize;
         for parsed in planes
@@ -200,7 +201,7 @@ impl ResidualPlaneArena {
             } = parsed;
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             let (role, pass_eob_u_nonzero) =
-                if chroma_pair::can_hold_for_cctx_pair(plane, work_unit) {
+                if chroma_pair::can_hold_for_cctx_pair(plane, segment_lossless) {
                     (CctxRole::HoldU, false)
                 } else if plane.plane_id == PlaneId::V && !plane.defer_reconstruction && pending_u {
                     (CctxRole::PairV, eob_u_nonzero)
@@ -215,6 +216,7 @@ impl ResidualPlaneArena {
                 luma_transform_type_context,
                 luma_tx_partition_context,
                 transform_tool_residual_policy,
+                segment_lossless,
                 pass_eob_u_nonzero,
                 deblock,
                 coeffs_arena,
@@ -252,6 +254,7 @@ impl ResidualPlanePlan {
         luma_transform_type_context: LumaTransformTypeContext,
         luma_tx_partition_context: Option<LumaTransformPartitionContext>,
         transform_tool_residual_policy: TransformToolResidualPolicy,
+        segment_lossless: Option<bool>,
         eob_u_nonzero: bool,
         deblock: &mut DeblockRecorder<'_>,
         coeffs_arena: &mut Vec<i32>,
@@ -283,8 +286,9 @@ impl ResidualPlanePlan {
             txb_skip_fsc_mode: self.txb_skip_fsc_mode,
             cctx_allowed: chroma_pair::cctx_allowed(self),
             policy,
+            segment_lossless,
         };
-        if let Some(unit_tx_size) = self.lossless_transform_unit_tx_size(work_unit) {
+        if let Some(unit_tx_size) = self.lossless_transform_unit_tx_size(segment_lossless) {
             let parsed = self.parse_lossless_transform_units(
                 unit_tx_size,
                 work_unit,
@@ -343,6 +347,7 @@ impl ResidualPlanePlan {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     fn parse_lossless_transform_units(
         &self,
         unit_tx_size: usize,
@@ -414,6 +419,7 @@ impl ResidualPlanePlan {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     fn parse_partitioned_luma(
         &self,
         work_unit: &mut DecodeTileWorkUnit,

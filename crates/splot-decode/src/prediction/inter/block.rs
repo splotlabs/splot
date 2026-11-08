@@ -52,8 +52,8 @@ use crate::bitstream::tile_payload::{
     TileCoeffContextState, TileCoeffStateError, TilePartitionFrontierError,
     TilePartitionTraversalError, TilePartitionTraversalUnsupported, TileSegmentIdState,
     TileSegmentIdStateError, TransformToolResidualPolicy, chroma_subsampling,
-    current_frame_qm_segment_id, decode_general_intra_plane_coeffs, get_plane_residual_size,
-    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
+    current_frame_qm_segment_id, current_segment_lossless, decode_general_intra_plane_coeffs,
+    get_plane_residual_size, is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
