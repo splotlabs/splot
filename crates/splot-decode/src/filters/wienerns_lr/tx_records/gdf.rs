@@ -147,7 +147,8 @@ impl GdfState {
         }
     }
 
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]
+    #[inline(always)]
     pub(crate) fn read_for_block(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
@@ -155,9 +156,10 @@ impl GdfState {
         frontier: &DecodeBlockFrontier,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        self.unit_for(frontier).map_or(Ok(()), |unit| {
-            self.read_unit(work_unit, symbols, unit, tile_offset)
-        })
+        match self.unit_for(frontier) {
+            Some(unit) => self.read_unit(work_unit, symbols, unit, tile_offset),
+            None => Ok(()),
+        }
     }
 
     #[inline(never)]
@@ -176,7 +178,8 @@ impl GdfState {
 
     /// The `(row, col)` of the GDF unit whose `use_gdf` the block at
     /// `frontier` codes (§ 5.20.10.3), if any.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]
+    #[inline(always)]
     pub(crate) fn unit_for(&self, frontier: &DecodeBlockFrontier) -> Option<(usize, usize)> {
         let sb_mask = self.sb_size4.wrapping_sub(1);
         if !self.active || frontier.is_chroma_part() || (frontier.r | frontier.c) & sb_mask != 0 {

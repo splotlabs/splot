@@ -176,6 +176,8 @@ impl CcsoState {
         }
     }
 
+    #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]
+    #[inline(always)]
     pub(crate) fn read_for_block(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
@@ -189,6 +191,17 @@ impl CcsoState {
         let Some(unit) = self.unit_at(frontier.r, frontier.c) else {
             return Ok(());
         };
+        self.read_unit(work_unit, symbols, unit, tile_offset)
+    }
+
+    #[inline(never)]
+    fn read_unit(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'_>,
+        unit: (usize, usize),
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
         if self.block_index(unit.0, unit.1).is_none() {
             return Err(ccso_state_error());
         }
