@@ -1683,7 +1683,7 @@ type GridPlane<'a, 'b, T, O> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [O],
 /// Runs a program of the uniform cells of a grid plane (or U and V) into
 /// each plane and predicts each cell it declines through [`predict_grid_cell`].
 fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
-    program: &CompoundCells,
+    program: &mut CompoundCells,
     mut planes: [Option<GridPlane<'_, '_, T, O>>; 2],
     (grid, interp, size): (&GridBlock<'_, '_, T>, InterpolationFilter, usize),
     pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
