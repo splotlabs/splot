@@ -25,8 +25,19 @@ pub(super) fn reset<T: Copy>(
     plane: splot_recon::PlaneId,
 ) -> Result<(), DeblockError> {
     cells.clear();
+    resize(cells, len, fill, plane)
+}
+
+/// Sizes `cells` to `len`, keeping the values of the cells it already had.
+pub(super) fn resize<T: Copy>(
+    cells: &mut Vec<T>,
+    len: usize,
+    fill: T,
+    plane: splot_recon::PlaneId,
+) -> Result<(), DeblockError> {
+    cells.truncate(len);
     cells
-        .try_reserve(len)
+        .try_reserve(len - cells.len())
         .map_err(|_| DeblockError::Allocation {
             plane,
             context: "deblock MI grid",

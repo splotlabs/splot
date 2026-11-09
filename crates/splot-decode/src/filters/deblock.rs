@@ -343,10 +343,8 @@ pub(crate) struct FrameDeblock {
     facts: [PlaneFacts; 3],
     /// Whether the grids are sized and empty yet.
     grids_reset: bool,
-    /// How many luma records, then U and V overlay records, the grids hold,
-    /// and how many luma records the U and V facts hold.
+    /// How many luma records, then U and V records, the grids hold.
     laid_out: [usize; 3],
-    luma_laid_out: [usize; 2],
     /// The next U and V record a frame whose V reads U's grid has not paired.
     twin_cursors: [usize; 2],
     mi_rows: usize,
@@ -456,7 +454,6 @@ impl FrameDeblock {
             facts,
             grids_reset: false,
             laid_out: [0; 3],
-            luma_laid_out: [0; 2],
             twin_cursors: [0; 2],
             mi_rows,
             filter,
@@ -710,7 +707,6 @@ impl FrameDeblock {
             &mut self.records.grids.chroma[1],
         ));
         self.laid_out[2] = 0;
-        self.luma_laid_out[1] = 0;
         if self.grids_reset {
             self.reset_chroma(1)?;
         }
@@ -749,13 +745,14 @@ impl FrameDeblock {
             if sub_pu {
                 grid.fill(extent.1, &self.records.chroma, (plane, start), extent.0)?;
             } else {
-                let facts = &mut self.facts[plane + 1];
                 let sub = (grid.sub_x, grid.sub_y);
-                let luma = blocks.get(self.luma_laid_out[plane]..).unwrap_or_default();
-                facts.paint_overlays(&self.records.chroma, (plane, start), extent, sub);
-                facts.paint_chroma_from_luma(luma, extent, sub);
+                self.facts[plane + 1].paint_chroma(
+                    &self.records.chroma,
+                    (plane, start),
+                    extent,
+                    sub,
+                );
             }
-            self.luma_laid_out[plane] = blocks.len();
             self.laid_out[plane + 1] = self.records.chroma.len();
         }
         Ok(())

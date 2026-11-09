@@ -203,10 +203,15 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         [(0, 32)]
     );
     let records = deblock_records();
+    let mut chroma_records = crate::filters::deblock::ChromaDeblockRecords::new();
+    for record in &records {
+        chroma_records.push_both(*record);
+    }
 
     let mut combined =
         WienerNsLrReconSink::for_final_filtering(deblock_workspace(), 64, 32, BitDepth::Eight);
     combined.filter_records.deblock_blocks.clone_from(&records);
+    combined.filter_records.chroma_deblock_blocks = chroma_records.clone();
     let (combined, _) = combined
         .into_filtered_frame(
             std::sync::Arc::new(core.clone()),
@@ -218,7 +223,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         .unwrap();
 
     let mut source = crate::test_support::frontier_rows(deblock_workspace()).1;
-    let chroma_records = crate::filters::deblock::ChromaDeblockRecords::new();
     let mut deblock = crate::filters::deblock::FrameDeblock::prepare(
         &records,
         &chroma_records,
