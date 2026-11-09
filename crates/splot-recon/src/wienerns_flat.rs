@@ -197,6 +197,11 @@ impl<T: LumaSimdSource> LumaFlatGroup<'_, '_, '_, T> {
 /// hold, given that the first `known` rows hold `value`; otherwise the
 /// window row that every window holding it shows two values in. Rows go
 /// bottom up, so that row stays in the next windows longest.
+#[allow(
+    clippy::inline_always,
+    reason = "a constant width unrolls the row check"
+)]
+#[inline(always)]
 fn flat_value<T: LumaSimdSource>(
     window: &[&[T]],
     start: usize,

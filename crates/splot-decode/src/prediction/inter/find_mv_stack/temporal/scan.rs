@@ -3,8 +3,10 @@
 
 use std::ops::Range;
 
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::Level;
 use fearless_simd::{
-    Level, Simd, dispatch, i16x8, i32x4, i32x16, mask32x16, prelude::*, u8x16, u32x4, u32x16, u64x2,
+    Simd, i16x8, i32x4, i32x16, mask32x16, prelude::*, u8x16, u32x4, u32x16, u64x2,
 };
 
 use super::trajectory::BandGeometry;
@@ -338,7 +340,7 @@ pub(super) fn project_temporal_motion_field(
             output,
         );
     }
-    dispatch!(Level::baseline(), simd => {
+    crate::baseline_simd!(simd => {
         let tables = TargetTables::new(simd, prepared, refs);
         project_rows(&tables, prepared, source, rows, geometry, trajectories, output);
     });
@@ -780,7 +782,7 @@ mod tests {
         if let Some(simd) = Level::baseline().as_sse4_2() {
             lane_projection_matches_scalar(simd);
         }
-        dispatch!(Level::baseline(), simd => lane_projection_matches_scalar(simd));
+        baseline_simd!(simd => lane_projection_matches_scalar(simd));
     }
 
     #[test]
@@ -789,7 +791,7 @@ mod tests {
         if let Some(simd) = Level::baseline().as_sse4_2() {
             chunk_lanes_match_scalar(simd);
         }
-        dispatch!(Level::baseline(), simd => chunk_lanes_match_scalar(simd));
+        baseline_simd!(simd => chunk_lanes_match_scalar(simd));
     }
 
     fn lane_projection_matches_scalar<S: Simd>(simd: S) {

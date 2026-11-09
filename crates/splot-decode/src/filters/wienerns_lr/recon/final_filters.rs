@@ -1009,13 +1009,12 @@ impl<'a> LrSourceRows<'a> {
 
 /// The one value that the `width` columns from `col` of every row hold.
 fn flat_lr_window(rows: &[&[u16]], col: usize, width: usize) -> Option<u16> {
-    use fearless_simd::{Level, dispatch};
     let value = *rows.first()?.get(col)?;
     #[cfg(target_arch = "x86_64")]
-    if let Some(simd) = Level::baseline().as_avx2() {
+    if let Some(simd) = fearless_simd::Level::baseline().as_avx2() {
         return rows_hold(simd, rows, col, width, value).then_some(value);
     }
-    let flat = dispatch!(Level::baseline(), simd => rows_hold(simd, rows, col, width, value));
+    let flat = crate::baseline_simd!(simd => rows_hold(simd, rows, col, width, value));
     flat.then_some(value)
 }
 

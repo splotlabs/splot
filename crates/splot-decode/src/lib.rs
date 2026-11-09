@@ -40,13 +40,24 @@ macro_rules! baseline_simd {
     };
 }
 
-/// [`baseline_simd`] for targets without an AVX2 baseline.
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        match fearless_simd::Level::baseline().as_neon() {
+            Some($simd) => $body,
+            None => fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body),
+        }
+    };
+}
+
+/// [`baseline_simd`] for targets without an AVX2 or NEON baseline.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 macro_rules! baseline_simd {
     ($simd:ident => $body:expr) => {
         fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body)
     };
 }
+pub(crate) use baseline_simd;
 
 mod bitstream;
 pub mod context;

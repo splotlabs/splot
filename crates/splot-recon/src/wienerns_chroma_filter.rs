@@ -18,7 +18,7 @@ use crate::math::round2_i32;
 use crate::wienerns_filter::{LumaSimdSource, validated_source_sample};
 use crate::workspace::u16_samples_exceed;
 use crate::{BitDepth, ReconError, ReconSample, Result};
-use fearless_simd::{Level, Simd, i16x16, i32x8, prelude::*, u16x16};
+use fearless_simd::{Level, Simd, SimdIntWiden, i16x8, i16x16, i32x4, i32x8, prelude::*, u16x16};
 
 /// AV2 § 3 `WIENER_NS_PREC_BITS`, used by § 7.20.3 for the accumulator scale.
 const WIENER_NS_PREC_BITS: u32 = 7;
@@ -933,22 +933,6 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
     max_sample: u16,
 ) {
     let reads_luma = params.reads_luma();
-    let pair_weights =
-        |low: i16, high: i16| i16x16::from_fn(simd, |lane| if lane % 2 == 0 { low } else { high });
-    let chroma_weights: [i16x16<S>; WIENER_NS_CHROMA_COEFF_SLOTS / 2] =
-        core::array::from_fn(|pair| {
-            pair_weights(
-                params.coeffs[WIENER_NS_CONFIG_UV_PAIRS[2 * pair].2],
-                params.coeffs[WIENER_NS_CONFIG_UV_PAIRS[2 * pair + 1].2],
-            )
-        });
-    let luma_weights: [i16x16<S>; WIENER_NS_CONFIG_UV.len() / 2] = core::array::from_fn(|pair| {
-        pair_weights(
-            params.coeffs[2 * pair + WIENER_NS_CHROMA_COEFF_SLOTS],
-            params.coeffs[2 * pair + 1 + WIENER_NS_CHROMA_COEFF_SLOTS],
-        )
-    });
-    let center_weights = pair_weights(1 << WIENER_NS_PREC_BITS, 1 << (WIENER_NS_PREC_BITS - 1));
     #[cfg(target_arch = "x86_64")]
     let wide = Level::baseline().as_avx2().zip(T::u16_slice(chroma));
     #[cfg(target_arch = "x86_64")]
@@ -1023,32 +1007,46 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
                         |lanes| u16x16::load_array_ref(simd, lanes).bitcast(),
                     )
             };
-            let mut sums = [i32x8::splat(simd, 0); 2];
-            let mut add = |a: i16x16<S>, b: i16x16<S>, weights: i16x16<S>| {
-                let (low, high) = a.interleave(b);
-                sums[0] += low.pairwise_dot_product(weights);
-                sums[1] += high.pairwise_dot_product(weights);
-            };
             let center = load_chroma(0, 0);
-            add(center, i16x16::splat(simd, 1), center_weights);
-            let twice_center = center + center;
-            let diff = |j: usize| {
-                let (dy, dx, _) = WIENER_NS_CONFIG_UV_PAIRS[j];
-                load_chroma(dy, dx) + load_chroma(-dy, -dx) - twice_center
+            let round = i32x4::splat(simd, 1 << (WIENER_NS_PREC_BITS - 1));
+            let (c_lo, c_hi) = simd.split_i16x16(center);
+            let w_center = i16x8::splat(simd, 1 << WIENER_NS_PREC_BITS);
+            let (c0, c1) = c_lo.widening_mul(w_center);
+            let (c2, c3) = c_hi.widening_mul(w_center);
+            let mut sums = [c0 + round, c1 + round, c2 + round, c3 + round];
+            let mut add_term = |a: i16x16<S>, coeff: i16| {
+                let w = i16x8::splat(simd, coeff);
+                let (a_lo, a_hi) = simd.split_i16x16(a);
+                let (p0, p1) = a_lo.widening_mul(w);
+                let (p2, p3) = a_hi.widening_mul(w);
+                sums[0] += p0;
+                sums[1] += p1;
+                sums[2] += p2;
+                sums[3] += p3;
             };
-            for (pair, &weights) in chroma_weights.iter().enumerate() {
-                add(diff(2 * pair), diff(2 * pair + 1), weights);
+            let twice_center = center + center;
+            for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_UV_PAIRS {
+                let coeff = params.coeffs[coeff_index];
+                if coeff != 0 {
+                    add_term(
+                        load_chroma(dy, dx) + load_chroma(-dy, -dx) - twice_center,
+                        coeff,
+                    );
+                }
             }
             if reads_luma {
                 let luma_center = load_luma(0, 0);
-                let diff = |j: usize| {
-                    let (dy, dx, _) = WIENER_NS_CONFIG_UV[j];
-                    load_luma(dy, dx) - luma_center
-                };
-                for (pair, &weights) in luma_weights.iter().enumerate() {
-                    add(diff(2 * pair), diff(2 * pair + 1), weights);
+                for (j, &(dy, dx, _)) in WIENER_NS_CONFIG_UV.iter().enumerate() {
+                    let coeff = params.coeffs[j + WIENER_NS_CHROMA_COEFF_SLOTS];
+                    if coeff != 0 {
+                        add_term(load_luma(dy, dx) - luma_center, coeff);
+                    }
                 }
             }
+            let sums = [
+                simd.combine_i32x4(sums[0], sums[1]),
+                simd.combine_i32x4(sums[2], sums[3]),
+            ];
             let (zero, max) = (
                 i32x8::splat(simd, 0),
                 i32x8::splat(simd, i32::from(max_sample)),

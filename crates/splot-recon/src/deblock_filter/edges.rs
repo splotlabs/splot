@@ -8,7 +8,9 @@
 //! § 7.17.7.2 width choice of every segment becomes lane masks and the
 //! § 7.17.7.1 ramp applies to all sixteen lines at once: no per-edge branch.
 
-use fearless_simd::{Bytes, Level, Simd, SimdBase, SimdInto, dispatch, i16x16, u16x16, u64x4};
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::Level;
+use fearless_simd::{Bytes, Simd, SimdBase, i16x16, u16x16, u64x4};
 use splot_core::tables::conversion::{Q_FIRST, Q_THRESH_MULTS, W_MULT};
 
 use crate::intra_dc_math::validate_sample_type;
@@ -393,27 +395,41 @@ fn too_short(boundary: usize, len: usize) -> ReconError {
 
 /// Sample storage the chunk kernels filter in place.
 trait EdgeSample: Copy + Default {
-    fn to_i16(self) -> i16;
-    fn from_i16(value: i16) -> Self;
+    fn load16<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x16<S>;
+    fn store16<S: Simd>(simd: S, samples: &mut [Self], at: usize, values: i16x16<S>);
 }
 
 impl EdgeSample for u8 {
-    fn to_i16(self) -> i16 {
-        i16::from(self)
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn load16<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x16<S> {
+        let bytes = fearless_simd::u8x16::from_slice(simd, &samples[at..at + LANES]);
+        let (low, high) = simd.widen_u8x16(bytes);
+        simd.combine_u16x8(low, high).bitcast()
     }
 
-    fn from_i16(value: i16) -> Self {
-        value as Self
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn store16<S: Simd>(simd: S, samples: &mut [Self], at: usize, values: i16x16<S>) {
+        let (low, high) = simd.split_u16x16(values.bitcast());
+        simd.narrow_u16x8(low, high)
+            .store_slice(&mut samples[at..at + LANES]);
     }
 }
 
 impl EdgeSample for u16 {
-    fn to_i16(self) -> i16 {
-        self as i16
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn load16<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x16<S> {
+        u16x16::from_slice(simd, &samples[at..at + LANES]).bitcast()
     }
 
-    fn from_i16(value: i16) -> Self {
-        value as Self
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn store16<S: Simd>(_simd: S, samples: &mut [Self], at: usize, values: i16x16<S>) {
+        values
+            .bitcast::<u16x16<S>>()
+            .store_slice(&mut samples[at..at + LANES]);
     }
 }
 
@@ -527,7 +543,7 @@ impl Chunk for u8 {
         edges: &[DeblockEdge; SEGMENTS],
         max_sample: i16,
     ) {
-        dispatch!(Level::baseline(), simd => portable_chunk::<_, Self, VERTICAL>(
+        baseline_simd!(simd => portable_chunk::<_, Self, VERTICAL>(
             simd, samples, stride, first, edges, max_sample,
         ));
     }
@@ -552,14 +568,14 @@ impl Chunk for u16 {
             }
             return;
         }
-        dispatch!(Level::baseline(), simd => portable_chunk::<_, Self, VERTICAL>(
+        baseline_simd!(simd => portable_chunk::<_, Self, VERTICAL>(
             simd, samples, stride, first, edges, max_sample,
         ));
     }
 }
 
-/// The portable chunk: gathers each row across the edge into a lane vector,
-/// filters, and scatters the rows back.
+/// The portable chunk: loads the active rows across the edge into lane
+/// vectors, filters, and stores the modified rows back when any line moved.
 #[inline]
 fn portable_chunk<S: Simd, E: EdgeSample, const VERTICAL: bool>(
     simd: S,
@@ -569,28 +585,48 @@ fn portable_chunk<S: Simd, E: EdgeSample, const VERTICAL: bool>(
     edges: &[DeblockEdge; SEGMENTS],
     max_sample: i16,
 ) {
-    let index = |row: usize, lane: usize| {
-        if VERTICAL {
-            first - REACH + row + lane * stride
-        } else {
-            first - REACH * stride + row * stride + lane
-        }
-    };
+    let reach = chunk_reach(edges);
     let mut rows = [i16x16::splat(simd, 0); ROWS];
-    for (row, vector) in rows.iter_mut().enumerate() {
-        let lanes: [i16; LANES] = core::array::from_fn(|lane| samples[index(row, lane)].to_i16());
-        *vector = lanes.simd_into(simd);
-    }
-    portable::filter(simd, &mut rows, edges, max_sample);
-    for (row, vector) in rows.iter().enumerate() {
-        for (lane, value) in vector.to_array().into_iter().enumerate() {
-            samples[index(row, lane)] = E::from_i16(value);
+    if VERTICAL {
+        let origin = first - REACH;
+        for (line, row) in rows.iter_mut().enumerate() {
+            *row = E::load16(simd, samples, origin + line * stride);
+        }
+        portable::transpose(simd, &mut rows);
+        if !portable::filter(simd, &mut rows, edges, reach, max_sample) {
+            return;
+        }
+        portable::transpose(simd, &mut rows);
+        for (line, row) in rows.iter().enumerate() {
+            E::store16(simd, samples, origin + line * stride, *row);
+        }
+    } else {
+        let origin = first - REACH * stride;
+        for (j, row) in rows
+            .iter_mut()
+            .enumerate()
+            .take(REACH + reach)
+            .skip(REACH - reach)
+        {
+            *row = E::load16(simd, samples, origin + j * stride);
+        }
+        if !portable::filter(simd, &mut rows, edges, reach, max_sample) {
+            return;
+        }
+        let writes = chunk_writes(reach);
+        for (j, &row) in rows
+            .iter()
+            .enumerate()
+            .take(REACH + writes)
+            .skip(REACH - writes)
+        {
+            E::store16(simd, samples, origin + j * stride, row);
         }
     }
 }
 
 mod portable {
-    use fearless_simd::{Bytes, Simd, SimdBase, i16x16, i32x8, u8x32};
+    use fearless_simd::{Bytes, Simd, SimdBase, i16x8, i16x16, i32x4, i32x8, i64x2, u8x32};
 
     use super::{CLAMP, DeblockEdge, LANES, LINES, Q_FIRST, RAMP, REACH, ROWS, SEGMENTS};
 
@@ -608,6 +644,68 @@ mod portable {
             byte += 1;
         }
         bytes
+    }
+
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
+    #[inline(always)]
+    fn transpose8<S: Simd>(simd: S, x: [i16x8<S>; 8]) -> [i16x8<S>; 8] {
+        let a = [
+            simd.zip_low_i16x8(x[0], x[1]).bitcast::<i32x4<S>>(),
+            simd.zip_high_i16x8(x[0], x[1]).bitcast::<i32x4<S>>(),
+            simd.zip_low_i16x8(x[2], x[3]).bitcast::<i32x4<S>>(),
+            simd.zip_high_i16x8(x[2], x[3]).bitcast::<i32x4<S>>(),
+            simd.zip_low_i16x8(x[4], x[5]).bitcast::<i32x4<S>>(),
+            simd.zip_high_i16x8(x[4], x[5]).bitcast::<i32x4<S>>(),
+            simd.zip_low_i16x8(x[6], x[7]).bitcast::<i32x4<S>>(),
+            simd.zip_high_i16x8(x[6], x[7]).bitcast::<i32x4<S>>(),
+        ];
+        let b = [
+            simd.zip_low_i32x4(a[0], a[2]).bitcast::<i64x2<S>>(),
+            simd.zip_high_i32x4(a[0], a[2]).bitcast::<i64x2<S>>(),
+            simd.zip_low_i32x4(a[1], a[3]).bitcast::<i64x2<S>>(),
+            simd.zip_high_i32x4(a[1], a[3]).bitcast::<i64x2<S>>(),
+            simd.zip_low_i32x4(a[4], a[6]).bitcast::<i64x2<S>>(),
+            simd.zip_high_i32x4(a[4], a[6]).bitcast::<i64x2<S>>(),
+            simd.zip_low_i32x4(a[5], a[7]).bitcast::<i64x2<S>>(),
+            simd.zip_high_i32x4(a[5], a[7]).bitcast::<i64x2<S>>(),
+        ];
+        [
+            simd.zip_low_i64x2(b[0], b[4]).bitcast(),
+            simd.zip_high_i64x2(b[0], b[4]).bitcast(),
+            simd.zip_low_i64x2(b[1], b[5]).bitcast(),
+            simd.zip_high_i64x2(b[1], b[5]).bitcast(),
+            simd.zip_low_i64x2(b[2], b[6]).bitcast(),
+            simd.zip_high_i64x2(b[2], b[6]).bitcast(),
+            simd.zip_low_i64x2(b[3], b[7]).bitcast(),
+            simd.zip_high_i64x2(b[3], b[7]).bitcast(),
+        ]
+    }
+
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
+    #[inline(always)]
+    pub(super) fn transpose<S: Simd>(simd: S, rows: &mut [i16x16<S>; ROWS]) {
+        let mut q00 = [i16x8::splat(simd, 0); 8];
+        let mut q01 = [i16x8::splat(simd, 0); 8];
+        let mut q10 = [i16x8::splat(simd, 0); 8];
+        let mut q11 = [i16x8::splat(simd, 0); 8];
+        for i in 0..8 {
+            (q00[i], q01[i]) = simd.split_i16x16(rows[i]);
+            (q10[i], q11[i]) = simd.split_i16x16(rows[i + 8]);
+        }
+        let q00 = transpose8(simd, q00);
+        let q01 = transpose8(simd, q01);
+        let q10 = transpose8(simd, q10);
+        let q11 = transpose8(simd, q11);
+        for i in 0..8 {
+            rows[i] = simd.combine_i16x8(q00[i], q10[i]);
+            rows[i + 8] = simd.combine_i16x8(q01[i], q11[i]);
+        }
     }
 
     /// The § 7.17.7.2 `(derivS + derivT + 1) >> 1` of each segment's first
@@ -649,7 +747,8 @@ mod portable {
     }
 
     /// Filters the chunk whose sample rows across the edge are `rows`: row
-    /// `REACH + j` is `s[j]` of every line.
+    /// `REACH + j` is `s[j]` of every line. Returns `false` when no line can
+    /// move.
     #[allow(
         clippy::inline_always,
         reason = "keeps the portable lanes in registers"
@@ -659,9 +758,9 @@ mod portable {
         simd: S,
         rows: &mut [i16x16<S>; ROWS],
         edges: &[DeblockEdge; SEGMENTS],
+        reach: usize,
         max_sample: i16,
-    ) {
-        let reach = super::chunk_reach(edges);
+    ) -> bool {
         let q = lanes(simd, edges, DeblockEdge::q_thr);
         let side = lanes(simd, edges, DeblockEdge::side);
         let max_pos = lanes(simd, edges, |edge| edge.max_width_pos() as i16);
@@ -680,7 +779,13 @@ mod portable {
         let le = |a: i16x16<S>, b: i16x16<S>| mask(a.simd_le(b));
         let high = second(-2).max(second(1));
         let transition = second(-1) + second(0);
-        let one = le(high, side) & mask(q.simd_gt(zero)) & mask(side.simd_gt(zero));
+        let one_mask = high.simd_le(side) & q.simd_gt(zero) & side.simd_gt(zero);
+        let one = mask(one_mask);
+        let inner = s(-2) - s(1) + (s(0) - s(-1)) * 3;
+        let noop = i16x16::splat(simd, 2) - mask(max_pos.simd_eq(i16x16::splat(simd, 1)));
+        if !simd.any_true_mask16x16(one_mask & inner.abs().simd_gt(noop)) {
+            return false;
+        }
         let two = one
             & mask(max_pos.simd_gt(i16x16::splat(simd, 1)))
             & le(high, side >> 2)
@@ -720,24 +825,30 @@ mod portable {
                 + mask(max_neg.simd_gt(i16x16::splat(simd, 4)))
                 + mask(max_neg.simd_gt(i16x16::splat(simd, 6))),
         );
-        let table = |values: &[i16; 8], index: i16x16<S>| {
-            let lanes = index.to_array().map(|index| values[index as usize & 7]);
-            i16x16::from_slice(simd, &lanes)
+        let table_bytes = |idx: i16x16<S>| (idx * 0x0202 + 0x0100).bitcast::<u8x32<S>>();
+        let pos_bytes = table_bytes(index);
+        let neg_bytes = table_bytes(neg_index);
+        let table = |values: &[i16; 8], bytes: u8x32<S>| {
+            let mut dup = [0i16; 16];
+            dup[..8].copy_from_slice(values); // splot-copy-ok: duplicate 8-entry table across both 128-bit blocks
+            dup[8..].copy_from_slice(values); // splot-copy-ok: duplicate 8-entry table across both 128-bit blocks
+            let lut = i16x16::from_slice(simd, &dup).bitcast::<u8x32<S>>();
+            simd.swizzle_dyn_within_blocks_u8x32(lut, bytes)
+                .bitcast::<i16x16<S>>()
         };
-        let q_clamp = q * table(&CLAMP, index);
-        let delta = ((s(-2) - s(1) + (s(0) - s(-1)) * 3) << 2)
-            .max(zero - q_clamp)
-            .min(q_clamp);
+        let q_clamp = q * table(&CLAMP, pos_bytes);
+        let delta = (inner << 2).max(zero - q_clamp).min(q_clamp);
         let high_sample = i16x16::splat(simd, max_sample);
         let writes = super::chunk_writes(reach);
         for j in 0..writes {
-            let pos = table(&RAMP[j], index) * keep_curr;
-            let neg = table(&RAMP[j], neg_index) * keep_prev;
+            let pos = table(&RAMP[j], pos_bytes) * keep_curr;
+            let neg = table(&RAMP[j], neg_bytes) * keep_prev;
             let curr = &mut rows[REACH + j];
             *curr = (*curr - ramp(simd, delta, pos)).max(zero).min(high_sample);
             let prev = &mut rows[REACH - 1 - j];
             *prev = (*prev + ramp(simd, delta, neg)).max(zero).min(high_sample);
         }
+        true
     }
 }
 

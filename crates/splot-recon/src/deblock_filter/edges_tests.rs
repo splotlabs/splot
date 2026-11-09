@@ -233,9 +233,16 @@ fn check_portable(
     bit_depth: BitDepth,
 ) {
     let max_sample = bit_depth.max_sample() as i16;
+    #[cfg(target_arch = "x86_64")]
     let Some(simd) = fearless_simd::Level::baseline().as_sse4_2() else {
         return;
     };
+    #[cfg(target_arch = "aarch64")]
+    let Some(simd) = fearless_simd::Level::baseline().as_neon() else {
+        return;
+    };
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let simd = fearless_simd::Fallback::new();
     for (index, chunk) in edges.as_chunks::<SEGMENTS>().0.iter().enumerate() {
         let start = if vertical {
             first + index * LANES * stride
@@ -324,7 +331,7 @@ fn edge_runs_reject_spans_outside_their_rows_or_samples() {
 
 #[test]
 fn edges_from_words_match_their_constructor() {
-    dispatch!(Level::baseline(), simd => check_from_words(simd));
+    baseline_simd!(simd => check_from_words(simd));
 }
 
 fn check_from_words<S: Simd>(simd: S) {

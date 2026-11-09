@@ -1474,10 +1474,24 @@ struct EdgeDecision {
     curr_lossless: bool,
 }
 
-/// The current and previous records across the edge at mode-info
-/// (`row`, `col`); the walk visits no edge on the plane's first row or column.
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
+fn cell_block<'g, const PLANE: usize>(
+    grid: &'g MiGrid,
+    row: usize,
+    col: usize,
+) -> Result<EdgeBlock<'g>, DeblockError> {
+    let edge = if PLANE == 0 {
+        grid.get_luma_edge(row, col)
+    } else {
+        grid.get_edge(row, col)
+    };
+    edge.ok_or(DeblockError::UncoveredMi { row, col })
+}
+
+/// The current and previous records across the edge at mode-info
+/// (`row`, `col`); the walk visits no edge on the plane's first row or column.
+#[cfg(test)]
 fn edge_blocks<'g, const PLANE: usize, const PASS: usize>(
     grid: &'g MiGrid,
     row: usize,
@@ -1485,21 +1499,16 @@ fn edge_blocks<'g, const PLANE: usize, const PASS: usize>(
     sub_x: usize,
     sub_y: usize,
 ) -> Result<(EdgeBlock<'g>, EdgeBlock<'g>), DeblockError> {
-    let edge = |row: usize, col: usize| {
-        let edge = if PLANE == 0 {
-            grid.get_luma_edge(row, col)
-        } else {
-            grid.get_edge(row, col)
-        };
-        edge.ok_or(DeblockError::UncoveredMi { row, col })
-    };
     let prev = if PASS == 0 {
         col.checked_sub(1 << sub_x).map(|col| (row, col))
     } else {
         row.checked_sub(1 << sub_y).map(|row| (row, col))
     };
     let (prev_row, prev_col) = prev.ok_or(DeblockError::UncoveredMi { row, col })?;
-    Ok((edge(row, col)?, edge(prev_row, prev_col)?))
+    Ok((
+        cell_block::<PLANE>(grid, row, col)?,
+        cell_block::<PLANE>(grid, prev_row, prev_col)?,
+    ))
 }
 
 impl EdgeBlock<'_> {

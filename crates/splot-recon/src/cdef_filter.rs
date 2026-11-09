@@ -34,10 +34,10 @@
 //! Feature tracking: `RECON-CDEF-FILTER`.
 
 #[cfg(target_arch = "x86_64")]
-use fearless_simd::{Avx2, SimdInto, i32x8};
+use fearless_simd::{Avx2, Level, SimdInto, i32x8};
 use fearless_simd::{
-    Bytes, Level, Select as _, Simd as SimdToken, SimdBase, SimdInt as _, dispatch, i8x16, i16x8,
-    i16x16, i32x4, u8x16, u16x8, u16x16,
+    Bytes, Select as _, Simd as SimdToken, SimdBase, SimdInt as _, i8x16, i16x8, i16x16, i32x4,
+    u8x16, u16x8, u16x16,
 };
 
 /// AV2 § 7.18.2 `Div_Table[9]`: reciprocal-scaling weights for the direction cost.
@@ -94,7 +94,7 @@ const fn floor_log2(x: u32) -> u32 {
 pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
     debug_assert!(block.iter().flatten().all(|&x| (-128..=127).contains(&x)));
     let rows = block.map(|row| row.map(|x| x as i16));
-    dispatch!(Level::baseline(), simd => cdef_direction_rows(
+    baseline_simd!( simd => cdef_direction_rows(
         simd,
         rows.map(|row| i16x8::from_slice(simd, &row)),
     ))
@@ -149,7 +149,7 @@ fn cdef_direction_strided<const STRIDE: usize, const AREA: usize>(
         let rows = cdef_direction_input::<_, STRIDE, AREA>(avx2, pad, coeff_shift);
         return cdef_best_direction(cdef_direction_costs_avx2(avx2, rows));
     }
-    dispatch!(Level::baseline(), simd => cdef_direction_rows(
+    baseline_simd!( simd => cdef_direction_rows(
         simd,
         cdef_direction_input::<_, STRIDE, AREA>(simd, pad, coeff_shift),
     ))

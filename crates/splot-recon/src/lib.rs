@@ -22,7 +22,16 @@ macro_rules! baseline_simd {
         }
     };
 }
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        match fearless_simd::Level::baseline().as_neon() {
+            Some($simd) => $body,
+            None => fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body),
+        }
+    };
+}
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 macro_rules! baseline_simd {
     ($simd:ident => $body:expr) => {
         fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body)
