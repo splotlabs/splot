@@ -155,7 +155,7 @@ impl<'payload> InterFrameParser<'payload> {
             initial_frame_cdfs,
         } = self.setup;
         let previous = final_segment_ids(core, reference, params.mi_rows, params.mi_cols);
-        let mut segment_ids = if previous.is_some() {
+        let segment_ids = if previous.is_some() {
             None
         } else {
             products.segment_ids(
@@ -175,7 +175,7 @@ impl<'payload> InterFrameParser<'payload> {
             if self.parser.is_some() || self.tile != self.tiles {
                 return Err(tile::invalid_inter_tile_scheduling_state());
             }
-            if let Some(map) = segment_ids.as_deref_mut() {
+            if let Some(map) = segment_ids {
                 self.segment_ids
                     .iter()
                     .for_each(|tile| map.merge_tile(tile));
