@@ -60,4 +60,5 @@ splot-recon.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+splot-core = { workspace = true, features = ["symbol-count"] }
 stats_alloc = "0.1.10"

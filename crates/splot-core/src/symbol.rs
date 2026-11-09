@@ -782,8 +782,8 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     /// Returns the number of counted frame symbols so far. Only builds with
-    /// debug assertions count; the hot decode loops skip the counter, so
-    /// other builds return 0.
+    /// debug assertions or the `symbol-count` feature count; the hot decode
+    /// loops skip the counter, so other builds return 0.
     #[must_use]
     pub const fn symbol_count(&self) -> u64 {
         self.frame_symbol_count
@@ -792,7 +792,7 @@ impl<'a> SymbolDecoder<'a> {
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     const fn count_symbols(&mut self, n: u64) {
-        if cfg!(debug_assertions) {
+        if cfg!(any(debug_assertions, feature = "symbol-count")) {
             self.frame_symbol_count = self.frame_symbol_count.wrapping_add(n);
         }
     }
