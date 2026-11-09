@@ -50,6 +50,19 @@ pub(super) enum LeafResolveRecord {
     Intrabc(Box<PendingIntrabcBlock>),
 }
 
+impl LeafResolveRecord {
+    /// The neighbour flags the parser published for this leaf.
+    pub(super) fn flag_syntax(&self, frame_precision: u8) -> NeighbourFlagSyntax {
+        match self {
+            Self::Inter(block) => block.syntax.flag_syntax(),
+            Self::Intrabc(block) => {
+                non_inter_flag_syntax(Some(block.residual.is_none()), frame_precision)
+            }
+            Self::Reseed(_) | Self::NonInter { .. } => non_inter_flag_syntax(None, frame_precision),
+        }
+    }
+}
+
 /// The bank and motion-plane work of a leaf whose command is already final,
 /// kept beside the command so the resolve pass leaves the command in place.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,7 +93,6 @@ pub(super) struct PendingIntrabcBlock {
     pub(super) mi_rows: usize,
     pub(super) mi_cols: usize,
     pub(super) info: crate::filters::wienerns_lr::intrabc_records::PendingIntrabcInfo,
-    pub(super) spatial: crate::filters::wienerns_lr::intrabc_ref_mv_stack::SpatialIntrabcProbes,
     pub(super) residual: Option<InterResidual>,
     pub(super) segment_id: u8,
     pub(super) qindex: u32,
@@ -198,7 +210,6 @@ fn resolve_pending_intrabc(
         mi_rows,
         mi_cols,
         info,
-        spatial,
         residual,
         segment_id,
         qindex,
@@ -209,7 +220,6 @@ fn resolve_pending_intrabc(
         avail_up,
         avail_left,
     } = pending;
-    let spatial = spatial.resolve(|row, col| state.grid.intrabc_mv_at(row, col));
     let block = MvBlockContext {
         mi_row: frontier.r,
         mi_col: frontier.c,
@@ -221,6 +231,10 @@ fn resolve_pending_intrabc(
         mi_rows,
         mi_cols,
     };
+    let spatial = state
+        .grid
+        .capture_spatial_intrabc_probes(&block)
+        .resolve(|row, col| state.grid.intrabc_mv_at(row, col));
     let bank_candidates = state
         .ref_mv_bank
         .as_ref()

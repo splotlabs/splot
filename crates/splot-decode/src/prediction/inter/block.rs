@@ -26,8 +26,8 @@ use splot_recon::{
 
 use super::find_mv_stack::{
     BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, INTRABC_REF_FRAME,
-    MotionMode, MvBlockContext, NON_INTER_FLAG_SYNTAX, NeighbourFlagRecord, NeighbourFlagSyntax,
-    NeighbourMvGrid, TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
+    MotionMode, MvBlockContext, NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourMvGrid,
+    TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
     TemporalProjectionConfig, TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
     find_compound_mv_stack_upto, find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_upto,
     mode_ctx_from_neighbours, warp_predicted_mv,
@@ -463,6 +463,7 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         enable_adaptive_mvd,
         allow_bawp,
         allow_warpmv_mode,
+        allow_intrabc: crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(core),
         frame_is_switch,
         current_order_hint,
         temporal_first_frame: frame_temporal_first(
@@ -1296,7 +1297,7 @@ fn decode_block<T: ReconSample>(
                 .is_some_and(|tail| tail.skip_mode_present),
             frontier,
             comp_ref_allowed,
-            neighbour_ctx.map_or(0, |ctx| ctx.skip_mode_ctx),
+            neighbour_ctx.as_ref().map_or(0, |ctx| ctx.skip_mode_ctx),
             tile_offset,
         )?
     };
@@ -1310,7 +1311,7 @@ fn decode_block<T: ReconSample>(
         let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
         cdfs.read_block_symbol_trace(
             TileCdfSelector::IsInter {
-                ctx: neighbour_ctx.map_or(0, |ctx| ctx.is_inter_ctx),
+                ctx: neighbour_ctx.as_ref().map_or(0, |ctx| ctx.is_inter_ctx),
             },
             symbols,
         )
@@ -1318,20 +1319,24 @@ fn decode_block<T: ReconSample>(
         .get()
     };
     if is_inter == 0 {
-        let mut prelude = IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
-            use_intrabc: false,
-            skip_flag: false,
-        });
+        let mut prelude = IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip::default());
         let mut pending_intrabc = None;
         if !frontier.is_chroma_part() {
-            let use_skip = read_intrabc_use_and_skip(
-                work_unit.cdf_mut().tile_cdfs_mut(),
-                symbols,
-                intrabc_state,
-                core,
-                IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
-                tile_offset,
-            )?;
+            let use_skip = if params.allow_intrabc {
+                read_intrabc_use_and_skip(
+                    work_unit.cdf_mut().tile_cdfs_mut(),
+                    symbols,
+                    intrabc_state,
+                    neighbour_ctx
+                        .as_ref()
+                        .map(|ctx| (ctx.intrabc_ctx(), ctx.skip_ctx)),
+                    core,
+                    IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
+                    tile_offset,
+                )?
+            } else {
+                IntrabcUseSkip::default()
+            };
             if !seg_pre_skip {
                 segment_id = read_inter_segment_id(
                     work_unit,
@@ -1378,10 +1383,9 @@ fn decode_block<T: ReconSample>(
                     geometry,
                     tile_offset,
                 )?;
-                let spatial = intrabc_state.capture_spatial_intrabc_probes(geometry);
                 prelude =
                     IntrabcBlockPrelude::from_use_skip(use_skip).with_morph_pred(info.morph_pred());
-                pending_intrabc = Some((info, spatial));
+                pending_intrabc = Some(info);
             } else {
                 prelude = IntrabcBlockPrelude::from_use_skip(use_skip);
             }
@@ -1389,7 +1393,7 @@ fn decode_block<T: ReconSample>(
         if !frontier.is_chroma_part() {
             segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
         }
-        if let Some((info, spatial)) = pending_intrabc {
+        if let Some(info) = pending_intrabc {
             let block_qindex = segment_block_qindex(
                 sequence,
                 core,
@@ -1439,20 +1443,12 @@ fn decode_block<T: ReconSample>(
                 block_qindex,
                 lossless,
             );
-            let precision = frame_mv_precision(core)?;
             mv_grid.record_flags(
                 mi_row,
                 mi_col,
                 n4w,
                 n4h,
-                NeighbourFlagSyntax {
-                    is_inter: true,
-                    ref_frame0: INTRABC_REF_FRAME,
-                    skip: prelude.skip_flag,
-                    interp_filter: interp_filter_no_neighbour_ctx(false) as u8,
-                    precision: BlockPrecisionRecord::explicit(precision),
-                    ..NON_INTER_FLAG_SYNTAX
-                },
+                non_inter_flag_syntax(Some(prelude.skip_flag), frame_mv_precision(core)?),
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
@@ -1465,7 +1461,6 @@ fn decode_block<T: ReconSample>(
                     mi_rows: params.mi_rows,
                     mi_cols: params.mi_cols,
                     info,
-                    spatial,
                     residual,
                     segment_id,
                     qindex: block_qindex,
@@ -1514,11 +1509,7 @@ fn decode_block<T: ReconSample>(
                 mi_col,
                 n4w,
                 n4h,
-                NeighbourFlagSyntax {
-                    interp_filter: interp_filter_no_neighbour_ctx(false) as u8,
-                    precision: BlockPrecisionRecord::explicit(frame_mv_precision(core)?),
-                    ..NON_INTER_FLAG_SYNTAX
-                },
+                non_inter_flag_syntax(None, frame_mv_precision(core)?),
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
         }
@@ -2130,6 +2121,25 @@ fn decode_block<T: ReconSample>(
             frame_mv_precision(core)?,
         ),
     ))
+}
+
+/// The neighbour flags of a non-inter leaf, or of an IntraBC leaf with its
+/// skip flag.
+pub(super) fn non_inter_flag_syntax(
+    intrabc_skip: Option<bool>,
+    frame_precision: u8,
+) -> NeighbourFlagSyntax {
+    let mut syntax = NeighbourFlagSyntax {
+        interp_filter: interp_filter_no_neighbour_ctx(false) as u8,
+        precision: BlockPrecisionRecord::explicit(frame_precision),
+        ..NON_INTER_FLAG_SYNTAX
+    };
+    if let Some(skip) = intrabc_skip {
+        syntax.is_inter = true;
+        syntax.ref_frame0 = INTRABC_REF_FRAME;
+        syntax.skip = skip;
+    }
+    syntax
 }
 
 const fn inter_skip_txfm_ctx(neighbour_skip_ctx: usize, skip_mode: bool) -> usize {

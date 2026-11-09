@@ -98,9 +98,8 @@ use derived::{CompoundScanState, DerivedMvState};
 use extra_search::{compound_extra_search, extra_search};
 use neighbour_grid::{ABSENT_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags};
 pub(crate) use neighbour_grid::{
-    BlockPrecisionRecord, GridCheckpoint, GridEdge, NON_INTER_FLAG_SYNTAX, NeighbourFlagRecord,
-    NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES,
-    compound_motion_mode,
+    BlockPrecisionRecord, GridCheckpoint, GridEdge, NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax,
+    NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES, compound_motion_mode,
 };
 pub(crate) use temporal::{
     MotionFieldLayout, OrderHintMvContext, TemporalBandPlan, TemporalMotionBand,
@@ -574,6 +573,15 @@ impl BlockNeighbourContext {
         let cells = self.npos_cells.iter().take(self.npos_count);
         usize::from(cells.clone().any(|cell| cell.is_warp()))
             + cells.filter(|cell| cell.is_local_warp()).count()
+    }
+
+    /// The § 8.3.2 `use_intrabc` context.
+    pub(crate) fn intrabc_ctx(&self) -> usize {
+        self.npos_cells
+            .iter()
+            .take(self.npos_count)
+            .filter(|cell| cell.ref_frame0() == INTRABC_REF_FRAME)
+            .count()
     }
 
     pub(crate) fn most_probable_precision_ctx(&self) -> usize {
