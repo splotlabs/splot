@@ -480,11 +480,21 @@ impl CdefState {
         Ok(())
     }
 
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: the read_for_block guard reads it"
+    )]
+    #[inline(always)]
     pub(crate) fn value(&self, row: usize, col: usize) -> Result<Option<usize>> {
         let index = self.index(row, col)?;
         Ok(self.values[index])
     }
 
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: the read_for_block guard reads it"
+    )]
+    #[inline(always)]
     fn index(&self, row: usize, col: usize) -> Result<usize> {
         let local_row = row
             .checked_sub(self.row_start)
