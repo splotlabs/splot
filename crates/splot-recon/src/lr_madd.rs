@@ -15,7 +15,9 @@
 
 #[cfg(not(target_arch = "x86_64"))]
 use fearless_simd::i32x4;
-use fearless_simd::{Simd, SimdIntWiden, i16x16, i32x8, prelude::*, u16x16};
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::i32x8;
+use fearless_simd::{Simd, SimdIntWiden, i16x16, prelude::*, u16x16};
 
 /// Runs `$body` with the baseline SIMD token bound to `$simd`; on x86 the
 /// AVX2 token binds directly, since a `dispatch!` closure does not inline
@@ -224,14 +226,26 @@ fn portable<S: Simd, F: TapPairs, T: LumaSimdSource, const ROWS: usize, const RE
         #[cfg(target_arch = "x86_64")]
         add(load(r, r).interleave(i16x16::splat(simd, 1)), weights);
     }
+    // A saturating narrow keeps the clamp exact, as `max_sample < 2^15`;
+    // NEON fuses the shift into it (`sqshrn`).
     #[cfg(not(target_arch = "x86_64"))]
-    let sums = [
-        simd.combine_i32x4(sums[0], sums[1]),
-        simd.combine_i32x4(sums[2], sums[3]),
-    ];
-    let max = i32x8::splat(simd, i32::from(max_sample));
-    let [low, high] = sums.map(|sum| (sum >> 7).clamp(i32x8::splat(simd, 0), max));
-    let values: u16x16<S> = low.narrow(high).bitcast();
+    let values: u16x16<S> = {
+        let (zero, max) = (
+            fearless_simd::i16x8::splat(simd, 0),
+            fearless_simd::i16x8::splat(simd, max_sample as i16),
+        );
+        let [low, high] = [[sums[0], sums[1]], [sums[2], sums[3]]].map(|[a, b]| {
+            simd.saturating_narrow_i32x4(a >> 7, b >> 7)
+                .clamp(zero, max)
+        });
+        simd.combine_i16x8(low, high).bitcast()
+    };
+    #[cfg(target_arch = "x86_64")]
+    let values: u16x16<S> = {
+        let max = i32x8::splat(simd, i32::from(max_sample));
+        let [low, high] = sums.map(|sum| (sum >> 7).clamp(i32x8::splat(simd, 0), max));
+        low.narrow(high).bitcast()
+    };
     values.into()
 }
 
