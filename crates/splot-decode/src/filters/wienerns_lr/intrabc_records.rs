@@ -45,7 +45,7 @@ fn intrabc_state_error() -> DecodeError {
     crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct IntrabcUseSkip {
     pub(crate) use_intrabc: bool,
     pub(crate) skip_flag: bool,
@@ -533,6 +533,9 @@ impl TileIntrabcPreludeState {
         n4h: usize,
         context: IntrabcNeighborContext,
     ) -> Result<usize> {
+        if !self.enabled {
+            return Err(intrabc_state_error());
+        }
         let mut ctx = 0usize;
         self.visit_neighbor_positions(
             IntrabcNeighborScan {
@@ -586,7 +589,7 @@ impl TileIntrabcPreludeState {
             {
                 continue;
             }
-            if same_sb_row && r / self.sb_size4 != row / self.sb_size4 {
+            if same_sb_row && !crate::tile::same_superblock_row(r, row, self.sb_size4) {
                 continue;
             }
             visit(r, c)?;
@@ -726,6 +729,7 @@ pub(crate) fn read_intrabc_use_and_skip(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     state: &TileIntrabcPreludeState,
+    neighbour_ctxs: Option<(usize, usize)>,
     core: &FrameHeaderCore,
     geometry: IntrabcBlockGeometry,
     tile_offset: ByteOffset,
@@ -734,12 +738,12 @@ pub(crate) fn read_intrabc_use_and_skip(
     let n4w = geometry.n4w;
     let n4h = geometry.n4h;
     if !intrabc_use_is_coded(core, block, n4w, n4h) {
-        return Ok(IntrabcUseSkip {
-            use_intrabc: false,
-            skip_flag: false,
-        });
+        return Ok(IntrabcUseSkip::default());
     }
-    let intrabc_ctx = state.intrabc_ctx(block.row, block.col, n4w, n4h)?;
+    let intrabc_ctx = match neighbour_ctxs {
+        Some((intrabc_ctx, _)) => intrabc_ctx,
+        None => state.intrabc_ctx(block.row, block.col, n4w, n4h)?,
+    };
     let use_intrabc = read_symbol(
         cdfs,
         symbols,
@@ -748,12 +752,12 @@ pub(crate) fn read_intrabc_use_and_skip(
         "5.20.5.3",
     )? != 0;
     if !use_intrabc {
-        return Ok(IntrabcUseSkip {
-            use_intrabc: false,
-            skip_flag: false,
-        });
+        return Ok(IntrabcUseSkip::default());
     }
-    let skip_ctx = state.skip_ctx(block.row, block.col, n4w, n4h)?;
+    let skip_ctx = match neighbour_ctxs {
+        Some((_, skip_ctx)) => skip_ctx,
+        None => state.skip_ctx(block.row, block.col, n4w, n4h)?,
+    };
     let skip_flag = read_symbol(
         cdfs,
         symbols,
@@ -787,10 +791,8 @@ pub(crate) fn read_pending_intrabc_info(
     } else {
         None
     };
-    let block = geometry.block;
-    let morph_pred_ctx = state.morph_pred_ctx(block.row, block.col, geometry.n4w, geometry.n4h)?;
     let morph_pred =
-        read_intrabc_morph_pred(cdfs, symbols, sequence, core, morph_pred_ctx, tile_offset)?;
+        read_intrabc_morph_pred(cdfs, symbols, state, sequence, core, geometry, tile_offset)?;
     Ok(PendingIntrabcInfo {
         syntax,
         mvd,
@@ -928,9 +930,10 @@ fn read_intrabc_mvd(
 fn read_intrabc_morph_pred(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
+    state: &TileIntrabcPreludeState,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    morph_pred_ctx: usize,
+    geometry: IntrabcBlockGeometry,
     tile_offset: ByteOffset,
 ) -> Result<bool> {
     if core.frame_is_intra != Some(true)
@@ -942,12 +945,12 @@ fn read_intrabc_morph_pred(
     {
         return Ok(false);
     }
+    let block = geometry.block;
+    let ctx = state.morph_pred_ctx(block.row, block.col, geometry.n4w, geometry.n4h)?;
     Ok(read_symbol(
         cdfs,
         symbols,
-        TileCdfSelector::MorphPred {
-            ctx: morph_pred_ctx,
-        },
+        TileCdfSelector::MorphPred { ctx },
         tile_offset,
         "5.20.5.4",
     )? != 0)

@@ -11,7 +11,6 @@ use super::super::compound::{
 };
 use super::super::find_mv_stack::TemporalMotionBlock;
 use super::super::read_mv::apply_inter_mvd_sign_pair;
-use super::prediction::PlacedInterGeometry;
 use super::temporal::temporal_motion_block;
 use super::warp::mvd_sign_derivation_block_scope_allowed;
 use super::*;
@@ -62,9 +61,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     tip_ref_pair: Option<(i8, i8)>,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
-    deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
-    chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
-    tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    filter_records: &mut tile::TileFilterRecords,
     intrabc_state: &mut TileIntrabcPreludeState,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
@@ -120,7 +117,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     )?;
     block_ctx.ref_frame0 = pair.0;
     block_ctx.ref_frame1 = Some(pair.1);
-    let mode_ctx = find_mode_ctx_with_tip(mv_grid, block_ctx, tip_ref_pair);
+    let mode_ctx = mode_ctx_from_neighbours(mv_grid, block_ctx, tip_ref_pair, neighbour_ctx);
     let mut compound = read_compound_mode_syntax(
         cdfs,
         symbols,
@@ -357,7 +354,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
         tile_offset,
     )?;
-    let force_integer_mv = effective_force_integer_mv(core);
     let temporal_allowed = compound.ref_frame0 != compound.ref_frame1;
     let temporal_first = |ref_frame| {
         temporal_first_frame
@@ -380,9 +376,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         frontier,
         mv_grid,
         frame_mv_config.precision(),
-        deblock_blocks,
-        chroma_deblock_blocks,
-        tx_skip_records,
+        filter_records,
         intrabc_state,
         ref_frame_idx,
         reference,
@@ -394,14 +388,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 skip_mode: false,
                 use_optflow: compound.use_optflow,
                 local_warp,
-                global_warp: if compound.y_mode == CompoundYMode::GlobalGlobal {
-                    [
-                        global_motion_warp(core, compound.ref_frame0, force_integer_mv, n4w, n4h),
-                        global_motion_warp(core, compound.ref_frame1, force_integer_mv, n4w, n4h),
-                    ]
-                } else {
-                    [None, None]
-                },
                 ref_mv_idx,
                 independent_idx: compound_reads_second_drl(compound)
                     .then_some([ref_mv_idx0, ref_mv_idx1]),
@@ -637,9 +623,7 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
     frontier: &DecodeBlockFrontier,
     mv_grid: &mut NeighbourMvGrid,
     frame_precision: u8,
-    deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
-    chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
-    tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    filter_records: &mut tile::TileFilterRecords,
     intrabc_state: &mut TileIntrabcPreludeState,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
@@ -701,25 +685,19 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
         n4w * MI_SIZE,
         n4h * MI_SIZE,
     );
-    record_inter_deblock_geometry(
-        deblock_blocks,
-        chroma_deblock_blocks,
-        tx_skip_records,
+    filter_records.defer_inter_leaf(
         frontier,
         (n4w, n4h),
-        sequence.general.chroma_format_idc,
         residual.as_ref(),
-        residual_blocks,
         sub_pu_size,
         block_qindex,
         current_residual_lossless(work_unit),
-    )?;
-    let placed_geometry = placed_inter_geometry(
+    );
+    let placement = inter_leaf_placement(
         frontier,
         work_unit,
-        (n4w, n4h),
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
-    )?;
+    );
     let optflow_distances = compound_optflow_distances(
         core,
         reference,
@@ -754,16 +732,8 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
     };
     mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
     Ok((
-        non_intra_leaf_mode(frontier),
-        pending_inter_leaf(
-            syntax,
-            PlacedInterGeometry {
-                interintra_chroma: false,
-                ..placed_geometry
-            },
-            block_qindex,
-            frame_precision,
-        ),
+        GeneralIntraLeafMode::no_luma_mode(),
+        pending_inter_leaf(syntax, placement, block_qindex, frame_precision),
     ))
 }
 
@@ -1007,9 +977,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
     tip_ref_pair: Option<(i8, i8)>,
-    deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
-    chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
-    tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    filter_records: &mut tile::TileFilterRecords,
     intrabc_state: &mut TileIntrabcPreludeState,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
@@ -1050,9 +1018,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         frontier,
         mv_grid,
         precision,
-        deblock_blocks,
-        chroma_deblock_blocks,
-        tx_skip_records,
+        filter_records,
         intrabc_state,
         ref_frame_idx,
         reference,
@@ -1064,7 +1030,6 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
                 skip_mode: true,
                 use_optflow: false,
                 local_warp: false,
-                global_warp: [None, None],
                 ref_mv_idx,
                 independent_idx: None,
                 mvd: [Mv::ZERO; 2],
@@ -1451,13 +1416,9 @@ pub(super) fn compound_ref_contexts(
     neighbour_ctx: &BlockNeighbourContext,
     num_total_refs: usize,
 ) -> Result<[usize; 7]> {
-    let mut contexts = [0usize; 7];
-    for (ref_idx, ctx) in contexts.iter_mut().take(num_total_refs).enumerate() {
-        *ctx = neighbour_ctx
-            .single_ref_ctx(ref_idx, num_total_refs)
-            .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
-    }
-    Ok(contexts)
+    neighbour_ctx
+        .single_ref_ctxs(num_total_refs)
+        .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterReferenceMap.into())
 }
 
 #[allow(

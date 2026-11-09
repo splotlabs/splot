@@ -37,7 +37,7 @@ pub(crate) struct InterFrameParse {
 
 /// Resumable entropy state; input bytes are borrowed, mutable tile state is not.
 pub(crate) struct InterFrameParser<'payload> {
-    parser: Option<tile::TileParser<'payload>>,
+    parser: Option<Box<tile::TileParser<'payload>>>,
     setup: super::InterParseSetup,
 }
 
@@ -70,7 +70,7 @@ impl<'payload> InterFrameParser<'payload> {
                 .filter_states
                 .take()
                 .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
-            self.parser = Some(tile::TileParser::scheduled(
+            self.parser = Some(Box::new(tile::TileParser::scheduled(
                 tile,
                 tile_bytes,
                 context,
@@ -78,7 +78,7 @@ impl<'payload> InterFrameParser<'payload> {
                 gdf_state,
                 ccso_state,
                 parse_progress,
-            )?);
+            )?));
         }
         self.parser
             .as_mut()
@@ -186,12 +186,9 @@ impl InterFrameParse {
         {
             return Err(tile::invalid_inter_tile_scheduling_state());
         }
+        tile.take_deblock_records();
         parse_progress.append_records(&mut records);
-        let has_active_deblock = core
-            .deblocking_filter_params
-            .as_ref()
-            .is_some_and(|filter| filter.apply_deblocking_filter != [false; 4]);
-        let (mut filter_setup, deblock_quant_deltas) = filter_sink_setup.deferred_filter_setup(
+        let (filter_setup, _) = filter_sink_setup.deferred_filter_setup(
             info,
             plane_sizes,
             InterFilterInputs {
@@ -204,13 +201,7 @@ impl InterFrameParse {
             core,
             progress,
         )?;
-        let deblock_records = has_active_deblock.then(|| filter_setup.detach_deblock_records());
-        tile.attach_filters(
-            filter_setup,
-            filter_shell,
-            deblock_records,
-            deblock_quant_deltas,
-        )
+        tile.attach_filters(filter_setup, filter_shell)
     }
 }
 
@@ -244,6 +235,7 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
     params: &tile::TileWalkParams,
     prelude: TemporalPrelude,
     motion_field: TemporalMotionField,
+    deblock: Option<crate::filters::deblock::OwnedDeblockRecords>,
 ) -> Result<(tile::ScheduledTileRecon<T>, PendingFilterAttach<T>)> {
     let mut parked = scratch;
     let mut tile = parked.tile.take().unwrap_or_default();
@@ -275,6 +267,9 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         temporal_plan,
         Arc::clone(parse_progress),
     )?;
+    if let Some(deblock) = deblock {
+        tile.arm_deblock(deblock, filter_sink_setup.deblock_quant_deltas)?;
+    }
     Ok((
         tile,
         PendingFilterAttach {

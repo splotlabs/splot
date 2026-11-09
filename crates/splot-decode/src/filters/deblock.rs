@@ -6,30 +6,25 @@ use splot_core::tables::conversion::{
     Q_FIRST, Q_THRESH_MULTS, SIDE_THRESHOLDS, TX_HEIGHT, TX_WIDTH, W_MULT,
 };
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, PixelFormat,
-    PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_edge_columns,
-    deblock_edge_rows, deblock_filter_choice, deblock_filter_choice_strided,
-    deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
-    deblock_sample_filter_strided_4, deblock_side_threshold_index, max_quantizer_index,
+    BitDepth, CurrentFrameWorkspace, DeblockEdge, DeblockFilterChoice, DeblockSampleFilter,
+    PixelFormat, PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_filter_choice,
+    deblock_filter_choice_strided, deblock_filter_max_width, deblock_horizontal_edges,
+    deblock_sample_filter, deblock_sample_filter_strided, deblock_sample_filter_strided_4,
+    deblock_side_threshold_index, deblock_vertical_edges, max_quantizer_index,
 };
-use std::simd::{Simd, cmp::SimdPartialEq as _};
 use std::{cell::Cell, num::NonZeroUsize, ops::Range};
 
+mod edges;
+mod facts;
 mod grid;
-mod replay;
 
+use edges::{PassEdges, PassGeometry};
 pub(crate) use grid::DeblockGridStorage;
-/// Mode-info rows above itself that a horizontal edge reads.
-const HORIZONTAL_EDGE_REACH_MI: usize = 2;
 
+use facts::PlaneFacts;
 #[cfg(test)]
 use grid::MiCell;
-use grid::{
-    COVERED_PLANE, ChromaMiGridStorage, HORIZONTAL_PLANE, MiGrid, MiGridStorage, RowOrder,
-    SUB_PU_PLANE, SUB_PU_ROW_PLANE, VERTICAL_PLANE, flag_word,
-};
-
-use replay::{LoneEdge, ReplayLog, ReplayStep};
+use grid::{ChromaMiGridStorage, MiGrid, MiGridStorage};
 
 use crate::pipeline::frame_progress::FrontierRows;
 
@@ -42,16 +37,16 @@ const SB_SIZE: usize = 64;
 /// deblock-record footprint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DeblockPredictionUnit {
-    pub(crate) base_r: u32,
-    pub(crate) base_c: u32,
+    pub(crate) base_r: u16,
+    pub(crate) base_c: u16,
     pub(crate) default_sub_pu_tx: u8,
 }
 
 impl DeblockPredictionUnit {
     pub(crate) const fn new(base_r: usize, base_c: usize, default_sub_pu_tx: usize) -> Self {
         Self {
-            base_r: base_r as u32,
-            base_c: base_c as u32,
+            base_r: base_r as u16,
+            base_c: base_c as u16,
             default_sub_pu_tx: default_sub_pu_tx as u8,
         }
     }
@@ -76,109 +71,28 @@ impl DeblockSubPuSize {
     }
 }
 
+/// One plane's transform block: its first luma mode-info unit, which is its
+/// § 7.17.2 `TxRowBase`/`TxColBase`, its extent in luma mode-info units, its
+/// transform size and the block facts its edges read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DeblockBlock {
-    pub(crate) r: u32,
-    pub(crate) c: u32,
-    pub(crate) luma_prediction: DeblockPredictionUnit,
-    pub(crate) chroma_prediction: DeblockPredictionUnit,
-    pub(crate) chroma_base_r: u32,
-    pub(crate) chroma_base_c: u32,
-    pub(crate) n4w: u32,
-    pub(crate) n4h: u32,
-    pub(crate) luma_tx: u8,
-    pub(crate) chroma_tx: Option<u8>,
-    pub(crate) sub_pu_size: Option<DeblockSubPuSize>,
-    pub(crate) chroma_transform_only: bool,
-    pub(crate) qindex: u32,
+    pub(crate) r: u16,
+    pub(crate) c: u16,
+    pub(crate) n4w: u8,
+    pub(crate) n4h: u8,
+    pub(crate) tx: u8,
     pub(crate) skip: bool,
     pub(crate) lossless: bool,
+    pub(crate) qindex: u16,
+    pub(crate) prediction: DeblockPredictionUnit,
+    pub(crate) sub_pu_size: Option<DeblockSubPuSize>,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ChromaDeblockBlock {
-    block: DeblockBlock,
-    planes: u8,
-}
-
-#[derive(Clone)]
-pub(crate) struct ChromaDeblockRecords {
-    blocks: Vec<ChromaDeblockBlock>,
-}
-
-impl Default for ChromaDeblockRecords {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ChromaDeblockRecords {
-    const U: u8 = 1;
-    const V: u8 = 2;
-
-    pub(crate) const fn new() -> Self {
-        Self { blocks: Vec::new() }
-    }
-
-    pub(crate) fn push(&mut self, plane: usize, block: DeblockBlock) {
-        let planes = [Self::U, Self::V][plane];
-        self.blocks.push(ChromaDeblockBlock { block, planes });
-    }
-
-    pub(crate) fn push_both(&mut self, block: DeblockBlock) {
-        self.blocks.push(ChromaDeblockBlock {
-            block,
-            planes: Self::U | Self::V,
-        });
-    }
-
-    pub(crate) fn append(&mut self, other: &mut Self) {
-        self.blocks.append(&mut other.blocks);
-    }
-
-    /// The record capacity this list is holding.
-    pub(crate) fn capacity(&self) -> usize {
-        self.blocks.capacity()
-    }
-
-    /// Reserves `records`, leaving the list as it was when that fails.
-    pub(crate) fn reserve_records(&mut self, records: usize) {
-        let _ = self.blocks.try_reserve_exact(records);
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.blocks.clear();
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.blocks.is_empty()
-    }
-
-    fn get(&self, index: usize) -> Option<&DeblockBlock> {
-        self.blocks.get(index).map(|record| &record.block)
-    }
-
-    /// Whether the U and V record lists match record for record. Each plane's
-    /// grid is then the same function of its list, so V can read U's grid.
-    fn uv_twins(&self) -> bool {
-        let plane = |mask: u8| {
-            self.blocks
-                .iter()
-                .filter(move |record| record.planes & mask != 0)
-                .map(|record| &record.block)
-        };
-        plane(Self::U).eq(plane(Self::V))
-    }
-
-    pub(crate) fn iter_plane(&self, plane: usize) -> impl Iterator<Item = (usize, &DeblockBlock)> {
-        let mask = [Self::U, Self::V][plane];
-        self.blocks
-            .iter()
-            .enumerate()
-            .filter(move |(_, record)| record.planes & mask != 0)
-            .map(|(index, record)| (index, &record.block))
-    }
-}
+/// The chroma transform records of a frame, which U and V share: § 5.20.7.24
+/// `store_tx_info` writes both planes' transform sizes and bases from the same
+/// `transform_block` calls, and every other § 7.17.2 input of a chroma edge is
+/// indexed by `plane > 0`.
+pub(crate) type ChromaDeblockRecords = Vec<DeblockBlock>;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DeblockQuantDeltas {
@@ -208,44 +122,6 @@ impl DeblockQuantDeltas {
     }
 }
 
-#[derive(Clone, Copy)]
-struct EdgeBlock<'a> {
-    block: &'a DeblockBlock,
-    chroma_transform: Option<&'a DeblockBlock>,
-}
-
-impl EdgeBlock<'_> {
-    fn prediction(self, plane: usize) -> DeblockPredictionUnit {
-        if plane == 0 {
-            self.block.luma_prediction
-        } else {
-            self.block.chroma_prediction
-        }
-    }
-
-    fn tx_base(self, plane: usize) -> (usize, usize) {
-        let (r, c) = if plane == 0 {
-            (self.block.r, self.block.c)
-        } else if let Some(transform) = self.chroma_transform {
-            (transform.chroma_base_r, transform.chroma_base_c)
-        } else {
-            (self.block.chroma_base_r, self.block.chroma_base_c)
-        };
-        (r as usize, c as usize)
-    }
-
-    fn tx(self, plane: usize) -> usize {
-        usize::from(if plane == 0 {
-            self.block.luma_tx
-        } else {
-            self.chroma_transform
-                .and_then(|transform| transform.chroma_tx)
-                .or(self.block.chroma_tx)
-                .unwrap_or(0)
-        })
-    }
-}
-
 /// One frame's deblock, prepared once and applied over ascending mode-info row
 /// sections.
 ///
@@ -260,10 +136,13 @@ impl EdgeBlock<'_> {
 pub(crate) struct FrameDeblock {
     records: OwnedDeblockRecords,
     grid: MiGridStorage,
-    chroma: [Option<ChromaMiGridStorage>; 2],
-    /// Luma and chroma record orders the per-advance grid windows are laid
-    /// out from.
-    order: [RowOrder; 2],
+    chroma: Option<ChromaMiGridStorage>,
+    /// The cell facts of luma, then of both chroma planes.
+    facts: [PlaneFacts; 2],
+    /// Whether the grids are sized and empty yet.
+    grids_reset: bool,
+    /// How many luma, then chroma, records the grids hold.
+    laid_out: [usize; 2],
     mi_rows: usize,
     filter: DeblockingFilterParams,
     tile_info: Option<TileInfo>,
@@ -271,9 +150,9 @@ pub(crate) struct FrameDeblock {
     quant_deltas: DeblockQuantDeltas,
     next_pass_0_mi_row: usize,
     next_pass_1_mi_row: usize,
-    /// [`FrameDeblock::v_strong_in_u`], derived on the first advance.
-    v_strong_in_u: bool,
-    bit_depth: Option<BitDepth>,
+    /// The edge decisions of each pass of the plane being filtered, which a
+    /// V plane with U's strengths reuses.
+    edges: [PassEdges; 2],
 }
 
 /// One plane band's share of a deblock section: the rows it owns and the passes
@@ -288,6 +167,22 @@ pub(crate) struct OwnedDeblockRecords {
     pub(crate) grids: DeblockGridStorage,
     pub(crate) blocks: Vec<DeblockBlock>,
     pub(crate) chroma: ChromaDeblockRecords,
+}
+
+impl OwnedDeblockRecords {
+    /// Takes a frame's deblock storage with its record lists emptied.
+    pub(crate) fn take_storage(
+        records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+    ) -> Self {
+        let mut storage = Self {
+            grids: core::mem::take(&mut records.deblock_grids),
+            blocks: core::mem::take(&mut records.deblock_blocks),
+            chroma: core::mem::take(&mut records.chroma_deblock_blocks),
+        };
+        storage.blocks.clear();
+        storage.chroma.clear();
+        storage
+    }
 }
 
 /// The interior tile starts one pass filters across, or `None` when the frame
@@ -320,9 +215,13 @@ pub(crate) const DEBLOCK_PASS_1_REACH: usize = 8;
 const PASS_0_LEAD_MI_ROWS: usize = 4;
 
 impl FrameDeblock {
-    /// Builds the frame's mode-info grids while taking ownership of detached
-    /// deblock records.
+    /// Takes ownership of detached deblock records; the first advance lays
+    /// the frame's mode-info grids out from them.
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "callers keep preparation fallible across frame setup paths"
+    )]
     pub(crate) fn prepare_owned(
         mut records: OwnedDeblockRecords,
         mi_rows: usize,
@@ -336,19 +235,18 @@ impl FrameDeblock {
         if filter.apply_deblocking_filter == [false; 4] {
             return Ok(None);
         }
-        let (grid, chroma, order) = take_grids(
-            &records.blocks,
-            &records.chroma,
-            (mi_rows, mi_cols),
-            filter,
-            chroma_subsampling,
-            &mut records.grids,
-        )?;
+        let chroma = (filter.apply_deblocking_filter[2..] != [false; 2]).then(|| {
+            ChromaMiGridStorage::new(mi_cols, chroma_subsampling, &mut records.grids.chroma)
+        });
+        let grid = MiGridStorage::new(mi_cols, &mut records.grids);
+        let facts = core::mem::take(&mut records.grids.facts);
         Ok(Some(Self {
             records,
             grid,
             chroma,
-            order,
+            facts,
+            grids_reset: false,
+            laid_out: [0; 2],
             mi_rows,
             filter,
             tile_info,
@@ -356,8 +254,7 @@ impl FrameDeblock {
             quant_deltas,
             next_pass_0_mi_row: 0,
             next_pass_1_mi_row: 0,
-            v_strong_in_u: false,
-            bit_depth: None,
+            edges: Default::default(),
         }))
     }
 
@@ -369,23 +266,9 @@ impl FrameDeblock {
         mi_row_end: usize,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
-        if self.bit_depth != Some(bit_depth) {
-            self.v_strong_in_u = self.v_strong_in_u(bit_depth);
-            self.bit_depth = Some(bit_depth);
-        }
         let (ranges, pass_0_end, pass_1_end) = self.next_ranges(mi_row_end);
-        let reach = |rows: &Range<usize>, back: usize| {
-            (!rows.is_empty()).then(|| rows.start.saturating_sub(back)..rows.end)
-        };
-        let window = [
-            reach(&ranges[0], 0),
-            reach(&ranges[1], HORIZONTAL_EDGE_REACH_MI),
-        ]
-        .into_iter()
-        .flatten()
-        .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end));
-        if let Some(window) = window {
-            self.fill_grids(window)?;
+        if ranges.iter().any(|rows| !rows.is_empty()) {
+            self.lay_out()?;
         }
         self.run_ranges_source(source, &ranges, bit_depth)?;
         self.next_pass_0_mi_row = pass_0_end;
@@ -414,7 +297,7 @@ impl FrameDeblock {
     }
 
     fn run_ranges_source<T: ReconSample>(
-        &self,
+        &mut self,
         source: &mut FrontierRows<T>,
         ranges: &[core::ops::Range<usize>; 2],
         bit_depth: BitDepth,
@@ -423,12 +306,12 @@ impl FrameDeblock {
             return Ok(());
         }
         let pixel_format = source.info().pixel_format();
-        let mut log = self.replays_u_on_v().then(replay::take_log);
-        let mut logged = None;
-        for plane in 0..3 {
+        let mut edges = core::mem::take(&mut self.edges);
+        let mut u_passes = [None; 2];
+        let result = (0..3).try_for_each(|plane| {
             let plane_id = plane_index_to_id(plane);
             if plane != 0 && !self.filter.apply_deblocking_filter[plane + 1] {
-                continue;
+                return Ok(());
             }
             let passes = [0usize, 1].map(|pass| {
                 (!ranges[pass].is_empty())
@@ -446,11 +329,22 @@ impl FrameDeblock {
                     .flatten()
             });
             if passes.iter().all(Option::is_none) {
-                continue;
+                return Ok(());
             }
-            let Some((_, height)) = source.plane_size(plane_id) else {
-                continue;
+            let same = |u: Option<PlanePass>, v: Option<PlanePass>| match (u, v) {
+                (Some(u), Some(v)) => {
+                    (u.df_delta_q, u.quant_delta) == (v.df_delta_q, v.quant_delta)
+                }
+                (None, None) => true,
+                _ => false,
             };
+            let reuse = plane == 2 && same(u_passes[0], passes[0]) && same(u_passes[1], passes[1]);
+            let Some((_, height)) = source.plane_size(plane_id) else {
+                return Ok(());
+            };
+            if plane == 1 {
+                u_passes = passes;
+            }
             let (start, end) =
                 deblock_plane_row_bounds(passes, height).ok_or(DeblockError::Workspace)?;
             source
@@ -459,79 +353,78 @@ impl FrameDeblock {
                     start,
                     end,
                     |samples, stride, width, height, y_origin| {
-                        let mut band = PlaneBand {
+                        let band = PlaneBand {
                             storage: PlaneRows { samples, stride },
                             width,
                             height,
                             y_origin,
                             row_count: end - start,
-                            log: None,
                         };
-                        let geometry = Some((stride, width, height, y_origin, end));
-                        match (plane, log.as_mut()) {
-                            (1, Some(log)) => {
-                                log.iter_mut().for_each(Vec::clear);
-                                logged = geometry;
-                                band.log = Some(log);
-                            }
-                            (2, Some(log)) if logged == geometry => {
-                                return replay::replay(band, passes, log);
-                            }
-                            _ => {}
-                        }
-                        self.run_plane_job(PlaneJob {
-                            band,
-                            grid: self.plane_grid(plane),
-                            passes,
-                        })
+                        self.run_plane_job(
+                            PlaneJob {
+                                band,
+                                grid: self.plane_grid(plane),
+                                passes,
+                            },
+                            &mut edges,
+                            reuse,
+                        )
                     },
                 )
-                .ok_or(DeblockError::Workspace)??;
-        }
-        if let Some(log) = log {
-            replay::keep_log(log);
-        }
-        Ok(())
+                .ok_or(DeblockError::Workspace)?
+        });
+        self.edges = edges;
+        result
     }
 
-    /// Runs one plane's owed passes over their mode-info row ranges.
-    ///
-    /// Planes hold disjoint sample buffers and read only their own, so the
-    /// section's three planes run beside each other; within a plane the passes
-    /// stay ordered.
-    fn run_plane_job<T: ReconSample>(&self, job: PlaneJob<'_, T>) -> Result<(), DeblockError> {
+    /// Runs one plane's owed passes over their mode-info row ranges: decides
+    /// each pass's edges, then filters them. Within a plane the passes stay
+    /// ordered.
+    fn run_plane_job<T: ReconSample>(
+        &self,
+        job: PlaneJob<'_, T>,
+        edges: &mut [PassEdges; 2],
+        reuse: bool,
+    ) -> Result<(), DeblockError> {
         let PlaneJob {
             mut band,
             grid,
             passes,
         } = job;
         for plane_pass in passes.into_iter().flatten() {
-            deblock_plane_pass_serial(
-                &mut band,
-                &grid,
-                plane_pass,
-                self.mi_rows,
-                self.grid.mi_cols,
-                pass_tile_starts(self.tile_info(), plane_pass.pass),
-                self.disable_loopfilters_across_tiles,
-            )?;
+            let geometry = PassGeometry {
+                mi_rows: self.mi_rows,
+                mi_cols: self.grid.mi_cols,
+                tile_starts: pass_tile_starts(self.tile_info(), plane_pass.pass),
+                disable_loopfilters_across_tiles: self.disable_loopfilters_across_tiles,
+                width: band.width,
+                height: band.height,
+            };
+            let edges = &mut edges[plane_pass.pass];
+            if !reuse {
+                edges.build(&grid, &plane_pass, &geometry)?;
+            }
+            let mut ctx = PlaneCtx::new(&mut band)?;
+            if plane_pass.pass == 0 {
+                edges.apply::<T, 0>(&mut ctx, plane_pass.bit_depth)?;
+            } else {
+                edges.apply::<T, 1>(&mut ctx, plane_pass.bit_depth)?;
+            }
         }
         Ok(())
     }
 
-    /// The mode-info grid one plane's edges read. An active V plane without a
-    /// grid of its own reads U's (see [`ChromaDeblockRecords::uv_twins`]).
+    /// The mode-info grid one plane's edges read; U and V read the same.
     fn plane_grid(&self, plane: usize) -> MiGrid<'_> {
-        let chroma = match plane.checked_sub(1) {
-            Some(chroma) => self.chroma[chroma].as_ref().or(self.chroma[0].as_ref()),
-            None => None,
-        };
-        MiGrid::new(
-            &self.grid,
-            chroma,
-            &self.records.blocks,
-            &self.records.chroma,
-        )
+        MiGrid {
+            facts: self.facts.get(plane.min(1)),
+            ..MiGrid::new(
+                &self.grid,
+                self.chroma.as_ref().filter(|_| plane != 0),
+                &self.records.blocks,
+                &self.records.chroma,
+            )
+        }
     }
 
     /// The luma rows whose deblocked samples are final now, given how far
@@ -568,45 +461,81 @@ impl FrameDeblock {
         self.mi_rows * MI_SIZE
     }
 
-    /// Lays every active plane's grid out over mode-info `rows`, widened to
-    /// whole chroma cell rows.
-    fn fill_grids(&mut self, rows: Range<usize>) -> Result<(), DeblockError> {
-        let rows = (rows.start & !1)..rows.end.saturating_add(rows.end & 1).min(self.mi_rows);
-        let blocks = &self.records.blocks;
-        self.grid.fill(
-            blocks,
-            &self.order[0],
-            self.mi_rows,
-            &rows,
-            self.filter.allow_df_sub_pu,
-        )?;
-        for (plane, slot) in self.chroma.iter_mut().enumerate() {
-            if let Some(chroma) = slot {
-                chroma.fill(
-                    &self.grid,
-                    &self.records.chroma,
-                    &self.order[1],
-                    plane,
-                    self.mi_rows,
-                    &rows,
-                    self.filter.allow_df_sub_pu,
-                )?;
+    /// The luma and chroma records taken so far.
+    pub(crate) fn records(&self) -> (&[DeblockBlock], &ChromaDeblockRecords) {
+        (&self.records.blocks, &self.records.chroma)
+    }
+
+    /// Takes the records a frame still being parsed has published since the
+    /// last call, in decode order.
+    pub(crate) fn append_records(
+        &mut self,
+        blocks: &mut Vec<DeblockBlock>,
+        chroma: &mut ChromaDeblockRecords,
+    ) {
+        self.records.blocks.append(blocks);
+        self.records.chroma.append(chroma);
+    }
+
+    /// Lays the records that arrived since the last call out over every
+    /// active plane's grid: the record of each cell for a frame with sub-PU
+    /// edges, else the cell facts.
+    fn lay_out(&mut self) -> Result<(), DeblockError> {
+        let extent = (self.mi_rows, self.grid.mi_cols);
+        let sub_pu = self.filter.allow_df_sub_pu;
+        let luma_facts = !sub_pu && self.filter.apply_deblocking_filter[..2] != [false; 2];
+        if !self.grids_reset {
+            if sub_pu {
+                self.grid.reset(self.mi_rows)?;
+            } else if luma_facts {
+                self.facts[0].reset(extent, splot_recon::PlaneId::Y)?;
             }
+            self.reset_chroma()?;
+            self.grids_reset = true;
+        }
+        let blocks = &self.records.blocks;
+        if sub_pu {
+            self.grid.fill(blocks, self.laid_out[0], self.mi_rows)?;
+        } else if luma_facts {
+            let fresh = blocks.get(self.laid_out[0]..).unwrap_or_default();
+            self.facts[0].paint_records(fresh, extent, (0, 0));
+        }
+        self.laid_out[0] = blocks.len();
+        if let Some(grid) = self.chroma.as_mut() {
+            let fresh = self
+                .records
+                .chroma
+                .get(self.laid_out[1]..)
+                .unwrap_or_default();
+            if sub_pu {
+                grid.fill(extent.1, fresh, self.laid_out[1], extent.0)?;
+            } else {
+                self.facts[1].paint_records(fresh, extent, (grid.sub_x, grid.sub_y));
+            }
+            self.laid_out[1] = self.records.chroma.len();
         }
         Ok(())
+    }
+
+    /// Marks every cell of the chroma grid empty.
+    fn reset_chroma(&mut self) -> Result<(), DeblockError> {
+        let Some(grid) = self.chroma.as_mut() else {
+            return Ok(());
+        };
+        if self.filter.allow_df_sub_pu {
+            return grid.reset(self.mi_rows);
+        }
+        let rows = self.mi_rows.div_ceil(1 << grid.sub_y);
+        self.facts[1].reset((rows, grid.cell_cols), splot_recon::PlaneId::U)
     }
 
     /// Hands the grid vectors back for the next frame to lay out over.
     pub(crate) fn release_grids(&mut self, storage: &mut DeblockGridStorage) {
         storage.cells = core::mem::take(&mut self.grid.cells);
-        storage.candidates = core::mem::take(&mut self.grid.candidates);
-        storage.order = core::mem::take(&mut self.order);
-        for (slot, storage) in self.chroma.iter_mut().zip(&mut storage.chroma) {
-            if let Some(grid) = slot.as_mut() {
-                storage.0 = core::mem::take(&mut grid.cells);
-                storage.1 = core::mem::take(&mut grid.candidates);
-            }
+        if let Some(grid) = self.chroma.as_mut() {
+            storage.chroma = core::mem::take(&mut grid.cells);
         }
+        storage.facts = core::mem::take(&mut self.facts);
     }
 
     pub(crate) fn finish(mut self) -> OwnedDeblockRecords {
@@ -632,7 +561,7 @@ impl FrameDeblock {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         blocks: &[DeblockBlock],
-        chroma_blocks: &ChromaDeblockRecords,
+        chroma_blocks: &[DeblockBlock],
         mi_rows: usize,
         mi_cols: usize,
         filter: DeblockingFilterParams,
@@ -646,7 +575,7 @@ impl FrameDeblock {
             OwnedDeblockRecords {
                 grids: core::mem::take(grids),
                 blocks: blocks.to_vec(),
-                chroma: chroma_blocks.clone(),
+                chroma: chroma_blocks.to_vec(),
             },
             mi_rows,
             mi_cols,
@@ -657,48 +586,6 @@ impl FrameDeblock {
             chroma_subsampling,
         )
     }
-}
-
-type FrameGrids = (
-    MiGridStorage,
-    [Option<ChromaMiGridStorage>; 2],
-    [RowOrder; 2],
-);
-
-/// Takes the frame's grid vectors and orders its records by row; the grids
-/// stay empty until an advance lays a window out.
-fn take_grids(
-    blocks: &[DeblockBlock],
-    chroma_blocks: &ChromaDeblockRecords,
-    (mi_rows, mi_cols): (usize, usize),
-    filter: DeblockingFilterParams,
-    chroma_subsampling: (usize, usize),
-    storage: &mut DeblockGridStorage,
-) -> Result<FrameGrids, DeblockError> {
-    let mut order = core::mem::take(&mut storage.order);
-    order[0].sort(blocks.iter(), mi_rows)?;
-    let mut chroma = [None, None];
-    let v_shares_u = filter.apply_deblocking_filter[2..] == [true; 2] && chroma_blocks.uv_twins();
-    for (plane, (slot, storage)) in chroma.iter_mut().zip(&mut storage.chroma).enumerate() {
-        if filter.apply_deblocking_filter[plane + 2] && !(plane == 1 && v_shares_u) {
-            *slot = Some(ChromaMiGridStorage::new(
-                mi_cols,
-                chroma_subsampling,
-                storage,
-            ));
-        }
-    }
-    if chroma.iter().any(Option::is_some) {
-        order[1].sort(
-            chroma_blocks.blocks.iter().map(|record| &record.block),
-            mi_rows,
-        )?;
-    }
-    Ok((
-        MiGridStorage::new(mi_cols, chroma_subsampling, storage),
-        chroma,
-        order,
-    ))
 }
 
 /// Deblocks the TIP unit edges of a `TIP_FRAME_AS_OUTPUT` frame. Each unit
@@ -769,16 +656,26 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
             let stride = view.stride_samples();
             let mut band = PlaneBand::plane(view.samples_mut(), stride, width, height);
             let mut plane_ctx = PlaneCtx::new(&mut band)?;
-            let run_edge =
-                |boundary, (max_width_neg, max_width_pos): (usize, usize)| ContiguousEdge {
-                    boundary,
-                    q_thr,
-                    side,
-                    max_width_neg: max_width_neg as u8,
-                    max_width_pos: max_width_pos as u8,
-                    prev_lossless: false,
-                    curr_lossless: false,
-                    key: StrengthKey::default(),
+            let mut run = Vec::new();
+            let mut run_edges =
+                |plane_ctx: &mut PlaneCtx<'_, '_, T>,
+                 vertical: bool,
+                 first: usize,
+                 edges: usize,
+                 (max_width_neg, max_width_pos): (usize, usize)| {
+                    let edge =
+                        DeblockEdge::new(q_thr, side, max_width_neg, max_width_pos, false, false)
+                            .ok_or(DeblockError::SampleFilter)?;
+                    run.clear();
+                    run.resize(edges, edge);
+                    let (samples, stride) = plane_ctx.rows.contiguous_mut();
+                    let kernel = if vertical {
+                        deblock_vertical_edges::<T>
+                    } else {
+                        deblock_horizontal_edges::<T>
+                    };
+                    kernel(samples, stride, first, &run, bit_depth)
+                        .map_err(|_| DeblockError::SampleFilter)
                 };
             let full_rows = height / MI_SIZE;
             for x in (unit_width..width).step_by(unit_width) {
@@ -789,8 +686,7 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
                 let max_widths = deblock_filter_max_width(unit_width, plane != 0, tile_edge);
                 let mut first_y = 0;
                 if full_rows > 0 && x >= GATHER_HALF && x <= width.saturating_sub(GATHER_HALF) {
-                    let edge = run_edge(x, max_widths);
-                    filter_contiguous_run::<T, 0>(&mut plane_ctx, edge, full_rows, bit_depth)?;
+                    run_edges(&mut plane_ctx, true, x, full_rows, max_widths)?;
                     first_y = full_rows * MI_SIZE;
                 }
                 for y in (first_y..height).step_by(MI_SIZE) {
@@ -821,8 +717,7 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
                 );
                 let mut first_x = 0;
                 if y >= GATHER_HALF && y <= height.saturating_sub(GATHER_HALF) {
-                    let edge = run_edge(y * stride, max_widths);
-                    filter_contiguous_run::<T, 1>(&mut plane_ctx, edge, full_cols, bit_depth)?;
+                    run_edges(&mut plane_ctx, false, y * stride, full_cols, max_widths)?;
                     first_x = full_cols * MI_SIZE;
                 }
                 for x in (first_x..width).step_by(MI_SIZE) {
@@ -904,320 +799,6 @@ fn apply_tip_filter_edge<T: ReconSample>(
     apply_edge_samples(plane_ctx, PerpLine::new(x, y, dx, dy), lanes, params)
 }
 
-#[inline(never)]
-fn deblock_plane_pass_serial<T: ReconSample>(
-    band: &mut PlaneBand<'_, T>,
-    grid: &MiGrid<'_>,
-    plane_pass: PlanePass,
-    mi_rows: usize,
-    mi_cols: usize,
-    tile_starts: Option<&[u32]>,
-    disable_loopfilters_across_tiles: bool,
-) -> Result<(), DeblockError> {
-    let walk = match (plane_pass.plane, plane_pass.pass) {
-        (0, 0) => deblock_plane_pass_serial_specialized::<T, 0, 0>,
-        (0, _) => deblock_plane_pass_serial_specialized::<T, 0, 1>,
-        (1, 0) => deblock_plane_pass_serial_specialized::<T, 1, 0>,
-        (1, _) => deblock_plane_pass_serial_specialized::<T, 1, 1>,
-        (2, 0) => deblock_plane_pass_serial_specialized::<T, 2, 0>,
-        _ => deblock_plane_pass_serial_specialized::<T, 2, 1>,
-    };
-    walk(
-        band,
-        grid,
-        plane_pass,
-        mi_rows,
-        mi_cols,
-        tile_starts,
-        disable_loopfilters_across_tiles,
-    )
-}
-
-/// How many mode-info rows the vertical pass walks column by column, so that
-/// the edges down one column meet the same two records in a row.
-const VERTICAL_WALK_ROWS: usize = 16;
-
-/// Filters one plane pass over its candidate edges: row by row for the horizontal
-/// pass, column by column inside [`VERTICAL_WALK_ROWS`] blocks for the vertical
-/// one. § 7.17.1 lets either pass run its edges in any order, and row 0 and
-/// column 0 hold no on-screen edge of their pass. A visit repeats its outcome
-/// over the next `repeated` rows of its column, which all follow it and so all
-/// hold candidate bits.
-#[inline(never)]
-fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, const PASS: usize>(
-    band: &mut PlaneBand<'_, T>,
-    grid: &MiGrid<'_>,
-    plane_pass: PlanePass,
-    mi_rows: usize,
-    mi_cols: usize,
-    tile_starts: Option<&[u32]>,
-    disable_loopfilters_across_tiles: bool,
-) -> Result<(), DeblockError> {
-    debug_assert_eq!(plane_pass.plane, PLANE);
-    debug_assert_eq!(plane_pass.pass, PASS);
-    let mut ctx = PlaneCtx::new(band)?;
-    let strengths = StrengthCache::new(
-        plane_pass.quant_delta,
-        plane_pass.df_delta_q,
-        plane_pass.bit_depth,
-    );
-    let mut run: EdgeRun = None;
-    let mut last: Option<(usize, usize, (EdgeBlock<'_>, EdgeBlock<'_>), Repeat)> = None;
-    let (sub_x, sub_y) = (plane_pass.plane_sub_x, plane_pass.plane_sub_y);
-    let step = if PASS == 0 {
-        plane_pass.row_step
-    } else {
-        1 << sub_x
-    };
-    // Returns how many of the `chain` same-record edges after this one repeat its outcome.
-    let mut visit = |r: usize, c: usize, tile_edge: bool, follows: bool, chain: usize| {
-        let (line, pos) = if PASS == 0 { (c, r) } else { (r, c) };
-        let spanned = |ctx: &PlaneCtx<'_, '_, T>, mut chain: usize| {
-            while chain > 0 {
-                let next = pos + chain * step;
-                let (row, col) = if PASS == 0 { (next, c) } else { (r, next) };
-                if ctx.in_span::<PASS>(row, col, sub_x, sub_y) {
-                    break;
-                }
-                chain -= 1;
-            }
-            chain
-        };
-        let mut blocks = None;
-        let same = follows || {
-            let pair = edge_blocks::<PLANE, PASS>(grid, r, c, sub_x, sub_y)?;
-            blocks = Some(pair);
-            last.is_some_and(|(held_line, _, held, _)| {
-                held_line == line && held.0.same(pair.0) && held.1.same(pair.1)
-            })
-        };
-        if same && let Some((_, held_pos, _, repeat)) = last.as_mut() {
-            match repeat {
-                Repeat::Skip => return Ok(chain),
-                Repeat::Join
-                    if *held_pos + step == pos && ctx.in_span::<PASS>(r, c, sub_x, sub_y) =>
-                {
-                    if let Some((_, edges)) = run.as_mut() {
-                        let joined = spanned(&ctx, chain);
-                        *edges += 1 + joined;
-                        *held_pos = pos + joined * step;
-                        return Ok(joined);
-                    }
-                }
-                Repeat::Join | Repeat::Derive => {}
-            }
-        }
-        let blocks = match blocks {
-            Some(blocks) => blocks,
-            None => edge_blocks::<PLANE, PASS>(grid, r, c, sub_x, sub_y)?,
-        };
-        let repeat = deblock_filter_edge_specialized::<T, PLANE, PASS>(
-            &mut ctx,
-            blocks,
-            plane_pass.edge_context(r, c, tile_edge),
-            disable_loopfilters_across_tiles,
-            &strengths,
-            &mut run,
-        )?;
-        let repeated = match (repeat, run.as_mut()) {
-            (Repeat::Skip, _) => chain,
-            (Repeat::Join, Some((_, edges))) => {
-                let joined = spanned(&ctx, chain);
-                *edges += joined;
-                joined
-            }
-            _ => 0,
-        };
-        last = Some((line, pos + repeated * step, blocks, repeat));
-        Ok::<_, DeblockError>(repeated)
-    };
-    let row_step = plane_pass.row_step;
-    let end = plane_pass.mi_row_range.1.min(mi_rows);
-    let mut first = plane_pass
-        .mi_row_range
-        .0
-        .div_ceil(row_step)
-        .saturating_mul(row_step);
-    if PASS == 1 && first == 0 {
-        first = row_step;
-    }
-    let block_rows = if PASS == 0 { VERTICAL_WALK_ROWS } else { 1 };
-    let subsampling = if PLANE == 0 { (0, 0) } else { (sub_x, sub_y) };
-    let mut rows_masks = [0u64; 2 * VERTICAL_WALK_ROWS];
-    for block_start in (first..end).step_by(row_step * block_rows) {
-        let rows = (block_start..end).step_by(row_step).take(block_rows);
-        let live_rows = (1u32 << rows.len()) - 1;
-        let row_tile_edge = PASS == 1 && starts_tile(tile_starts, block_start);
-        let mut carry = 0;
-        for start in (0..mi_cols).step_by(CANDIDATE_CHUNK) {
-            let mut any = 0;
-            let (masks, follows) = rows_masks.split_at_mut(VERTICAL_WALK_ROWS);
-            for (mask, r) in masks.iter_mut().zip(rows.clone()) {
-                *mask = candidate_mask::<PASS>(grid, r, start, &plane_pass)?;
-                any |= *mask;
-            }
-            if any != 0 {
-                for (i, r) in rows.clone().enumerate() {
-                    let back = match (PASS, i.checked_sub(1)) {
-                        (0, Some(above)) => masks[above],
-                        (0, None) => 0, // the walk reaches a block's first row from another column
-                        _ => masks[0] << step | carry,
-                    };
-                    follows[i] = masks[i] & back;
-                    if follows[i] != 0 {
-                        follows[i] &= same_records_mask::<PASS>(grid, r, start, subsampling);
-                    }
-                }
-            }
-            carry = masks[0] >> (CANDIDATE_CHUNK - step);
-            let follows = &rows_masks[VERTICAL_WALK_ROWS..];
-            if PASS == 0 && start == 0 {
-                any &= !1;
-            }
-            let [candidates, follows_columns] = [0, VERTICAL_WALK_ROWS]
-                .map(|first| Simd::<u64, VERTICAL_WALK_ROWS>::from_slice(&rows_masks[first..]));
-            while any != 0 {
-                let bit = any.trailing_zeros();
-                let col = start + bit as usize;
-                let tile_edge = row_tile_edge || PASS == 0 && starts_tile(tile_starts, col);
-                any &= any - 1;
-                if PASS == 1 {
-                    let follow = follows[0] >> bit;
-                    let lanes = if step == 1 {
-                        u64::MAX
-                    } else {
-                        0x5555_5555_5555_5555
-                    };
-                    let chain = (!(follow >> step) & lanes).trailing_zeros() as usize / step;
-                    let repeated = visit(block_start, col, tile_edge, follow & 1 != 0, chain)?;
-                    any &= !(((1u64 << (repeated * step)) - 1) << bit << 1);
-                    continue;
-                }
-                let column_bits = |masks: Simd<u64, VERTICAL_WALK_ROWS>| {
-                    ((masks >> Simd::splat(u64::from(bit))) & Simd::splat(1))
-                        .simd_ne(Simd::splat(0))
-                        .to_bitmask() as u32
-                };
-                let mut present = column_bits(candidates) & live_rows;
-                let column = column_bits(follows_columns) & live_rows;
-                while present != 0 {
-                    let i = present.trailing_zeros() as usize;
-                    let chain = (!(column >> (i + 1))).trailing_zeros() as usize;
-                    let r = block_start + i * row_step;
-                    let repeated = visit(r, col, tile_edge, column >> i & 1 != 0, chain)?;
-                    present &= !((2u32 << (i + repeated)) - 1);
-                }
-            }
-        }
-    }
-    flush_run::<T, PASS>(&mut run, &mut ctx, plane_pass.bit_depth)
-}
-
-/// Mode-info columns one candidate mask covers.
-const CANDIDATE_CHUNK: usize = 64;
-
-/// The per-cell `is_candidate` test for the `CANDIDATE_CHUNK` columns of `row` from
-/// `start` on the pass's column step, as a bitmask.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
-#[inline(always)]
-fn candidate_mask<const PASS: usize>(
-    grid: &MiGrid<'_>,
-    row: usize,
-    start: usize,
-    plane_pass: &PlanePass,
-) -> Result<u64, DeblockError> {
-    let flags = grid
-        .candidate_row(row)
-        .ok_or(DeblockError::UncoveredMi { row, col: start })?;
-    let word = start / CANDIDATE_CHUNK;
-    let edge = if PASS == 0 {
-        VERTICAL_PLANE
-    } else {
-        HORIZONTAL_PLANE
-    };
-    let mut mask = flag_word(flags, edge, word);
-    if plane_pass.allow_df_sub_pu {
-        let sub_pu = if PASS == 0 {
-            SUB_PU_PLANE
-        } else {
-            SUB_PU_ROW_PLANE
-        };
-        mask |= flag_word(flags, sub_pu, word);
-    }
-    if !grid.fully_covered {
-        mask |= !flag_word(flags, COVERED_PLANE, word);
-    }
-    if PASS == 0 && plane_pass.plane_sub_x != 0 {
-        let carried = word
-            .checked_sub(1)
-            .map_or(0, |left| flag_word(flags, VERTICAL_PLANE, left) >> 63);
-        mask |= flag_word(flags, VERTICAL_PLANE, word) << 1 | carried;
-    }
-    if PASS == 1 && plane_pass.plane_sub_y != 0 && row != 0 {
-        mask |= grid
-            .candidate_row(row - 1)
-            .map_or(u64::MAX, |above| flag_word(above, HORIZONTAL_PLANE, word));
-    }
-    let len = grid.base.mi_cols.saturating_sub(start);
-    if len < CANDIDATE_CHUNK {
-        mask &= (1 << len) - 1;
-    }
-    if plane_pass.plane_sub_x != 0 {
-        mask &= 0x5555_5555_5555_5555;
-    }
-    Ok(mask)
-}
-
-/// The bitmask of the `CANDIDATE_CHUNK` columns of `row` from `start` whose
-/// edge meets the same two records as the edge one step back along its line:
-/// one row step up on the vertical pass, one column step left on the
-/// horizontal one.
-///
-/// Each record flags its side edges on every mode-info row it covers and its
-/// top and bottom edges on every column, so two cells with no flag of that
-/// direction between them are covered by the same records. A chroma cell
-/// spans `1 << sub` mode-info units in each direction and a chroma record
-/// starts or ends anywhere inside one, so the flags are read over every unit
-/// of the two cells on each side of the edge; columns `start - 2` and
-/// `start - 1` sit on bits 0 and 1 of `before`.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
-#[inline(always)]
-fn same_records_mask<const PASS: usize>(
-    grid: &MiGrid<'_>,
-    row: usize,
-    start: usize,
-    (sub_x, sub_y): (usize, usize),
-) -> u64 {
-    let (unit_x, unit_y) = (1 << sub_x, 1 << sub_y);
-    let (plane, above, left) = if PASS == 0 {
-        (HORIZONTAL_PLANE, unit_y - 1, unit_x)
-    } else {
-        (VERTICAL_PLANE, unit_y, unit_x - 1)
-    };
-    let Some(first) = row.checked_sub(above) else {
-        return 0;
-    };
-    let word = start / CANDIDATE_CHUNK;
-    let back_bits = (1u64 << left) - 1;
-    let (mut flagged, mut before) = (0u64, 0u64);
-    for row in first..row + unit_y {
-        let Some(flags) = grid.candidate_row(row) else {
-            return 0;
-        };
-        flagged |= flag_word(flags, plane, word);
-        if let Some(left_word) = word.checked_sub(1) {
-            before |= (flag_word(flags, plane, left_word) >> 62) & (back_bits << (2 - left));
-        }
-    }
-    let near = u128::from(flagged) << 2 | u128::from(before);
-    let right = unit_x - 1;
-    let mut across = 0;
-    for offset in 2 - left..=2 + right {
-        across |= near >> offset;
-    }
-    !(across as u64) & u64::MAX >> right
-}
-
 struct PlaneRows<'samples, T> {
     samples: &'samples mut [T],
     stride: usize,
@@ -1251,7 +832,6 @@ struct PlaneCtx<'rows, 'samples, T: ReconSample> {
     height: usize,
     y_origin: usize,
     band_rows: usize,
-    log: Option<&'rows mut ReplayLog>,
 }
 
 /// The plane rows one deblock job filters: a whole plane, or a contiguous band
@@ -1265,8 +845,6 @@ struct PlaneBand<'a, T> {
     height: usize,
     y_origin: usize,
     row_count: usize,
-    /// Where a U band logs its steps for V to replay.
-    log: Option<&'a mut ReplayLog>,
 }
 
 impl<'a, T> PlaneBand<'a, T> {
@@ -1277,7 +855,6 @@ impl<'a, T> PlaneBand<'a, T> {
             height,
             y_origin: 0,
             row_count: height,
-            log: None,
         }
     }
 }
@@ -1308,24 +885,7 @@ impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
             height,
             y_origin,
             band_rows: rows,
-            log: band.log.as_deref_mut(),
         })
-    }
-
-    /// Whether the edge at mode-info (`row`, `col`) ends inside the plane
-    /// along its pass's line, the one placement term a line does not fix.
-    const fn in_span<const PASS: usize>(
-        &self,
-        row: usize,
-        col: usize,
-        sub_x: usize,
-        sub_y: usize,
-    ) -> bool {
-        if PASS == 0 {
-            ((row * MI_SIZE) >> sub_y) + MI_SIZE <= self.height
-        } else {
-            ((col * MI_SIZE) >> sub_x) + MI_SIZE <= self.width
-        }
     }
 
     fn local_coords(&self, x: usize, y: usize) -> Option<(usize, usize)> {
@@ -1394,14 +954,6 @@ impl StrengthCache {
         let (q_thr, side) = calculate();
         entry.set((q_thr + 1, side));
         (q_thr, side)
-    }
-
-    /// Whether a record of `qindex` filters its edges on its own.
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
-    #[inline(always)]
-    fn strong(&self, qindex: u32) -> bool {
-        let (q_thr, side) = self.get(qindex);
-        q_thr != 0 && side != 0
     }
 }
 
@@ -1490,7 +1042,6 @@ impl PlanePass {
             col,
             plane_sub_x: self.plane_sub_x,
             plane_sub_y: self.plane_sub_y,
-            bit_depth: self.bit_depth,
             allow_df_sub_pu: self.allow_df_sub_pu,
             tile_edge,
         }
@@ -1510,21 +1061,14 @@ struct EdgeContext {
     col: usize,
     plane_sub_x: usize,
     plane_sub_y: usize,
-    bit_depth: BitDepth,
     allow_df_sub_pu: bool,
     tile_edge: bool,
 }
 
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
-fn sub_pu_dimension(
-    info: EdgeBlock<'_>,
-    plane: usize,
-    pass: usize,
-    sub_x: usize,
-    sub_y: usize,
-) -> usize {
-    if let Some(size) = info.block.sub_pu_size {
+fn sub_pu_dimension(info: &DeblockBlock, pass: usize, sub_x: usize, sub_y: usize) -> usize {
+    if let Some(size) = info.sub_pu_size {
         let (dimension, subsampling) = if pass == 0 {
             (size.width, sub_x)
         } else {
@@ -1532,11 +1076,7 @@ fn sub_pu_dimension(
         };
         return (usize::from(dimension) >> subsampling).max(1);
     }
-    let tx = if plane == 0 {
-        info.block.luma_prediction.default_sub_pu_tx
-    } else {
-        info.block.chroma_prediction.default_sub_pu_tx
-    };
+    let tx = info.prediction.default_sub_pu_tx;
     let dimensions = if pass == 0 { &TX_WIDTH } else { &TX_HEIGHT };
     dimensions
         .get(usize::from(tx))
@@ -1547,17 +1087,16 @@ fn sub_pu_dimension(
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn sub_pu_base(
-    info: EdgeBlock<'_>,
-    plane: usize,
+    info: &DeblockBlock,
     x: usize,
     y: usize,
     sub_x: usize,
     sub_y: usize,
 ) -> (usize, usize) {
-    let prediction = info.prediction(plane);
+    let prediction = info.prediction;
     let block_x = (prediction.base_c as usize * MI_SIZE) >> sub_x;
     let block_y = (prediction.base_r as usize * MI_SIZE) >> sub_y;
-    let Some(size) = info.block.sub_pu_size else {
+    let Some(size) = info.sub_pu_size else {
         return (block_x, block_y);
     };
     let width = (usize::from(size.width) >> sub_x).max(1);
@@ -1591,8 +1130,8 @@ fn sub_pu_filter_dimension(tx_size: usize, sub_pu_size: usize, is_tx_edge: bool)
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
-#[inline(always)]
+/// Filters the luma vertical edge `ctx` names on its own, as the § 7.17 pass
+/// loop visits it.
 #[cfg(test)]
 fn deblock_filter_edge<T: ReconSample>(
     plane_ctx: &mut PlaneCtx<'_, '_, T>,
@@ -1601,16 +1140,20 @@ fn deblock_filter_edge<T: ReconSample>(
     disable_loopfilters_across_tiles: bool,
     strengths: &StrengthCache,
 ) -> Result<(), DeblockError> {
-    let mut run = None;
-    deblock_filter_edge_specialized::<T, 0, 0>(
-        plane_ctx,
-        edge_blocks::<0, 0>(grid, ctx.row, ctx.col, 0, 0)?,
-        ctx,
+    let geometry = PassGeometry {
+        mi_rows: usize::MAX,
+        mi_cols: usize::MAX,
+        tile_starts: None,
         disable_loopfilters_across_tiles,
-        strengths,
-        &mut run,
-    )?;
-    flush_run::<T, 0>(&mut run, plane_ctx, ctx.bit_depth)
+        width: plane_ctx.width,
+        height: plane_ctx.height,
+    };
+    let edge = edges::edge_at::<0, 0>(grid, ctx, &geometry, strengths)?;
+    if edge.is_none() {
+        return Ok(());
+    }
+    let (x_p, y_p) = (ctx.col * MI_SIZE, ctx.row * MI_SIZE);
+    edges::LoneEdge { x_p, y_p, edge }.filter::<T, 0>(plane_ctx, BitDepth::Eight)
 }
 
 /// What the records on both sides of an edge decide, before the clamps that
@@ -1622,305 +1165,43 @@ struct EdgeDecision {
     side: i32,
     prev_lossless: bool,
     curr_lossless: bool,
-    key: StrengthKey,
 }
-
-/// The § 7.17.6 strength inputs an edge's records give it: their `qindex`
-/// values and whether the edge is a sub-PU edge only, which scales the
-/// strengths down. A plane with other strength deltas derives its own
-/// strengths from it.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct StrengthKey {
-    curr_qindex: u32,
-    prev_qindex: u32,
-    sub_pu_only: bool,
-}
-
-impl StrengthKey {
-    /// The edge's `qThr` and `side` under `strengths`.
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
-    #[inline(always)]
-    fn strengths(self, strengths: &StrengthCache) -> (i32, i32) {
-        self.combine(
-            strengths.get(self.curr_qindex),
-            strengths.get(self.prev_qindex),
-        )
-    }
-
-    /// The edge's `qThr` and `side` from its records' own.
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
-    #[inline(always)]
-    fn combine(
-        self,
-        (curr_q, curr_side): (i32, i32),
-        (prev_q, prev_side): (i32, i32),
-    ) -> (i32, i32) {
-        let (q_thr, side) = combine_strengths(curr_q, prev_q, curr_side, prev_side);
-        if self.sub_pu_only {
-            (q_thr >> 3, side >> 3)
-        } else {
-            (q_thr, side)
-        }
-    }
-}
-
-/// What a pass walk may do with the next edge of the same two records on the
-/// same row (horizontal pass) or column (vertical pass).
-///
-/// Along one line only the span check reads the edge position once the
-/// records fix a uniform decision, so the outcome repeats.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Repeat {
-    /// Derive it afresh.
-    Derive,
-    /// Skip it: the records filter no edge of this line.
-    Skip,
-    /// Add it to the held run when it continues the run inside the plane.
-    Join,
-}
-
-/// One contiguous edge's sample-filter inputs, with `boundary` the band index
-/// of its first line's `q0`.
-#[derive(Clone, Copy, Eq)]
-struct ContiguousEdge {
-    boundary: usize,
-    q_thr: i32,
-    side: i32,
-    max_width_neg: u8,
-    max_width_pos: u8,
-    prev_lossless: bool,
-    curr_lossless: bool,
-    key: StrengthKey,
-}
-
-impl PartialEq for ContiguousEdge {
-    /// Compares every field without branching, as the walk does for each
-    /// edge it queues.
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
-    #[allow(clippy::needless_bitwise_bool, reason = "branch-free on purpose")]
-    #[inline(always)]
-    fn eq(&self, other: &Self) -> bool {
-        (self.boundary == other.boundary)
-            & (self.q_thr == other.q_thr)
-            & (self.side == other.side)
-            & (self.max_width_neg == other.max_width_neg)
-            & (self.max_width_pos == other.max_width_pos)
-            & (self.prev_lossless == other.prev_lossless)
-            & (self.curr_lossless == other.curr_lossless)
-            & (self.key.curr_qindex == other.key.curr_qindex)
-            & (self.key.prev_qindex == other.key.prev_qindex)
-            & (self.key.sub_pu_only == other.key.sub_pu_only)
-    }
-}
-
-/// The run of contiguous edges a pass walk holds back, with its edge count.
-///
-/// Each edge that continues the run (the next four columns on the horizontal
-/// pass, the next four rows on the vertical one) with the same filter inputs
-/// joins it; any other edge flushes the run through one kernel call. § 7.17.1
-/// makes the edges of one pass independent, so the delay changes no sample.
-type EdgeRun = Option<(ContiguousEdge, usize)>;
 
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
-fn queue_edge<T: ReconSample, const PASS: usize>(
-    run: &mut EdgeRun,
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
-    edge: ContiguousEdge,
-    bit_depth: BitDepth,
-) -> Result<(), DeblockError> {
-    if let Some((first, edges)) = run {
-        let step = if PASS == 0 {
-            MI_SIZE * plane_ctx.rows.stride
-        } else {
-            MI_SIZE
-        };
-        let next = ContiguousEdge {
-            boundary: first.boundary + *edges * step,
-            ..*first
-        };
-        if next == edge {
-            *edges += 1;
-            return Ok(());
-        }
-    }
-    replace_run::<T, PASS>(run, plane_ctx, Some(edge), bit_depth)
-}
-
-fn flush_run<T: ReconSample, const PASS: usize>(
-    run: &mut EdgeRun,
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
-    bit_depth: BitDepth,
-) -> Result<(), DeblockError> {
-    replace_run::<T, PASS>(run, plane_ctx, None, bit_depth)
-}
-
-/// Filters the held run, then holds `next` as a new run.
-#[inline(never)]
-fn replace_run<T: ReconSample, const PASS: usize>(
-    run: &mut EdgeRun,
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
-    next: Option<ContiguousEdge>,
-    bit_depth: BitDepth,
-) -> Result<(), DeblockError> {
-    match core::mem::replace(run, next.map(|edge| (edge, 1))) {
-        Some((first, edges)) => {
-            plane_ctx.record::<PASS>(ReplayStep::Run(first, edges))?;
-            filter_contiguous_run::<T, PASS>(plane_ctx, first, edges, bit_depth)
-        }
-        None => Ok(()),
-    }
+fn cell_block<'g, const PLANE: usize>(
+    grid: &'g MiGrid,
+    row: usize,
+    col: usize,
+) -> Result<&'g DeblockBlock, DeblockError> {
+    let edge = if PLANE == 0 {
+        grid.get_luma_edge(row, col)
+    } else {
+        grid.get_edge(row, col)
+    };
+    edge.ok_or(DeblockError::UncoveredMi { row, col })
 }
 
 /// The current and previous records across the edge at mode-info
 /// (`row`, `col`); the walk visits no edge on the plane's first row or column.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
-#[inline(always)]
+#[cfg(test)]
 fn edge_blocks<'g, const PLANE: usize, const PASS: usize>(
     grid: &'g MiGrid,
     row: usize,
     col: usize,
     sub_x: usize,
     sub_y: usize,
-) -> Result<(EdgeBlock<'g>, EdgeBlock<'g>), DeblockError> {
-    let edge = |row: usize, col: usize| {
-        let edge = if PLANE == 0 {
-            grid.get_luma_edge(row, col)
-        } else {
-            grid.get_edge(row, col)
-        };
-        edge.ok_or(DeblockError::UncoveredMi { row, col })
-    };
+) -> Result<(&'g DeblockBlock, &'g DeblockBlock), DeblockError> {
     let prev = if PASS == 0 {
         col.checked_sub(1 << sub_x).map(|col| (row, col))
     } else {
         row.checked_sub(1 << sub_y).map(|row| (row, col))
     };
     let (prev_row, prev_col) = prev.ok_or(DeblockError::UncoveredMi { row, col })?;
-    Ok((edge(row, col)?, edge(prev_row, prev_col)?))
-}
-
-impl EdgeBlock<'_> {
-    fn same(self, other: Self) -> bool {
-        core::ptr::eq(self.block, other.block)
-            && match (self.chroma_transform, other.chroma_transform) {
-                (Some(a), Some(b)) => core::ptr::eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
-    }
-}
-
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
-#[inline(always)]
-fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const PASS: usize>(
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
-    (curr, prev): (EdgeBlock<'g>, EdgeBlock<'g>),
-    ctx: EdgeContext,
-    disable_loopfilters_across_tiles: bool,
-    strengths: &StrengthCache,
-    run: &mut EdgeRun,
-) -> Result<Repeat, DeblockError> {
-    let EdgeContext {
-        row,
-        col,
-        plane_sub_x,
-        plane_sub_y,
-        bit_depth,
-        tile_edge,
-        ..
-    } = ctx;
-    let plane = PLANE;
-    let pass = PASS;
-
-    let (dx, dy) = if pass == 0 { (1usize, 0usize) } else { (0, 1) };
-
-    let x = col * MI_SIZE;
-    let y = row * MI_SIZE;
-
-    if disable_loopfilters_across_tiles && tile_edge {
-        return Ok(Repeat::Derive);
-    }
-
-    let sb_edge = pass == 1 && y.is_multiple_of(SB_SIZE) || pass == 0 && tile_edge;
-
-    let x_p = x >> plane_sub_x;
-    let y_p = y >> plane_sub_y;
-
-    let (decision, uniform) = edge_decision::<PLANE, PASS>(curr, prev, x_p, y_p, ctx, strengths);
-    let repeat = |repeat| if uniform { repeat } else { Repeat::Derive };
-    let Some(EdgeDecision {
-        mut filter_size,
-        q_thr,
-        side,
-        prev_lossless,
-        curr_lossless,
-        key,
-    }) = decision
-    else {
-        return Ok(repeat(Repeat::Skip));
-    };
-
-    let (plane_width, plane_height) = (plane_ctx.width, plane_ctx.height);
-    if plane == 0 {
-        if x_p + dx * 16 > plane_width || y_p + dy * 16 > plane_height {
-            filter_size = filter_size.min(16);
-        }
-    } else if x_p + dx * 8 > plane_width || y_p + dy * 8 > plane_height {
-        filter_size = filter_size.min(8);
-    }
-
-    let (max_width_neg, max_width_pos) =
-        MAX_WIDTHS[usize::from(plane != 0)][usize::from(sb_edge)][filter_size.min(64)];
-    let (max_width_neg, max_width_pos) = (usize::from(max_width_neg), usize::from(max_width_pos));
-    if max_width_neg == 0 || max_width_pos == 0 {
-        return Ok(Repeat::Derive);
-    }
-
-    let horizontal = dx == 1
-        && dy == 0
-        && x_p >= GATHER_HALF
-        && x_p <= plane_ctx.width.saturating_sub(GATHER_HALF)
-        && y_p >= plane_ctx.y_origin
-        && y_p
-            .checked_add(MI_SIZE)
-            .is_some_and(|end| end <= plane_ctx.height);
-    let vertical = dx == 0
-        && dy == 1
-        && y_p >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
-        && y_p <= plane_ctx.height.saturating_sub(GATHER_HALF)
-        && x_p
-            .checked_add(MI_SIZE)
-            .is_some_and(|end| end <= plane_ctx.width);
-    if horizontal || vertical {
-        let edge = ContiguousEdge {
-            boundary: (y_p - plane_ctx.y_origin) * plane_ctx.rows.stride + x_p,
-            q_thr,
-            side,
-            max_width_neg: max_width_neg as u8,
-            max_width_pos: max_width_pos as u8,
-            prev_lossless,
-            curr_lossless,
-            key,
-        };
-        queue_edge::<T, PASS>(run, plane_ctx, edge, bit_depth)?;
-        return Ok(repeat(Repeat::Join));
-    }
-
-    let edge = LoneEdge {
-        x_p,
-        y_p,
-        q_thr,
-        side,
-        max_width_neg: max_width_neg as u8,
-        max_width_pos: max_width_pos as u8,
-        prev_lossless,
-        curr_lossless,
-        key,
-    };
-    plane_ctx.record::<PASS>(ReplayStep::Lone(edge))?;
-    edge.filter::<T, PASS>(plane_ctx, bit_depth)?;
-    Ok(Repeat::Derive)
+    Ok((
+        cell_block::<PLANE>(grid, row, col)?,
+        cell_block::<PLANE>(grid, prev_row, prev_col)?,
+    ))
 }
 
 /// [`deblock_filter_max_width`] by chroma plane, super-block edge and filter
@@ -1938,46 +1219,35 @@ const MAX_WIDTHS: [[[(u8, u8); 65]; 2]; 2] = {
 };
 
 /// Derives § 7.17.2 `applyFilter`, `filterSize`, `qThr` and `side` from the
-/// two records of one edge, and whether that holds for every edge of the same
-/// two records along this row (horizontal pass) or column (vertical pass).
-///
-/// Only the sub-PU base comparison reads the position along the line. It is
-/// uniform when the bases already differ across the edge, or when both records
-/// share one prediction unit.
+/// two records of one edge.
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
-fn edge_decision<const PLANE: usize, const PASS: usize>(
-    curr: EdgeBlock<'_>,
-    prev: EdgeBlock<'_>,
+fn edge_decision<const PASS: usize>(
+    curr: &DeblockBlock,
+    prev: &DeblockBlock,
     x_p: usize,
     y_p: usize,
     ctx: EdgeContext,
     strengths: &StrengthCache,
-) -> (Option<EdgeDecision>, bool) {
+) -> Option<EdgeDecision> {
     let EdgeContext {
         plane_sub_x,
         plane_sub_y,
         allow_df_sub_pu,
         ..
     } = ctx;
-    let plane = PLANE;
     let pass = PASS;
     let (dx, dy) = if pass == 0 { (1usize, 0usize) } else { (0, 1) };
-    if curr.same(prev) {
-        return (
-            same_record_decision::<PLANE, PASS>(curr, x_p, y_p, ctx, strengths),
-            true,
-        );
+    if core::ptr::eq(curr, prev) {
+        return same_record_decision::<PASS>(curr, x_p, y_p, ctx, strengths);
     }
 
-    let (tx_row_base, tx_col_base) = curr.tx_base(plane);
-    let (prev_tx_row_base, prev_tx_col_base) = prev.tx_base(plane);
-    let prediction = curr.prediction(plane);
+    let prediction = curr.prediction;
     let block_y = (prediction.base_r as usize * MI_SIZE) >> plane_sub_y;
     let block_x = (prediction.base_c as usize * MI_SIZE) >> plane_sub_x;
-    let skip = curr.block.skip;
-    let tx_sz = curr.tx(plane);
-    let prev_tx_sz = prev.tx(plane);
+    let skip = curr.skip;
+    let tx_sz = usize::from(curr.tx);
+    let prev_tx_sz = usize::from(prev.tx);
     let curr_tx_size = usize::try_from(if pass == 0 {
         TX_WIDTH[tx_sz]
     } else {
@@ -1990,36 +1260,26 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
         TX_HEIGHT[prev_tx_sz]
     })
     .unwrap_or(0);
-    let mut uniform = true;
     let sub_pu_sizes = if allow_df_sub_pu {
-        let curr_sub_pu_base = sub_pu_base(curr, plane, x_p, y_p, plane_sub_x, plane_sub_y);
+        let curr_sub_pu_base = sub_pu_base(curr, x_p, y_p, plane_sub_x, plane_sub_y);
         let prev_sub_pu_base = sub_pu_base(
             prev,
-            plane,
             x_p.saturating_sub(dx),
             y_p.saturating_sub(dy),
             plane_sub_x,
             plane_sub_y,
         );
-        let across_differs = if pass == 0 {
-            curr_sub_pu_base.0 != prev_sub_pu_base.0
-        } else {
-            curr_sub_pu_base.1 != prev_sub_pu_base.1
-        };
-        uniform = across_differs
-            || (curr.prediction(plane) == prev.prediction(plane)
-                && curr.block.sub_pu_size == prev.block.sub_pu_size);
         (curr_sub_pu_base != prev_sub_pu_base).then(|| {
             (
-                sub_pu_dimension(curr, plane, pass, plane_sub_x, plane_sub_y),
-                sub_pu_dimension(prev, plane, pass, plane_sub_x, plane_sub_y),
+                sub_pu_dimension(curr, pass, plane_sub_x, plane_sub_y),
+                sub_pu_dimension(prev, pass, plane_sub_x, plane_sub_y),
             )
         })
     } else {
         None
     };
     let is_block_edge = (pass == 0 && x_p == block_x) || (pass == 1 && y_p == block_y);
-    let is_tx_edge = tx_col_base != prev_tx_col_base || tx_row_base != prev_tx_row_base;
+    let is_tx_edge = (curr.r, curr.c) != (prev.r, prev.c);
     let (curr_filter_size, curr_sub_pu_edge) = if let Some((curr_sub_pu_size, _)) = sub_pu_sizes {
         sub_pu_filter_dimension(curr_tx_size, curr_sub_pu_size, is_tx_edge)
     } else {
@@ -2032,33 +1292,39 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
     };
     let is_sub_pu_edge = curr_sub_pu_edge && !is_block_edge;
 
-    let curr_strength = strengths.get(curr.block.qindex);
-    let prev_strength = strengths.get(prev.block.qindex);
+    let curr_strength = strengths.get(curr.qindex.into());
+    let prev_strength = strengths.get(prev.qindex.into());
     let strong = |(q_thr, side): (i32, i32)| q_thr != 0 && side != 0;
     let apply_filter = (is_tx_edge || is_sub_pu_edge)
         && (strong(curr_strength) || strong(prev_strength))
         && (is_block_edge || !skip || is_sub_pu_edge);
     if !apply_filter {
-        return (None, uniform);
+        return None;
     }
 
-    let key = StrengthKey {
-        curr_qindex: curr.block.qindex,
-        prev_qindex: prev.block.qindex,
-        sub_pu_only: is_sub_pu_edge && !is_tx_edge,
-    };
-    let (q_thr, side) = key.combine(curr_strength, prev_strength);
-    (
-        Some(EdgeDecision {
-            filter_size: curr_filter_size.min(prev_filter_size),
-            q_thr,
-            side,
-            prev_lossless: prev.block.lossless,
-            curr_lossless: curr.block.lossless,
-            key,
-        }),
-        uniform,
-    )
+    let (q_thr, side) = edge_strengths(curr_strength, prev_strength, is_sub_pu_edge && !is_tx_edge);
+    Some(EdgeDecision {
+        filter_size: curr_filter_size.min(prev_filter_size),
+        q_thr,
+        side,
+        prev_lossless: prev.lossless,
+        curr_lossless: curr.lossless,
+    })
+}
+
+/// The § 7.17.2 `qThr` and `side` of an edge from its two records' own,
+/// scaled down on an edge that is a sub-PU edge only.
+fn edge_strengths(
+    (curr_q, curr_side): (i32, i32),
+    (prev_q, prev_side): (i32, i32),
+    sub_pu_only: bool,
+) -> (i32, i32) {
+    let (q_thr, side) = combine_strengths(curr_q, prev_q, curr_side, prev_side);
+    if sub_pu_only {
+        (q_thr >> 3, side >> 3)
+    } else {
+        (q_thr, side)
+    }
 }
 
 /// [`edge_decision`] for an edge whose two sides are the same record. Their
@@ -2067,15 +1333,15 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
 /// the prediction base, which is never the block edge.
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
-fn same_record_decision<const PLANE: usize, const PASS: usize>(
-    record: EdgeBlock<'_>,
+fn same_record_decision<const PASS: usize>(
+    record: &DeblockBlock,
     x_p: usize,
     y_p: usize,
     ctx: EdgeContext,
     strengths: &StrengthCache,
 ) -> Option<EdgeDecision> {
-    let size = record.block.sub_pu_size.filter(|_| ctx.allow_df_sub_pu)?;
-    let prediction = record.prediction(PLANE);
+    let size = record.sub_pu_size.filter(|_| ctx.allow_df_sub_pu)?;
+    let prediction = record.prediction;
     let (at, base, sub, size) = if PASS == 0 {
         (x_p, prediction.base_c, ctx.plane_sub_x, size.width)
     } else {
@@ -2086,7 +1352,7 @@ fn same_record_decision<const PLANE: usize, const PASS: usize>(
     if at <= base || round_down(at - base, sub_pu_size) != at - base {
         return None;
     }
-    let tx = record.tx(PLANE);
+    let tx = usize::from(record.tx);
     let tx_size = usize::try_from(if PASS == 0 {
         TX_WIDTH[tx]
     } else {
@@ -2094,60 +1360,18 @@ fn same_record_decision<const PLANE: usize, const PASS: usize>(
     })
     .unwrap_or(0);
     let (filter_size, sub_pu_edge) = sub_pu_filter_dimension(tx_size, sub_pu_size, false);
-    let strength = strengths.get(record.block.qindex);
+    let strength = strengths.get(record.qindex.into());
     if !sub_pu_edge || strength.0 == 0 || strength.1 == 0 {
         return None;
     }
-    let key = StrengthKey {
-        curr_qindex: record.block.qindex,
-        prev_qindex: record.block.qindex,
-        sub_pu_only: true,
-    };
-    let (q_thr, side) = key.combine(strength, strength);
+    let (q_thr, side) = edge_strengths(strength, strength, true);
     Some(EdgeDecision {
         filter_size,
         q_thr,
         side,
-        prev_lossless: record.block.lossless,
-        curr_lossless: record.block.lossless,
-        key,
+        prev_lossless: record.lossless,
+        curr_lossless: record.lossless,
     })
-}
-
-/// Chooses and filters a run of `edges` contiguous edges that start at
-/// `first` and share its filter inputs.
-fn filter_contiguous_run<T: ReconSample, const PASS: usize>(
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
-    first: ContiguousEdge,
-    edges: usize,
-    bit_depth: BitDepth,
-) -> Result<(), DeblockError> {
-    let (samples, stride) = plane_ctx.rows.contiguous_mut();
-    let choice = DeblockFilterChoice {
-        boundary: first.boundary,
-        q_thr: first.q_thr,
-        side_thr: first.side,
-        max_width_pos: usize::from(first.max_width_pos),
-        max_width_neg: usize::from(first.max_width_neg),
-        q_first: Q_FIRST,
-    };
-    let filter = if PASS == 0 {
-        deblock_edge_rows::<T>
-    } else {
-        deblock_edge_columns::<T>
-    };
-    filter(
-        samples,
-        stride,
-        &choice,
-        edges,
-        &Q_THRESH_MULTS,
-        &W_MULT,
-        first.prev_lossless,
-        first.curr_lossless,
-        bit_depth,
-    )
-    .map_err(|_| DeblockError::SampleFilter)
 }
 
 #[allow(clippy::too_many_arguments)]

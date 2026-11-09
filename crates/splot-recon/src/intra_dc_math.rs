@@ -3,8 +3,7 @@
 
 //! Shared DC intra prediction math.
 
-use std::simd::Simd;
-use std::simd::num::SimdUint as _;
+use fearless_simd::{Bytes as _, Simd, SimdBase, u8x16, u16x8, u16x16};
 
 use crate::intra::{IntraDcEdge, IntraRectBlockSize};
 use crate::{BitDepth, ReconError, ReconSample, Result};
@@ -68,11 +67,17 @@ pub(crate) trait IntraLaneSample: ReconSample {
     /// Stores in-range `values` over `output`, which has the same length.
     fn store(values: &[u16], output: &mut [Self]);
 
-    /// Loads `LANES` samples as `u16` lanes.
-    fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES>;
+    /// Loads sixteen samples as `u16` lanes.
+    fn load16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S>;
 
-    /// Stores in-range `u16` lanes.
-    fn store_lanes<const LANES: usize>(values: Simd<u16, LANES>, output: &mut [Self; LANES]);
+    /// Stores sixteen in-range `u16` lanes.
+    fn store16<S: Simd>(simd: S, values: u16x16<S>, output: &mut [Self; 16]);
+
+    /// Loads eight samples as `u16` lanes.
+    fn load8<S: Simd>(simd: S, samples: &[Self; 8]) -> u16x8<S>;
+
+    /// Stores eight in-range `u16` lanes.
+    fn store8<S: Simd>(simd: S, values: u16x8<S>, output: &mut [Self; 8]);
 }
 
 impl IntraLaneSample for u16 {
@@ -87,13 +92,23 @@ impl IntraLaneSample for u16 {
     }
 
     #[inline]
-    fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES> {
-        Simd::from_array(*samples)
+    fn load16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
+        u16x16::from_slice(simd, samples)
     }
 
     #[inline]
-    fn store_lanes<const LANES: usize>(values: Simd<u16, LANES>, output: &mut [Self; LANES]) {
-        *output = values.to_array();
+    fn store16<S: Simd>(_simd: S, values: u16x16<S>, output: &mut [Self; 16]) {
+        values.store_slice(output);
+    }
+
+    #[inline]
+    fn load8<S: Simd>(simd: S, samples: &[Self; 8]) -> u16x8<S> {
+        u16x8::from_slice(simd, samples)
+    }
+
+    #[inline]
+    fn store8<S: Simd>(_simd: S, values: u16x8<S>, output: &mut [Self; 8]) {
+        values.store_slice(output);
     }
 }
 
@@ -111,13 +126,27 @@ impl IntraLaneSample for u8 {
     }
 
     #[inline]
-    fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES> {
-        Simd::from_array(*samples).cast()
+    fn load16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
+        let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, samples));
+        simd.combine_u16x8(low, high)
     }
 
     #[inline]
-    fn store_lanes<const LANES: usize>(values: Simd<u16, LANES>, output: &mut [Self; LANES]) {
-        *output = values.cast::<u8>().to_array();
+    fn store16<S: Simd>(simd: S, values: u16x16<S>, output: &mut [Self; 16]) {
+        let (low, high): (u16x8<S>, u16x8<S>) = simd.split_u16x16(values);
+        simd.relaxed_narrow_u16x8(low, high).store_slice(output);
+    }
+
+    #[inline]
+    fn load8<S: Simd>(simd: S, samples: &[Self; 8]) -> u16x8<S> {
+        let bytes = fearless_simd::u64x2::splat(simd, u64::from_le_bytes(*samples));
+        simd.widen_u8x16(bytes.bitcast()).0
+    }
+
+    #[inline]
+    fn store8<S: Simd>(simd: S, values: u16x8<S>, output: &mut [Self; 8]) {
+        let bytes: [u8; 16] = simd.relaxed_narrow_u16x8(values, values).into();
+        output.copy_from_slice(&bytes[..8]); // splot-copy-ok: publish eight intra lanes
     }
 }
 
@@ -142,6 +171,9 @@ where
     }
 
     let max = bit_depth.max_sample();
+    if T::MAX_VALUE <= max {
+        return Ok(());
+    }
     for (sample_index, sample) in samples.iter().copied().enumerate() {
         let value = sample.to_u16();
         if value > max {

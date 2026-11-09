@@ -10,16 +10,13 @@ use super::cdf::block_context::{IntraJointMode, IntraYMode, MrlSelection};
 use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
 use super::cdf::{self, TileCdfError};
 use super::intra_joint_modes::{
-    IsCflContext, LumaPalette, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
-    TileIntraYModeState, TileIntraYModeStateError, TileLumaPaletteState, TileLumaPaletteStateError,
-    TileUseDipState, TileUseDipStateError, TileUsesMrlsState, TileUsesMrlsStateError,
-    TileUvCflState,
+    IntraFacts, LumaPalette, TileIntraFactsState, TileIntraFactsStateError,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::{self, PartitionDecisionError, PartitionType};
 use super::partition_allowed::{
     PartitionAllowedError, PartitionAllowedInput, PartitionDecisionMemo, PartitionFeatureFlags,
-    PartitionTreeType,
+    PartitionTreeType, decision_memo_key,
 };
 use super::partition_size::{
     BlockSize, PartitionSizeError, h_partition_midsize, partition_subsize,
@@ -37,16 +34,16 @@ pub(crate) use lr_records::{WienerNsLrSourceBlock, WienerNsLrUnitFilter};
 #[cfg(test)]
 use lr_syntax::{WienerNsUnitFilterState, read_wiener_ns_unit_filter};
 pub(crate) use lr_syntax::{pc_wiener_unit_source_blocks, superblock_lr_units};
-pub(crate) use partition_children::child_calls;
+pub(crate) use partition_children::{ChildCallSink, child_calls, child_calls_into};
 pub(crate) use state_publication::DecodedLeafPublication;
 pub(crate) use state_publication::publish_intra_leaf_state;
 use tree_walk::extended_sdp_allowed_for_child;
 pub(crate) use tree_walk::valid_subsize;
 pub(crate) use tree_walk::{
     GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
-    SdpPartitionState, TileTraversalStorage, decode_block_frontier, decode_block_part,
-    is_cfl_context_for_chroma_ref, is_intra_sdp_shared_root, partition_allowed_input,
-    partition_context_inputs, updated_chroma_offset,
+    LeafNeighbours, SdpPartitionState, TileTraversalStorage, decode_block_frontier,
+    decode_block_part, is_intra_sdp_shared_root, partition_allowed_input, partition_context_inputs,
+    updated_chroma_offset,
 };
 #[cfg(test)]
 use tree_walk::{
@@ -56,41 +53,6 @@ use tree_walk::{
 
 pub(crate) const BLOCK_8X32: usize = 21;
 pub(crate) const BLOCK_32X8: usize = 22;
-
-#[allow(clippy::struct_field_names)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TilePartitionContextState<'a> {
-    mi_sizes: &'a [u8],
-    mi_size_rows: &'a crate::tile::SbRowWindow,
-    mi_size_stride: usize,
-    left_mi_sizes: [&'a [u8]; 2],
-    above_mi_sizes: [&'a [u8]; 2],
-    origin_row: usize,
-    origin_col: usize,
-}
-
-impl<'a> TilePartitionContextState<'a> {
-    #[must_use]
-    pub(crate) const fn new_at(
-        mi_sizes: &'a [u8],
-        mi_size_rows: &'a crate::tile::SbRowWindow,
-        mi_size_stride: usize,
-        left_mi_sizes: [&'a [u8]; 2],
-        above_mi_sizes: [&'a [u8]; 2],
-        origin_row: usize,
-        origin_col: usize,
-    ) -> Self {
-        Self {
-            mi_sizes,
-            mi_size_rows,
-            mi_size_stride,
-            left_mi_sizes,
-            above_mi_sizes,
-            origin_row,
-            origin_col,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePartitionLoopRestorationState {
@@ -225,35 +187,46 @@ impl ChromaRefGeometry {
     }
 }
 
+const CALL_CHROMA_OFFSET: u8 = 1;
+const CALL_HAS_CHROMA: u8 = 1 << 1;
+const CALL_CFL_ALLOWED_IN_SDP: u8 = 1 << 2;
+const CALL_EXTENDED_SDP_ALLOWED: u8 = 1 << 3;
+const CALL_INTRA_REGION: u8 = 1 << 4;
+const CALL_EXTENDED_SDP_CHROMA_BLOCK: u8 = 1 << 5;
+
+/// One § 5.20.3.1 `decode_partition` call with its propagated state, packed
+/// into 24 bytes: the walk copies one per node and per child.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionCall {
-    pub(crate) r: usize,
-    pub(crate) c: usize,
+    r: u32,
+    c: u32,
+    chroma_row: u32,
+    chroma_col: u32,
     pub(crate) b_size: BlockSize,
+    chroma_size: BlockSize,
     pub(crate) parent_size: Option<BlockSize>,
-    pub(crate) chroma_offset: bool,
-    pub(crate) has_chroma: bool,
     tree_type: PartitionTreeType,
-    cfl_allowed_in_sdp: bool,
-    extended_sdp_allowed: bool,
-    intra_region: bool,
-    chroma_ref: Option<ChromaRefGeometry>,
+    flags: u8,
+}
+
+const fn call_flag(value: bool, flag: u8) -> u8 {
+    if value { flag } else { 0 }
 }
 
 impl TilePartitionCall {
     pub(crate) const fn root(r: usize, c: usize, b_size: BlockSize, has_chroma: bool) -> Self {
         Self {
-            r,
-            c,
+            r: r as u32,
+            c: c as u32,
+            chroma_row: r as u32,
+            chroma_col: c as u32,
             b_size,
+            chroma_size: b_size,
             parent_size: None,
-            chroma_offset: false,
-            has_chroma,
             tree_type: PartitionTreeType::Shared,
-            cfl_allowed_in_sdp: true,
-            extended_sdp_allowed: true,
-            intra_region: false,
-            chroma_ref: None,
+            flags: call_flag(has_chroma, CALL_HAS_CHROMA)
+                | CALL_CFL_ALLOWED_IN_SDP
+                | CALL_EXTENDED_SDP_ALLOWED,
         }
     }
 
@@ -270,19 +243,66 @@ impl TilePartitionCall {
         extended_sdp_allowed: bool,
         intra_region: bool,
     ) -> Self {
+        let chroma_ref = match chroma_ref {
+            Some(chroma_ref) => chroma_ref,
+            None => ChromaRefGeometry::new(r, c, b_size),
+        };
         Self {
-            r,
-            c,
+            r: r as u32,
+            c: c as u32,
+            chroma_row: chroma_ref.row,
+            chroma_col: chroma_ref.col,
             b_size,
+            chroma_size: chroma_ref.size,
             parent_size,
-            chroma_offset,
-            has_chroma,
             tree_type,
-            cfl_allowed_in_sdp: true,
-            extended_sdp_allowed,
-            intra_region,
-            chroma_ref,
+            flags: call_flag(chroma_offset, CALL_CHROMA_OFFSET)
+                | call_flag(has_chroma, CALL_HAS_CHROMA)
+                | CALL_CFL_ALLOWED_IN_SDP
+                | call_flag(extended_sdp_allowed, CALL_EXTENDED_SDP_ALLOWED)
+                | call_flag(intra_region, CALL_INTRA_REGION),
         }
+    }
+
+    pub(crate) const fn r(self) -> usize {
+        self.r as usize
+    }
+
+    pub(crate) const fn c(self) -> usize {
+        self.c as usize
+    }
+
+    const fn flag(self, flag: u8) -> bool {
+        self.flags & flag != 0
+    }
+
+    const fn with_flag(self, flag: u8, value: bool) -> Self {
+        Self {
+            flags: self.flags & !flag | call_flag(value, flag),
+            ..self
+        }
+    }
+
+    pub(crate) const fn chroma_offset(self) -> bool {
+        self.flag(CALL_CHROMA_OFFSET)
+    }
+
+    pub(crate) const fn has_chroma(self) -> bool {
+        self.flag(CALL_HAS_CHROMA)
+    }
+
+    const fn extended_sdp_allowed(self) -> bool {
+        self.flag(CALL_EXTENDED_SDP_ALLOWED)
+    }
+
+    const fn intra_region(self) -> bool {
+        self.flag(CALL_INTRA_REGION)
+    }
+
+    /// Whether this call is the collocated extended-SDP chroma block, which
+    /// § 5.20.3.1 decodes as one block after its luma tree.
+    const fn is_extended_sdp_chroma_block(self) -> bool {
+        self.flag(CALL_EXTENDED_SDP_CHROMA_BLOCK)
     }
 
     pub(crate) const fn tree_type(self) -> PartitionTreeType {
@@ -290,19 +310,22 @@ impl TilePartitionCall {
     }
 
     pub(crate) const fn cfl_allowed_in_sdp(self) -> bool {
-        self.cfl_allowed_in_sdp
+        self.flag(CALL_CFL_ALLOWED_IN_SDP)
     }
 
-    pub(crate) const fn set_cfl_allowed_in_sdp(&mut self, value: bool) {
-        self.cfl_allowed_in_sdp = value;
-    }
-
-    pub(crate) fn chroma_ref_geometry(self) -> ChromaRefGeometry {
-        if !self.chroma_offset && self.has_chroma {
-            return ChromaRefGeometry::new(self.r, self.c, self.b_size);
+    pub(crate) const fn chroma_ref_geometry(self) -> ChromaRefGeometry {
+        if !self.chroma_offset() && self.has_chroma() {
+            return ChromaRefGeometry {
+                row: self.r,
+                col: self.c,
+                size: self.b_size,
+            };
         }
-        self.chroma_ref
-            .unwrap_or(ChromaRefGeometry::new(self.r, self.c, self.b_size))
+        ChromaRefGeometry {
+            row: self.chroma_row,
+            col: self.chroma_col,
+            size: self.chroma_size,
+        }
     }
 
     pub(crate) const fn with_tree_type(self, tree_type: PartitionTreeType) -> Self {
@@ -310,17 +333,40 @@ impl TilePartitionCall {
     }
 
     pub(crate) const fn with_cfl_allowed_in_sdp(self, cfl_allowed_in_sdp: bool) -> Self {
+        self.with_flag(CALL_CFL_ALLOWED_IN_SDP, cfl_allowed_in_sdp)
+    }
+
+    const fn with_intra_region(self, intra_region: bool) -> Self {
+        self.with_flag(CALL_INTRA_REGION, intra_region)
+    }
+
+    /// The child of a template call at (`r`, `c`) with its own chroma state.
+    #[inline]
+    const fn at_child(
+        self,
+        r: usize,
+        c: usize,
+        b_size: BlockSize,
+        chroma_offset: bool,
+        has_chroma: bool,
+        chroma_ref: ChromaRefGeometry,
+    ) -> Self {
         Self {
-            cfl_allowed_in_sdp,
+            r: r as u32,
+            c: c as u32,
+            chroma_row: chroma_ref.row,
+            chroma_col: chroma_ref.col,
+            b_size,
+            chroma_size: chroma_ref.size,
+            flags: self.flags & !(CALL_CHROMA_OFFSET | CALL_HAS_CHROMA)
+                | call_flag(chroma_offset, CALL_CHROMA_OFFSET)
+                | call_flag(has_chroma, CALL_HAS_CHROMA),
             ..self
         }
     }
 
-    const fn with_intra_region(self, intra_region: bool) -> Self {
-        Self {
-            intra_region,
-            ..self
-        }
+    const fn as_extended_sdp_chroma_block(self) -> Self {
+        self.with_flag(CALL_EXTENDED_SDP_CHROMA_BLOCK, true)
     }
 }
 
@@ -352,29 +398,15 @@ impl TilePartitionBounds {
         }
     }
 
-    const fn is_inside(self, r: usize, c: usize) -> bool {
-        self.mi_col_start <= c
-            && c < self.mi_col_end
-            && self.mi_row_start <= r
-            && r < self.mi_row_end
+    /// `AvailU` of a call inside the tile, whose row above is in the tile
+    /// exactly when the call is below the tile's first row.
+    const fn avail_u(self, call: TilePartitionCall) -> bool {
+        call.r() > self.mi_row_start
     }
 
-    fn avail_u_at(self, r: usize, c: usize) -> bool {
-        r.checked_sub(1)
-            .is_some_and(|candidate_r| self.is_inside(candidate_r, c))
-    }
-
-    fn avail_l_at(self, r: usize, c: usize) -> bool {
-        c.checked_sub(1)
-            .is_some_and(|candidate_c| self.is_inside(r, candidate_c))
-    }
-
-    fn avail_u(self, call: TilePartitionCall) -> bool {
-        self.avail_u_at(call.r, call.c)
-    }
-
-    fn avail_l(self, call: TilePartitionCall) -> bool {
-        self.avail_l_at(call.r, call.c)
+    /// `AvailL` of a call inside the tile.
+    const fn avail_l(self, call: TilePartitionCall) -> bool {
+        call.c() > self.mi_col_start
     }
 }
 
@@ -440,28 +472,36 @@ impl DecodeBlockFrontier {
     pub(crate) const fn chroma_ref_geometry(&self) -> ChromaRefGeometry {
         self.chroma_ref
     }
+
+    /// A shared-tree leaf at `(r, c)` that carries its own chroma.
+    #[cfg(test)]
+    pub(crate) const fn shared_leaf(r: usize, c: usize, b_size: BlockSize) -> Self {
+        Self {
+            r,
+            c,
+            b_size,
+            has_chroma: true,
+            chroma_offset: false,
+            chroma_ref: ChromaRefGeometry::new(r, c, b_size),
+            part: DecodeBlockPart::Shared,
+            intra_region: false,
+            cfl_allowed_in_sdp: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraLeafMode {
-    intra_joint_mode: Option<IntraJointMode>,
-    y_mode: Option<IntraYMode>,
-    angle_delta_y: Option<i8>,
-    fsc_mode: Option<u8>,
-    mrl: Option<MrlSelection>,
-    use_dip: Option<u8>,
+    luma: Option<IntraFacts>,
     palette_y: Option<LumaPalette>,
-    uv_cfl: Option<bool>,
+    /// The `UVCfls` / `UVSmooth` bits of a leaf with chroma.
+    uv: u8,
     intrabc: bool,
 }
 
 impl GeneralIntraLeafMode {
-    pub(crate) fn y_mode_is_smooth(&self) -> bool {
-        self.y_mode.is_some_and(IntraYMode::is_smooth)
-    }
-
     #[must_use]
-    pub(crate) const fn luma(
+    pub(crate) fn luma(
         intra_joint_mode: IntraJointMode,
         y_mode: IntraYMode,
         angle_delta_y: i8,
@@ -469,14 +509,15 @@ impl GeneralIntraLeafMode {
         mrl: MrlSelection,
     ) -> Self {
         Self {
-            intra_joint_mode: Some(intra_joint_mode),
-            y_mode: Some(y_mode),
-            angle_delta_y: Some(angle_delta_y),
-            fsc_mode: Some(fsc_mode),
-            mrl: Some(mrl),
-            use_dip: Some(0),
+            luma: Some(IntraFacts::luma(
+                intra_joint_mode,
+                y_mode,
+                angle_delta_y,
+                fsc_mode,
+                mrl,
+            )),
             palette_y: None,
-            uv_cfl: None,
+            uv: 0,
             intrabc: false,
         }
     }
@@ -484,14 +525,9 @@ impl GeneralIntraLeafMode {
     #[must_use]
     pub(crate) const fn no_luma_mode() -> Self {
         Self {
-            intra_joint_mode: None,
-            y_mode: None,
-            angle_delta_y: None,
-            fsc_mode: None,
-            mrl: None,
-            use_dip: None,
+            luma: None,
             palette_y: None,
-            uv_cfl: None,
+            uv: 0,
             intrabc: false,
         }
     }
@@ -508,8 +544,8 @@ impl GeneralIntraLeafMode {
     }
 
     #[must_use]
-    pub(crate) const fn chroma(uv_cfl: bool) -> Self {
-        Self::no_luma_mode().with_uv_cfl(uv_cfl)
+    pub(crate) const fn chroma(uv: u8) -> Self {
+        Self::no_luma_mode().with_uv(uv)
     }
 
     #[must_use]
@@ -520,13 +556,15 @@ impl GeneralIntraLeafMode {
 
     #[must_use]
     pub(crate) const fn with_use_dip(mut self, use_dip: u8) -> Self {
-        self.use_dip = Some(use_dip);
+        if let Some(luma) = self.luma {
+            self.luma = Some(luma.with_dip(use_dip != 0));
+        }
         self
     }
 
     #[must_use]
-    pub(crate) const fn with_uv_cfl(mut self, uv_cfl: bool) -> Self {
-        self.uv_cfl = Some(uv_cfl);
+    pub(crate) const fn with_uv(mut self, uv: u8) -> Self {
+        self.uv = uv;
         self
     }
 }
@@ -539,16 +577,8 @@ pub(crate) enum TilePartitionTraversalError {
     Limit(#[from] DecodeLimitError),
     #[error("partition traversal block-decoded state failed: {0}")]
     BlockDecoded(#[from] super::block_decoded_state::TileBlockDecodedStateError),
-    #[error("partition traversal intra YMode state failed: {0}")]
-    IntraYModeState(#[from] TileIntraYModeStateError),
-    #[error("partition traversal intra UsesMrls state failed: {0}")]
-    UsesMrlsState(#[from] TileUsesMrlsStateError),
-    #[error("partition traversal intra UseDip state failed: {0}")]
-    UseDipState(#[from] TileUseDipStateError),
-    #[error("partition traversal intra FscModes state failed: {0}")]
-    FscModeState(#[from] TileFscModeStateError),
-    #[error("partition traversal luma palette state failed: {0}")]
-    LumaPaletteState(#[from] TileLumaPaletteStateError),
+    #[error("partition traversal intra mode facts state failed: {0}")]
+    IntraFactsState(#[from] TileIntraFactsStateError),
     #[error("partition traversal size lookup failed: {0}")]
     Size(#[from] PartitionSizeError),
     #[error("partition traversal allowed-set derivation failed: {0}")]
@@ -596,12 +626,6 @@ pub(crate) enum TilePartitionTraversalError {
     MissingIntraLumaModeState { r: usize, c: usize },
     #[error("partition traversal missing collocated SDP luma mode state at ({r}, {c})")]
     MissingSdpLumaModeState { r: usize, c: usize },
-    #[error("partition traversal missing intra UsesMrls state at ({r}, {c})")]
-    MissingIntraUsesMrlsState { r: usize, c: usize },
-    #[error("partition traversal missing intra FscModes state at ({r}, {c})")]
-    MissingIntraFscModeState { r: usize, c: usize },
-    #[error("partition traversal missing intra UseDip state at ({r}, {c})")]
-    MissingIntraUseDipState { r: usize, c: usize },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -647,8 +671,11 @@ fn symbol_decoder_for_work_unit<'payload>(
 /// still derives `ChromaMiRow` / `ChromaMiCol` / `ChromaMiSize`.
 pub(super) const ROOT_HAS_CHROMA: bool = true;
 
-pub(crate) const fn call_in_frame(frame: TilePartitionFrameFacts, call: TilePartitionCall) -> bool {
-    call.r < frame.mi_rows && call.c < frame.mi_cols
+pub(crate) const fn call_in_frame(
+    frame: &TilePartitionFrameFacts,
+    call: TilePartitionCall,
+) -> bool {
+    call.r() < frame.mi_rows && call.c() < frame.mi_cols
 }
 
 fn checked_mul_shifted(

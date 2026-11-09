@@ -12,10 +12,9 @@ use splot_core::tables::conversion::{
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSelector};
 use super::super::encode_symbol_sequence;
+use super::super::intra_joint_modes::IntraFacts;
 use super::super::partition_traversal::tests::make_work_unit as make_test_work_unit;
 use super::*;
-
-const WHOLE_TILE: usize = crate::tile::SbRowWindow::WHOLE_TILE_SB_H4;
 
 const BLOCK_16X16: usize = 6;
 const BLOCK_8X8: usize = 3;
@@ -65,24 +64,24 @@ fn mrl(index: u8, secondary: u8) -> MrlSelection {
     MrlSelection::from_symbols(index, Some(secondary)).expect("test MRL")
 }
 
-fn empty_joint_modes() -> TileIntraJointModeState {
-    TileIntraJointModeState::new_for_tile(0..SB_N4, 0..(2 * SB_N4), WHOLE_TILE).unwrap()
+fn empty_edges() -> TileMiSizeState {
+    TileMiSizeState::new_for_tile(
+        0..(2 * SB_N4),
+        0..(2 * SB_N4),
+        BlockSize::new(BLOCK_64X64).unwrap(),
+    )
+    .unwrap()
 }
 
-fn empty_uses_mrls() -> TileUsesMrlsState {
-    TileUsesMrlsState::new_for_tile(0..SB_N4, 0..(2 * SB_N4), SB_N4).unwrap()
+fn record_luma(facts: &mut TileMiSizeState, (r, c): (usize, usize), n4: usize, luma: IntraFacts) {
+    let size = if n4 == 1 { 0 } else { BLOCK_64X64 };
+    facts
+        .update_luma_block(r, c, BlockSize::new(size).unwrap(), Some(luma), None)
+        .unwrap();
 }
 
-fn empty_use_dip() -> TileUseDipState {
-    TileUseDipState::new_for_tile(0..SB_N4, 0..(2 * SB_N4), SB_N4).unwrap()
-}
-
-fn empty_fsc_modes() -> TileFscModeState {
-    TileFscModeState::new_for_tile(0..SB_N4, 0..(2 * SB_N4), SB_N4).unwrap()
-}
-
-fn empty_palette_state() -> TileLumaPaletteState {
-    TileLumaPaletteState::new_for_tile(0..SB_N4, 0..(2 * SB_N4), SB_N4).unwrap()
+fn luma_facts(joint: IntraJointMode, fsc: u8, use_dip: u8, mrl: MrlSelection) -> IntraFacts {
+    IntraFacts::luma(joint, IntraYMode::Dc, 0, fsc, mrl).with_dip(use_dip != 0)
 }
 
 fn block_size(index: usize) -> BlockSize {
@@ -145,9 +144,7 @@ fn decode_general_intra_luma_block_mode(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
-    joint_modes: &TileIntraJointModeState,
-    uses_mrls: &TileUsesMrlsState,
-    fsc_modes: &TileFscModeState,
+    facts: &TileMiSizeState,
     block_size_index: usize,
     block_r: usize,
     block_c: usize,
@@ -158,13 +155,9 @@ fn decode_general_intra_luma_block_mode(
         work_unit,
         symbols,
         chroma_tools,
-        joint_modes,
-        uses_mrls,
-        fsc_modes,
+        facts.intra_neighbours(block_r, block_c, block_n4w, block_n4h),
         true,
         block_size(block_size_index),
-        block_r,
-        block_c,
         block_n4w,
         block_n4h,
     )
@@ -175,10 +168,7 @@ fn decode_general_intra_block_modes(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
-    joint_modes: &TileIntraJointModeState,
-    uses_mrls: &TileUsesMrlsState,
-    fsc_modes: &TileFscModeState,
-    palette_state: &TileLumaPaletteState,
+    facts: &TileMiSizeState,
     is_cfl_ctx: usize,
     block_size_index: usize,
     block_r: usize,
@@ -191,12 +181,9 @@ fn decode_general_intra_block_modes(
         work_unit,
         symbols,
         chroma_tools,
-        joint_modes,
-        uses_mrls,
-        &empty_use_dip(),
-        fsc_modes,
+        facts,
+        facts.intra_neighbours(block_r, block_c, block_n4w, block_n4h),
         true,
-        palette_state,
         is_cfl_ctx,
         block_size(block_size_index),
         block_r,
@@ -239,17 +226,13 @@ fn cfl_allowed_uses_the_chroma_plane_64_sample_limit() {
 fn decodes_dc_luma_mode_and_a_chroma_mode_in_spec_order() {
     let mut work_unit = make_work_unit(&PAYLOAD);
     let mut symbols = symbols_at_block_start(&work_unit);
-    let joint_modes = empty_joint_modes();
-    let uses_mrls = empty_uses_mrls();
+    let facts = empty_edges();
 
     let modes = decode_general_intra_block_modes(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled(),
-        &joint_modes,
-        &uses_mrls,
-        &empty_fsc_modes(),
-        &empty_palette_state(),
+        &facts,
         0,
         BLOCK_64X64,
         0,
@@ -269,18 +252,19 @@ fn decodes_dc_luma_mode_and_a_chroma_mode_in_spec_order() {
 fn non_directional_left_neighbour_keeps_ctx_zero_and_decodes() {
     let mut work_unit = make_work_unit(&PAYLOAD);
     let mut symbols = symbols_at_block_start(&work_unit);
-    let mut joint_modes = empty_joint_modes();
-    let uses_mrls = empty_uses_mrls();
-    joint_modes.record_block(0, 0, SB_N4, SB_N4, joint_mode(2));
+    let mut facts = empty_edges();
+    record_luma(
+        &mut facts,
+        (0, 0),
+        SB_N4,
+        luma_facts(joint_mode(2), 0, 0, MrlSelection::Disabled),
+    );
 
     let modes = decode_general_intra_block_modes(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled(),
-        &joint_modes,
-        &uses_mrls,
-        &empty_fsc_modes(),
-        &empty_palette_state(),
+        &facts,
         0,
         BLOCK_64X64,
         0,
@@ -298,18 +282,19 @@ fn directional_neighbour_ctx_reads_with_the_real_context() {
     let mut work_unit = make_work_unit(&PAYLOAD);
     let mut symbols = symbols_at_block_start(&work_unit);
     let symbol_count_before = symbols.symbol_count();
-    let mut joint_modes = empty_joint_modes();
-    let uses_mrls = empty_uses_mrls();
-    joint_modes.record_block(0, 0, SB_N4, SB_N4, joint_mode(36));
+    let mut facts = empty_edges();
+    record_luma(
+        &mut facts,
+        (0, 0),
+        SB_N4,
+        luma_facts(joint_mode(36), 0, 0, MrlSelection::Disabled),
+    );
 
     let modes = decode_general_intra_block_modes(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled(),
-        &joint_modes,
-        &uses_mrls,
-        &empty_fsc_modes(),
-        &empty_palette_state(),
+        &facts,
         0,
         BLOCK_64X64,
         0,
@@ -335,18 +320,14 @@ fn writer_produced_luma_path_truncations_fail_at_exit_without_neighbour_publicat
         let truncated = &payload[..1];
         let mut work_unit = make_work_unit(truncated);
         let mut symbols = symbol_decoder(truncated);
-        let joint_modes = empty_joint_modes();
-        let uses_mrls = empty_uses_mrls();
-        let joint_before = joint_modes.clone();
-        let mrl_before = uses_mrls.clone();
+        let facts = empty_edges();
+        let facts_before = facts.clone();
 
         let _ = decode_general_intra_luma_block_mode(
             &mut work_unit,
             &mut symbols,
             GeneralIntraChromaToolConfig::disabled(),
-            &joint_modes,
-            &uses_mrls,
-            &empty_fsc_modes(),
+            &facts,
             BLOCK_64X64,
             0,
             0,
@@ -355,8 +336,7 @@ fn writer_produced_luma_path_truncations_fail_at_exit_without_neighbour_publicat
         );
         let _ = symbols.read_literal(32);
 
-        assert_eq!(joint_modes, joint_before);
-        assert_eq!(uses_mrls, mrl_before);
+        assert_eq!(facts, facts_before);
         let exit = symbols.exit_symbol();
         assert!(matches!(
             exit,
@@ -374,16 +354,13 @@ fn directional_luma_mrl_zero_is_consumed_when_mrls_are_enabled() {
     ]);
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
-    let joint_modes = empty_joint_modes();
-    let uses_mrls = empty_uses_mrls();
+    let facts = empty_edges();
 
     let luma = decode_general_intra_luma_block_mode(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled().with_enable_mrls(true),
-        &joint_modes,
-        &uses_mrls,
-        &empty_fsc_modes(),
+        &facts,
         BLOCK_64X64,
         0,
         0,
@@ -408,16 +385,13 @@ fn active_mrl_metadata_is_retained_after_mrl_sec_index_is_consumed() {
     ]);
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
-    let joint_modes = empty_joint_modes();
-    let uses_mrls = empty_uses_mrls();
+    let facts = empty_edges();
 
     let luma = decode_general_intra_luma_block_mode(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled().with_enable_mrls(true),
-        &joint_modes,
-        &uses_mrls,
-        &empty_fsc_modes(),
+        &facts,
         BLOCK_64X64,
         0,
         0,
@@ -445,16 +419,13 @@ fn active_fsc_mode_metadata_is_retained() {
     ]);
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
-    let joint_modes = empty_joint_modes();
-    let uses_mrls = empty_uses_mrls();
+    let facts = empty_edges();
 
     let luma = decode_general_intra_luma_block_mode(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled().with_enable_idtx_intra(true),
-        &joint_modes,
-        &uses_mrls,
-        &empty_fsc_modes(),
+        &facts,
         BLOCK_16X16,
         0,
         0,
@@ -492,24 +463,23 @@ fn mixed_region_fsc_mode_uses_inter_context() {
     ]);
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
-    let joint_modes = empty_joint_modes();
-    let uses_mrls = empty_uses_mrls();
-    let mut fsc_modes =
-        TileFscModeState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), SB_N4).unwrap();
-    fsc_modes.record_block(7, 11, 1, 1, 1);
-    fsc_modes.record_block(11, 7, 1, 1, 1);
+    let mut facts = empty_edges();
+    for pos in [(7, 11), (11, 7)] {
+        record_luma(
+            &mut facts,
+            pos,
+            1,
+            luma_facts(IntraJointMode::DC, 1, 0, MrlSelection::Disabled),
+        );
+    }
 
     let luma = decode_general_intra_luma_block_mode_with_fsc_context(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled().with_enable_idtx_intra(true),
-        &joint_modes,
-        &uses_mrls,
-        &fsc_modes,
+        facts.intra_neighbours(8, 8, 4, 4),
         false,
         block_size(BLOCK_16X16),
-        8,
-        8,
         4,
         4,
     )
@@ -529,17 +499,13 @@ fn inactive_palette_y_mode_is_consumed_after_chroma_mode() {
     ]);
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
-    let joint_modes = empty_joint_modes();
-    let uses_mrls = empty_uses_mrls();
+    let facts = empty_edges();
 
     let modes = decode_general_intra_block_modes(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled().with_allow_screen_content_tools(true),
-        &joint_modes,
-        &uses_mrls,
-        &empty_fsc_modes(),
-        &empty_palette_state(),
+        &facts,
         0,
         BLOCK_16X16,
         0,
@@ -594,17 +560,13 @@ fn active_palette_y_mode_accepts_every_size_symbol() {
         let payload = encoder.finish().unwrap().into_bytes();
         let mut work_unit = make_work_unit(&payload);
         let mut symbols = symbol_decoder(&payload);
-        let joint_modes = empty_joint_modes();
-        let uses_mrls = empty_uses_mrls();
+        let facts = empty_edges();
 
         let modes = decode_general_intra_block_modes(
             &mut work_unit,
             &mut symbols,
             GeneralIntraChromaToolConfig::disabled().with_allow_screen_content_tools(true),
-            &joint_modes,
-            &uses_mrls,
-            &empty_fsc_modes(),
-            &empty_palette_state(),
+            &facts,
             0,
             BLOCK_16X16,
             0,
@@ -650,22 +612,23 @@ fn active_dip_mode_info_reads_flag_transpose_and_mode_after_palette() {
     let payload = encoder.finish().unwrap().into_bytes();
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
-    let joint_modes = empty_joint_modes();
-    let uses_mrls = empty_uses_mrls();
-    let mut use_dip = TileUseDipState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), SB_N4).unwrap();
-    use_dip.record_block(7, 11, 1, 1, 1);
-    use_dip.record_block(11, 7, 1, 1, 1);
+    let mut facts = empty_edges();
+    for pos in [(7, 11), (11, 7)] {
+        record_luma(
+            &mut facts,
+            pos,
+            1,
+            luma_facts(IntraJointMode::DC, 0, 1, MrlSelection::Disabled),
+        );
+    }
 
     let modes = decode_general_intra_block_modes_with_fsc_context(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled().with_enable_dip(true),
-        &joint_modes,
-        &uses_mrls,
-        &use_dip,
-        &empty_fsc_modes(),
+        &facts,
+        facts.intra_neighbours(8, 8, 4, 4),
         true,
-        &empty_palette_state(),
         0,
         block_size(BLOCK_16X16),
         8,
@@ -696,20 +659,25 @@ fn mrl_symbols_use_retained_neighbour_contexts() {
     ]);
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
-    let joint_modes =
-        TileIntraJointModeState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), WHOLE_TILE).unwrap();
-    let mut uses_mrls =
-        TileUsesMrlsState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), SB_N4).unwrap();
-    uses_mrls.record_block(7, 11, 1, 1, mrl(1, 1));
-    uses_mrls.record_block(11, 7, 1, 1, mrl(1, 0));
+    let mut facts = empty_edges();
+    record_luma(
+        &mut facts,
+        (7, 11),
+        1,
+        luma_facts(IntraJointMode::DC, 0, 0, mrl(1, 1)),
+    );
+    record_luma(
+        &mut facts,
+        (11, 7),
+        1,
+        luma_facts(IntraJointMode::DC, 0, 0, mrl(1, 0)),
+    );
 
     let luma = decode_general_intra_luma_block_mode(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled().with_enable_mrls(true),
-        &joint_modes,
-        &uses_mrls,
-        &TileFscModeState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), SB_N4).unwrap(),
+        &facts,
         BLOCK_16X16,
         8,
         8,
@@ -767,7 +735,6 @@ fn active_cfl_chroma_mode_returns_typed_uv_cfl_pred() {
     )
     .unwrap();
 
-    assert!(mode.is_cfl());
     assert_eq!(mode.coeff_uv_mode(), usize::from(UV_CFL_PRED_MODE));
     assert_eq!(
         mode,
@@ -831,19 +798,15 @@ fn shared_chroma_mhccp_dir_uses_luma_syntax_block_size() {
     ]);
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
-    let joint_modes = empty_joint_modes();
-    let uses_mrls = empty_uses_mrls();
+    let facts = empty_edges();
 
     let modes = decode_general_intra_block_modes_with_fsc_context(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::new(false, true),
-        &joint_modes,
-        &uses_mrls,
-        &empty_use_dip(),
-        &empty_fsc_modes(),
+        &facts,
+        facts.intra_neighbours(0, 15, 1, 4),
         true,
-        &empty_palette_state(),
         0,
         block_size(BLOCK_4X16),
         0,
@@ -856,7 +819,6 @@ fn shared_chroma_mhccp_dir_uses_luma_syntax_block_size() {
     )
     .unwrap();
 
-    assert!(modes.is_cfl());
     assert_eq!(
         modes.chroma(),
         Some(GeneralIntraChromaBlockMode::Cfl(CflParams::Multi {
@@ -885,7 +847,6 @@ fn sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl() {
     )
     .unwrap();
 
-    assert!(!mode.is_cfl());
     assert_eq!(mode.supported_chroma_mode(), Some(SupportedChromaMode::Dc));
     assert_eq!(symbols.symbol_count(), 1);
     assert_eq!(symbols.finish().unwrap().symbol_count, 1);
@@ -997,7 +958,6 @@ fn lossless_420_chroma_4x4_reads_cfl_and_mhccp_syntax() {
     )
     .unwrap();
 
-    assert!(mode.is_cfl());
     assert_eq!(
         mode,
         GeneralIntraChromaBlockMode::Cfl(CflParams::Multi {
@@ -1037,7 +997,6 @@ fn lossless_chroma_non_4x4_plane_reads_uv_mode_without_is_cfl() {
             block_n4h,
         );
 
-        assert!(!mode.is_cfl(), "{label}");
         assert_eq!(
             mode.supported_chroma_mode(),
             Some(SupportedChromaMode::Dc),

@@ -20,7 +20,7 @@ pub const TCQ_STATES: usize = 8;
 /// `Tcq_Next_State[state][parity & 1]` (§ 5.20.7.27).
 #[must_use]
 pub fn tcq_next_state(state: usize, parity: u32) -> usize {
-    next_tcq_state(state % TCQ_STATES, parity).unwrap_or(0)
+    next_tcq_state(state % TCQ_STATES, parity)
 }
 
 /// The quantizer of `state`, `(tcqState >> 1) & 1`: it selects the

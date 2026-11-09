@@ -5,14 +5,11 @@
 //!
 //! Feature tracking: `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`.
 
-use core::ops::{Deref, DerefMut};
-
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection,
     IntraDirectionalAngleEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraMiddleDirectionalAngleIdifMrlEdges,
-    IntraPredictionScratchBuffer, IntraRectBlockSize, PlaneId, ReconSample,
-    predict_intra_cardinal_directional_rect_into,
+    IntraRectBlockSize, PlaneId, ReconSample, predict_intra_cardinal_directional_rect_into,
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_idif_mrl_into,
     predict_intra_middle_directional_angle_rect_into,
@@ -23,7 +20,8 @@ use super::one_sided::{
 };
 use super::sink::{
     IntraEdgeAvailability, build_mrl_luma_prediction, invalid_directional_edge_state,
-    noneighbour_above, noneighbour_corner, noneighbour_left, write_intra_prediction_block,
+    noneighbour_above, noneighbour_corner, noneighbour_left, predict_intra_block,
+    write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
@@ -32,36 +30,7 @@ use crate::pipeline::general_intra::RecycledIntraSamples;
 
 const TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY: usize = 128 + 3 + 4;
 
-struct TwoSidedMiddleIdifEdge<T: ReconSample> {
-    samples: [T; TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY],
-    len: usize,
-}
-
-impl<T: ReconSample> TwoSidedMiddleIdifEdge<T> {
-    fn new(len: usize) -> core::result::Result<Self, GeneralIntraResidualError> {
-        if len > TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY {
-            return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
-        }
-        Ok(Self {
-            samples: [T::default(); TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY],
-            len,
-        })
-    }
-}
-
-impl<T: ReconSample> Deref for TwoSidedMiddleIdifEdge<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        &self.samples[..self.len]
-    }
-}
-
-impl<T: ReconSample> DerefMut for TwoSidedMiddleIdifEdge<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.samples[..self.len]
-    }
-}
+type TwoSidedMiddleIdifEdge<T> = super::one_sided::IdifEdge<T, TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY>;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TwoSidedMiddleEdgeFilters {
@@ -116,37 +85,38 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
         bit_depth,
     )?;
     let angle = middle_directional_angle(mode);
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        side * side,
-        T::default(),
-    )?;
-    if matches!(plane_id, PlaneId::Y) {
-        let (left_idif, above_idif) =
-            extend_directional_middle_idif_edges(&left, &above, bit_depth)?;
-        predict_intra_middle_directional_angle_rect_idif_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-            &mut prediction,
-            side,
-        )?;
+    let idif = if matches!(plane_id, PlaneId::Y) {
+        Some(extend_directional_middle_idif_edges(
+            &left, &above, bit_depth,
+        )?)
     } else {
-        predict_intra_middle_directional_angle_rect_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleEdges::both(&left, &above),
-            &mut prediction,
-            side,
-        )?;
-    }
-    write_intra_prediction_block(
+        None
+    };
+    let predict = |output: &mut [T], stride: usize| {
+        if let Some((left_idif, above_idif)) = &idif {
+            predict_intra_middle_directional_angle_rect_idif_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleIdifEdges::both(left_idif, above_idif),
+                output,
+                stride,
+            )?;
+        } else {
+            predict_intra_middle_directional_angle_rect_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleEdges::both(&left, &above),
+                output,
+                stride,
+            )?;
+        }
+        Ok(())
+    };
+    predict_intra_block(
         workspace,
         block,
-        prediction,
         plane_id,
         x,
         y,
@@ -156,6 +126,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
         luma_context,
         None,
         bit_depth,
+        predict,
     )
 }
 
@@ -183,23 +154,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
-    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
-    workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
-    let left_samples = availability.left.then(|| edges.left_samples()).flatten();
-    let above_samples = availability.above.then(|| edges.above_samples()).flatten();
-    if (availability.left && left_samples.is_none())
-        || (availability.above && above_samples.is_none())
-    {
-        return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
-    }
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        T::default(),
-    )?;
-
-    let (left_idif, above_idif) = if left_samples.is_some() && above_samples.is_some() {
+    let (left_idif, above_idif) = if availability.left && availability.above && x > 0 && y > 0 {
         let above_row = y
             .checked_sub(1)
             .ok_or_else(invalid_directional_edge_state)?;
@@ -221,6 +176,15 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         })?;
         (left_idif, above_idif)
     } else {
+        let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+        workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
+        let left_samples = availability.left.then(|| edges.left_samples()).flatten();
+        let above_samples = availability.above.then(|| edges.above_samples()).flatten();
+        if (availability.left && left_samples.is_none())
+            || (availability.above && above_samples.is_none())
+        {
+            return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
+        }
         let (left, above) = build_directional_middle_rect_edges(
             left_samples,
             above_samples,
@@ -249,31 +213,33 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         };
         (left_idif, above_idif)
     };
-    if matches!(plane_id, PlaneId::Y) {
-        predict_intra_middle_directional_angle_rect_idif_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-            &mut prediction,
-            width,
-        )?;
-    } else {
-        let left = &left_idif[1..height + 2];
-        let above = &above_idif[1..width + 2];
-        predict_intra_middle_directional_angle_rect_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleEdges::both(left, above),
-            &mut prediction,
-            width,
-        )?;
-    }
-    write_intra_prediction_block(
+    let predict = |output: &mut [T], stride: usize| {
+        if matches!(plane_id, PlaneId::Y) {
+            predict_intra_middle_directional_angle_rect_idif_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
+                output,
+                stride,
+            )?;
+        } else {
+            let left = &left_idif[1..height + 2];
+            let above = &above_idif[1..width + 2];
+            predict_intra_middle_directional_angle_rect_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleEdges::both(left, above),
+                output,
+                stride,
+            )?;
+        }
+        Ok(())
+    };
+    predict_intra_block(
         workspace,
         block,
-        prediction,
         plane_id,
         x,
         y,
@@ -283,6 +249,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         luma_context,
         dpcm,
         bit_depth,
+        predict,
     )
 }
 
@@ -676,24 +643,20 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
             }
         }
     };
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        T::default(),
-    )?;
-    predict_intra_cardinal_directional_rect_into(
-        bit_depth,
-        block_size,
-        direction,
-        cardinal_edges,
-        &mut prediction,
-        width,
-    )?;
-    write_intra_prediction_block(
+    let predict = |output: &mut [T], stride: usize| {
+        predict_intra_cardinal_directional_rect_into(
+            bit_depth,
+            block_size,
+            direction,
+            cardinal_edges,
+            output,
+            stride,
+        )
+        .map_err(Into::into)
+    };
+    predict_intra_block(
         workspace,
         block,
-        prediction,
         plane_id,
         x,
         y,
@@ -703,6 +666,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
         luma_context,
         dpcm,
         bit_depth,
+        predict,
     )
 }
 

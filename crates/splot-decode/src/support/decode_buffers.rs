@@ -8,7 +8,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::filters::wienerns_lr::FrameFilterRecordCapacities;
-use crate::prediction::inter::{TemporalMotionBlock, TemporalMvContext};
+use crate::prediction::inter::{ReconRowBuffers, TemporalMotionBlock, TemporalMvContext};
 
 /// A frame walk's temporal context and motion records.
 pub(crate) type WalkTemporal = (TemporalMvContext, Vec<TemporalMotionBlock>);
@@ -18,15 +18,17 @@ pub(crate) type WalkTemporal = (TemporalMvContext, Vec<TemporalMotionBlock>);
 pub(crate) struct DecodeBuffers {
     planes: Arc<splot_recon::PlanePool>,
     tile_records: Mutex<FrameFilterRecordCapacities>,
-    /// The small row-list capacities any spent superblock unit reached.
-    row_capacities: Mutex<RowCapacities>,
+    /// Sixteen times the running mean of each large row list's length.
+    unit_lengths: Mutex<UnitLengths>,
+    /// Spent superblock units' row buffers, lent to the next unit parsed.
+    units: Mutex<Vec<ReconRowBuffers>>,
     /// One walk's temporal state for the whole decode: the inter and TIP output
     /// walks take turns, so a copy per walk or lane is memory nobody reads.
     walk_temporal: Mutex<Option<WalkTemporal>>,
 }
 
-/// The capacities of a superblock unit's small growable row lists.
-pub(crate) type RowCapacities = [usize; 3];
+/// The lengths of a superblock unit's large row lists.
+pub(crate) type UnitLengths = [usize; 11];
 
 impl DecodeBuffers {
     /// Opens the storage for one decode.
@@ -50,18 +52,29 @@ impl DecodeBuffers {
         self.tile_records.lock().cover(reached);
     }
 
-    /// The small row-list capacities any unit's buffers reached.
-    pub(crate) fn row_capacities(&self) -> RowCapacities {
-        *self.row_capacities.lock()
+    /// A spent unit's row buffers, if any is free.
+    pub(crate) fn take_unit_buffers(&self) -> Option<ReconRowBuffers> {
+        self.units.lock().pop()
     }
 
-    /// Notes the small row-list capacities one spent unit reached, so every
-    /// unit of every frame in flight sizes its lists once instead of growing
-    /// them apart. These lists are a few kilobytes, so one size fits all.
-    pub(crate) fn note_row_capacities(&self, reached: RowCapacities) {
-        for (held, reached) in self.row_capacities.lock().iter_mut().zip(reached) {
-            *held = (*held).max(reached);
+    /// Takes back a committed unit's row buffers.
+    pub(crate) fn give_unit_buffers(&self, buffers: ReconRowBuffers) {
+        self.units.lock().push(buffers);
+    }
+
+    /// The running mean of each large row list's length.
+    pub(crate) fn unit_lengths(&self) -> UnitLengths {
+        self.unit_lengths.lock().map(|mean| mean / 16)
+    }
+
+    /// Folds one spent unit's list lengths into the decode's running mean,
+    /// over about the last sixteen units, and returns that mean.
+    pub(crate) fn note_unit_lengths(&self, used: UnitLengths) -> UnitLengths {
+        let mut means = self.unit_lengths.lock();
+        for (mean, used) in means.iter_mut().zip(used) {
+            *mean = (*mean - *mean / 16).saturating_add(used);
         }
+        means.map(|mean| mean / 16)
     }
 
     /// Lends the decode's walk temporal state to one walk, or a new one when
@@ -91,5 +104,19 @@ impl Drop for TemporalLease<'_> {
             let temporal = core::mem::replace(&mut self.temporal, TemporalMvContext::empty());
             *buffers.walk_temporal.lock() = Some((temporal, core::mem::take(&mut self.records)));
         }
+    }
+}
+
+/// Sizes an emptied unit list for the next unit: to twice the decode's
+/// typical length for it when its capacity is under the typical length, or
+/// over three times it and 8 KiB. Pooled buffers otherwise each climb to the
+/// largest unit any of them has held. The list is empty, so a fresh
+/// allocation replaces it without a copy.
+pub(crate) fn fit_list<E>(list: &mut Vec<E>, typical: usize) {
+    debug_assert!(list.is_empty());
+    let keep = typical.saturating_mul(2);
+    let floor = (8 << 10) / core::mem::size_of::<E>().max(1);
+    if list.capacity() < typical || list.capacity() > keep.saturating_add(keep / 2).max(floor) {
+        *list = Vec::with_capacity(keep);
     }
 }

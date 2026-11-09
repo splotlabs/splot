@@ -35,24 +35,10 @@ thread_local! {
         std::cell::RefCell::new(PcWienerClassifyScratch::default());
     static WIENER_NS_LUMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
         const { std::cell::Cell::new(None) };
-    static WIENER_NS_CHROMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
-        const { std::cell::Cell::new(None) };
+    static WIENER_NS_CHROMA_SCRATCH: std::cell::RefCell<WienerNsChromaScratch> =
+        std::cell::RefCell::new(WienerNsChromaScratch::default());
     static LR_SOURCE_SCRATCH: std::cell::Cell<Option<Box<LrSourceScratch>>> =
         const { std::cell::Cell::new(None) };
-}
-
-fn with_wiener_ns_chroma_scratch<T: ReconSample, R>(
-    f: impl FnOnce(&mut WienerNsChromaScratch<T>) -> R,
-) -> R {
-    WIENER_NS_CHROMA_SCRATCH.with(|slot| {
-        let mut scratch = slot
-            .take()
-            .and_then(|scratch| scratch.downcast::<WienerNsChromaScratch<T>>().ok())
-            .unwrap_or_default();
-        let result = f(&mut scratch);
-        slot.set(Some(scratch));
-        result
-    })
 }
 
 const MAX_RETAINED_WIENER_NS_LUMA_SAMPLES: usize = 512 * 64;
@@ -535,13 +521,13 @@ pub(crate) fn terminal_luma_wiener_covers(
 pub(crate) fn terminal_luma_wiener_direct_u8(
     bit_depth: BitDepth,
     frame_type: Option<FrameRestorationType>,
-    gdf_active: bool,
+    gdf_needs_u16: bool,
     blocks: &[WienerNsLrSourceBlock],
     target: &crate::pipeline::frame_progress::DirectPlaneTarget,
 ) -> bool {
     bit_depth == BitDepth::Eight
         && !target.is_u16()
-        && !gdf_active
+        && !gdf_needs_u16
         && frame_type.is_some_and(|frame_type| {
             matches!(
                 frame_type,
@@ -582,7 +568,7 @@ pub(crate) fn lr_initializations(
 ) -> [StripeInitialization; 3] {
     core::array::from_fn(|index| {
         let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
-        let Some(target) = target.get(plane).filter(|target| target.is_u16()) else {
+        let Some(target) = target.get(plane) else {
             return StripeInitialization::CopyAll;
         };
         if !active_planes[index] {
@@ -1023,28 +1009,42 @@ impl<'a> LrSourceRows<'a> {
 
 /// The one value that the `width` columns from `col` of every row hold.
 fn flat_lr_window(rows: &[&[u16]], col: usize, width: usize) -> Option<u16> {
-    use std::simd::{Simd, num::SimdUint};
-    const LANES: usize = 16;
     let value = *rows.first()?.get(col)?;
-    let splat = Simd::<u16, LANES>::splat(value);
-    rows.iter()
-        .all(|row| {
-            let Some(row) = col.checked_add(width).and_then(|end| row.get(col..end)) else {
-                return false;
-            };
-            let Some(last) = row.last_chunk::<LANES>() else {
-                return row.iter().all(|&sample| sample == value);
-            };
-            let diff = row
-                .as_chunks::<LANES>()
-                .0
-                .iter()
-                .fold(Simd::from_array(*last) ^ splat, |diff, chunk| {
-                    diff | (Simd::from_array(*chunk) ^ splat)
-                });
-            diff.reduce_or() == 0
-        })
-        .then_some(value)
+    #[cfg(target_arch = "x86_64")]
+    if let Some(simd) = fearless_simd::Level::baseline().as_avx2() {
+        return rows_hold(simd, rows, col, width, value).then_some(value);
+    }
+    let flat = crate::baseline_simd!(simd => rows_hold(simd, rows, col, width, value));
+    flat.then_some(value)
+}
+
+#[inline]
+fn rows_hold<S: fearless_simd::Simd>(
+    simd: S,
+    rows: &[&[u16]],
+    col: usize,
+    width: usize,
+    value: u16,
+) -> bool {
+    use fearless_simd::{SimdBase, u16x16};
+    const LANES: usize = 16;
+    let splat = u16x16::splat(simd, value);
+    rows.iter().all(|row| {
+        let Some(row) = col.checked_add(width).and_then(|end| row.get(col..end)) else {
+            return false;
+        };
+        let Some(last) = row.last_chunk::<LANES>() else {
+            return row.iter().all(|&sample| sample == value);
+        };
+        let diff = row
+            .as_chunks::<LANES>()
+            .0
+            .iter()
+            .fold(u16x16::load_array_ref(simd, last) ^ splat, |diff, chunk| {
+                diff | (u16x16::load_array_ref(simd, chunk) ^ splat)
+            });
+        diff.reduce_max() == 0
+    })
 }
 
 /// Walks the `width` output columns of a luma LR block in 64-column strips
@@ -1657,7 +1657,7 @@ impl StripeChain<'_> {
                     )
                 }
                 .map_err(|error| lr_plane_window_error(&error, plane_id))?;
-                with_wiener_ns_chroma_scratch::<u16, _>(|scratch| match &mut output {
+                with_reusable_scratch(&WIENER_NS_CHROMA_SCRATCH, |scratch| match &mut output {
                     LrDestination::U16(output) => wiener_ns_filter_chroma_block_padded_u16_into(
                         output,
                         &params,
@@ -1932,23 +1932,6 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let tile_end_y = mi_to_luma_end_recon(block.tile_mi_row_end, "luma LR tile end y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        let cell_count = cell_cols
-            .checked_mul(cell_rows)
-            .ok_or_else(super::lr_pipeline_state_error)?;
-        if cell_count > cell_subclasses.len() {
-            let additional = cell_count - cell_subclasses.len();
-            if cell_subclasses.try_reserve_exact(additional).is_err() {
-                cell_subclasses.clear();
-                return Err(ReconError::WorkspaceAllocationFailed {
-                    plane: PlaneId::Y,
-                    context: "PC-Wiener cell subclasses",
-                }
-                .into());
-            }
-            cell_subclasses.resize(cell_count, 0);
-        } else {
-            cell_subclasses.truncate(cell_count);
-        }
         let subclass_table =
             pc_wiener_subclass_table(num_classes, filter_set_index).map_err(lr_window_error)?;
         let padded_source = PcWienerClassifyPaddedSource::from_rows(
@@ -1981,25 +1964,18 @@ impl StripeChain<'_> {
             tile_end_y,
         };
         with_reusable_scratch(&PC_WIENER_CLASSIFY_SCRATCH, |scratch| {
-            let classes = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
+            pc_wiener_classify_grid_padded_classes_into::<u16, _>(
                 &params,
                 cell_cols,
                 cell_rows,
                 &padded_source,
                 |run| tx_skip_grid.run(run.row, run.col, run.len),
+                subclass_table,
                 scratch,
+                cell_subclasses,
             )
-            .map_err(lr_window_error)?;
-            if classes.len() != cell_subclasses.len() {
-                return Err(super::lr_pipeline_state_error());
-            }
-            for (cell, &class) in cell_subclasses.iter_mut().zip(classes) {
-                *cell = subclass_table[usize::from(class)];
-            }
-            Ok(())
-        })?;
-
-        Ok(cell_subclasses)
+            .map_err(lr_window_error)
+        })
     }
 }
 

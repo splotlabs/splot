@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![feature(portable_simd)]
-#![feature(hint_prefetch)]
-#![feature(allocator_api)]
-
 //! `splot-recon` owns AV2 reconstruction primitives and frame/workspace storage.
 //!
 //! The crate exposes checked media buffers, view-first frame access, intra/inter
@@ -13,6 +9,34 @@
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
+
+/// Runs `$body` with the baseline SIMD token bound to `$simd`. On x86-64 the
+/// AVX2 token is taken directly, so a small per-row kernel inlines into its
+/// caller instead of going through the out-of-line `dispatch!` trampoline.
+#[cfg(target_arch = "x86_64")]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        match fearless_simd::Level::baseline().as_avx2() {
+            Some($simd) => $body,
+            None => fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body),
+        }
+    };
+}
+#[cfg(target_arch = "aarch64")]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        match fearless_simd::Level::baseline().as_neon() {
+            Some($simd) => $body,
+            None => fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body),
+        }
+    };
+}
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body)
+    };
+}
 
 mod cdef_filter;
 mod coefficient_scan;
@@ -32,6 +56,7 @@ mod intra_dc_subsampled;
 mod intra_dip;
 mod intra_directional;
 mod intra_directional_angle;
+mod intra_edge_filter;
 mod intra_ibp_angular;
 mod intra_ibp_dc;
 mod intra_smooth;
@@ -40,6 +65,7 @@ mod inverse_transform_2d;
 mod inverse_transform_2d_8bit;
 mod inverse_transform_2d_outer;
 mod loop_restoration;
+mod lr_madd;
 pub mod math;
 #[doc(hidden)]
 pub mod mhccp;
@@ -48,9 +74,7 @@ mod pc_wiener;
 mod plane;
 mod plane_buf;
 mod plane_pool;
-pub use plane_buf::{
-    PLANE_ALIGNMENT, PlaneAlloc, PlaneBuf, plane_buf, plane_buf_from, plane_stride,
-};
+pub use plane_buf::{PLANE_ALIGNMENT, PlaneBuf, plane_buf, plane_buf_from, plane_stride};
 pub use plane_pool::PlanePool;
 mod reconstruct;
 mod reconstruct_block;
@@ -70,22 +94,23 @@ pub use cdef_filter::{
     CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT,
     CDEF_PAIR_SEGMENT_BLOCK_AREA, CDEF_PAIR_SEGMENT_STRIDE, CDEF_PAIR_STRIDE,
     CDEF_SEGMENT_BLOCK_AREA, CDEF_SEGMENT_BLOCKS, CDEF_SEGMENT_STRIDE, CDEF_UNAVAILABLE,
-    CDEF_UV_DIR, CdefBlockFilter, CdefLumaSegment, CdefPairSegment, CdefSampleTaps, CdefTap,
-    cdef_constrain, cdef_direction, cdef_direction_padded, cdef_direction_segment,
-    cdef_filter_block_boundary_to_valid_stride, cdef_filter_block_chroma_pair,
-    cdef_filter_block_chroma_pair_segment, cdef_filter_block_interior,
+    CDEF_UV_DIR, CdefBlockFilter, CdefLumaSegment, CdefPairSegment, CdefSampleTaps,
+    CdefSegmentBlock, CdefSegmentOutput, CdefStrengths, CdefTap, cdef_constrain, cdef_direction,
+    cdef_direction_padded, cdef_direction_segment, cdef_filter_block_boundary_to_valid_stride,
+    cdef_filter_block_chroma_pair, cdef_filter_block_chroma_pair_segment,
     cdef_filter_block_interior_to, cdef_filter_block_interior_to_valid_stride,
-    cdef_filter_block_segment, cdef_filter_sample,
+    cdef_filter_block_segment, cdef_filter_sample, cdef_filter_segment,
 };
 pub use coefficient_scan::{
-    TransformClass, coefficient_scan_order, coefficient_scan_slice, tx_class,
+    TransformClass, coefficient_scan_order, coefficient_scan_position, coefficient_scan_slice,
+    tx_class,
 };
 pub use deblock_filter::{
-    DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
-    deblock_edge_columns, deblock_edge_rows, deblock_filter_choice,
-    deblock_filter_choice_and_sample_strided_4, deblock_filter_choice_strided,
-    deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
-    deblock_sample_filter_strided_4, deblock_side_threshold_index,
+    DeblockEdge, DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
+    deblock_filter_choice, deblock_filter_choice_strided, deblock_filter_max_width,
+    deblock_horizontal_edges, deblock_sample_filter, deblock_sample_filter_strided,
+    deblock_sample_filter_strided_4, deblock_side_threshold_index, deblock_vertical_edge_band,
+    deblock_vertical_edges,
 };
 pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_index,
@@ -114,6 +139,7 @@ pub use intra_basic::{IntraPaethEdge, IntraPaethEdges, predict_intra_paeth_rect_
 pub use intra_dc_math::resolve_divisor;
 pub use intra_dc_subsampled::{
     predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
+    predict_intra_dc_value_from_edge_sums,
 };
 pub use intra_dip::{IntraDipEdge, IntraDipEdges, predict_intra_dip_rect_into};
 pub use intra_directional::{IntraCardinalDirection, predict_intra_cardinal_directional_rect_into};
@@ -131,13 +157,15 @@ pub use intra_directional_angle::{
 pub use intra_ibp_angular::{apply_ibp_dr_blend_rect, ibp_blend_fires};
 pub use intra_ibp_dc::apply_intra_ibp_dc_rect;
 pub use intra_smooth::{
-    IntraSmoothEdge, IntraSmoothEdges, IntraSmoothMode, predict_intra_smooth_rect_into,
+    IntraSmoothEdge, IntraSmoothEdges, IntraSmoothFrameRequest, IntraSmoothMode,
+    predict_intra_smooth_rect_into,
 };
 pub use inverse_transform::{
     InverseTransform1dType, inverse_identity_transform, inverse_transform_1d,
     inverse_walsh_hadamard,
 };
 pub use inverse_transform_2d::{InverseTransform2d, InverseTransform2dDim, inverse_transform_2d};
+pub use inverse_transform_2d_8bit::{FlatDequant, InverseTransformAdd8};
 pub use inverse_transform_2d_outer::{
     DpcmDirection, InverseTransform2dOuter, inverse_transform_2d_outer,
     inverse_transform_2d_outer_adjusted, inverse_transform_2d_outer_with_scratch,
@@ -149,17 +177,17 @@ pub use loop_restoration::{
 };
 pub use optflow::{
     OptflowScratch, derive_optflow_mv_delta_8x8_strided_into, derive_optflow_mv_deltas,
-    derive_optflow_mv_deltas_into,
+    derive_optflow_mv_deltas_into, optflow_unit_8x8_u8,
 };
 pub use pc_wiener::{
     PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_FILTER_TAP_RADIUS,
     PC_WIENER_FULL_CLASSES, PC_WIENER_LUT_CLASSES, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES,
     PcWienerClassification, PcWienerClassifyPaddedSource, PcWienerClassifyParams,
     PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PcWienerTxSkipLookup,
-    PcWienerTxSkipRun, pc_wiener_classify, pc_wiener_classify_grid, pc_wiener_classify_grid_padded,
+    PcWienerTxSkipRun, pc_wiener_classify, pc_wiener_classify_grid,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_classify_grid_padded_into,
-    pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_block_padded_u16_into,
-    pc_wiener_filter_set_index, pc_wiener_subclass_table,
+    pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_set_index,
+    pc_wiener_subclass_table,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
@@ -180,10 +208,13 @@ pub use secondary_transform::{
 /// `splot-tables` directly.
 pub use splot_tables::tables::quantizer::QM_OFFSET;
 pub use subpel_mc::{
-    BilinearOverlapCarry, InterpolationFilter, ReferencePlaneView, SUBPEL_FILTERS,
-    SubpelPredictParams, blend_compound_average_equal, blend_compound_average_weighted,
-    blend_compound_average_weighted_sample, subpel_predict_12x12_bilinear_overlap_into,
-    subpel_predict_block, subpel_predict_block_compound_average_fast_pair_into,
+    BilinearOverlapCarry, CellPlacement, CompoundCells, InterpolationFilter, REFINEMV_NEIGHBORS,
+    ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams, UnscaledPut,
+    blend_compound_average_equal, blend_compound_average_weighted,
+    blend_compound_average_weighted_sample, refinemv_search_u8, subpel_compound_cell_u8,
+    subpel_compound_cells_u8, subpel_predict_12x12_bilinear_overlap_into,
+    subpel_predict_bilinear_search_window_u8, subpel_predict_bilinear_u8, subpel_predict_block,
+    subpel_predict_block_compound_average_fast_pair_into,
     subpel_predict_block_compound_average_fast_validated_strided_into,
     subpel_predict_block_compound_average_fullpel_strided_into_u8,
     subpel_predict_block_compound_average_into, subpel_predict_block_compound_average_strided_into,
@@ -191,7 +222,7 @@ pub use subpel_mc::{
     subpel_predict_block_compound_average_unscaled_strided_into,
     subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
     subpel_predict_block_into, subpel_predict_block_strided_into,
-    subpel_predict_block_strided_into_u8,
+    subpel_predict_block_strided_into_u8, subpel_put_u8_block,
 };
 pub use transform_params::{
     TransformPass, dpcm_direction, get_transform_1d_type, transform_shift, tx_size_index,
@@ -205,23 +236,20 @@ pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAPS,
     WIENER_NS_CONFIG_UV, WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch,
     wiener_ns_chroma_luma_plane, wiener_ns_filter_chroma_block,
-    wiener_ns_filter_chroma_block_padded_into, wiener_ns_filter_chroma_block_padded_u8_into,
-    wiener_ns_filter_chroma_block_padded_u16_into,
+    wiener_ns_filter_chroma_block_padded_u8_into, wiener_ns_filter_chroma_block_padded_u16_into,
 };
 pub use wienerns_filter::{
     WIENER_NS_CONFIG_Y_PAIRS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
     WIENER_NS_LUMA_TAPS, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
-    wiener_ns_filter_luma_block, wiener_ns_filter_luma_block_padded,
-    wiener_ns_filter_luma_block_padded_cells_into,
-    wiener_ns_filter_luma_block_padded_cells_u8_into,
-    wiener_ns_filter_luma_block_padded_cells_u16_into, wiener_ns_filter_luma_block_padded_into,
-    wiener_ns_filter_luma_block_padded_u8_into, wiener_ns_filter_luma_block_padded_u16_into,
+    wiener_ns_filter_luma_block, wiener_ns_filter_luma_block_padded_cells_into,
+    wiener_ns_filter_luma_block_padded_cells_u8_into, wiener_ns_filter_luma_block_padded_into,
+    wiener_ns_filter_luma_block_padded_u8_into,
 };
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRect, CurrentFrameRect,
     CurrentFrameRectRowsMut, CurrentFrameSurface, CurrentFrameWorkspace, InterIntraMode,
-    IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameRect, OwnedFrameRectRows,
-    WorkspaceRectRows, wedge_mask_plane_sample,
+    IntraBlockFrame, IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameRect,
+    OwnedFrameRectRows, WorkspaceRectRows, wedge_mask_plane_sample,
 };
 pub use y4m::{
     Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,

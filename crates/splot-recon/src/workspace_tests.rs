@@ -607,22 +607,11 @@ fn surface_add_residual_rejects_inputs_atomically() {
 
     let stride = workspace.plane(PlaneId::Y).unwrap().stride_samples();
     workspace.as_frame_mut().unwrap().y_mut().samples_mut()[3 * stride + 3] = 300;
-    assert!(matches!(
-        CurrentFrameSurface::Frame(&mut workspace).add_residual_rect_block(
-            PlaneId::Y,
-            0,
-            0,
-            rect_block(2, 2),
-            &[1; 16],
-        ),
-        Err(ReconError::ReconstructPredictionOutOfRange {
-            sample_index: 15,
-            value: 300,
-            max: 255,
-        })
-    ));
-    let mut expected = [20; 16];
-    expected[15] = 300;
+    CurrentFrameSurface::Frame(&mut workspace)
+        .add_residual_rect_block(PlaneId::Y, 0, 0, rect_block(2, 2), &[1; 16])
+        .unwrap();
+    let mut expected = [21; 16];
+    expected[15] = 255;
     assert_eq!(packed(&workspace, PlaneId::Y), expected);
 }
 
@@ -1684,4 +1673,58 @@ fn workspace_set_reconstructed_sample_writes_and_validates() {
         workspace.set_reconstructed_sample(PlaneId::U, 0, 0, 5),
         Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
     ));
+}
+
+#[test]
+fn u8_rect_target_matches_the_contiguous_writer() {
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 5, 4), 3).unwrap();
+    let base = workspace.samples(PlaneId::Y).unwrap().as_ptr().addr();
+    let span = |samples: &mut [u8], stride| (samples.as_ptr().addr() - base, samples.len(), stride);
+    for (x, y, w, h) in (0..6)
+        .flat_map(|x| (0..5).map(move |y| (x, y)))
+        .flat_map(|(x, y)| (1..6).flat_map(move |w| (1..5).map(move |h| (x, y, w, h))))
+    {
+        let mut surface = CurrentFrameSurface::Frame(&mut workspace);
+        let target = rect(x, y, w, h);
+        let direct = surface
+            .u8_rect_mut(PlaneId::Y, target)
+            .map(|(samples, stride)| span(samples, stride));
+        let written = surface
+            .with_contiguous_u8_rect_mut(PlaneId::Y, target, |samples, stride| {
+                Ok(span(samples, stride))
+            })
+            .ok()
+            .flatten();
+        assert_eq!(direct, written, "{x},{y} {w}x{h}");
+    }
+}
+
+#[test]
+fn bawp_rect_scales_every_width_like_the_scalar_formula() {
+    for width in [4usize, 8, 16, 32] {
+        let mut workspace =
+            CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 30, 4), 0).unwrap();
+        let rows: Vec<u8> = (0..120).map(|i| (i * 37 % 256) as u8).collect();
+        workspace
+            .write_rect(PlaneId::Y, rect(0, 0, 30, 4), &rows, 30)
+            .unwrap();
+        let log2 = width.trailing_zeros() as u8;
+        workspace
+            .apply_bawp_rect(PlaneId::Y, 2, 1, rect_block(log2, 2), 300, -900)
+            .unwrap();
+        let reach = (1usize << log2).min(28);
+        for (index, (&sample, &orig)) in
+            packed(&workspace, PlaneId::Y).iter().zip(&rows).enumerate()
+        {
+            let (x, y) = (index % 30, index / 30);
+            let inside = (2..2 + reach).contains(&x) && y >= 1;
+            let expected = if inside {
+                ((i32::from(orig) * 300 - 900) >> 8).clamp(0, 255) as u8
+            } else {
+                orig
+            };
+            assert_eq!(sample, expected, "width {width} at {x},{y}");
+        }
+    }
 }

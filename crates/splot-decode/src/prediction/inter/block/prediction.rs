@@ -4,16 +4,11 @@
 use super::*;
 use crate::pipeline::reconstruct::IntraEdgeAvailability;
 
+/// Positions in luma samples, which a `u32` frame size bounds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PlacedInterGeometry {
-    pub(super) luma_x: usize,
-    pub(super) luma_y: usize,
-    pub(super) luma_w: usize,
-    pub(super) luma_h: usize,
-    pub(super) chroma_luma_x: usize,
-    pub(super) chroma_luma_y: usize,
-    pub(super) chroma_luma_w: usize,
-    pub(super) chroma_luma_h: usize,
+    pub(super) luma: [u32; 4],
+    pub(super) chroma_luma: [u32; 4],
     pub(super) predict_chroma: bool,
     pub(super) sub8x8_chroma: bool,
     pub(super) interintra_chroma: bool,
@@ -22,16 +17,19 @@ pub(super) struct PlacedInterGeometry {
 
 impl PlacedInterGeometry {
     /// `block` placed at this geometry.
-    pub(super) const fn place(self, block: InterBlock) -> PlacedInterBlock {
+    pub(super) fn place(self, block: InterBlock) -> PlacedInterBlock {
+        let [luma_x, luma_y, luma_w, luma_h] = self.luma.map(|v| v as usize);
+        let [chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h] =
+            self.chroma_luma.map(|v| v as usize);
         PlacedInterBlock {
-            luma_x: self.luma_x,
-            luma_y: self.luma_y,
-            luma_w: self.luma_w,
-            luma_h: self.luma_h,
-            chroma_luma_x: self.chroma_luma_x,
-            chroma_luma_y: self.chroma_luma_y,
-            chroma_luma_w: self.chroma_luma_w,
-            chroma_luma_h: self.chroma_luma_h,
+            luma_x,
+            luma_y,
+            luma_w,
+            luma_h,
+            chroma_luma_x,
+            chroma_luma_y,
+            chroma_luma_w,
+            chroma_luma_h,
             predict_chroma: self.predict_chroma,
             sub8x8_chroma: self.sub8x8_chroma,
             interintra_chroma: self.interintra_chroma,
@@ -65,20 +63,37 @@ fn is_thin_4xn_nx4_block(size: BlockSize) -> bool {
     width.min(height) == 4 && width.max(height) >= 16
 }
 
-pub(super) fn placed_inter_geometry(
-    frontier: &DecodeBlockFrontier,
-    work_unit: &DecodeTileWorkUnit,
-    size4: (usize, usize),
+/// What [`placed_inter_geometry_at`] reads of a parsed leaf, kept for the
+/// resolve pass to place it.
+#[derive(Clone, Copy)]
+pub(super) struct InterLeafPlacement {
+    frontier: DecodeBlockFrontier,
+    tile_start: (usize, usize),
     chroma_planes: bool,
-) -> Result<PlacedInterGeometry> {
-    let tile_start = (
-        work_unit.mi_row_range().start as usize,
-        work_unit.mi_col_range().start as usize,
-    );
-    placed_inter_geometry_at(frontier, tile_start, size4, chroma_planes)
 }
 
-/// [`placed_inter_geometry`] in a tile that starts at 4x4 position `(row, col)`.
+impl InterLeafPlacement {
+    pub(super) fn geometry(&self, size4: (usize, usize)) -> Result<PlacedInterGeometry> {
+        placed_inter_geometry_at(&self.frontier, self.tile_start, size4, self.chroma_planes)
+    }
+}
+
+pub(super) fn inter_leaf_placement(
+    frontier: &DecodeBlockFrontier,
+    work_unit: &DecodeTileWorkUnit,
+    chroma_planes: bool,
+) -> InterLeafPlacement {
+    InterLeafPlacement {
+        frontier: *frontier,
+        tile_start: (
+            work_unit.mi_row_range().start as usize,
+            work_unit.mi_col_range().start as usize,
+        ),
+        chroma_planes,
+    }
+}
+
+/// A leaf's placed geometry in a tile that starts at 4x4 position `(row, col)`.
 #[inline]
 pub(super) fn placed_inter_geometry_at(
     frontier: &DecodeBlockFrontier,
@@ -122,14 +137,8 @@ pub(super) fn placed_inter_geometry_at(
         ),
     ];
     Ok(PlacedInterGeometry {
-        luma_x,
-        luma_y,
-        luma_w,
-        luma_h,
-        chroma_luma_x,
-        chroma_luma_y,
-        chroma_luma_w,
-        chroma_luma_h,
+        luma: [luma_x, luma_y, luma_w, luma_h].map(|v| v as u32),
+        chroma_luma: [chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h].map(|v| v as u32),
         predict_chroma,
         sub8x8_chroma: predict_chroma
             && sub8x8_chroma_disables_compound(frontier.b_size, chroma_ref.size()),
@@ -172,13 +181,12 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
         )?;
     }
     let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
-    let block_params = held
-        .block_params(placed, rect)?
-        .with_refinemv(use_refinemv)
-        .with_switchable_refinemv(refinemv_switchable);
-    let motion = mc::predict_inter_block_from_grid(
+    let motion = held.predict_into(
         &mut mc::WorkspaceSink::Frame(workspace),
-        block_params,
+        placed,
+        rect,
+        use_refinemv,
+        refinemv_switchable,
         motion,
         tile_offset,
     )?;
@@ -260,11 +268,15 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
     let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
-    let block_params = held
-        .block_params(placed, placed.motion_compensation_rect())?
-        .with_refinemv(use_refinemv)
-        .with_switchable_refinemv(refinemv_switchable);
-    let motion = mc::predict_inter_block_from_grid(sink, block_params, motion, tile_offset)?;
+    let motion = held.predict_into(
+        sink,
+        placed,
+        placed.motion_compensation_rect(),
+        use_refinemv,
+        refinemv_switchable,
+        motion,
+        tile_offset,
+    )?;
     drop(held);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(

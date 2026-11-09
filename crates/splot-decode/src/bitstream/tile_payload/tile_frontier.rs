@@ -6,20 +6,15 @@ use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockS
 use splot_core::symbol::SymbolDecoder;
 
 use super::DecodeTileWorkUnit;
-use super::intra_joint_modes::{
-    IsCflContext, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
-    TileIntraJointModeStateError, TileLumaPaletteState, TileLumaPaletteStateError, TileUseDipState,
-    TileUseDipStateError, TileUsesMrlsState, TileUsesMrlsStateError, TileUvCflState,
-    TileUvCflStateError,
-};
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition_allowed::PartitionFeatureFlags;
 pub(crate) use super::partition_traversal::GeneralIntraPartitionTreeOutput as GeneralIntraMultiblockOutput;
 use super::partition_traversal::{
     DecodeBlockFrontier, DecodedLeafPublication, GeneralIntraLeafMode,
-    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, TilePartitionFrameFacts,
-    TilePartitionLoopRestorationFrameState, TilePartitionLoopRestorationPlaneTool,
-    TilePartitionLoopRestorationState, TilePartitionTraversalError, TileTraversalStorage,
+    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, LeafNeighbours,
+    TilePartitionFrameFacts, TilePartitionLoopRestorationFrameState,
+    TilePartitionLoopRestorationPlaneTool, TilePartitionLoopRestorationState,
+    TilePartitionTraversalError, TileTraversalStorage,
 };
 use crate::DecodeLimits;
 
@@ -35,18 +30,6 @@ pub(crate) enum TilePartitionFrontierError {
     Traversal(#[from] TilePartitionTraversalError),
     #[error("MI-size state failed: {0}")]
     MiSizeState(#[from] TileMiSizeStateError),
-    #[error("intra joint-mode state failed: {0}")]
-    IntraJointModeState(#[from] TileIntraJointModeStateError),
-    #[error("intra UsesMrls state failed: {0}")]
-    UsesMrlsState(#[from] TileUsesMrlsStateError),
-    #[error("intra UseDip state failed: {0}")]
-    UseDipState(#[from] TileUseDipStateError),
-    #[error("intra FscModes state failed: {0}")]
-    FscModeState(#[from] TileFscModeStateError),
-    #[error("luma palette state failed: {0}")]
-    LumaPaletteState(#[from] TileLumaPaletteStateError),
-    #[error("intra UVCfls state failed: {0}")]
-    UvCflState(#[from] TileUvCflStateError),
     #[error("partition frontier mismatch: {reason}")]
     UnexpectedFrontier { reason: &'static str },
 }
@@ -62,12 +45,6 @@ pub(crate) enum GeneralIntraMultiblockError<E> {
 pub(crate) struct GeneralIntraMultiblockCursor<'payload> {
     tree: GeneralIntraPartitionTreeCursor<'payload>,
     mi_size_state: TileMiSizeState,
-    joint_modes: TileIntraJointModeState,
-    uses_mrls: TileUsesMrlsState,
-    use_dip: TileUseDipState,
-    fsc_modes: TileFscModeState,
-    palette_y: TileLumaPaletteState,
-    uv_cfls: TileUvCflState,
 }
 
 impl<'payload> GeneralIntraMultiblockCursor<'payload> {
@@ -87,35 +64,12 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
             ..(work_unit.mi_col_range().end as usize).min(mi_cols);
         let mi_size_state =
             TileMiSizeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), frame.sb_size())?;
-        let sb_size4 = frame
-            .sb_size()
-            .num_4x4_wide()
-            .map_err(TilePartitionTraversalError::from)?
-            .max(1);
-        let joint_modes =
-            TileIntraJointModeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
-        let uses_mrls =
-            TileUsesMrlsState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
-        let use_dip =
-            TileUseDipState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
-        let fsc_modes =
-            TileFscModeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
-        let palette_y =
-            TileLumaPaletteState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
-        let uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len(), sb_size4)?
-            .with_origin(tile_rows.start, tile_cols.start);
         let tree = GeneralIntraPartitionTreeCursor::new_with_bytes(
             work_unit, tile_bytes, frame, limits, lr_records,
         )?;
         Ok(Self {
             tree,
             mi_size_state,
-            joint_modes,
-            uses_mrls,
-            use_dip,
-            fsc_modes,
-            palette_y,
-            uv_cfls,
         })
     }
 
@@ -130,70 +84,36 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
             &mut DecodeTileWorkUnit,
             &mut SymbolDecoder<'payload>,
             &DecodeBlockFrontier,
-            &TileIntraJointModeState,
-            &TileUsesMrlsState,
-            &TileUseDipState,
-            &TileFscModeState,
-            &TileLumaPaletteState,
-            IsCflContext,
+            LeafNeighbours<'_>,
         ) -> Result<(GeneralIntraLeafMode, C), E>,
         P: FnMut(DecodedLeafPublication, C),
     {
-        let Self {
-            tree,
-            mi_size_state,
-            joint_modes,
-            uses_mrls,
-            use_dip,
-            fsc_modes,
-            palette_y,
-            uv_cfls,
-        } = self;
-        tree.decode_next_superblock_with_publication(
-            work_unit,
-            mi_size_state,
-            joint_modes,
-            uses_mrls,
-            use_dip,
-            fsc_modes,
-            palette_y,
-            uv_cfls,
-            on_leaf,
-            on_published,
-        )
-        .map_err(GeneralIntraMultiblockError::Walk)
+        self.tree
+            .decode_next_superblock_with_publication(
+                work_unit,
+                &mut self.mi_size_state,
+                on_leaf,
+                on_published,
+            )
+            .map_err(GeneralIntraMultiblockError::Walk)
+    }
+
+    pub(crate) const fn sb_mask(&self) -> usize {
+        self.tree.sb_mask()
+    }
+
+    /// Whether the next superblock starts a new superblock row.
+    pub(crate) const fn at_row_start(&self) -> bool {
+        self.tree.at_row_start()
     }
 
     /// Whether a neighbour grid touched a row its window had already reused.
     pub(crate) fn window_violated(&self) -> bool {
         self.tree.window_violated()
-            || self.mi_size_state.window_violated()
-            || self.joint_modes.window_violated()
-            || self.uses_mrls.window_violated()
-            || self.use_dip.window_violated()
-            || self.fsc_modes.window_violated()
-            || self.palette_y.window_violated()
-            || self.uv_cfls.window_violated()
     }
 
     pub(crate) fn into_output(self) -> GeneralIntraMultiblockOutput<'payload> {
-        let Self {
-            tree,
-            mi_size_state: _,
-            joint_modes,
-            uses_mrls,
-            use_dip,
-            fsc_modes,
-            palette_y,
-            uv_cfls,
-        } = self;
-        joint_modes.recycle();
-        uses_mrls.recycle();
-        use_dip.recycle();
-        fsc_modes.recycle();
-        palette_y.recycle();
-        uv_cfls.recycle();
-        tree.into_output()
+        self.tree.into_output()
     }
 }
 

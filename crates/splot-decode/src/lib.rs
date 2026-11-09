@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![feature(portable_simd)]
-
 //! `splot-decode` - the AV2 decode driver.
 //!
 //! This crate coordinates parsed AV2 bitstream facts from `splot-core` with
@@ -28,6 +26,38 @@
 
 /// Stable rule id for the current unsupported decode diagnostic.
 pub const UNSUPPORTED_FEATURE_RULE_ID: &str = "decode/unsupported-feature";
+
+/// Runs `$body` with `$simd` bound to the baseline SIMD token: the AVX2
+/// token directly where the baseline has it, since the closure `dispatch!`
+/// wraps its body in is not inlined, else through `dispatch!`.
+#[cfg(target_arch = "x86_64")]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        match fearless_simd::Level::baseline().as_avx2() {
+            Some($simd) => $body,
+            None => fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body),
+        }
+    };
+}
+
+#[cfg(target_arch = "aarch64")]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        match fearless_simd::Level::baseline().as_neon() {
+            Some($simd) => $body,
+            None => fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body),
+        }
+    };
+}
+
+/// [`baseline_simd`] for targets without an AVX2 or NEON baseline.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body)
+    };
+}
+pub(crate) use baseline_simd;
 
 mod bitstream;
 pub mod context;

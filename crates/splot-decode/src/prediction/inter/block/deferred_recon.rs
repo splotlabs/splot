@@ -18,7 +18,7 @@ use super::super::{
     PlacedInterBlock,
 };
 use super::compound_path::append_compound_temporal_motion;
-use super::temporal::{MotionFieldUnits, temporal_motion_block};
+use super::temporal::temporal_motion_block;
 use super::tip::{self, TipReconstructScratch};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQmSegmentScope, TileBlockDecodedState};
@@ -28,9 +28,8 @@ pub(super) enum PendingKind {
     Single,
     Compound {
         syntax: CompoundBlockSyntax,
-        warp_params: [Option<[i32; 6]>; 2],
-        mi_row: usize,
-        mi_col: usize,
+        mi_row: u32,
+        mi_col: u32,
         use_refinemv: bool,
         refinemv_switchable: bool,
     },
@@ -41,7 +40,7 @@ pub(super) enum PendingKind {
 pub(super) struct InterReconCommand {
     placed: PlacedInterBlock,
     kind: PendingKind,
-    segment_id: usize,
+    segment_id: u8,
     qindex: u32,
     motion_derived: bool,
     derived_motion: Option<Box<mc::CompoundMotionGrid>>,
@@ -51,12 +50,9 @@ pub(super) struct InterReconCommand {
 #[derive(Default)]
 #[repr(align(64))]
 pub(super) struct InterReconScratch<T: ReconSample> {
-    pub(super) coefficients: Vec<i32>,
-    pub(super) plane_records: crate::residual::pipeline::ResidualPlaneArena,
-    pub(super) lists: super::tile::UnitLists,
     general_intra: crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
-    tip: TipReconstructScratch<T>,
-    temporal: Vec<TemporalMotionBlock>,
+    tip: TipReconstructScratch,
+    pub(super) temporal: Vec<TemporalMotionBlock>,
     interintra: super::interintra::InterIntraScratch<T>,
     residual: InterResidualReconScratch<T>,
     mc: super::super::mc::McScratch,
@@ -76,6 +72,24 @@ pub(super) struct ReconShared<'a, T: ReconSample> {
     pub(super) mi_rows: usize,
     pub(super) mi_cols: usize,
     pub(super) current_order_hint: u32,
+    pub(super) tip: core::cell::OnceCell<tip::TipFramePlan>,
+}
+
+impl<T: ReconSample> ReconShared<'_, T> {
+    fn tip(&self, info: DecodedFrameInfo) -> Result<&tip::TipFramePlan> {
+        if let Some(plan) = self.tip.get() {
+            return Ok(plan);
+        }
+        let plan = tip::TipFramePlan::new(
+            info,
+            self.temporal_context,
+            self.sequence,
+            self.core,
+            self.ref_frame_idx,
+            self.reference,
+        )?;
+        Ok(self.tip.get_or_init(|| plan))
+    }
 }
 
 pub(super) const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
@@ -83,13 +97,14 @@ pub(super) const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
 }
 
 impl InterReconCommand {
-    /// `segment_id` is the § 7.14 quantizer-matrix segment in force while the
-    /// leaf was parsed, captured there because the resolve pass runs after the
-    /// leaf's segment scope has been dropped.
+    /// `segment_id` is the § 7.14 quantizer-matrix segment, below
+    /// `MAX_SEGMENTS`, in force while the leaf was parsed, captured there
+    /// because the resolve pass runs after the leaf's segment scope has been
+    /// dropped.
     pub(super) const fn new(
         placed: PlacedInterBlock,
         kind: PendingKind,
-        segment_id: usize,
+        segment_id: u8,
         qindex: u32,
         tile_offset: ByteOffset,
     ) -> Self {
@@ -125,17 +140,6 @@ impl InterReconCommand {
             self.placed.block.bawp.enabled,
             self.placed.block.interintra.is_some(),
         )
-    }
-
-    pub(super) fn temporal_record_capacity(&self) -> usize {
-        match self.kind {
-            PendingKind::Single => 1,
-            PendingKind::Compound { .. } | PendingKind::Tip => self
-                .placed
-                .luma_w
-                .div_ceil(8)
-                .saturating_mul(self.placed.luma_h.div_ceil(8)),
-        }
     }
 
     pub(super) fn prepass_write_is_contained(
@@ -218,7 +222,7 @@ impl InterReconCommand {
         sink: &WorkspaceSink<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
-        tip_scratch: &mut TipReconstructScratch<T>,
+        tip_scratch: &mut TipReconstructScratch,
     ) -> Result<Option<mc::CompoundMotionGrid>> {
         match self.kind {
             PendingKind::Tip => tip::motion(
@@ -226,9 +230,8 @@ impl InterReconCommand {
                 temporal_records,
                 sink,
                 &self.placed,
+                shared.tip(sink.info())?,
                 shared.temporal_context,
-                shared.sequence,
-                shared.core,
                 shared.ref_frame_idx,
                 shared.reference,
                 self.tile_offset,
@@ -245,7 +248,6 @@ impl InterReconCommand {
             }
             PendingKind::Compound {
                 syntax,
-                warp_params,
                 mi_row,
                 mi_col,
                 use_refinemv,
@@ -271,10 +273,10 @@ impl InterReconCommand {
                     shared.ref_frame_idx,
                     &self.placed,
                     syntax,
-                    warp_params,
+                    self.placed.block.warp_params,
                     grid.as_ref(),
-                    mi_row,
-                    mi_col,
+                    mi_row as usize,
+                    mi_col as usize,
                     shared.mi_rows,
                     shared.mi_cols,
                     shared.current_order_hint,
@@ -291,27 +293,27 @@ impl InterReconCommand {
         sink: &mut WorkspaceSink<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         motion: Option<mc::CompoundMotionGrid>,
+        fresh_motion: bool,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         shared: &ReconShared<'_, T>,
-        tip_scratch: &mut TipReconstructScratch<T>,
+        tip_scratch: &mut TipReconstructScratch,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
         residual_scratch: &mut InterResidualReconScratch<T>,
     ) -> Result<Option<mc::CompoundMotionGrid>> {
-        let _segment_scope = FrameQmSegmentScope::install(self.segment_id);
+        let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
         if matches!(self.kind, PendingKind::Tip) {
             return tip::predict(
                 tip_scratch,
                 residual_scratch,
                 sink,
                 motion,
+                fresh_motion,
                 &self.placed,
                 residual_blocks,
                 residual_coeffs,
+                shared.tip(sink.info())?,
                 shared.temporal_context,
-                shared.sequence,
-                shared.core,
-                shared.ref_frame_idx,
                 shared.reference,
                 self.qindex,
                 shared.luma_use_tcq,
@@ -373,7 +375,7 @@ impl InterReconCommand {
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         shared: &ReconShared<'_, T>,
-        tip_scratch: &mut TipReconstructScratch<T>,
+        tip_scratch: &mut TipReconstructScratch,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
         residual_scratch: &mut InterResidualReconScratch<T>,
     ) -> Result<()> {
@@ -386,6 +388,7 @@ impl InterReconCommand {
             sink,
             block_decoded,
             motion,
+            !self.motion_derived,
             residual_blocks,
             residual_coeffs,
             shared,
@@ -416,7 +419,7 @@ impl<T: ReconSample> InterReconScratch<T> {
 
     pub(super) fn reconstruct_intrabc(
         &mut self,
-        command: super::intrabc::IntrabcReconCommand,
+        command: &super::intrabc::IntrabcReconCommand,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -427,45 +430,17 @@ impl<T: ReconSample> InterReconScratch<T> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn derive_motion_logged(
         &mut self,
         command: &mut InterReconCommand,
         sink: &WorkspaceSink<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
-        temporal_context: &TemporalMvContext,
-        reference: &InterReferenceState<T>,
-        ref_frame_idx: &[u32],
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-        mi_rows: usize,
-        mi_cols: usize,
-        current_order_hint: u32,
-        luma_use_tcq: bool,
-        residual_use_ddt: bool,
-        bit_depth: BitDepth,
+        shared: &ReconShared<'_, T>,
     ) -> Result<()> {
         let Self { tip, mc, .. } = self;
         mc.with_installed(|| {
-            let _segment_scope = FrameQmSegmentScope::install(command.segment_id);
-            let grid = command.derive_motion(
-                sink,
-                temporal_records,
-                &ReconShared {
-                    reference,
-                    ref_frame_idx,
-                    temporal_context,
-                    sequence,
-                    core,
-                    luma_use_tcq,
-                    residual_use_ddt,
-                    bit_depth,
-                    mi_rows,
-                    mi_cols,
-                    current_order_hint,
-                },
-                tip,
-            )?;
+            let _segment_scope = FrameQmSegmentScope::install(usize::from(command.segment_id));
+            let grid = command.derive_motion(sink, temporal_records, shared, tip)?;
             command.motion_derived = true;
             command.derived_motion = grid.map(Box::new);
             Ok(())
@@ -481,17 +456,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
-        temporal_context: &TemporalMvContext,
-        reference: &InterReferenceState<T>,
-        ref_frame_idx: &[u32],
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-        mi_rows: usize,
-        mi_cols: usize,
-        current_order_hint: u32,
-        luma_use_tcq: bool,
-        residual_use_ddt: bool,
-        bit_depth: BitDepth,
+        shared: &ReconShared<'_, T>,
     ) -> Result<()> {
         let Self {
             tip,
@@ -507,19 +472,7 @@ impl<T: ReconSample> InterReconScratch<T> {
                 temporal_records,
                 residual_blocks,
                 residual_coeffs,
-                &ReconShared {
-                    reference,
-                    ref_frame_idx,
-                    temporal_context,
-                    sequence,
-                    core,
-                    luma_use_tcq,
-                    residual_use_ddt,
-                    bit_depth,
-                    mi_rows,
-                    mi_cols,
-                    current_order_hint,
-                },
+                shared,
                 tip,
                 interintra,
                 residual,
@@ -533,49 +486,31 @@ impl<T: ReconSample> InterReconScratch<T> {
         command: &mut InterReconCommand,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &TileBlockDecodedState,
-        motion: &MotionFieldUnits,
-        ordinal: usize,
+        temporal: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
-        temporal_context: &TemporalMvContext,
-        reference: &InterReferenceState<T>,
-        ref_frame_idx: &[u32],
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-        mi_rows: usize,
-        mi_cols: usize,
-        current_order_hint: u32,
-        luma_use_tcq: bool,
-        residual_use_ddt: bool,
-        bit_depth: BitDepth,
+        shared: &ReconShared<'_, T>,
     ) -> Result<()> {
-        let mut temporal = core::mem::take(&mut self.temporal);
-        temporal.clear();
-        let mut result = self.reconstruct_logged(
-            command,
-            &mut WorkspaceSink::Frame(workspace),
-            block_decoded,
-            &mut temporal,
-            residual_blocks,
-            residual_coeffs,
-            temporal_context,
-            reference,
-            ref_frame_idx,
-            sequence,
-            core,
-            mi_rows,
-            mi_cols,
-            current_order_hint,
-            luma_use_tcq,
-            residual_use_ddt,
-            bit_depth,
-        );
-        if result.is_ok() && !temporal.is_empty() {
-            result = motion.fold_unit(ordinal, &temporal);
-        }
-        temporal.clear();
-        self.temporal = temporal;
-        result
+        let Self {
+            tip,
+            interintra,
+            residual,
+            mc,
+            ..
+        } = self;
+        mc.with_installed(|| {
+            command.reconstruct_ordered(
+                &mut WorkspaceSink::Frame(workspace),
+                block_decoded,
+                temporal,
+                residual_blocks,
+                residual_coeffs,
+                shared,
+                tip,
+                interintra,
+                residual,
+            )
+        })
     }
 }
 
@@ -829,7 +764,8 @@ mod tests {
             cctx_pair_delta: 0,
             coeffs: LumaCoeffBlock {
                 eob: 0,
-                quant_range: 0..0,
+                quant_start: 0,
+                quant_len: 0,
                 zero_tail: 0,
                 intra_ist: None,
                 cctx_type: None,
@@ -838,9 +774,7 @@ mod tests {
                 lossless: false,
             },
         });
-        InterResidual {
-            block_range: start..blocks.len(),
-        }
+        InterResidual::new(start..blocks.len())
     }
 
     fn tx_size_for(width: usize, height: usize) -> usize {

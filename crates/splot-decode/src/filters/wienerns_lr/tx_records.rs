@@ -188,6 +188,8 @@ impl DeltaQState {
         })
     }
 
+    #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]
+    #[inline(always)]
     pub(crate) fn read_for_block(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
@@ -199,6 +201,18 @@ impl DeltaQState {
         if !self.present {
             return Ok(());
         }
+        self.read_present(work_unit, symbols, frontier, skip, tile_offset)
+    }
+
+    #[inline(never)]
+    fn read_present(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'_>,
+        frontier: &DecodeBlockFrontier,
+        skip: bool,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
         let sb = self.superblock(frontier);
         if self.current_sb != Some(sb) {
             self.current_sb = Some(sb);
@@ -231,7 +245,7 @@ impl DeltaQState {
     }
 
     const fn superblock(&self, frontier: &DecodeBlockFrontier) -> (usize, usize) {
-        (frontier.r / self.sb_size4, frontier.c / self.sb_size4)
+        crate::tile::superblock_of(frontier.r, frontier.c, self.sb_size4)
     }
 
     pub(crate) fn qindex_u32(&self) -> u32 {
@@ -302,7 +316,14 @@ impl CdefState {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Reads the block's CDEF unit index unless the unit already has one, which
+    /// only an earlier read of the same frame's parameters can have set.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::inline_always,
+        reason = "measured: a per-leaf guard"
+    )]
+    #[inline(always)]
     pub(crate) fn read_for_block(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
@@ -314,9 +335,37 @@ impl CdefState {
         skip_txfm: bool,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        if frontier.is_chroma_part() {
+        if frontier.is_chroma_part()
+            || matches!(
+                self.value(frontier.r / CDEF_UNIT_MI, frontier.c / CDEF_UNIT_MI),
+                Ok(Some(_))
+            )
+        {
             return Ok(());
         }
+        self.read_unit(
+            work_unit,
+            symbols,
+            core,
+            frontier,
+            (n4w, n4h),
+            skip_txfm,
+            tile_offset,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn read_unit(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'_>,
+        core: &FrameHeaderCore,
+        frontier: &DecodeBlockFrontier,
+        (n4w, n4h): (usize, usize),
+        skip_txfm: bool,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
         let Some(cdef) = core.cdef_params.as_ref() else {
             return Err(selectable_state_error());
         };
@@ -339,9 +388,6 @@ impl CdefState {
             || unit_col >= self.col_start + self.cols
         {
             return Err(selectable_state_error());
-        }
-        if self.value(unit_row, unit_col)?.is_some() {
-            return Ok(());
         }
 
         let strength = if strengths == 1 {
@@ -398,7 +444,7 @@ impl CdefState {
         }
         if let Some(above_row) = mi_row.checked_sub(CDEF_UNIT_MI)
             && above_row >= tile_row_start
-            && mi_row / self.sb_size4 == above_row / self.sb_size4
+            && crate::tile::same_superblock_row(mi_row, above_row, self.sb_size4)
         {
             if self.value(unit_row - 1, unit_col)? == Some(0) {
                 ctx += 1;
@@ -434,11 +480,21 @@ impl CdefState {
         Ok(())
     }
 
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: the read_for_block guard reads it"
+    )]
+    #[inline(always)]
     pub(crate) fn value(&self, row: usize, col: usize) -> Result<Option<usize>> {
         let index = self.index(row, col)?;
         Ok(self.values[index])
     }
 
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: the read_for_block guard reads it"
+    )]
+    #[inline(always)]
     fn index(&self, row: usize, col: usize) -> Result<usize> {
         let local_row = row
             .checked_sub(self.row_start)
@@ -726,8 +782,8 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
                 .c
                 .checked_add(extent.cols)
                 .ok_or_else(selectable_state_error)?;
-            for row in (frontier.r..row_end).step_by(tx_h4) {
-                for col in (frontier.c..col_end).step_by(tx_w4) {
+            for row in crate::support::step_range(frontier.r..row_end, tx_h4) {
+                for col in crate::support::step_range(frontier.c..col_end, tx_w4) {
                     let reduced_tx_part_set = work_unit.coeff_frame_facts().reduced_tx_part_set();
                     let Some(tx_partition) = read_tx_partition_symbols(
                         work_unit,

@@ -149,14 +149,14 @@ impl IntrabcReconCommand {
     }
 
     pub(super) fn reconstruct<T: ReconSample>(
-        self,
+        &self,
         residual_scratch: &mut InterResidualReconScratch<T>,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
     ) -> Result<()> {
         let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
-        let prediction = self.prediction;
+        let prediction = &self.prediction;
         if prediction.luma.fractional {
             mc::intrabc_predict_subpel_plane_into(
                 workspace,

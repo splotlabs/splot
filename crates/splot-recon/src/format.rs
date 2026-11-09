@@ -220,11 +220,6 @@ pub trait ReconSample:
     /// Takes back buffers of this storage depth, leaving any of another depth.
     fn reclaim_planes(retired: &mut crate::RetiredFramePlanes) -> crate::FramePlaneSamples<Self>;
 
-    /// Reinterprets mutable `u16` storage as this sample type when it is `u16`,
-    /// letting a filter write its samples straight into a `u16` plane without a
-    /// staging buffer; `None` for narrower storage types.
-    fn from_u16_slice_mut(samples: &mut [u16]) -> Option<&mut [Self]>;
-
     /// Reinterprets a mutable sample slice as `u8` storage when this type is
     /// `u8`; `None` for wider storage types.
     fn u8_slice_mut(samples: &mut [Self]) -> Option<&mut [u8]>;
@@ -270,10 +265,6 @@ impl ReconSample for u8 {
         None
     }
 
-    fn from_u16_slice_mut(_samples: &mut [u16]) -> Option<&mut [Self]> {
-        None
-    }
-
     fn u8_slice_mut(samples: &mut [Self]) -> Option<&mut [u8]> {
         Some(samples)
     }
@@ -312,10 +303,6 @@ impl ReconSample for u16 {
     }
 
     fn u16_slice_mut(samples: &mut [Self]) -> Option<&mut [u16]> {
-        Some(samples)
-    }
-
-    fn from_u16_slice_mut(samples: &mut [u16]) -> Option<&mut [Self]> {
         Some(samples)
     }
 

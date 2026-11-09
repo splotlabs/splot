@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-pub(crate) use block::ParseProgress;
+pub(crate) use block::{ParseProgress, ReconRowBuffers};
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use std::sync::Arc;
@@ -664,6 +664,42 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
         self.reference0.samples()
     }
 
+    /// Predicts the held block into `sink` from the compound `motion` grid,
+    /// a single-reference translation straight from its motion vector.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::block_params`] and [`mc::predict_inter_block_from_grid`].
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::prediction::inter) fn predict_into(
+        &self,
+        sink: &mut mc::WorkspaceSink<'_, '_, T>,
+        placed: &PlacedInterBlock,
+        rect: mc::McBlockRect,
+        use_refinemv: bool,
+        refinemv_switchable: bool,
+        motion: Option<mc::CompoundMotionGrid>,
+        offset: ByteOffset,
+    ) -> Result<Option<mc::CompoundMotionGrid>> {
+        if !self.compound && placed.block.warp_params[0].is_none() {
+            mc::motion_compensate_single_block_into(
+                sink,
+                self.reference0.samples()?,
+                rect,
+                placed.block.mv,
+                placed.block.interp,
+                placed.predict_chroma,
+                offset,
+            )?;
+            return Ok(motion);
+        }
+        let block = self
+            .block_params(placed, rect)?
+            .with_refinemv(use_refinemv)
+            .with_switchable_refinemv(refinemv_switchable);
+        mc::predict_inter_block_from_grid(sink, block, motion, offset)
+    }
+
     /// Builds the § 7.13.3 prediction parameters for the held block.
     ///
     /// # Errors
@@ -913,7 +949,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
         if block.cctx_pair_delta < 0 {
             continue;
         }
-        let cctx_type = block.coeffs.cctx_type.unwrap_or(0);
+        let cctx_type = block.coeffs.cctx_type().unwrap_or(0);
         if block.plane == ReconPlaneId::U && cctx_type != 0 {
             let v_block = inter_residual_chroma_pair(blocks, index, block)
                 .ok_or(DecodeHeaderStateError::MissingInterResidualCctxPair)?;
@@ -933,6 +969,9 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
         let use_tcq = block.plane == ReconPlaneId::Y && luma_use_tcq;
         let (log2_width, log2_height) = inter_residual_log2(block)
             .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
+        if block.coeffs.eob == 0 {
+            continue;
+        }
         crate::pipeline::reconstruct::reconstruct_inter_block_residual_rect_into(
             sink,
             crate::bitstream::tile_payload::CoeffBlock::new(&block.coeffs, residual_coeffs)
@@ -1001,6 +1040,7 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
@@ -1154,15 +1194,22 @@ impl PlacedInterBlock {
 }
 #[derive(Clone, Debug)]
 pub(crate) struct InterResidual {
-    pub(crate) block_range: core::ops::Range<usize>,
+    pub(crate) block_range: core::ops::Range<u32>,
 }
 
 impl InterResidual {
+    /// The arena blocks `range`; a row holds far fewer than `u32::MAX`.
+    pub(crate) fn new(range: core::ops::Range<usize>) -> Self {
+        Self {
+            block_range: range.start as u32..range.end as u32,
+        }
+    }
+
     pub(crate) fn blocks<'a>(
         &self,
         arena: &'a [InterResidualBlock],
     ) -> Option<&'a [InterResidualBlock]> {
-        arena.get(self.block_range.clone())
+        arena.get(self.block_range.start as usize..self.block_range.end as usize)
     }
 }
 
@@ -2165,13 +2212,11 @@ pub(crate) use block::encoder_leaf::{
     encoder_temporal_context,
 };
 pub(crate) use block::inter_residual_units;
-pub(crate) use block::non_intra_leaf_mode;
 pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
     InterFrameParse, InterFrameParser, InterReconScratchPool, PendingFilterAttach,
     RowReferenceBounds, ScheduledTileRecon, ScheduledTileWorkspace, TipOutputStages, TipSpares,
-    bounds_satisfied, chroma_smooth_tile_ranges, decode_inter_blocks,
-    invalid_inter_tile_scheduling_state,
+    bounds_satisfied, decode_inter_blocks, invalid_inter_tile_scheduling_state,
 };
 pub(crate) use compound::CompoundYMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};

@@ -4,8 +4,8 @@
 //! AV2 § 7.12.2 warp-parameter bank and the WRL warp-parameter stack.
 
 use super::{
-    DEFAULT_WARP_PARAMS, MAX_WARP_REF_CANDIDATES, MvBlockContext, NeighbourCell, NeighbourMvGrid,
-    bank_ring_update, seed_walk_from_row_above,
+    DEFAULT_WARP_PARAMS, MAX_WARP_REF_CANDIDATES, NeighbourMvGrid, bank_ring_update,
+    seed_walk_from_row_above, superblock_of,
 };
 
 const WARP_PARAM_BANK_SIZE: usize = 4;
@@ -39,7 +39,7 @@ impl WarpParamBank {
         mi_col: usize,
         sb_size4: usize,
     ) {
-        let sb = (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1));
+        let sb = superblock_of(mi_row, mi_col, sb_size4);
         if self.current_sb == Some(sb) {
             return;
         }
@@ -54,7 +54,7 @@ impl WarpParamBank {
             if cell.flags.is_warp()
                 && let Some(params) = cell.motion.warp_params()
             {
-                self.update(cell.flags.ref_frame0, params);
+                self.update(cell.flags.ref_frame0(), params);
             }
         });
     }
@@ -113,16 +113,6 @@ impl WarpParamStack {
         if self.num_found < MAX_WARP_REF_CANDIDATES {
             self.slots[self.num_found] = params;
             self.num_found += 1;
-        }
-    }
-
-    pub(super) fn add_scan_point(&mut self, cell: &NeighbourCell, block: &MvBlockContext) {
-        if cell.flags.is_inter()
-            && cell.flags.is_warp()
-            && cell.flags.ref_frame0 == block.ref_frame0
-            && let Some(params) = cell.motion.warp_params()
-        {
-            self.insert(params);
         }
     }
 }

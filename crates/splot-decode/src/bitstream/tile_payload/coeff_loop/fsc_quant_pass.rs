@@ -41,6 +41,7 @@ struct CoeffFscBranchTxSizeFacts {
     context: AllZeroCoeffBlockInput,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct CoeffFscStagedTxSizeNonZeroInput {
     pub(crate) block: AllZeroCoeffBlockInput,
     pub(crate) start: NonZeroCoeffBlockStart,
@@ -278,6 +279,22 @@ fn validate_fsc_block_geometry(
 /// hiding off, a zero level reads nothing and leaves every state unchanged,
 /// and its quant of 0 is already in the block, so it is skipped.
 fn apply_interleaved_fsc_quant_pass(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    block: &mut TransformCoeffBlockState,
+    walk: &FscCoeffScanWalk,
+    config: CoeffFscLevelPassConfig,
+) -> Result<NonZeroCoeffQuantState, CoeffFscQuantPassError> {
+    let mut owned = symbols.snapshot();
+    let result = fsc_quant_pass_on_snapshot(cdfs, &mut owned, block, walk, config);
+    symbols.restore(owned);
+    result
+}
+
+/// The FSC quant loop over an owned decoder, so the arithmetic state stays
+/// in registers instead of behind a pointer.
+#[inline(never)]
+fn fsc_quant_pass_on_snapshot(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     block: &mut TransformCoeffBlockState,

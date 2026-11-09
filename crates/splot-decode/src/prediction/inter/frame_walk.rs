@@ -361,6 +361,9 @@ pub(crate) struct InterWalkEarly<T: ReconSample> {
     pub(crate) params: block::TileWalkParams,
     pub(crate) prelude: block::TemporalPrelude,
     pub(crate) motion_field: super::find_mv_stack::TemporalMotionField,
+    /// The frame records' deblock storage, which the frontier fills from the
+    /// records the parse publishes.
+    pub(crate) deblock: Option<crate::filters::deblock::OwnedDeblockRecords>,
 }
 
 pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
@@ -369,7 +372,7 @@ pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
     pub(crate) core: Arc<FrameHeaderCore>,
     pub(crate) sequence: Arc<SequenceHeader>,
     pub(crate) options: &'payload DecodeOptions,
-    pub(crate) reference: InterReferenceState<T>,
+    pub(crate) reference: Box<InterReferenceState<T>>,
     pub(crate) bit_depth: BitDepth,
     pub(crate) geometry: FrameDecodeGeometry,
     pub(crate) motion: MotionFieldHandle,
@@ -456,14 +459,9 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             )?;
             motion.publish_metadata(block_setup.motion_field_metadata());
             let (parse_setup, params, prelude, motion_field) = block_setup.split();
-            block::publish_tile_geometry(
-                tile,
-                &params,
-                sequence.general.chroma_format_idc,
-                &parse_progress,
-            )?;
+            block::publish_tile_geometry(tile, &params, &parse_progress)?;
             let parser = InterFrameParser::new(parse_setup);
-            let identities = reusable.install_identities(core, reference)?;
+            let identities = reusable.install_identities(core, *reference)?;
             Ok((identities, parser, params, prelude, motion_field))
         })();
         let ((core, reference), parser, params, prelude, motion_field) = match prepared {
@@ -487,6 +485,10 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             params,
             prelude,
             motion_field,
+            deblock: core
+                .deblocking_filter_params
+                .is_some_and(|filter| filter.apply_deblocking_filter != [false; 4])
+                .then(|| crate::filters::deblock::OwnedDeblockRecords::take_storage(&mut records)),
         };
         let pending = PendingInterWalk {
             tile_plan,
@@ -630,6 +632,7 @@ impl<T: ReconSample> InterWalkEarly<T> {
             params,
             prelude,
             motion_field,
+            deblock,
         } = self;
         let _quantizer_scopes = quantizer.install_frame();
         let (reconstruction, pending) = block::prepare_scheduled_recon(
@@ -649,6 +652,7 @@ impl<T: ReconSample> InterWalkEarly<T> {
             &params,
             prelude,
             motion_field,
+            deblock,
         )?;
         Ok((reconstruction, pending))
     }

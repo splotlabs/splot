@@ -13,9 +13,9 @@ use crate::intra_dc_math::{DIV_LUT_BITS, IntraLaneSample, resolve_divisor_32, ro
 use crate::intra_directional_angle::{
     DR_INTRA_DERIVATIVE, ZONE_1_MAX, ZONE_3_INDEX_BASE, ZONE_3_MIN,
 };
+use crate::intra_ibp_dc::blend_ibp_lanes;
 use crate::{ReconError, ReconSample, Result};
-use std::simd::Simd;
-use std::simd::num::SimdUint;
+use fearless_simd::{Simd, SimdBase, u16x16};
 use std::sync::OnceLock;
 
 const IBP_WEIGHT_SIZE_LOG2: u32 = 4;
@@ -65,16 +65,18 @@ fn enabled_weight_angle(p_angle: u16) -> Option<u16> {
 /// AV2 § 7.13.2.9 blend weights for one angle.
 type IbpWeights = [[u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE];
 
-/// Derived § 7.13.2.9 weight tables, one slot per clamped weight angle.
-static IBP_WEIGHT_TABLES: [OnceLock<IbpWeights>; ZONE_1_MAX as usize + 1] =
+/// Derived § 7.13.2.9 weight tables, one slot per clamped weight angle: the
+/// zone 1 `[row][column]` table and its zone 3 transpose.
+static IBP_WEIGHT_TABLES: [OnceLock<[IbpWeights; 2]>; ZONE_1_MAX as usize + 1] =
     [const { OnceLock::new() }; ZONE_1_MAX as usize + 1];
 
-/// Returns the § 7.13.2.9 weight table for `p_angle`, deriving it once.
+/// Returns the § 7.13.2.9 weight table for `p_angle` and its transpose,
+/// deriving them once.
 ///
 /// The table depends only on the clamped weight angle, so the per-block
 /// derivation is memoized rather than repeated for every predicted block. The
 /// slot lookup rejects exactly the angles [`ibp_weights`] rejects.
-fn ibp_weight_table(p_angle: u16) -> Result<&'static IbpWeights> {
+fn ibp_weight_table(p_angle: u16) -> Result<&'static [IbpWeights; 2]> {
     let slot = IBP_WEIGHT_TABLES
         .get(usize::from(p_angle.max(IBP_WEIGHT_MIN_ANGLE)))
         .ok_or(ReconError::ArithmeticOverflow {
@@ -84,7 +86,8 @@ fn ibp_weight_table(p_angle: u16) -> Result<&'static IbpWeights> {
         return Ok(weights);
     }
     let weights = ibp_weights(p_angle)?;
-    Ok(slot.get_or_init(|| weights))
+    let transposed = core::array::from_fn(|column| weights.map(|row| row[column]));
+    Ok(slot.get_or_init(|| [weights, transposed]))
 }
 
 fn ibp_weights(p_angle: u16) -> Result<IbpWeights> {
@@ -163,19 +166,19 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
             context: "IBP angular blend buffer too small",
         });
     }
-    let weights = ibp_weight_table(weight_angle)?;
     let zone1 = p_angle < ZONE_1_MAX;
+    let weights = &ibp_weight_table(weight_angle)?[usize::from(!zone1)];
     let shift = IBP_WEIGHT_SIZE_LOG2 + 1;
     let c_shift = (width as u32) >> shift;
     let r_shift = (height as u32) >> shift;
     if width <= 64 && height <= 64 && width.is_multiple_of(4) {
         let (primary, second) = (&mut primary[..needed], &second[..needed]);
         if let (Some(primary), Some(second)) = (T::u16_slice_mut(primary), T::u16_slice(second)) {
-            blend_rows_lanes(weights, zone1, (c_shift, r_shift), width, primary, second);
+            blend_rows_lanes(weights, (c_shift, r_shift), width, true, primary, second);
             return Ok(());
         }
         if let (Some(primary), Some(second)) = (T::u8_slice_mut(primary), T::u8_slice(second)) {
-            blend_rows_lanes(weights, zone1, (c_shift, r_shift), width, primary, second);
+            blend_rows_lanes(weights, (c_shift, r_shift), width, false, primary, second);
             return Ok(());
         }
     }
@@ -185,18 +188,9 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
         .take(height)
         .enumerate()
     {
-        let row_idx = (row as u32 >> r_shift) as usize;
-        let zone1_weights = if zone1 {
-            Some(weight_row(weights, row_idx)?)
-        } else {
-            None
-        };
+        let row_weights = weight_row(weights, (row as u32 >> r_shift) as usize)?;
         for (column, (target, &source)) in primary_row.iter_mut().zip(second_row).enumerate() {
-            let col_idx = (column as u32 >> c_shift) as usize;
-            let s = match zone1_weights {
-                Some(row_weights) => weight_lane(row_weights, col_idx)?,
-                None => weight_lane(weight_row(weights, col_idx)?, row_idx)?,
-            };
+            let s = weight_lane(row_weights, (column as u32 >> c_shift) as usize)?;
             let primary_value = u32::from(target.to_u16());
             let second_value = u32::from(source.to_u16());
             let inverse = u32::from(IBP_WEIGHT_MAX - s);
@@ -210,64 +204,100 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
     Ok(())
 }
 
-/// The lane form of the blend: each row's weights expand once per weight row
-/// and the samples blend in `u32` lanes. Every `(row, column) >> shift` index
+/// The lane form of the blend over `width`-sample rows, 16 lanes at a time:
+/// 16 columns of one row, or `16 / w` rows of a narrower block. The weights of
+/// each distinct weight row expand once. Every `(row, column) >> shift` index
 /// is below `IBP_WEIGHT_SIZE` because the shifts scale a side of at most 64.
 #[inline(never)]
 fn blend_rows_lanes<O: IntraLaneSample>(
     weights: &IbpWeights,
-    zone1: bool,
-    (c_shift, r_shift): (u32, u32),
+    shifts: (u32, u32),
     width: usize,
+    wide: bool,
     primary: &mut [O],
     second: &[O],
 ) {
-    let mut row_weights = [0u16; 64];
-    let mut last_row_idx = usize::MAX;
-    for (row, (primary_row, second_row)) in primary
-        .chunks_exact_mut(width)
-        .zip(second.chunks_exact(width))
-        .enumerate()
-    {
-        let row_idx = (row as u32 >> r_shift) as usize & (IBP_WEIGHT_SIZE - 1);
-        if row_idx != last_row_idx {
-            last_row_idx = row_idx;
-            for (column, slot) in row_weights.iter_mut().take(width).enumerate() {
-                let col_idx = (column as u32 >> c_shift) as usize & (IBP_WEIGHT_SIZE - 1);
-                *slot = if zone1 {
-                    weights[row_idx][col_idx]
-                } else {
-                    weights[col_idx][row_idx]
-                };
-            }
-        }
-        if width.is_multiple_of(8) {
-            blend_row_lanes::<O, 8>(primary_row, second_row, &row_weights[..width]);
-        } else {
-            blend_row_lanes::<O, 4>(primary_row, second_row, &row_weights[..width]);
-        }
+    if width <= 16 {
+        baseline_simd!(simd => blend_rows::<_, _, 16>(simd, weights, shifts, width, wide, primary, second));
+    } else {
+        baseline_simd!(simd => blend_rows::<_, _, 64>(simd, weights, shifts, width, wide, primary, second));
     }
 }
 
-fn blend_row_lanes<O: IntraLaneSample, const LANES: usize>(
+/// [`blend_rows_lanes`] for rows of at most `W` samples. Rows of at most 16
+/// samples read their weights straight from the table (no column shift); wider
+/// rows expand each distinct weight row into `W`-wide scratch once.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn blend_rows<S: Simd, O: IntraLaneSample, const W: usize>(
+    simd: S,
+    weights: &IbpWeights,
+    (c_shift, r_shift): (u32, u32),
+    width: usize,
+    wide: bool,
     primary: &mut [O],
     second: &[O],
-    weights: &[u16],
 ) {
-    for ((target, source), weight) in primary
-        .as_chunks_mut::<LANES>()
+    let width_log2 = width.trailing_zeros();
+    let row_weights = |row: usize| &weights[(row >> r_shift) & (IBP_WEIGHT_SIZE - 1)];
+    let mut expanded = [0u16; W];
+    let mut expanded_row = usize::MAX;
+    let mut group = [0u16; 16];
+    for (index, (target, source)) in primary
+        .as_chunks_mut::<16>()
         .0
         .iter_mut()
-        .zip(second.as_chunks::<LANES>().0)
-        .zip(weights.as_chunks::<LANES>().0)
+        .zip(second.as_chunks::<16>().0)
+        .enumerate()
     {
-        let s = Simd::from_array(*weight).cast::<u32>();
-        let p = O::load(target).cast::<u32>();
-        let q = O::load(source).cast::<u32>();
-        let sum = p * s + q * (Simd::splat(u32::from(IBP_WEIGHT_MAX)) - s);
-        let blended =
-            (sum + Simd::splat(1 << (IBP_WEIGHT_SHIFT - 1))) >> u32::from(IBP_WEIGHT_SHIFT);
-        O::store(blended.cast::<u16>().as_array(), target);
+        let first = index * 16;
+        let row = first >> width_log2;
+        let weight = match width {
+            4 | 8 => {
+                fn expand<const N: usize>(group: &mut [u16; 16], row: impl Fn(usize) -> [u16; N]) {
+                    for (r, lanes) in group.as_chunks_mut::<N>().0.iter_mut().enumerate() {
+                        *lanes = row(r);
+                    }
+                }
+                if width == 4 {
+                    expand::<4>(&mut group, |r| {
+                        row_weights(row + r)
+                            .first_chunk()
+                            .copied()
+                            .unwrap_or_default()
+                    });
+                } else {
+                    expand::<8>(&mut group, |r| {
+                        row_weights(row + r)
+                            .first_chunk()
+                            .copied()
+                            .unwrap_or_default()
+                    });
+                }
+                u16x16::from_slice(simd, &group)
+            }
+            16 => u16x16::from_slice(simd, row_weights(row)),
+            _ => {
+                let weight_row = row >> r_shift;
+                if weight_row != expanded_row {
+                    let weights = row_weights(row);
+                    for (column, slot) in expanded.iter_mut().take(width).enumerate() {
+                        *slot = weights[(column >> c_shift) & (IBP_WEIGHT_SIZE - 1)];
+                    }
+                    expanded_row = weight_row;
+                }
+                let column = first & (width - 1);
+                u16x16::from_slice(simd, &expanded[column..column + 16])
+            }
+        };
+        let blended = blend_ibp_lanes(
+            simd,
+            wide,
+            O::load16(simd, target),
+            O::load16(simd, source),
+            weight,
+        );
+        O::store16(simd, blended, target);
     }
 }
 

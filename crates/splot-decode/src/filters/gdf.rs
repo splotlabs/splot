@@ -3,13 +3,6 @@
 
 //! AV2 § 7.20.5 guided detail filter application.
 
-use std::simd::{
-    Select, Simd,
-    cmp::{SimdOrd, SimdPartialOrd},
-    num::SimdUint,
-    simd_swizzle,
-};
-
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::tables::loop_restoration::{GDF_ALPHA, GDF_BIAS, GDF_WEIGHT};
 #[cfg(test)]
@@ -28,7 +21,9 @@ use crate::support::reusable_scratch::with_reusable_scratch;
 #[path = "gdf_simd.rs"]
 mod simd;
 
-use simd::{GdfSymParams, TAP_REACH, source_rows, sym_rows, sym_rows_narrow, window_at};
+use simd::{ClassScratch, GdfSymParams, TAP_REACH, source_rows, sym_rows_narrow};
+#[cfg(test)]
+use simd::{sym_rows, window_at};
 
 const MI_SIZE: usize = 4;
 const GDF_TEST_STRIPE_OFF: usize = 8;
@@ -119,8 +114,7 @@ pub(crate) fn stripe_ranges_into(
 struct GdfScratch {
     source: Vec<u16>,
     classes: Vec<GdfClass>,
-    gradient_pairs: [Vec<[u16; GDF_DIRECTIONS]>; 2],
-    gradient_tmp: Vec<[u16; GDF_DIRECTIONS]>,
+    class_scratch: ClassScratch,
 }
 
 std::thread_local! {
@@ -279,7 +273,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     deblocked_luma: FramePlane<'_, T>,
     separate_cdef_luma: Option<&StripePlane>,
     cdef_overlap: &[StripePlane],
-    post_lr_luma: &mut StripePlane,
+    post_lr_luma: GdfLuma<'_>,
     block_grid: Option<&GdfBlockGrid>,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
     bit_depth: BitDepth,
@@ -329,7 +323,7 @@ pub(crate) fn error_stripe(
         config,
         core,
         (deblocked_luma, separate_cdef_luma, cdef_overlap),
-        post_lr_luma,
+        GdfLuma::U16(post_lr_luma),
         (block_grid, None),
         bit_depth,
         disable_loopfilters_across_tiles,
@@ -348,7 +342,7 @@ fn apply_stripe_config<T: ReconSample>(
         Option<&StripePlane>,
         &[StripePlane],
     ),
-    post_lr_luma: &mut StripePlane,
+    mut post_lr_luma: GdfLuma<'_>,
     (block_grid, lossless_grid): (
         Option<&GdfBlockGrid>,
         Option<&crate::filters::lossless::LosslessBlockGrid>,
@@ -356,14 +350,11 @@ fn apply_stripe_config<T: ReconSample>(
     bit_depth: BitDepth,
     disable_loopfilters_across_tiles: bool,
 ) -> Result<()> {
-    let (width, stride) = (post_lr_luma.width(), post_lr_luma.stride());
-    let frame_height = post_lr_luma.frame_height();
-    let y = post_lr_luma.origin_y();
-    let sample_count = post_lr_luma.samples().len();
-    let height = sample_count.checked_div(stride).filter(|&height| {
-        height >= 2 && height.is_multiple_of(2) && height.checked_mul(stride) == Some(sample_count)
-    });
-    let Some(height) = height else {
+    let (width, stride, frame_height, y) = post_lr_luma.geometry();
+    let Some(height) = post_lr_luma
+        .rows()
+        .filter(|&height| height >= 2 && height.is_multiple_of(2))
+    else {
         return Err(gdf_state_error());
     };
     let end_y = y.checked_add(height).ok_or_else(gdf_state_error)?;
@@ -439,7 +430,15 @@ fn apply_stripe_config<T: ReconSample>(
                     max_sample: config.max_sample,
                 };
                 let bounds = source_bounds(core, &run_block, disable_loopfilters_across_tiles)?;
-                let cdef_luma = separate_cdef_luma.unwrap_or(post_lr_luma);
+                if lossless_grid.is_none() {
+                    let sources = (deblocked_luma, separate_cdef_luma, cdef_overlap);
+                    filter_run_tiles(sources, &bounds, &run_block, &mut post_lr_luma, scratch)?;
+                    continue;
+                }
+                let GdfLuma::U16(post_lr_luma) = &mut post_lr_luma else {
+                    return Err(gdf_state_error());
+                };
+                let cdef_luma = separate_cdef_luma.unwrap_or(&**post_lr_luma);
                 let source = GdfSource::materialize_stripe(
                     &mut scratch.source,
                     deblocked_luma,
@@ -456,20 +455,8 @@ fn apply_stripe_config<T: ReconSample>(
                     band_origin,
                     &run_block,
                     &mut scratch.classes,
-                    &mut scratch.gradient_pairs,
-                    &mut scratch.gradient_tmp,
+                    &mut scratch.class_scratch,
                 )?;
-                if lossless_grid.is_none() {
-                    compute_enabled_segment(
-                        &source,
-                        post_lr_luma.samples_mut(),
-                        &scratch.classes,
-                        &run_block,
-                        band_origin,
-                        0..run.len(),
-                    )?;
-                    continue;
-                }
                 let class_cols = run.len() >> 1;
                 let params = GdfSymParams::new(&run_block);
                 for local_y in (0..height).step_by(MI_SIZE) {
@@ -531,6 +518,122 @@ fn apply_stripe_config<T: ReconSample>(
     })
 }
 
+/// The luma rows GDF filters in place: a `u16` stripe, or the 8-bit frame
+/// rows `origin_y..origin_y + rows` of a direct stripe, `stride` apart.
+pub(crate) enum GdfLuma<'a> {
+    U16(&'a mut StripePlane),
+    U8 {
+        samples: &'a mut [u8],
+        width: usize,
+        stride: usize,
+        frame_height: usize,
+        origin_y: usize,
+        rows: usize,
+    },
+}
+
+impl GdfLuma<'_> {
+    /// Width, row stride, frame height and first frame row of the rows.
+    fn geometry(&self) -> (usize, usize, usize, usize) {
+        match self {
+            Self::U16(plane) => (
+                plane.width(),
+                plane.stride(),
+                plane.frame_height(),
+                plane.origin_y(),
+            ),
+            Self::U8 {
+                width,
+                stride,
+                frame_height,
+                origin_y,
+                ..
+            } => (*width, *stride, *frame_height, *origin_y),
+        }
+    }
+
+    /// The row count, when the samples hold every row.
+    fn rows(&self) -> Option<usize> {
+        match self {
+            Self::U16(plane) => {
+                let count = plane.samples().len();
+                let rows = count.checked_div(plane.stride())?;
+                (rows.checked_mul(plane.stride()) == Some(count)).then_some(rows)
+            }
+            Self::U8 {
+                samples,
+                width,
+                stride,
+                rows,
+                ..
+            } => {
+                let needed = rows
+                    .checked_sub(1)?
+                    .checked_mul(*stride)?
+                    .checked_add(*width)?;
+                (stride >= width && samples.len() >= needed).then_some(*rows)
+            }
+        }
+    }
+}
+
+/// Filters the run `run` in column tiles of at most [`simd::TILE_COLS`]
+/// columns. Every tile's source window is copied before any tile is
+/// filtered, since `post_lr_luma` may be the CDEF luma the windows read.
+fn filter_run_tiles<T: ReconSample>(
+    (deblocked_luma, separate_cdef_luma, cdef_overlap): (
+        FramePlane<'_, T>,
+        Option<&StripePlane>,
+        &[StripePlane],
+    ),
+    bounds: &LoopRestorationSourceBounds,
+    run: &GdfBlock,
+    post_lr_luma: &mut GdfLuma<'_>,
+    scratch: &mut GdfScratch,
+) -> Result<()> {
+    let tile = |index: usize| GdfBlock {
+        x: run.x + index * simd::TILE_COLS,
+        width: simd::TILE_COLS.min(run.width - index * simd::TILE_COLS),
+        ..*run
+    };
+    let tiles = run.width.div_ceil(simd::TILE_COLS);
+    let rows = GdfSource::window_size(run)?.1;
+    let area = rows
+        .checked_mul(simd::TILE_STRIDE)
+        .ok_or_else(gdf_state_error)?;
+    let total = tiles.checked_mul(area).ok_or_else(gdf_state_error)?;
+    resize_overwrite_scratch(&mut scratch.source, total)?;
+    let cdef_luma = match (separate_cdef_luma, &*post_lr_luma) {
+        (Some(cdef_luma), _) => cdef_luma,
+        (None, GdfLuma::U16(post_lr_luma)) => &**post_lr_luma,
+        (None, GdfLuma::U8 { .. }) => return Err(gdf_state_error()),
+    };
+    let sources = (deblocked_luma, cdef_luma, cdef_overlap);
+    GdfSource::fill_stripe_tiles(&mut scratch.source, sources, bounds, run, area)?;
+    let grads = 2 * ClassScratch::chunks(simd::TILE_COLS.min(run.width) >> 1);
+    resize_overwrite_scratch(&mut scratch.class_scratch.grads, grads)?;
+    let errors = 2 * ClassScratch::error_row(simd::TILE_COLS.min(run.width));
+    resize_overwrite_scratch(&mut scratch.class_scratch.errors, errors)?;
+    for (index, samples) in scratch.source.chunks_exact(area).enumerate() {
+        let tile = tile(index);
+        let source = GdfSource::tile(samples, &tile)?;
+        let origin = source
+            .relative_position(tile.x, tile.y)
+            .ok_or_else(gdf_state_error)?;
+        let scratch = &mut scratch.class_scratch;
+        match post_lr_luma {
+            GdfLuma::U16(plane) => {
+                simd::filter_run(&source, origin, &tile, plane.samples_mut(), scratch)
+            }
+            GdfLuma::U8 { samples, .. } => {
+                simd::filter_run(&source, origin, &tile, samples, scratch)
+            }
+        }
+        .ok_or_else(gdf_state_error)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn gdf_stripe_row(
     core: &FrameHeaderCore,
     y: usize,
@@ -585,6 +688,7 @@ fn base_row_pair<const W: usize>(
 }
 
 /// The `W` samples from column `x` of both output rows.
+#[cfg(test)]
 fn output_pair<'a, const W: usize>(
     top: &'a mut [u16],
     bottom: &'a mut [u16],
@@ -646,6 +750,7 @@ fn compute_block<T: ReconSample>(
     Ok(output)
 }
 
+#[cfg(test)]
 fn compute_enabled_segment(
     source: &GdfSource<'_>,
     base_luma: &mut [u16],
@@ -939,6 +1044,22 @@ impl<T: ReconSample> GdfSourceRow<'_, T> {
     }
 }
 
+/// The § 7.20.5 source rows of a stripe: deblocked rows, or the CDEF rows of
+/// the stripe or of its fringes.
+fn stripe_rows<'b, T: ReconSample>(
+    deblocked_luma: FramePlane<'b, T>,
+    cdef_luma: &'b StripePlane,
+    cdef_overlap: &'b [StripePlane],
+) -> impl Fn(LoopRestorationSource, usize) -> Option<GdfSourceRow<'b, T>> {
+    move |source, y| match source {
+        LoopRestorationSource::CurrFrame => deblocked_luma.row(y).map(GdfSourceRow::Frame),
+        LoopRestorationSource::CdefFrame => cdef_luma
+            .row(y)
+            .or_else(|| cdef_overlap.iter().find_map(|plane| plane.row(y)))
+            .map(GdfSourceRow::Stripe),
+    }
+}
+
 impl<'a> GdfSource<'a> {
     #[cfg(test)]
     fn materialize<T: ReconSample>(
@@ -968,13 +1089,30 @@ impl<'a> GdfSource<'a> {
         bounds: &LoopRestorationSourceBounds,
         block: &GdfBlock,
     ) -> Result<Self> {
-        Self::materialize_rows::<T, T>(samples, bounds, block, |source, y| match source {
-            LoopRestorationSource::CurrFrame => deblocked_luma.row(y).map(GdfSourceRow::Frame),
-            LoopRestorationSource::CdefFrame => cdef_luma
-                .row(y)
-                .or_else(|| cdef_overlap.iter().find_map(|plane| plane.row(y)))
-                .map(GdfSourceRow::Stripe),
-        })
+        Self::materialize_rows::<T, T>(
+            samples,
+            bounds,
+            block,
+            stripe_rows(deblocked_luma, cdef_luma, cdef_overlap),
+        )
+    }
+
+    /// [`GdfSource::materialize_stripe`] of the column tiles of `block` into
+    /// `samples`, `area` samples apart, for [`GdfSource::tile`].
+    fn fill_stripe_tiles<T: ReconSample>(
+        samples: &mut [u16],
+        (deblocked_luma, cdef_luma, cdef_overlap): (
+            FramePlane<'_, T>,
+            &StripePlane,
+            &[StripePlane],
+        ),
+        bounds: &LoopRestorationSourceBounds,
+        block: &GdfBlock,
+        area: usize,
+    ) -> Result<()> {
+        let rows = stripe_rows(deblocked_luma, cdef_luma, cdef_overlap);
+        let layout = (simd::TILE_STRIDE, simd::TILE_COLS, area);
+        Self::fill_rows::<T, T>(samples, layout, bounds, block, rows).map(|_| ())
     }
 
     fn materialize_rows<'b, S: ReconSample, T: ReconSample>(
@@ -983,21 +1121,56 @@ impl<'a> GdfSource<'a> {
         block: &GdfBlock,
         source_row: impl Fn(LoopRestorationSource, usize) -> Option<GdfSourceRow<'b, S>>,
     ) -> Result<Self> {
-        let width = block
-            .width
-            .checked_add(GDF_READ_RADIUS * 2)
-            .ok_or_else(gdf_state_error)?;
-        let height = block
-            .height
-            .checked_add(GDF_READ_RADIUS * 2)
-            .ok_or_else(gdf_state_error)?;
+        let (width, height) = Self::window_size(block)?;
         let sample_count = width.checked_mul(height).ok_or_else(gdf_state_error)?;
         resize_overwrite_scratch(samples, sample_count)?;
+        let (origin_x, origin_y) = Self::fill_rows::<S, T>(
+            samples,
+            (width, block.width.max(1), sample_count),
+            bounds,
+            block,
+            source_row,
+        )?;
+        Ok(Self {
+            samples: samples.as_slice(),
+            stride: width,
+            origin_x,
+            origin_y,
+        })
+    }
+
+    /// The columns and rows of `block`'s source window: the block and the
+    /// GDF read radius around it.
+    fn window_size(block: &GdfBlock) -> Result<(usize, usize)> {
+        let width = block.width.checked_add(GDF_READ_RADIUS * 2);
+        let height = block.height.checked_add(GDF_READ_RADIUS * 2);
+        width.zip(height).ok_or_else(gdf_state_error)
+    }
+
+    /// Writes `block`'s source window into `samples`, rows `stride` apart,
+    /// and returns the window's top-left frame position. With `tile_cols`
+    /// below the block width, it writes the windows of the block's column
+    /// tiles of `tile_cols` columns instead, `area` samples apart.
+    fn fill_rows<'b, S: ReconSample, T: ReconSample>(
+        samples: &mut [u16],
+        (stride, tile_cols, area): (usize, usize, usize),
+        bounds: &LoopRestorationSourceBounds,
+        block: &GdfBlock,
+        source_row: impl Fn(LoopRestorationSource, usize) -> Option<GdfSourceRow<'b, S>>,
+    ) -> Result<(isize, isize)> {
+        let (_, height) = Self::window_size(block)?;
+        if tile_cols == 0 || stride < tile_cols.min(block.width) + 2 * GDF_READ_RADIUS {
+            return Err(gdf_state_error());
+        }
+        let tiles = block.width.div_ceil(tile_cols).max(1);
         let radius = isize::try_from(GDF_READ_RADIUS).map_err(|_| gdf_state_error())?;
         let origin_x = isize::try_from(block.x).map_err(|_| gdf_state_error())? - radius;
         let origin_y = isize::try_from(block.y).map_err(|_| gdf_state_error())? - radius;
         let source_error = || gdf_state_error();
         let shift = u32::from(10 - block.bit_depth.bits().min(10));
+        let fill_value = |value: u16| -> Result<u16> {
+            Ok(T::try_from_u16(value).map_err(|_| source_error())?.to_u16() << shift)
+        };
         for row in 0..height {
             let y = origin_y
                 .checked_add(isize::try_from(row).map_err(|_| gdf_state_error())?)
@@ -1012,55 +1185,63 @@ impl<'a> GdfSource<'a> {
             let source_row = source_row(left.source, left.y)
                 .filter(|row| row.len() == block.frame_width)
                 .ok_or_else(source_error)?;
-            let width_i = isize::try_from(width).map_err(|_| source_error())?;
-            let pre = isize::try_from(left.x)
-                .ok()
-                .and_then(|left| left.checked_sub(origin_x))
-                .ok_or_else(source_error)?
-                .clamp(0, width_i) as usize;
-            let post = origin_x
-                .checked_add(width_i)
-                .and_then(|end| end.checked_sub(1))
-                .and_then(|last| last.checked_sub(isize::try_from(right.x).ok()?))
-                .ok_or_else(source_error)?
-                .clamp(0, isize::try_from(width - pre).map_err(|_| source_error())?)
-                as usize;
-            let mid = width - pre - post;
-            let row_start = row.checked_mul(width).ok_or_else(source_error)?;
-            let dst = samples
-                .get_mut(row_start..row_start + width)
-                .ok_or_else(source_error)?;
-            let left_value = source_row.get(left.x).ok_or_else(source_error)?;
-            dst[..pre].fill(
-                T::try_from_u16(left_value)
-                    .map_err(|_| source_error())?
-                    .to_u16()
-                    << shift,
-            );
-            if mid != 0 {
-                let mid_start = usize::try_from(
-                    origin_x
-                        .checked_add(isize::try_from(pre).map_err(|_| source_error())?)
-                        .ok_or_else(source_error)?,
-                )
-                .map_err(|_| source_error())?;
-                source_row
-                    .copy_range_as::<T>(mid_start, &mut dst[pre..pre + mid], shift)
+            let left_value = fill_value(source_row.get(left.x).ok_or_else(source_error)?)?;
+            let right_value = fill_value(source_row.get(right.x).ok_or_else(source_error)?)?;
+            for tile in 0..tiles {
+                let skipped = tile * tile_cols;
+                let width = (block.width - skipped).min(tile_cols) + 2 * GDF_READ_RADIUS;
+                let tile_x = origin_x
+                    .checked_add(isize::try_from(skipped).map_err(|_| source_error())?)
                     .ok_or_else(source_error)?;
+                let width_i = isize::try_from(width).map_err(|_| source_error())?;
+                let pre = isize::try_from(left.x)
+                    .ok()
+                    .and_then(|left| left.checked_sub(tile_x))
+                    .ok_or_else(source_error)?
+                    .clamp(0, width_i) as usize;
+                let post = tile_x
+                    .checked_add(width_i)
+                    .and_then(|end| end.checked_sub(1))
+                    .and_then(|last| last.checked_sub(isize::try_from(right.x).ok()?))
+                    .ok_or_else(source_error)?
+                    .clamp(0, isize::try_from(width - pre).map_err(|_| source_error())?)
+                    as usize;
+                let mid = width - pre - post;
+                let row_start = row
+                    .checked_mul(stride)
+                    .and_then(|start| start.checked_add(tile.checked_mul(area)?))
+                    .ok_or_else(source_error)?;
+                let dst = samples
+                    .get_mut(row_start..row_start + width)
+                    .ok_or_else(source_error)?;
+                dst[..pre].fill(left_value);
+                if mid != 0 {
+                    let mid_start = usize::try_from(
+                        tile_x
+                            .checked_add(isize::try_from(pre).map_err(|_| source_error())?)
+                            .ok_or_else(source_error)?,
+                    )
+                    .map_err(|_| source_error())?;
+                    source_row
+                        .copy_range_as::<T>(mid_start, &mut dst[pre..pre + mid], shift)
+                        .ok_or_else(source_error)?;
+                }
+                dst[pre + mid..].fill(right_value);
             }
-            let right_value = source_row.get(right.x).ok_or_else(source_error)?;
-            dst[pre + mid..].fill(
-                T::try_from_u16(right_value)
-                    .map_err(|_| source_error())?
-                    .to_u16()
-                    << shift,
-            );
         }
+        Ok((origin_x, origin_y))
+    }
+
+    /// The source window [`GdfSource::fill_rows`] wrote into `samples` at
+    /// [`simd::TILE_STRIDE`] for the column tile `block`.
+    fn tile(samples: &'a [u16], block: &GdfBlock) -> Result<Self> {
+        let radius = isize::try_from(GDF_READ_RADIUS).map_err(|_| gdf_state_error())?;
+        let origin = |at: usize| isize::try_from(at).map(|at| at - radius);
         Ok(Self {
-            samples: samples.as_slice(),
-            stride: width,
-            origin_x,
-            origin_y,
+            samples,
+            stride: simd::TILE_STRIDE,
+            origin_x: origin(block.x).map_err(|_| gdf_state_error())?,
+            origin_y: origin(block.y).map_err(|_| gdf_state_error())?,
         })
     }
 
@@ -1147,7 +1328,7 @@ impl GdfClass {
         (self.0 & 3) as u8
     }
 
-    #[inline]
+    #[cfg(test)]
     fn gradient_bias(self) -> i32 {
         self.0 >> 2
     }
@@ -1202,105 +1383,12 @@ fn band_classes(
     Ok(())
 }
 
-fn gradient_pair_row(
-    source: &GdfSource<'_>,
-    source_origin: (usize, usize),
-    row_pair: usize,
-    class_cols: usize,
-    output: &mut Vec<[u16; GDF_DIRECTIONS]>,
-    tmp: &mut Vec<[u16; GDF_DIRECTIONS]>,
-) -> Result<()> {
-    resize_overwrite_scratch(tmp, class_cols + 1)?;
-    resize_overwrite_scratch(output, class_cols)?;
-    let base_row = source_origin.1 - 1 + row_pair * 2;
-    let base_col = source_origin.0 - 1;
-    let source_error = gdf_state_error;
-    let window_col = base_col.checked_sub(1).ok_or_else(source_error)?;
-    let window_len = class_cols
-        .checked_mul(2)
-        .and_then(|width| width.checked_add(4))
-        .ok_or_else(source_error)?;
-    let first_row = base_row.checked_sub(1).ok_or_else(source_error)?;
-    let row_window = |row: usize| {
-        row.checked_mul(source.stride)
-            .and_then(|start| start.checked_add(window_col))
-            .and_then(|start| exact_slice(source.samples, start, window_len))
-            .ok_or_else(source_error)
-    };
-    let rows = [
-        row_window(first_row)?,
-        row_window(first_row + 1)?,
-        row_window(first_row + 2)?,
-        row_window(first_row + 3)?,
-    ];
-    let row0 = gradient_pair_chunks(rows[0]).ok_or_else(source_error)?;
-    let row1 = gradient_pair_chunks(rows[1]).ok_or_else(source_error)?;
-    let row2 = gradient_pair_chunks(rows[2]).ok_or_else(source_error)?;
-    let row3 = gradient_pair_chunks(rows[3]).ok_or_else(source_error)?;
-    let row_pairs = row0
-        .0
-        .iter()
-        .zip(row0.1)
-        .zip(row1.0.iter().zip(row1.1))
-        .zip(row2.0.iter().zip(row2.1))
-        .zip(row3.0.iter().zip(row3.1));
-    for (
-        sums,
-        (
-            (((row0_left, row0_right), (row1_left, row1_right)), (row2_left, row2_right)),
-            (row3_left, row3_right),
-        ),
-    ) in tmp.iter_mut().zip(row_pairs)
-    {
-        *sums = [
-            gdf_gradient(row0_left[1], row1_left[1], row2_left[1])
-                + gdf_gradient(row0_right[0], row1_right[0], row2_right[0])
-                + gdf_gradient(row1_left[1], row2_left[1], row3_left[1])
-                + gdf_gradient(row1_right[0], row2_right[0], row3_right[0]),
-            gdf_gradient(row1_left[0], row1_left[1], row1_right[0])
-                + gdf_gradient(row1_left[1], row1_right[0], row1_right[1])
-                + gdf_gradient(row2_left[0], row2_left[1], row2_right[0])
-                + gdf_gradient(row2_left[1], row2_right[0], row2_right[1]),
-            gdf_gradient(row0_left[0], row1_left[1], row2_right[0])
-                + gdf_gradient(row0_left[1], row1_right[0], row2_right[1])
-                + gdf_gradient(row1_left[0], row2_left[1], row3_right[0])
-                + gdf_gradient(row1_left[1], row2_right[0], row3_right[1]),
-            gdf_gradient(row2_left[0], row1_left[1], row0_right[0])
-                + gdf_gradient(row2_left[1], row1_right[0], row0_right[1])
-                + gdf_gradient(row3_left[0], row2_left[1], row1_right[0])
-                + gdf_gradient(row3_left[1], row2_right[0], row1_right[1]),
-        ];
-    }
-    for (col, pair) in output.iter_mut().enumerate() {
-        for direction in 0..GDF_DIRECTIONS {
-            pair[direction] = tmp[col][direction] + tmp[col + 1][direction];
-        }
-    }
-    Ok(())
-}
-
-#[allow(clippy::type_complexity)]
-fn gradient_pair_chunks(row: &[u16]) -> Option<(&[[u16; 2]], &[[u16; 2]])> {
-    let left_end = row.len().checked_sub(2)?;
-    let (left, left_remainder) = row.get(..left_end)?.as_chunks::<2>();
-    let (right, right_remainder) = row.get(2..)?.as_chunks::<2>();
-    (left_remainder.is_empty() && right_remainder.is_empty()).then_some((left, right))
-}
-
-/// Second difference of three samples; samples have at most 12 bits, so it fits in i16.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn gdf_gradient(before: u16, center: u16, after: u16) -> u16 {
-    (center as i16 * 2 - before as i16 - after as i16).unsigned_abs()
-}
-
 fn band_classes_from_source(
     source: &GdfSource<'_>,
     source_origin: (usize, usize),
     block: &GdfBlock,
     classes: &mut Vec<GdfClass>,
-    gradient_pairs: &mut [Vec<[u16; GDF_DIRECTIONS]>; 2],
-    gradient_tmp: &mut Vec<[u16; GDF_DIRECTIONS]>,
+    scratch: &mut ClassScratch,
 ) -> Result<()> {
     if source_origin.0 == 0
         || source_origin.1 == 0
@@ -1311,46 +1399,12 @@ fn band_classes_from_source(
         return Err(gdf_state_error());
     }
     let class_cols = block.width >> 1;
-    let class_rows = block.height >> 1;
-    let len = class_rows
+    let len = (block.height >> 1)
         .checked_mul(class_cols)
         .ok_or_else(gdf_state_error)?;
     resize_overwrite_scratch(classes, len)?;
-    let [previous, current] = gradient_pairs;
-    gradient_pair_row(source, source_origin, 0, class_cols, previous, gradient_tmp)?;
-    let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx][GDF_COORDS.len()..];
-    let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx][2][GDF_COORDS.len()..];
-    let tables: [(i16, i16); GDF_DIRECTIONS] =
-        core::array::from_fn(|d| (alpha_table[d][0] as i16, weight_table[d][0]));
-    for (row, classes) in classes.chunks_exact_mut(class_cols).enumerate() {
-        gradient_pair_row(
-            source,
-            source_origin,
-            row + 1,
-            class_cols,
-            current,
-            gradient_tmp,
-        )?;
-        let (previous_chunks, previous_tail) = previous.as_chunks::<8>();
-        let (current_chunks, current_tail) = current.as_chunks::<8>();
-        let (class_chunks, class_tail) = classes.as_chunks_mut::<8>();
-        for ((classes, previous), current) in class_chunks
-            .iter_mut()
-            .zip(previous_chunks)
-            .zip(current_chunks)
-        {
-            *classes = classify_eight(previous, current, &tables);
-        }
-        if !class_tail.is_empty() {
-            let mut tail = [[[0; GDF_DIRECTIONS]; 8]; 2];
-            tail[0][..previous_tail.len()].copy_from_slice(previous_tail);
-            tail[1][..current_tail.len()].copy_from_slice(current_tail);
-            let tail_classes = classify_eight(&tail[0], &tail[1], &tables);
-            class_tail.copy_from_slice(&tail_classes[..class_tail.len()]);
-        }
-        core::mem::swap(previous, current);
-    }
-    Ok(())
+    resize_overwrite_scratch(&mut scratch.grads, 2 * ClassScratch::chunks(class_cols))?;
+    simd::band_classes(source, source_origin, block, classes, scratch).ok_or_else(gdf_state_error)
 }
 
 /// Every table gives the gradient taps one clip bound and weight for all classes.
@@ -1372,38 +1426,6 @@ const _: () = {
         index += 1;
     }
 };
-
-/// Classifies eight 2x2 blocks from their direction strengths in two
-/// gradient row pairs; `tables` holds each direction's clip bound and weight.
-fn classify_eight(
-    previous: &[[u16; GDF_DIRECTIONS]; 8],
-    current: &[[u16; GDF_DIRECTIONS]; 8],
-    tables: &[(i16, i16); GDF_DIRECTIONS],
-) -> [GdfClass; 8] {
-    let directions = |pairs: &[[u16; GDF_DIRECTIONS]; 8]| {
-        let all = Simd::<u16, 32>::from_slice(pairs.as_flattened());
-        [
-            simd_swizzle!(all, [0, 4, 8, 12, 16, 20, 24, 28]),
-            simd_swizzle!(all, [1, 5, 9, 13, 17, 21, 25, 29]),
-            simd_swizzle!(all, [2, 6, 10, 14, 18, 22, 26, 30]),
-            simd_swizzle!(all, [3, 7, 11, 15, 19, 23, 27, 31]),
-        ]
-    };
-    let (previous, current) = (directions(previous), directions(current));
-    let strengths: [Simd<u32, 8>; GDF_DIRECTIONS] =
-        core::array::from_fn(|d| previous[d].cast::<u32>() + current[d].cast::<u32>());
-    let bit =
-        |a: Simd<u32, 8>, b, value: i32| a.simd_le(b).select(Simd::splat(value), Simd::splat(0));
-    let index = bit(strengths[0], strengths[1], 1) | bit(strengths[2], strengths[3], 2);
-    let mut bias = Simd::<i32, 8>::splat(0);
-    for (strength, &(alpha, weight)) in strengths.into_iter().zip(tables) {
-        let comb = (strength >> 4)
-            .simd_min(Simd::splat(alpha as u32))
-            .cast::<i32>();
-        bias += comb * Simd::splat(i32::from(weight));
-    }
-    ((bias << 2) | index).to_array().map(GdfClass)
-}
 
 #[cfg(test)]
 fn gdf_tap_offsets(stride: usize) -> Result<[usize; GDF_COORDS.len()]> {
@@ -1603,12 +1625,12 @@ mod wide_tests;
 mod tests {
     #![allow(clippy::expect_used)]
     use super::{
-        GDF_COORDS, GDF_READ_RADIUS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
-        GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT, band_classes,
-        band_classes_from_source, band_gradients, compute_block, gdf_band_segment,
+        ClassScratch, GDF_COORDS, GDF_READ_RADIUS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
+        GdfReferenceContext, GdfSource, GdfSourceRow, LoopRestorationSource, RESTRICTED_ORDER_HINT,
+        band_classes, band_classes_from_source, band_gradients, compute_block, gdf_band_segment,
         gdf_band_segments, gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist,
         gdf_stripe_end_for_tile, gdf_stripe_row_for_tile_end, grad_sum,
-        preserve_lossless_luma_samples, resize_overwrite_scratch, tile_axis_bounds,
+        preserve_lossless_luma_samples, resize_overwrite_scratch, simd, tile_axis_bounds,
     };
     use crate::error::{DecodeError, DecodeHeaderStateError};
     use crate::filters::deblock::DeblockBlock;
@@ -1862,6 +1884,77 @@ mod tests {
     }
 
     #[test]
+    fn column_tiles_match_the_run_window() {
+        let frame_width = 2 * simd::TILE_COLS + 40;
+        let frame_height = 64;
+        let curr: Vec<u16> = (0..frame_width * frame_height)
+            .map(|index| (index % 1_021) as u16)
+            .collect();
+        let cdef: Vec<u16> = curr.iter().map(|&sample| 1_023 - sample).collect();
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: 0,
+            luma_end_x: frame_width - 1,
+            luma_start_y: 0,
+            luma_end_y: frame_height - 1,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 55,
+            subsampling_x: 0,
+            subsampling_y: 0,
+        };
+        let run = GdfBlock {
+            x: 8,
+            y: 0,
+            width: frame_width - 16,
+            height: 56,
+            frame_width,
+            frame_height,
+            base_origin_y: 0,
+            base_stride: frame_width,
+            bit_depth: BitDepth::Ten,
+            qp_idx: 0,
+            ref_dst_idx: 0,
+            pix_scale: 1,
+            max_sample: 1_023,
+        };
+        let rows = |source: LoopRestorationSource, y: usize| {
+            let plane = match source {
+                LoopRestorationSource::CurrFrame => &curr,
+                LoopRestorationSource::CdefFrame => &cdef,
+            };
+            plane
+                .get(y * frame_width..(y + 1) * frame_width)
+                .map(GdfSourceRow::Stripe)
+        };
+        let mut packed = Vec::new();
+        let packed = GdfSource::materialize_rows::<u16, u16>(&mut packed, &bounds, &run, rows)
+            .expect("valid run window");
+        let area = GdfSource::window_size(&run).expect("window").1 * simd::TILE_STRIDE;
+        let tiles = run.width.div_ceil(simd::TILE_COLS);
+        let mut samples = vec![0; tiles * area];
+        let layout = (simd::TILE_STRIDE, simd::TILE_COLS, area);
+        GdfSource::fill_rows::<u16, u16>(&mut samples, layout, &bounds, &run, rows)
+            .expect("valid tile windows");
+        for (index, samples) in samples.chunks_exact(area).enumerate() {
+            let tile = GdfBlock {
+                x: run.x + index * simd::TILE_COLS,
+                width: simd::TILE_COLS.min(run.width - index * simd::TILE_COLS),
+                ..run
+            };
+            let source = GdfSource::tile(samples, &tile).expect("valid tile");
+            let radius = GDF_READ_RADIUS as isize;
+            for y in -radius..tile.height as isize + radius {
+                for x in tile.x as isize - radius..(tile.x + tile.width) as isize + radius {
+                    assert_eq!(
+                        source.get(x, y),
+                        packed.get(x, y),
+                        "tile {index} at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn inter_ref_dst_idx_uses_first_two_reference_list_entries() {
         let context = GdfReferenceContext::from_reference_list(10, &[2, 4, 1], &[0, 6, 7, 8, 3]);
 
@@ -1904,29 +1997,20 @@ mod tests {
         let lossless = [DeblockBlock {
             r: 1,
             c: 1,
-            luma_prediction: crate::filters::deblock::DeblockPredictionUnit {
+            prediction: crate::filters::deblock::DeblockPredictionUnit {
                 base_r: 1,
                 base_c: 1,
                 default_sub_pu_tx: 0,
             },
-            chroma_prediction: crate::filters::deblock::DeblockPredictionUnit {
-                base_r: 1,
-                base_c: 1,
-                default_sub_pu_tx: 0,
-            },
-            chroma_base_r: 1,
-            chroma_base_c: 1,
             n4w: 1,
             n4h: 1,
-            luma_tx: 0,
-            chroma_tx: Some(0),
+            tx: 0,
             sub_pu_size: None,
-            chroma_transform_only: false,
             qindex: 0,
             skip: false,
             lossless: true,
         }];
-        let grid = LosslessBlockGrid::from_deblock_blocks(4, 4, &lossless, [&[], &[]]);
+        let grid = LosslessBlockGrid::from_deblock_blocks(4, 4, &lossless, &[]);
         let grid = grid.expect("valid grid");
         let base: Vec<u16> = (0..64).collect();
         let mut output = vec![200_u8; 32];
@@ -2001,15 +2085,13 @@ mod tests {
         let classes_result = band_classes(&grad, grad_cols, &block, &mut classes);
         assert!(classes_result.is_ok());
         let mut fused_classes = Vec::new();
-        let mut gradient_pairs = [Vec::new(), Vec::new()];
-        let mut gradient_tmp = Vec::new();
+        let mut class_scratch = ClassScratch::default();
         let fused_result = band_classes_from_source(
             &source,
             origin,
             &block,
             &mut fused_classes,
-            &mut gradient_pairs,
-            &mut gradient_tmp,
+            &mut class_scratch,
         );
         assert!(fused_result.is_ok());
         assert_eq!(fused_classes, classes);
@@ -2031,18 +2113,16 @@ mod tests {
         assert_eq!(reused_source.samples, source.samples);
 
         let mut reused_classes = vec![GdfClass(i32::MAX); classes.len() + 4];
-        let mut reused_gradient_pairs = [
-            vec![[u16::MAX; 4]; gradient_pairs[0].len() + 3],
-            vec![[u16::MAX; 4]; gradient_pairs[1].len() + 3],
-        ];
-        let mut reused_gradient_tmp = vec![[u16::MAX; 4]; gradient_tmp.len() + 3];
+        let mut reused_class_scratch = ClassScratch {
+            grads: vec![[[u16::MAX; 16]; 4]; class_scratch.grads.len() + 3],
+            ..ClassScratch::default()
+        };
         let reused_result = band_classes_from_source(
             &reused_source,
             origin,
             &block,
             &mut reused_classes,
-            &mut reused_gradient_pairs,
-            &mut reused_gradient_tmp,
+            &mut reused_class_scratch,
         );
         assert!(reused_result.is_ok());
         assert_eq!(reused_classes, classes);

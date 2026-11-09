@@ -10,13 +10,12 @@ use super::*;
 use crate::bitstream::tile_payload::{
     BlockSize, BlockSymbolTraceReadError, CoeffParseErrorClass, GeneralIntraBlockModes,
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
-    GeneralIntraLeafMode, IntraYMode, IntraYModeClass, IsCflContext, LumaTransformPartitionContext,
+    GeneralIntraLeafMode, IntraYMode, IntraYModeClass, LumaTransformPartitionContext,
     LumaTransformTypeContext, MrlSelection, SupportedChromaMode, TileCoeffStateError,
     TransformToolResidualPolicy, classify_coeff_parse_error, read_lossless_luma_tx_size,
 };
 use crate::residual::pipeline::{
-    GeneralIntraResidualPlan, ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan,
-    ResidualPlanError,
+    ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan, ResidualPlanError,
 };
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
 
@@ -95,9 +94,9 @@ impl<T: Send + 'static> Drop for RecycledIntraSamples<T> {
 pub(crate) struct GeneralIntraReconScratch<T: ReconSample> {
     intra_prediction: IntraPredictionScratch<T>,
     hot_vectors: HotIntraVectors,
-    pub(crate) cfl_luma_ac: Vec<i32>,
+    pub(crate) cfl_luma_ac: Vec<i16>,
     pub(crate) cfl_prediction: Vec<T>,
-    pub(crate) mhccp_refs: [Vec<u16>; 2],
+    pub(crate) mhccp_refs: [Vec<u16>; 3],
     pub(crate) paeth_edges: [Vec<T>; 2],
     cctx: Option<Box<CctxReconScratch<T>>>,
 }
@@ -297,190 +296,199 @@ pub(crate) fn sequence_cfl_ds_filter_index(sequence: &SequenceHeader) -> u8 {
         .map_or(0, |intra| intra.cfl_ds_filter_index)
 }
 
-#[inline]
-pub(crate) fn chroma_edge_smoothness(
-    grid: Option<&crate::prediction::intra_edge::TileChromaSmoothGrid>,
-    block_ctx: BlockCtx,
-) -> (bool, bool) {
-    let chroma = block_ctx.plane_block(PlaneId::U);
-    grid.map_or((false, false), |grid| {
-        grid.block_smoothness(chroma.x() / MI_SIZE, chroma.y() / MI_SIZE)
-    })
+/// The frame facts every general-intra leaf of a frame reads, derived once.
+#[derive(Clone, Copy)]
+pub(crate) struct GeneralIntraFrameTools {
+    chroma_tools: GeneralIntraChromaToolConfig,
+    chroma_format: splot_core::headers::sequence::ChromaFormatIdc,
+    frame_is_intra: bool,
+    enable_ibp: bool,
+    enable_intra_edge_filter: bool,
+    cfl_ds_filter_index: u8,
+    sb_mib: usize,
+    tx_mode: Option<TxMode>,
 }
 
-pub(crate) fn record_chroma_smooth(
-    grid: Option<&mut crate::prediction::intra_edge::TileChromaSmoothGrid>,
-    block_ctx: BlockCtx,
-    mode: Option<SupportedChromaMode>,
-) {
-    let Some(grid) = grid else {
-        return;
-    };
-    let chroma = block_ctx.plane_block(PlaneId::U);
-    grid.record(
-        chroma.y() / MI_SIZE,
-        chroma.x() / MI_SIZE,
-        chroma.width4(),
-        chroma.height4(),
-        mode.is_some_and(SupportedChromaMode::is_smooth),
-    );
+impl GeneralIntraFrameTools {
+    pub(crate) fn new(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Self {
+        let frame_is_intra = core.frame_is_intra == Some(true);
+        let intra = sequence.intra.as_ref();
+        Self {
+            chroma_tools: general_intra_chroma_tools(sequence, core),
+            chroma_format: sequence.general.chroma_format_idc,
+            frame_is_intra,
+            enable_ibp: intra.is_some_and(|intra| intra.enable_ibp),
+            enable_intra_edge_filter: intra.is_some_and(|intra| intra.enable_intra_edge_filter),
+            cfl_ds_filter_index: sequence_cfl_ds_filter_index(sequence),
+            sb_mib: sequence.partition.as_ref().map_or(16, |partition| {
+                crate::tile::frame_superblock_h4(partition.seq_sb_size(), frame_is_intra)
+            }),
+            tx_mode: frame_tx_mode(core),
+        }
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The tile state a general-intra leaf parses into and its per-leaf facts,
+/// lent down the mode and residual syntax by one pointer.
+pub(crate) struct GeneralIntraLeafParse<'a, 'p> {
+    pub(crate) work_unit: &'a mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
+    pub(crate) symbols: &'a mut SymbolDecoder<'p>,
+    pub(crate) coeff_ctx: &'a mut crate::bitstream::tile_payload::TileCoeffContextState,
+    pub(crate) deblock_blocks: &'a mut Vec<crate::filters::deblock::DeblockBlock>,
+    pub(crate) chroma_deblock_blocks: &'a mut crate::filters::deblock::ChromaDeblockRecords,
+    pub(crate) tx_skip_records:
+        &'a mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    pub(crate) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
+    pub(crate) coeffs_arena: &'a mut Vec<i32>,
+    pub(crate) qindex: u32,
+    pub(crate) segment_id: u8,
+    pub(crate) luma_use_tcq: bool,
+    pub(crate) policy: TransformToolResidualPolicy,
+    pub(crate) mi_cols: usize,
+    pub(crate) mi_rows: usize,
+    pub(crate) bit_depth: BitDepth,
+    pub(crate) tile_offset: ByteOffset,
+}
+
+/// The residual-plan facts of one leaf beside its [`GeneralIntraLeafParse`].
+struct LeafResidualFacts {
+    block_ctx: BlockCtx,
+    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
+    lossless: bool,
+    uv_mode: usize,
+    luma_transform_type_context: LumaTransformTypeContext,
+    luma_tx_partition_context: Option<LumaTransformPartitionContext>,
+}
+
 pub(crate) fn decode_one_general_intra_block(
-    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
-    symbols: &mut SymbolDecoder<'_>,
+    leaf: &mut GeneralIntraLeafParse<'_, '_>,
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
-    sequence: &SequenceHeader,
-    y_smooth: Option<&crate::prediction::intra_edge::TileYSmoothGrid>,
-    mut chroma_smooth: Option<&mut crate::prediction::intra_edge::TileChromaSmoothGrid>,
-    core: &FrameHeaderCore,
-    joint_modes: &crate::bitstream::tile_payload::TileIntraJointModeState,
-    uses_mrls: &crate::bitstream::tile_payload::TileUsesMrlsState,
-    use_dip: &crate::bitstream::tile_payload::TileUseDipState,
-    fsc_modes: &crate::bitstream::tile_payload::TileFscModeState,
-    palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
-    is_cfl_ctx: IsCflContext,
-    segment_id: u8,
-    coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
-    deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
-    chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
-    tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
-    arena: &mut crate::residual::pipeline::ResidualPlaneArena,
-    coeffs_arena: &mut Vec<i32>,
-    qindex: u32,
-    luma_use_tcq: bool,
-    transform_tool_residual_policy: TransformToolResidualPolicy,
-    mi_cols: usize,
-    mi_rows: usize,
-    bit_depth: BitDepth,
-    tile_offset: ByteOffset,
+    tools: &GeneralIntraFrameTools,
+    neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
 ) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
+    let edges = neighbours.edges;
     let _qm_segment_scope =
-        crate::bitstream::tile_payload::FrameQmSegmentScope::install(usize::from(segment_id));
-    let mi_row_range = work_unit.mi_row_range();
-    let mi_col_range = work_unit.mi_col_range();
+        crate::bitstream::tile_payload::FrameQmSegmentScope::install(usize::from(leaf.segment_id));
+    let mi_row_range = leaf.work_unit.mi_row_range();
+    let mi_col_range = leaf.work_unit.mi_col_range();
     let (block_ctx, chroma_mode_geometry) = general_intra_block_ctx(
         frontier,
-        sequence.general.chroma_format_idc,
+        tools.chroma_format,
         (
             mi_row_range.start as usize,
             mi_col_range.start as usize..mi_col_range.end as usize,
         ),
-        (mi_rows, mi_cols),
-        bit_depth,
+        (leaf.mi_rows, leaf.mi_cols),
+        leaf.bit_depth,
     );
     let n4w = block_ctx.block().width4();
     let n4h = block_ctx.block().height4();
-    let (above_smooth, left_smooth) = y_smooth.map_or((false, false), |grid| {
-        grid.block_smoothness(frontier.c, frontier.r)
-    });
-    let (chroma_above_smooth, chroma_left_smooth) =
-        chroma_edge_smoothness(chroma_smooth.as_deref(), block_ctx);
+    let intra_neighbours = edges.intra_neighbours(frontier.r, frontier.c, n4w, n4h);
+    let (above_smooth, left_smooth) = intra_neighbours.smoothness();
+    let chroma_ref = frontier.chroma_ref_geometry();
+    let uv_edges = edges.uv_edges(chroma_ref.row(), chroma_ref.col());
+    let (chroma_above_smooth, chroma_left_smooth) = uv_edges.smoothness();
     let intra_edge = crate::prediction::intra_edge::IntraEdgeCtx {
-        enable_ibp: sequence
-            .intra
-            .as_ref()
-            .is_some_and(|intra| intra.enable_ibp),
-        enable_intra_edge_filter: sequence
-            .intra
-            .as_ref()
-            .is_some_and(|intra| intra.enable_intra_edge_filter),
+        enable_ibp: tools.enable_ibp,
+        enable_intra_edge_filter: tools.enable_intra_edge_filter,
         above_smooth,
         left_smooth,
         chroma_above_smooth,
         chroma_left_smooth,
     };
-    let lossless = work_unit
+    let lossless = leaf
+        .work_unit
         .coeff_frame_facts()
-        .lossless_for_segment(usize::from(segment_id))
+        .lossless_for_segment(usize::from(leaf.segment_id))
         .unwrap_or(false);
-    let chroma_tools = general_intra_chroma_tools(sequence, core).with_lossless(lossless);
-    let cfl_ds_filter_index = sequence_cfl_ds_filter_index(sequence);
-    let sb_mib = sequence.partition.as_ref().map_or(16, |partition| {
-        crate::tile::frame_superblock_h4(partition.seq_sb_size(), core.frame_is_intra == Some(true))
-    });
+    let chroma_tools = tools.chroma_tools.with_lossless(lossless);
+    let tile_offset = leaf.tile_offset;
 
     if let crate::bitstream::tile_payload::DecodeBlockPart::ChromaPart {
         y_mode,
         angle_delta_y,
     } = frontier.part()
     {
-        let lossless_luma_fsc = lossless
-            && fsc_modes
-                .fsc_mode_at(frontier.r, frontier.c)
-                .is_some_and(|mode| mode != 0);
-        return parse_one_general_intra_chroma_part_block(
-            intra_edge,
-            work_unit,
-            symbols,
-            frontier,
+        let chroma = crate::bitstream::tile_payload::decode_general_intra_chroma_block_mode(
+            leaf.work_unit,
+            leaf.symbols,
+            chroma_tools,
+            GeneralIntraChromaModeContext::sdp_chroma_part(
+                frontier.cfl_allowed_in_sdp(),
+                uv_edges.cfl_ctx(),
+            ),
+            y_mode,
+            frontier.b_size,
+            n4w,
+            n4h,
+        )
+        .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
+        let chroma_plan = chroma_plan_for_parts(
+            chroma,
             y_mode,
             angle_delta_y,
-            lossless_luma_fsc,
-            chroma_tools,
-            is_cfl_ctx,
-            cfl_ds_filter_index,
-            sb_mib,
-            lossless,
-            coeff_ctx,
-            deblock_blocks,
-            chroma_deblock_blocks,
-            tx_skip_records,
-            arena,
-            coeffs_arena,
-            chroma_smooth.as_deref_mut(),
-            qindex,
-            transform_tool_residual_policy,
-            block_ctx,
-            segment_id,
-            tile_offset,
+            tools.cfl_ds_filter_index,
+            tools.sb_mib,
         );
+        let lossless_luma_fsc =
+            lossless && neighbours.collocated.uses_fsc_at(frontier.r, frontier.c);
+        let residual_plan = leaf
+            .arena
+            .plan_chroma(block_ctx, chroma_plan, lossless_luma_fsc)
+            .map_err(general_intra_residual_plan_error)?;
+        let command = parse_general_intra_residual_plan(
+            leaf,
+            residual_plan,
+            &LeafResidualFacts {
+                block_ctx,
+                intra_edge,
+                lossless,
+                uv_mode: chroma.coeff_uv_mode(),
+                luma_transform_type_context: LumaTransformTypeContext::new(y_mode, angle_delta_y),
+                luma_tx_partition_context: None,
+            },
+        )?;
+        return Ok((GeneralIntraLeafMode::chroma(chroma.uv_bits()), command));
     }
 
     let luma_only = frontier.is_luma_part() || !frontier.has_chroma;
-    let use_neighbor_fsc_context = core.frame_is_intra == Some(true) || !frontier.is_mixed_region();
+    let use_neighbor_fsc_context = tools.frame_is_intra || !frontier.is_mixed_region();
+    let bit_depth_bits = u32::from(leaf.bit_depth.bits());
     let modes = if luma_only {
         let luma =
             crate::bitstream::tile_payload::decode_general_intra_luma_block_mode_with_fsc_context(
-                work_unit,
-                symbols,
+                leaf.work_unit,
+                leaf.symbols,
                 chroma_tools,
-                joint_modes,
-                uses_mrls,
-                fsc_modes,
+                intra_neighbours,
                 use_neighbor_fsc_context,
                 frontier.b_size,
-                frontier.r,
-                frontier.c,
                 n4w,
                 n4h,
             )
             .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
         let palette_y = crate::bitstream::tile_payload::read_general_intra_palette_y_mode(
-            work_unit,
-            symbols,
+            leaf.work_unit,
+            leaf.symbols,
             chroma_tools,
-            palette_state,
+            edges,
             luma.y_mode,
             frontier.b_size.index(),
             frontier.r,
             frontier.c,
             n4w,
             n4h,
-            u32::from(bit_depth.bits()),
+            bit_depth_bits,
         )
         .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
         let (use_dip_value, dip_transpose, dip_mode) =
             crate::bitstream::tile_payload::read_general_intra_dip_mode_info(
-                work_unit,
-                symbols,
+                leaf.work_unit,
+                leaf.symbols,
                 chroma_tools,
-                use_dip,
+                intra_neighbours,
                 luma.y_mode,
                 palette_y,
-                frontier.r,
-                frontier.c,
                 n4w,
                 n4h,
             )
@@ -490,16 +498,13 @@ pub(crate) fn decode_one_general_intra_block(
     } else {
         let (chroma_n4w, chroma_n4h) = chroma_mode_geometry.unwrap_or((n4w, n4h));
         crate::bitstream::tile_payload::decode_general_intra_block_modes_with_fsc_context(
-            work_unit,
-            symbols,
+            leaf.work_unit,
+            leaf.symbols,
             chroma_tools,
-            joint_modes,
-            uses_mrls,
-            use_dip,
-            fsc_modes,
+            edges,
+            intra_neighbours,
             use_neighbor_fsc_context,
-            palette_state,
-            is_cfl_ctx.get(),
+            uv_edges.cfl_ctx(),
             frontier.b_size,
             frontier.r,
             frontier.c,
@@ -507,45 +512,58 @@ pub(crate) fn decode_one_general_intra_block(
             n4h,
             chroma_n4w,
             chroma_n4h,
-            u32::from(bit_depth.bits()),
+            bit_depth_bits,
         )
         .map_err(|error| general_intra_block_mode_error(error, tile_offset))?
     };
     let luma_lossless_tx_size = if lossless && modes.uses_active_fsc() {
         Some(
-            read_lossless_luma_tx_size(work_unit, symbols, frontier.b_size, true, true)
+            read_lossless_luma_tx_size(leaf.work_unit, leaf.symbols, frontier.b_size, true, true)
                 .map_err(|error| general_intra_block_mode_error(error, tile_offset))?,
         )
     } else {
         None
     };
 
-    let (leaf, command) = parse_one_general_intra_rect_block(
-        intra_edge,
-        work_unit,
-        symbols,
-        &modes,
-        coeff_ctx,
-        deblock_blocks,
-        chroma_deblock_blocks,
-        tx_skip_records,
-        arena,
-        coeffs_arena,
-        qindex,
-        luma_use_tcq,
-        lossless,
-        luma_lossless_tx_size,
-        transform_tool_residual_policy,
-        luma_tx_partition_context(frame_tx_mode(core), frontier.b_size, lossless),
-        block_ctx,
-        cfl_ds_filter_index,
-        sb_mib,
-        segment_id,
-        tile_offset,
+    let luma_plan = rect_luma_plan(&modes, block_ctx, leaf.luma_use_tcq, tools.sb_mib)?;
+    let chroma_plan = rect_chroma_plan(&modes, tools.cfl_ds_filter_index, tools.sb_mib);
+    let residual_plan = leaf
+        .arena
+        .plan_rect(
+            block_ctx,
+            luma_plan,
+            chroma_plan,
+            modes.uses_active_fsc(),
+            luma_lossless_tx_size,
+            lossless,
+        )
+        .map_err(general_intra_residual_plan_error)?;
+    let command = parse_general_intra_residual_plan(
+        leaf,
+        residual_plan,
+        &LeafResidualFacts {
+            block_ctx,
+            intra_edge,
+            lossless,
+            uv_mode: modes.coeff_uv_mode(),
+            luma_transform_type_context: luma_transform_type_context(&modes),
+            luma_tx_partition_context: luma_tx_partition_context(
+                tools.tx_mode,
+                frontier.b_size,
+                lossless,
+            ),
+        },
     )?;
-    if frontier.has_chroma {
-        record_chroma_smooth(chroma_smooth, block_ctx, modes.supported_chroma_mode());
-    }
+    let leaf = GeneralIntraLeafMode::luma(
+        modes.intra_joint_mode,
+        modes.y_mode,
+        modes.angle_delta_y,
+        modes.fsc_mode,
+        modes.mrl,
+    )
+    .with_palette_y(modes.palette_y())
+    .with_use_dip(modes.use_dip)
+    .with_uv(modes.uv_bits());
     Ok((leaf, command))
 }
 
@@ -585,157 +603,6 @@ pub(crate) fn general_intra_block_ctx(
         chroma_tx_shape,
     );
     (block_ctx, Some((chroma_n4w, chroma_n4h)))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn parse_one_general_intra_chroma_part_block(
-    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
-    symbols: &mut SymbolDecoder<'_>,
-    frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
-    y_mode: crate::bitstream::tile_payload::IntraYMode,
-    angle_delta_y: i8,
-    lossless_luma_fsc: bool,
-    chroma_tools: GeneralIntraChromaToolConfig,
-    is_cfl_ctx: IsCflContext,
-    cfl_ds_filter_index: u8,
-    sb_mib: usize,
-    lossless: bool,
-    coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
-    deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
-    chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
-    tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
-    arena: &mut crate::residual::pipeline::ResidualPlaneArena,
-    coeffs_arena: &mut Vec<i32>,
-    chroma_smooth: Option<&mut crate::prediction::intra_edge::TileChromaSmoothGrid>,
-    qindex: u32,
-    transform_tool_residual_policy: TransformToolResidualPolicy,
-    block_ctx: BlockCtx,
-    segment_id: u8,
-    tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
-    let chroma = crate::bitstream::tile_payload::decode_general_intra_chroma_block_mode(
-        work_unit,
-        symbols,
-        chroma_tools,
-        GeneralIntraChromaModeContext::sdp_chroma_part(
-            frontier.cfl_allowed_in_sdp(),
-            is_cfl_ctx.get(),
-        ),
-        y_mode,
-        frontier.b_size,
-        block_ctx.block().width4(),
-        block_ctx.block().height4(),
-    )
-    .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
-    let chroma_plan =
-        chroma_plan_for_parts(chroma, y_mode, angle_delta_y, cfl_ds_filter_index, sb_mib);
-    let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan, lossless_luma_fsc)
-        .map_err(general_intra_residual_plan_error)?;
-    let command = parse_general_intra_residual_plan(
-        &residual_plan,
-        work_unit,
-        symbols,
-        coeff_ctx,
-        block_ctx,
-        deblock_blocks,
-        chroma_deblock_blocks,
-        tx_skip_records,
-        chroma.coeff_uv_mode(),
-        LumaTransformTypeContext::new(y_mode, angle_delta_y),
-        None,
-        transform_tool_residual_policy,
-        qindex,
-        lossless,
-        intra_edge,
-        segment_id,
-        tile_offset,
-        arena,
-        coeffs_arena,
-    )?;
-    record_chroma_smooth(chroma_smooth, block_ctx, chroma.supported_chroma_mode());
-    Ok((GeneralIntraLeafMode::chroma(chroma.is_cfl()), command))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn parse_one_general_intra_rect_block(
-    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
-    symbols: &mut SymbolDecoder<'_>,
-    modes: &GeneralIntraBlockModes,
-    coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
-    deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
-    chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
-    tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
-    arena: &mut crate::residual::pipeline::ResidualPlaneArena,
-    coeffs_arena: &mut Vec<i32>,
-    qindex: u32,
-    luma_use_tcq: bool,
-    lossless: bool,
-    luma_lossless_tx_size: Option<usize>,
-    transform_tool_residual_policy: TransformToolResidualPolicy,
-    luma_tx_partition_context: Option<LumaTransformPartitionContext>,
-    block_ctx: BlockCtx,
-    cfl_ds_filter_index: u8,
-    sb_mib: usize,
-    segment_id: u8,
-    tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
-    let luma_plan = rect_luma_plan(modes, block_ctx, luma_use_tcq, sb_mib)?;
-    let chroma_plan = rect_chroma_plan(modes, cfl_ds_filter_index, sb_mib);
-
-    let residual_plan = GeneralIntraResidualPlan::rect(
-        block_ctx,
-        luma_plan,
-        chroma_plan,
-        modes.uses_active_fsc(),
-        luma_lossless_tx_size,
-        lossless,
-    )
-    .map_err(general_intra_residual_plan_error)?;
-    let command = parse_general_intra_residual_plan(
-        &residual_plan,
-        work_unit,
-        symbols,
-        coeff_ctx,
-        block_ctx,
-        deblock_blocks,
-        chroma_deblock_blocks,
-        tx_skip_records,
-        modes.coeff_uv_mode(),
-        luma_transform_type_context(modes),
-        luma_tx_partition_context,
-        transform_tool_residual_policy,
-        qindex,
-        lossless,
-        intra_edge,
-        segment_id,
-        tile_offset,
-        arena,
-        coeffs_arena,
-    )?;
-    Ok((leaf_mode_for_block(modes), command))
-}
-
-fn leaf_mode(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
-    GeneralIntraLeafMode::luma(
-        modes.intra_joint_mode,
-        modes.y_mode,
-        modes.angle_delta_y,
-        modes.fsc_mode,
-        modes.mrl,
-    )
-    .with_palette_y(modes.palette_y())
-    .with_use_dip(modes.use_dip)
-}
-
-fn leaf_mode_for_block(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
-    let leaf = leaf_mode(modes);
-    if modes.chroma().is_some() {
-        leaf.with_uv_cfl(modes.is_cfl())
-    } else {
-        leaf
-    }
 }
 
 pub(crate) fn luma_transform_type_context(
@@ -1018,61 +885,44 @@ pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i3
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn parse_general_intra_residual_plan(
-    residual_plan: &GeneralIntraResidualPlan,
-    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
-    symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
-    block_ctx: BlockCtx,
-    deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
-    chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
-    tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
-    uv_mode: usize,
-    luma_transform_type_context: LumaTransformTypeContext,
-    luma_tx_partition_context: Option<LumaTransformPartitionContext>,
-    transform_tool_residual_policy: TransformToolResidualPolicy,
-    qindex: u32,
-    lossless: bool,
-    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-    segment_id: u8,
-    tile_offset: ByteOffset,
-    arena: &mut crate::residual::pipeline::ResidualPlaneArena,
-    coeffs_arena: &mut Vec<i32>,
+    leaf: &mut GeneralIntraLeafParse<'_, '_>,
+    residual_plan: crate::residual::pipeline::PlannedGeneralIntraResidual,
+    facts: &LeafResidualFacts,
 ) -> Result<GeneralIntraReconCommand> {
-    let block = block_ctx.block();
+    let block = facts.block_ctx.block();
     let mut deblock = crate::residual::pipeline::DeblockRecorder {
-        blocks: deblock_blocks,
-        chroma_blocks: chroma_deblock_blocks,
-        tx_skip_records,
+        blocks: leaf.deblock_blocks,
+        chroma_blocks: leaf.chroma_deblock_blocks,
+        tx_skip_records: leaf.tx_skip_records,
         block_r: block.row4(),
         block_c: block.col4(),
-        chroma_tx: residual_plan.chroma_tx(),
-        chroma_subsampling: block_ctx.chroma().subsampling(PlaneId::U),
-        qindex,
-        lossless,
+        chroma_subsampling: facts.block_ctx.chroma().subsampling(PlaneId::U),
+        qindex: leaf.qindex as u16,
+        lossless: facts.lossless,
     };
-    let residual = residual_plan
+    let residual = leaf
+        .arena
         .parse(
-            work_unit,
-            symbols,
-            coeff_ctx,
-            uv_mode,
-            luma_transform_type_context,
-            luma_tx_partition_context,
-            transform_tool_residual_policy,
+            residual_plan,
+            leaf.work_unit,
+            leaf.symbols,
+            leaf.coeff_ctx,
+            facts.uv_mode,
+            facts.luma_transform_type_context,
+            facts.luma_tx_partition_context,
+            leaf.policy,
             &mut deblock,
-            arena,
-            coeffs_arena,
+            leaf.coeffs_arena,
         )
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+        .map_err(|error| general_intra_residual_error(error, leaf.tile_offset))?;
     Ok(GeneralIntraReconCommand {
         residual,
-        qindex,
-        intra_edge,
-        luma_transform_type_context,
-        segment_id,
-        tile_offset,
+        qindex: leaf.qindex,
+        intra_edge: facts.intra_edge,
+        luma_transform_type_context: facts.luma_transform_type_context,
+        segment_id: leaf.segment_id,
+        tile_offset: leaf.tile_offset,
     })
 }
 

@@ -9,8 +9,8 @@
 //! through. It reconstructs the row's entries — all of them on the serial and
 //! multi-tile paths, and the ones the parallel prepass left behind on its own
 //! out-of-order surface — folds the row's § 7.12 temporal motion records into
-//! the frame's motion field, appends its filter records, and advances the
-//! block-decoded availability grid.
+//! the frame's motion field, and advances the block-decoded availability
+//! grid.
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
@@ -18,14 +18,14 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
 
 use super::super::InterReferenceState;
 use super::super::find_mv_stack::TemporalMvContext;
-use super::ReconCommand;
 use super::deferred_recon;
 use super::temporal::MotionFieldUnits;
 use super::tile::{ReconRow, ReconRowBuffers, TileFilterRecords};
+use super::{ReconCommandMut, ReconCommandRef};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQuantizerSnapshot, TileBlockDecodedState};
 
-fn append_row_filter_records(
+pub(super) fn append_row_filter_records(
     filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     row_filter_records: &mut TileFilterRecords,
 ) {
@@ -40,16 +40,29 @@ fn append_row_filter_records(
         .append(&mut row_filter_records.tx_skip_records);
 }
 
-/// Moves one parsed row's filter geometry into the frame owner before that row
-/// enters the scheduled reconstruction graph.
-///
-/// The canonical replay then carries an empty row record owner, which makes
-/// the complete frame geometry immutable while row tasks still own commands.
-pub(super) fn detach_row_filter_records(
-    row: &mut ReconRow,
+pub(super) fn take_tile_filter_records(
     filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+    tile_records: &mut TileFilterRecords,
 ) {
-    append_row_filter_records(filter_records, &mut row.filter_records);
+    if filter_records.deblock_blocks.is_empty()
+        && filter_records.chroma_deblock_blocks.is_empty()
+        && filter_records.tx_skip_records.is_empty()
+    {
+        core::mem::swap(
+            &mut filter_records.deblock_blocks,
+            &mut tile_records.deblock_blocks,
+        );
+        core::mem::swap(
+            &mut filter_records.chroma_deblock_blocks,
+            &mut tile_records.chroma_deblock_blocks,
+        );
+        core::mem::swap(
+            &mut filter_records.tx_skip_records,
+            &mut tile_records.tx_skip_records,
+        );
+    } else {
+        append_row_filter_records(filter_records, tile_records);
+    }
 }
 
 /// Commits one parsed row into the frame, in tile order.
@@ -64,7 +77,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     block_decoded: &mut TileBlockDecodedState,
     current_superblock: &mut Option<[usize; 2]>,
     motion: &MotionFieldUnits,
-    filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
@@ -77,16 +89,13 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<ReconRowBuffers> {
-    let mut coefficient_scratch = std::mem::take(&mut scratch.coefficients);
-    let mut plane_scratch = std::mem::take(&mut scratch.plane_records);
-    let mut lists = std::mem::take(&mut scratch.lists);
+    let mut folded = std::mem::take(&mut scratch.temporal);
+    folded.clear();
     let mut has_intra = false;
     let result = (|| {
         if row.ordinal != *expected_ordinal {
             return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
         }
-        row.return_terminal_error()?;
-        row.load_parsed(&mut lists);
         row.return_terminal_error()?;
         let ordinal = row.ordinal;
         *expected_ordinal = expected_ordinal.saturating_add(1);
@@ -96,26 +105,32 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         let _quantizer_scopes = quantizer.install_frame();
         let ReconRow {
             mut superblocks,
-            residual_source,
             mut residual_coeffs,
             mut entries,
+            mut slots,
             mut residual_blocks,
             mut temporal,
-            mut flag_log,
-            filter_records: mut row_filter_records,
             mut residual_planes,
+            mut filter_records,
             ..
         } = row;
-        let shared_coefficients = residual_source.is_some();
-        if let Some(source) = residual_source
-            && entries.iter().any(|entry| entry.command().is_some())
-        {
-            source.copy_into(&mut coefficient_scratch)?;
-            source.take_planes(&mut plane_scratch)?;
-        }
+        let shared = deferred_recon::ReconShared {
+            reference,
+            ref_frame_idx,
+            temporal_context,
+            sequence,
+            core,
+            luma_use_tcq,
+            residual_use_ddt,
+            bit_depth,
+            mi_rows,
+            mi_cols,
+            current_order_hint,
+            tip: core::cell::OnceCell::new(),
+        };
         has_intra = entries
             .iter()
-            .any(|entry| matches!(entry.command(), Some(ReconCommand::GeneralIntra(_))));
+            .any(|entry| matches!(entry.command(&slots), Some(ReconCommandRef::GeneralIntra)));
         if has_intra {
             crate::pipeline::general_intra::swap_general_intra_scratch(
                 scratch.general_intra_mut(),
@@ -131,13 +146,14 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     .iter()
                     .all(|entry| entry.publication.superblock_origin() == superblock.origin)
             );
-            let superblock_needs_decoded = superblock_entries.iter().any(|entry| {
-                matches!(entry.command(), Some(ReconCommand::GeneralIntra(_)))
-                    || matches!(
-                        entry.command(),
-                        Some(ReconCommand::Inter(c)) if c.reads_current_frame()
-                    )
-            });
+            let superblock_needs_decoded =
+                superblock_entries
+                    .iter()
+                    .any(|entry| match entry.command(&slots) {
+                        Some(ReconCommandRef::GeneralIntra) => true,
+                        Some(ReconCommandRef::Inter(c)) => c.reads_current_frame(),
+                        Some(ReconCommandRef::Intrabc) | None => false,
+                    });
             for (offset, entry) in superblock_entries.iter_mut().enumerate() {
                 if superblock_needs_decoded {
                     entry
@@ -152,87 +168,42 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     return Err(error);
                 }
                 let temporal_clear = if motion_owed {
-                    entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint)
+                    entry.temporal_clear_record(&slots, mi_rows, mi_cols, current_order_hint)
                 } else {
                     None
                 };
                 if let Some(clear) = temporal_clear {
-                    motion.fold_unit(ordinal, core::slice::from_ref(&clear))?;
+                    folded.push(clear);
                 }
-                let temporal_records = entry.temporal.clone();
-                match entry.command_mut() {
-                    Some(ReconCommand::GeneralIntra(command)) => {
-                        command.reconstruct(
-                            if shared_coefficients {
-                                &mut plane_scratch
-                            } else {
-                                &mut residual_planes
-                            },
-                            if shared_coefficients {
-                                &coefficient_scratch
-                            } else {
-                                &residual_coeffs
-                            },
-                            scratch.general_intra_mut(),
-                            workspace,
-                            block_decoded,
-                        )?;
-                    }
-                    Some(ReconCommand::Intrabc(_)) => {
-                        if let Some(ReconCommand::Intrabc(command)) = entry.take_command() {
-                            scratch.reconstruct_intrabc(
-                                command,
-                                &residual_blocks,
-                                if shared_coefficients {
-                                    &coefficient_scratch
-                                } else {
-                                    &residual_coeffs
-                                },
-                                workspace,
-                            )?;
-                        }
-                    }
-                    Some(ReconCommand::Inter(command)) => {
-                        let prederived_motion = command.has_derived_motion();
-                        scratch.reconstruct(
+                let temporal_records = entry.temporal();
+                let prederived_motion = match entry.command_mut(&mut slots) {
+                    Some(command) => {
+                        let prederived = matches!(
+                            &command,
+                            ReconCommandMut::Inter(inter) if inter.has_derived_motion()
+                        );
+                        reconstruct_command(
                             command,
+                            scratch,
                             workspace,
                             block_decoded,
-                            motion,
-                            ordinal,
-                            &residual_blocks,
-                            if shared_coefficients {
-                                &coefficient_scratch
-                            } else {
-                                &residual_coeffs
+                            &mut folded,
+                            &mut LeafResiduals {
+                                planes: &mut residual_planes,
+                                coefficients: &residual_coeffs,
+                                blocks: &residual_blocks,
                             },
-                            temporal_context,
-                            reference,
-                            ref_frame_idx,
-                            sequence,
-                            core,
-                            mi_rows,
-                            mi_cols,
-                            current_order_hint,
-                            luma_use_tcq,
-                            residual_use_ddt,
-                            bit_depth,
+                            &shared,
                         )?;
-                        if prederived_motion && motion_owed {
-                            let records = temporal.get(temporal_records).ok_or(
-                                crate::DecodeHeaderStateError::InvalidInterTileSchedulingState,
-                            )?;
-                            motion.fold_unit(ordinal, records)?;
-                        }
+                        prederived
                     }
-                    None => {
-                        let records = temporal.get(temporal_records).ok_or(
-                            crate::DecodeHeaderStateError::InvalidInterTileSchedulingState,
-                        )?;
-                        if motion_owed {
-                            motion.fold_unit(ordinal, records)?;
-                        }
-                    }
+                    None => true,
+                };
+                if prederived_motion && motion_owed {
+                    let records = temporal
+                        .get(temporal_records)
+                        .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+                    folded.extend_from_slice(records);
                 }
                 if superblock_needs_decoded {
                     entry
@@ -249,30 +220,46 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             );
             has_intra = false;
         }
+        if !folded.is_empty() {
+            motion.fold_unit(ordinal, &folded)?;
+        }
         if motion_owed {
             motion.unit_landed_for(ordinal);
         }
-        append_row_filter_records(filter_records, &mut row_filter_records);
         *decoded_any |= row_has_entries;
+        let [luma, chroma, tx_skip, leaves] = filter_records.published;
+        let [planes, units] = residual_planes.lengths();
+        let lengths = [
+            residual_coeffs.len(),
+            entries.len(),
+            slots.len(),
+            residual_blocks.len(),
+            temporal.len(),
+            planes,
+            units,
+            luma,
+            chroma,
+            tx_skip,
+            leaves,
+        ];
         residual_planes.clear();
         superblocks.clear();
         entries.clear();
+        slots.clear();
         residual_blocks.clear();
         residual_coeffs.clear();
         temporal.clear();
-        flag_log.clear();
-        if shared_coefficients {
-            lists.swap_into(&mut entries, &mut residual_blocks);
-        }
+        filter_records.clear();
         Ok(ReconRowBuffers {
             superblocks,
             residual_coeffs,
             entries,
+            slots,
             residual_blocks,
             temporal,
-            flag_log,
-            filter_records: row_filter_records,
             residual_planes,
+            filter_records,
+            lengths,
         })
     })();
     if has_intra {
@@ -281,9 +268,51 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             workspace,
         );
     }
-    scratch.coefficients = coefficient_scratch;
-    plane_scratch.clear();
-    scratch.plane_records = plane_scratch;
-    scratch.lists = lists;
+    folded.clear();
+    scratch.temporal = folded;
     result
+}
+
+/// The residual storage one leaf's command indexes into.
+pub(super) struct LeafResiduals<'a> {
+    pub(super) planes: &'a mut crate::residual::pipeline::ResidualPlaneArena,
+    pub(super) coefficients: &'a [i32],
+    pub(super) blocks: &'a [super::InterResidualBlock],
+}
+
+/// Reconstructs one leaf's resolved command into the frame, in walk order, and
+/// appends its § 7.22 temporal records to `folded`.
+pub(super) fn reconstruct_command<T: ReconSample>(
+    command: ReconCommandMut<'_>,
+    scratch: &mut deferred_recon::InterReconScratch<T>,
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block_decoded: &mut TileBlockDecodedState,
+    folded: &mut Vec<super::TemporalMotionBlock>,
+    residuals: &mut LeafResiduals<'_>,
+    shared: &deferred_recon::ReconShared<'_, T>,
+) -> Result<()> {
+    match command {
+        ReconCommandMut::GeneralIntra(command) => command.reconstruct(
+            residuals.planes,
+            residuals.coefficients,
+            scratch.general_intra_mut(),
+            workspace,
+            block_decoded,
+        ),
+        ReconCommandMut::Intrabc(command) => scratch.reconstruct_intrabc(
+            command,
+            residuals.blocks,
+            residuals.coefficients,
+            workspace,
+        ),
+        ReconCommandMut::Inter(command) => scratch.reconstruct(
+            command,
+            workspace,
+            block_decoded,
+            folded,
+            residuals.blocks,
+            residuals.coefficients,
+            shared,
+        ),
+    }
 }

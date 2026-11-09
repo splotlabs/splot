@@ -40,10 +40,10 @@ mod workspace_rows;
 pub use owned_rect::{OwnedFrameRect, OwnedFrameRectRows};
 pub use workspace_edges::CurrentFrameIntraEdges;
 pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
-pub use workspace_rows::{CurrentFrameRectRowsMut, WorkspaceRectRows};
+pub use workspace_rows::{CurrentFrameRectRowsMut, IntraBlockFrame, WorkspaceRectRows};
 
 macro_rules! contiguous_rect_writer {
-    ($name:ident, $sample:ty, $slice_mut:expr, $offset:literal, $span:literal) => {
+    ($name:ident, $sample:ty, $slice_mut:expr) => {
         #[doc = concat!(
             "Runs a writer over contiguous `",
             stringify!($sample),
@@ -61,58 +61,13 @@ macro_rules! contiguous_rect_writer {
             rect: PlaneRect,
             write: impl FnOnce(&mut [$sample], usize) -> Result<R>,
         ) -> Result<Option<R>> {
-            let storage = self.plane_storage_size(plane)?;
-            let clipped = clamp_rect_to_storage(plane, storage, rect)?;
-            if clipped != rect {
+            let Some((samples, stride)) = self.contiguous_rect(plane, rect)? else {
                 return Ok(None);
-            }
-            self.rect_rows(plane, rect)?;
-            let (samples, stride, local_x, local_y) = match self {
-                Self::Frame(workspace) => {
-                    let target = workspace.plane_mut(plane)?;
-                    let stride_samples = target.stride_samples();
-                    let local_y = target.band_row(rect.y(), rect.height())?;
-                    (&mut target.samples[..], stride_samples, rect.x(), local_y)
-                }
-                Self::Rect(surface) => {
-                    let target = surface.plane_mut(plane)?;
-                    target.ensure_rect(rect)?;
-                    let stride = target.stride();
-                    let local_y = rect.y() - target.rect.y();
-                    (&mut target.samples[..], stride, rect.x(), local_y)
-                }
-                Self::OwnedRect(surface) => {
-                    let target = surface.plane_mut(plane)?;
-                    target.ensure_rect(rect)?;
-                    let target_rect = target.rect();
-                    (
-                        target.into_samples_mut(),
-                        target_rect.width(),
-                        rect.x() - target_rect.x(),
-                        rect.y() - target_rect.y(),
-                    )
-                }
             };
             let Some(samples) = $slice_mut(samples) else {
                 return Ok(None);
             };
-            let base = local_y
-                .checked_mul(stride)
-                .and_then(|start| start.checked_add(local_x))
-                .ok_or(ReconError::ArithmeticOverflow { context: $offset })?;
-            let end = (rect.height() - 1)
-                .checked_mul(stride)
-                .and_then(|offset| base.checked_add(offset))
-                .and_then(|start| start.checked_add(rect.width()))
-                .ok_or(ReconError::ArithmeticOverflow { context: $span })?;
-            let available = samples.len();
-            let target = samples
-                .get_mut(base..end)
-                .ok_or(ReconError::BufferLengthMismatch {
-                    expected: end,
-                    actual: available,
-                })?;
-            write(target, stride).map(Some)
+            write(samples, stride).map(Some)
         }
     };
 }
@@ -419,7 +374,8 @@ struct CurrentFrameResidualTarget<'surface, T: ReconSample> {
 
 impl<T: ReconSample> CurrentFrameResidualTarget<'_, T> {
     /// Adds one residual row, which spans at least the clipped target width.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "per-row residual add hot path")]
+    #[inline(always)]
     fn add_row(&mut self, row: usize, residual: &[i32]) -> Result<()> {
         let target_start = self.base + row * self.stride;
         let samples = &mut self.samples[target_start..target_start + self.rect.width()];
@@ -595,27 +551,100 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         }
     }
 
-    contiguous_rect_writer!(
-        with_contiguous_rect_mut,
-        T,
-        Some,
-        "contiguous target offset",
-        "contiguous target span"
-    );
-    contiguous_rect_writer!(
-        with_contiguous_u16_rect_mut,
-        u16,
-        T::u16_slice_mut,
-        "contiguous u16 target offset",
-        "contiguous u16 target span"
-    );
-    contiguous_rect_writer!(
-        with_contiguous_u8_rect_mut,
-        u8,
-        T::u8_slice_mut,
-        "contiguous u8 target offset",
-        "contiguous u8 target span"
-    );
+    contiguous_rect_writer!(with_contiguous_rect_mut, T, Some);
+    contiguous_rect_writer!(with_contiguous_u16_rect_mut, u16, T::u16_slice_mut);
+    contiguous_rect_writer!(with_contiguous_u8_rect_mut, u8, T::u8_slice_mut);
+
+    /// The target [`Self::with_contiguous_u8_rect_mut`] runs its writer on,
+    /// or `None` wherever that returns `Ok(None)` or an error.
+    #[inline]
+    pub fn u8_rect_mut(&mut self, plane: PlaneId, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
+        if let Self::Frame(workspace) = self {
+            return workspace.plane_mut(plane).ok()?.u8_rect_mut(rect);
+        }
+        let (samples, stride) = self.contiguous_rect(plane, rect).ok()??;
+        Some((T::u8_slice_mut(samples)?, stride))
+    }
+
+    /// The [`Self::u8_rect_mut`] targets of `rect` in both chroma planes of
+    /// a whole-frame surface, or `None` wherever either is `None`.
+    #[inline]
+    pub fn u8_chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [u8], usize); 2]> {
+        let [(u, u_stride), (v, v_stride)] = self.chroma_rects_mut(rect)?;
+        Some([
+            (T::u8_slice_mut(u)?, u_stride),
+            (T::u8_slice_mut(v)?, v_stride),
+        ])
+    }
+
+    /// [`Self::u8_chroma_rects_mut`] of samples of any depth.
+    #[inline]
+    pub fn chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [T], usize); 2]> {
+        let Self::Frame(workspace) = self else {
+            return None;
+        };
+        let (u, v) = (workspace.u.as_mut()?, workspace.v.as_mut()?);
+        Some([u.rect_mut(rect)?, v.rect_mut(rect)?])
+    }
+
+    /// The samples of the exact in-storage `rect` of `plane`, from its
+    /// top-left sample through its last row, and their row stride; `Ok(None)`
+    /// for a rectangle clipped at the frame edge.
+    #[inline]
+    fn contiguous_rect(
+        &mut self,
+        plane: PlaneId,
+        rect: PlaneRect,
+    ) -> Result<Option<(&mut [T], usize)>> {
+        let storage = self.plane_storage_size(plane)?;
+        if clamp_rect_to_storage(plane, storage, rect)? != rect {
+            return Ok(None);
+        }
+        let (samples, stride, local_x, local_y) = match self {
+            Self::Frame(workspace) => {
+                let target = workspace.plane_mut(plane)?;
+                let stride_samples = target.stride_samples();
+                let local_y = target.band_row(rect.y(), rect.height())?;
+                (&mut target.samples[..], stride_samples, rect.x(), local_y)
+            }
+            Self::Rect(surface) => {
+                let target = surface.plane_mut(plane)?;
+                target.ensure_rect(rect)?;
+                let stride = target.stride();
+                let local_y = rect.y() - target.rect.y();
+                (&mut target.samples[..], stride, rect.x(), local_y)
+            }
+            Self::OwnedRect(surface) => {
+                let target = surface.plane_mut(plane)?;
+                target.ensure_rect(rect)?;
+                let target_rect = target.rect();
+                (
+                    target.into_samples_mut(),
+                    target_rect.width(),
+                    rect.x() - target_rect.x(),
+                    rect.y() - target_rect.y(),
+                )
+            }
+        };
+        let (base, end) = local_y
+            .checked_mul(stride)
+            .and_then(|start| start.checked_add(local_x))
+            .and_then(|base| {
+                let last = base.checked_add((rect.height() - 1).checked_mul(stride)?)?;
+                Some((base, last.checked_add(rect.width())?))
+            })
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "contiguous target span",
+            })?;
+        let available = samples.len();
+        let target = samples
+            .get_mut(base..end)
+            .ok_or(ReconError::BufferLengthMismatch {
+                expected: end,
+                actual: available,
+            })?;
+        Ok(Some((target, stride)))
+    }
 
     /// Writes one contiguous rectangular prediction block.
     ///
@@ -636,14 +665,14 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
 
     /// Adds a contiguous signed residual block directly to reconstructed samples.
     ///
-    /// The complete source and target geometry and every prediction sample are
-    /// validated before the first sample is changed. Frame-edge overhang is
-    /// clipped, while row targets reject blocks crossing their exclusive band.
+    /// The complete source and target geometry is validated before the first
+    /// sample is changed; every written sample is `Clip1`-bounded, whatever the
+    /// stored prediction. Frame-edge overhang is clipped, while row targets
+    /// reject blocks crossing their exclusive band.
     ///
     /// # Errors
     /// Returns [`ReconError`] for an absent plane, invalid source or target
-    /// geometry, cross-band access, or an existing prediction sample outside
-    /// the active bit depth.
+    /// geometry, or cross-band access.
     #[inline]
     pub fn add_residual_rect_block(
         &mut self,
@@ -655,7 +684,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     ) -> Result<()> {
         let rect = checked_sample_block_rect(plane, x, y, size, residual.len())?;
         let source_stride = size.width();
-        let mut target = self.residual_rect_target(plane, rect, source_stride)?;
+        let mut target = self.residual_rect_target(plane, rect)?;
         let rows = residual
             .chunks_exact(source_stride)
             .take(target.rect.height());
@@ -665,20 +694,56 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         Ok(())
     }
 
+    /// The 8-bit samples of a residual block from its origin and their row
+    /// stride, for a reconstruction added in place, after the same checks as
+    /// [`Self::add_residual_rect_block`]; `None` when the samples are not
+    /// 8-bit or the block overhangs storage.
+    ///
+    /// # Errors
+    /// Returns the [`Self::add_residual_rect_block`] geometry errors.
+    pub fn u8_residual_rect_mut(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+    ) -> Result<Option<(&mut [u8], usize)>> {
+        let rect = block_rect(x, y, size)?;
+        if let Self::Frame(workspace) = self {
+            let target = workspace.plane_mut(plane)?;
+            if target.clamp_rect_to_storage(rect)? != rect {
+                return Ok(None);
+            }
+            let stride = target.stride;
+            let base = target.band_row(rect.y(), rect.height())? * stride + rect.x();
+            let end = base + (rect.height() - 1) * stride + rect.width();
+            let samples = T::u8_slice_mut(&mut target.samples[..]);
+            return Ok(samples
+                .and_then(|samples| samples.get_mut(base..end))
+                .map(|samples| (samples, stride)));
+        }
+        let target = self.residual_rect_target(plane, rect)?;
+        if target.rect != rect {
+            return Ok(None);
+        }
+        let stride = target.stride;
+        let samples = target.samples.get_mut(target.base..).unwrap_or_default();
+        Ok(T::u8_slice_mut(samples).map(|samples| (samples, stride)))
+    }
+
     /// Adds an adjusted-size signed residual block directly to reconstructed
     /// samples, applying the AV2 § 7.15.4 sample duplication for a 64-sample
     /// transform side while writing.
     ///
-    /// The complete adjusted source and original target geometry and every
-    /// prediction sample are validated before the first sample is changed.
-    /// Frame-edge overhang is clipped using the original block stride, while
-    /// row targets reject blocks crossing their exclusive band.
+    /// The complete adjusted source and original target geometry is validated
+    /// before the first sample is changed. Frame-edge overhang is clipped using
+    /// the original block stride, while row targets reject blocks crossing
+    /// their exclusive band.
     ///
     /// # Errors
     /// Returns [`ReconError`] for an absent plane, an adjusted source length
     /// other than `min(width, 32) * min(height, 32)`, invalid target geometry,
-    /// cross-band access, or an existing prediction sample outside the active
-    /// bit depth.
+    /// or cross-band access.
     #[inline]
     pub fn add_adjusted_residual_rect_block(
         &mut self,
@@ -704,8 +769,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             });
         }
         let rect = block_rect(x, y, size)?;
-        let source_stride = size.width();
-        let mut target = self.residual_rect_target(plane, rect, source_stride)?;
+        let mut target = self.residual_rect_target(plane, rect)?;
         let mut duplicated = [0i32; 64];
         for row in 0..target.rect.height() {
             let source = &residual[(row >> height_shift) * adjusted_width..][..adjusted_width];
@@ -723,14 +787,13 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
 
     /// Adds one constant signed residual directly to a rectangular block.
     ///
-    /// Target geometry and every prediction sample are validated before the
-    /// first sample is changed. Frame-edge overhang is clipped, while row
-    /// targets reject blocks crossing their exclusive band.
+    /// Target geometry is validated before the first sample is changed.
+    /// Frame-edge overhang is clipped, while row targets reject blocks crossing
+    /// their exclusive band.
     ///
     /// # Errors
-    /// Returns [`ReconError`] for an absent plane, invalid target geometry,
-    /// cross-band access, or an existing prediction sample outside the active
-    /// bit depth.
+    /// Returns [`ReconError`] for an absent plane, invalid target geometry, or
+    /// cross-band access.
     #[inline]
     pub fn add_constant_residual_rect_block(
         &mut self,
@@ -741,7 +804,39 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         residual: i32,
     ) -> Result<()> {
         let rect = block_rect(x, y, size)?;
-        let mut target = self.residual_rect_target(plane, rect, size.width())?;
+        let mut target = self.residual_rect_target(plane, rect)?;
+        let (base, stride, width) = (target.base, target.stride, target.rect.width());
+        if target.max_sample == u16::from(u8::MAX)
+            && let Some(samples) = T::u8_slice_mut(&mut *target.samples)
+        {
+            let magnitude = residual.unsigned_abs().min(255) as u8;
+            let (plus, minus) = if residual < 0 {
+                (0, magnitude)
+            } else {
+                (magnitude, 0)
+            };
+            let add = |row: &mut [u8]| {
+                for sample in row {
+                    *sample = sample.saturating_add(plus).saturating_sub(minus);
+                }
+            };
+            let height = target.rect.height();
+            match width {
+                4 => add_constant_rows::<4>(samples, base, stride, height, add),
+                8 => add_constant_rows::<8>(samples, base, stride, height, add),
+                16 => add_constant_rows::<16>(samples, base, stride, height, add),
+                32 => add_constant_rows::<32>(samples, base, stride, height, add),
+                _ => {
+                    for row in 0..height {
+                        let start = base + row * stride;
+                        if let Some(row) = samples.get_mut(start..start + width) {
+                            add(row);
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
         let constant = [residual; 64];
         for row in 0..target.rect.height() {
             target.add_row(row, &constant)?;
@@ -754,7 +849,6 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         &mut self,
         plane: PlaneId,
         rect: PlaneRect,
-        source_stride: usize,
     ) -> Result<CurrentFrameResidualTarget<'_, T>> {
         let max_sample = self.info().bit_depth().max_sample();
         let (target, target_stride, target_base, rect) = match self {
@@ -806,23 +900,6 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                 expected: last_target_end,
                 actual: target.len(),
             });
-        }
-        for row_index in 0..rect.height() {
-            let target_start = target_base + row_index * target_stride;
-            let row = &target[target_start..target_start + rect.width()];
-            if !samples_exceed(row, max_sample) {
-                continue;
-            }
-            for (column, sample) in row.iter().enumerate() {
-                let value = sample.to_u16();
-                if value > max_sample {
-                    return Err(ReconError::ReconstructPredictionOutOfRange {
-                        sample_index: row_index * source_stride + column,
-                        value,
-                        max: max_sample,
-                    });
-                }
-            }
         }
         Ok(CurrentFrameResidualTarget {
             samples: target,
@@ -1451,6 +1528,33 @@ pub struct CurrentFramePlane<T: ReconSample> {
     pool: Option<Arc<crate::PlanePool>>,
 }
 
+impl<T: ReconSample> CurrentFramePlane<T> {
+    /// [`Self::rect_mut`] of eight-bit samples.
+    #[inline]
+    fn u8_rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
+        let (samples, stride) = self.rect_mut(rect)?;
+        Some((T::u8_slice_mut(samples)?, stride))
+    }
+
+    /// The in-storage `rect` of this plane from its top-left sample through
+    /// its last row, and their row stride.
+    #[inline]
+    fn rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [T], usize)> {
+        let (stride, storage) = (self.stride, self.storage_size);
+        let (right, bottom) = (
+            rect.x().saturating_add(rect.width()),
+            rect.y().saturating_add(rect.height()),
+        );
+        let local_y = rect.y().checked_sub(self.origin_y)?;
+        let rows = (bottom - self.origin_y).saturating_mul(stride);
+        if right > storage.width() || bottom > storage.height() || rows > self.samples.len() {
+            return None;
+        }
+        let base = local_y * stride + rect.x();
+        Some((self.samples.get_mut(base..rows - stride + right)?, stride))
+    }
+}
+
 /// Returns a retired workspace plane's storage to the pool the next workspace
 /// of this depth takes from.
 impl<T: ReconSample> Drop for CurrentFramePlane<T> {
@@ -1860,10 +1964,15 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// `rows` rows from `y` are stored.
     #[inline]
     fn band_row(&self, y: usize, rows: usize) -> Result<usize> {
-        let stored = self.samples.len() / self.stride_samples().max(1);
+        let stride = self.stride_samples().max(1);
         let in_plane = y.saturating_add(rows) <= self.storage_size.height();
         match y.checked_sub(self.origin_y) {
-            Some(local) if in_plane && local.saturating_add(rows) <= stored => Ok(local),
+            Some(local)
+                if in_plane
+                    && local.saturating_add(rows).saturating_mul(stride) <= self.samples.len() =>
+            {
+                Ok(local)
+            }
             _ => Err(ReconError::WorkspaceRectOutOfBounds {
                 plane: self.plane,
                 storage: self.storage_size,
@@ -2010,6 +2119,7 @@ fn select_plane_mut<'a, P>(
     }
 }
 
+#[inline]
 fn clamp_rect_to_storage(plane: PlaneId, storage: PlaneSize, rect: PlaneRect) -> Result<PlaneRect> {
     if rect.x() >= storage.width() || rect.y() >= storage.height() {
         return Err(ReconError::WorkspaceRectOutOfBounds {
@@ -2317,6 +2427,26 @@ fn required_row_strided_samples(rect: PlaneRect, row_stride_samples: usize) -> R
         .ok_or(ReconError::ArithmeticOverflow {
             context: "current-frame workspace source sample span",
         })
+}
+
+/// Runs `add` over `N` samples of each of `height` rows `stride` apart from
+/// `base`.
+#[inline]
+fn add_constant_rows<const N: usize>(
+    samples: &mut [u8],
+    base: usize,
+    stride: usize,
+    height: usize,
+    add: impl Fn(&mut [u8]),
+) {
+    for row in 0..height {
+        if let Some(row) = samples
+            .get_mut(base + row * stride..)
+            .and_then(<[u8]>::first_chunk_mut::<N>)
+        {
+            add(row);
+        }
+    }
 }
 
 #[cfg(test)]

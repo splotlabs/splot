@@ -14764,7 +14764,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs"
 change_id = "coeff-eob-size-context"
 owner = "decoder"
 risk = "medium"
-notes = "read_nonzero_coeff_eob_from_context derives EOB size/context from transform dimensions, plane, inter state, and quantizer context before ordinary or FSC decoding."
+notes = "read_nonzero_coeff_block_start derives EOB size/context from the TX_GEOMETRY entry, plane, inter state, and quantizer context before ordinary or FSC decoding."
 
 [feature.status]
 mapped = "done"
@@ -14806,7 +14806,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs"
 change_id = "coeff-eob-derived-symbol-read"
 owner = "decoder"
 risk = "medium"
-notes = "read_nonzero_coeff_eob_from_context composes checked transform facts with EOB syntax selection. Focused EOB and staged-coefficient tests cover the shared path."
+notes = "read_nonzero_coeff_block_start composes checked transform facts with EOB syntax selection. Focused EOB and staged-coefficient tests cover the shared path."
 
 [feature.status]
 mapped = "done"
@@ -18311,7 +18311,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-use-fsc-branch-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "decode_staged_transform_tool_nonzero_coeffs selects the FSC or ordinary coefficient path from the shared transform-tool facts."
+notes = "decode_nonzero_plane_coeffs selects the FSC or ordinary coefficient path from the shared transform-tool facts."
 
 [feature.status]
 mapped = "done"
@@ -18350,7 +18350,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-use-fsc-condition-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "decode_staged_transform_tool_nonzero_coeffs applies the FSC condition before selecting the coefficient branch."
+notes = "decode_nonzero_plane_coeffs applies the FSC condition before selecting the coefficient branch."
 
 [feature.status]
 mapped = "done"
@@ -18389,7 +18389,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-use-fsc-shared-facts-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "The FSC and ordinary branches receive the same frame and transform-tool facts from decode_staged_transform_tool_nonzero_coeffs."
+notes = "The FSC and ordinary branches receive the same frame and transform-tool facts from decode_nonzero_plane_coeffs."
 
 [feature.status]
 mapped = "done"
@@ -18468,7 +18468,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-frame-facts-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "decode_staged_transform_tool_nonzero_coeffs reads frame coefficient facts directly from the tile work unit."
+notes = "decode_nonzero_plane_coeffs reads frame coefficient facts directly from the tile work unit."
 
 [feature.status]
 mapped = "done"
@@ -21181,7 +21181,7 @@ tests = [
     "crates/splot-decode/src/filters/source_tests.rs::invalid_direct_u8_geometry_drops_without_publication_and_releases_lease",
     "crates/splot-decode/src/pipeline/frame_progress_tests.rs::direct_stripes_write_the_canonical_allocation_and_publish_out_of_order",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly",
-    "crates/splot-recon/src/wienerns_filter.rs::tests::direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::direct_u8_output_matches_runtime_class_counts_and_shapes",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_direct_tests.rs::terminal_luma_direct_u8_eligibility_keeps_every_non_class_a_fallback",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_direct_tests.rs::direct_u8_poison_oracle_exposes_one_suppressed_lr_block_write",

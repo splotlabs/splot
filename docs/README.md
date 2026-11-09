@@ -6,8 +6,9 @@ Everything you need to work on splot. For using splot, see the
 
 ## Toolchain
 
-The workspace pins a nightly in `rust-toolchain.toml` for portable SIMD (edition
-2024, resolver 3). Rustup selects and installs it.
+The workspace pins stable Rust in `rust-toolchain.toml` (edition 2024, resolver
+3); rustup selects and installs it. SIMD kernels use `fearless_simd`. Only
+`cargo +nightly fuzz` needs a nightly toolchain.
 
 ```bash
 rustup show active-toolchain

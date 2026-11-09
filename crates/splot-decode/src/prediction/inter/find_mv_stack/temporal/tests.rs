@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use super::super::warp_sub_mv_at;
 use super::tip_field::TIP_AVERAGE_WEIGHTS;
 use super::*;
 use splot_parallel::{ThreadCount, WorkerPool};
@@ -98,10 +99,14 @@ fn compact_temporal_motion_preserves_every_warp_shape() {
         [Some(first), Some(second)],
     ] {
         let motion = TemporalBlockMotion::new(mvs, warp_params);
-        for list in 0..2 {
-            let expected =
-                warp_params[list].map_or(mvs[list], |params| warp_sub_mv_at(params, 4, 6, 8, 10));
-            assert_eq!(motion.mv_at(list, 4, 6, 8, 10), expected);
+        let mut walks = motion.cell_walks(4, 6, 2);
+        for col in [6, 8, 10] {
+            let walked = walks.each_mut().map(CellMvWalk::next);
+            for list in 0..2 {
+                let expected = warp_params[list]
+                    .map_or(mvs[list], |params| warp_sub_mv_at(params, 4, 6, 8, col));
+                assert_eq!(walked[list], expected);
+            }
         }
     }
 }
@@ -127,7 +132,7 @@ fn odd_origin_warp_block_stores_round2_cells_sampled_at_its_own_rows() {
     };
     let mut cells = Vec::new();
     visit_temporal_block_cells(block, refs, 16, 16, |y8, x8, cell, _| {
-        cells.push((y8, x8, cell.mvs[0]));
+        cells.extend(x8.map(|x8| (y8, x8, cell.mvs[0])));
     });
     let expected: Vec<_> = [(1, 2, 3, 5), (1, 3, 3, 7), (2, 2, 5, 5), (2, 3, 5, 7)]
         .map(|(y8, x8, row, col)| {
@@ -877,13 +882,13 @@ fn projection_is_total_over_untrusted_integer_inputs() {
 #[test]
 fn tip_candidate_distinguishes_absent_from_present_invalid_cells() {
     let mut context = tip_context(4, vec![Some(2), Some(6)], 2, 2);
-    context.tip = Some(TipReferencePair {
+    context.tip = Some(tip_projection(TipReferencePair {
         past_ref: 0,
         future_ref: 1,
         past_offset: 2,
         future_offset: -2,
         ref_offset: 4,
-    });
+    }));
     let base = Mv { row: 3, col: -5 };
     assert_eq!(context.tip_candidate(0, 0, base), Some([base; 2]));
 

@@ -73,10 +73,11 @@ pub(crate) use general_intra_residual::{
     CoeffBlock, FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope,
     FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope,
     GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext,
-    LumaTransformPartitionUnits, LumaTransformTypeContext, LumaTxPartition,
-    PositionedLumaCoeffBlock, TransformToolResidualPolicy, current_frame_qm_segment_id,
-    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
-    is_cctx_geometry_allowed, luma_partition_record_fills_block,
+    LumaTransformPartitionUnits, LumaTransformTypeContext, LumaTxPartition, PlaneCoeffBlock,
+    PositionedLumaCoeffBlock, TransformToolResidualPolicy,
+    add_general_intra_coeff_block_residual_in_place, current_frame_qm_segment_id,
+    current_segment_lossless, decode_general_intra_luma_partition_coeffs,
+    decode_general_intra_plane_coeffs, is_cctx_geometry_allowed, luma_partition_record_fills_block,
     luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
     reconstruct_general_intra_chroma_cctx_pair_into,
     reconstruct_general_intra_coeff_block_rect_into_frame,
@@ -90,11 +91,8 @@ pub(crate) use input::{
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
     TileGroupPositionFacts, plan_derived_tile_payload_boundary_with_scratch,
 };
-pub(crate) use intra_joint_modes::IsCflContext;
 pub(crate) use intra_joint_modes::{
-    FrameSegmentIdMap, LumaPalette, MiGrid, TileFscModeState, TileIntraJointModeState,
-    TileLumaPaletteState, TileSegmentIdState, TileSegmentIdStateError, TileUseDipState,
-    TileUsesMrlsState, neg_deinterleave,
+    FrameSegmentIdMap, LumaPalette, TileSegmentIdState, TileSegmentIdStateError, neg_deinterleave,
 };
 #[cfg(test)]
 pub(crate) use partition::PartitionDecisionError;
@@ -106,7 +104,7 @@ pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
     DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode,
-    GeneralIntraTreeWalkError, TileTraversalStorage,
+    GeneralIntraTreeWalkError, LeafNeighbours, TileTraversalStorage,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
@@ -310,7 +308,7 @@ impl TileCoeffFrameFacts {
     }
 
     #[must_use]
-    pub(crate) const fn lossless_for_segment(self, segment_id: usize) -> Option<bool> {
+    pub(crate) const fn lossless_for_segment(&self, segment_id: usize) -> Option<bool> {
         if segment_id < self.lossless_array.len() {
             Some(self.lossless_array[segment_id])
         } else {
@@ -532,8 +530,8 @@ impl DecodeTileWorkUnit {
     }
 
     #[must_use]
-    pub(crate) const fn coeff_frame_facts(&self) -> TileCoeffFrameFacts {
-        self.coeff_frame_facts
+    pub(crate) const fn coeff_frame_facts(&self) -> &TileCoeffFrameFacts {
+        &self.coeff_frame_facts
     }
 
     #[must_use]

@@ -140,17 +140,12 @@ fn deblock_records() -> Vec<crate::filters::deblock::DeblockBlock> {
         .into_iter()
         .map(|c| crate::filters::deblock::DeblockBlock {
             r: 0,
-            c: c as u32,
-            luma_prediction: deblock_prediction(0, c),
-            chroma_prediction: deblock_prediction(0, c),
-            chroma_base_r: 0,
-            chroma_base_c: c as u32,
+            c: c as u16,
+            prediction: deblock_prediction(0, c),
             n4w: 8,
             n4h: 8,
-            luma_tx: 3,
-            chroma_tx: Some(2),
+            tx: 3,
             sub_pu_size: None,
-            chroma_transform_only: false,
             qindex: 100,
             skip: false,
             lossless: false,
@@ -203,10 +198,12 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         [(0, 32)]
     );
     let records = deblock_records();
+    let chroma_records = records.clone();
 
     let mut combined =
         WienerNsLrReconSink::for_final_filtering(deblock_workspace(), 64, 32, BitDepth::Eight);
     combined.filter_records.deblock_blocks.clone_from(&records);
+    combined.filter_records.chroma_deblock_blocks = chroma_records.clone();
     let (combined, _) = combined
         .into_filtered_frame(
             std::sync::Arc::new(core.clone()),
@@ -218,7 +215,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         .unwrap();
 
     let mut source = crate::test_support::frontier_rows(deblock_workspace()).1;
-    let chroma_records = crate::filters::deblock::ChromaDeblockRecords::new();
     let mut deblock = crate::filters::deblock::FrameDeblock::prepare(
         &records,
         &chroma_records,

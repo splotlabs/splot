@@ -9,10 +9,8 @@ use crate::bitstream::tile_payload::{
     DecodeTileWorkUnit, GeneralIntraResidualError, PositionedLumaCoeffBlock, TileCdfSelector,
 };
 
-use super::RectLumaPlan;
 use super::transform_units::tx_size_log2;
-
-use super::{ResidualPlanePlan, ResidualReconstructionPlan};
+use super::{LumaPalette, RectLumaPlan, ResidualPlanePlan, ResidualReconstructionPlan};
 
 const PALETTE_MAX_SIZE: usize = 8;
 const PALETTE_COLOR_CONTEXTS: usize = 5;
@@ -98,6 +96,7 @@ impl ResidualPlanePlan {
         Ok(Some(unit_map))
     }
 
+    #[inline]
     pub(super) fn read_palette_color_map(
         &self,
         work_unit: &mut DecodeTileWorkUnit,
@@ -108,6 +107,16 @@ impl ResidualPlanePlan {
         else {
             return Ok(None);
         };
+        self.read_palette_colors(palette, work_unit, symbols)
+    }
+
+    #[inline(never)]
+    fn read_palette_colors(
+        &self,
+        palette: LumaPalette,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'_>,
+    ) -> core::result::Result<Option<Vec<u8>>, GeneralIntraResidualError> {
         let plane_width = 1usize << self.tx.width_log2();
         let plane_height = 1usize << self.tx.height_log2();
         let frame_width = self.block_ctx.frame_mi_cols().saturating_mul(4);

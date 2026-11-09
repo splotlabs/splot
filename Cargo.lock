@@ -327,6 +327,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
+name = "fearless_simd"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "629c9d6b6f30b5604089e0980f4d924a013aacb1654a6cdf5d3d852224f68651"
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -763,6 +769,7 @@ dependencies = [
 name = "splot-core"
 version = "0.0.0"
 dependencies = [
+ "fearless_simd",
  "proptest",
  "serde",
  "thiserror",
@@ -773,6 +780,7 @@ dependencies = [
 name = "splot-decode"
 version = "0.0.0"
 dependencies = [
+ "fearless_simd",
  "parking_lot",
  "splot-core",
  "splot-parallel",
@@ -785,6 +793,7 @@ dependencies = [
 name = "splot-encode"
 version = "0.0.0"
 dependencies = [
+ "fearless_simd",
  "proptest",
  "splot-core",
  "splot-decode",
@@ -806,6 +815,7 @@ dependencies = [
 name = "splot-recon"
 version = "0.0.0"
 dependencies = [
+ "fearless_simd",
  "sha2",
  "splot-core",
  "splot-tables",

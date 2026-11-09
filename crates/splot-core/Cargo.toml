@@ -15,7 +15,13 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Counts decoded symbols in builds without debug assertions too, for tests
+# that check `SymbolDecoder::symbol_count` in release builds.
+symbol-count = []
+
 [dependencies]
+fearless_simd.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 # Fixed-layout IVF container wire header parsing only (AV2-IVF-CONTAINER); see

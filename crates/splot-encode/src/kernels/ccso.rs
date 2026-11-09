@@ -9,9 +9,7 @@
 //! The SIMD form classifies 16 samples at a time in `u16` lanes, as the
 //! decoder does, and adds the lanes to their classes in lane order.
 
-use std::simd::cmp::SimdPartialOrd as _;
-use std::simd::num::SimdUint as _;
-use std::simd::{Select as _, Simd};
+use fearless_simd::{Level, Select as _, Simd, SimdBase as _, SimdInt as _, dispatch, u16x16};
 
 /// Edge classes of one tap (`CCSO_INPUT_INTERVAL`).
 pub(crate) const EDGE_CLASSES: usize = 3;
@@ -110,25 +108,38 @@ pub(crate) fn accumulate_simd(
     band_shift: u32,
     stats: &mut CcsoStats,
 ) {
+    dispatch!(Level::baseline(), simd => {
+        accumulate_kernel(simd, row, quant_step, band_shift, stats);
+    });
+}
+
+#[inline]
+fn accumulate_kernel<S: Simd>(
+    simd: S,
+    row: CcsoRow<'_>,
+    quant_step: u16,
+    band_shift: u32,
+    stats: &mut CcsoStats,
+) {
     let len = row.len();
-    let q = Simd::<u16, LANES>::splat(quant_step);
-    let (one, zero) = (Simd::<u16, LANES>::splat(1), Simd::splat(0));
-    let classify = |tap: Simd<u16, LANES>, center: Simd<u16, LANES>| {
+    let q = u16x16::splat(simd, quant_step);
+    let (one, zero) = (u16x16::splat(simd, 1), u16x16::splat(simd, 0));
+    let classify = |tap: u16x16<S>, center: u16x16<S>| {
         tap.saturating_add(q).simd_ge(center).select(one, zero)
             + tap.simd_gt(center.saturating_add(q)).select(one, zero)
     };
-    let load = |samples: &[u16], x: usize| Simd::<u16, LANES>::from_slice(&samples[x..x + LANES]);
+    let load = |samples: &[u16], x: usize| u16x16::from_slice(simd, &samples[x..x + LANES]);
     let mut x = 0;
     while x + LANES <= len {
         let center = load(row.center, x);
-        let band = (center >> band_shift as u16) & Simd::splat(BANDS as u16 - 1);
-        let class = (classify(load(row.tap0, x), center) * Simd::splat(EDGE_CLASSES as u16)
+        let band = (center >> band_shift) & (BANDS as u16 - 1);
+        let class = (classify(load(row.tap0, x), center) * EDGE_CLASSES as u16
             + classify(load(row.tap1, x), center))
-            * Simd::splat(BANDS as u16)
+            * BANDS as u16
             + band;
-        let diff = load(row.source, x).cast::<i32>() - load(row.filtered, x).cast::<i32>();
-        for (&class, &diff) in class.as_array().iter().zip(diff.as_array()) {
-            stats.sum[usize::from(class)] += i64::from(diff);
+        let (source, filtered) = (load(row.source, x), load(row.filtered, x));
+        for ((&class, &source), &filtered) in class.iter().zip(source.iter()).zip(filtered.iter()) {
+            stats.sum[usize::from(class)] += i64::from(source) - i64::from(filtered);
             stats.count[usize::from(class)] += 1;
         }
         x += LANES;

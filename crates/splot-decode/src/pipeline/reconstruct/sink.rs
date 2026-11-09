@@ -14,10 +14,14 @@ use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSi
 use crate::Result;
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaPalette, LumaTransformTypeContext,
+    add_general_intra_coeff_block_residual_in_place,
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
     reconstruct_inter_coeff_block_residual_rect_into,
 };
+
+/// The widest intra prediction block side.
+const MAX_INTRA_SIDE: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntraEdgeAvailability {
@@ -78,6 +82,51 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    if bit_depth == workspace.info().bit_depth() {
+        let mut gathered = [[T::default(); MAX_INTRA_SIDE]; 2];
+        let [left, above] = &mut gathered;
+        let mut have = (false, false);
+        let in_frame = workspace.with_intra_block_frame(plane_id, x, y, block_size, |frame| {
+            have.0 = availability.left && frame.left_column(&mut left[..height]) == height;
+            if let Some(row) = frame
+                .above_row()
+                .get(..width)
+                .filter(|_| availability.above)
+            {
+                above[..width].copy_from_slice(row); // splot-copy-ok: DC above edge from its frame row
+                have.1 = true;
+            }
+            let dc_edges = IntraDcEdges::new(
+                have.0.then_some(&left[..height]),
+                have.1.then_some(&above[..width]),
+            );
+            let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
+            let (output, stride) = frame.target();
+            fill_block(output, stride, block_size, dc);
+            if ibp_dc {
+                apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, output, stride)?;
+            }
+            Ok::<_, GeneralIntraResidualError>(())
+        })?;
+        if in_frame.is_some() {
+            if block.eob != 0 {
+                add_general_intra_coeff_block_residual_in_place(
+                    workspace,
+                    block,
+                    plane_id,
+                    x,
+                    y,
+                    block_size,
+                    qindex,
+                    use_tcq,
+                    luma_context,
+                    None,
+                    bit_depth,
+                )?;
+            }
+            return Ok(());
+        }
+    }
     let mut edges = splot_recon::CurrentFrameIntraEdges::default();
     workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
     let dc_edges = IntraDcEdges::new(
@@ -85,19 +134,19 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
         availability.above.then(|| edges.above_samples()).flatten(),
     );
     let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        dc,
-    )?;
-    if ibp_dc {
-        apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, &mut prediction, width)?;
-    }
-    write_intra_prediction_block(
+    let predict_dc = |output: &mut [T], stride: usize| {
+        for row in output.chunks_mut(stride) {
+            let filled = width.min(row.len());
+            row[..filled].fill(dc);
+        }
+        if ibp_dc {
+            apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, output, stride)?;
+        }
+        Ok(())
+    };
+    predict_intra_block(
         workspace,
         block,
-        prediction,
         plane_id,
         x,
         y,
@@ -107,6 +156,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
         luma_context,
         None,
         bit_depth,
+        predict_dc,
     )
 }
 
@@ -310,6 +360,130 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
     );
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
     result
+}
+
+/// Fills the `size` block of `output`, rows `stride` apart, with `value`,
+/// one fixed-width store per row.
+fn fill_block<T: Copy>(output: &mut [T], stride: usize, size: IntraRectBlockSize, value: T) {
+    fn rows<T: Copy, const N: usize>(output: &mut [T], stride: usize, height: usize, value: T) {
+        for row in output.chunks_mut(stride).take(height) {
+            if let Some(row) = row.first_chunk_mut::<N>() {
+                *row = [value; N];
+            }
+        }
+    }
+    let height = size.height();
+    match size.width() {
+        4 => rows::<T, 4>(output, stride, height, value),
+        8 => rows::<T, 8>(output, stride, height, value),
+        16 => rows::<T, 16>(output, stride, height, value),
+        32 => rows::<T, 32>(output, stride, height, value),
+        _ => rows::<T, 64>(output, stride, height, value),
+    }
+}
+
+/// Predicts an in-frame block straight into its frame rows, then adds any
+/// coded residual there, so no staging buffer is copied into the frame.
+///
+/// Returns `false` without predicting when the block overhangs the frame edge
+/// or the workspace has another bit depth.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_intra_in_frame<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: CoeffBlock<'_>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    block_size: IntraRectBlockSize,
+    qindex: u32,
+    use_tcq: bool,
+    luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
+    bit_depth: BitDepth,
+    predict: impl FnOnce(&mut [T], usize) -> core::result::Result<(), GeneralIntraResidualError>,
+) -> core::result::Result<bool, GeneralIntraResidualError> {
+    if bit_depth != workspace.info().bit_depth() {
+        return Ok(false);
+    }
+    let predicted = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
+        let (samples, stride) = rows.prediction_target();
+        predict(samples, stride)
+    })?;
+    if predicted.is_none() {
+        return Ok(false);
+    }
+    if block.eob != 0 {
+        add_general_intra_coeff_block_residual_in_place(
+            workspace,
+            block,
+            plane_id,
+            x,
+            y,
+            block_size,
+            qindex,
+            use_tcq,
+            luma_context,
+            dpcm,
+            bit_depth,
+        )?;
+    }
+    Ok(true)
+}
+
+/// [`predict_intra_in_frame`], or for a block it declines, `predict` into a
+/// staging buffer that [`write_intra_prediction_block`] commits.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_intra_block<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: CoeffBlock<'_>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    block_size: IntraRectBlockSize,
+    qindex: u32,
+    use_tcq: bool,
+    luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
+    bit_depth: BitDepth,
+    predict: impl Fn(&mut [T], usize) -> core::result::Result<(), GeneralIntraResidualError>,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    if predict_intra_in_frame(
+        workspace,
+        block,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+        &predict,
+    )? {
+        return Ok(());
+    }
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        block_size.sample_count(),
+        T::default(),
+    )?;
+    predict(&mut prediction, block_size.width())?;
+    write_intra_prediction_block(
+        workspace,
+        block,
+        prediction,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+    )
 }
 
 /// Commits one intra block's prediction and residual into the current frame.

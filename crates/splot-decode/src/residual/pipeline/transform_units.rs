@@ -7,10 +7,10 @@ use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
-    CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock,
+    CoeffBlock, GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock,
     LumaTransformTypeContext, LumaTxPartition, PositionedLumaCoeffBlock, TileBlockDecodedState,
-    current_frame_qm_segment_id, luma_partition_record_fills_block,
-    luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
+    luma_partition_record_fills_block, luma_transform_record_starts_in_frame,
+    luma_transform_records_for_partition,
 };
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
@@ -43,9 +43,10 @@ impl GeneralIntraResidualPlan {
             .rposition(|&q| q != 0)
             .map_or(0, |last| last + 1);
         let mut coeffs = LumaCoeffBlock {
-            eob,
-            quant_range: 0..nonzero,
-            zero_tail: quant.len() - nonzero,
+            eob: eob as u16,
+            quant_start: 0,
+            quant_len: nonzero as u16,
+            zero_tail: (quant.len() - nonzero) as u16,
             use_tcq,
             intra_ist,
             ..LumaCoeffBlock::empty(plane_tx_type, false)
@@ -85,16 +86,17 @@ impl GeneralIntraResidualPlan {
                 .rposition(|&q| q != 0)
                 .map_or(0, |last| last + 1);
             let mut coeffs = LumaCoeffBlock {
-                eob,
-                quant_range: 0..nonzero,
-                zero_tail: quant.len() - nonzero,
+                eob: eob as u16,
+                quant_start: 0,
+                quant_len: nonzero as u16,
+                zero_tail: (quant.len() - nonzero) as u16,
                 cctx_type,
                 ..LumaCoeffBlock::empty(plane_tx_type, false)
             };
             plane.apply_reconstruction_tx_type(&mut coeffs);
             Ok::<_, GeneralIntraResidualError>((plane, coeffs))
         };
-        let (u_plane, u_coeffs) = block(u, Some(cctx_type))?;
+        let (u_plane, u_coeffs) = block(u, Some(cctx_type as u8))?;
         let (v_plane, v_coeffs) = block(v, None)?;
         super::chroma_pair::reconstruct_chroma_pair_or_planes(
             scratch,
@@ -227,14 +229,9 @@ impl ResidualReconstructionPlan {
 impl ResidualPlanePlan {
     pub(super) fn lossless_transform_unit_tx_size(
         &self,
-        work_unit: &DecodeTileWorkUnit,
+        segment_lossless: Option<bool>,
     ) -> Option<usize> {
-        if work_unit
-            .coeff_frame_facts()
-            .lossless_for_segment(current_frame_qm_segment_id())
-            != Some(true)
-            || (!self.fsc_mode && self.tx_size == TX_4X4)
-        {
+        if segment_lossless != Some(true) || (!self.fsc_mode && self.tx_size == TX_4X4) {
             return None;
         }
         if !self.fsc_mode {
@@ -276,8 +273,8 @@ impl ResidualPlanePlan {
             x: block.x,
             y: block.y,
             tx,
-            residual_width4: width4.max(1),
-            residual_height4: height4.max(1),
+            residual_width4: width4.max(1) as u16,
+            residual_height4: height4.max(1) as u16,
             zero_corners: block.middle,
             reconstruction,
             ..*self
@@ -331,7 +328,8 @@ impl ResidualPlanePlan {
     }
 
     pub(super) const fn tx_fills_residual_block(&self) -> bool {
-        self.tx.width4() == self.residual_width4 && self.tx.height4() == self.residual_height4
+        self.tx.width4() == self.residual_width4 as usize
+            && self.tx.height4() == self.residual_height4 as usize
     }
 }
 

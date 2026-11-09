@@ -106,6 +106,7 @@ fn direct_cdef_10bit(
         coeff_shift: 2,
         max_sample: 1023,
         fill_flat: [true; 3],
+        bytes_suffice: [false; 8],
     };
     let geometry = [
         Some(CdefPlaneGeometry {
@@ -317,13 +318,9 @@ fn partial_skip_and_lossless_cdef_keep_poison_out_of_direct_output() {
     );
 
     let blocks = [deblock_block(0, 0, 2, 2, true)];
-    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        5,
-        5,
-        &blocks,
-        [&blocks, &blocks],
-    )
-    .unwrap();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(5, 5, &blocks, &blocks)
+            .unwrap();
     assert_eq!(
         direct_cdef_10bit(
             &workspace,
@@ -698,10 +695,21 @@ fn run_segment(
         coeff_shift: 2,
         max_sample: 1023,
         fill_flat: [true; 3],
+        bytes_suffice: [false; 8],
     };
     if segment {
         let mut scratch = CdefSegmentScratch::default();
-        assert!(cdef_segment(&lookup, params, (2, c), (0, 6), &mut scratch, &mut frame).unwrap());
+        assert!(
+            cdef_segment(
+                &lookup,
+                (params, 0),
+                (2, c),
+                (0, 6),
+                &mut scratch,
+                &mut frame
+            )
+            .unwrap()
+        );
     } else {
         let mut pad = [0u16; CDEF_PADDED_AREA];
         for block in 0..CDEF_SEGMENT_BLOCKS {
@@ -730,19 +738,14 @@ fn segment_path_matches_per_block_path() {
     let input = run_segment(
         &workspace,
         active_params()[0],
-        &crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], [&[], &[]])
-            .unwrap(),
+        &crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], &[]).unwrap(),
         8,
         false,
     );
     let blocks = [deblock_block(2, 10, 2, 2, true)];
-    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        6,
-        36,
-        &blocks,
-        [&blocks, &blocks],
-    )
-    .unwrap();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &blocks, &blocks)
+            .unwrap();
     let mixed = |y_pri, y_sec, uv_pri, uv_sec| CdefFrameParams {
         y_pri,
         y_sec,
@@ -785,6 +788,7 @@ fn edge_segment_falls_back_to_the_per_block_path() {
         coeff_shift: 2,
         max_sample: 1023,
         fill_flat: [true; 3],
+        bytes_suffice: [false; 8],
     };
     let mut frame = cdef_stripe(
         DeblockedPlanes::frame(&workspace).unwrap(),
@@ -805,12 +809,30 @@ fn edge_segment_falls_back_to_the_per_block_path() {
     let params = active_params()[0];
     for (r, c) in [(0, 16), (2, 0), (2, 8), (2, 32), (4, 16)] {
         assert!(
-            !cdef_segment(&lookup, params, (r, c), (0, 6), &mut scratch, &mut frame).unwrap(),
+            !cdef_segment(
+                &lookup,
+                (params, 0),
+                (r, c),
+                (0, 6),
+                &mut scratch,
+                &mut frame
+            )
+            .unwrap(),
             "({r}, {c})"
         );
     }
     assert_eq!(cdef_frame_samples(&frame), before);
-    assert!(cdef_segment(&lookup, params, (2, 16), (0, 6), &mut scratch, &mut frame).unwrap());
+    assert!(
+        cdef_segment(
+            &lookup,
+            (params, 0),
+            (2, 16),
+            (0, 6),
+            &mut scratch,
+            &mut frame
+        )
+        .unwrap()
+    );
     assert_ne!(cdef_frame_samples(&frame), before);
 }
 
@@ -835,8 +857,7 @@ fn segment_path_matches_per_block_path_on(spread: usize) {
         }
     }
     let lossless =
-        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], [&[], &[]])
-            .unwrap();
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], &[]).unwrap();
     for damping in [3, 4, 5, 6] {
         for ((y_pri, y_sec), (uv_pri, uv_sec)) in [
             ((4, 4), (2, 4)),

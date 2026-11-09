@@ -9,16 +9,13 @@ use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConf
 use splot_core::symbol_encoder::SymbolEncoder;
 
 use super::super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
-use super::super::super::coeff_state::TileCoeffContextState;
-use super::super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
-use super::super::{
-    AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
-};
+use super::super::super::coeff_state::{CoeffBlockLines, TileCoeffContextState};
+use super::super::branch::NonZeroCoeffBlockStart;
+use super::super::{TX_GEOMETRY, read_nonzero_coeff_block_start};
 use super::geometry::{
     CoeffOrdinaryBranchTxSetBaseConfig, CoeffOrdinaryStagedLosslessNonZeroInput,
-    CoeffOrdinaryTxSizeGeometryConfig, apply_staged_nonzero_coeff_ordinary_branch_from_lossless,
+    apply_staged_nonzero_coeff_ordinary_branch_from_lossless,
 };
-use super::*;
 
 const TX_4X4: usize = 0;
 
@@ -45,31 +42,16 @@ fn write_symbol(
 }
 
 fn read_start(tile: &mut TileCdfSubset, symbols: &mut SymbolDecoder<'_>) -> NonZeroCoeffBlockStart {
-    read_nonzero_coeff_block_start(
-        tile,
-        symbols,
-        NonZeroCoeffBlockStartInput {
-            block: AllZeroCoeffBlockInput {
-                plane: 0,
-                x4: 1,
-                y4: 1,
-                w4: 1,
-                h4: 1,
-            },
-            eob: NonZeroCoeffEobContextInput {
-                plane: 0,
-                is_inter: false,
-                tx_width_log2: 2,
-                tx_height_log2: 2,
-            },
-        },
-    )
-    .unwrap()
+    read_nonzero_coeff_block_start(tile, symbols, &TX_GEOMETRY[TX_4X4], 0, false).unwrap()
+}
+
+fn levels_clear(state: &mut TileCoeffContextState) -> bool {
+    let (_, _, levels) = state.dc_lines_and_levels(0).unwrap();
+    levels.iter().all(|&word| word == 0)
 }
 
 fn base_config(parity_hiding: bool, use_tcq: bool) -> CoeffOrdinaryBranchTxSetBaseConfig {
     CoeffOrdinaryBranchTxSetBaseConfig {
-        reduced_tx_set: 0,
         enable_chroma_dctonly: false,
         uv_mode: 0,
         angle_delta_uv: 0,
@@ -81,22 +63,18 @@ fn base_config(parity_hiding: bool, use_tcq: bool) -> CoeffOrdinaryBranchTxSetBa
 }
 
 fn staged_input(
+    lines: &CoeffBlockLines,
     start: NonZeroCoeffBlockStart,
-    tx_size: usize,
-    start_x: usize,
     lossless: bool,
     base_config: CoeffOrdinaryBranchTxSetBaseConfig,
-) -> CoeffOrdinaryStagedLosslessNonZeroInput {
+) -> CoeffOrdinaryStagedLosslessNonZeroInput<'_> {
     CoeffOrdinaryStagedLosslessNonZeroInput {
-        geometry: CoeffOrdinaryTxSizeGeometryConfig {
-            plane: 0,
-            start_x,
-            start_y: 4,
-            tx_size,
-        },
+        plane: 0,
         start,
-        is_inter: false,
-        base_config,
+        lines,
+        plane_tx_type: base_config.luma_tx_type,
+        parity_hiding: base_config.parity_hiding,
+        use_tcq: base_config.use_tcq,
         lossless,
     }
 }
@@ -215,16 +193,19 @@ fn staged_ordinary_live_path_reads_base_br_sign_quant_and_commits() {
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
 
-    let block = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+    let mut quant = [0; 16];
+    let lines = state.block_lines(0, [1, 1, 1, 1]).unwrap();
+    let end = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         &mut state,
         &mut tile,
         &mut symbols,
-        staged_input(start, TX_4X4, 4, true, base_config(true, true)),
+        staged_input(&lines, start, true, base_config(true, true)),
+        &mut quant,
     )
     .unwrap();
 
-    assert_eq!(block.level_at(0, 0).unwrap(), 8);
-    assert_eq!(block.quant_at(0).unwrap(), -11);
+    assert_eq!((end, quant[0]), (1, -11));
+    assert!(levels_clear(&mut state));
     assert_eq!(state.above_level(0).unwrap()[1], 4);
     assert_eq!(state.left_level(0).unwrap()[1], 4);
     assert_eq!(state.above_dc(0).unwrap()[1], 1);
@@ -244,20 +225,20 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
 
-    let block = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+    let mut quant = [0; 16];
+    let lines = state.block_lines(0, [1, 1, 1, 1]).unwrap();
+    let end = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         &mut state,
         &mut tile,
         &mut symbols,
-        staged_input(start, TX_4X4, 4, false, base_config(false, true)),
+        staged_input(&lines, start, false, base_config(false, true)),
+        &mut quant,
     )
     .unwrap();
 
-    assert_eq!(block.level_at(0, 1).unwrap(), 1);
-    assert_eq!(block.level_at(1, 0).unwrap(), 2);
-    assert_eq!(block.level_at(0, 0).unwrap(), 1);
-    assert_eq!(block.quant_at(1).unwrap(), 2);
-    assert_eq!(block.quant_at(4).unwrap(), 4);
-    assert_eq!(block.quant_at(0).unwrap(), 1);
+    assert_eq!(end, 5);
+    assert_eq!(quant[..5], [1, 2, 0, 0, 4]);
+    assert!(levels_clear(&mut state));
     assert_eq!(state.above_level(0).unwrap()[1], 4);
     assert_eq!(state.left_level(0).unwrap()[1], 4);
     assert_eq!(state.above_dc(0).unwrap()[1], 2);
@@ -290,8 +271,8 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
 }
 
 #[test]
-fn staged_ordinary_preflights_geometry_and_bounds_without_consumption() {
-    for (tx_size, start_x) in [(usize::MAX, 4), (1, 4)] {
+fn staged_ordinary_preflights_plane_and_bounds_without_consumption() {
+    for (plane, quant_len) in [(1, 16), (0, 17)] {
         let payload = encode_start_only();
         let mut tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&payload);
@@ -302,12 +283,14 @@ fn staged_ordinary_preflights_geometry_and_bounds_without_consumption() {
             TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444)
                 .unwrap();
         let state_before = state.clone();
+        let lines = state.block_lines(plane, [1, 1, 1, 1]).unwrap();
 
         let result = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
             &mut state,
             &mut tile,
             &mut symbols,
-            staged_input(start, tx_size, start_x, true, base_config(false, false)),
+            staged_input(&lines, start, true, base_config(false, false)),
+            &mut vec![0; quant_len],
         );
 
         assert!(result.is_err());
@@ -318,69 +301,12 @@ fn staged_ordinary_preflights_geometry_and_bounds_without_consumption() {
 }
 
 #[test]
-fn staged_ordinary_context_commit_failure_preserves_context_after_reads() {
-    let (payload, expected_tile) = encode_lossless_extended_quant();
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = symbol_decoder(&payload);
-    let start = read_start(&mut tile, &mut symbols);
-    let mut state =
+fn block_lines_reject_a_block_outside_the_tile() {
+    let state =
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
-    let state_before = state.clone();
-
-    let result = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        staged_input(start, TX_4X4, usize::MAX, true, base_config(false, false)),
-    );
-
-    assert!(matches!(
-        result,
-        Err(CoeffOrdinaryBranchError::Ordinary(
-            CoeffOrdinaryPassError::ContextUpdate(_)
-        ))
-    ));
-    assert_eq!(state, state_before);
-    assert_eq!(tile, expected_tile);
-    assert_eq!(symbols.symbol_count(), 7);
-    assert!(symbols.finish().is_ok());
-}
-
-#[test]
-fn scan_walk_rejects_a_block_width_that_is_not_a_power_of_two() {
-    let payload = encode_start_only();
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = symbol_decoder(&payload);
-    let mut input = NonZeroCoeffBlockStartInput {
-        block: AllZeroCoeffBlockInput {
-            plane: 0,
-            x4: 0,
-            y4: 0,
-            w4: 3,
-            h4: 1,
-        },
-        eob: NonZeroCoeffEobContextInput {
-            plane: 0,
-            is_inter: false,
-            tx_width_log2: 2,
-            tx_height_log2: 2,
-        },
-    };
-    let scan: Vec<u16> = (0..48).collect();
-    let start = read_nonzero_coeff_block_start(&mut tile, &mut symbols, input).unwrap();
-
-    assert!(matches!(
-        walk_nonzero_coeff_scan(&start, &scan),
-        Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width: 12 })
-    ));
-
-    input.block.w4 = 4;
-    let mut symbols = symbol_decoder(&payload);
-    let start = read_nonzero_coeff_block_start(&mut tile, &mut symbols, input).unwrap();
-    let walk = walk_nonzero_coeff_scan(&start, &scan).unwrap();
-    let entry = walk.entry(0);
-    assert_eq!(
-        (entry.row(), entry.col()),
-        (entry.pos() / 16, entry.pos() % 16)
-    );
+    assert!(state.block_lines(0, [usize::MAX >> 2, 1, 1, 1]).is_err());
+    assert!(state.block_lines(0, [4, 1, 1, 1]).is_err());
+    assert!(state.block_lines(0, [3, 1, 0, 1]).is_err());
+    assert!(state.block_lines(3, [1, 1, 1, 1]).is_err());
+    assert_eq!(state.block_lines(0, [3, 1, 4, 1]).unwrap().x4, 3);
 }

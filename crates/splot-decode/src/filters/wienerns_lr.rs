@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{LoopRestorationSourceBounds, ReconError, Result as ReconResult};
 
 const MI_SIZE: usize = 4;
@@ -62,14 +61,13 @@ pub(crate) struct FilterStripeLists {
     pub(crate) outcomes: Vec<Option<crate::Result<()>>>,
 }
 
-/// The capacities one tile's spent record lists reached.
+/// The capacities one tile's spent frame-sized record lists reached.
 ///
 /// A tile publishes its units into a fresh set, so without this the lists climb
-/// the growth ladder again for a tile the decode has already sized.
+/// the growth ladder again for a tile the decode has already sized. The deblock
+/// lists are left out: the frontier drains them as the parse fills them.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct FrameFilterRecordCapacities {
-    deblock_blocks: usize,
-    chroma_deblock_blocks: usize,
     tx_skip_records: usize,
     lr_source_blocks: usize,
     lr_unit_filters: usize,
@@ -78,8 +76,6 @@ pub(crate) struct FrameFilterRecordCapacities {
 impl FrameFilterRecordCapacities {
     /// Grows every hint to cover `other` as well.
     pub(crate) fn cover(&mut self, other: Self) {
-        self.deblock_blocks = self.deblock_blocks.max(other.deblock_blocks);
-        self.chroma_deblock_blocks = self.chroma_deblock_blocks.max(other.chroma_deblock_blocks);
         self.tx_skip_records = self.tx_skip_records.max(other.tx_skip_records);
         self.lr_source_blocks = self.lr_source_blocks.max(other.lr_source_blocks);
         self.lr_unit_filters = self.lr_unit_filters.max(other.lr_unit_filters);
@@ -90,8 +86,6 @@ impl FrameFilterRecords {
     /// The capacities these lists are holding.
     pub(crate) fn capacities(&self) -> FrameFilterRecordCapacities {
         FrameFilterRecordCapacities {
-            deblock_blocks: self.deblock_blocks.capacity(),
-            chroma_deblock_blocks: self.chroma_deblock_blocks.capacity(),
             tx_skip_records: self.tx_skip_records.capacity(),
             lr_source_blocks: self.lr_source_blocks.capacity(),
             lr_unit_filters: self.lr_unit_filters.capacity(),
@@ -100,9 +94,6 @@ impl FrameFilterRecords {
 
     /// Sizes empty lists for the tile a spent set already covered.
     pub(crate) fn reserve_from(&mut self, hint: FrameFilterRecordCapacities) {
-        let _ = self.deblock_blocks.try_reserve_exact(hint.deblock_blocks);
-        self.chroma_deblock_blocks
-            .reserve_records(hint.chroma_deblock_blocks);
         let _ = self.tx_skip_records.try_reserve_exact(hint.tx_skip_records);
         let _ = self
             .lr_source_blocks
@@ -368,38 +359,77 @@ fn write_wienerns_lr_tx_skip_record(
     values: &mut [u8],
     populated: &mut usize,
 ) -> ReconResult<()> {
-    for_each_wienerns_lr_tx_skip_record_row(rows, cols, record, |cells| {
+    let (start, end_row, width) = wienerns_lr_tx_skip_record_span(rows, cols, record)?;
+    let run = (start, cols, end_row - record.row);
+    match width {
+        1 => write_tx_skip_rows::<1>(values, run, value, populated),
+        2 => write_tx_skip_rows::<2>(values, run, value, populated),
+        4 => write_tx_skip_rows::<4>(values, run, value, populated),
+        8 => write_tx_skip_rows::<8>(values, run, value, populated),
+        16 => write_tx_skip_rows::<16>(values, run, value, populated),
+        _ => for_each_wienerns_lr_tx_skip_record_row(rows, cols, record, |cells| {
+            let actual = values.len();
+            let slots = values
+                .get_mut(cells.clone())
+                .ok_or(ReconError::BufferLengthMismatch {
+                    expected: cells.start.max(actual).saturating_add(1),
+                    actual,
+                })?;
+            write_tx_skip_slots(slots, value, populated)
+        }),
+    }
+}
+
+/// Writes `value` over `N` slots from `start` in each of `count` rows `cols`
+/// apart.
+#[allow(clippy::inline_always, reason = "one fixed-width run per row")]
+#[inline(always)]
+fn write_tx_skip_rows<const N: usize>(
+    values: &mut [u8],
+    (start, cols, count): (usize, usize, usize),
+    value: u8,
+    populated: &mut usize,
+) -> ReconResult<()> {
+    let mut at = start;
+    for _ in 0..count {
         let actual = values.len();
-        let Some(slots) = values.get_mut(cells.clone()) else {
-            return Err(ReconError::BufferLengthMismatch {
-                expected: cells.start.max(actual).saturating_add(1),
+        let slots = values
+            .get_mut(at..)
+            .and_then(<[u8]>::first_chunk_mut::<N>)
+            .ok_or_else(|| ReconError::BufferLengthMismatch {
+                expected: at.max(actual).saturating_add(1),
                 actual,
-            });
-        };
-        let unwritten = if mi_run_is(slots, WIENERNS_LR_TX_SKIP_UNWRITTEN) {
-            crate::support::fill_mi_run(slots, value);
-            slots.len()
-        } else {
-            let mut unwritten = 0;
-            for slot in slots {
-                if *slot == WIENERNS_LR_TX_SKIP_UNWRITTEN {
-                    *slot = value;
-                    unwritten += 1;
-                } else if *slot != value {
-                    return Err(ReconError::PcWienerInvalidBounds {
-                        field: "LrTxSkip conflicting transform records",
-                    });
-                }
-            }
-            unwritten
-        };
-        *populated = populated
-            .checked_add(unwritten)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "LrTxSkip populated sample count",
             })?;
-        Ok(())
-    })
+        if *slots == [WIENERNS_LR_TX_SKIP_UNWRITTEN; N] {
+            *slots = [value; N];
+            *populated += N;
+        } else {
+            write_tx_skip_slots(slots, value, populated)?;
+        }
+        at += cols;
+    }
+    Ok(())
+}
+
+/// Writes `value` over the unwritten `slots`, failing on a slot another
+/// record wrote differently.
+fn write_tx_skip_slots(slots: &mut [u8], value: u8, populated: &mut usize) -> ReconResult<()> {
+    if mi_run_is(slots, WIENERNS_LR_TX_SKIP_UNWRITTEN) {
+        crate::support::fill_mi_run(slots, value);
+        *populated += slots.len();
+        return Ok(());
+    }
+    for slot in slots {
+        if *slot == WIENERNS_LR_TX_SKIP_UNWRITTEN {
+            *slot = value;
+            *populated += 1;
+        } else if *slot != value {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "LrTxSkip conflicting transform records",
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Whether every slot of `run` is `value`, read like
@@ -423,6 +453,21 @@ fn for_each_wienerns_lr_tx_skip_record_row(
     record: &WienerNsLrTxSkipTransformRecord,
     mut visit: impl FnMut(core::ops::Range<usize>) -> ReconResult<()>,
 ) -> ReconResult<()> {
+    let (mut start, end_row, width) = wienerns_lr_tx_skip_record_span(rows, cols, record)?;
+    for _ in record.row..end_row {
+        visit(start..start + width)?;
+        start += cols;
+    }
+    Ok(())
+}
+
+/// The first grid index, the clipped end row and the clipped width of
+/// `record`.
+fn wienerns_lr_tx_skip_record_span(
+    rows: usize,
+    cols: usize,
+    record: &WienerNsLrTxSkipTransformRecord,
+) -> ReconResult<(usize, usize, usize)> {
     if record.rows == 0 || record.cols == 0 {
         return Err(ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip transform record dimensions",
@@ -448,35 +493,9 @@ fn for_each_wienerns_lr_tx_skip_record_row(
         });
     }
     let end_row = nominal_end_row.min(rows);
-    let end_col = nominal_end_col.min(cols);
-
-    for row in record.row..end_row {
-        visit(
-            wienerns_lr_tx_skip_grid_index(row, record.col, cols)?
-                ..wienerns_lr_tx_skip_grid_index(row, end_col, cols)?,
-        )?;
-    }
-    Ok(())
-}
-
-pub(crate) fn fixed_largest_420_chroma_tx_size_from_luma_4x4(
-    n4w: usize,
-    n4h: usize,
-) -> Option<usize> {
-    if n4w < 2 || n4h < 2 || !n4w.is_power_of_two() || !n4h.is_power_of_two() {
-        return None;
-    }
-    let luma_w_log2 = n4w.trailing_zeros().checked_add(2)?;
-    let luma_h_log2 = n4h.trailing_zeros().checked_add(2)?;
-    tx_size_from_log2(luma_w_log2.checked_sub(1)?, luma_h_log2.checked_sub(1)?)
-}
-
-fn tx_size_from_log2(w_log2: u32, h_log2: u32) -> Option<usize> {
-    let w = i32::try_from(w_log2).ok()?;
-    let h = i32::try_from(h_log2).ok()?;
-    TX_WIDTH_LOG2.iter().enumerate().find_map(|(tx_size, &tw)| {
-        (tw == w && TX_HEIGHT_LOG2.get(tx_size).copied() == Some(h)).then_some(tx_size)
-    })
+    let width = nominal_end_col.min(cols) - record.col;
+    let start = wienerns_lr_tx_skip_grid_index(record.row, record.col, cols)?;
+    Ok((start, end_row, width))
 }
 
 pub(crate) fn wienerns_lr_source_block_bounds(

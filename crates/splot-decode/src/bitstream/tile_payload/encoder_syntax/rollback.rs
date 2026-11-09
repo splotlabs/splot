@@ -14,16 +14,14 @@
 //! superblock-sized and saved whole. A snapshot enters the node's superblock
 //! row in every windowed grid first, so no trial moves a window.
 
-use core::num::NonZeroU32;
 use core::ops::Range;
 
 use splot_recon::{PlaneId, PlaneRect};
 
 use super::super::block_decoded_state::TileBlockDecodedState;
-use super::super::cdf::block_context::{IntraJointMode, MrlSelection};
 use super::super::cdf::coeff_context::CoeffBaseSelection;
 use super::super::cdf::{CoeffBaseRow, CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
-use super::super::intra_joint_modes::{LumaPalette, TileIntraYModeFacts};
+use super::super::intra_joint_modes::{IntraFacts, LumaPalette};
 use super::super::tile_frontier::chroma_subsampling;
 use super::intra::Recon;
 use super::{EncoderSyntaxError, IntraTileSyntax, PartitionNode, Result, rule};
@@ -204,11 +202,7 @@ const STALE: EncoderSyntaxError =
 #[derive(Default)]
 struct Cells {
     bytes: Vec<u8>,
-    flags: Vec<bool>,
-    joint_modes: Vec<IntraJointMode>,
-    uses_mrls: Vec<MrlSelection>,
-    palettes: Vec<Option<NonZeroU32>>,
-    y_modes: Vec<Option<TileIntraYModeFacts>>,
+    intra_facts: Vec<IntraFacts>,
 }
 
 /// One direction of a cell copy: into a [`Cells`] list or back out of one.
@@ -268,15 +262,7 @@ struct WholeState {
     cdfs: TileCdfSubset,
     coeff: super::TileCoeffContextState,
     mi_sizes: super::TileMiSizeState,
-    joint_modes: super::TileIntraJointModeState,
-    uses_mrls: super::TileUsesMrlsState,
-    use_dip: super::TileUseDipState,
-    fsc_modes: super::TileFscModeState,
-    palette_y: super::TileLumaPaletteState,
-    uv_cfls: super::TileUvCflState,
-    y_modes: super::TileIntraYModeState,
-    y_smooth: crate::prediction::intra_edge::TileSmoothGrid,
-    chroma_smooth: crate::prediction::intra_edge::TileSmoothGrid,
+    intra_facts: super::TileIntraFactsState,
     ref_mv_bank: Option<crate::prediction::inter::RefMvBank>,
     tip_records: Vec<crate::prediction::inter::TemporalMotionBlock>,
     warp: Option<(
@@ -328,7 +314,7 @@ impl IntraTileSyntax {
         if !self.visit_cells(&snapshot.rows, &snapshot.cols, None, &snapshot.cells) {
             return Err(STALE);
         }
-        self.palette_y.palettes_mut().clone_from(&snapshot.palettes);
+        self.mi_sizes.palettes_mut().clone_from(&snapshot.palettes);
         self.recon.block_decoded.clone_from(&snapshot.block_decoded);
         self.sdp = snapshot.sdp;
         self.recon.restore_samples(&snapshot.samples)?;
@@ -379,7 +365,7 @@ impl IntraTileSyntax {
             node.row4().min(chroma.row()) & !sub_y..(node.row4() + h / 4).max(chroma.row() + n4h);
         let cols =
             node.col4().min(chroma.col()) & !sub_x..(node.col4() + w / 4).max(chroma.col() + n4w);
-        self.enter_rows(rows.start);
+        self.intra_facts.grid_mut().enter_row(rows.start);
         let mut cells = Cells::default();
         self.visit_cells(&rows, &cols, Some(&mut cells), &Cells::default());
         Ok(SyntaxSnapshot {
@@ -389,7 +375,7 @@ impl IntraTileSyntax {
             rows,
             cols,
             cells,
-            palettes: self.palette_y.palettes_mut().clone(),
+            palettes: self.mi_sizes.palettes_mut().clone(),
             block_decoded: self.recon.block_decoded.clone(),
             sdp: self.sdp,
             samples: self.recon.save_samples((x, y, w, h), (sub_x, sub_y))?,
@@ -405,19 +391,6 @@ impl IntraTileSyntax {
         (usize::from(x), usize::from(y))
     }
 
-    fn enter_rows(&mut self, row: usize) {
-        self.joint_modes.grid_mut().enter_row(row);
-        self.uses_mrls.grid_mut().enter_row(row);
-        self.use_dip.grid_mut().enter_row(row);
-        self.fsc_modes.grid_mut().enter_row(row);
-        self.palette_y.grid_mut().enter_row(row);
-        self.uv_cfls.grid_mut().enter_row(row);
-        self.y_modes.grid_mut().enter_row(row);
-        self.recon.y_smooth.grid_mut().enter_row(row);
-        let chroma_row = row >> self.subsampling().1;
-        self.recon.chroma_smooth.grid_mut().enter_row(chroma_row);
-    }
-
     /// Copies the cells of luma rows `rows` x columns `cols` into `save`, or
     /// back from `saved` without it; `false` when `saved` does not fit.
     fn visit_cells(
@@ -427,67 +400,21 @@ impl IntraTileSyntax {
         save: Option<&mut Cells>,
         saved: &Cells,
     ) -> bool {
-        let (sub_x, sub_y) = self.subsampling();
-        let (chroma_rows, chroma_cols) = (
-            rows.start >> sub_y..rows.end.div_ceil(1 << sub_y),
-            cols.start >> sub_x..cols.end.div_ceil(1 << sub_x),
-        );
-        let (bytes, flags, joint, mrls, palettes, y_modes) = match save {
-            Some(c) => (
-                Some(&mut c.bytes),
-                Some(&mut c.flags),
-                Some(&mut c.joint_modes),
-                Some(&mut c.uses_mrls),
-                Some(&mut c.palettes),
-                Some(&mut c.y_modes),
-            ),
-            None => (None, None, None, None, None, None),
-        };
+        let (bytes, intra_facts) = save.map(|c| (&mut c.bytes, &mut c.intra_facts)).unzip();
         let mut bytes = Pass::new(bytes, &saved.bytes);
-        self.mi_sizes
-            .visit_region(rows.clone(), cols, |c| bytes.visit(c));
+        let mut intra_facts = Pass::new(intra_facts, &saved.intra_facts);
+        self.mi_sizes.visit_region(
+            rows.clone(),
+            cols,
+            |c| bytes.visit(c),
+            |c| intra_facts.visit(c),
+        );
         self.coeff
-            .visit_region(rows, cols, (sub_x, sub_y), |c| bytes.visit(c));
-        self.use_dip
+            .visit_region(rows, cols, self.subsampling(), |c| bytes.visit(c));
+        self.intra_facts
             .grid_mut()
-            .visit_cells(rows.clone(), cols, |c| bytes.visit(c));
-        self.fsc_modes
-            .grid_mut()
-            .visit_cells(rows.clone(), cols, |c| bytes.visit(c));
-        self.uv_cfls
-            .grid_mut()
-            .visit_cells(rows.clone(), cols, |c| bytes.visit(c));
-        let mut flags = Pass::new(flags, &saved.flags);
-        self.recon
-            .y_smooth
-            .grid_mut()
-            .visit_cells(rows.clone(), cols, |c| flags.visit(c));
-        self.recon
-            .chroma_smooth
-            .grid_mut()
-            .visit_cells(chroma_rows, &chroma_cols, |c| flags.visit(c));
-        let mut joint = Pass::new(joint, &saved.joint_modes);
-        self.joint_modes
-            .grid_mut()
-            .visit_cells(rows.clone(), cols, |c| joint.visit(c));
-        let mut mrls = Pass::new(mrls, &saved.uses_mrls);
-        self.uses_mrls
-            .grid_mut()
-            .visit_cells(rows.clone(), cols, |c| mrls.visit(c));
-        let mut palettes = Pass::new(palettes, &saved.palettes);
-        self.palette_y
-            .grid_mut()
-            .visit_cells(rows.clone(), cols, |c| palettes.visit(c));
-        let mut y_modes = Pass::new(y_modes, &saved.y_modes);
-        self.y_modes
-            .grid_mut()
-            .visit_cells(rows.clone(), cols, |c| y_modes.visit(c));
-        bytes.done()
-            && flags.done()
-            && joint.done()
-            && mrls.done()
-            && palettes.done()
-            && y_modes.done()
+            .visit_cells(rows.clone(), cols, |c| intra_facts.visit(c));
+        bytes.done() && intra_facts.done()
     }
 
     #[cfg(debug_assertions)]
@@ -496,15 +423,7 @@ impl IntraTileSyntax {
             cdfs: self.cdfs.clone(),
             coeff: self.coeff.clone(),
             mi_sizes: self.mi_sizes.clone(),
-            joint_modes: self.joint_modes.clone(),
-            uses_mrls: self.uses_mrls.clone(),
-            use_dip: self.use_dip.clone(),
-            fsc_modes: self.fsc_modes.clone(),
-            palette_y: self.palette_y.clone(),
-            uv_cfls: self.uv_cfls.clone(),
-            y_modes: self.y_modes.clone(),
-            y_smooth: self.recon.y_smooth.clone(),
-            chroma_smooth: self.recon.chroma_smooth.clone(),
+            intra_facts: self.intra_facts.clone(),
             ref_mv_bank: self
                 .inter
                 .as_ref()
@@ -585,7 +504,7 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError::Unsupported`] when the edge does not fit
     /// this facade's row windows.
     pub fn import_edge(&mut self, edge: &SuperblockEdge) -> Result<()> {
-        self.enter_rows(edge.rows.end);
+        self.intra_facts.grid_mut().enter_row(edge.rows.end);
         if !self.visit_cells(&edge.rows, &edge.cols, None, &edge.cells) {
             return Err(EncoderSyntaxError::Unsupported(
                 "a superblock edge outside the row windows",

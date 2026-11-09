@@ -6,9 +6,9 @@
 use splot_recon::{CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
 
 use crate::bitstream::tile_payload::{
-    CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
-    LumaTransformTypeContext, TileBlockDecodedState, current_frame_qm_segment_id,
-    is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_into,
+    CoeffBlock, GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
+    TileBlockDecodedState, is_cctx_geometry_allowed,
+    reconstruct_general_intra_chroma_cctx_pair_into,
 };
 use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_pair_into;
 
@@ -16,16 +16,9 @@ use super::{ResidualPlanePlan, ResidualReconstructionPlan};
 
 pub(super) fn can_hold_for_cctx_pair(
     plane: &ResidualPlanePlan,
-    work_unit: &DecodeTileWorkUnit,
+    segment_lossless: Option<bool>,
 ) -> bool {
-    plane.plane_id == PlaneId::U
-        && !plane.defer_reconstruction
-        && matches!(
-            work_unit
-                .coeff_frame_facts()
-                .lossless_for_segment(current_frame_qm_segment_id()),
-            Some(false)
-        )
+    plane.plane_id == PlaneId::U && !plane.defer_reconstruction && segment_lossless == Some(false)
 }
 
 pub(super) fn cctx_allowed(plane: &ResidualPlanePlan) -> bool {
@@ -53,7 +46,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
     luma_context: LumaTransformTypeContext,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let (u_plane, u_coeffs) = u;
-    let cctx_type = u_coeffs.cctx_type.unwrap_or(0);
+    let cctx_type = u_coeffs.cctx_type().unwrap_or(0);
     let Some((v_plane, v_coeffs)) = v else {
         if cctx_type != 0 {
             return Err(GeneralIntraResidualError::InvalidReconstructionState {
@@ -244,7 +237,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
 }
 
 fn prediction_only_coeff_block(coeffs: CoeffBlock<'_>) -> LumaCoeffBlock {
-    LumaCoeffBlock::empty(coeffs.plane_tx_type, coeffs.lossless)
+    LumaCoeffBlock::empty(coeffs.plane_tx_type(), coeffs.lossless)
 }
 
 fn plane_rect(

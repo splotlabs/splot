@@ -1423,6 +1423,14 @@ fn bilinear_lanes_match_the_per_sample_writers_over_random_edges() {
                         continue;
                     }
                     assert_eq!(lanes, samples, "p_angle {p_angle} size {size:?} max {max}");
+                    let mut wide = vec![PAD; lanes.len()];
+                    if let Some(angle) = one_sided {
+                        write_prediction(size, angle, &edges[0], &mut wide, stride).unwrap();
+                    } else if let Some(angle) = middle {
+                        write_middle_prediction(size, angle, &edges[1], above, &mut wide, stride)
+                            .unwrap();
+                    }
+                    assert_eq!(wide, samples, "u16 p_angle {p_angle} size {size:?}");
                     if max != 255 {
                         continue;
                     }
@@ -1454,4 +1462,43 @@ fn bilinear_lanes_match_the_per_sample_writers_over_random_edges() {
         }
     }
     assert!(middle_blocks > 1_000, "{middle_blocks}");
+}
+
+/// The per-row bound check accepts exactly the blocks whose every § 7.13.2.8
+/// zone-2 reference and its successor lie on the edges.
+#[test]
+fn middle_index_bounds_match_a_per_sample_walk() {
+    for p_angle in 91..=179u16 {
+        let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle).unwrap();
+        let branch = angle.branch();
+        let (dx, dy) = (i32::from(branch.dx), i32::from(branch.dy));
+        for log2_width in 2..=6u8 {
+            for log2_height in 2..=6u8 {
+                let size = rect_size(log2_width, log2_height);
+                for (left_len, above_len) in [
+                    (size.height() + 1, size.width() + 1),
+                    (size.height(), size.width()),
+                ] {
+                    let mut covered = true;
+                    for row in 0..size.height() as i32 {
+                        for column in 0..size.width() as i32 {
+                            let above_idx = 64 * column - (row + 1) * dx;
+                            let (idx, len) = if above_idx >> 6 >= -1 {
+                                (above_idx, above_len)
+                            } else {
+                                (64 * row - (column + 1) * dy, left_len)
+                            };
+                            let base = (idx >> 6) + 1;
+                            covered &= base >= 0 && ((base + 1) as usize) < len;
+                        }
+                    }
+                    assert_eq!(
+                        validate_middle_index_bounds(size, angle, left_len, above_len).is_ok(),
+                        covered,
+                        "p_angle {p_angle} size {size:?} lens {left_len} {above_len}"
+                    );
+                }
+            }
+        }
+    }
 }

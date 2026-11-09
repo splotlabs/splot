@@ -9,9 +9,7 @@ use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
     validate_sample_type,
 };
-use core::simd::cmp::SimdOrd;
-use core::simd::num::SimdInt;
-use core::simd::{Simd, Swizzle, simd_swizzle};
+use fearless_simd::{Bytes as _, Simd, SimdBase, i16x16, i32x8, u8x32, u16x8, u16x16, u32x8};
 
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
@@ -71,10 +69,11 @@ pub struct IntraDipEdges<'a, T: ReconSample> {
 impl<'a, T: ReconSample> IntraDipEdges<'a, T> {
     /// Creates a prepared DIP edge set.
     ///
-    /// `left` must contain `height + height / 4` samples and `above` must
-    /// contain `width + width / 4` samples. Availability and fallback
-    /// preparation remain outside this type and are owned by the broader AV2
-    /// §7.13.2.1 intra process.
+    /// `left` holds `height` to `height + height / 4` samples and `above`
+    /// `width` to `width + width / 4`; the samples a shorter edge lacks repeat
+    /// its last, as the AV2 §7.13.2.1 edge preparation extends an edge past
+    /// its available samples. Availability and fallback preparation remain
+    /// outside this type and are owned by that broader intra process.
     pub const fn new(left: &'a [T], above: &'a [T], top_left: T) -> Self {
         Self {
             left,
@@ -124,17 +123,70 @@ pub fn predict_intra_dip_rect_into<T: ReconSample>(
     )?;
 
     let features = dip_features(size, edges, dip_transpose);
-    predict_coarse_grid(
-        bit_depth,
+    let Some(rows) = DIP_ROW_WEIGHTS[usize::from(dip_transpose)].get(dip_mode) else {
+        return Err(ReconError::UnsupportedIntraDipMode {
+            mode: dip_mode,
+            max: DIP_MODE_COUNT - 1,
+        });
+    };
+    let shape_error = || ReconError::ArithmeticOverflow {
+        context: "DIP intra prediction output shape",
+    };
+    let block = DipBlock {
         size,
-        dip_mode,
-        dip_transpose,
-        features,
-        output,
-        stride_samples,
-    )?;
-    interpolate_grid(size, edges, output, stride_samples)?;
-    Ok(())
+        grid: dip_grid(size),
+        max: i32::from(bit_depth.max_sample()),
+        stride: stride_samples,
+    };
+    macro_rules! predict {
+        ($view:ident, $view_mut:ident) => {
+            if let (Some(left), Some(above), Some(output)) = (
+                T::$view(edges.left),
+                T::$view(edges.above),
+                T::$view_mut(output),
+            ) {
+                return baseline_simd!(simd => {
+                    predict_dip_samples(simd, block, &features, rows, left, above, output)
+                })
+                .ok_or_else(shape_error);
+            }
+        };
+    }
+    predict!(u8_slice, u8_slice_mut);
+    predict!(u16_slice, u16_slice_mut);
+    Err(shape_error())
+}
+
+/// The geometry of one DIP block.
+#[derive(Clone, Copy)]
+struct DipBlock {
+    size: IntraRectBlockSize,
+    grid: DipGrid,
+    max: i32,
+    stride: usize,
+}
+
+/// Writes the § 7.13.2.3 coarse grid samples, then interpolates the samples
+/// between them.
+#[inline]
+fn predict_dip_samples<S: Simd, P: IntraLaneSample>(
+    simd: S,
+    block: DipBlock,
+    features: &[i32; DIP_FEATURE_COUNT],
+    rows: &[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE],
+    left: &[P],
+    above: &[P],
+    output: &mut [P],
+) -> Option<()> {
+    let DipBlock {
+        size,
+        grid,
+        max,
+        stride,
+    } = block;
+    let mut values = [[0i32; 8]; DIP_GRID_SIDE];
+    coarse_grid_rows(simd, features, rows, grid, max, &mut values);
+    interpolate_lanes(simd, size, grid, &values, left, above, output, stride)
 }
 
 fn validate_dip_mode(dip_mode: usize) -> Result<()> {
@@ -153,16 +205,17 @@ fn validate_dip_edges<T: ReconSample>(
     size: IntraRectBlockSize,
     edges: IntraDipEdges<'_, T>,
 ) -> Result<()> {
+    let extended = |edge: &[T], len: usize| edge.len().clamp(len, len + (len >> 2));
     validate_intra_edge_samples(
         IntraDipEdge::Left,
         edges.left,
-        size.height() + (size.height() >> 2),
+        extended(edges.left, size.height()),
         bit_depth,
     )?;
     validate_intra_edge_samples(
         IntraDipEdge::Above,
         edges.above,
-        size.width() + (size.width() >> 2),
+        extended(edges.above, size.width()),
         bit_depth,
     )?;
     validate_intra_edge_samples(
@@ -201,19 +254,33 @@ fn dip_features<T: ReconSample>(
 }
 
 fn dip_averages<T: ReconSample>(samples: &[T], block_len: usize, log2_len: u8) -> [i32; 5] {
-    let group_len = block_len >> 2;
-    let group_log2 = log2_len - 2;
-    let round = block_len >> 3;
-    let mut averages = [0i32; 5];
-    for (group, average) in averages.iter_mut().enumerate() {
-        let start = group * group_len;
-        let end = start + group_len;
-        let sum = samples[start..end]
-            .iter()
-            .fold(0i32, |acc, sample| acc + i32::from(sample.to_u16()));
-        *average = (sum + round as i32) >> group_log2;
+    /// The sums of the first five `N`-sample groups of `samples`, which
+    /// holds four to five groups; the samples it lacks repeat its last.
+    #[inline]
+    fn group_sums<T: ReconSample, const N: usize>(samples: &[T]) -> [i32; 5] {
+        let value = |sample: &T| i32::from(sample.to_u16());
+        let mut sums = [0i32; 5];
+        let (groups, rest) = samples.as_chunks::<N>();
+        for (sum, group) in sums.iter_mut().zip(groups) {
+            *sum = group.iter().map(value).sum();
+        }
+        if groups.len() < 5
+            && let Some(last) = samples.last()
+        {
+            sums[4] = rest.iter().map(value).sum::<i32>() + (N - rest.len()) as i32 * value(last);
+        }
+        sums
     }
-    averages
+    let sums = match block_len >> 2 {
+        1 => group_sums::<T, 1>(samples),
+        2 => group_sums::<T, 2>(samples),
+        4 => group_sums::<T, 4>(samples),
+        8 => group_sums::<T, 8>(samples),
+        _ => group_sums::<T, 16>(samples),
+    };
+    let group_log2 = log2_len - 2;
+    let round = (block_len >> 3) as i32;
+    sums.map(|sum| (sum + round) >> group_log2)
 }
 
 /// `DIP_WEIGHTS[mode][index]` of one grid row, interleaved for a pairwise
@@ -263,61 +330,30 @@ const fn dip_row_weights() -> [[[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE];
     table
 }
 
-/// Writes the § 7.13.2.3 coarse grid samples: every grid row is eight dot
-/// products of the features with that row's weights, one pairwise
-/// multiply-add per feature pair.
-fn predict_coarse_grid<T: ReconSample>(
-    bit_depth: BitDepth,
-    size: IntraRectBlockSize,
-    dip_mode: usize,
-    dip_transpose: bool,
-    features: [i32; DIP_FEATURE_COUNT],
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    let grid = dip_grid(size);
-    let Some(rows) = DIP_ROW_WEIGHTS[usize::from(dip_transpose)].get(dip_mode) else {
-        return Err(ReconError::UnsupportedIntraDipMode {
-            mode: dip_mode,
-            max: DIP_MODE_COUNT - 1,
-        });
-    };
-    let pairs: [Simd<i16, 16>; DIP_FEATURE_PAIRS] = core::array::from_fn(|k| {
-        let low = features[2 * k] as i16;
-        let high = features.get(2 * k + 1).map_or(0, |&f| f as i16);
-        Simd::from_array(core::array::from_fn(
-            |lane| if lane % 2 == 0 { low } else { high },
-        ))
+/// The coarse grid rows of a DIP block, each `Clip1(Round2(Σ
+/// features * weights, 10))` over its eight columns.
+#[inline]
+fn coarse_grid_rows<S: Simd>(
+    simd: S,
+    features: &[i32; DIP_FEATURE_COUNT],
+    rows: &[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE],
+    grid: DipGrid,
+    max: i32,
+    values: &mut [[i32; 8]; DIP_GRID_SIDE],
+) {
+    let pairs: [i16x16<S>; DIP_FEATURE_PAIRS] = core::array::from_fn(|k| {
+        let low = u32::from(features[2 * k] as u16);
+        let high = features.get(2 * k + 1).map_or(0, |&f| u32::from(f as u16));
+        u32x8::splat(simd, low | high << 16).bitcast()
     });
-    let max = Simd::splat(i32::from(bit_depth.max_sample()));
-    let mut y = grid.step_y - 1;
-    for gy in 0..grid.height {
+    for (gy, out) in values.iter_mut().take(grid.height).enumerate() {
         let weights = &rows[gy * grid.down_y];
-        let mut sum = Simd::<i32, 8>::splat(1 << 9);
+        let mut sum = i32x8::splat(simd, 1 << 9);
         for (pair, weight) in pairs.iter().zip(weights) {
-            let product = pair.cast::<i32>() * Simd::<i16, 16>::from_array(*weight).cast::<i32>();
-            sum += simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
-                + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15]);
+            sum += simd.pairwise_dot_product_i16x16(*pair, i16x16::from_slice(simd, weight));
         }
-        let values = (sum >> 10)
-            .simd_max(Simd::splat(0))
-            .simd_min(max)
-            .to_array();
-        let row = output
-            .get_mut(y * stride_samples..)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "DIP intra prediction coarse grid row",
-            })?;
-        let mut x = grid.step_x - 1;
-        for gx in 0..grid.width {
-            if let Some(slot) = row.get_mut(x) {
-                *slot = T::try_from_u16(values[gx * grid.down_x] as u16)?;
-            }
-            x += grid.step_x;
-        }
-        y += grid.step_y;
+        (sum >> 10).max(0).min(max).store_slice(out);
     }
-    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -357,171 +393,153 @@ fn split_dip_scale_log2(log2_quarter_len: u8) -> (u8, u8) {
     }
 }
 
-fn interpolate_grid<T: ReconSample>(
-    size: IntraRectBlockSize,
-    edges: IntraDipEdges<'_, T>,
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    let grid = dip_grid(size);
-    let shape_error = || ReconError::ArithmeticOverflow {
-        context: "DIP intra prediction interpolation shape",
-    };
-    macro_rules! interpolate {
-        ($view:ident, $view_mut:ident, $sample:ty) => {
-            if let (Some(left), Some(above), Some(output)) = (
-                T::$view(edges.left),
-                T::$view(edges.above),
-                T::$view_mut(output),
-            ) {
-                return interpolate_samples::<$sample>(
-                    size,
-                    grid,
-                    left,
-                    above,
-                    output,
-                    stride_samples,
-                )
-                .ok_or_else(shape_error);
-            }
-        };
-    }
-    interpolate!(u8_slice, u8_slice_mut, u8);
-    interpolate!(u16_slice, u16_slice_mut, u16);
-    Err(shape_error())
-}
-
-/// Fills the samples between the coarse grid: each sampled row horizontally
-/// from the left edge, then the rows between sampled rows from the row or
-/// above edge before them. Every result is a convex combination of two
-/// samples with power-of-two weights, so it needs no clipping.
-fn interpolate_samples<P: IntraLaneSample>(
+/// Writes each sampled row from its coarse grid `values`, horizontally
+/// interpolated from the left edge when the grid is coarser than the block,
+/// then fills the rows between sampled rows from the row or above edge before
+/// them. Every interpolated result is a convex combination of two samples with
+/// power-of-two weights, so it needs no clipping, and a between row's
+/// `a * step + z * (b - a)` is a wrapping running sum that stays exact.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn interpolate_lanes<S: Simd, P: IntraLaneSample>(
+    simd: S,
     size: IntraRectBlockSize,
     grid: DipGrid,
+    values: &[[i32; 8]; DIP_GRID_SIDE],
     left: &[P],
     above: &[P],
     output: &mut [P],
     stride: usize,
 ) -> Option<()> {
     let width = size.width();
-    if grid.step_x > 1 {
-        for band in 0..grid.height {
-            let y = band * grid.step_y + grid.step_y - 1;
-            let row = output.get_mut(y * stride..)?.get_mut(..width)?;
-            let mut points = [0u16; 16];
-            points[0] = left.get(y)?.to_u16();
-            for (gx, point) in points[1..=DIP_GRID_SIDE].iter_mut().enumerate() {
-                *point = row.get(gx * grid.step_x + grid.step_x - 1)?.to_u16();
+    let up = u32::from(grid.up_log2_x);
+    let step = 1u16 << up;
+    let w1 = u16x16::from_fn(simd, |lane| (lane as u16 & (step - 1)) + 1);
+    let w0 = u16x16::splat(simd, step) - w1;
+    for (band, row_values) in values.iter().enumerate().take(grid.height) {
+        let y = band * grid.step_y + grid.step_y - 1;
+        let row = output.get_mut(y * stride..)?.get_mut(..width)?;
+        let grid_row = || {
+            let (low, high) = simd.split_u32x8(i32x8::from_slice(simd, row_values).bitcast());
+            simd.relaxed_narrow_u32x4(low, high)
+        };
+        if grid.down_x == 1
+            && let Some(row) = row.first_chunk_mut::<8>()
+            && width == 8
+        {
+            P::store8(simd, grid_row(), row);
+            continue;
+        }
+        if grid.up_log2_x == 1
+            && let Some(row) = row.first_chunk_mut::<16>()
+            && width == 16
+        {
+            let right = grid_row();
+            let before = simd.slide_u16x8::<7>(u16x8::splat(simd, left.get(y)?.to_u16()), right);
+            let between = (before + right) >> 1;
+            let samples = simd.combine_u16x8(
+                simd.zip_low_u16x8(between, right),
+                simd.zip_high_u16x8(between, right),
+            );
+            P::store16(simd, samples, row);
+            continue;
+        }
+        if grid.step_x == 1 {
+            for (x, slot) in row.iter_mut().enumerate() {
+                *slot = P::from_lane(*row_values.get(x * grid.down_x)? as u16);
             }
-            let points = Simd::from_array(points);
-            match grid.up_log2_x {
-                1 => expand_grid_row::<1, 0, P>(points, row),
-                2 => {
-                    expand_grid_row::<2, 0, P>(points, row);
-                    expand_grid_row::<2, 1, P>(points, row);
-                }
-                3 => {
-                    expand_grid_row::<3, 0, P>(points, row);
-                    expand_grid_row::<3, 1, P>(points, row);
-                    expand_grid_row::<3, 2, P>(points, row);
-                    expand_grid_row::<3, 3, P>(points, row);
-                }
-                _ => return None,
-            }
+            continue;
+        }
+        let mut points = [0u16; 16];
+        points[0] = left.get(y)?.to_u16();
+        for (point, &value) in points[1..=DIP_GRID_SIDE].iter_mut().zip(row_values) {
+            *point = value as u16;
+        }
+        let points = u16x16::from_slice(simd, &points);
+        let index = GRID_POINT_INDEX.get(usize::from(grid.up_log2_x) - 1)?;
+        for (out, index) in row.as_chunks_mut::<16>().0.iter_mut().zip(index) {
+            let near = points.swizzle_dyn(u8x32::from_slice(simd, &index[0]));
+            let far = points.swizzle_dyn(u8x32::from_slice(simd, &index[1]));
+            P::store16(simd, (near * w0 + far * w1) >> up, out);
         }
     }
     if grid.step_y > 1 {
-        let shift = Simd::splat(u16::from(grid.up_log2_y));
-        for band in 0..grid.height {
-            let top = band * grid.step_y;
-            let (before, rest) = output.split_at_mut_checked(top * stride)?;
-            let p0 = if band == 0 {
-                above.get(..width)?
-            } else {
-                before.get((top - 1) * stride..)?.get(..width)?
+        let shift = u32::from(grid.up_log2_y);
+        let step = grid.step_y;
+        macro_rules! lerp_columns {
+            ($load:ident, $store:ident, $columns:expr) => {
+                for column in $columns {
+                    let mut a = P::$load(simd, above.get(column..)?.first_chunk()?);
+                    let mut at = column;
+                    for _ in 0..grid.height {
+                        let last = output.get(at + (step - 1) * stride..)?;
+                        let b = P::$load(simd, last.first_chunk()?);
+                        let (mut lerp, delta) = (a << shift, b - a);
+                        for _ in 1..step {
+                            lerp += delta;
+                            P::$store(
+                                simd,
+                                lerp >> shift,
+                                output.get_mut(at..)?.first_chunk_mut()?,
+                            );
+                            at += stride;
+                        }
+                        at += stride;
+                        a = b;
+                    }
+                }
             };
-            let (between, last) = rest.split_at_mut_checked((grid.step_y - 1) * stride)?;
-            let p1 = last.get(..width)?;
-            for z in 0..grid.step_y - 1 {
-                let w0 = Simd::splat((grid.step_y - z - 1) as u16);
-                let w1 = Simd::splat(z as u16 + 1);
-                let row = between.get_mut(z * stride..)?.get_mut(..width)?;
-                lerp_row(p0, p1, w0, w1, shift, row);
+        }
+        if width >= 16 {
+            lerp_columns!(load16, store16, (0..width).step_by(16));
+        } else if width == 8 {
+            lerp_columns!(load8, store8, [0]);
+        } else {
+            for band in 0..grid.height {
+                let top = band * step;
+                let last = (top + step - 1) * stride;
+                let a: [P; 4] = *match top.checked_sub(1) {
+                    Some(row) => output.get(row * stride..),
+                    None => above.get(..),
+                }?
+                .first_chunk()?;
+                let b: [P; 4] = *output.get(last..)?.first_chunk()?;
+                for z in 1..step {
+                    let row = output.get_mut((top + z - 1) * stride..)?;
+                    for ((out, a), b) in row.iter_mut().zip(a).zip(b) {
+                        let (w0, w1) = ((step - z) as u16, z as u16);
+                        *out = P::from_lane((a.to_u16() * w0 + b.to_u16() * w1) >> shift);
+                    }
+                }
             }
         }
     }
     Some(())
 }
 
-/// Lane `c` of [`expand_grid_row`] chunk `K` reads grid point
-/// `((16 * K + c) >> UP) + B` (point 0 is the left edge sample).
-struct GridPoint<const UP: u32, const K: usize, const B: usize>;
-
-impl<const UP: u32, const K: usize, const B: usize> Swizzle<16> for GridPoint<UP, K, B> {
-    const INDEX: [usize; 16] = {
-        let mut index = [0; 16];
-        let mut lane = 0;
-        while lane < 16 {
-            index[lane] = ((16 * K + lane) >> UP) + B;
-            lane += 1;
+/// `GRID_POINT_INDEX[up - 1][k]` holds the byte indices of the grid points
+/// around samples `16 * k..16 * k + 16` of a sampled row with `1 << up` samples
+/// per grid step: sample `c` lies between points `c >> up` and `(c >> up) + 1`
+/// (point 0 is the left edge sample).
+static GRID_POINT_INDEX: [[[[u8; 32]; 2]; 4]; 3] = {
+    let mut table = [[[[0u8; 32]; 2]; 4]; 3];
+    let mut up = 1;
+    while up <= 3 {
+        let mut k = 0;
+        while k < 4 {
+            let mut byte = 0;
+            while byte < 32 {
+                let point = ((16 * k + byte / 2) >> up) % 8;
+                table[up - 1][k][0][byte] = (2 * point + byte % 2) as u8;
+                table[up - 1][k][1][byte] = (2 * (point + 1) + byte % 2) as u8;
+                byte += 1;
+            }
+            k += 1;
         }
-        index
-    };
-}
-
-/// Interpolates samples `16 * K..16 * K + 16` of a sampled row from its grid
-/// `points`, `1 << UP` samples per grid step.
-#[allow(clippy::inline_always, reason = "keeps the swizzles constant")]
-#[inline(always)]
-fn expand_grid_row<const UP: u32, const K: usize, P: IntraLaneSample>(
-    points: Simd<u16, 16>,
-    row: &mut [P],
-) {
-    let step = 1u16 << UP;
-    let w1 = Simd::from_array(core::array::from_fn(|lane| (lane as u16 & (step - 1)) + 1));
-    let w0 = Simd::splat(step) - w1;
-    let value = (GridPoint::<UP, K, 0>::swizzle(points) * w0
-        + GridPoint::<UP, K, 1>::swizzle(points) * w1)
-        >> Simd::splat(UP as u16);
-    if let Some(out) = row.get_mut(16 * K..).and_then(<[P]>::first_chunk_mut) {
-        P::store_lanes(value, out);
+        up += 1;
     }
-}
-
-/// `(p0 * w0 + p1 * w1) >> shift` over a row.
-fn lerp_row<P: IntraLaneSample>(
-    p0: &[P],
-    p1: &[P],
-    w0: Simd<u16, 16>,
-    w1: Simd<u16, 16>,
-    shift: Simd<u16, 16>,
-    row: &mut [P],
-) {
-    let mut out = row.chunks_exact_mut(16);
-    let mut a = p0.chunks_exact(16);
-    let mut b = p1.chunks_exact(16);
-    for ((out, a), b) in out.by_ref().zip(a.by_ref()).zip(b.by_ref()) {
-        if let (Some(out), Some(a), Some(b)) =
-            (out.first_chunk_mut(), a.first_chunk(), b.first_chunk())
-        {
-            P::store_lanes((P::load(a) * w0 + P::load(b) * w1) >> shift, out);
-        }
-    }
-    let narrow = |v: Simd<u16, 16>| simd_swizzle!(v, [0, 1, 2, 3]);
-    for ((out, a), b) in out
-        .into_remainder()
-        .chunks_exact_mut(4)
-        .zip(a.remainder().chunks_exact(4))
-        .zip(b.remainder().chunks_exact(4))
-    {
-        if let (Some(out), Some(a), Some(b)) =
-            (out.first_chunk_mut(), a.first_chunk(), b.first_chunk())
-        {
-            let value = (P::load::<4>(a) * narrow(w0) + P::load(b) * narrow(w1)) >> narrow(shift);
-            P::store_lanes(value, out);
-        }
-    }
-}
+    table
+};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -606,7 +624,7 @@ mod tests {
             rect_size(3, 3),
             0,
             false,
-            IntraDipEdges::new(&[128u8; 9], &[128u8; 10], 128),
+            IntraDipEdges::new(&[128u8; 7], &[128u8; 10], 128),
             &mut [0u8; 64],
             8,
         )
@@ -615,9 +633,63 @@ mod tests {
             err,
             ReconError::IntraDipEdgeLengthMismatch {
                 edge: IntraDipEdge::Left,
-                expected: 10,
-                actual: 9,
+                expected: 8,
+                actual: 7,
             }
         );
+    }
+
+    #[test]
+    fn short_edges_repeat_their_last_sample() {
+        for (log2_width, log2_height) in [(2, 2), (3, 4), (4, 3), (5, 5), (6, 4)] {
+            let size = rect_size(log2_width, log2_height);
+            let (width, height) = (size.width(), size.height());
+            let left: Vec<u8> = (0..height + height / 4)
+                .map(|i| (37 * i % 251) as u8)
+                .collect();
+            let above: Vec<u8> = (0..width + width / 4)
+                .map(|i| (53 * i % 241) as u8)
+                .collect();
+            let partial = (height + (height / 4).min(1), width + (width / 4).min(3));
+            for (left_len, above_len) in [(height, width), partial] {
+                let extend = |edge: &[u8], len: usize| -> Vec<u8> {
+                    let last = edge[len - 1];
+                    (0..edge.len())
+                        .map(|i| if i < len { edge[i] } else { last })
+                        .collect()
+                };
+                let (full_left, full_above) = (extend(&left, left_len), extend(&above, above_len));
+                for mode in [0, 3, 5] {
+                    let mut short = vec![0u8; width * height];
+                    let mut full = vec![0u8; width * height];
+                    let edges = IntraDipEdges::new(&left[..left_len], &above[..above_len], 90);
+                    predict_intra_dip_rect_into(
+                        BitDepth::Eight,
+                        size,
+                        mode,
+                        true,
+                        edges,
+                        &mut short,
+                        width,
+                    )
+                    .unwrap();
+                    let edges = IntraDipEdges::new(&full_left, &full_above, 90);
+                    predict_intra_dip_rect_into(
+                        BitDepth::Eight,
+                        size,
+                        mode,
+                        true,
+                        edges,
+                        &mut full,
+                        width,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        short, full,
+                        "{width}x{height} {left_len}/{above_len} mode {mode}"
+                    );
+                }
+            }
+        }
     }
 }

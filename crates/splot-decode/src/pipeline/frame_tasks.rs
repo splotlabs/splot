@@ -88,7 +88,7 @@ pub(crate) struct SplitFrameInputs<T: SplitSample> {
     pub(crate) candidate: DecodePlannedObu,
     pub(crate) core: Arc<FrameHeaderCore>,
     pub(crate) sequence: Arc<SequenceHeader>,
-    pub(crate) reference: inter::InterReferenceState<T>,
+    pub(crate) reference: Box<inter::InterReferenceState<T>>,
     pub(crate) bit_depth: BitDepth,
     pub(crate) geometry: inter::FrameDecodeGeometry,
     pub(crate) motion: inter::MotionFieldHandle,
@@ -363,6 +363,15 @@ impl<T: SplitSample> SplitFrame<T> {
         Ok(())
     }
 
+    /// Whether frontier row `row` may run: its rows are committed, and the
+    /// final row, which releases the frame's last stripes, also has the
+    /// filter setup the finished parse attaches. Earlier rows deblock while
+    /// the parse runs.
+    fn frontier_ready(&self, row: usize) -> bool {
+        row < self.closed_rows.load(Ordering::Acquire)
+            && (row + 1 < self.stages[FRONTIER].rows() || self.attached.load(Ordering::Acquire))
+    }
+
     /// Resolves one temporal band; `false` when the parse has not reached
     /// every unit the band owes, so the row is claimed again later.
     fn resolve(&self, band: usize) -> Result<bool> {
@@ -419,23 +428,6 @@ impl<T: SplitSample> SplitFrame<T> {
         Ok(())
     }
 
-    /// Runs one filter stripe; the frame's first stripe error fails its output.
-    fn filter_stripe(&self, stripe: usize) -> Result<()> {
-        let job = self
-            .filter_jobs
-            .lock()
-            .get_mut(stripe)
-            .and_then(Option::take)
-            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        if let Err(error) = job.run() {
-            let mut owed = self.filter_error.lock();
-            if owed.is_none() {
-                *owed = Some(error);
-            }
-        }
-        Ok(())
-    }
-
     fn output(&self) -> Result<()> {
         if let Some(error) = self.filter_error.lock().take() {
             return Err(error);
@@ -473,17 +465,26 @@ impl<T: SplitSample> SplitFrame<T> {
 }
 
 impl<T: SplitSample> FrameWork for SplitFrame<T> {
+    /// The whole-tile parse: the next frame's parse waits for its CDFs.
+    fn claim_critical(&self) -> Option<Claim> {
+        if self.failed.load(Ordering::Acquire) {
+            return None;
+        }
+        let row = self.stages[PARSE].claim(|_| {
+            self.entropy
+                .get()
+                .is_none_or(inter::EntropyDependencies::is_settled)
+        })?;
+        Some(Claim { stage: PARSE, row })
+    }
+
     fn claim(&self) -> Option<Claim> {
         if self.failed.load(Ordering::Acquire) {
             return None;
         }
         let claim = |stage: usize, row: usize| Claim { stage, row };
-        if let Some(row) = self.stages[PARSE].claim(|_| {
-            self.entropy
-                .get()
-                .is_none_or(inter::EntropyDependencies::is_settled)
-        }) {
-            return Some(claim(PARSE, row));
+        if let Some(parse) = self.claim_critical() {
+            return Some(parse);
         }
         if let Some(row) = self.stages[PREPARE].claim(|_| {
             self.early_ready.load(Ordering::Acquire)
@@ -515,9 +516,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
         if let Some(row) = self.stages[COMMIT].claim(|batch| self.precompute.is_done(batch)) {
             return Some(claim(COMMIT, row));
         }
-        if let Some(row) = self.stages[FRONTIER].claim(|row| {
-            self.attached.load(Ordering::Acquire) && row < self.closed_rows.load(Ordering::Acquire)
-        }) {
+        if let Some(row) = self.stages[FRONTIER].claim(|row| self.frontier_ready(row)) {
             return Some(claim(FRONTIER, row));
         }
         if let Some(stripe) = self.filter.claim_ready() {
@@ -550,7 +549,8 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 COMMIT => self.commit(claim.row).map(|()| true),
                 FRONTIER => self.frontier(claim.row).map(|()| true),
                 PRECOMPUTE => self.precompute(claim.row).map(|()| true),
-                FILTER => self.filter_stripe(claim.row).map(|()| true),
+                FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row)
+                    .map(|()| true),
                 _ => self.output().map(|()| true),
             };
             match claim.stage {
@@ -571,10 +571,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                     .claim(|batch| batch == claim.row)
                     .map(|row| Claim { stage: COMMIT, row }),
                 COMMIT => self.stages[FRONTIER]
-                    .claim(|row| {
-                        self.attached.load(Ordering::Acquire)
-                            && row < self.closed_rows.load(Ordering::Acquire)
-                    })
+                    .claim(|row| self.frontier_ready(row))
                     .map(|row| Claim {
                         stage: FRONTIER,
                         row,
@@ -876,12 +873,13 @@ impl<T: SplitSample> TipFrame<T> {
 }
 
 impl<T: SplitSample> FrameWork for TipFrame<T> {
-    fn claim(&self) -> Option<Claim> {
+    /// The init, which settles the CDFs the next frame's parse loads.
+    fn claim_critical(&self) -> Option<Claim> {
         if self.failed.load(Ordering::Acquire) {
             return None;
         }
         let (entropy, motion_deps) = (self.entropy.try_lock()?, self.motion_deps.try_lock()?);
-        if let Some(row) = self.stages[TIP_INIT].claim(|_| {
+        let row = self.stages[TIP_INIT].claim(|_| {
             entropy
                 .as_ref()
                 .is_none_or(inter::EntropyDependencies::is_settled)
@@ -890,11 +888,19 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
                         .flatten()
                         .all(inter::MotionFieldHandle::field_settled)
                 })
-        }) {
-            return Some(Claim {
-                stage: TIP_INIT,
-                row,
-            });
+        })?;
+        Some(Claim {
+            stage: TIP_INIT,
+            row,
+        })
+    }
+
+    fn claim(&self) -> Option<Claim> {
+        if let Some(init) = self.claim_critical() {
+            return Some(init);
+        }
+        if self.failed.load(Ordering::Acquire) {
+            return None;
         }
         let (Some(core), Some(bounds)) = (self.core.get(), self.band_bounds.get()) else {
             return None;
@@ -1075,22 +1081,6 @@ impl<T: SplitSample> FinishFrame<T> {
         Ok(())
     }
 
-    fn filter_stripe(&self, stripe: usize) -> Result<()> {
-        let job = self
-            .filter_jobs
-            .lock()
-            .get_mut(stripe)
-            .and_then(Option::take)
-            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        if let Err(error) = job.run() {
-            let mut owed = self.filter_error.lock();
-            if owed.is_none() {
-                *owed = Some(error);
-            }
-        }
-        Ok(())
-    }
-
     fn output(&self) -> Result<()> {
         if let Some(error) = self.filter_error.lock().take() {
             return Err(error);
@@ -1154,7 +1144,7 @@ impl<T: SplitSample> FrameWork for FinishFrame<T> {
         let outcome = match claim.stage {
             FINISH_INIT => self.init(),
             FINISH_ADVANCE => self.advance(claim.row),
-            FINISH_FILTER => self.filter_stripe(claim.row),
+            FINISH_FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row),
             _ => self.output(),
         };
         if claim.stage == FINISH_FILTER {
@@ -1335,6 +1325,24 @@ impl RowPools {
         self.eight.drain(rows);
         self.ten.drain(rows);
     }
+}
+
+/// Runs filter stripe `stripe` of `jobs`; the first stripe error is kept in
+/// `error` to fail the frame's output.
+fn run_filter_stripe<T: SplitSample>(
+    jobs: &Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
+    error: &Mutex<Option<DecodeError>>,
+    stripe: usize,
+) -> Result<()> {
+    let job = jobs
+        .lock()
+        .get_mut(stripe)
+        .and_then(Option::take)
+        .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+    if let Err(failure) = job.run() {
+        error.lock().get_or_insert(failure);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

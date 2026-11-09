@@ -106,7 +106,7 @@ fn predict<T: ReconSample + CompoundAverageOutput + Send>(
                 offset,
                 &mut output,
                 w,
-                (plane == PlaneId::U).then_some(&mut v[..]),
+                (plane == PlaneId::U).then_some((&mut v[..], w)),
             )
             .expect("grid prediction")
         );
@@ -264,7 +264,7 @@ fn parallel_grid_fills_the_shared_v_output() {
             ByteOffset::new(0),
             output,
             half,
-            chroma_v,
+            chroma_v.map(|v| (v, half)),
         )
         .expect("grid prediction")
     };

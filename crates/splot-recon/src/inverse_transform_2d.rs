@@ -161,6 +161,7 @@ pub(super) fn inverse_transform_2d_with_scratch(
                 rescale: odd_ratio,
                 row_shift: params.row_shift,
                 col_shift: params.col_shift,
+                dequant: None,
             },
             dequant,
             residual,
@@ -785,6 +786,65 @@ mod tests {
         }
     }
 
+    /// The 8-bit lane form must reproduce the per-row and per-column
+    /// reference for every adjusted shape and pass pair, row and column
+    /// shifts at both ends of `1..=20`, and dense extreme, sparse,
+    /// single-coefficient, DC-only and first-column inputs, so that the
+    /// input clamp, the row `Clip3`, the zero-group and zero-row skips and the
+    /// DC-only path all run.
+    #[test]
+    fn eight_bit_lane_form_matches_the_reference_at_every_shift_and_sparsity() {
+        use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+        let types = [
+            InverseTransform2dDim::Identity,
+            InverseTransform2dDim::Kernel(Dct),
+            InverseTransform2dDim::Kernel(Adst),
+            InverseTransform2dDim::Kernel(Fdst),
+            InverseTransform2dDim::Kernel(Ddtx),
+            InverseTransform2dDim::Kernel(Fddt),
+        ];
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |range: u32| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % u64::from(range)) as i32
+        };
+        for (log2_w, log2_h) in (2..=5u32).flat_map(|w| (2..=5u32).map(move |h| (w, h))) {
+            let (w, h) = (1usize << log2_w, 1usize << log2_h);
+            for (row_type, col_type) in types.into_iter().flat_map(|r| types.map(|c| (r, c))) {
+                for (row_shift, col_shift) in [(1u8, 20u8), (20, 1), (5, 12), (12, 4)] {
+                    for pattern in 0..5 {
+                        let mut dequant = vec![0i32; w * h];
+                        let spot = next((w * h) as u32) as usize;
+                        for (index, slot) in dequant.iter_mut().enumerate() {
+                            *slot = match pattern {
+                                0 => [(1 << 17) - 1, -(1 << 17), 32767, -32768][index % 4],
+                                1 if next(9) == 0 => next(1 << 15) - (1 << 14),
+                                2 if index == spot => next(1 << 16) - (1 << 15),
+                                3 if index == 0 => next(1 << 16) - (1 << 15),
+                                4 if index % w == 0 => next(1 << 12) - (1 << 11),
+                                _ => 0,
+                            };
+                        }
+                        let p = params(
+                            log2_w, log2_h, false, row_type, col_type, row_shift, col_shift,
+                        );
+                        let mut got = vec![0i32; w * h];
+                        inverse_transform_2d(&p, &dequant, &mut got).unwrap();
+                        let mut scratch = [0i32; MAX_DIM * MAX_DIM];
+                        let mut expected = vec![0i32; w * h];
+                        reference_transform_2d(&p, &dequant, &mut expected, &mut scratch);
+                        assert_eq!(
+                            got, expected,
+                            "{w}x{h} {row_type:?} {col_type:?} shifts {row_shift}/{col_shift} pattern {pattern}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// A whole-row prefix of the coefficients transforms like the block with
     /// its omitted rows zero, for every kernel pair at 8 bits.
     #[test]
@@ -816,6 +876,40 @@ mod tests {
                     let mut got = vec![0i32; w * h];
                     inverse_transform_2d(&p, &full[..coded * w], &mut got).unwrap();
                     assert_eq!(got, expected, "{w}x{h} {row:?} {col:?} coded {coded}");
+                }
+            }
+        }
+    }
+
+    /// A block whose only non-zero coefficient is the DC one matches the
+    /// per-row and per-column reference for every 8-bit shape and type pair.
+    #[test]
+    fn dc_only_blocks_match_the_reference() {
+        use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+        let types = [
+            InverseTransform2dDim::Identity,
+            InverseTransform2dDim::Kernel(Dct),
+            InverseTransform2dDim::Kernel(Adst),
+            InverseTransform2dDim::Kernel(Fdst),
+            InverseTransform2dDim::Kernel(Ddtx),
+            InverseTransform2dDim::Kernel(Fddt),
+        ];
+        for (log2_w, log2_h) in (2..=5u32).flat_map(|w| (2..=5u32).map(move |h| (w, h))) {
+            let (w, h) = (1usize << log2_w, 1usize << log2_h);
+            for (row, col) in types
+                .into_iter()
+                .flat_map(|row| types.map(|col| (row, col)))
+            {
+                for (dc, shifts) in [(40_000, (1, 20)), (-517, (6, 12)), (3, (3, 1))] {
+                    let p = params(log2_w, log2_h, false, row, col, shifts.0, shifts.1);
+                    let mut dequant = vec![0i32; w];
+                    dequant[0] = dc;
+                    let mut got = vec![0i32; w * h];
+                    inverse_transform_2d(&p, &dequant, &mut got).unwrap();
+                    let mut scratch = [0i32; MAX_DIM * MAX_DIM];
+                    let mut expected = vec![0i32; w * h];
+                    reference_transform_2d(&p, &dequant, &mut expected, &mut scratch);
+                    assert_eq!(got, expected, "{w}x{h} {row:?} {col:?} dc {dc}");
                 }
             }
         }

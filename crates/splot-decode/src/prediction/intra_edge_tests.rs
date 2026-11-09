@@ -4,49 +4,6 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use crate::prediction::TileGridConstructionError;
-
-#[test]
-fn smooth_grid_constructor_classifies_invalid_geometry_and_allocation() {
-    let reversed = std::ops::Range { start: 5, end: 4 };
-    assert!(matches!(
-        TileYSmoothGrid::new_for_tile(4..4, 8..12),
-        Err(TileGridConstructionError::EmptyDimensions)
-    ));
-    assert!(matches!(
-        TileYSmoothGrid::new_for_tile(reversed, 8..12),
-        Err(TileGridConstructionError::ReversedDimensions)
-    ));
-    assert!(matches!(
-        TileYSmoothGrid::new_for_tile(0..usize::MAX, 0..2),
-        Err(TileGridConstructionError::AreaOverflow)
-    ));
-    assert!(matches!(
-        TileYSmoothGrid::new_for_tile(0..usize::MAX, 0..1),
-        Err(TileGridConstructionError::Allocation)
-    ));
-}
-
-#[test]
-fn grid_records_and_reads_cells() {
-    let mut grid = TileYSmoothGrid::new_for_tile(0..4, 0..4).unwrap();
-    grid.record(1, 1, 2, 2, true);
-    assert!(grid.at(1, 1));
-    assert!(grid.at(2, 2));
-    assert!(!grid.at(0, 0));
-    assert!(!grid.at(1, 4));
-}
-
-#[test]
-fn tile_local_grid_translates_absolute_coordinates() {
-    let mut grid = TileYSmoothGrid::new_for_tile(4..8, 8..12).unwrap();
-    grid.record(5, 9, 2, 2, true);
-    assert!(grid.at(9, 5));
-    assert!(grid.at(10, 6));
-    assert!(!grid.at(8, 4));
-    assert!(!grid.at(7, 5));
-    assert_eq!(grid.block_smoothness(10, 6), (true, true));
-}
 
 #[test]
 fn one_sided_spec_ors_smoothness_without_ibp() {

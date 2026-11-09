@@ -49,7 +49,6 @@ struct TipUnit {
     rect: mc::McBlockRect,
     has_chroma: bool,
     mvs: [Mv; 2],
-    metadata: Option<mc::CompoundBlockMetadata>,
 }
 
 #[derive(Clone, Copy)]
@@ -95,6 +94,7 @@ impl<'a, T: ReconSample> TipPrediction<'a, T> {
 
 /// The reference pair and § 7.13.5 prediction settings one TIP block reads
 /// through, resolved once so the borrows can be retaken per unit batch.
+#[derive(Clone, Copy, Debug)]
 struct TipReferencePlan {
     past: u32,
     future: Option<u32>,
@@ -162,14 +162,14 @@ impl<T: ReconSample> TipHeldReferences<'_, T> {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct TipReconstructScratch<T: ReconSample> {
+pub(super) struct TipReconstructScratch {
     units: Vec<TipUnit>,
     /// The per-unit refine-MV candidates a batch's motion grid holds.
     ///
     /// One batch grid is live at a time, so the list travels into the grid and
     /// comes back here as each unit is published.
     grid_candidates: Vec<[Mv; 2]>,
-    output_samples: Vec<T>,
+    motion_plan: Option<TipBlockPlan>,
 }
 
 /// The TIP output walk's reusable state: one entry per full-width row band.
@@ -223,7 +223,7 @@ impl<T: ReconSample> TipSpares<T> {
 /// surface it predicted into, until the band is committed.
 #[derive(Debug, Default)]
 struct TipOutputBand<T: ReconSample> {
-    scratch: TipReconstructScratch<T>,
+    scratch: TipReconstructScratch,
     records: Vec<TemporalMotionBlock>,
     surface: Option<splot_recon::OwnedFrameRect<T>>,
 }
@@ -255,54 +255,12 @@ const fn tip_refinemv_offsets_allowed(past_offset: i32, future_offset: i32) -> b
     past_offset != 0 && past_offset == -future_offset
 }
 
-#[doc = "AV2 § 5.20.7.14 and § 5.20.7.17 reference gate for refine-MV search."]
-fn tip_refinemv_references_allowed(
-    frame_type: Option<FrameType>,
-    frame_size: Option<splot_core::headers::frame::FrameSize>,
-    ref_frame_idx: &[u32],
-    ref_order_hint: &[u32],
-    ref_frame_width: &[u32],
-    ref_frame_height: &[u32],
-    references: [(i8, i32); 2],
-) -> bool {
-    if !tip_refinemv_offsets_allowed(references[0].1, references[1].1) {
-        return false;
-    }
-    tip_references_unscaled(
-        frame_type,
-        frame_size,
-        ref_frame_idx,
-        ref_order_hint,
-        ref_frame_width,
-        ref_frame_height,
-        [references[0].0, references[1].0],
-    )
-}
-
 #[doc = "AV2 § 5.20.7.14 opposite-direction reference gate for optical flow."]
-fn tip_optflow_references_allowed(
-    frame_type: Option<FrameType>,
-    frame_size: Option<splot_core::headers::frame::FrameSize>,
-    ref_frame_idx: &[u32],
-    ref_order_hint: &[u32],
-    ref_frame_width: &[u32],
-    ref_frame_height: &[u32],
-    references: [(i8, i32); 2],
-) -> bool {
-    if (references[0].1 <= 0) == (references[1].1 <= 0) {
-        return false;
-    }
-    tip_references_unscaled(
-        frame_type,
-        frame_size,
-        ref_frame_idx,
-        ref_order_hint,
-        ref_frame_width,
-        ref_frame_height,
-        [references[0].0, references[1].0],
-    )
+const fn tip_optflow_offsets_allowed(past_offset: i32, future_offset: i32) -> bool {
+    (past_offset <= 0) != (future_offset <= 0)
 }
 
+#[doc = "AV2 § 5.20.7.14 and § 5.20.7.17 unscaled-reference gate of refine-MV search and optical flow."]
 fn tip_references_unscaled(
     frame_type: Option<FrameType>,
     frame_size: Option<splot_core::headers::frame::FrameSize>,
@@ -350,31 +308,6 @@ const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: 
     } else {
         8
     }
-}
-
-fn compute_batched_output<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
-    units: &[TipUnit],
-    prediction: &TipPrediction<'_, T>,
-    plan: &TipBlockPlan,
-    motion: mc::CompoundMotionGrid,
-    tile_offset: ByteOffset,
-) -> Result<mc::CompoundBlockMetadata> {
-    let first = units.first().ok_or(ReconError::ZeroDimension {
-        field: "TIP compound batch",
-    })?;
-    let compound = prediction
-        .block_params(first)
-        .into_compound()
-        .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-    mc::predict_tip_batch_from_grid(
-        sink,
-        compound,
-        plan.batch_rect,
-        plan.batch_has_chroma,
-        motion,
-        tile_offset,
-    )
 }
 
 pub(super) const fn reference_uses_16x16_units(
@@ -521,14 +454,26 @@ pub(crate) fn tip_allowed_for_block_indices(
         && n4h >= 2
 }
 
+/// The frame-constant § 7.13.5 settings every TIP block of a frame shares.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TipFramePlan {
+    references: TipReferencePair,
+    plan: TipReferencePlan,
+    output: bool,
+    enable_tip_refinemv: bool,
+    optflow_allowed: bool,
+    frame_size: splot_recon::PlaneSize,
+    current_order_hint: u32,
+}
+
 /// The § 7.13.5 settings both halves of one TIP block derive from.
 ///
-/// Deriving them is header arithmetic over the frame's TIP controls, so each
-/// half derives its own copy rather than carrying one across the seam.
+/// The motion half leaves its plan with its units in the scratch for a
+/// prediction that follows at once; a later one derives its own.
+#[derive(Debug)]
 struct TipBlockPlan {
     references: TipReferencePair,
     plan: TipReferencePlan,
-    two_references: bool,
     output: bool,
     use_optflow: bool,
     unit_size: usize,
@@ -542,6 +487,10 @@ struct TipBlockPlan {
 }
 
 impl TipBlockPlan {
+    const fn batched(&self) -> bool {
+        self.use_optflow && self.unit_count > 1
+    }
+
     /// Borrows the block's reference pair.
     fn hold<'a, T: ReconSample>(
         &self,
@@ -570,7 +519,7 @@ impl TipBlockPlan {
             self.frame_mi_cols,
             current_order_hint,
             self.references.past_ref,
-            self.two_references.then_some(self.references.future_ref),
+            self.plan.future.map(|_| self.references.future_ref),
             stored_mvs[0],
             stored_mvs[1],
             [None, None],
@@ -578,155 +527,154 @@ impl TipBlockPlan {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn tip_block_plan<T: ReconSample>(
-    info: splot_recon::DecodedFrameInfo,
-    placed: &PlacedInterBlock,
-    temporal: &TemporalMvContext,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
-) -> Result<TipBlockPlan> {
-    let references = temporal
-        .tip_references()
-        .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-    let (inter, mode, weight, opfl_refine_type) = tip_prediction_controls(core.inter.as_ref())?;
-    let implicit_mask = sequence
-        .inter
-        .as_ref()
-        .is_some_and(|tools| tools.enable_imp_msk_bld);
-    let blend = mc::CompoundBlend::average_with_implicit_mask(implicit_mask)
-        .average_with_cwp_weight(weight);
-    let two_references = tip_uses_two_references(weight);
-    let enable_tip_refinemv = sequence
-        .inter
-        .as_ref()
-        .is_some_and(|tools| tools.enable_tip_refinemv);
-    let output = mode == TipFrameMode::AsOutput;
-    let offsets = [
-        (references.past_ref, references.past_offset),
-        (references.future_ref, references.future_offset),
-    ];
-    let refined_references_allowed = tip_refinemv_references_allowed(
-        core.frame_type,
-        core.frame_size,
-        ref_frame_idx,
-        &reference.ref_order_hint,
-        &reference.ref_frame_width,
-        &reference.ref_frame_height,
-        offsets,
-    );
-    let use_refinemv = sequence.inter.as_ref().is_some_and(|tools| {
-        tip_uses_refinemv(
-            output,
-            tools.enable_refinemv,
-            tools.enable_tip_refinemv,
-            weight,
-        )
-    });
-    let search_refinemv = use_refinemv && refined_references_allowed;
-    let interpolation_filter = if output {
-        output_interpolation_filter(inter)?
-    } else {
-        ReconInterpolationFilter::EightTapSharp
-    };
-    let unit_size = if output {
-        output_prediction_unit_size(enable_tip_refinemv, interpolation_filter)
-    } else {
-        prediction_unit_size(placed.luma_w, placed.luma_h, enable_tip_refinemv)
-    };
-    let use_optflow = unit_size == 8
-        && opfl_refine_type != 0
-        && enable_tip_refinemv
-        && interpolation_filter == ReconInterpolationFilter::EightTapSharp
-        && two_references
-        && tip_optflow_weight_and_references_allowed(
-            output,
-            weight,
-            tip_optflow_references_allowed(
-                core.frame_type,
-                core.frame_size,
-                ref_frame_idx,
-                &reference.ref_order_hint,
-                &reference.ref_frame_width,
-                &reference.ref_frame_height,
-                offsets,
-            ),
+impl TipFramePlan {
+    pub(super) fn new<T: ReconSample>(
+        info: splot_recon::DecodedFrameInfo,
+        temporal: &TemporalMvContext,
+        sequence: &SequenceHeader,
+        core: &FrameHeaderCore,
+        ref_frame_idx: &[u32],
+        reference: &InterReferenceState<T>,
+    ) -> Result<Self> {
+        let references = temporal
+            .tip_references()
+            .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        let (past_offset, future_offset) = (references.past_offset, references.future_offset);
+        let (inter, mode, weight, opfl_refine_type) = tip_prediction_controls(core.inter.as_ref())?;
+        let tools = sequence.inter.as_ref();
+        let implicit_mask = tools.is_some_and(|tools| tools.enable_imp_msk_bld);
+        let blend = mc::CompoundBlend::average_with_implicit_mask(implicit_mask)
+            .average_with_cwp_weight(weight);
+        let two_references = tip_uses_two_references(weight);
+        let enable_tip_refinemv = tools.is_some_and(|tools| tools.enable_tip_refinemv);
+        let output = mode == TipFrameMode::AsOutput;
+        let unscaled = tip_references_unscaled(
+            core.frame_type,
+            core.frame_size,
+            ref_frame_idx,
+            &reference.ref_order_hint,
+            &reference.ref_frame_width,
+            &reference.ref_frame_height,
+            [references.past_ref, references.future_ref],
         );
-    let frame_size = info.storage_luma_size();
-    let block_w = placed.luma_w.min(
-        frame_size
-            .width()
-            .saturating_sub(placed.luma_x)
-            .next_multiple_of(unit_size),
-    );
-    let block_h = placed.luma_h.min(
-        frame_size
-            .height()
-            .saturating_sub(placed.luma_y)
-            .next_multiple_of(unit_size),
-    );
-    if block_w == 0 || block_h == 0 {
-        return Err(DecodeHeaderStateError::InvalidBlockGeometry.into());
+        let use_refinemv = tools.is_some_and(|tools| {
+            tip_uses_refinemv(
+                output,
+                tools.enable_refinemv,
+                tools.enable_tip_refinemv,
+                weight,
+            )
+        });
+        let search_refinemv =
+            use_refinemv && unscaled && tip_refinemv_offsets_allowed(past_offset, future_offset);
+        let interpolation_filter = if output {
+            output_interpolation_filter(inter)?
+        } else {
+            ReconInterpolationFilter::EightTapSharp
+        };
+        let optflow_allowed = opfl_refine_type != 0
+            && enable_tip_refinemv
+            && interpolation_filter == ReconInterpolationFilter::EightTapSharp
+            && two_references
+            && tip_optflow_weight_and_references_allowed(
+                output,
+                weight,
+                unscaled && tip_optflow_offsets_allowed(past_offset, future_offset),
+            );
+        let past = super::super::block_reference_slot(ref_frame_idx, references.past_ref)?;
+        let future = two_references
+            .then(|| super::super::block_reference_slot(ref_frame_idx, references.future_ref))
+            .transpose()?;
+        Ok(Self {
+            references,
+            plan: TipReferencePlan {
+                past,
+                future,
+                interpolation_filter,
+                blend,
+                optflow_distances: Some([past_offset, future_offset]),
+                use_refinemv,
+                search_refinemv,
+                optflow_sad_threshold: Some(if output { 15 } else { 6 }),
+            },
+            output,
+            enable_tip_refinemv,
+            optflow_allowed,
+            frame_size: info.storage_luma_size(),
+            current_order_hint: core
+                .display_order_hint()
+                .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?,
+        })
     }
-    let unit_count = block_w
-        .div_ceil(unit_size)
-        .checked_mul(block_h.div_ceil(unit_size))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "TIP prediction unit count",
-        })?;
-    let past = super::super::block_reference_slot(ref_frame_idx, references.past_ref)?;
-    let future = two_references
-        .then(|| super::super::block_reference_slot(ref_frame_idx, references.future_ref))
-        .transpose()?;
-    let plan = TipReferencePlan {
-        past,
-        future,
-        interpolation_filter,
-        blend,
-        optflow_distances: use_optflow
-            .then_some([references.past_offset, references.future_offset]),
-        use_refinemv,
-        search_refinemv,
-        optflow_sad_threshold: use_optflow.then_some(if output { 15 } else { 6 }),
-    };
-    let batch_chroma_x = placed.luma_x.max(placed.chroma_luma_x);
-    let batch_chroma_y = placed.luma_y.max(placed.chroma_luma_y);
-    let batch_chroma_end_x = placed
-        .luma_x
-        .saturating_add(block_w)
-        .min(placed.chroma_luma_x.saturating_add(placed.chroma_luma_w));
-    let batch_chroma_end_y = placed
-        .luma_y
-        .saturating_add(block_h)
-        .min(placed.chroma_luma_y.saturating_add(placed.chroma_luma_h));
-    Ok(TipBlockPlan {
-        references,
-        plan,
-        two_references,
-        output,
-        use_optflow,
-        unit_size,
-        unit_count,
-        block_w,
-        block_h,
-        batch_rect: mc::McBlockRect {
-            luma_x: placed.luma_x,
-            luma_y: placed.luma_y,
-            luma_w: block_w,
-            luma_h: block_h,
-            chroma_luma_x: batch_chroma_x,
-            chroma_luma_y: batch_chroma_y,
-            chroma_luma_w: batch_chroma_end_x.saturating_sub(batch_chroma_x),
-            chroma_luma_h: batch_chroma_end_y.saturating_sub(batch_chroma_y),
-        },
-        batch_has_chroma: placed.predict_chroma
-            && batch_chroma_end_x > batch_chroma_x
-            && batch_chroma_end_y > batch_chroma_y,
-        frame_mi_rows: frame_size.height().div_ceil(4),
-        frame_mi_cols: frame_size.width().div_ceil(4),
-    })
+
+    fn block(&self, placed: &PlacedInterBlock) -> Result<TipBlockPlan> {
+        let unit_size = if self.output {
+            output_prediction_unit_size(self.enable_tip_refinemv, self.plan.interpolation_filter)
+        } else {
+            prediction_unit_size(placed.luma_w, placed.luma_h, self.enable_tip_refinemv)
+        };
+        let use_optflow = unit_size == 8 && self.optflow_allowed;
+        let block_w = placed.luma_w.min(
+            self.frame_size
+                .width()
+                .saturating_sub(placed.luma_x)
+                .next_multiple_of(unit_size),
+        );
+        let block_h = placed.luma_h.min(
+            self.frame_size
+                .height()
+                .saturating_sub(placed.luma_y)
+                .next_multiple_of(unit_size),
+        );
+        if block_w == 0 || block_h == 0 {
+            return Err(DecodeHeaderStateError::InvalidBlockGeometry.into());
+        }
+        let unit_count = block_w
+            .div_ceil(unit_size)
+            .checked_mul(block_h.div_ceil(unit_size))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "TIP prediction unit count",
+            })?;
+        let mut plan = self.plan;
+        if !use_optflow {
+            (plan.optflow_distances, plan.optflow_sad_threshold) = (None, None);
+        }
+        let batch_chroma_x = placed.luma_x.max(placed.chroma_luma_x);
+        let batch_chroma_y = placed.luma_y.max(placed.chroma_luma_y);
+        let batch_chroma_end_x = placed
+            .luma_x
+            .saturating_add(block_w)
+            .min(placed.chroma_luma_x.saturating_add(placed.chroma_luma_w));
+        let batch_chroma_end_y = placed
+            .luma_y
+            .saturating_add(block_h)
+            .min(placed.chroma_luma_y.saturating_add(placed.chroma_luma_h));
+        Ok(TipBlockPlan {
+            references: self.references,
+            plan,
+            output: self.output,
+            use_optflow,
+            unit_size,
+            unit_count,
+            block_w,
+            block_h,
+            batch_rect: mc::McBlockRect {
+                luma_x: placed.luma_x,
+                luma_y: placed.luma_y,
+                luma_w: block_w,
+                luma_h: block_h,
+                chroma_luma_x: batch_chroma_x,
+                chroma_luma_y: batch_chroma_y,
+                chroma_luma_w: batch_chroma_end_x.saturating_sub(batch_chroma_x),
+                chroma_luma_h: batch_chroma_end_y.saturating_sub(batch_chroma_y),
+            },
+            batch_has_chroma: placed.predict_chroma
+                && batch_chroma_end_x > batch_chroma_x
+                && batch_chroma_end_y > batch_chroma_y,
+            frame_mi_rows: self.frame_size.height().div_ceil(4),
+            frame_mi_cols: self.frame_size.width().div_ceil(4),
+        })
+    }
 }
 
 /// Fills `scratch.units` with the block's § 7.13.3.1 prediction units, or with
@@ -735,15 +683,14 @@ fn tip_block_plan<T: ReconSample>(
 /// The batch kernel reads the block's geometry off its first unit and samples
 /// every other one through the motion grid, so its prediction half rebuilds one
 /// unit where the motion half built them all.
-fn build_units<T: ReconSample>(
-    scratch: &mut TipReconstructScratch<T>,
+fn build_units(
+    scratch: &mut TipReconstructScratch,
     plan: &TipBlockPlan,
     placed: &PlacedInterBlock,
     temporal: &TemporalMvContext,
     first_only: bool,
 ) -> Result<()> {
     scratch.units.clear();
-    scratch.output_samples.clear();
     scratch
         .units
         .try_reserve_exact(if first_only { 1 } else { plan.unit_count })
@@ -786,7 +733,6 @@ fn build_units<T: ReconSample>(
                 },
                 has_chroma: predict_chroma,
                 mvs,
-                metadata: None,
             });
             if first_only {
                 return Ok(());
@@ -806,26 +752,17 @@ fn build_units<T: ReconSample>(
 /// candidate the unit was built with.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn motion<T: ReconSample>(
-    scratch: &mut TipReconstructScratch<T>,
+    scratch: &mut TipReconstructScratch,
     temporal_records: &mut Vec<TemporalMotionBlock>,
     sink: &mc::WorkspaceSink<'_, '_, T>,
     placed: &PlacedInterBlock,
+    frame: &TipFramePlan,
     temporal: &TemporalMvContext,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
-    let plan = tip_block_plan(
-        sink.info(),
-        placed,
-        temporal,
-        sequence,
-        core,
-        ref_frame_idx,
-        reference,
-    )?;
+    let plan = frame.block(placed)?;
     build_units(scratch, &plan, placed, temporal, false)?;
     let grid = plan
         .use_optflow
@@ -835,9 +772,6 @@ pub(super) fn motion<T: ReconSample>(
     temporal_records
         .try_reserve(plan.unit_count)
         .map_err(|_| inter_allocation!("TIP temporal records"))?;
-    let current_order_hint = core
-        .display_order_hint()
-        .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
     let held = (grid.is_none() && plan.plan.use_refinemv)
         .then(|| plan.hold(reference))
         .transpose()?;
@@ -860,20 +794,20 @@ pub(super) fn motion<T: ReconSample>(
         temporal_records.push(plan.temporal_record(
             reference,
             ref_frame_idx,
-            current_order_hint,
+            frame.current_order_hint,
             unit,
             stored_mvs,
         ));
     }
-    scratch.units.clear();
+    scratch.motion_plan = Some(plan);
     Ok(grid)
 }
 
-/// Builds the optical-flow motion grid the block's units share; `None` for a
-/// one-unit block whose two predictions are close enough that § 7.13.3.8
-/// skips the refinement.
+/// Builds the optical-flow motion grid the block's units share; `None` for an
+/// unsearched one-unit block whose two predictions are close enough that
+/// § 7.13.3.8 skips the refinement.
 fn tip_motion_grid<T: ReconSample>(
-    scratch: &mut TipReconstructScratch<T>,
+    scratch: &mut TipReconstructScratch,
     plan: &TipBlockPlan,
     sink: &mc::WorkspaceSink<'_, '_, T>,
     reference: &InterReferenceState<T>,
@@ -888,7 +822,7 @@ fn tip_motion_grid<T: ReconSample>(
         .block_params(first)
         .into_compound()
         .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-    if scratch.units.len() == 1 {
+    if scratch.units.len() == 1 && !plan.plan.search_refinemv {
         return mc::compound_block_motion_grid(sink, compound, Some(8), tile_offset);
     }
     mc::tip_batch_motion_grid(
@@ -917,64 +851,39 @@ fn keep_candidates(best: &mut Vec<[Mv; 2]>, candidates: Vec<[Mv; 2]>) {
 }
 
 fn publish_unit_outputs<T: ReconSample>(
-    scratch: &mut TipReconstructScratch<T>,
+    scratch: &TipReconstructScratch,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     plan: &TipBlockPlan,
     mut grid: Option<mc::CompoundMotionGrid>,
-    output_stride: usize,
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
-    let mut best_candidates = core::mem::take(&mut scratch.grid_candidates);
-    let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
-    let mut units_per_hold = scratch.units.len().max(1);
-    if scratch.units.iter().any(|unit| unit.metadata.is_none()) && !plan.hold(reference)?.settled()
-    {
-        units_per_hold = plan.block_w.div_ceil(plan.unit_size).max(1);
-    }
-    for batch in scratch.units.chunks_mut(units_per_hold) {
-        let held = batch
-            .iter()
-            .any(|unit| unit.metadata.is_none())
-            .then(|| plan.hold(reference))
-            .transpose()?;
-        let prediction = held
-            .as_ref()
-            .map(|held| held.prediction(&plan.plan))
-            .transpose()?;
+    let mut first = Some(plan.hold(reference)?);
+    let units_per_hold = if first.as_ref().is_some_and(TipHeldReferences::settled) {
+        scratch.units.len().max(1)
+    } else {
+        plan.block_w.div_ceil(plan.unit_size).max(1)
+    };
+    for batch in scratch.units.chunks(units_per_hold) {
+        let held = first.take().map_or_else(|| plan.hold(reference), Ok)?;
+        let prediction = held.prediction(&plan.plan)?;
         for unit in batch {
-            if let Some(mut metadata) = unit.metadata.take() {
-                let samples = output_chunks
-                    .next()
-                    .ok_or(ReconError::BufferLengthMismatch {
-                        expected: output_stride,
-                        actual: 0,
-                    })?;
-                metadata.publish(samples, sink)?;
-                keep_candidates(&mut best_candidates, metadata.take_grid_candidates());
-                continue;
-            }
-            let params = prediction
-                .as_ref()
-                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?
-                .block_params(unit);
+            let params = prediction.block_params(unit);
             if plan.use_optflow {
                 let compound = params
                     .into_compound()
                     .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-                grid = mc::predict_compound_into(sink, compound, grid.take(), tile_offset)?
-                    .take_motion();
+                grid = mc::predict_compound_into(sink, compound, grid.take(), tile_offset)?;
             } else {
                 mc::motion_compensate_inter_block_into(sink, params, tile_offset)?;
             }
         }
     }
-    scratch.grid_candidates = best_candidates;
     Ok(grid)
 }
 
-pub(super) fn retire_motion_grid<T: ReconSample>(
-    scratch: &mut TipReconstructScratch<T>,
+pub(super) fn retire_motion_grid(
+    scratch: &mut TipReconstructScratch,
     mut grid: Option<mc::CompoundMotionGrid>,
 ) {
     if let Some(grid) = grid.as_mut() {
@@ -982,7 +891,8 @@ pub(super) fn retire_motion_grid<T: ReconSample>(
     }
 }
 
-/// Reconstructs one § 7.13.5 TIP block into `sink` from the motion half's grid.
+/// Reconstructs one § 7.13.5 TIP block into `sink` from the motion half's grid,
+/// and from its plan and units when that half just ran on `scratch` (`fresh`).
 ///
 /// A block whose units carry the § 7.13.3.1 optical-flow shape is predicted by
 /// the fixed-unit batch kernel, which spawns no pool work and writes one
@@ -992,17 +902,16 @@ pub(super) fn retire_motion_grid<T: ReconSample>(
 /// that waits on that borrow would never run.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn predict<T: ReconSample>(
-    scratch: &mut TipReconstructScratch<T>,
+    scratch: &mut TipReconstructScratch,
     residual_scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     grid: Option<mc::CompoundMotionGrid>,
+    fresh: bool,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
+    frame: &TipFramePlan,
     temporal: &TemporalMvContext,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     qindex: u32,
     luma_use_tcq: bool,
@@ -1010,49 +919,35 @@ pub(super) fn predict<T: ReconSample>(
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
-    let plan = tip_block_plan(
-        sink.info(),
-        placed,
-        temporal,
-        sequence,
-        core,
-        ref_frame_idx,
-        reference,
-    )?;
-    let batched_output = plan.use_optflow && plan.unit_count > 1;
-    build_units(scratch, &plan, placed, temporal, batched_output)?;
-    let output_stride = mc::mc_planes(sink.info().pixel_format())
-        .into_iter()
-        .map(|(_, sub_x, sub_y)| (plan.unit_size >> sub_x) * (plan.unit_size >> sub_y))
-        .sum::<usize>();
-    let mut grid = grid;
-    let mut batch_metadata = if batched_output {
-        let held = plan.hold(reference)?;
-        Some(compute_batched_output(
-            sink,
-            &scratch.units,
-            &held.prediction(&plan.plan)?,
-            &plan,
-            grid.take()
-                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?,
-            tile_offset,
-        )?)
+    let plan = if let Some(plan) = scratch.motion_plan.take().filter(|_| fresh) {
+        plan
     } else {
-        None
+        let plan = frame.block(placed)?;
+        let first_only = plan.batched();
+        build_units(scratch, &plan, placed, temporal, first_only)?;
+        plan
     };
-    if let Some(metadata) = batch_metadata.as_mut() {
-        grid = metadata.take_motion();
-    } else {
-        grid = publish_unit_outputs(
-            scratch,
+    let grid = if plan.batched() {
+        let held = plan.hold(reference)?;
+        let first = scratch.units.first().ok_or(ReconError::ZeroDimension {
+            field: "TIP compound batch",
+        })?;
+        let compound = held
+            .prediction(&plan.plan)?
+            .block_params(first)
+            .into_compound()
+            .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+        mc::predict_tip_batch_from_grid(
             sink,
-            &plan,
-            grid,
-            output_stride,
-            reference,
+            compound,
+            plan.batch_rect,
+            plan.batch_has_chroma,
+            grid.ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?,
             tile_offset,
-        )?;
-    }
+        )?
+    } else {
+        publish_unit_outputs(scratch, sink, &plan, grid, reference, tile_offset)?
+    };
     scratch.units.clear();
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
@@ -1402,6 +1297,14 @@ impl<T: ReconSample> TipOutputStages<T> {
         placed.chroma_luma_y = rect.y();
         placed.chroma_luma_h = rect.height();
         let mut residual_scratch = InterResidualReconScratch::default();
+        let frame = TipFramePlan::new(
+            self.info,
+            &self.temporal,
+            sequence,
+            core,
+            ref_frame_idx,
+            reference,
+        )?;
         for band_x in (0..width).step_by(self.band_w) {
             let cols = self.band_w.min(width - band_x);
             placed.luma_x = band_x;
@@ -1413,9 +1316,8 @@ impl<T: ReconSample> TipOutputStages<T> {
                 &mut band.records,
                 sink,
                 &placed,
+                &frame,
                 &self.temporal,
-                sequence,
-                core,
                 ref_frame_idx,
                 reference,
                 self.offset,
@@ -1425,13 +1327,12 @@ impl<T: ReconSample> TipOutputStages<T> {
                 &mut residual_scratch,
                 sink,
                 grid,
+                true,
                 &placed,
                 &[],
                 &[],
+                &frame,
                 &self.temporal,
-                sequence,
-                core,
-                ref_frame_idx,
                 reference,
                 0,
                 false,
@@ -1539,8 +1440,8 @@ mod tests {
     use super::{
         TipHeldReferences, TipReferencePlan, output_interpolation_filter,
         output_prediction_unit_size, prediction_unit_extent, prediction_unit_size,
-        tip_optflow_references_allowed, tip_optflow_weight_and_references_allowed,
-        tip_prediction_controls, tip_refinemv_offsets_allowed, tip_refinemv_references_allowed,
+        tip_optflow_offsets_allowed, tip_optflow_weight_and_references_allowed,
+        tip_prediction_controls, tip_references_unscaled, tip_refinemv_offsets_allowed,
         tip_uses_refinemv, tip_uses_two_references, tmvp_unit_size8,
     };
     use crate::prediction::inter::mc;
@@ -1702,7 +1603,6 @@ mod tests {
                 search_refinemv: false,
                 optflow_sad_threshold: Some(6),
             },
-            two_references: true,
             output: false,
             use_optflow: true,
             unit_size: 8,
@@ -1714,12 +1614,11 @@ mod tests {
             frame_mi_rows: 2,
             frame_mi_cols: 2,
         };
-        let mut scratch = super::TipReconstructScratch::<u8>::default();
+        let mut scratch = super::TipReconstructScratch::default();
         scratch.units.push(super::TipUnit {
             rect,
             has_chroma: false,
             mvs: [crate::prediction::inter::Mv::ZERO; 2],
-            metadata: None,
         });
         let mut workspace = tip_workspace()?;
         let sink = mc::WorkspaceSink::Frame(&mut workspace);
@@ -1808,29 +1707,8 @@ mod tests {
 
     #[test]
     fn tip_optflow_accepts_unequal_opposite_direction_references() {
-        let allowed = |offsets: (i32, i32)| {
-            tip_optflow_references_allowed(
-                Some(FrameType::Inter),
-                Some(FrameSize::new(64, 64)),
-                &[0, 1],
-                &[1, 2],
-                &[64, 64],
-                &[64, 64],
-                [(0, offsets.0), (1, offsets.1)],
-            )
-        };
-
-        assert!(allowed((1, -2)));
-        assert!(!allowed((1, 2)));
-        assert!(!tip_optflow_references_allowed(
-            Some(FrameType::Inter),
-            Some(FrameSize::new(64, 64)),
-            &[0, 1],
-            &[1, 2],
-            &[63, 64],
-            &[64, 64],
-            [(0, 1), (1, -2)],
-        ));
+        assert!(tip_optflow_offsets_allowed(1, -2));
+        assert!(!tip_optflow_offsets_allowed(1, 2));
     }
 
     #[test]
@@ -1845,14 +1723,14 @@ mod tests {
     #[test]
     fn tip_refinemv_reference_gate_maps_slots_and_rejects_ineligible_state() {
         let allowed = |frame_type, frame_size, order_hints: &[u32], widths: &[u32]| {
-            tip_refinemv_references_allowed(
+            tip_references_unscaled(
                 frame_type,
                 frame_size,
                 &[2, 0],
                 order_hints,
                 widths,
                 &[352, 1, 352],
-                [(0, 4), (1, -4)],
+                [0, 1],
             )
         };
         let size = Some(FrameSize::new(352, 352));
@@ -1888,27 +1766,27 @@ mod tests {
             &[0, 0, 0],
             &[351, 1, 352]
         ));
-        assert!(!tip_refinemv_references_allowed(
+        assert!(!tip_references_unscaled(
             Some(FrameType::Inter),
             size,
             &[2],
             &[0, 0, 0],
             &[352, 1, 352],
             &[352, 1, 352],
-            [(0, 4), (1, -4)],
+            [0, 1],
         ));
     }
 
     #[test]
     fn tip_refinemv_scale_gate_uses_spec_rounding() {
-        assert!(tip_refinemv_references_allowed(
+        assert!(tip_references_unscaled(
             Some(FrameType::Inter),
             Some(FrameSize::new(65_536, 65_536)),
             &[0, 1],
             &[0, 0],
             &[65_535, 65_536],
             &[65_535, 65_536],
-            [(0, 4), (1, -4)],
+            [0, 1],
         ));
     }
 }

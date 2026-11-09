@@ -36,22 +36,18 @@ use super::coeff_loop::scan_walk::CoeffScanEntry;
 use super::coeff_loop::sign_symbol::{
     CoeffSignReadSource, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_input,
 };
-use super::coeff_loop::{NonZeroCoeffEobContextInput, nonzero_coeff_eob_symbol_input};
+use super::coeff_loop::{TX_GEOMETRY, eob_context};
 use super::coeff_state::{
     CoeffContextUpdate, LevelGrid, TileCoeffContextState, TransformCoeffBlockState,
 };
 use super::general_intra_residual::{block_recon_params, txb_skip_selector, txb_skip_tx_size_ctx};
-use super::intra_joint_modes::{
-    TileFscModeState, TileIntraJointModeState, TileIntraYModeState, TileLumaPaletteState,
-    TileUseDipState, TileUsesMrlsState, TileUvCflState,
-};
+use super::intra_joint_modes::TileIntraFactsState;
 use super::mi_size_state::TileMiSizeState;
 pub use super::partition::PartitionType as Partition;
 use super::partition::{PartitionDecisionError, PartitionSymbols, read_partition_decision};
 use super::partition_allowed::{
     PartitionDecisionFacts, PartitionTreeType, partition_decision_facts,
 };
-use super::partition_size::BlockSize;
 use super::partition_traversal::{
     DecodeBlockFrontier, ROOT_HAS_CHROMA, SdpPartitionState, TilePartitionBounds,
     TilePartitionCall, TilePartitionFrameFacts, call_in_frame, child_calls, decode_block_frontier,
@@ -156,13 +152,13 @@ impl PartitionNode {
     /// Luma row in 4x4 units.
     #[must_use]
     pub const fn row4(self) -> usize {
-        self.0.r
+        self.0.r()
     }
 
     /// Luma column in 4x4 units.
     #[must_use]
     pub const fn col4(self) -> usize {
-        self.0.c
+        self.0.c()
     }
 
     /// § 9.3 block-size index.
@@ -683,13 +679,7 @@ pub struct IntraTileSyntax {
     cdfs: TileCdfSubset,
     coeff: TileCoeffContextState,
     mi_sizes: TileMiSizeState,
-    joint_modes: TileIntraJointModeState,
-    uses_mrls: TileUsesMrlsState,
-    use_dip: TileUseDipState,
-    fsc_modes: TileFscModeState,
-    palette_y: TileLumaPaletteState,
-    uv_cfls: TileUvCflState,
-    y_modes: TileIntraYModeState,
+    intra_facts: TileIntraFactsState,
     y_mode_table: intra::YModeTable,
     inter: Option<inter::InterLeafState>,
     journal: CdfJournal,
@@ -778,39 +768,8 @@ impl IntraTileSyntax {
             coeff,
             mi_sizes: TileMiSizeState::new_for_tile(rows.clone(), cols.clone(), frame.sb_size())
                 .map_err(rule("MI-size state"))?,
-            joint_modes: neighbour(TileIntraJointModeState::new_for_tile(
-                rows.clone(),
-                cols.clone(),
-                sb_size4,
-            ))?,
-            uses_mrls: neighbour(TileUsesMrlsState::new_for_tile(
-                rows.clone(),
-                cols.clone(),
-                sb_size4,
-            ))?,
-            use_dip: neighbour(TileUseDipState::new_for_tile(
-                rows.clone(),
-                cols.clone(),
-                sb_size4,
-            ))?,
-            fsc_modes: neighbour(TileFscModeState::new_for_tile(
-                rows.clone(),
-                cols.clone(),
-                sb_size4,
-            ))?,
-            palette_y: neighbour(TileLumaPaletteState::new_for_tile(
-                rows.clone(),
-                cols.clone(),
-                sb_size4,
-            ))?,
-            uv_cfls: neighbour(
-                TileUvCflState::new(rows.len(), cols.len(), sb_size4)
-                    .map(|state| state.with_origin(rows.start, cols.start)),
-            )?,
-            y_modes: neighbour(
-                TileIntraYModeState::new(rows.len(), cols.len(), sb_size4)
-                    .map(|state| state.with_origin(rows.start, cols.start)),
-            )?,
+            intra_facts: TileIntraFactsState::new_for_tile(rows.clone(), cols.clone(), sb_size4)
+                .map_err(rule("neighbour state"))?,
             y_mode_table: intra::YModeTable::default(),
             inter,
             journal,
@@ -857,20 +816,20 @@ impl IntraTileSyntax {
     /// Starts coding the superblock of `root`; call once per superblock in raster order.
     pub fn begin_superblock(&mut self, root: PartitionNode) {
         self.journal.clear();
-        if root.0.c == self.tile.1.start {
-            self.mi_sizes.enter_sb_row(root.0.r);
+        if root.0.c() == self.tile.1.start {
+            self.mi_sizes.enter_sb_row(root.0.r());
         }
         self.recon
             .block_decoded
-            .clear_superblock(root.0.r, root.0.c);
-        self.enter_inter_superblock(root.0.r);
+            .clear_superblock(root.0.r(), root.0.c());
+        self.enter_inter_superblock(root.0.r());
         self.begin_delta_q();
     }
 
     /// Whether `node` starts inside the frame; nodes outside code nothing.
     #[must_use]
     pub const fn in_frame(&self, node: PartitionNode) -> bool {
-        call_in_frame(self.frame, node.0)
+        call_in_frame(&self.frame, node.0)
     }
 
     /// The `LUMA_PART` and `CHROMA_PART` roots that code `node` in turn when
@@ -878,7 +837,7 @@ impl IntraTileSyntax {
     /// (§ 5.20.3.1); `None` codes `node` as one tree.
     #[must_use]
     pub fn sdp_roots(&self, node: PartitionNode) -> Option<(PartitionNode, PartitionNode)> {
-        is_intra_sdp_shared_root(self.frame, node.0).then(|| {
+        is_intra_sdp_shared_root(&self.frame, node.0).then(|| {
             (
                 PartitionNode(node.0.with_tree_type(PartitionTreeType::LumaPart)),
                 PartitionNode(node.0.with_tree_type(PartitionTreeType::ChromaPart)),
@@ -892,9 +851,9 @@ impl IntraTileSyntax {
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] for an invalid node.
     pub fn partition_options(&self, node: PartitionNode) -> Result<PartitionOptions> {
-        let forced = self.sdp.forced_chroma_partition(self.frame, node.0);
+        let forced = self.sdp.forced_chroma_partition(&self.frame, node.0);
         let input =
-            partition_allowed_input(node.0, self.frame, forced).map_err(rule("partition"))?;
+            partition_allowed_input(node.0, &self.frame, forced).map_err(rule("partition"))?;
         partition_decision_facts(input)
             .map(PartitionOptions)
             .map_err(rule("partition"))
@@ -919,7 +878,7 @@ impl IntraTileSyntax {
             return Err(EncoderSyntaxError::Unsupported("partition not allowed"));
         }
         let (partition_context, square_context) =
-            partition_context_inputs(node.0, self.bounds, self.mi_sizes.context_state())
+            partition_context_inputs(node.0, self.bounds, &self.mi_sizes)
                 .map_err(rule("partition context"))?;
         let input =
             options
@@ -933,7 +892,7 @@ impl IntraTileSyntax {
         let coded = read_partition_decision(input, &mut self.cdfs, &mut writer)
             .map_err(rule("partition"))?;
         if coded == partition {
-            self.sdp.record_partition(self.frame, node.0, partition);
+            self.sdp.record_partition(&self.frame, node.0, partition);
             Ok(())
         } else {
             Err(EncoderSyntaxError::Unsupported(
@@ -953,9 +912,9 @@ impl IntraTileSyntax {
     ) -> Result<Vec<PartitionNode>> {
         let call = self.with_cfl_in_sdp(node.0, partition);
         let sub_size = valid_subsize(partition, call.b_size).map_err(rule("partition"))?;
-        let chroma_offset = updated_chroma_offset(call, partition, sub_size, self.frame)
+        let chroma_offset = updated_chroma_offset(call, partition, sub_size, &self.frame)
             .map_err(rule("partition"))?;
-        let calls = child_calls(call, partition, sub_size, self.frame, chroma_offset)
+        let calls = child_calls(call, partition, sub_size, &self.frame, chroma_offset)
             .map_err(rule("partition"))?;
         Ok(calls
             .as_slice()
@@ -971,17 +930,17 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError::Rule`] for an invalid node.
     pub fn leaf(&self, node: PartitionNode) -> Result<LeafBlock> {
         let call = self.with_cfl_in_sdp(node.0, Partition::None);
-        let chroma_offset = updated_chroma_offset(call, Partition::None, call.b_size, self.frame)
+        let chroma_offset = updated_chroma_offset(call, Partition::None, call.b_size, &self.frame)
             .map_err(rule("partition"))?;
-        let part = decode_block_part(call, &self.y_modes).map_err(rule("partition"))?;
-        let frontier = decode_block_frontier(call, self.frame, call.b_size, chroma_offset, part);
+        let part = decode_block_part(call, &self.intra_facts).map_err(rule("partition"))?;
+        let frontier = decode_block_frontier(call, &self.frame, call.b_size, chroma_offset, part);
         Ok(LeafBlock { call, frontier })
     }
 
     /// `call` with the `CflAllowedInSdp` that coding `partition` at it sets.
     fn with_cfl_in_sdp(&self, call: TilePartitionCall, partition: Partition) -> TilePartitionCall {
         let mut sdp = self.sdp;
-        call.with_cfl_allowed_in_sdp(sdp.record_partition(self.frame, call, partition))
+        call.with_cfl_allowed_in_sdp(sdp.record_partition(&self.frame, call, partition))
     }
 
     /// The `y_mode_set` CDF row.
@@ -1047,19 +1006,14 @@ impl IntraTileSyntax {
     /// The `eob_pt_*` CDF row of a transform block of the planned leaf.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for an invalid transform size.
+    /// Returns [`EncoderSyntaxError::Unsupported`] for an invalid transform size.
     pub fn eob_pt_cdf(&mut self, plane: usize, tx_size: usize) -> Result<&mut [u16]> {
-        let (log2_w, log2_h) = tx_log2(tx_size)?;
-        let input = nonzero_coeff_eob_symbol_input(NonZeroCoeffEobContextInput {
-            plane,
-            is_inter: self.leaf_is_inter(),
-            tx_width_log2: log2_w as usize,
-            tx_height_log2: log2_h as usize,
-        })
-        .map_err(rule("eob context"))?;
+        let tx = TX_GEOMETRY
+            .get(tx_size)
+            .ok_or(EncoderSyntaxError::Unsupported("transform size"))?;
         self.tile_row(TileCdfSelector::EobPt {
-            size: input.size,
-            eob_ctx: input.eob_ctx,
+            size: tx.eob_size,
+            eob_ctx: eob_context(plane, self.leaf_is_inter()),
         })
     }
 
@@ -1195,8 +1149,8 @@ impl IntraTileSyntax {
         let mut config = levels.sign_config(plane);
         let [x4, y4, w4, h4] = tx_area4(tx)?;
         let context = |error| rule("sign context")(error);
-        config.above_dc = self.coeff.above_dc(plane).map_err(context)?;
-        config.left_dc = self.coeff.left_dc(plane).map_err(context)?;
+        config.above_dc = self.coeff.above_line(plane).map_err(context)?;
+        config.left_dc = self.coeff.left_line(plane).map_err(context)?;
         config.x4 = self.coeff.local_x4(plane, x4).map_err(context)?;
         config.y4 = self.coeff.local_y4(plane, y4).map_err(context)?;
         (config.w4, config.h4) = (w4, h4);
@@ -1231,12 +1185,7 @@ impl IntraTileSyntax {
     }
 
     fn y_mode_ctx(&self, leaf: &LeafBlock) -> Result<usize> {
-        let b_size: BlockSize = leaf.frontier.b_size;
-        let n4w = b_size.num_4x4_wide().map_err(rule("block size"))?;
-        let n4h = b_size.num_4x4_high().map_err(rule("block size"))?;
-        Ok(self
-            .joint_modes
-            .y_mode_index_ctx(leaf.frontier.r, leaf.frontier.c, n4w, n4h))
+        Ok(self.intra_neighbours(leaf)?.y_mode_index_ctx())
     }
 
     fn tile_row(&mut self, selector: TileCdfSelector) -> Result<&mut [u16]> {
@@ -1255,12 +1204,6 @@ fn hidden_base_selection(context: CoeffBaseContext, level: &LevelGrid) -> CoeffB
         ..context
     }
     .select(level)
-}
-
-fn neighbour<T, E: std::error::Error + Send + Sync + 'static>(
-    state: core::result::Result<T, E>,
-) -> Result<T> {
-    state.map_err(rule("neighbour state"))
 }
 
 /// The `(Tx_Width_Log2, Tx_Height_Log2)` of a § 9.3 transform size.

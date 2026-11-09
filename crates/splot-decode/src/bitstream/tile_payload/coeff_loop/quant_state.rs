@@ -5,29 +5,17 @@
 //!
 //! Feature tracking: `DECODE-COEFF-QUANT-STATE-WRITE`.
 
-use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
+use super::super::coeff_state::TileCoeffStateError;
 use super::scan_walk::CoeffScanEntry;
-use super::sign_symbol::CoeffSignRead;
 
 const TCQ_STATES: usize = 8;
-const TCQ_PARITIES: usize = 2;
 pub(crate) const MAX_CONFORMING_QUANT_MAGNITUDE: u32 = 1 << 20;
-const TCQ_NEXT_STATE: [[usize; TCQ_PARITIES]; TCQ_STATES] = [
-    [0, 4],
-    [4, 0],
-    [1, 5],
-    [5, 1],
-    [6, 2],
-    [2, 6],
-    [7, 3],
-    [3, 7],
-];
-
+/// `Tcq_Next_State[ tcqState ][ parity & 1 ]` (§ 5.20.7.27) in bit form:
+/// the state shifts right by one and bit 2 becomes `s0 ^ s2 ^ parity`.
 #[inline]
-pub(crate) fn next_tcq_state(tcq_state: usize, parity: u32) -> Option<usize> {
-    TCQ_NEXT_STATE
-        .get(tcq_state)
-        .map(|row| row[(parity & 1) as usize])
+pub(crate) const fn next_tcq_state(tcq_state: usize, parity: u32) -> usize {
+    let state = tcq_state & (TCQ_STATES - 1);
+    (state >> 1) | ((((state >> 2) ^ state ^ parity as usize) & 1) << 2)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,8 +83,6 @@ pub(crate) enum CoeffQuantStateWriteError {
     },
     #[error("coefficient quant state error: {0}")]
     State(#[from] TileCoeffStateError),
-    #[error("coefficient quant input {index} used invalid tcqState {tcq_state}")]
-    InvalidTcqState { index: usize, tcq_state: usize },
     #[error(
         "coefficient quant input {index} has nonconforming magnitude {magnitude}; expected less than 1 << 20"
     )]
@@ -131,6 +117,22 @@ impl CoeffQuantStateAccumulator {
     /// that skips zero levels and takes each entry's state from the base
     /// pass. [`Self::apply_entry`] reads only that bit before the next call
     /// sets it again.
+    /// The accumulator with `culLevel` taken from the sum of the levels so
+    /// far: `Min(4, culLevel + quant)` per level is `Min(4, sum)`.
+    #[must_use]
+    pub(crate) fn with_cul_level(self, level_sum: u32) -> Self {
+        Self {
+            cul_level: level_sum.min(4) as u8,
+            ..self
+        }
+    }
+
+    /// The `dcCategory` of a nonzero DC coefficient with `sign`.
+    #[inline]
+    pub(crate) fn set_dc_sign(&mut self, sign: bool) {
+        self.dc_category = if sign { 1 } else { 2 };
+    }
+
     #[inline]
     pub(crate) fn set_tcq_q0(&mut self, q0: bool) {
         self.tcq_state = usize::from(q0) << 1;
@@ -138,6 +140,8 @@ impl CoeffQuantStateAccumulator {
 
     /// [`Self::apply_entry`] for an entry above scan index 0, which is
     /// neither the DC nor parity-hidden; returns its magnitude.
+    /// [`Self::ac_magnitude`] of a level below `maxLevel - allowTcq`, which
+    /// read no remainder and so cannot leave the conforming range.
     #[allow(clippy::inline_always, reason = "measured: per-coefficient quant step")]
     #[inline(always)]
     pub(crate) fn ac_magnitude(
@@ -180,12 +184,7 @@ impl CoeffQuantStateAccumulator {
 
         if !self.lossless && self.use_tcq {
             let q0 = ((self.tcq_state >> 1) & 1) as u32;
-            self.tcq_state = next_tcq_state(self.tcq_state, quant).ok_or(
-                CoeffQuantStateWriteError::InvalidTcqState {
-                    index,
-                    tcq_state: self.tcq_state,
-                },
-            )?;
+            self.tcq_state = next_tcq_state(self.tcq_state, quant);
             if quant > 0 {
                 quant = checked_mul_sub(index, quant, 2, q0, "quant * 2 - q0")?;
             }
@@ -204,24 +203,6 @@ impl CoeffQuantStateAccumulator {
             quant: if sign { -magnitude } else { magnitude },
         })
     }
-}
-
-#[allow(
-    clippy::inline_always,
-    reason = "measured: per-coefficient sign and quant step"
-)]
-#[inline(always)]
-pub(crate) fn apply_derived_nonzero_coeff_quant_state_step(
-    block: &mut TransformCoeffBlockState,
-    state: &mut CoeffQuantStateAccumulator,
-    index: usize,
-    entry: CoeffScanEntry,
-    sign: CoeffSignRead,
-    input: CoeffQuantReadInput,
-) -> Result<(), CoeffQuantStateWriteError> {
-    let write = state.apply_entry(index, entry, sign.sign(), input)?;
-    block.set_quant(write.entry().pos(), write.quant())?;
-    Ok(())
 }
 
 fn checked_mul_add(

@@ -95,6 +95,9 @@ pub(super) struct TileFilterRecords {
     pub(super) deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,
     pub(super) chroma_deblock_blocks: crate::filters::deblock::ChromaDeblockRecords,
     pub(super) tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    pub(super) inter_leaves: Vec<super::filter_records::InterDeblockLeaf>,
+    /// The list lengths the last publication moved out.
+    pub(super) published: [usize; 4],
 }
 
 /// The frame-level facts every tile phase reads, all owned so a resolve pass
@@ -117,12 +120,14 @@ pub(crate) struct TileWalkParams {
     pub(super) enable_adaptive_mvd: bool,
     pub(super) allow_bawp: bool,
     pub(super) allow_warpmv_mode: bool,
+    pub(super) allow_intrabc: bool,
     pub(super) frame_is_switch: bool,
     pub(super) current_order_hint: u32,
     pub(super) temporal_first_frame: bool,
     /// AV2 § 7.12.2 TIP reference pair, derived from the reference order hints
     /// alone so the entropy pass never reads the projected temporal field.
     pub(super) tip_ref_pair: Option<(i8, i8)>,
+    pub(super) intra_tools: crate::pipeline::general_intra::GeneralIntraFrameTools,
 }
 
 impl TileWalkParams {
@@ -151,6 +156,13 @@ pub(super) struct TileDecodeContext<'a, T: ReconSample> {
     params: TileWalkParams,
 }
 
+/// How far one [`TileParser::walk_leaves`] call parses.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum WalkSpan {
+    Superblock,
+    Row,
+}
+
 pub(super) struct TileParser<'payload> {
     walk: TileParserWalk<GeneralIntraMultiblockCursor<'payload>>,
     coeff_ctx: TileCoeffContextState,
@@ -158,8 +170,6 @@ pub(super) struct TileParser<'payload> {
     delta_q_state: DeltaQState,
     intrabc_state: TileIntrabcPreludeState,
     mv_grid: NeighbourMvGrid,
-    y_smooth: crate::prediction::intra_edge::TileYSmoothGrid,
-    chroma_smooth: crate::prediction::intra_edge::TileChromaSmoothGrid,
     filter_records: TileFilterRecords,
     /// The planes this row's general-intra blocks have parsed.
     residual_planes: crate::residual::pipeline::ResidualPlaneArena,
@@ -235,9 +245,6 @@ fn inter_tile_segment_id_error(error: &TileSegmentIdStateError) -> crate::Decode
 
 fn inter_tile_block_decoded_error(error: &TileBlockDecodedStateError) -> crate::DecodeError {
     match error {
-        TileBlockDecodedStateError::Allocation { .. } => {
-            inter_allocation!("inter block decoded state")
-        }
         TileBlockDecodedStateError::InvalidPlanes { .. }
         | TileBlockDecodedStateError::EmptySuperblock
         | TileBlockDecodedStateError::InvalidSubsampling { .. }
@@ -288,13 +295,15 @@ impl<'payload> TileParser<'payload> {
             .reset_for_tile_chroma(tile_rows.clone(), tile_cols.clone(), chroma)
             .map_err(|error| inter_tile_coeff_context_error(&error))?;
         let delta_q_state = DeltaQState::new(context.sequence, context.core)?;
+        let frame_is_intra = context.core.frame_is_intra == Some(true);
         parse.intrabc_state.reset_for_tile(
             (context.params.mi_rows, context.params.mi_cols),
             tile_rows.clone(),
             tile_cols.clone(),
             context.sequence,
-            context.core.frame_is_intra == Some(true),
-            crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(context.core),
+            frame_is_intra,
+            frame_is_intra
+                && crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(context.core),
         )?;
         let segment_id_state = if super::segmentation_enabled(context.core) {
             TileSegmentIdState::new_for_tile(tile_rows.clone(), tile_cols.clone())
@@ -305,18 +314,8 @@ impl<'payload> TileParser<'payload> {
         parse
             .mv_grid
             .reset_for_tile(tile_rows.clone(), tile_cols.clone(), context.params.sb_h4)
+            .and_then(|()| parse.mv_grid.track_edges())
             .map_err(|error| inter_tile_grid_error(&error, "inter parser MV grid"))?;
-        parse
-            .y_smooth
-            .reset_for_tile(tile_rows.clone(), tile_cols.clone(), context.params.sb_h4)
-            .map_err(|error| inter_tile_grid_error(&error, "inter luma smooth grid"))?;
-        let (chroma_rows, chroma_cols) =
-            super::chroma_smooth_tile_ranges(tile_rows, tile_cols, chroma);
-        let chroma_sb_h4 = context.params.sb_h4 >> usize::from(chroma_subsampling(chroma).1);
-        parse
-            .chroma_smooth
-            .reset_for_tile(chroma_rows, chroma_cols, chroma_sb_h4)
-            .map_err(|error| inter_tile_grid_error(&error, "inter chroma smooth grid"))?;
         let walk = GeneralIntraMultiblockCursor::new(
             tile,
             tile_bytes,
@@ -338,8 +337,6 @@ impl<'payload> TileParser<'payload> {
             delta_q_state,
             intrabc_state: parse.intrabc_state,
             mv_grid: parse.mv_grid,
-            y_smooth: parse.y_smooth,
-            chroma_smooth: parse.chroma_smooth,
             filter_records: parse.filter_records,
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             output: TileParserOutput {
@@ -353,43 +350,51 @@ impl<'payload> TileParser<'payload> {
         })
     }
 
+    /// Parses the next unit into `buffers`.
+    ///
+    /// Row units, the single-thread walk's, reserve the superblock bound up
+    /// front; scheduled units grow their slot's recycled lists instead, so a
+    /// frame in flight holds only what it parsed.
     fn next_unit<T: ReconSample>(
         &mut self,
         tile: &mut DecodeTileWorkUnit,
         context: &TileDecodeContext<'_, T>,
         buffers: Option<ReconRowBuffers>,
+        row_units: bool,
     ) -> ParserStep<ReconRow> {
         let tile_offset = tile.tile_byte_span().start;
         let mut buffers = buffers.unwrap_or_default();
-        let reservation = superblock_coefficient_capacity(
-            context.params.sb_h4,
-            context.sequence.general.chroma_format_idc,
-        )
-        .and_then(|capacity| buffers.reserve_unit(capacity));
+        let reservation = if row_units {
+            superblock_coefficient_capacity(
+                context.params.sb_h4,
+                context.sequence.general.chroma_format_idc,
+            )
+            .and_then(|capacity| buffers.reserve_unit(capacity))
+        } else {
+            Ok(())
+        };
         let ReconRowBuffers {
             superblocks,
             residual_coeffs,
             entries,
+            slots,
             residual_blocks,
             temporal,
-            mut flag_log,
-            filter_records,
             residual_planes,
+            filter_records,
+            ..
         } = buffers;
-        self.mv_grid.take_flag_log(&mut flag_log);
-        self.filter_records = filter_records;
         self.residual_planes = residual_planes;
         let mut recon_row = ReconRow {
             ordinal: self.parser_ordinal,
-            residual_source: None,
             superblocks,
             residual_coeffs,
             entries,
+            slots,
             residual_blocks,
             temporal,
-            flag_log,
-            filter_records: TileFilterRecords::default(),
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
+            filter_records,
             motion_folded: false,
             failure: ReconRowFailure::None,
         };
@@ -398,143 +403,130 @@ impl<'payload> TileParser<'payload> {
             return ParserStep::Last(recon_row);
         }
         self.parser_ordinal = self.parser_ordinal.saturating_add(1);
-        let walk = match self.walk.active_mut() {
-            Ok(walk) => walk,
+        let decoded_row = {
+            let ReconRow {
+                superblocks,
+                entries,
+                slots,
+                residual_blocks,
+                residual_coeffs,
+                filter_records,
+                ..
+            } = &mut recon_row;
+            self.walk_leaves(
+                tile,
+                context,
+                residual_blocks,
+                residual_coeffs,
+                filter_records,
+                if row_units {
+                    WalkSpan::Row
+                } else {
+                    WalkSpan::Superblock
+                },
+                |_, publication, resolve| {
+                    push_leaf_entry(superblocks, entries, slots, publication, resolve);
+                    Ok(())
+                },
+            )
+        };
+        recon_row.residual_planes = core::mem::take(&mut self.residual_planes);
+        match decoded_row.and_then(|more| self.close_walk(more, tile_offset).map(|()| more)) {
+            Ok(true) => ParserStep::More(recon_row),
+            Ok(false) => ParserStep::Last(recon_row),
             Err(error) => {
                 recon_row.record_terminal_error(error);
-                return ParserStep::Last(recon_row);
+                ParserStep::Last(recon_row)
             }
+        }
+    }
+
+    /// Parses one superblock or one superblock row and hands every leaf's
+    /// parse record to `consume` in walk order.
+    ///
+    /// This is the split point between the passes: the consumer decides
+    /// whether a record is stored for the resolve and reconstruction stages
+    /// or acted on at once. Returns whether superblocks remain.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn walk_leaves<T: ReconSample>(
+        &mut self,
+        tile: &mut DecodeTileWorkUnit,
+        context: &TileDecodeContext<'_, T>,
+        residual_blocks: &mut Vec<InterResidualBlock>,
+        residual_arena: &mut Vec<i32>,
+        filter_records: &mut TileFilterRecords,
+        span: WalkSpan,
+        mut consume: impl FnMut(
+            &mut super::BlockDecodeContext<'_, T>,
+            DecodedLeafPublication,
+            LeafResolveRecord,
+        ) -> Result<()>,
+    ) -> Result<bool> {
+        let tile_offset = tile.tile_byte_span().start;
+        let walk = self.walk.active_mut()?;
+        let sb_mask = walk.sb_mask();
+        let mut block_context = super::BlockDecodeContext {
+            sequence: context.sequence,
+            core: context.core,
+            params: &context.params,
+            ref_frame_idx: context.ref_frame_idx,
+            reference: context.reference,
+            tile_offset,
+            coeff_ctx: &mut self.coeff_ctx,
+            residual_scratch: &mut self.residual_scratch,
+            residual_blocks,
+            residual_arena,
+            gdf_state: &mut self.output.gdf_state,
+            cdef_state: &mut self.output.cdef_state,
+            ccso_state: &mut self.output.ccso_state,
+            delta_q_state: &mut self.delta_q_state,
+            intrabc_state: &mut self.intrabc_state,
+            segment_id_state: &mut self.output.segment_id_state,
+            mv_grid: &mut self.mv_grid,
+            filter_records,
+            arena: &mut self.residual_planes,
         };
-        let decoded_row = {
-            let mut decode_leaf =
-                |work_unit: &mut DecodeTileWorkUnit,
-                 symbols: &mut SymbolDecoder<'_>,
-                 frontier: &DecodeBlockFrontier,
-                 joint_modes: &TileIntraJointModeState,
-                 uses_mrls: &TileUsesMrlsState,
-                 use_dip: &crate::bitstream::tile_payload::TileUseDipState,
-                 fsc_modes: &TileFscModeState,
-                 palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
-                 is_cfl_ctx: IsCflContext| {
-                    decode_block(
-                        work_unit,
-                        symbols,
-                        frontier,
-                        context.sequence,
-                        context.core,
-                        &mut self.coeff_ctx,
-                        &mut self.residual_scratch,
-                        &mut recon_row.residual_blocks,
-                        &mut recon_row.residual_coeffs,
-                        &mut self.output.gdf_state,
-                        &mut self.output.cdef_state,
-                        &mut self.output.ccso_state,
-                        &mut self.delta_q_state,
-                        &mut self.intrabc_state,
-                        &mut self.output.segment_id_state,
-                        &mut self.mv_grid,
-                        context.params.tip_ref_pair,
-                        &mut self.y_smooth,
-                        &mut self.chroma_smooth,
-                        context.params.sb_h4,
-                        context.params.mi_rows,
-                        context.params.mi_cols,
-                        context.params.max_drl_bits_minus_1,
-                        context.params.frame_interpolation_filter,
-                        context.params.residual_tool_policy,
-                        context.params.num_total_refs,
-                        context.params.reference_select,
-                        context.params.num_same_ref_compound,
-                        joint_modes,
-                        uses_mrls,
-                        use_dip,
-                        fsc_modes,
-                        palette_state,
-                        is_cfl_ctx,
-                        &mut self.filter_records.deblock_blocks,
-                        &mut self.filter_records.chroma_deblock_blocks,
-                        &mut self.filter_records.tx_skip_records,
-                        &mut self.residual_planes,
-                        context.params.luma_use_tcq,
-                        context.params.residual_use_ddt,
-                        context.ref_frame_idx,
-                        context.reference,
-                        context.params.bit_depth,
-                        context.params.enable_adaptive_mvd,
-                        context.params.allow_bawp,
-                        context.params.allow_warpmv_mode,
-                        context.params.frame_is_switch,
-                        context.params.current_order_hint,
-                        context.params.temporal_first_frame,
-                        tile_offset,
-                    )
-                };
-            let mut on_published = |publication: DecodedLeafPublication,
-                                    resolve: LeafResolveRecord| {
-                let origin = publication.superblock_origin();
-                let (state, reset) = match resolve {
-                    LeafResolveRecord::Reseed(command) => {
-                        (ReconEntryState::Command(command), LeafReset::Reseed)
-                    }
-                    LeafResolveRecord::NonInter { command, n4w, n4h } => (
-                        ReconEntryState::Command(command),
-                        LeafReset::NonInter { n4w, n4h },
-                    ),
-                    pending => (ReconEntryState::Resolve(pending), LeafReset::None),
-                };
-                push_recon_entry(
-                    &mut recon_row.superblocks,
-                    &mut recon_row.entries,
-                    origin,
-                    ReconRowEntry {
-                        publication,
-                        state: Some(state),
-                        reset,
-                        temporal: 0..0,
-                    },
-                );
+        let mut decode_leaf =
+            |work_unit: &mut DecodeTileWorkUnit,
+             symbols: &mut SymbolDecoder<'_>,
+             frontier: &DecodeBlockFrontier,
+             neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>| {
+                let (leaf, resolve) =
+                    decode_block(work_unit, symbols, frontier, &mut block_context, neighbours)?;
+                consume(
+                    &mut block_context,
+                    DecodedLeafPublication::from_frontier(frontier, sb_mask),
+                    resolve,
+                )?;
+                Ok((leaf, ()))
             };
-            walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published)
-                .map(|superblock| superblock.is_some())
-        };
-        recon_row.filter_records = core::mem::take(&mut self.filter_records);
-        recon_row.residual_planes = core::mem::take(&mut self.residual_planes);
-        self.mv_grid.take_flag_log(&mut recon_row.flag_log);
-        if decoded_row.is_ok()
-            && (walk.window_violated()
-                || self.mv_grid.window_violated()
-                || self.intrabc_state.window_violated()
-                || self.y_smooth.window_violated()
-                || self.chroma_smooth.window_violated())
+        let mut on_published = |_: DecodedLeafPublication, ()| {};
+        loop {
+            match walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published) {
+                Ok(Some(_)) if span == WalkSpan::Row && !walk.at_row_start() => {}
+                Ok(next) => return Ok(next.is_some()),
+                Err(error) => return Err(map_inter_multiblock_error(error, tile_offset)),
+            }
+        }
+    }
+
+    /// Checks the neighbour windows after a walk and, once the tile has no
+    /// superblock left, retires the walk and its symbol decoder.
+    fn close_walk(&mut self, more: bool, tile_offset: ByteOffset) -> Result<()> {
+        let walk = self.walk.active_mut()?;
+        if walk.window_violated()
+            || self.mv_grid.window_violated()
+            || self.intrabc_state.window_violated()
         {
-            recon_row.record_terminal_error(invalid_inter_tile_scheduling_state());
-            return ParserStep::Last(recon_row);
+            return Err(invalid_inter_tile_scheduling_state());
         }
-        match decoded_row {
-            Ok(true) => ParserStep::More(recon_row),
-            Err(error) => {
-                recon_row.record_terminal_error(map_inter_multiblock_error(error, tile_offset));
-                ParserStep::Last(recon_row)
-            }
-            Ok(false) => {
-                let walk = match self.walk.finish() {
-                    Ok(walk) => walk,
-                    Err(error) => {
-                        recon_row.record_terminal_error(error);
-                        return ParserStep::Last(recon_row);
-                    }
-                };
-                let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput {
-                    symbols,
-                    storage,
-                } = walk.into_output();
-                if let Err(error) = finish_tile_symbols(symbols, tile_offset) {
-                    recon_row.record_terminal_error(error);
-                }
-                self.output.traversal = storage;
-                ParserStep::Last(recon_row)
-            }
+        if more {
+            return Ok(());
         }
+        let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput { symbols, storage } =
+            self.walk.finish()?.into_output();
+        self.output.traversal = storage;
+        finish_tile_symbols(symbols, tile_offset)
     }
 
     fn into_output(self) -> (TileParserOutput, TileParseState) {
@@ -546,11 +538,8 @@ impl<'payload> TileParser<'payload> {
                 coeff_ctx: self.coeff_ctx,
                 residual_scratch: self.residual_scratch,
                 intrabc_state: self.intrabc_state,
-                y_smooth: self.y_smooth,
-                chroma_smooth: self.chroma_smooth,
                 row_buffers: ReconRowBufferPool::default(),
                 traversal: crate::bitstream::tile_payload::TileTraversalStorage::default(),
-                block_decoded: TileBlockDecodedState::default(),
                 commit_block_decoded: TileBlockDecodedState::default(),
                 spent_filters: None,
             },
@@ -598,6 +587,7 @@ impl TileResolveState {
     ) -> Result<()> {
         resolve_parsed_leaves(
             &mut row.entries,
+            &mut row.slots,
             &mut MvResolutionState {
                 grid,
                 ref_mv_bank: &mut self.ref_mv_bank,
@@ -643,88 +633,164 @@ fn resolve_parser_step(
 
 pub(super) struct ReconRowEntry {
     pub(super) publication: DecodedLeafPublication,
-    state: Option<ReconEntryState>,
-    reset: LeafReset,
-    pub(super) temporal: Range<usize>,
+    state: EntryState,
+    /// Whether the resolve pass still owes this leaf its [`LeafReset`].
+    reset_pending: bool,
+    temporal: [u32; 2],
 }
 
-enum ReconEntryState {
+/// A general-intra leaf, most of a typical row, keeps its small command
+/// inline; every other leaf keeps its record, then its command, in the row's
+/// [`LeafSlot`] list, so the inline entry stays small.
+enum EntryState {
+    /// The leaf's luma size in 4x4 units when it codes the luma tree.
+    Intra {
+        command: crate::pipeline::general_intra::GeneralIntraReconCommand,
+        size4: Option<[u8; 2]>,
+    },
+    Slot(u32),
+    Spent,
+}
+
+pub(super) enum LeafSlot {
     Resolve(LeafResolveRecord),
     Command(ReconCommand),
+    Spent,
 }
 
 impl ReconRowEntry {
-    pub(super) fn command(&self) -> Option<&ReconCommand> {
-        match self.state.as_ref()? {
-            ReconEntryState::Command(command)
-            | ReconEntryState::Resolve(
-                LeafResolveRecord::Reseed(command) | LeafResolveRecord::NonInter { command, .. },
-            ) => Some(command),
-            ReconEntryState::Resolve(
-                LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_),
-            ) => None,
+    fn slot<'a>(&self, slots: &'a [LeafSlot]) -> Option<&'a LeafSlot> {
+        match self.state {
+            EntryState::Slot(index) => slots.get(index as usize),
+            EntryState::Intra { .. } | EntryState::Spent => None,
         }
     }
 
-    pub(super) fn take_reset(&mut self) -> LeafReset {
-        core::mem::replace(&mut self.reset, LeafReset::None)
+    fn slot_mut<'a>(&self, slots: &'a mut [LeafSlot]) -> Option<&'a mut LeafSlot> {
+        match self.state {
+            EntryState::Slot(index) => slots.get_mut(index as usize),
+            EntryState::Intra { .. } | EntryState::Spent => None,
+        }
     }
 
-    pub(super) fn has_pending_resolve(&self) -> bool {
-        matches!(self.state, Some(ReconEntryState::Resolve(_)))
+    pub(super) fn command<'a>(&'a self, slots: &'a [LeafSlot]) -> Option<ReconCommandRef<'a>> {
+        if let EntryState::Intra { .. } = &self.state {
+            return Some(ReconCommandRef::GeneralIntra);
+        }
+        match self.slot(slots)? {
+            LeafSlot::Command(command)
+            | LeafSlot::Resolve(
+                LeafResolveRecord::Reseed(command) | LeafResolveRecord::NonInter { command, .. },
+            ) => Some(command.as_view()),
+            LeafSlot::Resolve(LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_))
+            | LeafSlot::Spent => None,
+        }
     }
 
-    pub(super) fn take_resolve(&mut self) -> Option<LeafResolveRecord> {
-        if !self.has_pending_resolve() {
+    pub(super) fn take_reset(&mut self, slots: &[LeafSlot]) -> LeafReset {
+        if !core::mem::take(&mut self.reset_pending) {
+            return LeafReset::None;
+        }
+        let size4 = match (&self.state, self.slot(slots)) {
+            (EntryState::Intra { size4, .. }, _) => *size4,
+            (_, Some(LeafSlot::Resolve(LeafResolveRecord::Reseed(_)))) => None,
+            (_, Some(LeafSlot::Resolve(LeafResolveRecord::NonInter { n4w, n4h, .. }))) => {
+                Some([*n4w, *n4h])
+            }
+            _ => return LeafReset::None,
+        };
+        size4.map_or(LeafReset::Reseed, |[n4w, n4h]| LeafReset::NonInter {
+            n4w: usize::from(n4w),
+            n4h: usize::from(n4h),
+        })
+    }
+
+    /// The entry's § 7.22 records in its row's temporal list.
+    pub(super) fn temporal(&self) -> Range<usize> {
+        self.temporal[0] as usize..self.temporal[1] as usize
+    }
+
+    /// Row temporal lists hold a few records per leaf, far below `u32::MAX`.
+    pub(super) fn set_temporal(&mut self, records: Range<usize>) {
+        self.temporal = [records.start as u32, records.end as u32];
+    }
+
+    pub(super) fn pending_resolve_mut<'a>(
+        &self,
+        slots: &'a mut [LeafSlot],
+    ) -> Option<&'a mut LeafResolveRecord> {
+        match self.slot_mut(slots)? {
+            LeafSlot::Resolve(
+                resolve @ (LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_)),
+            ) => Some(resolve),
+            LeafSlot::Resolve(_) | LeafSlot::Command(_) | LeafSlot::Spent => None,
+        }
+    }
+
+    pub(super) fn has_pending_resolve(&self, slots: &[LeafSlot]) -> bool {
+        matches!(
+            self.slot(slots),
+            Some(LeafSlot::Resolve(
+                LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_)
+            ))
+        )
+    }
+
+    pub(super) fn take_resolve(&self, slots: &mut [LeafSlot]) -> Option<LeafResolveRecord> {
+        if !self.has_pending_resolve(slots) {
             return None;
         }
-        match self.state.take()? {
-            ReconEntryState::Resolve(resolve) => Some(resolve),
-            state @ ReconEntryState::Command(_) => {
-                self.state = Some(state);
-                None
-            }
+        match core::mem::replace(self.slot_mut(slots)?, LeafSlot::Spent) {
+            LeafSlot::Resolve(resolve) => Some(resolve),
+            LeafSlot::Command(_) | LeafSlot::Spent => None,
         }
     }
 
-    pub(super) fn store_command(&mut self, command: ReconCommand) {
-        self.state = Some(ReconEntryState::Command(command));
+    pub(super) fn store_command(&self, slots: &mut [LeafSlot], command: ReconCommand) {
+        if let Some(slot) = self.slot_mut(slots) {
+            *slot = LeafSlot::Command(command);
+        }
     }
 
     /// The final command, for a pass that consumes it in place.
-    pub(super) fn command_mut(&mut self) -> Option<&mut ReconCommand> {
-        match self.state.as_mut()? {
-            ReconEntryState::Command(command) => Some(command),
-            ReconEntryState::Resolve(_) => None,
+    pub(super) fn command_mut<'a>(
+        &'a mut self,
+        slots: &'a mut [LeafSlot],
+    ) -> Option<ReconCommandMut<'a>> {
+        let slot = self.slot_mut(slots);
+        if let EntryState::Intra { command, .. } = &mut self.state {
+            return Some(ReconCommandMut::GeneralIntra(command));
+        }
+        match slot? {
+            LeafSlot::Command(command)
+            | LeafSlot::Resolve(
+                LeafResolveRecord::Reseed(command) | LeafResolveRecord::NonInter { command, .. },
+            ) => Some(command.as_view_mut()),
+            LeafSlot::Resolve(LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_))
+            | LeafSlot::Spent => None,
         }
     }
 
     /// Marks the command consumed, as [`Self::take_command`] would.
-    pub(super) fn drop_command(&mut self) {
-        self.state = None;
-    }
-
-    pub(super) fn take_command(&mut self) -> Option<ReconCommand> {
-        match self.state.take()? {
-            ReconEntryState::Command(command) => Some(command),
-            state @ ReconEntryState::Resolve(_) => {
-                self.state = Some(state);
-                None
-            }
+    pub(super) fn drop_command(&mut self, slots: &mut [LeafSlot]) {
+        if let Some(slot) = self.slot_mut(slots) {
+            *slot = LeafSlot::Spent;
         }
+        self.state = EntryState::Spent;
     }
 
     /// The § 7.22 record a non-inter luma-tree leaf stores: every covered 8x8
     /// cell is reset to "no reference", clearing earlier inter writes there.
     pub(super) fn temporal_clear_record(
         &self,
+        slots: &[LeafSlot],
         mi_rows: usize,
         mi_cols: usize,
         current_order_hint: u32,
     ) -> Option<TemporalMotionBlock> {
         if !matches!(
-            self.command(),
-            Some(ReconCommand::GeneralIntra(_) | ReconCommand::Intrabc(_))
+            self.command(slots),
+            Some(ReconCommandRef::GeneralIntra | ReconCommandRef::Intrabc)
         ) {
             return None;
         }
@@ -749,6 +815,46 @@ pub(super) struct ReconSuperblock {
     pub(super) entries: Range<usize>,
 }
 
+fn push_leaf_entry(
+    superblocks: &mut Vec<ReconSuperblock>,
+    entries: &mut Vec<ReconRowEntry>,
+    slots: &mut Vec<LeafSlot>,
+    publication: DecodedLeafPublication,
+    resolve: LeafResolveRecord,
+) {
+    let state = match resolve {
+        LeafResolveRecord::NonInter {
+            command: ReconCommand::GeneralIntra(command),
+            n4w,
+            n4h,
+        } => EntryState::Intra {
+            command,
+            size4: Some([n4w, n4h]),
+        },
+        LeafResolveRecord::Reseed(ReconCommand::GeneralIntra(command)) => EntryState::Intra {
+            command,
+            size4: None,
+        },
+        resolve => {
+            let index = slots.len() as u32;
+            slots.push(LeafSlot::Resolve(resolve));
+            EntryState::Slot(index)
+        }
+    };
+    push_recon_entry(
+        superblocks,
+        entries,
+        publication.superblock_origin(),
+        ReconRowEntry {
+            publication,
+            state,
+            reset_pending: true,
+            temporal: [0, 0],
+        },
+    );
+}
+
+#[inline]
 fn push_recon_entry<Entry>(
     superblocks: &mut Vec<ReconSuperblock>,
     entries: &mut Vec<Entry>,
@@ -767,142 +873,19 @@ fn push_recon_entry<Entry>(
     }
 }
 
-/// A parsed frame's units, packed in parse order.
-///
-/// Units wait here from parse to commit, a whole frame of them per frame in
-/// flight. Most hold a few entries, so one list per unit would hold a page
-/// for each; packed, the frame costs only what it parsed.
-#[derive(Default)]
-struct FrameResiduals {
-    coefficients: Vec<i32>,
-    planes: crate::residual::pipeline::ResidualPlaneArena,
-    entries: Vec<Option<ReconRowEntry>>,
-    blocks: Vec<InterResidualBlock>,
-    flags: Vec<NeighbourFlagRecord>,
-}
-
-pub(super) struct RowResiduals {
-    frame: Arc<Mutex<FrameResiduals>>,
-    planes: crate::residual::pipeline::ResidualPlaneSpan,
-    range: Range<usize>,
-    entries: Range<usize>,
-    blocks: Range<usize>,
-    flags: Range<usize>,
-    capacity: usize,
-}
-
-/// The working entry and block lists of one stage that loads parsed units.
-#[derive(Default)]
-pub(super) struct UnitLists {
-    entries: Vec<ReconRowEntry>,
-    blocks: Vec<InterResidualBlock>,
-    flags: Vec<NeighbourFlagRecord>,
-}
-
-impl UnitLists {
-    pub(super) fn swap_into(
-        &mut self,
-        entries: &mut Vec<ReconRowEntry>,
-        blocks: &mut Vec<InterResidualBlock>,
-    ) {
-        core::mem::swap(&mut self.entries, entries);
-        core::mem::swap(&mut self.blocks, blocks);
-    }
-}
-
-impl RowResiduals {
-    fn load(
-        &self,
-        entries: &mut Vec<ReconRowEntry>,
-        blocks: &mut Vec<InterResidualBlock>,
-    ) -> Result<()> {
-        entries.clear();
-        blocks.clear();
-        let mut frame = self.frame.lock();
-        let FrameResiduals {
-            entries: parsed,
-            blocks: parsed_blocks,
-            ..
-        } = &mut *frame;
-        let parsed = parsed
-            .get_mut(self.entries.clone())
-            .filter(|parsed| parsed.iter().all(Option::is_some))
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        let parsed_blocks = parsed_blocks
-            .get(self.blocks.clone())
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        let bound = self.capacity / 16;
-        if entries.capacity() < parsed.len() {
-            entries
-                .try_reserve_exact(bound.max(parsed.len()))
-                .map_err(|_| inter_allocation!("unit entries"))?;
-        }
-        if blocks.capacity() < parsed_blocks.len() {
-            blocks
-                .try_reserve_exact(bound.max(parsed_blocks.len()))
-                .map_err(|_| inter_allocation!("unit residual blocks"))?;
-        }
-        entries.extend(parsed.iter_mut().filter_map(Option::take));
-        blocks.extend_from_slice(parsed_blocks);
-        Ok(())
-    }
-
-    fn store(&self, entries: &mut Vec<ReconRowEntry>) {
-        let mut frame = self.frame.lock();
-        if let Some(parsed) = frame
-            .entries
-            .get_mut(self.entries.clone())
-            .filter(|parsed| parsed.len() == entries.len())
-        {
-            for (slot, entry) in parsed.iter_mut().zip(entries.drain(..)) {
-                *slot = Some(entry);
-            }
-        }
-        entries.clear();
-    }
-
-    pub(super) fn take_planes(
-        &self,
-        target: &mut crate::residual::pipeline::ResidualPlaneArena,
-    ) -> Result<()> {
-        self.frame
-            .lock()
-            .planes
-            .take_row(&self.planes, target, self.capacity / 16)
-    }
-
-    pub(super) fn copy_into(&self, target: &mut Vec<i32>) -> Result<()> {
-        target.clear();
-        target
-            .try_reserve(self.capacity)
-            .map_err(|_| inter_allocation!("coefficient row snapshot"))?;
-        let frame = self.frame.lock();
-        let samples = frame
-            .coefficients
-            .get(self.range.clone())
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        if samples.len() > self.capacity {
-            return Err(invalid_inter_tile_scheduling_state());
-        }
-        target.extend_from_slice(samples);
-        Ok(())
-    }
-}
-
 pub(super) struct ReconRow {
-    pub(super) residual_source: Option<RowResiduals>,
     pub(super) ordinal: usize,
     pub(super) superblocks: Vec<ReconSuperblock>,
     /// The coefficients this row's transform blocks index into.
     pub(super) residual_coeffs: Vec<i32>,
     pub(super) entries: Vec<ReconRowEntry>,
+    /// The non-intra leaves' records and commands, which entries index.
+    pub(super) slots: Vec<LeafSlot>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
-    /// The unit's flag-plane publications, replayed by a resolve pass that runs
-    /// on a grid of its own. Empty unless the parser was logging.
-    pub(super) flag_log: Vec<NeighbourFlagRecord>,
-    pub(super) filter_records: TileFilterRecords,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
+    /// The unit's deblock and tx-skip records, published by its resolve.
+    pub(super) filter_records: TileFilterRecords,
     /// Whether the prepass already folded this unit's records into the frame's
     /// motion field, which it does for a unit it reconstructed in full.
     pub(super) motion_folded: bool,
@@ -910,40 +893,20 @@ pub(super) struct ReconRow {
 }
 
 impl ReconRow {
-    /// Moves a published unit's entries and residual blocks out of the frame
-    /// into `lists`, which the row holds until [`Self::unload_parsed`].
-    pub(super) fn load_parsed(&mut self, lists: &mut UnitLists) {
-        let Some(source) = &self.residual_source else {
-            return;
-        };
-        lists.swap_into(&mut self.entries, &mut self.residual_blocks);
-        if let Err(error) = source.load(&mut self.entries, &mut self.residual_blocks) {
-            self.record_terminal_error(error);
+    /// Publishes the flags of the unit's luma-tree leaves onto `grid`, in leaf
+    /// order, as the parser published them on its own grid.
+    pub(super) fn replay_flags(&self, grid: &mut NeighbourMvGrid, frame_precision: u8) {
+        for entry in &self.entries {
+            let Some((r, c, n4w, n4h)) = entry.publication.luma_tree_block() else {
+                continue;
+            };
+            let syntax = match (entry.slot(&self.slots), &entry.state) {
+                (Some(LeafSlot::Resolve(record)), _) => record.flag_syntax(frame_precision),
+                (None, EntryState::Intra { .. }) => non_inter_flag_syntax(None, frame_precision),
+                _ => continue,
+            };
+            grid.record_flags(r, c, n4w, n4h, syntax);
         }
-    }
-
-    /// Puts the entries back into the frame and returns the lists.
-    pub(super) fn unload_parsed(&mut self, lists: &mut UnitLists) {
-        let Some(source) = &self.residual_source else {
-            return;
-        };
-        source.store(&mut self.entries);
-        self.residual_blocks.clear();
-        lists.swap_into(&mut self.entries, &mut self.residual_blocks);
-    }
-
-    /// Replays the unit's logged flag publications onto `grid`.
-    pub(super) fn replay_flags(&self, grid: &mut NeighbourMvGrid) -> Result<()> {
-        let Some(source) = &self.residual_source else {
-            grid.replay_flag_log(&self.flag_log);
-            return Ok(());
-        };
-        let frame = source.frame.lock();
-        let flags = (frame.flags)
-            .get(source.flags.clone())
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        grid.replay_flag_log(flags);
-        Ok(())
     }
 
     fn has_terminal_error(&self) -> bool {
@@ -1021,27 +984,41 @@ pub(crate) struct ReconRowBuffers {
     /// The coefficients this row's transform blocks index into.
     pub(super) residual_coeffs: Vec<i32>,
     pub(super) entries: Vec<ReconRowEntry>,
+    /// The non-intra leaves' records and commands, which entries index.
+    pub(super) slots: Vec<LeafSlot>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
-    pub(super) flag_log: Vec<NeighbourFlagRecord>,
-    pub(super) filter_records: TileFilterRecords,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
+    pub(super) filter_records: TileFilterRecords,
+    /// The large lists' lengths in the unit these buffers last held.
+    pub(super) lengths: crate::support::decode_buffers::UnitLengths,
 }
 
 impl ReconRowBuffers {
-    fn capacities(&self) -> crate::support::decode_buffers::RowCapacities {
-        [
-            self.superblocks.capacity(),
-            self.temporal.capacity(),
-            self.flag_log.capacity(),
-        ]
-    }
-
-    fn reserve_to(&mut self, reached: crate::support::decode_buffers::RowCapacities) -> Result<()> {
-        let [superblocks, temporal, flag_log] = reached;
-        reserve_list(&mut self.superblocks, superblocks)?;
-        reserve_list(&mut self.temporal, temporal)?;
-        reserve_list(&mut self.flag_log, flag_log)
+    /// Sizes the emptied large lists to the decode's typical unit; see
+    /// [`fit_list`](crate::support::decode_buffers::fit_list).
+    fn fit(&mut self, typical: crate::support::decode_buffers::UnitLengths) {
+        use crate::support::decode_buffers::fit_list;
+        let [
+            coeffs,
+            entries,
+            slots,
+            blocks,
+            temporal,
+            planes,
+            units,
+            luma,
+            chroma,
+            tx_skip,
+            leaves,
+        ] = typical;
+        fit_list(&mut self.residual_coeffs, coeffs);
+        fit_list(&mut self.entries, entries);
+        fit_list(&mut self.slots, slots);
+        fit_list(&mut self.residual_blocks, blocks);
+        fit_list(&mut self.temporal, temporal);
+        self.residual_planes.fit([planes, units]);
+        self.filter_records.fit([luma, chroma, tx_skip, leaves]);
     }
 
     /// Sizes the unit's coefficient and block lists to a superblock's
@@ -1056,6 +1033,9 @@ impl ReconRowBuffers {
         let _ = self
             .entries
             .try_reserve_exact(blocks.saturating_sub(self.entries.len()));
+        let _ = self
+            .slots
+            .try_reserve_exact(blocks.saturating_sub(self.slots.len()));
         let _ = self
             .residual_blocks
             .try_reserve_exact(blocks.saturating_sub(self.residual_blocks.len()));
@@ -1179,11 +1159,7 @@ pub(in crate::prediction::inter) struct TileParseState {
     traversal: crate::bitstream::tile_payload::TileTraversalStorage,
     /// The row buffer sets this tile's units are parsed and replayed through.
     row_buffers: ReconRowBufferPool,
-    /// The smooth-mode grids this tile's intra edges are recorded in.
-    y_smooth: crate::prediction::intra_edge::TileYSmoothGrid,
-    chroma_smooth: crate::prediction::intra_edge::TileChromaSmoothGrid,
-    /// The tile's block-decoded grid, and the copy the commit spine reads.
-    block_decoded: TileBlockDecodedState,
+    /// The block-decoded grid the commit spine reads.
     commit_block_decoded: TileBlockDecodedState,
     /// The CDEF, GDF and CCSO tile states the last tile merged, whose grids
     /// the next tile's states are laid out on.
@@ -1198,7 +1174,8 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     surface_source: Option<std::sync::Arc<Mutex<admission::SurfaceSource<T>>>>,
     ordered: deferred_recon::InterReconScratch<T>,
     workers: InterReconScratchPool<T>,
-    batches: admission::BatchRowSlots<T>,
+    /// The ordinary walk's parsed rows waiting for their replay.
+    pending_rows: Vec<ReconRow>,
     scheduled_rows: admission::ScheduledRowSlots<T>,
     /// The decode's reusable storage, for the row sets.
     pub(in crate::prediction::inter) buffers:
@@ -1212,7 +1189,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             surface_source: None,
             ordered,
             workers: InterReconScratchPool::default(),
-            batches: admission::BatchRowSlots::default(),
+            pending_rows: Vec::new(),
             scheduled_rows: admission::ScheduledRowSlots::default(),
             buffers: None,
         }
@@ -1314,160 +1291,131 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
 ) -> ReconRow {
-    let mut coefficient_scratch = std::mem::take(&mut scratch.coefficients);
-    let row = (|| {
-        if row.has_terminal_error() {
-            return row;
-        }
-        let shared_coefficients = row.residual_source.is_some();
-        let mut coefficients_loaded = false;
-        let _quantizer_scopes = quantizer.install_frame();
-        let info = surface.info();
-        let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
-            capacity.saturating_add(
-                entry
-                    .command()
-                    .map_or(0, ReconCommand::temporal_record_capacity),
-            )
-        });
-        let _ = row.temporal.try_reserve(temporal_capacity);
-        'superblocks: for superblock in &row.superblocks {
-            let entry_start = superblock.entries.start;
-            let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
-                break;
-            };
-            let mut skipped_any = false;
-            for (offset, entry) in entries.iter_mut().enumerate() {
-                let safe = matches!(
-                    entry.command(),
-                    Some(ReconCommand::Inter(command))
-                        if !command.reads_current_frame()
-                            && (!skipped_any
-                                || (command.placed().luma_w >= 8
-                                    && command.placed().luma_h >= 8
-                                    && [
-                                        command.placed().chroma_luma_x,
-                                        command.placed().chroma_luma_y,
-                                        command.placed().chroma_luma_w,
-                                        command.placed().chroma_luma_h,
-                                    ] == [
-                                        command.placed().luma_x,
-                                        command.placed().luma_y,
-                                        command.placed().luma_w,
-                                        command.placed().luma_h,
-                                    ]))
-                            && command.prepass_write_is_contained(
-                                superblock.origin,
-                                sb_h4,
-                                info,
-                                &row.residual_blocks,
-                            )
-                );
-                if !safe {
-                    match entry.command_mut() {
-                        Some(ReconCommand::Inter(command)) => {
+    if row.has_terminal_error() {
+        return row;
+    }
+    let _quantizer_scopes = quantizer.install_frame();
+    let info = surface.info();
+    let shared = deferred_recon::ReconShared {
+        reference,
+        ref_frame_idx,
+        temporal_context,
+        sequence,
+        core,
+        luma_use_tcq,
+        residual_use_ddt,
+        bit_depth,
+        mi_rows,
+        mi_cols,
+        current_order_hint,
+        tip: core::cell::OnceCell::new(),
+    };
+    'superblocks: for superblock in &row.superblocks {
+        let entry_start = superblock.entries.start;
+        let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
+            break;
+        };
+        let mut skipped_any = false;
+        for (offset, entry) in entries.iter_mut().enumerate() {
+            let safe = matches!(
+                entry.command(&row.slots),
+                Some(ReconCommandRef::Inter(command))
+                    if !command.reads_current_frame()
+                        && (!skipped_any
+                            || (command.placed().luma_w >= 8
+                                && command.placed().luma_h >= 8
+                                && [
+                                    command.placed().chroma_luma_x,
+                                    command.placed().chroma_luma_y,
+                                    command.placed().chroma_luma_w,
+                                    command.placed().chroma_luma_h,
+                                ] == [
+                                    command.placed().luma_x,
+                                    command.placed().luma_y,
+                                    command.placed().luma_w,
+                                    command.placed().luma_h,
+                                ]))
+                        && command.prepass_write_is_contained(
+                            superblock.origin,
+                            sb_h4,
+                            info,
+                            &row.residual_blocks,
+                        )
+            );
+            if !safe {
+                match entry.command_mut(&mut row.slots) {
+                    Some(ReconCommandMut::Inter(command)) => {
+                        let start = row.temporal.len();
+                        let result = scratch.derive_motion_logged(
+                            command,
+                            surface,
+                            &mut row.temporal,
+                            &shared,
+                        );
+                        match result {
+                            Ok(()) => {
+                                entry.set_temporal(start..row.temporal.len());
+                            }
+                            Err(error) => {
+                                row.temporal.truncate(start);
+                                row.record_precompute_error(entry_start + offset, error);
+                                break 'superblocks;
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(clear) = entry.temporal_clear_record(
+                            &row.slots,
+                            mi_rows,
+                            mi_cols,
+                            current_order_hint,
+                        ) {
                             let start = row.temporal.len();
-                            let result = scratch.derive_motion_logged(
-                                command,
-                                surface,
-                                &mut row.temporal,
-                                temporal_context,
-                                reference,
-                                ref_frame_idx,
-                                sequence,
-                                core,
-                                mi_rows,
-                                mi_cols,
-                                current_order_hint,
-                                luma_use_tcq,
-                                residual_use_ddt,
-                                bit_depth,
-                            );
-                            match result {
-                                Ok(()) => {
-                                    entry.temporal = start..row.temporal.len();
-                                }
-                                Err(error) => {
-                                    row.temporal.truncate(start);
-                                    row.record_precompute_error(entry_start + offset, error);
-                                    break 'superblocks;
-                                }
-                            }
-                        }
-                        _ => {
-                            if let Some(clear) =
-                                entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint)
-                            {
-                                let start = row.temporal.len();
-                                row.temporal.push(clear);
-                                entry.temporal = start..row.temporal.len();
-                            }
+                            row.temporal.push(clear);
+                            entry.set_temporal(start..row.temporal.len());
                         }
                     }
-                    skipped_any = true;
-                    continue;
                 }
-                let Some(ReconCommand::Inter(command)) = entry.command_mut() else {
-                    skipped_any = true;
-                    continue;
-                };
-                if !coefficients_loaded && let Some(source) = &row.residual_source {
-                    if let Err(error) = source.copy_into(&mut coefficient_scratch) {
-                        row.record_precompute_error(entry_start + offset, error);
-                        break 'superblocks;
-                    }
-                    coefficients_loaded = true;
+                skipped_any = true;
+                continue;
+            }
+            let Some(ReconCommandMut::Inter(command)) = entry.command_mut(&mut row.slots) else {
+                skipped_any = true;
+                continue;
+            };
+            let start = row.temporal.len();
+            let result = {
+                scratch.reconstruct_logged(
+                    command,
+                    surface,
+                    block_decoded,
+                    &mut row.temporal,
+                    &row.residual_blocks,
+                    &row.residual_coeffs,
+                    &shared,
+                )
+            };
+            entry.drop_command(&mut row.slots);
+            match result {
+                Ok(()) => {
+                    entry.set_temporal(start..row.temporal.len());
                 }
-                let start = row.temporal.len();
-                let result = {
-                    scratch.reconstruct_logged(
-                        command,
-                        surface,
-                        block_decoded,
-                        &mut row.temporal,
-                        &row.residual_blocks,
-                        if shared_coefficients {
-                            &coefficient_scratch
-                        } else {
-                            &row.residual_coeffs
-                        },
-                        temporal_context,
-                        reference,
-                        ref_frame_idx,
-                        sequence,
-                        core,
-                        mi_rows,
-                        mi_cols,
-                        current_order_hint,
-                        luma_use_tcq,
-                        residual_use_ddt,
-                        bit_depth,
-                    )
-                };
-                entry.drop_command();
-                match result {
-                    Ok(()) => {
-                        entry.temporal = start..row.temporal.len();
-                    }
-                    Err(error) => {
-                        row.temporal.truncate(start);
-                        row.record_precompute_error(entry_start + offset, error);
-                        break 'superblocks;
-                    }
+                Err(error) => {
+                    row.temporal.truncate(start);
+                    row.record_precompute_error(entry_start + offset, error);
+                    break 'superblocks;
                 }
             }
         }
-        row.motion_folded = matches!(row.failure, ReconRowFailure::None);
-        if row.motion_folded && !row.superblocks.is_empty() {
-            if let Err(error) = motion.fold_unit(row.ordinal, &row.temporal) {
-                row.record_terminal_error(error);
-            } else {
-                motion.unit_landed_for(row.ordinal);
-            }
+    }
+    row.motion_folded = matches!(row.failure, ReconRowFailure::None);
+    if row.motion_folded && !row.superblocks.is_empty() {
+        if let Err(error) = motion.fold_unit(row.ordinal, &row.temporal) {
+            row.record_terminal_error(error);
+        } else {
+            motion.unit_landed_for(row.ordinal);
         }
-        row
-    })();
-    scratch.coefficients = coefficient_scratch;
+    }
     row
 }
 
@@ -1546,14 +1494,8 @@ pub(crate) struct TileGeometry {
 
 #[derive(Default)]
 pub(crate) struct ParseProgress {
-    row_buffers: Mutex<Vec<Option<ReconRowBuffers>>>,
-    /// The decode's storage, whose per-unit capacities size the row buffers.
+    /// The decode's storage, which lends the units their row buffers.
     buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
-    residuals: Arc<Mutex<FrameResiduals>>,
-    coefficient_scratch: Mutex<Vec<i32>>,
-    plane_scratch: Mutex<crate::residual::pipeline::ResidualPlaneArena>,
-    parse_lists: Mutex<UnitLists>,
-    resolve_lists: Mutex<UnitLists>,
     finished: splot_parallel::WatermarkCell,
     rows: Mutex<Vec<Option<ReconRow>>>,
     geometry: Mutex<GeometryState>,
@@ -1586,21 +1528,12 @@ impl ParseProgress {
         if !geometry_reusable {
             return false;
         }
-        let Some(residuals) = Arc::get_mut(&mut self.residuals) else {
-            return false;
-        };
         *geometry = match core::mem::take(geometry) {
             GeometryState::Published(geometry) | GeometryState::Spare(geometry) => {
                 GeometryState::Spare(geometry)
             }
             GeometryState::Unpublished => GeometryState::Unpublished,
         };
-        let residuals = residuals.get_mut();
-        residuals.coefficients.clear();
-        residuals.planes.clear();
-        residuals.entries.clear();
-        residuals.blocks.clear();
-        residuals.flags.clear();
         self.finished.reset();
         let records = self.records.get_mut();
         records.clear();
@@ -1614,16 +1547,31 @@ impl ParseProgress {
     /// The frame's § 7.17 and loop-restoration records leave the unit here, in
     /// parse order, because the scheduler claims units on its own schedule and
     /// the frame-level detach must not depend on when it does.
-    pub(super) fn publish_row(&self, mut row: ReconRow) -> TileFilterRecords {
-        pixel_commit::detach_row_filter_records(&mut row, &mut self.records.lock());
-        let records = std::mem::take(&mut row.filter_records);
+    pub(super) fn publish_row(&self, row: ReconRow) {
         let finished = {
             let mut rows = self.rows.lock();
             rows.push(Some(row));
             rows.len()
         };
         self.finished.publish(finished);
-        records
+    }
+
+    /// Publishes a unit's deblock and tx-skip records; units are pulled in
+    /// order, so the frame's lists stay in leaf order.
+    pub(super) fn publish_records(
+        &self,
+        row: &mut ReconRow,
+        chroma_format: ChromaFormatIdc,
+    ) -> Result<()> {
+        let mut records = self.records.lock();
+        let records = &mut *records;
+        row.filter_records.publish_into(
+            &mut records.deblock_blocks,
+            &mut records.chroma_deblock_blocks,
+            &mut records.tx_skip_records,
+            &row.residual_blocks,
+            chroma_format,
+        )
     }
 
     /// Takes the unit at `index`, which a caller may claim exactly once.
@@ -1631,7 +1579,22 @@ impl ParseProgress {
         self.rows.lock().get_mut(index).and_then(Option::take)
     }
 
-    /// Moves the parsed records into the frame, keeping this slot's lists.
+    /// Moves the deblock records published so far into `deblock`.
+    pub(super) fn take_deblock_records(&self, deblock: &mut crate::filters::deblock::FrameDeblock) {
+        let mut records = self.records.lock();
+        let records = &mut *records;
+        deblock.append_records(
+            &mut records.deblock_blocks,
+            &mut records.chroma_deblock_blocks,
+        );
+    }
+
+    /// Moves the parsed records into the frame.
+    ///
+    /// The frame-sized tx-skip list moves whole when the frame has none yet.
+    /// The frontier has drained the deblock lists by now, and their capacity
+    /// is freed: it only ever held records in transit, so a slot keeping it
+    /// would hold its worst frame's backlog for every frame after.
     pub(super) fn append_records(
         &self,
         target: &mut crate::filters::wienerns_lr::FrameFilterRecords,
@@ -1639,6 +1602,9 @@ impl ParseProgress {
         let mut records = self.records.lock();
         if let Some(buffers) = target.buffers.as_ref() {
             buffers.note_tile_record_capacities(records.capacities());
+        }
+        if target.tx_skip_records.is_empty() {
+            core::mem::swap(&mut target.tx_skip_records, &mut records.tx_skip_records);
         }
         target.append(&mut records);
     }
@@ -1654,36 +1620,7 @@ impl ParseProgress {
 
     /// Publishes the tile geometry, which the parser settles before its
     /// first unit.
-    pub(super) fn publish_geometry(
-        &self,
-        geometry: TileGeometry,
-        coefficients: usize,
-    ) -> Result<()> {
-        let slots = geometry.unit_count;
-        let mut buffers = self.row_buffers.lock();
-        if buffers.len() < slots {
-            buffers.resize_with(slots, || Some(ReconRowBuffers::default()));
-        }
-        let capacity = coefficients
-            .checked_mul(slots)
-            .ok_or(crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
-        let mut residuals = self.residuals.lock();
-        let additional = capacity.saturating_sub(residuals.coefficients.len());
-        residuals
-            .coefficients
-            .try_reserve(additional)
-            .map_err(|_| inter_allocation!("frame coefficients"))?;
-        residuals
-            .planes
-            .reserve_records(capacity / 16)
-            .map_err(|_| inter_allocation!("frame residual records"))?;
-        let FrameResiduals {
-            entries, blocks, ..
-        } = &mut *residuals;
-        let _ = entries.try_reserve_exact((capacity / 16).saturating_sub(entries.len()));
-        let _ = blocks.try_reserve_exact((capacity / 16).saturating_sub(blocks.len()));
-        drop(residuals);
-        drop(buffers);
+    pub(super) fn publish_geometry(&self, geometry: TileGeometry) -> Result<()> {
         let mut published = self.geometry.lock();
         let geometry = match core::mem::take(&mut *published) {
             GeometryState::Unpublished => Arc::new(geometry),
@@ -1717,32 +1654,25 @@ impl ParseProgress {
         self.finished.publish(splot_parallel::WatermarkCell::FAILED);
     }
 
-    fn take_row_buffers(&self, index: usize) -> Result<ReconRowBuffers> {
-        let mut row = self
-            .row_buffers
-            .lock()
-            .get_mut(index)
-            .and_then(Option::take)
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        if let Some(buffers) = &self.buffers {
-            row.reserve_to(buffers.row_capacities())?;
-        }
-        Ok(row)
+    /// Lends one unit the decode's spent row buffers, so the decode holds a
+    /// set per unit parsed and not yet committed rather than one per unit of
+    /// every frame in flight.
+    fn take_row_buffers(&self) -> ReconRowBuffers {
+        let Some(shared) = &self.buffers else {
+            return ReconRowBuffers::default();
+        };
+        shared.take_unit_buffers().unwrap_or_else(|| {
+            let mut cold = ReconRowBuffers::default();
+            cold.fit(shared.unit_lengths());
+            cold
+        })
     }
 
-    pub(super) fn return_row_buffers(&self, index: usize, buffers: ReconRowBuffers) -> Result<()> {
+    pub(super) fn return_row_buffers(&self, mut buffers: ReconRowBuffers) {
         if let Some(shared) = &self.buffers {
-            shared.note_row_capacities(buffers.capacities());
+            buffers.fit(shared.note_unit_lengths(buffers.lengths));
+            shared.give_unit_buffers(buffers);
         }
-        let mut rows = self.row_buffers.lock();
-        let slot = rows
-            .get_mut(index)
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        if slot.is_some() {
-            return Err(invalid_inter_tile_scheduling_state());
-        }
-        *slot = Some(buffers);
-        Ok(())
     }
 
     /// The cell a batch waits on for its own units.
@@ -1759,7 +1689,6 @@ impl ParseProgress {
 pub(crate) fn publish_tile_geometry(
     tile: &DecodeTileWorkUnit,
     params: &TileWalkParams,
-    chroma: ChromaFormatIdc,
     parse_progress: &ParseProgress,
 ) -> Result<()> {
     let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
@@ -1772,16 +1701,12 @@ pub(crate) fn publish_tile_geometry(
         params.sb_h4,
     );
     parse_progress.reserve(capacity)?;
-    parse_progress.publish_geometry(
-        TileGeometry {
-            tile_offset: tile.tile_byte_span().start,
-            mi_rows,
-            mi_cols,
-            unit_count: capacity,
-        },
-        superblock_coefficient_capacity(params.sb_h4, chroma)?,
-    )?;
-    Ok(())
+    parse_progress.publish_geometry(TileGeometry {
+        tile_offset: tile.tile_byte_span().start,
+        mi_rows,
+        mi_cols,
+        unit_count: capacity,
+    })
 }
 
 impl<'payload> TileParser<'payload> {
@@ -1806,7 +1731,7 @@ impl<'payload> TileParser<'payload> {
             ccso_state,
             core::mem::take(&mut *parse_progress.parser.lock()),
         )?;
-        parser.mv_grid.log_flags();
+        parser.mv_grid.keep_edges_only();
         Ok(parser)
     }
 
@@ -1816,91 +1741,13 @@ impl<'payload> TileParser<'payload> {
         context: &TileDecodeContext<'_, T>,
         parse_progress: &ParseProgress,
     ) -> Result<bool> {
-        let mut row_set = parse_progress.take_row_buffers(self.parser_ordinal)?;
-        core::mem::swap(
-            &mut row_set.flag_log,
-            &mut parse_progress.parse_lists.lock().flags,
-        );
-        std::mem::swap(&mut row_set.filter_records, &mut self.filter_records);
-        std::mem::swap(
-            &mut row_set.residual_coeffs,
-            &mut *parse_progress.coefficient_scratch.lock(),
-        );
-        std::mem::swap(
-            &mut row_set.residual_planes,
-            &mut *parse_progress.plane_scratch.lock(),
-        );
-        parse_progress
-            .parse_lists
-            .lock()
-            .swap_into(&mut row_set.entries, &mut row_set.residual_blocks);
-        let capacity = superblock_coefficient_capacity(
-            context.params.sb_h4,
-            context.sequence.general.chroma_format_idc,
-        )?;
-        row_set
-            .residual_planes
-            .reserve_records(capacity / 16)
-            .map_err(|_| inter_allocation!("producer residual records"))?;
-        let (mut row, last) = match self.next_unit(tile, context, Some(row_set)) {
+        let row_set = parse_progress.take_row_buffers();
+        let (mut row, last) = match self.next_unit(tile, context, Some(row_set), false) {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
         };
-        let publication = (|| {
-            row.return_terminal_error()?;
-            let mut residuals = parse_progress.residuals.lock();
-            let start = residuals.coefficients.len();
-            residuals
-                .coefficients
-                .try_reserve(row.residual_coeffs.len())
-                .map_err(|_| inter_allocation!("frame coefficient publication"))?;
-            residuals
-                .coefficients
-                .extend_from_slice(&row.residual_coeffs);
-            let planes = residuals
-                .planes
-                .append_row(&mut row.residual_planes)
-                .map_err(|_| inter_allocation!("frame residual publication"))?;
-            let entries = residuals.entries.len();
-            let blocks = residuals.blocks.len();
-            let flags = residuals.flags.len();
-            residuals
-                .entries
-                .try_reserve(row.entries.len())
-                .and_then(|()| residuals.blocks.try_reserve(row.residual_blocks.len()))
-                .and_then(|()| residuals.flags.try_reserve(row.flag_log.len()))
-                .map_err(|_| inter_allocation!("frame unit publication"))?;
-            residuals.entries.extend(row.entries.drain(..).map(Some));
-            residuals.blocks.append(&mut row.residual_blocks);
-            residuals.flags.append(&mut row.flag_log);
-            row.residual_source = Some(RowResiduals {
-                frame: Arc::clone(&parse_progress.residuals),
-                range: start..residuals.coefficients.len(),
-                planes,
-                entries: entries..residuals.entries.len(),
-                blocks: blocks..residuals.blocks.len(),
-                flags: flags..residuals.flags.len(),
-                capacity,
-            });
-            Ok::<(), crate::DecodeError>(())
-        })();
-        if row.residual_source.is_some() {
-            let mut lists = parse_progress.parse_lists.lock();
-            lists.swap_into(&mut row.entries, &mut row.residual_blocks);
-            core::mem::swap(&mut row.flag_log, &mut lists.flags);
-        }
-        row.residual_coeffs.clear();
-        std::mem::swap(
-            &mut row.residual_coeffs,
-            &mut *parse_progress.coefficient_scratch.lock(),
-        );
-        row.residual_planes.clear();
-        std::mem::swap(
-            &mut row.residual_planes,
-            &mut *parse_progress.plane_scratch.lock(),
-        );
-        publication?;
-        self.filter_records = parse_progress.publish_row(row);
+        row.return_terminal_error()?;
+        parse_progress.publish_row(row);
         Ok(last)
     }
 
@@ -2058,7 +1905,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         surface_source: mut spent_surface_source,
         mut ordered,
         workers,
-        mut batches,
+        mut pending_rows,
         scheduled_rows,
         buffers,
     } = scratch;
@@ -2090,31 +1937,21 @@ pub(super) fn decode_tiles<T: ReconSample>(
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
         let tile_offset = tile.tile_byte_span().start;
         reset_tile_block_decoded(
-            &mut parse_state.block_decoded,
+            &mut parse_state.commit_block_decoded,
             context.sequence.general.chroma_format_idc,
             &context.params,
             tile.mi_col_range().end as usize,
             tile.mi_row_range().end as usize,
         )?;
-        parse_state
-            .commit_block_decoded
-            .clone_from(&parse_state.block_decoded);
         let commit_block_decoded = core::mem::take(&mut parse_state.commit_block_decoded);
-        workers.ensure_workers(1);
         let reusable_surface_source = spent_surface_source.take();
-        let block_decoded = core::mem::take(&mut parse_state.block_decoded);
         let quantizer = FrameQuantizerSnapshot::capture();
         let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
         let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
         let unit_count = tile_unit_capacity(&rows, &cols, mi_rows, mi_cols, sb_h4);
-        let units_per_row = cols
-            .end
-            .min(mi_cols)
-            .saturating_sub(cols.start)
-            .div_ceil(sb_h4);
         let tile_mi_rows = rows;
         let tile_mi_cols = cols;
-        parse_state.row_buffers.reset(3);
+        parse_state.row_buffers.reset(admission::PARSE_AHEAD_ROWS);
         let row_buffers = core::mem::take(&mut parse_state.row_buffers);
         let (spent_cdef, spent_gdf, spent_ccso) = match parse_state.spent_filters.take() {
             Some((cdef, gdf, ccso)) => (Some(cdef), Some(gdf), Some(ccso)),
@@ -2158,18 +1995,14 @@ pub(super) fn decode_tiles<T: ReconSample>(
             tile,
             &mut resolve_state,
             tile_offset,
-            &surface_source,
             unit_count,
-            units_per_row,
             &context,
             temporal_context,
             &quantizer,
             &row_gate,
             &row_buffers,
-            &workers,
-            &block_decoded,
             &motion,
-            &mut batches,
+            &mut pending_rows,
             commit,
         )?;
         let (next_ordered, next_workspace, next_decoded, next_records, spent_block_decoded) =
@@ -2180,7 +2013,10 @@ pub(super) fn decode_tiles<T: ReconSample>(
         *frame_filter_records = next_records;
         let (output, next_parse_state) = parser.into_output();
         parse_state = next_parse_state;
-        parse_state.block_decoded = block_decoded;
+        pixel_commit::take_tile_filter_records(
+            frame_filter_records,
+            &mut parse_state.filter_records,
+        );
         parse_state.commit_block_decoded = spent_block_decoded;
         parse_state.row_buffers = row_buffers;
         spent_surface_source = Some(surface_source);
@@ -2214,7 +2050,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             surface_source: spent_surface_source,
             ordered,
             workers,
-            batches,
+            pending_rows,
             scheduled_rows,
         },
         workspace,

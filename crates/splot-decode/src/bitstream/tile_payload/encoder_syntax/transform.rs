@@ -71,12 +71,8 @@ impl Ist {
             return None;
         }
         Some(IntraIstSyntax {
-            sec_tx_type: self.sec_tx_type as usize,
-            most_probable_stx_set: if is_inter {
-                None
-            } else {
-                Some(self.set as usize)
-            },
+            sec_tx_type: self.sec_tx_type,
+            most_probable_stx_set: if is_inter { None } else { Some(self.set) },
         })
     }
 }

@@ -364,32 +364,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ) -> Result<OwnedFilterSetup<T>> {
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
-        if core
-            .lossless_info
-            .as_ref()
-            .is_some_and(|lossless| lossless.has_lossless_segment)
-        {
-            self.lossless_grid = Some(
-                crate::filters::lossless::LosslessBlockGrid::from_deblock_records(
-                    mi_rows,
-                    mi_cols,
-                    &self.filter_records.deblock_blocks,
-                    &self.filter_records.chroma_deblock_blocks,
-                )
-                .map_err(|error| match error {
-                    crate::filters::lossless::LosslessGridError::Allocation(plane) => {
-                        splot_recon::ReconError::WorkspaceAllocationFailed {
-                            plane,
-                            context: "lossless block grid",
-                        }
-                        .into()
-                    }
-                    crate::filters::lossless::LosslessGridError::Geometry => {
-                        lr_pipeline_state_error()
-                    }
-                })?,
-            );
-        }
+        self.lossless_grid = lossless_grid(
+            &core,
+            (mi_rows, mi_cols),
+            &self.filter_records.deblock_blocks,
+            &self.filter_records.chroma_deblock_blocks,
+        )?;
         if self.needs_lr_tx_skip_grid(&core) {
             self.ensure_tx_skip_grid(mi_rows, mi_cols)?;
         }
@@ -792,6 +772,18 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     }
 
     /// Restores the moved deblock vectors exactly once before terminal freeze.
+    /// Rebuilds the lossless grid from the deblock records of a frame whose
+    /// frontier took them before this setup was built.
+    pub(crate) fn set_lossless_grid(
+        &mut self,
+        blocks: &[crate::filters::deblock::DeblockBlock],
+        chroma: &crate::filters::deblock::ChromaDeblockRecords,
+    ) -> Result<()> {
+        self.lossless_grid =
+            lossless_grid(&self.core, (self.mi_rows, self.mi_cols), blocks, chroma)?;
+        Ok(())
+    }
+
     pub(crate) fn restore_deblock_records(
         &self,
         records: crate::filters::deblock::OwnedDeblockRecords,
@@ -994,7 +986,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 return final_filters::terminal_luma_wiener_direct_u8(
                     self.bit_depth,
                     frame_type,
-                    gdf_active,
+                    gdf_active && chain.lossless_grid.is_some(),
                     plane_blocks[index],
                     target,
                 );
@@ -1043,10 +1035,10 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
                     (
                         Some(&frame.cdef_y),
-                        post_lr_y.as_u16_mut().ok_or_else(lr_pipeline_state_error)?,
+                        gdf_luma(post_lr_y).ok_or_else(lr_pipeline_state_error)?,
                     )
                 } else {
-                    (None, &mut frame.cdef_y)
+                    (None, crate::filters::gdf::GdfLuma::U16(&mut frame.cdef_y))
                 };
             crate::filters::gdf::apply_stripe(
                 &self.core,
@@ -1173,6 +1165,57 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     /// Transfers terminal ownership to the exactly-once freeze job.
     pub(crate) fn owned_finish(setup: OwnedFilterShell<T>) -> OwnedFilterFinish<T> {
         OwnedFilterFinish { setup }
+    }
+}
+
+/// The lossless grid of a frame with a lossless segment, laid out from its
+/// deblock records.
+fn lossless_grid(
+    core: &splot_core::headers::frame::FrameHeaderCore,
+    (mi_rows, mi_cols): (usize, usize),
+    blocks: &[crate::filters::deblock::DeblockBlock],
+    chroma: &crate::filters::deblock::ChromaDeblockRecords,
+) -> Result<Option<crate::filters::lossless::LosslessBlockGrid>> {
+    if !core
+        .lossless_info
+        .as_ref()
+        .is_some_and(|lossless| lossless.has_lossless_segment)
+    {
+        return Ok(None);
+    }
+    crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
+        mi_rows, mi_cols, blocks, chroma,
+    )
+    .map(Some)
+    .map_err(|error| match error {
+        crate::filters::lossless::LosslessGridError::Allocation(plane) => {
+            splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane,
+                context: "lossless block grid",
+            }
+            .into()
+        }
+        crate::filters::lossless::LosslessGridError::Geometry => lr_pipeline_state_error(),
+    })
+}
+
+/// The post-LR luma rows GDF filters in place.
+fn gdf_luma(
+    plane: &mut crate::filters::source::StripeOutputPlane,
+) -> Option<crate::filters::gdf::GdfLuma<'_>> {
+    use crate::filters::source::StripeOutputPlane;
+    let (width, frame_height, origin_y) = (plane.width(), plane.frame_height(), plane.origin_y());
+    let rows = plane.end_y()?.checked_sub(origin_y)?;
+    match plane {
+        StripeOutputPlane::U16(plane) => Some(crate::filters::gdf::GdfLuma::U16(plane)),
+        StripeOutputPlane::DirectU8(target) => Some(crate::filters::gdf::GdfLuma::U8 {
+            stride: target.stride(),
+            samples: target.u8_samples_mut()?,
+            width,
+            frame_height,
+            origin_y,
+            rows,
+        }),
     }
 }
 
@@ -1310,8 +1353,8 @@ impl StripeChain<'_> {
         stripe: &crate::filters::source::StripeOutputPlane,
     ) -> Result<()> {
         let error = || lr_pipeline_state_error();
-        let size = self.plane_sizes[plane.index()].ok_or_else(&error)?;
-        let end_y = stripe.end_y().ok_or_else(&error)?;
+        let size = self.plane_sizes[plane.index()].ok_or_else(error)?;
+        let end_y = stripe.end_y().ok_or_else(error)?;
         if stripe.width() != size.width()
             || stripe.frame_height() != size.height()
             || stripe.origin_y() > end_y
@@ -1360,54 +1403,58 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn chroma_transform_deblock_block(
-    plane_id: PlaneId,
     x: usize,
     y: usize,
     chroma_tx: usize,
     log2_dimensions: Option<(u32, u32)>,
     chroma_subsampling: (u32, u32),
-    qindex: u32,
+    qindex: u16,
     lossless: bool,
-) -> Option<(usize, crate::filters::deblock::DeblockBlock)> {
+) -> Option<crate::filters::deblock::DeblockBlock> {
+    let [r, c, n4w, n4h] =
+        chroma_transform_cells(x, y, chroma_tx, log2_dimensions, chroma_subsampling)?;
+    Some(crate::filters::deblock::DeblockBlock {
+        r: r as u16,
+        c: c as u16,
+        n4w: n4w as u8,
+        n4h: n4h as u8,
+        tx: chroma_tx as u8,
+        skip: false,
+        lossless,
+        qindex,
+        prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, chroma_tx),
+        sub_pu_size: None,
+    })
+}
+
+/// The luma mode-info row, column, width and height of the chroma transform
+/// block `chroma_tx` (of `log2_dimensions` when given) at plane sample
+/// (`x`, `y`), which its deblock record covers.
+fn chroma_transform_cells(
+    x: usize,
+    y: usize,
+    chroma_tx: usize,
+    log2_dimensions: Option<(u32, u32)>,
+    (sub_x, sub_y): (u32, u32),
+) -> Option<[usize; 4]> {
     let (log2_width, log2_height) = log2_dimensions.or_else(|| tx_size_log2(chroma_tx))?;
-    let plane_index = match plane_id {
-        PlaneId::U => 0,
-        PlaneId::V => 1,
-        PlaneId::Y => return None,
-    };
     let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
-    let scale_x = 1usize.checked_shl(chroma_subsampling.0)?;
-    let scale_y = 1usize.checked_shl(chroma_subsampling.1)?;
-    let r = (y / MI_SIZE).saturating_mul(scale_y);
-    let c = (x / MI_SIZE).saturating_mul(scale_x);
-    Some((
-        plane_index,
-        crate::filters::deblock::DeblockBlock {
-            r: r as u32,
-            c: c as u32,
-            luma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, chroma_tx),
-            chroma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, chroma_tx),
-            chroma_base_r: r as u32,
-            chroma_base_c: c as u32,
-            n4w: (mi_w.saturating_mul(scale_x)) as u32,
-            n4h: (mi_h.saturating_mul(scale_y)) as u32,
-            luma_tx: chroma_tx as u8,
-            chroma_tx: Some(chroma_tx as u8),
-            sub_pu_size: None,
-            chroma_transform_only: false,
-            qindex,
-            skip: false,
-            lossless,
-        },
-    ))
+    let scale_x = 1usize.checked_shl(sub_x)?;
+    let scale_y = 1usize.checked_shl(sub_y)?;
+    Some([
+        (y / MI_SIZE).saturating_mul(scale_y),
+        (x / MI_SIZE).saturating_mul(scale_x),
+        mi_w.saturating_mul(scale_x),
+        mi_h.saturating_mul(scale_y),
+    ])
 }
 
 fn tx_size_log2(tx_size: usize) -> Option<(u32, u32)> {
-    let w = u32::try_from(*TX_WIDTH_LOG2.get(tx_size)?).ok()?;
-    let h = u32::try_from(*TX_HEIGHT_LOG2.get(tx_size)?).ok()?;
-    Some((w, h))
+    Some((
+        *TX_WIDTH_LOG2.get(tx_size)? as u32,
+        *TX_HEIGHT_LOG2.get(tx_size)? as u32,
+    ))
 }
 
 fn mi_extent(log2_width: u32, log2_height: u32) -> (usize, usize) {

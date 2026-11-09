@@ -33,7 +33,7 @@ use plane_execution::{
     chroma_angle_delta_uv,
 };
 pub(crate) use plane_execution::{
-    ParsedGeneralIntraResidual, ResidualPlaneArena, ResidualPlaneSpan,
+    ParsedGeneralIntraResidual, PlannedGeneralIntraResidual, ResidualPlaneArena,
 };
 #[cfg(test)]
 use splot_core::tables::conversion::TX_WIDTH_LOG2;
@@ -147,18 +147,18 @@ pub(crate) enum ResidualPlanError {
 struct ResidualPlanePlan {
     plane_id: PlaneId,
     block_ctx: BlockCtx,
-    coeff_plane: usize,
+    coeff_plane: u8,
     tx_size: usize,
     x: usize,
     y: usize,
     tx: TxShape,
-    residual_width4: usize,
-    residual_height4: usize,
+    residual_width4: u16,
+    residual_height4: u16,
     fsc_mode: bool,
     txb_skip_fsc_mode: bool,
     zero_corners: bool,
     defer_reconstruction: bool,
-    reconstruction_tx_type: Option<usize>,
+    reconstruction_tx_type: Option<u8>,
     reconstruction: ResidualReconstructionPlan,
 }
 

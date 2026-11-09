@@ -292,6 +292,12 @@ types plus `cargo xtask check-zero-copy-policy`; see
 [ARCHITECTURE.md](../ARCHITECTURE.md)) and it is a normal permissive Cargo dependency,
 not vendored or relicensed material.
 
+- **Material:** the `fearless_simd` crate from crates.io (workspace dependency
+  `fearless_simd = "1.2"`), used for portable SIMD vectors and token-gated
+  `core::arch` intrinsics without `unsafe` in splot code.
+- **License:** `Apache-2.0 OR MIT` (permissive; on `deny.toml`'s allow list). Not
+  vendored or relicensed.
+
 - **Material:** the `zerocopy` crate from crates.io, used via the workspace
   dependency shape `zerocopy = { version = "0.8", default-features = false,
   features = ["derive"] }`.

@@ -15,10 +15,8 @@ use super::cdf::block_context::{
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
-use super::intra_joint_modes::{
-    LumaPalette, PALETTE_MAX_SIZE, TileFscModeState, TileIntraJointModeState, TileLumaPaletteState,
-    TileUseDipState, TileUsesMrlsState,
-};
+use super::intra_joint_modes::{IntraNeighbours, LumaPalette, PALETTE_MAX_SIZE};
+use super::mi_size_state::TileMiSizeState;
 use super::{DecodeTileWorkUnit, partition_size::BlockSize};
 
 pub(crate) const CHROMA_MODE_COUNT: u8 = 8;
@@ -259,14 +257,19 @@ impl GeneralIntraChromaBlockMode {
         }
     }
 
-    pub(crate) const fn is_cfl(self) -> bool {
-        matches!(self, Self::Cfl(_))
-    }
-
     pub(crate) const fn supported_chroma_mode(self) -> Option<SupportedChromaMode> {
         match self {
             Self::Prediction { mode, .. } => Some(mode),
             Self::Cfl(_) => None,
+        }
+    }
+
+    /// The § 5.20.5.3 `UVCfls` / `UVSmooth` bits of this mode.
+    pub(crate) fn uv_bits(self) -> u8 {
+        match self.supported_chroma_mode() {
+            Some(mode) if mode.is_smooth() => super::mi_size_state::UV_SMOOTH,
+            Some(_) => 0,
+            None => super::mi_size_state::UV_CFL,
         }
     }
 }
@@ -381,17 +384,19 @@ impl GeneralIntraBlockModes {
         self
     }
 
-    pub(crate) const fn is_cfl(&self) -> bool {
-        matches!(self.chroma, Some(GeneralIntraChromaBlockMode::Cfl(_)))
-    }
-
     pub(crate) const fn chroma(&self) -> Option<GeneralIntraChromaBlockMode> {
         self.chroma
     }
 
+    #[cfg(test)]
     pub(crate) fn supported_chroma_mode(&self) -> Option<SupportedChromaMode> {
         self.chroma
             .and_then(GeneralIntraChromaBlockMode::supported_chroma_mode)
+    }
+
+    /// The `UVCfls` / `UVSmooth` bits of the chroma mode, 0 without one.
+    pub(crate) fn uv_bits(&self) -> u8 {
+        self.chroma.map_or(0, GeneralIntraChromaBlockMode::uv_bits)
     }
 
     pub(crate) const fn coeff_uv_mode(&self) -> usize {
@@ -447,19 +452,14 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
-    joint_modes: &TileIntraJointModeState,
-    uses_mrls: &TileUsesMrlsState,
-    fsc_modes: &TileFscModeState,
+    neighbours: IntraNeighbours,
     use_neighbor_fsc_context: bool,
     block_size: BlockSize,
-    block_r: usize,
-    block_c: usize,
     block_n4w: usize,
     block_n4h: usize,
 ) -> Result<GeneralIntraLumaBlockMode, GeneralIntraBlockModeError> {
-    let mode_ctx = joint_modes.y_mode_index_ctx(block_r, block_c, block_n4w, block_n4h);
-    let neighbour_joint_modes =
-        joint_modes.neighbour_joint_modes(block_r, block_c, block_n4w, block_n4h);
+    let mode_ctx = neighbours.y_mode_index_ctx();
+    let neighbour_joint_modes = neighbours.joint_modes();
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
 
     let y_mode_result = decode_luma_y_mode(
@@ -475,7 +475,7 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
     let fsc_mode = if allow_fsc_intra(chroma_tools, block_n4w, block_n4h) {
         let bsize_group = fsc_bsize_group(block_size);
         let ctx = if use_neighbor_fsc_context {
-            fsc_modes.fsc_mode_ctx(block_r, block_c, block_n4w, block_n4h)
+            neighbours.fsc_mode_ctx()
         } else {
             INTER_FSC_MODE_CONTEXT
         };
@@ -497,7 +497,7 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
             cdfs,
             symbols,
             TileCdfSelector::MrlIndex {
-                ctx: uses_mrls.mrl_index_ctx(block_r, block_c, block_n4w, block_n4h),
+                ctx: neighbours.mrl_index_ctx(),
             },
             MRL_INDEX_REASON,
         )?;
@@ -508,7 +508,7 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
                 cdfs,
                 symbols,
                 TileCdfSelector::MrlSecIndex {
-                    ctx: uses_mrls.mrl_sec_index_ctx(block_r, block_c, block_n4w, block_n4h),
+                    ctx: neighbours.mrl_sec_index_ctx(),
                 },
                 MRL_SEC_INDEX_REASON,
             )?;
@@ -537,12 +537,9 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
-    joint_modes: &TileIntraJointModeState,
-    uses_mrls: &TileUsesMrlsState,
-    use_dip: &TileUseDipState,
-    fsc_modes: &TileFscModeState,
+    edges: &TileMiSizeState,
+    neighbours: IntraNeighbours,
     use_neighbor_fsc_context: bool,
-    palette_state: &TileLumaPaletteState,
     is_cfl_ctx: usize,
     luma_block_size: BlockSize,
     block_r: usize,
@@ -557,13 +554,9 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
         work_unit,
         symbols,
         chroma_tools,
-        joint_modes,
-        uses_mrls,
-        fsc_modes,
+        neighbours,
         use_neighbor_fsc_context,
         luma_block_size,
-        block_r,
-        block_c,
         block_n4w,
         block_n4h,
     )?;
@@ -581,7 +574,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
         work_unit,
         symbols,
         chroma_tools,
-        palette_state,
+        edges,
         luma.y_mode,
         luma_block_size.index(),
         block_r,
@@ -594,11 +587,9 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
         work_unit,
         symbols,
         chroma_tools,
-        use_dip,
+        neighbours,
         luma.y_mode,
         palette_y,
-        block_r,
-        block_c,
         block_n4w,
         block_n4h,
     )?;
@@ -614,7 +605,7 @@ pub(crate) fn read_general_intra_palette_y_mode(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
-    palette_state: &TileLumaPaletteState,
+    edges: &TileMiSizeState,
     y_mode: IntraYMode,
     block_size_index: usize,
     block_r: usize,
@@ -644,7 +635,7 @@ pub(crate) fn read_general_intra_palette_y_mode(
         let palette_size = usize::from(palette_size_symbol.get()) + 2;
         let colors = read_palette_colors_y(
             symbols,
-            palette_state,
+            edges,
             block_r,
             block_c,
             palette_size,
@@ -663,11 +654,9 @@ pub(crate) fn read_general_intra_dip_mode_info(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
-    use_dip: &TileUseDipState,
+    neighbours: IntraNeighbours,
     y_mode: IntraYMode,
     palette_y: Option<LumaPalette>,
-    block_r: usize,
-    block_c: usize,
     block_n4w: usize,
     block_n4h: usize,
 ) -> Result<(u8, u8, u8), GeneralIntraBlockModeError> {
@@ -675,7 +664,7 @@ pub(crate) fn read_general_intra_dip_mode_info(
         return Ok((0, 0, 0));
     }
 
-    let ctx = use_dip.use_dip_ctx(block_r, block_c, block_n4w, block_n4h);
+    let ctx = neighbours.use_dip_ctx();
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let use_dip_value = read_symbol(
         cdfs,
@@ -738,13 +727,13 @@ pub(crate) fn read_lossless_tx_size(
 
 fn read_palette_colors_y(
     symbols: &mut SymbolDecoder<'_>,
-    palette_state: &TileLumaPaletteState,
+    edges: &TileMiSizeState,
     block_r: usize,
     block_c: usize,
     palette_size: usize,
     bit_depth_bits: u32,
 ) -> Result<[u16; PALETTE_MAX_SIZE], GeneralIntraBlockModeError> {
-    let (cache, cache_len) = palette_state.palette_cache(block_r, block_c);
+    let (cache, cache_len) = edges.palette_cache(block_r, block_c);
     let mut colors = [0u16; PALETTE_MAX_SIZE];
     let mut idx = 0usize;
     for &cached in cache.iter().take(cache_len) {

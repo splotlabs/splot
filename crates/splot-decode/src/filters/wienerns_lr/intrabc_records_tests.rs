@@ -23,7 +23,7 @@ use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
 const BLOCK_16X16: usize = 6;
 
 impl IntrabcBlockContext {
-    const fn new(row: usize, col: usize, b_size: usize, is_chroma_part: bool) -> Self {
+    pub(crate) const fn new(row: usize, col: usize, b_size: usize, is_chroma_part: bool) -> Self {
         Self {
             row,
             col,
@@ -51,7 +51,7 @@ impl IntrabcBlockContext {
 }
 
 impl IntrabcBlockGeometry {
-    const fn new(block: IntrabcBlockContext, n4w: usize, n4h: usize) -> Self {
+    pub(crate) const fn new(block: IntrabcBlockContext, n4w: usize, n4h: usize) -> Self {
         Self { block, n4w, n4h }
     }
 }
@@ -305,6 +305,7 @@ fn run_intrabc_prelude(
         &mut cdfs,
         &mut symbols,
         &state,
+        None,
         &core,
         geometry,
         ByteOffset::new(20),
@@ -486,6 +487,7 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
         &mut cdfs,
         &mut symbols,
         &state,
+        None,
         &core,
         geometry,
         ByteOffset::new(20),
@@ -1077,6 +1079,7 @@ fn non_intrabc_path_reads_only_use_intrabc_symbol() {
         &mut cdfs,
         &mut symbols,
         &state,
+        None,
         &core,
         geometry,
         ByteOffset::new(20),

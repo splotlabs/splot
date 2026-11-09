@@ -162,14 +162,11 @@ impl TemporalMotionBand {
                 let Some(row) = y8.checked_sub(row_base8) else {
                     return;
                 };
-                let Some(index) = row
-                    .checked_mul(width8)
-                    .and_then(|base| base.checked_add(x8))
-                else {
+                let Some(base) = row.checked_mul(width8) else {
                     return;
                 };
-                if let Some(target) = cells.get_mut(index) {
-                    *target = cell.store();
+                if let Some(target) = cells.get_mut(base + x8.start..base + x8.end) {
+                    crate::support::fill_mi_run(target, cell.store());
                 }
             });
         }

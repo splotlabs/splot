@@ -6,8 +6,7 @@
 //! row and the primary coefficients `x` at the layout's output positions; the
 //! outputs go to the input positions and every other coefficient is zero.
 
-use std::simd::Simd;
-use std::simd::num::SimdInt as _;
+use fearless_simd::{Level, SimdBase as _, dispatch, i32x8};
 
 use splot_recon::SecondaryTransformLayout;
 use splot_recon::math::round2_signed_i32;
@@ -80,16 +79,18 @@ pub(crate) fn forward_simd(
     let x = gather(layout, coeffs)?;
     let x = &x[..layout.width];
     let mut sums = [0; 32];
-    for (sum, row) in sums
-        .iter_mut()
-        .zip(layout.kernel.chunks_exact(layout.width))
-    {
-        let mut acc = Simd::<i32, LANES>::splat(0);
-        for (k, v) in row.chunks_exact(LANES).zip(x.chunks_exact(LANES)) {
-            acc += Simd::from_slice(k) * Simd::from_slice(v);
+    dispatch!(Level::baseline(), simd => {
+        for (sum, row) in sums
+            .iter_mut()
+            .zip(layout.kernel.chunks_exact(layout.width))
+        {
+            let mut acc = i32x8::splat(simd, 0);
+            for (k, v) in row.chunks_exact(LANES).zip(x.chunks_exact(LANES)) {
+                acc += i32x8::from_slice(simd, k) * i32x8::from_slice(simd, v);
+            }
+            *sum = acc.reduce_sum();
         }
-        *sum = acc.reduce_sum();
-    }
+    });
     scatter(layout, &sums[..layout.n], coeffs);
     Ok(())
 }

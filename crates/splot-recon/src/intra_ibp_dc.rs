@@ -10,13 +10,10 @@ use crate::intra_dc_math::{
     IntraLaneSample, round2_u32, validate_dc_edge, validate_output_shape, validate_sample_type,
 };
 use crate::{BitDepth, ReconError, ReconSample, Result};
+use fearless_simd::{Simd, SimdBase, u16x16};
 use std::ops::Range;
-use std::simd::Simd;
-use std::simd::num::SimdUint;
 
 const IBP_WEIGHT_MAX: u16 = 128;
-/// Widest IBP DC block side.
-const IBP_MAX_SIDE: usize = 64;
 const IBP_WEIGHT_SHIFT: u8 = 7;
 
 #[rustfmt::skip]
@@ -69,10 +66,8 @@ pub fn apply_intra_ibp_dc_rect<T: ReconSample>(
             return Ok(());
         }
     } else if let Some(pred) = T::u8_slice_mut(pred) {
-        let mut wide = [[0u16; IBP_MAX_SIDE]; 2];
-        let [wide_left, wide_above] = &mut wide;
-        let left = widen_u8_edge(edges.left_samples(), wide_left);
-        let above = widen_u8_edge(edges.above_samples(), wide_above);
+        let left = edges.left_samples().and_then(T::u8_slice);
+        let above = edges.above_samples().and_then(T::u8_slice);
         if left.is_some() == have_left
             && above.is_some() == have_above
             && blend_ibp_dc_lanes(bit_depth, size, left, above, pred, stride_samples)
@@ -128,29 +123,15 @@ pub fn apply_intra_ibp_dc_rect<T: ReconSample>(
     Ok(())
 }
 
-/// Widens a `u8` edge into `wide`, or `None` for an absent, wider-typed, or
-/// longer edge.
-fn widen_u8_edge<'a, T: ReconSample>(
-    samples: Option<&[T]>,
-    wide: &'a mut [u16; IBP_MAX_SIDE],
-) -> Option<&'a [u16]> {
-    let narrow = samples.and_then(T::u8_slice)?;
-    let wide = wide.get_mut(..narrow.len())?;
-    for (slot, &sample) in wide.iter_mut().zip(narrow) {
-        *slot = u16::from(sample);
-    }
-    Some(wide)
-}
-
-/// The lane form of the § 7.13.2.12 blend over `u16` edges: each above-zone
+/// The lane form of the § 7.13.2.12 blend over in-range edges: each above-zone
 /// row blends with one weight and each left-zone row with the `w / 4` column
 /// weights. Returns `false` without writing when a zone sample is above
 /// `bit_depth`, so the checked path reports it.
-fn blend_ibp_dc_lanes<O: IntraLaneSample>(
+fn blend_ibp_dc_lanes<E: IntraLaneSample, O: IntraLaneSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
-    left: Option<&[u16]>,
-    above: Option<&[u16]>,
+    left: Option<&[E]>,
+    above: Option<&[E]>,
     pred: &mut [O],
     stride: usize,
 ) -> bool {
@@ -183,52 +164,226 @@ fn blend_ibp_dc_lanes<O: IntraLaneSample>(
                 .is_some_and(|run| run.iter().all(|&value| value.to_u16() <= max))
         })
     };
-    if (above.is_some() && !in_range(0..height >> 2, above_start..width))
-        || (left.is_some() && !in_range(left_start..height, 0..width >> 2))
+    if O::MAX_VALUE > max
+        && ((above.is_some() && !in_range(0..height >> 2, above_start..width))
+            || (left.is_some() && !in_range(left_start..height, 0..width >> 2)))
     {
         return false;
     }
-    if let Some(edge) = above.and_then(|edge| edge.get(above_start..)) {
-        for (row, &weight) in above_weights.iter().enumerate().take(height >> 2) {
-            let Some(out) = pred.get_mut(row * stride + above_start..row * stride + width) else {
-                continue;
-            };
-            let (runs, out) = out.as_chunks_mut::<4>();
-            let (sources, edge) = edge.as_chunks::<4>();
-            for (run, source) in runs.iter_mut().zip(sources) {
-                blend_ibp_lanes(run, Simd::from_array(*source), Simd::splat(weight));
-            }
-            for (slot, &source) in out.iter_mut().zip(edge) {
-                *slot = O::from_lane(blend_ibp_value(source, slot.to_u16(), weight));
-            }
-        }
-    }
-    for (row, &edge) in left.into_iter().flatten().enumerate().skip(left_start) {
-        let Some(out) = pred.get_mut(row * stride..row * stride + (width >> 2)) else {
-            continue;
-        };
-        let (runs, out) = out.as_chunks_mut::<4>();
-        let (weights, left_weights) = left_weights.as_chunks::<4>();
-        for (run, weight) in runs.iter_mut().zip(weights) {
-            blend_ibp_lanes(run, Simd::splat(edge), Simd::from_array(*weight));
-        }
-        for (slot, &weight) in out.iter_mut().zip(left_weights) {
-            *slot = O::from_lane(blend_ibp_value(edge, slot.to_u16(), weight));
-        }
-    }
+    let wide = max > MAX_NARROW_BLEND_SAMPLE;
+    let zones = IbpDcZones {
+        above: above
+            .and_then(|edge| edge.get(above_start..))
+            .map(|edge| (edge, above_start, above_weights)),
+        left: left.map(|edge| (edge, left_start, left_weights)),
+    };
+    baseline_simd!(simd => blend_ibp_dc_zones(simd, wide, size, zones, pred, stride));
     true
 }
 
-fn blend_ibp_lanes<O: IntraLaneSample>(
-    pred: &mut [O; 4],
-    edge: Simd<u16, 4>,
-    weight: Simd<u16, 4>,
+/// Largest sample whose § 7.13.2.12 blend sum `128 * sample + 64` fits `u16`.
+const MAX_NARROW_BLEND_SAMPLE: u16 = 511;
+
+/// The § 7.13.2.12 above and left zones: edge samples from the zone's first
+/// sample, the first row or column of the zone, and the weights.
+#[derive(Clone, Copy)]
+struct IbpDcZones<'a, E> {
+    above: Option<(&'a [E], usize, &'a [u16; 16])>,
+    left: Option<(&'a [E], usize, &'a [u16])>,
+}
+
+#[inline]
+fn blend_ibp_dc_zones<S: Simd, E: IntraLaneSample, O: IntraLaneSample>(
+    simd: S,
+    wide: bool,
+    size: IntraRectBlockSize,
+    zones: IbpDcZones<'_, E>,
+    pred: &mut [O],
+    stride: usize,
 ) {
-    let weight = weight.cast::<u32>();
-    let sum = edge.cast::<u32>() * (Simd::splat(u32::from(IBP_WEIGHT_MAX)) - weight)
-        + O::load(pred).cast::<u32>() * weight;
-    let blended = (sum + Simd::splat(1 << (IBP_WEIGHT_SHIFT - 1))) >> u32::from(IBP_WEIGHT_SHIFT);
-    O::store(blended.cast::<u16>().as_array(), pred);
+    let (width, height) = (size.width(), size.height());
+    let packed = PackedRuns { simd, wide, stride };
+    if let Some((edge, start, weights)) = zones.above {
+        let rows = 0..height >> 2;
+        let row_weight = |row: usize| weights.get(row).copied().unwrap_or(0);
+        let narrow = |len: usize| start == 0 && width == len;
+        if let Some(&edge) = edge.first_chunk::<4>().filter(|_| narrow(4)) {
+            let edge = edge.map(E::to_u16);
+            packed.blend::<O, 4>(rows, 0, pred, |_| edge, |row| [row_weight(row); 4]);
+        } else if let Some(&edge) = edge.first_chunk::<8>().filter(|_| narrow(8)) {
+            let edge = edge.map(E::to_u16);
+            packed.blend::<O, 8>(rows, 0, pred, |_| edge, |row| [row_weight(row); 8]);
+        } else {
+            blend_above_rows(simd, wide, edge, start, width, rows, weights, pred, stride);
+        }
+    }
+    let Some((edge, start, weights)) = zones.left else {
+        return;
+    };
+    let rows = start..height.min(edge.len());
+    let row_edge = |row: usize| edge[row].to_u16();
+    if let Some(&run_weights) = weights.first_chunk::<4>().filter(|_| weights.len() == 4) {
+        packed.blend::<O, 4>(rows, 0, pred, |row| [row_edge(row); 4], |_| run_weights);
+    } else if let Some(&run_weights) = weights.first_chunk::<8>().filter(|_| weights.len() == 8) {
+        packed.blend::<O, 8>(rows, 0, pred, |row| [row_edge(row); 8], |_| run_weights);
+    } else {
+        blend_left_rows(simd, wide, edge, width, rows, weights, pred, stride);
+    }
+}
+
+/// Blends the § 7.13.2.12 runs of `C` samples (4 or 8) from column `start`
+/// of each row, `16 / C` rows per lane group.
+#[derive(Clone, Copy)]
+struct PackedRuns<S> {
+    simd: S,
+    wide: bool,
+    stride: usize,
+}
+
+impl<S: Simd> PackedRuns<S> {
+    #[inline]
+    fn blend<O: IntraLaneSample, const C: usize>(
+        self,
+        rows: Range<usize>,
+        start: usize,
+        pred: &mut [O],
+        edge: impl Fn(usize) -> [u16; C],
+        weight: impl Fn(usize) -> [u16; C],
+    ) {
+        let per_group = 16 / C;
+        let mut row = rows.start;
+        while row < rows.end {
+            let count = per_group.min(rows.end - row);
+            let mut lanes = [O::from_lane(0); 16];
+            let (mut edges, mut weights) = ([0u16; 16], [0u16; 16]);
+            for i in 0..count {
+                let at = (row + i) * self.stride + start;
+                let Some(run) = pred.get(at..).and_then(<[O]>::first_chunk::<C>) else {
+                    return;
+                };
+                lanes[i * C..(i + 1) * C].copy_from_slice(run); // splot-copy-ok: gather one IBP run
+                edges[i * C..(i + 1) * C].copy_from_slice(&edge(row + i)); // splot-copy-ok: gather one IBP run edge
+                weights[i * C..(i + 1) * C].copy_from_slice(&weight(row + i)); // splot-copy-ok: gather one IBP run weight
+            }
+            let blended = blend_ibp_lanes(
+                self.simd,
+                self.wide,
+                O::load16(self.simd, &lanes),
+                u16x16::from_slice(self.simd, &edges),
+                u16x16::from_slice(self.simd, &weights),
+            );
+            O::store16(self.simd, blended, &mut lanes);
+            for i in 0..count {
+                let at = (row + i) * self.stride + start;
+                if let Some(run) = pred.get_mut(at..).and_then(<[O]>::first_chunk_mut::<C>) {
+                    run.copy_from_slice(&lanes[i * C..(i + 1) * C]); // splot-copy-ok: publish one IBP run
+                }
+            }
+            row += count;
+        }
+    }
+}
+
+/// The above zone of [`blend_ibp_dc_zones`] row by row.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn blend_above_rows<S: Simd, E: IntraLaneSample, O: IntraLaneSample>(
+    simd: S,
+    wide: bool,
+    edge: &[E],
+    start: usize,
+    width: usize,
+    rows: Range<usize>,
+    weights: &[u16; 16],
+    pred: &mut [O],
+    stride: usize,
+) {
+    for (row, &weight) in weights.iter().enumerate().take(rows.end) {
+        let Some(out) = pred.get_mut(row * stride + start..row * stride + width) else {
+            continue;
+        };
+        let (runs, out) = out.as_chunks_mut::<16>();
+        let (sources, edge) = edge.as_chunks::<16>();
+        let weight_lanes = u16x16::splat(simd, weight);
+        for (run, source) in runs.iter_mut().zip(sources) {
+            let blended = blend_ibp_lanes(
+                simd,
+                wide,
+                O::load16(simd, run),
+                E::load16(simd, source),
+                weight_lanes,
+            );
+            O::store16(simd, blended, run);
+        }
+        for (slot, &source) in out.iter_mut().zip(edge) {
+            *slot = O::from_lane(blend_ibp_value(source.to_u16(), slot.to_u16(), weight));
+        }
+    }
+}
+
+/// The left zone of [`blend_ibp_dc_zones`] row by row.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn blend_left_rows<S: Simd, E: IntraLaneSample, O: IntraLaneSample>(
+    simd: S,
+    wide: bool,
+    edge: &[E],
+    width: usize,
+    rows: Range<usize>,
+    weights: &[u16],
+    pred: &mut [O],
+    stride: usize,
+) {
+    for (row, &edge) in edge.iter().enumerate().take(rows.end).skip(rows.start) {
+        let edge = edge.to_u16();
+        let Some(out) = pred.get_mut(row * stride..row * stride + (width >> 2)) else {
+            continue;
+        };
+        let (runs, out) = out.as_chunks_mut::<16>();
+        let (run_weights, weights) = weights.as_chunks::<16>();
+        let edge_lanes = u16x16::splat(simd, edge);
+        for (run, weight) in runs.iter_mut().zip(run_weights) {
+            let blended = blend_ibp_lanes(
+                simd,
+                wide,
+                O::load16(simd, run),
+                edge_lanes,
+                u16x16::from_slice(simd, weight),
+            );
+            O::store16(simd, blended, run);
+        }
+        for (slot, &weight) in out.iter_mut().zip(weights) {
+            *slot = O::from_lane(blend_ibp_value(edge, slot.to_u16(), weight));
+        }
+    }
+}
+
+/// `Round2(pred * weight + edge * (128 - weight), 7)` over 16 lanes, in `u16`
+/// lanes unless `wide` samples need `u32`.
+#[inline]
+pub(crate) fn blend_ibp_lanes<S: Simd>(
+    simd: S,
+    wide: bool,
+    pred: u16x16<S>,
+    edge: u16x16<S>,
+    weight: u16x16<S>,
+) -> u16x16<S> {
+    let inverse = u16x16::splat(simd, IBP_WEIGHT_MAX) - weight;
+    let round = 1 << (IBP_WEIGHT_SHIFT - 1);
+    if !wide {
+        return (pred * weight + edge * inverse + round) >> u32::from(IBP_WEIGHT_SHIFT);
+    }
+    let [
+        (pred_low, pred_high),
+        (edge_low, edge_high),
+        (weight_low, weight_high),
+        (inverse_low, inverse_high),
+    ] = [pred, edge, weight, inverse].map(|lanes| simd.widen_u16x16(lanes));
+    let low = (pred_low * weight_low + edge_low * inverse_low + u32::from(round))
+        >> u32::from(IBP_WEIGHT_SHIFT);
+    let high = (pred_high * weight_high + edge_high * inverse_high + u32::from(round))
+        >> u32::from(IBP_WEIGHT_SHIFT);
+    simd.relaxed_narrow_u32x8(low, high)
 }
 
 fn blend_ibp_value(edge: u16, pred: u16, weight: u16) -> u16 {

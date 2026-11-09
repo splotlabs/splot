@@ -150,7 +150,6 @@ fn omits_chroma_plans_for_luma_only_blocks() {
     .expect("rect luma plan");
     assert!(plan.plane_plan(PlaneId::U).is_none());
     assert!(plan.plane_plan(PlaneId::V).is_none());
-    assert_eq!(plan.chroma_tx(), None);
 }
 
 #[test]
@@ -189,7 +188,6 @@ fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
         tx_skip_records: &mut tx_skip_records,
         block_r: 0,
         block_c: 0,
-        chroma_tx: Some(tx_8x8),
         chroma_subsampling: (1, 0),
         qindex: 37,
         lossless: true,
@@ -199,23 +197,15 @@ fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
     recorder.record_chroma_unit(PlaneId::U, 8, 8, tx_8x8);
     recorder.record_chroma_unit(PlaneId::V, 0, 8, tx_8x8);
 
-    let u: Vec<_> = chroma_blocks
-        .iter_plane(0)
-        .map(|(_, record)| record)
-        .collect();
-    let v: Vec<_> = chroma_blocks
-        .iter_plane(1)
-        .map(|(_, record)| record)
-        .collect();
+    let u = &chroma_blocks;
     assert_eq!(u.len(), 2);
-    assert_eq!(u[0].chroma_base_c, 0);
-    assert_eq!(u[1].chroma_base_c, 4);
+    assert_eq!(u[0].c, 0);
+    assert_eq!(u[1].c, 4);
     assert_eq!(u[1].n4w, 4);
-    assert_eq!(u[1].chroma_base_r, 2);
+    assert_eq!(u[1].r, 2);
     assert_eq!(u[1].n4h, 2);
-    assert_eq!(v.len(), 1);
-    assert_eq!(v[0].qindex, 37);
-    assert!(v[0].lossless);
+    assert_eq!(u[0].qindex, 37);
+    assert!(u[0].lossless);
 }
 
 #[test]
@@ -291,10 +281,10 @@ fn chroma_part_applies_lossless_luma_fsc_only_to_reconstruction() {
         let plane = plan.plane_plan(plane_id).expect("chroma plane");
         assert!(!plane.fsc_mode);
         assert!(!plane.txb_skip_fsc_mode);
-        assert_eq!(plane.reconstruction_tx_type, Some(IDTX));
+        assert_eq!(plane.reconstruction_tx_type, Some(IDTX as u8));
         let mut coeffs = empty_luma_coeffs();
         plane.apply_reconstruction_tx_type(&mut coeffs);
-        assert_eq!(coeffs.plane_tx_type, IDTX);
+        assert_eq!(coeffs.plane_tx_type(), IDTX);
     }
 }
 
@@ -659,7 +649,7 @@ fn every_av2_block_shape_maps_to_valid_luma_and_chroma_chunk_tx_sizes() {
 }
 
 #[test]
-fn max_residual_plan_capacity_reuses_storage_after_invalid_geometry() {
+fn max_residual_plan_fills_its_bound_and_rejects_a_wider_block() {
     let plan = |width4, height4| {
         let block = BlockRect::new(0, 0, width4, height4);
         let tx = TxShape::from_luma_4x4(width4.min(64), height4.min(64))
@@ -684,15 +674,9 @@ fn max_residual_plan_capacity_reuses_storage_after_invalid_geometry() {
 
     let max_plan = plan(64, 64).expect("maximum AV2 block plan");
     assert_eq!(max_plan.planes.len(), MAX_RESIDUAL_PLANES);
-    let storage = max_plan.planes.as_ptr();
-    drop(max_plan);
 
     let error = plan(65, 64).expect_err("first out-of-table width must exceed the plan bound");
     assert_eq!(error, ResidualPlanError::InvalidGeometry);
-
-    let after_error = plan(64, 64).expect("bound error must leave plan storage reusable");
-    assert_eq!(after_error.planes.len(), MAX_RESIDUAL_PLANES);
-    assert_eq!(after_error.planes.as_ptr(), storage);
 }
 
 #[test]
@@ -734,7 +718,7 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
         let mut coeffs = empty_luma_coeffs();
         if !all_zero {
             coeffs.eob = 1;
-            coeffs.quant_range = 0..16;
+            coeffs.quant_len = 16;
         }
         ParsedTransformUnit {
             block: PositionedLumaCoeffBlock {
@@ -1032,7 +1016,7 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
     assert_eq!(original_count, 4);
     assert_eq!(visible.len(), 1);
     let mut deblock_blocks = Vec::new();
-    let mut chroma_blocks = crate::filters::deblock::ChromaDeblockRecords::new();
+    let mut chroma_blocks = Vec::new();
     let mut tx_skip_records = Vec::new();
     let mut deblock = DeblockRecorder {
         blocks: &mut deblock_blocks,
@@ -1040,16 +1024,19 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
         tx_skip_records: &mut tx_skip_records,
         block_r: 8,
         block_c: 8,
-        chroma_tx: None,
         chroma_subsampling: (1, 1),
         qindex: 0,
         lossless: false,
     };
 
     let mut units = Vec::new();
-    let mut parsed = plane
-        .retain_partitioned_luma(visible, None, &mut deblock, &mut units)
-        .expect("visible transform unit has valid geometry");
+    let mut parsed = ParsedResidualPlane {
+        plane,
+        kind: plane
+            .retain_partitioned_luma(visible, None, &mut deblock, &mut units)
+            .expect("visible transform unit has valid geometry"),
+        cctx_role: CctxRole::None,
+    };
     assert_eq!(deblock_blocks.len(), 1);
     assert_eq!(
         (
@@ -1057,7 +1044,7 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
             deblock_blocks[0].c,
             deblock_blocks[0].n4w,
             deblock_blocks[0].n4h,
-            usize::from(deblock_blocks[0].luma_tx),
+            usize::from(deblock_blocks[0].tx),
         ),
         (8, 8, 8, 8, tx_32x32)
     );
@@ -1371,7 +1358,12 @@ fn assert_case(case: Case) {
         "{}",
         case.label
     );
-    assert_eq!(plane.coeff_plane, coeff_plane(case.plane), "{}", case.label);
+    assert_eq!(
+        usize::from(plane.coeff_plane),
+        coeff_plane(case.plane),
+        "{}",
+        case.label
+    );
 }
 
 fn ctx(block: BlockRect, bit_depth: BitDepth) -> BlockCtx {
@@ -1386,7 +1378,8 @@ fn ctx_with_chroma(block: BlockRect, bit_depth: BitDepth, chroma: ChromaSampling
 fn empty_luma_coeffs() -> crate::bitstream::tile_payload::LumaCoeffBlock {
     crate::bitstream::tile_payload::LumaCoeffBlock {
         eob: 0,
-        quant_range: 0..0,
+        quant_start: 0,
+        quant_len: 0,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,

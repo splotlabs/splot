@@ -898,77 +898,20 @@ pub(crate) enum TileCdfError {
         context_update_tile_id: u32,
         tile_count: u32,
     },
+    #[cfg(test)]
     #[error("{table} bSize={b_size} is outside 0..{max_exclusive}")]
     BlockSizeOutOfRange {
         table: &'static str,
         b_size: usize,
         max_exclusive: usize,
     },
+    #[cfg(test)]
     #[error("{array}[{plane_start}][{index}] is unavailable; length {len}")]
     PartitionNeighborOutOfRange {
         array: &'static str,
         plane_start: usize,
         index: usize,
         len: usize,
-    },
-    #[error(
-        "{array}[{plane_start}][{index}] partition context {context} is outside 0..{max_exclusive}"
-    )]
-    PartitionNeighborContextOutOfRange {
-        array: &'static str,
-        plane_start: usize,
-        index: usize,
-        context: usize,
-        max_exclusive: usize,
-    },
-    #[error(
-        "{array}[{plane_start}] {coordinate} coordinate underflow deriving {actual}-{subtract}"
-    )]
-    PartitionGridCoordinateUnderflow {
-        array: &'static str,
-        plane_start: usize,
-        coordinate: &'static str,
-        actual: usize,
-        subtract: usize,
-    },
-    #[error("{array}[{plane_start}][{row}] row is unavailable; rows {rows}")]
-    PartitionGridRowOutOfRange {
-        array: &'static str,
-        plane_start: usize,
-        row: usize,
-        rows: usize,
-    },
-    #[error("{array}[{plane_start}][{row}][{col}] column is unavailable; columns {cols}")]
-    PartitionGridColumnOutOfRange {
-        array: &'static str,
-        plane_start: usize,
-        row: usize,
-        col: usize,
-        cols: usize,
-    },
-    #[error(
-        "{array}[{plane_start}][{row}][{col}] block size {block_size} is outside 0..{max_exclusive}"
-    )]
-    PartitionGridBlockSizeOutOfRange {
-        array: &'static str,
-        plane_start: usize,
-        row: usize,
-        col: usize,
-        block_size: usize,
-        max_exclusive: usize,
-    },
-    #[error("{array}[{plane_start}] index overflow deriving {base}+{offset}")]
-    PartitionNeighborIndexOverflow {
-        array: &'static str,
-        plane_start: usize,
-        base: usize,
-        offset: usize,
-    },
-    #[error("{table}[{b_size}] value {value} cannot be represented as a context index")]
-    ConversionTableValueOutOfRange {
-        table: &'static str,
-        b_size: usize,
-        value: i32,
     },
     #[error("tile CDF selector did not map to a tile-local or block selector")]
     UnexpectedSelector,

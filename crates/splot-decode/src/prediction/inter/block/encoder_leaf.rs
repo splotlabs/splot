@@ -12,8 +12,8 @@
 
 use super::super::compound::CompoundYMode;
 use super::super::find_mv_stack::{
-    GridCheckpoint, GridEdge, ModeContext, OrderHintMvContext, RefMvBank, WarpParamBank,
-    reference_order_hints,
+    ALL_CANDIDATES, GridCheckpoint, GridEdge, ModeContext, OrderHintMvContext, RefMvBank,
+    WarpParamBank, reference_order_hints,
 };
 use splot_core::headers::sequence::{SequencePartitionConfig, SuperblockSize};
 
@@ -198,7 +198,7 @@ pub(crate) struct EncoderInterTile {
     tip_records: Vec<TemporalMotionBlock>,
     /// The unit records a TIP trial derives and drops, kept for reuse.
     tip_trial_records: Vec<TemporalMotionBlock>,
-    tip_scratch: super::tip::TipReconstructScratch<u16>,
+    tip_scratch: super::tip::TipReconstructScratch,
     /// The intra block copy state of an intra frame with `allow_intrabc`;
     /// `None` in an inter frame.
     intrabc: Option<TileIntrabcPreludeState>,
@@ -548,7 +548,7 @@ impl EncoderInterTile {
             .collect();
         let temporal_first = !tip && self.temporal_first(ref_frame);
         let state = self.resolution_state(&block);
-        let stack = single_mv_stack(&block, tip, temporal_first, &state);
+        let stack = single_mv_stack(&block, tip, temporal_first, &state, ALL_CANDIDATES);
         let mv = |single: &SingleMotionSyntax| {
             single_mode_mv(single, &stack, (precision, false), &block, &state)
         };
@@ -793,22 +793,23 @@ impl EncoderInterTile {
             .clone()
             .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
         let mut sink = mc::WorkspaceSink::Frame(workspace);
-        let shared = (
+        let frame = super::tip::TipFramePlan::new(
+            sink.info(),
+            &temporal,
             &self.sequence,
             &self.core,
             &self.ref_frame_idx,
             &self.reference,
-        );
+        )?;
         let grid = super::tip::motion(
             &mut self.tip_scratch,
             records,
             &sink,
             placed,
+            &frame,
             &temporal,
-            shared.0,
-            shared.1,
-            shared.2,
-            shared.3,
+            &self.ref_frame_idx,
+            &self.reference,
             ByteOffset::new(0),
         )?;
         if predict {
@@ -817,14 +818,13 @@ impl EncoderInterTile {
                 &mut self.residual_scratch,
                 &mut sink,
                 grid,
+                true,
                 placed,
                 &[],
                 &[],
+                &frame,
                 &temporal,
-                shared.0,
-                shared.1,
-                shared.2,
-                shared.3,
+                &self.reference,
                 self.qindex,
                 false,
                 false,
@@ -957,7 +957,7 @@ impl EncoderInterTile {
             ),
             EncoderMotion::Compound(compound) => {
                 let syntax;
-                (syntax, blend) = self.compound_syntax(frontier, &block, compound)?;
+                (syntax, blend) = self.compound_syntax(frontier, compound)?;
                 let distances = super::compound_path::compound_optflow_distances(
                     &self.core,
                     &self.reference,
@@ -1221,7 +1221,7 @@ impl EncoderInterTile {
     fn placed(
         &self,
         frontier: &DecodeBlockFrontier,
-        syntax: InterBlockSyntax,
+        mut syntax: InterBlockSyntax,
         resolved: &ResolvedInterBlock,
     ) -> Result<PlacedInterBlock> {
         let geometry = prediction::placed_inter_geometry_at(
@@ -1235,8 +1235,8 @@ impl EncoderInterTile {
                 interintra_chroma: false,
                 ..geometry
             }
-            .place(compound_inter_block(syntax, &compound, resolved)),
-            _ => geometry.place(single_inter_block(syntax, resolved)),
+            .place(compound_inter_block(&mut syntax, &compound, resolved)),
+            _ => geometry.place(single_inter_block(&mut syntax, resolved)),
         })
     }
 }
@@ -1344,9 +1344,10 @@ impl EncoderInterResidual {
         let start = self.coeffs.len();
         self.coeffs.extend_from_slice(&levels[..nonzero]);
         let coeffs = LumaCoeffBlock {
-            eob,
-            quant_range: start..start + nonzero,
-            zero_tail: levels.len() - nonzero,
+            eob: eob as u16,
+            quant_start: start as u32,
+            quant_len: nonzero as u16,
+            zero_tail: (levels.len() - nonzero) as u16,
             use_tcq,
             intra_ist,
             ..LumaCoeffBlock::empty(tx_type, false)
@@ -1363,9 +1364,7 @@ impl EncoderInterResidual {
     }
 
     fn range(&self) -> InterResidual {
-        InterResidual {
-            block_range: 0..self.blocks.len(),
-        }
+        InterResidual::new(0..self.blocks.len())
     }
 }
 

@@ -7,8 +7,7 @@ use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 use super::{
-    Mv, MvBlockContext, NeighbourCell, NeighbourMvGrid, RelativeProbe, TIP_REF_FRAME,
-    warp_sub_mv_at,
+    Mv, MvBlockContext, NeighbourCell, NeighbourMvGrid, RelativeProbe, TIP_REF_FRAME, WarpSubMvWalk,
 };
 use band::BandCells;
 pub(crate) use band::TemporalMotionBand;
@@ -502,13 +501,44 @@ impl TemporalMotionField {
         let mut refs = None;
         for &block in blocks {
             let resolved = BlockRefs::reuse(&mut refs, &block, &self.ref_order_hints);
-            visit_temporal_block_cells(block, resolved, width8, height8, |y8, x8, cell, hints| {
-                let index = y8 * width8 + x8;
-                if let Some(pending) = pending.as_mut().and_then(|pending| pending.get_mut(index)) {
-                    *pending = hints.map(|hint| hint.unwrap_or(u32::MAX));
+            if pending.is_none()
+                && let Some((rows8, cols8)) = temporal_block_cells8(&block, width8, height8)
+            {
+                let first = rows8.start * width8 + cols8.start;
+                let end = (rows8.end - 1) * width8 + cols8.end;
+                let Some(region) = cells.get_mut(first..end) else {
+                    continue;
+                };
+                let rows = region
+                    .chunks_mut(width8)
+                    .filter_map(|run| run.get_mut(..cols8.len()));
+                if let TemporalBlockMotion::Mvs(mvs) = block.motion {
+                    let stored = temporal_cell_from_mvs(&block, resolved, mvs).0.store();
+                    rows.for_each(|run| crate::support::fill_mi_run(run, stored));
+                    continue;
                 }
-                if let Some(target) = cells.get_mut(index) {
-                    *target = cell.store();
+                for (i8, run) in rows.enumerate() {
+                    let mut walks = block.motion.cell_walks(block.mi_row, block.mi_col, i8);
+                    for slot in run {
+                        let mvs = walks.each_mut().map(CellMvWalk::next);
+                        *slot = temporal_cell_from_mvs(&block, resolved, mvs).0.store();
+                    }
+                }
+                continue;
+            }
+            visit_temporal_block_cells(block, resolved, width8, height8, |y8, x8, cell, hints| {
+                let run = y8 * width8 + x8.start..y8 * width8 + x8.end;
+                if let Some(pending) = pending
+                    .as_mut()
+                    .and_then(|pending| pending.get_mut(run.clone()))
+                {
+                    crate::support::fill_mi_run(
+                        pending,
+                        hints.map(|hint| hint.unwrap_or(u32::MAX)),
+                    );
+                }
+                if let Some(target) = cells.get_mut(run) {
+                    crate::support::fill_mi_run(target, cell.store());
                 }
             });
         }
@@ -537,52 +567,75 @@ fn visit_temporal_block_cells(
     refs: BlockRefs,
     width8: usize,
     height8: usize,
-    mut visit: impl FnMut(usize, usize, TemporalMotionCell, [Option<u32>; 2]),
+    mut visit: impl FnMut(usize, Range<usize>, TemporalMotionCell, [Option<u32>; 2]),
 ) {
-    let Some(row_end) = block.mi_row.checked_add(block.n4h) else {
+    let Some((rows8, cols8)) = temporal_block_cells8(&block, width8, height8) else {
         return;
     };
-    let Some(col_end) = block.mi_col.checked_add(block.n4w) else {
+    let (row8_start, row8_end) = (rows8.start, rows8.end);
+    let (col8_start, col8_end) = (cols8.start, cols8.end);
+    if let TemporalBlockMotion::Mvs(mvs) = block.motion {
+        let (cell, hints) = temporal_cell_from_mvs(&block, refs, mvs);
+        for y8 in row8_start..row8_end {
+            visit(y8, col8_start..col8_end, cell, hints);
+        }
         return;
-    };
-    let row_end = row_end.min(block.mi_rows);
-    let col_end = col_end.min(block.mi_cols);
+    }
+    for y8 in row8_start..row8_end {
+        let mut walks = block
+            .motion
+            .cell_walks(block.mi_row, block.mi_col, y8 - row8_start);
+        for x8 in col8_start..col8_end {
+            let mvs = walks.each_mut().map(CellMvWalk::next);
+            let (cell, hints) = temporal_cell_from_mvs(&block, refs, mvs);
+            visit(y8, x8..x8 + 1, cell, hints);
+        }
+    }
+}
+
+/// The 8x8 field rows and columns a block covers, `None` when it covers none.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn temporal_block_cells8(
+    block: &TemporalMotionBlock,
+    width8: usize,
+    height8: usize,
+) -> Option<(Range<usize>, Range<usize>)> {
+    let row_end = block.mi_row.checked_add(block.n4h)?.min(block.mi_rows);
+    let col_end = block.mi_col.checked_add(block.n4w)?.min(block.mi_cols);
     if row_end <= block.mi_row || col_end <= block.mi_col {
-        return;
+        return None;
     }
     let row8_start = block.mi_row >> 1;
     let col8_start = block.mi_col >> 1;
     let row8_end = (row8_start + (row_end - block.mi_row).div_ceil(2)).min(height8);
     let col8_end = (col8_start + (col_end - block.mi_col).div_ceil(2)).min(width8);
-    if matches!(block.motion, TemporalBlockMotion::Mvs(_)) {
-        let (cell, hints) = derive_temporal_cell(&block, refs, block.mi_row, block.mi_col);
-        for y8 in row8_start..row8_end {
-            for x8 in col8_start..col8_end {
-                visit(y8, x8, cell, hints);
-            }
-        }
-        return;
-    }
-    for y8 in row8_start..row8_end {
-        for x8 in col8_start..col8_end {
-            let (cell, hints) = derive_temporal_cell(
-                &block,
-                refs,
-                block.mi_row + 2 * (y8 - row8_start),
-                block.mi_col + 2 * (x8 - col8_start),
-            );
-            visit(y8, x8, cell, hints);
+    (row8_start < row8_end && col8_start < col8_end)
+        .then_some((row8_start..row8_end, col8_start..col8_end))
+}
+
+/// One list's per-cell motion along a row of a block's 8x8 cells.
+#[derive(Clone, Copy)]
+enum CellMvWalk {
+    Fixed(Mv),
+    Warp(WarpSubMvWalk),
+}
+
+impl CellMvWalk {
+    fn next(&mut self) -> Mv {
+        match self {
+            Self::Fixed(mv) => *mv,
+            Self::Warp(walk) => walk.next(),
         }
     }
 }
 
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn derive_temporal_cell(
+fn temporal_cell_from_mvs(
     block: &TemporalMotionBlock,
     refs: BlockRefs,
-    row: usize,
-    col: usize,
+    mvs: [Mv; 2],
 ) -> (TemporalMotionCell, [Option<u32>; 2]) {
     let mut hints = [None; 2];
     let mut cell = TemporalMotionCell::default();
@@ -590,9 +643,7 @@ fn derive_temporal_cell(
         let Some(order_hint) = block.ref_order_hints[list] else {
             continue;
         };
-        let mv = block
-            .motion
-            .mv_at(list, block.mi_row, block.mi_col, row, col);
+        let mv = mvs[list];
         if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
             continue;
         }
@@ -757,32 +808,14 @@ impl TemporalBlockMotion {
 
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn mv_at(
-        self,
-        list: usize,
-        mi_row: usize,
-        mi_col: usize,
-        cell_row: usize,
-        cell_col: usize,
-    ) -> Mv {
-        let warp = |params| warp_sub_mv_at(params, mi_row, mi_col, cell_row, cell_col);
+    /// The walks over cell row `i8` of a block at `(mi_row, mi_col)`.
+    fn cell_walks(self, mi_row: usize, mi_col: usize, i8: usize) -> [CellMvWalk; 2] {
+        let warp = |params| CellMvWalk::Warp(WarpSubMvWalk::new(params, mi_row, mi_col, i8));
         match self {
-            Self::Mvs(mvs) => mvs[list],
-            Self::Warp0 { params, mv1 } => {
-                if list == 0 {
-                    warp(params)
-                } else {
-                    mv1
-                }
-            }
-            Self::Warp1 { mv0, params } => {
-                if list == 0 {
-                    mv0
-                } else {
-                    warp(params)
-                }
-            }
-            Self::WarpBoth(params) => warp(params[list]),
+            Self::Mvs(mvs) => mvs.map(CellMvWalk::Fixed),
+            Self::Warp0 { params, mv1 } => [warp(params), CellMvWalk::Fixed(mv1)],
+            Self::Warp1 { mv0, params } => [CellMvWalk::Fixed(mv0), warp(params)],
+            Self::WarpBoth(params) => params.map(warp),
         }
     }
 }
@@ -898,6 +931,13 @@ pub(crate) struct TipReferencePair {
     pub(crate) ref_offset: i32,
 }
 
+/// A TIP reference pair with the [`project_mv`] scales of its two offsets.
+fn tip_projection(references: TipReferencePair) -> (TipReferencePair, [i64; 2]) {
+    let scale = |offset| i64::from(clamped_tmvp_factor(offset, references.ref_offset));
+    let past = scale(references.past_offset);
+    (references, [past, scale(references.future_offset)])
+}
+
 #[derive(Debug)]
 pub(crate) struct TemporalMvContext {
     current_order_hint: u32,
@@ -905,7 +945,7 @@ pub(crate) struct TemporalMvContext {
     field: ProjectedTemporalMotionField,
     trajectories: Option<TrajectoryState>,
     trajectory_scratch: Option<TrajectoryState>,
-    tip: Option<TipReferencePair>,
+    tip: Option<(TipReferencePair, [i64; 2])>,
     banded: Option<BandedTemporalContext>,
 }
 
@@ -1225,7 +1265,7 @@ impl TemporalMvContext {
         field.set(y8, x8, mv, references.ref_offset, true);
         Some(Self {
             field,
-            tip: Some(references),
+            tip: Some(tip_projection(references)),
             ..Self::empty()
         })
     }
@@ -1482,7 +1522,7 @@ impl TemporalMvContext {
         }
         self.current_order_hint = current_order_hint;
         self.trajectories = None;
-        self.tip = tip;
+        self.tip = tip.map(tip_projection);
         let banded = self.banded.get_or_insert_with(|| BandedTemporalContext {
             layout: target_layout,
             bands: Vec::new(),
@@ -1544,7 +1584,7 @@ impl TemporalMvContext {
             tmvp_unit_size8,
             fill_holes,
         )?;
-        self.tip = Some(references);
+        self.tip = Some(tip_projection(references));
         Ok(())
     }
 
@@ -1569,19 +1609,17 @@ impl TemporalMvContext {
     }
 
     pub(crate) fn tip_references(&self) -> Option<TipReferencePair> {
-        self.tip
+        self.tip.map(|(references, _)| references)
     }
 
     pub(crate) fn tip_candidate(&self, y8: usize, x8: usize, base_mv: Mv) -> Option<[Mv; 2]> {
-        let references = self.tip?;
+        let (_, scales) = self.tip?;
         let y8 = y8.min(self.field.height8.saturating_sub(1));
         let x8 = x8.min(self.field.width8.saturating_sub(1));
         let cell = self.projected_cell(y8, x8)?;
         let projected = if cell.valid {
-            [
-                project_mv(cell.mv(), references.past_offset, references.ref_offset),
-                project_mv(cell.mv(), references.future_offset, references.ref_offset),
-            ]
+            let mv = cell.mv();
+            [project_scaled(mv, scales[0]), project_scaled(mv, scales[1])]
         } else {
             [Mv::ZERO; 2]
         };
@@ -1598,7 +1636,7 @@ impl TemporalMvContext {
         probe: RelativeProbe,
         cell: &NeighbourCell,
     ) -> Option<[Mv; 2]> {
-        if cell.flags.ref_frame0 != TIP_REF_FRAME || cell.flags.ref_frame1.is_some() {
+        if cell.flags.ref_frame0() != TIP_REF_FRAME || cell.flags.ref_frame1().is_some() {
             return None;
         }
         let (row, col, _) = probe.stack_target(block);
@@ -2218,21 +2256,15 @@ fn project_no_constraint(v8: usize, delta: i32, max8: usize) -> Option<usize> {
 }
 
 fn project_mv(mv: Mv, numerator: i32, denominator: i32) -> Mv {
-    let denominator = denominator.clamp(0, MAX_FRAME_DISTANCE) as usize;
-    let numerator = numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE);
-    let scale = DIV_MULT[denominator];
+    project_scaled(mv, i64::from(clamped_tmvp_factor(numerator, denominator)))
+}
+
+fn project_scaled(mv: Mv, scale: i64) -> Mv {
     let bound = (1 << 16) - 1;
-    let row = round2_signed(
-        i64::from(mv.row) * i64::from(numerator) * i64::from(scale),
-        14,
-    )
-    .clamp(-bound, bound) as i32;
-    let col = round2_signed(
-        i64::from(mv.col) * i64::from(numerator) * i64::from(scale),
-        14,
-    )
-    .clamp(-bound, bound) as i32;
-    Mv { row, col }
+    Mv {
+        row: round2_signed(i64::from(mv.row) * scale, 14).clamp(-bound, bound) as i32,
+        col: round2_signed(i64::from(mv.col) * scale, 14).clamp(-bound, bound) as i32,
+    }
 }
 
 fn tmvp_projection_factor(numerator: i32, ref_offset: i32, side: usize) -> Option<i32> {

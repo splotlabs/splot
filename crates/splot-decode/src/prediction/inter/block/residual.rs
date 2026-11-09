@@ -27,7 +27,7 @@ pub(super) struct InterLumaTxTypeMap {
     col: usize,
     rows: usize,
     cols: usize,
-    values: Vec<usize>,
+    values: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,8 +70,8 @@ impl InterLumaTxTypeMap {
         self.values
             .try_reserve_exact(len.saturating_sub(self.values.len()))
             .map_err(|_| inter_allocation!("inter residual luma transform-type map"))?;
-        self.values.resize(len, DCT_DCT);
-        self.values.fill(DCT_DCT);
+        self.values.clear();
+        self.values.resize(len, DCT_DCT as u8);
         self.row = row;
         self.col = col;
         self.rows = rows;
@@ -88,6 +88,7 @@ impl InterLumaTxTypeMap {
     ) -> Result<()> {
         let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
         let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
+        let tx_type = u8::try_from(tx_type).map_err(|_| residual_geometry_error())?;
         for dy in (0..tx_h4).step_by(TX_TYPE_MAP_UNIT_4X4) {
             for dx in (0..tx_w4).step_by(TX_TYPE_MAP_UNIT_4X4) {
                 let map_row = row.checked_add(dy).ok_or_else(residual_geometry_error)?;
@@ -119,7 +120,7 @@ impl InterLumaTxTypeMap {
             )
         };
         self.index(luma_row, luma_col)
-            .map_or(DCT_DCT, |index| self.values[index])
+            .map_or(DCT_DCT, |index| usize::from(self.values[index]))
     }
 
     fn index(&self, row: usize, col: usize) -> Option<usize> {
@@ -181,8 +182,8 @@ pub(crate) fn read_inter_residual(
             .luma_tx_types
             .reset(frontier.r, frontier.c, n4h, n4w)?;
 
-        for start_chunk_y in (0..height_chunks).step_by(2) {
-            for start_chunk_x in (0..width_chunks).step_by(2) {
+        for start_chunk_y in (0..height_chunks.div_ceil(2)).map(|group| 2 * group) {
+            for start_chunk_x in (0..width_chunks.div_ceil(2)).map(|group| 2 * group) {
                 let group_end_y = (start_chunk_y + 2).min(height_chunks);
                 let group_end_x = (start_chunk_x + 2).min(width_chunks);
                 for chunk_y in start_chunk_y..group_end_y {
@@ -252,9 +253,7 @@ pub(crate) fn read_inter_residual(
         blocks.truncate(block_start);
         return Err(error);
     }
-    Ok(InterResidual {
-        block_range: block_start..blocks.len(),
-    })
+    Ok(InterResidual::new(block_start..blocks.len()))
 }
 
 /// Returns the chroma group's top-left chunk position when `(chunk_x, chunk_y)`
@@ -375,7 +374,7 @@ fn read_inter_residual_luma_chunk(
                 residual_tool_policy,
                 tile_offset,
             )?;
-            luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type)?;
+            luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type())?;
             push_inter_residual_block(blocks, ReconPlaneId::Y, x4, y4, tx_size, coeffs)?;
             x4 = x4.checked_add(tx_w4).ok_or_else(residual_geometry_error)?;
         }
@@ -427,7 +426,12 @@ fn read_inter_residual_luma_records_for_chunk(
             residual_tool_policy,
             tile_offset,
         )?;
-        luma_tx_types.update(record.row, record.col, record.tx_size, coeffs.plane_tx_type)?;
+        luma_tx_types.update(
+            record.row,
+            record.col,
+            record.tx_size,
+            coeffs.plane_tx_type(),
+        )?;
         push_inter_residual_block(
             blocks,
             ReconPlaneId::Y,
@@ -605,12 +609,12 @@ impl InterChromaGroup {
             ref_w4 * MI_SIZE,
             ref_h4 * MI_SIZE,
         );
-        let plane_source_size = if chroma_mi_size != frontier.b_size {
-            chroma_mi_size
-        } else {
-            mi_size_chunk
-        };
-        let (mut num4x4_w, mut num4x4_h) = dims(residual_size(plane_source_size)?)?;
+        let (mut num4x4_w, mut num4x4_h) =
+            if chroma_mi_size != frontier.b_size || mi_size_chunk == chroma_mi_size {
+                (ref_w4, ref_h4)
+            } else {
+                dims(residual_size(mi_size_chunk)?)?
+            };
         let (block_w4, block_h4) = dims(frontier.b_size)?;
         if subsampling_x && chunk_x + 1 < (block_w4 >> 4).max(1) && !lossless {
             num4x4_w <<= 1;
@@ -640,14 +644,10 @@ impl InterChromaGroup {
     /// The 4x4 offsets `(x4, y4)` from `base` of the group's transform
     /// blocks, in raster order.
     fn units(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        let (x0, y0) = self.start;
-        (y0..y0 + self.extent.1)
-            .step_by(self.step.1)
-            .flat_map(move |y4| {
-                (x0..x0 + self.extent.0)
-                    .step_by(self.step.0)
-                    .map(move |x4| (x4, y4))
-            })
+        use crate::support::step_range;
+        let ((x0, y0), (w4, h4), (step_x, step_y)) = (self.start, self.extent, self.step);
+        step_range(y0..y0 + h4, step_y)
+            .flat_map(move |y4| step_range(x0..x0 + w4, step_x).map(move |x4| (x4, y4)))
     }
 }
 
@@ -798,25 +798,29 @@ fn read_inter_residual_plane(
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<LumaCoeffBlock> {
+    let segment_lossless = current_segment_lossless(work_unit);
     decode_general_intra_plane_coeffs(
         work_unit,
         symbols,
         coeff_ctx,
         arena,
-        plane,
-        tx_size,
-        start_x,
-        start_y,
-        tx_fills_block,
-        chroma_eob_ctx,
-        INTER_UV_MODE_DC,
-        0,
-        chroma_inter_tx_type,
-        true,
-        false,
-        false,
-        cctx_allowed,
-        residual_tool_policy,
+        &PlaneCoeffBlock {
+            plane,
+            tx_size,
+            x: start_x,
+            y: start_y,
+            tx_fills_block,
+            eob_u_nonzero: chroma_eob_ctx,
+            uv_mode: INTER_UV_MODE_DC,
+            angle_delta_uv: 0,
+            chroma_inter_tx_type,
+            is_inter: true,
+            fsc_mode: false,
+            txb_skip_fsc_mode: false,
+            cctx_allowed,
+            policy: residual_tool_policy,
+            segment_lossless,
+        },
     )
     .map_err(|error| residual_plane_read_error(&error, tile_offset))
 }

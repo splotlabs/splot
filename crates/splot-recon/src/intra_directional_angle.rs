@@ -11,7 +11,11 @@ use crate::intra_dc_math::{
 };
 use crate::math::round2_i32;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
-use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
+use fearless_simd::{Bytes as _, Simd, SimdBase, i16x16, i32x8, u16x8};
+
+#[cfg(test)]
+use crate::intra_edge_filter::INTRA_EDGE_KERNEL;
+pub use crate::intra_edge_filter::{apply_intra_edge_filter, filter_intra_edge_corner};
 
 const ANGLE_D45: u16 = 45;
 const ANGLE_D67: u16 = 67;
@@ -83,9 +87,6 @@ const DR_INTERP_FILTER_ROUND: u8 = 7;
 
 /// Widest predicted block side, the largest AV2 transform dimension.
 const MAX_ONE_SIDED_SIDE: usize = 64;
-/// The longest one-sided IDIF edge, `w + h + 4 + (mrlIndex << 1)` for a 64x64
-/// block at `mrlIndex == 3`.
-const MAX_ONE_SIDED_IDIF_EDGE: usize = 2 * MAX_ONE_SIDED_SIDE + 10;
 /// The longest zone-2 IDIF edge, `w + mrlIndex + 4` (or `h + mrlIndex + 4`)
 /// for a 64-sample side at `mrlIndex == 3`.
 const MAX_MIDDLE_IDIF_EDGE: usize = MAX_ONE_SIDED_SIDE + 7;
@@ -974,6 +975,9 @@ fn required_middle_idif_mrl_above_len(size: IntraRectBlockSize, mrl_index: usize
         })
 }
 
+/// Checks every § 7.13.2.8 zone-2 reference against the edge lengths from each
+/// row's extremes: along a row the above bases grow and the left bases shrink
+/// with the column, so the first and last reference of each run bound it.
 fn validate_middle_index_bounds(
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
@@ -981,23 +985,24 @@ fn validate_middle_index_bounds(
     above_len: usize,
 ) -> Result<()> {
     let branch = angle.branch();
-    for row in 0..size.height() {
-        let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
-        for _ in 0..size.width() {
-            let reference = walk.next();
-            let len = match reference.edge {
-                IntraDirectionalAngleEdge::Left => left_len,
-                IntraDirectionalAngleEdge::Above => above_len,
-            };
-            logical_edge_offset(reference.base, len)?;
-            let next_base =
-                reference
-                    .base
-                    .checked_add(1)
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "middle directional angle next edge base",
-                    })?;
-            logical_edge_offset(next_base, len)?;
+    let (dx, dy) = (i32::from(branch.dx), i32::from(branch.dy));
+    let width = size.width() as i32;
+    let covered = |low: i32, high: i32, len: usize| {
+        logical_edge_offset(low, len)?;
+        logical_edge_offset(high + 1, len).map(|_| ())
+    };
+    for row in 0..size.height() as i32 {
+        let first_above = (-(row + 1) * dx) >> 6;
+        let left_run = (-1 - first_above).clamp(0, width);
+        if left_run < width {
+            covered(first_above + left_run, first_above + width - 1, above_len)?;
+        }
+        if left_run > 0 {
+            covered(
+                (64 * row - left_run * dy) >> 6,
+                (64 * row - dy) >> 6,
+                left_len,
+            )?;
         }
     }
     Ok(())
@@ -1071,6 +1076,9 @@ where
     }
 
     let max = bit_depth.max_sample();
+    if T::MAX_VALUE <= max {
+        return Ok(());
+    }
     for (sample_index, sample) in samples.iter().copied().enumerate() {
         let value = sample.to_u16();
         if value > max {
@@ -1088,16 +1096,48 @@ fn write_prediction<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let mut wide = [0u16; 2 * MAX_ONE_SIDED_SIDE];
-    if let Some(edge) = widen_edge(edge, &mut wide) {
-        if let Some(output) = T::u16_slice_mut(output) {
-            write_bilinear_lanes(size, angle, edge, output, stride_samples);
+    let max_base = size.width() + size.height() - 1;
+    if size.width() * size.height() <= small::SMALL_BLOCK_SAMPLES {
+        if let (Some(edge), Some(output)) = (T::u8_slice(edge), T::u8_slice_mut(output)) {
+            small::write_one_sided(size, angle.branch(), edge, output, stride_samples);
             return Ok(());
         }
-        if let Some(output) = T::u8_slice_mut(output) {
-            write_bilinear_lanes(size, angle, edge, output, stride_samples);
+        if let (Some(edge), Some(output)) = (T::u16_slice(edge), T::u16_slice_mut(output)) {
+            small::write_one_sided(size, angle.branch(), edge, output, stride_samples);
             return Ok(());
         }
+    }
+    if let (Some(narrow), Some(output)) = (T::u8_slice(edge), T::u8_slice_mut(output))
+        && let Some(padded) = u8_lines::PaddedEdge::new(narrow, 1)
+        && let Some(&last) = narrow.get(max_base)
+    {
+        let branch = angle.branch();
+        let (DirectionalAngleBranch::Above { derivative }
+        | DirectionalAngleBranch::Left { derivative }) = branch;
+        let line = |line: usize| {
+            let idx = (line + 1) * usize::from(derivative);
+            let (first, shift) = (idx >> 6, directional_shift(idx as i32));
+            Ok(u8_lines::Line {
+                first,
+                shift,
+                active: max_base.saturating_sub(first),
+            })
+        };
+        let filter = u8_lines::LineFilter::Bilinear;
+        return u8_lines::write_one_sided(
+            size,
+            branch,
+            filter,
+            &padded,
+            last,
+            line,
+            output,
+            stride_samples,
+        );
+    }
+    if let (Some(edge), Some(output)) = (T::u16_slice(edge), T::u16_slice_mut(output)) {
+        write_bilinear_lanes(size, angle, edge, output, stride_samples);
+        return Ok(());
     }
     write_prediction_samples(size, angle, edge, output, stride_samples)
 }
@@ -1205,15 +1245,11 @@ fn write_bilinear_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
 ) {
     let active = max_base.saturating_sub(base).min(count);
     let mut at = 0;
-    while active - at >= 8 {
-        let values = bilinear_lanes::<8>(&edge[base + at..], shift);
-        store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, values.as_array());
-        at += 8;
-    }
-    while active - at >= 4 {
-        let values = bilinear_lanes::<4>(&edge[base + at..], shift);
-        store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, values.as_array());
-        at += 4;
+    while active - at >= 8 || (active - at >= 4 && edge.len() > base + at + 8) {
+        let values = bilinear_lanes8(&edge[base + at..], shift);
+        let take = (active - at).min(8);
+        store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, &values[..take]);
+        at += take;
     }
     while at < active {
         let value = bilinear(edge[base + at], edge[base + at + 1], shift);
@@ -1223,14 +1259,16 @@ fn write_bilinear_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
     fill_one_sided_idif_line::<O, CONTIGUOUS>(output, step, active, count, edge[max_base]);
 }
 
-/// `LANES` adjacent bilinear samples over `edge[..=LANES]`. Every caller
-/// validates the edge to the bit depth (at most 10 bits), so each weighted
-/// sum stays below `1024 * 32` and fits `u16` lanes.
+/// Eight adjacent bilinear samples over `edge[..=8]`. Every caller validates
+/// the edge to the bit depth (at most 10 bits), so each weighted sum stays
+/// below `1024 * 32` and fits `u16` lanes.
 #[inline]
-fn bilinear_lanes<const LANES: usize>(edge: &[u16], shift: u16) -> Simd<u16, LANES> {
-    let near = Simd::<u16, LANES>::from_slice(&edge[..LANES]);
-    let far = Simd::<u16, LANES>::from_slice(&edge[1..=LANES]);
-    (near * Simd::splat(INTERP_SCALE - shift) + far * Simd::splat(shift) + Simd::splat(16)) >> 5
+fn bilinear_lanes8(edge: &[u16], shift: u16) -> [u16; 8] {
+    baseline_simd!(simd => {
+        let near = u16x8::from_slice(simd, &edge[..8]);
+        let far = u16x8::from_slice(simd, &edge[1..9]);
+        ((near * (INTERP_SCALE - shift) + far * shift + 16) >> 5).into()
+    })
 }
 
 /// Validates one-sided IDIF inputs and returns the angle's prepared edge.
@@ -1406,19 +1444,40 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
             stride_samples,
         );
     }
-    let mut wide = [0u16; MAX_ONE_SIDED_IDIF_EDGE];
-    if let (Some(narrow), Some(output)) = (T::u8_slice(edge), T::u8_slice_mut(output))
-        && let Some(wide) = wide.get_mut(..narrow.len())
+    if let (Some(edge), Some(output)) = (T::u8_slice(edge), T::u8_slice_mut(output))
+        && let Some(padded) = u8_lines::PaddedEdge::new(edge, 0)
     {
-        for (slot, &sample) in wide.iter_mut().zip(narrow) {
-            *slot = u16::from(sample);
-        }
-        return write_one_sided_idif_lanes(
-            bit_depth,
+        let (derivative, branch) = (one_sided_idif_derivative(angle), angle.branch());
+        let max_base = one_sided_max_base(size, mrl_index)?;
+        let last = edge[logical_idif_edge_offset(max_base, edge.len())?];
+        let offset = u8_lines::idif_offset(edge.len(), 0);
+        let line = |line: usize| {
+            let (row, column) = match branch {
+                DirectionalAngleBranch::Above { .. } => (line, 0),
+                DirectionalAngleBranch::Left { .. } => (0, line),
+            };
+            let reference = one_sided_idif_reference(branch, row, column, derivative, mrl_index)?;
+            let active = usize::try_from(max_base - reference.base + 1).unwrap_or(0);
+            let first = if active == 0 {
+                0
+            } else {
+                offset(reference.base)?
+            };
+            let shift = reference.shift;
+            Ok(u8_lines::Line {
+                first,
+                shift,
+                active,
+            })
+        };
+        let filter = u8_lines::LineFilter::Idif;
+        return u8_lines::write_one_sided(
             size,
-            angle,
-            wide,
-            mrl_index,
+            branch,
+            filter,
+            &padded,
+            last,
+            line,
             output,
             stride_samples,
         );
@@ -1575,17 +1634,17 @@ fn write_one_sided_idif_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
         })?;
     let mut at = 0;
     while active - at >= 16 {
-        let values = idif_row_chunk16(edge, first + at, pairs, bit_depth).to_array();
+        let values = idif_row_chunk16(edge, first + at, pairs, bit_depth);
         store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, &values);
         at += 16;
     }
     while active - at >= 8 {
-        let values = idif_row_chunk8(edge, first + at, pairs, bit_depth).to_array();
+        let values = idif_row_chunk8(edge, first + at, pairs, bit_depth);
         store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, &values);
         at += 8;
     }
     while active - at >= 4 {
-        let values = idif_above_row_chunk::<4>(edge, first + at, *taps, bit_depth).to_array();
+        let values = idif_row_chunk4(edge, first + at, pairs, *taps, bit_depth);
         store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, &values);
         at += 4;
     }
@@ -1615,14 +1674,14 @@ fn write_one_sided_idif_tiles<O: IntraLaneSample>(
     let last = logical_idif_edge_sample(edge, max_base)?;
     for (tile, tile_columns) in columns.chunks_exact(8).enumerate() {
         for top in (0..height).step_by(8) {
-            let mut lines = [Simd::splat(0); 8];
+            let mut lines = [[0u16; 8]; 8];
             for (line, &reference) in lines.iter_mut().zip(tile_columns) {
                 *line =
                     one_sided_idif_line_chunk8(edge, reference, max_base, last, top, bit_depth)?;
             }
-            for (row, values) in transpose_u16x8(lines).into_iter().enumerate() {
+            for (row, values) in transpose_u16x8(lines).iter().enumerate() {
                 let start = (top + row) * stride_samples + tile * 8;
-                O::store(values.as_array(), &mut output[start..start + 8]);
+                O::store(values, &mut output[start..start + 8]);
             }
         }
     }
@@ -1640,10 +1699,10 @@ fn one_sided_idif_line_chunk8(
     last: u16,
     at: usize,
     bit_depth: BitDepth,
-) -> Result<Simd<u16, 8>> {
+) -> Result<[u16; 8]> {
     let active = usize::try_from(max_base - reference.base + 1).unwrap_or(0);
     if at >= active {
-        return Ok(Simd::splat(last));
+        return Ok([last; 8]);
     }
     if at + 8 > active {
         let mut lanes = [last; 8];
@@ -1655,11 +1714,13 @@ fn one_sided_idif_line_chunk8(
                 bit_depth,
             )?;
         }
-        return Ok(Simd::from_array(lanes));
+        return Ok(lanes);
     }
     if reference.shift == 0 {
         let start = logical_idif_edge_offset(reference.base, edge.len())? + at;
-        return Ok(Simd::from_slice(&edge[start..start + 8]));
+        let mut lanes = [0u16; 8];
+        lanes.copy_from_slice(&edge[start..start + 8]); // splot-copy-ok: unfiltered IDIF line chunk
+        return Ok(lanes);
     }
     let pairs = DR_INTERP_PAIRS.get(usize::from(reference.shift)).ok_or(
         ReconError::ArithmeticOverflow {
@@ -1678,15 +1739,19 @@ fn one_sided_idif_line_chunk8(
 
 /// Transposes an 8x8 block: three rounds of interleaving row `i` with row
 /// `i + 4` rotate each element's 6-bit (row, column) index by three bits.
-fn transpose_u16x8(mut rows: [Simd<u16, 8>; 8]) -> [Simd<u16, 8>; 8] {
-    for _ in 0..3 {
-        let mut next = rows;
-        for i in 0..4 {
-            (next[2 * i], next[2 * i + 1]) = rows[i].interleave(rows[i + 4]);
+fn transpose_u16x8(rows: [[u16; 8]; 8]) -> [[u16; 8]; 8] {
+    baseline_simd!(simd => {
+        let mut rows = rows.map(|row| u16x8::from_slice(simd, &row));
+        for _ in 0..3 {
+            let mut next = rows;
+            for i in 0..4 {
+                next[2 * i] = simd.zip_low_u16x8(rows[i], rows[i + 4]);
+                next[2 * i + 1] = simd.zip_high_u16x8(rows[i], rows[i + 4]);
+            }
+            rows = next;
         }
-        rows = next;
-    }
-    rows
+        rows.map(Into::into)
+    })
 }
 
 /// Publishes `values` to line positions `at..at + values.len()`.
@@ -1732,74 +1797,85 @@ fn fill_one_sided_idif_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
     }
 }
 
-/// Sixteen [`idif_above_row_chunk`] samples as two pairwise multiply-adds.
+/// Sixteen [`idif_row_chunk8`] samples.
 #[inline]
 fn idif_row_chunk16(
     edge: &[u16],
     first: usize,
     pairs: &[[i16; 16]; 2],
     bit_depth: BitDepth,
-) -> Simd<u16, 16> {
-    let lo = idif_row_chunk8(edge, first, pairs, bit_depth);
-    let hi = idif_row_chunk8(edge, first + 8, pairs, bit_depth);
-    simd_swizzle!(
-        lo,
-        hi,
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-    )
+) -> [u16; 16] {
+    let mut values = [0u16; 16];
+    values[..8].copy_from_slice(&idif_row_chunk8(edge, first, pairs, bit_depth)); // splot-copy-ok: join IDIF chunks
+    values[8..].copy_from_slice(&idif_row_chunk8(edge, first + 8, pairs, bit_depth)); // splot-copy-ok: join IDIF chunks
+    values
 }
 
-/// Eight [`idif_above_row_chunk`] samples as two pairwise multiply-adds of
-/// the interleaved windows `(edge[i], edge[i + 1])` and `(edge[i + 2],
-/// edge[i + 3])` with the tap pairs of [`DR_INTERP_PAIRS`].
+/// Eight adjacent § 7.13.2.8 4-tap IDIF samples over `edge[first..first +
+/// 11]` as two pairwise multiply-adds of the interleaved windows `(edge[i],
+/// edge[i + 1])` and `(edge[i + 2], edge[i + 3])` with the tap pairs of
+/// [`DR_INTERP_PAIRS`].
+///
+/// Every caller validates the edge samples to the bit depth (at most 10 bits)
+/// and every `Dr_Interp_Filter` tap fits `i16`, so the products take `i16`
+/// lanes with `i32` sums. One slice of the whole tap window replaces a bounds
+/// check per tap.
 #[inline]
 fn idif_row_chunk8(
     edge: &[u16],
     first: usize,
     pairs: &[[i16; 16]; 2],
     bit_depth: BitDepth,
-) -> Simd<u16, 8> {
-    const INTERLEAVE: [usize; 16] = [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15];
+) -> [u16; 8] {
     let window = &edge[first..first + 8 + DR_INTERP_FILTER_TAPS - 1];
-    let load = |tap: usize| Simd::<u16, 8>::from_slice(&window[tap..tap + 8]).cast::<i16>();
-    let madd = |x: Simd<i16, 16>, w: &[i16; 16]| {
-        let product = x.cast::<i32>() * Simd::from_array(*w).cast::<i32>();
-        simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
-            + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
-    };
-    let sum = madd(simd_swizzle!(load(0), load(1), INTERLEAVE), &pairs[0])
-        + madd(simd_swizzle!(load(2), load(3), INTERLEAVE), &pairs[1]);
-    ((sum + Simd::splat(1 << (DR_INTERP_FILTER_ROUND - 1))) >> i32::from(DR_INTERP_FILTER_ROUND))
-        .simd_max(Simd::splat(0))
-        .simd_min(Simd::splat(i32::from(bit_depth.max_sample())))
-        .cast()
+    let max = i32::from(bit_depth.max_sample());
+    baseline_simd!(simd => idif_lanes8(simd, window, pairs, max))
 }
 
-/// `LANES` adjacent § 7.13.2.8 4-tap IDIF samples over `edge[first..]`.
-///
-/// Every caller validates the edge samples to the bit depth (at most 10 bits)
-/// and every `Dr_Interp_Filter` tap fits `i16`, so the products take `i16`
-/// lanes widened to `i32` with no loss. One slice of the whole tap window
-/// replaces a bounds check per tap.
 #[inline]
-fn idif_above_row_chunk<const LANES: usize>(
+fn idif_lanes8<S: Simd>(simd: S, window: &[u16], pairs: &[[i16; 16]; 2], max: i32) -> [u16; 8] {
+    let load = |tap: usize| u16x8::from_slice(simd, &window[tap..tap + 8]);
+    let madd = |near: u16x8<S>, far: u16x8<S>, weights: &[i16; 16]| {
+        let pairs = simd.combine_u16x8(
+            simd.zip_low_u16x8(near, far),
+            simd.zip_high_u16x8(near, far),
+        );
+        simd.pairwise_dot_product_i16x16(
+            pairs.bitcast::<i16x16<S>>(),
+            i16x16::from_slice(simd, weights),
+        )
+    };
+    let sum: i32x8<S> = madd(load(0), load(1), &pairs[0]) + madd(load(2), load(3), &pairs[1]);
+    let values = ((sum + (1 << (DR_INTERP_FILTER_ROUND - 1))) >> u32::from(DR_INTERP_FILTER_ROUND))
+        .max(0)
+        .min(max);
+    let (low, high) = simd.split_u32x8(values.bitcast());
+    simd.relaxed_narrow_u32x4(low, high).into()
+}
+
+/// Four [`idif_row_chunk8`] samples, through the lane form when the edge
+/// covers its window.
+#[inline]
+fn idif_row_chunk4(
     edge: &[u16],
     first: usize,
+    pairs: &[[i16; 16]; 2],
     taps: [i32; DR_INTERP_FILTER_TAPS],
     bit_depth: BitDepth,
-) -> Simd<u16, LANES> {
-    let window = &edge[first..first + LANES + DR_INTERP_FILTER_TAPS - 1];
-    let mut sum = Simd::<i32, LANES>::splat(0);
-    for (tap, coefficient) in taps.into_iter().enumerate() {
-        sum += Simd::<u16, LANES>::from_slice(&window[tap..tap + LANES])
-            .cast::<i16>()
-            .cast::<i32>()
-            * Simd::splat(coefficient as i16).cast::<i32>();
+) -> [u16; 4] {
+    if edge.len() >= first + 8 + DR_INTERP_FILTER_TAPS - 1 {
+        let values = idif_row_chunk8(edge, first, pairs, bit_depth);
+        return [values[0], values[1], values[2], values[3]];
     }
-    ((sum + Simd::splat(1 << (DR_INTERP_FILTER_ROUND - 1))) >> i32::from(DR_INTERP_FILTER_ROUND))
-        .simd_max(Simd::splat(0))
-        .simd_min(Simd::splat(i32::from(bit_depth.max_sample())))
-        .cast()
+    core::array::from_fn(|lane| {
+        let window = &edge[first + lane..first + lane + DR_INTERP_FILTER_TAPS];
+        let sum = taps
+            .iter()
+            .zip(window)
+            .map(|(&tap, &sample)| tap * i32::from(sample))
+            .sum();
+        idif_round2_clip(sum, bit_depth)
+    })
 }
 
 fn write_middle_prediction<T: ReconSample>(
@@ -1810,16 +1886,60 @@ fn write_middle_prediction<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let mut wide = [[0u16; MAX_ONE_SIDED_SIDE + 1]; 2];
-    let [wide_left, wide_above] = &mut wide;
-    if let (Some(left), Some(above)) = (widen_edge(left, wide_left), widen_edge(above, wide_above))
+    if size.width() * size.height() <= small::SMALL_BLOCK_SAMPLES {
+        if let (Some(left), Some(above), Some(output)) = (
+            T::u8_slice(left),
+            T::u8_slice(above),
+            T::u8_slice_mut(output),
+        ) {
+            small::write_middle(size, angle.branch(), [left, above], output, stride_samples);
+            return Ok(());
+        }
+        if let (Some(left), Some(above), Some(output)) = (
+            T::u16_slice(left),
+            T::u16_slice(above),
+            T::u16_slice_mut(output),
+        ) {
+            small::write_middle(size, angle.branch(), [left, above], output, stride_samples);
+            return Ok(());
+        }
+    }
+    if let (Some(left), Some(above), Some(output)) = (
+        T::u8_slice(left),
+        T::u8_slice(above),
+        T::u8_slice_mut(output),
+    ) && let (Some(padded_left), Some(padded_above)) = (
+        u8_lines::PaddedEdge::new(left, 1),
+        u8_lines::PaddedEdge::new(above, 1),
+    ) && let (Some(&left_last), Some(&above_last)) = (left.last(), above.last())
     {
-        if let Some(output) = T::u16_slice_mut(output) {
-            return write_middle_lanes(size, angle, left, above, output, stride_samples);
-        }
-        if let Some(output) = T::u8_slice_mut(output) {
-            return write_middle_lanes(size, angle, left, above, output, stride_samples);
-        }
+        let offset = |base: i32| {
+            usize::try_from(base + 1).map_err(|_| ReconError::ArithmeticOverflow {
+                context: "middle directional angle logical edge coverage",
+            })
+        };
+        let lasts = [
+            Some((left.len() - 1, left_last)),
+            Some((above.len() - 1, above_last)),
+        ];
+        return u8_lines::write_middle(
+            size,
+            angle,
+            u8_lines::LineFilter::Bilinear,
+            0,
+            [&padded_left, &padded_above],
+            [&offset, &offset],
+            lasts,
+            output,
+            stride_samples,
+        );
+    }
+    if let (Some(left), Some(above), Some(output)) = (
+        T::u16_slice(left),
+        T::u16_slice(above),
+        T::u16_slice_mut(output),
+    ) {
+        return write_middle_lanes(size, angle, left, above, output, stride_samples);
     }
     write_middle_prediction_samples(size, angle, left, above, output, stride_samples)
 }
@@ -1974,6 +2094,30 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
     params: MiddleIdifMrlPrediction<'_, T>,
     output: &mut [T],
 ) -> Result<()> {
+    if let (Some(left), Some(above), Some(out)) = (
+        T::u8_slice(params.left),
+        T::u8_slice(params.above),
+        T::u8_slice_mut(output),
+    ) && let (Some(padded_left), Some(padded_above)) = (
+        u8_lines::PaddedEdge::new(left, 0),
+        u8_lines::PaddedEdge::new(above, 0),
+    ) {
+        let mrl = params.mrl_index;
+        return u8_lines::write_middle(
+            params.size,
+            params.angle,
+            u8_lines::LineFilter::Idif,
+            mrl,
+            [&padded_left, &padded_above],
+            [
+                &u8_lines::idif_offset(left.len(), mrl),
+                &u8_lines::idif_offset(above.len(), mrl),
+            ],
+            [None, None],
+            out,
+            params.stride_samples,
+        );
+    }
     let mut wide = [[0u16; MAX_MIDDLE_IDIF_EDGE]; 2];
     let [wide_left, wide_above] = &mut wide;
     let left = widen_edge(params.left, wide_left);
@@ -2095,17 +2239,17 @@ fn write_middle_idif_run<T: ReconSample, O: IntraLaneSample>(
     let mut at = 0;
     while count - at >= 16 {
         let values = idif_row_chunk16(window, at, pairs, params.bit_depth);
-        O::store(values.as_array(), &mut out[at..at + 16]);
+        O::store(&values, &mut out[at..at + 16]);
         at += 16;
     }
     while count - at >= 8 {
         let values = idif_row_chunk8(window, at, pairs, params.bit_depth);
-        O::store(values.as_array(), &mut out[at..at + 8]);
+        O::store(&values, &mut out[at..at + 8]);
         at += 8;
     }
     while count - at >= 4 {
-        let values = idif_above_row_chunk::<4>(window, at, *taps, params.bit_depth);
-        O::store(values.as_array(), &mut out[at..at + 4]);
+        let values = idif_row_chunk4(window, at, pairs, *taps, params.bit_depth);
+        O::store(&values, &mut out[at..at + 4]);
         at += 4;
     }
     for (column, slot) in out.iter_mut().enumerate().skip(at) {
@@ -2154,18 +2298,11 @@ fn idif_tap_with_mrl<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "middle directional angle IDIF tap index",
         })?;
-    let sum = T::u16_slice(samples).map_or_else(
-        || {
-            taps.iter()
-                .zip(samples)
-                .map(|(&tap, sample)| tap * i32::from(sample.to_u16()))
-                .sum()
-        },
-        |samples| {
-            (Simd::<u16, 4>::from_slice(samples).cast::<i32>() * Simd::from_array(*taps))
-                .reduce_sum()
-        },
-    );
+    let sum = taps
+        .iter()
+        .zip(samples)
+        .map(|(&tap, sample)| tap * i32::from(sample.to_u16()))
+        .sum();
     Ok(idif_round2_clip(sum, bit_depth))
 }
 
@@ -2329,148 +2466,10 @@ fn bilinear<T: ReconSample>(a: T, b: T, shift: u16) -> u16 {
     round2_u32(weighted, 5) as u16
 }
 
-/// Number of §7.13.2.18 intra edge filter kernel rows (`INTRA_EDGE_KERNELS`).
-const INTRA_EDGE_KERNELS: usize = 3;
-/// Number of taps per §7.13.2.18 intra edge filter kernel (`INTRA_EDGE_TAPS`).
-const INTRA_EDGE_TAPS: usize = 5;
-
-/// AV2 §7.13.2.18 `Intra_Edge_Kernel[INTRA_EDGE_KERNELS][INTRA_EDGE_TAPS]`,
-/// transcribed VERBATIM from the committed spec mirror
-/// `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-18`. Indexed by
-/// `strength - 1` (strength `1..=3`).
-const INTRA_EDGE_KERNEL: [[i32; INTRA_EDGE_TAPS]; INTRA_EDGE_KERNELS] =
-    [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
-
-/// AV2 §7.13.2.18 Intra edge filter process. Filters the first `sz` samples of
-/// `edge` in place with the given `strength` (`0..=3`). `strength == 0` is a
-/// no-op (the process returns without modifying the edge). Transcribed VERBATIM
-/// from the committed spec mirror (`av2_filter_intra_edge_high_c`,
-/// `~/Devel/avm/av2/common/reconintra.c:997-1018`):
-///
-/// `edge` holds the §7.13.2.1 reference samples with `edge[i]` the §7.13.2.18
-/// array element (the caller positions the slice so `edge[0]` is the logical
-/// `AboveRow[-1]` / `LeftCol[-1]` corner, `edge[1]` the logical `[0]`, etc). For
-/// `i = 1..sz-1`: `s = Σ(j=0..4) Intra_Edge_Kernel[strength-1][j] *
-/// edge[Clip3(0, sz-1, i-2+j)]`, then `edge[i] = (s + 8) >> 4`. The `i == 0`
-/// corner sample is read but never overwritten (matching the §7.13.2.18
-/// `AboveRow[-1]` / `LeftCol[-1]` invariance), so a preceding §7.13.2.14 corner
-/// rewrite survives into the §7.13.2.8 prediction.
-///
-/// # Errors
-/// Returns [`ReconError::ArithmeticOverflow`] when `sz` exceeds `edge.len()`, or
-/// a filtered sample falls outside the representable range (the `(s + 8) >> 4`
-/// average of in-range samples is always representable, so this cannot fire for
-/// valid edges, but the conversion is checked rather than truncating).
-pub fn apply_intra_edge_filter<T: ReconSample>(
-    edge: &mut [T],
-    sz: usize,
-    strength: u8,
-) -> Result<()> {
-    if strength == 0 || sz == 0 {
-        return Ok(());
-    }
-    if sz > edge.len() {
-        return Err(ReconError::ArithmeticOverflow {
-            context: "intra edge filter size exceeds edge length",
-        });
-    }
-    let Some(kernel) = INTRA_EDGE_KERNEL.get(usize::from(strength - 1)) else {
-        return Err(ReconError::ArithmeticOverflow {
-            context: "intra edge filter strength out of range",
-        });
-    };
-    if filter_intra_edge_lanes(edge, sz, kernel) {
-        return Ok(());
-    }
-    let last = sz - 1;
-    let [tap_m2, tap_m1, tap_0, tap_p1, tap_p2] = *kernel;
-    let mut two_back = edge[0].to_u16();
-    let mut one_back = two_back;
-    for i in 1..sz {
-        let current = edge[i].to_u16();
-        let one_ahead = edge[i.saturating_add(1).min(last)].to_u16();
-        let two_ahead = edge[i.saturating_add(2).min(last)].to_u16();
-        let s = tap_m2 * i32::from(two_back)
-            + tap_m1 * i32::from(one_back)
-            + tap_0 * i32::from(current)
-            + tap_p1 * i32::from(one_ahead)
-            + tap_p2 * i32::from(two_ahead);
-        let value = (s + 8) >> 4;
-        let value = u16::try_from(value).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "intra edge filter output out of range",
-        })?;
-        edge[i] = T::try_from_u16(value)?;
-        two_back = one_back;
-        one_back = current;
-    }
-    Ok(())
-}
-
-/// Widest edge [`filter_intra_edge_lanes`] filters.
-const MAX_LANE_EDGE: usize = 256;
-/// Largest 12-bit sample, whose weighted sums fit the `u16` lanes.
-const MAX_LANE_SAMPLE: u16 = 4095;
-
-/// [`apply_intra_edge_filter`] in 16 `u16` lanes over a clamped copy of the
-/// edge, for `u8`/`u16` storage of samples up to 12 bits. The taps are
-/// non-negative and sum to 16, so each output is a weighted average of stored
-/// samples: it fits `u16` lanes (`16 * 4095 + 8`) and needs no range check.
-fn filter_intra_edge_lanes<T: ReconSample>(
-    edge: &mut [T],
-    sz: usize,
-    kernel: &[i32; INTRA_EDGE_TAPS],
-) -> bool {
-    const PAD: usize = 2;
-    let Some(samples) = edge
-        .get(..sz)
-        .filter(|_| sz + 2 * PAD + 16 <= MAX_LANE_EDGE)
-    else {
-        return false;
-    };
-    let mut source = [0u16; MAX_LANE_EDGE];
-    let mut max = 0;
-    for (slot, sample) in source[PAD..].iter_mut().zip(samples) {
-        *slot = sample.to_u16();
-        max = max.max(*slot);
-    }
-    if max > MAX_LANE_SAMPLE {
-        return false;
-    }
-    let (first, last) = (source[PAD], source[PAD + sz - 1]);
-    source[..PAD].fill(first);
-    source[PAD + sz..].fill(last);
-    let taps = kernel.map(|tap| Simd::<u16, 16>::splat(tap as u16));
-    let mut filtered = [0u16; MAX_LANE_EDGE];
-    for start in (0..sz).step_by(16) {
-        let mut sum = Simd::splat(8u16);
-        for (k, tap) in taps.iter().enumerate() {
-            sum += Simd::<u16, 16>::from_slice(&source[start + k..start + k + 16]) * *tap;
-        }
-        (sum >> 4).copy_to_slice(&mut filtered[start..start + 16]);
-    }
-    if let Some(out) = T::u8_slice_mut(&mut edge[1..sz]) {
-        for (slot, &value) in out.iter_mut().zip(&filtered[1..sz]) {
-            *slot = value as u8;
-        }
-    } else if let Some(out) = T::u16_slice_mut(&mut edge[1..sz]) {
-        out.copy_from_slice(&filtered[1..sz]); // splot-copy-ok: publish the filtered edge
-    } else {
-        return false;
-    }
-    true
-}
-
-/// AV2 §7.13.2.14 Filter corner process. Returns the three-tap top-left corner
-/// value `Round2(LeftCol[0] * 5 + AboveRow[-1] * 6 + AboveRow[0] * 5, 4)`,
-/// written by the caller into BOTH `AboveRow[-1]` and `LeftCol[-1]`. Transcribed
-/// VERBATIM from the committed spec mirror
-/// (`filter_intra_edge_corner_high`, `~/Devel/avm/av2/common/reconintra.c:1020-1028`):
-/// `s = left0 * 5 + above_neg1 * 6 + above0 * 5; out = (s + 8) >> 4`.
-#[must_use]
-pub fn filter_intra_edge_corner(left0: u16, above_neg1: u16, above0: u16) -> u16 {
-    let s = i32::from(left0) * 5 + i32::from(above_neg1) * 6 + i32::from(above0) * 5;
-    ((s + 8) >> 4) as u16
-}
+#[path = "intra_directional_small.rs"]
+mod small;
+#[path = "intra_directional_u8.rs"]
+mod u8_lines;
 
 #[cfg(test)]
 #[path = "intra_directional_angle_tests.rs"]

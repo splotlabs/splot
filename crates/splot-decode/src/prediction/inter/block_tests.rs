@@ -3,7 +3,7 @@
 
 use crate::reference::buffer::RefSlots;
 use splot_core::error::SymbolCdfErrorKind;
-use splot_core::headers::sequence::{ChromaFormatIdc, SuperblockSize};
+use splot_core::headers::sequence::SuperblockSize;
 use splot_core::span::{BitOffset, ByteOffset};
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
@@ -19,10 +19,10 @@ use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
 use super::resolve::effective_intrabc_sb_h4;
 use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_allowed};
 use super::{
-    chroma_smooth_tile_ranges, frame_segment_id_map, frame_superblock_h4, inter_skip_txfm_ctx,
-    leaf_uses_general_intra, map_inter_multiblock_error, predict_interintra_planes,
-    read_inter_intra_syntax_enabled, scheduled_motion_field_inputs, single_ref_read_error,
-    skip_segment_reference, symbol_read_error, validate_segment_id,
+    frame_segment_id_map, frame_superblock_h4, inter_skip_txfm_ctx, leaf_uses_general_intra,
+    map_inter_multiblock_error, predict_interintra_planes, read_inter_intra_syntax_enabled,
+    scheduled_motion_field_inputs, single_ref_read_error, skip_segment_reference,
+    symbol_read_error, validate_segment_id,
 };
 
 #[test]
@@ -783,44 +783,6 @@ fn shared_chroma_size_disables_compound_prediction() -> TestResult {
     assert!(sub8x8_chroma_disables_compound(block_16x4, block_16x4));
     assert!(!sub8x8_chroma_disables_compound(block_4x8, block_4x8));
     Ok(())
-}
-
-#[test]
-fn chroma_smooth_tile_ranges_follow_chroma_sampling() {
-    assert_eq!(
-        chroma_smooth_tile_ranges(0..17, 0..19, ChromaFormatIdc::Yuv420),
-        (0..9, 0..10)
-    );
-    assert_eq!(
-        chroma_smooth_tile_ranges(0..17, 0..19, ChromaFormatIdc::Yuv422),
-        (0..17, 0..10)
-    );
-    assert_eq!(
-        chroma_smooth_tile_ranges(0..17, 0..19, ChromaFormatIdc::Yuv444),
-        (0..17, 0..19)
-    );
-    assert_eq!(
-        chroma_smooth_tile_ranges(5..17, 7..19, ChromaFormatIdc::Yuv420),
-        (2..9, 3..10)
-    );
-}
-
-#[test]
-fn tile_grid_ranges_are_arithmetic_safe_at_maximum_frame_size() {
-    let max_frame_dimension = 1_usize << 16;
-    let max_mi_dimension = 2 * ((max_frame_dimension + 7) >> 3);
-    assert!(max_mi_dimension.checked_mul(max_mi_dimension).is_some());
-    for chroma in [
-        ChromaFormatIdc::Yuv420,
-        ChromaFormatIdc::Yuv422,
-        ChromaFormatIdc::Yuv444,
-    ] {
-        let (rows, cols) =
-            chroma_smooth_tile_ranges(0..max_mi_dimension, 0..max_mi_dimension, chroma);
-        assert!(rows.end.checked_sub(rows.start).is_some());
-        assert!(cols.end.checked_sub(cols.start).is_some());
-        assert!(rows.len().checked_mul(cols.len()).is_some());
-    }
 }
 
 #[test]

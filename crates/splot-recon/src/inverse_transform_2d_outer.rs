@@ -1027,3 +1027,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "inverse_transform_2d_outer_add_tests.rs"]
+mod add_tests;

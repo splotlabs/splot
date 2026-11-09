@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_recon::PlaneSize;
 use splot_recon::math::{round2_signed, round2_signed_i32};
+use splot_recon::{DecodedFrameInfo, PlaneSize};
 
 const REF_SCALE_SHIFT: u32 = 14;
 const SUBPEL_BITS: u32 = 4;
@@ -25,6 +25,31 @@ pub(crate) struct PlaneScaling {
 impl PlaneScaling {
     pub(crate) const fn is_scaled(self) -> bool {
         self.scale_x != 1 << REF_SCALE_SHIFT || self.scale_y != 1 << REF_SCALE_SHIFT
+    }
+
+    #[expect(clippy::inline_always)]
+    #[inline(always)]
+    pub(crate) fn of_reference(
+        reference: DecodedFrameInfo,
+        frame: PlaneSize,
+        sub_x: u32,
+        sub_y: u32,
+    ) -> Self {
+        let coded = reference.coded_luma_size();
+        derive_plane_scaling_from_scale(
+            0,
+            0,
+            0,
+            0,
+            sub_x,
+            sub_y,
+            scale_dimension(coded.width() as i32, frame.width() as i32),
+            scale_dimension(coded.height() as i32, frame.height() as i32),
+            0,
+            0,
+            false,
+        )
+        .with_reference_storage(reference.storage_luma_size(), sub_x, sub_y)
     }
 
     pub(crate) fn with_reference_storage(
@@ -51,7 +76,8 @@ impl PlaneScaling {
         self.with_mv_precision(plane_x, plane_y, mv_row, mv_col, sub_x, sub_y, true)
     }
 
-    #[inline]
+    #[expect(clippy::inline_always)]
+    #[inline(always)]
     pub(crate) fn with_mv(
         self,
         plane_x: i32,
@@ -120,8 +146,7 @@ pub(crate) fn derive_plane_scaling(
     let scale_x = scale_dimension(reference_width, frame_width);
     let scale_y = scale_dimension(reference_height, frame_height);
     let plane_bound = |reference_dimension: i32, subsampling: u32| {
-        let sample_scale = 1 << subsampling;
-        ((reference_dimension + sample_scale - 1) / sample_scale - 1).max(0)
+        (((reference_dimension + (1 << subsampling) - 1) >> subsampling) - 1).max(0)
     };
     derive_plane_scaling_from_scale(
         plane_x,

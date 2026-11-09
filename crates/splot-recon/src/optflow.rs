@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::simd::{
-    Select, Simd,
-    cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd},
-    num::{SimdInt, SimdUint},
-    simd_swizzle,
-};
+use fearless_simd::{i16x8, i16x16, i32x8, mask16x8, prelude::*, u16x8};
 
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2_signed_i32;
@@ -139,33 +134,17 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "optical-flow scratch sample count",
         })?;
-    scratch.samples.resize(scratch_len, 0);
-    let (weighted, scratch_samples) = scratch.samples.split_at_mut(expected);
+    if scratch.samples.len() < scratch_len {
+        scratch.samples.resize(scratch_len, 0);
+    }
+    let (weighted, scratch_samples) = scratch.samples[..scratch_len].split_at_mut(expected);
     let (difference, scratch_samples) = scratch_samples.split_at_mut(expected);
     let (gradient_x, gradient_y) = scratch_samples.split_at_mut(expected);
     let max_sample = bit_depth.max_sample();
-    let (pred0_chunks, pred0_remainder) = pred0.as_chunks::<8>();
-    let (pred1_chunks, pred1_remainder) = pred1.as_chunks::<8>();
-    let (weighted_chunks, weighted_remainder) = weighted.as_chunks_mut::<8>();
-    let (difference_chunks, difference_remainder) = difference.as_chunks_mut::<8>();
-    debug_assert!(pred0_remainder.is_empty());
-    debug_assert!(pred1_remainder.is_empty());
-    debug_assert!(weighted_remainder.is_empty());
-    debug_assert!(difference_remainder.is_empty());
-    let mut peak = Simd::<u16, 8>::splat(0);
-    for (((left_samples, right_samples), weighted), difference) in pred0_chunks
-        .iter()
-        .zip(pred1_chunks)
-        .zip(weighted_chunks)
-        .zip(difference_chunks)
-    {
-        let left_samples = Simd::from_array(*left_samples);
-        let right_samples = Simd::from_array(*right_samples);
-        peak = peak.simd_max(left_samples).simd_max(right_samples);
-        let rows = weighted_difference_row(left_samples, right_samples, distances, downshift);
-        (*weighted, *difference) = (rows.0.to_array(), rows.1.to_array());
-    }
-    if peak.reduce_max() > max_sample {
+    let peak = baseline_simd!(simd => weighted_difference_planes(
+        simd, pred0, pred1, weighted, difference, distances, downshift,
+    ));
+    if peak > max_sample {
         for (sample_index, (&left, &right)) in pred0.iter().zip(pred1).enumerate() {
             for (predictor, value) in [(0, left), (1, right)] {
                 if value > max_sample {
@@ -180,13 +159,21 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         }
     }
 
-    if let (8, Ok(weighted), Ok(difference)) = (
-        unit_size,
+    if let (Ok(weighted), Ok(difference)) = (
         <&[i16; 64]>::try_from(&*weighted),
         <&[i16; 64]>::try_from(&*difference),
-    ) {
-        let delta = solve_sums(unit_8x8_sums(weighted, difference), distances)?;
-        scratch.deltas.push(delta);
+    ) && width == 8
+    {
+        if unit_size == 8 {
+            let delta = solve_sums(unit_8x8_sums(weighted, difference), distances)?;
+            scratch.deltas.push(delta);
+            return Ok(&scratch.deltas);
+        }
+        push_unit_deltas(
+            &mut scratch.deltas,
+            unit_4x4_sums(weighted, difference),
+            distances,
+        )?;
         return Ok(&scratch.deltas);
     }
     if let (8, Ok(weighted), Ok(difference)) = (
@@ -195,15 +182,11 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         <&[i16; 256]>::try_from(&*difference),
     ) && width == 16
     {
-        for sums in unit_16x16_sums(weighted, difference) {
-            match solve_sums(sums, distances) {
-                Ok(delta) => scratch.deltas.push(delta),
-                Err(error) => {
-                    scratch.deltas.clear();
-                    return Err(error);
-                }
-            }
-        }
+        push_unit_deltas(
+            &mut scratch.deltas,
+            unit_16x16_sums(weighted, difference),
+            distances,
+        )?;
         return Ok(&scratch.deltas);
     }
     gradients(weighted, width, height, gradient_x, gradient_y);
@@ -223,6 +206,61 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         }
     }
     Ok(&scratch.deltas)
+}
+
+/// Solves four units' sums into `deltas`, which an error leaves empty.
+fn push_unit_deltas(
+    deltas: &mut Vec<[[i32; 2]; 2]>,
+    units: [[i32; 5]; 4],
+    distances: [i32; 2],
+) -> Result<()> {
+    for sums in units {
+        match solve_sums(sums, distances) {
+            Ok(delta) => deltas.push(delta),
+            Err(error) => {
+                deltas.clear();
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fills the § 7.13.3.9 `weighted` and `difference` planes of two row-major
+/// predictors and returns their largest sample for the caller's range check.
+#[inline]
+fn weighted_difference_planes<S: Simd>(
+    simd: S,
+    pred0: &[u16],
+    pred1: &[u16],
+    weighted: &mut [i16],
+    difference: &mut [i16],
+    distances: [i32; 2],
+    downshift: u32,
+) -> u16 {
+    let (pred0_chunks, pred0_remainder) = pred0.as_chunks::<8>();
+    let (pred1_chunks, pred1_remainder) = pred1.as_chunks::<8>();
+    let (weighted_chunks, weighted_remainder) = weighted.as_chunks_mut::<8>();
+    let (difference_chunks, difference_remainder) = difference.as_chunks_mut::<8>();
+    debug_assert!(pred0_remainder.is_empty());
+    debug_assert!(pred1_remainder.is_empty());
+    debug_assert!(weighted_remainder.is_empty());
+    debug_assert!(difference_remainder.is_empty());
+    let mut peak = u16x8::splat(simd, 0);
+    for (((left, right), weighted), difference) in pred0_chunks
+        .iter()
+        .zip(pred1_chunks)
+        .zip(weighted_chunks)
+        .zip(difference_chunks)
+    {
+        let left = u16x8::load_array_ref(simd, left);
+        let right = u16x8::load_array_ref(simd, right);
+        peak = peak.max(left).max(right);
+        let rows = weighted_difference_row(left, right, distances, downshift);
+        rows.0.store_array(weighted);
+        rows.1.store_array(difference);
+    }
+    peak.reduce_max()
 }
 
 /// Derives one 8x8 optical-flow delta from strided predictors.
@@ -274,14 +312,39 @@ pub fn derive_optflow_mv_delta_8x8_strided_into(
     let distances = reduce_distances(distances);
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
     let max_sample = bit_depth.max_sample();
-    let mut peak = Simd::<u16, 8>::splat(0);
-    let mut weighted = [Simd::splat(0); 8];
-    let mut difference = [Simd::splat(0); 8];
+    baseline_simd!(simd => strided_8x8_delta(
+        simd, pred0, pred1, stride, distances, downshift, max_sample,
+    ))
+}
+
+/// [`derive_optflow_mv_delta_8x8_strided_into`] over its validated spans.
+#[inline]
+fn strided_8x8_delta<S: Simd>(
+    simd: S,
+    pred0: &[u16],
+    pred1: &[u16],
+    stride: usize,
+    distances: [i32; 2],
+    downshift: u32,
+    max_sample: u16,
+) -> Result<[[i32; 2]; 2]> {
+    let mut peak = u16x8::splat(simd, 0);
+    let mut weighted = [i16x8::splat(simd, 0); 8];
+    let mut difference = weighted;
     for row in 0..8 {
         let source = row * stride;
-        let left = Simd::<u16, 8>::from_slice(&pred0[source..]);
-        let right = Simd::<u16, 8>::from_slice(&pred1[source..]);
-        peak = peak.simd_max(left).simd_max(right);
+        let (Some(left), Some(right)) = (
+            pred0.get(source..).and_then(<[u16]>::first_chunk),
+            pred1.get(source..).and_then(<[u16]>::first_chunk),
+        ) else {
+            return Err(ReconError::BufferLengthMismatch {
+                expected: source + 8,
+                actual: pred0.len().min(pred1.len()),
+            });
+        };
+        let left = u16x8::load_array_ref(simd, left);
+        let right = u16x8::load_array_ref(simd, right);
+        peak = peak.max(left).max(right);
         (weighted[row], difference[row]) =
             weighted_difference_row(left, right, distances, downshift);
     }
@@ -290,7 +353,8 @@ pub fn derive_optflow_mv_delta_8x8_strided_into(
             pred0, pred1, stride, max_sample,
         ));
     }
-    solve_sums(rows_8x8_sums(&weighted, &difference), distances)
+    let sums = whole_8x8(rows_8x8_sums(simd, &weighted, &difference));
+    solve_sums(sums, distances)
 }
 
 /// The error for the first strided 8x8 predictor sample above `max_sample`,
@@ -323,6 +387,346 @@ fn strided_sample_out_of_range(
     }
 }
 
+/// The § 7.13.3.8 refinement of an eight-bit 8x8 optical-flow unit whose two
+/// predictions are the eight-sample rows of `preds` from `starts`, 16 bytes
+/// apart: `None` when their SAD is below `sad_threshold`, else the
+/// § 7.13.3.12 delta of [`derive_optflow_mv_delta_8x8_strided_into`].
+///
+/// # Errors
+///
+/// Returns [`ReconError::BufferLengthMismatch`] when either prediction does
+/// not hold its 8x8 rows, or the arithmetic errors of the solve.
+#[doc(hidden)]
+pub fn optflow_unit_8x8_u8(
+    preds: [&[u8]; 2],
+    starts: [usize; 2],
+    distances: [i32; 2],
+    sad_threshold: Option<u32>,
+) -> Result<Option<[[i32; 2]; 2]>> {
+    const SPAN: usize = 7 * 16 + 8;
+    let mut rows = [[0u64; 8]; 2];
+    for ((rows, pred), start) in rows.iter_mut().zip(preds).zip(starts) {
+        let span = pred
+            .get(start..)
+            .and_then(<[u8]>::first_chunk::<SPAN>)
+            .ok_or(ReconError::BufferLengthMismatch {
+                expected: start.saturating_add(SPAN),
+                actual: pred.len(),
+            })?;
+        for (index, row) in rows.iter_mut().enumerate() {
+            if let Some(bytes) = span[16 * index..].first_chunk::<8>() {
+                *row = u64::from_le_bytes(*bytes);
+            }
+        }
+    }
+    let threshold = sad_threshold.unwrap_or(0);
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    let reduced = if distances.contains(&0) {
+        [0; 2]
+    } else {
+        reduce_distances(distances)
+    };
+    #[cfg(target_arch = "x86_64")]
+    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
+        let Some(sums) = avx2::unit_8x8(t, &rows, reduced, threshold) else {
+            return Ok(None);
+        };
+        if reduced == [0; 2] {
+            return Ok(Some([[0; 2]; 2]));
+        }
+        return solve_sums(unit_sums(sums, 64), reduced).map(Some);
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+        let Some(sums) = neon::unit_8x8(t, &rows, reduced, threshold) else {
+            return Ok(None);
+        };
+        if reduced == [0; 2] {
+            return Ok(Some([[0; 2]; 2]));
+        }
+        return solve_sums(unit_sums(sums, 64), reduced).map(Some);
+    }
+    let samples = rows.map(|rows| {
+        let mut samples = [0u16; 64];
+        for (lanes, row) in samples.chunks_exact_mut(8).zip(rows) {
+            for (lane, byte) in lanes.iter_mut().zip(row.to_le_bytes()) {
+                *lane = u16::from(byte);
+            }
+        }
+        samples
+    });
+    let sad = samples[0]
+        .iter()
+        .zip(&samples[1])
+        .map(|(&a, &b)| u32::from(a.abs_diff(b)))
+        .sum::<u32>();
+    if sad < threshold {
+        return Ok(None);
+    }
+    derive_optflow_mv_delta_8x8_strided_into(
+        &samples[0],
+        0,
+        &samples[1],
+        0,
+        8,
+        BitDepth::Eight,
+        distances,
+    )
+    .map(Some)
+}
+
+#[cfg(target_arch = "x86_64")]
+mod avx2 {
+    use core::arch::x86_64::*;
+    use fearless_simd::{Avx2, SimdBase, u8x32};
+
+    /// `pshufb` bytes picking, for every `i16` lane of an eight-lane row,
+    /// the lane `OFFSET` away clamped to the row.
+    const fn neighbours<const OFFSET: i32>() -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let mut lane = 0;
+        while lane < 16 {
+            let mut source = (lane % 8) as i32 + OFFSET;
+            if source < 0 {
+                source = 0;
+            }
+            if source > 7 {
+                source = 7;
+            }
+            out[2 * lane] = 2 * source as u8;
+            out[2 * lane + 1] = 2 * source as u8 + 1;
+            lane += 1;
+        }
+        out
+    }
+
+    const NEXT: [u8; 32] = neighbours::<1>();
+    const PREV: [u8; 32] = neighbours::<-1>();
+    const NEXT2: [u8; 32] = neighbours::<2>();
+    const PREV2: [u8; 32] = neighbours::<-2>();
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn bytes(t: Avx2, bytes: [u8; 32]) -> __m256i {
+        u8x32::load_array(t, bytes).into()
+    }
+
+    /// `Round2Signed(42 * (next - prev) - 5 * (next2 - prev2), 7)` of `i16`
+    /// lanes, the edge lanes doubled first: the magnitude rounds unsigned as
+    /// `(m + add) * mul >> 16`, with `(add, mul)` `(64, 512)` for `>> 7` and
+    /// `(32, 1024)` for the doubled `>> 6`, and takes its sign back after.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn gradient(taps: [__m256i; 4], add: __m256i, mul: __m256i) -> __m256i {
+        let [next, prev, next2, prev2] = taps;
+        let near = _mm256_mullo_epi16(_mm256_sub_epi16(next, prev), _mm256_set1_epi16(42));
+        let far = _mm256_mullo_epi16(_mm256_sub_epi16(next2, prev2), _mm256_set1_epi16(5));
+        let magnitude = _mm256_sub_epi16(_mm256_max_epi16(near, far), _mm256_min_epi16(near, far));
+        let rounded = _mm256_mulhi_epu16(_mm256_add_epi16(magnitude, add), mul);
+        let sign = _mm256_cmpgt_epi16(far, near);
+        _mm256_sub_epi16(_mm256_xor_si256(rounded, sign), sign)
+    }
+
+    fearless_simd::kernel!(
+        /// The 8x8 SAD test and raw `[su2, sv2, suv, suw, svw]` sums of two
+        /// predictions held as eight-byte rows, row pairs `(2j, 2j + 1)` in
+        /// the two lanes of one `i16` vector.
+        #[inline]
+        pub(super) fn unit_8x8(
+            t: Avx2,
+            rows: &[[u64; 8]; 2],
+            distances: [i32; 2],
+            sad_threshold: u32,
+        ) -> Option<[i32; 5]> {
+            let pairs = |rows: &[u64; 8]| -> [__m128i; 4] {
+                core::array::from_fn(|j| _mm_set_epi64x(rows[2 * j + 1] as i64, rows[2 * j] as i64))
+            };
+            let (first, second) = (pairs(&rows[0]), pairs(&rows[1]));
+            let mut sad = _mm_setzero_si128();
+            for (&a, &b) in first.iter().zip(&second) {
+                sad = _mm_add_epi64(sad, _mm_sad_epu8(a, b));
+            }
+            if ((_mm_cvtsi128_si64(sad) + _mm_extract_epi64::<1>(sad)) as u32) < sad_threshold {
+                return None;
+            }
+            let [near, far] = distances.map(|distance| _mm256_set1_epi16(distance as i16));
+            let mut weighted = [_mm256_setzero_si256(); 4];
+            let mut difference = weighted;
+            for j in 0..4 {
+                let (a, b) = (
+                    _mm256_cvtepu8_epi16(first[j]),
+                    _mm256_cvtepu8_epi16(second[j]),
+                );
+                weighted[j] =
+                    _mm256_sub_epi16(_mm256_mullo_epi16(a, near), _mm256_mullo_epi16(b, far));
+                difference[j] = _mm256_sub_epi16(a, b);
+            }
+            let edge = |lanes: __m256i, edge: i16, inner: i16| {
+                _mm256_blendv_epi8(_mm256_set1_epi16(inner), _mm256_set1_epi16(edge), lanes)
+            };
+            let row_edges = _mm256_setr_epi16(-1, 0, 0, 0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0, -1);
+            let (h_add, h_mul) = (edge(row_edges, 32, 64), edge(row_edges, 1024, 512));
+            let top = _mm256_permute2x128_si256::<0x00>(weighted[0], weighted[0]);
+            let bottom = _mm256_permute2x128_si256::<0x11>(weighted[3], weighted[3]);
+            let middle: [__m256i; 3] = core::array::from_fn(|j| {
+                _mm256_permute2x128_si256::<0x21>(weighted[j], weighted[j + 1])
+            });
+            let (inner_add, inner_mul) = (_mm256_set1_epi16(64), _mm256_set1_epi16(512));
+            let first_rows =
+                _mm256_setr_epi16(-1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0);
+            let last_rows =
+                _mm256_setr_epi16(0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1, -1, -1);
+            let mut sums = [_mm256_setzero_si256(); 5];
+            for j in 0..4 {
+                let row = weighted[j];
+                let shuffle = |pattern: [u8; 32]| _mm256_shuffle_epi8(row, bytes(t, pattern));
+                let u = gradient(
+                    [shuffle(NEXT), shuffle(PREV), shuffle(NEXT2), shuffle(PREV2)],
+                    h_add,
+                    h_mul,
+                );
+                let taps = [
+                    if j < 3 { middle[j] } else { bottom },
+                    if j > 0 { middle[j - 1] } else { top },
+                    if j < 3 { weighted[j + 1] } else { bottom },
+                    if j > 0 { weighted[j - 1] } else { top },
+                ];
+                let v = match j {
+                    0 => gradient(taps, edge(first_rows, 32, 64), edge(first_rows, 1024, 512)),
+                    3 => gradient(taps, edge(last_rows, 32, 64), edge(last_rows, 1024, 512)),
+                    _ => gradient(taps, inner_add, inner_mul),
+                };
+                let w = difference[j];
+                sums[0] = _mm256_add_epi32(sums[0], _mm256_madd_epi16(u, u));
+                sums[1] = _mm256_add_epi32(sums[1], _mm256_madd_epi16(v, v));
+                sums[2] = _mm256_add_epi32(sums[2], _mm256_madd_epi16(u, v));
+                sums[3] = _mm256_add_epi32(sums[3], _mm256_madd_epi16(u, w));
+                sums[4] = _mm256_add_epi32(sums[4], _mm256_madd_epi16(v, w));
+            }
+            let quad = _mm256_hadd_epi32(
+                _mm256_hadd_epi32(sums[0], sums[1]),
+                _mm256_hadd_epi32(sums[2], sums[3]),
+            );
+            let quad = _mm_add_epi32(
+                _mm256_castsi256_si128(quad),
+                _mm256_extracti128_si256::<1>(quad),
+            );
+            let last = _mm_add_epi32(
+                _mm256_castsi256_si128(sums[4]),
+                _mm256_extracti128_si256::<1>(sums[4]),
+            );
+            let last = _mm_hadd_epi32(last, last);
+            let last = _mm_hadd_epi32(last, last);
+            Some([
+                _mm_cvtsi128_si32(quad),
+                _mm_extract_epi32::<1>(quad),
+                _mm_extract_epi32::<2>(quad),
+                _mm_extract_epi32::<3>(quad),
+                _mm_cvtsi128_si32(last),
+            ])
+        }
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+mod neon {
+    use core::arch::aarch64::*;
+    use fearless_simd::{SimdBase, u8x16};
+
+    /// `tbl` bytes picking, for every `i16` lane of an eight-lane row, the
+    /// lane `offset` away clamped to the row.
+    const fn neighbours(offset: i32) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        let mut lane = 0;
+        while lane < 8 {
+            let source = match lane + offset {
+                ..0 => 0,
+                8.. => 7,
+                source => source as u8,
+            };
+            out[2 * lane as usize] = 2 * source;
+            out[2 * lane as usize + 1] = 2 * source + 1;
+            lane += 1;
+        }
+        out
+    }
+
+    const NEIGHBOURS: [[u8; 16]; 4] =
+        [neighbours(1), neighbours(-1), neighbours(2), neighbours(-2)];
+
+    /// `Round2Signed(42 * (next - prev) - 5 * (next2 - prev2), 7)` of `i16`
+    /// lanes, as [`super::gradient_i16`]: the wrapped magnitude rounds
+    /// unsigned by `(m + add) >> -shift` and takes its sign back after.
+    #[inline]
+    #[target_feature(enable = "neon")]
+    fn gradient(taps: [int16x8_t; 4], add: uint16x8_t, shift: int16x8_t) -> int16x8_t {
+        let [next, prev, next2, prev2] = taps;
+        let near = vmulq_n_s16(vsubq_s16(next, prev), 42);
+        let far = vmulq_n_s16(vsubq_s16(next2, prev2), 5);
+        let rounded = vshlq_u16(
+            vaddq_u16(vreinterpretq_u16_s16(vabdq_s16(near, far)), add),
+            shift,
+        );
+        let sign = vcgtq_s16(far, near);
+        vreinterpretq_s16_u16(vsubq_u16(veorq_u16(rounded, sign), sign))
+    }
+
+    fearless_simd::kernel!(
+        /// The 8x8 SAD test and raw `[su2, sv2, suv, suw, svw]` sums of two
+        /// predictions held as eight-byte rows, one row per `i16` vector.
+        #[inline]
+        pub(super) fn unit_8x8(
+            t: Neon,
+            rows: &[[u64; 8]; 2],
+            distances: [i32; 2],
+            sad_threshold: u32,
+        ) -> Option<[i32; 5]> {
+            let (first, second) = (
+                rows[0].map(|row| vcreate_u8(row)),
+                rows[1].map(|row| vcreate_u8(row)),
+            );
+            let mut sad = vabdl_u8(first[0], second[0]);
+            for (&a, &b) in first.iter().zip(&second).skip(1) {
+                sad = vabal_u8(sad, a, b);
+            }
+            if vaddlvq_u16(sad) < sad_threshold {
+                return None;
+            }
+            let [near, far] = distances.map(|distance| vdupq_n_s16(distance as i16));
+            let widen = |row: uint8x8_t| vreinterpretq_s16_u16(vmovl_u8(row));
+            let weighted: [int16x8_t; 8] = core::array::from_fn(|j| {
+                vmlsq_s16(vmulq_s16(widen(first[j]), near), widen(second[j]), far)
+            });
+            let neighbours =
+                NEIGHBOURS.map(|lanes| -> uint8x16_t { u8x16::load_array(t, lanes).into() });
+            let row_shift = vsetq_lane_s16::<7>(-6, vsetq_lane_s16::<0>(-6, vdupq_n_s16(-7)));
+            let row_add = vsetq_lane_u16::<7>(32, vsetq_lane_u16::<0>(32, vdupq_n_u16(64)));
+            let mut sums = [[vdupq_n_s32(0); 2]; 5];
+            for j in 0..8 {
+                let row = vreinterpretq_u8_s16(weighted[j]);
+                let taps = neighbours.map(|lanes| vreinterpretq_s16_u8(vqtbl1q_u8(row, lanes)));
+                let u = gradient(taps, row_add, row_shift);
+                let rows = [j + 1, j.saturating_sub(1), j + 2, j.saturating_sub(2)];
+                let (add, shift) = if j == 0 || j == 7 { (32, -6) } else { (64, -7) };
+                let v = gradient(
+                    rows.map(|row| weighted[row.min(7)]),
+                    vdupq_n_u16(add),
+                    vdupq_n_s16(shift),
+                );
+                let w = vsubq_s16(widen(first[j]), widen(second[j]));
+                for (sum, (a, b)) in sums
+                    .iter_mut()
+                    .zip([(u, u), (v, v), (u, v), (u, w), (v, w)])
+                {
+                    sum[0] = vmlal_s16(sum[0], vget_low_s16(a), vget_low_s16(b));
+                    sum[1] = vmlal_high_s16(sum[1], a, b);
+                }
+            }
+            Some(sums.map(|[low, high]| vaddvq_s32(vaddq_s32(low, high))))
+        }
+    );
+}
+
 /// The § 7.13.3.9 `weighted` and `difference` rows of eight predictor sample
 /// pairs, in `i16` lanes.
 ///
@@ -332,31 +736,99 @@ fn strided_sample_out_of_range(
 /// caller's range check, so their wrapped values never reach a solve.
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
-fn weighted_difference_row(
-    left: Simd<u16, 8>,
-    right: Simd<u16, 8>,
+fn weighted_difference_row<S: Simd>(
+    left: u16x8<S>,
+    right: u16x8<S>,
     distances: [i32; 2],
     downshift: u32,
-) -> (Simd<i16, 8>, Simd<i16, 8>) {
-    let (left, right) = (left.cast::<i16>(), right.cast::<i16>());
-    let round = |value: Simd<i16, 8>| {
+) -> (i16x8<S>, i16x8<S>) {
+    let (left, right): (i16x8<S>, i16x8<S>) = (left.bitcast(), right.bitcast());
+    let round = |value: i16x8<S>| {
         if downshift == 0 {
             return value;
         }
-        (value + Simd::splat(1 << (downshift - 1)) + (value >> 15)) >> downshift as i16
+        (value + (1 << (downshift - 1)) + (value >> 15)) >> downshift
     };
-    let [near, far] = distances.map(|distance| Simd::splat(distance as i16));
-    (round(near * left - far * right), round(left - right))
+    let [near, far] = distances.map(|distance| distance as i16);
+    (round(left * near - right * far), round(left - right))
 }
 
 /// `Round2Signed` lane-wise: a negative value rounds its half away from zero
 /// by adding one less before the arithmetic shift. The callers' sums stay far
 /// below the `i32` limits, so the addition cannot wrap.
-fn round2_signed_simd<const LANES: usize>(value: Simd<i32, LANES>, shift: u32) -> Simd<i32, LANES> {
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn round2_signed_simd<S: Simd, W: SimdInt<S, Element = i32>>(value: W, shift: u32) -> W {
     if shift == 0 {
         return value;
     }
-    (value + Simd::splat(1 << (shift - 1)) + (value >> 31)) >> shift as i32
+    (value + (1 << (shift - 1)) + (value >> 31)) >> shift
+}
+
+/// `Round2Signed(42 * (next - prev) - 5 * (next2 - prev2), 7)` of
+/// `[next, prev, next2, prev2]` in `i32` lanes, with the taps of the lanes
+/// whose `double` shift is 1 doubled before rounding.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn gradient_lanes<S: Simd, W: SimdInt<S, Element = i32>>(
+    [next, prev, next2, prev2]: [W; 4],
+    double: W,
+) -> W {
+    let value = (next - prev) * 42 - (next2 - prev2) * 5;
+    round2_signed_simd(value << double, 7)
+}
+
+/// `[next, prev, next2, prev2]` neighbours of every lane of a row of
+/// `LAST + 1` samples, repeating the row's end samples past its edges: lane
+/// `LAST` of `first` holds the first sample and lane 0 of `last` the last.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn clamped_neighbours<S: Simd, V: SimdBase<S>, const LAST: usize>(
+    samples: V,
+    first: V,
+    last: V,
+) -> [V; 4] {
+    debug_assert_eq!(LAST + 1, V::LEN);
+    let next = samples.slide::<1>(last);
+    let prev = first.slide::<LAST>(samples);
+    [next, prev, next.slide::<1>(last), first.slide::<LAST>(prev)]
+}
+
+/// [`gradient_lanes`] of eight `i16` lanes in one `i32x8`.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn gradient_lanes_8<S: Simd>(taps: [i16x8<S>; 4], double: bool) -> i16x8<S> {
+    let taps = taps.map(widen_8);
+    narrow_8(gradient_lanes(
+        taps,
+        i32x8::splat(taps[0].simd, i32::from(double)),
+    ))
+}
+
+/// Eight `i16` lanes sign-extended into one `i32x8`.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn widen_8<S: Simd>(lanes: i16x8<S>) -> i32x8<S> {
+    let (low, high) = lanes.widen();
+    low.combine(high)
+}
+
+/// One `i32x8` truncated back to eight `i16` lanes.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn narrow_8<S: Simd>(lanes: i32x8<S>) -> i16x8<S> {
+    let (low, high) = lanes.split();
+    low.narrow(high)
+}
+
+/// [`gradient_lanes`] of sixteen `i16` lanes in two `i32x8`s.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn gradient_lanes_16<S: Simd>(taps: [i16x16<S>; 4], double: bool) -> i16x16<S> {
+    let taps = taps.map(SimdWiden::widen);
+    let double = i32x8::splat(taps[0].0.simd, i32::from(double));
+    gradient_lanes(taps.map(|taps| taps.0), double)
+        .narrow(gradient_lanes(taps.map(|taps| taps.1), double))
 }
 
 fn reduce_distances(distances: [i32; 2]) -> [i32; 2] {
@@ -389,6 +861,20 @@ fn gradients(
     horizontal: &mut [i16],
     vertical: &mut [i16],
 ) {
+    baseline_simd!(simd => gradient_planes(
+        simd, values, width, height, horizontal, vertical,
+    ));
+}
+
+#[inline]
+fn gradient_planes<S: Simd>(
+    simd: S,
+    values: &[i16],
+    width: usize,
+    height: usize,
+    horizontal: &mut [i16],
+    vertical: &mut [i16],
+) {
     for (source, output) in values
         .chunks_exact(width)
         .zip(horizontal.chunks_exact_mut(width))
@@ -396,15 +882,17 @@ fn gradients(
         let (source_units, source_remainder) = source.as_chunks::<GRADIENT_UNIT>();
         let (output_units, output_remainder) = output.as_chunks_mut::<GRADIENT_UNIT>();
         for (source, output) in source_units.iter().zip(output_units) {
-            *output = horizontal_gradient_lanes(source);
+            horizontal_gradient_16(simd, source).store_array(output);
         }
         if let (Ok(source), Ok(output)) = (
             <&[i16; 8]>::try_from(source_remainder),
             <&mut [i16; 8]>::try_from(&mut *output_remainder),
         ) {
-            *output = horizontal_gradient_lanes(source);
+            horizontal_gradient_8(simd, source).store_array(output);
         } else {
-            horizontal_gradient_partial(source_remainder, output_remainder);
+            for (col, output) in output_remainder.iter_mut().enumerate() {
+                *output = horizontal_gradient_scalar(source_remainder, col);
+            }
         }
     }
     for row in 0..height {
@@ -417,65 +905,73 @@ fn gradients(
         let double = row + 1 > row_end || row < row_start + 1;
         let row_slice = |row| &values[row * width..][..width];
         let output = &mut vertical[row * width..][..width];
-        vertical_gradient_row(
-            row_slice(row_prev),
-            row_slice(row_prev2),
+        let rows = [
             row_slice(row_next),
+            row_slice(row_prev),
             row_slice(row_next2),
-            double,
-            output,
-        );
+            row_slice(row_prev2),
+        ];
+        let wide = vertical_gradient_chunks(simd, rows, output, |taps: [i16x16<S>; 4]| {
+            gradient_lanes_16(taps, double)
+        });
+        let narrow = wide
+            + vertical_gradient_chunks(
+                simd,
+                rows.map(|row| &row[wide..]),
+                &mut output[wide..],
+                |taps: [i16x8<S>; 4]| gradient_lanes_8(taps, double),
+            );
+        for col in narrow..width {
+            let [next, prev, next2, prev2] = rows.map(|row| i32::from(row[col]));
+            let mut value = 42 * (next - prev) - 5 * (next2 - prev2);
+            if double {
+                value *= 2;
+            }
+            output[col] = round2_signed_i32(value, 7) as i16;
+        }
     }
 }
 
 /// Horizontal § 7.13.3.9 gradients of one whole gradient unit, with the
 /// clamped edge taps and doubled edge columns of [`horizontal_gradient_scalar`]
 /// applied lane-wise.
-fn horizontal_gradient_lanes<const N: usize>(source: &[i16; N]) -> [i16; N] {
-    let samples = Simd::<i16, N>::from_array(*source).cast::<i32>();
-    let lane = Simd::<i32, N>::from_array(core::array::from_fn(|lane| lane as i32));
-    let first = Simd::splat(samples[0]);
-    let last = Simd::splat(samples[N - 1]);
-    let end = Simd::splat(N as i32 - 1);
-    let next = lane
-        .simd_ge(end)
-        .select(last, samples.rotate_elements_left::<1>());
-    let next2 = (lane + Simd::splat(1))
-        .simd_ge(end)
-        .select(last, samples.rotate_elements_left::<2>());
-    let prev = lane
-        .simd_le(Simd::splat(0))
-        .select(first, samples.rotate_elements_right::<1>());
-    let prev2 = lane
-        .simd_le(Simd::splat(1))
-        .select(first, samples.rotate_elements_right::<2>());
-    let value = Simd::splat(42) * (next - prev) - Simd::splat(5) * (next2 - prev2);
-    let edge = lane.simd_eq(Simd::splat(0)) | lane.simd_eq(end);
-    let value = value + edge.select(value, Simd::splat(0));
-    round2_signed_simd(value, 7).cast::<i16>().to_array()
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn horizontal_gradient_16<S: Simd>(simd: S, samples: &[i16; 16]) -> i16x16<S> {
+    let [first, last] = edge_lanes(simd, samples);
+    let (low, high) = i16x16::load_array_ref(simd, samples).widen();
+    let low_taps = [
+        low.slide::<1>(high),
+        first.slide::<7>(low),
+        low.slide::<2>(high),
+        first.slide::<6>(low),
+    ];
+    let high_taps = [
+        high.slide::<1>(last),
+        low.slide::<7>(high),
+        high.slide::<2>(last),
+        low.slide::<6>(high),
+    ];
+    let edge = |lanes| i32x8::load_array(simd, lanes);
+    gradient_lanes(low_taps, edge([1, 0, 0, 0, 0, 0, 0, 0]))
+        .narrow(gradient_lanes(high_taps, edge([0, 0, 0, 0, 0, 0, 0, 1])))
 }
 
-fn horizontal_gradient_partial(source: &[i16], output: &mut [i16]) {
-    if source.is_empty() {
-        return;
-    }
-    let col_end = source.len() - 1;
-    let mut col = 0;
-    while col <= col_end {
-        if col >= 2 && col + 5 <= col_end {
-            let next = Simd::<i16, 4>::from_slice(&source[col + 1..]).cast::<i32>();
-            let prev = Simd::<i16, 4>::from_slice(&source[col - 1..]).cast::<i32>();
-            let next2 = Simd::<i16, 4>::from_slice(&source[col + 2..]).cast::<i32>();
-            let prev2 = Simd::<i16, 4>::from_slice(&source[col - 2..]).cast::<i32>();
-            let value = Simd::splat(42) * (next - prev) - Simd::splat(5) * (next2 - prev2);
-            output[col..col + 4]
-                .copy_from_slice(&round2_signed_simd(value, 7).cast::<i16>().to_array()); // splot-copy-ok: publish SIMD horizontal gradients into caller scratch
-            col += 4;
-            continue;
-        }
-        output[col] = horizontal_gradient_scalar(source, col);
-        col += 1;
-    }
+/// [`horizontal_gradient_16`] of an eight-sample gradient unit.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn horizontal_gradient_8<S: Simd>(simd: S, samples: &[i16; 8]) -> i16x8<S> {
+    let [first, last] = edge_lanes(simd, samples);
+    let samples = widen_8(i16x8::load_array_ref(simd, samples));
+    let taps = clamped_neighbours::<S, _, 7>(samples, first, last);
+    let edges = i32x8::load_array(simd, [1, 0, 0, 0, 0, 0, 0, 1]);
+    narrow_8(gradient_lanes(taps, edges))
+}
+
+/// The first and last samples of a gradient unit, each splatted to `i32` lanes.
+fn edge_lanes<S: Simd, const N: usize>(simd: S, samples: &[i16; N]) -> [i32x8<S>; 2] {
+    [samples.first(), samples.last()]
+        .map(|sample| i32x8::splat(simd, sample.copied().map_or(0, i32::from)))
 }
 
 fn horizontal_gradient_scalar(source: &[i16], col: usize) -> i16 {
@@ -492,44 +988,29 @@ fn horizontal_gradient_scalar(source: &[i16], col: usize) -> i16 {
     round2_signed_i32(value, 7) as i16
 }
 
-fn vertical_gradient_row(
-    prev: &[i16],
-    prev2: &[i16],
-    next: &[i16],
-    next2: &[i16],
-    double: bool,
+/// Vertical § 7.13.3.9 gradients of `[next, prev, next2, prev2]` rows in
+/// `N`-lane groups, returning how many leading columns it wrote.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn vertical_gradient_chunks<S: Simd, V: SimdBase<S, Array = [i16; N]>, const N: usize>(
+    simd: S,
+    rows: [&[i16]; 4],
     output: &mut [i16],
-) {
-    let (prev_chunks, prev_remainder) = prev.as_chunks::<8>();
-    let (prev2_chunks, prev2_remainder) = prev2.as_chunks::<8>();
-    let (next_chunks, next_remainder) = next.as_chunks::<8>();
-    let (next2_chunks, next2_remainder) = next2.as_chunks::<8>();
-    let (output_chunks, output_remainder) = output.as_chunks_mut::<8>();
-    for ((((prev, prev2), next), next2), output) in prev_chunks
+    lanes: impl Fn([V; 4]) -> V,
+) -> usize {
+    let [next, prev, next2, prev2] = rows.map(|row| row.as_chunks::<N>().0);
+    let (output, _) = output.as_chunks_mut::<N>();
+    for ((((next, prev), next2), prev2), output) in next
         .iter()
-        .zip(prev2_chunks)
-        .zip(next_chunks)
-        .zip(next2_chunks)
-        .zip(output_chunks)
+        .zip(prev)
+        .zip(next2)
+        .zip(prev2)
+        .zip(&mut *output)
     {
-        let mut value = (Simd::from_array(*next).cast::<i32>()
-            - Simd::from_array(*prev).cast::<i32>())
-            * Simd::splat(42);
-        value -= (Simd::from_array(*next2).cast::<i32>() - Simd::from_array(*prev2).cast::<i32>())
-            * Simd::splat(5);
-        if double {
-            value += value;
-        }
-        *output = round2_signed_simd(value, 7).cast::<i16>().to_array();
+        lanes([next, prev, next2, prev2].map(|row| V::load_array_ref(simd, row)))
+            .store_array(output);
     }
-    for col in 0..output_remainder.len() {
-        let mut value = 42 * (i32::from(next_remainder[col]) - i32::from(prev_remainder[col]))
-            - 5 * (i32::from(next2_remainder[col]) - i32::from(prev2_remainder[col]));
-        if double {
-            value *= 2;
-        }
-        output_remainder[col] = round2_signed_i32(value, 7) as i16;
-    }
+    output.len() * N
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -597,6 +1078,8 @@ fn solve_sums(sums: [i32; 5], distances: [i32; 2]) -> Result<[[i32; 2]; 2]> {
     ])
 }
 
+/// The `[su2, sv2, suv, suw, svw]` sums of one `N`x`N` unit of stored gradient
+/// planes, packed `16 / N` rows to a 16-lane group.
 fn solve_unit_sums<const N: usize>(
     gradient_x: &[i16],
     gradient_y: &[i16],
@@ -608,45 +1091,32 @@ fn solve_unit_sums<const N: usize>(
     debug_assert!(stride.is_multiple_of(N));
     let row_chunks = stride / N;
     let first_chunk = unit_y * row_chunks + unit_x / N;
-    let end_chunk = (unit_y + N) * row_chunks;
-    let (gradient_x, gradient_x_remainder) = gradient_x.as_chunks::<N>();
-    let (gradient_y, gradient_y_remainder) = gradient_y.as_chunks::<N>();
-    let (difference, difference_remainder) = difference.as_chunks::<N>();
-    debug_assert!(gradient_x_remainder.is_empty());
-    debug_assert!(gradient_y_remainder.is_empty());
-    debug_assert!(difference_remainder.is_empty());
-    let mut sums = [Simd::<i32, N>::splat(0); 5];
-    for ((u, v), w) in gradient_x[first_chunk..end_chunk]
-        .iter()
-        .step_by(row_chunks)
-        .zip(
-            gradient_y[first_chunk..end_chunk]
-                .iter()
-                .step_by(row_chunks),
-        )
-        .zip(
-            difference[first_chunk..end_chunk]
-                .iter()
-                .step_by(row_chunks),
-        )
-    {
-        let u = Simd::from_array(*u).cast::<i32>();
-        let v = Simd::from_array(*v).cast::<i32>();
-        let w = Simd::from_array(*w).cast::<i32>();
-        sums[0] += u * u;
-        sums[1] += v * v;
-        sums[2] += u * v;
-        sums[3] += u * w;
-        sums[4] += v * w;
+    let planes = [gradient_x, gradient_y, difference]
+        .map(|plane| unit_rows::<N>(plane, first_chunk, row_chunks));
+    baseline_simd!(simd => unit_lane_sums(simd, planes))
+}
+
+/// The `N` rows of one unit whose first row starts at `first_chunk` in a plane
+/// of `row_chunks` `N`-sample chunks per row.
+fn unit_rows<const N: usize>(
+    plane: &[i16],
+    first_chunk: usize,
+    row_chunks: usize,
+) -> [&[i16; N]; N] {
+    let (chunks, remainder) = plane.as_chunks::<N>();
+    debug_assert!(remainder.is_empty());
+    core::array::from_fn(|row| &chunks[first_chunk + row * row_chunks])
+}
+
+#[inline]
+fn unit_lane_sums<S: Simd, const N: usize>(simd: S, planes: [[&[i16; N]; N]; 3]) -> [i32; 5] {
+    let mut sums = [i32x8::splat(simd, 0); 5];
+    for first_row in (0..N).step_by(16 / N) {
+        let [u, v, w] =
+            planes.map(|rows| i16x16::from_fn(simd, |lane| rows[first_row + lane / N][lane % N]));
+        accumulate_unit_sums(&mut sums, u, v, w);
     }
-    let area = (N * N) as i32;
-    [
-        sums[0].reduce_sum() + area,
-        sums[1].reduce_sum() + area,
-        sums[2].reduce_sum(),
-        sums[3].reduce_sum(),
-        sums[4].reduce_sum(),
-    ]
+    unit_sums(sums.map(SimdBase::reduce_sum), (N * N) as i32)
 }
 
 /// [`solve_unit_sums`] of an 8x8 predictor pair, which is one gradient unit,
@@ -658,159 +1128,170 @@ fn solve_unit_sums<const N: usize>(
 /// lanes and only their difference needs the separate sign of
 /// [`gradient_i16`].
 fn unit_8x8_sums(weighted: &[i16; 64], difference: &[i16; 64]) -> [i32; 5] {
-    let rows = |plane: &[i16; 64]| -> [Simd<i16, 8>; 8] {
-        core::array::from_fn(|row| Simd::from_slice(&plane[row * 8..]))
-    };
-    rows_8x8_sums(&rows(weighted), &rows(difference))
+    baseline_simd!(simd => whole_8x8(rows_8x8_sums(
+        simd,
+        &plane_rows_8x8(simd, weighted),
+        &plane_rows_8x8(simd, difference),
+    )))
 }
 
-/// [`unit_8x8_sums`] of rows held in lanes, one row per call so that every
-/// row's clamped neighbours are constants.
+/// [`solve_unit_sums`] of the four 4x4 units of an 8x8 predictor pair, as
+/// [`unit_8x8_sums`] derives its gradients, in the order of
+/// [`derive_optflow_mv_deltas_into`].
+fn unit_4x4_sums(weighted: &[i16; 64], difference: &[i16; 64]) -> [[i32; 5]; 4] {
+    baseline_simd!(simd => {
+        let halves = rows_8x8_sums(
+            simd,
+            &plane_rows_8x8(simd, weighted),
+            &plane_rows_8x8(simd, difference),
+        );
+        let mut units = [[0; 5]; 4];
+        for (half, sums) in halves.iter().enumerate() {
+            for (sum, &lanes) in sums.iter().enumerate() {
+                let (first, second) = lanes.split();
+                let [a, b, c, d] = *(first + second);
+                units[2 * half][sum] = a + b;
+                units[2 * half + 1][sum] = c + d;
+            }
+        }
+        units.map(|sums| unit_sums(sums, 16))
+    })
+}
+
+fn plane_rows_8x8<S: Simd>(simd: S, plane: &[i16; 64]) -> [i16x8<S>; 8] {
+    let (rows, _) = plane.as_chunks::<8>();
+    core::array::from_fn(|row| i16x8::load_array_ref(simd, &rows[row]))
+}
+
+/// The lane sums of the top and bottom halves of an 8x8 unit held in lanes,
+/// one row per call so that every row's clamped neighbours are constants.
 #[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
-fn rows_8x8_sums(weighted: &[Simd<i16, 8>; 8], difference: &[Simd<i16, 8>; 8]) -> [i32; 5] {
+fn rows_8x8_sums<S: Simd>(
+    simd: S,
+    weighted: &[i16x8<S>; 8],
+    difference: &[i16x8<S>; 8],
+) -> [[i32x8<S>; 5]; 2] {
     let gradients = [
-        row_8x8_gradients::<0>(weighted),
-        row_8x8_gradients::<1>(weighted),
-        row_8x8_gradients::<2>(weighted),
-        row_8x8_gradients::<3>(weighted),
-        row_8x8_gradients::<4>(weighted),
-        row_8x8_gradients::<5>(weighted),
-        row_8x8_gradients::<6>(weighted),
-        row_8x8_gradients::<7>(weighted),
+        row_8x8_gradients::<S, 0>(weighted),
+        row_8x8_gradients::<S, 1>(weighted),
+        row_8x8_gradients::<S, 2>(weighted),
+        row_8x8_gradients::<S, 3>(weighted),
+        row_8x8_gradients::<S, 4>(weighted),
+        row_8x8_gradients::<S, 5>(weighted),
+        row_8x8_gradients::<S, 6>(weighted),
+        row_8x8_gradients::<S, 7>(weighted),
     ];
-    let mut sums = [Simd::<i32, 8>::splat(0); 5];
+    let mut halves = [[i32x8::splat(simd, 0); 5]; 2];
     for pair in 0..4 {
-        let join = |a: Simd<i16, 8>, b: Simd<i16, 8>| -> Simd<i16, 16> {
-            simd_swizzle!(a, b, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
-        };
         let (top, bottom) = (gradients[2 * pair], gradients[2 * pair + 1]);
-        let u = join(top.0, bottom.0);
-        let v = join(top.1, bottom.1);
-        let w = join(difference[2 * pair], difference[2 * pair + 1]);
-        sums[0] += multiply_add_pairs(u, u);
-        sums[1] += multiply_add_pairs(v, v);
-        sums[2] += multiply_add_pairs(u, v);
-        sums[3] += multiply_add_pairs(u, w);
-        sums[4] += multiply_add_pairs(v, w);
+        accumulate_unit_sums(
+            &mut halves[pair / 2],
+            top.0.combine(bottom.0),
+            top.1.combine(bottom.1),
+            difference[2 * pair].combine(difference[2 * pair + 1]),
+        );
     }
-    reduce_unit_sums(sums)
+    halves
 }
 
-/// Adjacent `i16` products summed in `i32` (`pmaddwd`). The unit sums only
-/// need every lane's product once, so pairing lanes leaves them unchanged.
+/// The unit sums of a whole 8x8 unit from the lane sums of its halves.
+#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[inline(always)]
+fn whole_8x8<S: Simd>([top, bottom]: [[i32x8<S>; 5]; 2]) -> [i32; 5] {
+    let sums = core::array::from_fn(|sum| (top[sum] + bottom[sum]).reduce_sum());
+    unit_sums(sums, 64)
+}
+
+/// Adds one lane group's `[u², v², uv, uw, vw]` products to `sums`, adjacent
+/// `i16` products summed in `i32` (`pmaddwd`). The unit sums only need every
+/// lane's product once, so pairing lanes leaves them unchanged.
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
-fn multiply_add_pairs(a: Simd<i16, 16>, b: Simd<i16, 16>) -> Simd<i32, 8> {
-    let product = a.cast::<i32>() * b.cast::<i32>();
-    simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
-        + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
+fn accumulate_unit_sums<S: Simd>(
+    sums: &mut [i32x8<S>; 5],
+    u: i16x16<S>,
+    v: i16x16<S>,
+    w: i16x16<S>,
+) {
+    sums[0] += u.pairwise_dot_product(u);
+    sums[1] += v.pairwise_dot_product(v);
+    sums[2] += u.pairwise_dot_product(v);
+    sums[3] += u.pairwise_dot_product(w);
+    sums[4] += v.pairwise_dot_product(w);
 }
 
 /// The horizontal and vertical gradients of one row of an 8x8 unit; a doubled
 /// edge tap rounds by 6 bits instead of doubling before 7.
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
-fn row_8x8_gradients<const ROW: usize>(rows: &[Simd<i16, 8>; 8]) -> (Simd<i16, 8>, Simd<i16, 8>) {
-    let samples = rows[ROW];
-    let (first, last) = (Simd::splat(samples[0]), Simd::splat(samples[7]));
-    let u = gradient_i16(
-        [
-            simd_swizzle!(samples, last, [1, 2, 3, 4, 5, 6, 7, 8]),
-            simd_swizzle!(first, samples, [0, 8, 9, 10, 11, 12, 13, 14]),
-        ],
-        [
-            simd_swizzle!(samples, last, [2, 3, 4, 5, 6, 7, 8, 8]),
-            simd_swizzle!(first, samples, [0, 0, 8, 9, 10, 11, 12, 13]),
-        ],
-        Simd::from_array([6, 7, 7, 7, 7, 7, 7, 6]),
-    );
+fn row_8x8_gradients<S: Simd, const ROW: usize>(rows: &[i16x8<S>; 8]) -> (i16x8<S>, i16x8<S>) {
+    let reversed = rows[ROW].reverse();
+    let [next, prev, next2, prev2] = clamped_neighbours::<S, _, 7>(rows[ROW], reversed, reversed);
+    let u = gradient_i16([next, prev], [next2, prev2], |magnitude| {
+        let edge = mask16x8::from_bitmask(magnitude.simd, 0b1000_0001);
+        edge.select((magnitude + 32) >> 6, (magnitude + 64) >> 7)
+    });
+    let shift = if ROW == 0 || ROW == 7 { 6 } else { 7 };
     let v = gradient_i16(
         [rows[(ROW + 1).min(7)], rows[ROW.saturating_sub(1)]],
         [rows[(ROW + 2).min(7)], rows[ROW.saturating_sub(2)]],
-        Simd::splat(if ROW == 0 || ROW == 7 { 6 } else { 7 }),
+        |magnitude| (magnitude + (1 << (shift - 1))) >> shift,
     );
     (u, v)
 }
 
 /// `Round2Signed(42 * (near[0] - near[1]) - 5 * (far[0] - far[1]), shift)` in
-/// `i16` lanes: the magnitude of the difference fits `u16`, so it rounds
-/// unsigned and takes its sign back afterwards.
+/// `i16` lanes: the magnitude of the difference fits `u16`, so `round` rounds
+/// it unsigned and it takes its sign back afterwards.
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
-fn gradient_i16(
-    near: [Simd<i16, 8>; 2],
-    far: [Simd<i16, 8>; 2],
-    shift: Simd<u16, 8>,
-) -> Simd<i16, 8> {
-    let near = (near[0] - near[1]) * Simd::splat(42);
-    let far = (far[0] - far[1]) * Simd::splat(5);
-    let magnitude = (near.abs_diff(far) + (Simd::splat(1) << (shift - Simd::splat(1)))) >> shift;
-    let sign = far.simd_gt(near).select(Simd::splat(-1), Simd::splat(0));
-    (magnitude.cast::<i16>() ^ sign) - sign
+fn gradient_i16<S: Simd>(
+    near: [i16x8<S>; 2],
+    far: [i16x8<S>; 2],
+    round: impl FnOnce(u16x8<S>) -> u16x8<S>,
+) -> i16x8<S> {
+    let near = (near[0] - near[1]) * 42;
+    let far = (far[0] - far[1]) * 5;
+    let magnitude: i16x8<S> = round((near.max(far) - near.min(far)).bitcast()).bitcast();
+    let sign = far.simd_gt(near).to_vector();
+    (magnitude ^ sign) - sign
 }
 
 /// [`solve_unit_sums`] of the four 8x8 units of a 16x16 predictor pair, which
 /// is one gradient unit, in the order of [`derive_optflow_mv_deltas_into`].
 fn unit_16x16_sums(weighted: &[i16; 256], difference: &[i16; 256]) -> [[i32; 5]; 4] {
+    baseline_simd!(simd => unit_16x16_lane_sums(simd, weighted, difference))
+}
+
+/// [`unit_16x16_sums`] with whole 16-lane rows: `pmaddwd` keeps the left
+/// unit's products in the low four `i32` lanes and the right unit's in the
+/// high four, so the halves separate only in the final reduction.
+#[inline]
+fn unit_16x16_lane_sums<S: Simd>(
+    simd: S,
+    weighted: &[i16; 256],
+    difference: &[i16; 256],
+) -> [[i32; 5]; 4] {
     let (rows, _) = weighted.as_chunks::<16>();
     let (diff_rows, _) = difference.as_chunks::<16>();
-    let mut top_left = [Simd::<i32, 8>::splat(0); 5];
-    let mut top_right = [Simd::<i32, 8>::splat(0); 5];
-    let mut bottom_left = [Simd::<i32, 8>::splat(0); 5];
-    let mut bottom_right = [Simd::<i32, 8>::splat(0); 5];
-    for pair in 0..8 {
-        let (u0, v0) = gradient_row(rows, 2 * pair);
-        let (u1, v1) = gradient_row(rows, 2 * pair + 1);
-        let w0 = Simd::from_array(diff_rows[2 * pair]);
-        let w1 = Simd::from_array(diff_rows[2 * pair + 1]);
-        let u_left = simd_swizzle!(
-            u0,
-            u1,
-            [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
-        );
-        let v_left = simd_swizzle!(
-            v0,
-            v1,
-            [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
-        );
-        let w_left = simd_swizzle!(
-            w0,
-            w1,
-            [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
-        );
-        let u_right = simd_swizzle!(
-            u0,
-            u1,
-            [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
-        );
-        let v_right = simd_swizzle!(
-            v0,
-            v1,
-            [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
-        );
-        let w_right = simd_swizzle!(
-            w0,
-            w1,
-            [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
-        );
-        let (left, right) = if pair < 4 {
-            (&mut top_left, &mut top_right)
-        } else {
-            (&mut bottom_left, &mut bottom_right)
-        };
-        left[0] += multiply_add_pairs(u_left, u_left);
-        left[1] += multiply_add_pairs(v_left, v_left);
-        left[2] += multiply_add_pairs(u_left, v_left);
-        left[3] += multiply_add_pairs(u_left, w_left);
-        left[4] += multiply_add_pairs(v_left, w_left);
-        right[0] += multiply_add_pairs(u_right, u_right);
-        right[1] += multiply_add_pairs(v_right, v_right);
-        right[2] += multiply_add_pairs(u_right, v_right);
-        right[3] += multiply_add_pairs(u_right, w_right);
-        right[4] += multiply_add_pairs(v_right, w_right);
-    }
-    [top_left, top_right, bottom_left, bottom_right].map(reduce_unit_sums)
+    let half_sums = |half: core::ops::Range<usize>| {
+        let mut sums = [i32x8::splat(simd, 0); 5];
+        for row in half {
+            let (u, v) = gradient_row(simd, rows, row);
+            let w = i16x16::load_array_ref(simd, &diff_rows[row]);
+            accumulate_unit_sums(&mut sums, u, v, w);
+        }
+        sums.map(SimdSplit::split)
+    };
+    let (top, bottom) = (half_sums(0..8), half_sums(8..16));
+    [
+        top.map(|(left, _)| left.reduce_sum()),
+        top.map(|(_, right)| right.reduce_sum()),
+        bottom.map(|(left, _)| left.reduce_sum()),
+        bottom.map(|(_, right)| right.reduce_sum()),
+    ]
+    .map(|sums| unit_sums(sums, 64))
 }
 
 /// The horizontal and vertical § 7.13.3.9 gradients of `row` in one gradient
@@ -820,26 +1301,25 @@ fn unit_16x16_sums(weighted: &[i16; 256], difference: &[i16; 256]) -> [[i32; 5];
 /// `±1024` and every gradient fits the `i16` the planes would hold.
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
-fn gradient_row<const N: usize>(rows: &[[i16; N]], row: usize) -> (Simd<i16, N>, Simd<i16, N>) {
+fn gradient_row<S: Simd>(simd: S, rows: &[[i16; 16]], row: usize) -> (i16x16<S>, i16x16<S>) {
     let last = rows.len() - 1;
-    let lanes = |row: usize| Simd::<i16, N>::from_array(rows[row]).cast::<i32>();
-    let u = Simd::from_array(horizontal_gradient_lanes(&rows[row]));
-    let mut value = (lanes((row + 1).min(last)) - lanes(row.saturating_sub(1))) * Simd::splat(42)
-        - (lanes((row + 2).min(last)) - lanes(row.saturating_sub(2))) * Simd::splat(5);
-    if row == 0 || row == last {
-        value += value;
-    }
-    (u, round2_signed_simd(value, 7).cast::<i16>())
+    let lanes = |row: usize| i16x16::load_array_ref(simd, &rows[row]);
+    let vertical = gradient_lanes_16(
+        [
+            lanes((row + 1).min(last)),
+            lanes(row.saturating_sub(1)),
+            lanes((row + 2).min(last)),
+            lanes(row.saturating_sub(2)),
+        ],
+        row == 0 || row == last,
+    );
+    (horizontal_gradient_16(simd, &rows[row]), vertical)
 }
 
-fn reduce_unit_sums(sums: [Simd<i32, 8>; 5]) -> [i32; 5] {
-    [
-        sums[0].reduce_sum() + 64,
-        sums[1].reduce_sum() + 64,
-        sums[2].reduce_sum(),
-        sums[3].reduce_sum(),
-        sums[4].reduce_sum(),
-    ]
+/// Adds the regularizing unit `area` to the `su2` and `sv2` diagonal of raw
+/// `[su2, sv2, suv, suw, svw]` sums.
+fn unit_sums(raw: [i32; 5], area: i32) -> [i32; 5] {
+    [raw[0] + area, raw[1] + area, raw[2], raw[3], raw[4]]
 }
 
 fn divide_and_round(values: [i32; 2], denominator: i32, shift: i32) -> Result<[i32; 2]> {
@@ -883,6 +1363,82 @@ mod tests {
 
     use super::*;
 
+    /// The byte unit matches the `u16` strided derivation for every distance
+    /// pair over textured, extreme-contrast and flat predictions, and skips
+    /// the refinement exactly when the SAD is below the threshold.
+    #[test]
+    fn byte_8x8_units_match_the_strided_derivation() {
+        let distance_pairs = [1i32, -1, 3, -4, 0]
+            .into_iter()
+            .flat_map(|near| [1, -1, 2, -3].map(|far| [near, far]));
+        let stride = 16;
+        let fills: [fn(usize) -> u8; 6] = [
+            |i| ((i * 73 + i / 13 * 29 + (i * i) % 7) % 256) as u8,
+            |i| if (i + i / 13) % 3 == 0 { 255 } else { 0 },
+            |i| ((i * 7919) % 256) as u8,
+            |_| 90,
+            |i| ((i as u32).wrapping_mul(2_654_435_761) >> 24) as u8,
+            |i| {
+                if (i as u32).wrapping_mul(2_246_822_519) >> 31 == 0 {
+                    255
+                } else {
+                    0
+                }
+            },
+        ];
+        for distances in distance_pairs {
+            for (first, second) in [
+                (0, 1),
+                (1, 2),
+                (2, 0),
+                (3, 3),
+                (0, 3),
+                (4, 5),
+                (5, 4),
+                (4, 4),
+            ] {
+                let preds: [Vec<u8>; 2] = [
+                    (0..stride * 9 + 2).map(fills[first]).collect(),
+                    (0..stride * 9 + 2).map(|i| fills[second](i + 5)).collect(),
+                ];
+                let starts = [1, stride + 2];
+                let widened = |pred: &[u8], start: usize| -> Vec<u16> {
+                    (0..64)
+                        .map(|i| u16::from(pred[start + i / 8 * stride + i % 8]))
+                        .collect()
+                };
+                let (a, b) = (widened(&preds[0], starts[0]), widened(&preds[1], starts[1]));
+                let sad: u32 = a
+                    .iter()
+                    .zip(&b)
+                    .map(|(&x, &y)| u32::from(x.abs_diff(y)))
+                    .sum();
+                let delta = derive_optflow_mv_delta_8x8_strided_into(
+                    &a,
+                    0,
+                    &b,
+                    0,
+                    8,
+                    BitDepth::Eight,
+                    distances,
+                )
+                .unwrap();
+                for threshold in [None, Some(sad), Some(sad + 1)] {
+                    let expected =
+                        (threshold.is_none_or(|threshold| sad >= threshold)).then_some(delta);
+                    let actual =
+                        optflow_unit_8x8_u8([&preds[0], &preds[1]], starts, distances, threshold)
+                            .unwrap();
+                    assert_eq!(
+                        actual, expected,
+                        "{distances:?} {first}/{second} {threshold:?}"
+                    );
+                }
+            }
+        }
+        assert!(optflow_unit_8x8_u8([&[0; 120], &[0; 119]], [0, 0], [1, 1], None).is_err());
+    }
+
     /// The `i16` lane sums match the stored `i32`-rounded gradient planes for
     /// every reduced distance pair over in-range samples, including the
     /// extreme steps that bound the lane arithmetic.
@@ -915,18 +1471,20 @@ mod tests {
                         let (left, right) = (plane(seed), plane(seed + 3));
                         let downshift = u32::from(bit_depth.bits() - 8);
                         let (mut weighted, mut difference) = ([0i16; 64], [0i16; 64]);
-                        for row in 0..8 {
-                            let (w, d) = weighted_difference_row(
-                                Simd::from_slice(&left[row * 8..]),
-                                Simd::from_slice(&right[row * 8..]),
-                                distances,
-                                downshift,
-                            );
-                            w.copy_to_slice(&mut weighted[row * 8..]);
-                            d.copy_to_slice(&mut difference[row * 8..]);
-                        }
+                        baseline_simd!(simd => weighted_difference_planes(
+                            simd, &left, &right, &mut weighted, &mut difference, distances,
+                            downshift,
+                        ));
                         let (mut gradient_x, mut gradient_y) = ([0i16; 64], [0i16; 64]);
                         gradients(&weighted, 8, 8, &mut gradient_x, &mut gradient_y);
+                        let want = [(0, 0), (4, 0), (0, 4), (4, 4)].map(|(x, y)| {
+                            solve_unit_sums::<4>(&gradient_x, &gradient_y, &difference, 8, x, y)
+                        });
+                        assert_eq!(
+                            unit_4x4_sums(&weighted, &difference),
+                            want,
+                            "{distances:?} {bit_depth:?}"
+                        );
                         assert_eq!(
                             unit_8x8_sums(&weighted, &difference),
                             solve_unit_sums::<8>(&gradient_x, &gradient_y, &difference, 8, 0, 0),
@@ -940,12 +1498,19 @@ mod tests {
 
     #[test]
     fn i16_weighted_difference_rows_match_the_i32_rounding() {
-        let left = Simd::from_array([0, 1023, 1, 512, 1023, 7, 0, 333]);
-        let right = Simd::from_array([1023, 0, 2, 511, 1023, 9, 0, 1000]);
+        let left = [0, 1023, 1, 512, 1023, 7, 0, 333];
+        let right = [1023, 0, 2, 511, 1023, 9, 0, 1000];
         for distances in [[1, 1], [2, -1], [-1, 2], [-2, -1], [1, -2]] {
             for downshift in [0, 2] {
-                let (weighted, difference) =
-                    weighted_difference_row(left, right, distances, downshift);
+                let (weighted, difference) = baseline_simd!(simd => {
+                    let (weighted, difference) = weighted_difference_row(
+                        u16x8::load_array(simd, left),
+                        u16x8::load_array(simd, right),
+                        distances,
+                        downshift,
+                    );
+                    (weighted.to_array(), difference.to_array())
+                });
                 for lane in 0..8 {
                     let (l, r) = (i32::from(left[lane]), i32::from(right[lane]));
                     let want = |value: i32| round2_signed_i32(value, downshift) as i16;
@@ -987,8 +1552,12 @@ mod tests {
         let want16: Vec<i16> = (0..16)
             .map(|col| horizontal_gradient_scalar(&source16, col))
             .collect();
-        assert_eq!(horizontal_gradient_lanes(&source8)[..], want8[..]);
-        assert_eq!(horizontal_gradient_lanes(&source16)[..], want16[..]);
+        let (got8, got16) = baseline_simd!(simd => (
+            horizontal_gradient_8(simd, &source8).to_array(),
+            horizontal_gradient_16(simd, &source16).to_array(),
+        ));
+        assert_eq!(got8[..], want8[..]);
+        assert_eq!(got16[..], want16[..]);
     }
 
     #[test]

@@ -4,12 +4,6 @@
 //! AV2 § 7.10.4 TIP motion field: the projected field scaled to the TIP pair,
 //! hole-filled and averaged inside each TMVP unit.
 
-use std::simd::{
-    Select, Simd,
-    cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd},
-    num::SimdInt,
-};
-
 use super::{
     DIV_MULT, MAX_FRAME_DISTANCE, Mv, ProjectedTemporalMotionCell, ProjectedTemporalMotionField,
     REFMVS_LIMIT, TipReferencePair, fill_temporal_sampling_gaps, project_tmvp_mv,
@@ -45,8 +39,12 @@ const MAX_TIP_UNIT8: usize = 16;
 /// four neighbours and an absent one adds nothing to an average.
 const TIP_GRID: usize = MAX_TIP_UNIT8 + 2;
 
-/// One unit row of up to `N` samples.
-type TipRow<const N: usize> = Simd<i32, N>;
+/// One unit row of up to `N` samples, as fixed lanes the compiler vectorizes.
+type TipRow<const N: usize> = [i32; N];
+
+fn lanes<const N: usize>(f: impl Fn(usize) -> i32) -> TipRow<N> {
+    core::array::from_fn(f)
+}
 
 /// A unit's sample valid flags and vector components as zero-bordered
 /// planes. An invalid sample carries a zero vector, so summing samples sums
@@ -81,8 +79,9 @@ fn prepare_tip_units<const N: usize, const STEP: usize>(
         .ref_offset
         .clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE);
     let offset = references.ref_offset as i16;
-    let limit = TipRow::<N>::splat(REFMVS_LIMIT);
-    let load = |plane: &[i32], at: usize| TipRow::<N>::from_slice(&plane[at..at + N]);
+    let limit = REFMVS_LIMIT;
+    let load =
+        |plane: &[i32], at: usize| -> TipRow<N> { plane[at..at + N].try_into().unwrap_or([0; N]) };
     let mut planes: TipPlanes = [[0; TIP_GRID * TIP_GRID]; 3];
     for block_y in (0..height8).step_by(unit) {
         let unit_rows = (height8 - block_y).min(unit);
@@ -101,25 +100,32 @@ fn prepare_tip_units<const N: usize, const STEP: usize>(
                     lanes[2][lane] = i32::from(cell.mv[1]);
                     lanes[3][lane] = DIV_MULT[denominator];
                 }
-                let [valid, mv_row, mv_col, divisor] = lanes.map(TipRow::from_array);
-                valid_count += valid.reduce_sum();
-                let factor = divisor * TipRow::splat(numerator);
+                let [valid, mv_row, mv_col, divisor] = lanes;
+                valid_count += valid.iter().fold(0i32, |sum, &v| sum.wrapping_add(v));
                 let scale = |mv: TipRow<N>| {
-                    round2_signed_lanes(mv * factor, 14).simd_clamp(-limit, limit) & -valid
+                    self::lanes(|i| {
+                        round2_signed(mv[i].wrapping_mul(divisor[i].wrapping_mul(numerator)), 14)
+                            .clamp(-limit, limit)
+                            & -valid[i]
+                    })
                 };
                 let mut scaled = [valid, scale(mv_row), scale(mv_col)];
-                if mv_row.abs().simd_max(mv_col.abs()).simd_gt(limit).any() {
+                if mv_row
+                    .iter()
+                    .zip(&mv_col)
+                    .any(|(row, col)| row.abs().max(col.abs()) > limit)
+                {
                     let mut wide = [[0; N]; 2];
                     for (lane, &cell) in cells.enumerate() {
                         let mv = scale_tip_mv(cell, references);
                         wide[0][lane] = mv.row;
                         wide[1][lane] = mv.col;
                     }
-                    [scaled[1], scaled[2]] = wide.map(TipRow::from_array);
+                    [scaled[1], scaled[2]] = wide;
                 }
                 let at = (y + 1) * TIP_GRID + 1;
                 for (plane, value) in planes.iter_mut().zip(scaled) {
-                    value.copy_to_slice(&mut plane[at..at + N]);
+                    plane[at..at + N].copy_from_slice(&value);
                 }
             }
             let below = (rows + 1) * TIP_GRID + 1;
@@ -138,21 +144,27 @@ fn prepare_tip_units<const N: usize, const STEP: usize>(
                 }
                 let at = (y / STEP + 1) * TIP_GRID + 1;
                 let [valid, mv_row, mv_col] = if fill_holes {
-                    let cross = |plane: &[i32]| {
-                        load(plane, at)
-                            + load(plane, at - TIP_GRID)
-                            + load(plane, at - 1)
-                            + load(plane, at + TIP_GRID)
-                            + load(plane, at + 1)
+                    let cross = |plane: &[i32]| -> TipRow<N> {
+                        let [c, up, left, down, right] =
+                            [at, at - TIP_GRID, at - 1, at + TIP_GRID, at + 1]
+                                .map(|from| load(plane, from));
+                        lanes(|i| {
+                            c[i].wrapping_add(up[i])
+                                .wrapping_add(left[i])
+                                .wrapping_add(down[i])
+                                .wrapping_add(right[i])
+                        })
                     };
                     let count = cross(&planes[0]);
-                    let weight = tip_average_weights(count);
-                    let average = |plane: &[i32]| round2_signed_lanes(cross(plane) * weight, 16);
+                    let weight: TipRow<N> = lanes(|i| tip_average_weight(count[i]));
+                    let average = |plane: &[i32]| -> TipRow<N> {
+                        let sum = cross(plane);
+                        lanes(|i| round2_signed(sum[i].wrapping_mul(weight[i]), 16))
+                    };
                     [count, average(&planes[1]), average(&planes[2])]
                 } else {
                     planes.each_ref().map(|plane| load(plane, at))
-                }
-                .map(TipRow::to_array);
+                };
                 if STEP > 1 {
                     cells.fill(ProjectedTemporalMotionCell::default());
                 }
@@ -170,10 +182,13 @@ fn prepare_tip_units<const N: usize, const STEP: usize>(
     Ok(())
 }
 
-/// `Round2Signed` per lane: a negative value adds one less before the
-/// arithmetic shift, so its half rounds away from zero.
-fn round2_signed_lanes<const N: usize>(value: TipRow<N>, shift: i32) -> TipRow<N> {
-    (value + TipRow::splat(1 << (shift - 1)) + (value >> 31)) >> shift
+/// `Round2Signed`: a negative value adds one less before the arithmetic
+/// shift, so its half rounds away from zero.
+const fn round2_signed(value: i32, shift: i32) -> i32 {
+    value
+        .wrapping_add(1 << (shift - 1))
+        .wrapping_add(value >> 31)
+        >> shift
 }
 
 /// A sampled cell's vector scaled to the TIP pair, zero when invalid.
@@ -218,15 +233,14 @@ fn fill_tip_holes(planes: &mut TipPlanes, rows: usize, cols: usize) {
     }
 }
 
-/// AV2 § 7.10.4 `Weight_Div_Mult` for each lane's sample count.
-fn tip_average_weights<const N: usize>(count: TipRow<N>) -> TipRow<N> {
-    let mut weight = TipRow::splat(0);
-    for (index, &value) in TIP_AVERAGE_WEIGHTS.iter().enumerate().skip(1) {
-        weight = count
-            .simd_eq(TipRow::splat(index as i32))
-            .select(TipRow::splat(value), weight);
-    }
-    weight
+/// AV2 § 7.10.4 `Weight_Div_Mult` for a sample count; counts outside the
+/// table weigh zero.
+fn tip_average_weight(count: i32) -> i32 {
+    usize::try_from(count)
+        .ok()
+        .and_then(|index| TIP_AVERAGE_WEIGHTS.get(index))
+        .copied()
+        .unwrap_or(0)
 }
 
 /// AV2 § 7.10.4 `Weight_Div_Mult` per sample count.

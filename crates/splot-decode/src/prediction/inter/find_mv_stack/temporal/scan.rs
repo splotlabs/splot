@@ -2,10 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use std::ops::Range;
-use std::simd::{
-    Mask, Select, Simd, Swizzle,
-    cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd},
-    num::{SimdInt, SimdUint},
+
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::Level;
+use fearless_simd::{
+    Simd, i16x8, i32x4, i32x16, mask32x16, prelude::*, u8x16, u32x4, u32x16, u64x2,
 };
 
 use super::trajectory::BandGeometry;
@@ -17,11 +18,10 @@ use super::{
 const LANES: usize = 16;
 const GROUPS: usize = 4;
 const CHUNK: usize = LANES * GROUPS;
-/// 64-byte blocks of the stored cells a chunk spans at the widest step.
-const BLOCKS: usize = CHUNK * 2 * size_of::<StoredTemporalCell>() / 64;
+/// Bytes of the stored cells a chunk spans at the widest step.
+const WINDOW: usize = CHUNK * 2 * size_of::<StoredTemporalCell>();
 
-type Lanes = Simd<i32, LANES>;
-type Narrow = Simd<i16, LANES>;
+type Lanes<S> = i32x16<S>;
 type Grid<T> = [[T; LANES]; GROUPS];
 
 /// One source reference's AV2 § 7.9.3 projection constants, indexed by the
@@ -126,18 +126,21 @@ impl LaneInts<'_> {
 
 /// One source's [`ProjectionTarget`] flags and divisor bytes as lane tables
 /// indexed by the stored reference. Entries past the targets, and lookups past
-/// the table, read 0, as the empty target does. [`INTERSECTS`] stays set only
-/// when the source and the end reference both index the trajectory grid.
-struct TargetTables {
-    flags: Simd<u8, LANES>,
-    divisor: [Simd<u8, LANES>; 2],
-    end_divisor: [Simd<u8, LANES>; 2],
-    end_numerator: Simd<u8, LANES>,
+/// the table, read 0, as the empty target does, except that every reference
+/// admits [`REVERSE`] and [`END_WRITE`]. [`INTERSECT`] is admitted only when
+/// the source and the end reference both index the trajectory grid.
+struct TargetTables<S: Simd> {
+    simd: S,
+    /// The lane bits each reference admits.
+    allow: u8x16<S>,
+    divisor: [u8x16<S>; 2],
+    end_divisor: [u8x16<S>; 2],
+    end_numerator: u8x16<S>,
     source_to_current: i32,
 }
 
-impl TargetTables {
-    fn new(prepared: &TemporalProjectionSource, trajectory_refs: usize) -> Self {
+impl<S: Simd> TargetTables<S> {
+    fn new(simd: S, prepared: &TemporalProjectionSource, trajectory_refs: usize) -> Self {
         let entry = |index: usize| prepared.targets.get(index).copied().unwrap_or_default();
         let byte = |index: usize, shift: u32| (entry(index).divisor >> shift) as u8;
         let end_byte = |index: usize, shift: u32| (entry(index).end_divisor >> shift) as u8;
@@ -146,39 +149,52 @@ impl TargetTables {
             prepared.source_ref < trajectory_refs
                 && target.end_ref.is_some_and(|end| end < trajectory_refs)
         };
-        let flags = |index: usize| {
+        let allow = |index: usize| {
             let target = entry(index);
-            target.flags
-                & if tracked(target) {
-                    u8::MAX
-                } else {
-                    !INTERSECTS
-                }
+            let projects = if target.flags & PROJECTS != 0 {
+                PROJECT | OBSERVE
+            } else {
+                0
+            };
+            let intersects = target.flags & INTERSECTS != 0 && tracked(target);
+            projects | if intersects { INTERSECT } else { 0 }
         };
         Self {
-            flags: Simd::from_array(core::array::from_fn(flags)),
-            divisor: [0, 8].map(|shift| Simd::from_array(core::array::from_fn(|i| byte(i, shift)))),
-            end_divisor: [0, 8]
-                .map(|shift| Simd::from_array(core::array::from_fn(|i| end_byte(i, shift)))),
-            end_numerator: Simd::from_array(core::array::from_fn(end_num)),
+            simd,
+            allow: u8x16::from_fn(simd, allow),
+            divisor: [0, 8].map(|shift| u8x16::from_fn(simd, |i| byte(i, shift))),
+            end_divisor: [0, 8].map(|shift| u8x16::from_fn(simd, |i| end_byte(i, shift))),
+            end_numerator: u8x16::from_fn(simd, end_num),
             source_to_current: prepared.source_to_current,
         }
     }
 
     /// The folded factor of `table` at each lane's reference, signed bytes
     /// reassembled into one `i16` per lane.
-    fn folded(table: [Simd<u8, LANES>; 2], refs: Simd<u8, LANES>) -> Lanes {
-        let [low, high] = table.map(|table| table.swizzle_dyn(refs).cast::<u16>());
-        (low | high << 8).cast::<i16>().cast()
+    fn folded(&self, [low, high]: [u8x16<S>; 2], refs: u8x16<S>) -> Lanes<S> {
+        let (low, high) = (
+            low.swizzle_dyn_precise(refs),
+            high.swizzle_dyn_precise(refs),
+        );
+        widen_i16(
+            self.simd,
+            low.zip_low(high).bitcast(),
+            low.zip_high(high).bitcast(),
+        )
     }
 
-    /// The flags, the folded projection factor and the § 7.9.8 trajectory-end
-    /// factor of each lane's reference.
-    fn lookup(&self, refs: Simd<u8, LANES>) -> (Simd<u8, LANES>, Lanes, Lanes) {
-        let factor = Self::folded(self.divisor, refs) * Lanes::splat(self.source_to_current);
-        let end_numerator = self.end_numerator.swizzle_dyn(refs).cast::<i8>().cast();
-        let end_factor = Self::folded(self.end_divisor, refs) * end_numerator;
-        (self.flags.swizzle_dyn(refs), factor, end_factor)
+    /// The admitted lane bits, the folded projection factor and the § 7.9.8
+    /// trajectory-end factor of each lane's reference.
+    fn lookup(&self, refs: u8x16<S>) -> (u8x16<S>, Lanes<S>, Lanes<S>) {
+        let factor = self.folded(self.divisor, refs) * self.source_to_current;
+        let end_numerator = widen_i8(self.simd, self.end_numerator.swizzle_dyn_precise(refs));
+        let end_factor = self.folded(self.end_divisor, refs) * end_numerator;
+        let allow = u8x16::splat(self.simd, REVERSE | END_WRITE);
+        (
+            self.allow.swizzle_dyn_precise(refs) | allow,
+            factor,
+            end_factor,
+        )
     }
 }
 
@@ -198,10 +214,9 @@ impl BandLanes {
     }
 
     /// The band cell of `(y8, x8)`, or -1 for a row above the band.
-    fn index(self, [y8, x8]: [Lanes; 2]) -> Lanes {
-        let row = y8 - Lanes::splat(self.row_base);
-        row.simd_ge(Lanes::splat(0))
-            .select(row * Lanes::splat(self.width8) + x8, Lanes::splat(-1))
+    fn index<S: Simd>(self, [y8, x8]: [Lanes<S>; 2]) -> Lanes<S> {
+        let row = y8 - self.row_base;
+        (row * self.width8 + x8) | (row >> 31)
     }
 }
 
@@ -299,7 +314,7 @@ pub(super) fn project_temporal_motion_field(
     rows: Range<usize>,
     projection_step: usize,
     tmvp_unit_size8: usize,
-    mut trajectories: Option<&mut TrajectoryBand<'_>>,
+    trajectories: Option<&mut TrajectoryBand<'_>>,
     output: &mut ProjectedFieldBand<'_>,
 ) {
     debug_assert_eq!(
@@ -310,10 +325,39 @@ pub(super) fn project_temporal_motion_field(
     let Some(geometry) = LaneGeometry::new(projection_step, tmvp_unit_size8, output, band) else {
         return;
     };
+    let refs = band.map_or(0, |band| band.reference_count);
+    let rows = rows.start..rows.end.min(prepared.source_height8);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(simd) = Level::baseline().as_avx2() {
+        let tables = TargetTables::new(simd, prepared, refs);
+        return project_rows(
+            &tables,
+            prepared,
+            source,
+            rows,
+            geometry,
+            trajectories,
+            output,
+        );
+    }
+    crate::baseline_simd!(simd => {
+        let tables = TargetTables::new(simd, prepared, refs);
+        project_rows(&tables, prepared, source, rows, geometry, trajectories, output);
+    });
+}
+
+/// [`project_temporal_motion_field`] with the SIMD token bound.
+fn project_rows<S: Simd>(
+    tables: &TargetTables<S>,
+    prepared: &TemporalProjectionSource,
+    source: &impl TemporalMotionRows,
+    rows: Range<usize>,
+    geometry: LaneGeometry,
+    mut trajectories: Option<&mut TrajectoryBand<'_>>,
+    output: &mut ProjectedFieldBand<'_>,
+) {
     let step = geometry.step;
     let side = prepared.side & 1;
-    let rows = rows.start..rows.end.min(prepared.source_height8);
-    let tables = TargetTables::new(prepared, band.map_or(0, |band| band.reference_count));
     let mut lanes = ChunkLanes::default();
     for y8 in rows.step_by(step) {
         let Some(row) = source.row(y8) else {
@@ -323,7 +367,7 @@ pub(super) fn project_temporal_motion_field(
             let x_base = chunk_index * CHUNK * step;
             if let Some(trajectories) = trajectories.as_deref_mut() {
                 let Some(walk) =
-                    chunk_lanes::<true>(&mut lanes, chunk, side, &tables, y8, x_base, geometry)
+                    chunk_lanes::<S, true>(&mut lanes, chunk, side, tables, y8, x_base, geometry)
                 else {
                     return;
                 };
@@ -334,7 +378,7 @@ pub(super) fn project_temporal_motion_field(
                 );
             } else {
                 let Some(walk) =
-                    chunk_lanes::<false>(&mut lanes, chunk, side, &tables, y8, x_base, geometry)
+                    chunk_lanes::<S, false>(&mut lanes, chunk, side, tables, y8, x_base, geometry)
                 else {
                     return;
                 };
@@ -492,196 +536,219 @@ fn write_projection(
 /// spans one six-byte list per cell and a step-2 group skips every other
 /// cell, so lanes past that read stale bytes that the walk mask drops.
 #[inline(never)]
-fn chunk_lanes<const TRACKED: bool>(
+fn chunk_lanes<S: Simd, const TRACKED: bool>(
     lanes: &mut ChunkLanes,
     chunk: &[StoredTemporalCell],
     side: usize,
-    tables: &TargetTables,
+    tables: &TargetTables<S>,
     y8: usize,
     x_base: usize,
     geometry: LaneGeometry,
 ) -> Option<u64> {
+    let simd = tables.simd;
     let count = chunk.len().div_ceil(geometry.step).min(CHUNK);
     let stored = chunk
         .as_flattened()
         .get(side * size_of::<StoredTemporalCell>() / 2..)
         .unwrap_or_default();
-    let window = lanes.window.0.as_flattened_mut();
+    let window = &mut lanes.window.0;
     let needed = count * geometry.step * size_of::<StoredTemporalCell>();
     let copied = stored.len().min(window.len()).min(needed);
     window[..copied].copy_from_slice(&stored[..copied]);
     let track = geometry.track;
-    let iota = Lanes::from_array(core::array::from_fn(|lane| lane as i32));
-    let y = Lanes::splat(i32::try_from(y8).ok()?);
-    let y_unit = y & Lanes::splat(!geometry.unit_mask);
-    let y_track_unit = y & Lanes::splat(!track.unit_mask);
-    let row_inside = Mask::splat(u32::try_from(y8).is_ok_and(|y8| y8 < track.height8));
-    let (mut projects, mut intersects) = (0u64, 0u64);
+    let lane_x = Lanes::from_fn(simd, |lane| (lane * geometry.step) as i32);
+    let y = Lanes::splat(simd, i32::try_from(y8).ok()?);
+    let y_unit = y & !geometry.unit_mask;
+    let y_track_unit = y & !track.unit_mask;
+    let row_inside = simd.splat_mask32x16(u32::try_from(y8).is_ok_and(|y8| y8 < track.height8));
+    let mut walk = 0;
     for group in 0..count.div_ceil(LANES) {
         let first = i32::try_from(x_base + group * LANES * geometry.step).ok()?;
-        let x = Lanes::splat(first) + iota * Lanes::splat(geometry.step as i32);
-        let [refs, saved_rows, saved_cols] = deinterleave(&lanes.window.0, group, geometry.step);
-        lanes.refs[group] = refs.to_array();
-        let (flags, factor, end_factor) = tables.lookup(refs);
-        let (mut sampled, mut ended) = (Mask::splat(true), Mask::splat(true));
-        let mut base = [Lanes::splat(0); 2];
-        let mut position = [Lanes::splat(0); 2];
-        let mut end = [Lanes::splat(0); 2];
+        let x = lane_x + first;
+        let [refs, saved_rows, saved_cols] =
+            deinterleave(simd, &lanes.window, group, geometry.step)?;
+        lanes.refs[group] = refs.into();
+        let (allow, factor, end_factor) = tables.lookup(refs);
+        let (mut sampled, mut ended) = (simd.splat_mask32x16(true), simd.splat_mask32x16(true));
+        let mut base = [Lanes::splat(simd, 0); 2];
+        let mut position = [Lanes::splat(simd, 0); 2];
+        let mut end = [Lanes::splat(simd, 0); 2];
         for (component, saved) in [saved_rows, saved_cols].into_iter().enumerate() {
-            let mv: Lanes = decompress(saved.cast::<i8>().cast()).cast();
-            lanes.ints[MV + component][group] = mv.to_array();
+            let mv = decompress(widen_i8(simd, saved));
+            lanes.ints[MV + component][group] = mv.into();
             let projected = project(mv, factor);
-            lanes.ints[PROJECTED + component][group] = projected.to_array();
+            lanes.ints[PROJECTED + component][group] = projected.into();
             if TRACKED {
-                lanes.ints[END_MV + component][group] = project(mv, end_factor).to_array();
+                lanes.ints[END_MV + component][group] = project(mv, end_factor).into();
             }
             let (origin, limit) = if component == 0 {
                 (y, geometry.height8)
             } else {
                 (x, geometry.width8)
             };
-            let inside = |position: Lanes| position.cast::<u32>().simd_lt(Simd::splat(limit));
+            let inside = |position: Lanes<S>| position.bitcast::<u32x16<S>>().simd_lt(limit);
             let unrounded = origin + divide_by_64(projected);
             sampled &= inside(unrounded);
-            position[component] = unrounded & Lanes::splat(!geometry.step_mask);
-            lanes.ints[POSITION + component][group] = position[component].to_array();
-            base[component] = position[component] & Lanes::splat(!geometry.unit_mask);
+            position[component] = unrounded & !geometry.step_mask;
+            lanes.ints[POSITION + component][group] = position[component].into();
+            base[component] = position[component] & !geometry.unit_mask;
             let unrounded = origin + divide_by_64(mv);
             ended &= inside(unrounded);
-            end[component] = unrounded & Lanes::splat(!geometry.step_mask);
+            end[component] = unrounded & !geometry.step_mask;
         }
-        lanes.ints[OUTPUT_CELL][group] = geometry.output.index(position).to_array();
-        let column = x - base[1] + Lanes::splat(geometry.horizontal_offset8);
+        lanes.ints[OUTPUT_CELL][group] = geometry.output.index(position).into();
+        let column = x - base[1] + geometry.horizontal_offset8;
         let near =
-            base[0].simd_eq(y_unit) & column.cast::<u32>().simd_lt(Simd::splat(geometry.window8));
-        let projecting =
-            (flags & Simd::splat(PROJECTS)).simd_ne(Simd::splat(0)) & (sampled & near).cast();
-        let shift = group * LANES;
-        projects |= projecting.to_bitmask() << shift;
+            base[0].simd_eq(y_unit) & column.bitcast::<u32x16<S>>().simd_lt(geometry.window8);
+        let zero = Lanes::splat(simd, 0);
+        let bit = |mask: mask32x16<S>, bit: u8| mask.select(Lanes::splat(simd, bit.into()), zero);
+        let projecting = sampled & near;
+        let mut bits = bit(projecting, PROJECT);
         if TRACKED {
-            let inside = (x.cast::<u32>().simd_lt(Simd::splat(track.width8)) & row_inside).cast();
-            let intersecting = (flags & Simd::splat(INTERSECTS)).simd_ne(Simd::splat(0)) & inside;
-            intersects |= intersecting.to_bitmask() << shift;
-            lanes.ints[TRAJECTORY_CELL][group] = track.band.index(position).to_array();
+            let inside = x.bitcast::<u32x16<S>>().simd_lt(track.width8) & row_inside;
+            lanes.ints[TRAJECTORY_CELL][group] = track.band.index(position).into();
             let end_index = track.band.index(end);
-            lanes.ints[END_CELL][group] = end_index.to_array();
-            let in_band = ended & end_index.cast::<u32>().simd_lt(Simd::splat(track.cells));
-            let reverse = (end[0] & Lanes::splat(!track.unit_mask)).simd_eq(y_track_unit);
-            let unit = position.map(|value| value & Lanes::splat(!track.unit_mask));
+            lanes.ints[END_CELL][group] = end_index.into();
+            let in_band = ended & end_index.bitcast::<u32x16<S>>().simd_lt(track.cells);
+            let reverse = (end[0] & !track.unit_mask).simd_eq(y_track_unit);
+            let unit = position.map(|value| value & !track.unit_mask);
             let window = (end[0] - unit[0])
-                .cast::<u32>()
-                .simd_lt(Simd::splat(track.unit8))
-                & (end[1] - unit[1] + Lanes::splat(track.col_offset8))
-                    .cast::<u32>()
-                    .simd_lt(Simd::splat(track.window8));
-            let bit = |mask: Mask<i32, LANES>, bit: u8| {
-                (mask & in_band)
-                    .cast::<i8>()
-                    .select(Simd::splat(bit), Simd::splat(0))
-            };
-            let flag =
-                |mask: Mask<i8, LANES>, bit: u8| mask.select(Simd::splat(bit), Simd::splat(0));
-            lanes.bits[group] = (bit(reverse, REVERSE)
-                | bit(window, END_WRITE)
-                | flag(projecting, PROJECT)
-                | flag(intersecting, INTERSECT)
-                | flag(projecting & inside, OBSERVE))
-            .to_array();
+                .bitcast::<u32x16<S>>()
+                .simd_lt(track.unit8)
+                & (end[1] - unit[1] + track.col_offset8)
+                    .bitcast::<u32x16<S>>()
+                    .simd_lt(track.window8);
+            bits = bits
+                | bit(reverse & in_band, REVERSE)
+                | bit(window & in_band, END_WRITE)
+                | bit(inside, INTERSECT)
+                | bit(projecting & inside, OBSERVE);
         }
+        let bits = narrow_bytes(simd, bits) & allow;
+        if TRACKED {
+            lanes.bits[group] = bits.into();
+        }
+        walk |= (bits & (PROJECT | INTERSECT)).simd_ne(0).to_bitmask() << (group * LANES);
     }
     let live = u64::MAX >> (CHUNK - count.max(1));
-    Some((projects | intersects) & live)
+    Some(walk & live)
 }
 
 /// A chunk's stored cells from the scanned list's first byte on.
-struct Window([[u8; 64]; BLOCKS]);
+struct Window([u8; WINDOW]);
 
 impl Default for Window {
     fn default() -> Self {
-        Self([[0; 64]; BLOCKS])
+        Self([0; WINDOW])
     }
-}
-
-/// Lane `i` reads byte `OFFSET + STRIDE * i - BASE` of two concatenated
-/// blocks, or byte 0 when that byte lies outside them.
-struct Strided<const OFFSET: usize, const STRIDE: usize, const BASE: usize>;
-
-impl<const OFFSET: usize, const STRIDE: usize, const BASE: usize> Swizzle<LANES>
-    for Strided<OFFSET, STRIDE, BASE>
-{
-    const INDEX: [usize; LANES] = {
-        let mut index = [0; LANES];
-        let mut lane = 0;
-        while lane < LANES {
-            let byte = OFFSET + STRIDE * lane;
-            if byte >= BASE && byte - BASE < 128 {
-                index[lane] = byte - BASE;
-            }
-            lane += 1;
-        }
-        index
-    };
 }
 
 /// The stored reference and saved row and column of each lane of `group`,
-/// read from a chunk window whose cells start at the scanned list. A step-1
-/// group spans 96 bytes, so even groups start on a block and odd groups 32
-/// bytes in; a step-2 group spans three blocks, and its last five lanes read
-/// the third.
-fn deinterleave(window: &[[u8; 64]; BLOCKS], group: usize, step: usize) -> [Simd<u8, LANES>; 3] {
-    type Block = Simd<u8, 64>;
-    let block = |index: usize| Block::from_array(window[index]);
+/// read from a chunk window whose cells start at the scanned list. A step-2
+/// group is four runs of four cells; a step-1 group's even cells and its odd
+/// cells, six bytes further, each form two such runs, whose bytes interleave.
+#[inline]
+fn deinterleave<S: Simd>(
+    simd: S,
+    window: &Window,
+    group: usize,
+    step: usize,
+) -> Option<[u8x16<S>; 3]> {
     if step == 1 {
-        let first = 3 * group / 2;
-        let (low, high) = (block(first), block(first + 1));
-        if group.is_multiple_of(2) {
-            [
-                Strided::<0, 6, 0>::concat_swizzle(low, high),
-                Strided::<1, 6, 0>::concat_swizzle(low, high),
-                Strided::<2, 6, 0>::concat_swizzle(low, high),
-            ]
-        } else {
-            [
-                Strided::<32, 6, 0>::concat_swizzle(low, high),
-                Strided::<33, 6, 0>::concat_swizzle(low, high),
-                Strided::<34, 6, 0>::concat_swizzle(low, high),
-            ]
-        }
+        let span: &[u8; 112] = window.0.get(96 * group..)?.first_chunk()?;
+        let [even_low, even_high, odd_low, odd_high] = [
+            compact(simd, span, 0)?,
+            compact(simd, span, 48)?,
+            compact(simd, span, 6)?,
+            compact(simd, span, 54)?,
+        ];
+        Some(transpose(
+            [even_low.zip_low(odd_low), even_high.zip_low(odd_high)],
+            [even_low.zip_high(odd_low), even_high.zip_high(odd_high)],
+        ))
     } else {
-        let [low, middle, high] = [0, 1, 2].map(|offset| block(3 * group + offset));
-        let tail = Mask::<i8, LANES>::from_array(core::array::from_fn(|lane| lane >= 11));
-        [
-            tail.select(
-                Strided::<0, 12, 128>::concat_swizzle(high, high),
-                Strided::<0, 12, 0>::concat_swizzle(low, middle),
-            ),
-            tail.select(
-                Strided::<1, 12, 128>::concat_swizzle(high, high),
-                Strided::<1, 12, 0>::concat_swizzle(low, middle),
-            ),
-            tail.select(
-                Strided::<2, 12, 128>::concat_swizzle(high, high),
-                Strided::<2, 12, 0>::concat_swizzle(low, middle),
-            ),
-        ]
+        let span: &[u8; 192] = window.0.get(192 * group..)?.first_chunk()?;
+        let [first, second, third, fourth] = [
+            compact(simd, span, 0)?.bitcast::<u32x4<S>>(),
+            compact(simd, span, 48)?.bitcast(),
+            compact(simd, span, 96)?.bitcast(),
+            compact(simd, span, 144)?.bitcast(),
+        ];
+        Some(transpose(
+            [first.zip_low(second), third.zip_low(fourth)].map(Bytes::bitcast),
+            [first.zip_high(second), third.zip_high(fourth)].map(Bytes::bitcast),
+        ))
     }
 }
 
+/// The run of four cells twelve bytes apart at `start`: each cell's three
+/// bytes sit in their own dword of the run's three blocks, so dword blends
+/// collect them in one vector, whose bytes are then grouped as four
+/// references, four rows and four columns.
+#[inline]
+fn compact<S: Simd, const N: usize>(simd: S, span: &[u8; N], start: usize) -> Option<u8x16<S>> {
+    const ORDER: [u8; LANES] = [0, 12, 8, 4, 1, 13, 9, 5, 2, 14, 10, 6, 3, 7, 11, 15];
+    let block = |offset: usize| {
+        let bytes = span.get(start + offset..)?.first_chunk::<16>()?;
+        Some(u8x16::simd_from(simd, *bytes).bitcast::<u32x4<S>>())
+    };
+    let dwords = |lanes: [i32; 4]| simd.from_vector_mask32x4(i32x4::simd_from(simd, lanes));
+    let run = dwords([0, -1, 0, 0]).select(
+        block(32)?,
+        dwords([0, 0, -1, 0]).select(block(16)?, block(0)?),
+    );
+    Some(
+        run.bitcast::<u8x16<S>>()
+            .swizzle_dyn(u8x16::simd_from(simd, ORDER)),
+    )
+}
+
+/// The references, rows and columns of two vectors holding lanes 0..8 and
+/// 8..16 of the references and rows, and two holding their columns.
+fn transpose<S: Simd>(low: [u8x16<S>; 2], high: [u8x16<S>; 2]) -> [u8x16<S>; 3] {
+    let [first, second] = low.map(Bytes::bitcast::<u64x2<S>>);
+    let [low_columns, high_columns] = high.map(Bytes::bitcast::<u64x2<S>>);
+    let columns = low_columns.zip_low(high_columns);
+    [first.zip_low(second), first.zip_high(second), columns].map(Bytes::bitcast)
+}
+
+/// `i8` lanes sign-extended to `i32`.
+fn widen_i8<S: Simd>(simd: S, bytes: u8x16<S>) -> Lanes<S> {
+    let bytes = bytes.bitcast();
+    let words = simd.widen_i8x32(simd.combine_i8x16(bytes, bytes)).0;
+    let (low, high) = simd.split_i16x16(words);
+    widen_i16(simd, low, high)
+}
+
+/// Two halves of `i16` lanes sign-extended to `i32`, each through the lower
+/// half of a doubled vector, which AVX2 widens in one instruction.
+fn widen_i16<S: Simd>(simd: S, low: i16x8<S>, high: i16x8<S>) -> Lanes<S> {
+    let widen = |half: i16x8<S>| simd.widen_i16x16(simd.combine_i16x8(half, half)).0;
+    simd.combine_i32x8(widen(low), widen(high))
+}
+
+/// `i32` lanes saturated to `i8` lanes.
+fn narrow_bytes<S: Simd>(simd: S, lanes: Lanes<S>) -> u8x16<S> {
+    let (low, high) = simd.split_i32x16(lanes);
+    let (low, high) = simd.split_i16x16(low.saturating_narrow(high));
+    low.saturating_narrow(high).bitcast()
+}
+
 /// AV2 § 7.9.2 decompression of a saved vector component, lane by lane.
-fn decompress(value: Narrow) -> Narrow {
+fn decompress<S: Simd>(value: Lanes<S>) -> Lanes<S> {
     let magnitude = value.abs();
-    let step_log2 = ((magnitude >> 4) - Narrow::splat(1)).simd_max(Narrow::splat(0));
+    let step_log2 = ((magnitude >> 4) - 1).max(0);
     let decompressed = (magnitude - (step_log2 << 4)) << step_log2;
-    let sign = value >> 15;
+    let sign = value >> 31;
     (decompressed ^ sign) - sign
 }
 
 /// `Round2Signed(component * factor, 14)` of a decompressed component. A
 /// magnitude of at most 2048 keeps the product inside `i32` and the result
 /// under `MV_LIMIT` for every admitted factor, so the scalar clamp never binds.
-fn project(component: Lanes, factor: Lanes) -> Lanes {
+fn project<S: Simd>(component: Lanes<S>, factor: Lanes<S>) -> Lanes<S> {
     let scaled = component * factor;
-    (scaled + (scaled >> 31) + Lanes::splat(1 << 13)) >> 14
+    (scaled + (scaled >> 31) + (1 << 13)) >> 14
 }
 
 /// [`project`] for one component.
@@ -692,8 +759,8 @@ fn project_component(component: i32, factor: i32) -> i32 {
 }
 
 /// Division by 64 that truncates toward zero, as the scalar `/` does.
-fn divide_by_64(value: Lanes) -> Lanes {
-    (value + ((value >> 31) & Lanes::splat(63))) >> 6
+fn divide_by_64<S: Simd>(value: Lanes<S>) -> Lanes<S> {
+    (value + ((value >> 31) & 63)) >> 6
 }
 
 #[cfg(test)]
@@ -711,6 +778,23 @@ mod tests {
 
     #[test]
     fn lane_projection_matches_the_scalar_projection_for_every_saved_component() {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(simd) = Level::baseline().as_sse4_2() {
+            lane_projection_matches_scalar(simd);
+        }
+        baseline_simd!(simd => lane_projection_matches_scalar(simd));
+    }
+
+    #[test]
+    fn chunk_lanes_match_the_scalar_cell_projection() {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(simd) = Level::baseline().as_sse4_2() {
+            chunk_lanes_match_scalar(simd);
+        }
+        baseline_simd!(simd => chunk_lanes_match_scalar(simd));
+    }
+
+    fn lane_projection_matches_scalar<S: Simd>(simd: S) {
         let saved: Vec<i32> = (-128..128).collect();
         for numerator in -MAX_FRAME_DISTANCE..=MAX_FRAME_DISTANCE {
             for ref_offset in -MAX_FRAME_DISTANCE..=MAX_FRAME_DISTANCE {
@@ -721,11 +805,10 @@ mod tests {
                 let end_numerator = ref_offset.abs() - observed;
                 let end_factor = clamped_tmvp_factor(end_numerator, ref_offset.abs());
                 for chunk in saved.chunks_exact(LANES) {
-                    let narrow =
-                        Narrow::from_array(core::array::from_fn(|lane| chunk[lane] as i16));
-                    let decompressed: Lanes = decompress(narrow).cast();
-                    let projected = project(decompressed, Lanes::splat(folded));
-                    let end_projected = project(decompressed, Lanes::splat(end_factor));
+                    let saved = u8x16::from_fn(simd, |lane| chunk[lane] as u8);
+                    let decompressed = decompress(widen_i8(simd, saved));
+                    let projected = project(decompressed, Lanes::splat(simd, folded));
+                    let end_projected = project(decompressed, Lanes::splat(simd, end_factor));
                     for (lane, &value) in chunk.iter().enumerate() {
                         let component = value as i8;
                         let mv = uncompress_tmvp_mv(CompressedTemporalMv {
@@ -756,8 +839,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn chunk_lanes_match_the_scalar_cell_projection() {
+    fn chunk_lanes_match_scalar<S: Simd>(simd: S) {
         let mut state = 0x2545_f491_4f6c_dd1d_u64;
         let mut next = |bound: usize| {
             state ^= state << 13;
@@ -840,11 +922,11 @@ mod tests {
             };
             let geometry = LaneGeometry::new(step, unit, &output, Some(band)).unwrap();
             let stored: Vec<StoredTemporalCell> = cells.iter().map(|cell| cell.store()).collect();
-            let walk = chunk_lanes::<true>(
+            let walk = chunk_lanes::<S, true>(
                 &mut lanes,
                 &stored,
                 side,
-                &TargetTables::new(&source, hints.len()),
+                &TargetTables::new(simd, &source, hints.len()),
                 y8,
                 x_base,
                 geometry,

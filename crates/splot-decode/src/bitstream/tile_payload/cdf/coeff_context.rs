@@ -5,9 +5,8 @@
 
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
-use std::simd::cmp::SimdPartialEq as _;
 
-use super::super::coeff_state::{LEVEL_INDEX_MASK, LevelGrid};
+use super::super::coeff_state::{DC_CATEGORY_SHIFT, LEVEL_INDEX_MASK, LevelGrid};
 
 const SIG_COEF_CONTEXTS_EOB: usize = 4;
 
@@ -280,15 +279,19 @@ impl CoeffBaseContext {
     }
 }
 
+/// The `dc_sign` context (§ 8.3.2) from the above and left context lines
+/// (see `coeff_state::DC_CATEGORY_SHIFT`) of a block at `x4, y4` of `w4` by `h4`.
+#[allow(clippy::inline_always, reason = "measured: once per coded DC")]
+#[inline(always)]
 pub(crate) fn dc_sign_ctx(
-    above_dc: &[u8],
-    left_dc: &[u8],
+    above: &[u8],
+    left: &[u8],
     x4: usize,
     y4: usize,
     w4: usize,
     h4: usize,
 ) -> usize {
-    let dc_sign = dc_sign_votes(above_dc, x4, w4) + dc_sign_votes(left_dc, y4, h4);
+    let dc_sign = dc_sign_votes(above, x4, w4) + dc_sign_votes(left, y4, h4);
     match dc_sign.cmp(&0) {
         core::cmp::Ordering::Less => 1,
         core::cmp::Ordering::Greater => 2,
@@ -296,66 +299,31 @@ pub(crate) fn dc_sign_ctx(
     }
 }
 
-/// Net sign of the `len` DC categories from `start`; categories are random
-/// per block, so the sum is branchless.
+/// `dcCategory` 2 and 1 of a context-line byte are its high and low
+/// category bit, so a run's net sign is the difference of two popcounts.
+const DC_POSITIVE: u64 = 0x0202_0202_0202_0202 << DC_CATEGORY_SHIFT;
+const DC_NEGATIVE: u64 = 0x0101_0101_0101_0101 << DC_CATEGORY_SHIFT;
+
+const fn dc_votes(word: u64) -> i32 {
+    (word & DC_POSITIVE).count_ones() as i32 - (word & DC_NEGATIVE).count_ones() as i32
+}
+
+/// Net sign of the DC categories of the `len` context-line bytes from
+/// `start`, clamped to the line.
+#[allow(clippy::inline_always, reason = "measured: twice per coded DC")]
+#[inline(always)]
 fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
-    let Some(slice) = start.checked_add(len).and_then(|end| line.get(start..end)) else {
-        return line
-            .get(start..)
-            .unwrap_or_default()
-            .iter()
-            .take(len)
-            .map(|&category| i32::from(category == 2) - i32::from(category == 1))
-            .sum();
-    };
-    match len {
-        0 => 0,
-        1 => i32::from(slice[0] == 2) - i32::from(slice[0] == 1),
-        2 => {
-            (i32::from(slice[0] == 2) - i32::from(slice[0] == 1))
-                + (i32::from(slice[1] == 2) - i32::from(slice[1] == 1))
-        }
-        4 => {
-            let v = std::simd::Simd::<u8, 4>::from_slice(slice);
-            v.simd_eq(std::simd::Simd::splat(2))
-                .to_bitmask()
-                .count_ones() as i32
-                - v.simd_eq(std::simd::Simd::splat(1))
-                    .to_bitmask()
-                    .count_ones() as i32
-        }
-        8 => {
-            let v = std::simd::Simd::<u8, 8>::from_slice(slice);
-            v.simd_eq(std::simd::Simd::splat(2))
-                .to_bitmask()
-                .count_ones() as i32
-                - v.simd_eq(std::simd::Simd::splat(1))
-                    .to_bitmask()
-                    .count_ones() as i32
-        }
-        16 => {
-            let v = std::simd::Simd::<u8, 16>::from_slice(slice);
-            v.simd_eq(std::simd::Simd::splat(2))
-                .to_bitmask()
-                .count_ones() as i32
-                - v.simd_eq(std::simd::Simd::splat(1))
-                    .to_bitmask()
-                    .count_ones() as i32
-        }
-        32 => {
-            let v = std::simd::Simd::<u8, 32>::from_slice(slice);
-            v.simd_eq(std::simd::Simd::splat(2))
-                .to_bitmask()
-                .count_ones() as i32
-                - v.simd_eq(std::simd::Simd::splat(1))
-                    .to_bitmask()
-                    .count_ones() as i32
-        }
-        _ => slice
-            .iter()
-            .map(|&category| i32::from(category == 2) - i32::from(category == 1))
-            .sum(),
+    let run = line.get(start..).unwrap_or_default();
+    let len = len.min(run.len());
+    if (1..=8).contains(&len)
+        && let Some(bytes) = run.first_chunk::<8>()
+    {
+        return dc_votes(u64::from_le_bytes(*bytes) & (u64::MAX >> (64 - 8 * len)));
     }
+    run.iter()
+        .take(len)
+        .map(|&byte| dc_votes(u64::from(byte)))
+        .sum()
 }
 
 #[inline]

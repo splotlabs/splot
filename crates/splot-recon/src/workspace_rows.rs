@@ -290,6 +290,20 @@ impl<T: ReconSample> CurrentFrameRectRowsMut<'_, T> {
         self.rect
     }
 
+    /// The rows as one strided slice, `(samples, stride)`, for a predictor that
+    /// writes the block in place; every sample it writes must already lie
+    /// within the active bit depth.
+    pub fn prediction_target(&mut self) -> (&mut [T], usize) {
+        (&mut *self.samples, self.stride_samples)
+    }
+
+    /// The rectangle's 8-bit samples from its origin and their row stride,
+    /// for a reconstruction added in place; `None` for wider samples.
+    pub fn u8_samples_mut(&mut self) -> Option<(&mut [u8], usize)> {
+        let stride = self.stride_samples;
+        T::u8_slice_mut(self.samples).map(|samples| (samples, stride))
+    }
+
     /// Reconstructs the rectangle from a contiguous block prediction and its
     /// AV2 § 7.14.3 residual, writing `Clip1(prediction + residual)` straight
     /// into the frame.
@@ -371,6 +385,203 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             bit_depth,
         };
         write(&mut rows).map(Some)
+    }
+}
+
+/// One block lying wholly inside plane storage, with the stored samples
+/// around it: an intra predictor reads its § 7.13.2 edges straight from the
+/// frame and writes its prediction in place.
+///
+/// Every sample written through [`Self::target`] must lie within the active
+/// bit depth.
+pub struct IntraBlockFrame<'a, T: ReconSample> {
+    samples: &'a mut [T],
+    origin: usize,
+    /// Where the block's first row starts in `samples`.
+    row_start: usize,
+    stride: usize,
+    /// Stored samples of the row above, from the block's first column.
+    above_len: usize,
+    /// Plane rows of the column to the left from the block's first row, stored
+    /// or not; none in the plane's first column.
+    left_len: usize,
+    /// Plane rows from the block's first row to the bottom storage edge.
+    rows_below: usize,
+}
+
+impl<T: ReconSample> IntraBlockFrame<'_, T> {
+    /// The stored row above the block from its first column, up to the plane's
+    /// right storage edge; empty in the plane's first row.
+    #[inline]
+    pub fn above_row(&self) -> &[T] {
+        match self.origin.checked_sub(self.stride) {
+            Some(start) if self.above_len > 0 => self
+                .samples
+                .get(start..start + self.above_len)
+                .unwrap_or_default(),
+            _ => &[],
+        }
+    }
+
+    /// Copies the column left of the block from its first row into `out`, up
+    /// to the plane's bottom storage edge, and returns how many samples it
+    /// copied: none in the plane's first column.
+    #[inline]
+    pub fn left_column(&self, out: &mut [T]) -> usize {
+        let len = out.len().min(self.left_len);
+        let len = if self.row_start + len * self.stride <= self.samples.len() {
+            len
+        } else {
+            self.samples.len().saturating_sub(self.row_start) / self.stride.max(1)
+        };
+        let column = match (self.origin.checked_sub(1), len.checked_sub(1)) {
+            (Some(first), Some(last)) => self.samples.get(first..first + last * self.stride + 1),
+            _ => None,
+        };
+        let Some(column) = column else {
+            return 0;
+        };
+        for (i, slot) in out[..len].iter_mut().enumerate() {
+            *slot = column[i * self.stride];
+        }
+        len
+    }
+
+    /// Plane rows from the block's first row down to the bottom storage edge,
+    /// stored or not.
+    #[inline]
+    pub const fn left_extent(&self) -> usize {
+        self.rows_below
+    }
+
+    /// The sample above and left of the block, when both edges are stored.
+    #[inline]
+    pub fn top_left(&self) -> Option<T> {
+        if self.above_len == 0 || self.left_len == 0 {
+            return None;
+        }
+        self.samples.get(self.origin - self.stride - 1).copied()
+    }
+
+    /// [`Self::above_row`] beside [`Self::target`], for a prediction that
+    /// reads its above edge straight from the frame while it writes.
+    #[inline]
+    pub fn above_row_and_target(&mut self) -> (&[T], &mut [T], usize) {
+        let (before, target) = self
+            .samples
+            .split_at_mut_checked(self.origin)
+            .unwrap_or_default();
+        let above = match self.origin.checked_sub(self.stride) {
+            Some(start) if self.above_len > 0 => before
+                .get(start..start + self.above_len)
+                .unwrap_or_default(),
+            _ => &[],
+        };
+        (above, target, self.stride)
+    }
+
+    /// The block's first sample onwards and the row stride, for the
+    /// prediction write.
+    #[inline]
+    pub fn target(&mut self) -> (&mut [T], usize) {
+        (
+            self.samples.get_mut(self.origin..).unwrap_or_default(),
+            self.stride,
+        )
+    }
+}
+
+impl<T: ReconSample> CurrentFrameWorkspace<T> {
+    /// Runs `predict` over one block and the stored samples around it.
+    ///
+    /// Returns `Ok(None)` without running `predict` when the block overhangs
+    /// plane storage or its above row lies outside a band, so the caller keeps
+    /// its buffered path for those blocks.
+    ///
+    /// # Errors
+    /// Returns the caller's error type for an absent plane, a block origin
+    /// outside plane storage, or any failure `predict` raises.
+    #[inline]
+    pub fn with_intra_block_frame<R, E>(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        predict: impl FnOnce(&mut IntraBlockFrame<'_, T>) -> core::result::Result<R, E>,
+    ) -> core::result::Result<Option<R>, E>
+    where
+        E: From<ReconError>,
+    {
+        match IntraBlockFrame::of(self.plane_mut(plane)?, x, y, size)? {
+            Some(mut frame) => predict(&mut frame).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// [`Self::with_intra_block_frame`] over the U and V blocks at the same
+    /// position at once.
+    ///
+    /// # Errors
+    /// Returns the caller's error type for a monochrome workspace, a block
+    /// origin outside plane storage, or any failure `predict` raises.
+    #[inline]
+    pub fn with_intra_chroma_frames<R, E>(
+        &mut self,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        predict: impl FnOnce(&mut [IntraBlockFrame<'_, T>; 2]) -> core::result::Result<R, E>,
+    ) -> core::result::Result<Option<R>, E>
+    where
+        E: From<ReconError>,
+    {
+        let (Some(u), Some(v)) = (self.u.as_mut(), self.v.as_mut()) else {
+            return Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U }.into());
+        };
+        match (
+            IntraBlockFrame::of(u, x, y, size)?,
+            IntraBlockFrame::of(v, x, y, size)?,
+        ) {
+            (Some(u), Some(v)) => predict(&mut [u, v]).map(Some),
+            _ => Ok(None),
+        }
+    }
+}
+
+impl<'a, T: ReconSample> IntraBlockFrame<'a, T> {
+    /// The block of `target` at `(x, y)`, or `None` when it overhangs plane
+    /// storage or its above row lies outside a band.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: keeps the intra glue as lean as before"
+    )]
+    #[inline(always)]
+    fn of(
+        target: &'a mut CurrentFramePlane<T>,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+    ) -> Result<Option<Self>> {
+        let storage = target.storage_size;
+        let (width, height) = (size.width(), size.height());
+        if x + width > storage.width() || y + height > storage.height() {
+            return Ok(None);
+        }
+        let stride = target.stride_samples();
+        let local_y = target.band_row(y, height)?;
+        if y > 0 && local_y == 0 {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            origin: local_y * stride + x,
+            row_start: local_y * stride,
+            stride,
+            above_len: if y > 0 { storage.width() - x } else { 0 },
+            left_len: if x > 0 { storage.height() - y } else { 0 },
+            rows_below: storage.height() - y,
+            samples: &mut target.samples,
+        }))
     }
 }
 
@@ -599,5 +810,50 @@ mod tests {
             })
             .unwrap();
         assert_eq!(rect, Some(PlaneRect::new(8, 16, 8, 4).unwrap()));
+    }
+
+    #[test]
+    fn intra_block_frame_reads_stored_edges_and_writes_in_place() {
+        let mut ws = workspace(BitDepth::Eight, 16, 16, 0u8);
+        for y in 0..16 {
+            for x in 0..16 {
+                ws.set_reconstructed_sample(PlaneId::Y, x, y, (x + 16 * y) as u8)
+                    .unwrap();
+            }
+        }
+        let above: Vec<u8> = (4..16).map(|x| x + 48).collect();
+        let read = ws
+            .with_intra_block_frame(PlaneId::Y, 4, 4, block(2, 2), |frame| {
+                assert_eq!(frame.above_row(), &above[..]);
+                let mut left = [0u8; 16];
+                let copied = frame.left_column(&mut left);
+                let (target, stride) = frame.target();
+                target[stride + 1] = 7;
+                Ok::<_, ReconError>((copied, left, frame.top_left(), frame.left_extent()))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.0, 12);
+        assert_eq!(
+            read.1[..12],
+            core::array::from_fn::<u8, 12, _>(|i| (3 + 16 * (i + 4)) as u8)
+        );
+        assert_eq!((read.2, read.3), (Some(51), 12));
+        assert_eq!(ws.reconstructed_sample(PlaneId::Y, 5, 5).unwrap(), 7);
+
+        let corner = ws
+            .with_intra_block_frame(PlaneId::Y, 0, 0, block(2, 2), |frame| {
+                Ok::<_, ReconError>((
+                    frame.above_row().len(),
+                    frame.left_column(&mut [0; 4]),
+                    frame.top_left(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(corner, Some((0, 0, None)));
+        let overhang = ws
+            .with_intra_block_frame(PlaneId::Y, 14, 4, block(2, 2), |_| Ok::<_, ReconError>(()))
+            .unwrap();
+        assert_eq!(overhang, None);
     }
 }
