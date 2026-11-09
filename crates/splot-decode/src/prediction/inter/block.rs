@@ -1875,7 +1875,7 @@ fn decode_block<T: ReconSample>(
             GeneralIntraLeafMode::no_luma_mode(),
             pending_inter_leaf(
                 syntax,
-                placed_inter_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
+                inter_leaf_placement(frontier, work_unit, chroma_planes),
                 block_qindex,
                 frame_mv_precision(core)?,
             ),
@@ -2125,7 +2125,7 @@ fn decode_block<T: ReconSample>(
         GeneralIntraLeafMode::no_luma_mode(),
         pending_inter_leaf(
             syntax,
-            placed_inter_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
+            inter_leaf_placement(frontier, work_unit, chroma_planes),
             block_qindex,
             frame_mv_precision(core)?,
         ),
@@ -2186,7 +2186,7 @@ pub(crate) use tip::{TipOutputStages, TipSpares};
 mod warp;
 
 use self::interintra::predict_interintra_planes;
-use self::prediction::placed_inter_geometry;
+use self::prediction::inter_leaf_placement;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
     LeafReset, LeafResolveRecord, MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax,

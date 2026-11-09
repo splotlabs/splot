@@ -25,7 +25,7 @@ use super::compound_path::{
     add_mv_clamped, compound_local_warp_models, project_joint_mvd, scale_joint_projected_mvd,
     select_near_near_candidates,
 };
-use super::prediction::PlacedInterGeometry;
+use super::prediction::InterLeafPlacement;
 use super::tile::{LeafSlot, ReconRowEntry};
 use super::warp::{
     ExtendWarpContext, apply_warp_delta, extend_warp_estimation, set_warp_translation,
@@ -67,7 +67,7 @@ pub(super) enum LeafReset {
 /// One inter leaf's parse output, held until the resolve pass reaches it.
 pub(super) struct PendingInterBlock {
     syntax: InterBlockSyntax,
-    geometry: PlacedInterGeometry,
+    placement: InterLeafPlacement,
     segment_id: u8,
     qindex: u32,
     frame_precision: u8,
@@ -101,13 +101,13 @@ pub(super) fn pending_intrabc_leaf(pending: PendingIntrabcBlock) -> LeafResolveR
 /// reconstruction command.
 pub(super) fn pending_inter_leaf(
     syntax: InterBlockSyntax,
-    geometry: PlacedInterGeometry,
+    placement: InterLeafPlacement,
     qindex: u32,
     frame_precision: u8,
 ) -> LeafResolveRecord {
     LeafResolveRecord::Inter(PendingInterBlock {
         syntax,
-        geometry,
+        placement,
         segment_id: current_frame_qm_segment_id() as u8,
         qindex,
         frame_precision,
@@ -310,12 +310,13 @@ fn resolve_pending_inter(
 ) -> Result<deferred_recon::InterReconCommand> {
     let PendingInterBlock {
         syntax,
-        geometry,
+        placement,
         segment_id,
         qindex,
         frame_precision,
     } = pending;
-    let (geometry, segment_id, qindex) = (*geometry, *segment_id, *qindex);
+    let mut geometry = placement.geometry((syntax.block_ctx.bw4, syntax.block_ctx.bh4))?;
+    let (segment_id, qindex) = (*segment_id, *qindex);
     state.frame_precision = *frame_precision;
     let mut resolved = resolve_inter_block(syntax, state)?;
     predict_by_translation_under_integer_mv(syntax, state.core, &mut resolved);
@@ -323,6 +324,7 @@ fn resolve_pending_inter(
         InterMotionSyntax::Compound(compound) => Some(*compound),
         InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) => None,
     };
+    geometry.interintra_chroma &= compound.is_none();
     let tip_ref = matches!(
         &syntax.motion,
         InterMotionSyntax::Single(SingleMotionSyntax { tip_ref: true, .. })

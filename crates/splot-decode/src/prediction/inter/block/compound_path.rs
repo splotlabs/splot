@@ -11,7 +11,6 @@ use super::super::compound::{
 };
 use super::super::find_mv_stack::TemporalMotionBlock;
 use super::super::read_mv::apply_inter_mvd_sign_pair;
-use super::prediction::PlacedInterGeometry;
 use super::temporal::temporal_motion_block;
 use super::warp::mvd_sign_derivation_block_scope_allowed;
 use super::*;
@@ -694,12 +693,11 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
         block_qindex,
         current_residual_lossless(work_unit),
     );
-    let placed_geometry = placed_inter_geometry(
+    let placement = inter_leaf_placement(
         frontier,
         work_unit,
-        (n4w, n4h),
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
-    )?;
+    );
     let optflow_distances = compound_optflow_distances(
         core,
         reference,
@@ -735,15 +733,7 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
     mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
     Ok((
         GeneralIntraLeafMode::no_luma_mode(),
-        pending_inter_leaf(
-            syntax,
-            PlacedInterGeometry {
-                interintra_chroma: false,
-                ..placed_geometry
-            },
-            block_qindex,
-            frame_precision,
-        ),
+        pending_inter_leaf(syntax, placement, block_qindex, frame_precision),
     ))
 }
 
