@@ -26,7 +26,7 @@ use crate::math::round2;
 use crate::math::{round2_i32, round2_signed, round2_signed_i32};
 use crate::subpel_mc::ReferencePlaneView;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod eight_bit;
 mod ext_unit;
 
@@ -234,7 +234,7 @@ impl PreparedWarpPrediction {
         )? {
             return Ok(());
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         let view = reference.as_u8();
         for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
             let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
@@ -243,9 +243,9 @@ impl PreparedWarpPrediction {
                 block_y: (y + local_y) as i32,
                 ..self.params
             };
-            #[cfg(not(target_arch = "x86_64"))]
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
             let written = 0u64;
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             let written = match (&view, output.get_mut(local_y * stride..)) {
                 (Some(view), Some(target)) if section_h == WARPED_BLOCK_SIZE => {
                     T::u8_slice_mut(target).map_or(0, |target| {
@@ -775,7 +775,7 @@ fn warp_predict_section<S: Simd, T: ReconSample>(
     let projected = project_section_center(params)?;
     let mut intermediate = [[0i16; WARPED_BLOCK_SIZE]; WARP_INTERMEDIATE_ROWS];
     let origin = interior_warp_source_origin(reference, params, &projected);
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if let Some(source_origin) = origin
         && !(shear.alpha == 0 && shear.beta == 0 && two_tap_phase(projected.sx4).is_some())
         && let Some(reference) = reference.as_u8()

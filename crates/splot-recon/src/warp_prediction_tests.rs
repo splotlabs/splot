@@ -1081,3 +1081,80 @@ fn eight_bit_sections_with_full_shear_match_the_spec_trace() {
         }
     }
 }
+
+/// The byte-lane section and row kernels against the § 7.13.3.19 trace for
+/// random valid models (some with zero `alpha` or `gamma`) on noise with
+/// extreme runs, at interior and border blocks, of luma and 4:2:0 chroma.
+#[test]
+fn eight_bit_kernels_match_the_spec_trace_for_random_models() {
+    let (ref_w, ref_h) = (72usize, 56usize);
+    let unit = 1 << WARPEDMODEL_PREC_BITS;
+    let mut state = 0x2545_f491u32;
+    let mut next = |span: i32| {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (state >> 8) as i32 % (2 * span + 1) - span
+    };
+    let mut checked = 0;
+    for seed in 0..48u32 {
+        let samples = noise_samples(ref_w * ref_h, 255, seed);
+        let bytes = samples.iter().map(|&s| s as u8).collect::<Vec<u8>>();
+        let view = ReferencePlaneView::new(&bytes, ref_w, ref_h).unwrap();
+        let mut warp_params = [
+            translation(next(3), next(0xffff).abs(), 0),
+            translation(next(3), next(0xffff).abs(), 0),
+            unit + next(7000),
+            next(7000),
+            next(7000),
+            unit + next(7000),
+        ];
+        match seed % 4 {
+            1 => warp_params[2] = unit,
+            2 => warp_params[4] = 0,
+            _ => {}
+        }
+        let mut params = default_params(0, 0, ref_w as i32, ref_h as i32);
+        params.warp_params = warp_params;
+        params.subsampling_x = u8::from(seed % 3 == 0);
+        params.subsampling_y = params.subsampling_x;
+        let Ok(prepared) = PreparedWarpPrediction::new(&params) else {
+            continue;
+        };
+        checked += 1;
+        let (x, y) = (8 * (seed as usize % 6), 8 * (seed as usize % 5));
+        let (width, height) = (24, 16);
+        let stride = width + 5;
+        let mut clipped = vec![0u8; stride * height];
+        prepared
+            .predict_clipped_into(&view, [x, y, width, height], &mut clipped, stride)
+            .unwrap();
+        for local_y in (0..height).step_by(8) {
+            for local_x in (0..width).step_by(8) {
+                let section = WarpPredictBlockParams {
+                    block_x: (x + local_x) as i32,
+                    block_y: (y + local_y) as i32,
+                    ..params
+                };
+                let at = (section.block_x, section.block_y);
+                let want = reference_warp_8x8(&samples, ref_w, ref_h, &section);
+                for (row, want) in want.chunks_exact(8).enumerate() {
+                    let start = (local_y + row) * stride + local_x;
+                    let got = clipped[start..start + 8].iter().map(|&s| u16::from(s));
+                    assert!(got.eq(want.iter().copied()), "{warp_params:?} {at:?}");
+                }
+                for round1 in [INTER_ROUND1_NON_COMPOUND, INTER_ROUND1_COMPOUND] {
+                    let want = reference_warp_rounded(&samples, ref_w, ref_h, &section, round1);
+                    let compound = round1 == INTER_ROUND1_COMPOUND;
+                    let mut got = [0i32; 64];
+                    prepared
+                        .predict_block_into(&view, at.0, at.1, compound, &mut got)
+                        .unwrap();
+                    assert!(
+                        got.iter().map(|&v| i64::from(v)).eq(want),
+                        "{warp_params:?} {at:?} round {round1}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(checked >= 24, "only {checked} valid models");
+}
