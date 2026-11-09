@@ -315,7 +315,7 @@ fn resolve_pending_inter(
         qindex,
         frame_precision,
     } = pending;
-    let mut geometry = placement.geometry((syntax.block_ctx.bw4, syntax.block_ctx.bh4))?;
+    let geometry = placement.geometry((syntax.block_ctx.bw4, syntax.block_ctx.bh4))?;
     let (segment_id, qindex) = (*segment_id, *qindex);
     state.frame_precision = *frame_precision;
     let mut resolved = resolve_inter_block(syntax, state)?;
@@ -324,7 +324,6 @@ fn resolve_pending_inter(
         InterMotionSyntax::Compound(compound) => Some(*compound),
         InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) => None,
     };
-    geometry.interintra_chroma &= compound.is_none();
     let tip_ref = matches!(
         &syntax.motion,
         InterMotionSyntax::Single(SingleMotionSyntax { tip_ref: true, .. })
