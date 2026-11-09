@@ -42,13 +42,21 @@ fn chroma_params(
 #[test]
 fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
     const RADIUS: usize = WIENER_NS_CHROMA_TAP_RADIUS;
-    let mut coeffs = ZERO_CHROMA;
-    for (index, coeff) in coeffs.iter_mut().enumerate() {
+    let mut mixed = ZERO_CHROMA;
+    for (index, coeff) in mixed.iter_mut().enumerate() {
         *coeff = (index as i16 * 13 % 41) - 20;
     }
-    for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
+    let extreme = [
+        39, -24, 17, -14, 15, -16, 15, -16, 15, -16, 7, -8, 7, -8, 7, -8, 7, -8,
+    ];
+    let mut chroma_only = extreme;
+    chroma_only[WIENER_NS_CHROMA_COEFF_SLOTS..].fill(0);
+    for (&bit_depth, coeffs) in [BitDepth::Eight, BitDepth::Ten]
+        .iter()
+        .flat_map(|depth| [(depth, &mixed), (depth, &extreme), (depth, &chroma_only)])
+    {
         let max = bit_depth.max_sample();
-        for &width in &[64, 65, 70, 127, 128, 191, 200] {
+        for &width in &[8, 9, 12, 15, 16, 17, 24, 64, 65, 70, 127, 128, 191, 200] {
             let height = 3;
             let stride = width + 2 * RADIUS;
             let plane = |seed: usize| -> Vec<u16> {
@@ -62,7 +70,7 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
             };
             let chroma = plane(0);
             let luma_ds = plane(3);
-            let params = chroma_params(width, height, width, bit_depth, &coeffs);
+            let params = chroma_params(width, height, width, bit_depth, coeffs);
             let mut lanes = vec![0u16; width * height];
             let mut scalar = vec![0u16; width * height];
             filter_chroma_padded_simd(&mut lanes, &params, &chroma, stride, &luma_ds, stride, max);

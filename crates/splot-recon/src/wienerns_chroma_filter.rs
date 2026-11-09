@@ -968,7 +968,22 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
         }
         _ => false,
     };
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    let narrow_done = match T::u16_slice(chroma) {
+        Some(chroma) if params.width >= 8 => {
+            filter_chroma_lanes8(
+                simd,
+                output,
+                params,
+                (chroma, chroma_stride),
+                (luma_ds, luma_stride),
+                max_sample,
+            );
+            true
+        }
+        _ => false,
+    };
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let narrow_done = false;
     for r in (0..params.height).filter(|_| !narrow_done) {
         let output = &mut output[r * params.output_stride..][..params.width];
@@ -1130,6 +1145,57 @@ fn filter_chroma_narrow<O: ChromaOutputSample>(
         }
     }
     true
+}
+
+/// [`filter_chroma_rows`] on aarch64 for a block at least 8 samples wide:
+/// 8-lane groups, the last one of a row overlapping the one before it when
+/// the width is not a multiple of 8. A group whose window is short takes the
+/// scalar kernel.
+#[cfg(target_arch = "aarch64")]
+fn filter_chroma_lanes8<S: Simd, O: ChromaOutputSample>(
+    simd: S,
+    output: &mut [O],
+    params: &WienerNsChromaFilter<'_>,
+    (chroma, chroma_stride): (&[u16], usize),
+    (luma_ds, luma_stride): (&[u16], usize),
+    max_sample: u16,
+) {
+    let reads_luma = params.reads_luma();
+    let weights = lanes8::weights(simd, params.coeffs);
+    let last = params.width - 8;
+    for r in 0..params.height {
+        let output = &mut output[r * params.output_stride..][..params.width];
+        let mut c = 0;
+        while c < params.width {
+            c = c.min(last);
+            let window = |samples, stride| lanes8::window(samples, r * stride + c, stride);
+            let chroma_window = window(chroma, chroma_stride);
+            let windows = if reads_luma {
+                chroma_window.zip(window(luma_ds, luma_stride))
+            } else {
+                chroma_window.map(|window| (window, window))
+            };
+            if let Some((chroma, luma)) = windows {
+                let values =
+                    lanes8::filter8(simd, &chroma, &luma, &weights, reads_luma, max_sample);
+                O::write_lanes::<8>(&mut output[c..c + 8], values);
+            } else {
+                for (offset, slot) in output[c..c + 8].iter_mut().enumerate() {
+                    *slot = O::from_clamped_u16(filter_chroma_padded_sample(
+                        params,
+                        chroma,
+                        chroma_stride,
+                        luma_ds,
+                        luma_stride,
+                        r,
+                        c + offset,
+                        max_sample,
+                    ));
+                }
+            }
+            c += 8;
+        }
+    }
 }
 
 #[inline(never)]
@@ -1566,6 +1632,103 @@ fn scale_coord(value: isize, shift: u8, context: &'static str) -> Result<isize> 
 #[allow(clippy::unwrap_used, clippy::panic)]
 #[path = "wienerns_chroma_filter_tests.rs"]
 mod tests;
+
+/// The 8-lane kernel of [`filter_chroma_lanes8`], with only `fearless_simd`
+/// operations: each tap term widens into `i32` lanes by its coefficient.
+#[cfg(target_arch = "aarch64")]
+mod lanes8 {
+    use fearless_simd::{Simd, SimdIntWiden, i16x8, i32x4, prelude::*, u16x8};
+
+    use super::{
+        WIENER_NS_CHROMA_COEFF_SLOTS, WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS,
+        WIENER_NS_CONFIG_UV, WIENER_NS_CONFIG_UV_PAIRS, WIENER_NS_PREC_BITS,
+    };
+
+    const R: usize = WIENER_NS_CHROMA_TAP_RADIUS;
+    const REACH: usize = 8 + 2 * R;
+    const TERMS: usize = WIENER_NS_CHROMA_COEFF_SLOTS + WIENER_NS_CONFIG_UV.len();
+
+    /// The padded rows of one 8-sample group: row `R + dy` from column
+    /// `R + dx` holds the taps at offset `(dy, dx)`.
+    pub(super) type Window<'a> = [&'a [u16; REACH]; 2 * R + 1];
+
+    /// The [`Window`] whose first sample is `samples[base]`, rows `stride`
+    /// apart.
+    #[inline]
+    pub(super) fn window(samples: &[u16], base: usize, stride: usize) -> Option<Window<'_>> {
+        let row = |dy: usize| samples.get(base + dy * stride..)?.first_chunk::<REACH>();
+        Some([row(0)?, row(1)?, row(2)?, row(3)?, row(4)?])
+    }
+
+    #[inline]
+    fn at<'a>(window: &Window<'a>, dy: isize, dx: isize) -> &'a [u16; 8] {
+        window[R.wrapping_add_signed(dy)][R.wrapping_add_signed(dx)..]
+            .first_chunk::<8>()
+            .unwrap_or(&[0; 8])
+    }
+
+    /// The coefficient of each chroma tap pair, then of each luma tap.
+    #[inline]
+    pub(super) fn weights<S: Simd>(
+        simd: S,
+        coeffs: &[i16; WIENER_NS_CHROMA_COEFFS],
+    ) -> [i16x8<S>; TERMS] {
+        core::array::from_fn(|term| {
+            let coeff = match WIENER_NS_CONFIG_UV_PAIRS.get(term) {
+                Some(&(_, _, index)) => coeffs[index],
+                None => coeffs[term],
+            };
+            i16x8::splat(simd, coeff)
+        })
+    }
+
+    /// One 8-sample group of one row.
+    #[inline]
+    pub(super) fn filter8<S: Simd>(
+        simd: S,
+        chroma: &Window<'_>,
+        luma: &Window<'_>,
+        weights: &[i16x8<S>; TERMS],
+        reads_luma: bool,
+        max_sample: u16,
+    ) -> [u16; 8] {
+        let load = |window: &Window<'_>, dy: isize, dx: isize| -> i16x8<S> {
+            u16x8::load_array_ref(simd, at(window, dy, dx)).bitcast()
+        };
+        let center = load(chroma, 0, 0);
+        let round = i32x4::splat(simd, 1 << (WIENER_NS_PREC_BITS - 1));
+        let (low, high) = center.widening_mul(i16x8::splat(simd, 1 << WIENER_NS_PREC_BITS));
+        let mut sums = [low + round, high + round];
+        let mut add = |term: i16x8<S>, weight: i16x8<S>| {
+            let (low, high) = term.widening_mul(weight);
+            sums[0] += low;
+            sums[1] += high;
+        };
+        let twice_center = center + center;
+        for (&(dy, dx, _), &weight) in WIENER_NS_CONFIG_UV_PAIRS.iter().zip(weights) {
+            add(
+                load(chroma, dy, dx) + load(chroma, -dy, -dx) - twice_center,
+                weight,
+            );
+        }
+        if reads_luma {
+            let luma_center = load(luma, 0, 0);
+            for (&(dy, dx, _), &weight) in WIENER_NS_CONFIG_UV
+                .iter()
+                .zip(&weights[WIENER_NS_CHROMA_COEFF_SLOTS..])
+            {
+                add(load(luma, dy, dx) - luma_center, weight);
+            }
+        }
+        let (zero, max) = (i16x8::splat(simd, 0), i16x8::splat(simd, max_sample as i16));
+        let [low, high] = sums.map(|sum| sum >> WIENER_NS_PREC_BITS);
+        let values: u16x8<S> = simd
+            .saturating_narrow_i32x4(low, high)
+            .clamp(zero, max)
+            .bitcast();
+        values.into()
+    }
+}
 
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
