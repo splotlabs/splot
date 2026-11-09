@@ -34,25 +34,9 @@ pub(super) struct Cell<'a> {
 }
 
 impl<'a> Cell<'a> {
-    /// The cell of a `size`-square block, or `None` when its clip range is
-    /// empty or its window leaves the storage of 16 bytes per row.
-    #[allow(clippy::inline_always, reason = "measured compound cell hot path")]
-    #[inline(always)]
-    fn new(
-        view: &ReferencePlaneView<'a, u8>,
-        params: &SubpelPredictParams,
-        size: usize,
-    ) -> Option<Self> {
-        Self::at(
-            view,
-            params.interp,
-            size,
-            ([params.start_x, params.start_y], params.bounds()),
-        )
-    }
-
-    /// [`Self::new`] of a cell at 1/1024-sample `[x, y]` with clip bounds
-    /// `[firstX, firstY, lastX, lastY]`.
+    /// The cell of a `size`-square block at 1/1024-sample `[x, y]` with clip
+    /// bounds `[firstX, firstY, lastX, lastY]`, or `None` when its clip range
+    /// is empty or its window leaves the storage of 16 bytes per row.
     #[allow(clippy::inline_always, reason = "measured compound cell hot path")]
     #[inline(always)]
     fn at(
@@ -129,7 +113,12 @@ pub(super) fn put_cell<'a>(
     if params.h != size || (size != 4 && size != 8) {
         return None;
     }
-    let cell = Cell::new(reference, params, size)?;
+    let cell = Cell::at(
+        reference,
+        params.interp,
+        size,
+        ([params.start_x, params.start_y], params.bounds()),
+    )?;
     if size == 4 && cell.horizontal.is_some_and(|taps| taps.count > 2) {
         return None;
     }
@@ -141,14 +130,13 @@ pub(super) fn put_cell<'a>(
 }
 
 impl<'a> Cell<'a> {
-    /// The tap-pair counts of the horizontal and vertical passes, zero for
-    /// a skipped pass.
+    /// The kernel key `5 * H + V + 25 * clamped` of this cell's tap-pair
+    /// counts, zero for a skipped pass.
     #[inline]
-    fn counts(&self) -> [usize; 2] {
-        [
-            self.horizontal.map_or(0, |taps| taps.count),
-            self.vertical.map_or(0, |taps| taps.count),
-        ]
+    fn key(&self) -> i32 {
+        (5 * self.horizontal.map_or(0, |taps| taps.count)
+            + self.vertical.map_or(0, |taps| taps.count)
+            + 25 * usize::from(self.clamped.is_some())) as i32
     }
 
     /// This cell read from `source`, storage of the same geometry.
@@ -617,13 +605,12 @@ mod avx2 {
         ) -> bool {
             let mut lanes = [Lanes::default(), Lanes::default()];
             for ((lanes, cell), [x, y]) in lanes.iter_mut().zip(cells).zip(starts) {
-                let [h, v] = cell.counts();
                 let Ok(origin) = i32::try_from(cell.origin) else {
                     return false;
                 };
                 lanes.origin[0] = origin;
                 lanes.phases = [[(x >> 6) & 15; 8], [(y >> 6) & 15; 8]];
-                lanes.keys[0] = (5 * h + v) as i32 + if cell.clamped.is_some() { 25 } else { 0 };
+                lanes.keys[0] = cell.key();
                 for (field, value) in lanes
                     .clamped
                     .iter_mut()
@@ -811,14 +798,7 @@ mod avx2 {
                     })
             };
             let windows = [half(0), half(1)];
-            let CompoundCells {
-                len,
-                positions,
-                starts,
-                bounds,
-                stash,
-            } = cells;
-            let len = (*len).min(PROGRAM_CELLS);
+            let len = cells.len.min(PROGRAM_CELLS);
             for batch in (0..len).step_by(8) {
                 let lanes = [0, 1].map(|reference| {
                     lanes(
@@ -826,7 +806,7 @@ mod avx2 {
                         &first_views[reference],
                         windows,
                         size,
-                        (&starts[reference], &bounds[reference]),
+                        (&cells.starts[reference], &cells.bounds[reference]),
                         batch,
                     )
                 });
@@ -839,14 +819,14 @@ mod avx2 {
                     &sources,
                     filters,
                     size,
-                    stash,
+                    &mut cells.stash,
                 );
                 let mut pending = valid & done & done >> 8;
                 while pending != 0 {
                     let lane = pending.trailing_zeros() as usize;
                     pending &= pending - 1;
                     let index = batch + lane;
-                    let Some(&[row, col]) = positions.get(index) else {
+                    let Some(&[row, col]) = cells.positions.get(index) else {
                         continue;
                     };
                     for (plane, (slot, written)) in planes.iter_mut().zip(&mut written).enumerate()
@@ -864,7 +844,7 @@ mod avx2 {
                         ) else {
                             continue;
                         };
-                        store(t, stash, plane, lane, size, forward, output, stride);
+                        store(t, &cells.stash, plane, lane, size, forward, output, stride);
                         written[index / 64 % 4] |= 1 << (index % 64);
                     }
                 }
@@ -876,12 +856,10 @@ mod avx2 {
     fearless_simd::kernel!(
         #[inline]
         pub(super) fn put(t: Avx2, cell: &Cell<'_>, size: usize, output: &mut [u8], stride: usize) {
-            let [h, v] = cell.counts();
-            let key = (5 * h + v) as i32 + if cell.clamped.is_some() { 25 } else { 0 };
             if size == 4 {
-                by_key!(key, 4, put_cell(t, cell, output, stride));
+                by_key!(cell.key(), 4, put_cell(t, cell, output, stride));
             } else {
-                by_key!(key, 8, put_cell(t, cell, output, stride));
+                by_key!(cell.key(), 8, put_cell(t, cell, output, stride));
             }
         }
     );

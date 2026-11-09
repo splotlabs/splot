@@ -43,7 +43,6 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     if last_load > view.samples.len() || u32::try_from(last_load).is_err() {
         return false;
     }
-    let (origin, source_stride) = (origin as u32, view.stride as u32);
     #[cfg(target_arch = "x86_64")]
     if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
         let phases = [
@@ -53,7 +52,7 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
         avx2::window(
             t,
             view.samples,
-            [origin, source_stride],
+            [origin as u32, view.stride as u32],
             [w, h],
             phases,
             output,
@@ -102,7 +101,6 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
     if last_load > view.samples.len() || u32::try_from(last_load).is_err() {
         return false;
     }
-    let (origin, source_stride) = (origin as u32, view.stride as u32);
     #[cfg(target_arch = "x86_64")]
     if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
         let phases = [
@@ -112,7 +110,7 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
         avx2::block(
             t,
             view.samples,
-            ([origin, source_stride], [w, h]),
+            ([origin as u32, view.stride as u32], [w, h]),
             phases,
             output,
             stride,
