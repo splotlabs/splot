@@ -940,7 +940,7 @@ struct TipProjection {
 
 impl TipProjection {
     fn new(references: TipReferencePair) -> Self {
-        let scale = |offset| projection_scale(offset, references.ref_offset);
+        let scale = |offset| i64::from(clamped_tmvp_factor(offset, references.ref_offset));
         Self {
             references,
             scales: [
@@ -1631,7 +1631,8 @@ impl TemporalMvContext {
         let x8 = x8.min(self.field.width8.saturating_sub(1));
         let cell = self.projected_cell(y8, x8)?;
         let projected = if cell.valid {
-            scales.map(|scale| project_scaled(cell.mv(), scale))
+            let mv = cell.mv();
+            [project_scaled(mv, scales[0]), project_scaled(mv, scales[1])]
         } else {
             [Mv::ZERO; 2]
         };
@@ -2268,23 +2269,14 @@ fn project_no_constraint(v8: usize, delta: i32, max8: usize) -> Option<usize> {
 }
 
 fn project_mv(mv: Mv, numerator: i32, denominator: i32) -> Mv {
-    project_scaled(mv, projection_scale(numerator, denominator))
-}
-
-fn projection_scale(numerator: i32, denominator: i32) -> i64 {
-    let denominator = denominator.clamp(0, MAX_FRAME_DISTANCE) as usize;
-    let numerator = numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE);
-    i64::from(numerator) * i64::from(DIV_MULT[denominator])
+    project_scaled(mv, i64::from(clamped_tmvp_factor(numerator, denominator)))
 }
 
 fn project_scaled(mv: Mv, scale: i64) -> Mv {
     let bound = (1 << 16) - 1;
-    let project = |component: i32| {
-        round2_signed(i64::from(component) * scale, 14).clamp(-bound, bound) as i32
-    };
     Mv {
-        row: project(mv.row),
-        col: project(mv.col),
+        row: round2_signed(i64::from(mv.row) * scale, 14).clamp(-bound, bound) as i32,
+        col: round2_signed(i64::from(mv.col) * scale, 14).clamp(-bound, bound) as i32,
     }
 }
 

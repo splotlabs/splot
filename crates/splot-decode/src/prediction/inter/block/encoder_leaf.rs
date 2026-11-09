@@ -801,10 +801,6 @@ impl EncoderInterTile {
             &self.ref_frame_idx,
             &self.reference,
         )?;
-        let current_order_hint = self
-            .core
-            .display_order_hint()
-            .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
         let grid = super::tip::motion(
             &mut self.tip_scratch,
             records,
@@ -812,7 +808,6 @@ impl EncoderInterTile {
             placed,
             &frame,
             &temporal,
-            current_order_hint,
             &self.ref_frame_idx,
             &self.reference,
             ByteOffset::new(0),

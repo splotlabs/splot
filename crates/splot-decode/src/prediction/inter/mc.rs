@@ -18,7 +18,7 @@ use splot_recon::{
 };
 
 use super::Mv;
-use super::mv_scaling::{PlaneScaling, derive_plane_scaling};
+use super::mv_scaling::PlaneScaling;
 use super::reference::{
     ReferenceSamples, compound_last_row, subpel_last_reference_row, subpel_last_row,
     warp_plane_last_row,
@@ -846,22 +846,13 @@ pub(crate) fn plane_prediction<T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<(ReferencePlaneView<'_, T>, PlaneRect, SubpelPredictParams)> {
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
-    let reference_size = reference.info().coded_luma_size();
-    let frame_size = info.coded_luma_size();
-
-    let scaling = derive_plane_scaling(
-        plane_x as i32,
-        plane_y as i32,
-        mv.row,
-        mv.col,
+    let scaling = PlaneScaling::of_reference(
+        reference.info(),
+        info.coded_luma_size(),
         sub_x,
         sub_y,
-        reference_size.width() as i32,
-        reference_size.height() as i32,
-        frame_size.width() as i32,
-        frame_size.height() as i32,
     )
-    .with_reference_storage(reference.info().storage_luma_size(), sub_x, sub_y);
+    .with_mv(plane_x as i32, plane_y as i32, mv.row, mv.col, sub_x, sub_y);
 
     let params = SubpelPredictParams {
         interp,
@@ -899,21 +890,13 @@ fn predict_warp_plane<T: ReconSample>(
 
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = sink.info().bit_depth();
-    let reference_size = reference.info().coded_luma_size();
-    let frame_size = sink.info().coded_luma_size();
-    let scaling = derive_plane_scaling(
-        plane_x as i32,
-        plane_y as i32,
-        0,
-        0,
+    let scaling = PlaneScaling::of_reference(
+        reference.info(),
+        sink.info().coded_luma_size(),
         sub_x,
         sub_y,
-        reference_size.width() as i32,
-        reference_size.height() as i32,
-        frame_size.width() as i32,
-        frame_size.height() as i32,
     )
-    .with_reference_storage(reference.info().storage_luma_size(), sub_x, sub_y);
+    .with_mv(plane_x as i32, plane_y as i32, 0, 0, sub_x, sub_y);
     let last_row = warp_plane_last_row(
         warp_params,
         (plane_x, plane_y, block_w, block_h),
@@ -1766,21 +1749,13 @@ fn compound_ref_intermediate<T: ReconSample>(
 ) -> Result<PlaneScaling> {
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = info.bit_depth();
-    let reference_size = reference.info().coded_luma_size();
-    let frame_size = info.coded_luma_size();
-    let scaling = derive_plane_scaling(
-        plane_x as i32,
-        plane_y as i32,
-        mv.row,
-        mv.col,
+    let scaling = PlaneScaling::of_reference(
+        reference.info(),
+        info.coded_luma_size(),
         sub_x,
         sub_y,
-        reference_size.width() as i32,
-        reference_size.height() as i32,
-        frame_size.width() as i32,
-        frame_size.height() as i32,
     )
-    .with_reference_storage(reference.info().storage_luma_size(), sub_x, sub_y);
+    .with_mv(plane_x as i32, plane_y as i32, mv.row, mv.col, sub_x, sub_y);
     let last_row = warp_params.map_or_else(
         || compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
         |warp_params| {

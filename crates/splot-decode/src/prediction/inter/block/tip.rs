@@ -464,6 +464,7 @@ pub(super) struct TipFramePlan {
     enable_tip_refinemv: bool,
     optflow_allowed: bool,
     frame_size: splot_recon::PlaneSize,
+    current_order_hint: u32,
 }
 
 /// The § 7.13.5 settings both halves of one TIP block derive from.
@@ -612,6 +613,9 @@ impl TipFramePlan {
             enable_tip_refinemv,
             optflow_allowed,
             frame_size: info.storage_luma_size(),
+            current_order_hint: core
+                .display_order_hint()
+                .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?,
         })
     }
 
@@ -769,7 +773,6 @@ pub(super) fn motion<T: ReconSample>(
     placed: &PlacedInterBlock,
     frame: &TipFramePlan,
     temporal: &TemporalMvContext,
-    current_order_hint: u32,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
@@ -806,7 +809,7 @@ pub(super) fn motion<T: ReconSample>(
         temporal_records.push(plan.temporal_record(
             reference,
             ref_frame_idx,
-            current_order_hint,
+            frame.current_order_hint,
             unit,
             stored_mvs,
         ));
@@ -1317,9 +1320,6 @@ impl<T: ReconSample> TipOutputStages<T> {
             ref_frame_idx,
             reference,
         )?;
-        let current_order_hint = core
-            .display_order_hint()
-            .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
         for band_x in (0..width).step_by(self.band_w) {
             let cols = self.band_w.min(width - band_x);
             placed.luma_x = band_x;
@@ -1333,7 +1333,6 @@ impl<T: ReconSample> TipOutputStages<T> {
                 &placed,
                 &frame,
                 &self.temporal,
-                current_order_hint,
                 ref_frame_idx,
                 reference,
                 self.offset,

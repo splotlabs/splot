@@ -170,15 +170,11 @@ pub fn derive_optflow_mv_deltas_into<'a>(
             scratch.deltas.push(delta);
             return Ok(&scratch.deltas);
         }
-        for sums in unit_4x4_sums(weighted, difference) {
-            match solve_sums(unit_sums(sums, 16), distances) {
-                Ok(delta) => scratch.deltas.push(delta),
-                Err(error) => {
-                    scratch.deltas.clear();
-                    return Err(error);
-                }
-            }
-        }
+        push_unit_deltas(
+            &mut scratch.deltas,
+            unit_4x4_sums(weighted, difference),
+            distances,
+        )?;
         return Ok(&scratch.deltas);
     }
     if let (8, Ok(weighted), Ok(difference)) = (
@@ -187,15 +183,11 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         <&[i16; 256]>::try_from(&*difference),
     ) && width == 16
     {
-        for sums in unit_16x16_sums(weighted, difference) {
-            match solve_sums(sums, distances) {
-                Ok(delta) => scratch.deltas.push(delta),
-                Err(error) => {
-                    scratch.deltas.clear();
-                    return Err(error);
-                }
-            }
-        }
+        push_unit_deltas(
+            &mut scratch.deltas,
+            unit_16x16_sums(weighted, difference),
+            distances,
+        )?;
         return Ok(&scratch.deltas);
     }
     gradients(weighted, width, height, gradient_x, gradient_y);
@@ -215,6 +207,24 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         }
     }
     Ok(&scratch.deltas)
+}
+
+/// Solves four units' sums into `deltas`, which an error leaves empty.
+fn push_unit_deltas(
+    deltas: &mut Vec<[[i32; 2]; 2]>,
+    units: [[i32; 5]; 4],
+    distances: [i32; 2],
+) -> Result<()> {
+    for sums in units {
+        match solve_sums(sums, distances) {
+            Ok(delta) => deltas.push(delta),
+            Err(error) => {
+                deltas.clear();
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Fills the § 7.13.3.9 `weighted` and `difference` planes of two row-major
@@ -1018,25 +1028,26 @@ fn unit_8x8_sums(weighted: &[i16; 64], difference: &[i16; 64]) -> [i32; 5] {
     )))
 }
 
-/// The raw `[su2, sv2, suv, suw, svw]` sums of the four 4x4 units of an
-/// 8x8 predictor pair, as [`unit_8x8_sums`] derives its gradients, in the
-/// order of [`derive_optflow_mv_deltas_into`].
+/// [`solve_unit_sums`] of the four 4x4 units of an 8x8 predictor pair, as
+/// [`unit_8x8_sums`] derives its gradients, in the order of
+/// [`derive_optflow_mv_deltas_into`].
 fn unit_4x4_sums(weighted: &[i16; 64], difference: &[i16; 64]) -> [[i32; 5]; 4] {
     baseline_simd!(simd => {
-        let [top, bottom] = rows_8x8_sums(
+        let halves = rows_8x8_sums(
             simd,
             &plane_rows_8x8(simd, weighted),
             &plane_rows_8x8(simd, difference),
-        )
-        .map(|sums| {
-            sums.map(|lanes| {
+        );
+        let mut units = [[0; 5]; 4];
+        for (half, sums) in halves.iter().enumerate() {
+            for (sum, &lanes) in sums.iter().enumerate() {
                 let (first, second) = lanes.split();
                 let [a, b, c, d] = *(first + second);
-                [a + b, c + d]
-            })
-        });
-        let side = |half: [[i32; 2]; 5], side: usize| half.map(|sums| sums[side]);
-        [side(top, 0), side(top, 1), side(bottom, 0), side(bottom, 1)]
+                units[2 * half][sum] = a + b;
+                units[2 * half + 1][sum] = c + d;
+            }
+        }
+        units.map(|sums| unit_sums(sums, 16))
     })
 }
 
@@ -1345,15 +1356,7 @@ mod tests {
                         let (mut gradient_x, mut gradient_y) = ([0i16; 64], [0i16; 64]);
                         gradients(&weighted, 8, 8, &mut gradient_x, &mut gradient_y);
                         let want = [(0, 0), (4, 0), (0, 4), (4, 4)].map(|(x, y)| {
-                            let sums = solve_unit_sums::<4>(
-                                &gradient_x,
-                                &gradient_y,
-                                &difference,
-                                8,
-                                x,
-                                y,
-                            );
-                            [sums[0] - 16, sums[1] - 16, sums[2], sums[3], sums[4]]
+                            solve_unit_sums::<4>(&gradient_x, &gradient_y, &difference, 8, x, y)
                         });
                         assert_eq!(
                             unit_4x4_sums(&weighted, &difference),

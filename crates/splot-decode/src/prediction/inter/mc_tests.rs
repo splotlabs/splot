@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use super::*;
+use crate::prediction::inter::mv_scaling::derive_plane_scaling;
 use splot_recon::{
     DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane, PlaneSize,
     wedge_mask_plane_sample,

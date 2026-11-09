@@ -2250,6 +2250,7 @@ mod tests {
 
     use super::super::blend::blend_nonuniform_implicit_mask;
     use super::*;
+    use crate::prediction::inter::mv_scaling::derive_plane_scaling;
 
     #[test]
     fn subsampling_rounding_matches_round2_signed() {
