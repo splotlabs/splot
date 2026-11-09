@@ -678,7 +678,28 @@ mod neon {
             u8x16::splat(simd, h_phase),
         );
         let tables = TAPS.map(|pair| pair.map(|taps| u8x16::load_array(simd, taps)));
-        let part = |bytes: u8x16<S>, [left, right]: [u8x16<S>; 2]| {
+        if [h_phase, v_phase] == [0, 0] {
+            // Zero phases weigh only the left tap of the row above.
+            for row in 0..height {
+                let at = origin + (row.max(1) - 1) * stride;
+                let Some(line) = output.get_mut(row * width..(row + 1) * width) else {
+                    return;
+                };
+                let left = |at: usize, table: usize| {
+                    simd.swizzle_dyn_within_blocks_u8x16(load(simd, source, at), tables[table][0])
+                };
+                if let Some(slot) = line.first_chunk_mut::<16>() {
+                    left(at, usize::from(width == 24)).store_array(slot);
+                }
+                if width == 24
+                    && let Some(slot) = line.last_chunk_mut::<8>()
+                {
+                    *slot = left(at + 15, 2).bitcast::<u64x2<S>>()[0].to_le_bytes();
+                }
+            }
+            return;
+        }
+        let part =|bytes: u8x16<S>, [left, right]: [u8x16<S>; 2]| {
             let (l0, l1) = simd
                 .swizzle_dyn_within_blocks_u8x16(bytes, left)
                 .widening_mul(weights.0);
