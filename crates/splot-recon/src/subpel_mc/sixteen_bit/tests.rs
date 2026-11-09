@@ -49,9 +49,10 @@ fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     let stride = w + 3;
     let run = |neon: bool, sink: &mut Sink<'_>| {
         let mut stage = vec![0x5a5a_u16 as i16; len];
-        if neon {
-            assert!(super::predict(block, sink, &mut stage), "declined {label}");
-        } else {
+        // Full-pel blocks stay on the portable copy, which is faster.
+        let filtered = block.horizontal.is_some() || block.vertical.is_some();
+        if !neon || !super::predict(block, sink, &mut stage) {
+            assert!(!neon || !filtered, "declined {label}");
             portable::predict(block, sink, &mut stage);
         }
     };
@@ -232,16 +233,20 @@ fn neon_compound_matches_portable() {
                         let mut stage = vec![0x5a5a_u16 as i16; len];
                         let mut output = vec![0xa5a5_u16; stride * h];
                         let blocks = [&first, &second];
-                        if neon {
-                            assert!(super::compound(
+                        let filtered = blocks
+                            .iter()
+                            .any(|block| block.horizontal.is_some() || block.vertical.is_some());
+                        let taken = neon
+                            && super::compound(
                                 blocks,
                                 forward,
                                 max,
                                 &mut stage,
                                 &mut output,
-                                stride
-                            ));
-                        } else {
+                                stride,
+                            );
+                        assert_eq!(taken, neon && filtered && w * h <= 64);
+                        if !taken {
                             portable::compound_u16(
                                 blocks,
                                 forward,

@@ -38,6 +38,7 @@ pub(super) fn predict<T: ReconSample>(
     if let Some(token) = fearless_simd::Level::baseline().as_neon()
         && let Some(source) = T::u16_slice(block.source)
         && fits(block)
+        && (block.horizontal.is_some() || block.vertical.is_some())
     {
         neon::predict(token, &block.with_source(source), sink, stage);
         return true;
@@ -69,10 +70,10 @@ pub(super) fn compound(
     #[cfg(target_arch = "aarch64")]
     if let Some(token) = fearless_simd::Level::baseline().as_neon()
         && blocks.iter().all(|block| fits(block))
-        && (blocks[0].w * blocks[0].h <= 64
-            || blocks
-                .iter()
-                .all(|block| block.horizontal.is_none() && block.vertical.is_none()))
+        && blocks[0].w * blocks[0].h <= 64
+        && blocks
+            .iter()
+            .any(|block| block.horizontal.is_some() || block.vertical.is_some())
     {
         neon::compound(token, blocks, forward, max, stage, output, stride);
         return true;

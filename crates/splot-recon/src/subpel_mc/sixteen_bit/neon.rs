@@ -102,17 +102,6 @@ fearless_simd::kernel!(
         output: &mut [u16],
         stride: usize,
     ) {
-        if blocks
-            .iter()
-            .all(|block| block.horizontal.is_none() && block.vertical.is_none())
-        {
-            if blocks[0].w == 4 {
-                copy_compound::<4>(t, blocks, forward, max, output, stride);
-            } else {
-                copy_compound::<8>(t, blocks, forward, max, output, stride);
-            }
-            return;
-        }
         let w = blocks[0].w;
         let mut pred0 = [0i32; 64];
         let prep = &mut Sink::Prep {
@@ -586,39 +575,6 @@ fn filter_stage<const W: usize, const P: usize>(
             r = core::array::from_fn(|k| tap(k + 1));
         }
     }
-}
-
-/// The full-pel COMPOUND_AVERAGE of a cell, `Round2(f * a + (16 - f) * b, 4)`.
-#[inline(never)]
-#[target_feature(enable = "neon")]
-fn copy_compound<const W: usize>(
-    t: Neon,
-    blocks: [&Block<'_, u16>; 2],
-    forward: i32,
-    max: u16,
-    output: &mut [u16],
-    stride: usize,
-) {
-    let max = vdupq_n_u16(max);
-    let (fwd, back) = (forward as i16, (16 - forward) as i16);
-    copy::<W>(t, blocks[0], &mut |w, row, col, a| {
-        let b = group::<W>(t, blocks[1], row, col);
-        let values = if forward == 8 {
-            vrhaddq_u16(vreinterpretq_u16_s16(a), vreinterpretq_u16_s16(b))
-        } else {
-            let low = vmlal_n_s16(vmull_n_s16(vget_low_s16(a), fwd), vget_low_s16(b), back);
-            let high = vmlal_high_n_s16(vmull_high_n_s16(a, fwd), b, back);
-            vqrshrun_high_n_s32::<4>(vqrshrun_n_s32::<4>(low), high)
-        };
-        store_words(
-            t,
-            output,
-            w,
-            row * stride + col,
-            stride,
-            vminq_u16(values, max),
-        );
-    });
 }
 
 /// The COMPOUND_AVERAGE of the eight first predictors at `at` of `pred0`
