@@ -348,10 +348,8 @@ fn strided_8x8_delta<S: Simd>(
             pred0, pred1, stride, max_sample,
         ));
     }
-    solve_sums(
-        whole_8x8(rows_8x8_sums(simd, &weighted, &difference)),
-        distances,
-    )
+    let sums = whole_8x8(rows_8x8_sums(simd, &weighted, &difference));
+    solve_sums(sums, distances)
 }
 
 /// The error for the first strided 8x8 predictor sample above `max_sample`,
@@ -1086,10 +1084,8 @@ fn rows_8x8_sums<S: Simd>(
 #[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn whole_8x8<S: Simd>([top, bottom]: [[i32x8<S>; 5]; 2]) -> [i32; 5] {
-    unit_sums(
-        core::array::from_fn(|sum| (top[sum] + bottom[sum]).reduce_sum()),
-        64,
-    )
+    let sums = core::array::from_fn(|sum| (top[sum] + bottom[sum]).reduce_sum());
+    unit_sums(sums, 64)
 }
 
 /// Adds one lane group's `[u², v², uv, uw, vw]` products to `sums`, adjacent
