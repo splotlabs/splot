@@ -79,7 +79,6 @@ impl InterLumaTxTypeMap {
         Ok(())
     }
 
-    #[inline(never)]
     pub(super) fn update(
         &mut self,
         row: usize,
@@ -90,12 +89,6 @@ impl InterLumaTxTypeMap {
         let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
         let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
         let tx_type = u8::try_from(tx_type).map_err(|_| residual_geometry_error())?;
-        if tx_w4 <= TX_TYPE_MAP_UNIT_4X4 && tx_h4 <= TX_TYPE_MAP_UNIT_4X4 {
-            if let Some(index) = self.index(row, col) {
-                self.values[index] = tx_type;
-            }
-            return Ok(());
-        }
         for dy in (0..tx_h4).step_by(TX_TYPE_MAP_UNIT_4X4) {
             for dx in (0..tx_w4).step_by(TX_TYPE_MAP_UNIT_4X4) {
                 let map_row = row.checked_add(dy).ok_or_else(residual_geometry_error)?;
@@ -156,16 +149,6 @@ pub(crate) fn read_inter_residual(
     tile_offset: ByteOffset,
 ) -> Result<InterResidual> {
     let block_start = blocks.len();
-    let mut reads = InterResidualReads {
-        segment_lossless: current_segment_lossless(work_unit),
-        work_unit,
-        symbols,
-        coeff_ctx,
-        blocks,
-        arena,
-        policy: residual_tool_policy,
-        tile_offset,
-    };
     let result = (|| -> Result<()> {
         let (subsampling_x, subsampling_y) = chroma_subsampling(sequence.general.chroma_format_idc);
         let width_chunks = (n4w >> 4).max(1);
@@ -176,13 +159,8 @@ pub(crate) fn read_inter_residual(
         } else {
             frontier.b_size
         };
-        let luma_tx_size = inter_residual_tx_size(
-            reads.work_unit,
-            reads.symbols,
-            frontier.b_size,
-            lossless,
-            tile_offset,
-        )?;
+        let luma_tx_size =
+            inter_residual_tx_size(work_unit, symbols, frontier.b_size, lossless, tile_offset)?;
         let selectable_luma_tx = inter_luma_tx_records_are_selectable(
             residual_uses_selectable_tx_partitions(core),
             lossless,
@@ -190,8 +168,8 @@ pub(crate) fn read_inter_residual(
         scratch.luma_tx_records.clear();
         if selectable_luma_tx {
             derive_inter_luma_tx_records_for_block(
-                reads.work_unit,
-                reads.symbols,
+                work_unit,
+                symbols,
                 frontier,
                 (mi_rows, mi_cols),
                 0,
@@ -216,13 +194,21 @@ pub(crate) fn read_inter_residual(
                             continue;
                         }
                         read_inter_residual_luma_chunk(
-                            &mut reads,
+                            work_unit,
+                            symbols,
+                            coeff_ctx,
+                            blocks,
+                            arena,
                             &mut scratch.luma_tx_types,
                             luma_tx_records,
                             luma_tx_size,
                             frontier,
-                            (luma_chunk_x, luma_chunk_y),
-                            (n4w, n4h),
+                            luma_chunk_x,
+                            luma_chunk_y,
+                            n4w,
+                            n4h,
+                            residual_tool_policy,
+                            tile_offset,
                         )?;
                         let chroma_group = chroma_parse_group_start(
                             chunk_x,
@@ -233,17 +219,27 @@ pub(crate) fn read_inter_residual(
                             subsampling_y,
                             lossless,
                         );
-                        if let (true, Some(chroma_chunk)) = (frontier.has_chroma, chroma_group) {
+                        if let (true, Some((chroma_chunk_x, chroma_chunk_y))) =
+                            (frontier.has_chroma, chroma_group)
+                        {
                             read_inter_residual_chroma_group(
-                                &mut reads,
+                                work_unit,
+                                symbols,
+                                coeff_ctx,
+                                blocks,
+                                arena,
                                 &scratch.luma_tx_types,
                                 &mut scratch.chroma_reads,
                                 frontier,
                                 mi_size_chunk,
-                                (subsampling_x, subsampling_y),
-                                chroma_chunk,
+                                subsampling_x,
+                                subsampling_y,
+                                chroma_chunk_x,
+                                chroma_chunk_y,
                                 lossless,
                                 luma_tx_size_mode == InterResidualLumaTxSizeMode::Inter,
+                                residual_tool_policy,
+                                tile_offset,
                             )?;
                         }
                     }
@@ -254,23 +250,10 @@ pub(crate) fn read_inter_residual(
         Ok(())
     })();
     if let Err(error) = result {
-        reads.blocks.truncate(block_start);
+        blocks.truncate(block_start);
         return Err(error);
     }
-    Ok(InterResidual::new(block_start..reads.blocks.len()))
-}
-
-/// The tile state and segment losslessness every plane read of one inter
-/// residual shares.
-struct InterResidualReads<'a, 'b> {
-    work_unit: &'a mut DecodeTileWorkUnit,
-    symbols: &'a mut SymbolDecoder<'b>,
-    coeff_ctx: &'a mut TileCoeffContextState,
-    blocks: &'a mut Vec<InterResidualBlock>,
-    arena: &'a mut Vec<i32>,
-    policy: TransformToolResidualPolicy,
-    tile_offset: ByteOffset,
-    segment_lossless: Option<bool>,
+    Ok(InterResidual::new(block_start..blocks.len()))
 }
 
 /// Returns the chroma group's top-left chunk position when `(chunk_x, chunk_y)`
@@ -329,25 +312,43 @@ fn intra_frame_needs_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
             .is_some_and(|lossless| !lossless.lossless_array[0])
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_inter_residual_luma_chunk(
-    reads: &mut InterResidualReads<'_, '_>,
+    work_unit: &mut DecodeTileWorkUnit,
+    symbols: &mut SymbolDecoder<'_>,
+    coeff_ctx: &mut TileCoeffContextState,
+    blocks: &mut Vec<InterResidualBlock>,
+    arena: &mut Vec<i32>,
     luma_tx_types: &mut InterLumaTxTypeMap,
     luma_tx_records: Option<&[SelectableLumaTxRecord]>,
     tx_size: usize,
     frontier: &DecodeBlockFrontier,
-    (luma_chunk_x4, luma_chunk_y4): (usize, usize),
-    (block_n4w, block_n4h): (usize, usize),
+    luma_chunk_x4: usize,
+    luma_chunk_y4: usize,
+    block_n4w: usize,
+    block_n4h: usize,
+    residual_tool_policy: TransformToolResidualPolicy,
+    tile_offset: ByteOffset,
 ) -> Result<()> {
     let chunk_end_x4 = (frontier.c + block_n4w).min(luma_chunk_x4 + CHUNK_64_N4);
     let chunk_end_y4 = (frontier.r + block_n4h).min(luma_chunk_y4 + CHUNK_64_N4);
     if let Some(luma_tx_records) = luma_tx_records {
         return read_inter_residual_luma_records_for_chunk(
-            reads,
+            work_unit,
+            symbols,
+            coeff_ctx,
+            blocks,
+            arena,
             luma_tx_types,
             luma_tx_records,
-            (luma_chunk_x4, luma_chunk_y4),
-            (chunk_end_x4, chunk_end_y4),
-            (block_n4w, block_n4h),
+            luma_chunk_x4,
+            luma_chunk_y4,
+            chunk_end_x4,
+            chunk_end_y4,
+            block_n4w,
+            block_n4h,
+            residual_tool_policy,
+            tile_offset,
         );
     }
     let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
@@ -357,16 +358,24 @@ fn read_inter_residual_luma_chunk(
         let mut x4 = luma_chunk_x4;
         while x4 < chunk_end_x4 {
             let tx_fills_block = tx_w4 == block_n4w && tx_h4 == block_n4h;
-            let coeffs = reads.plane(
+            let coeffs = read_inter_residual_plane(
+                work_unit,
+                symbols,
+                coeff_ctx,
+                arena,
                 0,
                 tx_size,
-                (x4, y4),
+                x4 * MI_SIZE,
+                y4 * MI_SIZE,
                 tx_fills_block,
                 DCT_DCT,
-                (false, false),
+                false,
+                false,
+                residual_tool_policy,
+                tile_offset,
             )?;
             luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type())?;
-            push_inter_residual_block(reads.blocks, ReconPlaneId::Y, x4, y4, tx_size, coeffs)?;
+            push_inter_residual_block(blocks, ReconPlaneId::Y, x4, y4, tx_size, coeffs)?;
             x4 = x4.checked_add(tx_w4).ok_or_else(residual_geometry_error)?;
         }
         y4 = y4.checked_add(tx_h4).ok_or_else(residual_geometry_error)?;
@@ -374,13 +383,23 @@ fn read_inter_residual_luma_chunk(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_inter_residual_luma_records_for_chunk(
-    reads: &mut InterResidualReads<'_, '_>,
+    work_unit: &mut DecodeTileWorkUnit,
+    symbols: &mut SymbolDecoder<'_>,
+    coeff_ctx: &mut TileCoeffContextState,
+    blocks: &mut Vec<InterResidualBlock>,
+    arena: &mut Vec<i32>,
     luma_tx_types: &mut InterLumaTxTypeMap,
     luma_tx_records: &[SelectableLumaTxRecord],
-    (luma_chunk_x4, luma_chunk_y4): (usize, usize),
-    (chunk_end_x4, chunk_end_y4): (usize, usize),
-    (block_n4w, block_n4h): (usize, usize),
+    luma_chunk_x4: usize,
+    luma_chunk_y4: usize,
+    chunk_end_x4: usize,
+    chunk_end_y4: usize,
+    block_n4w: usize,
+    block_n4h: usize,
+    residual_tool_policy: TransformToolResidualPolicy,
+    tile_offset: ByteOffset,
 ) -> Result<()> {
     let mut decoded_any = false;
     for record in luma_tx_records.iter().copied().filter(|record| {
@@ -391,13 +410,21 @@ fn read_inter_residual_luma_records_for_chunk(
     }) {
         decoded_any = true;
         let tx_fills_block = record.cols == block_n4w && record.rows == block_n4h;
-        let coeffs = reads.plane(
+        let coeffs = read_inter_residual_plane(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            arena,
             0,
             record.tx_size,
-            (record.col, record.row),
+            record.col * MI_SIZE,
+            record.row * MI_SIZE,
             tx_fills_block,
             DCT_DCT,
-            (false, false),
+            false,
+            false,
+            residual_tool_policy,
+            tile_offset,
         )?;
         luma_tx_types.update(
             record.row,
@@ -406,7 +433,7 @@ fn read_inter_residual_luma_records_for_chunk(
             coeffs.plane_tx_type(),
         )?;
         push_inter_residual_block(
-            reads.blocks,
+            blocks,
             ReconPlaneId::Y,
             record.col,
             record.row,
@@ -423,15 +450,23 @@ fn read_inter_residual_luma_records_for_chunk(
 
 #[allow(clippy::too_many_arguments)]
 fn read_inter_residual_chroma_group(
-    reads: &mut InterResidualReads<'_, '_>,
+    work_unit: &mut DecodeTileWorkUnit,
+    symbols: &mut SymbolDecoder<'_>,
+    coeff_ctx: &mut TileCoeffContextState,
+    blocks: &mut Vec<InterResidualBlock>,
+    arena: &mut Vec<i32>,
     luma_tx_types: &InterLumaTxTypeMap,
     chroma_reads: &mut Vec<InterChromaURead>,
     frontier: &DecodeBlockFrontier,
     mi_size_chunk: BlockSize,
-    (subsampling_x, subsampling_y): (bool, bool),
-    (chunk_x, chunk_y): (usize, usize),
+    subsampling_x: bool,
+    subsampling_y: bool,
+    chunk_x: usize,
+    chunk_y: usize,
     lossless: bool,
     is_inter: bool,
+    residual_tool_policy: TransformToolResidualPolicy,
+    tile_offset: ByteOffset,
 ) -> Result<()> {
     let group = InterChromaGroup::new(
         frontier,
@@ -447,6 +482,8 @@ fn read_inter_residual_chroma_group(
         lossless && is_inter && (frontier.r != chroma_ref.row() || frontier.c != chroma_ref.col());
     chroma_reads.clear();
     for (x4, y4) in group.units() {
+        let start_x = (base_x4 + x4) * MI_SIZE;
+        let start_y = (base_y4 + y4) * MI_SIZE;
         let chroma_inter_tx_type = luma_tx_types.chroma_inter_tx_type(
             frontier.r,
             frontier.c,
@@ -461,16 +498,24 @@ fn read_inter_residual_chroma_group(
             tx_fills_block: group.tx_fills_block,
             chroma_inter_tx_type,
         };
-        let u = reads.plane(
+        let u = read_inter_residual_plane(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            arena,
             1,
             tx_size,
-            (base_x4 + x4, base_y4 + y4),
+            start_x,
+            start_y,
             unit.tx_fills_block,
             unit.chroma_inter_tx_type,
-            (false, cctx_allowed),
+            false,
+            cctx_allowed,
+            residual_tool_policy,
+            tile_offset,
         )?;
         let block_index = push_inter_residual_block(
-            reads.blocks,
+            blocks,
             ReconPlaneId::U,
             base_x4 + x4,
             base_y4 + y4,
@@ -484,24 +529,39 @@ fn read_inter_residual_chroma_group(
     }
 
     for read in chroma_reads.iter().copied() {
-        let (x4, y4) = (base_x4 + read.unit.x4, base_y4 + read.unit.y4);
-        let u = reads
-            .blocks
+        let start_x = (base_x4 + read.unit.x4) * MI_SIZE;
+        let start_y = (base_y4 + read.unit.y4) * MI_SIZE;
+        let u = blocks
             .get(read.block_index)
             .ok_or_else(residual_geometry_error)?;
         let u_nonzero = u.coeffs.eob != 0;
         let uses_cctx = u.coeffs.cctx_type.unwrap_or(0) != 0;
-        let v = reads.plane(
+        let v = read_inter_residual_plane(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            arena,
             2,
             tx_size,
-            (x4, y4),
+            start_x,
+            start_y,
             read.unit.tx_fills_block,
             read.unit.chroma_inter_tx_type,
-            (u_nonzero, cctx_allowed),
+            u_nonzero,
+            cctx_allowed,
+            residual_tool_policy,
+            tile_offset,
         )?;
-        let v_index = push_inter_residual_block(reads.blocks, ReconPlaneId::V, x4, y4, tx_size, v)?;
+        let v_index = push_inter_residual_block(
+            blocks,
+            ReconPlaneId::V,
+            base_x4 + read.unit.x4,
+            base_y4 + read.unit.y4,
+            tx_size,
+            v,
+        )?;
         if uses_cctx {
-            record_inter_residual_chroma_pair(reads.blocks, read.block_index, v_index)?;
+            record_inter_residual_chroma_pair(blocks, read.block_index, v_index)?;
         }
     }
     Ok(())
@@ -721,45 +781,48 @@ fn residual_allocation_error() -> crate::error::DecodeError {
     inter_allocation!("inter residual transform-block list")
 }
 
-impl InterResidualReads<'_, '_> {
-    /// Reads the coefficients of the `plane` transform block of `tx_size`
-    /// at 4x4 position `(x4, y4)`, with the V `all_zero` context of a
-    /// nonzero U block and whether CCTX is allowed in `(chroma_eob_ctx,
-    /// cctx_allowed)`.
-    fn plane(
-        &mut self,
-        plane: usize,
-        tx_size: usize,
-        (x4, y4): (usize, usize),
-        tx_fills_block: bool,
-        chroma_inter_tx_type: usize,
-        (chroma_eob_ctx, cctx_allowed): (bool, bool),
-    ) -> Result<LumaCoeffBlock> {
-        decode_general_intra_plane_coeffs(
-            self.work_unit,
-            self.symbols,
-            self.coeff_ctx,
-            self.arena,
-            &PlaneCoeffBlock {
-                plane,
-                tx_size,
-                x: x4 * MI_SIZE,
-                y: y4 * MI_SIZE,
-                tx_fills_block,
-                eob_u_nonzero: chroma_eob_ctx,
-                uv_mode: INTER_UV_MODE_DC,
-                angle_delta_uv: 0,
-                chroma_inter_tx_type,
-                is_inter: true,
-                fsc_mode: false,
-                txb_skip_fsc_mode: false,
-                cctx_allowed,
-                policy: self.policy,
-                segment_lossless: self.segment_lossless,
-            },
-        )
-        .map_err(|error| residual_plane_read_error(&error, self.tile_offset))
-    }
+#[allow(clippy::too_many_arguments)]
+fn read_inter_residual_plane(
+    work_unit: &mut DecodeTileWorkUnit,
+    symbols: &mut SymbolDecoder<'_>,
+    coeff_ctx: &mut TileCoeffContextState,
+    arena: &mut Vec<i32>,
+    plane: usize,
+    tx_size: usize,
+    start_x: usize,
+    start_y: usize,
+    tx_fills_block: bool,
+    chroma_inter_tx_type: usize,
+    chroma_eob_ctx: bool,
+    cctx_allowed: bool,
+    residual_tool_policy: TransformToolResidualPolicy,
+    tile_offset: ByteOffset,
+) -> Result<LumaCoeffBlock> {
+    let segment_lossless = current_segment_lossless(work_unit);
+    decode_general_intra_plane_coeffs(
+        work_unit,
+        symbols,
+        coeff_ctx,
+        arena,
+        &PlaneCoeffBlock {
+            plane,
+            tx_size,
+            x: start_x,
+            y: start_y,
+            tx_fills_block,
+            eob_u_nonzero: chroma_eob_ctx,
+            uv_mode: INTER_UV_MODE_DC,
+            angle_delta_uv: 0,
+            chroma_inter_tx_type,
+            is_inter: true,
+            fsc_mode: false,
+            txb_skip_fsc_mode: false,
+            cctx_allowed,
+            policy: residual_tool_policy,
+            segment_lossless,
+        },
+    )
+    .map_err(|error| residual_plane_read_error(&error, tile_offset))
 }
 
 pub(crate) fn max_tx_size(block_size: usize) -> Result<usize> {
