@@ -233,11 +233,43 @@ pub(crate) fn secondary_inverse_transform_prefix(
 /// returned whole-row prefix of `dequant`.
 pub(crate) fn secondary_inverse_transform_quant(
     quant: &[i32],
-    (dc_quant, ac_quant, dq_denom): (u32, u32, u32),
+    quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
     dequant: &mut [i32],
 ) -> Result<usize> {
-    let (scan, bound) = validated(params, dequant.len(), quant.len())?;
+    let coefs = dequantized_inputs(quant, quantizers, params, dequant.len())?;
+    Ok(transform_into(&coefs, params, dequant, 0))
+}
+
+/// [`secondary_inverse_transform_quant`] of a block at least 16 wide into the
+/// first 8 columns of its rows, row `r` at `rows[8 * r..]`: the output rows
+/// as the 8-wide transform writes them. Returns the written length.
+pub(crate) fn secondary_inverse_transform_quant_rows8(
+    quant: &[i32],
+    quantizers: (u32, u32, u32),
+    params: &SecondaryInverseTransform,
+    rows: &mut [i32; 64],
+) -> Result<usize> {
+    if params.w < 16 {
+        return Err(ReconError::SecondaryTransformInvalidShape {
+            w: params.w,
+            h: params.h,
+        });
+    }
+    let coefs = dequantized_inputs(quant, quantizers, params, params.w * params.h)?;
+    let narrow = SecondaryInverseTransform { w: 8, ..*params };
+    Ok(transform_into(&coefs, &narrow, rows, 0))
+}
+
+/// The dequantized inputs of [`secondary_inverse_transform_quant`] into a
+/// `len`-sample `Dequant`.
+fn dequantized_inputs(
+    quant: &[i32],
+    (dc_quant, ac_quant, dq_denom): (u32, u32, u32),
+    params: &SecondaryInverseTransform,
+    len: usize,
+) -> Result<[i32; IST_8X8_HEIGHT]> {
+    let (scan, bound) = validated(params, len, quant.len())?;
     let mut coefs = [0i32; IST_8X8_HEIGHT];
     for (slot, &pos) in coefs[..params.n].iter_mut().zip(scan) {
         *slot = quant.get(usize::from(pos)).copied().unwrap_or(0);
@@ -259,7 +291,7 @@ pub(crate) fn secondary_inverse_transform_quant(
             *slot = crate::dequant_coefficient(*slot, q2, dq_denom, params.bit_depth);
         }
     }
-    Ok(transform_into(&coefs, params, dequant, 0))
+    Ok(coefs)
 }
 
 /// The checked shape, parameters and buffer of `params` with the primary

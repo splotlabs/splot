@@ -29,6 +29,10 @@ use splot_tables::tables::transform_1d::{
 use crate::dequant_process::{dequant_coefficient, dequant_lanes};
 use crate::inverse_transform::InverseTransform1dType;
 use crate::inverse_transform_2d::InverseTransform2dDim;
+use crate::secondary_transform::{
+    SecondaryInverseTransform, secondary_inverse_transform_quant,
+    secondary_inverse_transform_quant_rows8,
+};
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
@@ -464,11 +468,7 @@ impl InverseTransformAdd8 {
         scratch: &mut [i32; 32 * 32],
     ) -> bool {
         let (w, h) = (self.w(), self.h());
-        let fits = (h - 1)
-            .checked_mul(stride)
-            .and_then(|span| span.checked_add(w))
-            .is_some_and(|span| stride >= w && span <= dst.len());
-        if !fits || coeffs.len() > w * h {
+        if !self.fits(dst, stride) || coeffs.len() > w * h {
             return false;
         }
         #[cfg(target_arch = "x86_64")]
@@ -480,6 +480,7 @@ impl InverseTransformAdd8 {
                     &self,
                     dequant,
                     coeffs,
+                    false,
                     avx2::Sink::Add { dst, stride },
                     scratch,
                 );
@@ -497,6 +498,48 @@ impl InverseTransformAdd8 {
             },
             scratch,
         )
+    }
+
+    /// Adds the transform of the § 7.15.3 secondary inverse transform of
+    /// `quant`, under the flat § 7.14.4 dequantization by the `(dc_quant,
+    /// ac_quant, dq_denom)` `quantizers`, to the 8-bit block at the start of
+    /// `dst` as [`Self::add`] does, with the block's `Dequant` in `dequant`.
+    /// A block at least 16 wide keeps only the 8 columns the secondary
+    /// transform writes and stages them straight into the row pass.
+    ///
+    /// # Errors
+    /// Returns the [`secondary_inverse_transform`](crate::secondary_inverse_transform)
+    /// errors for invalid `secondary` parameters or a `dequant` that is not
+    /// the block.
+    pub fn add_secondary(
+        self,
+        (quantizers, secondary): ((u32, u32, u32), &SecondaryInverseTransform),
+        quant: &[i32],
+        dequant: &mut [i32],
+        (dst, stride): (&mut [u8], usize),
+        scratch: &mut [i32; 32 * 32],
+    ) -> crate::Result<bool> {
+        #[cfg(target_arch = "x86_64")]
+        if self.w_log2 >= 4
+            && self.fits(dst, stride)
+            && let Some(token) = Level::baseline().as_avx2()
+            && let Some(rows) = dequant.first_chunk_mut::<64>()
+        {
+            let len = secondary_inverse_transform_quant_rows8(quant, quantizers, secondary, rows)?;
+            let sink = avx2::Sink::Add { dst, stride };
+            avx2::transform(token, &self, None, &rows[..len], true, sink, scratch);
+            return Ok(true);
+        }
+        let coded = secondary_inverse_transform_quant(quant, quantizers, secondary, dequant)?;
+        Ok(self.add(&dequant[..coded], None, dst, stride, scratch))
+    }
+
+    /// Whether a `w x h` block with rows `stride` apart fits `dst`.
+    fn fits(&self, dst: &[u8], stride: usize) -> bool {
+        (self.h() - 1)
+            .checked_mul(stride)
+            .and_then(|span| span.checked_add(self.w()))
+            .is_some_and(|span| stride >= self.w() && span <= dst.len())
     }
 
     const fn transform8(self, dequant: Option<FlatDequant>) -> Transform8 {
@@ -565,7 +608,7 @@ pub(crate) fn inverse_transform_2d_8bit(
             return false;
         };
         let sink = avx2::Sink::Residual(residual);
-        avx2::transform(token, &shape, t.dequant, dequant, sink, scratch);
+        avx2::transform(token, &shape, t.dequant, dequant, false, sink, scratch);
         return true;
     }
     run(t, dequant, residual, scratch)

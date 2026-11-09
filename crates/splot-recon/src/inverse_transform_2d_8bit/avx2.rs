@@ -401,8 +401,7 @@ impl<'a, const DQ: bool, const RS: bool> Input<'a, DQ, RS> {
             }
         }
         if RS {
-            let scaled = _mm256_mullo_epi32(v, _mm256_set1_epi32(2896));
-            v = _mm256_srai_epi32::<12>(_mm256_add_epi32(scaled, _mm256_set1_epi32(1 << 11)));
+            v = rescale(v);
         }
         v
     }
@@ -424,6 +423,14 @@ impl<'a, const DQ: bool, const RS: bool> Input<'a, DQ, RS> {
             store8(t, out, 0, packed);
         }
     }
+}
+
+/// The `Round2(x * 2896, 12)` row input rescale.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn rescale(v: __m256i) -> __m256i {
+    let scaled = _mm256_mullo_epi32(v, _mm256_set1_epi32(2896));
+    _mm256_srai_epi32::<12>(_mm256_add_epi32(scaled, _mm256_set1_epi32(1 << 11)))
 }
 
 #[inline]
@@ -1687,12 +1694,15 @@ fearless_simd::kernel!(
 fearless_simd::kernel!(
     /// Runs `shape` over `coeffs` (dequantized by `dequant` as they load, or
     /// already dequantized) into `sink`, with the 32x32 `scratch` holding the
-    /// column pairs.
+    /// column pairs. With `rows8`, `shape` is 16 or 32 wide and `coeffs`
+    /// holds only the first 8 columns of its coded rows, row `r` at
+    /// `coeffs[8 * r..]`, dequantized.
     pub(super) fn transform(
         t: Avx2,
         shape: &InverseTransformAdd8,
         dequant: Option<FlatDequant>,
         coeffs: &[i32],
+        rows8: bool,
         sink: Sink<'_>,
         scratch: &mut [i32; 32 * 32],
     ) {
@@ -1723,20 +1733,25 @@ fearless_simd::kernel!(
             bound: 0,
         };
         let dq = dequant.as_ref().unwrap_or(&none);
-        let coded = (coeffs.len() + w - 1) >> shape.w_log2;
         let Some((pairs, staged)) = scratch.split_first_chunk_mut::<{ 16 * 32 }>() else {
             return;
         };
-        let count = coded * w;
         let mask = if w <= 8 {
             rows_direct(t, shape, (coeffs, dq, dequant.is_some()), pairs)
         } else {
-            match (dequant.is_some(), shape.rescale) {
-                (true, false) => stage::<true, false>(t, coeffs, dq, count, staged),
-                (true, true) => stage::<true, true>(t, coeffs, dq, count, staged),
-                (false, false) => stage::<false, false>(t, coeffs, dq, count, staged),
-                (false, true) => stage::<false, true>(t, coeffs, dq, count, staged),
-            }
+            let coded = if rows8 {
+                stage_rows8(t, shape, coeffs, staged)
+            } else {
+                let coded = (coeffs.len() + w - 1) >> shape.w_log2;
+                let count = coded * w;
+                match (dequant.is_some(), shape.rescale) {
+                    (true, false) => stage::<true, false>(t, coeffs, dq, count, staged),
+                    (true, true) => stage::<true, true>(t, coeffs, dq, count, staged),
+                    (false, false) => stage::<false, false>(t, coeffs, dq, count, staged),
+                    (false, true) => stage::<false, true>(t, coeffs, dq, count, staged),
+                }
+                coded
+            };
             rows(t, shape, staged, coded, pairs)
         };
         if mask == 0 {
@@ -1761,3 +1776,30 @@ fearless_simd::kernel!(
         cols::<RESIDUAL>(t, shape, pairs, mask, tile, residual);
     }
 );
+
+/// Stages the 8-column `rows8` of a 16- or 32-wide `shape` (see
+/// [`transform`]) as its row inputs, zero past column 8, and returns the
+/// coded row count.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn stage_rows8(t: Avx2, shape: &InverseTransformAdd8, rows8: &[i32], staged: &mut [i32]) -> usize {
+    let words = shape.w() / 2;
+    let coded = (rows8.len() / 8).min(shape.h());
+    for (r, row) in rows8.as_chunks::<8>().0.iter().take(coded).enumerate() {
+        let mut v = load8(t, row, 0);
+        if shape.rescale {
+            v = rescale(v);
+        }
+        let packed = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(v, v));
+        store8(
+            t,
+            staged,
+            r * words,
+            _mm256_zextsi128_si256(_mm256_castsi256_si128(packed)),
+        );
+        if words > 8 {
+            store8(t, staged, r * words + 8, _mm256_setzero_si256());
+        }
+    }
+    coded
+}

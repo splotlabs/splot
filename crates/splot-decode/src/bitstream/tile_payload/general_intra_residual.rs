@@ -253,14 +253,15 @@ fn current_quantizer_deltas() -> QuantizerDeltas {
     FRAME_QUANTIZER_DELTAS.with(core::cell::Cell::get)
 }
 
-fn resolve_block_qm(
+/// The § 7.14.4 `segLvl` of a `tw x th` block of `plane_id` and its plane
+/// index, `None` when the block takes the flat dequantization (`useQm == 0`).
+#[inline]
+fn block_qm_level(
     plane_id: PlaneId,
     plane_tx_type: usize,
     tw: usize,
     th: usize,
-    log2_width: u32,
-    log2_height: u32,
-) -> Option<QmDequant> {
+) -> Option<(usize, usize)> {
     let levels = FRAME_QM.with(core::cell::Cell::get)?;
     if plane_tx_type >= IDTX {
         return None;
@@ -279,9 +280,18 @@ fn resolve_block_qm(
             .get(segment_id)
             .map_or(NUM_CUSTOM_QMS as u8, |level| level[plane_idx])
     });
-    if seg_level >= NUM_CUSTOM_QMS {
-        return None;
-    }
+    (seg_level < NUM_CUSTOM_QMS).then_some((seg_level, plane_idx))
+}
+
+fn resolve_block_qm(
+    plane_id: PlaneId,
+    plane_tx_type: usize,
+    tw: usize,
+    th: usize,
+    log2_width: u32,
+    log2_height: u32,
+) -> Option<QmDequant> {
+    let (seg_level, plane_idx) = block_qm_level(plane_id, plane_tx_type, tw, th)?;
     let tx_sz = tx_size_index(log2_width, log2_height).ok()?;
     let qm_offset = usize::try_from(*QM_OFFSET.get(tx_sz)?).ok()?;
     let transform = match tw.cmp(&th) {

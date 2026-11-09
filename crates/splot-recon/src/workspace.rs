@@ -810,15 +810,28 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             && let Some(samples) = T::u8_slice_mut(&mut *target.samples)
         {
             let magnitude = residual.unsigned_abs().min(255) as u8;
-            for row in 0..target.rect.height() {
-                let start = base + row * stride;
-                if let Some(row) = samples.get_mut(start..start + width) {
-                    for sample in row {
-                        *sample = if residual < 0 {
-                            sample.saturating_sub(magnitude)
-                        } else {
-                            sample.saturating_add(magnitude)
-                        };
+            let (plus, minus) = if residual < 0 {
+                (0, magnitude)
+            } else {
+                (magnitude, 0)
+            };
+            let add = |row: &mut [u8]| {
+                for sample in row {
+                    *sample = sample.saturating_add(plus).saturating_sub(minus);
+                }
+            };
+            let height = target.rect.height();
+            match width {
+                4 => add_constant_rows::<4>(samples, base, stride, height, add),
+                8 => add_constant_rows::<8>(samples, base, stride, height, add),
+                16 => add_constant_rows::<16>(samples, base, stride, height, add),
+                32 => add_constant_rows::<32>(samples, base, stride, height, add),
+                _ => {
+                    for row in 0..height {
+                        let start = base + row * stride;
+                        if let Some(row) = samples.get_mut(start..start + width) {
+                            add(row);
+                        }
                     }
                 }
             }
@@ -2414,6 +2427,26 @@ fn required_row_strided_samples(rect: PlaneRect, row_stride_samples: usize) -> R
         .ok_or(ReconError::ArithmeticOverflow {
             context: "current-frame workspace source sample span",
         })
+}
+
+/// Runs `add` over `N` samples of each of `height` rows `stride` apart from
+/// `base`.
+#[inline]
+fn add_constant_rows<const N: usize>(
+    samples: &mut [u8],
+    base: usize,
+    stride: usize,
+    height: usize,
+    add: impl Fn(&mut [u8]),
+) {
+    for row in 0..height {
+        if let Some(row) = samples
+            .get_mut(base + row * stride..)
+            .and_then(<[u8]>::first_chunk_mut::<N>)
+        {
+            add(row);
+        }
+    }
 }
 
 #[cfg(test)]

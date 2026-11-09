@@ -16,8 +16,9 @@ use super::super::coeff_loop::max_level::CoeffTransformClass;
 use super::{
     ADST_ADST, CoeffBlock, D67_PRED, D157_PRED, DCT_DCT, GeneralIntraResidualError, H_PRED,
     IST_4X4_HEIGHT, IST_8X8_HEIGHT, IST_8X8_HEIGHT_RED, LumaTransformTypeContext, SMOOTH_H_PRED,
-    current_quantizers, intra_secondary_transform_kernel, intra_secondary_transform_mode,
-    invalid_reconstruction_state, invalid_reconstruction_state_error, resolve_block_qm,
+    block_qm_level, current_quantizers, intra_secondary_transform_kernel,
+    intra_secondary_transform_mode, invalid_reconstruction_state,
+    invalid_reconstruction_state_error, resolve_block_qm,
 };
 
 pub(super) struct ReconstructBlockSetup {
@@ -200,6 +201,13 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
     if bit_depth != workspace.info().bit_depth() {
         return Ok(false);
     }
+    let adjusted = block_size.width().min(32) * block_size.height().min(32);
+    if block.dense_len() != adjusted {
+        return Err(GeneralIntraResidualError::QuantLength {
+            expected: adjusted,
+            actual: block.dense_len(),
+        });
+    }
     let fused = fused_intra_setup(
         block,
         plane_id,
@@ -209,7 +217,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
         luma_context,
         dpcm,
         bit_depth,
-    )?;
+    );
     let general = || {
         intra_residual_setup(
             block,
@@ -313,7 +321,7 @@ fn fused_intra_setup(
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
-) -> Result<Option<(InverseTransformAdd8, FlatDequant)>, GeneralIntraResidualError> {
+) -> Option<(InverseTransformAdd8, FlatDequant)> {
     let (plane_id, dpcm) = match luma_context {
         Some(luma_context) => (PlaneId::Y, luma_context.dpcm),
         None => (plane_id, dpcm),
@@ -331,8 +339,8 @@ fn fused_intra_setup(
 }
 
 /// The fused 8-bit transform and add of a block without a secondary
-/// transform, with its flat dequantization, after the length checks of
-/// [`reconstruct_block_setup`]; `None` sends the block down the general path.
+/// transform, with its flat dequantization; `None` sends the block down the
+/// general path, which also reports a block of the wrong length.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn fused_residual_setup(
@@ -344,17 +352,15 @@ fn fused_residual_setup(
     use_ddt: bool,
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
-) -> Result<Option<(InverseTransformAdd8, FlatDequant)>, GeneralIntraResidualError> {
+) -> Option<(InverseTransformAdd8, FlatDequant)> {
     if bit_depth != BitDepth::Eight || block.lossless || dpcm.is_some() || has_secondary(block) {
-        return Ok(None);
+        return None;
     }
-    let Some(fused) = fused_transform(block, block_size, plane_id, use_ddt)? else {
-        return Ok(None);
-    };
+    let fused = fused_transform(block, block_size, plane_id, use_ddt)?;
     let plane_tx_type = block.plane_tx_type();
     let (dc_quant, ac_quant) = current_quantizers(plane_id, qindex, bit_depth);
     let dq_denom = dq_denom(block_size.sample_count(), use_tcq, plane_tx_type);
-    Ok(FlatDequant::new(dc_quant, ac_quant, dq_denom).map(|flat| (fused, flat)))
+    FlatDequant::new(dc_quant, ac_quant, dq_denom).map(|flat| (fused, flat))
 }
 
 /// Whether `block` codes a secondary transform.
@@ -381,7 +387,7 @@ fn add_secondary_fused(
     if block.lossless || luma_context.is_some_and(|context| context.dpcm.is_some()) {
         return Ok(false);
     }
-    let Some(fused) = fused_transform(block, block_size, plane_id, use_ddt)? else {
+    let Some(fused) = fused_transform(block, block_size, plane_id, use_ddt) else {
         return Ok(false);
     };
     let (log2_width, log2_height) = (
@@ -400,63 +406,34 @@ fn add_secondary_fused(
     };
     let (dc_quant, ac_quant) = current_quantizers(plane_id, qindex, bit_depth);
     let samples = block_size.sample_count();
-    let params = DequantBlockParams {
-        dc_quant,
-        ac_quant,
-        tx_width: block_size.width(),
-        tx_height: block_size.height(),
-        dq_denom: dq_denom(samples, use_tcq, block.plane_tx_type()),
-        bit_depth,
-        qm: None,
-    };
-    let dequant = &mut scratch.dequant[..samples];
-    let coded = dequantize_with_secondary(&params, block.quant, Some(&secondary), dequant)
-        .map_err(reconstruct_error)?;
-    Ok(fused.add(
-        &dequant[..coded],
-        None,
-        dst,
-        stride,
-        &mut scratch.dequant_pair,
-    ))
+    let dq_denom = dq_denom(samples, use_tcq, block.plane_tx_type());
+    fused
+        .add_secondary(
+            ((dc_quant, ac_quant, dq_denom), &secondary),
+            block.quant,
+            &mut scratch.dequant[..samples],
+            (dst, stride),
+            &mut scratch.dequant_pair,
+        )
+        .map_err(reconstruct_error)
 }
 
-/// The fused 8-bit transform of a block of `plane_id`, after the length
-/// checks of [`reconstruct_block_setup`]; `None` for a shape it does not
-/// cover or a block weighted by a quantization matrix.
+/// The fused 8-bit transform of a block of `plane_id`; `None` for a shape
+/// it does not cover, a block of the wrong length or a block weighted by a
+/// quantization matrix.
 #[inline]
 fn fused_transform(
     block: CoeffBlock<'_>,
     block_size: IntraRectBlockSize,
     plane_id: PlaneId,
     use_ddt: bool,
-) -> Result<Option<InverseTransformAdd8>, GeneralIntraResidualError> {
-    let (log2_width, log2_height) = (
-        u32::from(block_size.log2_width()),
-        u32::from(block_size.log2_height()),
-    );
+) -> Option<InverseTransformAdd8> {
     let plane_tx_type = block.plane_tx_type();
-    let Some(fused) = InverseTransformAdd8::new(plane_tx_type, log2_width, log2_height, use_ddt)
-    else {
-        return Ok(None);
-    };
-    let (w, h) = (1usize << log2_width, 1usize << log2_height);
-    if block_size.sample_count() != w * h {
-        return Err(GeneralIntraResidualError::PredictionLength {
-            expected: w * h,
-            actual: block_size.sample_count(),
-        });
-    }
-    if block.dense_len() != w * h {
-        return Err(GeneralIntraResidualError::QuantLength {
-            expected: w * h,
-            actual: block.dense_len(),
-        });
-    }
-    if resolve_block_qm(plane_id, plane_tx_type, w, h, log2_width, log2_height).is_some() {
-        return Ok(None);
-    }
-    Ok(Some(fused))
+    let (log2_w, log2_h) = (block_size.log2_width(), block_size.log2_height());
+    let fused = InverseTransformAdd8::new(plane_tx_type, log2_w.into(), log2_h.into(), use_ddt)?;
+    let (w, h) = (block_size.width(), block_size.height());
+    let flat = block_qm_level(plane_id, plane_tx_type, w, h).is_none();
+    (block.dense_len() == w * h && flat).then_some(fused)
 }
 
 /// The § 7.14.4 `dq_denom` of a block of `pels` samples.
@@ -491,7 +468,7 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
         luma_context,
         dpcm,
         bit_depth,
-    )?;
+    );
     let general = || {
         intra_residual_setup(
             block,
@@ -636,7 +613,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
         use_ddt,
         None,
         bit_depth,
-    )?;
+    );
     if let Some((fused, flat)) = fused {
         if let Some(residual) = fused.flat_residual(block.quant, Some(flat)) {
             sink.add_constant_residual_rect_block(plane_id, x, y, block_size, residual)?;
