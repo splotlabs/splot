@@ -1863,7 +1863,8 @@ impl ParseProgress {
 ///
 /// The scheduled reconstruction is built from this alone, and it is promoted
 /// while the § 8.2 pass still runs, so this must be called before the walk is
-/// promoted -- not as the pass's first act, which would race it.
+/// promoted -- not as the pass's first act, which would race it. The raster
+/// numbering needs every tile to start on a superblock.
 pub(crate) fn publish_tile_geometry(
     tiles: &[DecodeTileWorkUnit],
     params: &TileWalkParams,
@@ -1889,7 +1890,6 @@ pub(crate) fn publish_tile_geometry(
         for tile in tiles {
             let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
             let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
-            // The raster numbering needs every tile to start on a superblock.
             if mi_rows.start % params.sb_h4 != 0 || mi_cols.start % params.sb_h4 != 0 {
                 return Err(invalid_inter_tile_scheduling_state());
             }

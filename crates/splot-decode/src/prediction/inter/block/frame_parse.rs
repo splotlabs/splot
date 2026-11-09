@@ -42,6 +42,8 @@ pub(crate) struct InterFrameParser<'payload> {
     tiles: usize,
     /// The tile being parsed; earlier tiles are merged into the frame state.
     tile: usize,
+    /// Units the merged tiles published: all but the last tile parse a
+    /// trailing empty unit they do not publish.
     merged_units: usize,
     segment_ids: Vec<TileSegmentIdState>,
 }
@@ -134,7 +136,6 @@ impl<'payload> InterFrameParser<'payload> {
             records,
             &mut self.segment_ids,
         )?;
-        // Every tile but the last parses a trailing empty unit it does not publish.
         self.merged_units += units - usize::from(self.tile + 1 < self.tiles);
         self.tile += 1;
         Ok(self.tile == self.tiles)

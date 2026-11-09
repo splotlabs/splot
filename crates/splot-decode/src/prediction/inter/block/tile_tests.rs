@@ -325,6 +325,8 @@ fn failed_frame_rows_left_unclaimed_do_not_pin_the_parse_slot() {
     assert!(progress.take_row(1).is_none());
 }
 
+/// A left tile column's units, then the right column's, of a 2x2-superblock
+/// frame plus its trailing unit.
 #[test]
 fn out_of_order_units_publish_only_their_contiguous_prefix() {
     let buffers = crate::support::decode_buffers::DecodeBuffers::new();
@@ -345,7 +347,6 @@ fn out_of_order_units_publish_only_their_contiguous_prefix() {
         failure: ReconRowFailure::None,
     };
     progress.reserve(5).expect("parsed rows");
-    // A left tile column's units, then the right column's, of a 2x2-superblock frame.
     for (ordinal, watermark) in [(0, 1), (2, 1), (1, 3), (3, 4), (4, 5)] {
         progress.publish_row(row(ordinal)).expect("unit slot");
         assert_eq!(progress.cell().current(), watermark);
