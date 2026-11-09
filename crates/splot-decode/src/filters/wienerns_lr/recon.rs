@@ -1184,10 +1184,7 @@ fn lossless_grid(
         return Ok(None);
     }
     crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        mi_rows,
-        mi_cols,
-        blocks,
-        [chroma.as_slice(); 2],
+        mi_rows, mi_cols, blocks, chroma,
     )
     .map(Some)
     .map_err(|error| match error {
@@ -1406,7 +1403,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn chroma_transform_deblock_block(
     x: usize,
     y: usize,

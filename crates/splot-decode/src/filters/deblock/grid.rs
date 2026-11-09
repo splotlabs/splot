@@ -218,7 +218,7 @@ impl ChromaMiGridStorage {
         )
     }
 
-    /// Lays the chroma overlay records `records`, the first of which is
+    /// Lays the chroma records `records`, the first of which is
     /// record `first`, out over the frame in record order.
     pub(super) fn fill(
         &mut self,

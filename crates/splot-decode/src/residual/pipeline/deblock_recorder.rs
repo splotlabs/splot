@@ -11,7 +11,7 @@ pub(crate) struct DeblockRecorder<'a> {
     pub(crate) block_r: usize,
     pub(crate) block_c: usize,
     pub(crate) chroma_subsampling: (u32, u32),
-    pub(crate) qindex: u32,
+    pub(crate) qindex: u16,
     pub(crate) lossless: bool,
 }
 
@@ -36,7 +36,7 @@ impl DeblockRecorder<'_> {
             tx_size,
             None,
             self.chroma_subsampling,
-            self.qindex as u16,
+            self.qindex,
             self.lossless,
         ) {
             self.chroma_blocks.push(record);
@@ -60,7 +60,7 @@ impl DeblockRecorder<'_> {
             tx: luma_tx as u8,
             skip: false,
             lossless: self.lossless,
-            qindex: self.qindex as u16,
+            qindex: self.qindex,
             prediction: crate::filters::deblock::DeblockPredictionUnit::new(
                 self.block_r,
                 self.block_c,

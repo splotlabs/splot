@@ -277,13 +277,9 @@ fn lossless_grid_leaves_lossless_luma_8x8_unfiltered() {
     let before = luma_8x8(&ws);
     let grid = constant_cdef_grid(16, 16, 0).unwrap();
     let blocks = [deblock_block(0, 0, 2, 2, true)];
-    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        16,
-        16,
-        &blocks,
-        [&[], &[]],
-    )
-    .unwrap();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(16, 16, &blocks, &[])
+            .unwrap();
     cdef_general_intra_frame_indexed(
         &mut ws,
         &[cdef_ripple_params()],

@@ -538,7 +538,7 @@ pub(super) fn edge_at<const PLANE: usize, const PASS: usize>(
     let sb_edge = PASS == 1 && (row * MI_SIZE).is_multiple_of(SB_SIZE) || PASS == 0 && tile_edge;
     let x_p = (col * MI_SIZE) >> plane_sub_x;
     let y_p = (row * MI_SIZE) >> plane_sub_y;
-    let Some(decision) = edge_decision::<PLANE, PASS>(curr, prev, x_p, y_p, ctx, strengths) else {
+    let Some(decision) = edge_decision::<PASS>(curr, prev, x_p, y_p, ctx, strengths) else {
         return Ok(DeblockEdge::NONE);
     };
     let mut filter_size = decision.filter_size;

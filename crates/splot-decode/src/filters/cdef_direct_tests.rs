@@ -318,13 +318,9 @@ fn partial_skip_and_lossless_cdef_keep_poison_out_of_direct_output() {
     );
 
     let blocks = [deblock_block(0, 0, 2, 2, true)];
-    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        5,
-        5,
-        &blocks,
-        [&blocks, &blocks],
-    )
-    .unwrap();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(5, 5, &blocks, &blocks)
+            .unwrap();
     assert_eq!(
         direct_cdef_10bit(
             &workspace,
@@ -742,19 +738,14 @@ fn segment_path_matches_per_block_path() {
     let input = run_segment(
         &workspace,
         active_params()[0],
-        &crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], [&[], &[]])
-            .unwrap(),
+        &crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], &[]).unwrap(),
         8,
         false,
     );
     let blocks = [deblock_block(2, 10, 2, 2, true)];
-    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        6,
-        36,
-        &blocks,
-        [&blocks, &blocks],
-    )
-    .unwrap();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &blocks, &blocks)
+            .unwrap();
     let mixed = |y_pri, y_sec, uv_pri, uv_sec| CdefFrameParams {
         y_pri,
         y_sec,
@@ -866,8 +857,7 @@ fn segment_path_matches_per_block_path_on(spread: usize) {
         }
     }
     let lossless =
-        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], [&[], &[]])
-            .unwrap();
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], &[]).unwrap();
     for damping in [3, 4, 5, 6] {
         for ((y_pri, y_sec), (uv_pri, uv_sec)) in [
             ((4, 4), (2, 4)),

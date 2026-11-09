@@ -2010,7 +2010,7 @@ mod tests {
             skip: false,
             lossless: true,
         }];
-        let grid = LosslessBlockGrid::from_deblock_blocks(4, 4, &lossless, [&[], &[]]);
+        let grid = LosslessBlockGrid::from_deblock_blocks(4, 4, &lossless, &[]);
         let grid = grid.expect("valid grid");
         let base: Vec<u16> = (0..64).collect();
         let mut output = vec![200_u8; 32];

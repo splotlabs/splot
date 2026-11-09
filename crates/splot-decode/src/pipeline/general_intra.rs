@@ -898,7 +898,7 @@ fn parse_general_intra_residual_plan(
         block_r: block.row4(),
         block_c: block.col4(),
         chroma_subsampling: facts.block_ctx.chroma().subsampling(PlaneId::U),
-        qindex: leaf.qindex,
+        qindex: leaf.qindex as u16,
         lossless: facts.lossless,
     };
     let residual = leaf

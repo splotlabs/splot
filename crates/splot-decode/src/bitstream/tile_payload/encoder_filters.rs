@@ -320,7 +320,7 @@ impl FilterRecorder {
             block_r: leaf.row4(),
             block_c: leaf.col4(),
             chroma_subsampling: self.subsampling,
-            qindex: syntax.qindex(),
+            qindex: syntax.qindex() as u16,
             lossless: false,
         };
         for (tx, &eob) in transforms.iter().zip(eobs) {
@@ -334,13 +334,8 @@ impl FilterRecorder {
                     tx.tx_size,
                     eob,
                 );
-            } else {
-                let plane = if tx.plane == 1 {
-                    PlaneId::U
-                } else {
-                    PlaneId::V
-                };
-                recorder.record_chroma_unit(plane, tx.x, tx.y, tx.tx_size);
+            } else if tx.plane == 1 {
+                recorder.record_chroma_unit(PlaneId::U, tx.x, tx.y, tx.tx_size);
             }
         }
         Ok(())

@@ -502,8 +502,11 @@ impl FrameDeblock {
         }
         self.laid_out[0] = blocks.len();
         if let Some(grid) = self.chroma.as_mut() {
-            let fresh = self.records.chroma.get(self.laid_out[1]..);
-            let fresh = fresh.unwrap_or_default();
+            let fresh = self
+                .records
+                .chroma
+                .get(self.laid_out[1]..)
+                .unwrap_or_default();
             if sub_pu {
                 grid.fill(extent.1, fresh, self.laid_out[1], extent.0)?;
             } else {
@@ -558,7 +561,7 @@ impl FrameDeblock {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         blocks: &[DeblockBlock],
-        chroma_blocks: &ChromaDeblockRecords,
+        chroma_blocks: &[DeblockBlock],
         mi_rows: usize,
         mi_cols: usize,
         filter: DeblockingFilterParams,
@@ -572,7 +575,7 @@ impl FrameDeblock {
             OwnedDeblockRecords {
                 grids: core::mem::take(grids),
                 blocks: blocks.to_vec(),
-                chroma: chroma_blocks.clone(),
+                chroma: chroma_blocks.to_vec(),
             },
             mi_rows,
             mi_cols,
@@ -1210,7 +1213,7 @@ const MAX_WIDTHS: [[[(u8, u8); 65]; 2]; 2] = {
 /// two records of one edge.
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
-fn edge_decision<const PLANE: usize, const PASS: usize>(
+fn edge_decision<const PASS: usize>(
     curr: &DeblockBlock,
     prev: &DeblockBlock,
     x_p: usize,

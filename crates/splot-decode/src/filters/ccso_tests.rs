@@ -401,7 +401,7 @@ fn luma_ccso_preserves_lossless_4x4_samples() {
         2,
         2,
         &[lossless_block],
-        [&[], &[]],
+        &[],
     )
     .unwrap();
 
@@ -647,8 +647,7 @@ fn ten_bit_vector_rows_match_the_scalar_path_for_every_quant_step() {
         })
         .collect();
     let lossless =
-        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(2, 32, &[], [&[], &[]])
-            .unwrap();
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(2, 32, &[], &[]).unwrap();
     for (scale_idx, quant_idx) in [(0, 3), (0, 0), (2, 2), (3, 1), (1, 3), (3, 3)] {
         for edge_clf in [false, true] {
             for sub in [0, 1] {

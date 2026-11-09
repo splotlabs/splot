@@ -24,13 +24,13 @@ fn block(r: usize, c: usize, n4w: usize, n4h: usize, lossless: bool) -> DeblockB
 #[test]
 fn grid_marks_luma_and_subsampled_chroma_cells() {
     let luma = [block(1, 2, 2, 2, true)];
-    let u = [block(4, 6, 2, 2, true)];
-    let v = [block(4, 6, 2, 2, false)];
-    let grid = LosslessBlockGrid::from_deblock_blocks(8, 8, &luma, [&u, &v]).unwrap();
+    let chroma = [block(4, 6, 2, 2, true)];
+    let grid = LosslessBlockGrid::from_deblock_blocks(8, 8, &luma, &chroma).unwrap();
 
     assert!(grid.cdef_luma_lossless(0, 2));
     assert!(!grid.cdef_luma_lossless(0, 0));
 
     assert!(grid.plane_sample_lossless(PlaneId::U, 12, 8, 1, 1));
-    assert!(!grid.plane_sample_lossless(PlaneId::V, 12, 8, 1, 1));
+    assert!(grid.plane_sample_lossless(PlaneId::V, 12, 8, 1, 1));
+    assert!(!grid.plane_sample_lossless(PlaneId::V, 4, 4, 1, 1));
 }

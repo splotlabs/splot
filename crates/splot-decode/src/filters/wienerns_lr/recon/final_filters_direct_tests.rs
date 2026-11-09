@@ -336,13 +336,9 @@ fn lossless_block() -> crate::filters::deblock::DeblockBlock {
 fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
     let workspace = workspace(PixelFormat::Monochrome, 8, 8);
     let records = [lossless_block()];
-    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        2,
-        2,
-        &records,
-        [&[], &[]],
-    )
-    .unwrap();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(2, 2, &records, &[])
+            .unwrap();
     let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
         workspace
             .plane(plane)
@@ -431,13 +427,9 @@ fn u8_lossless_luma_samples_write_exactly_to_both_output_representations() {
         |x, y, plane| 20 + ((x * 7 + y * 11 + plane.index() * 23) % 200) as u8,
     );
     let records = [lossless_block()];
-    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        2,
-        2,
-        &records,
-        [&[], &[]],
-    )
-    .unwrap();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(2, 2, &records, &[])
+            .unwrap();
     let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
         workspace
             .plane(plane)
