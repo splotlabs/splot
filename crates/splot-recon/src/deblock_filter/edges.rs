@@ -543,6 +543,10 @@ impl Chunk for u8 {
         edges: &[DeblockEdge; SEGMENTS],
         max_sample: i16,
     ) {
+        #[cfg(target_arch = "aarch64")]
+        if let Some(token) = fearless_simd::Level::baseline().as_neon() {
+            return neon_u8::chunk(token, samples, stride, first, edges, VERTICAL);
+        }
         baseline_simd!(simd => portable_chunk::<_, Self, VERTICAL>(
             simd, samples, stride, first, edges, max_sample,
         ));
@@ -1218,6 +1222,10 @@ mod avx2 {
 #[cfg(target_arch = "x86_64")]
 #[path = "edges_u8.rs"]
 mod avx2_u8;
+
+#[cfg(target_arch = "aarch64")]
+#[path = "edges_u8_neon.rs"]
+mod neon_u8;
 
 #[cfg(test)]
 #[path = "edges_tests.rs"]
