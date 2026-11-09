@@ -1141,7 +1141,7 @@ fn eight_bit_byte_lanes_match_the_callback_reference() {
                 })
             })
             .collect();
-        let width = [32, 64, 96, 100, 128, 256, 47][case % 7];
+        let width = [32, 64, 96, 100, 128, 256, 47, 16, 24][case % 9];
         let height = 1 + next(16) as usize;
         let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS + next(3) as usize;
         let style = next(3);
@@ -1218,10 +1218,29 @@ fn eight_bit_byte_lanes_match_the_callback_reference() {
 
 /// The byte-lane exactness bounds accept every class of the § 5.20.2.1
 /// ranges whose taps stay near a low-pass filter, and reject the extremes.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn eight_bit_unit_weights_bound_the_extreme_classes() {
     let low_pass = [20, 18, 4, 3, -2, -1, 1, 0, 0, 1, -1, 0, 0, 0, 0, 0];
     assert!(eight_bit::unit_weights(&low_pass).is_some());
     let extreme = [39, 39, 17, 17, 15, 15, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7];
     assert!(eight_bit::unit_weights(&extreme).is_none());
+}
+
+/// The tap-pair group bounds accept both extremes of the § 5.20.2.1 ranges
+/// and reject a group past them.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn eight_bit_pair_weights_take_every_ranged_class() {
+    let highest = [39, 39, 17, 17, 15, 15, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7];
+    let lowest = [
+        -24, -24, -14, -14, -16, -16, -8, -8, -8, -8, -8, -8, -8, -8, -8, -8,
+    ];
+    let weights = eight_bit::pair_weights(&highest).unwrap();
+    assert_eq!(weights[16], 128 - 2 * 212);
+    assert_eq!(&weights[..4], &[39, 7, 7, 7]);
+    assert!(eight_bit::pair_weights(&lowest).is_some());
+    let mut past = highest;
+    past[6] = 26;
+    assert!(eight_bit::pair_weights(&past).is_none());
 }

@@ -21,12 +21,22 @@
 //! (`m - 512`) gives the filtered value, which `packuswb` clips to 8 bits.
 //! Classes outside these bounds, which the § 5.20.2.1 tap ranges allow, take
 //! the general kernel.
+//!
+//! The aarch64 kernel has no byte-pair multiply. It adds each symmetric tap
+//! pair in `u16` lanes and weighs the sums in `i16` lanes, in four groups of
+//! four coefficients. A group's sum lies in `±510 * max(P, N)`, so with both
+//! at most 64 it is exact in `i16` lanes, and every § 5.20.2.1 class fits.
+//! The groups and the center meet in `i32` lanes.
 
+#[cfg(target_arch = "aarch64")]
+use super::WIENER_NS_CONFIG_Y_PAIRS;
 use super::{FlatChunks, LumaSubclassLayout, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS};
 
 /// Distinct weight pairs: ten adjacent-tap pairs, then four interleaved ones.
+#[cfg(target_arch = "x86_64")]
 const UNITS: usize = 14;
 /// Output columns per vector.
+#[cfg(target_arch = "x86_64")]
 const LANES: usize = 32;
 /// A subclass map indexes classes through 16-entry byte tables.
 const MAX_CLASSES: usize = 16;
@@ -38,6 +48,7 @@ const STAGE_STRIDE: usize = 3 * 512 / 2 + 2 * WIENER_NS_LUMA_TAP_RADIUS;
 const GROUP_ROWS: usize = 12;
 
 /// A weight of [`unit_weights`]: coefficient `j`, or a group's center share.
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
 enum Weight {
     Coeff(usize),
@@ -45,9 +56,11 @@ enum Weight {
     LowerCenter,
 }
 
+#[cfg(target_arch = "x86_64")]
 use Weight::{Coeff, LowerCenter, UpperCenter};
 
 /// The weight pairs in the order the kernel reads them.
+#[cfg(target_arch = "x86_64")]
 const UNIT_WEIGHTS: [[Weight; 2]; UNITS] = [
     [Coeff(6), Coeff(2)],
     [Coeff(8), Coeff(4)],
@@ -65,10 +78,12 @@ const UNIT_WEIGHTS: [[Weight; 2]; UNITS] = [
     [Coeff(3), Coeff(3)],
 ];
 
+#[cfg(target_arch = "x86_64")]
 type UnitWeights = [[i8; 2]; UNITS];
 
 /// The byte-lane weights of one coefficient class, or `None` outside the
 /// exactness bounds of the module docs.
+#[cfg(target_arch = "x86_64")]
 pub(super) fn unit_weights(coeffs: &[i16; WIENER_NS_LUMA_COEFFS]) -> Option<UnitWeights> {
     let coeffs = coeffs.map(i32::from);
     let sum: i32 = coeffs.iter().sum();
@@ -99,14 +114,55 @@ pub(super) fn unit_weights(coeffs: &[i16; WIENER_NS_LUMA_COEFFS]) -> Option<Unit
     (bounded(None, coeffs[3]) && bounded(Some(3), 0)).then_some(weights)
 }
 
+#[cfg(target_arch = "x86_64")]
+type ClassWeights = UnitWeights;
+#[cfg(target_arch = "x86_64")]
+use unit_weights as class_weights;
+#[cfg(not(target_arch = "x86_64"))]
+type ClassWeights = PairWeights;
+#[cfg(not(target_arch = "x86_64"))]
+use pair_weights as class_weights;
+
+/// The coefficients of the aarch64 kernel's four groups, in the order it
+/// reads them.
+#[cfg(not(target_arch = "x86_64"))]
+const PAIR_ORDER: [usize; WIENER_NS_LUMA_COEFFS] =
+    [0, 6, 7, 8, 1, 9, 10, 11, 2, 3, 12, 13, 4, 5, 14, 15];
+
+/// A class's coefficients in [`PAIR_ORDER`], then its center scale.
+#[cfg(not(target_arch = "x86_64"))]
+type PairWeights = [i16; WIENER_NS_LUMA_COEFFS + 1];
+
+/// The tap-pair weights of one coefficient class, or `None` outside the
+/// group bounds of the module docs.
+#[cfg(not(target_arch = "x86_64"))]
+pub(super) fn pair_weights(coeffs: &[i16; WIENER_NS_LUMA_COEFFS]) -> Option<PairWeights> {
+    let mut weights = [0; WIENER_NS_LUMA_COEFFS + 1];
+    for (slots, group) in weights.chunks_exact_mut(4).zip(PAIR_ORDER.chunks_exact(4)) {
+        let (mut positive, mut negative) = (0, 0);
+        for (slot, &j) in slots.iter_mut().zip(group) {
+            *slot = coeffs[j];
+            positive += i32::from(coeffs[j]).max(0);
+            negative -= i32::from(coeffs[j]).min(0);
+        }
+        if positive.max(negative) > 64 {
+            return None;
+        }
+    }
+    let sum: i32 = coeffs.iter().map(|&c| i32::from(c)).sum();
+    weights[WIENER_NS_LUMA_COEFFS] = i16::try_from(128 - 2 * sum).ok()?;
+    Some(weights)
+}
+
 /// Byte rows and class weights of one block.
 #[derive(Debug, Default)]
 pub(super) struct EightBitLuma {
     staged: Vec<[u8; STAGE_STRIDE]>,
-    classes: Vec<UnitWeights>,
+    classes: Vec<ClassWeights>,
     /// The coefficients `classes` and `tables` were prepared from, when they all fit.
     prepared: Vec<[i16; WIENER_NS_LUMA_COEFFS]>,
     /// Per unit, each class's first and second weight byte.
+    #[cfg(target_arch = "x86_64")]
     tables: [[[u8; MAX_CLASSES]; 2]; UNITS],
     ready: bool,
 }
@@ -156,7 +212,7 @@ impl EightBitLuma {
     ) -> bool {
         self.ready = false;
         if !kernel_available()
-            || width < LANES
+            || width < MIN_WIDTH
             || coeffs_by_class.len() > MAX_CLASSES
             || matches!(layout, LumaSubclassLayout::Samples(_))
         {
@@ -169,17 +225,20 @@ impl EightBitLuma {
         self.prepared.clear();
         self.classes.clear();
         for coeffs in coeffs_by_class {
-            let Some(weights) = unit_weights(coeffs) else {
+            let Some(weights) = class_weights(coeffs) else {
                 self.classes.clear();
                 return false;
             };
             self.classes.push(weights);
         }
-        self.tables = [[[0; MAX_CLASSES]; 2]; UNITS];
-        for (class, weights) in self.classes.iter().enumerate() {
-            for (unit, pair) in weights.iter().enumerate() {
-                self.tables[unit][0][class] = pair[0] as u8;
-                self.tables[unit][1][class] = pair[1] as u8;
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.tables = [[[0; MAX_CLASSES]; 2]; UNITS];
+            for (class, weights) in self.classes.iter().enumerate() {
+                for (unit, pair) in weights.iter().enumerate() {
+                    self.tables[unit][0][class] = pair[0] as u8;
+                    self.tables[unit][1][class] = pair[1] as u8;
+                }
             }
         }
         self.prepared.extend_from_slice(coeffs_by_class); // splot-copy-ok: weight-cache key, not samples
@@ -217,6 +276,19 @@ impl EightBitLuma {
                 flat,
             );
         }
+        #[cfg(target_arch = "aarch64")]
+        if let Some(token) = fearless_simd::Level::baseline().as_neon() {
+            return paired::filter_cell_rows(
+                token,
+                self,
+                output,
+                output_stride,
+                (first, end, origin),
+                width,
+                layout,
+                flat,
+            );
+        }
         let _ = (
             output,
             output_stride,
@@ -231,12 +303,22 @@ impl EightBitLuma {
     }
 }
 
+/// The narrowest block the kernel takes: one vector of outputs.
+#[cfg(target_arch = "x86_64")]
+const MIN_WIDTH: usize = LANES;
+#[cfg(not(target_arch = "x86_64"))]
+const MIN_WIDTH: usize = 16;
+
 fn kernel_available() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         fearless_simd::Level::baseline().as_avx2().is_some()
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    {
+        fearless_simd::Level::baseline().as_neon().is_some()
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         false
     }
@@ -280,25 +362,137 @@ fn narrow_row_lanes<S: fearless_simd::Simd>(simd: S, staged: &mut [u8], row: &[u
 
 /// Output samples the byte-lane kernel writes.
 pub(crate) trait ByteLaneOutput: Copy {
-    #[cfg(target_arch = "x86_64")]
-    fn store(bytes: [u8; LANES], output: &mut [Self; LANES]);
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn store<const N: usize>(bytes: [u8; N], output: &mut [Self; N]);
 }
 
 impl ByteLaneOutput for u8 {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[inline]
-    fn store(bytes: [u8; LANES], output: &mut [Self; LANES]) {
+    fn store<const N: usize>(bytes: [u8; N], output: &mut [Self; N]) {
         *output = bytes;
     }
 }
 
 impl ByteLaneOutput for u16 {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[inline]
-    fn store(bytes: [u8; LANES], output: &mut [Self; LANES]) {
+    fn store<const N: usize>(bytes: [u8; N], output: &mut [Self; N]) {
         for (slot, byte) in output.iter_mut().zip(bytes) {
             *slot = u16::from(byte);
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::super::WIENER_NS_CONFIG_Y_PAIRS;
+    use super::*;
+
+    /// Every vector the kernel fills holds the § 7.20.3 sum of its class,
+    /// for random and extreme classes, cell maps, samples, and widths. On
+    /// aarch64 every class prepares and every whole vector is filled.
+    #[test]
+    fn kernel_vectors_match_the_scalar_sum() {
+        const MIN: [i16; WIENER_NS_LUMA_COEFFS] = [
+            -24, -24, -14, -14, -16, -16, -8, -8, -8, -8, -8, -8, -8, -8, -8, -8,
+        ];
+        const K: [u32; WIENER_NS_LUMA_COEFFS] = [6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4];
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |limit: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % limit
+        };
+        let r = WIENER_NS_LUMA_TAP_RADIUS;
+        let mut luma = EightBitLuma::default();
+        let mut filled = 0;
+        for case in 0..60 {
+            let width = [16, 32, 48, 64, 80, 40, 128][case % 7];
+            let height = 1 + next(12) as usize;
+            let coeffs: Vec<[i16; WIENER_NS_LUMA_COEFFS]> = (0..=next(16))
+                .map(|_| {
+                    let style = next(4);
+                    core::array::from_fn(|j| {
+                        let span = 1u64 << K[j];
+                        MIN[j] + [0, span - 1, next(span), next(span)][style as usize] as i16
+                    })
+                })
+                .collect();
+            let rows: Vec<Vec<u16>> = (0..height + 2 * r)
+                .map(|_| {
+                    let style = next(3);
+                    (0..width + 2 * r)
+                        .map(|_| match style {
+                            0 => [0, 255][next(2) as usize],
+                            _ => next(256) as u16,
+                        })
+                        .collect()
+                })
+                .collect();
+            let cols = width / 4;
+            let values: Vec<u8> = (0..cols * height.div_ceil(4))
+                .map(|_| next(coeffs.len() as u64) as u8)
+                .collect();
+            let layout = if case % 2 == 0 {
+                LumaSubclassLayout::Uniform
+            } else {
+                LumaSubclassLayout::Cells {
+                    values: &values,
+                    cols,
+                }
+            };
+            assert!(luma.stage(|index| rows.get(index).map(Vec::as_slice), width, height));
+            let prepared = luma.prepare(width, &coeffs, layout);
+            #[cfg(target_arch = "aarch64")]
+            assert!(prepared, "case {case}");
+            if !prepared {
+                continue;
+            }
+            let mut output = vec![0u8; width * height];
+            for first in (0..height).step_by(4) {
+                let end = (first + 4).min(height);
+                let done = luma.filter_cell_rows(
+                    &mut output[first * width..],
+                    width,
+                    (first, end, first),
+                    width,
+                    layout,
+                    &FlatChunks::new(),
+                );
+                #[cfg(target_arch = "aarch64")]
+                assert_eq!(done, width / 16 * 16, "case {case}");
+                filled += done;
+                for y in first..end {
+                    for x in 0..done {
+                        let class = match layout {
+                            LumaSubclassLayout::Cells { values, cols } => {
+                                usize::from(values[(y / 4) * cols + x / 4])
+                            }
+                            _ => 0,
+                        };
+                        let c = &coeffs[class];
+                        let at = |dy: isize, dx: isize| {
+                            i32::from(
+                                rows[r.wrapping_add_signed(dy) + y][r.wrapping_add_signed(dx) + x],
+                            )
+                        };
+                        let sum: i32 = c.iter().map(|&c| i32::from(c)).sum();
+                        let mut total = (128 - 2 * sum) * at(0, 0) + 64;
+                        for &(dy, dx, j) in &WIENER_NS_CONFIG_Y_PAIRS {
+                            total += i32::from(c[j]) * (at(dy, dx) + at(-dy, -dx));
+                        }
+                        let expected = (total >> 7).clamp(0, 255) as u8;
+                        assert_eq!(output[y * width + x], expected, "case {case} ({x}, {y})");
+                    }
+                }
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        assert!(filled > 0);
+        let _ = filled;
     }
 }
 
@@ -568,5 +762,188 @@ mod avx2 {
             x += LANES;
         }
         x
+    }
+}
+
+/// The tap-pair kernel of the module docs, 16 outputs of one row per vector.
+/// It uses only `fearless_simd` operations; x86 keeps the byte-pair kernel.
+#[cfg(target_arch = "aarch64")]
+mod paired {
+    use fearless_simd::{Simd, i16x8, i32x4, prelude::*, u8x16};
+
+    use super::{
+        ByteLaneOutput, EightBitLuma, FlatChunks, GROUP_ROWS, LumaSubclassLayout, PAIR_ORDER,
+        PairWeights, STAGE_STRIDE, WIENER_NS_CONFIG_Y_PAIRS, WIENER_NS_LUMA_COEFFS,
+        WIENER_NS_LUMA_TAP_RADIUS,
+    };
+
+    const LANES: usize = 16;
+    const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
+    /// Source bytes one vector row reads.
+    const REACH: usize = LANES + 2 * R;
+    const SLOTS: usize = WIENER_NS_LUMA_COEFFS + 1;
+    type Row = [u8; STAGE_STRIDE];
+
+    #[inline]
+    fn at(row: &Row, x: usize) -> &[u8; LANES] {
+        row.get(x..)
+            .and_then(<[u8]>::first_chunk::<LANES>)
+            .unwrap_or(&[0; LANES])
+    }
+
+    /// One row of 16 outputs from columns `x..x + REACH` of the nine source
+    /// rows `rows[dy + 4]`; `weight(slot, half)` gives the [`PairWeights`]
+    /// slot of outputs `8 * half..8 * half + 8`.
+    #[allow(
+        clippy::inline_always,
+        reason = "the row kernel must inline into its row loop"
+    )]
+    #[inline(always)]
+    fn filter_row<S: Simd>(
+        simd: S,
+        rows: &[Row; 9],
+        x: usize,
+        weight: &impl Fn(usize, usize) -> i16x8<S>,
+    ) -> u8x16<S> {
+        let x = x.min(STAGE_STRIDE - REACH);
+        let load = |dy: isize, dx: isize| {
+            u8x16::load_array_ref(
+                simd,
+                at(
+                    &rows[R.wrapping_add_signed(dy)],
+                    x + R.wrapping_add_signed(dx),
+                ),
+            )
+        };
+        let mut groups = [i16x8::splat(simd, 0); 8];
+        // A literal slot makes every tap offset a constant.
+        macro_rules! pairs {
+            ($($slot:literal)*) => {$({
+                const TAP: (isize, isize, usize) = WIENER_NS_CONFIG_Y_PAIRS[PAIR_ORDER[$slot]];
+                let (low, high) = load(TAP.0, TAP.1).widening_add(load(-TAP.0, -TAP.1));
+                groups[$slot / 4 * 2] += low.bitcast::<i16x8<S>>() * weight($slot, 0);
+                groups[$slot / 4 * 2 + 1] += high.bitcast::<i16x8<S>>() * weight($slot, 1);
+            })*};
+        }
+        pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
+        let (center_low, center_high) = load(0, 0).widen();
+        let half = |half: usize, center: i16x8<S>| {
+            let (g0, g1) = groups[half].widening_add(groups[2 + half]);
+            let (g2, g3) = groups[4 + half].widening_add(groups[6 + half]);
+            let (m0, m1) = center.widening_mul(weight(WIENER_NS_LUMA_COEFFS, half));
+            let round = i32x4::splat(simd, 64);
+            let value = simd
+                .saturating_narrow_i32x4((g0 + g2 + m0 + round) >> 7, (g1 + g3 + m1 + round) >> 7)
+                .max(i16x8::splat(simd, 0));
+            value.bitcast()
+        };
+        simd.saturating_narrow_u16x8(
+            half(0, center_low.bitcast()),
+            half(1, center_high.bitcast()),
+        )
+    }
+
+    /// The x86 `filter_cell_rows` contract over 16-column vectors.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn filter_cell_rows<S: Simd, O: ByteLaneOutput>(
+        simd: S,
+        luma: &EightBitLuma,
+        output: &mut [O],
+        output_stride: usize,
+        (first, end, origin): (usize, usize, usize),
+        width: usize,
+        layout: LumaSubclassLayout<'_>,
+        flat: &FlatChunks<WIENER_NS_LUMA_TAP_RADIUS>,
+    ) -> usize {
+        let Some(group) = luma
+            .staged
+            .get(first..)
+            .and_then(<[Row]>::first_chunk::<GROUP_ROWS>)
+        else {
+            return 0;
+        };
+        let rows = (first, end, origin);
+        let mut x = 0;
+        while x + LANES <= width && x + REACH <= STAGE_STRIDE {
+            if let Some(value) = flat.chunk_value(x / 32) {
+                let value = u8::try_from(value).unwrap_or(u8::MAX);
+                for r in first..end {
+                    let Some(target) = output
+                        .get_mut((r - origin) * output_stride + x..)
+                        .and_then(<[O]>::first_chunk_mut::<LANES>)
+                    else {
+                        return x;
+                    };
+                    O::store([value; LANES], target);
+                }
+                x += LANES;
+                continue;
+            }
+            let cells: [Option<&PairWeights>; 4] = match layout {
+                LumaSubclassLayout::Uniform => [luma.classes.first(); 4],
+                LumaSubclassLayout::Cells { values, cols } => {
+                    let Some(cells) = values
+                        .get((first / 4) * cols + x / 4..)
+                        .and_then(<[u8]>::first_chunk::<4>)
+                    else {
+                        break;
+                    };
+                    cells.map(|class| luma.classes.get(usize::from(class)))
+                }
+                LumaSubclassLayout::Samples(_) => break,
+            };
+            let [Some(c0), Some(c1), Some(c2), Some(c3)] = cells else {
+                break;
+            };
+            let uniform = core::ptr::eq(c0, c1) && core::ptr::eq(c1, c2) && core::ptr::eq(c2, c3);
+            let done = if uniform {
+                let weight = |slot: usize, _| i16x8::splat(simd, c0[slot]);
+                filter_rows(simd, group, (output, output_stride), rows, x, &weight)
+            } else {
+                let cells = [c0, c1, c2, c3];
+                let mixed: [[[i16; 8]; 2]; SLOTS] = core::array::from_fn(|slot| {
+                    core::array::from_fn(|half| {
+                        core::array::from_fn(|lane| cells[2 * half + lane / 4][slot])
+                    })
+                });
+                let weight =
+                    |slot: usize, half: usize| i16x8::load_array_ref(simd, &mixed[slot][half]);
+                filter_rows(simd, group, (output, output_stride), rows, x, &weight)
+            };
+            if !done {
+                return x;
+            }
+            x += LANES;
+        }
+        x
+    }
+
+    /// Filters the vector at column `x` of the rows `first..end`; returns
+    /// `false`, the vector unfinished, when an output row is short.
+    #[allow(
+        clippy::inline_always,
+        reason = "the weights must stay in registers across the rows"
+    )]
+    #[inline(always)]
+    fn filter_rows<S: Simd, O: ByteLaneOutput>(
+        simd: S,
+        group: &[Row; GROUP_ROWS],
+        (output, output_stride): (&mut [O], usize),
+        (first, end, origin): (usize, usize, usize),
+        x: usize,
+        weight: &impl Fn(usize, usize) -> i16x8<S>,
+    ) -> bool {
+        for r in first..end {
+            let (Some(rows), Some(target)) = (
+                group.get(r - first..).and_then(<[Row]>::first_chunk::<9>),
+                output
+                    .get_mut((r - origin) * output_stride + x..)
+                    .and_then(<[O]>::first_chunk_mut::<LANES>),
+            ) else {
+                return false;
+            };
+            O::store(filter_row(simd, rows, x, weight).into(), target);
+        }
+        true
     }
 }
