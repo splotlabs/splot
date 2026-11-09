@@ -13,11 +13,15 @@
 //! pair stays below the `pmaddubsw` saturation bound.
 //!
 //! A vector covers 16 outputs: one strip row of a block at least 16 wide, two
-//! rows of an 8-wide block or four rows of a 4-wide block. Other widths,
-//! 10-bit sinks and targets without AVX2 decline to the portable kernels.
+//! rows of an 8-wide block or four rows of a 4-wide block. On AArch64 the
+//! [`neon`] kernels take the same blocks. Other widths, 10-bit sinks and
+//! other targets decline to the portable kernels.
 
 use super::block::{Block, Sink};
 use crate::format::ReconSample;
+
+#[cfg(target_arch = "aarch64")]
+pub(super) mod neon;
 
 /// Predicts an eight-bit block in byte lanes and returns `true`, or returns
 /// `false` without writing when the block is outside the byte-lane subset.
@@ -37,6 +41,19 @@ pub(super) fn predict<T: ReconSample>(
         }
     {
         avx2::predict(token, &block.with_source(source), sink, stage);
+        return true;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_neon()
+        && let Some(source) = T::u8_slice(block.source)
+        && neon::fits(block)
+        && match sink {
+            Sink::PutWide { max, .. } => *max == u16::from(u8::MAX),
+            Sink::AverageWide { .. } => false,
+            _ => true,
+        }
+    {
+        neon::predict(token, &block.with_source(source), sink);
         return true;
     }
     let _ = (block, sink, stage);
@@ -60,6 +77,13 @@ pub(super) fn put(
         && fits(block)
     {
         avx2::put(token, block, stage, output, stride);
+        return true;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_neon()
+        && neon::fits(block)
+    {
+        neon::predict(token, block, &mut Sink::Put { output, stride });
         return true;
     }
     let _ = (block, stage, output, stride);
@@ -140,6 +164,15 @@ pub(super) fn compound(
             .all(|block| fits(block) && block.w * block.h <= 64)
     {
         avx2::compound(token, blocks, forward, stage, output, stride);
+        return true;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_neon()
+        && blocks
+            .iter()
+            .all(|block| neon::fits(block) && block.w * block.h <= 64)
+    {
+        neon::compound(token, blocks, forward, output, stride);
         return true;
     }
     let _ = (blocks, forward, stage, output, stride);

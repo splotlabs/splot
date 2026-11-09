@@ -10,15 +10,12 @@
 //! horizontal pass is `Round2(sum, InterRound0)` of halved taps (or the
 //! single-pass put `Round2`), a vertical-only pass weighs the samples by the
 //! halved taps, and a two-pass vertical rounds the intermediates. Every other
-//! block takes the general path.
+//! block takes the general path. On AArch64 a cell runs as a block of the
+//! eight-bit NEON kernels.
 
 #![cfg_attr(
-    not(target_arch = "x86_64"),
-    allow(
-        dead_code,
-        clippy::unused_self,
-        reason = "AVX2-only cells until the NEON port"
-    )
+    not(any(target_arch = "x86_64", target_arch = "aarch64")),
+    allow(dead_code, clippy::unused_self, reason = "AVX2 and NEON cells only")
 )]
 
 use super::block::{TAPS, Taps, even_tap_span};
@@ -135,12 +132,17 @@ pub(super) fn put_cell<'a>(
     if fearless_simd::Level::baseline().as_avx2().is_some() {
         return Some(cell);
     }
+    #[cfg(target_arch = "aarch64")]
+    if fearless_simd::Level::baseline().as_neon().is_some() {
+        return Some(cell);
+    }
     None
 }
 
 impl<'a> Cell<'a> {
     /// The kernel key `5 * H + V + 25 * clamped` of this cell's tap-pair
     /// counts, zero for a skipped pass.
+    #[cfg(target_arch = "x86_64")]
     #[inline]
     fn key(&self) -> i32 {
         (5 * self.horizontal.map_or(0, |taps| taps.count)
@@ -160,7 +162,41 @@ impl<'a> Cell<'a> {
         if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
             avx2::put(token, self, size, output, stride);
         }
+        #[cfg(target_arch = "aarch64")]
+        if let Some(token) = fearless_simd::Level::baseline().as_neon() {
+            let mut sink = super::block::Sink::Put { output, stride };
+            super::eight_bit::neon::predict(token, &self.block(size), &mut sink);
+        }
         let _ = (size, output, stride);
+    }
+
+    /// This `size`-square cell as a block of the byte-lane kernels: the
+    /// bounded rows of a clamped window, and its column `Clip3` as a remap.
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn block(&self, size: usize) -> super::block::Block<'a, u8> {
+        let (top, rows, remap) = match self.clamped {
+            Some([row, first, last, offset, limit]) => (
+                row as isize,
+                [first as isize, last as isize],
+                Some(core::array::from_fn(|column| {
+                    (column as i32 + offset).max(0).min(limit) as u8
+                })),
+            ),
+            None => (0, [0, isize::MAX], None),
+        };
+        super::block::Block {
+            source: self.source,
+            stride: self.stride as usize,
+            origin: self.origin as usize,
+            top,
+            rows,
+            w: size,
+            h: size,
+            horizontal: self.horizontal,
+            vertical: self.vertical,
+            remap,
+        }
     }
 }
 
@@ -221,6 +257,12 @@ pub(super) fn compound_at(
             stride,
         );
     }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_neon() {
+        let blocks = [first.block(size), second.block(size)];
+        super::eight_bit::neon::compound(token, [&blocks[0], &blocks[1]], forward, output, stride);
+        return true;
+    }
     let _ = (first, second, forward, output, stride);
     false
 }
@@ -238,6 +280,10 @@ pub struct CompoundCells {
     positions: [[u32; 2]; PROGRAM_CELLS],
     starts: [[[i32; PROGRAM_CELLS]; 2]; 2],
     bounds: [[[i32; PROGRAM_CELLS]; 4]; 2],
+    #[cfg_attr(
+        not(target_arch = "x86_64"),
+        allow(dead_code, reason = "read by the AVX2 program")
+    )]
     stash: [Stashed; 32],
 }
 
@@ -320,6 +366,10 @@ impl CompoundCells {
 /// offset `start - 3` of its first tap (low byte, signed), its extent
 /// `span - 1` (second byte) and its tap-pair count (third byte); zero for a
 /// skipped pass.
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    allow(dead_code, reason = "read by the AVX2 program")
+)]
 static WINDOWS: [[i32; NUM_PHASES]; NUM_FILTER_TYPES] = {
     let mut table = [[0; NUM_PHASES]; NUM_FILTER_TYPES];
     let mut filter = 0;
@@ -337,6 +387,10 @@ static WINDOWS: [[i32; NUM_PHASES]; NUM_FILTER_TYPES] = {
 };
 
 type CellPlane<'a, 'b, T> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [u8], usize);
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    allow(dead_code, reason = "read by the AVX2 program")
+)]
 type U8Plane<'a, 'b> = ([ReferencePlaneView<'b, u8>; 2], &'a mut [u8], usize);
 
 /// Runs a [`CompoundCells`] program of eight-bit `size`-square cells into
@@ -394,6 +448,31 @@ pub fn subpel_compound_cells_u8<T: ReconSample>(
         }
         let [first, second] = planes;
         return [run([first, None])[0], run([second, None])[0]];
+    }
+    #[cfg(target_arch = "aarch64")]
+    if fearless_simd::Level::baseline().as_neon().is_some() {
+        let (mut written, forward) = (written, i32::from(cwp_weight));
+        for (plane, written) in planes.into_iter().zip(&mut written) {
+            let Some((views, output, stride)) = plane else {
+                continue;
+            };
+            for index in 0..cells.len() {
+                let Some(([row, col], placements)) = cells.get(index) else {
+                    continue;
+                };
+                let stored = output
+                    .get_mut(row * stride + col..)
+                    .filter(|output| (size - 1) * stride + size <= output.len())
+                    .is_some_and(|output| {
+                        let views = [&views[0], &views[1]];
+                        compound_at(views, interp, size, placements, forward, output, stride)
+                    });
+                if stored {
+                    written[index / 64 % 4] |= 1 << (index % 64);
+                }
+            }
+        }
+        return written;
     }
     let _ = (planes, interp, cells, cwp_weight);
     written

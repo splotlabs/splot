@@ -59,6 +59,22 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
         );
         return true;
     }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+        let phases = [
+            ((params.start_x >> 6) & SUBPEL_MASK) as u8,
+            ((params.start_y >> 6) & SUBPEL_MASK) as u8,
+        ];
+        neon::window(
+            t,
+            view.samples,
+            [origin, view.stride],
+            [w, h],
+            phases,
+            output,
+        );
+        return true;
+    }
     false
 }
 
@@ -117,6 +133,16 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
         );
         return true;
     }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+        let phases = [
+            ((params.start_x >> 6) & SUBPEL_MASK) as u8,
+            ((params.start_y >> 6) & SUBPEL_MASK) as u8,
+        ];
+        let geometry = ([origin, view.stride], [w, h]);
+        neon::block(t, view.samples, geometry, phases, output, stride);
+        return true;
+    }
     false
 }
 
@@ -160,6 +186,10 @@ pub fn refinemv_search_u8(
     #[cfg(target_arch = "x86_64")]
     if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
         return Some(avx2::search(t, windows, [stride, sad_h], allow_center));
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+        return Some(neon::search(t, windows, [stride, sad_h], allow_center));
     }
     let sad = |dy: i32, dx: i32| {
         let at = |sign: i32, row: usize, col: usize| {
@@ -572,6 +602,220 @@ mod avx2 {
                     (2, 2)
                 )
             },
+            (2 * (STRIDE - 4) * SAD_H) as u32,
+            allow_center,
+        )
+    }
+}
+
+/// The bilinear windows and blocks in generic `u16` lanes, and the SADs in
+/// NEON byte lanes.
+#[cfg(target_arch = "aarch64")]
+mod neon {
+    use fearless_simd::{Neon, Simd, prelude::*, u8x16, u16x8, u64x2};
+
+    /// The source index, from `base`, of the left or right tap of output
+    /// columns `first..first + 16` of an `m`-sample row, clamped to the row.
+    const fn taps(first: usize, base: usize, m: usize, right: bool) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        let mut lane = 0;
+        while lane < 16 {
+            let column = first + lane;
+            let index = if right || column == 0 {
+                column
+            } else {
+                column - 1
+            };
+            out[lane] = ((if index > m - 1 { m - 1 } else { index }) - base) as u8;
+            lane += 1;
+        }
+        out
+    }
+
+    /// Left and right taps of columns `0..16` of a 16-wide window, then of
+    /// columns `0..16` and `16..24` of a 24-wide one.
+    const TAPS: [[[u8; 16]; 2]; 3] = [
+        [taps(0, 0, 15, false), taps(0, 0, 15, true)],
+        [taps(0, 0, 23, false), taps(0, 0, 23, true)],
+        [taps(16, 15, 23, false), taps(16, 15, 23, true)],
+    ];
+
+    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+    #[inline(always)]
+    fn load<S: Simd>(simd: S, bytes: &[u8], at: usize) -> u8x16<S> {
+        bytes
+            .get(at..)
+            .and_then(<[u8]>::first_chunk::<16>)
+            .map_or(u8x16::splat(simd, 0), |bytes| {
+                u8x16::load_array_ref(simd, bytes)
+            })
+    }
+
+    /// `Round2((16 - phase) * top + phase * bottom, 8)` of two horizontal rows.
+    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+    #[inline(always)]
+    fn blend<S: Simd>(simd: S, phase: u8, top: u16x8<S>, bottom: u16x8<S>) -> u16x8<S> {
+        let weights = (
+            u16x8::splat(simd, 16 - u16::from(phase)),
+            u16x8::splat(simd, u16::from(phase)),
+        );
+        (top * weights.0 + bottom * weights.1 + 128) >> 8
+    }
+
+    /// The `w x h` search window, `w` and `h` each 16 or 24, of the rows of
+    /// `source` from `origin`, into `output` at stride `w`.
+    #[inline(never)]
+    pub(super) fn window<S: Simd>(
+        simd: S,
+        source: &[u8],
+        [origin, stride]: [usize; 2],
+        [width, height]: [usize; 2],
+        [h_phase, v_phase]: [u8; 2],
+        output: &mut [u8],
+    ) {
+        let weights = (
+            u8x16::splat(simd, 16 - h_phase),
+            u8x16::splat(simd, h_phase),
+        );
+        let tables = TAPS.map(|pair| pair.map(|taps| u8x16::load_array(simd, taps)));
+        let part = |bytes: u8x16<S>, [left, right]: [u8x16<S>; 2]| {
+            let (l0, l1) = simd
+                .swizzle_dyn_within_blocks_u8x16(bytes, left)
+                .widening_mul(weights.0);
+            let (r0, r1) = simd
+                .swizzle_dyn_within_blocks_u8x16(bytes, right)
+                .widening_mul(weights.1);
+            (l0 + r0, l1 + r1)
+        };
+        let horizontal = |row: usize| -> [u16x8<S>; 3] {
+            let at = origin + row * stride;
+            if width == 24 {
+                let (low, high) = part(load(simd, source, at), tables[1]);
+                [low, high, part(load(simd, source, at + 15), tables[2]).0]
+            } else {
+                let (low, high) = part(load(simd, source, at), tables[0]);
+                [low, high, low]
+            }
+        };
+        let mut write = |row: usize, top: [u16x8<S>; 3], bottom: [u16x8<S>; 3]| {
+            let [low, high, tail] =
+                [0, 1, 2].map(|part| blend(simd, v_phase, top[part], bottom[part]));
+            let Some(line) = output.get_mut(row * width..(row + 1) * width) else {
+                return;
+            };
+            if let Some(slot) = line.first_chunk_mut::<16>() {
+                simd.narrow_u16x8(low, high).store_array(slot);
+            }
+            if width == 24
+                && let Some(slot) = line.last_chunk_mut::<8>()
+            {
+                *slot = simd.narrow_u16x8(tail, tail).bitcast::<u64x2<S>>()[0].to_le_bytes();
+            }
+        };
+        let mut top = horizontal(0);
+        write(0, top, top);
+        for row in 1..height - 1 {
+            let bottom = horizontal(row);
+            write(row, top, bottom);
+            top = bottom;
+        }
+        write(height - 1, top, top);
+    }
+
+    /// The bilinear `w x h` block, `w` a multiple of 8, of the rows of
+    /// `source` from `origin`, into `output` at `stride`.
+    #[inline(never)]
+    pub(super) fn block<S: Simd>(
+        simd: S,
+        source: &[u8],
+        ([origin, source_stride], [w, h]): ([usize; 2], [usize; 2]),
+        [h_phase, v_phase]: [u8; 2],
+        output: &mut [u16],
+        stride: usize,
+    ) {
+        let weights = (
+            u8x16::splat(simd, 16 - h_phase),
+            u8x16::splat(simd, h_phase),
+        );
+        for column in (0..w).step_by(8) {
+            let horizontal = |row: usize| {
+                let bytes = load(simd, source, origin + column + row * source_stride);
+                bytes.widening_mul(weights.0).0 + bytes.slide::<1>(bytes).widening_mul(weights.1).0
+            };
+            let mut top = horizontal(0);
+            for row in 0..h {
+                let bottom = horizontal(row + 1);
+                let at = row * stride + column;
+                if let Some(slot) = output.get_mut(at..).and_then(<[u16]>::first_chunk_mut::<8>) {
+                    blend(simd, v_phase, top, bottom).store_array(slot);
+                }
+                top = bottom;
+            }
+        }
+    }
+
+    fearless_simd::kernel!(
+        #[inline]
+        pub(super) fn search(
+            t: Neon,
+            windows: [&[u8]; 2],
+            geometry: [usize; 2],
+            allow_center: bool,
+        ) -> (i32, i32) {
+            match geometry {
+                [16, 12] => search_for::<16, 12>(t, windows, allow_center),
+                [16, _] => search_for::<16, 20>(t, windows, allow_center),
+                [_, 12] => search_for::<24, 12>(t, windows, allow_center),
+                _ => search_for::<24, 20>(t, windows, allow_center),
+            }
+        }
+    );
+
+    /// [`search`] of `STRIDE`-wide windows and `SAD_H`-row areas: `uabd` and
+    /// `uadalp` over each 12-byte row at stride 16, or 20-byte row at stride
+    /// 24 (its last four bytes from a second load), then one `uaddlv`.
+    #[inline]
+    #[target_feature(enable = "neon")]
+    fn search_for<const STRIDE: usize, const SAD_H: usize>(
+        t: Neon,
+        [first, second]: [&[u8]; 2],
+        allow_center: bool,
+    ) -> (i32, i32) {
+        use core::arch::aarch64::{
+            uint8x16_t, vabdq_u8, vaddlvq_u16, vandq_u8, vdupq_n_u16, vpadalq_u8,
+        };
+        let keep = |lanes: core::ops::Range<usize>| -> uint8x16_t {
+            u8x16::load_array(
+                t,
+                core::array::from_fn(|lane| if lanes.contains(&lane) { u8::MAX } else { 0 }),
+            )
+            .into()
+        };
+        let (low, high) = (keep(0..12), keep(12..16));
+        let sad = |dy: i32, dx: i32| -> u32 {
+            let start = |dy: i32, dx: i32| ((2 + dy) * STRIDE as i32 + 2 + dx) as usize;
+            let (a, b) = (start(dy, dx), start(-dy, -dx));
+            let diff = |at: usize| -> uint8x16_t {
+                vabdq_u8(
+                    load(t, first, a + at).into(),
+                    load(t, second, b + at).into(),
+                )
+            };
+            let mut sum = vdupq_n_u16(0);
+            for row in (0..SAD_H).step_by(2) {
+                let at = row * STRIDE;
+                if STRIDE == 16 {
+                    sum = vpadalq_u8(sum, vandq_u8(diff(at), low));
+                } else {
+                    sum = vpadalq_u8(sum, diff(at));
+                    sum = vpadalq_u8(sum, vandq_u8(diff(at + 4), high));
+                }
+            }
+            vaddlvq_u16(sum)
+        };
+        super::best_offset(
+            || sad(0, 0),
+            || super::REFINEMV_NEIGHBORS.map(|(dy, dx)| sad(dy, dx)),
             (2 * (STRIDE - 4) * SAD_H) as u32,
             allow_center,
         )

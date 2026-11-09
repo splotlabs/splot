@@ -113,7 +113,7 @@ fn byte_lane_sinks_match_the_oracle_for_every_shape_and_phase() {
 
 /// The byte search window and its SADs against the general bilinear
 /// prediction and a scalar SAD, for every window shape and phase pair.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn byte_search_window_and_sads_match_the_general_path() {
     let (ref_w, ref_h) = (72usize, 64usize);
@@ -213,7 +213,7 @@ fn byte_search_window_and_sads_match_the_general_path() {
 /// The byte bilinear kernel against the general prediction for every phase
 /// pair and several shapes and strides, and its refusal of a block whose
 /// taps would clamp.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn byte_bilinear_blocks_match_the_general_path() {
     let (ref_w, ref_h) = (72usize, 60usize);
@@ -267,7 +267,17 @@ fn clamped_cells_match_the_oracle() {
     let bytes = texture.iter().map(|&s| s as u8).collect::<Vec<_>>();
     let view = ReferencePlaneView::new(&bytes, ref_w, ref_h).unwrap();
     for size in [4usize, 8] {
-        for (dx, dy) in [(-3, 0), (4, 0), (0, -2), (0, 5), (-1, 3), (2, -4)] {
+        for (dx, dy) in [
+            (-3, 0),
+            (4, 0),
+            (0, -2),
+            (0, 5),
+            (-1, 3),
+            (2, -4),
+            (-5, 1),
+            (6, -6),
+            (1, 7),
+        ] {
             for phase in [0, 5, 8, 80, 133, 255] {
                 let interp = [
                     InterpolationFilter::EightTap,
@@ -372,7 +382,7 @@ fn paired_put_matches_two_single_puts() {
 /// A program run stores and reports exactly the cells the placement entry
 /// stores, for windows inside, across and outside their clip bounds and
 /// storage, with more cells than one setup batch.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn compound_cell_programs_match_the_placement_entry() {
     let (ref_w, ref_h) = (40usize, 32usize);
@@ -452,7 +462,7 @@ fn compound_cell_programs_match_the_placement_entry() {
 /// The placement entry of a compound cell stores what the validated
 /// compound entry stores for the same parameters, inside and across its
 /// clip bounds, and declines shapes outside the register cells.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn placed_compound_cells_match_the_compound_entry() {
     let (ref_w, ref_h) = (40usize, 32usize);
@@ -528,4 +538,142 @@ fn placed_compound_cells_match_the_compound_entry() {
         &mut out[..60],
         8
     ));
+}
+
+/// The AArch64 byte-lane kernels against the portable kernels on the same
+/// blocks: every filter, both passes at phases of each tap-pair count, 4- to
+/// 32-wide blocks with clamped rows, column-remapped windows, every
+/// eight-bit sink and the fused compound, over noise and extreme contrast.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn neon_byte_lanes_match_the_portable_kernels() {
+    let (stride, rows) = (72usize, 44usize);
+    let textures: [Vec<u8>; 2] = [
+        (0..stride * rows)
+            .map(|i| ((i * 7919 + i / stride * 104_729) % 256) as u8)
+            .collect(),
+        (0..stride * rows)
+            .map(|i| if (i + i / stride) % 3 == 0 { 255 } else { 0 })
+            .collect(),
+    ];
+    let remap: [u8; 16] = core::array::from_fn(|lane| (lane as u8).saturating_sub(2).min(9));
+    for source in &textures {
+        for filter in 0..NUM_FILTER_TYPES {
+            for (case, [x_phase, y_phase]) in [[0, 0], [7, 0], [0, 9], [1, 15], [8, 8], [13, 4]]
+                .into_iter()
+                .enumerate()
+            {
+                let taps = |phase: usize| block::TAPS[filter][phase].as_ref();
+                for (w, h) in [(4, 4), (4, 16), (8, 2), (8, 8), (16, 4), (16, 16), (32, 8)] {
+                    for remapped in [false, true] {
+                        if remapped && (w > 8 || x_phase == 0) {
+                            continue;
+                        }
+                        let block = block::Block {
+                            source,
+                            stride,
+                            origin: 3 + case,
+                            top: case as isize - 3,
+                            rows: [0, 20 + case as isize],
+                            w,
+                            h,
+                            horizontal: taps(x_phase),
+                            vertical: taps(y_phase),
+                            remap: remapped.then_some(remap),
+                        };
+                        let label =
+                            format!("{filter} {w}x{h} phases {x_phase},{y_phase} {remapped}");
+                        let span = block.vertical.map_or(1, block::Taps::span);
+                        let len = block::stage_len(h + span - 1, w, block.vertical);
+                        let mut stage = vec![0i16; len];
+                        let run = |sink: &mut block::Sink<'_>, stage: &mut [i16], neon: bool| {
+                            if neon {
+                                assert!(eight_bit::predict(&block, sink, &mut []), "{label}");
+                            } else {
+                                portable::predict(&block, sink, stage);
+                            }
+                        };
+                        let out_stride = w + 5;
+                        let mut prep = [vec![0i32; out_stride * h], vec![0i32; out_stride * h]];
+                        let mut put = [vec![7u8; out_stride * h], vec![7u8; out_stride * h]];
+                        let mut wide = [vec![7u16; out_stride * h], vec![7u16; out_stride * h]];
+                        for (neon, ((prep, put), wide)) in
+                            (0..2).zip(prep.iter_mut().zip(&mut put).zip(&mut wide))
+                        {
+                            let neon = neon == 1;
+                            let sink = &mut block::Sink::Prep {
+                                output: prep,
+                                stride: out_stride,
+                            };
+                            run(sink, &mut stage, neon);
+                            run(
+                                &mut block::Sink::Put {
+                                    output: put,
+                                    stride: out_stride,
+                                },
+                                &mut stage,
+                                neon,
+                            );
+                            let sink = &mut block::Sink::PutWide {
+                                output: wide,
+                                stride: out_stride,
+                                max: 255,
+                            };
+                            run(sink, &mut stage, neon);
+                        }
+                        assert_eq!(prep[0], prep[1], "prep {label}");
+                        assert_eq!(put[0], put[1], "put {label}");
+                        assert_eq!(wide[0], wide[1], "put wide {label}");
+                        let pred0: Vec<i32> =
+                            (0..w * h).map(|i| (i as i32 * 397) % 8200 - 1100).collect();
+                        for forward in [8, 0, 5, 16] {
+                            let mut average =
+                                [vec![9u8; out_stride * h], vec![9u8; out_stride * h]];
+                            for (neon, output) in (0..2).zip(&mut average) {
+                                let sink = &mut block::Sink::Average {
+                                    pred0: &pred0,
+                                    forward,
+                                    output,
+                                    stride: out_stride,
+                                };
+                                run(sink, &mut stage, neon == 1);
+                            }
+                            assert_eq!(average[0], average[1], "average {forward} {label}");
+                            if w * h > 64 {
+                                continue;
+                            }
+                            let other = block::Block {
+                                horizontal: taps(y_phase),
+                                vertical: taps(x_phase),
+                                remap: None,
+                                ..block
+                            };
+                            let mut fused = [vec![3u8; out_stride * h], vec![3u8; out_stride * h]];
+                            portable::compound_u8(
+                                [&block, &other],
+                                forward,
+                                &mut vec![0; 4096],
+                                &mut fused[0],
+                                out_stride,
+                            );
+                            assert!(eight_bit::compound(
+                                [&block, &other],
+                                forward,
+                                &mut [],
+                                &mut fused[1],
+                                out_stride
+                            ));
+                            assert_eq!(fused[0], fused[1], "compound {forward} {label}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let view = ReferencePlaneView::new(&textures[0], stride, rows).unwrap();
+    let params = SubpelPredictParams {
+        start_x: (9 << 10) + (5 << 6),
+        ..full_pel_params(InterpolationFilter::EightTap, 8, 8, 0, 0, 72, 44)
+    };
+    assert!(cell::put_cell(&view, &params).is_some());
 }
