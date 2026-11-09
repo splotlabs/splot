@@ -82,6 +82,27 @@ impl Pass {
         })
     }
 
+    const ALL: [Self; 18] = [
+        Self::Identity4,
+        Self::Identity8,
+        Self::Identity16,
+        Self::Identity32,
+        Self::Dct4,
+        Self::Adst4,
+        Self::Fdst4,
+        Self::Dct8,
+        Self::Adst8,
+        Self::Fdst8,
+        Self::Ddtx8,
+        Self::Fddt8,
+        Self::Dct16,
+        Self::Adst16,
+        Self::Fdst16,
+        Self::Ddtx16,
+        Self::Fddt16,
+        Self::Dct32,
+    ];
+
     /// Whether this is the factored `DCT` of a column pass.
     const fn is_dct(self) -> bool {
         matches!(self, Self::Dct4 | Self::Dct8 | Self::Dct16 | Self::Dct32)
@@ -1567,6 +1588,26 @@ const fn col_spec16(pass: Pass) -> Option<Spec<16, 8>> {
     })
 }
 
+/// The [`Spec`] of every [`Pass`] by `spec`, indexed by the pass.
+macro_rules! by_pass {
+    ($spec:ident) => {{
+        let mut out = [None; Pass::ALL.len()];
+        let mut i = 0;
+        while i < out.len() {
+            assert!(Pass::ALL[i] as usize == i);
+            out[i] = $spec(Pass::ALL[i]);
+            i += 1;
+        }
+        out
+    }};
+}
+
+static ROW_SPEC4: [Option<Spec<4, 2>>; 18] = by_pass!(row_spec4);
+static ROW_SPEC8: [Option<Spec<8, 4>>; 18] = by_pass!(row_spec8);
+static COL_SPEC4: [Option<Spec<4, 2>>; 18] = by_pass!(col_spec4);
+static COL_SPEC8: [Option<Spec<8, 4>>; 18] = by_pass!(col_spec8);
+static COL_SPEC16: [Option<Spec<16, 8>>; 18] = by_pass!(col_spec16);
+
 /// The `W`-sample rows (4 or 8) of a coefficient prefix: row `r` whole,
 /// the one partial row zero-padded, zero past the prefix.
 #[derive(Clone, Copy)]
@@ -1624,7 +1665,7 @@ fn small<
 >(
     t: Avx2,
     (coeffs, dq): (&[i32], &FlatDequant),
-    (row, col): (Spec<W, WH>, Spec<H, HH>),
+    (row, col): (&Spec<W, WH>, &Spec<H, HH>),
     (row_shift, col_shift): (u32, u32),
     (dst, stride): (&mut [u8], usize),
 ) {
@@ -1696,7 +1737,7 @@ fn add_small(
     let input = (coeffs, dq);
     macro_rules! run {
         ($rs:literal, $f:ident [$($g:literal),*], $row:expr, $col:expr) => {{
-            let (Some(row), Some(col)) = ($row, $col) else {
+            let (Some(row), Some(col)) = (&$row[row as usize], &$col[col as usize]) else {
                 return false;
             };
             let specs = (row, col);
@@ -1712,12 +1753,12 @@ fn add_small(
         }};
     }
     match (shape.w_log2, shape.h_log2, shape.rescale) {
-        (2, 2, false) => run!(false, small[4, 2, 4, 2], row_spec4(row), col_spec4(col)),
-        (2, 3, true) => run!(true, small[4, 2, 8, 4], row_spec4(row), col_spec8(col)),
-        (3, 2, true) => run!(true, small[8, 4, 4, 2], row_spec8(row), col_spec4(col)),
-        (3, 3, false) => run!(false, small[8, 4, 8, 4], row_spec8(row), col_spec8(col)),
-        (2, 4, false) => run!(false, small[4, 2, 16, 8], row_spec4(row), col_spec16(col)),
-        (3, 4, true) => run!(true, small[8, 4, 16, 8], row_spec8(row), col_spec16(col)),
+        (2, 2, false) => run!(false, small[4, 2, 4, 2], ROW_SPEC4, COL_SPEC4),
+        (2, 3, true) => run!(true, small[4, 2, 8, 4], ROW_SPEC4, COL_SPEC8),
+        (3, 2, true) => run!(true, small[8, 4, 4, 2], ROW_SPEC8, COL_SPEC4),
+        (3, 3, false) => run!(false, small[8, 4, 8, 4], ROW_SPEC8, COL_SPEC8),
+        (2, 4, false) => run!(false, small[4, 2, 16, 8], ROW_SPEC4, COL_SPEC16),
+        (3, 4, true) => run!(true, small[8, 4, 16, 8], ROW_SPEC8, COL_SPEC16),
         _ => false,
     }
 }
