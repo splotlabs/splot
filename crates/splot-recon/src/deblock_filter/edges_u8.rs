@@ -185,10 +185,11 @@ macro_rules! for_chunks {
         for chunk in 0..count.div_ceil(SEGMENTS) {
             let $start = (chunk * SEGMENTS).min(count - SEGMENTS);
             let done = chunk * SEGMENTS - $start;
-            let lanes: [i64; SEGMENTS] = $edges
-                .get($start..)
-                .and_then(<[DeblockEdge]>::first_chunk::<SEGMENTS>)
-                .map_or([0; SEGMENTS], |run| run.map(|edge| edge.0 as i64));
+            let Some(run) = $edges.get($start..).and_then(<[DeblockEdge]>::first_chunk::<SEGMENTS>)
+            else {
+                return;
+            };
+            let lanes = run.map(|edge| edge.0 as i64);
             if lanes.iter().fold(0, |any, lane| any | lane) == 0 {
                 continue;
             }
@@ -521,6 +522,8 @@ kernel!(
             return;
         }
         let columns = live.len();
+        let span = (LINES - 1) * stride;
+        let block_len = span + 2 * REACH;
         for chunk in 0..segments.div_ceil(SEGMENTS) {
             let start = (chunk * SEGMENTS).min(segments - SEGMENTS);
             let done = chunk * SEGMENTS - start;
@@ -531,17 +534,20 @@ kernel!(
             if rows.iter().any(|row| row.len() != columns) {
                 return;
             }
+            let origin = first + 4 * start * stride - REACH;
+            let Some(band) =
+                samples.get_mut(origin..origin + 4 * columns.saturating_sub(1) + block_len)
+            else {
+                return;
+            };
             for (column, _) in live.iter().enumerate().filter(|(_, live)| **live) {
                 let lanes = rows.map(|row| row.get(column).map_or(0, |edge| edge.0 as i64));
                 let (low, high, widest) = pack(token, lanes, done as i32);
                 if widest == 0 {
                     continue;
                 }
-                let first = first + 4 * column;
-                let origin = first + 4 * start * stride - REACH;
-                let span = (LINES - 1) * stride;
-                let Some(block) = samples.get_mut(origin..origin + span + 2 * REACH) else {
-                    continue;
+                let Some(block) = band.get_mut(4 * column..4 * column + block_len) else {
+                    return;
                 };
                 macro_rules! lines {
                     ($lines:ident, $line:ident, $row:ident, $body:block) => {{
@@ -565,15 +571,15 @@ kernel!(
                 let word = |line: &[u8; 2 * REACH]| {
                     let mut bytes = [0; 8];
                     bytes.copy_from_slice(&line[REACH / 2..REACH / 2 + 8]); // splot-copy-ok: one 8-byte load
-                    i64::from_le_bytes(bytes)
+                    f64::from_bits(u64::from_le_bytes(bytes))
                 };
+                // Double lanes: two lines load as one `movsd` and one `movhps`.
+                let pair = |low, high| _mm_castpd_si128(_mm_setr_pd(word(low), word(high)));
                 let mut v = [_mm256_setzero_si256(); 8];
                 each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
-                    v[I] = _mm256_setr_epi64x(
-                        word(&copies[2 * I]),
-                        word(&copies[2 * I + 1]),
-                        word(&copies[16 + 2 * I]),
-                        word(&copies[17 + 2 * I]),
+                    v[I] = _mm256_inserti128_si256::<1>(
+                        _mm256_castsi128_si256(pair(&copies[2 * I], &copies[2 * I + 1])),
+                        pair(&copies[16 + 2 * I], &copies[17 + 2 * I]),
                     );
                 });
                 for _ in 0..4 {

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{LoopRestorationSourceBounds, ReconError, Result as ReconResult};
 
 const MI_SIZE: usize = 4;
@@ -506,17 +505,8 @@ pub(crate) fn fixed_largest_420_chroma_tx_size_from_luma_4x4(
     if n4w < 2 || n4h < 2 || !n4w.is_power_of_two() || !n4h.is_power_of_two() {
         return None;
     }
-    let luma_w_log2 = n4w.trailing_zeros().checked_add(2)?;
-    let luma_h_log2 = n4h.trailing_zeros().checked_add(2)?;
-    tx_size_from_log2(luma_w_log2.checked_sub(1)?, luma_h_log2.checked_sub(1)?)
-}
-
-fn tx_size_from_log2(w_log2: u32, h_log2: u32) -> Option<usize> {
-    let w = i32::try_from(w_log2).ok()?;
-    let h = i32::try_from(h_log2).ok()?;
-    TX_WIDTH_LOG2.iter().enumerate().find_map(|(tx_size, &tw)| {
-        (tw == w && TX_HEIGHT_LOG2.get(tx_size).copied() == Some(h)).then_some(tx_size)
-    })
+    let half_log2 = |n4: usize| n4.trailing_zeros() + 1;
+    splot_recon::tx_size_index(half_log2(n4w), half_log2(n4h)).ok()
 }
 
 pub(crate) fn wienerns_lr_source_block_bounds(
