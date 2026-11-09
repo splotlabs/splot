@@ -314,18 +314,21 @@ mod avx2 {
                 _mm256_setzero_si256(),
             )
         };
-        let horizontal = |row: usize| -> [__m256i; 2] {
+        let horizontal = |row: usize| -> Option<[__m256i; 2]> {
             let at = origin + row * stride;
-            let low = _mm256_broadcastsi128_si256(load16(t, source, at));
-            let low = _mm256_maddubs_epi16(_mm256_shuffle_epi8(low, low_pairs), weights);
+            let bytes = source.get(at..at + if W == 24 { 31 } else { 16 })?;
+            let half = |at: usize| -> Option<__m256i> {
+                let half = u8x16::load_array_ref(t, bytes.get(at..)?.first_chunk::<16>()?);
+                Some(_mm256_broadcastsi128_si256(half.into()))
+            };
+            let low = _mm256_maddubs_epi16(_mm256_shuffle_epi8(half(0)?, low_pairs), weights);
             if W != 24 {
-                return [low, low];
+                return Some([low, low]);
             }
-            let high = _mm256_broadcastsi128_si256(load16(t, source, at + 15));
-            [
+            Some([
                 low,
-                _mm256_maddubs_epi16(_mm256_shuffle_epi8(high, high_pairs), weights),
-            ]
+                _mm256_maddubs_epi16(_mm256_shuffle_epi8(half(15)?, high_pairs), weights),
+            ])
         };
         let (top_weight, bottom_weight) =
             (_mm256_set1_epi16(16 - v_phase), _mm256_set1_epi16(v_phase));
@@ -358,10 +361,14 @@ mod avx2 {
                 *bytes = _mm_cvtsi128_si64(_mm256_extracti128_si256::<1>(packed)).to_le_bytes();
             }
         };
-        let mut top = horizontal(0);
+        let Some(mut top) = horizontal(0) else {
+            return;
+        };
         write(0, top, top);
         for row in 1..H - 1 {
-            let bottom = horizontal(row);
+            let Some(bottom) = horizontal(row) else {
+                return;
+            };
             write(row, top, bottom);
             top = bottom;
         }
@@ -466,24 +473,29 @@ mod avx2 {
             allow_center: bool,
         ) -> (i32, i32) {
             match geometry {
-                [16, 12] => search_for::<16, 12, 176>(t, windows, allow_center),
-                [16, _] => search_for::<16, 20, 304>(t, windows, allow_center),
-                [_, 12] => search_for::<24, 12, 272>(t, windows, allow_center),
-                _ => search_for::<24, 20, 464>(t, windows, allow_center),
+                [16, 12] => search_for::<16, 12, 176, 256>(t, windows, allow_center),
+                [16, _] => search_for::<16, 20, 304, 384>(t, windows, allow_center),
+                [_, 12] => search_for::<24, 12, 272, 384>(t, windows, allow_center),
+                _ => search_for::<24, 20, 464, 576>(t, windows, allow_center),
             }
         }
     );
 
-    /// [`search`] of `STRIDE`-wide windows and `SAD_H`-row areas, each
-    /// read as one `SPAN`-byte run: one masked 12-byte row per
+    /// [`search`] of `STRIDE`-wide windows of `AREA` bytes and `SAD_H`-row
+    /// areas, each read as one `SPAN`-byte run: one masked 12-byte row per
     /// `xmm` at stride 16, one masked 20-byte row per `ymm` at stride 24.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn search_for<const STRIDE: usize, const SAD_H: usize, const SPAN: usize>(
+    fn search_for<const STRIDE: usize, const SAD_H: usize, const SPAN: usize, const AREA: usize>(
         t: Avx2,
         [first, second]: [&[u8]; 2],
         allow_center: bool,
     ) -> (i32, i32) {
+        let (Some(first), Some(second)) =
+            (first.first_chunk::<AREA>(), second.first_chunk::<AREA>())
+        else {
+            return (0, 0);
+        };
         let mask: __m256i = if STRIDE == 16 {
             u8x32::load_array(t, MASK_12).into()
         } else {
