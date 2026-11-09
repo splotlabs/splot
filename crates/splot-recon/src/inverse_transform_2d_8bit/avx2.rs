@@ -795,6 +795,21 @@ fn row_wide<const N: usize, const H: usize>(
             }
         }
     }
+    put_row_pairs::<N>(t, (&ya, &yb), split, out);
+    true
+}
+
+/// Stores the `N / 8` output chunks of rows `ya` and `yb` as column pairs,
+/// those of the second half of a `split` row reversed.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn put_row_pairs<const N: usize>(
+    t: Avx2,
+    (ya, yb): (&[__m256i; 4], &[__m256i; 4]),
+    split: bool,
+    out: &mut [i32],
+) {
+    let chunks = N / 8;
     for c in 0..chunks {
         let packed = if split && c >= chunks / 2 {
             let reversed = pair_columns(t, ya[c], yb[c], &INTERLEAVE_REVERSED);
@@ -804,7 +819,131 @@ fn row_wide<const N: usize, const H: usize>(
         };
         store8(t, out, 8 * c, packed);
     }
-    true
+}
+
+/// The coded rows of a 16- or 32-wide block whose inputs are zero past
+/// column 8: the first 8 columns of row `r` at `rows[r]`, with the
+/// `Round2(x * 2896, 12)` row input rescale when `rescale`.
+#[derive(Clone, Copy)]
+struct Rows8<'a> {
+    rows: &'a [[i32; 8]],
+    rescale: bool,
+}
+
+impl Rows8<'_> {
+    /// The eight clamped `i16` inputs of row `r`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn x8(self, t: Avx2, r: usize) -> __m128i {
+        let Some(row) = self.rows.get(r) else {
+            return _mm_setzero_si128();
+        };
+        let mut v = load8(t, row, 0);
+        if self.rescale {
+            v = rescale(v);
+        }
+        _mm_packs_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v))
+    }
+}
+
+/// [`row_pass`] of a block whose `rows` hold inputs only in their first 8
+/// columns, each row on its four input pairs.
+#[inline(never)]
+#[target_feature(enable = "avx2")]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "rows a and b of a column pair, as in § 7.15.4.1"
+)]
+fn row_pass8<const N: usize, const H: usize, const KIND: u8>(
+    t: Avx2,
+    rows: Rows8<'_>,
+    (pairs, shift): (&[(u8, u8)], u32),
+    kernel: &[[u32; N]; H],
+    scratch: &mut [i32],
+) -> u32 {
+    let round = Round::new(shift);
+    let chunks = N / 8;
+    let k = |p: usize, c: usize| weights(t, kernel[p].get(8 * c..).unwrap_or_default());
+    let row = |x: __m128i| {
+        let x = if KIND == SPLIT {
+            _mm_shuffle_epi8(x, _mm256_castsi256_si128(bytes(t, &SPLIT_ORDER)))
+        } else {
+            x
+        };
+        let x = _mm256_broadcastsi128_si256(x);
+        let p = [
+            _mm256_shuffle_epi32::<0x00>(x),
+            _mm256_shuffle_epi32::<0x55>(x),
+            _mm256_shuffle_epi32::<0xAA>(x),
+            _mm256_shuffle_epi32::<0xFF>(x),
+        ];
+        let madd =
+            |acc, i: usize, c: usize| _mm256_add_epi32(acc, _mm256_madd_epi16(p[i], k(i, c)));
+        let shift = |v| _mm256_sra_epi32(v, round.shift);
+        let mut y = [_mm256_setzero_si256(); 4];
+        if KIND == SPLIT {
+            for c in 0..chunks / 2 {
+                let even = madd(madd(round.rnd, 0, c), 2, c);
+                let odd = madd(madd(_mm256_setzero_si256(), 1, c), 3, c);
+                y[c] = shift(_mm256_add_epi32(even, odd));
+                y[chunks - 1 - c] = shift(_mm256_sub_epi32(even, odd));
+            }
+        } else {
+            for (c, y) in y.iter_mut().enumerate().take(chunks) {
+                *y = shift((0..4).fold(round.rnd, |acc, i| madd(acc, i, c)));
+            }
+        }
+        y
+    };
+    let coded = rows.rows.len();
+    let mut mask = 0;
+    for (q, &(a, b)) in pairs.iter().enumerate() {
+        let (a, b) = (usize::from(a), usize::from(b));
+        if a >= coded && b >= coded {
+            continue;
+        }
+        let (xa, xb) = (rows.x8(t, a), rows.x8(t, b));
+        if is_zero(_mm256_set_m128i(xa, xb)) {
+            continue;
+        }
+        let Some(out) = scratch.get_mut(q * N..q * N + N) else {
+            break;
+        };
+        let ya = row(xa);
+        let yb = if b < coded {
+            row(xb)
+        } else {
+            [_mm256_setzero_si256(); 4]
+        };
+        put_row_pairs::<N>(t, (&ya, &yb), KIND == SPLIT, out);
+        mask |= 1 << q;
+    }
+    mask
+}
+
+/// The row pass of a 16- or 32-wide `shape` over `rows` (see [`Rows8`]),
+/// or `None` for an identity row pass.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn rows8_pass(
+    t: Avx2,
+    shape: &InverseTransformAdd8,
+    rows: Rows8<'_>,
+    scratch: &mut [i32],
+) -> Option<u32> {
+    let p = (
+        pairs_of(shape.passes.1, shape.h()),
+        u32::from(shape.row_shift),
+    );
+    Some(match shape.passes.0 {
+        Pass::Dct16 => row_pass8::<16, 8, SPLIT>(t, rows, p, &DCT16_SPLIT, scratch),
+        Pass::Adst16 => row_pass8::<16, 8, DENSE>(t, rows, p, &ADST16, scratch),
+        Pass::Fdst16 => row_pass8::<16, 8, DENSE>(t, rows, p, &FDST16, scratch),
+        Pass::Ddtx16 => row_pass8::<16, 8, DENSE>(t, rows, p, &DDTX16, scratch),
+        Pass::Fddt16 => row_pass8::<16, 8, DENSE>(t, rows, p, &FDDT16, scratch),
+        Pass::Dct32 => row_pass8::<32, 16, SPLIT>(t, rows, p, &DCT32_SPLIT, scratch),
+        _ => return None,
+    })
 }
 
 /// `sum[n] = init + Σ pair[p] * k[p][n]` over the pairs written in `mask`.
@@ -1736,10 +1875,17 @@ fearless_simd::kernel!(
         let Some((pairs, staged)) = scratch.split_first_chunk_mut::<{ 16 * 32 }>() else {
             return;
         };
+        let (coeff_rows, _) = coeffs.as_chunks::<8>();
+        let rows8 = rows8.then(|| Rows8 {
+            rows: coeff_rows.get(..h).unwrap_or(coeff_rows),
+            rescale: shape.rescale,
+        });
         let mask = if w <= 8 {
             rows_direct(t, shape, (coeffs, dq, dequant.is_some()), pairs)
+        } else if let Some(mask) = rows8.and_then(|rows| rows8_pass(t, shape, rows, pairs)) {
+            mask
         } else {
-            let coded = if rows8 {
+            let coded = if rows8.is_some() {
                 stage_rows8(t, shape, coeffs, staged)
             } else {
                 let coded = (coeffs.len() + w - 1) >> shape.w_log2;
