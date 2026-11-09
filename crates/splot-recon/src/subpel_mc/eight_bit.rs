@@ -202,6 +202,32 @@ pub(super) mod avx2 {
         samples.get(at..)?.first_chunk::<N>()
     }
 
+    /// A window row start of [`tap_bytes`]; a `u32` start ends one compare
+    /// from the storage end.
+    pub(in crate::subpel_mc) trait RowStart: Copy {
+        fn row<const N: usize>(self, source: &[u8]) -> Option<&[u8; N]>;
+    }
+
+    impl RowStart for usize {
+        #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+        #[inline(always)]
+        fn row<const N: usize>(self, source: &[u8]) -> Option<&[u8; N]> {
+            chunk(source, self)
+        }
+    }
+
+    impl RowStart for u32 {
+        #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+        #[inline(always)]
+        fn row<const N: usize>(self, source: &[u8]) -> Option<&[u8; N]> {
+            let at = self as usize;
+            if at + N > source.len() {
+                return None;
+            }
+            chunk(source, at)
+        }
+    }
+
     /// Calls `$f::<W, P>` for the run-time strip width and pair count.
     macro_rules! specialize {
         ($width:expr, $pairs:expr, $f:ident($($arg:expr),*)) => {
@@ -428,20 +454,17 @@ pub(super) mod avx2 {
     /// holds the bytes its outputs read.
     #[inline]
     #[target_feature(enable = "avx2")]
-    pub(in crate::subpel_mc) fn tap_bytes<const W: usize>(
+    pub(in crate::subpel_mc) fn tap_bytes<const W: usize, S: RowStart>(
         t: Avx2,
         source: &[u8],
-        starts: [usize; 4],
+        starts: [S; 4],
         remap: Option<__m128i>,
     ) -> Option<__m256i> {
         let row = |q: usize| starts[q];
         let start = starts[0];
         if let Some(remap) = remap {
             let line = |q: usize| -> Option<__m128i> {
-                Some(_mm_shuffle_epi8(
-                    load16(t, chunk(source, starts[q])?),
-                    remap,
-                ))
+                Some(_mm_shuffle_epi8(load16(t, starts[q].row(source)?), remap))
             };
             return Some(if W == 4 {
                 _mm256_set_m128i(
@@ -454,17 +477,17 @@ pub(super) mod avx2 {
         }
         Some(match W {
             4 => _mm256_set_epi64x(
-                load8(*chunk(source, row(3))?),
-                load8(*chunk(source, row(2))?),
-                load8(*chunk(source, row(1))?),
-                load8(*chunk(source, row(0))?),
+                load8(*row(3).row(source)?),
+                load8(*row(2).row(source)?),
+                load8(*row(1).row(source)?),
+                load8(*row(0).row(source)?),
             ),
             8 => _mm256_set_m128i(
-                load16(t, chunk(source, row(1))?),
-                load16(t, chunk(source, row(0))?),
+                load16(t, row(1).row(source)?),
+                load16(t, row(0).row(source)?),
             ),
             _ => {
-                let bytes = chunk::<24, u8>(source, start)?;
+                let bytes = start.row::<24>(source)?;
                 let (low, high) = (bytes.first_chunk::<16>()?, bytes.last_chunk::<16>()?);
                 _mm256_set_m128i(load16(t, high), load16(t, low))
             }
@@ -603,7 +626,7 @@ pub(super) mod avx2 {
         for strip in 0..block.w / W {
             for row in (0..block.h).step_by(16 / W) {
                 let starts = starts::<W>(block, row, strip, usize::MAX);
-                let Some(bytes) = tap_bytes::<W>(t, block.source, starts, remap) else {
+                let Some(bytes) = tap_bytes::<W, _>(t, block.source, starts, remap) else {
                     return;
                 };
                 let sums = filter.sums::<P>(bytes);
@@ -692,7 +715,7 @@ pub(super) mod avx2 {
             .enumerate()
         {
             let starts = starts::<W>(block, group * (16 / W), strip, rows - 1);
-            let Some(bytes) = tap_bytes::<W>(t, block.source, starts, remap) else {
+            let Some(bytes) = tap_bytes::<W, _>(t, block.source, starts, remap) else {
                 return;
             };
             let values = _mm256_mulhrs_epi16(filter.sums::<P>(bytes), round);
