@@ -43,8 +43,9 @@ pub(in crate::subpel_mc) fn predict<S: Simd>(simd: S, block: &Block<'_, u8>, sin
     passes(simd, block, put, &mut Out::Sink(sink));
 }
 
-/// Predicts both blocks of a compound cell of at most 64 samples, whose
-/// widths [`fits`], and stores their COMPOUND_AVERAGE into `output`.
+/// Predicts both blocks of a compound cell of at most 64 samples (or of
+/// two full-sample blocks of any size), whose widths [`fits`], and stores
+/// their COMPOUND_AVERAGE into `output`.
 #[inline]
 pub(in crate::subpel_mc) fn compound<S: Simd>(
     simd: S,
