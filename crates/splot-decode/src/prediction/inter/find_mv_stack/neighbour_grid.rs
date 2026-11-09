@@ -18,6 +18,9 @@ use core::ops::Range;
 use super::{
     CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, Mv, SWITCHABLE_FILTERS, TIP_REF_FRAME, warp_sub_mv_at,
 };
+use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
+    SpatialIntrabcProbes, SpatialScanGeometry, capture_spatial_intrabc_probes,
+};
 use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
 use crate::tile::SbRowWindow;
 
@@ -489,9 +492,6 @@ fn take_spare_plane<T: Send + 'static>(plane: &mut Vec<T>, cells: usize) {
 }
 
 /// Returns a retired grid's plane and tables to the per-thread spare set.
-///
-/// The flag log is not among them: nothing takes a log back, so parking one
-/// would hold a spare slot against the storage that is taken back.
 impl Drop for NeighbourMvGrid {
     fn drop(&mut self) {
         use crate::support::reusable_scratch::recycle_pooled_vec;
@@ -522,21 +522,6 @@ pub(crate) struct GridCheckpoint {
     cells: Vec<Option<NonZeroU32>>,
 }
 
-/// One leaf's flag-plane publication, replayable onto a second grid.
-///
-/// A parse pass that hands its units to a resolve pass running later, or
-/// elsewhere, logs what it published so the resolve pass can rebuild the same
-/// flag plane on its own grid instead of sharing the parser's. A replay is
-/// the publication [`NeighbourMvGrid::record_flags`] made, so it cannot drift.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct NeighbourFlagRecord {
-    r: u32,
-    c: u32,
-    n4w: u32,
-    n4h: u32,
-    flags: NeighbourFlags,
-}
-
 #[derive(Default)]
 pub(crate) struct NeighbourMvGrid {
     pub(super) origin_row: usize,
@@ -549,10 +534,9 @@ pub(crate) struct NeighbourMvGrid {
     /// First grid row past the window's superblock row, zero before the first.
     sb_row_end: usize,
     pub(super) planes: GridPlanes,
-    /// Flag publications since the last [`NeighbourMvGrid::take_flag_log`],
-    /// collected only while logging is on.
-    flag_log: Vec<NeighbourFlagRecord>,
-    logging: bool,
+    /// Whether only the edge lines are kept: a resolve pass rebuilds the
+    /// plane on its own grid from the parsed leaves.
+    edges_only: bool,
     /// With [`Self::track_edges`], the last leaf on each tile column and row
     /// (see `TileMiSizeState`), and `above` as the superblock row began.
     above: Vec<NeighbourFlags>,
@@ -595,15 +579,14 @@ impl NeighbourMvGrid {
             tile_cells,
         )
         .map_err(|_| TileGridConstructionError::Allocation)?;
-        self.flag_log.clear();
-        self.logging = false;
+        self.edges_only = false;
         self.above.clear();
         Ok(())
     }
 
-    /// Starts logging flag publications for later replay onto another grid.
-    pub(crate) const fn log_flags(&mut self) {
-        self.logging = true;
+    /// Publishes only the edge lines from now on.
+    pub(crate) const fn keep_edges_only(&mut self) {
+        self.edges_only = true;
     }
 
     /// Keeps the edge lines that the parse's probes read.
@@ -674,26 +657,6 @@ impl NeighbourMvGrid {
         })
     }
 
-    /// Moves the flag publications made since the last call into `into`,
-    /// handing `into`'s emptied storage back to the log.
-    pub(crate) fn take_flag_log(&mut self, into: &mut Vec<NeighbourFlagRecord>) {
-        into.clear();
-        core::mem::swap(&mut self.flag_log, into);
-    }
-
-    /// Replays one unit's logged flag publications onto this grid.
-    pub(crate) fn replay_flag_log(&mut self, records: &[NeighbourFlagRecord]) {
-        for record in records {
-            self.publish_flags(
-                record.r as usize,
-                record.c as usize,
-                record.n4w as usize,
-                record.n4h as usize,
-                record.flags,
-            );
-        }
-    }
-
     /// Publishes the flag plane for one leaf. The entropy pass calls this as
     /// soon as the leaf's syntax is parsed, before any § 7.12 resolution.
     pub(crate) fn record_flags(
@@ -704,17 +667,7 @@ impl NeighbourMvGrid {
         n4h: usize,
         syntax: NeighbourFlagSyntax,
     ) {
-        let flags = NeighbourFlags::from_syntax(syntax);
-        if self.logging {
-            self.flag_log.push(NeighbourFlagRecord {
-                r: r as u32,
-                c: c as u32,
-                n4w: n4w as u32,
-                n4h: n4h as u32,
-                flags,
-            });
-        }
-        self.publish_flags(r, c, n4w, n4h, flags);
+        self.publish_flags(r, c, n4w, n4h, NeighbourFlags::from_syntax(syntax));
     }
 
     fn publish_flags(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, flags: NeighbourFlags) {
@@ -730,7 +683,7 @@ impl NeighbourMvGrid {
                     crate::support::fill_mi_run(run, flags);
                 }
             }
-            if self.logging {
+            if self.edges_only {
                 return;
             }
         }
@@ -1476,6 +1429,28 @@ impl NeighbourMvGrid {
         let cell = self.get(i32::try_from(r).ok()?, i32::try_from(c).ok()?)?;
         (cell.flags.ref_frame0() == INTRABC_REF_FRAME && cell.flags.ref_frame1().is_none())
             .then_some(cell.motion.mv)
+    }
+
+    /// The § 7.12.2.6 spatial IntraBC probes of a block, over the leaves
+    /// resolved so far: those decoded before it.
+    pub(crate) fn capture_spatial_intrabc_probes(
+        &self,
+        block: &super::MvBlockContext,
+    ) -> SpatialIntrabcProbes {
+        let geometry = SpatialScanGeometry {
+            mi_row: block.mi_row,
+            mi_col: block.mi_col,
+            n4w: block.bw4,
+            n4h: block.bh4,
+            mi_rows: block.mi_rows,
+            mi_cols: block.mi_cols,
+            sb_size4: block.sb_h4,
+        };
+        let base_c = |r: usize, c: usize| {
+            self.base_c_at(i32::try_from(r).ok()?, i32::try_from(c).ok()?)
+                .map(|col| col as usize)
+        };
+        capture_spatial_intrabc_probes(geometry, |r, c| base_c(r, c).is_some(), base_c)
     }
 
     #[cfg(debug_assertions)]

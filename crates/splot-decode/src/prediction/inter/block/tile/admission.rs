@@ -854,7 +854,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             else {
                 break;
             };
-            row.replay_flags(&mut resolve.grid);
+            row.replay_flags(&mut resolve.grid, frame_mv_precision(context.core)?);
             row.return_terminal_error()?;
             {
                 let ScheduledResolve { grid, state, .. } = &mut *resolve;

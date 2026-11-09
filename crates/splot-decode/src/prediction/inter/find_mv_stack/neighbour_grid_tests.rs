@@ -5,8 +5,12 @@
 
 #![allow(clippy::unwrap_used)]
 
-use super::{CWP_EQUAL, MotionMode, Mv, warp_sub_mv_at};
-use super::{NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid};
+use super::super::MvBlockContext;
+use super::{CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, Mv, warp_sub_mv_at};
+use super::{
+    NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid,
+    ZERO_NEIGHBOUR_MOTION_VALUES,
+};
 use crate::prediction::TileGridConstructionError;
 
 #[test]
@@ -326,7 +330,7 @@ fn the_direct_index_matches_the_window_row_mapping() {
     }
 }
 
-/// A logging grid keeps only edge lines, and reads the same immediate and
+/// An edges-only grid reads the same immediate and
 /// superblock-border probes as a grid that keeps the plane, for leaves of
 /// every shape published in partition order, odd columns on a superblock
 /// row's top included.
@@ -337,7 +341,7 @@ fn edge_lines_read_the_probes_of_the_plane() {
     let mut edges = NeighbourMvGrid::default();
     edges.reset_for_tile(0..16, 0..16, 8).unwrap();
     edges.track_edges().unwrap();
-    edges.log_flags();
+    edges.keep_edges_only();
     let leaves = [
         (0, 0, 4, 4),
         (0, 4, 4, 4),
@@ -402,4 +406,108 @@ fn edge_lines_read_the_probes_of_the_plane() {
         edges.record_flags(r, c, n4w, n4h, syntax);
     }
     assert!(!plane.window_violated() && !edges.window_violated());
+}
+
+/// Partition-order leaves of one `size` square: whole, two halves, or four
+/// recursive quarters, chosen from `seed`.
+fn partition_leaves(r: usize, c: usize, size: usize, seed: &mut u32, out: &mut Vec<[usize; 4]>) {
+    *seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+    let half = size / 2;
+    match (size, (*seed >> 16) % 4) {
+        (1, _) | (_, 0) => out.push([r, c, size, size]),
+        (_, 1) => out.extend([[r, c, size, half], [r + half, c, size, half]]),
+        (_, 2) => out.extend([[r, c, half, size], [r, c + half, half, size]]),
+        _ => {
+            for (dr, dc) in [(0, 0), (0, half), (half, 0), (half, half)] {
+                partition_leaves(r + dr, c + dc, half, seed, out);
+            }
+        }
+    }
+}
+
+/// The inter-frame `use_intrabc` / `skip` contexts read from the parse's edge
+/// lines, and the spatial IntraBC probes the resolve pass captures over the
+/// leaves it has resolved, match what the IntraBC prelude grid reads.
+#[test]
+fn neighbour_grid_reads_the_intrabc_prelude_neighbours() {
+    use crate::filters::wienerns_lr::intrabc_records::{
+        IntrabcBlockContext, IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip,
+        TileIntrabcPreludeState,
+    };
+
+    let mut sequence = splot_core::headers::frame::build_minimal_intra_sequence_header().unwrap();
+    let partition = sequence.partition.as_mut().unwrap();
+    partition.use_128x128_superblock = false;
+    partition.use_256x256_superblock = false;
+    let (sb4, rows, cols) = (16, 32, 48);
+    let mut state = TileIntrabcPreludeState::new_for_tile(
+        (rows, cols),
+        0..rows,
+        0..cols,
+        &sequence,
+        false,
+        true,
+    )
+    .unwrap();
+    let mut edges = NeighbourMvGrid::default();
+    edges.reset_for_tile(0..rows, 0..cols, sb4).unwrap();
+    edges.track_edges().unwrap();
+    edges.keep_edges_only();
+    let mut plane = NeighbourMvGrid::default();
+    plane.reset_for_tile(0..rows, 0..cols, sb4).unwrap();
+    let mut seed = 7;
+    for (sb_r, sb_c) in (0..rows / sb4).flat_map(|r| (0..cols / sb4).map(move |c| (r, c))) {
+        let mut leaves = Vec::new();
+        partition_leaves(sb_r * sb4, sb_c * sb4, sb4, &mut seed, &mut leaves);
+        let syntax = |index: usize| NeighbourFlagSyntax {
+            is_inter: !index.is_multiple_of(4),
+            ref_frame0: if index % 4 == 1 {
+                INTRABC_REF_FRAME
+            } else {
+                (index % 7) as i8
+            },
+            skip: !index.is_multiple_of(3),
+            ..NON_INTER_FLAG_SYNTAX
+        };
+        let base = seed as usize;
+        for (index, &[r, c, n4w, n4h]) in leaves.iter().enumerate() {
+            plane.record_flags(r, c, n4w, n4h, syntax(base + index));
+        }
+        for (index, [r, c, n4w, n4h]) in leaves.into_iter().enumerate() {
+            let flags = syntax(base + index);
+            let block = MvBlockContext {
+                mi_row: r,
+                mi_col: c,
+                bw4: n4w,
+                bh4: n4h,
+                sb_h4: sb4,
+                ref_frame0: 0,
+                ref_frame1: None,
+                mi_rows: rows,
+                mi_cols: cols,
+            };
+            let ctx = super::super::block_neighbour_ctx(&edges, &block);
+            assert_eq!(
+                ctx.intrabc_ctx(),
+                state.intrabc_ctx(r, c, n4w, n4h).unwrap()
+            );
+            assert_eq!(ctx.skip_ctx, state.skip_ctx(r, c, n4w, n4h).unwrap());
+            let geometry =
+                IntrabcBlockGeometry::new(IntrabcBlockContext::new(r, c, 0, false), n4w, n4h);
+            assert_eq!(
+                plane.capture_spatial_intrabc_probes(&block),
+                state.capture_spatial_intrabc_probes(geometry),
+                "probes of leaf ({r}, {c}) {n4w}x{n4h}"
+            );
+            let mut prelude = IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
+                use_intrabc: flags.ref_frame0 == INTRABC_REF_FRAME,
+                skip_flag: flags.skip,
+            });
+            prelude.is_inter = flags.is_inter;
+            state.record_block(r, c, n4w, n4h, prelude).unwrap();
+            edges.record_flags(r, c, n4w, n4h, flags);
+            plane.record_motion(r, c, n4w, n4h, ZERO_NEIGHBOUR_MOTION_VALUES);
+        }
+    }
+    assert!(!state.window_violated() && !plane.window_violated());
 }
