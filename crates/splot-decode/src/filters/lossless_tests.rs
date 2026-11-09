@@ -8,16 +8,12 @@ use splot_recon::PlaneId;
 
 fn block(r: usize, c: usize, n4w: usize, n4h: usize, lossless: bool) -> DeblockBlock {
     DeblockBlock {
-        r: r as u32,
-        c: c as u32,
-        luma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, 0),
-        chroma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, 0),
-        chroma_base_r: r as u32,
-        chroma_base_c: c as u32,
-        n4w: n4w as u32,
-        n4h: n4h as u32,
-        luma_tx: 0,
-        chroma_tx: Some(0),
+        r: r as u16,
+        c: c as u16,
+        prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, 0),
+        n4w: n4w as u8,
+        n4h: n4h as u8,
+        tx: 0,
         sub_pu_size: None,
         qindex: 0,
         skip: false,

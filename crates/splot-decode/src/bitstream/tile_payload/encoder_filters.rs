@@ -319,10 +319,6 @@ impl FilterRecorder {
             tx_skip_records: &mut self.tx_skip,
             block_r: leaf.row4(),
             block_c: leaf.col4(),
-            chroma_tx: transforms
-                .iter()
-                .find(|tx| tx.plane == 1)
-                .map(|tx| tx.tx_size),
             chroma_subsampling: self.subsampling,
             qindex: syntax.qindex(),
             lossless: false,

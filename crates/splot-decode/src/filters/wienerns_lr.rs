@@ -498,17 +498,6 @@ fn wienerns_lr_tx_skip_record_span(
     Ok((start, end_row, width))
 }
 
-pub(crate) fn fixed_largest_420_chroma_tx_size_from_luma_4x4(
-    n4w: usize,
-    n4h: usize,
-) -> Option<usize> {
-    if n4w < 2 || n4h < 2 || !n4w.is_power_of_two() || !n4h.is_power_of_two() {
-        return None;
-    }
-    let half_log2 = |n4: usize| n4.trailing_zeros() + 1;
-    splot_recon::tx_size_index(half_log2(n4w), half_log2(n4h)).ok()
-}
-
 pub(crate) fn wienerns_lr_source_block_bounds(
     block: &crate::bitstream::tile_payload::WienerNsLrSourceBlock,
     subsampling_x: u8,

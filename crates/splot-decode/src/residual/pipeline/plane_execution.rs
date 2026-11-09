@@ -157,17 +157,6 @@ impl ResidualPlaneArena {
         self.planned_since(start)
     }
 
-    /// The transform size of the planned block's first U plane.
-    pub(crate) fn chroma_tx(&self, planned: &PlannedGeneralIntraResidual) -> Option<usize> {
-        self.planes
-            .get(planned.0.start as usize..planned.0.end as usize)
-            .unwrap_or_default()
-            .iter()
-            .flatten()
-            .find(|parsed| parsed.plane.plane_id == PlaneId::U)
-            .map(|parsed| parsed.plane.tx_size)
-    }
-
     /// Reads the coefficients of the planned planes in syntax order.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn parse(

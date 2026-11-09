@@ -26,8 +26,8 @@ pub(super) const COVERED: u16 = 1 << 10;
 /// each. Two neighbouring cells lie inside the blocks their bases start, at
 /// most 64 mode-info units across, so their bases differ exactly when these
 /// keys do.
-const fn key(row: u32, col: u32) -> u16 {
-    ((row & 0xff) << 8 | col & 0xff) as u16
+const fn key(row: u16, col: u16) -> u16 {
+    (row & 0xff) << 8 | col & 0xff
 }
 
 /// Cells per row of a plane `cols` cells wide: padded so that a sixteen-lane
@@ -52,16 +52,16 @@ fn size_codes(tx: u8) -> u16 {
     SIZE_CODES_BY_TX.get(usize::from(tx)).copied().unwrap_or(0)
 }
 
-/// A record's own info bits and `qindex`.
-fn block_bits(block: &DeblockBlock) -> (u16, u16) {
+/// A record's own info bits.
+fn block_bits(block: &DeblockBlock) -> u16 {
     let flags = if block.skip { SKIP } else { 0 } | if block.lossless { LOSSLESS } else { 0 };
-    (flags | COVERED, block.qindex.min(0xfff) as u16)
+    flags | COVERED
 }
 
 /// The plane sample origin of `prediction`, kept to 16 bits as the cell
 /// positions it is compared with.
 fn origin(prediction: DeblockPredictionUnit, (sub_x, sub_y): (usize, usize)) -> [usize; 2] {
-    let at = |base: u32, sub: usize| usize::from(((base as usize * MI_SIZE) >> sub) as u16);
+    let at = |base: u16, sub: usize| usize::from(((base as usize * MI_SIZE) >> sub) as u16);
     [at(prediction.base_c, sub_x), at(prediction.base_r, sub_y)]
 }
 
@@ -110,59 +110,30 @@ impl PlaneFacts {
         ])
     }
 
-    /// Paints the luma records `blocks` over a `mi_rows` by `mi_cols` frame
-    /// in record order, so that a later record overwrites an earlier one.
-    pub(super) fn paint_luma(
-        &mut self,
-        blocks: &[DeblockBlock],
-        (mi_rows, mi_cols): (usize, usize),
-    ) {
-        let stride = self.stride;
-        for block in blocks {
-            let (r, c) = (block.r as usize, block.c as usize);
-            let row_end = r.saturating_add(block.n4h as usize).min(mi_rows);
-            let col_end = c.saturating_add(block.n4w as usize).min(mi_cols);
-            if r >= row_end || c >= col_end {
-                continue;
-            }
-            let (bits, qindex) = block_bits(block);
-            let [x, y] = origin(block.luma_prediction, (0, 0));
-            let rect = Rect {
-                at: r * stride + c,
-                rows: row_end - r,
-                values: [
-                    key(block.r, block.c),
-                    bits | size_codes(block.luma_tx),
-                    qindex,
-                ],
-                edges: [edge(x, c), edge(y, r)],
-            };
-            self.paint(rect, col_end - c);
-        }
-    }
-
-    /// Paints the chroma records `records` over a `mi_rows` by `mi_cols`
-    /// frame in record order, so that a later record overwrites an earlier
-    /// one.
-    pub(super) fn paint_chroma(
+    /// Paints `records` over a `mi_rows` by `mi_cols` frame whose cells are
+    /// `1 << sub` mode-info units wide and high, in record order, so that a
+    /// later record overwrites an earlier one.
+    pub(super) fn paint_records(
         &mut self,
         records: &[DeblockBlock],
         extent: (usize, usize),
-        (sub_x, sub_y): (usize, usize),
+        sub: (usize, usize),
     ) {
         let stride = self.stride;
         for block in records {
-            let [rows, cols] = block_cells(block, extent, (sub_x, sub_y));
+            let [rows, cols] = block_cells(block, extent, sub);
             if rows.is_empty() || cols.is_empty() {
                 continue;
             }
-            let key = key(block.chroma_base_r, block.chroma_base_c);
-            let (bits, qindex) = block_bits(block);
-            let [x, y] = origin(block.chroma_prediction, (sub_x, sub_y));
+            let [x, y] = origin(block.prediction, sub);
             let rect = Rect {
                 at: rows.start * stride + cols.start,
                 rows: rows.len(),
-                values: [key, bits | size_codes(block.chroma_tx.unwrap_or(0)), qindex],
+                values: [
+                    key(block.r, block.c),
+                    block_bits(block) | size_codes(block.tx),
+                    block.qindex,
+                ],
                 edges: [edge(x, cols.start), edge(y, rows.start)],
             };
             self.paint(rect, cols.len());

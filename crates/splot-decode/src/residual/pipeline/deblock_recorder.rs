@@ -10,7 +10,6 @@ pub(crate) struct DeblockRecorder<'a> {
         &'a mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     pub(crate) block_r: usize,
     pub(crate) block_c: usize,
-    pub(crate) chroma_tx: Option<usize>,
     pub(crate) chroma_subsampling: (u32, u32),
     pub(crate) qindex: u32,
     pub(crate) lossless: bool,
@@ -37,7 +36,7 @@ impl DeblockRecorder<'_> {
             tx_size,
             None,
             self.chroma_subsampling,
-            self.qindex,
+            self.qindex as u16,
             self.lossless,
         ) {
             self.chroma_blocks.push(record);
@@ -54,28 +53,20 @@ impl DeblockRecorder<'_> {
         eob: usize,
     ) {
         self.blocks.push(crate::filters::deblock::DeblockBlock {
-            r: r as u32,
-            c: c as u32,
-            luma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(
+            r: r as u16,
+            c: c as u16,
+            n4w: n4w as u8,
+            n4h: n4h as u8,
+            tx: luma_tx as u8,
+            skip: false,
+            lossless: self.lossless,
+            qindex: self.qindex as u16,
+            prediction: crate::filters::deblock::DeblockPredictionUnit::new(
                 self.block_r,
                 self.block_c,
                 luma_tx,
             ),
-            chroma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(
-                self.block_r,
-                self.block_c,
-                self.chroma_tx.unwrap_or(luma_tx),
-            ),
-            chroma_base_r: self.block_r as u32,
-            chroma_base_c: self.block_c as u32,
-            n4w: n4w as u32,
-            n4h: n4h as u32,
-            luma_tx: luma_tx as u8,
-            chroma_tx: self.chroma_tx.map(|tx| tx as u8),
             sub_pu_size: None,
-            qindex: self.qindex,
-            skip: false,
-            lossless: self.lossless,
         });
         self.tx_skip_records.push(
             crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {

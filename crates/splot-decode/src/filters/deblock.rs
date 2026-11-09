@@ -37,16 +37,16 @@ const SB_SIZE: usize = 64;
 /// deblock-record footprint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DeblockPredictionUnit {
-    pub(crate) base_r: u32,
-    pub(crate) base_c: u32,
+    pub(crate) base_r: u16,
+    pub(crate) base_c: u16,
     pub(crate) default_sub_pu_tx: u8,
 }
 
 impl DeblockPredictionUnit {
     pub(crate) const fn new(base_r: usize, base_c: usize, default_sub_pu_tx: usize) -> Self {
         Self {
-            base_r: base_r as u32,
-            base_c: base_c as u32,
+            base_r: base_r as u16,
+            base_c: base_c as u16,
             default_sub_pu_tx: default_sub_pu_tx as u8,
         }
     }
@@ -71,22 +71,21 @@ impl DeblockSubPuSize {
     }
 }
 
+/// One plane's transform block: its first luma mode-info unit, which is its
+/// § 7.17.2 `TxRowBase`/`TxColBase`, its extent in luma mode-info units, its
+/// transform size and the block facts its edges read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DeblockBlock {
-    pub(crate) r: u32,
-    pub(crate) c: u32,
-    pub(crate) luma_prediction: DeblockPredictionUnit,
-    pub(crate) chroma_prediction: DeblockPredictionUnit,
-    pub(crate) chroma_base_r: u32,
-    pub(crate) chroma_base_c: u32,
-    pub(crate) n4w: u32,
-    pub(crate) n4h: u32,
-    pub(crate) luma_tx: u8,
-    pub(crate) chroma_tx: Option<u8>,
-    pub(crate) sub_pu_size: Option<DeblockSubPuSize>,
-    pub(crate) qindex: u32,
+    pub(crate) r: u16,
+    pub(crate) c: u16,
+    pub(crate) n4w: u8,
+    pub(crate) n4h: u8,
+    pub(crate) tx: u8,
     pub(crate) skip: bool,
     pub(crate) lossless: bool,
+    pub(crate) qindex: u16,
+    pub(crate) prediction: DeblockPredictionUnit,
+    pub(crate) sub_pu_size: Option<DeblockSubPuSize>,
 }
 
 /// The chroma transform records of a frame, which U and V share: § 5.20.7.24
@@ -120,38 +119,6 @@ impl DeblockQuantDeltas {
             2 => self.v_ac,
             _ => 0,
         }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct EdgeBlock<'a> {
-    block: &'a DeblockBlock,
-}
-
-impl EdgeBlock<'_> {
-    fn prediction(self, plane: usize) -> DeblockPredictionUnit {
-        if plane == 0 {
-            self.block.luma_prediction
-        } else {
-            self.block.chroma_prediction
-        }
-    }
-
-    fn tx_base(self, plane: usize) -> (usize, usize) {
-        let (r, c) = if plane == 0 {
-            (self.block.r, self.block.c)
-        } else {
-            (self.block.chroma_base_r, self.block.chroma_base_c)
-        };
-        (r as usize, c as usize)
-    }
-
-    fn tx(self, plane: usize) -> usize {
-        usize::from(if plane == 0 {
-            self.block.luma_tx
-        } else {
-            self.block.chroma_tx.unwrap_or(0)
-        })
     }
 }
 
@@ -371,9 +338,7 @@ impl FrameDeblock {
                 (None, None) => true,
                 _ => false,
             };
-            let reuse = plane == 2
-                && same(u_passes[0], passes[0])
-                && same(u_passes[1], passes[1]);
+            let reuse = plane == 2 && same(u_passes[0], passes[0]) && same(u_passes[1], passes[1]);
             let Some((_, height)) = source.plane_size(plane_id) else {
                 return Ok(());
             };
@@ -533,7 +498,7 @@ impl FrameDeblock {
             self.grid.fill(blocks, self.laid_out[0], self.mi_rows)?;
         } else if luma_facts {
             let fresh = blocks.get(self.laid_out[0]..).unwrap_or_default();
-            self.facts[0].paint_luma(fresh, extent);
+            self.facts[0].paint_records(fresh, extent, (0, 0));
         }
         self.laid_out[0] = blocks.len();
         if let Some(grid) = self.chroma.as_mut() {
@@ -542,7 +507,7 @@ impl FrameDeblock {
             if sub_pu {
                 grid.fill(extent.1, fresh, self.laid_out[1], extent.0)?;
             } else {
-                self.facts[1].paint_chroma(fresh, extent, (grid.sub_x, grid.sub_y));
+                self.facts[1].paint_records(fresh, extent, (grid.sub_x, grid.sub_y));
             }
             self.laid_out[1] = self.records.chroma.len();
         }
@@ -1099,14 +1064,8 @@ struct EdgeContext {
 
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
-fn sub_pu_dimension(
-    info: EdgeBlock<'_>,
-    plane: usize,
-    pass: usize,
-    sub_x: usize,
-    sub_y: usize,
-) -> usize {
-    if let Some(size) = info.block.sub_pu_size {
+fn sub_pu_dimension(info: &DeblockBlock, pass: usize, sub_x: usize, sub_y: usize) -> usize {
+    if let Some(size) = info.sub_pu_size {
         let (dimension, subsampling) = if pass == 0 {
             (size.width, sub_x)
         } else {
@@ -1114,11 +1073,7 @@ fn sub_pu_dimension(
         };
         return (usize::from(dimension) >> subsampling).max(1);
     }
-    let tx = if plane == 0 {
-        info.block.luma_prediction.default_sub_pu_tx
-    } else {
-        info.block.chroma_prediction.default_sub_pu_tx
-    };
+    let tx = info.prediction.default_sub_pu_tx;
     let dimensions = if pass == 0 { &TX_WIDTH } else { &TX_HEIGHT };
     dimensions
         .get(usize::from(tx))
@@ -1129,17 +1084,16 @@ fn sub_pu_dimension(
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn sub_pu_base(
-    info: EdgeBlock<'_>,
-    plane: usize,
+    info: &DeblockBlock,
     x: usize,
     y: usize,
     sub_x: usize,
     sub_y: usize,
 ) -> (usize, usize) {
-    let prediction = info.prediction(plane);
+    let prediction = info.prediction;
     let block_x = (prediction.base_c as usize * MI_SIZE) >> sub_x;
     let block_y = (prediction.base_r as usize * MI_SIZE) >> sub_y;
-    let Some(size) = info.block.sub_pu_size else {
+    let Some(size) = info.sub_pu_size else {
         return (block_x, block_y);
     };
     let width = (usize::from(size.width) >> sub_x).max(1);
@@ -1220,7 +1174,7 @@ fn edge_blocks<'g, const PLANE: usize, const PASS: usize>(
     col: usize,
     sub_x: usize,
     sub_y: usize,
-) -> Result<(EdgeBlock<'g>, EdgeBlock<'g>), DeblockError> {
+) -> Result<(&'g DeblockBlock, &'g DeblockBlock), DeblockError> {
     let edge = |row: usize, col: usize| {
         let edge = if PLANE == 0 {
             grid.get_luma_edge(row, col)
@@ -1236,12 +1190,6 @@ fn edge_blocks<'g, const PLANE: usize, const PASS: usize>(
     };
     let (prev_row, prev_col) = prev.ok_or(DeblockError::UncoveredMi { row, col })?;
     Ok((edge(row, col)?, edge(prev_row, prev_col)?))
-}
-
-impl EdgeBlock<'_> {
-    fn same(self, other: Self) -> bool {
-        core::ptr::eq(self.block, other.block)
-    }
 }
 
 /// [`deblock_filter_max_width`] by chroma plane, super-block edge and filter
@@ -1263,8 +1211,8 @@ const MAX_WIDTHS: [[[(u8, u8); 65]; 2]; 2] = {
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn edge_decision<const PLANE: usize, const PASS: usize>(
-    curr: EdgeBlock<'_>,
-    prev: EdgeBlock<'_>,
+    curr: &DeblockBlock,
+    prev: &DeblockBlock,
     x_p: usize,
     y_p: usize,
     ctx: EdgeContext,
@@ -1276,21 +1224,18 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
         allow_df_sub_pu,
         ..
     } = ctx;
-    let plane = PLANE;
     let pass = PASS;
     let (dx, dy) = if pass == 0 { (1usize, 0usize) } else { (0, 1) };
-    if curr.same(prev) {
-        return same_record_decision::<PLANE, PASS>(curr, x_p, y_p, ctx, strengths);
+    if core::ptr::eq(curr, prev) {
+        return same_record_decision::<PASS>(curr, x_p, y_p, ctx, strengths);
     }
 
-    let (tx_row_base, tx_col_base) = curr.tx_base(plane);
-    let (prev_tx_row_base, prev_tx_col_base) = prev.tx_base(plane);
-    let prediction = curr.prediction(plane);
+    let prediction = curr.prediction;
     let block_y = (prediction.base_r as usize * MI_SIZE) >> plane_sub_y;
     let block_x = (prediction.base_c as usize * MI_SIZE) >> plane_sub_x;
-    let skip = curr.block.skip;
-    let tx_sz = curr.tx(plane);
-    let prev_tx_sz = prev.tx(plane);
+    let skip = curr.skip;
+    let tx_sz = usize::from(curr.tx);
+    let prev_tx_sz = usize::from(prev.tx);
     let curr_tx_size = usize::try_from(if pass == 0 {
         TX_WIDTH[tx_sz]
     } else {
@@ -1304,10 +1249,9 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
     })
     .unwrap_or(0);
     let sub_pu_sizes = if allow_df_sub_pu {
-        let curr_sub_pu_base = sub_pu_base(curr, plane, x_p, y_p, plane_sub_x, plane_sub_y);
+        let curr_sub_pu_base = sub_pu_base(curr, x_p, y_p, plane_sub_x, plane_sub_y);
         let prev_sub_pu_base = sub_pu_base(
             prev,
-            plane,
             x_p.saturating_sub(dx),
             y_p.saturating_sub(dy),
             plane_sub_x,
@@ -1315,15 +1259,15 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
         );
         (curr_sub_pu_base != prev_sub_pu_base).then(|| {
             (
-                sub_pu_dimension(curr, plane, pass, plane_sub_x, plane_sub_y),
-                sub_pu_dimension(prev, plane, pass, plane_sub_x, plane_sub_y),
+                sub_pu_dimension(curr, pass, plane_sub_x, plane_sub_y),
+                sub_pu_dimension(prev, pass, plane_sub_x, plane_sub_y),
             )
         })
     } else {
         None
     };
     let is_block_edge = (pass == 0 && x_p == block_x) || (pass == 1 && y_p == block_y);
-    let is_tx_edge = tx_col_base != prev_tx_col_base || tx_row_base != prev_tx_row_base;
+    let is_tx_edge = (curr.r, curr.c) != (prev.r, prev.c);
     let (curr_filter_size, curr_sub_pu_edge) = if let Some((curr_sub_pu_size, _)) = sub_pu_sizes {
         sub_pu_filter_dimension(curr_tx_size, curr_sub_pu_size, is_tx_edge)
     } else {
@@ -1336,8 +1280,8 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
     };
     let is_sub_pu_edge = curr_sub_pu_edge && !is_block_edge;
 
-    let curr_strength = strengths.get(curr.block.qindex);
-    let prev_strength = strengths.get(prev.block.qindex);
+    let curr_strength = strengths.get(curr.qindex.into());
+    let prev_strength = strengths.get(prev.qindex.into());
     let strong = |(q_thr, side): (i32, i32)| q_thr != 0 && side != 0;
     let apply_filter = (is_tx_edge || is_sub_pu_edge)
         && (strong(curr_strength) || strong(prev_strength))
@@ -1351,8 +1295,8 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
         filter_size: curr_filter_size.min(prev_filter_size),
         q_thr,
         side,
-        prev_lossless: prev.block.lossless,
-        curr_lossless: curr.block.lossless,
+        prev_lossless: prev.lossless,
+        curr_lossless: curr.lossless,
     })
 }
 
@@ -1377,15 +1321,15 @@ fn edge_strengths(
 /// the prediction base, which is never the block edge.
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
-fn same_record_decision<const PLANE: usize, const PASS: usize>(
-    record: EdgeBlock<'_>,
+fn same_record_decision<const PASS: usize>(
+    record: &DeblockBlock,
     x_p: usize,
     y_p: usize,
     ctx: EdgeContext,
     strengths: &StrengthCache,
 ) -> Option<EdgeDecision> {
-    let size = record.block.sub_pu_size.filter(|_| ctx.allow_df_sub_pu)?;
-    let prediction = record.prediction(PLANE);
+    let size = record.sub_pu_size.filter(|_| ctx.allow_df_sub_pu)?;
+    let prediction = record.prediction;
     let (at, base, sub, size) = if PASS == 0 {
         (x_p, prediction.base_c, ctx.plane_sub_x, size.width)
     } else {
@@ -1396,7 +1340,7 @@ fn same_record_decision<const PLANE: usize, const PASS: usize>(
     if at <= base || round_down(at - base, sub_pu_size) != at - base {
         return None;
     }
-    let tx = record.tx(PLANE);
+    let tx = usize::from(record.tx);
     let tx_size = usize::try_from(if PASS == 0 {
         TX_WIDTH[tx]
     } else {
@@ -1404,7 +1348,7 @@ fn same_record_decision<const PLANE: usize, const PASS: usize>(
     })
     .unwrap_or(0);
     let (filter_size, sub_pu_edge) = sub_pu_filter_dimension(tx_size, sub_pu_size, false);
-    let strength = strengths.get(record.block.qindex);
+    let strength = strengths.get(record.qindex.into());
     if !sub_pu_edge || strength.0 == 0 || strength.1 == 0 {
         return None;
     }
@@ -1413,8 +1357,8 @@ fn same_record_decision<const PLANE: usize, const PASS: usize>(
         filter_size,
         q_thr,
         side,
-        prev_lossless: record.block.lossless,
-        curr_lossless: record.block.lossless,
+        prev_lossless: record.lossless,
+        curr_lossless: record.lossless,
     })
 }
 

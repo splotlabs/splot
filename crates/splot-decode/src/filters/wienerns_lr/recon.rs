@@ -1413,26 +1413,22 @@ pub(crate) fn chroma_transform_deblock_block(
     chroma_tx: usize,
     log2_dimensions: Option<(u32, u32)>,
     chroma_subsampling: (u32, u32),
-    qindex: u32,
+    qindex: u16,
     lossless: bool,
 ) -> Option<crate::filters::deblock::DeblockBlock> {
     let [r, c, n4w, n4h] =
         chroma_transform_cells(x, y, chroma_tx, log2_dimensions, chroma_subsampling)?;
     Some(crate::filters::deblock::DeblockBlock {
-        r: r as u32,
-        c: c as u32,
-        luma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, chroma_tx),
-        chroma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, chroma_tx),
-        chroma_base_r: r as u32,
-        chroma_base_c: c as u32,
-        n4w: n4w as u32,
-        n4h: n4h as u32,
-        luma_tx: chroma_tx as u8,
-        chroma_tx: Some(chroma_tx as u8),
-        sub_pu_size: None,
-        qindex,
+        r: r as u16,
+        c: c as u16,
+        n4w: n4w as u8,
+        n4h: n4h as u8,
+        tx: chroma_tx as u8,
         skip: false,
         lossless,
+        qindex,
+        prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, chroma_tx),
+        sub_pu_size: None,
     })
 }
 

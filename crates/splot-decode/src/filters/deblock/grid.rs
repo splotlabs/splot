@@ -2,11 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::facts::PlaneFacts;
-use super::{DeblockBlock, DeblockError, EdgeBlock};
+use super::{DeblockBlock, DeblockError};
 
 /// A cell holds its record index plus one, so that an empty cell is zero.
-const NO_BLOCK: u32 = 0;
-
 #[derive(Clone, Copy, Default)]
 pub(super) struct MiCell {
     pub(super) base: u32,
@@ -92,29 +90,21 @@ impl MiGrid<'_> {
 
     #[allow(clippy::inline_always, reason = "measured luma deblock hot path")]
     #[inline(always)]
-    pub(super) fn get_luma_edge(&self, row: usize, col: usize) -> Option<EdgeBlock<'_>> {
+    pub(super) fn get_luma_edge(&self, row: usize, col: usize) -> Option<&DeblockBlock> {
         let cell = self.base.cells.get(self.index(row, col))?;
-        Some(EdgeBlock {
-            block: self.base_blocks.get(record(cell.base))?,
-        })
+        self.base_blocks.get(record(cell.base))
     }
 
     #[allow(clippy::inline_always, reason = "measured chroma deblock hot path")]
     #[inline(always)]
-    pub(super) fn get_edge(&self, row: usize, col: usize) -> Option<EdgeBlock<'_>> {
-        let base = self.base.cells.get(self.index(row, col))?;
-        let chroma = self.chroma.and_then(|grid| {
-            grid.cells.get(
-                (row >> grid.sub_y)
-                    .wrapping_mul(grid.cell_cols)
-                    .wrapping_add(col >> grid.sub_x),
-            )
-        });
-        let block = match chroma.map(|cell| cell.base) {
-            Some(overlay) if overlay != NO_BLOCK => self.overlay_blocks.get(record(overlay))?,
-            _ => self.base_blocks.get(record(base.base))?,
-        };
-        Some(EdgeBlock { block })
+    pub(super) fn get_edge(&self, row: usize, col: usize) -> Option<&DeblockBlock> {
+        let grid = self.chroma?;
+        let cell = grid.cells.get(
+            (row >> grid.sub_y)
+                .wrapping_mul(grid.cell_cols)
+                .wrapping_add(col >> grid.sub_x),
+        )?;
+        self.overlay_blocks.get(record(cell.base))
     }
 }
 
@@ -220,7 +210,12 @@ impl ChromaMiGridStorage {
             .div_ceil(1 << self.sub_y)
             .checked_mul(self.cell_cols)
             .ok_or(DeblockError::Workspace)?;
-        reset(&mut self.cells, len, MiCell::default(), splot_recon::PlaneId::U)
+        reset(
+            &mut self.cells,
+            len,
+            MiCell::default(),
+            splot_recon::PlaneId::U,
+        )
     }
 
     /// Lays the chroma overlay records `records`, the first of which is

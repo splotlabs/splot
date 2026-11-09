@@ -188,7 +188,6 @@ fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
         tx_skip_records: &mut tx_skip_records,
         block_r: 0,
         block_c: 0,
-        chroma_tx: Some(tx_8x8),
         chroma_subsampling: (1, 0),
         qindex: 37,
         lossless: true,
@@ -200,10 +199,10 @@ fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
 
     let u = &chroma_blocks;
     assert_eq!(u.len(), 2);
-    assert_eq!(u[0].chroma_base_c, 0);
-    assert_eq!(u[1].chroma_base_c, 4);
+    assert_eq!(u[0].c, 0);
+    assert_eq!(u[1].c, 4);
     assert_eq!(u[1].n4w, 4);
-    assert_eq!(u[1].chroma_base_r, 2);
+    assert_eq!(u[1].r, 2);
     assert_eq!(u[1].n4h, 2);
     assert_eq!(u[0].qindex, 37);
     assert!(u[0].lossless);
@@ -1025,7 +1024,6 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
         tx_skip_records: &mut tx_skip_records,
         block_r: 8,
         block_c: 8,
-        chroma_tx: None,
         chroma_subsampling: (1, 1),
         qindex: 0,
         lossless: false,
@@ -1046,7 +1044,7 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
             deblock_blocks[0].c,
             deblock_blocks[0].n4w,
             deblock_blocks[0].n4h,
-            usize::from(deblock_blocks[0].luma_tx),
+            usize::from(deblock_blocks[0].tx),
         ),
         (8, 8, 8, 8, tx_32x32)
     );
