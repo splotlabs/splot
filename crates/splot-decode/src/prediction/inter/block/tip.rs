@@ -971,8 +971,11 @@ pub(super) fn predict<T: ReconSample>(
 /// The whole frame is one TIP block, so predicting it in one pass sized the
 /// compound scratch at frame scale. Banding keeps that scratch bounded; both
 /// sizes are multiples of both prediction unit sizes and of chroma
-/// subsampling, so a band boundary never splits a unit.
+/// subsampling, so a band boundary never splits a unit. Scheduled bands are
+/// shorter: the frame's slowest band bounds the TIP output chain, and on a
+/// 270-row frame 64-row bands left at most five workers busy.
 const TIP_OUTPUT_BAND_LUMA_ROWS: usize = 64;
+const TIP_OUTPUT_SCHEDULED_BAND_LUMA_ROWS: usize = 16;
 const TIP_OUTPUT_BAND_LUMA_COLS: usize = 256;
 
 pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
@@ -1106,7 +1109,12 @@ impl<T: ReconSample> TipOutputStages<T> {
                 plane: splot_recon::PlaneId::Y,
                 context: "TIP-output motion field",
             })?;
-        let band_h = TIP_OUTPUT_BAND_LUMA_ROWS.min(height);
+        let band_h = if gate_bands {
+            TIP_OUTPUT_SCHEDULED_BAND_LUMA_ROWS
+        } else {
+            TIP_OUTPUT_BAND_LUMA_ROWS
+        }
+        .min(height);
         let band_w = TIP_OUTPUT_BAND_LUMA_COLS.min(width);
         let placed = PlacedInterBlock {
             luma_x: 0,
