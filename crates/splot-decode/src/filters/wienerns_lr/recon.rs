@@ -1414,17 +1414,13 @@ pub(crate) fn chroma_transform_deblock_block(
     qindex: u32,
     lossless: bool,
 ) -> Option<(usize, crate::filters::deblock::DeblockBlock)> {
-    let (log2_width, log2_height) = log2_dimensions.or_else(|| tx_size_log2(chroma_tx))?;
     let plane_index = match plane_id {
         PlaneId::U => 0,
         PlaneId::V => 1,
         PlaneId::Y => return None,
     };
-    let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
-    let scale_x = 1usize.checked_shl(chroma_subsampling.0)?;
-    let scale_y = 1usize.checked_shl(chroma_subsampling.1)?;
-    let r = (y / MI_SIZE).saturating_mul(scale_y);
-    let c = (x / MI_SIZE).saturating_mul(scale_x);
+    let [r, c, n4w, n4h] =
+        chroma_transform_cells(x, y, chroma_tx, log2_dimensions, chroma_subsampling)?;
     Some((
         plane_index,
         crate::filters::deblock::DeblockBlock {
@@ -1434,8 +1430,8 @@ pub(crate) fn chroma_transform_deblock_block(
             chroma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, chroma_tx),
             chroma_base_r: r as u32,
             chroma_base_c: c as u32,
-            n4w: (mi_w.saturating_mul(scale_x)) as u32,
-            n4h: (mi_h.saturating_mul(scale_y)) as u32,
+            n4w: n4w as u32,
+            n4h: n4h as u32,
             luma_tx: chroma_tx as u8,
             chroma_tx: Some(chroma_tx as u8),
             sub_pu_size: None,
@@ -1445,6 +1441,28 @@ pub(crate) fn chroma_transform_deblock_block(
             lossless,
         },
     ))
+}
+
+/// The luma mode-info row, column, width and height of the chroma transform
+/// block `chroma_tx` (of `log2_dimensions` when given) at plane sample
+/// (`x`, `y`), which its deblock record covers.
+pub(crate) fn chroma_transform_cells(
+    x: usize,
+    y: usize,
+    chroma_tx: usize,
+    log2_dimensions: Option<(u32, u32)>,
+    (sub_x, sub_y): (u32, u32),
+) -> Option<[usize; 4]> {
+    let (log2_width, log2_height) = log2_dimensions.or_else(|| tx_size_log2(chroma_tx))?;
+    let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
+    let scale_x = 1usize.checked_shl(sub_x)?;
+    let scale_y = 1usize.checked_shl(sub_y)?;
+    Some([
+        (y / MI_SIZE).saturating_mul(scale_y),
+        (x / MI_SIZE).saturating_mul(scale_x),
+        mi_w.saturating_mul(scale_x),
+        mi_h.saturating_mul(scale_y),
+    ])
 }
 
 fn tx_size_log2(tx_size: usize) -> Option<(u32, u32)> {

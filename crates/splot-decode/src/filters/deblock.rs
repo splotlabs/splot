@@ -126,10 +126,9 @@ impl ChromaDeblockRecords {
         self.blocks.push(ChromaDeblockBlock { block, planes });
     }
 
-    /// Pushes one block's record of plane `plane` (0 for U), pairing the
-    /// block's U and V records without a second copy: `twin` is the block's
-    /// next U record, which a V record that is the same record marks as V's
-    /// too.
+    /// Pushes one block's chroma transform record of plane `plane` (0 for
+    /// U); `twin` keeps the block's next U record, which a V record that
+    /// [`Self::pair_v`] did not pair has passed.
     #[inline]
     pub(crate) fn push_paired(
         &mut self,
@@ -141,14 +140,42 @@ impl ChromaDeblockRecords {
             twin.get_or_insert(self.blocks.len());
             return self.push(0, block);
         }
+        *twin = twin.map(|at| at + 1);
+        self.push(1, block);
+    }
+
+    /// Marks the block's next U record, `twin`, as V's too when it covers
+    /// `cells` ([`chroma_transform_cells`]) with transform `tx`: the block's
+    /// V record of that transform would be the same record.
+    ///
+    /// [`chroma_transform_cells`]: crate::filters::wienerns_lr::chroma_transform_cells
+    #[inline]
+    pub(crate) fn pair_v(
+        &mut self,
+        twin: &mut Option<usize>,
+        cells: [usize; 4],
+        tx: usize,
+    ) -> bool {
         match twin.and_then(|at| self.blocks.get_mut(at)) {
-            Some(record) if record.planes == Self::U && record.block == block => {
+            Some(record)
+                if record.planes == Self::U
+                    && usize::from(record.block.luma_tx) == tx
+                    && [
+                        record.block.r,
+                        record.block.c,
+                        record.block.n4w,
+                        record.block.n4h,
+                    ]
+                    .map(|value| value as usize)
+                        == cells =>
+            {
                 record.planes = Self::U | Self::V;
                 self.single -= 1;
+                *twin = twin.map(|at| at + 1);
+                true
             }
-            _ => self.push(1, block),
+            _ => false,
         }
-        *twin = twin.map(|at| at + 1);
     }
 
     pub(crate) fn push_both(&mut self, block: DeblockBlock) {
@@ -343,10 +370,8 @@ pub(crate) struct FrameDeblock {
     facts: [PlaneFacts; 3],
     /// Whether the grids are sized and empty yet.
     grids_reset: bool,
-    /// How many luma records, then U and V overlay records, the grids hold,
-    /// and how many luma records the U and V facts hold.
+    /// How many luma records, then U and V records, the grids hold.
     laid_out: [usize; 3],
-    luma_laid_out: [usize; 2],
     /// The next U and V record a frame whose V reads U's grid has not paired.
     twin_cursors: [usize; 2],
     mi_rows: usize,
@@ -456,7 +481,6 @@ impl FrameDeblock {
             facts,
             grids_reset: false,
             laid_out: [0; 3],
-            luma_laid_out: [0; 2],
             twin_cursors: [0; 2],
             mi_rows,
             filter,
@@ -710,7 +734,6 @@ impl FrameDeblock {
             &mut self.records.grids.chroma[1],
         ));
         self.laid_out[2] = 0;
-        self.luma_laid_out[1] = 0;
         if self.grids_reset {
             self.reset_chroma(1)?;
         }
@@ -749,13 +772,14 @@ impl FrameDeblock {
             if sub_pu {
                 grid.fill(extent.1, &self.records.chroma, (plane, start), extent.0)?;
             } else {
-                let facts = &mut self.facts[plane + 1];
                 let sub = (grid.sub_x, grid.sub_y);
-                let luma = blocks.get(self.luma_laid_out[plane]..).unwrap_or_default();
-                facts.paint_overlays(&self.records.chroma, (plane, start), extent, sub);
-                facts.paint_chroma_from_luma(luma, extent, sub);
+                self.facts[plane + 1].paint_chroma(
+                    &self.records.chroma,
+                    (plane, start),
+                    extent,
+                    sub,
+                );
             }
-            self.luma_laid_out[plane] = blocks.len();
             self.laid_out[plane + 1] = self.records.chroma.len();
         }
         Ok(())

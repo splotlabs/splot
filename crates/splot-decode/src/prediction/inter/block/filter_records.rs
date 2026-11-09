@@ -221,8 +221,8 @@ pub(crate) fn record_inter_deblock_geometry(
         let tx_size = super::residual::max_tx_size(frontier.b_size.index())?;
         let tx_w4 = super::residual::tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
         let tx_h4 = super::residual::tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
-        for row4 in (0..n4h).step_by(tx_h4.max(1)) {
-            for col4 in (0..n4w).step_by(tx_w4.max(1)) {
+        for row4 in crate::support::step_range(0..n4h, tx_h4) {
+            for col4 in crate::support::step_range(0..n4w, tx_w4) {
                 deblock_blocks.push(crate::filters::deblock::DeblockBlock {
                     r: (frontier.r + row4) as u32,
                     c: (frontier.c + col4) as u32,
@@ -313,6 +313,20 @@ pub(crate) fn record_inter_deblock_geometry(
                 );
             }
             ReconPlaneId::U | ReconPlaneId::V => {
+                if block.plane == ReconPlaneId::V
+                    && crate::filters::wienerns_lr::chroma_transform_cells(
+                        block.x,
+                        block.y,
+                        block.tx_size,
+                        Some((log2_width, log2_height)),
+                        chroma_subsampling,
+                    )
+                    .is_some_and(|cells| {
+                        chroma_deblock_blocks.pair_v(&mut v_twin, cells, block.tx_size)
+                    })
+                {
+                    continue;
+                }
                 if let Some((plane_index, mut record)) =
                     crate::filters::wienerns_lr::chroma_transform_deblock_block(
                         block.plane,
@@ -370,8 +384,8 @@ fn record_skipped_chroma_deblock_geometry(
     let base_x = (chroma_ref_col >> usize::from(sub_x)) * MI_SIZE;
     let base_y = (chroma_ref_row >> usize::from(sub_y)) * MI_SIZE;
     let subsampling = (u32::from(sub_x), u32::from(sub_y));
-    for y in (0..height).step_by(tx_height.max(1)) {
-        for x in (0..width).step_by(tx_width.max(1)) {
+    for y in crate::support::step_range(0..height, tx_height) {
+        for x in crate::support::step_range(0..width, tx_width) {
             if let Some((_, mut record)) =
                 crate::filters::wienerns_lr::chroma_transform_deblock_block(
                     ReconPlaneId::U,

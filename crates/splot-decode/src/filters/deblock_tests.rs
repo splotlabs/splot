@@ -54,11 +54,20 @@ fn plane_facts(
         Some((records, plane)) => {
             let cells = (mi_rows.div_ceil(2), mi_cols.div_ceil(2));
             facts.reset(cells, PlaneId::U).unwrap();
-            facts.paint_chroma_from_luma(luma, extent, (1, 1));
-            facts.paint_overlays(records, (plane, 0), extent, (1, 1));
+            facts.paint_chroma(records, (plane, 0), extent, (1, 1));
         }
     }
     facts
+}
+
+/// Chroma records that give each chroma cell the facts of the luma record
+/// it lies in.
+pub(super) fn chroma_of(blocks: &[DeblockBlock]) -> ChromaDeblockRecords {
+    let mut chroma = ChromaDeblockRecords::default();
+    for block in blocks {
+        chroma.push_both(*block);
+    }
+    chroma
 }
 
 pub(super) const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
@@ -130,7 +139,7 @@ fn deblock_through_live_source<T: ReconSample>(
 ) -> Result<(), DeblockError> {
     let Some(mut sections) = FrameDeblock::prepare(
         blocks,
-        &EMPTY_CHROMA_RECORDS,
+        &chroma_of(blocks),
         mi_rows,
         mi_cols,
         filter,
@@ -215,7 +224,7 @@ fn one_row_advance_matches_the_whole_frame_deblock() {
     .unwrap();
     let mut plan = FrameDeblock::prepare(
         &blocks,
-        &EMPTY_CHROMA_RECORDS,
+        &chroma_of(&blocks),
         mi_rows,
         mi_cols,
         params,
@@ -357,7 +366,7 @@ fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
     .unwrap();
     let mut plan = FrameDeblock::prepare(
         &blocks,
-        &EMPTY_CHROMA_RECORDS,
+        &chroma_of(&blocks),
         mi_rows,
         mi_cols,
         params,
@@ -397,6 +406,7 @@ fn records_appended_per_superblock_row_deblock_like_the_whole_frame() {
         let part = &mut parts[usize::from(block.r >= 16)];
         for list in [&mut chroma, part] {
             if index == 9 {
+                list.push(0, DeblockBlock { qindex: 5, ..block });
                 list.push(1, block);
             } else {
                 list.push_both(block);
@@ -464,7 +474,7 @@ fn in_place_deblock_matches_workspace_across_stripe_windows() {
     .unwrap();
     let mut plan = FrameDeblock::prepare(
         &blocks,
-        &EMPTY_CHROMA_RECORDS,
+        &chroma_of(&blocks),
         mi_rows,
         mi_cols,
         params,
@@ -518,7 +528,7 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
     let mut owned = patterned_yuv420_workspace(128, 128);
     let mut borrowed_plan = FrameDeblock::prepare(
         &blocks,
-        &EMPTY_CHROMA_RECORDS,
+        &chroma_of(&blocks),
         mi_rows,
         mi_cols,
         params,
@@ -542,7 +552,7 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
         OwnedDeblockRecords {
             grids: crate::filters::deblock::DeblockGridStorage::default(),
             blocks: owned_blocks,
-            chroma: ChromaDeblockRecords::default(),
+            chroma: chroma_of(&blocks),
         },
         mi_rows,
         mi_cols,
@@ -573,7 +583,7 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
     assert_eq!(records.blocks.len(), blocks.len());
     assert_eq!(records.blocks.as_ptr(), owned_pointer);
     assert_eq!(records.blocks.capacity(), owned_capacity);
-    assert!(records.chroma.is_empty());
+    assert_eq!(records.chroma.len(), blocks.len());
     let addresses = |storage: &DeblockGridStorage| {
         (
             storage.cells.as_ptr(),
@@ -620,7 +630,7 @@ fn incremental_deblock_enforces_frontiers_and_leases_exact_window() {
     let mut workspace = patterned_yuv420_workspace(128, 128);
     let mut plan = FrameDeblock::prepare(
         &blocks,
-        &EMPTY_CHROMA_RECORDS,
+        &chroma_of(&blocks),
         mi_rows,
         mi_cols,
         params,
@@ -680,7 +690,7 @@ fn incremental_deblock_clamps_completed_window_to_clipped_frame_height() {
     .unwrap();
     let mut plan = FrameDeblock::prepare(
         &blocks,
-        &EMPTY_CHROMA_RECORDS,
+        &chroma_of(&blocks),
         mi_rows,
         mi_cols,
         params,
@@ -738,7 +748,7 @@ fn incremental_deblock_matches_tile_boundary_rules() {
         .unwrap();
         let mut plan = FrameDeblock::prepare(
             &blocks,
-            &EMPTY_CHROMA_RECORDS,
+            &chroma_of(&blocks),
             mi_rows,
             mi_cols,
             params,
@@ -1134,7 +1144,7 @@ fn batched_passes_match_every_edge_alone_across_frame_edges_and_chroma() {
     };
     assert_walk_matches_every_edge(&grid, 0, frame, (mi_rows, mi_cols));
 
-    let mut chroma = ChromaDeblockRecords::default();
+    let mut chroma = chroma_of(&blocks);
     chroma.push_both(block(0, 40, 4, 8, 1, (0, 40), None, false, 60));
     let mut transform = block(8, 16, 12, 12, 2, (8, 16), None, false, 60);
     transform.chroma_transform_only = true;
