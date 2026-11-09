@@ -311,6 +311,7 @@ impl<'payload> TileParser<'payload> {
         parse
             .mv_grid
             .reset_for_tile(tile_rows.clone(), tile_cols.clone(), context.params.sb_h4)
+            .and_then(|()| parse.mv_grid.track_edges())
             .map_err(|error| inter_tile_grid_error(&error, "inter parser MV grid"))?;
         let walk = GeneralIntraMultiblockCursor::new(
             tile,

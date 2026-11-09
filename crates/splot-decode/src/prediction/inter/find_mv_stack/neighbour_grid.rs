@@ -21,16 +21,12 @@ use super::{
 use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
 use crate::tile::SbRowWindow;
 
-/// Syntax facts read by neighbour context derivation during symbol decode.
+/// Syntax facts read by neighbour context derivation during symbol decode,
+/// one byte per field: the flag bits, `ref_frame0`, `ref_frame1`
+/// ([`Self::NO_REF`] when absent), `interp_filter`, `motion_mode`, the two
+/// halves of the [`BlockPrecisionRecord`], and whether a leaf was published.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct NeighbourFlags {
-    bits: u8,
-    pub(super) ref_frame0: i8,
-    pub(super) ref_frame1: Option<i8>,
-    pub(super) interp_filter: u8,
-    pub(super) motion_mode: MotionMode,
-    pub(super) precision: BlockPrecisionRecord,
-}
+pub(super) struct NeighbourFlags(u64);
 
 impl NeighbourFlags {
     const IS_INTER: u8 = 1 << 0;
@@ -41,59 +37,121 @@ impl NeighbourFlags {
     const USE_AMVD: u8 = 1 << 5;
     const MASKED_COMPOUND: u8 = 1 << 6;
     const TIP_SIZE_16X16: u8 = 1 << 7;
+    const NO_REF: u8 = i8::MIN as u8;
 
     const fn flag(enabled: bool, mask: u8) -> u8 {
         if enabled { mask } else { 0 }
     }
 
+    fn from_syntax(syntax: NeighbourFlagSyntax) -> Self {
+        Self(u64::from_le_bytes([
+            Self::flag(syntax.is_inter, Self::IS_INTER)
+                | Self::flag(syntax.newmv[0], Self::NEWMV_LIST0)
+                | Self::flag(syntax.newmv[1], Self::NEWMV_LIST1)
+                | Self::flag(syntax.skip_mode, Self::SKIP_MODE)
+                | Self::flag(syntax.skip, Self::SKIP)
+                | Self::flag(syntax.use_amvd, Self::USE_AMVD)
+                | Self::flag(syntax.masked_compound, Self::MASKED_COMPOUND)
+                | Self::flag(syntax.tip_size_16x16, Self::TIP_SIZE_16X16),
+            syntax.ref_frame0 as u8,
+            syntax
+                .ref_frame1
+                .map_or(Self::NO_REF, |ref_frame| ref_frame as u8),
+            syntax.interp_filter.min(SWITCHABLE_FILTERS),
+            syntax.motion_mode as u8,
+            syntax.precision.use_most_probable_precision as u8,
+            syntax.precision.mv_precision,
+            1,
+        ]))
+    }
+
+    const fn byte(self, index: u32) -> u8 {
+        (self.0 >> (8 * index)) as u8
+    }
+
+    const fn bit(self, mask: u8) -> bool {
+        self.byte(0) & mask != 0
+    }
+
     pub(super) const fn is_inter(self) -> bool {
-        self.bits & Self::IS_INTER != 0
+        self.bit(Self::IS_INTER)
     }
 
     pub(super) const fn newmv_for_list0(self) -> bool {
-        self.bits & Self::NEWMV_LIST0 != 0
+        self.bit(Self::NEWMV_LIST0)
     }
 
     pub(super) const fn newmv_for_list1(self) -> bool {
-        self.bits & Self::NEWMV_LIST1 != 0
+        self.bit(Self::NEWMV_LIST1)
     }
 
     pub(super) const fn skip_mode(self) -> bool {
-        self.bits & Self::SKIP_MODE != 0
+        self.bit(Self::SKIP_MODE)
     }
 
     pub(super) const fn skip(self) -> bool {
-        self.bits & Self::SKIP != 0
+        self.bit(Self::SKIP)
     }
 
     pub(super) const fn use_amvd(self) -> bool {
-        self.bits & Self::USE_AMVD != 0
+        self.bit(Self::USE_AMVD)
     }
 
     pub(super) const fn masked_compound(self) -> bool {
-        self.bits & Self::MASKED_COMPOUND != 0
+        self.bit(Self::MASKED_COMPOUND)
     }
 
     pub(super) const fn tip_size_16x16(self) -> bool {
-        self.bits & Self::TIP_SIZE_16X16 != 0
+        self.bit(Self::TIP_SIZE_16X16)
+    }
+
+    pub(super) const fn ref_frame0(self) -> i8 {
+        self.byte(1) as i8
+    }
+
+    pub(super) const fn ref_frame1(self) -> Option<i8> {
+        match self.byte(2) {
+            Self::NO_REF => None,
+            ref_frame => Some(ref_frame as i8),
+        }
+    }
+
+    pub(super) const fn interp_filter(self) -> u8 {
+        self.byte(3)
     }
 
     pub(super) const fn is_warp(self) -> bool {
-        self.motion_mode.is_warp()
+        self.byte(4) >= MotionMode::LocalWarp as u8
+    }
+
+    pub(super) const fn is_local_warp(self) -> bool {
+        self.byte(4) == MotionMode::LocalWarp as u8
+    }
+
+    pub(super) const fn use_most_probable_precision(self) -> bool {
+        self.byte(5) != 0
+    }
+
+    pub(super) const fn mv_precision(self) -> u8 {
+        self.byte(6)
+    }
+
+    pub(super) const fn is_present(self) -> bool {
+        self.byte(7) != 0
     }
 }
 
-pub(super) const EMPTY_NEIGHBOUR_FLAGS: NeighbourFlags = NeighbourFlags {
-    bits: 0,
-    ref_frame0: -1,
-    ref_frame1: None,
-    interp_filter: SWITCHABLE_FILTERS,
-    motion_mode: MotionMode::Simple,
-    precision: BlockPrecisionRecord {
-        use_most_probable_precision: false,
-        mv_precision: 0,
-    },
-};
+/// The flags of a position where no leaf is published: a non-inter leaf.
+pub(super) const ABSENT_NEIGHBOUR_FLAGS: NeighbourFlags = NeighbourFlags(u64::from_le_bytes([
+    0,
+    -1i8 as u8,
+    NeighbourFlags::NO_REF,
+    SWITCHABLE_FILTERS,
+    0,
+    0,
+    0,
+    0,
+]));
 
 /// Motion payload read by AV2 § 7.12 stack, bank and warp-sample derivation.
 ///
@@ -167,10 +225,10 @@ impl LeafRecord {
     const STORED_OWN: u8 = 1 << 3;
 }
 
-/// Footprint guard: a plane cell is four bytes and a leaf record forty-four.
+/// Footprint guard: a plane cell is four bytes and a leaf record forty-eight.
 const _: () = {
     assert!(size_of::<Option<NonZeroU32>>() == 4);
-    assert!(size_of::<LeafRecord>() == 44);
+    assert!(size_of::<LeafRecord>() == 48);
     assert!(size_of::<NeighbourMotion>() == 72);
 };
 
@@ -397,6 +455,14 @@ pub(crate) struct GridEdge {
     models: Vec<[i32; 6]>,
 }
 
+/// The flags at `at` of an edge line, absent unless `inside`.
+fn edge(line: &[NeighbourFlags], inside: bool, at: usize) -> NeighbourFlags {
+    line.get(at)
+        .copied()
+        .filter(|_| inside)
+        .unwrap_or(ABSENT_NEIGHBOUR_FLAGS)
+}
+
 /// Sizes one tile's grid plane and empties its tables.
 fn reset_grid_planes(
     planes: &mut GridPlanes,
@@ -460,16 +526,15 @@ pub(crate) struct GridCheckpoint {
 ///
 /// A parse pass that hands its units to a resolve pass running later, or
 /// elsewhere, logs what it published so the resolve pass can rebuild the same
-/// flag plane on its own grid instead of sharing the parser's. The record is
-/// exactly [`NeighbourMvGrid::record_flags`]'s arguments, so a replay is that
-/// call again and cannot drift from it.
+/// flag plane on its own grid instead of sharing the parser's. A replay is
+/// the publication [`NeighbourMvGrid::record_flags`] made, so it cannot drift.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NeighbourFlagRecord {
     r: u32,
     c: u32,
     n4w: u32,
     n4h: u32,
-    syntax: NeighbourFlagSyntax,
+    flags: NeighbourFlags,
 }
 
 #[derive(Default)]
@@ -488,6 +553,11 @@ pub(crate) struct NeighbourMvGrid {
     /// collected only while logging is on.
     flag_log: Vec<NeighbourFlagRecord>,
     logging: bool,
+    /// With [`Self::track_edges`], the last leaf on each tile column and row
+    /// (see `TileMiSizeState`), and `above` as the superblock row began.
+    above: Vec<NeighbourFlags>,
+    sb_above: Vec<NeighbourFlags>,
+    left: Vec<NeighbourFlags>,
 }
 
 impl NeighbourMvGrid {
@@ -527,12 +597,81 @@ impl NeighbourMvGrid {
         .map_err(|_| TileGridConstructionError::Allocation)?;
         self.flag_log.clear();
         self.logging = false;
+        self.above.clear();
         Ok(())
     }
 
     /// Starts logging flag publications for later replay onto another grid.
     pub(crate) const fn log_flags(&mut self) {
         self.logging = true;
+    }
+
+    /// Keeps the edge lines that the parse's probes read.
+    pub(crate) fn track_edges(&mut self) -> Result<(), TileGridConstructionError> {
+        for (line, len) in [
+            (&mut self.above, self.mi_cols),
+            (&mut self.sb_above, self.mi_cols),
+            (&mut self.left, self.mi_rows),
+        ] {
+            line.clear();
+            line.try_reserve_exact(len)
+                .map_err(|_| TileGridConstructionError::Allocation)?;
+            line.resize(len, ABSENT_NEIGHBOUR_FLAGS);
+        }
+        Ok(())
+    }
+
+    /// The flags at the four § 7.12.2.6 immediate probes of a block: the
+    /// left-bottom, above-right, left-top and above-left.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: per-block neighbour contexts"
+    )]
+    #[inline(always)]
+    pub(super) fn immediate_flags(
+        &self,
+        r: usize,
+        c: usize,
+        bw4: usize,
+        bh4: usize,
+    ) -> [NeighbourFlags; 4] {
+        let (up, left) = (r.wrapping_sub(1), c.wrapping_sub(1));
+        if self.above.is_empty() {
+            return self.flags_at_each([
+                (r + bh4 - 1, left),
+                (up, c + bw4 - 1),
+                (r, left),
+                (up, c),
+            ]);
+        }
+        let (row, col) = (
+            r.wrapping_sub(self.origin_row),
+            c.wrapping_sub(self.origin_col),
+        );
+        [
+            edge(&self.left, col != 0, row + bh4 - 1),
+            edge(&self.above, row != 0, col + bw4 - 1),
+            edge(&self.left, col != 0, row),
+            edge(&self.above, row != 0, col),
+        ]
+    }
+
+    /// The flags on row `up` above a block at column `c` on its superblock
+    /// row's top, at columns `cols`.
+    pub(super) fn sb_border_flags(
+        &self,
+        c: usize,
+        up: usize,
+        cols: [usize; 2],
+    ) -> [NeighbourFlags; 2] {
+        if self.above.is_empty() {
+            return self.flags_at_each(cols.map(|col| (up, col)));
+        }
+        let inside = up.wrapping_sub(self.origin_row) < self.mi_rows;
+        cols.map(|col| {
+            let line = if col < c { &self.sb_above } else { &self.above };
+            edge(line, inside, col.wrapping_sub(self.origin_col))
+        })
     }
 
     /// Moves the flag publications made since the last call into `into`,
@@ -545,12 +684,12 @@ impl NeighbourMvGrid {
     /// Replays one unit's logged flag publications onto this grid.
     pub(crate) fn replay_flag_log(&mut self, records: &[NeighbourFlagRecord]) {
         for record in records {
-            self.record_flags(
+            self.publish_flags(
                 record.r as usize,
                 record.c as usize,
                 record.n4w as usize,
                 record.n4h as usize,
-                record.syntax,
+                record.flags,
             );
         }
     }
@@ -565,14 +704,35 @@ impl NeighbourMvGrid {
         n4h: usize,
         syntax: NeighbourFlagSyntax,
     ) {
+        let flags = NeighbourFlags::from_syntax(syntax);
         if self.logging {
             self.flag_log.push(NeighbourFlagRecord {
                 r: r as u32,
                 c: c as u32,
                 n4w: n4w as u32,
                 n4h: n4h as u32,
-                syntax,
+                flags,
             });
+        }
+        self.publish_flags(r, c, n4w, n4h, flags);
+    }
+
+    fn publish_flags(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, flags: NeighbourFlags) {
+        let (row, col) = (
+            r.wrapping_sub(self.origin_row),
+            c.wrapping_sub(self.origin_col),
+        );
+        if row < self.mi_rows && col < self.mi_cols && !self.above.is_empty() {
+            self.enter_sb_row(r);
+            for (line, at, len) in [(&mut self.above, col, n4w), (&mut self.left, row, n4h)] {
+                let end = (at + len).min(line.len());
+                if let Some(run) = line.get_mut(at..end) {
+                    crate::support::fill_mi_run(run, flags);
+                }
+            }
+            if self.logging {
+                return;
+            }
         }
         let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
             return;
@@ -583,21 +743,6 @@ impl NeighbourMvGrid {
             .and_then(|leaf| NonZeroU32::new(leaf.wrapping_add(1)))
         else {
             return;
-        };
-        let flags = NeighbourFlags {
-            bits: NeighbourFlags::flag(syntax.is_inter, NeighbourFlags::IS_INTER)
-                | NeighbourFlags::flag(syntax.newmv[0], NeighbourFlags::NEWMV_LIST0)
-                | NeighbourFlags::flag(syntax.newmv[1], NeighbourFlags::NEWMV_LIST1)
-                | NeighbourFlags::flag(syntax.skip_mode, NeighbourFlags::SKIP_MODE)
-                | NeighbourFlags::flag(syntax.skip, NeighbourFlags::SKIP)
-                | NeighbourFlags::flag(syntax.use_amvd, NeighbourFlags::USE_AMVD)
-                | NeighbourFlags::flag(syntax.masked_compound, NeighbourFlags::MASKED_COMPOUND)
-                | NeighbourFlags::flag(syntax.tip_size_16x16, NeighbourFlags::TIP_SIZE_16X16),
-            ref_frame0: syntax.ref_frame0,
-            ref_frame1: syntax.ref_frame1,
-            interp_filter: syntax.interp_filter.min(SWITCHABLE_FILTERS),
-            motion_mode: syntax.motion_mode,
-            precision: syntax.precision,
         };
         self.planes.leaves.push(LeafRecord {
             flags,
@@ -817,6 +962,7 @@ impl NeighbourMvGrid {
                 precision,
             },
         );
+        let warp = warp_params.filter(|_| motion_mode >= MotionMode::LocalWarp);
         self.record_motion(
             r,
             c,
@@ -825,9 +971,9 @@ impl NeighbourMvGrid {
             NeighbourMotionValues {
                 mv: [mv, Mv::ZERO],
                 cwp_weight: CWP_EQUAL,
-                stored_warp: warp_params.filter(|_| motion_mode.is_warp()),
-                global_mv: [warp_params.is_some() && !motion_mode.is_warp(), false],
-                splat_warp: [warp_params.filter(|_| motion_mode.is_warp()), None],
+                stored_warp: warp,
+                global_mv: [warp_params.is_some() && warp.is_none(), false],
+                splat_warp: [warp, None],
             },
         );
     }
@@ -1072,7 +1218,7 @@ impl NeighbourMvGrid {
                 ),
                 leaf.flags
                     .is_inter()
-                    .then_some((leaf.flags.ref_frame0, leaf.flags.ref_frame1)),
+                    .then_some((leaf.flags.ref_frame0(), leaf.flags.ref_frame1())),
                 [leaf.mv, leaf.mv1],
                 self.splat_models(leaf),
                 [0, 1].map(|list| leaf.global_mv_lists & (1 << list) != 0),
@@ -1115,6 +1261,7 @@ impl NeighbourMvGrid {
         if let Some(slide) = slide {
             slide.apply(&mut self.planes.cells, self.mi_cols, None);
         }
+        self.sb_above.clone_from(&self.above);
     }
 
     /// Plane row of tile row `row`, `None` outside the readable window.
@@ -1211,11 +1358,13 @@ impl NeighbourMvGrid {
     pub(super) fn flags_at_each<const N: usize>(
         &self,
         positions: [(usize, usize); N],
-    ) -> [Option<NeighbourFlags>; N] {
+    ) -> [NeighbourFlags; N] {
         let (cells, leaves) = (self.planes.cells.as_slice(), self.planes.leaves.as_slice());
         positions.map(|(r, c)| {
-            let slot = (*cells.get(self.index_at(r, c)?)?)?;
-            leaves.get(slot.get() as usize - 1).map(|leaf| leaf.flags)
+            self.index_at(r, c)
+                .and_then(|index| *cells.get(index)?)
+                .and_then(|slot| leaves.get(slot.get() as usize - 1))
+                .map_or(ABSENT_NEIGHBOUR_FLAGS, |leaf| leaf.flags)
         })
     }
 
@@ -1325,7 +1474,7 @@ impl NeighbourMvGrid {
 
     pub(crate) fn intrabc_mv_at(&self, r: usize, c: usize) -> Option<Mv> {
         let cell = self.get(i32::try_from(r).ok()?, i32::try_from(c).ok()?)?;
-        (cell.flags.ref_frame0 == INTRABC_REF_FRAME && cell.flags.ref_frame1.is_none())
+        (cell.flags.ref_frame0() == INTRABC_REF_FRAME && cell.flags.ref_frame1().is_none())
             .then_some(cell.motion.mv)
     }
 
@@ -1337,7 +1486,7 @@ impl NeighbourMvGrid {
     }
 
     pub(crate) fn is_non_tip_at(&self, r: i32, c: i32) -> bool {
-        matches!(self.flags_at(r, c), Some(flags) if flags.ref_frame0 != TIP_REF_FRAME)
+        matches!(self.flags_at(r, c), Some(flags) if flags.ref_frame0() != TIP_REF_FRAME)
     }
 }
 

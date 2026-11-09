@@ -96,12 +96,12 @@ mod temporal;
 mod warp_bank;
 use derived::{CompoundScanState, DerivedMvState};
 use extra_search::{compound_extra_search, extra_search};
+use neighbour_grid::{ABSENT_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags};
 pub(crate) use neighbour_grid::{
     BlockPrecisionRecord, GridCheckpoint, GridEdge, NON_INTER_FLAG_SYNTAX, NeighbourFlagRecord,
     NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES,
     compound_motion_mode,
 };
-use neighbour_grid::{EMPTY_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags};
 pub(crate) use temporal::{
     MotionFieldLayout, OrderHintMvContext, TemporalBandPlan, TemporalMotionBand,
     TemporalMotionBlock, TemporalMotionField, TemporalMotionFieldMetadata, TemporalMvContext,
@@ -117,12 +117,6 @@ pub(crate) enum MotionMode {
     LocalWarp,
     DeltaWarp,
     ExtendWarp,
-}
-
-impl MotionMode {
-    const fn is_warp(self) -> bool {
-        matches!(self, Self::LocalWarp | Self::DeltaWarp | Self::ExtendWarp)
-    }
 }
 
 const SWITCHABLE_FILTERS: u8 = 3;
@@ -200,19 +194,6 @@ impl RelativeProbe {
     }
 }
 
-/// The flags at the four immediate spatial probes: left-bottom, above-right,
-/// left-top and above-left, negative coordinates wrapped.
-fn immediate_flags(grid: &NeighbourMvGrid, block: &MvBlockContext) -> [Option<NeighbourFlags>; 4] {
-    let (r, c) = (block.mi_row, block.mi_col);
-    let (up, left) = (r.wrapping_sub(1), c.wrapping_sub(1));
-    grid.flags_at_each([
-        (r + block.bh4 - 1, left),
-        (up, c + block.bw4 - 1),
-        (r, left),
-        (up, c),
-    ])
-}
-
 /// The § 7.12.2.6 spatial probes with [`RelativeProbe::stack_target`]'s
 /// column adjustment applied, so [`RelativeProbe::adjusted_target`] reads them.
 fn mv_stack_spatial_probes(block: &MvBlockContext) -> [Option<RelativeProbe>; 7] {
@@ -273,7 +254,7 @@ fn matches_block_ref(cell: NeighbourFlags, block: &MvBlockContext) -> bool {
 }
 
 fn neighbour_matches_ref(cell: NeighbourFlags, ref_frame: i8) -> bool {
-    cell.is_inter() && (cell.ref_frame0 == ref_frame || cell.ref_frame1 == Some(ref_frame))
+    cell.is_inter() && (cell.ref_frame0() == ref_frame || cell.ref_frame1() == Some(ref_frame))
 }
 
 fn mode_ctx_match_newmv(
@@ -285,21 +266,21 @@ fn mode_ctx_match_newmv(
         return None;
     }
     let Some(block_ref1) = block.ref_frame1 else {
-        if cell.ref_frame0 == block.ref_frame0 {
+        if cell.ref_frame0() == block.ref_frame0 {
             return Some(cell.newmv_for_list0());
         }
-        if cell.ref_frame1 == Some(block.ref_frame0) {
+        if cell.ref_frame1() == Some(block.ref_frame0) {
             return Some(cell.newmv_for_list1());
         }
         return None;
     };
-    if cell.ref_frame0 == TIP_REF_FRAME
-        && cell.ref_frame1.is_none()
+    if cell.ref_frame0() == TIP_REF_FRAME
+        && cell.ref_frame1().is_none()
         && tip_ref_pair == Some((block.ref_frame0, block_ref1))
     {
         return Some(cell.newmv_for_list0());
     }
-    if cell.ref_frame0 == block.ref_frame0 && cell.ref_frame1 == Some(block_ref1) {
+    if cell.ref_frame0() == block.ref_frame0 && cell.ref_frame1() == Some(block_ref1) {
         return Some(cell.newmv_for_list0() || cell.newmv_for_list1());
     }
     None
@@ -335,26 +316,14 @@ pub(crate) fn mode_ctx_from_neighbours(
     tip_ref_pair: Option<(i8, i8)>,
     neighbours: &BlockNeighbourContext,
 ) -> ModeContext {
-    let mut new_mv_count = 0usize;
-    let mut warp_mv_count = 0usize;
-    let mut found = [false; 4];
-    let immediate = neighbours.immediate;
-
-    for (slot, cell) in found.iter_mut().zip(immediate.iter()) {
-        let Some(cell) = *cell else {
-            continue;
-        };
-        let Some(is_newmv) = mode_ctx_match_newmv(cell, block, tip_ref_pair) else {
-            continue;
-        };
-        if is_newmv {
-            new_mv_count = (new_mv_count + 1).min(3);
+    let mut cells = neighbours.immediate;
+    let (mut found, mut newmv) = (0u32, false);
+    for (index, &cell) in cells.iter().enumerate() {
+        if let Some(is_newmv) = mode_ctx_match_newmv(cell, block, tip_ref_pair) {
+            found |= 1 << index;
+            newmv |= is_newmv;
         }
-        *slot = true;
     }
-    let mut warp_sample_found = false;
-    let mut warp_sample_found1 = false;
-    let mut extend_delta = (0, 0);
     let is_sb_border = block.is_sb_border();
     let (bw4, bh4) = (block.bw4 as i32, block.bh4 as i32);
     let odd_col = (block.mi_col & 1) as i32;
@@ -369,50 +338,35 @@ pub(crate) fn mode_ctx_from_neighbours(
         (0, -1),
         (-1, above_left_col),
     ];
-    let above_left = bw4 >= if is_sb_border { 4 } else { 2 };
-    let cells = if is_sb_border {
-        let up = block.mi_row.wrapping_sub(1);
+    if is_sb_border {
         let column = |delta: i32| block.mi_col.wrapping_add_signed(delta as isize);
-        let [above_right_cell, above_left_cell] =
-            grid.flags_at_each([(up, column(above_right_col)), (up, column(above_left_col))]);
-        [
-            immediate[0],
-            above_right_cell,
-            immediate[2],
-            above_left_cell,
-        ]
-    } else {
-        immediate
-    };
-    for (index, cell) in cells.into_iter().enumerate() {
-        let Some(cell) = cell.filter(|_| index != 3 || above_left) else {
-            continue;
-        };
-        if matches_block_ref(cell, block) {
-            if !warp_sample_found {
-                extend_delta = deltas[index];
-            }
-            warp_sample_found = true;
-            if cell.is_warp() {
-                warp_mv_count = (warp_mv_count + 1).min(4);
-            }
-        }
-        if let Some(ref1) = block.ref_frame1
-            && neighbour_matches_ref(cell, ref1)
-        {
-            warp_sample_found1 = true;
-        }
+        [cells[1], cells[3]] = grid.sb_border_flags(
+            block.mi_col,
+            block.mi_row.wrapping_sub(1),
+            [column(above_right_col), column(above_left_col)],
+        );
     }
-
-    let [left_a, above_a, left_b, above_b] = found;
-    let nearest_match = usize::from(above_a || above_b) + usize::from(left_a || left_b);
-    let new_mv_context = nearest_match + if new_mv_count > 0 { 2 } else { 0 };
+    let probed = 3 + usize::from(bw4 >= if is_sb_border { 4 } else { 2 });
+    let (mut samples, mut warp_mv_count, mut warp_sample_found1) = (0u32, 0, false);
+    for (index, &cell) in cells.iter().enumerate().take(probed) {
+        if matches_block_ref(cell, block) {
+            samples |= 1 << index;
+            warp_mv_count += usize::from(cell.is_warp());
+        }
+        warp_sample_found1 |= block
+            .ref_frame1
+            .is_some_and(|ref1| neighbour_matches_ref(cell, ref1));
+    }
+    let nearest_match = usize::from(found & 0b1010 != 0) + usize::from(found & 0b0101 != 0);
     ModeContext {
-        new_mv_context,
+        new_mv_context: nearest_match + 2 * usize::from(newmv),
         warp_mv_count,
-        warp_sample_found,
+        warp_sample_found: samples != 0,
         warp_sample_found1,
-        extend_delta,
+        extend_delta: deltas
+            .get(samples.trailing_zeros() as usize)
+            .copied()
+            .unwrap_or((0, 0)),
     }
 }
 
@@ -421,35 +375,36 @@ pub(crate) struct BlockNeighbourContext {
     pub(crate) is_inter_ctx: usize,
     pub(crate) skip_mode_ctx: usize,
     pub(crate) skip_ctx: usize,
-    ref_counts: [u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS],
+    /// Per-reference use counts, a nibble per reference.
+    ref_counts: u32,
     cells: [NeighbourFlags; 2],
     cell_count: usize,
     npos_cells: [NeighbourFlags; 2],
     npos_count: usize,
-    /// Flags at the four [`immediate_flags`] probes.
-    immediate: [Option<NeighbourFlags>; 4],
+    /// Flags at the four [`NeighbourMvGrid::immediate_flags`] probes.
+    immediate: [NeighbourFlags; 4],
 }
 
 impl BlockNeighbourContext {
     const MAX_NEIGHBOUR_REFS: usize = 7;
 
-    pub(crate) fn single_ref_ctx(&self, ref_idx: usize, num_total_refs: usize) -> Option<usize> {
-        let this_count = u32::from(*self.ref_counts.get(ref_idx)?);
-        let next_start = ref_idx.checked_add(1)?;
-        let next_count = if next_start >= num_total_refs {
-            0
-        } else {
-            self.ref_counts
-                .get(next_start..num_total_refs)?
-                .iter()
-                .map(|&count| u32::from(count))
-                .sum()
-        };
-        Some(match this_count.cmp(&next_count) {
-            core::cmp::Ordering::Equal => 1,
-            core::cmp::Ordering::Less => 0,
-            core::cmp::Ordering::Greater => 2,
-        })
+    /// The single-reference contexts of references `0..num_total_refs`.
+    pub(crate) fn single_ref_ctxs(
+        &self,
+        num_total_refs: usize,
+    ) -> Option<[usize; Self::MAX_NEIGHBOUR_REFS]> {
+        if num_total_refs > Self::MAX_NEIGHBOUR_REFS {
+            return None;
+        }
+        let mut contexts = [0; Self::MAX_NEIGHBOUR_REFS];
+        let mut next =
+            (self.ref_counts & ((1 << (4 * num_total_refs)) - 1)).wrapping_mul(0x1111_1111) >> 28;
+        for (ref_idx, ctx) in contexts.iter_mut().take(num_total_refs).enumerate() {
+            let this = (self.ref_counts >> (4 * ref_idx)) & 0xf;
+            next -= this;
+            *ctx = usize::from(this >= next) + usize::from(this > next);
+        }
+        Some(contexts)
     }
 
     pub(crate) fn skip_mode_ref_pair(
@@ -458,16 +413,16 @@ impl BlockNeighbourContext {
         tip_ref_pair: Option<(i8, i8)>,
     ) -> (i8, i8) {
         for cell in self.cells.iter().take(self.cell_count) {
-            if cell.ref_frame0 < 0 {
+            if cell.ref_frame0() < 0 {
                 continue;
             }
-            if cell.ref_frame0 == TIP_REF_FRAME {
+            if cell.ref_frame0() == TIP_REF_FRAME {
                 return tip_ref_pair.map_or(default, |(first, second)| {
                     (first.min(second), first.max(second))
                 });
             }
-            if let Some(ref_frame1) = cell.ref_frame1.filter(|&ref_frame| ref_frame >= 0) {
-                return (cell.ref_frame0, ref_frame1);
+            if let Some(ref_frame1) = cell.ref_frame1().filter(|&ref_frame| ref_frame >= 0) {
+                return (cell.ref_frame0(), ref_frame1);
             }
             break;
         }
@@ -478,7 +433,7 @@ impl BlockNeighbourContext {
         self.cells
             .iter()
             .take(self.cell_count)
-            .filter(|cell| cell.ref_frame0 == TIP_REF_FRAME)
+            .filter(|cell| cell.ref_frame0() == TIP_REF_FRAME)
             .count()
     }
 
@@ -492,7 +447,7 @@ impl BlockNeighbourContext {
             0 => 1,
             1 => {
                 let neighbour = self.cells[0];
-                if neighbour.ref_frame1.is_some() {
+                if neighbour.ref_frame1().is_some() {
                     3
                 } else {
                     usize::from(is_backward_ref_frame(
@@ -506,7 +461,7 @@ impl BlockNeighbourContext {
             _ => {
                 let first = self.cells[0];
                 let second = self.cells[1];
-                match (first.ref_frame1.is_some(), second.ref_frame1.is_some()) {
+                match (first.ref_frame1().is_some(), second.ref_frame1().is_some()) {
                     (false, false) => usize::from(
                         is_backward_ref_frame(
                             first,
@@ -568,9 +523,9 @@ impl BlockNeighbourContext {
         if !cell.is_inter() {
             return 0;
         }
-        if cell.ref_frame1.is_some() {
+        if cell.ref_frame1().is_some() {
             usize::from(cell.masked_compound())
-        } else if Some(cell.ref_frame0) == furthest_future_ref {
+        } else if Some(cell.ref_frame0()) == furthest_future_ref {
             2
         } else {
             0
@@ -581,7 +536,7 @@ impl BlockNeighbourContext {
         let mut neighbour_filter_type = [SWITCHABLE_FILTERS; 2];
         for (slot, cell) in self.npos_cells.iter().take(self.npos_count).enumerate() {
             if neighbour_matches_ref(*cell, ref_frame0) {
-                neighbour_filter_type[slot] = cell.interp_filter.min(SWITCHABLE_FILTERS);
+                neighbour_filter_type[slot] = cell.interp_filter();
             }
         }
 
@@ -603,7 +558,7 @@ impl BlockNeighbourContext {
         self.cells
             .iter()
             .take(self.cell_count)
-            .filter(|cell| cell.is_inter() && cell.ref_frame0 == ref_frame0 && cell.use_amvd())
+            .filter(|cell| cell.is_inter() && cell.ref_frame0() == ref_frame0 && cell.use_amvd())
             .count()
     }
 
@@ -618,16 +573,14 @@ impl BlockNeighbourContext {
     pub(crate) fn use_local_warp_ctx(&self) -> usize {
         let cells = self.npos_cells.iter().take(self.npos_count);
         usize::from(cells.clone().any(|cell| cell.is_warp()))
-            + cells
-                .filter(|cell| cell.motion_mode == MotionMode::LocalWarp)
-                .count()
+            + cells.filter(|cell| cell.is_local_warp()).count()
     }
 
     pub(crate) fn most_probable_precision_ctx(&self) -> usize {
         self.npos_cells
             .iter()
             .take(self.npos_count)
-            .filter(|cell| cell.precision.use_most_probable_precision)
+            .filter(|cell| cell.use_most_probable_precision())
             .count()
     }
 
@@ -636,7 +589,7 @@ impl BlockNeighbourContext {
             self.npos_cells
                 .iter()
                 .take(self.npos_count)
-                .any(|cell| cell.precision.mv_precision < frame_precision),
+                .any(|cell| cell.mv_precision() < frame_precision),
         )
     }
 }
@@ -645,16 +598,13 @@ pub(crate) fn block_neighbour_ctx(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
 ) -> BlockNeighbourContext {
-    let immediate = immediate_flags(grid, block);
-    let cells = immediate.map(|cell| cell.unwrap_or(EMPTY_NEIGHBOUR_FLAGS));
-    let present = (0..4).fold(0u32, |mask, i| {
-        mask | u32::from(immediate[i].is_some()) << i
-    });
+    let cells = grid.immediate_flags(block.mi_row, block.mi_col, block.bw4, block.bh4);
+    let present = (0..4).fold(0u32, |mask, i| mask | u32::from(cells[i].is_present()) << i);
     let first_two = |mask: u32| {
         let rest = mask & mask.wrapping_sub(1);
         let pick = |m: u32| {
             if m == 0 {
-                EMPTY_NEIGHBOUR_FLAGS
+                ABSENT_NEIGHBOUR_FLAGS
             } else {
                 cells[m.trailing_zeros() as usize & 3]
             }
@@ -683,17 +633,11 @@ pub(crate) fn block_neighbour_ctx(
         2 * usize::from(n_intra_0)
     };
 
-    let mut ref_counts = [0u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS];
-    for cell in buf {
-        if !cell.is_inter() {
-            continue;
-        }
-        for ref_frame in [Some(cell.ref_frame0), cell.ref_frame1] {
-            if let Some(slot) = ref_frame
-                .and_then(|ref_frame| usize::try_from(ref_frame).ok())
-                .and_then(|ref_frame| ref_counts.get_mut(ref_frame))
-            {
-                *slot += 1;
+    let mut ref_counts = 0u32;
+    for cell in buf.iter().filter(|cell| cell.is_inter()) {
+        for ref_frame in [cell.ref_frame0(), cell.ref_frame1().unwrap_or(-1)] {
+            if (ref_frame as u8 as usize) < BlockNeighbourContext::MAX_NEIGHBOUR_REFS {
+                ref_counts += 1 << (4 * ref_frame as u8);
             }
         }
     }
@@ -707,7 +651,7 @@ pub(crate) fn block_neighbour_ctx(
         cell_count: num_buf,
         npos_cells,
         npos_count,
-        immediate,
+        immediate: cells,
     }
 }
 
@@ -717,13 +661,13 @@ fn is_backward_ref_frame(
     ref_order_hint: &[u32],
     current_order_hint: CompoundOrderHint,
 ) -> bool {
-    if !cell.is_inter() || cell.ref_frame0 < 0 {
+    if !cell.is_inter() || cell.ref_frame0() < 0 {
         return false;
     }
-    if cell.ref_frame0 == TIP_REF_FRAME {
+    if cell.ref_frame0() == TIP_REF_FRAME {
         return true;
     }
-    let Some(&slot) = ref_frame_idx.get(cell.ref_frame0 as usize) else {
+    let Some(&slot) = ref_frame_idx.get(cell.ref_frame0() as usize) else {
         return false;
     };
     let Some(&order_hint) = ref_order_hint.get(slot as usize) else {
@@ -830,9 +774,9 @@ pub(crate) fn extend_warp_neighbour_params(
         block.mi_row as i32 + delta_row,
         block.mi_col as i32 + delta_col,
     )?;
-    let list = if cell.flags.ref_frame0 == block.ref_frame0 {
+    let list = if cell.flags.ref_frame0() == block.ref_frame0 {
         0
-    } else if cell.flags.ref_frame1 == Some(block.ref_frame0) {
+    } else if cell.flags.ref_frame1() == Some(block.ref_frame0) {
         1
     } else {
         return None;
@@ -883,9 +827,9 @@ pub(crate) fn find_warp_samples(
             return;
         };
         let lists = [
-            (cell.flags.ref_frame0 == target_ref && cell.flags.is_inter())
+            (cell.flags.ref_frame0() == target_ref && cell.flags.is_inter())
                 .then_some(cell.motion.mv),
-            (cell.flags.ref_frame1 == Some(target_ref)).then_some(cell.motion.mv1),
+            (cell.flags.ref_frame1() == Some(target_ref)).then_some(cell.motion.mv1),
         ];
         for mv in lists.into_iter().flatten() {
             if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
@@ -1057,10 +1001,10 @@ impl RefMvBank {
         if seed_from_above {
             seed_walk_from_row_above(grid, sb.0 * sb_size4, sb.1 * sb_size4, sb_size4, |cell| {
                 self.update(
-                    cell.flags.ref_frame0,
-                    cell.flags.ref_frame1,
+                    cell.flags.ref_frame0(),
+                    cell.flags.ref_frame1(),
                     cell.motion.mv,
-                    cell.flags.ref_frame1.map(|_| cell.motion.mv1),
+                    cell.flags.ref_frame1().map(|_| cell.motion.mv1),
                     cell.motion.cwp_weight,
                     false,
                 );
@@ -1681,10 +1625,10 @@ fn scan_compound_mv_stack_probe(
     if !flags.is_inter() {
         return;
     }
+    let (ref0, ref1) = (flags.ref_frame0(), flags.ref_frame1());
     let zero_weight = (probe.delta_row == -1 && delta_col == -1) || delta_col < -1;
     let weight = u32::from(!zero_weight);
-    let candidate = if flags.ref_frame0 == block.ref_frame0 && flags.ref_frame1 == Some(ref_frame1)
-    {
+    let candidate = if ref0 == block.ref_frame0 && ref1 == Some(ref_frame1) {
         CompoundMvCandidate {
             mvs: core::array::from_fn(|list| {
                 if leaf.is_global_mv(list) {
@@ -1695,14 +1639,14 @@ fn scan_compound_mv_stack_probe(
             }),
             cwp_weight: leaf.cwp_weight(),
         }
-    } else if flags.ref_frame0 == TIP_REF_FRAME {
+    } else if ref0 == TIP_REF_FRAME {
         let Some(temporal) = temporal else {
             return;
         };
         let Some(tip_refs) = temporal.tip_references() else {
             return;
         };
-        if flags.ref_frame1.is_some()
+        if ref1.is_some()
             || (tip_refs.past_ref, tip_refs.future_ref) != (block.ref_frame0, ref_frame1)
         {
             return;
@@ -1721,10 +1665,7 @@ fn scan_compound_mv_stack_probe(
         let sub_mvs = leaf.sub_mvs();
         state.derived.add_spatial(
             block,
-            [
-                Some((flags.ref_frame0, sub_mvs[0])),
-                flags.ref_frame1.map(|r| (r, sub_mvs[1])),
-            ],
+            [Some((ref0, sub_mvs[0])), ref1.map(|r| (r, sub_mvs[1]))],
             [leaf.is_global_mv(0), leaf.is_global_mv(1)],
             state.global_mvs,
             temporal,
@@ -1875,7 +1816,7 @@ fn scan_mv_stack_probe(
     if let Some(warp) = warp
         && flags.is_inter()
         && flags.is_warp()
-        && flags.ref_frame0 == block.ref_frame0
+        && flags.ref_frame0() == block.ref_frame0
         && let Some(params) = leaf.stored_warp()
     {
         warp.insert(params);
@@ -1889,13 +1830,13 @@ fn scan_mv_stack_probe(
         (probe.delta_row == -1 && adjusted_delta_col == -1) || adjusted_delta_col < -1;
     let weight = u32::from(!zero_weight);
     let offsets = (probe.delta_row, adjusted_delta_col);
-    if flags.ref_frame0 == TIP_REF_FRAME
-        && flags.ref_frame1.is_none()
+    if flags.ref_frame0() == TIP_REF_FRAME
+        && flags.ref_frame1().is_none()
         && block.ref_frame0 != TIP_REF_FRAME
     {
         scan_tip_spatial_probe(grid, block, probe, entries, prune_count, derived, weight);
     }
-    for (list, candidate_ref) in [(0, Some(flags.ref_frame0)), (1, flags.ref_frame1)] {
+    for (list, candidate_ref) in [(0, Some(flags.ref_frame0())), (1, flags.ref_frame1())] {
         let Some(candidate_ref) = candidate_ref else {
             continue;
         };
@@ -2138,9 +2079,9 @@ fn warp_corner(
     }
     for ref_list in 0..2usize {
         let ref_matches = if ref_list == 0 {
-            flags.ref_frame0 == block.ref_frame0
+            flags.ref_frame0() == block.ref_frame0
         } else {
-            flags.ref_frame1 == Some(block.ref_frame0)
+            flags.ref_frame1() == Some(block.ref_frame0)
         };
         if !ref_matches {
             continue;

@@ -1631,7 +1631,7 @@ impl TemporalMvContext {
         probe: RelativeProbe,
         cell: &NeighbourCell,
     ) -> Option<[Mv; 2]> {
-        if cell.flags.ref_frame0 != TIP_REF_FRAME || cell.flags.ref_frame1.is_some() {
+        if cell.flags.ref_frame0() != TIP_REF_FRAME || cell.flags.ref_frame1().is_some() {
             return None;
         }
         let (row, col, _) = probe.stack_target(block);

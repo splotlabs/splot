@@ -653,10 +653,10 @@ impl EncoderInterTile {
         if let (EncoderMotion::Single(_) | EncoderMotion::Warp(_), (ref_frame, _)) =
             (motion, motion.refs())
         {
-            for ref_idx in 0..refs.saturating_sub(1) {
-                let ctx = neighbour
-                    .single_ref_ctx(ref_idx, refs)
-                    .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
+            let contexts = neighbour
+                .single_ref_ctxs(refs)
+                .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
+            for (ref_idx, &ctx) in contexts.iter().enumerate().take(refs.saturating_sub(1)) {
                 let value = ref_idx == ref_frame as usize;
                 out.push((TileCdfSelector::SingleRef { ctx, ref_idx }, u8::from(value)));
                 if value {

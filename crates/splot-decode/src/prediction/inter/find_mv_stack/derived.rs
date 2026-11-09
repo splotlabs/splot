@@ -282,14 +282,14 @@ impl<'a> DerivedMvState<'a> {
         sub_mvs: impl FnOnce() -> [Mv; 2],
     ) {
         let source = if block.ref_frame0 == TIP_REF_FRAME {
-            let Some(ref_frame1) = flags.ref_frame1 else {
+            let Some(ref_frame1) = flags.ref_frame1() else {
                 return;
             };
-            if candidate_ref != flags.ref_frame0 || self.temporal.is_none() {
+            if candidate_ref != flags.ref_frame0() || self.temporal.is_none() {
                 return;
             }
             DerivedSource {
-                refs: [flags.ref_frame0, ref_frame1],
+                refs: [flags.ref_frame0(), ref_frame1],
                 mvs: sub_mvs(),
             }
         } else {
