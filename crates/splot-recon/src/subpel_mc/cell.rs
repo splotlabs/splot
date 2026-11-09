@@ -263,7 +263,6 @@ pub(super) fn compound_at(
         let unclamped_fullpel = [&first, &second].iter().all(|cell| {
             cell.horizontal.is_none() && cell.vertical.is_none() && cell.clamped.is_none()
         });
-        // Separate arms let each full-sample size unroll with constant rows.
         match (unclamped_fullpel, size) {
             (true, 4) => {
                 let blocks = [first.block(4), second.block(4)];

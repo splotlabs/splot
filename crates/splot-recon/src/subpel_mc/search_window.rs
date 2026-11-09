@@ -679,7 +679,6 @@ mod neon {
         );
         let tables = TAPS.map(|pair| pair.map(|taps| u8x16::load_array(simd, taps)));
         if [h_phase, v_phase] == [0, 0] {
-            // Zero phases weigh only the left tap of the row above.
             for row in 0..height {
                 let at = origin + (row.max(1) - 1) * stride;
                 let Some(line) = output.get_mut(row * width..(row + 1) * width) else {
