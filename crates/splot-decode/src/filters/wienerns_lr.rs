@@ -15,7 +15,7 @@ pub(crate) mod intrabc_ref_mv_stack;
 pub(crate) mod recon;
 pub(crate) mod tx_records;
 
-pub(crate) use self::recon::{chroma_transform_cells, chroma_transform_deblock_block};
+pub(crate) use self::recon::chroma_transform_deblock_block;
 
 pub(crate) fn recon_final_filter_sink<T: splot_recon::ReconSample>(
     workspace: splot_recon::CurrentFrameWorkspace<T>,
@@ -496,17 +496,6 @@ fn wienerns_lr_tx_skip_record_span(
     let width = nominal_end_col.min(cols) - record.col;
     let start = wienerns_lr_tx_skip_grid_index(record.row, record.col, cols)?;
     Ok((start, end_row, width))
-}
-
-pub(crate) fn fixed_largest_420_chroma_tx_size_from_luma_4x4(
-    n4w: usize,
-    n4h: usize,
-) -> Option<usize> {
-    if n4w < 2 || n4h < 2 || !n4w.is_power_of_two() || !n4h.is_power_of_two() {
-        return None;
-    }
-    let half_log2 = |n4: usize| n4.trailing_zeros() + 1;
-    splot_recon::tx_size_index(half_log2(n4w), half_log2(n4h)).ok()
 }
 
 pub(crate) fn wienerns_lr_source_block_bounds(

@@ -120,6 +120,7 @@ pub(crate) struct TileWalkParams {
     pub(super) enable_adaptive_mvd: bool,
     pub(super) allow_bawp: bool,
     pub(super) allow_warpmv_mode: bool,
+    pub(super) allow_intrabc: bool,
     pub(super) frame_is_switch: bool,
     pub(super) current_order_hint: u32,
     pub(super) temporal_first_frame: bool,
@@ -294,13 +295,15 @@ impl<'payload> TileParser<'payload> {
             .reset_for_tile_chroma(tile_rows.clone(), tile_cols.clone(), chroma)
             .map_err(|error| inter_tile_coeff_context_error(&error))?;
         let delta_q_state = DeltaQState::new(context.sequence, context.core)?;
+        let frame_is_intra = context.core.frame_is_intra == Some(true);
         parse.intrabc_state.reset_for_tile(
             (context.params.mi_rows, context.params.mi_cols),
             tile_rows.clone(),
             tile_cols.clone(),
             context.sequence,
-            context.core.frame_is_intra == Some(true),
-            crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(context.core),
+            frame_is_intra,
+            frame_is_intra
+                && crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(context.core),
         )?;
         let segment_id_state = if super::segmentation_enabled(context.core) {
             TileSegmentIdState::new_for_tile(tile_rows.clone(), tile_cols.clone())
@@ -377,12 +380,10 @@ impl<'payload> TileParser<'payload> {
             slots,
             residual_blocks,
             temporal,
-            mut flag_log,
             residual_planes,
             filter_records,
             ..
         } = buffers;
-        self.mv_grid.take_flag_log(&mut flag_log);
         self.residual_planes = residual_planes;
         let mut recon_row = ReconRow {
             ordinal: self.parser_ordinal,
@@ -392,7 +393,6 @@ impl<'payload> TileParser<'payload> {
             slots,
             residual_blocks,
             temporal,
-            flag_log,
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             filter_records,
             motion_folded: false,
@@ -431,7 +431,6 @@ impl<'payload> TileParser<'payload> {
             )
         };
         recon_row.residual_planes = core::mem::take(&mut self.residual_planes);
-        self.mv_grid.take_flag_log(&mut recon_row.flag_log);
         match decoded_row.and_then(|more| self.close_walk(more, tile_offset).map(|()| more)) {
             Ok(true) => ParserStep::More(recon_row),
             Ok(false) => ParserStep::Last(recon_row),
@@ -884,9 +883,6 @@ pub(super) struct ReconRow {
     pub(super) slots: Vec<LeafSlot>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
-    /// The unit's flag-plane publications, replayed by a resolve pass that runs
-    /// on a grid of its own. Empty unless the parser was logging.
-    pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     /// The unit's deblock and tx-skip records, published by its resolve.
     pub(super) filter_records: TileFilterRecords,
@@ -897,9 +893,20 @@ pub(super) struct ReconRow {
 }
 
 impl ReconRow {
-    /// Replays the unit's logged flag publications onto `grid`.
-    pub(super) fn replay_flags(&self, grid: &mut NeighbourMvGrid) {
-        grid.replay_flag_log(&self.flag_log);
+    /// Publishes the flags of the unit's luma-tree leaves onto `grid`, in leaf
+    /// order, as the parser published them on its own grid.
+    pub(super) fn replay_flags(&self, grid: &mut NeighbourMvGrid, frame_precision: u8) {
+        for entry in &self.entries {
+            let Some((r, c, n4w, n4h)) = entry.publication.luma_tree_block() else {
+                continue;
+            };
+            let syntax = match (entry.slot(&self.slots), &entry.state) {
+                (Some(LeafSlot::Resolve(record)), _) => record.flag_syntax(frame_precision),
+                (None, EntryState::Intra { .. }) => non_inter_flag_syntax(None, frame_precision),
+                _ => continue,
+            };
+            grid.record_flags(r, c, n4w, n4h, syntax);
+        }
     }
 
     fn has_terminal_error(&self) -> bool {
@@ -981,7 +988,6 @@ pub(crate) struct ReconRowBuffers {
     pub(super) slots: Vec<LeafSlot>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
-    pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     pub(super) filter_records: TileFilterRecords,
     /// The large lists' lengths in the unit these buffers last held.
@@ -999,7 +1005,6 @@ impl ReconRowBuffers {
             slots,
             blocks,
             temporal,
-            flag_log,
             planes,
             units,
             luma,
@@ -1012,7 +1017,6 @@ impl ReconRowBuffers {
         fit_list(&mut self.slots, slots);
         fit_list(&mut self.residual_blocks, blocks);
         fit_list(&mut self.temporal, temporal);
-        fit_list(&mut self.flag_log, flag_log);
         self.residual_planes.fit([planes, units]);
         self.filter_records.fit([luma, chroma, tx_skip, leaves]);
     }
@@ -1576,16 +1580,13 @@ impl ParseProgress {
     }
 
     /// Moves the deblock records published so far into `deblock`.
-    pub(super) fn take_deblock_records(
-        &self,
-        deblock: &mut crate::filters::deblock::FrameDeblock,
-    ) -> core::result::Result<(), crate::filters::deblock::DeblockError> {
+    pub(super) fn take_deblock_records(&self, deblock: &mut crate::filters::deblock::FrameDeblock) {
         let mut records = self.records.lock();
         let records = &mut *records;
         deblock.append_records(
             &mut records.deblock_blocks,
             &mut records.chroma_deblock_blocks,
-        )
+        );
     }
 
     /// Moves the parsed records into the frame.
@@ -1730,7 +1731,7 @@ impl<'payload> TileParser<'payload> {
             ccso_state,
             core::mem::take(&mut *parse_progress.parser.lock()),
         )?;
-        parser.mv_grid.log_flags();
+        parser.mv_grid.keep_edges_only();
         Ok(parser)
     }
 

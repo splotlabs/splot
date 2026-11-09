@@ -8,15 +8,11 @@ use super::*;
 
 /// Counts the positions along one line where [`same_record_decision`]
 /// filters, asserting it decides as [`edge_decision`] does for a twin record.
-fn same_record_decisions_match<const PLANE: usize, const PASS: usize>(
+fn same_record_decisions_match<const PASS: usize>(
     record: &DeblockBlock,
     (plane_sub_x, plane_sub_y): (usize, usize),
 ) -> usize {
     let twin = *record;
-    let side = |block| EdgeBlock {
-        block,
-        chroma_transform: None,
-    };
     let strengths = StrengthCache::new(0, 0, BitDepth::Ten);
     let project = |decision: Option<EdgeDecision>| {
         decision.map(|d| {
@@ -40,14 +36,9 @@ fn same_record_decisions_match<const PLANE: usize, const PASS: usize>(
             allow_df_sub_pu: true,
             tile_edge: false,
         };
-        let fast = same_record_decision::<PLANE, PASS>(side(record), x_p, y_p, ctx, &strengths);
-        let general =
-            edge_decision::<PLANE, PASS>(side(record), side(&twin), x_p, y_p, ctx, &strengths);
-        assert_eq!(
-            project(fast),
-            project(general),
-            "plane {PLANE} pass {PASS} at {at}"
-        );
+        let fast = same_record_decision::<PASS>(record, x_p, y_p, ctx, &strengths);
+        let general = edge_decision::<PASS>(record, &twin, x_p, y_p, ctx, &strengths);
+        assert_eq!(project(fast), project(general), "pass {PASS} at {at}");
         filtered += usize::from(fast.is_some());
     }
     filtered
@@ -57,17 +48,14 @@ fn same_record_decisions_match<const PLANE: usize, const PASS: usize>(
 fn same_record_decisions_match_the_two_record_derivation() {
     let mut record = deblock_blocks(1, 1)[0];
     record.qindex = 180;
-    record.luma_prediction = prediction(1, 1, 3);
-    record.chroma_prediction = prediction(2, 0, 2);
+    record.prediction = prediction(1, 1, 3);
     let mut filtered = 0;
-    for (sub_pu, luma_tx) in [((8, 16), 3), ((16, 8), 0), ((4, 4), 4), ((16, 16), 11)] {
+    for (sub_pu, tx) in [((8, 16), 3), ((16, 8), 0), ((4, 4), 4), ((16, 16), 11)] {
         record.sub_pu_size = Some(DeblockSubPuSize::new(sub_pu.0, sub_pu.1));
-        record.luma_tx = luma_tx;
-        filtered += same_record_decisions_match::<0, 0>(&record, (0, 0));
-        filtered += same_record_decisions_match::<0, 1>(&record, (0, 0));
+        record.tx = tx;
         for subsampling in [(1, 1), (1, 0), (0, 0)] {
-            filtered += same_record_decisions_match::<1, 0>(&record, subsampling);
-            filtered += same_record_decisions_match::<1, 1>(&record, subsampling);
+            filtered += same_record_decisions_match::<0>(&record, subsampling);
+            filtered += same_record_decisions_match::<1>(&record, subsampling);
         }
     }
     assert!(filtered > 0);

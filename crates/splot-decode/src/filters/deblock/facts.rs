@@ -9,7 +9,7 @@
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 
 use super::grid::{block_cells, reset, resize};
-use super::{ChromaDeblockRecords, DeblockBlock, DeblockError, DeblockPredictionUnit, MI_SIZE};
+use super::{DeblockBlock, DeblockError, DeblockPredictionUnit, MI_SIZE};
 use crate::support::fill_mi_run;
 
 /// Info bits past the § 7.17.4 size codes (`log2 - 1` of `Tx_Width` in bits
@@ -21,14 +21,13 @@ pub(super) const LOSSLESS: u16 = 1 << 7;
 pub(super) const EDGE_V: u16 = 1 << 8;
 pub(super) const EDGE_H: u16 = 1 << 9;
 pub(super) const COVERED: u16 = 1 << 10;
-const SIZE_CODES: u16 = 0x3f;
 
 /// The § 7.17.2 `TxRowBase`/`TxColBase` pair of a cell as its low eight bits
 /// each. Two neighbouring cells lie inside the blocks their bases start, at
 /// most 64 mode-info units across, so their bases differ exactly when these
 /// keys do.
-const fn key(row: u32, col: u32) -> u16 {
-    ((row & 0xff) << 8 | col & 0xff) as u16
+const fn key(row: u16, col: u16) -> u16 {
+    (row & 0xff) << 8 | col & 0xff
 }
 
 /// Cells per row of a plane `cols` cells wide: padded so that a sixteen-lane
@@ -53,16 +52,16 @@ fn size_codes(tx: u8) -> u16 {
     SIZE_CODES_BY_TX.get(usize::from(tx)).copied().unwrap_or(0)
 }
 
-/// A record's own info bits and `qindex`.
-fn block_bits(block: &DeblockBlock) -> (u16, u16) {
+/// A record's own info bits.
+fn block_bits(block: &DeblockBlock) -> u16 {
     let flags = if block.skip { SKIP } else { 0 } | if block.lossless { LOSSLESS } else { 0 };
-    (flags | COVERED, block.qindex.min(0xfff) as u16)
+    flags | COVERED
 }
 
 /// The plane sample origin of `prediction`, kept to 16 bits as the cell
 /// positions it is compared with.
 fn origin(prediction: DeblockPredictionUnit, (sub_x, sub_y): (usize, usize)) -> [usize; 2] {
-    let at = |base: u32, sub: usize| usize::from(((base as usize * MI_SIZE) >> sub) as u16);
+    let at = |base: u16, sub: usize| usize::from(((base as usize * MI_SIZE) >> sub) as u16);
     [at(prediction.base_c, sub_x), at(prediction.base_r, sub_y)]
 }
 
@@ -111,75 +110,30 @@ impl PlaneFacts {
         ])
     }
 
-    /// Paints the luma records `blocks` over a `mi_rows` by `mi_cols` frame
-    /// in record order, so that a later record overwrites an earlier one.
-    pub(super) fn paint_luma(
+    /// Paints `records` over a `mi_rows` by `mi_cols` frame whose cells are
+    /// `1 << sub` mode-info units wide and high, in record order, so that a
+    /// later record overwrites an earlier one.
+    pub(super) fn paint_records(
         &mut self,
-        blocks: &[DeblockBlock],
-        (mi_rows, mi_cols): (usize, usize),
-    ) {
-        let stride = self.stride;
-        for block in blocks {
-            let (r, c) = (block.r as usize, block.c as usize);
-            let row_end = r.saturating_add(block.n4h as usize).min(mi_rows);
-            let col_end = c.saturating_add(block.n4w as usize).min(mi_cols);
-            if r >= row_end || c >= col_end {
-                continue;
-            }
-            let (bits, qindex) = block_bits(block);
-            let [x, y] = origin(block.luma_prediction, (0, 0));
-            let rect = Rect {
-                at: r * stride + c,
-                rows: row_end - r,
-                values: [
-                    key(block.r, block.c),
-                    bits | size_codes(block.luma_tx),
-                    qindex,
-                ],
-                edges: [edge(x, c), edge(y, r)],
-            };
-            self.paint(rect, col_end - c);
-        }
-    }
-
-    /// Paints plane `plane` (0 for U) of the chroma records from `start` on
-    /// in record order: a block record writes every fact of its cells, a
-    /// transform-only record, which follows its block's, their transform base
-    /// and size.
-    pub(super) fn paint_chroma(
-        &mut self,
-        records: &ChromaDeblockRecords,
-        (plane, start): (usize, usize),
+        records: &[DeblockBlock],
         extent: (usize, usize),
-        (sub_x, sub_y): (usize, usize),
+        sub: (usize, usize),
     ) {
-        let mask = [ChromaDeblockRecords::U, ChromaDeblockRecords::V][plane];
-        let records = records.blocks.get(start..).unwrap_or_default();
         let stride = self.stride;
-        for block in records.iter().filter(|record| record.planes & mask != 0) {
-            let block = &block.block;
-            let [rows, cols] = block_cells(block, extent, (sub_x, sub_y));
+        for block in records {
+            let [rows, cols] = block_cells(block, extent, sub);
             if rows.is_empty() || cols.is_empty() {
                 continue;
             }
-            let key = key(block.chroma_base_r, block.chroma_base_c);
-            if block.chroma_transform_only {
-                let codes = block.chroma_tx.map(size_codes);
-                for row in rows {
-                    self.paint_transform(
-                        key,
-                        codes,
-                        row * stride + cols.start..row * stride + cols.end,
-                    );
-                }
-                continue;
-            }
-            let (bits, qindex) = block_bits(block);
-            let [x, y] = origin(block.chroma_prediction, (sub_x, sub_y));
+            let [x, y] = origin(block.prediction, sub);
             let rect = Rect {
                 at: rows.start * stride + cols.start,
                 rows: rows.len(),
-                values: [key, bits | size_codes(block.chroma_tx.unwrap_or(0)), qindex],
+                values: [
+                    key(block.r, block.c),
+                    block_bits(block) | size_codes(block.tx),
+                    block.qindex,
+                ],
                 edges: [edge(x, cols.start), edge(y, rows.start)],
             };
             self.paint(rect, cols.len());
@@ -257,22 +211,6 @@ impl PlaneFacts {
                 *cell |= EDGE_V;
             }
             at += self.stride;
-        }
-    }
-
-    /// Writes a transform-only record's base `key` and size `codes` over
-    /// cells `cells`.
-    fn paint_transform(&mut self, key: u16, codes: Option<u16>, cells: core::ops::Range<usize>) {
-        let (Some(keys), Some(infos)) =
-            (self.keys.get_mut(cells.clone()), self.info.get_mut(cells))
-        else {
-            return;
-        };
-        fill_mi_run(keys, key);
-        if let Some(codes) = codes {
-            for info in infos {
-                *info = *info & !SIZE_CODES | codes;
-            }
         }
     }
 }

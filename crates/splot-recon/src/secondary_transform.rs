@@ -13,9 +13,7 @@
 //!
 //! Feature tracking: `RECON-SECONDARY-INVERSE-TRANSFORM`.
 
-use fearless_simd::{
-    Bytes as _, Simd, SimdBase as _, SimdIntWiden as _, SimdWiden as _, i8x32, i16x16, i32x8, u32x8,
-};
+use fearless_simd::{Bytes as _, Simd, SimdBase as _, SimdIntWiden as _, i16x16, i32x8, u32x8};
 
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
@@ -379,12 +377,15 @@ fn transform_into(
             if let Some(pairs) = pairs {
                 accumulate_kernel_pairs(simd, pairs, coefs, wide, &mut sums);
             }
-            for (r, &t) in sums.iter().enumerate() {
-                if let Some(row) = dequant.get_mut(r * w..len).and_then(<[i32]>::first_chunk_mut::<8>) {
-                    ((t + (1 << 6) + (t >> 31)) >> 7)
-                        .max(i32x8::splat(simd, -bound))
-                        .min(i32x8::splat(simd, bound - 1))
-                        .store_array(row);
+            if let (8, Some(block)) = (w, dequant.first_chunk_mut::<64>()) {
+                for (row, &t) in block.as_chunks_mut::<8>().0.iter_mut().zip(&sums) {
+                    clip(simd, t, bound).store_array(row);
+                }
+            } else {
+                for (r, &t) in sums.iter().enumerate() {
+                    if let Some(row) = dequant.get_mut(r * w..len).and_then(<[i32]>::first_chunk_mut::<8>) {
+                        clip(simd, t, bound).store_array(row);
+                    }
                 }
             }
         });
@@ -397,10 +398,7 @@ fn transform_into(
         }
         let mut clipped = [0i32; IST_8X8_WIDTH];
         for (&t, out) in sums.iter().zip(clipped.as_chunks_mut::<8>().0) {
-            ((t + (1 << 6) + (t >> 31)) >> 7)
-                .max(i32x8::splat(simd, -bound))
-                .min(i32x8::splat(simd, bound - 1))
-                .store_slice(out);
+            clip(simd, t, bound).store_slice(out);
         }
         clipped
     });
@@ -418,6 +416,14 @@ fn transform_into(
         }
     }
     len
+}
+
+/// The § 7.15.3 `Round2Signed(t, 7)` output clamped to `bound`.
+#[inline]
+fn clip<S: Simd>(simd: S, t: i32x8<S>, bound: i32) -> i32x8<S> {
+    ((t + (1 << 6) + (t >> 31)) >> 7)
+        .max(i32x8::splat(simd, -bound))
+        .min(i32x8::splat(simd, bound - 1))
 }
 
 /// The output-block position, `row * 8 + column` with `[1]` transposed, of
@@ -442,13 +448,13 @@ static OUTPUTS_8X8: [[[[u8; IST_8X8_WIDTH]; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2
     out
 };
 
-/// The § 9.7 `Ist_8x8_Kernel` as interleaved byte pairs with each output
+/// The § 9.7 `Ist_8x8_Kernel` as interleaved `i16` pairs with each output
 /// moved to its [`OUTPUTS_8X8`] position of the 8x8 block (zero weights
 /// elsewhere), so the sums are the block's rows:
 /// `[transpose][set][kind][q][2 * pos + r]` is the weight of the output at
 /// `pos` in kernel row `2 * q + r`.
-static IST_8X8_RASTER: [[[[[i8; 128]; IST_8X8_HEIGHT / 2]; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2] = {
-    let mut out = [[[[[0i8; 128]; IST_8X8_HEIGHT / 2]; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2];
+static IST_8X8_RASTER: [[[[[i16; 128]; IST_8X8_HEIGHT / 2]; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2] = {
+    let mut out = [[[[[0i16; 128]; IST_8X8_HEIGHT / 2]; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2];
     let mut index = 0;
     while index < 2 * IST_SET_SIZE_8X8 * (STX_TYPES - 1) * IST_8X8_HEIGHT {
         let (transpose, rest) = (
@@ -464,8 +470,8 @@ static IST_8X8_RASTER: [[[[[i8; 128]; IST_8X8_HEIGHT / 2]; STX_TYPES - 1]; IST_S
         while i < IST_8X8_WIDTH {
             let pos = OUTPUTS_8X8[transpose][set][kind][i] as usize;
             let weight = IST_8X8_KERNEL[set][kind][row][i];
-            assert!(weight == weight as i8 as i32);
-            out[transpose][set][kind][row / 2][2 * pos + row % 2] = weight as i8;
+            assert!(weight == weight as i16 as i32);
+            out[transpose][set][kind][row / 2][2 * pos + row % 2] = weight as i16;
             i += 1;
         }
         index += 1;
@@ -487,11 +493,9 @@ static OUTPUTS_4X4: [[u8; IST_4X4_WIDTH]; 2] = {
     out
 };
 
-/// The § 9.7 `Ist_4x4_Kernel` as interleaved byte pairs: entry
+/// The § 9.7 `Ist_4x4_Kernel` as interleaved `i16` pairs: entry
 /// `[q][2 * i + r]` is the weight of output `i` in kernel row `2 * q + r`.
-/// Every weight is below 128 in magnitude, and the quarter-size tables keep
-/// the inverse transform's working set in cache.
-static IST_4X4_PAIRS: [[[[i8; 2 * IST_4X4_WIDTH]; IST_4X4_HEIGHT / 2]; STX_TYPES - 1];
+static IST_4X4_PAIRS: [[[[i16; 2 * IST_4X4_WIDTH]; IST_4X4_HEIGHT / 2]; STX_TYPES - 1];
     IST_SET_SIZE_4X4] = pair_kernels(&IST_4X4_KERNEL);
 
 const fn pair_kernels<
@@ -503,17 +507,17 @@ const fn pair_kernels<
     const H2: usize,
 >(
     kernels: &[[[[i32; W]; H]; T]; S],
-) -> [[[[i8; W2]; H2]; T]; S] {
+) -> [[[[i16; W2]; H2]; T]; S] {
     assert!(W2 == 2 * W && 2 * H2 == H);
-    let mut out = [[[[0i8; W2]; H2]; T]; S];
+    let mut out = [[[[0i16; W2]; H2]; T]; S];
     let mut index = 0;
     while index < S * T * H * W {
         let (set, rest) = (index / (T * H * W), index % (T * H * W));
         let (kind, rest) = (rest / (H * W), rest % (H * W));
         let (row, col) = (rest / W, rest % W);
         let weight = kernels[set][kind][row][col];
-        assert!(weight == weight as i8 as i32);
-        out[set][kind][row / 2][2 * col + row % 2] = weight as i8;
+        assert!(weight == weight as i16 as i32);
+        out[set][kind][row / 2][2 * col + row % 2] = weight as i16;
         index += 1;
     }
     out
@@ -530,7 +534,7 @@ const fn pair_kernels<
 #[inline]
 fn accumulate_kernel_pairs<S: Simd, const W2: usize, const N: usize>(
     simd: S,
-    pairs: &[[i8; W2]],
+    pairs: &[[i16; W2]],
     coefs: &[i32],
     wide: bool,
     sums: &mut [i32x8<S>; N],
@@ -546,20 +550,13 @@ fn accumulate_kernel_pairs<S: Simd, const W2: usize, const N: usize>(
         } else {
             (operand(a, b), operand(0, 0))
         };
-        for (chunk, sums) in pair
-            .as_chunks::<32>()
-            .0
-            .iter()
-            .zip(sums.as_chunks_mut::<2>().0)
-        {
-            let (lo, hi) = i8x32::from_slice(simd, chunk).widen();
-            for (sum, weights) in sums.iter_mut().zip([lo, hi]) {
-                let mut term = high.pairwise_dot_product(weights);
-                if wide {
-                    term = (term << 8) + low.pairwise_dot_product(weights);
-                }
-                *sum += term;
+        for (chunk, sum) in pair.as_chunks::<16>().0.iter().zip(sums.iter_mut()) {
+            let weights = i16x16::from_slice(simd, chunk);
+            let mut term = high.pairwise_dot_product(weights);
+            if wide {
+                term = (term << 8) + low.pairwise_dot_product(weights);
             }
+            *sum += term;
         }
     }
 }

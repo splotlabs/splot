@@ -854,7 +854,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             else {
                 break;
             };
-            row.replay_flags(&mut resolve.grid);
+            row.replay_flags(&mut resolve.grid, frame_mv_precision(context.core)?);
             row.return_terminal_error()?;
             {
                 let ScheduledResolve { grid, state, .. } = &mut *resolve;
@@ -923,27 +923,18 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         )
         .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))?;
         if let Some(deblock) = deblock.as_mut() {
-            self.parse_progress
-                .take_deblock_records(deblock)
-                .map_err(|error| {
-                    crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
-                })?;
+            self.parse_progress.take_deblock_records(deblock);
         }
         self.frontier.lock().deblock = deblock;
         Ok(())
     }
 
     /// Hands the frontier every deblock record of the finished parse.
-    pub(in crate::prediction::inter::block) fn take_deblock_records(&self) -> Result<()> {
+    pub(in crate::prediction::inter::block) fn take_deblock_records(&self) {
         self.materialize_rows(self.recon.unit_count);
         if let Some(deblock) = self.frontier.lock().deblock.as_mut() {
-            self.parse_progress
-                .take_deblock_records(deblock)
-                .map_err(|error| {
-                    crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
-                })?;
+            self.parse_progress.take_deblock_records(deblock);
         }
-        Ok(())
     }
 
     /// Hands the frontier its final-filter setup.
@@ -1050,11 +1041,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let mut filters = core::mem::take(spare_filters);
         match deblock.as_mut() {
             Some(deblock) => {
-                self.parse_progress
-                    .take_deblock_records(deblock)
-                    .map_err(|error| {
-                        crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
-                    })?;
+                self.parse_progress.take_deblock_records(deblock);
                 if let Some(safe_mi_end) = safe_deblock_mi_end(
                     committed_units,
                     self.recon.units_per_row,

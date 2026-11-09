@@ -40,7 +40,7 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     }
     let origin = (y0 + 1) as usize * view.stride + (x0 + 1) as usize;
     let last_load = origin + (h - 2) * view.stride + if w == 24 { 31 } else { 16 };
-    if last_load > view.samples.len() {
+    if last_load > view.samples.len() || u32::try_from(last_load).is_err() {
         return false;
     }
     #[cfg(target_arch = "x86_64")]
@@ -49,7 +49,14 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
             ((params.start_x >> 6) & SUBPEL_MASK) as i16,
             ((params.start_y >> 6) & SUBPEL_MASK) as i16,
         ];
-        avx2::window(t, view.samples, [origin, view.stride, w, h], phases, output);
+        avx2::window(
+            t,
+            view.samples,
+            [origin as u32, view.stride as u32],
+            [w, h],
+            phases,
+            output,
+        );
         return true;
     }
     false
@@ -90,7 +97,8 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
         return false;
     }
     let origin = y0 as usize * view.stride + x0 as usize;
-    if origin + h * view.stride + w + 8 > view.samples.len() {
+    let last_load = origin + h * view.stride + w + 8;
+    if last_load > view.samples.len() || u32::try_from(last_load).is_err() {
         return false;
     }
     #[cfg(target_arch = "x86_64")]
@@ -102,7 +110,7 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
         avx2::block(
             t,
             view.samples,
-            [origin, view.stride, w, h],
+            ([origin as u32, view.stride as u32], [w, h]),
             phases,
             output,
             stride,
@@ -203,6 +211,7 @@ fn best_offset(
 
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
+    use crate::subpel_mc::eight_bit::avx2::row_bytes;
     use core::arch::x86_64::*;
     use fearless_simd::{Avx2, SimdBase, SimdFrom, u8x16, u8x32, u16x16};
 
@@ -273,16 +282,15 @@ mod avx2 {
         pub(super) fn window(
             t: Avx2,
             source: &[u8],
-            geometry: [usize; 4],
+            at: [u32; 2],
+            size: [usize; 2],
             phases: [i16; 2],
             output: &mut [u8],
         ) {
-            let [origin, stride, w, h] = geometry;
-            let at = [origin, stride];
-            match (w, h) {
-                (16, 16) => window_for::<16, 16, 256>(t, source, at, phases, output),
-                (16, _) => window_for::<16, 24, 384>(t, source, at, phases, output),
-                (_, 16) => window_for::<24, 16, 384>(t, source, at, phases, output),
+            match size {
+                [16, 16] => window_for::<16, 16, 256>(t, source, at, phases, output),
+                [16, _] => window_for::<16, 24, 384>(t, source, at, phases, output),
+                [_, 16] => window_for::<24, 16, 384>(t, source, at, phases, output),
                 _ => window_for::<24, 24, 576>(t, source, at, phases, output),
             };
         }
@@ -295,7 +303,7 @@ mod avx2 {
     fn window_for<const W: usize, const H: usize, const N: usize>(
         t: Avx2,
         source: &[u8],
-        [origin, stride]: [usize; 2],
+        [origin, stride]: [u32; 2],
         [h_phase, v_phase]: [i16; 2],
         output: &mut [u8],
     ) -> Option<()> {
@@ -313,19 +321,20 @@ mod avx2 {
             )
         };
         let horizontal = |row: usize| -> Option<[__m256i; 2]> {
-            let at = origin + row * stride;
-            let bytes = source.get(at..at + if W == 24 { 31 } else { 16 })?;
-            let half = |at: usize| -> Option<__m256i> {
-                let half = u8x16::load_array_ref(t, bytes.get(at..)?.first_chunk::<16>()?);
-                Some(_mm256_broadcastsi128_si256(half.into()))
+            let at = origin + row as u32 * stride;
+            let half = |bytes: &[u8; 16]| -> __m256i {
+                _mm256_broadcastsi128_si256(u8x16::load_array_ref(t, bytes).into())
             };
-            let low = _mm256_maddubs_epi16(_mm256_shuffle_epi8(half(0)?, low_pairs), weights);
             if W != 24 {
+                let low = half(row_bytes::<16>(source, at)?);
+                let low = _mm256_maddubs_epi16(_mm256_shuffle_epi8(low, low_pairs), weights);
                 return Some([low, low]);
             }
+            let bytes = row_bytes::<31>(source, at)?;
+            let (low, high) = (half(bytes.first_chunk()?), half(bytes.last_chunk()?));
             Some([
-                low,
-                _mm256_maddubs_epi16(_mm256_shuffle_epi8(half(15)?, high_pairs), weights),
+                _mm256_maddubs_epi16(_mm256_shuffle_epi8(low, low_pairs), weights),
+                _mm256_maddubs_epi16(_mm256_shuffle_epi8(high, high_pairs), weights),
             ])
         };
         let (top_weight, bottom_weight) =
@@ -387,23 +396,15 @@ mod avx2 {
         pub(super) fn block(
             t: Avx2,
             source: &[u8],
-            geometry: [usize; 4],
+            geometry: ([u32; 2], [usize; 2]),
             phases: [i16; 2],
             output: &mut [u16],
             stride: usize,
         ) {
-            let [origin, source_stride, w, h] = geometry;
-            if [w, h, stride] == [8; 3] {
-                block_rows::<8>(t, source, [origin, source_stride, 8, 8], phases, output, 8);
+            if geometry.1 == [8; 2] && stride == 8 {
+                block_rows::<8>(t, source, geometry, phases, output, 8);
             } else {
-                block_rows::<0>(
-                    t,
-                    source,
-                    [origin, source_stride, w, h],
-                    phases,
-                    output,
-                    stride,
-                );
+                block_rows::<0>(t, source, geometry, phases, output, stride);
             }
         }
     );
@@ -415,7 +416,7 @@ mod avx2 {
     fn block_rows<const N: usize>(
         t: Avx2,
         source: &[u8],
-        [origin, source_stride, w, h]: [usize; 4],
+        ([origin, source_stride], [w, h]): ([u32; 2], [usize; 2]),
         [h_phase, v_phase]: [i16; 2],
         output: &mut [u16],
         stride: usize,
@@ -428,11 +429,13 @@ mod avx2 {
         let bias = _mm256_set1_epi16(128);
         for column in (0..w).step_by(8) {
             let rows = |first: usize| {
-                let at = |row: usize| origin + column + row.min(h) * source_stride;
-                let bytes = _mm256_set_m128i(
-                    load16(t, source, at(first + 1)),
-                    load16(t, source, at(first)),
-                );
+                let load = |row: usize| -> __m128i {
+                    let at = origin + column as u32 + row.min(h) as u32 * source_stride;
+                    row_bytes::<16>(source, at).map_or(_mm_setzero_si128(), |bytes| {
+                        u8x16::load_array_ref(t, bytes).into()
+                    })
+                };
+                let bytes = _mm256_set_m128i(load(first + 1), load(first));
                 _mm256_maddubs_epi16(_mm256_shuffle_epi8(bytes, pairs), weights)
             };
             let mut top = rows(0);

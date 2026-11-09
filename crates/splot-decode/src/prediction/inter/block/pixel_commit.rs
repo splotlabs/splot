@@ -110,7 +110,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             mut slots,
             mut residual_blocks,
             mut temporal,
-            mut flag_log,
             mut residual_planes,
             mut filter_records,
             ..
@@ -236,7 +235,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             slots.len(),
             residual_blocks.len(),
             temporal.len(),
-            flag_log.len(),
             planes,
             units,
             luma,
@@ -251,7 +249,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         residual_blocks.clear();
         residual_coeffs.clear();
         temporal.clear();
-        flag_log.clear();
         filter_records.clear();
         Ok(ReconRowBuffers {
             superblocks,
@@ -260,7 +257,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             slots,
             residual_blocks,
             temporal,
-            flag_log,
             residual_planes,
             filter_records,
             lengths,

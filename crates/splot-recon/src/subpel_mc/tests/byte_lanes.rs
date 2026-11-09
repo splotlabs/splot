@@ -433,7 +433,7 @@ fn compound_cell_programs_match_the_placement_entry() {
                 [Some((&[view, view], &mut got[..], stride)), None],
                 interp,
                 size,
-                &program,
+                &mut program,
                 11,
             );
             assert_eq!(written[0], [expected, 0, 0, 0], "{interp:?} {size}");
