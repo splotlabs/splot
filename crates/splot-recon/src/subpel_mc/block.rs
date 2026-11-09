@@ -280,6 +280,7 @@ impl<'a, T> Block<'a, T> {
     }
 
     /// [`Self::start`] of storage shorter than `2^32` samples.
+    #[cfg(target_arch = "x86_64")]
     #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn start32(&self, row: usize) -> u32 {
