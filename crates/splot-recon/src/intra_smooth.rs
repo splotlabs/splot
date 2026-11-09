@@ -5,7 +5,7 @@
 //!
 //! Feature tracking: `RECON-INTRA-SMOOTH-PREDICTION`.
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use fearless_simd::u8x16;
 use fearless_simd::{Level, Simd, SimdBase, dispatch, u8x32, u16x8, u16x16};
 
@@ -530,6 +530,10 @@ fn predict_smooth_u8(
     if let Some(token) = Level::baseline().as_avx2() {
         return smooth_u8_avx2(token, block, left, above, output, stride);
     }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = Level::baseline().as_neon() {
+        return smooth_u8_neon(token, block, left, above, output, stride);
+    }
     let mut lanes = [left.map(u16::from), [0; LANE_LEN]];
     let mut row = [0u16; MAX_SMOOTH_SIDE];
     for (lane, &sample) in row.iter_mut().zip(above) {
@@ -711,6 +715,141 @@ fearless_simd::kernel!(
             IntraSmoothMode::SmoothVertical => run!(v),
             IntraSmoothMode::SmoothHorizontal => run!(h),
             IntraSmoothMode::Smooth => run!(|row| _mm256_avg_epu16(v(row), h(row))),
+        }
+    }
+);
+
+#[cfg(target_arch = "aarch64")]
+fearless_simd::kernel!(
+    /// [`smooth_u8_avx2`] on NEON: `sqrdmulh` rounds as `pmulhrsw` for these
+    /// lanes, whose weights are below `2^15`, and `urhadd` averages as
+    /// `pavgw`.
+    #[inline]
+    fn smooth_u8_neon(
+        token: Neon,
+        block: SmoothBlockU8,
+        left: &[u8; LANE_LEN],
+        above: &[u8],
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        use core::arch::aarch64::{vcombine_u8, vqmovun_s16, vqrdmulhq_s16, vrhaddq_u16};
+        use fearless_simd::{Bytes, Neon, SimdCombine, SimdFrom, SimdInto, SimdSplit, SimdWiden};
+        use fearless_simd::{i16x8, i16x16, u16x8 as words, u32x4, u64x2};
+        let SmoothBlockU8 {
+            size,
+            mode,
+            corners,
+        } = block;
+        let width = size.width();
+        let height = size.height().min(MAX_SMOOTH_SIDE);
+        let [[h_far, _, h_blend], [v_far, _, v_blend]] = smooth_tables(size);
+        let h_shift = 15 - u32::from(size.log2_width());
+        let v_shift = 15 - u32::from(size.log2_height());
+        let splat = |value: u16| i16x16::splat(token, value as i16);
+        let (right, bottom) = (splat(corners[0].into()), splat(corners[1].into()));
+        let columns =
+            |terms: &[u16]| -> i16x16<Neon> { u16x16::from_slice(token, terms).bitcast() };
+        let widen = |bytes: u8x16<Neon>| -> i16x16<Neon> {
+            let (low, high) = bytes.widen();
+            low.combine(high).bitcast()
+        };
+        let mulhrs = |a: i16x16<Neon>, b: i16x16<Neon>| {
+            let ((a0, a1), (b0, b1)) = (a.split(), b.split());
+            let half = |a: i16x8<Neon>, b: i16x8<Neon>| -> i16x8<Neon> {
+                vqrdmulhq_s16(a.into(), b.into()).simd_into(token)
+            };
+            half(a0, b0).combine(half(a1, b1))
+        };
+        let blend = |pred: i16x16<Neon>, edge: i16x16<Neon>, weight: i16x16<Neon>| {
+            pred + mulhrs(edge - pred, weight)
+        };
+        let vertical = |top, far: i16x16<Neon>, s_top: i16x16<Neon>| {
+            blend(blend(bottom, top, far << v_shift), top, s_top << 9)
+        };
+        let horizontal = |left, far, s_left| blend(blend(right, left, far), left, s_left);
+        let average = |v: i16x16<Neon>, h: i16x16<Neon>| -> i16x16<Neon> {
+            let ((v0, v1), (h0, h1)) = (
+                v.bitcast::<u16x16<Neon>>().split(),
+                h.bitcast::<u16x16<Neon>>().split(),
+            );
+            let half = |a: words<Neon>, b: words<Neon>| -> words<Neon> {
+                vrhaddq_u16(a.into(), b.into()).simd_into(token)
+            };
+            half(v0, h0).combine(half(v1, h1)).bitcast()
+        };
+        macro_rules! value {
+            ($v:expr, $h:expr) => {
+                match mode {
+                    IntraSmoothMode::SmoothVertical => $v,
+                    IntraSmoothMode::SmoothHorizontal => $h,
+                    IntraSmoothMode::Smooth => average($v, $h),
+                }
+            };
+        }
+        let pack = |value: i16x16<Neon>| -> [u8; 16] {
+            let (low, high) = value.split();
+            u8x16::simd_from(
+                token,
+                vcombine_u8(vqmovun_s16(low.into()), vqmovun_s16(high.into())),
+            )
+            .into()
+        };
+        if width >= 16 {
+            for chunk in (0..width.min(MAX_SMOOTH_SIDE)).step_by(16) {
+                let top = widen(u8x16::from_slice(token, &above[chunk..chunk + 16]));
+                let far = columns(&h_far[chunk..chunk + 16]) << h_shift;
+                let s_left = columns(&h_blend[chunk..chunk + 16]) << 9;
+                for row in 0..height {
+                    let lanes = pack(value!(
+                        vertical(top, splat(v_far[row]), splat(v_blend[row])),
+                        horizontal(splat(left[row].into()), far, s_left)
+                    ));
+                    if let Some(out) = output
+                        .get_mut(row * stride + chunk..)
+                        .and_then(<[u8]>::first_chunk_mut::<16>)
+                    {
+                        *out = lanes;
+                    }
+                }
+            }
+            return;
+        }
+        let top: u8x16<Neon> = match (above.first_chunk::<4>(), above.first_chunk::<8>()) {
+            (_, Some(&row)) if width == 8 => u64x2::splat(token, u64::from_le_bytes(row)).bitcast(),
+            (Some(&row), _) => u32x4::splat(token, u32::from_le_bytes(row)).bitcast(),
+            _ => return,
+        };
+        let top = widen(top);
+        let index = u8x32::from_slice(
+            token,
+            if width == 8 {
+                &ROW_INDEX_8
+            } else {
+                &ROW_INDEX_4
+            },
+        );
+        let rows = |terms: words<Neon>| -> i16x16<Neon> {
+            u16x16::block_splat(terms)
+                .swizzle_dyn_within_blocks(index)
+                .bitcast()
+        };
+        let far = columns(&h_far[..16]) << h_shift;
+        let s_left = columns(&h_blend[..16]) << 9;
+        let mut rest = &mut *output;
+        for row in (0..height).step_by(16 >> size.log2_width()) {
+            let terms =
+                |terms: &[u16; LANE_LEN]| rows(words::from_slice(token, &terms[row..row + 8]));
+            let left = || u8x16::from_slice(token, &left[row..row + 16]).widen().0;
+            let lanes = pack(value!(
+                vertical(top, terms(v_far), terms(v_blend)),
+                horizontal(rows(left()), far, s_left)
+            ));
+            rest = if width == 4 {
+                publish_rows::<u8, 4>(&lanes, rest, stride)
+            } else {
+                publish_rows::<u8, 8>(&lanes, rest, stride)
+            };
         }
     }
 );
@@ -1132,7 +1271,8 @@ mod tests {
 
     /// The `u16` lane groups must reproduce the per-sample § 7.13.2.13
     /// reference exactly for every block shape, mode, and bit depth, over
-    /// randomized edges and a strided output; `u8` storage must match at 8 bits.
+    /// randomized edges with extreme samples and a strided output; `u8`
+    /// storage must match at 8 bits.
     #[test]
     fn u16_lane_groups_match_the_per_sample_reference() {
         let mut state = 0x9e37_79b9_7f4a_7c15u64;
@@ -1144,14 +1284,16 @@ mod tests {
         };
         for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
             let span = u64::from(bit_depth.max_sample()) + 1;
+            let mut sample = || match next() % 4 {
+                0 => 0,
+                1 => span as u16 - 1,
+                _ => (next() % span) as u16,
+            };
             for log2_width in 2..=6u8 {
                 for log2_height in 2..=6u8 {
                     let size = rect_size(log2_width, log2_height);
-                    let left: Vec<u16> = (0..=size.height())
-                        .map(|_| (next() % span) as u16)
-                        .collect();
-                    let above: Vec<u16> =
-                        (0..=size.width()).map(|_| (next() % span) as u16).collect();
+                    let left: Vec<u16> = (0..=size.height()).map(|_| sample()).collect();
+                    let above: Vec<u16> = (0..=size.width()).map(|_| sample()).collect();
                     for mode in [
                         IntraSmoothMode::Smooth,
                         IntraSmoothMode::SmoothVertical,
