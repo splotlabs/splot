@@ -519,10 +519,7 @@ impl TipBlockPlan {
             self.frame_mi_cols,
             current_order_hint,
             self.references.past_ref,
-            self.plan
-                .future
-                .is_some()
-                .then_some(self.references.future_ref),
+            self.plan.future.map(|_| self.references.future_ref),
             stored_mvs[0],
             stored_mvs[1],
             [None, None],
@@ -542,18 +539,14 @@ impl TipFramePlan {
         let references = temporal
             .tip_references()
             .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        let (past_offset, future_offset) = (references.past_offset, references.future_offset);
         let (inter, mode, weight, opfl_refine_type) = tip_prediction_controls(core.inter.as_ref())?;
-        let implicit_mask = sequence
-            .inter
-            .as_ref()
-            .is_some_and(|tools| tools.enable_imp_msk_bld);
+        let tools = sequence.inter.as_ref();
+        let implicit_mask = tools.is_some_and(|tools| tools.enable_imp_msk_bld);
         let blend = mc::CompoundBlend::average_with_implicit_mask(implicit_mask)
             .average_with_cwp_weight(weight);
         let two_references = tip_uses_two_references(weight);
-        let enable_tip_refinemv = sequence
-            .inter
-            .as_ref()
-            .is_some_and(|tools| tools.enable_tip_refinemv);
+        let enable_tip_refinemv = tools.is_some_and(|tools| tools.enable_tip_refinemv);
         let output = mode == TipFrameMode::AsOutput;
         let unscaled = tip_references_unscaled(
             core.frame_type,
@@ -564,7 +557,7 @@ impl TipFramePlan {
             &reference.ref_frame_height,
             [references.past_ref, references.future_ref],
         );
-        let use_refinemv = sequence.inter.as_ref().is_some_and(|tools| {
+        let use_refinemv = tools.is_some_and(|tools| {
             tip_uses_refinemv(
                 output,
                 tools.enable_refinemv,
@@ -572,9 +565,8 @@ impl TipFramePlan {
                 weight,
             )
         });
-        let search_refinemv = use_refinemv
-            && unscaled
-            && tip_refinemv_offsets_allowed(references.past_offset, references.future_offset);
+        let search_refinemv =
+            use_refinemv && unscaled && tip_refinemv_offsets_allowed(past_offset, future_offset);
         let interpolation_filter = if output {
             output_interpolation_filter(inter)?
         } else {
@@ -587,11 +579,7 @@ impl TipFramePlan {
             && tip_optflow_weight_and_references_allowed(
                 output,
                 weight,
-                unscaled
-                    && tip_optflow_offsets_allowed(
-                        references.past_offset,
-                        references.future_offset,
-                    ),
+                unscaled && tip_optflow_offsets_allowed(past_offset, future_offset),
             );
         let past = super::super::block_reference_slot(ref_frame_idx, references.past_ref)?;
         let future = two_references
@@ -604,7 +592,7 @@ impl TipFramePlan {
                 future,
                 interpolation_filter,
                 blend,
-                optflow_distances: Some([references.past_offset, references.future_offset]),
+                optflow_distances: Some([past_offset, future_offset]),
                 use_refinemv,
                 search_refinemv,
                 optflow_sad_threshold: Some(if output { 15 } else { 6 }),
