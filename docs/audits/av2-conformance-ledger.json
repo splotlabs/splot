@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "71a2771b71828c62307fc8b050029f23a9a7738f",
+  "audited_commit": "a54cbe460cba606090e273f275a936e25991cf52",
   "outcome": "success",
   "files": [
     {
@@ -19,7 +19,7 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "cb66ce548cc549ad1ffec63be19fa976f2b8d1ab8289b89e84ed73ebc50ae0f7",
+      "sha256": "5ed7c4e72fdf5cfa7a2ffb732e8cc259816837443987509946e95c7412d2e240",
       "scope_kind": "automation",
       "feature_ids": [],
       "outcome": "success"
@@ -585,7 +585,7 @@
     },
     {
       "path": "crates/splot-core/Cargo.toml",
-      "sha256": "cfad5c0ab1877feeebaa1a3603915ee134ae47fdc5aa6f1d9b872bc2f0e27b54",
+      "sha256": "f0165d94410a665fa6c2a754ff8d9e2af335840cf4631221d85309bc695a1c0c",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-IVF-CONTAINER"
@@ -1158,7 +1158,7 @@
     },
     {
       "path": "crates/splot-core/src/symbol.rs",
-      "sha256": "01b86aba3bf8348fe0f6196d7b57ce65b9a539d46702a81af08e7d80f56e059e",
+      "sha256": "c2637bed84056f82c663a7a1831b689e8042f1bcb3c5f9db59803366f32a8a90",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER"
@@ -1799,7 +1799,7 @@
     },
     {
       "path": "crates/splot-decode/Cargo.toml",
-      "sha256": "cef10789095afa79aa604efcd2b354ffd436300c809069d9cbeab464439efdd6",
+      "sha256": "c81e34cd7b7f0a636be7ff4c4bbe265552cb7169c2571e8b045f2feb4cdeb995",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -5796,21 +5796,21 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/sixteen_bit.rs",
-      "sha256": "e63d808d052aeb7f4232e076386bb9b96d247c720897be8a6c0a6809626d3ea2",
+      "sha256": "9c3d1447763cc3fb448f5bc5ed85f725b59d20aa211f7d85875bafa514c9234d",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/sixteen_bit/neon.rs",
-      "sha256": "a19484836d5d15c6fd3841a5e28f3744008ef5e17d992f983dd72c12cf26eef0",
+      "sha256": "b2ff03a417ac10e6c8b69ab167c9c82fe582749ef22e46c56f258f4c98f9e24e",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/sixteen_bit/tests.rs",
-      "sha256": "3633bbb556c2cd8476d9795e6580b3d65ef5a09d4bdb20176f67d97ced5e4a2e",
+      "sha256": "3ebdb15829a06d81987dc6c0475841344a155508b69c1370a1b68db6f32edbe9",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
