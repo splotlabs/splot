@@ -10,10 +10,22 @@
 //! `decode_tile()`, reconstruction, and encoder range writing.
 
 #[cfg(target_arch = "x86_64")]
+use fearless_simd::Avx2;
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::SimdMask;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use fearless_simd::{
-    Avx2, Bytes, Level, Select, SimdBase, SimdInt, SimdInto, SimdMask, i16x8, mask16x8, u16x8,
-    u64x2,
+    Bytes, Level, Select, SimdBase, SimdInt, SimdInto, i16x8, mask16x8, u16x8, u64x2,
 };
+#[cfg(target_arch = "aarch64")]
+use fearless_simd::{Neon, Simd};
+
+/// The token of the lane reads: AVX2 on x86-64, NEON on AArch64.
+#[cfg(target_arch = "x86_64")]
+type LaneToken = Avx2;
+/// The token of the lane reads: AVX2 on x86-64, NEON on AArch64.
+#[cfg(target_arch = "aarch64")]
+type LaneToken = Neon;
 
 use crate::bitio::be_window;
 use crate::error::{Error, Result, SymbolCdfErrorKind, SymbolDecoderErrorKind};
@@ -47,9 +59,9 @@ pub(crate) trait CdfStorage: Copy {
     }
     fn from_i32(value: i32) -> Self;
 
-    /// The row as `u16` storage, which the x86-64 lane reads search and
+    /// The row as `u16` storage, which the lane reads search and
     /// adapt directly.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn u16_row(_cdf: &mut [Self]) -> Option<&mut [u16]> {
         None
     }
@@ -99,7 +111,7 @@ impl CdfStorage for u16 {
         value as u16
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn u16_row(cdf: &mut [u16]) -> Option<&mut [u16]> {
         Some(cdf)
     }
@@ -183,19 +195,19 @@ fn adapt_probability_lanes<const L: usize>(
     if cdf.len() < first + L {
         return;
     }
-    #[cfg(target_arch = "x86_64")]
-    if let Some(token) = Level::baseline().as_avx2() {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    if let Some(token) = lane_token() {
         let lanes = &mut cdf[first..first + L];
-        return adapt_row_avx2(token, lanes, first, probabilities, rate, symbol);
+        return adapt_row_lanes(token, lanes, first, probabilities, rate, symbol);
     }
     adapt_probabilities_scalar(cdf, first..probabilities.min(first + L), rate, symbol);
 }
 
 /// Four, five or eight row entries in one register without a stack round trip.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn load_row_avx2(token: Avx2, row: &[u16], len: usize) -> u16x8<Avx2> {
+fn load_row_lanes(token: LaneToken, row: &[u16], len: usize) -> u16x8<LaneToken> {
     if len >= 8 {
         return u16x8::from_slice(token, &row[..8]);
     }
@@ -208,18 +220,18 @@ fn load_row_avx2(token: Avx2, row: &[u16], len: usize) -> u16x8<Avx2> {
 }
 
 /// [`adapt_probability_lanes`] on the four or eight entries of `lanes`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn adapt_row_avx2(
-    token: Avx2,
+fn adapt_row_lanes(
+    token: LaneToken,
     lanes: &mut [u16],
     first: usize,
     probabilities: usize,
     rate: u32,
     symbol: usize,
 ) {
-    let value = load_row_avx2(token, lanes, lanes.len());
+    let value = load_row_lanes(token, lanes, lanes.len());
     let index = i16x8::load_array(token, [0, 1, 2, 3, 4, 5, 6, 7]) + first as i16;
     let shrunk = value - (value >> rate);
     let grown = value + ((u16x8::splat(token, CDF_PROB_SCALE as u16) - value) >> rate);
@@ -232,11 +244,27 @@ fn adapt_row_avx2(
     if lanes.len() >= 8 {
         adapted.store_slice(&mut lanes[..8]);
     } else {
-        let word = adapted.bitcast::<u64x2<Avx2>>().as_array()[0];
+        let word = adapted.bitcast::<u64x2<LaneToken>>().as_array()[0];
         for (lane, entry) in lanes.iter_mut().take(4).enumerate() {
             *entry = (word >> (16 * lane)) as u16;
         }
     }
+}
+
+/// The lane token of this target, bound directly so the hot reads inline.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn lane_token() -> Option<LaneToken> {
+    Level::baseline().as_avx2()
+}
+
+/// The lane token of this target, bound directly so the hot reads inline.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn lane_token() -> Option<LaneToken> {
+    Level::baseline().as_neon()
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -245,6 +273,27 @@ fearless_simd::kernel!(
     #[inline]
     fn mul_high_avx2(token: Avx2, a: i16x8<Avx2>, b: i16x8<Avx2>) -> i16x8<Avx2> {
         core::arch::x86_64::_mm_mulhi_epi16(a.into(), b.into()).simd_into(token)
+    }
+);
+
+/// `(range7 * b) >> 16` in each lane, the signed high half of the product.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn mul_high(token: LaneToken, range7: u16, b: i16x8<LaneToken>) -> i16x8<LaneToken> {
+    mul_high_avx2(token, i16x8::splat(token, range7 as i16), b)
+}
+
+#[cfg(target_arch = "aarch64")]
+fearless_simd::kernel!(
+    /// `(range7 * b) >> 16` in each lane, as `sqdmulh` of `range7 / 2`:
+    /// `range7` is even and below `2^15`, so the doubled product is exact
+    /// and never saturates.
+    #[inline]
+    fn mul_high(token: Neon, range7: u16, b: i16x8<Neon>) -> i16x8<Neon> {
+        use core::arch::aarch64::{vdupq_n_s16, vqdmulhq_s16};
+        debug_assert!(range7.is_multiple_of(2) && range7 < 1 << 15);
+        vqdmulhq_s16(vdupq_n_s16((range7 >> 1) as i16), b.into()).simd_into(token)
     }
 );
 
@@ -344,32 +393,40 @@ fn multi_symbol_search<T: CdfStorage, const N: usize>(
 /// lane to lane, so the symbol's two are the ones beside the last lane above
 /// the value, read back from memory. Returns the number of lanes above and
 /// the lanes above, which for such rows are the lanes below the symbol.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn search_lanes_avx2(
-    token: Avx2,
-    row: u16x8<Avx2>,
+fn search_lanes(
+    token: LaneToken,
+    row: u16x8<LaneToken>,
     past: [u16; 8],
     increments: [u16; 8],
     range7: u16,
     threshold: i16,
     range: u16,
-) -> (u32, u16, u16, mask16x8<Avx2>) {
+) -> (u32, u16, u16, mask16x8<LaneToken>) {
     let probabilities = row | u16x8::load_array(token, past);
     let f = u16x8::splat(token, CDF_PROB_SCALE as u16).saturating_sub(probabilities);
     let pp4 = ((f >> EC_PROB_SHIFT) << 6) + u16x8::load_array(token, increments);
-    let scaled = mul_high_avx2(token, i16x8::splat(token, range7 as i16), pp4.bitcast());
-    let boundaries: u16x8<Avx2> = (scaled << 3).bitcast();
+    let scaled = mul_high(token, range7, pp4.bitcast());
+    let boundaries: u16x8<LaneToken> = (scaled << 3).bitcast();
     let below = scaled.simd_gt(i16x8::splat(token, threshold));
+    #[cfg(target_arch = "x86_64")]
     let above = below.to_bitmask().count_ones();
+    // NEON has no `movemask`: one across-lane add of the `-1` lanes counts them.
+    #[cfg(target_arch = "aarch64")]
+    let above = u32::from(
+        token
+            .reduce_sum_i16x8(token.to_vector_mask16x8(below))
+            .unsigned_abs(),
+    );
     let mut lanes = [range; 9];
     boundaries.store_slice(&mut lanes[1..]);
     let symbol = above as usize & 7;
     (above, lanes[symbol + 1], lanes[symbol], below)
 }
 
-/// The lane count [`load_row_avx2`] reads for an `N`-ary row.
+/// The lane count [`load_row_lanes`] reads for an `N`-ary row.
 const fn row_lanes<const N: usize>() -> usize {
     if N >= 7 {
         8
@@ -383,19 +440,19 @@ const fn row_lanes<const N: usize>() -> usize {
 /// The search of an `N`-ary row (`N > 2`) in vector lanes: the symbol, its
 /// boundaries, the loaded row and the lanes above the value. On rows within
 /// the § 8.2.6 invariants those lanes are the entries below the symbol, so
-/// they select [`adapt_lanes_avx2`] directly; lanes past the row's `N - 1`
+/// they select [`adapt_lanes`] directly; lanes past the row's `N - 1`
 /// boundaries never count, so the symbol is at most `N - 1` without a clamp.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn lanes_search_avx2<const N: usize>(
-    token: Avx2,
+fn row_search_lanes<const N: usize>(
+    token: LaneToken,
     cdf: &[u16],
     symbol_value: u32,
     range: u32,
-) -> (u32, u32, u32, u16x8<Avx2>, mask16x8<Avx2>) {
-    let value = load_row_avx2(token, cdf, row_lanes::<N>());
-    let (above, cur, prev, below) = search_lanes_avx2(
+) -> (u32, u32, u32, u16x8<LaneToken>, mask16x8<LaneToken>) {
+    let value = load_row_lanes(token, cdf, row_lanes::<N>());
+    let (above, cur, prev, below) = search_lanes(
         token,
         value,
         const { past_row_lanes::<N>() },
@@ -409,14 +466,14 @@ fn lanes_search_avx2<const N: usize>(
 
 /// The § 8.2.6 step on the `N - 1` probabilities of the row `value` was
 /// loaded from, shrinking the lanes `below` the symbol.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn adapt_lanes_avx2<const N: usize>(
-    token: Avx2,
+fn adapt_lanes<const N: usize>(
+    token: LaneToken,
     cdf: &mut [u16],
-    value: u16x8<Avx2>,
-    below: mask16x8<Avx2>,
+    value: u16x8<LaneToken>,
+    below: mask16x8<LaneToken>,
     rate: u32,
 ) {
     let shrunk = value - (value >> rate);
@@ -428,7 +485,7 @@ fn adapt_lanes_avx2<const N: usize>(
     if row_lanes::<N>() >= 8 {
         adapted.store_slice(&mut cdf[..8]);
     } else {
-        let words = *adapted.bitcast::<u64x2<Avx2>>().as_array();
+        let words = *adapted.bitcast::<u64x2<LaneToken>>().as_array();
         for (lane, entry) in cdf.iter_mut().take(4).enumerate() {
             *entry = (words[0] >> (16 * lane)) as u16;
         }
@@ -978,13 +1035,13 @@ impl<'a> SymbolDecoder<'a> {
         let count = cdf[N].to_i32();
         self.ensure_buffered(15);
         let symbol_value = (self.dif >> SV_SHIFT) as u32;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         if N > 2
-            && let Some(token) = Level::baseline().as_avx2()
+            && let Some(token) = lane_token()
             && let Some(row) = T::u16_row(cdf)
         {
             let (symbol, cur, prev, value, below) =
-                lanes_search_avx2::<N>(token, row, symbol_value, self.symbol_range);
+                row_search_lanes::<N>(token, row, symbol_value, self.symbol_range);
             if prev.saturating_sub(cur) == 0 {
                 return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
             }
@@ -993,7 +1050,7 @@ impl<'a> SymbolDecoder<'a> {
                 let n_term = if N <= 3 { 1 } else { 2 };
                 let rate =
                     u32::from(rates[count.clamp(0, MAX_CDF_COUNT * 2 - 1) as usize]) + n_term;
-                adapt_lanes_avx2::<N>(token, row, value, below, rate);
+                adapt_lanes::<N>(token, row, value, below, rate);
                 if count < MAX_CDF_COUNT {
                     row[N] = (count + 1) as u16;
                 }
@@ -1152,11 +1209,11 @@ impl<'a> SymbolDecoder<'a> {
         }
         self.ensure_buffered(15);
         let symbol_value = (self.dif >> SV_SHIFT) as u32;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         if N > 2
-            && let Some(token) = Level::baseline().as_avx2()
+            && let Some(token) = lane_token()
         {
-            return self.read_trusted_lanes_avx2::<N>(token, cdf, symbol_value, update);
+            return self.read_trusted_lanes::<N>(token, cdf, symbol_value, update);
         }
         let (symbol, cur, prev) = if N == 2 {
             let f = CDF_PROB_SCALE.saturating_sub(u32::from(cdf[0]));
@@ -1180,23 +1237,23 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     /// [`Self::read_trusted_arity`] for `N > 2` in vector lanes, see
-    /// [`lanes_search_avx2`].
-    #[cfg(target_arch = "x86_64")]
+    /// [`row_search_lanes`].
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
-    fn read_trusted_lanes_avx2<const N: usize>(
+    fn read_trusted_lanes<const N: usize>(
         &mut self,
-        token: Avx2,
+        token: LaneToken,
         cdf: &mut [u16],
         symbol_value: u32,
         update: bool,
     ) -> u32 {
         let (symbol, cur, prev, value, below) =
-            lanes_search_avx2::<N>(token, cdf, symbol_value, self.symbol_range);
+            row_search_lanes::<N>(token, cdf, symbol_value, self.symbol_range);
         self.consume(cur, prev);
         if update {
             let count = cdf[N];
-            adapt_lanes_avx2::<N>(token, cdf, value, below, trusted_rate::<N>(cdf));
+            adapt_lanes::<N>(token, cdf, value, below, trusted_rate::<N>(cdf));
             cdf[N] = count + u16::from(count < MAX_CDF_COUNT as u16);
         }
         symbol
