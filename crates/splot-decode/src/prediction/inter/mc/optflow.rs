@@ -1935,18 +1935,6 @@ fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
             output_stride,
         )?);
     }
-    if O::predict_fast(
-        &views[0],
-        &params[0],
-        &views[1],
-        &params[1],
-        block.cwp_weight,
-        intermediate_scratch,
-        output,
-        output_stride,
-    )? {
-        return Ok(());
-    }
     let subplane = CompoundSubpelPlane {
         views: *views,
         plane_x: prediction.plane_x + col,

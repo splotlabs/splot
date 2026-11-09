@@ -259,8 +259,24 @@ pub(super) fn compound_at(
     }
     #[cfg(target_arch = "aarch64")]
     if let Some(token) = fearless_simd::Level::baseline().as_neon() {
-        let blocks = [first.block(size), second.block(size)];
-        super::eight_bit::neon::compound(token, [&blocks[0], &blocks[1]], forward, output, stride);
+        use super::eight_bit::neon;
+        let unclamped_fullpel = [&first, &second].iter().all(|cell| {
+            cell.horizontal.is_none() && cell.vertical.is_none() && cell.clamped.is_none()
+        });
+        match (unclamped_fullpel, size) {
+            (true, 4) => {
+                let blocks = [first.block(4), second.block(4)];
+                neon::fullpel_compound(token, [&blocks[0], &blocks[1]], forward, output, stride);
+            }
+            (true, 8) => {
+                let blocks = [first.block(8), second.block(8)];
+                neon::fullpel_compound(token, [&blocks[0], &blocks[1]], forward, output, stride);
+            }
+            _ => {
+                let blocks = [first.block(size), second.block(size)];
+                neon::compound(token, [&blocks[0], &blocks[1]], forward, output, stride);
+            }
+        }
         return true;
     }
     let _ = (first, second, forward, output, stride);

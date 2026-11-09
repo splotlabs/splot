@@ -43,8 +43,9 @@ pub(in crate::subpel_mc) fn predict<S: Simd>(simd: S, block: &Block<'_, u8>, sin
     passes(simd, block, put, &mut Out::Sink(sink));
 }
 
-/// Predicts both blocks of a compound cell of at most 64 samples, whose
-/// widths [`fits`], and stores their COMPOUND_AVERAGE into `output`.
+/// Predicts both blocks of a compound cell of at most 64 samples (or of
+/// two full-sample blocks of any size), whose widths [`fits`], and stores
+/// their COMPOUND_AVERAGE into `output`.
 #[inline]
 pub(in crate::subpel_mc) fn compound<S: Simd>(
     simd: S,
@@ -53,6 +54,13 @@ pub(in crate::subpel_mc) fn compound<S: Simd>(
     output: &mut [u8],
     stride: usize,
 ) {
+    if blocks
+        .iter()
+        .all(|block| block.horizontal.is_none() && block.vertical.is_none())
+    {
+        fullpel_compound(simd, blocks, forward, output, stride);
+        return;
+    }
     let mut first = [i16x8::splat(simd, 0); 16];
     passes(simd, blocks[0], false, &mut Out::First(&mut first));
     passes(
@@ -66,6 +74,44 @@ pub(in crate::subpel_mc) fn compound<S: Simd>(
             stride,
         },
     );
+}
+
+/// [`compound`] of two full-sample blocks: the [`average`] of the `<< 4`
+/// samples reduced to `(a * f + b * (16 - f) + 8) >> 4`, with no taps or
+/// predictor groups.
+#[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
+#[inline(always)]
+pub(in crate::subpel_mc) fn fullpel_compound<S: Simd>(
+    simd: S,
+    blocks: [&Block<'_, u8>; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) {
+    let [first, second] = blocks;
+    let remaps = blocks.map(|block| block.remap.map(|remap| u8x16::load_array(simd, remap)));
+    let weights = (
+        i16x8::splat(simd, forward as i16),
+        i16x8::splat(simd, (16 - forward) as i16),
+    );
+    for row in 0..first.h {
+        for col in (0..first.w).step_by(8) {
+            let (a, _) = samples(simd, first, remaps[0], row, col);
+            let (b, _) = samples(simd, second, remaps[1], row, col);
+            let values = if forward == 8 {
+                (a + b + 1) >> 1
+            } else {
+                (a * weights.0 + b * weights.1 + 8) >> 4
+            };
+            store_bytes(
+                simd,
+                output,
+                row * stride + col,
+                (first.w - col).min(8),
+                values,
+            );
+        }
+    }
 }
 
 /// Calls `$f::<_, H>` or `$f::<_, H, V>` for the tap-pair counts of a
