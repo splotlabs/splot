@@ -167,18 +167,25 @@ impl PlaneFacts {
     #[inline(always)]
     fn fill_rect<const N: usize>(&mut self, rect: LumaRect) {
         let [key, info, qindex] = rect.values;
+        let (keys, infos, qindexes) =
+            (&mut self.keys[..], &mut self.info[..], &mut self.qindex[..]);
+        let Some(last) = keys
+            .len()
+            .min(infos.len())
+            .min(qindexes.len())
+            .checked_sub(N)
+        else {
+            return;
+        };
         let mut at = rect.at;
         for row in rect.rows {
-            let (Some(keys), Some(infos), Some(qindexes)) = (
-                cells::<_, N>(&mut self.keys, at),
-                cells::<_, N>(&mut self.info, at),
-                cells::<_, N>(&mut self.qindex, at),
-            ) else {
+            if at > last {
                 return;
-            };
-            *keys = [key; N];
-            *infos = [info | row_edge(rect.origin, row); N];
-            *qindexes = [qindex; N];
+            }
+            keys[at..at + N].copy_from_slice(&[key; N]);
+            let infos = &mut infos[at..at + N];
+            infos.copy_from_slice(&[info | row_edge(rect.origin, row); N]);
+            qindexes[at..at + N].copy_from_slice(&[qindex; N]);
             if let Some(cell) = rect.edge_col.and_then(|col| infos.get_mut(col)) {
                 *cell |= EDGE_V;
             }
@@ -273,39 +280,54 @@ impl PlaneFacts {
     /// Writes `paint` over the cells `cells` of cell row `row` that no overlay
     /// holds (or every one, for an overlay), keeping a transform-only
     /// record's base and size.
+    #[allow(clippy::inline_always, reason = "most spans are one cell")]
+    #[inline(always)]
     fn paint_cells(&mut self, paint: &Paint, row: usize, cells: core::ops::Range<usize>) {
         let first = cells.start - row * self.stride;
-        match cells.len() {
-            1 => self.paint_fixed::<1>(paint, (row, first), cells.start),
-            2 => self.paint_fixed::<2>(paint, (row, first), cells.start),
-            4 => self.paint_fixed::<4>(paint, (row, first), cells.start),
-            8 => self.paint_fixed::<8>(paint, (row, first), cells.start),
-            _ => {
-                let (Some(layers), Some(keys), Some(infos), Some(qindexes)) = (
-                    self.layers.get_mut(cells.clone()),
-                    self.keys.get_mut(cells.clone()),
-                    self.info.get_mut(cells.clone()),
-                    self.qindex.get_mut(cells),
-                ) else {
-                    return;
-                };
-                paint_span(paint, (row, first), [keys, infos, qindexes], layers);
-            }
+        if cells.len() != 1 {
+            return self.paint_run(paint, (row, first), cells);
         }
-    }
-
-    #[allow(clippy::inline_always, reason = "fixed-width stores per span")]
-    #[inline(always)]
-    fn paint_fixed<const N: usize>(&mut self, paint: &Paint, at: (usize, usize), cell: usize) {
-        let (Some(layers), Some(keys), Some(infos), Some(qindexes)) = (
-            cells::<_, N>(&mut self.layers, cell),
-            cells::<_, N>(&mut self.keys, cell),
-            cells::<_, N>(&mut self.info, cell),
-            cells::<_, N>(&mut self.qindex, cell),
+        let at = cells.start;
+        let (Some(layer), Some(key), Some(info), Some(qindex)) = (
+            self.layers.get_mut(at),
+            self.keys.get_mut(at),
+            self.info.get_mut(at),
+            self.qindex.get_mut(at),
         ) else {
             return;
         };
-        paint_span(paint, at, [keys, infos, qindexes], layers);
+        let spans = [key, info, qindex].map(core::slice::from_mut);
+        paint_span(paint, (row, first), spans, core::slice::from_mut(layer));
+    }
+
+    #[inline(never)]
+    fn paint_run(&mut self, paint: &Paint, at: (usize, usize), cells: core::ops::Range<usize>) {
+        let (layers, keys, infos, qindexes) = (
+            &mut self.layers[..],
+            &mut self.keys[..],
+            &mut self.info[..],
+            &mut self.qindex[..],
+        );
+        let len = layers
+            .len()
+            .min(keys.len())
+            .min(infos.len())
+            .min(qindexes.len());
+        if cells.start > cells.end || cells.end > len {
+            return;
+        }
+        let spans = [
+            &mut keys[cells.clone()],
+            &mut infos[cells.clone()],
+            &mut qindexes[cells.clone()],
+        ];
+        let layers = &mut layers[cells];
+        match layers.len() {
+            2 => paint_fixed::<2>(paint, at, spans, layers),
+            4 => paint_fixed::<4>(paint, at, spans, layers),
+            8 => paint_fixed::<8>(paint, at, spans, layers),
+            _ => paint_span(paint, at, spans, layers),
+        }
     }
 
     /// Writes the transform-only record `block`'s base and size over cells
@@ -382,9 +404,24 @@ fn paint_span(
     }
 }
 
-/// The `N` cells of `cells` from `at`.
-fn cells<T, const N: usize>(cells: &mut [T], at: usize) -> Option<&mut [T; N]> {
-    cells.get_mut(at..)?.first_chunk_mut::<N>()
+/// [`paint_span`] over spans of `N` cells.
+#[allow(clippy::inline_always, reason = "fixed-width stores per span")]
+#[inline(always)]
+fn paint_fixed<const N: usize>(
+    paint: &Paint,
+    at: (usize, usize),
+    [keys, infos, qindexes]: [&mut [u16]; 3],
+    layers: &mut [u8],
+) {
+    let (Some(keys), Some(infos), Some(qindexes), Some(layers)) = (
+        keys.first_chunk_mut::<N>(),
+        infos.first_chunk_mut::<N>(),
+        qindexes.first_chunk_mut::<N>(),
+        layers.first_chunk_mut::<N>(),
+    ) else {
+        return;
+    };
+    paint_span(paint, at, [keys, infos, qindexes], layers);
 }
 
 /// One luma record's cells: the first, its rows, the key, info and
