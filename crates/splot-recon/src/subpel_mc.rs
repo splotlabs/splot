@@ -949,7 +949,7 @@ std::thread_local! {
     static COMPOUND_PRED0: std::cell::Cell<Vec<i32>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
-fn with_compound_pred0<R>(len: usize, f: impl FnOnce(&mut [i32]) -> R) -> R {
+pub(super) fn with_compound_pred0<R>(len: usize, f: impl FnOnce(&mut [i32]) -> R) -> R {
     COMPOUND_PRED0.with(|slot| {
         let mut pred0 = slot.take();
         if pred0.len() < len {

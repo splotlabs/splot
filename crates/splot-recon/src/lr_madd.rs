@@ -13,22 +13,15 @@
 //! of cells 1 and 3 share a vector, and the final pack restores the order;
 //! the portable kernel interleaves in sample order.
 
-use fearless_simd::{Simd, i16x16, i32x8, prelude::*, u16x16};
+use fearless_simd::{Simd, SimdIntWiden, i16x16, i32x4, i32x8, prelude::*, u16x16};
 
 /// Runs `$body` with the baseline SIMD token bound to `$simd`; on x86 the
 /// AVX2 token binds directly, since a `dispatch!` closure does not inline
 /// into per-row callers.
 macro_rules! lr_simd {
-    ($simd:ident => $body:expr) => {{
-        #[cfg(target_arch = "x86_64")]
-        let value = match fearless_simd::Level::baseline().as_avx2() {
-            Some($simd) => $body,
-            None => fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body),
-        };
-        #[cfg(not(target_arch = "x86_64"))]
-        let value = fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body);
-        value
-    }};
+    ($simd:ident => $body:expr) => {
+        baseline_simd!($simd => $body)
+    };
 }
 pub(crate) use lr_simd;
 
@@ -63,6 +56,18 @@ pub(crate) fn arrange_into<T: LumaSimdSource>(weights: &mut MaddWeights, cells: 
     } else {
         cells
     };
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        weights[0] = [
+            a[0], a[0], a[0], a[0], b[0], b[0], b[0], b[0], c[0], c[0], c[0], c[0], d[0], d[0],
+            d[0], d[0],
+        ];
+        weights[1] = [
+            a[1], a[1], a[1], a[1], b[1], b[1], b[1], b[1], c[1], c[1], c[1], c[1], d[1], d[1],
+            d[1], d[1],
+        ];
+    }
+    #[cfg(target_arch = "x86_64")]
     for (half, [low, high]) in weights.iter_mut().zip([[a, b], [c, d]]) {
         let (first, second) = half.split_at_mut(8);
         first.copy_from_slice(low); // splot-copy-ok: one cell's weights into its vector half
@@ -73,13 +78,20 @@ pub(crate) fn arrange_into<T: LumaSimdSource>(weights: &mut MaddWeights, cells: 
 /// The weights of one pair shared by all four cells.
 #[inline]
 pub(crate) fn uniform(pattern: &MaddPattern) -> MaddWeights {
-    let mut weights = [[0; 16]; 2];
-    for half in &mut weights {
-        for (lane, weight) in half.iter_mut().enumerate() {
-            *weight = pattern[lane % 8];
-        }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        [[pattern[0]; 16], [pattern[1]; 16]]
     }
-    weights
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut weights = [[0; 16]; 2];
+        for half in &mut weights {
+            for (lane, weight) in half.iter_mut().enumerate() {
+                *weight = pattern[lane % 8];
+            }
+        }
+        weights
+    }
 }
 
 /// The symmetric taps `(dy, dx)` paired with `(-dy, -dx)` of one filter.
@@ -148,18 +160,73 @@ fn portable<S: Simd, F: TapPairs, T: LumaSimdSource, const ROWS: usize, const RE
         load(r.wrapping_add_signed(dy), r.wrapping_add_signed(dx))
             + load(r.wrapping_add_signed(-dy), r.wrapping_add_signed(-dx))
     };
+    #[cfg(not(target_arch = "x86_64"))]
+    let mut sums = [i32x4::splat(simd, 0); 4];
+    #[cfg(not(target_arch = "x86_64"))]
+    let mut add_term = |j: usize, w: &[i16; 16]| {
+        let (a_lo, a_hi) = simd.split_i16x16(term(j));
+        let w_lo = fearless_simd::i16x8::from_slice(simd, &w[..8]);
+        let w_hi = fearless_simd::i16x8::from_slice(simd, &w[8..]);
+        let (p0, p1) = a_lo.widening_mul(w_lo);
+        let (p2, p3) = a_hi.widening_mul(w_hi);
+        sums[0] += p0;
+        sums[1] += p1;
+        sums[2] += p2;
+        sums[3] += p3;
+    };
+    #[cfg(target_arch = "x86_64")]
     let mut sums = [i32x8::splat(simd, 0); 2];
+    #[cfg(target_arch = "x86_64")]
     let mut add = |(low, high): (i16x16<S>, i16x16<S>), weights: &MaddWeights| {
         sums[0] += low.pairwise_dot_product(i16x16::load_array_ref(simd, &weights[0]));
         sums[1] += high.pairwise_dot_product(i16x16::load_array_ref(simd, &weights[1]));
     };
     let pairs = F::TAPS.len() / 2;
-    for (pair, weights) in weights.iter().enumerate().take(pairs) {
-        add(term(2 * pair).interleave(term(2 * pair + 1)), weights);
+    macro_rules! pair_step {
+        ($pair:literal) => {
+            if $pair < pairs
+                && let Some(weights) = weights.get($pair)
+            {
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    add_term(2 * $pair, &weights[0]);
+                    add_term(2 * $pair + 1, &weights[1]);
+                }
+                #[cfg(target_arch = "x86_64")]
+                add(term(2 * $pair).interleave(term(2 * $pair + 1)), weights);
+            }
+        };
     }
+    pair_step!(0);
+    pair_step!(1);
+    pair_step!(2);
+    pair_step!(3);
+    pair_step!(4);
+    pair_step!(5);
+    pair_step!(6);
+    pair_step!(7);
     if let Some(weights) = weights.get(pairs) {
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let (a_lo, a_hi) = simd.split_i16x16(load(r, r));
+            let w_lo = fearless_simd::i16x8::from_slice(simd, &weights[0][..8]);
+            let w_hi = fearless_simd::i16x8::from_slice(simd, &weights[0][8..]);
+            let (p0, p1) = a_lo.widening_mul(w_lo);
+            let (p2, p3) = a_hi.widening_mul(w_hi);
+            let round = i32x4::splat(simd, i32::from(weights[1][0]));
+            sums[0] += p0 + round;
+            sums[1] += p1 + round;
+            sums[2] += p2 + round;
+            sums[3] += p3 + round;
+        }
+        #[cfg(target_arch = "x86_64")]
         add(load(r, r).interleave(i16x16::splat(simd, 1)), weights);
     }
+    #[cfg(not(target_arch = "x86_64"))]
+    let sums = [
+        simd.combine_i32x4(sums[0], sums[1]),
+        simd.combine_i32x4(sums[2], sums[3]),
+    ];
     let max = i32x8::splat(simd, i32::from(max_sample));
     let [low, high] = sums.map(|sum| (sum >> 7).clamp(i32x8::splat(simd, 0), max));
     let values: u16x16<S> = low.narrow(high).bitcast();

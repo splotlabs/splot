@@ -315,7 +315,7 @@ fn gather_luma<T: crate::ReconSample>(
     if let Some(avx2) = Level::baseline().as_avx2() {
         return gather_luma_with(avx2, MinPos, samples, width, stride, pad, origin);
     }
-    dispatch!(Level::baseline(), simd => gather_luma_with(simd, Reduced, samples, width, stride, pad, origin))
+    baseline_simd!(simd => gather_luma_with(simd, Reduced, samples, width, stride, pad, origin))
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
@@ -414,7 +414,7 @@ fn gather_luma_bytes(
     if let Some(avx2) = Level::baseline().as_avx2() {
         return gather_luma_bytes_with(avx2, MinPos, samples, width, stride, bytes, origin);
     }
-    dispatch!(Level::baseline(), simd => gather_luma_bytes_with(simd, Reduced, samples, width, stride, bytes, origin))
+    baseline_simd!(simd => gather_luma_bytes_with(simd, Reduced, samples, width, stride, bytes, origin))
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
@@ -476,7 +476,7 @@ fn direction_from_bytes(bytes: &[u8; LUMA_BLOCK_BYTES]) -> (usize, i32) {
     if let Some(avx2) = Level::baseline().as_avx2() {
         return cdef_best_direction(cdef_direction_costs_avx2(avx2, rows(avx2, bytes)));
     }
-    dispatch!(Level::baseline(), simd => cdef_direction_rows(simd, rows(simd, bytes)))
+    baseline_simd!(simd => cdef_direction_rows(simd, rows(simd, bytes)))
 }
 
 /// Interleaves the chroma segment's tap rows, `PAIR_SPAN` samples of each
@@ -498,7 +498,7 @@ fn gather_pair<T: crate::ReconSample>(
             avx2, MinPos, u_samples, v_samples, width, stride, pad, origin,
         );
     }
-    dispatch!(Level::baseline(), simd => gather_pair_with(
+    baseline_simd!(simd => gather_pair_with(
         simd, Reduced, u_samples, v_samples, width, stride, pad, origin,
     ))
 }
@@ -592,7 +592,7 @@ pub fn cdef_filter_block_chroma_pair_segment(
     if let Some(avx2) = Level::baseline().as_avx2() {
         return pair_segment_with(avx2, InLane, (pad, bytes), range, filter, out);
     }
-    dispatch!(Level::baseline(), simd => pair_segment_with(
+    baseline_simd!(simd => pair_segment_with(
         simd,
         Ordered,
         (pad, bytes),
@@ -965,7 +965,7 @@ pub fn cdef_filter_block_segment(
     if let Some(avx2) = Level::baseline().as_avx2() {
         return luma_segment_with(avx2, InLane, pad, range, filter, (out, out_stride));
     }
-    dispatch!(Level::baseline(), simd => luma_segment_with(
+    baseline_simd!(simd => luma_segment_with(
         simd,
         Ordered,
         pad,
@@ -1189,7 +1189,7 @@ pub fn cdef_filter_segment(
     if let Some(avx2) = Level::baseline().as_avx2() {
         return segment_with(avx2, InLane, segment, strengths, blocks, fill_flat, output);
     }
-    dispatch!(Level::baseline(), simd => segment_with(
+    baseline_simd!(simd => segment_with(
         simd, Ordered, segment, strengths, blocks, fill_flat, output,
     ))
 }

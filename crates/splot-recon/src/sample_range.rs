@@ -5,7 +5,7 @@
 //!
 //! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`.
 
-use fearless_simd::{Level, Simd, SimdBase, dispatch, u16x16};
+use fearless_simd::{Simd, SimdBase, u16x16};
 
 use crate::ReconSample;
 
@@ -36,7 +36,7 @@ pub(crate) fn samples_exceed<T: ReconSample>(samples: &[T], max_sample: u16) -> 
 /// by sample to name the offender. A ragged tail rereads the last full lane
 /// group instead of walking sample by sample.
 pub(crate) fn u16_samples_exceed(samples: &[u16], max_sample: u16) -> bool {
-    dispatch!(Level::baseline(), simd => u16_peak_exceeds(simd, samples, max_sample))
+    baseline_simd!(simd => u16_peak_exceeds(simd, samples, max_sample))
 }
 
 #[inline]

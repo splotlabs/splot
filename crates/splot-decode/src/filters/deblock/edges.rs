@@ -17,9 +17,9 @@ use fearless_simd::{Simd, mask16x16, prelude::*, u8x32, u16x16};
 use super::facts::{COVERED, EDGE_H, EDGE_V, LOSSLESS, PlaneFacts, SKIP, padded_stride};
 use super::grid::MiGrid;
 use super::{
-    DeblockError, EdgeContext, GATHER_HALF, MAX_WIDTHS, MI_SIZE, PerpLine, PlaneCtx, PlanePass,
-    SB_SIZE, StrengthCache, apply_edge_samples, choose_filter_width, edge_blocks, edge_decision,
-    starts_tile,
+    DeblockError, EdgeBlock, EdgeContext, GATHER_HALF, MAX_WIDTHS, MI_SIZE, PerpLine, PlaneCtx,
+    PlanePass, SB_SIZE, StrengthCache, apply_edge_samples, cell_block, choose_filter_width,
+    edge_decision, starts_tile,
 };
 
 /// The edges of one plane pass over the mode-info rows it owes, row-major by
@@ -251,23 +251,76 @@ impl PassEdges {
             return self
                 .build_from_facts::<PLANE, PASS>(facts, plane_pass, geometry, first, &strengths);
         }
+        if PASS == 0 {
+            for row_index in 0..self.rows {
+                let r = first + row_index * row_step;
+                let row_out = row_index * self.stride;
+                self.edges[row_out] = DeblockEdge::NONE;
+                if self.cols <= 1 {
+                    continue;
+                }
+                let mut prev = cell_block::<PLANE>(grid, r, 0)?;
+                for col_index in 1..self.cols {
+                    let c = col_index << sub_x;
+                    let curr = cell_block::<PLANE>(grid, r, c)?;
+                    if curr.same(prev) && curr.block.sub_pu_size.is_none() {
+                        self.edges[row_out + col_index] = DeblockEdge::NONE;
+                        prev = curr;
+                        continue;
+                    }
+                    let tile_edge = starts_tile(geometry.tile_starts, c);
+                    let edge = edge_at_blocks::<PLANE, 0>(
+                        (curr, prev),
+                        plane_pass.edge_context(r, c, tile_edge),
+                        geometry,
+                        &strengths,
+                    )?;
+                    prev = curr;
+                    self.edges[row_out + col_index] = edge;
+                    self.live[col_index] |= !edge.is_none();
+                }
+            }
+            return Ok(());
+        }
+        let sub_y = plane_pass.plane_sub_y;
         for row_index in 0..self.rows {
             let r = first + row_index * row_step;
-            let row_tile_edge = PASS == 1 && starts_tile(geometry.tile_starts, r);
-            self.edges[row_index * self.stride] = DeblockEdge::NONE;
-            for col_index in usize::from(PASS == 0)..self.cols {
+            let prev_r = r
+                .checked_sub(1 << sub_y)
+                .ok_or(DeblockError::UncoveredMi { row: r, col: 0 })?;
+            let row_tile_edge = starts_tile(geometry.tile_starts, r);
+            let row_out = row_index * self.stride;
+            let mut last: Option<(EdgeBlock<'_>, EdgeBlock<'_>, DeblockEdge)> = None;
+            let mut row_live = false;
+            for col_index in 0..self.cols {
                 let c = col_index << sub_x;
-                let tile_edge = row_tile_edge || PASS == 0 && starts_tile(geometry.tile_starts, c);
-                let edge = edge_at::<PLANE, PASS>(
-                    grid,
-                    plane_pass.edge_context(r, c, tile_edge),
-                    geometry,
-                    &strengths,
-                )?;
-                let line = if PASS == 0 { col_index } else { row_index };
-                self.edges[row_index * self.stride + col_index] = edge;
-                self.live[line] |= !edge.is_none();
+                let curr = cell_block::<PLANE>(grid, r, c)?;
+                let prev = cell_block::<PLANE>(grid, prev_r, c)?;
+                let plain = curr.block.sub_pu_size.is_none() && prev.block.sub_pu_size.is_none();
+                let edge = if curr.same(prev) && plain {
+                    DeblockEdge::NONE
+                } else if plain
+                    && let Some((last_curr, last_prev, last_edge)) = last
+                    && curr.same(last_curr)
+                    && prev.same(last_prev)
+                {
+                    last_edge
+                } else {
+                    let edge = edge_at_blocks::<PLANE, 1>(
+                        (curr, prev),
+                        plane_pass.edge_context(r, c, row_tile_edge),
+                        geometry,
+                        &strengths,
+                    )?;
+                    if plain {
+                        last = Some((curr, prev, edge));
+                    }
+                    edge
+                };
+                self.edges[row_out + col_index] = edge;
+                row_live |= !edge.is_none();
             }
+            self.live[row_index] = row_live;
         }
         Ok(())
     }
@@ -515,10 +568,27 @@ impl PassEdges {
 }
 
 /// The edge at mode-info (`row`, `col`) of `ctx`, which is on screen.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
-#[inline(always)]
+#[cfg(test)]
 pub(super) fn edge_at<const PLANE: usize, const PASS: usize>(
     grid: &MiGrid<'_>,
+    ctx: EdgeContext,
+    geometry: &PassGeometry<'_>,
+    strengths: &StrengthCache,
+) -> Result<DeblockEdge, DeblockError> {
+    let blocks = super::edge_blocks::<PLANE, PASS>(
+        grid,
+        ctx.row,
+        ctx.col,
+        ctx.plane_sub_x,
+        ctx.plane_sub_y,
+    )?;
+    edge_at_blocks::<PLANE, PASS>(blocks, ctx, geometry, strengths)
+}
+
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn edge_at_blocks<const PLANE: usize, const PASS: usize>(
+    (curr, prev): (EdgeBlock<'_>, EdgeBlock<'_>),
     ctx: EdgeContext,
     geometry: &PassGeometry<'_>,
     strengths: &StrengthCache,
@@ -531,7 +601,6 @@ pub(super) fn edge_at<const PLANE: usize, const PASS: usize>(
         tile_edge,
         ..
     } = ctx;
-    let (curr, prev) = edge_blocks::<PLANE, PASS>(grid, row, col, plane_sub_x, plane_sub_y)?;
     if geometry.disable_loopfilters_across_tiles && tile_edge {
         return Ok(DeblockEdge::NONE);
     }

@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 #[cfg(target_arch = "x86_64")]
-use fearless_simd::{Avx2, kernel};
-use fearless_simd::{Level, Simd, dispatch, i8x16, i16x16, i32x8, prelude::*, u8x16, u16x16};
+use fearless_simd::{Avx2, Level, kernel};
+use fearless_simd::{Simd, i8x16, i16x16, i32x8, prelude::*, u8x16, u16x16};
 
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
@@ -977,7 +977,7 @@ pub(super) fn sym_rows_interleaved<O: GdfSample>(
     block: &GdfBlock,
     params: &GdfSymParams,
 ) {
-    dispatch!(Level::baseline(), simd => sym_rows_with(
+    crate::baseline_simd!(simd => sym_rows_with(
         simd,
         Interleaved,
         window,
@@ -1218,7 +1218,7 @@ pub(super) fn filter_run<O: GdfSample>(
     if let Some(avx2) = Level::baseline().as_avx2() {
         return filter_run_with(avx2, InLane, source, origin, block, output, scratch);
     }
-    dispatch!(Level::baseline(), simd => filter_run_with(
+    crate::baseline_simd!(simd => filter_run_with(
         simd, Interleaved, source, origin, block, output, scratch,
     ))
 }

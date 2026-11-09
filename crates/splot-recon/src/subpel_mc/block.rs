@@ -265,7 +265,10 @@ impl<'a, T> Block<'a, T> {
     #[inline(always)]
     pub(super) fn start(&self, row: usize) -> usize {
         self.origin
-            + (self.top + row as isize).clamp(self.rows[0], self.rows[1]) as usize * self.stride
+            + (self.top + row as isize)
+                .max(self.rows[0])
+                .min(self.rows[1]) as usize
+                * self.stride
     }
 
     /// [`Self::start`] of storage shorter than `2^32` samples.
@@ -287,11 +290,13 @@ pub(super) const fn reach(w: usize) -> usize {
 /// `w`-wide block in, none without a vertical pass.
 pub(super) const fn stage_len(rows: usize, w: usize, vertical: Option<&Taps>) -> usize {
     match vertical {
-        Some(_) => {
+        Some(_) if cfg!(target_arch = "x86_64") => {
             let groups = rows.next_multiple_of(4) * 16;
             let strips = rows * w.div_ceil(8) * 8 + 64;
             if groups > strips { groups } else { strips }
         }
+        Some(_) if w <= 4 => rows.div_ceil(2) * 8,
+        Some(_) => rows * w.next_multiple_of(8),
         None => 0,
     }
 }
@@ -431,8 +436,16 @@ pub(super) fn put_admitted<const N: usize>(
     };
     let mut put = |stage: &mut [i16]| {
         for (view, (output, stride)) in views.into_iter().zip(&mut outputs) {
-            if !super::eight_bit::put(&block.with_source(view.samples), stage, output, *stride) {
-                return false;
+            let block = block.with_source(view.samples);
+            if !super::eight_bit::put(&block, stage, output, *stride) {
+                super::portable::predict(
+                    &block,
+                    &mut Sink::Put {
+                        output,
+                        stride: *stride,
+                    },
+                    stage,
+                );
             }
         }
         true
@@ -550,7 +563,7 @@ pub(super) fn small_compound<T: ReconSample, O: ReconSample>(
     stride: usize,
 ) -> bool {
     let (w, h) = (params[0].w, params[0].h);
-    if w > 16 || w * h > 64 || output.len() < (h - 1) * stride + w {
+    if output.len() < (h - 1) * stride + w {
         return false;
     }
     let bounded = [
@@ -558,17 +571,26 @@ pub(super) fn small_compound<T: ReconSample, O: ReconSample>(
         plane_bounded(references[1], params[1]),
     ];
     let layouts = [Layout::new(&bounded[0]), Layout::new(&bounded[1])];
+    let fullpel = layouts
+        .iter()
+        .all(|l| l.horizontal.is_none() && l.vertical.is_none());
+    if !fullpel && (w > 16 || w * h > 64) {
+        return false;
+    }
     let len = stage_len(layouts[0].rows, w, layouts[0].vertical).max(stage_len(
         layouts[1].rows,
         w,
         layouts[1].vertical,
     ));
+    if len > CELL_STAGE && scratch.len() < len {
+        return false;
+    }
     let mut cell;
     let stage = if let Some(stage) = scratch.get_mut(..len) {
         stage
     } else {
         cell = [0; CELL_STAGE];
-        &mut cell[..]
+        &mut cell[..len]
     };
     if let (Some(first), Some(second), Some(output)) = (
         references[0].as_u8(),
@@ -581,7 +603,10 @@ pub(super) fn small_compound<T: ReconSample, O: ReconSample>(
         ) else {
             return false;
         };
-        return super::eight_bit::compound([&first, &second], forward, stage, output, stride);
+        if !super::eight_bit::compound([&first, &second], forward, stage, output, stride) {
+            super::portable::compound_u8([&first, &second], forward, stage, output, stride);
+        }
+        return true;
     }
     if let (Some(first), Some(second), Some(output)) = (
         references[0].as_u16(),
@@ -595,20 +620,20 @@ pub(super) fn small_compound<T: ReconSample, O: ReconSample>(
             return false;
         };
         let max = params[0].bit_depth.max_sample();
-        return super::sixteen_bit::compound(
-            [&first, &second],
-            forward,
-            max,
-            stage,
-            output,
-            stride,
-        );
+        if !super::sixteen_bit::compound([&first, &second], forward, max, stage, output, stride) {
+            super::portable::compound_u16([&first, &second], forward, max, stage, output, stride);
+        }
+        return true;
     }
     false
 }
 
-/// The stage of the tallest compound cell, 4x16.
-const CELL_STAGE: usize = 24 * 16;
+/// The stage of an eight-tap compound cell of up to 64 samples.
+const CELL_STAGE: usize = if cfg!(target_arch = "x86_64") {
+    24 * 16 + 64
+} else {
+    128
+};
 
 /// The stage of an eight-tap put of up to 16x16 samples.
 const PUT_STAGE: usize = 23 * 16 + 64;
@@ -711,9 +736,6 @@ fn kernels<T: Sample>(block: &Block<'_, T>, sink: &mut Sink<'_>, stage: &mut [i1
         || super::sixteen_bit::predict(block, sink, stage)
     {
         return true;
-    }
-    if block.remap.is_some() {
-        return false;
     }
     super::portable::predict(block, sink, stage);
     true
