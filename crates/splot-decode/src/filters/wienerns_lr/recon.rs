@@ -1448,9 +1448,10 @@ pub(crate) fn chroma_transform_deblock_block(
 }
 
 fn tx_size_log2(tx_size: usize) -> Option<(u32, u32)> {
-    let w = u32::try_from(*TX_WIDTH_LOG2.get(tx_size)?).ok()?;
-    let h = u32::try_from(*TX_HEIGHT_LOG2.get(tx_size)?).ok()?;
-    Some((w, h))
+    Some((
+        *TX_WIDTH_LOG2.get(tx_size)? as u32,
+        *TX_HEIGHT_LOG2.get(tx_size)? as u32,
+    ))
 }
 
 fn mi_extent(log2_width: u32, log2_height: u32) -> (usize, usize) {
