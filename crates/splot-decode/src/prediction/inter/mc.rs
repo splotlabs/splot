@@ -1580,36 +1580,12 @@ fn compound_subpel_plane<T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<CompoundSubpelPlane<'_, T>> {
     let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
-    let reference_size0 = block.reference0.info().coded_luma_size();
-    let reference_size1 = block.reference1.info().coded_luma_size();
     let frame_size = info.coded_luma_size();
-
-    let scaling0 = derive_plane_scaling(
-        plane_x as i32,
-        plane_y as i32,
-        block.mv0.row,
-        block.mv0.col,
-        sub_x,
-        sub_y,
-        reference_size0.width() as i32,
-        reference_size0.height() as i32,
-        frame_size.width() as i32,
-        frame_size.height() as i32,
-    )
-    .with_reference_storage(block.reference0.info().storage_luma_size(), sub_x, sub_y);
-    let scaling1 = derive_plane_scaling(
-        plane_x as i32,
-        plane_y as i32,
-        block.mv1.row,
-        block.mv1.col,
-        sub_x,
-        sub_y,
-        reference_size1.width() as i32,
-        reference_size1.height() as i32,
-        frame_size.width() as i32,
-        frame_size.height() as i32,
-    )
-    .with_reference_storage(block.reference1.info().storage_luma_size(), sub_x, sub_y);
+    let (x, y) = (plane_x as i32, plane_y as i32);
+    let scaling0 = PlaneScaling::of_reference(block.reference0.info(), frame_size, sub_x, sub_y)
+        .with_mv(x, y, block.mv0.row, block.mv0.col, sub_x, sub_y);
+    let scaling1 = PlaneScaling::of_reference(block.reference1.info(), frame_size, sub_x, sub_y)
+        .with_mv(x, y, block.mv1.row, block.mv1.col, sub_x, sub_y);
     Ok(CompoundSubpelPlane {
         views: compound_plane_views(block, plane, [scaling0, scaling1], block_h, offset)?,
         plane_x,
@@ -1621,23 +1597,27 @@ fn compound_subpel_plane<T: ReconSample>(
 }
 
 /// The two reference views of a `block_h`-row compound plane prediction.
-fn compound_plane_views<T: ReconSample>(
-    block: CompoundMcBlock<'_, T>,
+fn compound_plane_views<'a, T: ReconSample>(
+    block: CompoundMcBlock<'a, T>,
     plane: PlaneId,
     scalings: [PlaneScaling; 2],
     block_h: usize,
     offset: ByteOffset,
-) -> Result<[ReferencePlaneView<'_, T>; 2]> {
-    let last_row = |scaling: PlaneScaling| {
-        compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y)
+) -> Result<[ReferencePlaneView<'a, T>; 2]> {
+    let view = |reference: ReferenceSamples<'a, T>, scaling: PlaneScaling| match reference
+        .settled_plane_view(plane)
+    {
+        Some(view) => Ok(view),
+        None => reference.plane_view(
+            plane,
+            compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
+            offset,
+        ),
     };
-    let view0 = block
-        .reference0
-        .plane_view(plane, last_row(scalings[0]), offset)?;
-    let view1 = block
-        .reference1
-        .plane_view(plane, last_row(scalings[1]), offset)?;
-    Ok([view0, view1])
+    Ok([
+        view(block.reference0, scalings[0])?,
+        view(block.reference1, scalings[1])?,
+    ])
 }
 
 fn translational_compound_plane<T: ReconSample>(
