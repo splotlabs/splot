@@ -134,8 +134,11 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "optical-flow scratch sample count",
         })?;
-    scratch.samples.resize(scratch_len, 0);
-    let (weighted, scratch_samples) = scratch.samples.split_at_mut(expected);
+    if scratch.samples.len() < scratch_len {
+        scratch.samples.resize(scratch_len, 0);
+    }
+    let (samples, _) = scratch.samples.split_at_mut(scratch_len);
+    let (weighted, scratch_samples) = samples.split_at_mut(expected);
     let (difference, scratch_samples) = scratch_samples.split_at_mut(expected);
     let (gradient_x, gradient_y) = scratch_samples.split_at_mut(expected);
     let max_sample = bit_depth.max_sample();
@@ -157,13 +160,25 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         }
     }
 
-    if let (8, Ok(weighted), Ok(difference)) = (
-        unit_size,
+    if let (Ok(weighted), Ok(difference)) = (
         <&[i16; 64]>::try_from(&*weighted),
         <&[i16; 64]>::try_from(&*difference),
-    ) {
-        let delta = solve_sums(unit_8x8_sums(weighted, difference), distances)?;
-        scratch.deltas.push(delta);
+    ) && width == 8
+    {
+        if unit_size == 8 {
+            let delta = solve_sums(unit_8x8_sums(weighted, difference), distances)?;
+            scratch.deltas.push(delta);
+            return Ok(&scratch.deltas);
+        }
+        for sums in unit_4x4_sums(weighted, difference) {
+            match solve_sums(unit_sums(sums, 16), distances) {
+                Ok(delta) => scratch.deltas.push(delta),
+                Err(error) => {
+                    scratch.deltas.clear();
+                    return Err(error);
+                }
+            }
+        }
         return Ok(&scratch.deltas);
     }
     if let (8, Ok(weighted), Ok(difference)) = (
@@ -329,7 +344,10 @@ fn strided_8x8_delta<S: Simd>(
             pred0, pred1, stride, max_sample,
         ));
     }
-    solve_sums(rows_8x8_sums(simd, &weighted, &difference), distances)
+    solve_sums(
+        whole_8x8(rows_8x8_sums(simd, &weighted, &difference)),
+        distances,
+    )
 }
 
 /// The error for the first strided 8x8 predictor sample above `max_sample`,
@@ -993,24 +1011,49 @@ fn unit_lane_sums<S: Simd, const N: usize>(simd: S, planes: [[&[i16; N]; N]; 3])
 /// lanes and only their difference needs the separate sign of
 /// [`gradient_i16`].
 fn unit_8x8_sums(weighted: &[i16; 64], difference: &[i16; 64]) -> [i32; 5] {
+    baseline_simd!(simd => whole_8x8(rows_8x8_sums(
+        simd,
+        &plane_rows_8x8(simd, weighted),
+        &plane_rows_8x8(simd, difference),
+    )))
+}
+
+/// The raw `[su2, sv2, suv, suw, svw]` sums of the four 4x4 units of an
+/// 8x8 predictor pair, as [`unit_8x8_sums`] derives its gradients, in the
+/// order of [`derive_optflow_mv_deltas_into`].
+fn unit_4x4_sums(weighted: &[i16; 64], difference: &[i16; 64]) -> [[i32; 5]; 4] {
     baseline_simd!(simd => {
-        let rows = |plane: &[i16; 64]| {
-            let (rows, _) = plane.as_chunks::<8>();
-            core::array::from_fn(|row| i16x8::load_array_ref(simd, &rows[row]))
-        };
-        rows_8x8_sums(simd, &rows(weighted), &rows(difference))
+        let [top, bottom] = rows_8x8_sums(
+            simd,
+            &plane_rows_8x8(simd, weighted),
+            &plane_rows_8x8(simd, difference),
+        )
+        .map(|sums| {
+            sums.map(|lanes| {
+                let (first, second) = lanes.split();
+                let [a, b, c, d] = *(first + second);
+                [a + b, c + d]
+            })
+        });
+        let side = |half: [[i32; 2]; 5], side: usize| half.map(|sums| sums[side]);
+        [side(top, 0), side(top, 1), side(bottom, 0), side(bottom, 1)]
     })
 }
 
-/// [`unit_8x8_sums`] of rows held in lanes, one row per call so that every
-/// row's clamped neighbours are constants.
+fn plane_rows_8x8<S: Simd>(simd: S, plane: &[i16; 64]) -> [i16x8<S>; 8] {
+    let (rows, _) = plane.as_chunks::<8>();
+    core::array::from_fn(|row| i16x8::load_array_ref(simd, &rows[row]))
+}
+
+/// The lane sums of the top and bottom halves of an 8x8 unit held in lanes,
+/// one row per call so that every row's clamped neighbours are constants.
 #[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn rows_8x8_sums<S: Simd>(
     simd: S,
     weighted: &[i16x8<S>; 8],
     difference: &[i16x8<S>; 8],
-) -> [i32; 5] {
+) -> [[i32x8<S>; 5]; 2] {
     let gradients = [
         row_8x8_gradients::<S, 0>(weighted),
         row_8x8_gradients::<S, 1>(weighted),
@@ -1021,17 +1064,27 @@ fn rows_8x8_sums<S: Simd>(
         row_8x8_gradients::<S, 6>(weighted),
         row_8x8_gradients::<S, 7>(weighted),
     ];
-    let mut sums = [i32x8::splat(simd, 0); 5];
+    let mut halves = [[i32x8::splat(simd, 0); 5]; 2];
     for pair in 0..4 {
         let (top, bottom) = (gradients[2 * pair], gradients[2 * pair + 1]);
         accumulate_unit_sums(
-            &mut sums,
+            &mut halves[pair / 2],
             top.0.combine(bottom.0),
             top.1.combine(bottom.1),
             difference[2 * pair].combine(difference[2 * pair + 1]),
         );
     }
-    unit_sums(sums.map(SimdBase::reduce_sum), 64)
+    halves
+}
+
+/// The unit sums of a whole 8x8 unit from the lane sums of its halves.
+#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[inline(always)]
+fn whole_8x8<S: Simd>([top, bottom]: [[i32x8<S>; 5]; 2]) -> [i32; 5] {
+    unit_sums(
+        core::array::from_fn(|sum| (top[sum] + bottom[sum]).reduce_sum()),
+        64,
+    )
 }
 
 /// Adds one lane group's `[u², v², uv, uw, vw]` products to `sums`, adjacent
@@ -1291,6 +1344,22 @@ mod tests {
                         ));
                         let (mut gradient_x, mut gradient_y) = ([0i16; 64], [0i16; 64]);
                         gradients(&weighted, 8, 8, &mut gradient_x, &mut gradient_y);
+                        let want = [(0, 0), (4, 0), (0, 4), (4, 4)].map(|(x, y)| {
+                            let sums = solve_unit_sums::<4>(
+                                &gradient_x,
+                                &gradient_y,
+                                &difference,
+                                8,
+                                x,
+                                y,
+                            );
+                            [sums[0] - 16, sums[1] - 16, sums[2], sums[3], sums[4]]
+                        });
+                        assert_eq!(
+                            unit_4x4_sums(&weighted, &difference),
+                            want,
+                            "{distances:?} {bit_depth:?}"
+                        );
                         assert_eq!(
                             unit_8x8_sums(&weighted, &difference),
                             solve_unit_sums::<8>(&gradient_x, &gradient_y, &difference, 8, 0, 0),
