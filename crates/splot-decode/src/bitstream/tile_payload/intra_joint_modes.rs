@@ -515,7 +515,9 @@ impl TileSegmentIdState {
         n4h: usize,
         segment_id: u8,
     ) {
-        self.grid.record_block((r, c), (n4w, n4h), segment_id);
+        if self.grid.rows != 0 {
+            self.grid.record_block((r, c), (n4w, n4h), segment_id);
+        }
     }
 
     pub(crate) fn predicted_context(&self, r: usize, c: usize) -> usize {
