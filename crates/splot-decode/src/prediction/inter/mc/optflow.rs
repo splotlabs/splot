@@ -890,23 +890,9 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
         samples: ReferenceSamples<'a, T>,
         offset: ByteOffset,
     ) -> Self {
-        let (reference, frame) = (samples.info().coded_luma_size(), info.coded_luma_size());
-        let scaling = derive_plane_scaling(
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            reference.width() as i32,
-            reference.height() as i32,
-            frame.width() as i32,
-            frame.height() as i32,
-        )
-        .with_reference_storage(samples.info().storage_luma_size(), 0, 0);
         Self {
             samples,
-            scaling,
+            scaling: PlaneScaling::of_reference(samples.info(), info.coded_luma_size(), 0, 0),
             view: None,
             bit_depth: info.bit_depth(),
             offset,
@@ -2264,6 +2250,7 @@ mod tests {
 
     use super::super::blend::blend_nonuniform_implicit_mask;
     use super::*;
+    use crate::prediction::inter::mv_scaling::derive_plane_scaling;
 
     #[test]
     fn subsampling_rounding_matches_round2_signed() {

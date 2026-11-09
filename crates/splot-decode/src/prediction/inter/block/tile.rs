@@ -1292,6 +1292,20 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     }
     let _quantizer_scopes = quantizer.install_frame();
     let info = surface.info();
+    let shared = deferred_recon::ReconShared {
+        reference,
+        ref_frame_idx,
+        temporal_context,
+        sequence,
+        core,
+        luma_use_tcq,
+        residual_use_ddt,
+        bit_depth,
+        mi_rows,
+        mi_cols,
+        current_order_hint,
+        tip: core::cell::OnceCell::new(),
+    };
     'superblocks: for superblock in &row.superblocks {
         let entry_start = superblock.entries.start;
         let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
@@ -1332,17 +1346,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                             command,
                             surface,
                             &mut row.temporal,
-                            temporal_context,
-                            reference,
-                            ref_frame_idx,
-                            sequence,
-                            core,
-                            mi_rows,
-                            mi_cols,
-                            current_order_hint,
-                            luma_use_tcq,
-                            residual_use_ddt,
-                            bit_depth,
+                            &shared,
                         );
                         match result {
                             Ok(()) => {
@@ -1384,17 +1388,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                     &mut row.temporal,
                     &row.residual_blocks,
                     &row.residual_coeffs,
-                    temporal_context,
-                    reference,
-                    ref_frame_idx,
-                    sequence,
-                    core,
-                    mi_rows,
-                    mi_cols,
-                    current_order_hint,
-                    luma_use_tcq,
-                    residual_use_ddt,
-                    bit_depth,
+                    &shared,
                 )
             };
             entry.drop_command(&mut row.slots);

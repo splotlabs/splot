@@ -72,6 +72,24 @@ pub(super) struct ReconShared<'a, T: ReconSample> {
     pub(super) mi_rows: usize,
     pub(super) mi_cols: usize,
     pub(super) current_order_hint: u32,
+    pub(super) tip: core::cell::OnceCell<tip::TipFramePlan>,
+}
+
+impl<T: ReconSample> ReconShared<'_, T> {
+    fn tip(&self, info: DecodedFrameInfo) -> Result<&tip::TipFramePlan> {
+        if let Some(plan) = self.tip.get() {
+            return Ok(plan);
+        }
+        let plan = tip::TipFramePlan::new(
+            info,
+            self.temporal_context,
+            self.sequence,
+            self.core,
+            self.ref_frame_idx,
+            self.reference,
+        )?;
+        Ok(self.tip.get_or_init(|| plan))
+    }
 }
 
 pub(super) const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
@@ -212,9 +230,8 @@ impl InterReconCommand {
                 temporal_records,
                 sink,
                 &self.placed,
+                shared.tip(sink.info())?,
                 shared.temporal_context,
-                shared.sequence,
-                shared.core,
                 shared.ref_frame_idx,
                 shared.reference,
                 self.tile_offset,
@@ -295,10 +312,8 @@ impl InterReconCommand {
                 &self.placed,
                 residual_blocks,
                 residual_coeffs,
+                shared.tip(sink.info())?,
                 shared.temporal_context,
-                shared.sequence,
-                shared.core,
-                shared.ref_frame_idx,
                 shared.reference,
                 self.qindex,
                 shared.luma_use_tcq,
@@ -415,45 +430,17 @@ impl<T: ReconSample> InterReconScratch<T> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn derive_motion_logged(
         &mut self,
         command: &mut InterReconCommand,
         sink: &WorkspaceSink<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
-        temporal_context: &TemporalMvContext,
-        reference: &InterReferenceState<T>,
-        ref_frame_idx: &[u32],
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-        mi_rows: usize,
-        mi_cols: usize,
-        current_order_hint: u32,
-        luma_use_tcq: bool,
-        residual_use_ddt: bool,
-        bit_depth: BitDepth,
+        shared: &ReconShared<'_, T>,
     ) -> Result<()> {
         let Self { tip, mc, .. } = self;
         mc.with_installed(|| {
             let _segment_scope = FrameQmSegmentScope::install(usize::from(command.segment_id));
-            let grid = command.derive_motion(
-                sink,
-                temporal_records,
-                &ReconShared {
-                    reference,
-                    ref_frame_idx,
-                    temporal_context,
-                    sequence,
-                    core,
-                    luma_use_tcq,
-                    residual_use_ddt,
-                    bit_depth,
-                    mi_rows,
-                    mi_cols,
-                    current_order_hint,
-                },
-                tip,
-            )?;
+            let grid = command.derive_motion(sink, temporal_records, shared, tip)?;
             command.motion_derived = true;
             command.derived_motion = grid.map(Box::new);
             Ok(())
@@ -469,17 +456,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
-        temporal_context: &TemporalMvContext,
-        reference: &InterReferenceState<T>,
-        ref_frame_idx: &[u32],
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-        mi_rows: usize,
-        mi_cols: usize,
-        current_order_hint: u32,
-        luma_use_tcq: bool,
-        residual_use_ddt: bool,
-        bit_depth: BitDepth,
+        shared: &ReconShared<'_, T>,
     ) -> Result<()> {
         let Self {
             tip,
@@ -495,19 +472,7 @@ impl<T: ReconSample> InterReconScratch<T> {
                 temporal_records,
                 residual_blocks,
                 residual_coeffs,
-                &ReconShared {
-                    reference,
-                    ref_frame_idx,
-                    temporal_context,
-                    sequence,
-                    core,
-                    luma_use_tcq,
-                    residual_use_ddt,
-                    bit_depth,
-                    mi_rows,
-                    mi_cols,
-                    current_order_hint,
-                },
+                shared,
                 tip,
                 interintra,
                 residual,

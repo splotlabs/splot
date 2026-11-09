@@ -793,22 +793,23 @@ impl EncoderInterTile {
             .clone()
             .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
         let mut sink = mc::WorkspaceSink::Frame(workspace);
-        let shared = (
+        let frame = super::tip::TipFramePlan::new(
+            sink.info(),
+            &temporal,
             &self.sequence,
             &self.core,
             &self.ref_frame_idx,
             &self.reference,
-        );
+        )?;
         let grid = super::tip::motion(
             &mut self.tip_scratch,
             records,
             &sink,
             placed,
+            &frame,
             &temporal,
-            shared.0,
-            shared.1,
-            shared.2,
-            shared.3,
+            &self.ref_frame_idx,
+            &self.reference,
             ByteOffset::new(0),
         )?;
         if predict {
@@ -821,11 +822,9 @@ impl EncoderInterTile {
                 placed,
                 &[],
                 &[],
+                &frame,
                 &temporal,
-                shared.0,
-                shared.1,
-                shared.2,
-                shared.3,
+                &self.reference,
                 self.qindex,
                 false,
                 false,

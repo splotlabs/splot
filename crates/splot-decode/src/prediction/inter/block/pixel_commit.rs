@@ -127,6 +127,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             mi_rows,
             mi_cols,
             current_order_hint,
+            tip: core::cell::OnceCell::new(),
         };
         has_intra = entries
             .iter()

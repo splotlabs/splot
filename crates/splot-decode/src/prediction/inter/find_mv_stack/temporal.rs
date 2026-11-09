@@ -931,6 +931,13 @@ pub(crate) struct TipReferencePair {
     pub(crate) ref_offset: i32,
 }
 
+/// A TIP reference pair with the [`project_mv`] scales of its two offsets.
+fn tip_projection(references: TipReferencePair) -> (TipReferencePair, [i64; 2]) {
+    let scale = |offset| i64::from(clamped_tmvp_factor(offset, references.ref_offset));
+    let past = scale(references.past_offset);
+    (references, [past, scale(references.future_offset)])
+}
+
 #[derive(Debug)]
 pub(crate) struct TemporalMvContext {
     current_order_hint: u32,
@@ -938,7 +945,7 @@ pub(crate) struct TemporalMvContext {
     field: ProjectedTemporalMotionField,
     trajectories: Option<TrajectoryState>,
     trajectory_scratch: Option<TrajectoryState>,
-    tip: Option<TipReferencePair>,
+    tip: Option<(TipReferencePair, [i64; 2])>,
     banded: Option<BandedTemporalContext>,
 }
 
@@ -1258,7 +1265,7 @@ impl TemporalMvContext {
         field.set(y8, x8, mv, references.ref_offset, true);
         Some(Self {
             field,
-            tip: Some(references),
+            tip: Some(tip_projection(references)),
             ..Self::empty()
         })
     }
@@ -1515,7 +1522,7 @@ impl TemporalMvContext {
         }
         self.current_order_hint = current_order_hint;
         self.trajectories = None;
-        self.tip = tip;
+        self.tip = tip.map(tip_projection);
         let banded = self.banded.get_or_insert_with(|| BandedTemporalContext {
             layout: target_layout,
             bands: Vec::new(),
@@ -1577,7 +1584,7 @@ impl TemporalMvContext {
             tmvp_unit_size8,
             fill_holes,
         )?;
-        self.tip = Some(references);
+        self.tip = Some(tip_projection(references));
         Ok(())
     }
 
@@ -1602,19 +1609,17 @@ impl TemporalMvContext {
     }
 
     pub(crate) fn tip_references(&self) -> Option<TipReferencePair> {
-        self.tip
+        self.tip.map(|(references, _)| references)
     }
 
     pub(crate) fn tip_candidate(&self, y8: usize, x8: usize, base_mv: Mv) -> Option<[Mv; 2]> {
-        let references = self.tip?;
+        let (_, scales) = self.tip?;
         let y8 = y8.min(self.field.height8.saturating_sub(1));
         let x8 = x8.min(self.field.width8.saturating_sub(1));
         let cell = self.projected_cell(y8, x8)?;
         let projected = if cell.valid {
-            [
-                project_mv(cell.mv(), references.past_offset, references.ref_offset),
-                project_mv(cell.mv(), references.future_offset, references.ref_offset),
-            ]
+            let mv = cell.mv();
+            [project_scaled(mv, scales[0]), project_scaled(mv, scales[1])]
         } else {
             [Mv::ZERO; 2]
         };
@@ -2251,21 +2256,15 @@ fn project_no_constraint(v8: usize, delta: i32, max8: usize) -> Option<usize> {
 }
 
 fn project_mv(mv: Mv, numerator: i32, denominator: i32) -> Mv {
-    let denominator = denominator.clamp(0, MAX_FRAME_DISTANCE) as usize;
-    let numerator = numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE);
-    let scale = DIV_MULT[denominator];
+    project_scaled(mv, i64::from(clamped_tmvp_factor(numerator, denominator)))
+}
+
+fn project_scaled(mv: Mv, scale: i64) -> Mv {
     let bound = (1 << 16) - 1;
-    let row = round2_signed(
-        i64::from(mv.row) * i64::from(numerator) * i64::from(scale),
-        14,
-    )
-    .clamp(-bound, bound) as i32;
-    let col = round2_signed(
-        i64::from(mv.col) * i64::from(numerator) * i64::from(scale),
-        14,
-    )
-    .clamp(-bound, bound) as i32;
-    Mv { row, col }
+    Mv {
+        row: round2_signed(i64::from(mv.row) * scale, 14).clamp(-bound, bound) as i32,
+        col: round2_signed(i64::from(mv.col) * scale, 14).clamp(-bound, bound) as i32,
+    }
 }
 
 fn tmvp_projection_factor(numerator: i32, ref_offset: i32, side: usize) -> Option<i32> {
