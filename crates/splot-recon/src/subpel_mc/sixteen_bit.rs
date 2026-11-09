@@ -7,11 +7,17 @@
 //! row of a block 16 columns wide, two rows of an 8-column strip or four rows
 //! of a 4-column strip. Each tap pair interleaves two windows, or two rows,
 //! into one `pmaddwd`, so every sum is exact in `i32`; a horizontal value
-//! fits `i16` for 8- and 10-bit samples. Other widths and targets without
-//! AVX2 decline to the portable kernels.
+//! fits `i16` for 8- and 10-bit samples. On aarch64 the NEON kernels of
+//! [`neon`] take blocks 4 or a multiple of 8 columns wide. Other widths and
+//! targets decline to the portable kernels.
 
 use super::block::{Block, Sink};
 use crate::format::ReconSample;
+
+#[cfg(target_arch = "aarch64")]
+mod neon;
+#[cfg(all(test, target_arch = "aarch64"))]
+mod tests;
 
 /// Predicts a 16-bit block and returns `true`, or returns `false` without
 /// writing when the block is outside the word-lane subset.
@@ -26,6 +32,14 @@ pub(super) fn predict<T: ReconSample>(
         && fits(block)
     {
         avx2::predict(token, &block.with_source(source), sink, stage);
+        return true;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_neon()
+        && let Some(source) = T::u16_slice(block.source)
+        && fits(block)
+    {
+        neon::predict(token, &block.with_source(source), sink, stage);
         return true;
     }
     let _ = (block, sink, stage);
@@ -52,6 +66,17 @@ pub(super) fn compound(
         avx2::compound(token, blocks, forward, max, stage, output, stride);
         return true;
     }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_neon()
+        && blocks.iter().all(|block| fits(block))
+        && (blocks[0].w * blocks[0].h <= 64
+            || blocks
+                .iter()
+                .all(|block| block.horizontal.is_none() && block.vertical.is_none()))
+    {
+        neon::compound(token, blocks, forward, max, stage, output, stride);
+        return true;
+    }
     let _ = (blocks, forward, max, stage, output, stride);
     false
 }
@@ -62,6 +87,13 @@ fn fits<T>(block: &Block<'_, T>) -> bool {
     block.w.is_multiple_of(4)
         && block.h.is_multiple_of(16 / width(block.w))
         && !(width(block.w) == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
+}
+
+/// Whether the NEON kernels cover the shape of `block`: 4 columns in pairs
+/// of rows, or strips of 8 columns.
+#[cfg(target_arch = "aarch64")]
+fn fits<T>(block: &Block<'_, T>) -> bool {
+    (block.w == 4 && block.h.is_multiple_of(2)) || (block.w > 0 && block.w.is_multiple_of(8))
 }
 
 /// The strip width of a block: 16 columns, else strips of 8 columns in
