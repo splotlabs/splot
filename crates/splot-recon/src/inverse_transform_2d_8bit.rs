@@ -504,8 +504,9 @@ impl InverseTransformAdd8 {
     /// `quant`, under the flat § 7.14.4 dequantization by the `(dc_quant,
     /// ac_quant, dq_denom)` `quantizers`, to the 8-bit block at the start of
     /// `dst` as [`Self::add`] does, with the block's `Dequant` in `dequant`.
-    /// A block at least 16 wide keeps only the 8 columns the secondary
-    /// transform writes and stages them straight into the row pass.
+    /// A block at least 16 wide, without an identity row pass, keeps only the
+    /// 8 columns the secondary transform writes and runs the row pass
+    /// straight from them.
     ///
     /// # Errors
     /// Returns the [`secondary_inverse_transform`](crate::secondary_inverse_transform)
@@ -521,6 +522,7 @@ impl InverseTransformAdd8 {
     ) -> crate::Result<bool> {
         #[cfg(target_arch = "x86_64")]
         if self.w_log2 >= 4
+            && self.row != InverseTransform2dDim::Identity
             && self.fits(dst, stride)
             && let Some(token) = Level::baseline().as_avx2()
             && let Some(rows) = dequant.first_chunk_mut::<64>()
