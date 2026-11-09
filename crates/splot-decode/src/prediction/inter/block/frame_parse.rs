@@ -186,7 +186,7 @@ impl InterFrameParse {
         {
             return Err(tile::invalid_inter_tile_scheduling_state());
         }
-        tile.take_deblock_records()?;
+        tile.take_deblock_records();
         parse_progress.append_records(&mut records);
         let (filter_setup, _) = filter_sink_setup.deferred_filter_setup(
             info,

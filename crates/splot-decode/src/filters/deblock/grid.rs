@@ -2,20 +2,12 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::facts::PlaneFacts;
-use super::{ChromaDeblockRecords, DeblockBlock, DeblockError, EdgeBlock};
+use super::{DeblockBlock, DeblockError};
 
 /// A cell holds its record index plus one, so that an empty cell is zero.
-const NO_BLOCK: u32 = 0;
-
 #[derive(Clone, Copy, Default)]
 pub(super) struct MiCell {
     pub(super) base: u32,
-}
-
-#[derive(Clone, Copy, Default)]
-pub(super) struct ChromaMiCell {
-    pub(super) overlay: u32,
-    pub(super) chroma_transform: u32,
 }
 
 pub(super) fn reset<T: Copy>(
@@ -60,7 +52,7 @@ pub(super) struct MiGridStorage {
 
 pub(super) struct ChromaMiGridStorage {
     /// One cell per chroma mode-info unit, not per luma one.
-    pub(super) cells: Vec<ChromaMiCell>,
+    pub(super) cells: Vec<MiCell>,
     pub(super) cell_cols: usize,
     pub(super) sub_x: usize,
     pub(super) sub_y: usize,
@@ -70,7 +62,7 @@ pub(super) struct MiGrid<'a> {
     pub(super) base: &'a MiGridStorage,
     pub(super) chroma: Option<&'a ChromaMiGridStorage>,
     pub(super) base_blocks: &'a [DeblockBlock],
-    pub(super) overlay_blocks: &'a ChromaDeblockRecords,
+    pub(super) overlay_blocks: &'a [DeblockBlock],
     /// The plane's cell facts, which the edge decisions of a frame without
     /// sub-PU edges read instead of the records.
     pub(super) facts: Option<&'a PlaneFacts>,
@@ -81,7 +73,7 @@ impl MiGrid<'_> {
         base: &'a MiGridStorage,
         chroma: Option<&'a ChromaMiGridStorage>,
         base_blocks: &'a [DeblockBlock],
-        overlay_blocks: &'a ChromaDeblockRecords,
+        overlay_blocks: &'a [DeblockBlock],
     ) -> MiGrid<'a> {
         MiGrid {
             base,
@@ -98,39 +90,21 @@ impl MiGrid<'_> {
 
     #[allow(clippy::inline_always, reason = "measured luma deblock hot path")]
     #[inline(always)]
-    pub(super) fn get_luma_edge(&self, row: usize, col: usize) -> Option<EdgeBlock<'_>> {
+    pub(super) fn get_luma_edge(&self, row: usize, col: usize) -> Option<&DeblockBlock> {
         let cell = self.base.cells.get(self.index(row, col))?;
-        Some(EdgeBlock {
-            block: self.base_blocks.get(record(cell.base))?,
-            chroma_transform: None,
-        })
+        self.base_blocks.get(record(cell.base))
     }
 
     #[allow(clippy::inline_always, reason = "measured chroma deblock hot path")]
     #[inline(always)]
-    pub(super) fn get_edge(&self, row: usize, col: usize) -> Option<EdgeBlock<'_>> {
-        let base = self.base.cells.get(self.index(row, col))?;
-        let chroma = self.chroma.and_then(|grid| {
-            grid.cells.get(
-                (row >> grid.sub_y)
-                    .wrapping_mul(grid.cell_cols)
-                    .wrapping_add(col >> grid.sub_x),
-            )
-        });
-        let block = match chroma.map(|cell| cell.overlay) {
-            Some(overlay) if overlay != NO_BLOCK => self.overlay_blocks.get(record(overlay))?,
-            _ => self.base_blocks.get(record(base.base))?,
-        };
-        let chroma_transform = match chroma.map(|cell| cell.chroma_transform) {
-            Some(transform) if transform != NO_BLOCK => {
-                Some(self.overlay_blocks.get(record(transform))?)
-            }
-            _ => None,
-        };
-        Some(EdgeBlock {
-            block,
-            chroma_transform,
-        })
+    pub(super) fn get_edge(&self, row: usize, col: usize) -> Option<&DeblockBlock> {
+        let grid = self.chroma?;
+        let cell = grid.cells.get(
+            (row >> grid.sub_y)
+                .wrapping_mul(grid.cell_cols)
+                .wrapping_add(col >> grid.sub_x),
+        )?;
+        self.overlay_blocks.get(record(cell.base))
     }
 }
 
@@ -141,8 +115,8 @@ impl MiGrid<'_> {
 #[derive(Default)]
 pub(crate) struct DeblockGridStorage {
     pub(super) cells: Vec<MiCell>,
-    pub(super) chroma: [Vec<ChromaMiCell>; 2],
-    pub(super) facts: [PlaneFacts; 3],
+    pub(super) chroma: Vec<MiCell>,
+    pub(super) facts: [PlaneFacts; 2],
 }
 
 /// The cell rows and columns `block` covers in a grid whose cells are
@@ -220,7 +194,7 @@ impl ChromaMiGridStorage {
     pub(super) fn new(
         mi_cols: usize,
         (sub_x, sub_y): (usize, usize),
-        storage: &mut Vec<ChromaMiCell>,
+        storage: &mut Vec<MiCell>,
     ) -> Self {
         Self {
             cells: core::mem::take(storage),
@@ -230,49 +204,38 @@ impl ChromaMiGridStorage {
         }
     }
 
-    /// Marks every cell of a `mi_rows`-row frame empty for chroma plane
-    /// `plane` (0 for U).
-    pub(super) fn reset(&mut self, plane: usize, mi_rows: usize) -> Result<(), DeblockError> {
-        let plane_id = match plane {
-            0 => splot_recon::PlaneId::U,
-            1 => splot_recon::PlaneId::V,
-            _ => return Err(DeblockError::Workspace),
-        };
+    /// Marks every cell of a `mi_rows`-row frame empty.
+    pub(super) fn reset(&mut self, mi_rows: usize) -> Result<(), DeblockError> {
         let len = mi_rows
             .div_ceil(1 << self.sub_y)
             .checked_mul(self.cell_cols)
             .ok_or(DeblockError::Workspace)?;
-        reset(&mut self.cells, len, ChromaMiCell::default(), plane_id)
+        reset(
+            &mut self.cells,
+            len,
+            MiCell::default(),
+            splot_recon::PlaneId::U,
+        )
     }
 
-    /// Lays one chroma plane's overlay records from `records[start]` on out
-    /// over the frame in record order, after the luma grid's fill of the same
-    /// records.
+    /// Lays the chroma records `records`, the first of which is
+    /// record `first`, out over the frame in record order.
     pub(super) fn fill(
         &mut self,
         mi_cols: usize,
-        records: &ChromaDeblockRecords,
-        (plane, start): (usize, usize),
+        records: &[DeblockBlock],
+        first: usize,
         mi_rows: usize,
     ) -> Result<(), DeblockError> {
-        let mask = [ChromaDeblockRecords::U, ChromaDeblockRecords::V][plane];
         let (sub_x, sub_y, cols) = (self.sub_x, self.sub_y, self.cell_cols);
         let extent = (mi_rows, mi_cols);
-        for (index, record) in records.blocks.iter().enumerate().skip(start) {
-            if record.planes & mask == 0 {
-                continue;
-            }
-            let mark = mi_block_index(index)? + 1;
-            let block = &record.block;
+        for (index, block) in (first..).zip(records) {
+            let mark = MiCell {
+                base: mi_block_index(index)? + 1,
+            };
             for (_, span) in block_spans(block, extent, (sub_x, sub_y), cols) {
                 if let Some(cells) = self.cells.get_mut(span) {
-                    for cell in cells {
-                        if block.chroma_transform_only {
-                            cell.chroma_transform = mark;
-                        } else {
-                            cell.overlay = mark;
-                        }
-                    }
+                    cells.fill(mark);
                 }
             }
         }

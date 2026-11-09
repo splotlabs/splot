@@ -388,16 +388,11 @@ fn luma_ccso_preserves_lossless_4x4_samples() {
     let lossless_block = crate::filters::deblock::DeblockBlock {
         r: 0,
         c: 0,
-        luma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(0, 0, 0),
-        chroma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(0, 0, 0),
-        chroma_base_r: 0,
-        chroma_base_c: 0,
+        prediction: crate::filters::deblock::DeblockPredictionUnit::new(0, 0, 0),
         n4w: 1,
         n4h: 1,
-        luma_tx: 0,
-        chroma_tx: Some(0),
+        tx: 0,
         sub_pu_size: None,
-        chroma_transform_only: false,
         qindex: 0,
         skip: false,
         lossless: true,
@@ -406,7 +401,7 @@ fn luma_ccso_preserves_lossless_4x4_samples() {
         2,
         2,
         &[lossless_block],
-        [&[], &[]],
+        &[],
     )
     .unwrap();
 
@@ -652,8 +647,7 @@ fn ten_bit_vector_rows_match_the_scalar_path_for_every_quant_step() {
         })
         .collect();
     let lossless =
-        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(2, 32, &[], [&[], &[]])
-            .unwrap();
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(2, 32, &[], &[]).unwrap();
     for (scale_idx, quant_idx) in [(0, 3), (0, 0), (2, 2), (3, 1), (1, 3), (3, 3)] {
         for edge_clf in [false, true] {
             for sub in [0, 1] {

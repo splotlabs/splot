@@ -897,11 +897,9 @@ fn parse_general_intra_residual_plan(
         tx_skip_records: leaf.tx_skip_records,
         block_r: block.row4(),
         block_c: block.col4(),
-        chroma_tx: leaf.arena.chroma_tx(&residual_plan),
         chroma_subsampling: facts.block_ctx.chroma().subsampling(PlaneId::U),
-        qindex: leaf.qindex,
+        qindex: leaf.qindex as u16,
         lossless: facts.lossless,
-        v_twin: None,
     };
     let residual = leaf
         .arena

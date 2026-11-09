@@ -17,7 +17,7 @@ use fearless_simd::{Simd, mask16x16, prelude::*, u8x32, u16x16};
 use super::facts::{COVERED, EDGE_H, EDGE_V, LOSSLESS, PlaneFacts, SKIP, padded_stride};
 use super::grid::MiGrid;
 use super::{
-    DeblockError, EdgeBlock, EdgeContext, GATHER_HALF, MAX_WIDTHS, MI_SIZE, PerpLine, PlaneCtx,
+    DeblockBlock, DeblockError, EdgeContext, GATHER_HALF, MAX_WIDTHS, MI_SIZE, PerpLine, PlaneCtx,
     PlanePass, SB_SIZE, StrengthCache, apply_edge_samples, cell_block, choose_filter_width,
     edge_decision, starts_tile,
 };
@@ -263,7 +263,7 @@ impl PassEdges {
                 for col_index in 1..self.cols {
                     let c = col_index << sub_x;
                     let curr = cell_block::<PLANE>(grid, r, c)?;
-                    if curr.same(prev) && curr.block.sub_pu_size.is_none() {
+                    if core::ptr::eq(curr, prev) && curr.sub_pu_size.is_none() {
                         self.edges[row_out + col_index] = DeblockEdge::NONE;
                         prev = curr;
                         continue;
@@ -290,19 +290,19 @@ impl PassEdges {
                 .ok_or(DeblockError::UncoveredMi { row: r, col: 0 })?;
             let row_tile_edge = starts_tile(geometry.tile_starts, r);
             let row_out = row_index * self.stride;
-            let mut last: Option<(EdgeBlock<'_>, EdgeBlock<'_>, DeblockEdge)> = None;
+            let mut last: Option<(&DeblockBlock, &DeblockBlock, DeblockEdge)> = None;
             let mut row_live = false;
             for col_index in 0..self.cols {
                 let c = col_index << sub_x;
                 let curr = cell_block::<PLANE>(grid, r, c)?;
                 let prev = cell_block::<PLANE>(grid, prev_r, c)?;
-                let plain = curr.block.sub_pu_size.is_none() && prev.block.sub_pu_size.is_none();
-                let edge = if curr.same(prev) && plain {
+                let plain = curr.sub_pu_size.is_none() && prev.sub_pu_size.is_none();
+                let edge = if core::ptr::eq(curr, prev) && plain {
                     DeblockEdge::NONE
                 } else if plain
                     && let Some((last_curr, last_prev, last_edge)) = last
-                    && curr.same(last_curr)
-                    && prev.same(last_prev)
+                    && core::ptr::eq(curr, last_curr)
+                    && core::ptr::eq(prev, last_prev)
                 {
                     last_edge
                 } else {
@@ -588,7 +588,7 @@ pub(super) fn edge_at<const PLANE: usize, const PASS: usize>(
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn edge_at_blocks<const PLANE: usize, const PASS: usize>(
-    (curr, prev): (EdgeBlock<'_>, EdgeBlock<'_>),
+    (curr, prev): (&DeblockBlock, &DeblockBlock),
     ctx: EdgeContext,
     geometry: &PassGeometry<'_>,
     strengths: &StrengthCache,
@@ -607,7 +607,7 @@ fn edge_at_blocks<const PLANE: usize, const PASS: usize>(
     let sb_edge = PASS == 1 && (row * MI_SIZE).is_multiple_of(SB_SIZE) || PASS == 0 && tile_edge;
     let x_p = (col * MI_SIZE) >> plane_sub_x;
     let y_p = (row * MI_SIZE) >> plane_sub_y;
-    let Some(decision) = edge_decision::<PLANE, PASS>(curr, prev, x_p, y_p, ctx, strengths) else {
+    let Some(decision) = edge_decision::<PASS>(curr, prev, x_p, y_p, ctx, strengths) else {
         return Ok(DeblockEdge::NONE);
     };
     let mut filter_size = decision.filter_size;

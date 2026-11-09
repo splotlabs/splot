@@ -130,7 +130,7 @@ impl TileFilterRecords {
     /// [`fit_list`].
     pub(super) fn fit(&mut self, [luma, chroma, tx_skip, leaves]: [usize; 4]) {
         fit_list(&mut self.deblock_blocks, luma);
-        self.chroma_deblock_blocks.fit(chroma);
+        fit_list(&mut self.chroma_deblock_blocks, chroma);
         fit_list(&mut self.tx_skip_records, tx_skip);
         fit_list(&mut self.inter_leaves, leaves);
     }
@@ -146,7 +146,9 @@ impl TileFilterRecords {
         if let Some(blocks) = self.deblock_blocks.get(span(0)) {
             deblock_blocks.extend_from_slice(blocks);
         }
-        chroma_deblock_blocks.extend_from_range(&self.chroma_deblock_blocks, span(1));
+        if let Some(blocks) = self.chroma_deblock_blocks.get(span(1)) {
+            chroma_deblock_blocks.extend_from_slice(blocks);
+        }
         if let Some(records) = self.tx_skip_records.get(span(2)) {
             tx_skip_records.extend_from_slice(records);
         }
@@ -167,6 +169,7 @@ pub(crate) fn record_inter_deblock_geometry(
     qindex: u32,
     lossless: bool,
 ) -> Result<()> {
+    let qindex = qindex as u16;
     let (n4w, n4h) = block_size4;
     let (sub_x, sub_y) = chroma_subsampling(chroma_format);
     let chroma_subsampling = (u32::from(sub_x), u32::from(sub_y));
@@ -199,23 +202,18 @@ pub(crate) fn record_inter_deblock_geometry(
             .num_4x4_high()
             .map_err(|_| super::residual::residual_geometry_error())?;
         let block = crate::filters::deblock::DeblockBlock {
-            r: chroma_ref.row() as u32,
-            c: chroma_ref.col() as u32,
-            luma_prediction,
-            chroma_prediction,
-            chroma_base_r: chroma_ref.row() as u32,
-            chroma_base_c: chroma_ref.col() as u32,
-            n4w: chroma_n4w as u32,
-            n4h: chroma_n4h as u32,
-            luma_tx: chroma_tx as u8,
-            chroma_tx: Some(chroma_tx as u8),
-            sub_pu_size,
-            chroma_transform_only: false,
-            qindex,
+            r: chroma_ref.row() as u16,
+            c: chroma_ref.col() as u16,
+            n4w: chroma_n4w as u8,
+            n4h: chroma_n4h as u8,
+            tx: chroma_tx as u8,
             skip: residual.is_none(),
             lossless,
+            qindex,
+            prediction: chroma_prediction,
+            sub_pu_size,
         };
-        chroma_deblock_blocks.push_both(block);
+        chroma_deblock_blocks.push(block);
     }
     let Some(residual) = residual else {
         let tx_size = super::residual::max_tx_size(frontier.b_size.index())?;
@@ -224,21 +222,16 @@ pub(crate) fn record_inter_deblock_geometry(
         for row4 in crate::support::step_range(0..n4h, tx_h4) {
             for col4 in crate::support::step_range(0..n4w, tx_w4) {
                 deblock_blocks.push(crate::filters::deblock::DeblockBlock {
-                    r: (frontier.r + row4) as u32,
-                    c: (frontier.c + col4) as u32,
-                    luma_prediction,
-                    chroma_prediction,
-                    chroma_base_r: (frontier.r + row4) as u32,
-                    chroma_base_c: (frontier.c + col4) as u32,
-                    n4w: tx_w4 as u32,
-                    n4h: tx_h4 as u32,
-                    luma_tx: tx_size as u8,
-                    chroma_tx: None,
-                    sub_pu_size,
-                    chroma_transform_only: false,
-                    qindex,
+                    r: (frontier.r + row4) as u16,
+                    c: (frontier.c + col4) as u16,
+                    n4w: tx_w4 as u8,
+                    n4h: tx_h4 as u8,
+                    tx: tx_size as u8,
                     skip: true,
                     lossless,
+                    qindex,
+                    prediction: luma_prediction,
+                    sub_pu_size,
                 });
                 tx_skip_records.push(
                     crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
@@ -259,10 +252,8 @@ pub(crate) fn record_inter_deblock_geometry(
                 chroma_ref.col(),
                 chroma_ref.size(),
                 (sub_x, sub_y),
-                luma_prediction,
                 chroma_prediction,
                 sub_pu_size,
-                inherited_chroma_metadata,
                 qindex,
                 lossless,
             )?;
@@ -272,7 +263,6 @@ pub(crate) fn record_inter_deblock_geometry(
     let blocks = residual
         .blocks(residual_blocks)
         .ok_or(DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
-    let mut v_twin = None;
     for block in blocks {
         let (log2_width, log2_height) = super::super::inter_residual_log2(block)
             .map_err(|_| super::residual::residual_geometry_error())?;
@@ -281,25 +271,16 @@ pub(crate) fn record_inter_deblock_geometry(
                 let tx_w4 = (1usize << log2_width) / MI_SIZE;
                 let tx_h4 = (1usize << log2_height) / MI_SIZE;
                 deblock_blocks.push(crate::filters::deblock::DeblockBlock {
-                    r: (block.y / MI_SIZE) as u32,
-                    c: (block.x / MI_SIZE) as u32,
-                    luma_prediction,
-                    chroma_prediction,
-                    chroma_base_r: (block.y / MI_SIZE) as u32,
-                    chroma_base_c: (block.x / MI_SIZE) as u32,
-                    n4w: tx_w4 as u32,
-                    n4h: tx_h4 as u32,
-                    luma_tx: block.tx_size as u8,
-                    chroma_tx:
-                        crate::filters::wienerns_lr::fixed_largest_420_chroma_tx_size_from_luma_4x4(
-                            tx_w4, tx_h4,
-                        )
-                        .map(|tx| tx as u8),
-                    sub_pu_size,
-                    chroma_transform_only: false,
-                    qindex,
+                    r: (block.y / MI_SIZE) as u16,
+                    c: (block.x / MI_SIZE) as u16,
+                    n4w: tx_w4 as u8,
+                    n4h: tx_h4 as u8,
+                    tx: block.tx_size as u8,
                     skip: false,
                     lossless,
+                    qindex,
+                    prediction: luma_prediction,
+                    sub_pu_size,
                 });
                 tx_skip_records.push(
                     crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
@@ -312,24 +293,10 @@ pub(crate) fn record_inter_deblock_geometry(
                     },
                 );
             }
-            ReconPlaneId::U | ReconPlaneId::V => {
-                if block.plane == ReconPlaneId::V
-                    && crate::filters::wienerns_lr::chroma_transform_cells(
-                        block.x,
-                        block.y,
-                        block.tx_size,
-                        Some((log2_width, log2_height)),
-                        chroma_subsampling,
-                    )
-                    .is_some_and(|cells| {
-                        chroma_deblock_blocks.pair_v(&mut v_twin, cells, block.tx_size)
-                    })
-                {
-                    continue;
-                }
-                if let Some((plane_index, mut record)) =
+            ReconPlaneId::V => {}
+            ReconPlaneId::U => {
+                if let Some(mut record) =
                     crate::filters::wienerns_lr::chroma_transform_deblock_block(
-                        block.plane,
                         block.x,
                         block.y,
                         block.tx_size,
@@ -339,14 +306,9 @@ pub(crate) fn record_inter_deblock_geometry(
                         lossless,
                     )
                 {
-                    retain_inter_prediction_metadata(
-                        &mut record,
-                        luma_prediction,
-                        chroma_prediction,
-                        sub_pu_size,
-                        inherited_chroma_metadata,
-                    );
-                    chroma_deblock_blocks.push_paired(plane_index, &mut v_twin, record);
+                    record.prediction = chroma_prediction;
+                    record.sub_pu_size = sub_pu_size;
+                    chroma_deblock_blocks.push(record);
                 }
             }
         }
@@ -361,11 +323,9 @@ fn record_skipped_chroma_deblock_geometry(
     chroma_ref_col: usize,
     chroma_ref_size: BlockSize,
     chroma_subsampling: (bool, bool),
-    luma_prediction: crate::filters::deblock::DeblockPredictionUnit,
     chroma_prediction: crate::filters::deblock::DeblockPredictionUnit,
     sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
-    inherited_chroma_metadata: bool,
-    qindex: u32,
+    qindex: u16,
     lossless: bool,
 ) -> Result<()> {
     let (sub_x, sub_y) = chroma_subsampling;
@@ -386,84 +346,30 @@ fn record_skipped_chroma_deblock_geometry(
     let subsampling = (u32::from(sub_x), u32::from(sub_y));
     for y in crate::support::step_range(0..height, tx_height) {
         for x in crate::support::step_range(0..width, tx_width) {
-            if let Some((_, mut record)) =
-                crate::filters::wienerns_lr::chroma_transform_deblock_block(
-                    ReconPlaneId::U,
-                    base_x + x,
-                    base_y + y,
-                    chroma_tx,
-                    None,
-                    subsampling,
-                    qindex,
-                    lossless,
-                )
-            {
-                retain_inter_prediction_metadata(
-                    &mut record,
-                    luma_prediction,
-                    chroma_prediction,
-                    sub_pu_size,
-                    inherited_chroma_metadata,
-                );
+            if let Some(mut record) = crate::filters::wienerns_lr::chroma_transform_deblock_block(
+                base_x + x,
+                base_y + y,
+                chroma_tx,
+                None,
+                subsampling,
+                qindex,
+                lossless,
+            ) {
+                record.prediction = chroma_prediction;
+                record.sub_pu_size = sub_pu_size;
                 record.skip = true;
-                chroma_deblock_blocks.push_both(record);
+                chroma_deblock_blocks.push(record);
             }
         }
     }
     Ok(())
 }
 
-fn retain_inter_prediction_metadata(
-    record: &mut crate::filters::deblock::DeblockBlock,
-    luma_prediction: crate::filters::deblock::DeblockPredictionUnit,
-    chroma_prediction: crate::filters::deblock::DeblockPredictionUnit,
-    sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
-    chroma_transform_only: bool,
-) {
-    record.luma_prediction = luma_prediction;
-    record.chroma_prediction = chroma_prediction;
-    record.sub_pu_size = sub_pu_size;
-    record.chroma_transform_only = chroma_transform_only;
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use splot_recon::PlaneId;
-
     use super::*;
-
-    #[test]
-    fn ordinary_chroma_residual_retains_parent_prediction_and_rectangular_subpu() {
-        let (_, mut record) = crate::filters::wienerns_lr::chroma_transform_deblock_block(
-            PlaneId::U,
-            8,
-            12,
-            3,
-            None,
-            (1, 1),
-            77,
-            false,
-        )
-        .unwrap();
-        let luma_prediction = crate::filters::deblock::DeblockPredictionUnit::new(2, 3, 4);
-        let chroma_prediction = crate::filters::deblock::DeblockPredictionUnit::new(4, 5, 6);
-        let sub_pu_size = crate::filters::deblock::DeblockSubPuSize::new(8, 16);
-
-        retain_inter_prediction_metadata(
-            &mut record,
-            luma_prediction,
-            chroma_prediction,
-            Some(sub_pu_size),
-            false,
-        );
-
-        assert_eq!(record.luma_prediction, luma_prediction);
-        assert_eq!(record.chroma_prediction, chroma_prediction);
-        assert_eq!(record.sub_pu_size, Some(sub_pu_size));
-        assert!(!record.chroma_transform_only);
-    }
 
     #[test]
     fn skipped_64x128_420_chroma_keeps_one_transform_across_luma_chunks() {
@@ -477,27 +383,18 @@ mod tests {
             BlockSize::new(13).unwrap(),
             (true, true),
             prediction,
-            prediction,
             Some(crate::filters::deblock::DeblockSubPuSize::square(4)),
-            false,
             200,
             false,
         )
         .unwrap();
 
-        for plane in 0..2 {
-            let plane: Vec<_> = records
-                .iter_plane(plane)
-                .map(|(_, record)| record)
-                .collect();
-            assert_eq!(plane.len(), 1);
-            let record = plane[0];
-            assert_eq!((record.r, record.c), (128, 96));
-            assert_eq!((record.n4h, record.n4w), (32, 16));
-            assert_eq!((record.chroma_base_r, record.chroma_base_c), (128, 96));
-            assert!(record.skip);
-            assert_eq!(record.qindex, 200);
-        }
+        assert_eq!(records.len(), 1);
+        let record = records[0];
+        assert_eq!((record.r, record.c), (128, 96));
+        assert_eq!((record.n4h, record.n4w), (32, 16));
+        assert!(record.skip);
+        assert_eq!(record.qindex, 200);
     }
 
     #[test]
@@ -508,9 +405,8 @@ mod tests {
             DecodeBlockFrontier::shared_leaf(0, 0, size),
             DecodeBlockFrontier::shared_leaf(2, 4, size),
         ];
-        let parsed = |records: &mut TileFilterRecords, r: u32| {
-            let (_, block) = crate::filters::wienerns_lr::chroma_transform_deblock_block(
-                PlaneId::V,
+        let parsed = |records: &mut TileFilterRecords, r: u16| {
+            let block = crate::filters::wienerns_lr::chroma_transform_deblock_block(
                 0,
                 0,
                 0,
@@ -521,7 +417,7 @@ mod tests {
             )
             .unwrap();
             records.deblock_blocks.push(block);
-            records.chroma_deblock_blocks.push(1, block);
+            records.chroma_deblock_blocks.push(block);
             records.tx_skip_records.push(
                 crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
                     row: r as usize,
@@ -536,8 +432,8 @@ mod tests {
         let mut unit = TileFilterRecords::default();
         let mut expected = TileFilterRecords::default();
         for (index, leaf) in leaves.iter().enumerate() {
-            parsed(&mut unit, 90 + index as u32);
-            parsed(&mut expected, 90 + index as u32);
+            parsed(&mut unit, 90 + index as u16);
+            parsed(&mut expected, 90 + index as u16);
             unit.defer_inter_leaf(leaf, (2, 2), None, None, 40, false);
             record_inter_deblock_geometry(
                 &mut expected.deblock_blocks,
@@ -577,18 +473,7 @@ mod tests {
 
         assert_eq!(frame.deblock_blocks, want.deblock_blocks);
         assert_eq!(frame.tx_skip_records, want.tx_skip_records);
-        for plane in 0..2 {
-            assert!(
-                frame
-                    .chroma_deblock_blocks
-                    .iter_plane(plane)
-                    .map(|(_, record)| record)
-                    .eq(want
-                        .chroma_deblock_blocks
-                        .iter_plane(plane)
-                        .map(|(_, record)| record))
-            );
-        }
+        assert_eq!(frame.chroma_deblock_blocks, want.chroma_deblock_blocks);
         assert!(unit.deblock_blocks.is_empty() && unit.inter_leaves.is_empty());
         assert!(unit.chroma_deblock_blocks.is_empty() && unit.tx_skip_records.is_empty());
         assert_eq!(unit.deblock_blocks.capacity(), capacity);
