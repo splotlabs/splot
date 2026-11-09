@@ -201,6 +201,13 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
     if bit_depth != workspace.info().bit_depth() {
         return Ok(false);
     }
+    let adjusted = block_size.width().min(32) * block_size.height().min(32);
+    if block.dense_len() != adjusted {
+        return Err(GeneralIntraResidualError::QuantLength {
+            expected: adjusted,
+            actual: block.dense_len(),
+        });
+    }
     let fused = fused_intra_setup(
         block,
         plane_id,
