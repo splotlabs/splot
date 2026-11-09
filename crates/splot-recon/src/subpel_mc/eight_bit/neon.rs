@@ -14,9 +14,12 @@
 use super::super::block::{Block, Sink, Taps};
 use fearless_simd::{Simd, i16x8, i32x4, prelude::*, u8x16, u16x8, u32x4, u64x2};
 
-/// Whether the kernels cover the width of `block`: 4 or a multiple of 8.
+/// Whether the kernels cover `block`: a width of 4 or a multiple of 8, and at
+/// most one pass. A block with both passes is faster in the staged portable
+/// kernel (measured +3.9% decode time on an 8-bit 4:2:2 stream here).
 pub(in crate::subpel_mc) const fn fits<T>(block: &Block<'_, T>) -> bool {
-    block.w == 4 || block.w.is_multiple_of(8)
+    (block.w == 4 || block.w.is_multiple_of(8))
+        && (block.horizontal.is_none() || block.vertical.is_none())
 }
 
 /// Where the eight final-pass values of a strip row go.

@@ -586,9 +586,15 @@ fn neon_byte_lanes_match_the_portable_kernels() {
                         let span = block.vertical.map_or(1, block::Taps::span);
                         let len = block::stage_len(h + span - 1, w, block.vertical);
                         let mut stage = vec![0i16; len];
+                        // `eight_bit` takes one-pass blocks only (the swapped `other` too).
+                        let one_pass = block.horizontal.is_none() || block.vertical.is_none();
                         let run = |sink: &mut block::Sink<'_>, stage: &mut [i16], neon: bool| {
                             if neon {
-                                assert!(eight_bit::predict(&block, sink, &mut []), "{label}");
+                                let taken = eight_bit::predict(&block, sink, &mut []);
+                                assert_eq!(taken, one_pass, "{label}");
+                                if !taken {
+                                    portable::predict(&block, sink, stage);
+                                }
                             } else {
                                 portable::predict(&block, sink, stage);
                             }
@@ -656,13 +662,27 @@ fn neon_byte_lanes_match_the_portable_kernels() {
                                 &mut fused[0],
                                 out_stride,
                             );
-                            assert!(eight_bit::compound(
+                            let mut declined = vec![3u8; out_stride * h];
+                            assert_eq!(
+                                eight_bit::compound(
+                                    [&block, &other],
+                                    forward,
+                                    &mut [],
+                                    &mut declined,
+                                    out_stride
+                                ),
+                                one_pass,
+                                "{label}"
+                            );
+                            // The cells run every compound in the NEON kernel.
+                            let token = fearless_simd::Level::baseline().as_neon().unwrap();
+                            eight_bit::neon::compound(
+                                token,
                                 [&block, &other],
                                 forward,
-                                &mut [],
                                 &mut fused[1],
-                                out_stride
-                            ));
+                                out_stride,
+                            );
                             assert_eq!(fused[0], fused[1], "compound {forward} {label}");
                         }
                     }
