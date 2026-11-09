@@ -188,6 +188,8 @@ impl DeltaQState {
         })
     }
 
+    #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]
+    #[inline(always)]
     pub(crate) fn read_for_block(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
@@ -199,6 +201,18 @@ impl DeltaQState {
         if !self.present {
             return Ok(());
         }
+        self.read_present(work_unit, symbols, frontier, skip, tile_offset)
+    }
+
+    #[inline(never)]
+    fn read_present(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'_>,
+        frontier: &DecodeBlockFrontier,
+        skip: bool,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
         let sb = self.superblock(frontier);
         if self.current_sb != Some(sb) {
             self.current_sb = Some(sb);
@@ -304,8 +318,12 @@ impl CdefState {
 
     /// Reads the block's CDEF unit index unless the unit already has one, which
     /// only an earlier read of the same frame's parameters can have set.
-    #[allow(clippy::too_many_arguments)]
-    #[inline]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::inline_always,
+        reason = "measured: a per-leaf guard"
+    )]
+    #[inline(always)]
     pub(crate) fn read_for_block(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,

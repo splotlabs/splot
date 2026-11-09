@@ -147,7 +147,8 @@ impl GdfState {
         }
     }
 
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]
+    #[inline(always)]
     pub(crate) fn read_for_block(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
