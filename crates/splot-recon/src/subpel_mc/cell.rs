@@ -603,10 +603,7 @@ mod avx2 {
         ) -> bool {
             let mut lanes = [Lanes::default(), Lanes::default()];
             for ((lanes, cell), [x, y]) in lanes.iter_mut().zip(cells).zip(starts) {
-                let Ok(origin) = i32::try_from(cell.origin) else {
-                    return false;
-                };
-                lanes.origin[0] = origin;
+                lanes.origin[0] = cell.origin as i32;
                 lanes.phases = [[(x >> 6) & 15; 8], [(y >> 6) & 15; 8]];
                 lanes.keys[0] = cell.key();
                 for (field, value) in lanes
@@ -819,7 +816,7 @@ mod avx2 {
                     size,
                     &mut cells.stash,
                 );
-                let mut pending = valid & done & done >> 8;
+                let mut pending = done & done >> 8;
                 while pending != 0 {
                     let lane = pending.trailing_zeros() as usize;
                     pending &= pending - 1;
