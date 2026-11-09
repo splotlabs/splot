@@ -1000,12 +1000,13 @@ fn pack_rows<S: Simd>(a: i32x8<S>, b: i32x8<S>, shift: u32) -> i32x8<S> {
     (clip_row(a, shift) & 0xffff) | (clip_row(b, shift) << 16)
 }
 
-/// The `pshufb` that swaps the middle two samples of every four.
+/// The `pshufb` that swaps the middle two samples of every four, as
+/// block-local indices: NEON `tbl` zeroes an index of 16 or more.
 const SPLIT_ORDER: [u8; 32] = {
     let mut order = [0u8; 32];
     let mut i = 0;
     while i < 32 {
-        let sample = i / 2;
+        let sample = i % 16 / 2;
         let swapped = match sample % 4 {
             1 => sample + 1,
             2 => sample - 1,
