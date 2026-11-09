@@ -23,7 +23,7 @@ use splot_recon::{
     WIENER_NS_LUMA_TAP_RADIUS, WienerNsChromaFilter, WienerNsChromaPaddedSource,
     WienerNsChromaScratch, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_filter_block_padded,
-    pc_wiener_filter_set_index, pc_wiener_subclass_table,
+    pc_wiener_filter_block_padded_u8_into, pc_wiener_filter_set_index, pc_wiener_subclass_table,
     wiener_ns_filter_chroma_block_padded_u8_into, wiener_ns_filter_chroma_block_padded_u16_into,
     wiener_ns_filter_luma_block_padded_cells_into,
     wiener_ns_filter_luma_block_padded_cells_u8_into, wiener_ns_filter_luma_block_padded_into,
@@ -500,24 +500,6 @@ pub(crate) fn lr_plane_fully_overwritten(
     true
 }
 
-pub(crate) fn terminal_luma_wiener_covers(
-    blocks: &[WienerNsLrSourceBlock],
-    width: usize,
-    frame_height: usize,
-    start_y: usize,
-    end_y: usize,
-) -> bool {
-    lr_plane_fully_overwritten(
-        blocks,
-        PlaneId::Y,
-        FrameRestorationType::WienerNonsep,
-        width,
-        frame_height,
-        start_y,
-        end_y,
-    )
-}
-
 pub(crate) fn terminal_luma_wiener_direct_u8(
     bit_depth: BitDepth,
     frame_type: Option<FrameRestorationType>,
@@ -528,36 +510,19 @@ pub(crate) fn terminal_luma_wiener_direct_u8(
     bit_depth == BitDepth::Eight
         && !target.is_u16()
         && !gdf_needs_u16
-        && frame_type.is_some_and(|frame_type| {
-            matches!(
-                frame_type,
-                FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
-            )
-        })
-        && target.end_y().is_some_and(|end_y| {
-            luma_stripe_units_all_wiener_nonsep(blocks, target.origin_y(), end_y)
-                && terminal_luma_wiener_covers(
+        && frame_type
+            .zip(target.end_y())
+            .is_some_and(|(frame_type, end_y)| {
+                lr_plane_fully_overwritten(
                     blocks,
+                    PlaneId::Y,
+                    frame_type,
                     target.width(),
                     target.frame_height(),
                     target.origin_y(),
                     end_y,
                 )
-        })
-}
-
-/// The direct-`u8` luma sink has no `u16` post-LR stripe, so a PC-Wiener unit
-/// dispatched into it would fail. Reject the whole stripe unless every unit the
-/// LR walk will visit is Wiener-NS.
-fn luma_stripe_units_all_wiener_nonsep(
-    blocks: &[WienerNsLrSourceBlock],
-    start_y: usize,
-    end_y: usize,
-) -> bool {
-    lr_blocks_near_rows(blocks, start_y, end_y)
-        .iter()
-        .filter(|block| lr_block_in_rows(block, start_y, end_y).is_some())
-        .all(|block| block.restoration_type == LrUnitRestorationType::WienerNonsep)
+            })
 }
 
 pub(crate) fn lr_initializations(
@@ -598,25 +563,6 @@ pub(crate) fn lr_initializations(
     })
 }
 
-fn lr_block_destination<'a>(
-    plane: &'a mut StripePlane,
-    block: &WienerNsLrSourceBlock,
-) -> Result<(&'a mut [u16], usize)> {
-    if block
-        .x
-        .checked_add(block.width)
-        .is_none_or(|end_x| end_x > plane.width())
-    {
-        return Err(super::lr_pipeline_state_error());
-    }
-    let rect = splot_recon::PlaneRect::new(block.x, block.y, block.width, block.height)
-        .map_err(|_| super::lr_pipeline_state_error())?;
-    let (destination, stride) = plane
-        .rect_mut(rect)
-        .ok_or_else(super::lr_pipeline_state_error)?;
-    Ok((destination, stride))
-}
-
 enum LrDestination<'a> {
     U16(&'a mut [u16]),
     U8(&'a mut [u8]),
@@ -640,7 +586,7 @@ impl LrDestination<'_> {
     }
 }
 
-fn chroma_lr_block_destination<'a>(
+fn lr_block_destination<'a>(
     plane: &'a mut StripeOutputPlane,
     block: &WienerNsLrSourceBlock,
 ) -> Result<(LrDestination<'a>, usize)> {
@@ -1312,9 +1258,6 @@ impl StripeChain<'_> {
             {
                 match block.restoration_type {
                     LrUnitRestorationType::PcWiener => {
-                        let post_lr_y = post_lr_y
-                            .as_u16_mut()
-                            .ok_or_else(super::lr_pipeline_state_error)?;
                         self.compute_pc_wiener_block(
                             &block,
                             frame.deblocked_y,
@@ -1428,7 +1371,7 @@ impl StripeChain<'_> {
         cdef_luma_overlap: &[StripePlane],
         qindex: u32,
         filter_set_index: usize,
-        post_lr: &mut StripePlane,
+        post_lr: &mut StripeOutputPlane,
         fill_flat: bool,
     ) -> Result<()> {
         let block = clipped_lr_source_block(
@@ -1443,7 +1386,7 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "PC-Wiener block y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        let (output, output_stride) = lr_block_destination(post_lr, &block)?;
+        let (mut output, output_stride) = lr_block_destination(post_lr, &block)?;
         with_lr_source_scratch(|scratch| {
             let LrSourceScratch {
                 primary,
@@ -1476,11 +1419,18 @@ impl StripeChain<'_> {
                     if flat.is_some() && !fill_flat {
                         return Ok(());
                     }
-                    let output = output
-                        .get_mut(x..)
-                        .ok_or_else(super::lr_pipeline_state_error)?;
+                    let output = output.columns_from(x)?;
                     if let Some(value) = flat {
-                        return fill_lr_rect(output, output_stride, end - x, block.height, value);
+                        return match output {
+                            LrDestination::U16(output) => {
+                                fill_lr_rect(output, output_stride, end - x, block.height, value)
+                            }
+                            LrDestination::U8(output) => {
+                                let value = u8::try_from(value)
+                                    .map_err(|_| super::lr_pipeline_state_error())?;
+                                fill_lr_rect(output, output_stride, end - x, block.height, value)
+                            }
+                        };
                     }
                     let mut sub = block;
                     sub.x += x;
@@ -1505,18 +1455,35 @@ impl StripeChain<'_> {
                     let padded_source =
                         PcWienerPaddedSource::from_rows(rows, col + x, sub.width, block.height)
                             .map_err(lr_window_error)?;
-                    pc_wiener_filter_block_padded(output, &params, &padded_source)
-                        .map_err(lr_window_error)
+                    match output {
+                        LrDestination::U16(output) => {
+                            pc_wiener_filter_block_padded(output, &params, &padded_source)
+                        }
+                        LrDestination::U8(output) => {
+                            pc_wiener_filter_block_padded_u8_into(output, &params, &padded_source)
+                        }
+                    }
+                    .map_err(lr_window_error)
                 },
             )?;
-            self.preserve_lossless_lr_samples(
-                PlaneId::Y,
-                &block,
-                curr_luma,
-                output,
-                output_stride,
-                |slot, sample| *slot = sample.to_u16(),
-            )
+            match output {
+                LrDestination::U16(output) => self.preserve_lossless_lr_samples(
+                    PlaneId::Y,
+                    &block,
+                    curr_luma,
+                    output,
+                    output_stride,
+                    |slot, sample| *slot = sample.to_u16(),
+                ),
+                LrDestination::U8(output) => self.preserve_lossless_lr_samples(
+                    PlaneId::Y,
+                    &block,
+                    curr_luma,
+                    output,
+                    output_stride,
+                    |slot, sample| *slot = sample.to_u16() as u8,
+                ),
+            }
         })
     }
 
@@ -1565,7 +1532,7 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "chroma LR block y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        let (mut output, output_stride) = chroma_lr_block_destination(post_lr, &block)?;
+        let (mut output, output_stride) = lr_block_destination(post_lr, &block)?;
         {
             let params = WienerNsChromaFilter {
                 x: block.x,
@@ -1720,7 +1687,7 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "luma LR block y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        let (mut output, output_stride) = chroma_lr_block_destination(post_lr, &block)?;
+        let (mut output, output_stride) = lr_block_destination(post_lr, &block)?;
         with_lr_source_scratch(|scratch| -> Result<()> {
             let LrSourceScratch {
                 primary,

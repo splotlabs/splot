@@ -1061,7 +1061,7 @@ fn tiled_lr_blocks(plane: PlaneId, width: usize, height: usize) -> Vec<WienerNsL
 #[test]
 fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
     let wiener = tiled_lr_blocks(PlaneId::Y, 9, 7);
-    assert!(terminal_luma_wiener_covers(&wiener, 9, 7, 0, 7));
+    assert!(luma_wiener_covers(&wiener, 9, 7, 0, 7));
 
     let mut mixed = tiled_lr_blocks(PlaneId::Y, 9, 7);
     for (index, block) in mixed.iter_mut().enumerate() {
@@ -1080,7 +1080,7 @@ fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
         0,
         7,
     ));
-    assert!(!terminal_luma_wiener_covers(&mixed, 9, 7, 0, 7));
+    assert!(!luma_wiener_covers(&mixed, 9, 7, 0, 7));
 
     let mut pc_wiener = tiled_lr_blocks(PlaneId::Y, 9, 7);
     for block in &mut pc_wiener {
@@ -1095,7 +1095,7 @@ fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
         0,
         7,
     ));
-    assert!(!terminal_luma_wiener_covers(&pc_wiener, 9, 7, 0, 7));
+    assert!(!luma_wiener_covers(&pc_wiener, 9, 7, 0, 7));
     assert!(!lr_plane_fully_overwritten(
         &pc_wiener,
         PlaneId::U,
@@ -1111,29 +1111,13 @@ fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
 fn loop_restoration_coverage_rejects_one_pixel_and_one_block_holes() {
     let mut one_pixel = tiled_lr_blocks(PlaneId::Y, 8, 4);
     one_pixel[0].width = 3;
-    assert!(!lr_plane_fully_overwritten(
-        &one_pixel,
-        PlaneId::Y,
-        FrameRestorationType::WienerNonsep,
-        8,
-        4,
-        0,
-        4,
-    ));
-    assert!(!terminal_luma_wiener_covers(&one_pixel, 8, 4, 0, 4));
+    assert!(!luma_wiener_covers(&one_pixel, 8, 4, 0, 4,));
+    assert!(!luma_wiener_covers(&one_pixel, 8, 4, 0, 4));
 
     let mut one_block = tiled_lr_blocks(PlaneId::Y, 8, 8);
     one_block.remove(2);
-    assert!(!lr_plane_fully_overwritten(
-        &one_block,
-        PlaneId::Y,
-        FrameRestorationType::WienerNonsep,
-        8,
-        8,
-        0,
-        8,
-    ));
-    assert!(!terminal_luma_wiener_covers(&one_block, 8, 8, 0, 8));
+    assert!(!luma_wiener_covers(&one_block, 8, 8, 0, 8,));
+    assert!(!luma_wiener_covers(&one_block, 8, 8, 0, 8));
 }
 
 #[test]
@@ -1175,7 +1159,7 @@ fn terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts() {
         .map(|index| 32 + ((index * 37 + index / 16 * 19) % 192) as u8)
         .collect();
     let blocks = tiled_lr_blocks(PlaneId::Y, 16, 16);
-    assert!(terminal_luma_wiener_covers(&blocks, 16, 16, 0, 16));
+    assert!(luma_wiener_covers(&blocks, 16, 16, 0, 16));
 
     let mut cell_core = switchable_core();
     if let Some(gdf) = cell_core.gdf_params.as_mut() {
@@ -1825,17 +1809,22 @@ fn lr_source_scratch_does_not_retain_oversized_buffers() {
 #[test]
 fn lr_block_destination_lands_in_its_rectangle() {
     fn filtered_plane() -> Vec<u16> {
-        let mut plane = StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap();
+        let mut plane =
+            StripeOutputPlane::u16(StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap());
         let mut source = block(0, 2, 5);
         source.width = 3;
         source.height = 2;
-        let (output, stride) = lr_block_destination(&mut plane, &source).unwrap();
+        let (LrDestination::U16(output), stride) =
+            lr_block_destination(&mut plane, &source).unwrap()
+        else {
+            unreachable!()
+        };
         for row in 0..source.height {
             for col in 0..source.width {
                 output[row * stride + col] = (row * source.width + col + 1) as u16;
             }
         }
-        plane.samples().to_vec()
+        plane.as_u16_mut().unwrap().samples().to_vec()
     }
 
     let expected = vec![
@@ -1849,11 +1838,13 @@ fn lr_block_destination_lands_in_its_rectangle() {
 
 #[test]
 fn lr_block_output_refuses_a_rectangle_wider_than_the_stripe() {
-    let mut plane = StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap();
+    let mut plane =
+        StripeOutputPlane::u16(StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap());
     let mut source = block(0, 6, 5);
     source.width = 3;
     source.height = 1;
     assert!(lr_block_destination(&mut plane, &source).is_err());
+    let plane = plane.as_u16_mut().unwrap();
     assert!(plane.samples().iter().all(|sample| *sample == 9));
 }
 
@@ -1871,4 +1862,22 @@ fn stripe_traversal_streams_ranges_and_stops_after_error() {
     assert!(invalid.next().unwrap().is_err());
     assert!(invalid.next().is_none());
     assert!(invalid.next().is_none());
+}
+
+fn luma_wiener_covers(
+    blocks: &[WienerNsLrSourceBlock],
+    width: usize,
+    height: usize,
+    start: usize,
+    end: usize,
+) -> bool {
+    lr_plane_fully_overwritten(
+        blocks,
+        PlaneId::Y,
+        FrameRestorationType::WienerNonsep,
+        width,
+        height,
+        start,
+        end,
+    )
 }

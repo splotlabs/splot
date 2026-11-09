@@ -23,7 +23,7 @@ use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
 use crate::loop_restoration::PaddedRows;
 use crate::math::{round2_i32, round2_signed_i32};
-use crate::wienerns_filter::{FlatChunks, LumaSimdSource};
+use crate::wienerns_filter::{FlatChunks, LumaSimdOutput, LumaSimdSource};
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// AV2 § 3 `PC_WIENER_NUM_FEATURES`.
@@ -1610,30 +1610,57 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
     }
 
     if let Some(destination) = T::u16_slice_mut(output) {
-        return filter_pc_wiener_padded_u16(destination, params, source.rows, T::u16_slice, &setup);
+        return filter_pc_wiener_padded(destination, params, source.rows, T::u16_slice, &setup);
     }
+    let destination = T::u8_slice_mut(output).ok_or(ReconError::SampleTypeUnsupportedBitDepth {
+        sample_type: T::TYPE_NAME,
+        bit_depth: params.bit_depth,
+    })?;
+    filter_pc_wiener_padded(destination, params, source.rows, T::u8_slice, &setup)
+}
 
-    let mut filtered = vec![0u16; setup.sample_count];
-    let packed = PcWienerFilter {
-        output_stride: params.width,
-        ..*params
-    };
-    filter_pc_wiener_padded_u16(&mut filtered, &packed, source.rows, T::u8_slice, &setup)?;
-    let rows = output.chunks_mut(params.output_stride);
-    for (output, filtered) in rows.zip(filtered.chunks(params.width)) {
-        for (output, &sample) in output.iter_mut().zip(filtered) {
-            *output = T::try_from_u16(sample)?;
+/// [`pc_wiener_filter_block_padded`] into an 8-bit `output` from any source
+/// sample type.
+///
+/// # Errors
+/// As [`pc_wiener_filter_block_padded`], plus a non-8-bit `params.bit_depth`.
+pub fn pc_wiener_filter_block_padded_u8_into<T: ReconSample>(
+    output: &mut [u8],
+    params: &PcWienerFilter<'_>,
+    source: &PcWienerPaddedSource<'_, T>,
+) -> Result<()> {
+    validate_sample_type::<u8>(params.bit_depth)?;
+    let setup = prepare_pc_wiener_padded_filter(output.len(), params, source)?;
+    if !setup.lanes {
+        let mut filtered = vec![T::default(); setup.sample_count];
+        let packed = PcWienerFilter {
+            output_stride: params.width,
+            ..*params
+        };
+        pc_wiener_filter_block(&mut filtered, &packed, |x, y| {
+            source.sample(x, y, params.width)
+        })?;
+        let rows = output.chunks_mut(params.output_stride);
+        for (output, filtered) in rows.zip(filtered.chunks(params.width)) {
+            for (output, sample) in output.iter_mut().zip(filtered) {
+                *output = sample.to_u16() as u8;
+            }
         }
+        return Ok(());
     }
-    Ok(())
+    if T::u8_slice(&[]).is_some() {
+        filter_pc_wiener_padded(output, params, source.rows, T::u8_slice, &setup)
+    } else {
+        filter_pc_wiener_padded(output, params, source.rows, T::u16_slice, &setup)
+    }
 }
 
 /// Filters a cell row in column groups of up to four 4x4 cells, each lane with
 /// its cell's taps; a 32-column chunk whose whole tap reach in the group holds
 /// one value takes it, as every `Pc_Wiener_Filters` row sums to zero (checked
 /// at compile time below).
-fn filter_pc_wiener_padded_u16<'a, S, T: ReconSample + LumaSimdSource + 'a>(
-    destination: &mut [u16],
+fn filter_pc_wiener_padded<'a, S, T: ReconSample + LumaSimdSource + 'a, O: LumaSimdOutput>(
+    destination: &mut [O],
     params: &PcWienerFilter<'_>,
     source: PaddedRows<'a, S>,
     cast: impl Fn(&'a [S]) -> Option<&'a [T]>,
@@ -1671,7 +1698,7 @@ fn filter_pc_wiener_padded_u16<'a, S, T: ReconSample + LumaSimdSource + 'a>(
             {
                 for row in group_rows.clone() {
                     let output = &mut destination[row * params.output_stride..];
-                    output[c0..run_end].fill(value.min(setup.max_sample));
+                    output[c0..run_end].fill(O::from_u16(value.min(setup.max_sample)));
                 }
                 c0 = run_end;
                 (end, run) = flat.split(c0, params.width);
@@ -1694,7 +1721,7 @@ fn filter_pc_wiener_padded_u16<'a, S, T: ReconSample + LumaSimdSource + 'a>(
                     chunk_rows::<_, 22, { PC_WIENER_BLOCK_SIZE + 2 * R }>(&window, group_col)
                         .ok_or_else(rows_error)?;
                 group_weights::<T>(&mut weights, setup.pairs, *cells);
-                filter_pc_wiener_group16::<T>(
+                filter_pc_wiener_group16::<T, O>(
                     &mut destination[row * params.output_stride + group_col..],
                     (params.output_stride, group),
                     &lanes,
@@ -1722,8 +1749,10 @@ fn filter_pc_wiener_padded_u16<'a, S, T: ReconSample + LumaSimdSource + 'a>(
                     for (&(dy, dx), &coeff) in PC_WIENER_CONFIG.iter().zip(coeffs) {
                         sum += (tap(dy, dx) + tap(-dy, -dx)) * coeff;
                     }
-                    *slot = round2_i32(sum, PC_WIENER_PREC_BITS)
-                        .clamp(0, i32::from(setup.max_sample)) as u16;
+                    *slot = O::from_u16(
+                        round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, i32::from(setup.max_sample))
+                            as u16,
+                    );
                 }
             }
             c0 = end;

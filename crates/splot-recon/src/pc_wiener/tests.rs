@@ -503,6 +503,17 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
                         actual, reference,
                         "random {bit_depth:?} {width}x{height} set {filter_set_index}"
                     );
+                    if bit_depth == BitDepth::Eight {
+                        let mut narrow = vec![0u8; width * height];
+                        pc_wiener_filter_block_padded_u8_into(&mut narrow, &params, &source)
+                            .unwrap();
+                        assert!(
+                            narrow
+                                .iter()
+                                .zip(&reference)
+                                .all(|(&a, &b)| u16::from(a) == b)
+                        );
+                    }
                 }
             }
         }
