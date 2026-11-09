@@ -820,14 +820,14 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                     *sample = sample.saturating_add(plus).saturating_sub(minus);
                 }
             };
-            let rows = (base, stride, target.rect.height());
+            let height = target.rect.height();
             match width {
-                4 => add_constant_rows::<4>(samples, rows, add),
-                8 => add_constant_rows::<8>(samples, rows, add),
-                16 => add_constant_rows::<16>(samples, rows, add),
-                32 => add_constant_rows::<32>(samples, rows, add),
+                4 => add_constant_rows::<4>(samples, base, stride, height, add),
+                8 => add_constant_rows::<8>(samples, base, stride, height, add),
+                16 => add_constant_rows::<16>(samples, base, stride, height, add),
+                32 => add_constant_rows::<32>(samples, base, stride, height, add),
                 _ => {
-                    for row in 0..rows.2 {
+                    for row in 0..height {
                         let start = base + row * stride;
                         if let Some(row) = samples.get_mut(start..start + width) {
                             add(row);
@@ -2434,7 +2434,9 @@ fn required_row_strided_samples(rect: PlaneRect, row_stride_samples: usize) -> R
 #[inline]
 fn add_constant_rows<const N: usize>(
     samples: &mut [u8],
-    (base, stride, height): (usize, usize, usize),
+    base: usize,
+    stride: usize,
+    height: usize,
     add: impl Fn(&mut [u8]),
 ) {
     for row in 0..height {

@@ -479,7 +479,8 @@ impl InverseTransformAdd8 {
                     token,
                     &self,
                     dequant,
-                    (coeffs, false),
+                    coeffs,
+                    false,
                     avx2::Sink::Add { dst, stride },
                     scratch,
                 );
@@ -518,41 +519,19 @@ impl InverseTransformAdd8 {
         (dst, stride): (&mut [u8], usize),
         scratch: &mut [i32; 32 * 32],
     ) -> crate::Result<bool> {
+        #[cfg(target_arch = "x86_64")]
         if self.w_log2 >= 4
+            && self.fits(dst, stride)
+            && let Some(token) = Level::baseline().as_avx2()
             && let Some(rows) = dequant.first_chunk_mut::<64>()
         {
             let len = secondary_inverse_transform_quant_rows8(quant, quantizers, secondary, rows)?;
-            return Ok(self.add_rows8(&rows[..len], dst, stride, scratch));
+            let sink = avx2::Sink::Add { dst, stride };
+            avx2::transform(token, &self, None, &rows[..len], true, sink, scratch);
+            return Ok(true);
         }
         let coded = secondary_inverse_transform_quant(quant, quantizers, secondary, dequant)?;
         Ok(self.add(&dequant[..coded], None, dst, stride, scratch))
-    }
-
-    /// [`Self::add`] of a block at least 16 wide whose coded rows hold
-    /// nonzero coefficients only in their first 8 columns, given as
-    /// `rows8`: row `r` at `rows8[8 * r..]`.
-    fn add_rows8(
-        self,
-        rows8: &[i32],
-        dst: &mut [u8],
-        stride: usize,
-        scratch: &mut [i32; 32 * 32],
-    ) -> bool {
-        let (w, h) = (self.w(), self.h());
-        if w < 16 || rows8.len() > 8 * h || !self.fits(dst, stride) {
-            return false;
-        }
-        #[cfg(target_arch = "x86_64")]
-        if let Some(token) = Level::baseline().as_avx2() {
-            let sink = avx2::Sink::Add { dst, stride };
-            avx2::transform(token, &self, None, (rows8, true), sink, scratch);
-            return true;
-        }
-        let mut raster = [0i32; 8 * 32];
-        for (out, row) in raster.chunks_exact_mut(w).zip(rows8.chunks(8)) {
-            out.iter_mut().zip(row).for_each(|(out, &v)| *out = v);
-        }
-        self.add(&raster[..rows8.len() / 8 * w], None, dst, stride, scratch)
     }
 
     /// Whether a `w x h` block with rows `stride` apart fits `dst`.
@@ -629,7 +608,7 @@ pub(crate) fn inverse_transform_2d_8bit(
             return false;
         };
         let sink = avx2::Sink::Residual(residual);
-        avx2::transform(token, &shape, t.dequant, (dequant, false), sink, scratch);
+        avx2::transform(token, &shape, t.dequant, dequant, false, sink, scratch);
         return true;
     }
     run(t, dequant, residual, scratch)

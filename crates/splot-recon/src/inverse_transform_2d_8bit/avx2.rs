@@ -1701,11 +1701,12 @@ fearless_simd::kernel!(
         t: Avx2,
         shape: &InverseTransformAdd8,
         dequant: Option<FlatDequant>,
-        coeffs: (&[i32], bool),
+        coeffs: &[i32],
+        rows8: bool,
         sink: Sink<'_>,
         scratch: &mut [i32; 32 * 32],
     ) {
-        let ((coeffs, rows8), (w, h)) = (coeffs, (shape.w(), shape.h()));
+        let (w, h) = (shape.w(), shape.h());
         let (dst, stride, residual) = match sink {
             Sink::Add { dst, stride } => (dst, stride, None),
             Sink::Residual(residual) => (&mut [][..], 0, Some(residual)),
