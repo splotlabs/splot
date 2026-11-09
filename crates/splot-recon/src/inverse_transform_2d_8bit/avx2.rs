@@ -21,14 +21,97 @@
 use core::arch::x86_64::*;
 
 use fearless_simd::{Avx2, SimdBase as _, SimdInto as _, i32x4, i32x8};
-use splot_tables::tables::transform_1d::{DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16, DCT_KERNEL32};
-
-use super::{
-    ADST4, ADST8, ADST16, DCT4, DCT8, DCT8_SPLIT, DCT16, DCT16_SPLIT, DCT32, DCT32_SPLIT, DDTX8,
-    DDTX16, FDDT8, FDDT16, FDST4, FDST8, FDST16, FlatDequant, InverseTransformAdd8, SPLIT_ORDER,
+use splot_tables::tables::transform_1d::{
+    ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
+    DCT_KERNEL32, DDTX_KERNEL8, DDTX_KERNEL16, FDST_KERNEL4, FDST_KERNEL8, FDST_KERNEL16,
 };
+
+use super::{FlatDequant, InverseTransformAdd8};
 use crate::inverse_transform::InverseTransform1dType;
 use crate::inverse_transform_2d::InverseTransform2dDim;
+
+/// Entry `[q][i]` packs `kernel[2q][i]` (low half) and `kernel[2q + 1][i]`
+/// (high half), with the output index reversed for `FDDT`.
+const fn pair_kernel<const N: usize, const H: usize>(
+    kernel: &[[i32; N]; N],
+    reversed: bool,
+) -> [[u32; N]; H] {
+    assert!(2 * H == N);
+    let mut out = [[0u32; N]; H];
+    let mut q = 0;
+    while q < H {
+        let mut i = 0;
+        while i < N {
+            let column = if reversed { N - 1 - i } else { i };
+            let (low, high) = (kernel[2 * q][column], kernel[2 * q + 1][column]);
+            assert!(low == low as i16 as i32 && high == high as i16 as i32);
+            out[q][i] = (low as u16 as u32) | ((high as u16 as u32) << 16);
+            i += 1;
+        }
+        q += 1;
+    }
+    out
+}
+
+static DCT4: [[u32; 4]; 2] = pair_kernel(&DCT_KERNEL4, false);
+static ADST4: [[u32; 4]; 2] = pair_kernel(&ADST_KERNEL4, false);
+static FDST4: [[u32; 4]; 2] = pair_kernel(&FDST_KERNEL4, false);
+static DCT8: [[u32; 8]; 4] = pair_kernel(&DCT_KERNEL8, false);
+static ADST8: [[u32; 8]; 4] = pair_kernel(&ADST_KERNEL8, false);
+static FDST8: [[u32; 8]; 4] = pair_kernel(&FDST_KERNEL8, false);
+static DDTX8: [[u32; 8]; 4] = pair_kernel(&DDTX_KERNEL8, false);
+static FDDT8: [[u32; 8]; 4] = pair_kernel(&DDTX_KERNEL8, true);
+static DCT16: [[u32; 16]; 8] = pair_kernel(&DCT_KERNEL16, false);
+static ADST16: [[u32; 16]; 8] = pair_kernel(&ADST_KERNEL16, false);
+static FDST16: [[u32; 16]; 8] = pair_kernel(&FDST_KERNEL16, false);
+static DDTX16: [[u32; 16]; 8] = pair_kernel(&DDTX_KERNEL16, false);
+static FDDT16: [[u32; 16]; 8] = pair_kernel(&DDTX_KERNEL16, true);
+static DCT32: [[u32; 32]; 16] = pair_kernel(&DCT_KERNEL32, false);
+static DCT8_SPLIT: [[u32; 8]; 4] = split_pair_kernel(&DCT_KERNEL8);
+static DCT16_SPLIT: [[u32; 16]; 8] = split_pair_kernel(&DCT_KERNEL16);
+static DCT32_SPLIT: [[u32; 32]; 16] = split_pair_kernel(&DCT_KERNEL32);
+
+/// [`pair_kernel`] over the row pairs `4m + j, 4m + j + 2` (pair `2m + j`)
+/// of a split `DCT` column pass, for the first `N / 2` outputs.
+const fn split_pair_kernel<const N: usize, const H: usize>(
+    kernel: &[[i32; N]; N],
+) -> [[u32; N]; H] {
+    assert!(2 * H == N);
+    let mut out = [[0u32; N]; H];
+    let mut q = 0;
+    while q < H {
+        let a = 4 * (q / 2) + q % 2;
+        let b = a + 2;
+        let mut i = 0;
+        while i < N / 2 {
+            let (low, high) = (kernel[a][i], kernel[b][i]);
+            assert!(low == low as i16 as i32 && high == high as i16 as i32);
+            assert!(kernel[a][N - 1 - i] == low * (1 - 2 * (a % 2) as i32));
+            assert!(kernel[b][N - 1 - i] == high * (1 - 2 * (b % 2) as i32));
+            out[q][i] = (low as u16 as u32) | ((high as u16 as u32) << 16);
+            i += 1;
+        }
+        q += 1;
+    }
+    out
+}
+
+/// The `pshufb` that swaps the middle two samples of every four.
+const SPLIT_ORDER: [u8; 32] = {
+    let mut order = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        let sample = i % 16 / 2;
+        let swapped = match sample % 4 {
+            1 => sample + 1,
+            2 => sample - 1,
+            _ => sample,
+        };
+        order[i] = (2 * swapped + i % 2) as u8;
+        i += 1;
+    }
+    order
+};
 
 /// One pass of a fused transform: the § 7.15.2.3 identity or a § 7.15.2.1
 /// kernel at its length, with the paired kernel the scalar selection picks.

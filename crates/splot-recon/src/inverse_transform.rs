@@ -100,7 +100,7 @@ pub fn inverse_transform_1d(
 /// reverse flag (the § 7.15.2.1 `else` branch, which indexes the kernel column
 /// in reverse).
 #[derive(Clone, Copy)]
-enum Kernel1d {
+pub(crate) enum Kernel1d {
     /// The length-4 kernel; no type reaches the reversed branch at this length.
     N4(&'static [[i32; 4]; 4]),
     /// The length-8 kernel.
@@ -117,7 +117,7 @@ enum Kernel1d {
 /// At length 4 only `DCT` and `ADST` have their own kernel and every other type
 /// falls to the `FDST` kernel; at length 32 the `DCT` kernel is used regardless
 /// of type.
-fn select_kernel(sz: usize, tx_type: InverseTransform1dType) -> Option<Kernel1d> {
+pub(crate) fn select_kernel(sz: usize, tx_type: InverseTransform1dType) -> Option<Kernel1d> {
     use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
     Some(match sz {
         4 => Kernel1d::N4(match tx_type {

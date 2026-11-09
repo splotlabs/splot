@@ -1,147 +1,37 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 7.15.4.1 kernel-by-kernel 2D matrix transform at 8-bit depth, in
-//! 16-bit multiply-add pairs.
+//! AV2 § 7.15.4.1 kernel-by-kernel 2D matrix transform at 8-bit depth.
 //!
 //! At `BitDepth == 8` every § 7.15.2.1 input lies in the row clamp
 //! `[-2^15, 2^15 - 1]`, every row output in the row `Clip3` bound of the same
-//! range, and every kernel entry below `2^7`, so each product fits an `i16`
-//! multiply with an `i32` sum and the transform runs on `pmaddwd` pairs of
-//! adjacent kernel rows. The `i32` sums are the scalar sums re-associated,
-//! which is exact under wrapping `i32` addition, and `|sum| < 32 * 2^7 * 2^15`
-//! never wraps.
+//! range, and every kernel entry below `2^7`, so `|sum| < 32 * 2^7 * 2^15`
+//! never wraps an `i32` and the re-associated sums are the scalar sums.
 //!
-//! The row pass works on two rows at once and stores them as one `u32` pair
-//! per column (row `2q` low, row `2q + 1` high), which is already the operand
-//! of the column pass's multiply-add over rows `2q` and `2q + 1`.
+//! The lane form here is one `i32` multiply-add per input and output, four
+//! outputs per vector: the row pass vectorizes over a row's outputs, the
+//! column pass over the block's columns, and the `DCT` passes split into
+//! even and odd halves. The AVX2 form in [`avx2`] runs on `pmaddwd` pairs
+//! instead.
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Level;
 use fearless_simd::{
-    Bytes as _, Simd, SimdBase as _, SimdIntWiden as _, SimdMask as _, SimdNarrow as _, i16x8,
-    i16x16, i32x4, i32x8, u8x16, u8x32, u16x8, u32x8, u64x2,
+    Bytes as _, Simd, SimdBase as _, SimdInt, i16x8, i32x4, i32x8, u8x16, u16x8, u32x8, u64x2,
 };
 
-use splot_tables::tables::transform_1d::{
-    ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
-    DCT_KERNEL32, DDTX_KERNEL8, DDTX_KERNEL16, FDST_KERNEL4, FDST_KERNEL8, FDST_KERNEL16,
-};
+use splot_tables::tables::transform_1d::{DCT_KERNEL8, DCT_KERNEL16, DCT_KERNEL32};
 
 use crate::dequant_process::{dequant_coefficient, dequant_lanes};
-use crate::inverse_transform::InverseTransform1dType;
+use crate::inverse_transform::{InverseTransform1dType, Kernel1d, select_kernel};
 use crate::inverse_transform_2d::InverseTransform2dDim;
-#[cfg(target_arch = "x86_64")]
-use crate::secondary_transform::secondary_inverse_transform_quant_rows8;
-use crate::secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform_quant};
+use crate::secondary_transform::{
+    SecondaryInverseTransform, secondary_inverse_transform_quant,
+    secondary_inverse_transform_quant_rows8,
+};
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
-
-/// Entry `[q][i]` packs `kernel[2q][i]` (low half) and `kernel[2q + 1][i]`
-/// (high half), with the output index reversed for `FDDT`.
-const fn pair_kernel<const N: usize, const H: usize>(
-    kernel: &[[i32; N]; N],
-    reversed: bool,
-) -> [[u32; N]; H] {
-    assert!(2 * H == N);
-    let mut out = [[0u32; N]; H];
-    let mut q = 0;
-    while q < H {
-        let mut i = 0;
-        while i < N {
-            let column = if reversed { N - 1 - i } else { i };
-            let (low, high) = (kernel[2 * q][column], kernel[2 * q + 1][column]);
-            assert!(low == low as i16 as i32 && high == high as i16 as i32);
-            out[q][i] = (low as u16 as u32) | ((high as u16 as u32) << 16);
-            i += 1;
-        }
-        q += 1;
-    }
-    out
-}
-
-static DCT4: [[u32; 4]; 2] = pair_kernel(&DCT_KERNEL4, false);
-static ADST4: [[u32; 4]; 2] = pair_kernel(&ADST_KERNEL4, false);
-static FDST4: [[u32; 4]; 2] = pair_kernel(&FDST_KERNEL4, false);
-static DCT8: [[u32; 8]; 4] = pair_kernel(&DCT_KERNEL8, false);
-static ADST8: [[u32; 8]; 4] = pair_kernel(&ADST_KERNEL8, false);
-static FDST8: [[u32; 8]; 4] = pair_kernel(&FDST_KERNEL8, false);
-static DDTX8: [[u32; 8]; 4] = pair_kernel(&DDTX_KERNEL8, false);
-static FDDT8: [[u32; 8]; 4] = pair_kernel(&DDTX_KERNEL8, true);
-static DCT16: [[u32; 16]; 8] = pair_kernel(&DCT_KERNEL16, false);
-static ADST16: [[u32; 16]; 8] = pair_kernel(&ADST_KERNEL16, false);
-static FDST16: [[u32; 16]; 8] = pair_kernel(&FDST_KERNEL16, false);
-static DDTX16: [[u32; 16]; 8] = pair_kernel(&DDTX_KERNEL16, false);
-static FDDT16: [[u32; 16]; 8] = pair_kernel(&DDTX_KERNEL16, true);
-static DCT32: [[u32; 32]; 16] = pair_kernel(&DCT_KERNEL32, false);
-static DCT8_SPLIT: [[u32; 8]; 4] = split_pair_kernel(&DCT_KERNEL8);
-static DCT16_SPLIT: [[u32; 16]; 8] = split_pair_kernel(&DCT_KERNEL16);
-static DCT32_SPLIT: [[u32; 32]; 16] = split_pair_kernel(&DCT_KERNEL32);
-
-/// [`pair_kernel`] over the [`pair_rows`] of a split `DCT` column pass, for
-/// the first `N / 2` outputs.
-const fn split_pair_kernel<const N: usize, const H: usize>(
-    kernel: &[[i32; N]; N],
-) -> [[u32; N]; H] {
-    assert!(2 * H == N);
-    let mut out = [[0u32; N]; H];
-    let mut q = 0;
-    while q < H {
-        let (a, b) = pair_rows(q, true);
-        let mut i = 0;
-        while i < N / 2 {
-            let (low, high) = (kernel[a][i], kernel[b][i]);
-            assert!(low == low as i16 as i32 && high == high as i16 as i32);
-            assert!(kernel[a][N - 1 - i] == low * (1 - 2 * (a % 2) as i32));
-            assert!(kernel[b][N - 1 - i] == high * (1 - 2 * (b % 2) as i32));
-            out[q][i] = (low as u16 as u32) | ((high as u16 as u32) << 16);
-            i += 1;
-        }
-        q += 1;
-    }
-    out
-}
-
-fn select_split(len: usize) -> Option<PairKernel> {
-    Some(match len {
-        8 => PairKernel::N8(&DCT8_SPLIT),
-        16 => PairKernel::N16(&DCT16_SPLIT),
-        32 => PairKernel::N32(&DCT32_SPLIT),
-        _ => return None,
-    })
-}
-
-/// The paired § 7.15.2.1 kernel of one 1D length, with the same dispatch as
-/// the scalar kernel selection.
-#[derive(Clone, Copy)]
-enum PairKernel {
-    N4(&'static [[u32; 4]; 2]),
-    N8(&'static [[u32; 8]; 4]),
-    N16(&'static [[u32; 16]; 8]),
-    N32(&'static [[u32; 32]; 16]),
-}
-
-fn select(len: usize, tx_type: InverseTransform1dType) -> Option<PairKernel> {
-    use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
-    Some(match (len, tx_type) {
-        (4, Dct) => PairKernel::N4(&DCT4),
-        (4, Adst) => PairKernel::N4(&ADST4),
-        (4, Fdst | Ddtx | Fddt) => PairKernel::N4(&FDST4),
-        (8, Dct) => PairKernel::N8(&DCT8),
-        (8, Adst) => PairKernel::N8(&ADST8),
-        (8, Fdst) => PairKernel::N8(&FDST8),
-        (8, Ddtx) => PairKernel::N8(&DDTX8),
-        (8, Fddt) => PairKernel::N8(&FDDT8),
-        (16, Dct) => PairKernel::N16(&DCT16),
-        (16, Adst) => PairKernel::N16(&ADST16),
-        (16, Fdst) => PairKernel::N16(&FDST16),
-        (16, Ddtx) => PairKernel::N16(&DDTX16),
-        (16, Fddt) => PairKernel::N16(&FDDT16),
-        (32, _) => PairKernel::N32(&DCT32),
-        _ => return None,
-    })
-}
 
 /// One 8-bit § 7.15.4.1 kernel-by-kernel transform.
 #[derive(Clone, Copy)]
@@ -241,8 +131,6 @@ fn input_row(input: &[i32], row: usize, w: usize) -> &[i32] {
 pub(crate) trait Output {
     /// Writes chunk `index` of column-pass output.
     fn put<S: Simd>(&mut self, simd: S, index: usize, v: i32x8<S>);
-    /// Marks chunk `index` as all zero.
-    fn zero<S: Simd>(&mut self, simd: S, index: usize);
 }
 
 impl Output for [i32] {
@@ -251,11 +139,6 @@ impl Output for [i32] {
         if let Some(out) = self.as_chunks_mut::<8>().0.get_mut(index) {
             v.store_slice(out);
         }
-    }
-
-    #[inline]
-    fn zero<S: Simd>(&mut self, simd: S, index: usize) {
-        self.put(simd, index, i32x8::splat(simd, 0));
     }
 }
 
@@ -302,9 +185,6 @@ impl Output for AddU8<'_> {
             *out = add_u8x8(simd, u64::from_le_bytes(*out), v).to_le_bytes();
         }
     }
-
-    #[inline]
-    fn zero<S: Simd>(&mut self, _: S, _: usize) {}
 }
 
 /// Eight `Clip1(p + r)` of the eight bytes of `pred` and the column `Clip3`
@@ -488,15 +368,10 @@ impl InverseTransformAdd8 {
             }
             return true;
         }
-        let chunks_log2 = (w >= 8).then(|| (w / 8).trailing_zeros());
         run(
             self.transform8(dequant),
-            coeffs,
-            &mut AddU8 {
-                dst,
-                stride,
-                chunks_log2,
-            },
+            (coeffs, w),
+            &mut self.add_u8(dst, stride),
             scratch,
         )
     }
@@ -533,8 +408,27 @@ impl InverseTransformAdd8 {
             avx2::transform(token, &self, None, &rows[..len], true, sink, scratch);
             return Ok(true);
         }
+        #[cfg(not(target_arch = "x86_64"))]
+        if self.w_log2 >= 4
+            && self.fits(dst, stride)
+            && let Some(rows) = dequant.first_chunk_mut::<64>()
+        {
+            let len = secondary_inverse_transform_quant_rows8(quant, quantizers, secondary, rows)?;
+            let sink = &mut self.add_u8(dst, stride);
+            return Ok(run(self.transform8(None), (&rows[..len], 8), sink, scratch));
+        }
         let coded = secondary_inverse_transform_quant(quant, quantizers, secondary, dequant)?;
         Ok(self.add(&dequant[..coded], None, dst, stride, scratch))
+    }
+
+    /// The column-pass sink adding to the block at the start of `dst`.
+    fn add_u8(self, dst: &mut [u8], stride: usize) -> AddU8<'_> {
+        let w = self.w();
+        AddU8 {
+            dst,
+            stride,
+            chunks_log2: (w >= 8).then(|| (w / 8).trailing_zeros()),
+        }
     }
 
     /// Whether a `w x h` block with rows `stride` apart fits `dst`.
@@ -588,7 +482,7 @@ impl InverseTransformAdd8 {
 
 /// Runs the transform of `dequant` (a whole-row prefix of the `w * h` block)
 /// into the `w * h` `residual`, or returns `false` with nothing written when
-/// the shape or a shift has no paired form.
+/// the shape or a shift has no lane form.
 pub(crate) fn inverse_transform_2d_8bit(
     t: Transform8,
     dequant: &[i32],
@@ -614,10 +508,10 @@ pub(crate) fn inverse_transform_2d_8bit(
         avx2::transform(token, &shape, t.dequant, dequant, false, sink, scratch);
         return true;
     }
-    run(t, dequant, residual, scratch)
+    run(t, (dequant, t.w), residual, scratch)
 }
 
-/// Whether `t` and `dequant` have a paired form.
+/// Whether `t` and `dequant` have a lane form.
 fn valid(t: &Transform8, dequant: &[i32]) -> bool {
     let shifts = 1..=20u8;
     shifts.contains(&t.row_shift)
@@ -627,131 +521,123 @@ fn valid(t: &Transform8, dequant: &[i32]) -> bool {
         && matches!(t.h, 4 | 8 | 16 | 32)
 }
 
-/// The DC coefficient of a block whose only non-zero coefficient it is.
-fn dc_only(t: &Transform8, dequant: &[i32]) -> Option<i32> {
+/// The DC coefficient of a block whose only non-zero coefficient it is, with
+/// input rows `in_w` apart.
+fn dc_only(t: &Transform8, dequant: &[i32], in_w: usize) -> Option<i32> {
     let (&dc, rest) = dequant.split_first()?;
-    (rest.len() < t.w && rest.iter().all(|&coeff| coeff == 0)).then(|| {
+    (rest.len() < in_w && rest.iter().all(|&coeff| coeff == 0)).then(|| {
         t.dequant.map_or(dc, |dq| {
             dequant_coefficient(dc, dq.dc, 1 << dq.denom_shift, crate::BitDepth::Eight)
         })
     })
 }
 
-fn run<O: Output + ?Sized>(
-    t: Transform8,
-    dequant: &[i32],
-    residual: &mut O,
-    scratch: &mut [i32; 32 * 32],
-) -> bool {
-    if !valid(&t, dequant) {
-        return false;
+/// One resolved pass: `None` for the § 7.15.2.3 identity, or the § 7.15.2.1
+/// kernel and whether its type is `DCT`.
+type Pass1d = Option<(Kernel1d, bool)>;
+
+/// `kernel[j][N - 1 - i] == (-1)^j * kernel[j][i]`, the `DCT` symmetry the
+/// split passes take.
+const fn dct_symmetric<const N: usize>(kernel: &[[i32; N]; N]) -> bool {
+    let mut j = 0;
+    while j < N {
+        let mut i = 0;
+        while i < N {
+            let sign = if j % 2 == 0 { 1 } else { -1 };
+            if kernel[j][N - 1 - i] != sign * kernel[j][i] {
+                return false;
+            }
+            i += 1;
+        }
+        j += 1;
     }
-    let kernel = |dim, len| match dim {
-        InverseTransform2dDim::Kernel(tx_type) => select(len, tx_type).map(Some),
-        InverseTransform2dDim::Identity => Some(None),
-    };
-    let (Some(row), Some(col)) = (kernel(t.row, t.w), kernel(t.col, t.h)) else {
-        return false;
-    };
-    let dct = |dim| dim == InverseTransform2dDim::Kernel(InverseTransform1dType::Dct);
-    let split = t.h >= 8 && col.is_some() && (dct(t.col) || t.h == 32);
-    let col = match col {
-        Some(_) if split => select_split(t.h).map(Some),
-        col => Some(col),
-    };
-    let Some(col) = col else {
-        return false;
-    };
-    if let Some(dc) = dc_only(&t, dequant) {
-        let flat = dct(t.row) && dct(t.col);
-        baseline_simd!(simd => dc_only_transform(simd, t, dc, flat, residual));
-        return true;
-    }
-    let plan = Plan {
-        t,
-        row,
-        row_dct: dct(t.row),
-        col,
-        split,
-    };
-    baseline_simd!(simd => transform(simd, plan, dequant, residual, scratch));
     true
 }
 
-/// The resolved kernels of one [`Transform8`].
-#[derive(Clone, Copy)]
-struct Plan {
+const _: () = assert!(
+    dct_symmetric(&DCT_KERNEL8) && dct_symmetric(&DCT_KERNEL16) && dct_symmetric(&DCT_KERNEL32)
+);
+
+/// Runs `t` over the whole-row prefix `dequant`, whose input rows are `in_w`
+/// apart (`t.w`, or 8 for a 16- or 32-wide block whose inputs are zero past
+/// column 8), into `residual`. Returns `false` with nothing written when the
+/// shape or a shift has no lane form.
+fn run<O: Output + ?Sized>(
     t: Transform8,
-    row: Option<PairKernel>,
-    row_dct: bool,
-    col: Option<PairKernel>,
-    split: bool,
+    (dequant, in_w): (&[i32], usize),
+    residual: &mut O,
+    scratch: &mut [i32; 32 * 32],
+) -> bool {
+    if !valid(&t, dequant) || !(in_w == t.w || (in_w == 8 && t.w >= 16)) {
+        return false;
+    }
+    let pass = |dim, len| match dim {
+        InverseTransform2dDim::Kernel(tx_type) => select_kernel(len, tx_type)
+            .map(|kernel| Some((kernel, tx_type == InverseTransform1dType::Dct))),
+        InverseTransform2dDim::Identity => Some(None),
+    };
+    let (Some(row), Some(col)) = (pass(t.row, t.w), pass(t.col, t.h)) else {
+        return false;
+    };
+    if let Some(dc) = dc_only(&t, dequant, in_w) {
+        baseline_simd!(simd => dc_only_transform(simd, t, dc, (row, col), residual));
+        return true;
+    }
+    let rows = Rows {
+        input: dequant,
+        in_w,
+        coded: dequant.len().div_ceil(in_w).min(t.h),
+        load: Load {
+            rescale: t.rescale,
+            dequant: t.dequant,
+        },
+        shift: u32::from(t.row_shift),
+    };
+    let pass = ColPass {
+        w: t.w,
+        h: t.h,
+        shift: u32::from(t.col_shift),
+    };
+    baseline_simd!(simd => transform(simd, (row, col), rows, pass, residual, scratch));
+    true
 }
 
-#[inline]
+#[allow(
+    clippy::inline_always,
+    reason = "measured § 7.15.4.1 transform hot path"
+)]
+#[inline(always)]
 fn transform<S: Simd, O: Output + ?Sized>(
     simd: S,
-    plan: Plan,
-    dequant: &[i32],
+    (row, col): (Pass1d, Pass1d),
+    rows: Rows<'_>,
+    pass: ColPass,
     residual: &mut O,
     scratch: &mut [i32; 32 * 32],
 ) {
-    let Plan {
-        t,
-        row,
-        row_dct,
-        col,
-        split,
-    } = plan;
-    let (row_shift, rows) = (u32::from(t.row_shift), (t.h, split));
-    let rescale = Load {
-        rescale: t.rescale,
-        dequant: t.dequant,
+    let mask = match row {
+        None => row_pass_identity(simd, pass.w, rows, scratch),
+        Some((Kernel1d::N4(k), _)) => row_pass_4(simd, k, rows, scratch),
+        Some((Kernel1d::N8(k, true), _)) => row_pass::<_, 8, false, true>(simd, k, rows, scratch),
+        Some((Kernel1d::N8(k, false), true)) => {
+            row_pass::<_, 8, true, false>(simd, k, rows, scratch)
+        }
+        Some((Kernel1d::N8(k, false), false)) => {
+            row_pass::<_, 8, false, false>(simd, k, rows, scratch)
+        }
+        Some((Kernel1d::N16(k, true), _)) => row_pass::<_, 16, false, true>(simd, k, rows, scratch),
+        Some((Kernel1d::N16(k, false), true)) => {
+            row_pass::<_, 16, true, false>(simd, k, rows, scratch)
+        }
+        Some((Kernel1d::N16(k, false), false)) => {
+            row_pass::<_, 16, false, false>(simd, k, rows, scratch)
+        }
+        Some((Kernel1d::N32(k), _)) => row_pass::<_, 32, true, false>(simd, k, rows, scratch),
     };
-    let input = dequant;
-    let mask = match (row, row_dct) {
-        (None, _) => row_pass_identity(simd, t.w, input, rescale, row_shift, rows, scratch),
-        (Some(PairKernel::N4(k)), _) => {
-            row_pass_4(simd, k, input, rescale, row_shift, rows, scratch)
-        }
-        (Some(PairKernel::N8(k)), _) => {
-            row_pass::<_, 8, 4, false>(simd, k, input, rescale, row_shift, rows, scratch)
-        }
-        (Some(PairKernel::N16(_)), true) => {
-            row_pass::<_, 16, 8, true>(simd, &DCT16_SPLIT, input, rescale, row_shift, rows, scratch)
-        }
-        (Some(PairKernel::N16(k)), false) => {
-            row_pass::<_, 16, 8, false>(simd, k, input, rescale, row_shift, rows, scratch)
-        }
-        (Some(PairKernel::N32(_)), _) => row_pass::<_, 32, 16, true>(
-            simd,
-            &DCT32_SPLIT,
-            input,
-            rescale,
-            row_shift,
-            rows,
-            scratch,
-        ),
-    };
-    let (shift, w) = (u32::from(t.col_shift), t.w);
-    let Some(col) = col else {
-        col_pass_identity(simd, (w, t.h), scratch, mask, shift, residual);
-        return;
-    };
-    let pass = ColPass { w, mask, shift };
-    match (col, split) {
-        (PairKernel::N4(k), _) => col_pass::<_, _, 4, 2, false>(simd, k, scratch, pass, residual),
-        (PairKernel::N8(k), false) => {
-            col_pass::<_, _, 8, 4, false>(simd, k, scratch, pass, residual);
-        }
-        (PairKernel::N8(k), true) => col_pass::<_, _, 8, 4, true>(simd, k, scratch, pass, residual),
-        (PairKernel::N16(k), false) => {
-            col_pass::<_, _, 16, 8, false>(simd, k, scratch, pass, residual);
-        }
-        (PairKernel::N16(k), true) => {
-            col_pass::<_, _, 16, 8, true>(simd, k, scratch, pass, residual);
-        }
-        (PairKernel::N32(k), _) => col_pass::<_, _, 32, 16, true>(simd, k, scratch, pass, residual),
+    if pass.w == 4 {
+        col_dispatch::<_, i32x4<S>, O>(simd, col, scratch, (pass, mask), residual);
+    } else {
+        col_dispatch::<_, i32x8<S>, O>(simd, col, scratch, (pass, mask), residual);
     }
 }
 
@@ -766,26 +652,23 @@ const fn identity_scale(len: usize) -> i32 {
     }
 }
 
-/// Row 0 of the paired § 7.15.2.1 kernel of `dim` at length `len` (the
-/// identity scale at index 0 for the § 7.15.2.3 identity), as packed
-/// multiply-add pairs `(k, 0)`.
-fn first_kernel_row(dim: InverseTransform2dDim, len: usize) -> [u32; 32] {
-    let mut row = [0u32; 32];
-    let kernel: &[u32] = match dim {
-        InverseTransform2dDim::Identity => {
-            row[0] = identity_scale(len) as u32;
+/// Row 0 of the § 7.15.2.1 kernel of `pass` at length `len`, reversed for
+/// `FDDT` (the identity scale at index 0 for the § 7.15.2.3 identity).
+fn first_kernel_row(pass: Pass1d, len: usize) -> [i32; 32] {
+    let mut row = [0; 32];
+    let (first, reversed): (&[i32], bool) = match pass {
+        None => {
+            row[0] = identity_scale(len);
             return row;
         }
-        InverseTransform2dDim::Kernel(tx_type) => match select(len, tx_type) {
-            Some(PairKernel::N4(k)) => &k[0],
-            Some(PairKernel::N8(k)) => &k[0],
-            Some(PairKernel::N16(k)) => &k[0],
-            Some(PairKernel::N32(k)) => &k[0],
-            None => &[],
-        },
+        Some((Kernel1d::N4(k), _)) => (&k[0], false),
+        Some((Kernel1d::N8(k, reversed), _)) => (&k[0], reversed),
+        Some((Kernel1d::N16(k, reversed), _)) => (&k[0], reversed),
+        Some((Kernel1d::N32(k), _)) => (&k[0], false),
     };
-    for (slot, &pair) in row.iter_mut().zip(kernel) {
-        *slot = pair & 0xffff;
+    let len = first.len();
+    for (i, slot) in row.iter_mut().take(len).enumerate() {
+        *slot = first[if reversed { len - 1 - i } else { i }];
     }
     row
 }
@@ -793,25 +676,26 @@ fn first_kernel_row(dim: InverseTransform2dDim, len: usize) -> [u32; 32] {
 /// The transform of a block whose only non-zero coefficient is `dc`: the
 /// row pass leaves only row 0, `Clip3(Round2(dc * kr[c], rowShift))` for
 /// row-kernel row 0 `kr`, and every column sum has the one term
-/// `kc[r] * row0[c]` for column-kernel row 0 `kc`. With `flat` (`DCT` both
-/// ways) every kernel row 0 is constant and so is the residual.
+/// `kc[r] * row0[c]` for column-kernel row 0 `kc`. With `DCT` both ways every
+/// kernel row 0 is constant and so is the residual.
 fn dc_only_transform<S: Simd, O: Output + ?Sized>(
     simd: S,
     t: Transform8,
     dc: i32,
-    flat: bool,
+    (row, col): (Pass1d, Pass1d),
     residual: &mut O,
 ) {
-    let dc = row_input(i32x8::splat(simd, dc), t.rescale).bitcast::<i16x16<S>>();
+    let dc = row_input(i32x8::splat(simd, dc), t.rescale);
     let (row_shift, col_shift) = (u32::from(t.row_shift), u32::from(t.col_shift));
-    let row = first_kernel_row(t.row, t.w);
-    let col = first_kernel_row(t.col, t.h);
+    let kr = first_kernel_row(row, t.w);
+    let kc = first_kernel_row(col, t.h);
     let row0 = |c: usize| {
-        let k = row.as_chunks::<8>().0.get(c).map_or([0; 8], |k| *k);
-        clip_row(madd(dc, pairs(simd, &k)), row_shift).bitcast::<i16x16<S>>()
+        let k = kr.as_chunks::<8>().0.get(c).map_or([0; 8], |k| *k);
+        clip_row(i32x8::from_slice(simd, &k) * dc, row_shift)
     };
-    if flat {
-        let value: [i32; 8] = clip_col(madd(row0(0), splat_pair(simd, col[0])), col_shift).into();
+    let dct = |dim| dim == InverseTransform2dDim::Kernel(InverseTransform1dType::Dct);
+    if dct(t.row) && dct(t.col) {
+        let value: [i32; 8] = clip_col(row0(0) * kc[0], col_shift).into();
         let value = i32x8::splat(simd, value[0]);
         for index in 0..t.w * t.h / 8 {
             residual.put(simd, index, value);
@@ -819,28 +703,22 @@ fn dc_only_transform<S: Simd, O: Output + ?Sized>(
         return;
     }
     if t.w == 4 {
-        let row0 = row0(0).bitcast::<i32x8<S>>();
-        let (row0, _) = simd.split_i32x8(row0);
-        let row0 = simd.combine_i32x4(row0, row0).bitcast();
-        for (index, k) in col.as_chunks::<2>().0.iter().take(t.h / 2).enumerate() {
-            let [a, b] = *k;
-            let v = clip_col(
-                madd(row0, pairs(simd, &[a, a, a, a, b, b, b, b])),
-                col_shift,
-            );
-            residual.put(simd, index, v);
+        let (row0, _) = simd.split_i32x8(row0(0));
+        let row0 = simd.combine_i32x4(row0, row0);
+        for (index, &[a, b]) in kc.as_chunks::<2>().0.iter().take(t.h / 2).enumerate() {
+            let k = i32x8::from_slice(simd, &[a, a, a, a, b, b, b, b]);
+            residual.put(simd, index, clip_col(row0 * k, col_shift));
         }
         return;
     }
     let chunks = t.w / 8;
-    let mut row0s = [i16x16::splat(simd, 0); 4];
+    let mut row0s = [i32x8::splat(simd, 0); 4];
     for (c, slot) in row0s.iter_mut().enumerate().take(chunks) {
         *slot = row0(c);
     }
-    for (r, &k) in col.iter().take(t.h).enumerate() {
-        let k = splat_pair(simd, k);
+    for (r, &k) in kc.iter().take(t.h).enumerate() {
         for (c, &row0) in row0s.iter().take(chunks).enumerate() {
-            residual.put(simd, r * chunks + c, clip_col(madd(row0, k), col_shift));
+            residual.put(simd, r * chunks + c, clip_col(row0 * k, col_shift));
         }
     }
 }
@@ -863,116 +741,6 @@ fn row_input<S: Simd>(v: i32x8<S>, rescale: bool) -> i32x8<S> {
         .min(i32x8::splat(v.simd, i32::from(i16::MAX)))
 }
 
-/// [`row_pass`] for the § 7.15.2.3 identity transform: each row output is
-/// its own clamped input times the identity scale, in the row `Clip3`.
-fn row_pass_identity<S: Simd>(
-    simd: S,
-    w: usize,
-    dequant: &[i32],
-    load: Load,
-    shift: u32,
-    (h, split): (usize, bool),
-    scratch: &mut [i32; 32 * 32],
-) -> u32 {
-    let scale = identity_scale(w);
-    let scaled = |v: i32x8<S>| row_input(v, load.rescale) * scale;
-    let coded = dequant.len().div_ceil(w);
-    let mut mask = 0u32;
-    for (q, out) in scratch.chunks_exact_mut(w).take(h / 2).enumerate() {
-        let (row_a, row_b) = pair_rows(q, split);
-        if row_a >= coded {
-            break;
-        }
-        let (first, second) = (input_row(dequant, row_a, w), input_row(dequant, row_b, w));
-        if first.iter().chain(second).all(|&coeff| coeff == 0) {
-            continue;
-        }
-        mask |= 1 << q;
-        let (dc_a, dc_b) = (row_a == 0, row_b == 0);
-        if w == 4 {
-            let mut padded = [0i32; 8];
-            padded[..first.len().min(4)].copy_from_slice(&first[..first.len().min(4)]); // splot-copy-ok: one identity row pair
-            padded[4..4 + second.len().min(4)].copy_from_slice(&second[..second.len().min(4)]); // splot-copy-ok: one identity row pair
-            let v = load.dequantize(simd, i32x8::from_slice(simd, &padded), dc_a);
-            let sum: [i32; 8] = clip_row(scaled(v), shift).into();
-            for (i, out) in out.iter_mut().take(4).enumerate() {
-                *out = (sum[i] & 0xffff) | (sum[4 + i] << 16);
-            }
-            continue;
-        }
-        for (c, out) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
-            let low = scaled(load.coeffs(simd, first, 8 * c, dc_a && c == 0));
-            let high = scaled(load.coeffs(simd, second, 8 * c, dc_b && c == 0));
-            pack_rows(low, high, shift).store_slice(out);
-        }
-    }
-    mask
-}
-
-/// [`col_pass`] for the § 7.15.2.3 identity transform over the adjacent row
-/// pairs of `scratch`: each output is its own row-pass sample times the
-/// identity scale, in the column `Clip3`.
-fn col_pass_identity<S: Simd, O: Output + ?Sized>(
-    simd: S,
-    (w, h): (usize, usize),
-    scratch: &[i32; 32 * 32],
-    mask: u32,
-    shift: u32,
-    residual: &mut O,
-) {
-    let scale = identity_scale(h);
-    let emit = |packed: i32x8<S>, high: bool| {
-        let v = if high {
-            packed >> 16
-        } else {
-            (packed << 16) >> 16
-        };
-        clip_col(v * scale, shift)
-    };
-    let chunks = w / 8;
-    for (q, pair) in scratch.chunks_exact(w).take(h / 2).enumerate() {
-        let written = mask & (1 << q) != 0;
-        if w == 4 {
-            let Some(&[z0, z1, z2, z3]) = pair.first_chunk::<4>().filter(|_| written) else {
-                residual.zero(simd, q);
-                continue;
-            };
-            let packed = i32x8::from_slice(simd, &[z0, z1, z2, z3, z0, z1, z2, z3]);
-            let (low, _) = simd.split_i32x8(emit(packed, false));
-            let (_, high) = simd.split_i32x8(emit(packed, true));
-            residual.put(simd, q, simd.combine_i32x4(low, high));
-            continue;
-        }
-        for (c, packed) in pair.as_chunks::<8>().0.iter().enumerate() {
-            let (a, b) = (2 * q * chunks + c, (2 * q + 1) * chunks + c);
-            if !written {
-                residual.zero(simd, a);
-                residual.zero(simd, b);
-                continue;
-            }
-            let packed = i32x8::from_slice(simd, packed);
-            residual.put(simd, a, emit(packed, false));
-            residual.put(simd, b, emit(packed, true));
-        }
-    }
-}
-
-/// `pmaddwd`: the sum of each adjacent pair of `i16` products.
-#[inline]
-fn madd<S: Simd>(x: i16x16<S>, w: i16x16<S>) -> i32x8<S> {
-    x.pairwise_dot_product(w)
-}
-
-#[inline]
-fn pairs<S: Simd>(simd: S, packed: &[u32; 8]) -> i16x16<S> {
-    u32x8::from_slice(simd, packed).bitcast()
-}
-
-#[inline]
-fn splat_pair<S: Simd>(simd: S, packed: u32) -> i16x16<S> {
-    u32x8::splat(simd, packed).bitcast()
-}
-
 /// `Round2(sum, shift)` for `1 <= shift <= 20` and `|sum| < 2^28`.
 #[inline]
 fn round<S: Simd>(sum: i32x8<S>, shift: u32) -> i32x8<S> {
@@ -990,352 +758,393 @@ fn clip_row<S: Simd>(sum: i32x8<S>, shift: u32) -> i32x8<S> {
 /// The column `Clip3` of `Round2(sum, shift)`.
 #[inline]
 fn clip_col<S: Simd>(sum: i32x8<S>, shift: u32) -> i32x8<S> {
-    round(sum, shift)
-        .max(i32x8::splat(sum.simd, -256))
-        .min(i32x8::splat(sum.simd, 255))
+    clip_lanes(sum.simd, sum, shift)
 }
 
-/// Rows `a` and `b` of the row `Clip3`, packed `a` low and `b` high.
+/// [`clip_col`] over `V` lanes.
 #[inline]
-fn pack_rows<S: Simd>(a: i32x8<S>, b: i32x8<S>, shift: u32) -> i32x8<S> {
-    (clip_row(a, shift) & 0xffff) | (clip_row(b, shift) << 16)
+fn clip_lanes<S: Simd, V: SimdInt<S, Element = i32>>(simd: S, sum: V, shift: u32) -> V {
+    ((sum + (1 << (shift - 1))) >> shift)
+        .max(V::splat(simd, -256))
+        .min(V::splat(simd, 255))
 }
 
-/// The `pshufb` that swaps the middle two samples of every four, as
-/// block-local indices: NEON `tbl` zeroes an index of 16 or more.
-const SPLIT_ORDER: [u8; 32] = {
-    let mut order = [0u8; 32];
-    let mut i = 0;
-    while i < 32 {
-        let sample = i % 16 / 2;
-        let swapped = match sample % 4 {
-            1 => sample + 1,
-            2 => sample - 1,
-            _ => sample,
-        };
-        order[i] = (2 * swapped + i % 2) as u8;
-        i += 1;
-    }
-    order
-};
-
-/// The row input clamp (after the optional rescale, as the `packssdw`
-/// saturation) of up to 32 row samples as packed pairs, with one past the last non-zero pair: adjacent samples,
-/// or with `split` samples `4m + j` and `4m + j + 2` as pair `2m + j`.
-#[inline]
-fn row_input_pairs<S: Simd>(
-    simd: S,
-    row: &[i32],
+/// The coded input rows of a row pass and how they load.
+#[derive(Clone, Copy)]
+struct Rows<'a> {
+    /// The whole-row prefix, rows `in_w` apart.
+    input: &'a [i32],
+    in_w: usize,
+    /// Rows the prefix holds, at most the block height.
+    coded: usize,
     load: Load,
-    split: bool,
-    dc: bool,
-) -> ([u32; 16], usize) {
-    let mut out = [0u32; 16];
-    let mut nonzero = 0u64;
-    let lanes = |i: usize| rescaled(load.coeffs(simd, row, 8 * i, dc && i == 0), load.rescale);
-    for (index, slot) in out
-        .as_chunks_mut::<8>()
-        .0
-        .iter_mut()
-        .take(row.len().div_ceil(16))
-        .enumerate()
-    {
-        let mut packed = lanes(2 * index)
-            .saturating_narrow(lanes(2 * index + 1))
-            .bitcast::<u8x32<S>>();
-        if split {
-            packed = packed.swizzle_dyn_within_blocks(u8x32::from_slice(simd, &SPLIT_ORDER));
-        }
-        let packed = packed.bitcast::<u32x8<S>>();
-        nonzero |= packed.simd_ne(u32x8::splat(simd, 0)).to_bitmask() << (8 * index);
-        packed.store_slice(slot);
-    }
-    (out, (u64::BITS - nonzero.leading_zeros()) as usize)
+    /// Row-pass down-shift.
+    shift: u32,
 }
 
-/// The two rows the row pass packs as column pair `q`: adjacent rows, or for
-/// a split `DCT` column pass rows `4m + j` and `4m + j + 2` (`q = 2m + j`), so
-/// that every pair holds two even or two odd rows.
+impl Rows<'_> {
+    /// The clamped § 7.15.2.1 inputs of the eight coefficients of `row` from
+    /// `8 * k`; `dc` marks lane 0 as the DC coefficient.
+    #[inline]
+    fn inputs<S: Simd>(self, simd: S, row: &[i32], k: usize, dc: bool) -> i32x8<S> {
+        row_input(self.load.coeffs(simd, row, 8 * k, dc), self.load.rescale)
+    }
+}
+
+/// Whether any lane of `v` is non-zero.
 #[inline]
-const fn pair_rows(q: usize, split: bool) -> (usize, usize) {
-    if split {
-        let row = 4 * (q / 2) + q % 2;
-        (row, row + 2)
-    } else {
-        (2 * q, 2 * q + 1)
-    }
+fn any<S: Simd>(simd: S, v: i32x4<S>) -> bool {
+    simd.any_true_mask32x4(v.simd_ne(i32x4::splat(simd, 0)))
 }
 
-/// The row pass of an `N`-wide, `h`-tall block, `H = N / 2`, for `N >= 8`:
-/// writes column pair `q` (rows [`pair_rows`]) at `scratch[q * N..][..N]` and
-/// returns the mask of written pairs.
+/// The row pass of an `N`-wide block, `N >= 8`, into row `r` of the `N`-wide
+/// `scratch` for every coded row `r` with a non-zero input, returning the
+/// mask of written rows. Each output lane takes one multiply-add per
+/// non-zero group of four inputs, four outputs at a time, from the `i32`
+/// kernel row of each input.
+///
+/// `SPLIT` takes the `DCT` symmetry `kernel[j][N - 1 - i] == (-1)^j *
+/// kernel[j][i]`: the even inputs sum `E` and the odd inputs `O` over the
+/// first `N / 2` outputs, and output `N - 1 - i` is `E - O` where output `i`
+/// is `E + O`. `REV` reverses the outputs (`FDDT`).
 #[allow(
     clippy::inline_always,
     reason = "measured § 7.15.4.1 row-pass hot path"
 )]
 #[inline(always)]
-fn row_pass<S: Simd, const N: usize, const H: usize, const SPLIT: bool>(
+fn row_pass<S: Simd, const N: usize, const SPLIT: bool, const REV: bool>(
     simd: S,
-    kernel: &[[u32; N]; H],
-    dequant: &[i32],
-    load: Load,
-    shift: u32,
-    (h, split): (usize, bool),
+    kernel: &[[i32; N]; N],
+    rows: Rows<'_>,
     scratch: &mut [i32; 32 * 32],
 ) -> u32 {
-    let coded = dequant.len().div_ceil(N);
-    let input = |row: usize| {
-        let coeffs = input_row(dequant, row, N);
-        if coeffs.is_empty() {
-            return ([0; 16], 0);
-        }
-        row_input_pairs(simd, coeffs, load, SPLIT, row == 0)
-    };
-    let zero = i32x8::splat(simd, 0);
-    let mut mask = 0u32;
-    for (q, out) in scratch.chunks_exact_mut(N).take(h / 2).enumerate() {
-        let (row_a, row_b) = pair_rows(q, split);
-        if row_a >= coded {
-            break;
-        }
-        let ((a, used_a), (b, used_b)) = (input(row_a), input(row_b));
-        let used = used_a.max(used_b).min(H);
-        if used == 0 {
-            continue;
-        }
-        mask |= 1 << q;
-        if SPLIT {
-            row_pair_split(simd, kernel, (&a, &b), used, shift, out);
-            continue;
-        }
-        let mut sum_a = [zero; 4];
-        let mut sum_b = [zero; 4];
-        for ((weights, &a), &b) in kernel[..used].iter().zip(&a).zip(&b) {
-            let (a, b) = (splat_pair(simd, a), splat_pair(simd, b));
-            for ((weights, sum_a), sum_b) in weights
-                .as_chunks::<8>()
-                .0
-                .iter()
-                .zip(&mut sum_a)
-                .zip(&mut sum_b)
-            {
-                let weights = pairs(simd, weights);
-                *sum_a += madd(a, weights);
-                *sum_b += madd(b, weights);
-            }
-        }
-        for ((out, &a), &b) in out
-            .as_chunks_mut::<8>()
+    let zero = i32x4::splat(simd, 0);
+    let mut mask = 0;
+    for (r, out) in scratch.chunks_exact_mut(N).take(rows.coded).enumerate() {
+        let row = input_row(rows.input, r, rows.in_w);
+        let mut x = [zero; 8];
+        for (k, pair) in x
+            .as_chunks_mut::<2>()
             .0
             .iter_mut()
-            .zip(&sum_a)
-            .zip(&sum_b)
+            .take(row.len().div_ceil(8))
+            .enumerate()
         {
-            pack_rows(a, b, shift).store_slice(out);
+            (pair[0], pair[1]) = simd.split_i32x8(rows.inputs(simd, row, k, r == 0 && k == 0));
         }
-    }
-    mask
-}
-
-/// One row pair of a split `DCT` [`row_pass`]: the even-sample pairs sum `E`
-/// and the odd-sample pairs `O` over the first `N / 2` outputs, and output
-/// `N - 1 - i` is `E - O` where output `i` is `E + O`.
-#[allow(
-    clippy::inline_always,
-    reason = "measured § 7.15.4.1 row-pass hot path"
-)]
-#[inline(always)]
-fn row_pair_split<S: Simd, const N: usize, const H: usize>(
-    simd: S,
-    kernel: &[[u32; N]; H],
-    (a, b): (&[u32; 16], &[u32; 16]),
-    used: usize,
-    shift: u32,
-    out: &mut [i32],
-) {
-    let chunks = N / 16;
-    let mut sums = [[[i32x8::splat(simd, 0); 2]; 2]; 2];
-    let used = used.next_multiple_of(2).min(H);
-    for (p, weights) in kernel[..used].as_chunks::<2>().0.iter().enumerate() {
-        for (parity, weights) in weights.iter().enumerate() {
-            let inputs = [a[2 * p + parity], b[2 * p + parity]].map(|x| splat_pair(simd, x));
-            for (row, &input) in inputs.iter().enumerate() {
-                for (sum, weights) in sums[row][parity]
-                    .iter_mut()
-                    .zip(weights.as_chunks::<8>().0)
-                    .take(chunks)
-                {
-                    *sum += madd(input, pairs(simd, weights));
+        let mut sums = [[zero; 8]; 2];
+        let mut written = false;
+        for (x, k) in x.iter().zip(kernel.as_chunks::<4>().0) {
+            if !any(simd, *x) {
+                continue;
+            }
+            written = true;
+            for (lane, k) in k.iter().enumerate() {
+                let (sum, len) = if SPLIT {
+                    (&mut sums[lane % 2], N / 8)
+                } else {
+                    (&mut sums[0], N / 4)
+                };
+                let x = x[lane];
+                for (sum, k) in sum.iter_mut().zip(k.as_chunks::<4>().0).take(len) {
+                    *sum += i32x4::from_slice(simd, k) * x;
                 }
             }
         }
-    }
-    let out = out.as_chunks_mut::<8>().0;
-    let [[a_even, a_odd], [b_even, b_odd]] = sums;
-    for chunk in 0..chunks {
-        let (a_e, a_o, b_e, b_o) = (a_even[chunk], a_odd[chunk], b_even[chunk], b_odd[chunk]);
-        if let Some(out) = out.get_mut(chunk) {
-            pack_rows(a_e + a_o, b_e + b_o, shift).store_slice(out);
-        }
-        if let Some(out) = out.get_mut(N / 8 - 1 - chunk) {
-            pack_rows((a_e - a_o).reverse(), (b_e - b_o).reverse(), shift).store_slice(out);
-        }
-    }
-}
-
-/// [`row_pass`] for a 4-wide block: each sum holds row `a` in its low half and
-/// row `b` in its high half.
-fn row_pass_4<S: Simd>(
-    simd: S,
-    kernel: &[[u32; 4]; 2],
-    dequant: &[i32],
-    load: Load,
-    shift: u32,
-    (h, split): (usize, bool),
-    scratch: &mut [i32; 32 * 32],
-) -> u32 {
-    let coded = dequant.len().div_ceil(4);
-    let pick = |row: usize| {
-        let row = input_row(dequant, row, 4);
-        let mut out = [0; 4];
-        out[..row.len()].copy_from_slice(row); // splot-copy-ok: one 4-sample row
-        out
-    };
-    let weights = kernel.map(|[w0, w1, w2, w3]| pairs(simd, &[w0, w1, w2, w3, w0, w1, w2, w3]));
-    let mut mask = 0u32;
-    for (q, out) in scratch
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .take(h / 2)
-        .enumerate()
-    {
-        let (row_a, row_b) = pair_rows(q, split);
-        if row_a >= coded {
-            break;
-        }
-        let ([a0, a1, a2, a3], [b0, b1, b2, b3]) = (pick(row_a), pick(row_b));
-        let (pair, used) = row_input_pairs(
-            simd,
-            &[a0, a1, a2, a3, b0, b1, b2, b3],
-            load,
-            false,
-            row_a == 0,
-        );
-        if used == 0 {
+        if !written {
             continue;
         }
-        mask |= 1 << q;
-        let mut sum = i32x8::splat(simd, 0);
-        for (p, weights) in weights.iter().enumerate() {
-            let (a, b) = (pair[p], pair[2 + p]);
-            sum += madd(pairs(simd, &[a, a, a, a, b, b, b, b]), *weights);
+        mask |= 1 << r;
+        let [first, second] = sums;
+        let mut y = [zero; 8];
+        for (i, y) in y.iter_mut().enumerate().take(N / 4) {
+            *y = if SPLIT && i < N / 8 {
+                first[i] + second[i]
+            } else if SPLIT {
+                let i = N / 4 - 1 - i;
+                (first[i] - second[i]).reverse()
+            } else if REV {
+                first[N / 4 - 1 - i].reverse()
+            } else {
+                first[i]
+            };
         }
-        let sum: [i32; 8] = clip_row(sum, shift).into();
-        for (i, out) in out.iter_mut().enumerate() {
-            *out = (sum[i] & 0xffff) | (sum[4 + i] << 16);
+        for (out, y) in out
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip(y.as_chunks::<2>().0)
+        {
+            clip_row(simd.combine_i32x4(y[0], y[1]), rows.shift).store_slice(out);
         }
     }
     mask
 }
 
-/// The column-pair geometry of one [`col_pass`].
+/// [`row_pass`] of a 4-wide block, two rows per input load.
+fn row_pass_4<S: Simd>(
+    simd: S,
+    kernel: &[[i32; 4]; 4],
+    rows: Rows<'_>,
+    scratch: &mut [i32; 32 * 32],
+) -> u32 {
+    let k = kernel.map(|k| i32x4::from_slice(simd, &k));
+    let transform = |x: i32x4<S>| k[0] * x[0] + k[1] * x[1] + k[2] * x[2] + k[3] * x[3];
+    let mut mask = 0;
+    for (q, out) in scratch
+        .as_chunks_mut::<8>()
+        .0
+        .iter_mut()
+        .take(rows.coded.div_ceil(2))
+        .enumerate()
+    {
+        let (a, b) = simd.split_i32x8(rows.inputs(simd, rows.input, q, q == 0));
+        let written = u32::from(any(simd, a)) | u32::from(any(simd, b)) << 1;
+        if written == 0 {
+            continue;
+        }
+        mask |= written << (2 * q);
+        let sum = simd.combine_i32x4(transform(a), transform(b));
+        clip_row(sum, rows.shift).store_slice(out);
+    }
+    mask
+}
+
+/// [`row_pass`] for the § 7.15.2.3 identity transform: each row output is
+/// its own clamped input times the identity scale, in the row `Clip3`.
+fn row_pass_identity<S: Simd>(
+    simd: S,
+    w: usize,
+    rows: Rows<'_>,
+    scratch: &mut [i32; 32 * 32],
+) -> u32 {
+    let scale = identity_scale(w);
+    let scaled = |v: i32x8<S>| clip_row(v * scale, rows.shift);
+    let mut mask = 0;
+    if w == 4 {
+        for (q, out) in scratch
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .take(rows.coded.div_ceil(2))
+            .enumerate()
+        {
+            let v = rows.inputs(simd, rows.input, q, q == 0);
+            let (a, b) = simd.split_i32x8(v);
+            let written = u32::from(any(simd, a)) | u32::from(any(simd, b)) << 1;
+            if written != 0 {
+                mask |= written << (2 * q);
+                scaled(v).store_slice(out);
+            }
+        }
+        return mask;
+    }
+    for (r, out) in scratch.chunks_exact_mut(w).take(rows.coded).enumerate() {
+        let row = input_row(rows.input, r, rows.in_w);
+        let mut v = [i32x8::splat(simd, 0); 4];
+        let mut written = false;
+        for (k, v) in v.iter_mut().enumerate().take(w / 8) {
+            *v = rows.inputs(simd, row, k, r == 0 && k == 0);
+            let (low, high) = simd.split_i32x8(*v);
+            written |= any(simd, low | high);
+        }
+        if written {
+            mask |= 1 << r;
+            for (out, &v) in out.as_chunks_mut::<8>().0.iter_mut().zip(&v) {
+                scaled(v).store_slice(out);
+            }
+        }
+    }
+    mask
+}
+
+/// The column-pass geometry of one block.
 #[derive(Clone, Copy)]
 struct ColPass {
-    /// Block width.
+    /// Block width and height.
     w: usize,
-    /// The written column pairs of the row pass.
-    mask: u32,
+    h: usize,
     /// Column-pass down-shift.
     shift: u32,
 }
 
-/// The column pass of an `M`-tall block, `HM = M / 2`, over the column-pair
-/// `scratch` of a `w`-wide block, reading only the pairs in `mask`.
-///
-/// `SPLIT` takes the `DCT` symmetry `kernel[r][M - 1 - i] == (-1)^r *
-/// kernel[r][i]`: the even-row pairs sum `E` and the odd-row pairs `O` over
-/// the first `M / 2` outputs, and output `M - 1 - i` is `E - O` where output
-/// `i` is `E + O`.
+/// The column lanes of one column pass: 4 for a 4-wide block, else 8.
+trait Lanes<S: Simd>: SimdInt<S, Element = i32> {
+    /// Puts the column `Clip3` outputs `v` of rows `start..start + 4`
+    /// (`start` a multiple of 4), lanes `c * LEN..`, of a `w`-wide block.
+    fn put<O: Output + ?Sized>(simd: S, at: (usize, usize, usize), v: [Self; 4], out: &mut O);
+}
+
+impl<S: Simd> Lanes<S> for i32x4<S> {
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the column outputs in registers"
+    )]
+    #[inline(always)]
+    fn put<O: Output + ?Sized>(
+        simd: S,
+        (_, _, start): (usize, usize, usize),
+        v: [Self; 4],
+        out: &mut O,
+    ) {
+        out.put(simd, start / 2, simd.combine_i32x4(v[0], v[1]));
+        out.put(simd, start / 2 + 1, simd.combine_i32x4(v[2], v[3]));
+    }
+}
+
+impl<S: Simd> Lanes<S> for i32x8<S> {
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the column outputs in registers"
+    )]
+    #[inline(always)]
+    fn put<O: Output + ?Sized>(
+        simd: S,
+        (w, c, start): (usize, usize, usize),
+        v: [Self; 4],
+        out: &mut O,
+    ) {
+        let chunks = w / 8;
+        for (row, v) in (start..).zip(v) {
+            out.put(simd, row * chunks + c, v);
+        }
+    }
+}
+
+/// The column pass of `col` over the rows of `scratch` written in `mask`.
 #[allow(
     clippy::inline_always,
     reason = "measured § 7.15.4.1 column-pass hot path"
 )]
 #[inline(always)]
-fn col_pass<S: Simd, O: Output + ?Sized, const M: usize, const HM: usize, const SPLIT: bool>(
+fn col_dispatch<S: Simd, V: Lanes<S>, O: Output + ?Sized>(
     simd: S,
-    kernel: &[[u32; M]; HM],
+    col: Pass1d,
     scratch: &[i32; 32 * 32],
-    ColPass { w, mask, shift }: ColPass,
+    pass: (ColPass, u32),
     residual: &mut O,
 ) {
-    let mask = mask & ((1 << HM) - 1);
-    let kernel = &kernel[..(u32::BITS - mask.leading_zeros()) as usize];
-    let (pair_kernels, last) = kernel.as_chunks::<2>();
-    let outputs = if SPLIT { M / 2 } else { M };
-    let zero = i32x8::splat(simd, 0);
-    let written = |q: usize| mask & (1 << q) != 0;
-    if w == 4 {
-        let step = |q: usize, k: &[u32; M], r: usize, sum: &mut i32x8<S>| {
-            let (Some(z), true) = (scratch.get(q * 4..q * 4 + 4), written(q)) else {
-                return;
-            };
-            let z = i32x4::from_slice(simd, z);
-            let (a, b) = (k[r], k[r + 1]);
-            *sum += madd(
-                simd.combine_i32x4(z, z).bitcast(),
-                pairs(simd, &[a, a, a, a, b, b, b, b]),
-            );
-        };
-        for r in (0..outputs).step_by(2) {
-            let (mut e, mut o) = (zero, zero);
-            for (p, [k0, k1]) in pair_kernels.iter().enumerate() {
-                step(2 * p, k0, r, &mut e);
-                step(2 * p + 1, k1, r, if SPLIT { &mut o } else { &mut e });
-            }
-            if let [k0] = last {
-                step(kernel.len() - 1, k0, r, &mut e);
-            }
-            residual.put(simd, r / 2, clip_col(e + o, shift));
-            if SPLIT {
-                let (low, high) = simd.split_i32x8(clip_col(e - o, shift));
-                residual.put(simd, (M - 2 - r) / 2, simd.combine_i32x4(high, low));
-            }
+    match col {
+        None => col_pass_identity::<_, V, _>(simd, scratch, pass, residual),
+        Some((Kernel1d::N4(k), _)) => {
+            col_pass::<_, V, _, 4, false, false>(simd, k, scratch, pass, residual);
         }
-        return;
+        Some((Kernel1d::N8(k, true), _)) => {
+            col_pass::<_, V, _, 8, false, true>(simd, k, scratch, pass, residual);
+        }
+        Some((Kernel1d::N8(k, false), true)) => {
+            col_pass::<_, V, _, 8, true, false>(simd, k, scratch, pass, residual);
+        }
+        Some((Kernel1d::N8(k, false), false)) => {
+            col_pass::<_, V, _, 8, false, false>(simd, k, scratch, pass, residual);
+        }
+        Some((Kernel1d::N16(k, true), _)) => {
+            col_pass::<_, V, _, 16, false, true>(simd, k, scratch, pass, residual);
+        }
+        Some((Kernel1d::N16(k, false), true)) => {
+            col_pass::<_, V, _, 16, true, false>(simd, k, scratch, pass, residual);
+        }
+        Some((Kernel1d::N16(k, false), false)) => {
+            col_pass::<_, V, _, 16, false, false>(simd, k, scratch, pass, residual);
+        }
+        Some((Kernel1d::N32(k), _)) => {
+            col_pass::<_, V, _, 32, true, false>(simd, k, scratch, pass, residual);
+        }
     }
-    let chunks = w / 8;
-    let columns = scratch.as_chunks::<8>().0;
-    let step = |q: usize, k: &[u32; M], c: usize, r: usize, sums: &mut [i32x8<S>; 4]| {
-        let (Some(z), Some(k), true) = (columns.get(q * chunks + c), k.get(r..r + 4), written(q))
-        else {
-            return;
+}
+
+/// The column pass of an `M`-tall block over the `V` column lanes of the
+/// rows of `scratch` written in `mask`, four outputs at a time: each output
+/// lane takes one multiply-add per written row. `SPLIT` and `REV` are as in
+/// [`row_pass`], over the rows.
+#[allow(
+    clippy::inline_always,
+    reason = "measured § 7.15.4.1 column-pass hot path"
+)]
+#[inline(always)]
+fn col_pass<
+    S: Simd,
+    V: Lanes<S>,
+    O: Output + ?Sized,
+    const M: usize,
+    const SPLIT: bool,
+    const REV: bool,
+>(
+    simd: S,
+    kernel: &[[i32; M]; M],
+    scratch: &[i32; 32 * 32],
+    (ColPass { w, shift, .. }, mask): (ColPass, u32),
+    residual: &mut O,
+) {
+    let mask = if M >= 32 { mask } else { mask & ((1 << M) - 1) };
+    let zero = V::splat(simd, 0);
+    let outputs = if SPLIT { M / 2 } else { M };
+    let clip = |v: V| clip_lanes(simd, v, shift);
+    for c in 0..w / V::LEN {
+        let at = |r: usize| {
+            let start = r * w + c * V::LEN;
+            scratch
+                .get(start..start + V::LEN)
+                .map(|lanes| V::from_slice(simd, lanes))
         };
-        let z = i32x8::from_slice(simd, z).bitcast();
-        for (sum, &k) in sums.iter_mut().zip(k) {
-            *sum += madd(z, splat_pair(simd, k));
-        }
-    };
-    for c in 0..chunks {
-        for r in (0..outputs).step_by(4) {
-            let (mut e, mut o) = ([zero; 4], [zero; 4]);
-            for (p, [k0, k1]) in pair_kernels.iter().enumerate() {
-                step(2 * p, k0, c, r, &mut e);
-                step(2 * p + 1, k1, c, r, if SPLIT { &mut o } else { &mut e });
-            }
-            if let [k0] = last {
-                step(kernel.len() - 1, k0, c, r, &mut e);
-            }
-            for (offset, (&e, &o)) in e.iter().zip(&o).enumerate() {
-                residual.put(simd, (r + offset) * chunks + c, clip_col(e + o, shift));
-                if SPLIT {
-                    residual.put(
-                        simd,
-                        (M - 1 - r - offset) * chunks + c,
-                        clip_col(e - o, shift),
-                    );
+        for base in (0..outputs).step_by(4) {
+            let mut sums = [[zero; 4]; 2];
+            for (parity, sum) in sums.iter_mut().enumerate().take(1 + usize::from(SPLIT)) {
+                let mut rows = if SPLIT {
+                    mask & (0x5555_5555 << parity)
+                } else {
+                    mask
+                };
+                while rows != 0 {
+                    let r = rows.trailing_zeros() as usize;
+                    rows &= rows - 1;
+                    let k = kernel.get(r).and_then(|k| k.get(base..base + 4));
+                    let (Some(y), Some(k)) = (at(r), k) else {
+                        break;
+                    };
+                    for (sum, &k) in sum.iter_mut().zip(k) {
+                        *sum += y * k;
+                    }
                 }
             }
+            let [first, second] = sums;
+            if SPLIT {
+                let low = core::array::from_fn(|o| clip(first[o] + second[o]));
+                V::put(simd, (w, c, base), low, residual);
+                let high = core::array::from_fn(|o| clip(first[3 - o] - second[3 - o]));
+                V::put(simd, (w, c, M - 4 - base), high, residual);
+            } else if REV {
+                let high = core::array::from_fn(|o| clip(first[3 - o]));
+                V::put(simd, (w, c, M - 4 - base), high, residual);
+            } else {
+                V::put(simd, (w, c, base), first.map(clip), residual);
+            }
+        }
+    }
+}
+
+/// [`col_pass`] for the § 7.15.2.3 identity transform: each output is its
+/// own row-pass sample times the identity scale, in the column `Clip3`.
+fn col_pass_identity<S: Simd, V: Lanes<S>, O: Output + ?Sized>(
+    simd: S,
+    scratch: &[i32; 32 * 32],
+    (ColPass { w, h, shift }, mask): (ColPass, u32),
+    residual: &mut O,
+) {
+    let scale = identity_scale(h);
+    for c in 0..w / V::LEN {
+        for base in (0..h).step_by(4) {
+            let v = core::array::from_fn(|o| {
+                let r = base + o;
+                let start = r * w + c * V::LEN;
+                match scratch.get(start..start + V::LEN) {
+                    Some(lanes) if mask & (1 << r) != 0 => {
+                        clip_lanes(simd, V::from_slice(simd, lanes) * scale, shift)
+                    }
+                    _ => V::splat(simd, 0),
+                }
+            });
+            V::put(simd, (w, c, base), v, residual);
         }
     }
 }
