@@ -942,29 +942,24 @@ fn row_pass8<const N: usize, const H: usize, const KIND: u8>(
     mask
 }
 
-/// The row pass of a 16- or 32-wide `shape` over `rows` (see [`Rows8`]),
-/// or `None` for an identity row pass.
+/// The row pass of a 16- or 32-wide `shape` over `rows` (see [`Rows8`]);
+/// no pairs for an identity row pass, which has no secondary transform.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn rows8_pass(
-    t: Avx2,
-    shape: &InverseTransformAdd8,
-    rows: Rows8<'_>,
-    scratch: &mut [i32],
-) -> Option<u32> {
+fn rows8_pass(t: Avx2, shape: &InverseTransformAdd8, rows: Rows8<'_>, scratch: &mut [i32]) -> u32 {
     let p = (
         pairs_of(shape.passes.1, shape.h()),
         u32::from(shape.row_shift),
     );
-    Some(match shape.passes.0 {
+    match shape.passes.0 {
         Pass::Dct16 => row_pass8::<16, 8, SPLIT>(t, rows, p, &DCT16_SPLIT, scratch),
         Pass::Adst16 => row_pass8::<16, 8, DENSE>(t, rows, p, &ADST16, scratch),
         Pass::Fdst16 => row_pass8::<16, 8, DENSE>(t, rows, p, &FDST16, scratch),
         Pass::Ddtx16 => row_pass8::<16, 8, DENSE>(t, rows, p, &DDTX16, scratch),
         Pass::Fddt16 => row_pass8::<16, 8, DENSE>(t, rows, p, &FDDT16, scratch),
         Pass::Dct32 => row_pass8::<32, 16, SPLIT>(t, rows, p, &DCT32_SPLIT, scratch),
-        _ => return None,
-    })
+        _ => 0,
+    }
 }
 
 /// `sum[n] = init + Σ pair[p] * k[p][n]` over the pairs written in `mask`.
@@ -1592,6 +1587,7 @@ const fn col_spec16(pass: Pass) -> Option<Spec<16, 8>> {
 macro_rules! by_pass {
     ($spec:ident) => {{
         let mut out = [None; Pass::ALL.len()];
+        assert!(Pass::Dct32 as usize + 1 == out.len());
         let mut i = 0;
         while i < out.len() {
             assert!(Pass::ALL[i] as usize == i);
@@ -1602,11 +1598,11 @@ macro_rules! by_pass {
     }};
 }
 
-static ROW_SPEC4: [Option<Spec<4, 2>>; 18] = by_pass!(row_spec4);
-static ROW_SPEC8: [Option<Spec<8, 4>>; 18] = by_pass!(row_spec8);
-static COL_SPEC4: [Option<Spec<4, 2>>; 18] = by_pass!(col_spec4);
-static COL_SPEC8: [Option<Spec<8, 4>>; 18] = by_pass!(col_spec8);
-static COL_SPEC16: [Option<Spec<16, 8>>; 18] = by_pass!(col_spec16);
+static ROW_SPEC4: [Option<Spec<4, 2>>; Pass::ALL.len()] = by_pass!(row_spec4);
+static ROW_SPEC8: [Option<Spec<8, 4>>; Pass::ALL.len()] = by_pass!(row_spec8);
+static COL_SPEC4: [Option<Spec<4, 2>>; Pass::ALL.len()] = by_pass!(col_spec4);
+static COL_SPEC8: [Option<Spec<8, 4>>; Pass::ALL.len()] = by_pass!(col_spec8);
+static COL_SPEC16: [Option<Spec<16, 8>>; Pass::ALL.len()] = by_pass!(col_spec16);
 
 /// The `W`-sample rows (4 or 8) of a coefficient prefix: row `r` whole,
 /// the one partial row zero-padded, zero past the prefix.
@@ -1874,9 +1870,9 @@ fearless_simd::kernel!(
 fearless_simd::kernel!(
     /// Runs `shape` over `coeffs` (dequantized by `dequant` as they load, or
     /// already dequantized) into `sink`, with the 32x32 `scratch` holding the
-    /// column pairs. With `rows8`, `shape` is 16 or 32 wide and `coeffs`
-    /// holds only the first 8 columns of its coded rows, row `r` at
-    /// `coeffs[8 * r..]`, dequantized.
+    /// column pairs. With `rows8`, `shape` is 16 or 32 wide without an
+    /// identity row pass and `coeffs` holds only the first 8 columns of its
+    /// coded rows, row `r` at `coeffs[8 * r..]`, dequantized.
     pub(super) fn transform(
         t: Avx2,
         shape: &InverseTransformAdd8,
@@ -1916,29 +1912,24 @@ fearless_simd::kernel!(
         let Some((pairs, staged)) = scratch.split_first_chunk_mut::<{ 16 * 32 }>() else {
             return;
         };
-        let (coeff_rows, _) = coeffs.as_chunks::<8>();
-        let rows8 = rows8.then(|| Rows8 {
-            rows: coeff_rows.get(..h).unwrap_or(coeff_rows),
-            rescale: shape.rescale,
-        });
         let mask = if w <= 8 {
             rows_direct(t, shape, (coeffs, dq, dequant.is_some()), pairs)
-        } else if let Some(mask) = rows8.and_then(|rows| rows8_pass(t, shape, rows, pairs)) {
-            mask
-        } else {
-            let coded = if rows8.is_some() {
-                stage_rows8(t, shape, coeffs, staged)
-            } else {
-                let coded = (coeffs.len() + w - 1) >> shape.w_log2;
-                let count = coded * w;
-                match (dequant.is_some(), shape.rescale) {
-                    (true, false) => stage::<true, false>(t, coeffs, dq, count, staged),
-                    (true, true) => stage::<true, true>(t, coeffs, dq, count, staged),
-                    (false, false) => stage::<false, false>(t, coeffs, dq, count, staged),
-                    (false, true) => stage::<false, true>(t, coeffs, dq, count, staged),
-                }
-                coded
+        } else if rows8 {
+            let (coeff_rows, _) = coeffs.as_chunks::<8>();
+            let rows = Rows8 {
+                rows: coeff_rows.get(..h).unwrap_or(coeff_rows),
+                rescale: shape.rescale,
             };
+            rows8_pass(t, shape, rows, pairs)
+        } else {
+            let coded = (coeffs.len() + w - 1) >> shape.w_log2;
+            let count = coded * w;
+            match (dequant.is_some(), shape.rescale) {
+                (true, false) => stage::<true, false>(t, coeffs, dq, count, staged),
+                (true, true) => stage::<true, true>(t, coeffs, dq, count, staged),
+                (false, false) => stage::<false, false>(t, coeffs, dq, count, staged),
+                (false, true) => stage::<false, true>(t, coeffs, dq, count, staged),
+            }
             rows(t, shape, staged, coded, pairs)
         };
         if mask == 0 {
@@ -1963,30 +1954,3 @@ fearless_simd::kernel!(
         cols::<RESIDUAL>(t, shape, pairs, mask, tile, residual);
     }
 );
-
-/// Stages the 8-column `rows8` of a 16- or 32-wide `shape` (see
-/// [`transform`]) as its row inputs, zero past column 8, and returns the
-/// coded row count.
-#[inline]
-#[target_feature(enable = "avx2")]
-fn stage_rows8(t: Avx2, shape: &InverseTransformAdd8, rows8: &[i32], staged: &mut [i32]) -> usize {
-    let words = shape.w() / 2;
-    let coded = (rows8.len() / 8).min(shape.h());
-    for (r, row) in rows8.as_chunks::<8>().0.iter().take(coded).enumerate() {
-        let mut v = load8(t, row, 0);
-        if shape.rescale {
-            v = rescale(v);
-        }
-        let packed = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(v, v));
-        store8(
-            t,
-            staged,
-            r * words,
-            _mm256_zextsi128_si256(_mm256_castsi256_si128(packed)),
-        );
-        if words > 8 {
-            store8(t, staged, r * words + 8, _mm256_setzero_si256());
-        }
-    }
-    coded
-}
