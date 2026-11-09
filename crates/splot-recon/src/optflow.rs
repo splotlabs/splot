@@ -420,7 +420,7 @@ pub fn optflow_unit_8x8_u8(
         }
     }
     let threshold = sad_threshold.unwrap_or(0);
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let reduced = if distances.contains(&0) {
         [0; 2]
     } else {
@@ -429,6 +429,16 @@ pub fn optflow_unit_8x8_u8(
     #[cfg(target_arch = "x86_64")]
     if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
         let Some(sums) = avx2::unit_8x8(t, &rows, reduced, threshold) else {
+            return Ok(None);
+        };
+        if reduced == [0; 2] {
+            return Ok(Some([[0; 2]; 2]));
+        }
+        return solve_sums(unit_sums(sums, 64), reduced).map(Some);
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+        let Some(sums) = neon::unit_8x8(t, &rows, reduced, threshold) else {
             return Ok(None);
         };
         if reduced == [0; 2] {
@@ -614,6 +624,105 @@ mod avx2 {
                 _mm_extract_epi32::<3>(quad),
                 _mm_cvtsi128_si32(last),
             ])
+        }
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+mod neon {
+    use core::arch::aarch64::*;
+    use fearless_simd::{SimdBase, u8x16};
+
+    /// `tbl` bytes picking, for every `i16` lane of an eight-lane row, the
+    /// lane `offset` away clamped to the row.
+    const fn neighbours(offset: i32) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        let mut lane = 0;
+        while lane < 8 {
+            let source = match lane + offset {
+                ..0 => 0,
+                8.. => 7,
+                source => source as u8,
+            };
+            out[2 * lane as usize] = 2 * source;
+            out[2 * lane as usize + 1] = 2 * source + 1;
+            lane += 1;
+        }
+        out
+    }
+
+    const NEIGHBOURS: [[u8; 16]; 4] =
+        [neighbours(1), neighbours(-1), neighbours(2), neighbours(-2)];
+
+    /// `Round2Signed(42 * (next - prev) - 5 * (next2 - prev2), 7)` of `i16`
+    /// lanes, as [`super::gradient_i16`]: the wrapped magnitude rounds
+    /// unsigned by `(m + add) >> -shift` and takes its sign back after.
+    #[inline]
+    #[target_feature(enable = "neon")]
+    fn gradient(taps: [int16x8_t; 4], add: uint16x8_t, shift: int16x8_t) -> int16x8_t {
+        let [next, prev, next2, prev2] = taps;
+        let near = vmulq_n_s16(vsubq_s16(next, prev), 42);
+        let far = vmulq_n_s16(vsubq_s16(next2, prev2), 5);
+        let rounded = vshlq_u16(
+            vaddq_u16(vreinterpretq_u16_s16(vabdq_s16(near, far)), add),
+            shift,
+        );
+        let sign = vcgtq_s16(far, near);
+        vreinterpretq_s16_u16(vsubq_u16(veorq_u16(rounded, sign), sign))
+    }
+
+    fearless_simd::kernel!(
+        /// The 8x8 SAD test and raw `[su2, sv2, suv, suw, svw]` sums of two
+        /// predictions held as eight-byte rows, one row per `i16` vector.
+        #[inline]
+        pub(super) fn unit_8x8(
+            t: Neon,
+            rows: &[[u64; 8]; 2],
+            distances: [i32; 2],
+            sad_threshold: u32,
+        ) -> Option<[i32; 5]> {
+            let (first, second) = (
+                rows[0].map(|row| vcreate_u8(row)),
+                rows[1].map(|row| vcreate_u8(row)),
+            );
+            let mut sad = vabdl_u8(first[0], second[0]);
+            for (&a, &b) in first.iter().zip(&second).skip(1) {
+                sad = vabal_u8(sad, a, b);
+            }
+            if vaddlvq_u16(sad) < sad_threshold {
+                return None;
+            }
+            let [near, far] = distances.map(|distance| vdupq_n_s16(distance as i16));
+            let widen = |row: uint8x8_t| vreinterpretq_s16_u16(vmovl_u8(row));
+            let weighted: [int16x8_t; 8] = core::array::from_fn(|j| {
+                vmlsq_s16(vmulq_s16(widen(first[j]), near), widen(second[j]), far)
+            });
+            let neighbours =
+                NEIGHBOURS.map(|lanes| -> uint8x16_t { u8x16::load_array(t, lanes).into() });
+            let row_shift = vsetq_lane_s16::<7>(-6, vsetq_lane_s16::<0>(-6, vdupq_n_s16(-7)));
+            let row_add = vsetq_lane_u16::<7>(32, vsetq_lane_u16::<0>(32, vdupq_n_u16(64)));
+            let mut sums = [[vdupq_n_s32(0); 2]; 5];
+            for j in 0..8 {
+                let row = vreinterpretq_u8_s16(weighted[j]);
+                let taps = neighbours.map(|lanes| vreinterpretq_s16_u8(vqtbl1q_u8(row, lanes)));
+                let u = gradient(taps, row_add, row_shift);
+                let rows = [j + 1, j.saturating_sub(1), j + 2, j.saturating_sub(2)];
+                let (add, shift) = if j == 0 || j == 7 { (32, -6) } else { (64, -7) };
+                let v = gradient(
+                    rows.map(|row| weighted[row.min(7)]),
+                    vdupq_n_u16(add),
+                    vdupq_n_s16(shift),
+                );
+                let w = vsubq_s16(widen(first[j]), widen(second[j]));
+                for (sum, (a, b)) in sums
+                    .iter_mut()
+                    .zip([(u, u), (v, v), (u, v), (u, w), (v, w)])
+                {
+                    sum[0] = vmlal_s16(sum[0], vget_low_s16(a), vget_low_s16(b));
+                    sum[1] = vmlal_high_s16(sum[1], a, b);
+                }
+            }
+            Some(sums.map(|[low, high]| vaddvq_s32(vaddq_s32(low, high))))
         }
     );
 }
@@ -1263,14 +1372,31 @@ mod tests {
             .into_iter()
             .flat_map(|near| [1, -1, 2, -3].map(|far| [near, far]));
         let stride = 16;
-        let fills: [fn(usize) -> u8; 4] = [
+        let fills: [fn(usize) -> u8; 6] = [
             |i| ((i * 73 + i / 13 * 29 + (i * i) % 7) % 256) as u8,
             |i| if (i + i / 13) % 3 == 0 { 255 } else { 0 },
             |i| ((i * 7919) % 256) as u8,
             |_| 90,
+            |i| ((i as u32).wrapping_mul(2_654_435_761) >> 24) as u8,
+            |i| {
+                if (i as u32).wrapping_mul(2_246_822_519) >> 31 == 0 {
+                    255
+                } else {
+                    0
+                }
+            },
         ];
         for distances in distance_pairs {
-            for (first, second) in [(0, 1), (1, 2), (2, 0), (3, 3), (0, 3)] {
+            for (first, second) in [
+                (0, 1),
+                (1, 2),
+                (2, 0),
+                (3, 3),
+                (0, 3),
+                (4, 5),
+                (5, 4),
+                (4, 4),
+            ] {
                 let preds: [Vec<u8>; 2] = [
                     (0..stride * 9 + 2).map(fills[first]).collect(),
                     (0..stride * 9 + 2).map(|i| fills[second](i + 5)).collect(),
