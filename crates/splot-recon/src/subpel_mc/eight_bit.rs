@@ -477,7 +477,6 @@ pub(super) mod avx2 {
         starts: [u32; 4],
         remap: Option<__m128i>,
     ) -> Option<__m256i> {
-        let start = starts[0];
         if let Some(remap) = remap {
             let line = |q: usize| -> Option<__m128i> {
                 Some(_mm_shuffle_epi8(
@@ -506,7 +505,7 @@ pub(super) mod avx2 {
                 load16(t, row_bytes(source, starts[0])?),
             ),
             _ => {
-                let bytes = row_bytes::<24>(source, start)?;
+                let bytes = row_bytes::<24>(source, starts[0])?;
                 let (low, high) = (bytes.first_chunk::<16>()?, bytes.last_chunk::<16>()?);
                 _mm256_set_m128i(load16(t, high), load16(t, low))
             }

@@ -514,9 +514,7 @@ mod avx2 {
             } else {
                 by_key!(key, 8, cells(t, mask, lanes, sources, filters, stash))
             };
-            if predicted {
-                done |= mask;
-            }
+            done |= if predicted { mask } else { 0 };
         }
         done
     }
