@@ -192,30 +192,21 @@ fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
         chroma_subsampling: (1, 0),
         qindex: 37,
         lossless: true,
-        v_twin: None,
     };
 
     recorder.record_chroma_unit(PlaneId::U, 0, 8, tx_8x8);
     recorder.record_chroma_unit(PlaneId::U, 8, 8, tx_8x8);
     recorder.record_chroma_unit(PlaneId::V, 0, 8, tx_8x8);
 
-    let u: Vec<_> = chroma_blocks
-        .iter_plane(0)
-        .map(|(_, record)| record)
-        .collect();
-    let v: Vec<_> = chroma_blocks
-        .iter_plane(1)
-        .map(|(_, record)| record)
-        .collect();
+    let u = &chroma_blocks;
     assert_eq!(u.len(), 2);
     assert_eq!(u[0].chroma_base_c, 0);
     assert_eq!(u[1].chroma_base_c, 4);
     assert_eq!(u[1].n4w, 4);
     assert_eq!(u[1].chroma_base_r, 2);
     assert_eq!(u[1].n4h, 2);
-    assert_eq!(v.len(), 1);
-    assert_eq!(v[0].qindex, 37);
-    assert!(v[0].lossless);
+    assert_eq!(u[0].qindex, 37);
+    assert!(u[0].lossless);
 }
 
 #[test]
@@ -1026,7 +1017,7 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
     assert_eq!(original_count, 4);
     assert_eq!(visible.len(), 1);
     let mut deblock_blocks = Vec::new();
-    let mut chroma_blocks = crate::filters::deblock::ChromaDeblockRecords::new();
+    let mut chroma_blocks = Vec::new();
     let mut tx_skip_records = Vec::new();
     let mut deblock = DeblockRecorder {
         blocks: &mut deblock_blocks,
@@ -1038,7 +1029,6 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
         chroma_subsampling: (1, 1),
         qindex: 0,
         lossless: false,
-        v_twin: None,
     };
 
     let mut units = Vec::new();

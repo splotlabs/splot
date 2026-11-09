@@ -1576,16 +1576,13 @@ impl ParseProgress {
     }
 
     /// Moves the deblock records published so far into `deblock`.
-    pub(super) fn take_deblock_records(
-        &self,
-        deblock: &mut crate::filters::deblock::FrameDeblock,
-    ) -> core::result::Result<(), crate::filters::deblock::DeblockError> {
+    pub(super) fn take_deblock_records(&self, deblock: &mut crate::filters::deblock::FrameDeblock) {
         let mut records = self.records.lock();
         let records = &mut *records;
         deblock.append_records(
             &mut records.deblock_blocks,
             &mut records.chroma_deblock_blocks,
-        )
+        );
     }
 
     /// Moves the parsed records into the frame.

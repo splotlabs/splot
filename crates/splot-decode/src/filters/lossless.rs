@@ -5,7 +5,7 @@
 
 use splot_recon::PlaneId;
 
-use crate::filters::deblock::{ChromaDeblockRecords, DeblockBlock};
+use crate::filters::deblock::DeblockBlock;
 
 const MI_SIZE: usize = 4;
 
@@ -18,7 +18,6 @@ pub(crate) struct LosslessBlockGrid {
 }
 
 impl LosslessBlockGrid {
-    #[cfg(test)]
     pub(crate) fn from_deblock_blocks(
         mi_rows: usize,
         mi_cols: usize,
@@ -32,33 +31,6 @@ impl LosslessBlockGrid {
             chroma: [
                 lossless_cells(mi_rows, mi_cols, chroma_blocks[0].iter())?,
                 lossless_cells(mi_rows, mi_cols, chroma_blocks[1].iter())?,
-            ],
-        })
-    }
-
-    pub(crate) fn from_deblock_records(
-        mi_rows: usize,
-        mi_cols: usize,
-        luma_blocks: &[DeblockBlock],
-        chroma_blocks: &ChromaDeblockRecords,
-    ) -> Result<Self, LosslessGridError> {
-        Ok(Self {
-            mi_rows,
-            mi_cols,
-            luma: lossless_cells(mi_rows, mi_cols, luma_blocks.iter())?,
-            chroma: [
-                lossless_cells(
-                    mi_rows,
-                    mi_cols,
-                    chroma_blocks.iter_plane(0).map(|(_, block)| block),
-                )
-                .map_err(|error| error.for_plane(splot_recon::PlaneId::U))?,
-                lossless_cells(
-                    mi_rows,
-                    mi_cols,
-                    chroma_blocks.iter_plane(1).map(|(_, block)| block),
-                )
-                .map_err(|error| error.for_plane(splot_recon::PlaneId::V))?,
             ],
         })
     }
@@ -201,15 +173,6 @@ pub(crate) enum LosslessGridError {
     Geometry,
     #[error("lossless grid storage could not be reserved")]
     Allocation(splot_recon::PlaneId),
-}
-
-impl LosslessGridError {
-    const fn for_plane(self, plane: splot_recon::PlaneId) -> Self {
-        match self {
-            Self::Allocation(_) => Self::Allocation(plane),
-            Self::Geometry => Self::Geometry,
-        }
-    }
 }
 
 #[cfg(test)]

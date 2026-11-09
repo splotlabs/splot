@@ -203,10 +203,7 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         [(0, 32)]
     );
     let records = deblock_records();
-    let mut chroma_records = crate::filters::deblock::ChromaDeblockRecords::new();
-    for record in &records {
-        chroma_records.push_both(*record);
-    }
+    let chroma_records = records.clone();
 
     let mut combined =
         WienerNsLrReconSink::for_final_filtering(deblock_workspace(), 64, 32, BitDepth::Eight);

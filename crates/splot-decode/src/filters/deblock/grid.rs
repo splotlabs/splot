@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::facts::PlaneFacts;
-use super::{ChromaDeblockRecords, DeblockBlock, DeblockError, EdgeBlock};
+use super::{DeblockBlock, DeblockError, EdgeBlock};
 
 /// A cell holds its record index plus one, so that an empty cell is zero.
 const NO_BLOCK: u32 = 0;
@@ -70,7 +70,7 @@ pub(super) struct MiGrid<'a> {
     pub(super) base: &'a MiGridStorage,
     pub(super) chroma: Option<&'a ChromaMiGridStorage>,
     pub(super) base_blocks: &'a [DeblockBlock],
-    pub(super) overlay_blocks: &'a ChromaDeblockRecords,
+    pub(super) overlay_blocks: &'a [DeblockBlock],
     /// The plane's cell facts, which the edge decisions of a frame without
     /// sub-PU edges read instead of the records.
     pub(super) facts: Option<&'a PlaneFacts>,
@@ -81,7 +81,7 @@ impl MiGrid<'_> {
         base: &'a MiGridStorage,
         chroma: Option<&'a ChromaMiGridStorage>,
         base_blocks: &'a [DeblockBlock],
-        overlay_blocks: &'a ChromaDeblockRecords,
+        overlay_blocks: &'a [DeblockBlock],
     ) -> MiGrid<'a> {
         MiGrid {
             base,
@@ -141,8 +141,8 @@ impl MiGrid<'_> {
 #[derive(Default)]
 pub(crate) struct DeblockGridStorage {
     pub(super) cells: Vec<MiCell>,
-    pub(super) chroma: [Vec<ChromaMiCell>; 2],
-    pub(super) facts: [PlaneFacts; 3],
+    pub(super) chroma: Vec<ChromaMiCell>,
+    pub(super) facts: [PlaneFacts; 2],
 }
 
 /// The cell rows and columns `block` covers in a grid whose cells are
@@ -230,40 +230,28 @@ impl ChromaMiGridStorage {
         }
     }
 
-    /// Marks every cell of a `mi_rows`-row frame empty for chroma plane
-    /// `plane` (0 for U).
-    pub(super) fn reset(&mut self, plane: usize, mi_rows: usize) -> Result<(), DeblockError> {
-        let plane_id = match plane {
-            0 => splot_recon::PlaneId::U,
-            1 => splot_recon::PlaneId::V,
-            _ => return Err(DeblockError::Workspace),
-        };
+    /// Marks every cell of a `mi_rows`-row frame empty.
+    pub(super) fn reset(&mut self, mi_rows: usize) -> Result<(), DeblockError> {
         let len = mi_rows
             .div_ceil(1 << self.sub_y)
             .checked_mul(self.cell_cols)
             .ok_or(DeblockError::Workspace)?;
-        reset(&mut self.cells, len, ChromaMiCell::default(), plane_id)
+        reset(&mut self.cells, len, ChromaMiCell::default(), splot_recon::PlaneId::U)
     }
 
-    /// Lays one chroma plane's overlay records from `records[start]` on out
-    /// over the frame in record order, after the luma grid's fill of the same
-    /// records.
+    /// Lays the chroma overlay records `records`, the first of which is
+    /// record `first`, out over the frame in record order.
     pub(super) fn fill(
         &mut self,
         mi_cols: usize,
-        records: &ChromaDeblockRecords,
-        (plane, start): (usize, usize),
+        records: &[DeblockBlock],
+        first: usize,
         mi_rows: usize,
     ) -> Result<(), DeblockError> {
-        let mask = [ChromaDeblockRecords::U, ChromaDeblockRecords::V][plane];
         let (sub_x, sub_y, cols) = (self.sub_x, self.sub_y, self.cell_cols);
         let extent = (mi_rows, mi_cols);
-        for (index, record) in records.blocks.iter().enumerate().skip(start) {
-            if record.planes & mask == 0 {
-                continue;
-            }
+        for (index, block) in (first..).zip(records) {
             let mark = mi_block_index(index)? + 1;
-            let block = &record.block;
             for (_, span) in block_spans(block, extent, (sub_x, sub_y), cols) {
                 if let Some(cells) = self.cells.get_mut(span) {
                     for cell in cells {

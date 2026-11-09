@@ -9,7 +9,7 @@
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 
 use super::grid::{block_cells, reset, resize};
-use super::{ChromaDeblockRecords, DeblockBlock, DeblockError, DeblockPredictionUnit, MI_SIZE};
+use super::{DeblockBlock, DeblockError, DeblockPredictionUnit, MI_SIZE};
 use crate::support::fill_mi_run;
 
 /// Info bits past the § 7.17.4 size codes (`log2 - 1` of `Tx_Width` in bits
@@ -142,22 +142,17 @@ impl PlaneFacts {
         }
     }
 
-    /// Paints plane `plane` (0 for U) of the chroma records from `start` on
-    /// in record order: a block record writes every fact of its cells, a
-    /// transform-only record, which follows its block's, their transform base
-    /// and size.
+    /// Paints the chroma records `records` in record order: a block record
+    /// writes every fact of its cells, a transform-only record, which follows
+    /// its block's, their transform base and size.
     pub(super) fn paint_chroma(
         &mut self,
-        records: &ChromaDeblockRecords,
-        (plane, start): (usize, usize),
+        records: &[DeblockBlock],
         extent: (usize, usize),
         (sub_x, sub_y): (usize, usize),
     ) {
-        let mask = [ChromaDeblockRecords::U, ChromaDeblockRecords::V][plane];
-        let records = records.blocks.get(start..).unwrap_or_default();
         let stride = self.stride;
-        for block in records.iter().filter(|record| record.planes & mask != 0) {
-            let block = &block.block;
+        for block in records {
             let [rows, cols] = block_cells(block, extent, (sub_x, sub_y));
             if rows.is_empty() || cols.is_empty() {
                 continue;

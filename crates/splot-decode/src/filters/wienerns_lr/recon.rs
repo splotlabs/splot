@@ -1183,8 +1183,11 @@ fn lossless_grid(
     {
         return Ok(None);
     }
-    crate::filters::lossless::LosslessBlockGrid::from_deblock_records(
-        mi_rows, mi_cols, blocks, chroma,
+    crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
+        mi_rows,
+        mi_cols,
+        blocks,
+        [chroma.as_slice(); 2],
     )
     .map(Some)
     .map_err(|error| match error {
@@ -1405,7 +1408,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn chroma_transform_deblock_block(
-    plane_id: PlaneId,
     x: usize,
     y: usize,
     chroma_tx: usize,
@@ -1413,40 +1415,32 @@ pub(crate) fn chroma_transform_deblock_block(
     chroma_subsampling: (u32, u32),
     qindex: u32,
     lossless: bool,
-) -> Option<(usize, crate::filters::deblock::DeblockBlock)> {
-    let plane_index = match plane_id {
-        PlaneId::U => 0,
-        PlaneId::V => 1,
-        PlaneId::Y => return None,
-    };
+) -> Option<crate::filters::deblock::DeblockBlock> {
     let [r, c, n4w, n4h] =
         chroma_transform_cells(x, y, chroma_tx, log2_dimensions, chroma_subsampling)?;
-    Some((
-        plane_index,
-        crate::filters::deblock::DeblockBlock {
-            r: r as u32,
-            c: c as u32,
-            luma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, chroma_tx),
-            chroma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, chroma_tx),
-            chroma_base_r: r as u32,
-            chroma_base_c: c as u32,
-            n4w: n4w as u32,
-            n4h: n4h as u32,
-            luma_tx: chroma_tx as u8,
-            chroma_tx: Some(chroma_tx as u8),
-            sub_pu_size: None,
-            chroma_transform_only: false,
-            qindex,
-            skip: false,
-            lossless,
-        },
-    ))
+    Some(crate::filters::deblock::DeblockBlock {
+        r: r as u32,
+        c: c as u32,
+        luma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, chroma_tx),
+        chroma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, chroma_tx),
+        chroma_base_r: r as u32,
+        chroma_base_c: c as u32,
+        n4w: n4w as u32,
+        n4h: n4h as u32,
+        luma_tx: chroma_tx as u8,
+        chroma_tx: Some(chroma_tx as u8),
+        sub_pu_size: None,
+        chroma_transform_only: false,
+        qindex,
+        skip: false,
+        lossless,
+    })
 }
 
 /// The luma mode-info row, column, width and height of the chroma transform
 /// block `chroma_tx` (of `log2_dimensions` when given) at plane sample
 /// (`x`, `y`), which its deblock record covers.
-pub(crate) fn chroma_transform_cells(
+fn chroma_transform_cells(
     x: usize,
     y: usize,
     chroma_tx: usize,

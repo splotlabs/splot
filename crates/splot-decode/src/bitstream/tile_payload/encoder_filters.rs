@@ -326,7 +326,6 @@ impl FilterRecorder {
             chroma_subsampling: self.subsampling,
             qindex: syntax.qindex(),
             lossless: false,
-            v_twin: None,
         };
         for (tx, &eob) in transforms.iter().zip(eobs) {
             if tx.plane == 0 {

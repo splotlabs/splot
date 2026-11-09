@@ -14,11 +14,13 @@ pub(crate) struct DeblockRecorder<'a> {
     pub(crate) chroma_subsampling: (u32, u32),
     pub(crate) qindex: u32,
     pub(crate) lossless: bool,
-    /// The block's next U record a V record may pair with.
-    pub(crate) v_twin: Option<usize>,
 }
 
 impl DeblockRecorder<'_> {
+    /// Records a chroma transform unit once for both planes: from its U
+    /// unit, as V's has the same geometry ([`ChromaDeblockRecords`]).
+    ///
+    /// [`ChromaDeblockRecords`]: crate::filters::deblock::ChromaDeblockRecords
     pub(crate) fn record_chroma_unit(
         &mut self,
         plane_id: splot_recon::PlaneId,
@@ -26,32 +28,19 @@ impl DeblockRecorder<'_> {
         y: usize,
         tx_size: usize,
     ) {
-        if plane_id == splot_recon::PlaneId::V
-            && crate::filters::wienerns_lr::chroma_transform_cells(
-                x,
-                y,
-                tx_size,
-                None,
-                self.chroma_subsampling,
-            )
-            .is_some_and(|cells| self.chroma_blocks.pair_v(&mut self.v_twin, cells, tx_size))
-        {
+        if plane_id != splot_recon::PlaneId::U {
             return;
         }
-        if let Some((plane_index, record)) =
-            crate::filters::wienerns_lr::chroma_transform_deblock_block(
-                plane_id,
-                x,
-                y,
-                tx_size,
-                None,
-                self.chroma_subsampling,
-                self.qindex,
-                self.lossless,
-            )
-        {
-            self.chroma_blocks
-                .push_paired(plane_index, &mut self.v_twin, record);
+        if let Some(record) = crate::filters::wienerns_lr::chroma_transform_deblock_block(
+            x,
+            y,
+            tx_size,
+            None,
+            self.chroma_subsampling,
+            self.qindex,
+            self.lossless,
+        ) {
+            self.chroma_blocks.push(record);
         }
     }
 
