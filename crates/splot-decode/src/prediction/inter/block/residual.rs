@@ -609,12 +609,12 @@ impl InterChromaGroup {
             ref_w4 * MI_SIZE,
             ref_h4 * MI_SIZE,
         );
-        let plane_source_size = if chroma_mi_size != frontier.b_size {
-            chroma_mi_size
-        } else {
-            mi_size_chunk
-        };
-        let (mut num4x4_w, mut num4x4_h) = dims(residual_size(plane_source_size)?)?;
+        let (mut num4x4_w, mut num4x4_h) =
+            if chroma_mi_size != frontier.b_size || mi_size_chunk == chroma_mi_size {
+                (ref_w4, ref_h4)
+            } else {
+                dims(residual_size(mi_size_chunk)?)?
+            };
         let (block_w4, block_h4) = dims(frontier.b_size)?;
         if subsampling_x && chunk_x + 1 < (block_w4 >> 4).max(1) && !lossless {
             num4x4_w <<= 1;

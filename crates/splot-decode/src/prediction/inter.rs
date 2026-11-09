@@ -966,6 +966,9 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
             .map_err(inter_residual_reconstruction_error)?;
             continue;
         }
+        if block.coeffs.eob == 0 {
+            continue;
+        }
         let use_tcq = block.plane == ReconPlaneId::Y && luma_use_tcq;
         let (log2_width, log2_height) = inter_residual_log2(block)
             .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
