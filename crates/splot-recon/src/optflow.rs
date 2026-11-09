@@ -420,6 +420,7 @@ pub fn optflow_unit_8x8_u8(
         }
     }
     let threshold = sad_threshold.unwrap_or(0);
+    #[cfg(target_arch = "x86_64")]
     let reduced = if distances.contains(&0) {
         [0; 2]
     } else {

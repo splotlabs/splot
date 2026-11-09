@@ -12,6 +12,15 @@
 //! halved taps, and a two-pass vertical rounds the intermediates. Every other
 //! block takes the general path.
 
+#![cfg_attr(
+    not(target_arch = "x86_64"),
+    allow(
+        dead_code,
+        clippy::unused_self,
+        reason = "AVX2-only cells until the NEON port"
+    )
+)]
+
 use super::block::{TAPS, Taps, even_tap_span};
 use super::{
     CellPlacement, InterpolationFilter, NUM_FILTER_TYPES, NUM_PHASES, ReferencePlaneView,

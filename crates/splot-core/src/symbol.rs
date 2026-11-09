@@ -49,6 +49,7 @@ pub(crate) trait CdfStorage: Copy {
 
     /// The row as `u16` storage, which the x86-64 lane reads search and
     /// adapt directly.
+    #[cfg(target_arch = "x86_64")]
     fn u16_row(_cdf: &mut [Self]) -> Option<&mut [u16]> {
         None
     }
@@ -98,6 +99,7 @@ impl CdfStorage for u16 {
         value as u16
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn u16_row(cdf: &mut [u16]) -> Option<&mut [u16]> {
         Some(cdf)
     }

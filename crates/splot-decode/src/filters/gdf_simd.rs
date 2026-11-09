@@ -650,9 +650,9 @@ fn cycle_combs<
     let (c_above, c_below) = tap_diffs::<S, W, C, ROW>(simd, window, centers);
     let (d_above, d_below) = tap_diffs::<S, W, D, ROW>(simd, window, centers);
     let select4 = |a: u16x16<S>, b: u16x16<S>, c: u16x16<S>, d: u16x16<S>| {
-        let ((ab, ba), (cd, dc)) = (swap(a, b, mirrored), swap(c, d, mirrored));
+        let ((ab0, ab1), (cd0, cd1)) = (swap(a, b, mirrored), swap(c, d, mirrored));
         let ((first, third), (second, fourth)) =
-            (swap(ab, cd, transposed), swap(ba, dc, transposed));
+            (swap(ab0, cd0, transposed), swap(ab1, cd1, transposed));
         [first, second, third, fourth]
     };
     let above = select4(a_above, b_above, c_above, d_above);

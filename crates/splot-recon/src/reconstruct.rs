@@ -12,9 +12,11 @@
 //!
 //! Feature tracking: `RECON-RESIDUAL-ADDITION`.
 
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::Level;
 use fearless_simd::{
-    Bytes as _, Level, Simd, SimdBase as _, SimdInt as _, SimdNarrow as _, SimdWiden as _, i16x16,
-    i32x4, i32x8, u8x16, u16x8, u16x16, u32x4, u32x8, u64x2,
+    Bytes as _, Simd, SimdBase as _, SimdInt as _, SimdNarrow as _, SimdWiden as _, i16x16, i32x4,
+    i32x8, u8x16, u16x8, u16x16, u32x4, u32x8, u64x2,
 };
 
 #[cfg(target_arch = "x86_64")]

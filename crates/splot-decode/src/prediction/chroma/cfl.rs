@@ -1537,7 +1537,7 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
             }
         }
         #[cfg(not(target_arch = "x86_64"))]
-        let _ = (x, y, height, clamps, above, left, out);
+        let _ = (self, x, y, height, clamps, above, left, out);
         false
     }
 
@@ -1606,6 +1606,7 @@ trait CflLaneSample: Copy + Into<u16> {
     fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>);
     fn from_clipped(v: i32) -> Self;
     /// `samples` as bytes, for 8-bit planes.
+    #[cfg(target_arch = "x86_64")]
     fn as_u8(samples: &[Self]) -> Option<&[u8]>;
 }
 
@@ -1633,6 +1634,7 @@ impl CflLaneSample for u8 {
     }
 
     #[inline]
+    #[cfg(target_arch = "x86_64")]
     fn as_u8(samples: &[Self]) -> Option<&[u8]> {
         Some(samples)
     }
@@ -1657,6 +1659,7 @@ impl CflLaneSample for u16 {
     }
 
     #[inline]
+    #[cfg(target_arch = "x86_64")]
     fn as_u8(_samples: &[Self]) -> Option<&[u8]> {
         None
     }

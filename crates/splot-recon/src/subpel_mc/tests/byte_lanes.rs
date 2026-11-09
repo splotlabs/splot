@@ -113,6 +113,7 @@ fn byte_lane_sinks_match_the_oracle_for_every_shape_and_phase() {
 
 /// The byte search window and its SADs against the general bilinear
 /// prediction and a scalar SAD, for every window shape and phase pair.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn byte_search_window_and_sads_match_the_general_path() {
     let (ref_w, ref_h) = (72usize, 64usize);
@@ -212,6 +213,7 @@ fn byte_search_window_and_sads_match_the_general_path() {
 /// The byte bilinear kernel against the general prediction for every phase
 /// pair and several shapes and strides, and its refusal of a block whose
 /// taps would clamp.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn byte_bilinear_blocks_match_the_general_path() {
     let (ref_w, ref_h) = (72usize, 60usize);
@@ -370,6 +372,7 @@ fn paired_put_matches_two_single_puts() {
 /// A program run stores and reports exactly the cells the placement entry
 /// stores, for windows inside, across and outside their clip bounds and
 /// storage, with more cells than one setup batch.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn compound_cell_programs_match_the_placement_entry() {
     let (ref_w, ref_h) = (40usize, 32usize);
@@ -449,6 +452,7 @@ fn compound_cell_programs_match_the_placement_entry() {
 /// The placement entry of a compound cell stores what the validated
 /// compound entry stores for the same parameters, inside and across its
 /// clip bounds, and declines shapes outside the register cells.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn placed_compound_cells_match_the_compound_entry() {
     let (ref_w, ref_h) = (40usize, 32usize);

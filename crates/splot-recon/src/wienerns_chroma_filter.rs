@@ -18,7 +18,9 @@ use crate::math::round2_i32;
 use crate::wienerns_filter::{LumaSimdSource, validated_source_sample};
 use crate::workspace::u16_samples_exceed;
 use crate::{BitDepth, ReconError, ReconSample, Result};
-use fearless_simd::{Level, Simd, SimdIntWiden, i16x8, i16x16, i32x4, i32x8, prelude::*, u16x16};
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::Level;
+use fearless_simd::{Simd, SimdIntWiden, i16x8, i16x16, i32x4, i32x8, prelude::*, u16x16};
 
 /// AV2 § 3 `WIENER_NS_PREC_BITS`, used by § 7.20.3 for the accumulator scale.
 const WIENER_NS_PREC_BITS: u32 = 7;

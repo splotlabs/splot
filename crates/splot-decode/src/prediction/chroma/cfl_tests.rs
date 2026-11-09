@@ -920,7 +920,7 @@ fn check_u8_gathered_edges<const F: usize>(frame: &CurrentFrameWorkspace<u8>, st
             }
         }
     }
-    assert!(folded > 5, "{folded}");
+    assert!(folded > 5 || cfg!(not(target_arch = "x86_64")), "{folded}");
 }
 
 #[test]
@@ -967,6 +967,7 @@ fn cfl_420_u8_block_luma_matches_per_sample_q3() {
 
 /// [`CflLuma::block_luma_420`] with only first-row and first-column clamps
 /// (the § 7.13.6 MHCCP reference rows) against [`CflLuma::q3_run`].
+#[cfg(target_arch = "x86_64")]
 fn check_u8_reference_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, state: &mut u64) {
     let samples = frame.plane(PlaneId::Y).unwrap().samples();
     let luma = CflLuma::<u8, F>::new(frame, samples, F).unwrap();
@@ -998,6 +999,7 @@ fn check_u8_reference_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, st
     assert!(fast_runs > 10, "{fast_runs}");
 }
 
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn mhccp_420_u8_reference_luma_matches_q3_runs() {
     let mut state = 29;
