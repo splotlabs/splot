@@ -341,6 +341,7 @@ fn error_table(block: &GdfBlock) -> Option<&'static [i8]> {
 /// The kernels read `center - tap`, the negated tap differences. The clip
 /// bounds are symmetric, so every comb comes out negated, and the weighted
 /// combs are subtracted from the bias.
+#[repr(align(32))]
 pub(super) struct GdfSymParams {
     /// Each tap's clip bounds `[-alpha, alpha]` plus [`ABOVE_OFFSET`], then
     /// plus [`BELOW_OFFSET`], as whole vectors that the clamps read from memory.
