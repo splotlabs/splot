@@ -699,7 +699,7 @@ mod neon {
             }
             return;
         }
-        let part =|bytes: u8x16<S>, [left, right]: [u8x16<S>; 2]| {
+        let part = |bytes: u8x16<S>, [left, right]: [u8x16<S>; 2]| {
             let (l0, l1) = simd
                 .swizzle_dyn_within_blocks_u8x16(bytes, left)
                 .widening_mul(weights.0);

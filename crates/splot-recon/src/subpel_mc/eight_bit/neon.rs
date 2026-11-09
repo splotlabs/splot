@@ -103,7 +103,13 @@ pub(in crate::subpel_mc) fn fullpel_compound<S: Simd>(
             } else {
                 (a * weights.0 + b * weights.1 + 8) >> 4
             };
-            store_bytes(simd, output, row * stride + col, (first.w - col).min(8), values);
+            store_bytes(
+                simd,
+                output,
+                row * stride + col,
+                (first.w - col).min(8),
+                values,
+            );
         }
     }
 }
