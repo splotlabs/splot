@@ -15,7 +15,7 @@ pub(crate) mod intrabc_ref_mv_stack;
 pub(crate) mod recon;
 pub(crate) mod tx_records;
 
-pub(crate) use self::recon::chroma_transform_deblock_block;
+pub(crate) use self::recon::{chroma_transform_cells, chroma_transform_deblock_block};
 
 pub(crate) fn recon_final_filter_sink<T: splot_recon::ReconSample>(
     workspace: splot_recon::CurrentFrameWorkspace<T>,

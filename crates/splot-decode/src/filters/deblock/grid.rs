@@ -145,22 +145,34 @@ pub(crate) struct DeblockGridStorage {
     pub(super) facts: [PlaneFacts; 3],
 }
 
+/// The cell rows and columns `block` covers in a grid whose cells are
+/// `1 << sub` mode-info units wide and high.
+pub(super) fn block_cells(
+    block: &DeblockBlock,
+    (mi_rows, mi_cols): (usize, usize),
+    (sub_x, sub_y): (usize, usize),
+) -> [core::ops::Range<usize>; 2] {
+    let (r, c) = (block.r as usize, block.c as usize);
+    let row_end = r.saturating_add(block.n4h as usize).min(mi_rows);
+    let col_end = c.saturating_add(block.n4w as usize).min(mi_cols);
+    [
+        (r >> sub_y)..row_end.div_ceil(1 << sub_y),
+        (c.min(col_end) >> sub_x)..col_end.div_ceil(1 << sub_x),
+    ]
+}
+
 /// The cell spans `block` covers, one per cell row, in a grid of `cols`
 /// cells per row whose cells are `1 << sub` mode-info units wide and high.
 pub(super) fn block_spans(
     block: &DeblockBlock,
-    (mi_rows, mi_cols): (usize, usize),
-    (sub_x, sub_y): (usize, usize),
+    extent: (usize, usize),
+    sub: (usize, usize),
     cols: usize,
 ) -> impl Iterator<Item = (usize, core::ops::Range<usize>)> + use<> {
-    let (r, c) = (block.r as usize, block.c as usize);
-    let row_end = r.saturating_add(block.n4h as usize).min(mi_rows);
-    let col_end = c.saturating_add(block.n4w as usize).min(mi_cols);
-    let col_start = c.min(col_end) >> sub_x;
-    let col_end = col_end.div_ceil(1 << sub_x);
-    ((r >> sub_y)..row_end.div_ceil(1 << sub_y)).map(move |row| {
+    let [rows, columns] = block_cells(block, extent, sub);
+    rows.map(move |row| {
         let base = row * cols;
-        (row, base + col_start..base + col_end)
+        (row, base + columns.start..base + columns.end)
     })
 }
 

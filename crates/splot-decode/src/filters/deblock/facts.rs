@@ -8,7 +8,7 @@
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 
-use super::grid::{reset, resize};
+use super::grid::{block_cells, reset, resize};
 use super::{ChromaDeblockRecords, DeblockBlock, DeblockError, DeblockPredictionUnit, MI_SIZE};
 use crate::support::fill_mi_run;
 
@@ -150,7 +150,7 @@ impl PlaneFacts {
         &mut self,
         records: &ChromaDeblockRecords,
         (plane, start): (usize, usize),
-        (mi_rows, mi_cols): (usize, usize),
+        extent: (usize, usize),
         (sub_x, sub_y): (usize, usize),
     ) {
         let mask = [ChromaDeblockRecords::U, ChromaDeblockRecords::V][plane];
@@ -158,31 +158,31 @@ impl PlaneFacts {
         let stride = self.stride;
         for block in records.iter().filter(|record| record.planes & mask != 0) {
             let block = &block.block;
-            let (r, c) = (block.r as usize, block.c as usize);
-            let row_end = r.saturating_add(block.n4h as usize).min(mi_rows);
-            let col_end = c.saturating_add(block.n4w as usize).min(mi_cols);
-            let (col, col_end) = (c.min(col_end) >> sub_x, col_end.div_ceil(1 << sub_x));
-            let rows = (r >> sub_y)..row_end.div_ceil(1 << sub_y);
-            if rows.is_empty() || col >= col_end {
+            let [rows, cols] = block_cells(block, extent, (sub_x, sub_y));
+            if rows.is_empty() || cols.is_empty() {
                 continue;
             }
             let key = key(block.chroma_base_r, block.chroma_base_c);
             if block.chroma_transform_only {
                 let codes = block.chroma_tx.map(size_codes);
                 for row in rows {
-                    self.paint_transform(key, codes, row * stride + col..row * stride + col_end);
+                    self.paint_transform(
+                        key,
+                        codes,
+                        row * stride + cols.start..row * stride + cols.end,
+                    );
                 }
                 continue;
             }
             let (bits, qindex) = block_bits(block);
             let [x, y] = origin(block.chroma_prediction, (sub_x, sub_y));
             let rect = Rect {
-                at: rows.start * stride + col,
+                at: rows.start * stride + cols.start,
                 rows: rows.len(),
                 values: [key, bits | size_codes(block.chroma_tx.unwrap_or(0)), qindex],
-                edges: [edge(x, col), edge(y, rows.start)],
+                edges: [edge(x, cols.start), edge(y, rows.start)],
             };
-            self.paint(rect, col_end - col);
+            self.paint(rect, cols.len());
         }
     }
 
@@ -250,14 +250,8 @@ impl PlaneFacts {
                 return;
             };
             fill_mi_run(keys, key);
-            fill_mi_run(
-                infos,
-                if Some(row) == edge_row {
-                    info | EDGE_H
-                } else {
-                    info
-                },
-            );
+            let edge = if Some(row) == edge_row { EDGE_H } else { 0 };
+            fill_mi_run(infos, info | edge);
             fill_mi_run(qindexes, qindex);
             if let Some(cell) = edge_col.and_then(|col| infos.get_mut(col)) {
                 *cell |= EDGE_V;

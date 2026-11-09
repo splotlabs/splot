@@ -126,10 +126,9 @@ impl ChromaDeblockRecords {
         self.blocks.push(ChromaDeblockBlock { block, planes });
     }
 
-    /// Pushes one block's record of plane `plane` (0 for U), pairing the
-    /// block's U and V records without a second copy: `twin` is the block's
-    /// next U record, which a V record that is the same record marks as V's
-    /// too.
+    /// Pushes one block's chroma transform record of plane `plane` (0 for
+    /// U); `twin` keeps the block's next U record, which a V record that
+    /// [`Self::pair_v`] did not pair has passed.
     #[inline]
     pub(crate) fn push_paired(
         &mut self,
@@ -141,23 +140,35 @@ impl ChromaDeblockRecords {
             twin.get_or_insert(self.blocks.len());
             return self.push(0, block);
         }
-        if !self.pair_v(twin, |u| *u == block) {
-            self.push(1, block);
-            *twin = twin.map(|at| at + 1);
-        }
+        *twin = twin.map(|at| at + 1);
+        self.push(1, block);
     }
 
-    /// Marks the block's next U record, `twin`, as V's too when `same` holds
-    /// for it, which is [`Self::push_paired`] of a V record without building
-    /// it.
+    /// Marks the block's next U record, `twin`, as V's too when it covers
+    /// `cells` ([`chroma_transform_cells`]) with transform `tx`: the block's
+    /// V record of that transform would be the same record.
+    ///
+    /// [`chroma_transform_cells`]: crate::filters::wienerns_lr::chroma_transform_cells
     #[inline]
     pub(crate) fn pair_v(
         &mut self,
         twin: &mut Option<usize>,
-        same: impl FnOnce(&DeblockBlock) -> bool,
+        cells: [usize; 4],
+        tx: usize,
     ) -> bool {
         match twin.and_then(|at| self.blocks.get_mut(at)) {
-            Some(record) if record.planes == Self::U && same(&record.block) => {
+            Some(record)
+                if record.planes == Self::U
+                    && usize::from(record.block.luma_tx) == tx
+                    && [
+                        record.block.r,
+                        record.block.c,
+                        record.block.n4w,
+                        record.block.n4h,
+                    ]
+                    .map(|value| value as usize)
+                        == cells =>
+            {
                 record.planes = Self::U | Self::V;
                 self.single -= 1;
                 *twin = twin.map(|at| at + 1);

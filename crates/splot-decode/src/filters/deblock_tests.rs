@@ -1144,10 +1144,7 @@ fn batched_passes_match_every_edge_alone_across_frame_edges_and_chroma() {
     };
     assert_walk_matches_every_edge(&grid, 0, frame, (mi_rows, mi_cols));
 
-    let mut chroma = ChromaDeblockRecords::default();
-    for block in blocks {
-        chroma.push_both(block);
-    }
+    let mut chroma = chroma_of(&blocks);
     chroma.push_both(block(0, 40, 4, 8, 1, (0, 40), None, false, 60));
     let mut transform = block(8, 16, 12, 12, 2, (8, 16), None, false, 60);
     transform.chroma_transform_only = true;
