@@ -134,9 +134,9 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "optical-flow scratch sample count",
         })?;
-    scratch
-        .samples
-        .resize(scratch.samples.len().max(scratch_len), 0);
+    if scratch.samples.len() < scratch_len {
+        scratch.samples.resize(scratch_len, 0);
+    }
     let (weighted, scratch_samples) = scratch.samples[..scratch_len].split_at_mut(expected);
     let (difference, scratch_samples) = scratch_samples.split_at_mut(expected);
     let (gradient_x, gradient_y) = scratch_samples.split_at_mut(expected);
@@ -215,8 +215,13 @@ fn push_unit_deltas(
     distances: [i32; 2],
 ) -> Result<()> {
     for sums in units {
-        let delta = solve_sums(sums, distances).inspect_err(|_| deltas.clear())?;
-        deltas.push(delta);
+        match solve_sums(sums, distances) {
+            Ok(delta) => deltas.push(delta),
+            Err(error) => {
+                deltas.clear();
+                return Err(error);
+            }
+        }
     }
     Ok(())
 }
