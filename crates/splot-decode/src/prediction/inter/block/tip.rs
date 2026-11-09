@@ -474,7 +474,6 @@ pub(super) struct TipFramePlan {
 struct TipBlockPlan {
     references: TipReferencePair,
     plan: TipReferencePlan,
-    two_references: bool,
     output: bool,
     use_optflow: bool,
     unit_size: usize,
@@ -520,7 +519,10 @@ impl TipBlockPlan {
             self.frame_mi_cols,
             current_order_hint,
             self.references.past_ref,
-            self.two_references.then_some(self.references.future_ref),
+            self.plan
+                .future
+                .is_some()
+                .then_some(self.references.future_ref),
             stored_mvs[0],
             stored_mvs[1],
             [None, None],
@@ -662,7 +664,6 @@ impl TipFramePlan {
         Ok(TipBlockPlan {
             references: self.references,
             plan,
-            two_references: self.plan.future.is_some(),
             output: self.output,
             use_optflow,
             unit_size,
@@ -1614,7 +1615,6 @@ mod tests {
                 search_refinemv: false,
                 optflow_sad_threshold: Some(6),
             },
-            two_references: true,
             output: false,
             use_optflow: true,
             unit_size: 8,

@@ -932,23 +932,10 @@ pub(crate) struct TipReferencePair {
 }
 
 /// A TIP reference pair with the [`project_mv`] scales of its two offsets.
-#[derive(Clone, Copy, Debug)]
-struct TipProjection {
-    references: TipReferencePair,
-    scales: [i64; 2],
-}
-
-impl TipProjection {
-    fn new(references: TipReferencePair) -> Self {
-        let scale = |offset| i64::from(clamped_tmvp_factor(offset, references.ref_offset));
-        Self {
-            references,
-            scales: [
-                scale(references.past_offset),
-                scale(references.future_offset),
-            ],
-        }
-    }
+fn tip_projection(references: TipReferencePair) -> (TipReferencePair, [i64; 2]) {
+    let scale = |offset| i64::from(clamped_tmvp_factor(offset, references.ref_offset));
+    let past = scale(references.past_offset);
+    (references, [past, scale(references.future_offset)])
 }
 
 #[derive(Debug)]
@@ -958,7 +945,7 @@ pub(crate) struct TemporalMvContext {
     field: ProjectedTemporalMotionField,
     trajectories: Option<TrajectoryState>,
     trajectory_scratch: Option<TrajectoryState>,
-    tip: Option<TipProjection>,
+    tip: Option<(TipReferencePair, [i64; 2])>,
     banded: Option<BandedTemporalContext>,
 }
 
@@ -1278,7 +1265,7 @@ impl TemporalMvContext {
         field.set(y8, x8, mv, references.ref_offset, true);
         Some(Self {
             field,
-            tip: Some(TipProjection::new(references)),
+            tip: Some(tip_projection(references)),
             ..Self::empty()
         })
     }
@@ -1535,7 +1522,7 @@ impl TemporalMvContext {
         }
         self.current_order_hint = current_order_hint;
         self.trajectories = None;
-        self.tip = tip.map(TipProjection::new);
+        self.tip = tip.map(tip_projection);
         let banded = self.banded.get_or_insert_with(|| BandedTemporalContext {
             layout: target_layout,
             bands: Vec::new(),
@@ -1597,7 +1584,7 @@ impl TemporalMvContext {
             tmvp_unit_size8,
             fill_holes,
         )?;
-        self.tip = Some(TipProjection::new(references));
+        self.tip = Some(tip_projection(references));
         Ok(())
     }
 
@@ -1622,11 +1609,11 @@ impl TemporalMvContext {
     }
 
     pub(crate) fn tip_references(&self) -> Option<TipReferencePair> {
-        self.tip.map(|tip| tip.references)
+        self.tip.map(|(references, _)| references)
     }
 
     pub(crate) fn tip_candidate(&self, y8: usize, x8: usize, base_mv: Mv) -> Option<[Mv; 2]> {
-        let scales = self.tip?.scales;
+        let (_, scales) = self.tip?;
         let y8 = y8.min(self.field.height8.saturating_sub(1));
         let x8 = x8.min(self.field.width8.saturating_sub(1));
         let cell = self.projected_cell(y8, x8)?;

@@ -882,7 +882,7 @@ fn projection_is_total_over_untrusted_integer_inputs() {
 #[test]
 fn tip_candidate_distinguishes_absent_from_present_invalid_cells() {
     let mut context = tip_context(4, vec![Some(2), Some(6)], 2, 2);
-    context.tip = Some(TipProjection::new(TipReferencePair {
+    context.tip = Some(tip_projection(TipReferencePair {
         past_ref: 0,
         future_ref: 1,
         past_offset: 2,
