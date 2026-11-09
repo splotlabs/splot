@@ -13,7 +13,7 @@
 //! of cells 1 and 3 share a vector, and the final pack restores the order;
 //! the portable kernel interleaves in sample order.
 
-use fearless_simd::{Simd, SimdIntWiden, i16x16, i32x4, i32x8, prelude::*, u16x16};
+use fearless_simd::{Simd, SimdIntWiden, i16x16, i32x8, prelude::*, u16x16};
 
 /// Runs `$body` with the baseline SIMD token bound to `$simd`; on x86 the
 /// AVX2 token binds directly, since a `dispatch!` closure does not inline
@@ -161,7 +161,7 @@ fn portable<S: Simd, F: TapPairs, T: LumaSimdSource, const ROWS: usize, const RE
             + load(r.wrapping_add_signed(-dy), r.wrapping_add_signed(-dx))
     };
     #[cfg(not(target_arch = "x86_64"))]
-    let mut sums = [i32x4::splat(simd, 0); 4];
+    let mut sums = [fearless_simd::i32x4::splat(simd, 0); 4];
     #[cfg(not(target_arch = "x86_64"))]
     let mut add_term = |j: usize, w: &[i16; 16]| {
         let (a_lo, a_hi) = simd.split_i16x16(term(j));
@@ -213,7 +213,7 @@ fn portable<S: Simd, F: TapPairs, T: LumaSimdSource, const ROWS: usize, const RE
             let w_hi = fearless_simd::i16x8::from_slice(simd, &weights[0][8..]);
             let (p0, p1) = a_lo.widening_mul(w_lo);
             let (p2, p3) = a_hi.widening_mul(w_hi);
-            let round = i32x4::splat(simd, i32::from(weights[1][0]));
+            let round = fearless_simd::i32x4::splat(simd, i32::from(weights[1][0]));
             sums[0] += p0 + round;
             sums[1] += p1 + round;
             sums[2] += p2 + round;
