@@ -12,7 +12,7 @@
 //!
 //! Feature tracking: `RECON-RESIDUAL-ADDITION`.
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use fearless_simd::Level;
 use fearless_simd::{
     Bytes as _, Simd, SimdBase as _, SimdInt as _, SimdNarrow as _, SimdWiden as _, i16x16, i32x4,
@@ -399,6 +399,22 @@ fn clip_add_u8<S: Simd, const LANES: usize>(
         out.copy_from_slice(&sum.as_slice()[..LANES]); // splot-copy-ok: one residual lane group
         return out;
     }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = Level::baseline().as_neon()
+        && LANES.is_multiple_of(8)
+    {
+        let mut out = [0u8; LANES];
+        for ((out, pred), res) in out
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip(pred.as_chunks::<8>().0)
+            .zip(res.as_chunks::<8>().0)
+        {
+            *out = clip_add_u8x8_neon(token, *pred, res, max as u8);
+        }
+        return out;
+    }
     let (pred, res) = if let (Ok(pred), Some((lo, hi))) =
         (<&[u8; 16]>::try_from(pred), res.split_at_checked(8))
     {
@@ -471,6 +487,31 @@ fearless_simd::kernel!(
         );
         let sum = _mm_adds_epi16(_mm_cvtepu8_epi16(prediction), residual);
         _mm_min_epu8(_mm_packus_epi16(sum, sum), max)
+    }
+);
+
+#[cfg(target_arch = "aarch64")]
+fearless_simd::kernel!(
+    /// Eight lanes of [`clip_add_u8`]: `sqxtn` saturates the residual to
+    /// `i16`, `sqadd` adds the widened prediction, and `sqxtun` clips to
+    /// `0..=255` before the `max` bound.
+    #[inline]
+    fn clip_add_u8x8_neon(
+        token: Neon,
+        prediction: [u8; 8],
+        residual: &[i32; 8],
+        max: u8,
+    ) -> [u8; 8] {
+        use core::arch::aarch64::{
+            vcombine_s16, vcreate_u8, vdup_n_u8, vget_lane_u64, vmin_u8, vmovl_u8, vqaddq_s16,
+            vqmovn_s32, vqmovun_s16, vreinterpret_u64_u8, vreinterpretq_s16_u16,
+        };
+        let half = |lanes: &[i32]| vqmovn_s32(i32x4::from_slice(token, lanes).into());
+        let residual = vcombine_s16(half(&residual[..4]), half(&residual[4..]));
+        let prediction = vmovl_u8(vcreate_u8(u64::from_le_bytes(prediction)));
+        let sum = vqaddq_s16(vreinterpretq_s16_u16(prediction), residual);
+        let clipped = vmin_u8(vqmovun_s16(sum), vdup_n_u8(max));
+        vget_lane_u64::<0>(vreinterpret_u64_u8(clipped)).to_le_bytes()
     }
 );
 
