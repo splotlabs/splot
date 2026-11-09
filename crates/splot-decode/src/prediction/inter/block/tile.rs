@@ -1148,6 +1148,11 @@ impl<T: ReconSample> InterReconScratchPool<T> {
         }
     }
 
+    /// The worker count the pool was sized for.
+    pub(crate) fn workers(&self) -> usize {
+        self.available.lock().0.max(1)
+    }
+
     fn with_scratch<R>(
         &self,
         f: impl FnOnce(&mut deferred_recon::InterReconScratch<T>) -> R,

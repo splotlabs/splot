@@ -1296,8 +1296,18 @@ fn safe_deblock_mi_end(
     )
 }
 
-/// Reconstruction units one row-bounded precompute batch prepares.
+/// Most superblocks one row-bounded precompute batch prepares.
 const RECON_BATCH_UNITS: usize = 4;
+
+/// Superblocks per precompute batch, so that a superblock row splits into
+/// about one batch per worker. Four 256-wide superblocks a batch put a 720p
+/// row in two batches, which serialized the frame's reconstruction and every
+/// frame that reads it; a 1080p row at four workers still takes four a batch.
+fn recon_batch_units(units_per_row: usize, workers: usize) -> usize {
+    units_per_row
+        .div_ceil(workers.max(1))
+        .clamp(1, RECON_BATCH_UNITS)
+}
 
 /// Splits the units into precompute batches that never cross a superblock row.
 ///
@@ -1434,7 +1444,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     superblock_row_batches_into(
         unit_count,
         units_per_row.max(1),
-        RECON_BATCH_UNITS,
+        recon_batch_units(units_per_row, workers.workers()),
         &mut batches,
     );
     scratch.scheduled_rows.reset(unit_count, &batches)?;
@@ -1914,6 +1924,15 @@ mod tests {
         for batch in &batches {
             assert_eq!(batch.start / 15, (batch.end - 1) / 15);
         }
+    }
+
+    #[test]
+    fn precompute_batches_split_a_row_about_once_per_worker() {
+        assert_eq!(super::recon_batch_units(15, 4), 4);
+        assert_eq!(super::recon_batch_units(15, 8), 2);
+        assert_eq!(super::recon_batch_units(5, 8), 1);
+        assert_eq!(super::recon_batch_units(40, 1), 4);
+        assert_eq!(super::recon_batch_units(0, 0), 1);
     }
 
     #[test]
