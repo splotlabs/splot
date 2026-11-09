@@ -216,7 +216,7 @@ pub(super) fn compound_at(
         return avx2::compound(
             token,
             [&first, &second],
-            placements.map(|([x, y], _)| [x, y]),
+            placements.map(|(start, _)| start),
             interp,
             size,
             forward,
@@ -407,7 +407,9 @@ mod avx2 {
     use super::{
         Cell, CompoundCells, NUM_PHASES, PROGRAM_CELLS, Stashed, TAPS, Taps, U8Plane, WINDOWS,
     };
-    use crate::subpel_mc::eight_bit::avx2::{Horizontal, average, store_bytes, tap_bytes};
+    use crate::subpel_mc::eight_bit::avx2::{
+        Horizontal, average, store_bytes, store_rows, tap_bytes,
+    };
     use crate::subpel_mc::{InterpolationFilter, ReferencePlaneView};
     use core::arch::x86_64::*;
     use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x16, i32x8, u8x32};
@@ -429,78 +431,6 @@ mod avx2 {
         }
         out
     };
-
-    /// Calls `$f::<$w, H, V, $put, CLAMPED>` for the tap-pair counts of a
-    /// cell's passes and whether its window is clamped.
-    macro_rules! by_taps {
-        ($w:literal, $put:literal, $h:expr, $v:expr, $clamped:expr, $f:ident($($arg:expr),*)) => {
-            if $clamped {
-                by_taps!(@ $w, $put, true, $h, $v, $f($($arg),*))
-            } else {
-                by_taps!(@ $w, $put, false, $h, $v, $f($($arg),*))
-            }
-        };
-        (@ $w:literal, $put:literal, $c:literal, $h:expr, $v:expr, $f:ident($($arg:expr),*)) => {
-            match ($h, $v) {
-                (0, 0) => $f::<$w, 0, 0, $put, $c>($($arg),*),
-                (0, 1) => $f::<$w, 0, 1, $put, $c>($($arg),*),
-                (0, 2) => $f::<$w, 0, 2, $put, $c>($($arg),*),
-                (0, 3) => $f::<$w, 0, 3, $put, $c>($($arg),*),
-                (0, _) => $f::<$w, 0, 4, $put, $c>($($arg),*),
-                (1, 0) => $f::<$w, 1, 0, $put, $c>($($arg),*),
-                (1, 1) => $f::<$w, 1, 1, $put, $c>($($arg),*),
-                (1, 2) => $f::<$w, 1, 2, $put, $c>($($arg),*),
-                (1, 3) => $f::<$w, 1, 3, $put, $c>($($arg),*),
-                (1, _) => $f::<$w, 1, 4, $put, $c>($($arg),*),
-                (2, 0) => $f::<$w, 2, 0, $put, $c>($($arg),*),
-                (2, 1) => $f::<$w, 2, 1, $put, $c>($($arg),*),
-                (2, 2) => $f::<$w, 2, 2, $put, $c>($($arg),*),
-                (2, 3) => $f::<$w, 2, 3, $put, $c>($($arg),*),
-                (2, _) => $f::<$w, 2, 4, $put, $c>($($arg),*),
-                (3, 0) => $f::<$w, 3, 0, $put, $c>($($arg),*),
-                (3, 1) => $f::<$w, 3, 1, $put, $c>($($arg),*),
-                (3, 2) => $f::<$w, 3, 2, $put, $c>($($arg),*),
-                (3, 3) => $f::<$w, 3, 3, $put, $c>($($arg),*),
-                (3, _) => $f::<$w, 3, 4, $put, $c>($($arg),*),
-                (_, 0) => $f::<$w, 4, 0, $put, $c>($($arg),*),
-                (_, 1) => $f::<$w, 4, 1, $put, $c>($($arg),*),
-                (_, 2) => $f::<$w, 4, 2, $put, $c>($($arg),*),
-                (_, 3) => $f::<$w, 4, 3, $put, $c>($($arg),*),
-                (_, _) => $f::<$w, 4, 4, $put, $c>($($arg),*),
-            }
-        };
-    }
-
-    /// [`by_taps`] of a 4x4 cell, whose horizontal pass has at most two
-    /// tap pairs.
-    macro_rules! by_narrow_taps {
-        ($put:literal, $h:expr, $v:expr, $clamped:expr, $f:ident($($arg:expr),*)) => {
-            if $clamped {
-                by_narrow_taps!(@ $put, true, $h, $v, $f($($arg),*))
-            } else {
-                by_narrow_taps!(@ $put, false, $h, $v, $f($($arg),*))
-            }
-        };
-        (@ $put:literal, $c:literal, $h:expr, $v:expr, $f:ident($($arg:expr),*)) => {
-            match ($h, $v) {
-                (0, 0) => $f::<4, 0, 0, $put, $c>($($arg),*),
-                (0, 1) => $f::<4, 0, 1, $put, $c>($($arg),*),
-                (0, 2) => $f::<4, 0, 2, $put, $c>($($arg),*),
-                (0, 3) => $f::<4, 0, 3, $put, $c>($($arg),*),
-                (0, _) => $f::<4, 0, 4, $put, $c>($($arg),*),
-                (1, 0) => $f::<4, 1, 0, $put, $c>($($arg),*),
-                (1, 1) => $f::<4, 1, 1, $put, $c>($($arg),*),
-                (1, 2) => $f::<4, 1, 2, $put, $c>($($arg),*),
-                (1, 3) => $f::<4, 1, 3, $put, $c>($($arg),*),
-                (1, _) => $f::<4, 1, 4, $put, $c>($($arg),*),
-                (_, 0) => $f::<4, 2, 0, $put, $c>($($arg),*),
-                (_, 1) => $f::<4, 2, 1, $put, $c>($($arg),*),
-                (_, 2) => $f::<4, 2, 2, $put, $c>($($arg),*),
-                (_, 3) => $f::<4, 2, 3, $put, $c>($($arg),*),
-                (_, _) => $f::<4, 2, 4, $put, $c>($($arg),*),
-            }
-        };
-    }
 
     /// Calls `$f::<$w, H, V, CLAMPED>` for the kernel key
     /// `5 * H + V + 25 * CLAMPED` of a reference of a `$w`-square cell, and
@@ -549,6 +479,14 @@ mod avx2 {
         samples: [[&'a [u8]; 2]; 2],
         strides: [u32; 2],
         planes: usize,
+    }
+
+    /// An output stride whose eight rows stay below `2^32`.
+    #[inline]
+    fn output_stride(stride: usize) -> Option<u32> {
+        u32::try_from(stride)
+            .ok()
+            .filter(|&stride| stride <= u32::MAX / 8)
     }
 
     /// Stash slot of plane `plane`, cell lane `lane`, reference `reference`.
@@ -644,7 +582,7 @@ mod avx2 {
         size: usize,
         forward: i32,
         output: &mut [u8],
-        stride: usize,
+        stride: u32,
     ) {
         let (Some(first), Some(second)) = (
             stash.get(slot(plane, lane, 0)),
@@ -655,12 +593,12 @@ mod avx2 {
         let load = |values: &[i16; 16]| -> __m256i { i16x16::load_array_ref(t, values).into() };
         if size == 4 {
             let blended = average(load(&first[0]), load(&second[0]), forward);
-            store_bytes::<4>(t, output, 0, stride, blended);
+            store_rows::<4, u32>(t, output, 0, stride, blended);
             return;
         }
-        for (group, (first, second)) in first.iter().zip(second).enumerate() {
+        for (group, (first, second)) in (0..).zip(first.iter().zip(second)) {
             let blended = average(load(first), load(second), forward);
-            store_bytes::<8>(t, output, 2 * group * stride, stride, blended);
+            store_rows::<8, u32>(t, output, 2 * group * stride, stride, blended);
         }
     }
 
@@ -683,9 +621,6 @@ mod avx2 {
                 let Ok(origin) = i32::try_from(cell.origin) else {
                     return false;
                 };
-                if size == 4 && h > 2 {
-                    return false;
-                }
                 lanes.origin[0] = origin;
                 lanes.phases = [[(x >> 6) & 15; 8], [(y >> 6) & 15; 8]];
                 lanes.keys[0] = (5 * h + v) as i32 + if cell.clamped.is_some() { 25 } else { 0 };
@@ -704,6 +639,9 @@ mod avx2 {
             };
             let filters = &TAPS[interp.pass_index(size as u32) as usize];
             let mut stash = [[[0; 16]; 4]; 2];
+            let Some(stride) = output_stride(stride) else {
+                return false;
+            };
             if run(t, 1 | 1 << 8, &lanes, &sources, filters, size, &mut stash) != 1 | 1 << 8 {
                 return false;
             }
@@ -918,10 +856,12 @@ mod avx2 {
                         };
                         let stride = *stride;
                         let at = row as usize * stride + col as usize;
-                        let Some(output) = output
-                            .get_mut(at..)
-                            .filter(|output| (size - 1) * stride + size <= output.len())
-                        else {
+                        let (Some(output), Some(stride)) = (
+                            output
+                                .get_mut(at..)
+                                .filter(|output| (size - 1) * stride + size <= output.len()),
+                            output_stride(stride),
+                        ) else {
                             continue;
                         };
                         store(t, stash, plane, lane, size, forward, output, stride);
@@ -937,23 +877,11 @@ mod avx2 {
         #[inline]
         pub(super) fn put(t: Avx2, cell: &Cell<'_>, size: usize, output: &mut [u8], stride: usize) {
             let [h, v] = cell.counts();
+            let key = (5 * h + v) as i32 + if cell.clamped.is_some() { 25 } else { 0 };
             if size == 4 {
-                by_narrow_taps!(
-                    true,
-                    h,
-                    v,
-                    cell.clamped.is_some(),
-                    put_cell(t, cell, output, stride)
-                );
+                by_key!(key, 4, put_cell(t, cell, output, stride));
             } else {
-                by_taps!(
-                    8,
-                    true,
-                    h,
-                    v,
-                    cell.clamped.is_some(),
-                    put_cell(t, cell, output, stride)
-                );
+                by_key!(key, 8, put_cell(t, cell, output, stride));
             }
         }
     );
@@ -961,19 +889,13 @@ mod avx2 {
     /// Stores the [`predict`] put of one cell.
     #[inline(never)]
     #[target_feature(enable = "avx2")]
-    fn put_cell<
-        const W: usize,
-        const H: usize,
-        const V: usize,
-        const PUT: bool,
-        const CLAMPED: bool,
-    >(
+    fn put_cell<const W: usize, const H: usize, const V: usize, const CLAMPED: bool>(
         t: Avx2,
         cell: &Cell<'_>,
         output: &mut [u8],
         stride: usize,
     ) {
-        let groups = predict::<W, H, V, PUT, CLAMPED>(t, cell);
+        let groups = predict::<W, H, V, true, CLAMPED>(t, cell);
         if W == 4 {
             store_bytes::<4>(t, output, 0, stride, groups[0]);
             return;
@@ -1036,7 +958,7 @@ mod avx2 {
         for (group, line) in lines.iter_mut().enumerate().take(rows.div_ceil(per)) {
             let row = group * per;
             let starts = [start(row), start(row + 1), start(row + 2), start(row + 3)];
-            let Some(bytes) = tap_bytes::<W, _>(t, cell.source, starts, remap) else {
+            let Some(bytes) = tap_bytes::<W>(t, cell.source, starts, remap) else {
                 return [zero; 4];
             };
             *line = match &filter {

@@ -267,6 +267,15 @@ impl<'a, T> Block<'a, T> {
         self.origin
             + (self.top + row as isize).clamp(self.rows[0], self.rows[1]) as usize * self.stride
     }
+
+    /// [`Self::start`] of storage shorter than `2^32` samples.
+    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[inline(always)]
+    pub(super) fn start32(&self, row: usize) -> u32 {
+        self.origin as u32
+            + (self.top + row as isize).clamp(self.rows[0], self.rows[1]) as u32
+                * self.stride as u32
+    }
 }
 
 /// Window columns every kernel may read past the window origin of a row.

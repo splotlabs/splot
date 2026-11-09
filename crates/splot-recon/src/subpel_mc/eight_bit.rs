@@ -148,7 +148,8 @@ pub(super) fn compound(
 
 /// Whether the byte-lane kernels cover the shape of `block`.
 fn fits<T>(block: &Block<'_, T>) -> bool {
-    block.w.is_multiple_of(4)
+    u32::try_from(block.source.len()).is_ok()
+        && block.w.is_multiple_of(4)
         && block.h.is_multiple_of(16 / width(block.w))
         && !(width(block.w) == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
 }
@@ -202,29 +203,45 @@ pub(super) mod avx2 {
         samples.get(at..)?.first_chunk::<N>()
     }
 
-    /// A window row start of [`tap_bytes`]; a `u32` start ends one compare
+    /// The `N` bytes of `source` from `at`: a `u32` start ends one compare
     /// from the storage end.
-    pub(in crate::subpel_mc) trait RowStart: Copy {
-        fn row<const N: usize>(self, source: &[u8]) -> Option<&[u8; N]>;
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    pub(in crate::subpel_mc) fn row_bytes<const N: usize>(
+        source: &[u8],
+        at: u32,
+    ) -> Option<&[u8; N]> {
+        let at = at as usize;
+        if at + N > source.len() {
+            return None;
+        }
+        chunk(source, at)
+    }
+
+    /// An output row start of [`store_rows`].
+    pub(in crate::subpel_mc) trait RowStart:
+        Copy + core::ops::Add<Output = Self> + core::ops::Mul<Output = Self> + From<u8>
+    {
+        fn row_mut<const N: usize>(self, output: &mut [u8]) -> Option<&mut [u8; N]>;
     }
 
     impl RowStart for usize {
         #[allow(clippy::inline_always, reason = "measured subpel hot path")]
         #[inline(always)]
-        fn row<const N: usize>(self, source: &[u8]) -> Option<&[u8; N]> {
-            chunk(source, self)
+        fn row_mut<const N: usize>(self, output: &mut [u8]) -> Option<&mut [u8; N]> {
+            output.get_mut(self..)?.first_chunk_mut::<N>()
         }
     }
 
     impl RowStart for u32 {
         #[allow(clippy::inline_always, reason = "measured subpel hot path")]
         #[inline(always)]
-        fn row<const N: usize>(self, source: &[u8]) -> Option<&[u8; N]> {
+        fn row_mut<const N: usize>(self, output: &mut [u8]) -> Option<&mut [u8; N]> {
             let at = self as usize;
-            if at + N > source.len() {
+            if at + N > output.len() {
                 return None;
             }
-            chunk(source, at)
+            output.get_mut(at..)?.first_chunk_mut::<N>()
         }
     }
 
@@ -454,17 +471,19 @@ pub(super) mod avx2 {
     /// holds the bytes its outputs read.
     #[inline]
     #[target_feature(enable = "avx2")]
-    pub(in crate::subpel_mc) fn tap_bytes<const W: usize, S: RowStart>(
+    pub(in crate::subpel_mc) fn tap_bytes<const W: usize>(
         t: Avx2,
         source: &[u8],
-        starts: [S; 4],
+        starts: [u32; 4],
         remap: Option<__m128i>,
     ) -> Option<__m256i> {
-        let row = |q: usize| starts[q];
         let start = starts[0];
         if let Some(remap) = remap {
             let line = |q: usize| -> Option<__m128i> {
-                Some(_mm_shuffle_epi8(load16(t, starts[q].row(source)?), remap))
+                Some(_mm_shuffle_epi8(
+                    load16(t, row_bytes(source, starts[q])?),
+                    remap,
+                ))
             };
             return Some(if W == 4 {
                 _mm256_set_m128i(
@@ -477,17 +496,17 @@ pub(super) mod avx2 {
         }
         Some(match W {
             4 => _mm256_set_epi64x(
-                load8(*row(3).row(source)?),
-                load8(*row(2).row(source)?),
-                load8(*row(1).row(source)?),
-                load8(*row(0).row(source)?),
+                load8(*row_bytes(source, starts[3])?),
+                load8(*row_bytes(source, starts[2])?),
+                load8(*row_bytes(source, starts[1])?),
+                load8(*row_bytes(source, starts[0])?),
             ),
             8 => _mm256_set_m128i(
-                load16(t, row(1).row(source)?),
-                load16(t, row(0).row(source)?),
+                load16(t, row_bytes(source, starts[1])?),
+                load16(t, row_bytes(source, starts[0])?),
             ),
             _ => {
-                let bytes = start.row::<24>(source)?;
+                let bytes = row_bytes::<24>(source, start)?;
                 let (low, high) = (bytes.first_chunk::<16>()?, bytes.last_chunk::<16>()?);
                 _mm256_set_m128i(load16(t, high), load16(t, low))
             }
@@ -503,8 +522,8 @@ pub(super) mod avx2 {
         row: usize,
         strip: usize,
         last: usize,
-    ) -> [usize; 4] {
-        let start = |q: usize| block.start((row + q).min(last)) + strip * W;
+    ) -> [u32; 4] {
+        let start = |q: usize| block.start32((row + q).min(last)) + (strip * W) as u32;
         [start(0), start(1), start(2), start(3)]
     }
 
@@ -575,7 +594,7 @@ pub(super) mod avx2 {
                 let bytes = match W {
                     4 => {
                         let row = |q: usize| {
-                            chunk::<4, u8>(source, starts[q])
+                            row_bytes::<4>(source, starts[q])
                                 .map(|bytes| i32::from_le_bytes(*bytes))
                         };
                         let (Some(first), Some(second), Some(third), Some(fourth)) =
@@ -587,14 +606,14 @@ pub(super) mod avx2 {
                     }
                     8 => {
                         let (Some(first), Some(second)) =
-                            (chunk(source, starts[0]), chunk(source, starts[1]))
+                            (row_bytes(source, starts[0]), row_bytes(source, starts[1]))
                         else {
                             return;
                         };
                         _mm_set_epi64x(load8(*second), load8(*first))
                     }
                     _ => {
-                        let Some(bytes) = chunk(source, starts[0]) else {
+                        let Some(bytes) = row_bytes(source, starts[0]) else {
                             return;
                         };
                         load16(t, bytes)
@@ -626,7 +645,7 @@ pub(super) mod avx2 {
         for strip in 0..block.w / W {
             for row in (0..block.h).step_by(16 / W) {
                 let starts = starts::<W>(block, row, strip, usize::MAX);
-                let Some(bytes) = tap_bytes::<W, _>(t, block.source, starts, remap) else {
+                let Some(bytes) = tap_bytes::<W>(t, block.source, starts, remap) else {
                     return;
                 };
                 let sums = filter.sums::<P>(bytes);
@@ -660,9 +679,8 @@ pub(super) mod avx2 {
         for strip in 0..block.w / W {
             if W < 16 {
                 for (row, slot) in stage.chunks_exact_mut(W / 2).take(rows).enumerate() {
-                    let Some(bytes) = source
-                        .get(block.start(row) + strip * W..)
-                        .and_then(|row| row.get(..W))
+                    let Some(bytes) =
+                        row_bytes::<W>(source, block.start32(row) + (strip * W) as u32)
                     else {
                         return;
                     };
@@ -676,7 +694,7 @@ pub(super) mod avx2 {
                     i16x8::load_array_ref(t, chunk::<8, i16>(stage, row * W / 2).unwrap_or(&zero))
                         .into()
                 } else {
-                    chunk(source, block.start(row) + strip * 16)
+                    row_bytes::<16>(source, block.start32(row) + (strip * 16) as u32)
                         .map_or(_mm_setzero_si128(), |bytes| load16(t, bytes))
                 };
                 _mm256_permute4x64_epi64::<0b01_01_00_00>(_mm256_castsi128_si256(lanes))
@@ -715,7 +733,7 @@ pub(super) mod avx2 {
             .enumerate()
         {
             let starts = starts::<W>(block, group * (16 / W), strip, rows - 1);
-            let Some(bytes) = tap_bytes::<W, _>(t, block.source, starts, remap) else {
+            let Some(bytes) = tap_bytes::<W>(t, block.source, starts, remap) else {
                 return;
             };
             let values = _mm256_mulhrs_epi16(filter.sums::<P>(bytes), round);
@@ -898,6 +916,20 @@ pub(super) mod avx2 {
         stride: usize,
         values: __m256i,
     ) {
+        store_rows::<W, usize>(t, output, at, stride, values);
+    }
+
+    /// [`store_bytes`] from rows `at + r * stride`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    pub(in crate::subpel_mc) fn store_rows<const W: usize, S: RowStart>(
+        t: Avx2,
+        output: &mut [u8],
+        at: S,
+        stride: S,
+        values: __m256i,
+    ) {
+        let row = |row: u8| at + S::from(row) * stride;
         let packed = _mm256_packus_epi16(values, values);
         let lanes = _mm256_castsi256_si128(_mm256_permute4x64_epi64::<0b1000>(packed));
         match W {
@@ -908,28 +940,22 @@ pub(super) mod avx2 {
                     _mm_extract_epi32::<2>(lanes),
                     _mm_extract_epi32::<3>(lanes),
                 ];
-                for (row, word) in words.into_iter().enumerate() {
-                    if let Some(slot) = output
-                        .get_mut(at + row * stride..)
-                        .and_then(<[u8]>::first_chunk_mut::<4>)
-                    {
+                for (index, word) in (0..).zip(words) {
+                    if let Some(slot) = row(index).row_mut::<4>(output) {
                         *slot = word.to_le_bytes();
                     }
                 }
             }
             8 => {
                 let words = [_mm_cvtsi128_si64(lanes), _mm_extract_epi64::<1>(lanes)];
-                for (row, word) in words.into_iter().enumerate() {
-                    if let Some(slot) = output
-                        .get_mut(at + row * stride..)
-                        .and_then(<[u8]>::first_chunk_mut::<8>)
-                    {
+                for (index, word) in (0..).zip(words) {
+                    if let Some(slot) = row(index).row_mut::<8>(output) {
                         *slot = word.to_le_bytes();
                     }
                 }
             }
             _ => {
-                if let Some(slot) = output.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<16>) {
+                if let Some(slot) = at.row_mut::<16>(output) {
                     u8x16::<Avx2>::simd_from(t, lanes).store_array(slot);
                 }
             }
