@@ -26,11 +26,8 @@ use super::{FlatChunks, LumaSubclassLayout, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUM
 
 /// Distinct weight pairs: ten adjacent-tap pairs, then four interleaved ones.
 const UNITS: usize = 14;
-const PAIR_UNITS: usize = 10;
 /// Output columns per vector.
 const LANES: usize = 32;
-/// Source bytes one vector row reads.
-const REACH: usize = LANES + 2 * WIENER_NS_LUMA_TAP_RADIUS;
 /// A subclass map indexes classes through 16-entry byte tables.
 const MAX_CLASSES: usize = 16;
 /// Bytes per staged row: the widest § 7.20 block, a last restoration unit
@@ -283,10 +280,12 @@ fn narrow_row_lanes<S: fearless_simd::Simd>(simd: S, staged: &mut [u8], row: &[u
 
 /// Output samples the byte-lane kernel writes.
 pub(crate) trait ByteLaneOutput: Copy {
+    #[cfg(target_arch = "x86_64")]
     fn store(bytes: [u8; LANES], output: &mut [Self; LANES]);
 }
 
 impl ByteLaneOutput for u8 {
+    #[cfg(target_arch = "x86_64")]
     #[inline]
     fn store(bytes: [u8; LANES], output: &mut [Self; LANES]) {
         *output = bytes;
@@ -294,6 +293,7 @@ impl ByteLaneOutput for u8 {
 }
 
 impl ByteLaneOutput for u16 {
+    #[cfg(target_arch = "x86_64")]
     #[inline]
     fn store(bytes: [u8; LANES], output: &mut [Self; LANES]) {
         for (slot, byte) in output.iter_mut().zip(bytes) {
@@ -310,9 +310,12 @@ mod avx2 {
 
     use super::{
         ByteLaneOutput, EightBitLuma, FlatChunks, GROUP_ROWS, LANES, LumaSubclassLayout,
-        PAIR_UNITS, REACH, STAGE_STRIDE, UNITS, UnitWeights, WIENER_NS_LUMA_TAP_RADIUS,
+        STAGE_STRIDE, UNITS, UnitWeights, WIENER_NS_LUMA_TAP_RADIUS,
     };
 
+    const PAIR_UNITS: usize = 10;
+    /// Source bytes one vector row reads.
+    const REACH: usize = LANES + 2 * WIENER_NS_LUMA_TAP_RADIUS;
     const INTERLEAVED: usize = UNITS - PAIR_UNITS;
     type Row = [u8; STAGE_STRIDE];
 

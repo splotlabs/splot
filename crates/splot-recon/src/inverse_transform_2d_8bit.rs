@@ -16,9 +16,11 @@
 //! per column (row `2q` low, row `2q + 1` high), which is already the operand
 //! of the column pass's multiply-add over rows `2q` and `2q + 1`.
 
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::Level;
 use fearless_simd::{
-    Bytes as _, Level, Simd, SimdBase as _, SimdIntWiden as _, SimdMask as _, SimdNarrow as _,
-    i16x8, i16x16, i32x4, i32x8, u8x16, u8x32, u16x8, u32x8, u64x2,
+    Bytes as _, Simd, SimdBase as _, SimdIntWiden as _, SimdMask as _, SimdNarrow as _, i16x8,
+    i16x16, i32x4, i32x8, u8x16, u8x32, u16x8, u32x8, u64x2,
 };
 
 use splot_tables::tables::transform_1d::{
@@ -29,10 +31,9 @@ use splot_tables::tables::transform_1d::{
 use crate::dequant_process::{dequant_coefficient, dequant_lanes};
 use crate::inverse_transform::InverseTransform1dType;
 use crate::inverse_transform_2d::InverseTransform2dDim;
-use crate::secondary_transform::{
-    SecondaryInverseTransform, secondary_inverse_transform_quant,
-    secondary_inverse_transform_quant_rows8,
-};
+#[cfg(target_arch = "x86_64")]
+use crate::secondary_transform::secondary_inverse_transform_quant_rows8;
+use crate::secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform_quant};
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
@@ -441,12 +442,12 @@ impl InverseTransformAdd8 {
     }
 
     /// The adjusted width.
-    const fn w(&self) -> usize {
+    const fn w(self) -> usize {
         1 << self.w_log2
     }
 
     /// The adjusted height.
-    const fn h(&self) -> usize {
+    const fn h(self) -> usize {
         1 << self.h_log2
     }
 
@@ -537,7 +538,7 @@ impl InverseTransformAdd8 {
     }
 
     /// Whether a `w x h` block with rows `stride` apart fits `dst`.
-    fn fits(&self, dst: &[u8], stride: usize) -> bool {
+    fn fits(self, dst: &[u8], stride: usize) -> bool {
         (self.h() - 1)
             .checked_mul(stride)
             .and_then(|span| span.checked_add(self.w()))

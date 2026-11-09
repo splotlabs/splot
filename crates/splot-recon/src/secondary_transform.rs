@@ -244,6 +244,7 @@ pub(crate) fn secondary_inverse_transform_quant(
 /// [`secondary_inverse_transform_quant`] of a block at least 16 wide into the
 /// first 8 columns of its rows, row `r` at `rows[8 * r..]`: the output rows
 /// as the 8-wide transform writes them. Returns the written length.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn secondary_inverse_transform_quant_rows8(
     quant: &[i32],
     quantizers: (u32, u32, u32),

@@ -147,6 +147,7 @@ pub(super) fn compound(
 }
 
 /// Whether the byte-lane kernels cover the shape of `block`.
+#[cfg(target_arch = "x86_64")]
 fn fits<T>(block: &Block<'_, T>) -> bool {
     block.w.is_multiple_of(4)
         && block.h.is_multiple_of(16 / width(block.w))
@@ -155,6 +156,7 @@ fn fits<T>(block: &Block<'_, T>) -> bool {
 
 /// The strip width of a block: 16 columns, else strips of 8 columns in
 /// pairs of rows, else strips of 4 in quads of rows.
+#[cfg(target_arch = "x86_64")]
 const fn width(w: usize) -> usize {
     if w.is_multiple_of(16) {
         16

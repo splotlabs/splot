@@ -950,12 +950,14 @@ impl LumaSimdOutput for u8 {
 
 pub(crate) trait LumaSimdSource: Copy {
     /// The samples are `u16`, which the x86 tap-pair kernel reads.
+    #[cfg(target_arch = "x86_64")]
     const WIDE: bool;
 
     /// Zero-extends 16 samples.
     fn widen16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S>;
 
     /// The rows as `u16` rows when the samples are `u16`.
+    #[cfg(target_arch = "x86_64")]
     fn u16_rows<'a, const ROWS: usize, const REACH: usize>(
         rows: &[&'a [Self; REACH]; ROWS],
     ) -> Option<[&'a [u16; REACH]; ROWS]>;
@@ -964,12 +966,14 @@ pub(crate) trait LumaSimdSource: Copy {
 }
 
 impl LumaSimdSource for u16 {
+    #[cfg(target_arch = "x86_64")]
     const WIDE: bool = true;
     #[inline]
     fn widen16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
         u16x16::load_array_ref(simd, samples)
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[inline]
     fn u16_rows<'a, const ROWS: usize, const REACH: usize>(
         rows: &[&'a [Self; REACH]; ROWS],
@@ -984,6 +988,7 @@ impl LumaSimdSource for u16 {
 }
 
 impl LumaSimdSource for u8 {
+    #[cfg(target_arch = "x86_64")]
     const WIDE: bool = false;
     #[inline]
     fn widen16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
@@ -992,6 +997,7 @@ impl LumaSimdSource for u8 {
         simd.combine_u16x8(low, high)
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[inline]
     fn u16_rows<'a, const ROWS: usize, const REACH: usize>(
         _rows: &[&'a [Self; REACH]; ROWS],

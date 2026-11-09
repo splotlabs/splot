@@ -177,7 +177,7 @@ fn copy_compound_u8<S: Simd>(
     stride: usize,
 ) {
     let (w, h) = (blocks[0].w, blocks[0].h);
-    let (fwd, bck, bias) = (
+    let (fwd, back, bias) = (
         i16x8::splat(simd, forward as i16),
         i16x8::splat(simd, (16 - forward) as i16),
         i16x8::splat(simd, 8),
@@ -191,7 +191,7 @@ fn copy_compound_u8<S: Simd>(
             let avg: u16x8<S> = if forward == 8 {
                 (a.bitcast::<u16x8<S>>() + c.bitcast::<u16x8<S>>() + one) >> 1
             } else {
-                ((a * fwd + c * bck + bias) >> 4).max(0).min(255).bitcast()
+                ((a * fwd + c * back + bias) >> 4).max(0).min(255).bitcast()
             };
             store(
                 output,
@@ -357,10 +357,12 @@ fn window16<S: Simd, T: Lanes>(
     match remap {
         None => (a, b),
         Some([idx0, idx1]) => {
-            let (ba, bb) = (a.bitcast::<u8x16<S>>(), b.bitcast::<u8x16<S>>());
+            let (bytes_a, bytes_b) = (a.bitcast::<u8x16<S>>(), b.bitcast::<u8x16<S>>());
             (
-                simd.concat_swizzle_dyn_u8x16(ba, bb, *idx0).bitcast(),
-                simd.concat_swizzle_dyn_u8x16(ba, bb, *idx1).bitcast(),
+                simd.concat_swizzle_dyn_u8x16(bytes_a, bytes_b, *idx0)
+                    .bitcast(),
+                simd.concat_swizzle_dyn_u8x16(bytes_a, bytes_b, *idx1)
+                    .bitcast(),
             )
         }
     }

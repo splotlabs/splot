@@ -15,10 +15,8 @@
 //! `DECODE-INTER-COMPOUND-LOCALWARP`.
 
 #[cfg(target_arch = "x86_64")]
-use fearless_simd::Avx2;
-use fearless_simd::{
-    Level, i16x8, i16x16, i32x4, i32x8, i64x2, prelude::*, u8x16, u16x8, u16x16, u64x2,
-};
+use fearless_simd::{Avx2, Level};
+use fearless_simd::{i16x8, i16x16, i32x4, i32x8, i64x2, prelude::*, u8x16, u16x8, u16x16, u64x2};
 use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 
 use crate::error::{ReconError, Result};
@@ -28,6 +26,7 @@ use crate::math::round2;
 use crate::math::{round2_i32, round2_signed, round2_signed_i32};
 use crate::subpel_mc::ReferencePlaneView;
 
+#[cfg(target_arch = "x86_64")]
 mod eight_bit;
 mod ext_unit;
 
@@ -235,6 +234,7 @@ impl PreparedWarpPrediction {
         )? {
             return Ok(());
         }
+        #[cfg(target_arch = "x86_64")]
         let view = reference.as_u8();
         for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
             let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
@@ -243,6 +243,9 @@ impl PreparedWarpPrediction {
                 block_y: (y + local_y) as i32,
                 ..self.params
             };
+            #[cfg(not(target_arch = "x86_64"))]
+            let written = 0u64;
+            #[cfg(target_arch = "x86_64")]
             let written = match (&view, output.get_mut(local_y * stride..)) {
                 (Some(view), Some(target)) if section_h == WARPED_BLOCK_SIZE => {
                     T::u8_slice_mut(target).map_or(0, |target| {
@@ -772,6 +775,7 @@ fn warp_predict_section<S: Simd, T: ReconSample>(
     let projected = project_section_center(params)?;
     let mut intermediate = [[0i16; WARPED_BLOCK_SIZE]; WARP_INTERMEDIATE_ROWS];
     let origin = interior_warp_source_origin(reference, params, &projected);
+    #[cfg(target_arch = "x86_64")]
     if let Some(source_origin) = origin
         && !(shear.alpha == 0 && shear.beta == 0 && two_tap_phase(projected.sx4).is_some())
         && let Some(reference) = reference.as_u8()
@@ -1340,6 +1344,8 @@ fn hadd_blocks<S: Simd>(simd: S, a: i32x8<S>, b: i32x8<S>) -> i32x8<S> {
     if let Some(avx2) = Level::baseline().as_avx2() {
         return i32x8::load_array(simd, avx2_hadd_blocks(avx2, a.to_array(), b.to_array()));
     }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = simd;
     let pairwise = |a: i32x4<S>, b: i32x4<S>| a.unzip_low(b) + a.unzip_high(b);
     let ((a0, a1), (b0, b1)) = (a.split(), b.split());
     pairwise(a0, b0).combine(pairwise(a1, b1))
@@ -1488,6 +1494,8 @@ fn paired_column_taps<S: Simd>(
         let pairs = avx2_paired_column_taps(avx2, columns.map(SimdBase::to_array));
         return pairs.map(|pair| i16x16::load_array(simd, pair));
     }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = simd;
     let half = |first: usize| {
         let words = |col: usize| columns[first + col].bitcast::<i32x4<S>>();
         let pairs = |a: i32x4<S>, b: i32x4<S>| {
