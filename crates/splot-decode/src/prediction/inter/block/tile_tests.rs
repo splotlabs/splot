@@ -58,6 +58,7 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
     let offset = ByteOffset::new(43);
     let row = ReconRow {
         ordinal: 0,
+        tile: 0,
         residual_coeffs: Vec::new(),
         superblocks: Vec::new(),
         entries: Vec::new(),
@@ -303,6 +304,7 @@ fn failed_frame_rows_left_unclaimed_do_not_pin_the_parse_slot() {
     assert!(progress.reset(&buffers));
     let row = |ordinal| ReconRow {
         ordinal,
+        tile: 0,
         residual_coeffs: Vec::new(),
         superblocks: Vec::new(),
         entries: Vec::new(),
@@ -314,12 +316,54 @@ fn failed_frame_rows_left_unclaimed_do_not_pin_the_parse_slot() {
         motion_folded: false,
         failure: ReconRowFailure::None,
     };
-    progress.publish_row(row(0));
-    progress.publish_row(row(1));
+    progress.reserve(2).expect("parsed rows");
+    progress.publish_row(row(0)).expect("first unit");
+    progress.publish_row(row(1)).expect("second unit");
     let claimed = progress.take_row(0).expect("published row");
     assert!(progress.reset(&buffers));
     drop(claimed);
     assert!(progress.take_row(1).is_none());
+}
+
+#[test]
+fn out_of_order_units_publish_only_their_contiguous_prefix() {
+    let buffers = crate::support::decode_buffers::DecodeBuffers::new();
+    let mut progress = ParseProgress::default();
+    assert!(progress.reset(&buffers));
+    let row = |ordinal| ReconRow {
+        ordinal,
+        tile: ordinal % 2,
+        residual_coeffs: Vec::new(),
+        superblocks: Vec::new(),
+        entries: Vec::new(),
+        slots: Vec::new(),
+        residual_blocks: Vec::new(),
+        temporal: Vec::new(),
+        residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
+        filter_records: TileFilterRecords::default(),
+        motion_folded: false,
+        failure: ReconRowFailure::None,
+    };
+    progress.reserve(5).expect("parsed rows");
+    // A left tile column's units, then the right column's, of a 2x2-superblock frame.
+    for (ordinal, watermark) in [(0, 1), (2, 1), (1, 3), (3, 4), (4, 5)] {
+        progress.publish_row(row(ordinal)).expect("unit slot");
+        assert_eq!(progress.cell().current(), watermark);
+    }
+    assert!(progress.take_row(0).is_some());
+    assert!(
+        progress.publish_row(row(0)).is_err(),
+        "a claimed slot stays closed"
+    );
+    assert!(
+        progress.publish_row(row(3)).is_err(),
+        "a unit publishes once"
+    );
+    assert!(
+        progress.publish_row(row(5)).is_err(),
+        "no slot past the frame"
+    );
+    assert_eq!(progress.take_row(2).map(|row| row.tile), Some(0));
 }
 
 #[test]
@@ -330,20 +374,25 @@ fn frame_geometry_waits_for_readers_then_reuses_hidden_backing() {
     let mut progress = super::ParseProgress::default();
     assert!(progress.reset(&buffers));
     progress
-        .publish_geometry(super::tile::TileGeometry {
-            tile_offset: ByteOffset::new(3),
-            mi_rows: 0..2,
-            mi_cols: 0..3,
-            unit_count: 2,
+        .publish_geometry(|geometry| {
+            geometry.unit_count = 2;
+            geometry.tiles.push(super::tile::GeometryTile {
+                tile_offset: ByteOffset::new(3),
+                mi_rows: 0..2,
+                mi_cols: 0..3,
+            });
+            Ok(())
         })
         .expect("first geometry publication");
     let held = progress.geometry().expect("published geometry");
     let identity = Arc::as_ptr(&held);
+    let tiles_capacity = held.tiles.capacity();
     assert!(!progress.reset(&buffers));
     assert_eq!(
         progress
             .geometry()
             .expect("held geometry remains visible")
+            .tiles[0]
             .tile_offset,
         ByteOffset::new(3)
     );
@@ -352,16 +401,16 @@ fn frame_geometry_waits_for_readers_then_reuses_hidden_backing() {
     assert!(progress.reset(&buffers));
     assert!(progress.geometry().is_none());
     progress
-        .publish_geometry(super::tile::TileGeometry {
-            tile_offset: ByteOffset::new(9),
-            mi_rows: 1..5,
-            mi_cols: 2..7,
-            unit_count: 4,
+        .publish_geometry(|geometry| {
+            assert_eq!(geometry.tiles.capacity(), tiles_capacity);
+            geometry.unit_count = 4;
+            geometry.tiles[0].tile_offset = ByteOffset::new(9);
+            Ok(())
         })
         .expect("reused geometry publication");
     let reused = progress.geometry().expect("republished geometry");
     assert_eq!(Arc::as_ptr(&reused), identity);
-    assert_eq!(reused.tile_offset, ByteOffset::new(9));
+    assert_eq!(reused.tiles[0].tile_offset, ByteOffset::new(9));
     assert_eq!(reused.unit_count, 4);
 }
 
@@ -453,8 +502,10 @@ fn resolved_record_publication_keeps_the_unit_capacity() {
                 eob: 1,
             },
         );
+        progress.reserve(1).expect("parsed rows");
         let row = ReconRow {
-            ordinal: cycle,
+            ordinal: 0,
+            tile: 0,
             residual_coeffs: Vec::new(),
             superblocks: Vec::new(),
             entries: Vec::new(),
@@ -471,7 +522,7 @@ fn resolved_record_publication_keeps_the_unit_capacity() {
             .publish_records(&mut row, ChromaFormatIdc::Yuv420)
             .expect("publish records");
         records = core::mem::take(&mut row.filter_records);
-        progress.publish_row(row);
+        progress.publish_row(row).expect("unit slot");
         assert!(records.tx_skip_records.is_empty());
         assert_eq!(records.tx_skip_records.as_ptr(), storage);
         assert!(records.deblock_blocks.capacity() >= 32);

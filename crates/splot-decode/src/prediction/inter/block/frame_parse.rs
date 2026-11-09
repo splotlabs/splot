@@ -39,16 +39,32 @@ pub(crate) struct InterFrameParse {
 pub(crate) struct InterFrameParser<'payload> {
     parser: Option<Box<tile::TileParser<'payload>>>,
     setup: super::InterParseSetup,
+    tiles: usize,
+    /// The tile being parsed; earlier tiles are merged into the frame state.
+    tile: usize,
+    merged_units: usize,
+    segment_ids: Vec<TileSegmentIdState>,
 }
 
 impl<'payload> InterFrameParser<'payload> {
-    pub(crate) const fn new(setup: super::InterParseSetup) -> Self {
+    pub(crate) const fn new(setup: super::InterParseSetup, tiles: usize) -> Self {
         Self {
             parser: None,
             setup,
+            tiles,
+            tile: 0,
+            merged_units: 0,
+            segment_ids: Vec::new(),
         }
     }
 
+    /// The tile the next unit belongs to.
+    pub(crate) const fn tile(&self) -> usize {
+        self.tile
+    }
+
+    /// Parses the next unit of the current tile, returning whether the frame's
+    /// entropy pass has ended.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn parse_unit<T: ReconSample>(
         &mut self,
@@ -59,17 +75,26 @@ impl<'payload> InterFrameParser<'payload> {
         ref_frame_idx: &[u32],
         reference: &InterReferenceState<T>,
         parse_progress: &tile::ParseProgress,
+        records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     ) -> Result<bool> {
         let context = &self
             .setup
             .params
             .context(sequence, core, reference, ref_frame_idx);
         if self.parser.is_none() {
-            let (cdef_state, gdf_state, ccso_state) = self
-                .setup
-                .filter_states
-                .take()
-                .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
+            let (cdef_state, gdf_state, ccso_state) = if self.tiles == 1 {
+                self.setup.filter_states.take()
+            } else {
+                let spent = parse_progress.take_spent_filters();
+                self.setup
+                    .filter_states
+                    .as_ref()
+                    .map(|(cdef, gdf, ccso)| {
+                        tile::tile_filter_states((cdef, gdf, ccso), tile, spent)
+                    })
+                    .transpose()?
+            }
+            .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
             self.parser = Some(Box::new(tile::TileParser::scheduled(
                 tile,
                 tile_bytes,
@@ -78,17 +103,46 @@ impl<'payload> InterFrameParser<'payload> {
                 gdf_state,
                 ccso_state,
                 parse_progress,
+                (self.tile, self.tiles),
             )?));
         }
-        self.parser
+        let ended = self
+            .parser
             .as_mut()
             .ok_or_else(tile::invalid_inter_tile_scheduling_state)?
-            .parse_scheduled_unit(tile, context, parse_progress)
+            .parse_scheduled_unit(tile, context, parse_progress)?;
+        if !ended || self.tiles == 1 {
+            return Ok(ended);
+        }
+        let parsed = self
+            .parser
+            .take()
+            .ok_or_else(tile::invalid_inter_tile_scheduling_state)?
+            .finish_scheduled(parse_progress)?;
+        if self.tile == 0 {
+            records.clear();
+        }
+        let frame = self
+            .setup
+            .filter_states
+            .as_mut()
+            .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
+        let units = parsed.merge_scheduled_tile(
+            tile,
+            parse_progress,
+            frame,
+            records,
+            &mut self.segment_ids,
+        )?;
+        // Every tile but the last parses a trailing empty unit it does not publish.
+        self.merged_units += units - usize::from(self.tile + 1 < self.tiles);
+        self.tile += 1;
+        Ok(self.tile == self.tiles)
     }
 
     pub(crate) fn finish<T: ReconSample>(
         self,
-        tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
+        work_units: &[crate::bitstream::tile_payload::DecodeTileWorkUnit],
         mut records: crate::filters::wienerns_lr::FrameFilterRecords,
         core: &FrameHeaderCore,
         reference: &InterReferenceState<T>,
@@ -97,15 +151,11 @@ impl<'payload> InterFrameParser<'payload> {
     ) -> Result<InterFrameParse> {
         let super::InterParseSetup {
             params,
-            filter_states: _,
+            filter_states,
             initial_frame_cdfs,
         } = self.setup;
-        let parsed = self
-            .parser
-            .ok_or_else(tile::invalid_inter_tile_scheduling_state)?
-            .finish_scheduled(parse_progress)?;
         let previous = final_segment_ids(core, reference, params.mi_rows, params.mi_cols);
-        let segment_ids = if previous.is_some() {
+        let mut segment_ids = if previous.is_some() {
             None
         } else {
             products.segment_ids(
@@ -114,14 +164,27 @@ impl<'payload> InterFrameParser<'payload> {
                 super::segmentation_enabled(core),
             )?
         };
-        records.clear();
-        let (unit_count, cdef_state, gdf_state, ccso_state) =
-            parsed.finish_single_tile_filter_state(parse_progress, &mut records, segment_ids)?;
-        let frame_cdfs = finish_frame_cdfs(
-            &initial_frame_cdfs,
-            std::slice::from_mut(tile),
-            &mut products,
-        )?;
+        let (unit_count, cdef_state, gdf_state, ccso_state) = if self.tiles == 1 {
+            let parsed = self
+                .parser
+                .ok_or_else(tile::invalid_inter_tile_scheduling_state)?
+                .finish_scheduled(parse_progress)?;
+            records.clear();
+            parsed.finish_single_tile_filter_state(parse_progress, &mut records, segment_ids)?
+        } else {
+            if self.parser.is_some() || self.tile != self.tiles {
+                return Err(tile::invalid_inter_tile_scheduling_state());
+            }
+            if let Some(map) = segment_ids.as_deref_mut() {
+                self.segment_ids
+                    .iter()
+                    .for_each(|tile| map.merge_tile(tile));
+            }
+            let (cdef, gdf, ccso) =
+                filter_states.ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
+            (self.merged_units, cdef, gdf, ccso)
+        };
+        let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, &mut products)?;
         let ccso_grid = products.finish_ccso(ccso_state)?;
         if let Some(previous) = previous {
             products.inherit_segment_ids(previous)?;

@@ -331,6 +331,7 @@ impl<'a> DecodeTilePayloadPlan<'a> {
         &self.work_units
     }
 
+    #[cfg(test)]
     pub(crate) fn work_units_mut(&mut self) -> &mut [DecodeTileWorkUnit] {
         &mut self.work_units
     }
@@ -341,12 +342,11 @@ impl<'a> DecodeTilePayloadPlan<'a> {
         (self.payload, &self.extra_payloads, &mut self.work_units)
     }
 
-    pub(crate) fn single_tile_mut(&mut self) -> Option<(&'a [u8], &mut DecodeTileWorkUnit)> {
+    /// Work unit `index` and its payload bytes.
+    pub(crate) fn tile_mut(&mut self, index: usize) -> Option<(&'a [u8], &mut DecodeTileWorkUnit)> {
         let payload = self.payload;
         let extra_payloads = &self.extra_payloads;
-        let [tile] = self.work_units.as_mut_slice() else {
-            return None;
-        };
+        let tile = self.work_units.get_mut(index)?;
         let source = if tile.payload_index == 0 {
             Some(payload)
         } else {
