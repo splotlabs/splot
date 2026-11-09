@@ -459,7 +459,6 @@ pub(crate) fn tip_allowed_for_block_indices(
 pub(super) struct TipFramePlan {
     references: TipReferencePair,
     plan: TipReferencePlan,
-    two_references: bool,
     output: bool,
     enable_tip_refinemv: bool,
     optflow_allowed: bool,
@@ -608,7 +607,6 @@ impl TipFramePlan {
                 search_refinemv,
                 optflow_sad_threshold: Some(if output { 15 } else { 6 }),
             },
-            two_references,
             output,
             enable_tip_refinemv,
             optflow_allowed,
@@ -626,15 +624,14 @@ impl TipFramePlan {
             prediction_unit_size(placed.luma_w, placed.luma_h, self.enable_tip_refinemv)
         };
         let use_optflow = unit_size == 8 && self.optflow_allowed;
-        let frame_size = self.frame_size;
         let block_w = placed.luma_w.min(
-            frame_size
+            self.frame_size
                 .width()
                 .saturating_sub(placed.luma_x)
                 .next_multiple_of(unit_size),
         );
         let block_h = placed.luma_h.min(
-            frame_size
+            self.frame_size
                 .height()
                 .saturating_sub(placed.luma_y)
                 .next_multiple_of(unit_size),
@@ -650,8 +647,7 @@ impl TipFramePlan {
             })?;
         let mut plan = self.plan;
         if !use_optflow {
-            plan.optflow_distances = None;
-            plan.optflow_sad_threshold = None;
+            (plan.optflow_distances, plan.optflow_sad_threshold) = (None, None);
         }
         let batch_chroma_x = placed.luma_x.max(placed.chroma_luma_x);
         let batch_chroma_y = placed.luma_y.max(placed.chroma_luma_y);
@@ -666,7 +662,7 @@ impl TipFramePlan {
         Ok(TipBlockPlan {
             references: self.references,
             plan,
-            two_references: self.two_references,
+            two_references: self.plan.future.is_some(),
             output: self.output,
             use_optflow,
             unit_size,
@@ -686,8 +682,8 @@ impl TipFramePlan {
             batch_has_chroma: placed.predict_chroma
                 && batch_chroma_end_x > batch_chroma_x
                 && batch_chroma_end_y > batch_chroma_y,
-            frame_mi_rows: frame_size.height().div_ceil(4),
-            frame_mi_cols: frame_size.width().div_ceil(4),
+            frame_mi_rows: self.frame_size.height().div_ceil(4),
+            frame_mi_cols: self.frame_size.width().div_ceil(4),
         })
     }
 }

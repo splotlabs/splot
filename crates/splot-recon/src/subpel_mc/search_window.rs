@@ -284,7 +284,7 @@ mod avx2 {
                 (16, _) => window_for::<16, 24, 384>(t, source, at, phases, output),
                 (_, 16) => window_for::<24, 16, 384>(t, source, at, phases, output),
                 _ => window_for::<24, 24, 576>(t, source, at, phases, output),
-            }
+            };
         }
     );
 
@@ -298,10 +298,8 @@ mod avx2 {
         [origin, stride]: [usize; 2],
         [h_phase, v_phase]: [i16; 2],
         output: &mut [u8],
-    ) {
-        let Some(output) = output.first_chunk_mut::<N>() else {
-            return;
-        };
+    ) -> Option<()> {
+        let output = output.first_chunk_mut::<N>()?;
         let weights = _mm256_set1_epi16((h_phase << 8) | (16 - h_phase));
         let (low_pairs, high_pairs): (__m256i, __m256i) = if W == 24 {
             (
@@ -361,18 +359,15 @@ mod avx2 {
                 *bytes = _mm_cvtsi128_si64(_mm256_extracti128_si256::<1>(packed)).to_le_bytes();
             }
         };
-        let Some(mut top) = horizontal(0) else {
-            return;
-        };
+        let mut top = horizontal(0)?;
         write(0, top, top);
         for row in 1..H - 1 {
-            let Some(bottom) = horizontal(row) else {
-                return;
-            };
+            let bottom = horizontal(row)?;
             write(row, top, bottom);
             top = bottom;
         }
         write(H - 1, top, top);
+        Some(())
     }
 
     /// The `(c, c + 1)` byte pairs of eight columns, in both lanes.
