@@ -1219,28 +1219,6 @@ fn decode_block<T: ReconSample>(
         ref mut filter_records,
         ref mut arena,
     } = *context;
-    let tile::TileWalkParams {
-        mi_rows,
-        mi_cols,
-        sb_h4,
-        max_drl_bits_minus_1,
-        frame_interpolation_filter,
-        residual_tool_policy,
-        num_total_refs,
-        reference_select,
-        num_same_ref_compound,
-        luma_use_tcq,
-        residual_use_ddt,
-        bit_depth,
-        enable_adaptive_mvd,
-        allow_bawp,
-        allow_warpmv_mode,
-        frame_is_switch,
-        current_order_hint,
-        temporal_first_frame,
-        tip_ref_pair,
-        ..
-    } = *params;
     let (avail_up, avail_left) = tile_neighbour_availability(
         frontier.r,
         frontier.c,
@@ -1263,11 +1241,11 @@ fn decode_block<T: ReconSample>(
         mi_col,
         bw4: n4w,
         bh4: n4h,
-        sb_h4,
+        sb_h4: params.sb_h4,
         ref_frame0: SINGLE_REF_FRAME0,
         ref_frame1: None,
-        mi_rows,
-        mi_cols,
+        mi_rows: params.mi_rows,
+        mi_cols: params.mi_cols,
     };
 
     let comp_ref_allowed = is_comp_ref_allowed(n4w, n4h);
@@ -1282,7 +1260,8 @@ fn decode_block<T: ReconSample>(
         .as_ref()
         .is_some_and(|seg| seg.segmentation_enabled && seg.seg_id_pre_skip);
     let previous_segment_ids =
-        super::previous_segment_ids(core, reference, mi_rows, mi_cols).map(Arc::as_ref);
+        super::previous_segment_ids(core, reference, params.mi_rows, params.mi_cols)
+            .map(Arc::as_ref);
     let mut segment_id = if frontier.is_chroma_part() {
         segment_id_state.cell(frontier.r, frontier.c).unwrap_or(0)
     } else {
@@ -1444,11 +1423,11 @@ fn decode_block<T: ReconSample>(
                     frontier,
                     n4w,
                     n4h,
-                    mi_rows,
-                    mi_cols,
+                    params.mi_rows,
+                    params.mi_cols,
                     lossless,
                     InterResidualLumaTxSizeMode::Intrabc,
-                    residual_tool_policy,
+                    params.residual_tool_policy,
                     tile_offset,
                 )?)
             };
@@ -1483,16 +1462,16 @@ fn decode_block<T: ReconSample>(
                     frontier: *frontier,
                     n4w,
                     n4h,
-                    mi_rows,
-                    mi_cols,
+                    mi_rows: params.mi_rows,
+                    mi_cols: params.mi_cols,
                     info,
                     spatial,
                     residual,
                     segment_id,
                     qindex: block_qindex,
-                    luma_use_tcq,
-                    residual_use_ddt,
-                    bit_depth,
+                    luma_use_tcq: params.luma_use_tcq,
+                    residual_use_ddt: params.residual_use_ddt,
+                    bit_depth: params.bit_depth,
                     subsampling: (u32::from(sub_x), u32::from(sub_y)),
                     avail_up,
                     avail_left,
@@ -1517,11 +1496,11 @@ fn decode_block<T: ReconSample>(
                 coeffs_arena: residual_arena,
                 qindex: block_qindex,
                 segment_id,
-                luma_use_tcq,
-                policy: residual_tool_policy,
-                mi_cols,
-                mi_rows,
-                bit_depth,
+                luma_use_tcq: params.luma_use_tcq,
+                policy: params.residual_tool_policy,
+                mi_cols: params.mi_cols,
+                mi_rows: params.mi_rows,
+                bit_depth: params.bit_depth,
                 tile_offset,
             },
             frontier,
@@ -1560,7 +1539,7 @@ fn decode_block<T: ReconSample>(
     let Some(neighbour_ctx) = neighbour_ctx else {
         return Err(crate::DecodeHeaderStateError::InvalidInterPartitionState.into());
     };
-    if num_total_refs == 0 {
+    if params.num_total_refs == 0 {
         return Err(crate::pipeline::malformed_tile_payload(
             tile_offset,
             SPEC_MODE_INFO,
@@ -1638,17 +1617,17 @@ fn decode_block<T: ReconSample>(
             mv_grid,
             &mut block_ctx,
             &neighbour_ctx,
-            tip_ref_pair,
+            params.tip_ref_pair,
             filter_records,
             intrabc_state,
             ref_frame_idx,
             reference,
-            num_total_refs,
+            params.num_total_refs,
             skip,
-            mi_rows,
-            mi_cols,
-            max_drl_bits_minus_1,
-            residual_tool_policy,
+            params.mi_rows,
+            params.mi_cols,
+            params.max_drl_bits_minus_1,
+            params.residual_tool_policy,
             block_qindex,
             tile_offset,
         );
@@ -1675,7 +1654,7 @@ fn decode_block<T: ReconSample>(
     };
     let uses_compound = if !segment_forces_globalmv
         && !tip_ref
-        && reference_select
+        && params.reference_select
         && is_comp_ref_allowed(n4w, n4h)
     {
         compound_path::read_reference_mode(
@@ -1684,7 +1663,7 @@ fn decode_block<T: ReconSample>(
             &neighbour_ctx,
             ref_frame_idx,
             &reference.ref_order_hint,
-            current_order_hint,
+            params.current_order_hint,
             tile_offset,
         )?
     } else {
@@ -1702,40 +1681,45 @@ fn decode_block<T: ReconSample>(
             core,
             frontier,
             mv_grid,
-            tip_ref_pair,
+            params.tip_ref_pair,
             &mut block_ctx,
             &neighbour_ctx,
             filter_records,
             intrabc_state,
             ref_frame_idx,
             reference,
-            num_total_refs,
-            num_same_ref_compound,
+            params.num_total_refs,
+            params.num_same_ref_compound,
             skip,
             n4w,
             n4h,
-            mi_rows,
-            mi_cols,
-            max_drl_bits_minus_1,
-            temporal_first_frame,
-            enable_adaptive_mvd,
-            residual_tool_policy,
+            params.mi_rows,
+            params.mi_cols,
+            params.max_drl_bits_minus_1,
+            params.temporal_first_frame,
+            params.enable_adaptive_mvd,
+            params.residual_tool_policy,
             block_qindex,
-            frame_interpolation_filter,
+            params.frame_interpolation_filter,
             tile_offset,
         );
     }
 
     let ref_frame0: i8 = if segment_forces_globalmv {
-        skip_segment_reference(current_order_hint, ref_frame_idx, &reference.ref_order_hint)
+        skip_segment_reference(
+            params.current_order_hint,
+            ref_frame_idx,
+            &reference.ref_order_hint,
+        )
     } else if tip_ref {
         TIP_REF_FRAME
-    } else if num_total_refs >= 2 {
+    } else if params.num_total_refs >= 2 {
         let contexts = neighbour_ctx
-            .single_ref_ctxs(num_total_refs)
+            .single_ref_ctxs(params.num_total_refs)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
-        let selected = super::single_ref::read_single_ref(cdfs, symbols, num_total_refs, &contexts)
-            .map_err(|error| single_ref_read_error(error, tile_offset))?;
+        let selected =
+            super::single_ref::read_single_ref(cdfs, symbols, params.num_total_refs, &contexts)
+                .map_err(|error| single_ref_read_error(error, tile_offset))?;
         selected as i8
     } else {
         SINGLE_REF_FRAME0
@@ -1749,7 +1733,7 @@ fn decode_block<T: ReconSample>(
         read_warp_inter_mode_syntax(
             cdfs,
             symbols,
-            allow_warpmv_mode,
+            params.allow_warpmv_mode,
             force_integer_mv,
             n4w,
             n4h,
@@ -1759,11 +1743,11 @@ fn decode_block<T: ReconSample>(
     };
     if let Some(warp_mode) = warp_mode {
         let derive_wrl = n4w >= 2 && n4h >= 2;
-        let use_temporal_first = temporal_first_frame
+        let use_temporal_first = params.temporal_first_frame
             && block_ref_within_temporal_distance(
                 reference,
                 ref_frame_idx,
-                current_order_hint,
+                params.current_order_hint,
                 ref_frame0,
             );
         let mv_config = inter_mv_read_config(core)?;
@@ -1790,7 +1774,7 @@ fn decode_block<T: ReconSample>(
                     mv_config,
                     motion_mode,
                     mode_ctx.new_mv_context,
-                    max_drl_bits_minus_1,
+                    params.max_drl_bits_minus_1,
                     tile_offset,
                 )?
             }
@@ -1803,7 +1787,7 @@ fn decode_block<T: ReconSample>(
                 mv_config,
                 frontier.b_size.index(),
                 mode_ctx.new_mv_context,
-                max_drl_bits_minus_1,
+                params.max_drl_bits_minus_1,
                 tile_offset,
             )?,
             (WarpInterMode::Warpmv, _) => {
@@ -1828,11 +1812,11 @@ fn decode_block<T: ReconSample>(
                 frontier,
                 n4w,
                 n4h,
-                mi_rows,
-                mi_cols,
+                params.mi_rows,
+                params.mi_cols,
                 lossless,
                 InterResidualLumaTxSizeMode::Inter,
-                residual_tool_policy,
+                params.residual_tool_policy,
                 tile_offset,
             )?)
         } else {
@@ -1924,7 +1908,7 @@ fn decode_block<T: ReconSample>(
     let use_amvd = read_use_amvd_syntax(
         cdfs,
         symbols,
-        enable_adaptive_mvd,
+        params.enable_adaptive_mvd,
         single_mode,
         neighbour_ctx.amvd_ctx(ref_frame0),
         tile_offset,
@@ -1941,9 +1925,9 @@ fn decode_block<T: ReconSample>(
             cdfs,
             symbols,
             BawpParseInput {
-                allow_bawp,
+                allow_bawp: params.allow_bawp,
                 reference_scaled,
-                frame_is_switch,
+                frame_is_switch: params.frame_is_switch,
                 single_mode,
                 use_amvd,
                 n4w,
@@ -1960,7 +1944,7 @@ fn decode_block<T: ReconSample>(
         ref_frame0,
         ref_frame_idx,
         reference,
-        current_order_hint,
+        params.current_order_hint,
     );
     let interintra = if tip_ref || segment_forces_globalmv {
         None
@@ -1970,23 +1954,23 @@ fn decode_block<T: ReconSample>(
         None
     };
     let use_temporal_first = !tip_ref
-        && temporal_first_frame
+        && params.temporal_first_frame
         && block_ref_within_temporal_distance(
             reference,
             ref_frame_idx,
-            current_order_hint,
+            params.current_order_hint,
             ref_frame0,
         );
 
     let ref_mv_idx = if single_mode == SINGLE_MODE_NEARMV || single_mode == SINGLE_MODE_NEWMV {
         if tip_ref {
-            read_tip_drl_idx(cdfs, symbols, max_drl_bits_minus_1, tile_offset)?
+            read_tip_drl_idx(cdfs, symbols, params.max_drl_bits_minus_1, tile_offset)?
         } else {
             read_drl_idx(
                 cdfs,
                 symbols,
                 mode_ctx.new_mv_context,
-                max_drl_bits_minus_1,
+                params.max_drl_bits_minus_1,
                 tile_offset,
             )?
         }
@@ -2047,7 +2031,7 @@ fn decode_block<T: ReconSample>(
         resolve_interp_filter(
             cdfs,
             symbols,
-            frame_interpolation_filter,
+            params.frame_interpolation_filter,
             single_inter_needs_interp_filter(n4w, n4h, single_mode),
             interp_ctx,
             tile_offset,
@@ -2066,11 +2050,11 @@ fn decode_block<T: ReconSample>(
             frontier,
             n4w,
             n4h,
-            mi_rows,
-            mi_cols,
+            params.mi_rows,
+            params.mi_cols,
             lossless,
             InterResidualLumaTxSizeMode::Inter,
-            residual_tool_policy,
+            params.residual_tool_policy,
             tile_offset,
         )?)
     } else {
