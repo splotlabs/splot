@@ -150,7 +150,6 @@ fn deblock_records() -> Vec<crate::filters::deblock::DeblockBlock> {
             luma_tx: 3,
             chroma_tx: Some(2),
             sub_pu_size: None,
-            chroma_transform_only: false,
             qindex: 100,
             skip: false,
             lossless: false,

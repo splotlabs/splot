@@ -12,12 +12,6 @@ pub(super) struct MiCell {
     pub(super) base: u32,
 }
 
-#[derive(Clone, Copy, Default)]
-pub(super) struct ChromaMiCell {
-    pub(super) overlay: u32,
-    pub(super) chroma_transform: u32,
-}
-
 pub(super) fn reset<T: Copy>(
     cells: &mut Vec<T>,
     len: usize,
@@ -60,7 +54,7 @@ pub(super) struct MiGridStorage {
 
 pub(super) struct ChromaMiGridStorage {
     /// One cell per chroma mode-info unit, not per luma one.
-    pub(super) cells: Vec<ChromaMiCell>,
+    pub(super) cells: Vec<MiCell>,
     pub(super) cell_cols: usize,
     pub(super) sub_x: usize,
     pub(super) sub_y: usize,
@@ -102,7 +96,6 @@ impl MiGrid<'_> {
         let cell = self.base.cells.get(self.index(row, col))?;
         Some(EdgeBlock {
             block: self.base_blocks.get(record(cell.base))?,
-            chroma_transform: None,
         })
     }
 
@@ -117,20 +110,11 @@ impl MiGrid<'_> {
                     .wrapping_add(col >> grid.sub_x),
             )
         });
-        let block = match chroma.map(|cell| cell.overlay) {
+        let block = match chroma.map(|cell| cell.base) {
             Some(overlay) if overlay != NO_BLOCK => self.overlay_blocks.get(record(overlay))?,
             _ => self.base_blocks.get(record(base.base))?,
         };
-        let chroma_transform = match chroma.map(|cell| cell.chroma_transform) {
-            Some(transform) if transform != NO_BLOCK => {
-                Some(self.overlay_blocks.get(record(transform))?)
-            }
-            _ => None,
-        };
-        Some(EdgeBlock {
-            block,
-            chroma_transform,
-        })
+        Some(EdgeBlock { block })
     }
 }
 
@@ -141,7 +125,7 @@ impl MiGrid<'_> {
 #[derive(Default)]
 pub(crate) struct DeblockGridStorage {
     pub(super) cells: Vec<MiCell>,
-    pub(super) chroma: Vec<ChromaMiCell>,
+    pub(super) chroma: Vec<MiCell>,
     pub(super) facts: [PlaneFacts; 2],
 }
 
@@ -220,7 +204,7 @@ impl ChromaMiGridStorage {
     pub(super) fn new(
         mi_cols: usize,
         (sub_x, sub_y): (usize, usize),
-        storage: &mut Vec<ChromaMiCell>,
+        storage: &mut Vec<MiCell>,
     ) -> Self {
         Self {
             cells: core::mem::take(storage),
@@ -236,7 +220,7 @@ impl ChromaMiGridStorage {
             .div_ceil(1 << self.sub_y)
             .checked_mul(self.cell_cols)
             .ok_or(DeblockError::Workspace)?;
-        reset(&mut self.cells, len, ChromaMiCell::default(), splot_recon::PlaneId::U)
+        reset(&mut self.cells, len, MiCell::default(), splot_recon::PlaneId::U)
     }
 
     /// Lays the chroma overlay records `records`, the first of which is
@@ -251,16 +235,12 @@ impl ChromaMiGridStorage {
         let (sub_x, sub_y, cols) = (self.sub_x, self.sub_y, self.cell_cols);
         let extent = (mi_rows, mi_cols);
         for (index, block) in (first..).zip(records) {
-            let mark = mi_block_index(index)? + 1;
+            let mark = MiCell {
+                base: mi_block_index(index)? + 1,
+            };
             for (_, span) in block_spans(block, extent, (sub_x, sub_y), cols) {
                 if let Some(cells) = self.cells.get_mut(span) {
-                    for cell in cells {
-                        if block.chroma_transform_only {
-                            cell.chroma_transform = mark;
-                        } else {
-                            cell.overlay = mark;
-                        }
-                    }
+                    cells.fill(mark);
                 }
             }
         }

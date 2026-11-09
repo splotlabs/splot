@@ -21,7 +21,6 @@ pub(super) const LOSSLESS: u16 = 1 << 7;
 pub(super) const EDGE_V: u16 = 1 << 8;
 pub(super) const EDGE_H: u16 = 1 << 9;
 pub(super) const COVERED: u16 = 1 << 10;
-const SIZE_CODES: u16 = 0x3f;
 
 /// The § 7.17.2 `TxRowBase`/`TxColBase` pair of a cell as its low eight bits
 /// each. Two neighbouring cells lie inside the blocks their bases start, at
@@ -142,9 +141,9 @@ impl PlaneFacts {
         }
     }
 
-    /// Paints the chroma records `records` in record order: a block record
-    /// writes every fact of its cells, a transform-only record, which follows
-    /// its block's, their transform base and size.
+    /// Paints the chroma records `records` over a `mi_rows` by `mi_cols`
+    /// frame in record order, so that a later record overwrites an earlier
+    /// one.
     pub(super) fn paint_chroma(
         &mut self,
         records: &[DeblockBlock],
@@ -158,17 +157,6 @@ impl PlaneFacts {
                 continue;
             }
             let key = key(block.chroma_base_r, block.chroma_base_c);
-            if block.chroma_transform_only {
-                let codes = block.chroma_tx.map(size_codes);
-                for row in rows {
-                    self.paint_transform(
-                        key,
-                        codes,
-                        row * stride + cols.start..row * stride + cols.end,
-                    );
-                }
-                continue;
-            }
             let (bits, qindex) = block_bits(block);
             let [x, y] = origin(block.chroma_prediction, (sub_x, sub_y));
             let rect = Rect {
@@ -252,22 +240,6 @@ impl PlaneFacts {
                 *cell |= EDGE_V;
             }
             at += self.stride;
-        }
-    }
-
-    /// Writes a transform-only record's base `key` and size `codes` over
-    /// cells `cells`.
-    fn paint_transform(&mut self, key: u16, codes: Option<u16>, cells: core::ops::Range<usize>) {
-        let (Some(keys), Some(infos)) =
-            (self.keys.get_mut(cells.clone()), self.info.get_mut(cells))
-        else {
-            return;
-        };
-        fill_mi_run(keys, key);
-        if let Some(codes) = codes {
-            for info in infos {
-                *info = *info & !SIZE_CODES | codes;
-            }
         }
     }
 }

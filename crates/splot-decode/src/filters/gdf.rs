@@ -2014,7 +2014,6 @@ mod tests {
             luma_tx: 0,
             chroma_tx: Some(0),
             sub_pu_size: None,
-            chroma_transform_only: false,
             qindex: 0,
             skip: false,
             lossless: true,

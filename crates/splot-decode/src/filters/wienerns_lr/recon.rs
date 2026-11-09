@@ -1430,7 +1430,6 @@ pub(crate) fn chroma_transform_deblock_block(
         luma_tx: chroma_tx as u8,
         chroma_tx: Some(chroma_tx as u8),
         sub_pu_size: None,
-        chroma_transform_only: false,
         qindex,
         skip: false,
         lossless,

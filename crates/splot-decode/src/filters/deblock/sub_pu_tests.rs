@@ -15,7 +15,6 @@ fn same_record_decisions_match<const PLANE: usize, const PASS: usize>(
     let twin = *record;
     let side = |block| EdgeBlock {
         block,
-        chroma_transform: None,
     };
     let strengths = StrengthCache::new(0, 0, BitDepth::Ten);
     let project = |decision: Option<EdgeDecision>| {

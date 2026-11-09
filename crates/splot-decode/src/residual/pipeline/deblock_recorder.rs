@@ -73,7 +73,6 @@ impl DeblockRecorder<'_> {
             luma_tx: luma_tx as u8,
             chroma_tx: self.chroma_tx.map(|tx| tx as u8),
             sub_pu_size: None,
-            chroma_transform_only: false,
             qindex: self.qindex,
             skip: false,
             lossless: self.lossless,

@@ -28,7 +28,7 @@ fn overlay_mi_grid(
     blocks: &[DeblockBlock],
     (mi_rows, mi_cols): (usize, usize),
     (sub_x, sub_y): (usize, usize),
-    storage: &mut Vec<grid::ChromaMiCell>,
+    storage: &mut Vec<MiCell>,
 ) -> Result<ChromaMiGridStorage, DeblockError> {
     let mut grid = ChromaMiGridStorage::new(mi_cols, (sub_x, sub_y), storage);
     grid.reset(mi_rows)?;
@@ -99,7 +99,6 @@ pub(super) fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock
                 luma_tx: 3,
                 chroma_tx: Some(2),
                 sub_pu_size: None,
-                chroma_transform_only: false,
                 qindex: 100,
                 skip: false,
                 lossless: false,
@@ -790,7 +789,6 @@ fn explicit_sub_pu_dimensions_follow_pass_and_chroma_subsampling() {
     blocks[0].sub_pu_size = Some(DeblockSubPuSize::square(8));
     let info = EdgeBlock {
         block: &blocks[0],
-        chroma_transform: None,
     };
     assert_eq!(sub_pu_dimension(info, 1, 0, 1, 1), 4);
     assert_eq!(sub_pu_dimension(info, 1, 1, 1, 1), 4);
@@ -798,7 +796,6 @@ fn explicit_sub_pu_dimensions_follow_pass_and_chroma_subsampling() {
     blocks[0].sub_pu_size = Some(DeblockSubPuSize::new(16, 8));
     let info = EdgeBlock {
         block: &blocks[0],
-        chroma_transform: None,
     };
     assert_eq!(sub_pu_dimension(info, 1, 0, 1, 1), 8);
     assert_eq!(sub_pu_dimension(info, 1, 1, 1, 1), 4);
@@ -940,7 +937,6 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
             luma_tx: 3,
             chroma_tx: None,
             sub_pu_size: None,
-            chroma_transform_only: false,
             qindex,
             skip: false,
             lossless: false,
@@ -957,7 +953,6 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
             luma_tx: 3,
             chroma_tx: None,
             sub_pu_size: None,
-            chroma_transform_only: false,
             qindex,
             skip: curr_skip,
             lossless: false,
@@ -986,7 +981,6 @@ fn batched_passes_match_every_edge_alone_in_spec_order() {
             luma_tx: tx,
             chroma_tx: None,
             sub_pu_size: sub_pu,
-            chroma_transform_only: false,
             qindex,
             skip,
             lossless: false,
@@ -1036,7 +1030,6 @@ fn batched_passes_match_every_edge_alone_across_frame_edges_and_chroma() {
             luma_tx: tx,
             chroma_tx: Some(tx.saturating_sub(1)),
             sub_pu_size: sub_pu,
-            chroma_transform_only: false,
             qindex,
             skip,
             lossless: false,
@@ -1093,9 +1086,7 @@ fn batched_passes_match_every_edge_alone_across_frame_edges_and_chroma() {
 
     let mut chroma = chroma_of(&blocks);
     chroma.push(block(0, 40, 4, 8, 1, (0, 40), None, false, 60));
-    let mut transform = block(8, 16, 12, 12, 2, (8, 16), None, false, 60);
-    transform.chroma_transform_only = true;
-    chroma.push(transform);
+    chroma.push(block(8, 16, 12, 12, 2, (8, 16), None, false, 60));
     let overlay = overlay_mi_grid(
         &chroma,
         (mi_rows, mi_cols),
@@ -1300,7 +1291,6 @@ fn skipped_block_filters_internal_prediction_unit_edges() {
         luma_tx: 3,
         chroma_tx: Some(2),
         sub_pu_size: Some(DeblockSubPuSize::square(8)),
-        chroma_transform_only: false,
         qindex: 215,
         skip: true,
         lossless: false,
@@ -1331,7 +1321,6 @@ fn prediction_unit_geometry_caps_filter_width_at_block_edges() {
         luma_tx: 4,
         chroma_tx: Some(2),
         sub_pu_size: Some(DeblockSubPuSize::square(8)),
-        chroma_transform_only: false,
         qindex: 215,
         skip: true,
         lossless: false,
@@ -1743,7 +1732,6 @@ fn mi_grid_covers_decoded_blocks() {
         luma_tx: 3,
         chroma_tx: Some(2),
         sub_pu_size: None,
-        chroma_transform_only: false,
         qindex: 100,
         skip: false,
         lossless: true,
@@ -1770,82 +1758,6 @@ fn mi_grid_covers_decoded_blocks() {
 }
 
 #[test]
-fn inherited_chroma_residual_transform_retains_prediction_metadata() {
-    let luma = [DeblockBlock {
-        r: 0,
-        c: 0,
-        luma_prediction: prediction(0, 0, 0),
-        chroma_prediction: prediction(0, 0, 0),
-        chroma_base_r: 0,
-        chroma_base_c: 0,
-        n4w: 8,
-        n4h: 8,
-        luma_tx: 0,
-        chroma_tx: None,
-        sub_pu_size: None,
-        chroma_transform_only: false,
-        qindex: 1,
-        skip: false,
-        lossless: false,
-    }];
-    let metadata = DeblockBlock {
-        r: 0,
-        c: 0,
-        luma_prediction: prediction(0, 3, 1),
-        chroma_prediction: prediction(0, 0, 3),
-        chroma_base_r: 0,
-        chroma_base_c: 0,
-        n4w: 4,
-        n4h: 2,
-        luma_tx: 1,
-        chroma_tx: Some(2),
-        sub_pu_size: None,
-        chroma_transform_only: false,
-        qindex: 90,
-        skip: false,
-        lossless: false,
-    };
-    let transform = DeblockBlock {
-        r: 0,
-        c: 2,
-        luma_prediction: prediction(7, 7, 0),
-        chroma_prediction: prediction(7, 7, 0),
-        chroma_base_r: 0,
-        chroma_base_c: 2,
-        n4w: 2,
-        n4h: 2,
-        luma_tx: 0,
-        chroma_tx: Some(5),
-        sub_pu_size: None,
-        chroma_transform_only: true,
-        qindex: 90,
-        skip: false,
-        lossless: false,
-    };
-    let base = build_mi_grid(&luma, 8, 8, &mut DeblockGridStorage::default()).unwrap();
-    let chroma = vec![metadata, transform];
-    let storage = overlay_mi_grid(
-        &chroma,
-        (8, 8),
-        (1, 1),
-        &mut DeblockGridStorage::default().chroma,
-    )
-    .unwrap();
-    let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
-
-    let inherited = grid.get_edge(1, 3).unwrap();
-    let chroma_prediction = inherited.prediction(1);
-    assert_eq!((chroma_prediction.base_r, chroma_prediction.base_c), (0, 0));
-    assert_eq!(chroma_prediction.default_sub_pu_tx, 3);
-    assert_eq!(inherited.tx_base(1), (0, 2));
-    assert_eq!(inherited.tx(1), 5);
-    assert_eq!(inherited.block.qindex, 90);
-    assert!(!inherited.block.skip);
-    assert!(!inherited.block.lossless);
-    assert_eq!(inherited.block.sub_pu_size, None);
-}
-
-#[test]
 fn ordinary_chroma_overlay_replaces_full_block_metadata() {
     let luma = [DeblockBlock {
         r: 0,
@@ -1859,7 +1771,6 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
         luma_tx: 0,
         chroma_tx: None,
         sub_pu_size: None,
-        chroma_transform_only: false,
         qindex: 1,
         skip: true,
         lossless: false,
@@ -1876,7 +1787,6 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
         luma_tx: 0,
         chroma_tx: Some(5),
         sub_pu_size: Some(DeblockSubPuSize::new(4, 8)),
-        chroma_transform_only: false,
         qindex: 255,
         skip: false,
         lossless: true,
@@ -1928,7 +1838,6 @@ fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
         (6, 4)
     );
     assert_eq!((record.chroma_base_r, record.chroma_base_c), (6, 4));
-    assert!(!record.chroma_transform_only);
 
     let luma = deblock_blocks(16, 16);
     let base = build_mi_grid(&luma, 16, 16, &mut DeblockGridStorage::default()).unwrap();
@@ -2161,7 +2070,6 @@ fn chroma_pass_uses_4x4_tx_for_sub8_luma_records() {
         luma_tx: 0,
         chroma_tx: None,
         sub_pu_size: None,
-        chroma_transform_only: false,
         qindex: 100,
         skip: false,
         lossless: false,

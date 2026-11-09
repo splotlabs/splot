@@ -212,7 +212,6 @@ pub(crate) fn record_inter_deblock_geometry(
             luma_tx: chroma_tx as u8,
             chroma_tx: Some(chroma_tx as u8),
             sub_pu_size,
-            chroma_transform_only: false,
             qindex,
             skip: residual.is_none(),
             lossless,
@@ -237,8 +236,7 @@ pub(crate) fn record_inter_deblock_geometry(
                     luma_tx: tx_size as u8,
                     chroma_tx: None,
                     sub_pu_size,
-                    chroma_transform_only: false,
-                    qindex,
+                            qindex,
                     skip: true,
                     lossless,
                 });
@@ -264,7 +262,6 @@ pub(crate) fn record_inter_deblock_geometry(
                 luma_prediction,
                 chroma_prediction,
                 sub_pu_size,
-                inherited_chroma_metadata,
                 qindex,
                 lossless,
             )?;
@@ -297,8 +294,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         )
                         .map(|tx| tx as u8),
                     sub_pu_size,
-                    chroma_transform_only: false,
-                    qindex,
+                            qindex,
                     skip: false,
                     lossless,
                 });
@@ -331,7 +327,6 @@ pub(crate) fn record_inter_deblock_geometry(
                         luma_prediction,
                         chroma_prediction,
                         sub_pu_size,
-                        inherited_chroma_metadata,
                     );
                     chroma_deblock_blocks.push(record);
                 }
@@ -351,7 +346,6 @@ fn record_skipped_chroma_deblock_geometry(
     luma_prediction: crate::filters::deblock::DeblockPredictionUnit,
     chroma_prediction: crate::filters::deblock::DeblockPredictionUnit,
     sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
-    inherited_chroma_metadata: bool,
     qindex: u32,
     lossless: bool,
 ) -> Result<()> {
@@ -389,7 +383,6 @@ fn record_skipped_chroma_deblock_geometry(
                     luma_prediction,
                     chroma_prediction,
                     sub_pu_size,
-                    inherited_chroma_metadata,
                 );
                 record.skip = true;
                 chroma_deblock_blocks.push(record);
@@ -404,12 +397,10 @@ fn retain_inter_prediction_metadata(
     luma_prediction: crate::filters::deblock::DeblockPredictionUnit,
     chroma_prediction: crate::filters::deblock::DeblockPredictionUnit,
     sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
-    chroma_transform_only: bool,
 ) {
     record.luma_prediction = luma_prediction;
     record.chroma_prediction = chroma_prediction;
     record.sub_pu_size = sub_pu_size;
-    record.chroma_transform_only = chroma_transform_only;
 }
 
 #[cfg(test)]
@@ -439,13 +430,11 @@ mod tests {
             luma_prediction,
             chroma_prediction,
             Some(sub_pu_size),
-            false,
         );
 
         assert_eq!(record.luma_prediction, luma_prediction);
         assert_eq!(record.chroma_prediction, chroma_prediction);
         assert_eq!(record.sub_pu_size, Some(sub_pu_size));
-        assert!(!record.chroma_transform_only);
     }
 
     #[test]
@@ -462,7 +451,6 @@ mod tests {
             prediction,
             prediction,
             Some(crate::filters::deblock::DeblockSubPuSize::square(4)),
-            false,
             200,
             false,
         )

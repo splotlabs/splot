@@ -84,7 +84,6 @@ pub(crate) struct DeblockBlock {
     pub(crate) luma_tx: u8,
     pub(crate) chroma_tx: Option<u8>,
     pub(crate) sub_pu_size: Option<DeblockSubPuSize>,
-    pub(crate) chroma_transform_only: bool,
     pub(crate) qindex: u32,
     pub(crate) skip: bool,
     pub(crate) lossless: bool,
@@ -127,7 +126,6 @@ impl DeblockQuantDeltas {
 #[derive(Clone, Copy)]
 struct EdgeBlock<'a> {
     block: &'a DeblockBlock,
-    chroma_transform: Option<&'a DeblockBlock>,
 }
 
 impl EdgeBlock<'_> {
@@ -142,8 +140,6 @@ impl EdgeBlock<'_> {
     fn tx_base(self, plane: usize) -> (usize, usize) {
         let (r, c) = if plane == 0 {
             (self.block.r, self.block.c)
-        } else if let Some(transform) = self.chroma_transform {
-            (transform.chroma_base_r, transform.chroma_base_c)
         } else {
             (self.block.chroma_base_r, self.block.chroma_base_c)
         };
@@ -154,10 +150,7 @@ impl EdgeBlock<'_> {
         usize::from(if plane == 0 {
             self.block.luma_tx
         } else {
-            self.chroma_transform
-                .and_then(|transform| transform.chroma_tx)
-                .or(self.block.chroma_tx)
-                .unwrap_or(0)
+            self.block.chroma_tx.unwrap_or(0)
         })
     }
 }
@@ -1248,11 +1241,6 @@ fn edge_blocks<'g, const PLANE: usize, const PASS: usize>(
 impl EdgeBlock<'_> {
     fn same(self, other: Self) -> bool {
         core::ptr::eq(self.block, other.block)
-            && match (self.chroma_transform, other.chroma_transform) {
-                (Some(a), Some(b)) => core::ptr::eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
     }
 }
 
