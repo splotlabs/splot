@@ -340,45 +340,67 @@ static WINDOWS: [[i32; NUM_PHASES]; NUM_FILTER_TYPES] = {
     table
 };
 
+type CellPlane<'a, 'b, T> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [u8], usize);
+type U8Plane<'a, 'b> = ([ReferencePlaneView<'b, u8>; 2], &'a mut [u8], usize);
+
 /// Runs a [`CompoundCells`] program of eight-bit `size`-square cells into
-/// `output` rows `stride` apart. Each cell that
+/// each plane (U and V share one program). Each cell that
 /// [`super::subpel_compound_cell_u8`] would store from its position and
 /// placements is stored the same way and sets bit `index % 64` of word
-/// `index / 64` of the returned mask;
+/// `index / 64` of its plane's mask;
 /// every other cell is left unwritten for the caller to predict.
 #[doc(hidden)]
 #[inline]
 pub fn subpel_compound_cells_u8<T: ReconSample>(
-    references: [&ReferencePlaneView<'_, T>; 2],
+    planes: [Option<CellPlane<'_, '_, T>>; 2],
     interp: InterpolationFilter,
     size: usize,
     cells: &CompoundCells,
     cwp_weight: i16,
-    output: &mut [u8],
-    stride: usize,
-) -> [u64; PROGRAM_CELLS / 64] {
-    let none = [0; PROGRAM_CELLS / 64];
-    let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) else {
-        return none;
-    };
-    if (size != 4 && size != 8) || stride < size {
-        return none;
+) -> [[u64; PROGRAM_CELLS / 64]; 2] {
+    let written = [[0; PROGRAM_CELLS / 64]; 2];
+    let planes = planes.map(|plane| {
+        let (views, output, stride) = plane?;
+        let [Some(first), Some(second)] = views.each_ref().map(ReferencePlaneView::as_u8) else {
+            return None;
+        };
+        (stride >= size).then_some(([first, second], output, stride))
+    });
+    if size != 4 && size != 8 {
+        return written;
     }
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
-        return avx2::program(
-            token,
-            [&first, &second],
-            interp,
-            size,
-            cells,
-            i32::from(cwp_weight),
-            output,
-            stride,
-        );
+        let geometry = |plane: &Option<U8Plane<'_, '_>>| {
+            plane.as_ref().map(|(views, ..)| {
+                views.each_ref().map(|view| {
+                    (
+                        view.stride,
+                        view.width,
+                        view.readable_rows,
+                        view.samples.len(),
+                    )
+                })
+            })
+        };
+        let run = |mut planes| {
+            avx2::program(
+                token,
+                &mut planes,
+                interp,
+                size,
+                cells,
+                i32::from(cwp_weight),
+            )
+        };
+        if planes[1].is_none() || geometry(&planes[0]) == geometry(&planes[1]) {
+            return run(planes);
+        }
+        let [first, second] = planes;
+        return [run([first, None])[0], run([second, None])[0]];
     }
-    let _ = (first, second, interp, cells, cwp_weight, output);
-    none
+    let _ = (planes, interp, cells, cwp_weight);
+    written
 }
 
 /// [`compound_at`] of program cell `index`, out of the program's loop.
@@ -402,7 +424,7 @@ fn program_cell(
 
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
-    use super::{Cell, CompoundCells, PROGRAM_CELLS, TAPS, WINDOWS};
+    use super::{Cell, CompoundCells, PROGRAM_CELLS, TAPS, U8Plane, WINDOWS};
     use crate::subpel_mc::eight_bit::avx2::{Horizontal, average, store_bytes, tap_bytes};
     use crate::subpel_mc::{InterpolationFilter, ReferencePlaneView};
     use core::arch::x86_64::*;
@@ -704,14 +726,17 @@ mod avx2 {
         #[inline(never)]
         pub(super) fn program(
             t: Avx2,
-            views: [&ReferencePlaneView<'_, u8>; 2],
+            planes: &mut [Option<U8Plane<'_, '_>>; 2],
             interp: InterpolationFilter,
             size: usize,
             cells: &CompoundCells,
             forward: i32,
-            output: &mut [u8],
-            stride: usize,
-        ) -> [u64; PROGRAM_CELLS / 64] {
+        ) -> [[u64; PROGRAM_CELLS / 64]; 2] {
+            let mut written = [[0; PROGRAM_CELLS / 64]; 2];
+            let Some((first_views, ..)) = &planes[0] else {
+                return written;
+            };
+            let first_views = *first_views;
             let filter = interp.pass_index(size as u32) as usize;
             let (filters, windows) = (&TAPS[filter], &WINDOWS[filter]);
             let half = |half: usize| -> __m256i {
@@ -724,63 +749,85 @@ mod avx2 {
             };
             let windows = [half(0), half(1)];
             let len = cells.len.min(PROGRAM_CELLS);
-            let mut written = [0u64; PROGRAM_CELLS / 64];
             for batch in (0..len).step_by(8) {
                 let lanes = [0, 1].map(|reference| {
-                    lanes(t, views[reference], windows, size, cells, reference, batch)
+                    lanes(
+                        t,
+                        &first_views[reference],
+                        windows,
+                        size,
+                        cells,
+                        reference,
+                        batch,
+                    )
                 });
                 let inside = lanes[0].inside & lanes[1].inside;
                 for lane in 0..(len - batch).min(8) {
                     let index = batch + lane;
                     let [row, col] = cells.positions[index];
-                    let at = row as usize * stride + col as usize;
-                    let Some(output) = output
-                        .get_mut(at..)
-                        .filter(|output| (size - 1) * stride + size <= output.len())
-                    else {
-                        continue;
-                    };
-                    if inside >> lane & 1 == 0 {
-                        let stored = super::program_cell(
-                            views, interp, size, cells, index, forward, output, stride,
-                        );
-                        written[index / 64 % 4] |= u64::from(stored) << (index % 64);
-                        continue;
-                    }
-                    let cell = |reference: usize| {
-                        let (view, lanes) = (views[reference], &lanes[reference]);
-                        let taps =
-                            |pass: usize| filters[lanes.phases[pass][lane] as usize & 15].as_ref();
-                        Cell {
-                            source: view.samples,
-                            origin: lanes.origin[lane] as usize,
-                            stride: view.stride,
-                            horizontal: taps(0),
-                            vertical: taps(1),
-                            clamped: None,
+                    for (plane, written) in planes.iter_mut().zip(written.iter_mut()) {
+                        let Some((views, output, stride)) = plane else {
+                            continue;
+                        };
+                        let stride = *stride;
+                        let at = row as usize * stride + col as usize;
+                        let Some(output) = output
+                            .get_mut(at..)
+                            .filter(|output| (size - 1) * stride + size <= output.len())
+                        else {
+                            continue;
+                        };
+                        if inside >> lane & 1 == 0 {
+                            let stored = super::program_cell(
+                                [&views[0], &views[1]],
+                                interp,
+                                size,
+                                cells,
+                                index,
+                                forward,
+                                output,
+                                stride,
+                            );
+                            written[index / 64 % 4] |= u64::from(stored) << (index % 64);
+                            continue;
                         }
-                    };
-                    let (first, second) = (cell(0), cell(1));
-                    let classes = [lanes[0].classes[lane], lanes[1].classes[lane]];
-                    if size == 4 {
-                        let first = by_narrow_class!(classes[0], predicted(t, &first));
-                        let second = by_narrow_class!(classes[1], predicted(t, &second));
-                        store_bytes::<4>(
-                            t,
-                            output,
-                            0,
-                            stride,
-                            average(first[0], second[0], forward),
-                        );
-                    } else {
-                        let first = by_class!(classes[0], predicted(t, &first));
-                        let second = by_class!(classes[1], predicted(t, &second));
-                        for (group, (&first, &second)) in first.iter().zip(&second).enumerate() {
-                            let blended = average(first, second, forward);
-                            store_bytes::<8>(t, output, 2 * group * stride, stride, blended);
+                        let cell = |reference: usize| {
+                            let (view, lanes) = (&views[reference], &lanes[reference]);
+                            let taps = |pass: usize| {
+                                filters[lanes.phases[pass][lane] as usize & 15].as_ref()
+                            };
+                            Cell {
+                                source: view.samples,
+                                origin: lanes.origin[lane] as usize,
+                                stride: view.stride,
+                                horizontal: taps(0),
+                                vertical: taps(1),
+                                clamped: None,
+                            }
+                        };
+                        let (first, second) = (cell(0), cell(1));
+                        let classes = [lanes[0].classes[lane], lanes[1].classes[lane]];
+                        if size == 4 {
+                            let first = by_narrow_class!(classes[0], predicted(t, &first));
+                            let second = by_narrow_class!(classes[1], predicted(t, &second));
+                            store_bytes::<4>(
+                                t,
+                                output,
+                                0,
+                                stride,
+                                average(first[0], second[0], forward),
+                            );
+                        } else {
+                            let first = by_class!(classes[0], predicted(t, &first));
+                            let second = by_class!(classes[1], predicted(t, &second));
+                            for (group, (&first, &second)) in first.iter().zip(&second).enumerate()
+                            {
+                                let blended = average(first, second, forward);
+                                store_bytes::<8>(t, output, 2 * group * stride, stride, blended);
+                            }
                         }
+                        written[index / 64 % 4] |= 1 << (index % 64);
                     }
-                    written[index / 64 % 4] |= 1 << (index % 64);
                 }
             }
             written

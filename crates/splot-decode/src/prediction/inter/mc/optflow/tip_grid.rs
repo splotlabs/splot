@@ -149,19 +149,16 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                    pred: &mut Pred,
                    intermediate: &mut Intermediate|
          -> Result<()> {
-            for (views, (output, stride)) in views.iter().zip(outputs.iter_mut()) {
-                if let Some(views) = views {
-                    run_cell_program(
-                        program,
-                        views,
-                        (&grid, self.block.interp, size),
-                        pred,
-                        intermediate,
-                        output,
-                        *stride,
-                    )?;
-                }
-            }
+            let [first, second] = outputs;
+            let planes = [(&views[0], first), (&views[1], second)]
+                .map(|(views, (output, stride))| Some((views.as_ref()?, &mut **output, *stride)));
+            run_cell_program(
+                program,
+                planes,
+                (&grid, self.block.interp, size),
+                pred,
+                intermediate,
+            )?;
             program.clear();
             Ok(())
         };

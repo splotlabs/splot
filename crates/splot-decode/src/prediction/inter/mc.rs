@@ -370,65 +370,6 @@ pub(crate) struct CompoundMcBlock<'a, T: ReconSample> {
     optflow_sad_threshold: Option<u32>,
 }
 
-#[derive(Debug)]
-pub(super) struct CompoundBlockMetadata {
-    rect: McBlockRect,
-    has_chroma: bool,
-    motion: Option<CompoundMotionGrid>,
-}
-
-impl CompoundBlockMetadata {
-    pub(super) fn take_motion(&mut self) -> Option<CompoundMotionGrid> {
-        self.motion.take()
-    }
-
-    /// Takes the motion grid's per-cell candidate list back for the caller's
-    /// context, leaving the metadata otherwise intact.
-    pub(super) fn take_grid_candidates(&mut self) -> Vec<[Mv; 2]> {
-        self.motion
-            .as_mut()
-            .map(CompoundMotionGrid::take_candidates)
-            .unwrap_or_default()
-    }
-
-    pub(super) fn publish<T: ReconSample>(
-        &self,
-        samples: &[T],
-        sink: &mut WorkspaceSink<'_, '_, T>,
-    ) -> Result<()> {
-        let mut sample_start = 0usize;
-        for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
-            if plane != PlaneId::Y && !self.has_chroma {
-                continue;
-            }
-            let (plane_x, plane_y, block_w, block_h) = self.rect.plane_rect(plane, sub_x, sub_y);
-            let sample_count =
-                block_w
-                    .checked_mul(block_h)
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "compound output plane sample count",
-                    })?;
-            let sample_end =
-                sample_start
-                    .checked_add(sample_count)
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "compound output plane sample range",
-                    })?;
-            let plane_samples =
-                samples
-                    .get(sample_start..sample_end)
-                    .ok_or(ReconError::BufferLengthMismatch {
-                        expected: sample_end,
-                        actual: samples.len(),
-                    })?;
-            let plane_rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
-            sink.write_rect(plane, plane_rect, plane_samples, block_w)?;
-            sample_start = sample_end;
-        }
-        Ok(())
-    }
-}
-
 struct RecycledMcSamples<T: Send + 'static>(Vec<T>);
 
 impl<T: Send + 'static> RecycledMcSamples<T> {
@@ -518,9 +459,7 @@ pub(crate) fn predict_inter_block_from_grid<T: ReconSample>(
             {
                 Ok(None)
             }
-            Some(compound) => {
-                Ok(predict_compound_into(sink, compound, motion, offset)?.take_motion())
-            }
+            Some(compound) => predict_compound_into(sink, compound, motion, offset),
             None => Ok(motion),
         },
     }
@@ -672,7 +611,7 @@ pub(super) fn predict_tip_batch_from_grid<T: ReconSample>(
     batch_has_chroma: bool,
     motion: CompoundMotionGrid,
     offset: ByteOffset,
-) -> Result<CompoundBlockMetadata> {
+) -> Result<Option<CompoundMotionGrid>> {
     block.rect = batch_rect;
     block.has_chroma = batch_has_chroma;
     block.sub8x8_chroma = false;
@@ -689,15 +628,11 @@ pub(super) fn predict_compound_into<T: ReconSample>(
     block: CompoundMcBlock<'_, T>,
     motion: Option<CompoundMotionGrid>,
     offset: ByteOffset,
-) -> Result<CompoundBlockMetadata> {
+) -> Result<Option<CompoundMotionGrid>> {
     if let Some(grid) = motion.as_ref()
         && optflow::predict_tip_grid_u8(sink, block, grid, offset)?
     {
-        return Ok(CompoundBlockMetadata {
-            rect: block.rect,
-            has_chroma: block.has_chroma,
-            motion,
-        });
+        return Ok(motion);
     }
     let info = sink.info();
     let mut luma_diff_weighted_mask = None;
@@ -794,11 +729,7 @@ pub(super) fn predict_compound_into<T: ReconSample>(
         };
         staged_v = chroma_v.filter(|_| shared);
     }
-    Ok(CompoundBlockMetadata {
-        rect: block.rect,
-        has_chroma: block.has_chroma,
-        motion,
-    })
+    Ok(motion)
 }
 
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
