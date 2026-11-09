@@ -141,14 +141,30 @@ impl ChromaDeblockRecords {
             twin.get_or_insert(self.blocks.len());
             return self.push(0, block);
         }
+        if !self.pair_v(twin, |u| *u == block) {
+            self.push(1, block);
+            *twin = twin.map(|at| at + 1);
+        }
+    }
+
+    /// Marks the block's next U record, `twin`, as V's too when `same` holds
+    /// for it, which is [`Self::push_paired`] of a V record without building
+    /// it.
+    #[inline]
+    pub(crate) fn pair_v(
+        &mut self,
+        twin: &mut Option<usize>,
+        same: impl FnOnce(&DeblockBlock) -> bool,
+    ) -> bool {
         match twin.and_then(|at| self.blocks.get_mut(at)) {
-            Some(record) if record.planes == Self::U && record.block == block => {
+            Some(record) if record.planes == Self::U && same(&record.block) => {
                 record.planes = Self::U | Self::V;
                 self.single -= 1;
+                *twin = twin.map(|at| at + 1);
+                true
             }
-            _ => self.push(1, block),
+            _ => false,
         }
-        *twin = twin.map(|at| at + 1);
     }
 
     pub(crate) fn push_both(&mut self, block: DeblockBlock) {

@@ -26,6 +26,15 @@ impl DeblockRecorder<'_> {
         y: usize,
         tx_size: usize,
     ) {
+        let (sub_x, sub_y) = self.chroma_subsampling;
+        let (r, c) = ((y / 4) << sub_y, (x / 4) << sub_x);
+        let same = |u: &crate::filters::deblock::DeblockBlock| {
+            (u.r as usize, u.c as usize, usize::from(u.luma_tx)) == (r, c, tx_size)
+        };
+        if plane_id == splot_recon::PlaneId::V && self.chroma_blocks.pair_v(&mut self.v_twin, same)
+        {
+            return;
+        }
         if let Some((plane_index, record)) =
             crate::filters::wienerns_lr::chroma_transform_deblock_block(
                 plane_id,

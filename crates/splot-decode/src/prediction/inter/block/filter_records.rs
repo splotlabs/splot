@@ -313,6 +313,21 @@ pub(crate) fn record_inter_deblock_geometry(
                 );
             }
             ReconPlaneId::U | ReconPlaneId::V => {
+                let (r, c) = (
+                    (block.y / MI_SIZE) << usize::from(sub_y),
+                    (block.x / MI_SIZE) << usize::from(sub_x),
+                );
+                let extent =
+                    |log2: u32, sub: bool| (1usize << log2 >> 2).max(1) << usize::from(sub);
+                let size = (extent(log2_width, sub_x), extent(log2_height, sub_y));
+                let same = |u: &crate::filters::deblock::DeblockBlock| {
+                    (u.r as usize, u.c as usize, usize::from(u.luma_tx)) == (r, c, block.tx_size)
+                        && (u.n4w as usize, u.n4h as usize) == size
+                };
+                if block.plane == ReconPlaneId::V && chroma_deblock_blocks.pair_v(&mut v_twin, same)
+                {
+                    continue;
+                }
                 if let Some((plane_index, mut record)) =
                     crate::filters::wienerns_lr::chroma_transform_deblock_block(
                         block.plane,
