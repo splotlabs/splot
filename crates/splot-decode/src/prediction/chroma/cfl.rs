@@ -22,9 +22,9 @@ use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, PixelFormat, PlaneId, ReconSample,
 };
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use super::cfl_luma::{
-    Luma420Block, cfl_alpha_fits_i16, cfl_predict_u8, cfl_predict_u16, luma_420,
+    Luma420Block, cfl_alpha_fits_i16, cfl_predict_u8, cfl_predict_u16, luma_420, luma_token,
 };
 use crate::bitstream::tile_payload::{
     CflMultiDirection, CflParams, CoeffBlock, GeneralIntraResidualError,
@@ -575,10 +575,10 @@ fn cfl_predict_block<T: ReconSample>(
             context: "CfL prediction target",
         });
     }
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if cfl_alpha_fits_i16(model[1])
         && luma.len().is_multiple_of(16)
-        && let Some(token) = fearless_simd::Level::baseline().as_avx2()
+        && let Some(token) = luma_token()
     {
         if let Some(out) = T::u16_slice_mut(out) {
             cfl_predict_u16(token, model, luma, width, out, stride);
@@ -1497,11 +1497,11 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
         out: &mut [i16],
     ) -> bool {
         let height = (out.len() / width.max(1)).saturating_sub(usize::from(above.is_some()));
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         if F < RUNTIME_WEIGHTS
             && width > 0
             && height > 0
-            && let Some(token) = fearless_simd::Level::baseline().as_avx2()
+            && let Some(token) = luma_token()
             && let Some(samples) = P::as_u8(self.plane.samples)
             && 2 * (x + width) <= self.plane.width
             && 2 * (y + height) <= self.plane.height
@@ -1536,7 +1536,7 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
                 return luma_420::<F>(token, samples, block, left.as_deref_mut(), out);
             }
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         let _ = (self, x, y, height, clamps, above, left, out);
         false
     }
@@ -1606,7 +1606,7 @@ trait CflLaneSample: Copy + Into<u16> {
     fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>);
     fn from_clipped(v: i32) -> Self;
     /// `samples` as bytes, for 8-bit planes.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn as_u8(samples: &[Self]) -> Option<&[u8]>;
 }
 
@@ -1634,7 +1634,7 @@ impl CflLaneSample for u8 {
     }
 
     #[inline]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn as_u8(samples: &[Self]) -> Option<&[u8]> {
         Some(samples)
     }
@@ -1659,7 +1659,7 @@ impl CflLaneSample for u16 {
     }
 
     #[inline]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn as_u8(_samples: &[Self]) -> Option<&[u8]> {
         None
     }

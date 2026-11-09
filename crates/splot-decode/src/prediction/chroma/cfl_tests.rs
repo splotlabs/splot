@@ -749,6 +749,41 @@ fn cfl_predict_blocks_match_scalar_for_pmulhrsw_alphas() {
     }
 }
 
+/// [`cfl_predict_block`] at the extreme `alpha`, `lumaAvg`, `dc` and `L`.
+fn check_cfl_predict_extremes<T: ReconSample>(max: i32) {
+    for alpha in [-2047, -1024, -1, 0, 1, 1024, 2047] {
+        for average in [0, 4 * max, 8 * max] {
+            for dc in [0, max / 2, max] {
+                let model = [dc, alpha, average, max];
+                let near = [
+                    0,
+                    8 * max,
+                    average,
+                    (average + 1).min(8 * max),
+                    (average - 1).max(0),
+                ];
+                let luma: Vec<i16> = (0..64)
+                    .map(|i| near.get(i % 6).map_or(4 * max + i as i32, |&l| l) as i16)
+                    .collect();
+                for width in [4, 8, 16, 64] {
+                    let mut out = vec![T::default(); 64];
+                    cfl_predict_block(model, &luma, width, &mut out, width).unwrap();
+                    for (got, &l) in out.iter().zip(&luma) {
+                        let expected = cfl_predict(model, i32::from(l)) as u16;
+                        assert_eq!(got.to_u16(), expected, "{model:?} L={l} width={width}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn cfl_predict_blocks_match_scalar_at_extremes() {
+    check_cfl_predict_extremes::<u8>(255);
+    check_cfl_predict_extremes::<u16>(1023);
+}
+
 /// [`CflLuma::q3_run`] over chroma row `y - 1` with the 4:2:0 filter `F`.
 #[allow(clippy::too_many_arguments)]
 fn specialised_run<const F: usize>(
@@ -920,19 +955,22 @@ fn check_u8_gathered_edges<const F: usize>(frame: &CurrentFrameWorkspace<u8>, st
             }
         }
     }
-    assert!(folded > 5 || cfg!(not(target_arch = "x86_64")), "{folded}");
+    assert!(
+        folded > 5 || cfg!(not(any(target_arch = "x86_64", target_arch = "aarch64"))),
+        "{folded}"
+    );
 }
 
 #[test]
 fn cfl_420_u8_gathered_edges_match_per_sample_q3() {
     let mut state = 31;
-    for _ in 0..30 {
+    for round in 0..30 {
         let width = 32 + 4 * (lcg(&mut state) % 60);
         let height = 32 + 4 * (lcg(&mut state) % 40);
         let mut frame = workspace_sized(PixelFormat::Yuv420, width, height);
         for y in 0..height {
             for x in 0..width {
-                let sample = (lcg(&mut state) % 256) as u8;
+                let sample = (lcg(&mut state) % 256) as u8 | if round % 5 == 0 { 255 } else { 0 };
                 frame
                     .set_reconstructed_sample(PlaneId::Y, x, y, sample)
                     .unwrap();
@@ -947,13 +985,13 @@ fn cfl_420_u8_gathered_edges_match_per_sample_q3() {
 #[test]
 fn cfl_420_u8_block_luma_matches_per_sample_q3() {
     let mut state = 23;
-    for _ in 0..30 {
+    for round in 0..30 {
         let width = 16 + 4 * (lcg(&mut state) % 60);
         let height = 16 + 4 * (lcg(&mut state) % 40);
         let mut frame = workspace_sized(PixelFormat::Yuv420, width, height);
         for y in 0..height {
             for x in 0..width {
-                let sample = (lcg(&mut state) % 256) as u8;
+                let sample = (lcg(&mut state) % 256) as u8 | if round % 5 == 0 { 255 } else { 0 };
                 frame
                     .set_reconstructed_sample(PlaneId::Y, x, y, sample)
                     .unwrap();
@@ -967,7 +1005,6 @@ fn cfl_420_u8_block_luma_matches_per_sample_q3() {
 
 /// [`CflLuma::block_luma_420`] with only first-row and first-column clamps
 /// (the § 7.13.6 MHCCP reference rows) against [`CflLuma::q3_run`].
-#[cfg(target_arch = "x86_64")]
 fn check_u8_reference_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, state: &mut u64) {
     let samples = frame.plane(PlaneId::Y).unwrap().samples();
     let luma = CflLuma::<u8, F>::new(frame, samples, F).unwrap();
@@ -999,17 +1036,16 @@ fn check_u8_reference_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, st
     assert!(fast_runs > 10, "{fast_runs}");
 }
 
-#[cfg(target_arch = "x86_64")]
 #[test]
 fn mhccp_420_u8_reference_luma_matches_q3_runs() {
     let mut state = 29;
-    for _ in 0..20 {
+    for round in 0..20 {
         let width = 64 + 4 * (lcg(&mut state) % 40);
         let height = 32 + 4 * (lcg(&mut state) % 30);
         let mut frame = workspace_sized(PixelFormat::Yuv420, width, height);
         for y in 0..height {
             for x in 0..width {
-                let sample = (lcg(&mut state) % 256) as u8;
+                let sample = (lcg(&mut state) % 256) as u8 | if round % 5 == 0 { 255 } else { 0 };
                 frame
                     .set_reconstructed_sample(PlaneId::Y, x, y, sample)
                     .unwrap();

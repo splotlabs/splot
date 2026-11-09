@@ -2,11 +2,33 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! The AV2 § 7.13.5 4:2:0 8-bit CfL luma `L` of a whole block in one AVX2
-//! pass: `pmaddubsw` pairs the centre and right taps of each luma row, and
-//! the left tap where the filter has one. Also the CfL prediction from `L`
-//! in 16-bit lanes.
+//! or NEON pass: `pmaddubsw` pairs the centre and right taps of each luma
+//! row, and the left tap where the filter has one. Also the CfL prediction
+//! from `L` in 16-bit lanes.
 
 use super::cfl::CFL_FILTERS_420;
+#[cfg(target_arch = "aarch64")]
+pub(super) use neon::{
+    cfl_predict_u8, cfl_predict_u16, luma_420_pairs_f0, luma_420_pairs_f1, luma_420_rows_f0,
+    luma_420_rows_f1, luma_420_rows_f2,
+};
+
+/// The token of this target's kernels.
+#[cfg(target_arch = "x86_64")]
+pub(super) type LumaToken = fearless_simd::Avx2;
+/// The token of this target's kernels.
+#[cfg(target_arch = "aarch64")]
+pub(super) type LumaToken = fearless_simd::Neon;
+
+/// The [`LumaToken`] of this machine, if it has one.
+#[allow(clippy::inline_always, reason = "a token read in hot CfL paths")]
+#[inline(always)]
+pub(super) fn luma_token() -> Option<LumaToken> {
+    #[cfg(target_arch = "x86_64")]
+    return fearless_simd::Level::baseline().as_avx2();
+    #[cfg(target_arch = "aarch64")]
+    return fearless_simd::Level::baseline().as_neon();
+}
 
 /// A block whose every luma tap lies inside the stored plane, so no tap
 /// clamps at a frame edge.
@@ -105,6 +127,7 @@ fn tap_sum(luma: &[u8], weights: &[[i32; 3]; 3], centres: [usize; 3], clamp_left
 /// `pmaddubsw` byte-pair weights of each tap row: the (centre, right) pair
 /// read from the centre column and the (left, centre) pair from one before;
 /// with `clamped`, the left tap folded into the centre.
+#[cfg(target_arch = "x86_64")]
 const fn pair_taps(weights: &[[i32; 3]; 3], clamped: bool) -> [(i16, i16); 3] {
     let mut taps = [(0i16, 0i16); 3];
     let mut row = 0;
@@ -128,6 +151,7 @@ const fn pair_taps(weights: &[[i32; 3]; 3], clamped: bool) -> [(i16, i16); 3] {
 /// [`pair_taps`] (centre, right) (`pair` 0) and (left, centre) (`pair` 1)
 /// weights of each tap row: unclamped (`variant` 0), or with the left tap of
 /// lane 0 (`variant` 1) or lane 8 (`variant` 2) clamped.
+#[cfg(target_arch = "x86_64")]
 static LANE_TAPS: [[[[[i16; 16]; 3]; 2]; 3]; 3] = {
     let mut table = [[[[[0i16; 16]; 3]; 2]; 3]; 3];
     let mut filter = 0;
@@ -166,7 +190,7 @@ static LANE_TAPS: [[[[[i16; 16]; 3]; 2]; 3]; 3] = {
 /// the first tap row take the left column from lane 7.
 #[inline]
 pub(super) fn luma_420<const F: usize>(
-    token: fearless_simd::Avx2,
+    token: LumaToken,
     luma: &[u8],
     block: Luma420Block,
     mut left: Option<&mut [i16]>,
@@ -465,6 +489,7 @@ luma_420_pairs!(luma_420_pairs_f0, 0);
 luma_420_pairs!(luma_420_pairs_f1, 1);
 
 /// Stores the first `out.len()` (at most 8) lanes of `row`.
+#[cfg(target_arch = "x86_64")]
 #[inline]
 fn store_row8(token: fearless_simd::Avx2, row: core::arch::x86_64::__m128i, out: &mut [i16]) {
     use fearless_simd::{SimdFrom as _, i16x8};
@@ -490,6 +515,7 @@ pub(super) const fn cfl_alpha_fits_i16(alpha: i32) -> bool {
 /// before `Clip1`, from the `L` of `luma[..16]`. With `d = L - lumaAvg` signed
 /// by `alpha`, `pmulhrsw` of `|d|` by `16 * |alpha|` is
 /// `(16 * |alpha * d| + 2^14) >> 15 = Round2(|alpha * d|, 11)`.
+#[cfg(target_arch = "x86_64")]
 macro_rules! cfl_predict16 {
     ($token:ident, $luma:expr, [$average:ident, $sign:ident, $scale:ident, $dc:ident]) => {{
         let luma: __m256i = i16x16::from_slice($token, &$luma[..16]).into();
@@ -501,6 +527,7 @@ macro_rules! cfl_predict16 {
 
 /// The broadcast `lumaAvg`, `alpha` sign, `16 * |alpha|` and `dc` of a
 /// `[dc, alpha, lumaAvg, max]` model.
+#[cfg(target_arch = "x86_64")]
 macro_rules! cfl_predict_constants {
     ($model:expr) => {{
         let [dc, alpha, average, _] = $model;
@@ -622,3 +649,294 @@ fearless_simd::kernel!(
         cfl_rows!(width, luma, out, stride, samples);
     }
 );
+
+/// The NEON form of the AVX2 kernels: `umlal` of the deinterleaved left,
+/// centre and right luma columns is `pmaddubsw` (every weight and sum is
+/// non-negative and below `2^11`), and `sqrdmulh` is `pmulhrsw` (its
+/// operands are non-negative, so it never saturates).
+#[cfg(target_arch = "aarch64")]
+mod neon {
+    use core::arch::aarch64::{
+        int16x8_t, uint8x16_t, uint16x8_t, vabsq_s16, vaddq_s16, vcombine_u8, vdupq_n_s16,
+        vdupq_n_u16, veorq_s16, vget_low_u8, vgetq_lane_u16, vmaxq_s16, vminq_s16, vmlal_high_u8,
+        vmlal_u8, vqmovun_s16, vqrdmulhq_s16, vreinterpretq_s16_u16, vreinterpretq_u16_s16,
+        vshrq_n_s16, vsubq_s16, vuzp1q_u8, vuzp2q_u8,
+    };
+    use fearless_simd::{Neon, Simd as _, SimdBase as _, SimdFrom as _, i16x8, u8x16, u16x8};
+
+    use super::{CFL_FILTERS_420, Luma420Block, tap_rows};
+
+    /// `WEIGHTS[filter][variant][row][tap]`: the 16 lane weights of the left,
+    /// centre and right `tap` of each tap row, unclamped (`variant` 0) or with
+    /// the left tap of lane 0 (`variant` 1) or lane 8 (`variant` 2) folded
+    /// into the centre.
+    static WEIGHTS: [[[[[u8; 16]; 3]; 3]; 3]; 3] = {
+        let mut table = [[[[[0; 16]; 3]; 3]; 3]; 3];
+        let mut i = 0;
+        while i < 3 * 3 * 3 * 3 * 16 {
+            let (filter, variant, row) = (i / 432, i / 144 % 3, i / 48 % 3);
+            let (tap, lane) = (i / 16 % 3, i % 16);
+            let [left, centre, right] = CFL_FILTERS_420[filter][row];
+            let taps = if variant > 0 && lane == 8 * (variant - 1) {
+                [0, centre + left, right]
+            } else {
+                [left, centre, right]
+            };
+            table[filter][variant][row][tap][lane] = taps[tap] as u8;
+            i += 1;
+        }
+        table
+    };
+
+    /// The `L` of filter `F` in 16 lanes (8 unless `WIDE`) from luma
+    /// column `at[row]` of each tap row, with lane weights `weights[row]`.
+    #[target_feature(enable = "neon")]
+    #[inline]
+    fn taps<const F: usize, const WIDE: bool>(
+        token: Neon,
+        luma: &[u8],
+        at: [usize; 3],
+        weights: &[[[u8; 16]; 3]; 3],
+    ) -> [uint16x8_t; 2] {
+        let mut acc = [vdupq_n_u16(0); 2];
+        let columns = |start: usize| {
+            let low: uint8x16_t = u8x16::from_slice(token, &luma[start..start + 16]).into();
+            let high = if WIDE {
+                u8x16::from_slice(token, &luma[start + 16..start + 32]).into()
+            } else {
+                low
+            };
+            (vuzp1q_u8(low, high), vuzp2q_u8(low, high))
+        };
+        let mut add = |bytes: uint8x16_t, weights: &[u8; 16]| {
+            let weights: uint8x16_t = u8x16::from_slice(token, weights).into();
+            acc[0] = vmlal_u8(acc[0], vget_low_u8(bytes), vget_low_u8(weights));
+            if WIDE {
+                acc[1] = vmlal_high_u8(acc[1], bytes, weights);
+            }
+        };
+        for ((&at, [left, centre, right]), weights) in
+            at.iter().zip(CFL_FILTERS_420[F]).zip(weights)
+        {
+            if centre != 0 || right != 0 {
+                let (centres, rights) = columns(at);
+                add(centres, &weights[1]);
+                if right != 0 {
+                    add(rights, &weights[2]);
+                }
+            }
+            if left != 0 {
+                add(columns(at - 1).0, &weights[0]);
+            }
+        }
+        acc
+    }
+
+    /// The lanes of `v` as `i16`; every `L` is below `2^11`.
+    #[target_feature(enable = "neon")]
+    #[inline]
+    fn signed(token: Neon, v: uint16x8_t) -> i16x8<Neon> {
+        i16x8::simd_from(token, vreinterpretq_s16_u16(v))
+    }
+
+    /// Stores the first `out.len()` (at most 8) lanes of `row`.
+    #[target_feature(enable = "neon")]
+    #[inline]
+    fn store_row8(token: Neon, row: uint16x8_t, out: &mut [i16]) {
+        let lanes: [i16; 8] = signed(token, row).into();
+        if let Some(out) = out.first_chunk_mut::<8>() {
+            *out = lanes;
+        } else {
+            for (slot, lane) in out.iter_mut().zip(lanes) {
+                *slot = lane;
+            }
+        }
+    }
+
+    /// Stores the first `out.len()` (at most 16) lanes of `[low, high]`.
+    #[target_feature(enable = "neon")]
+    #[inline]
+    fn store_row16(token: Neon, [low, high]: [uint16x8_t; 2], out: &mut [i16]) {
+        if let Some(out) = out.first_chunk_mut::<16>() {
+            let (first, second) = out.split_at_mut(8);
+            signed(token, low).store_slice(first);
+            signed(token, high).store_slice(second);
+        } else {
+            store_row8(token, low, out);
+            store_row8(token, high, out.get_mut(8..).unwrap_or_default());
+        }
+    }
+
+    /// The NEON `luma_420_rows_f*` of filter `F`.
+    #[target_feature(enable = "neon")]
+    #[inline]
+    fn rows<const F: usize>(
+        token: Neon,
+        clamp_groups: u8,
+        luma: &[u8],
+        block: Luma420Block,
+        mut left: Option<&mut [i16]>,
+        out: &mut [i16],
+    ) {
+        let weights = &WEIGHTS[F];
+        let width = block.width;
+        let first = usize::from(clamp_groups & 1);
+        let skip = usize::from(block.above.is_some());
+        for (r, out) in out.chunks_exact_mut(width).enumerate() {
+            let rows = tap_rows(&block, r);
+            if width > 8 {
+                for g in (0..width).step_by(16) {
+                    let clamped = usize::from(clamp_groups >> (g / 16) & 1);
+                    let at = rows.map(|row| row + 2 * g);
+                    let acc = taps::<F, true>(token, luma, at, &weights[clamped]);
+                    store_row16(token, acc, &mut out[g..]);
+                }
+            } else if let Some(left) = left.as_deref_mut() {
+                let at = rows.map(|row| row - 16);
+                let [low, high] = taps::<F, true>(token, luma, at, &weights[2 * first]);
+                if let Some(slot) = left.get_mut(r.wrapping_sub(skip)) {
+                    *slot = vgetq_lane_u16::<7>(low) as i16;
+                }
+                store_row8(token, high, out);
+            } else {
+                let [low, _] = taps::<F, false>(token, luma, rows, &weights[first]);
+                store_row8(token, low, out);
+            }
+        }
+    }
+
+    /// The NEON `luma_420_pairs_f*` of filter `F`, without top taps.
+    #[target_feature(enable = "neon")]
+    #[inline]
+    fn pairs<const F: usize>(
+        token: Neon,
+        clamp_groups: u8,
+        rows: &[u8],
+        block: Luma420Block,
+        left: &mut [i16],
+        out: &mut [i16],
+    ) {
+        let stride = block.stride;
+        if stride < 64 {
+            return;
+        }
+        let weights = &WEIGHTS[F][2 * usize::from(clamp_groups & 1)];
+        let skip = usize::from(block.above.is_some());
+        let mut rest = rows;
+        for (r, out) in out.chunks_exact_mut(block.width).enumerate() {
+            let Some((pair, tail)) = rest.split_at_checked(2 * stride) else {
+                return;
+            };
+            rest = tail;
+            let [low, high] = taps::<F, true>(token, pair, [1, 1, stride + 1], weights);
+            if let Some(slot) = left.get_mut(r.wrapping_sub(skip)) {
+                *slot = vgetq_lane_u16::<7>(low) as i16;
+            }
+            store_row8(token, high, out);
+        }
+    }
+
+    /// Defines a `luma_420` kernel entry for one constant filter.
+    macro_rules! luma_420_kernel {
+        ($name:ident, $kernel:ident, $filter:literal, $left:ty) => {
+            fearless_simd::kernel!(
+                /// The NEON kernel of this name for one filter.
+                #[inline]
+                pub(in super::super) fn $name(
+                    token: Neon,
+                    clamp_groups: u8,
+                    luma: &[u8],
+                    block: Luma420Block,
+                    left: $left,
+                    out: &mut [i16],
+                ) {
+                    $kernel::<$filter>(token, clamp_groups, luma, block, left, out);
+                }
+            );
+        };
+    }
+    luma_420_kernel!(luma_420_rows_f0, rows, 0, Option<&mut [i16]>);
+    luma_420_kernel!(luma_420_rows_f1, rows, 1, Option<&mut [i16]>);
+    luma_420_kernel!(luma_420_rows_f2, rows, 2, Option<&mut [i16]>);
+    luma_420_kernel!(luma_420_pairs_f0, pairs, 0, &mut [i16]);
+    luma_420_kernel!(luma_420_pairs_f1, pairs, 1, &mut [i16]);
+
+    /// The broadcast `lumaAvg`, `alpha` sign mask, `16 * |alpha|` and `dc`
+    /// of a `[dc, alpha, lumaAvg, max]` model.
+    #[target_feature(enable = "neon")]
+    #[inline]
+    fn constants([dc, alpha, average, _]: [i32; 4]) -> [int16x8_t; 4] {
+        [
+            vdupq_n_s16(average as i16),
+            vdupq_n_s16(-i16::from(alpha < 0)),
+            vdupq_n_s16((alpha.unsigned_abs() << 4) as i16),
+            vdupq_n_s16(dc as i16),
+        ]
+    }
+
+    /// Eight CfL samples before `Clip1` from `luma[..8]`, as the AVX2
+    /// `cfl_predict16`: `Round2(|alpha * d|, 11)` from `sqrdmulh`, then the
+    /// sign of `alpha * d` from the sign masks of `d` and `alpha`.
+    #[target_feature(enable = "neon")]
+    #[inline]
+    fn predict8(
+        token: Neon,
+        [average, sign, scale, dc]: [int16x8_t; 4],
+        luma: &[i16],
+    ) -> int16x8_t {
+        let d = vsubq_s16(i16x8::from_slice(token, &luma[..8]).into(), average);
+        let scaled = vqrdmulhq_s16(vabsq_s16(d), scale);
+        let sign = veorq_s16(vshrq_n_s16::<15>(d), sign);
+        vaddq_s16(vsubq_s16(veorq_s16(scaled, sign), sign), dc)
+    }
+
+    fearless_simd::kernel!(
+        /// The NEON `cfl_predict_u8`; `sqxtun` is the 8-bit `Clip1`.
+        #[inline]
+        pub(in super::super) fn cfl_predict_u8(
+            token: Neon,
+            model: [i32; 4],
+            luma: &[i16],
+            width: usize,
+            out: &mut [u8],
+            stride: usize,
+        ) {
+            let constants = constants(model);
+            let samples = |luma: &[i16]| -> [u8; 16] {
+                let low = vqmovun_s16(predict8(token, constants, &luma[..8]));
+                let high = vqmovun_s16(predict8(token, constants, &luma[8..]));
+                u8x16::simd_from(token, vcombine_u8(low, high)).into()
+            };
+            cfl_rows!(width, luma, out, stride, samples);
+        }
+    );
+
+    fearless_simd::kernel!(
+        /// The NEON `cfl_predict_u16`.
+        #[inline]
+        pub(in super::super) fn cfl_predict_u16(
+            token: Neon,
+            model: [i32; 4],
+            luma: &[i16],
+            width: usize,
+            out: &mut [u16],
+            stride: usize,
+        ) {
+            let constants = constants(model);
+            let (zero, max) = (vdupq_n_s16(0), vdupq_n_s16(model[3] as i16));
+            let clip = |luma: &[i16]| {
+                let v = predict8(token, constants, luma);
+                u16x8::simd_from(
+                    token,
+                    vreinterpretq_u16_s16(vminq_s16(vmaxq_s16(v, zero), max)),
+                )
+            };
+            let samples = |luma: &[i16]| -> [u16; 16] {
+                token
+                    .combine_u16x8(clip(&luma[..8]), clip(&luma[8..]))
+                    .into()
+            };
+            cfl_rows!(width, luma, out, stride, samples);
+        }
+    );
+}
