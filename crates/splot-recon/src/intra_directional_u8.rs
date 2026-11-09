@@ -13,11 +13,9 @@
 //!
 //! Feature tracking: `RECON-INTRA-DIRECTIONAL-ANGLE`.
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use fearless_simd::SimdFrom;
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::u8x32;
 use fearless_simd::{Bytes as _, Simd, SimdBase, u8x16, u16x8, u16x16, u32x4};
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::{SimdFrom, u8x32};
 
 use super::{
     DR_INTERP_FILTER, DirectionalAngleBranch, IntraMiddleDirectionalAngle, directional_shift,
@@ -126,61 +124,10 @@ impl PaddedEdge {
             );
             return Ok(());
         }
-        #[cfg(target_arch = "aarch64")]
-        if let Some(token) = fearless_simd::Level::baseline().as_neon() {
-            line_neon(token, window, taps, out);
-            return Ok(());
-        }
         baseline_simd!(simd => line_lanes(simd, window, taps, out));
         Ok(())
     }
 }
-
-/// Every IDIF kernel has non-positive outer taps and non-negative inner
-/// taps, as the bilinear kernels have, which [`line_neon`] needs.
-const _: () = {
-    let mut shift = 1;
-    while shift < 32 {
-        let [t0, t1, t2, t3] = IDIF_TAPS[shift];
-        assert!(t0 <= 0 && t1 >= 0 && t2 >= 0 && t3 <= 0);
-        shift += 1;
-    }
-};
-
-#[cfg(target_arch = "aarch64")]
-fearless_simd::kernel!(
-    /// The NEON line kernel, 16 samples per step: `umull`/`umlal` of the
-    /// inner taps and of the negated outer taps give two exact `u16` sums,
-    /// whose saturating difference clips a negative sum to 0, and `uqrshrn`
-    /// rounds by 7 bits and clips to 255.
-    #[inline]
-    fn line_neon(token: Neon, window: &[u8], taps: [i8; 4], out: &mut [u8]) {
-        use core::arch::aarch64::{
-            uint8x16_t, vcombine_u8, vdupq_n_u8, vget_low_u8, vmlal_high_u8, vmlal_u8,
-            vmull_high_u8, vmull_u8, vqrshrn_n_u16, vqsubq_u16,
-        };
-        let [t0, t1, t2, t3] = taps.map(|tap| vdupq_n_u8(tap.unsigned_abs()));
-        let low = |lanes: uint8x16_t| vget_low_u8(lanes);
-        for at in (0..out.len()).step_by(16) {
-            let load = |tap: usize| -> uint8x16_t {
-                u8x16::from_slice(token, &window[at + tap..at + tap + 16]).into()
-            };
-            let (x0, x1, x2, x3) = (load(0), load(1), load(2), load(3));
-            let inner = vmlal_u8(vmull_u8(low(x1), low(t1)), low(x2), low(t2));
-            let outer = vmlal_u8(vmull_u8(low(x0), low(t0)), low(x3), low(t3));
-            let inner_high = vmlal_high_u8(vmull_high_u8(x1, t1), x2, t2);
-            let outer_high = vmlal_high_u8(vmull_high_u8(x0, t0), x3, t3);
-            let (sums, sums_high) = (vqsubq_u16(inner, outer), vqsubq_u16(inner_high, outer_high));
-            let bytes: [u8; 16] = u8x16::simd_from(
-                token,
-                vcombine_u8(vqrshrn_n_u16::<7>(sums), vqrshrn_n_u16::<7>(sums_high)),
-            )
-            .into();
-            let count = (out.len() - at).min(16);
-            out[at..at + count].copy_from_slice(&bytes[..count]); // splot-copy-ok: publish one line chunk
-        }
-    }
-);
 
 /// Bias that lifts every 8-bit 4-tap sum above zero in [`line_lanes`]: the
 /// negative taps total at least `-24`, so `-24 * 255 + 48 * 128 > 0`, and the
@@ -549,56 +496,4 @@ pub(super) fn write_middle(
 /// is logical `-2 - mrlIndex`.
 pub(super) fn idif_offset(len: usize, mrl_index: usize) -> impl Fn(i32) -> Result<usize> {
     move |base| logical_idif_edge_offset_mrl(base - 1, len, mrl_index)
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-
-    use super::{LineFilter, PaddedEdge};
-
-    /// The dispatched line kernel against `Clip1(Round2(Σ taps * edge, 7))`
-    /// for every shift, both filters, every length up to 64 and several
-    /// starts, on noise and on 0/255 edges that reach both clips.
-    #[test]
-    fn line_matches_the_rounded_tap_sum() {
-        let mut state = 0x9e37_79b9u32;
-        let mut edges = vec![[0u8; 200], [255u8; 200]];
-        edges.push(core::array::from_fn(|i| if i % 3 == 1 { 255 } else { 0 }));
-        edges.push(core::array::from_fn(|i| if i % 4 == 0 { 0 } else { 255 }));
-        edges.push(core::array::from_fn(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            (state >> 24) as u8
-        }));
-        for edge in &edges {
-            let padded = PaddedEdge::new(edge, 3).unwrap();
-            for filter in [LineFilter::Idif, LineFilter::Bilinear] {
-                for shift in 0..32u16 {
-                    let taps = filter.taps(shift).unwrap_or([0, 127, 0, 0]);
-                    for len in 1..=64 {
-                        for first in [0, 1, 7, 100] {
-                            let mut out = [0u8; 64];
-                            padded.line(filter, first, shift, &mut out[..len]).unwrap();
-                            let want = (0..len).map(|j| {
-                                if shift == 0 {
-                                    return padded.samples[first + j + 1];
-                                }
-                                let sum: i32 = (0..4)
-                                    .map(|t| {
-                                        i32::from(taps[t])
-                                            * i32::from(padded.samples[first + j + t])
-                                    })
-                                    .sum();
-                                ((sum + 64) >> 7).clamp(0, 255) as u8
-                            });
-                            assert!(
-                                out[..len].iter().copied().eq(want),
-                                "{filter:?} shift {shift} len {len} first {first}"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
