@@ -13,7 +13,9 @@
 //! of cells 1 and 3 share a vector, and the final pack restores the order;
 //! the portable kernel interleaves in sample order.
 
-use fearless_simd::{Simd, SimdIntWiden, i16x16, i32x4, i32x8, prelude::*, u16x16};
+#[cfg(not(target_arch = "x86_64"))]
+use fearless_simd::i32x4;
+use fearless_simd::{Simd, SimdIntWiden, i16x16, i32x8, prelude::*, u16x16};
 
 /// Runs `$body` with the baseline SIMD token bound to `$simd`; on x86 the
 /// AVX2 token binds directly, since a `dispatch!` closure does not inline
