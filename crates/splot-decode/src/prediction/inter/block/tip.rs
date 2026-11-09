@@ -94,7 +94,7 @@ impl<'a, T: ReconSample> TipPrediction<'a, T> {
 
 /// The reference pair and § 7.13.5 prediction settings one TIP block reads
 /// through, resolved once so the borrows can be retaken per unit batch.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 struct TipReferencePlan {
     past: u32,
     future: Option<u32>,
@@ -454,6 +454,18 @@ pub(crate) fn tip_allowed_for_block_indices(
         && n4h >= 2
 }
 
+/// The frame-constant § 7.13.5 settings every TIP block of a frame shares.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TipFramePlan {
+    references: TipReferencePair,
+    plan: TipReferencePlan,
+    two_references: bool,
+    output: bool,
+    enable_tip_refinemv: bool,
+    optflow_allowed: bool,
+    frame_size: splot_recon::PlaneSize,
+}
+
 /// The § 7.13.5 settings both halves of one TIP block derive from.
 ///
 /// The motion half leaves its plan with its units in the scratch for a
@@ -516,146 +528,164 @@ impl TipBlockPlan {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn tip_block_plan<T: ReconSample>(
-    info: splot_recon::DecodedFrameInfo,
-    placed: &PlacedInterBlock,
-    temporal: &TemporalMvContext,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
-) -> Result<TipBlockPlan> {
-    let references = temporal
-        .tip_references()
-        .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-    let (inter, mode, weight, opfl_refine_type) = tip_prediction_controls(core.inter.as_ref())?;
-    let implicit_mask = sequence
-        .inter
-        .as_ref()
-        .is_some_and(|tools| tools.enable_imp_msk_bld);
-    let blend = mc::CompoundBlend::average_with_implicit_mask(implicit_mask)
-        .average_with_cwp_weight(weight);
-    let two_references = tip_uses_two_references(weight);
-    let enable_tip_refinemv = sequence
-        .inter
-        .as_ref()
-        .is_some_and(|tools| tools.enable_tip_refinemv);
-    let output = mode == TipFrameMode::AsOutput;
-    let unscaled = tip_references_unscaled(
-        core.frame_type,
-        core.frame_size,
-        ref_frame_idx,
-        &reference.ref_order_hint,
-        &reference.ref_frame_width,
-        &reference.ref_frame_height,
-        [references.past_ref, references.future_ref],
-    );
-    let use_refinemv = sequence.inter.as_ref().is_some_and(|tools| {
-        tip_uses_refinemv(
-            output,
-            tools.enable_refinemv,
-            tools.enable_tip_refinemv,
-            weight,
-        )
-    });
-    let search_refinemv = use_refinemv
-        && unscaled
-        && tip_refinemv_offsets_allowed(references.past_offset, references.future_offset);
-    let interpolation_filter = if output {
-        output_interpolation_filter(inter)?
-    } else {
-        ReconInterpolationFilter::EightTapSharp
-    };
-    let unit_size = if output {
-        output_prediction_unit_size(enable_tip_refinemv, interpolation_filter)
-    } else {
-        prediction_unit_size(placed.luma_w, placed.luma_h, enable_tip_refinemv)
-    };
-    let use_optflow = unit_size == 8
-        && opfl_refine_type != 0
-        && enable_tip_refinemv
-        && interpolation_filter == ReconInterpolationFilter::EightTapSharp
-        && two_references
-        && tip_optflow_weight_and_references_allowed(
-            output,
-            weight,
-            unscaled
-                && tip_optflow_offsets_allowed(references.past_offset, references.future_offset),
+impl TipFramePlan {
+    pub(super) fn new<T: ReconSample>(
+        info: splot_recon::DecodedFrameInfo,
+        temporal: &TemporalMvContext,
+        sequence: &SequenceHeader,
+        core: &FrameHeaderCore,
+        ref_frame_idx: &[u32],
+        reference: &InterReferenceState<T>,
+    ) -> Result<Self> {
+        let references = temporal
+            .tip_references()
+            .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        let (inter, mode, weight, opfl_refine_type) = tip_prediction_controls(core.inter.as_ref())?;
+        let implicit_mask = sequence
+            .inter
+            .as_ref()
+            .is_some_and(|tools| tools.enable_imp_msk_bld);
+        let blend = mc::CompoundBlend::average_with_implicit_mask(implicit_mask)
+            .average_with_cwp_weight(weight);
+        let two_references = tip_uses_two_references(weight);
+        let enable_tip_refinemv = sequence
+            .inter
+            .as_ref()
+            .is_some_and(|tools| tools.enable_tip_refinemv);
+        let output = mode == TipFrameMode::AsOutput;
+        let unscaled = tip_references_unscaled(
+            core.frame_type,
+            core.frame_size,
+            ref_frame_idx,
+            &reference.ref_order_hint,
+            &reference.ref_frame_width,
+            &reference.ref_frame_height,
+            [references.past_ref, references.future_ref],
         );
-    let frame_size = info.storage_luma_size();
-    let block_w = placed.luma_w.min(
-        frame_size
-            .width()
-            .saturating_sub(placed.luma_x)
-            .next_multiple_of(unit_size),
-    );
-    let block_h = placed.luma_h.min(
-        frame_size
-            .height()
-            .saturating_sub(placed.luma_y)
-            .next_multiple_of(unit_size),
-    );
-    if block_w == 0 || block_h == 0 {
-        return Err(DecodeHeaderStateError::InvalidBlockGeometry.into());
+        let use_refinemv = sequence.inter.as_ref().is_some_and(|tools| {
+            tip_uses_refinemv(
+                output,
+                tools.enable_refinemv,
+                tools.enable_tip_refinemv,
+                weight,
+            )
+        });
+        let search_refinemv = use_refinemv
+            && unscaled
+            && tip_refinemv_offsets_allowed(references.past_offset, references.future_offset);
+        let interpolation_filter = if output {
+            output_interpolation_filter(inter)?
+        } else {
+            ReconInterpolationFilter::EightTapSharp
+        };
+        let optflow_allowed = opfl_refine_type != 0
+            && enable_tip_refinemv
+            && interpolation_filter == ReconInterpolationFilter::EightTapSharp
+            && two_references
+            && tip_optflow_weight_and_references_allowed(
+                output,
+                weight,
+                unscaled
+                    && tip_optflow_offsets_allowed(
+                        references.past_offset,
+                        references.future_offset,
+                    ),
+            );
+        let past = super::super::block_reference_slot(ref_frame_idx, references.past_ref)?;
+        let future = two_references
+            .then(|| super::super::block_reference_slot(ref_frame_idx, references.future_ref))
+            .transpose()?;
+        Ok(Self {
+            references,
+            plan: TipReferencePlan {
+                past,
+                future,
+                interpolation_filter,
+                blend,
+                optflow_distances: Some([references.past_offset, references.future_offset]),
+                use_refinemv,
+                search_refinemv,
+                optflow_sad_threshold: Some(if output { 15 } else { 6 }),
+            },
+            two_references,
+            output,
+            enable_tip_refinemv,
+            optflow_allowed,
+            frame_size: info.storage_luma_size(),
+        })
     }
-    let unit_count = block_w
-        .div_ceil(unit_size)
-        .checked_mul(block_h.div_ceil(unit_size))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "TIP prediction unit count",
-        })?;
-    let past = super::super::block_reference_slot(ref_frame_idx, references.past_ref)?;
-    let future = two_references
-        .then(|| super::super::block_reference_slot(ref_frame_idx, references.future_ref))
-        .transpose()?;
-    let plan = TipReferencePlan {
-        past,
-        future,
-        interpolation_filter,
-        blend,
-        optflow_distances: use_optflow
-            .then_some([references.past_offset, references.future_offset]),
-        use_refinemv,
-        search_refinemv,
-        optflow_sad_threshold: use_optflow.then_some(if output { 15 } else { 6 }),
-    };
-    let batch_chroma_x = placed.luma_x.max(placed.chroma_luma_x);
-    let batch_chroma_y = placed.luma_y.max(placed.chroma_luma_y);
-    let batch_chroma_end_x = placed
-        .luma_x
-        .saturating_add(block_w)
-        .min(placed.chroma_luma_x.saturating_add(placed.chroma_luma_w));
-    let batch_chroma_end_y = placed
-        .luma_y
-        .saturating_add(block_h)
-        .min(placed.chroma_luma_y.saturating_add(placed.chroma_luma_h));
-    Ok(TipBlockPlan {
-        references,
-        plan,
-        two_references,
-        output,
-        use_optflow,
-        unit_size,
-        unit_count,
-        block_w,
-        block_h,
-        batch_rect: mc::McBlockRect {
-            luma_x: placed.luma_x,
-            luma_y: placed.luma_y,
-            luma_w: block_w,
-            luma_h: block_h,
-            chroma_luma_x: batch_chroma_x,
-            chroma_luma_y: batch_chroma_y,
-            chroma_luma_w: batch_chroma_end_x.saturating_sub(batch_chroma_x),
-            chroma_luma_h: batch_chroma_end_y.saturating_sub(batch_chroma_y),
-        },
-        batch_has_chroma: placed.predict_chroma
-            && batch_chroma_end_x > batch_chroma_x
-            && batch_chroma_end_y > batch_chroma_y,
-        frame_mi_rows: frame_size.height().div_ceil(4),
-        frame_mi_cols: frame_size.width().div_ceil(4),
-    })
+
+    fn block(&self, placed: &PlacedInterBlock) -> Result<TipBlockPlan> {
+        let unit_size = if self.output {
+            output_prediction_unit_size(self.enable_tip_refinemv, self.plan.interpolation_filter)
+        } else {
+            prediction_unit_size(placed.luma_w, placed.luma_h, self.enable_tip_refinemv)
+        };
+        let use_optflow = unit_size == 8 && self.optflow_allowed;
+        let frame_size = self.frame_size;
+        let block_w = placed.luma_w.min(
+            frame_size
+                .width()
+                .saturating_sub(placed.luma_x)
+                .next_multiple_of(unit_size),
+        );
+        let block_h = placed.luma_h.min(
+            frame_size
+                .height()
+                .saturating_sub(placed.luma_y)
+                .next_multiple_of(unit_size),
+        );
+        if block_w == 0 || block_h == 0 {
+            return Err(DecodeHeaderStateError::InvalidBlockGeometry.into());
+        }
+        let unit_count = block_w
+            .div_ceil(unit_size)
+            .checked_mul(block_h.div_ceil(unit_size))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "TIP prediction unit count",
+            })?;
+        let mut plan = self.plan;
+        if !use_optflow {
+            plan.optflow_distances = None;
+            plan.optflow_sad_threshold = None;
+        }
+        let batch_chroma_x = placed.luma_x.max(placed.chroma_luma_x);
+        let batch_chroma_y = placed.luma_y.max(placed.chroma_luma_y);
+        let batch_chroma_end_x = placed
+            .luma_x
+            .saturating_add(block_w)
+            .min(placed.chroma_luma_x.saturating_add(placed.chroma_luma_w));
+        let batch_chroma_end_y = placed
+            .luma_y
+            .saturating_add(block_h)
+            .min(placed.chroma_luma_y.saturating_add(placed.chroma_luma_h));
+        Ok(TipBlockPlan {
+            references: self.references,
+            plan,
+            two_references: self.two_references,
+            output: self.output,
+            use_optflow,
+            unit_size,
+            unit_count,
+            block_w,
+            block_h,
+            batch_rect: mc::McBlockRect {
+                luma_x: placed.luma_x,
+                luma_y: placed.luma_y,
+                luma_w: block_w,
+                luma_h: block_h,
+                chroma_luma_x: batch_chroma_x,
+                chroma_luma_y: batch_chroma_y,
+                chroma_luma_w: batch_chroma_end_x.saturating_sub(batch_chroma_x),
+                chroma_luma_h: batch_chroma_end_y.saturating_sub(batch_chroma_y),
+            },
+            batch_has_chroma: placed.predict_chroma
+                && batch_chroma_end_x > batch_chroma_x
+                && batch_chroma_end_y > batch_chroma_y,
+            frame_mi_rows: frame_size.height().div_ceil(4),
+            frame_mi_cols: frame_size.width().div_ceil(4),
+        })
+    }
 }
 
 /// Fills `scratch.units` with the block's § 7.13.3.1 prediction units, or with
@@ -737,22 +767,14 @@ pub(super) fn motion<T: ReconSample>(
     temporal_records: &mut Vec<TemporalMotionBlock>,
     sink: &mc::WorkspaceSink<'_, '_, T>,
     placed: &PlacedInterBlock,
+    frame: &TipFramePlan,
     temporal: &TemporalMvContext,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
+    current_order_hint: u32,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
-    let plan = tip_block_plan(
-        sink.info(),
-        placed,
-        temporal,
-        sequence,
-        core,
-        ref_frame_idx,
-        reference,
-    )?;
+    let plan = frame.block(placed)?;
     build_units(scratch, &plan, placed, temporal, false)?;
     let grid = plan
         .use_optflow
@@ -762,9 +784,6 @@ pub(super) fn motion<T: ReconSample>(
     temporal_records
         .try_reserve(plan.unit_count)
         .map_err(|_| inter_allocation!("TIP temporal records"))?;
-    let current_order_hint = core
-        .display_order_hint()
-        .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
     let held = (grid.is_none() && plan.plan.use_refinemv)
         .then(|| plan.hold(reference))
         .transpose()?;
@@ -903,10 +922,8 @@ pub(super) fn predict<T: ReconSample>(
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
+    frame: &TipFramePlan,
     temporal: &TemporalMvContext,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     qindex: u32,
     luma_use_tcq: bool,
@@ -917,15 +934,7 @@ pub(super) fn predict<T: ReconSample>(
     let plan = if let Some(plan) = scratch.motion_plan.take().filter(|_| fresh) {
         plan
     } else {
-        let plan = tip_block_plan(
-            sink.info(),
-            placed,
-            temporal,
-            sequence,
-            core,
-            ref_frame_idx,
-            reference,
-        )?;
+        let plan = frame.block(placed)?;
         let first_only = plan.batched();
         build_units(scratch, &plan, placed, temporal, first_only)?;
         plan
@@ -1300,6 +1309,17 @@ impl<T: ReconSample> TipOutputStages<T> {
         placed.chroma_luma_y = rect.y();
         placed.chroma_luma_h = rect.height();
         let mut residual_scratch = InterResidualReconScratch::default();
+        let frame = TipFramePlan::new(
+            self.info,
+            &self.temporal,
+            sequence,
+            core,
+            ref_frame_idx,
+            reference,
+        )?;
+        let current_order_hint = core
+            .display_order_hint()
+            .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
         for band_x in (0..width).step_by(self.band_w) {
             let cols = self.band_w.min(width - band_x);
             placed.luma_x = band_x;
@@ -1311,9 +1331,9 @@ impl<T: ReconSample> TipOutputStages<T> {
                 &mut band.records,
                 sink,
                 &placed,
+                &frame,
                 &self.temporal,
-                sequence,
-                core,
+                current_order_hint,
                 ref_frame_idx,
                 reference,
                 self.offset,
@@ -1327,10 +1347,8 @@ impl<T: ReconSample> TipOutputStages<T> {
                 &placed,
                 &[],
                 &[],
+                &frame,
                 &self.temporal,
-                sequence,
-                core,
-                ref_frame_idx,
                 reference,
                 0,
                 false,
