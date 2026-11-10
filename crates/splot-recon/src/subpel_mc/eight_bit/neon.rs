@@ -89,6 +89,57 @@ pub(in crate::subpel_mc) fn fullpel_compound<S: Simd>(
     stride: usize,
 ) {
     let [first, second] = blocks;
+    if first.remap.is_none() && second.remap.is_none() && (0..=16).contains(&forward) {
+        let weights = (
+            u8x16::splat(simd, forward as u8),
+            u8x16::splat(simd, (16 - forward) as u8),
+        );
+        let load = |block: &Block<'_, u8>, at: usize| {
+            block
+                .source
+                .get(at..)
+                .and_then(<[u8]>::first_chunk::<16>)
+                .map_or(u8x16::splat(simd, 0), |bytes| {
+                    u8x16::load_array_ref(simd, bytes)
+                })
+        };
+        for row in 0..first.h {
+            let starts = [first.start(row), second.start(row)];
+            for col in (0..first.w).step_by(16) {
+                let (a, b) = (load(first, starts[0] + col), load(second, starts[1] + col));
+                let (low, high) = if forward == 8 {
+                    let (low, high) = simd.widening_add_u8x16(a, b);
+                    ((low + 1) >> 1, (high + 1) >> 1)
+                } else {
+                    let (a0, a1) = simd.widening_mul_u8x16(a, weights.0);
+                    let (b0, b1) = simd.widening_mul_u8x16(b, weights.1);
+                    ((a0 + b0 + 8) >> 4, (a1 + b1 + 8) >> 4)
+                };
+                let bytes = simd.narrow_u16x8(low, high);
+                let Some(slot) = output.get_mut(row * stride + col..) else {
+                    return;
+                };
+                match first.w - col {
+                    4 => {
+                        if let Some(slot) = slot.first_chunk_mut::<4>() {
+                            *slot = bytes.bitcast::<u32x4<S>>()[0].to_le_bytes();
+                        }
+                    }
+                    8 => {
+                        if let Some(slot) = slot.first_chunk_mut::<8>() {
+                            *slot = bytes.bitcast::<u64x2<S>>()[0].to_le_bytes();
+                        }
+                    }
+                    _ => {
+                        if let Some(slot) = slot.first_chunk_mut::<16>() {
+                            bytes.store_array(slot);
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
     let remaps = blocks.map(|block| block.remap.map(|remap| u8x16::load_array(simd, remap)));
     let weights = (
         i16x8::splat(simd, forward as i16),
@@ -211,7 +262,136 @@ fn passes<S: Simd>(simd: S, block: &Block<'_, u8>, put: bool, out: &mut Out<'_, 
         block.horizontal.map_or(0, |taps| taps.count),
         block.vertical.map_or(0, |taps| taps.count),
     );
+    if block.w == 4 && block.h.is_multiple_of(2) && block.remap.is_none() {
+        match pairs {
+            (0, 1) => return paired_passes::<_, 0, 1>(simd, block, put, out),
+            (0, 2) => return paired_passes::<_, 0, 2>(simd, block, put, out),
+            (0, 4) => return paired_passes::<_, 0, 4>(simd, block, put, out),
+            (1, 1) => return paired_passes::<_, 1, 1>(simd, block, put, out),
+            (1, 2) => return paired_passes::<_, 1, 2>(simd, block, put, out),
+            (1, 4) => return paired_passes::<_, 1, 4>(simd, block, put, out),
+            (2, 1) => return paired_passes::<_, 2, 1>(simd, block, put, out),
+            (2, 2) => return paired_passes::<_, 2, 2>(simd, block, put, out),
+            (2, 4) => return paired_passes::<_, 2, 4>(simd, block, put, out),
+            _ => {}
+        }
+    }
     by_pairs!(pairs, one_pass, two_passes(simd, block, put, out));
+}
+
+/// Byte indices of the two-row pair of window columns `tap..tap + 4` and
+/// `tap + 1..tap + 5` of rows held in bytes `0..8` and `8..16`.
+const fn pair_taps(tap: usize) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    let mut lane = 0;
+    while lane < 16 {
+        out[lane] = (lane / 8 + tap + lane % 4 + lane / 4 % 2 * 8) as u8;
+        lane += 1;
+    }
+    out
+}
+
+const PAIR_TAPS: [[u8; 16]; 2] = [pair_taps(0), pair_taps(2)];
+
+/// [`two_passes`] of a 4-wide block of even height with unclamped columns,
+/// rows `2k` and `2k + 1` of each pass in the halves of one vector. A 4-wide
+/// block's horizontal filter has at most two tap pairs, so a pair's window
+/// rows fit eight bytes each.
+#[inline(never)]
+fn paired_passes<S: Simd, const H: usize, const V: usize>(
+    simd: S,
+    block: &Block<'_, u8>,
+    put: bool,
+    out: &mut Out<'_, '_, S>,
+) {
+    let (h_weights, v_weights) = (halved(simd, block.horizontal), halved(simd, block.vertical));
+    let taps = PAIR_TAPS.map(|taps| u8x16::load_array(simd, taps));
+    let (bias, shift) = match (H > 0, put) {
+        (true, true) => (1 << 9, 10),
+        (true, false) | (false, true) => (1 << 5, 6),
+        (false, false) => (2, 2),
+    };
+    let word = |row: usize| {
+        block
+            .source
+            .get(block.start(row)..)
+            .and_then(<[u8]>::first_chunk::<8>)
+            .map_or(0, |bytes| u64::from_le_bytes(*bytes))
+    };
+    let pair = |row: usize| -> i16x8<S> {
+        let bytes = u64x2::from_slice(simd, &[word(row), word(row + 1)]).bitcast::<u8x16<S>>();
+        let columns = |pair: usize| {
+            let (low, high) = simd
+                .swizzle_dyn_within_blocks_u8x16(bytes, taps[pair])
+                .widen();
+            (low.bitcast::<i16x8<S>>(), high.bitcast::<i16x8<S>>())
+        };
+        let (first, second) = columns(0);
+        if H == 0 {
+            return first;
+        }
+        let mut sum = first * h_weights[0] + second * h_weights[1];
+        if H > 1 {
+            let (third, fourth) = columns(1);
+            sum += third * h_weights[2] + fourth * h_weights[3];
+        }
+        (sum + 2) >> 2
+    };
+    let mut ring = [i16x8::splat(simd, 0); 5];
+    for (index, slot) in ring.iter_mut().enumerate().take(V) {
+        *slot = pair(2 * index);
+    }
+    for row in (0..block.h).step_by(2) {
+        ring[V] = pair(row + 2 * V);
+        let tap = |k: usize| {
+            if k.is_multiple_of(2) {
+                ring[k / 2]
+            } else {
+                ring[k / 2].slide::<4>(ring[k / 2 + 1])
+            }
+        };
+        let values = if H > 0 {
+            let (mut low, mut high) = (i32x4::splat(simd, bias), i32x4::splat(simd, bias));
+            let mut add = |k: usize| {
+                let (l, h) = tap(k).widening_mul(v_weights[k]);
+                low += l;
+                high += h;
+            };
+            add(0);
+            add(1);
+            if V > 1 {
+                add(2);
+                add(3);
+            }
+            if V > 2 {
+                add(4);
+                add(5);
+            }
+            if V > 3 {
+                add(6);
+                add(7);
+            }
+            (low >> shift).narrow(high >> shift)
+        } else {
+            let mut sum = i16x8::splat(simd, bias as i16) + tap(0) * v_weights[0];
+            sum += tap(1) * v_weights[1];
+            if V > 1 {
+                sum += tap(2) * v_weights[2] + tap(3) * v_weights[3];
+            }
+            if V > 2 {
+                sum += tap(4) * v_weights[4] + tap(5) * v_weights[5];
+            }
+            if V > 3 {
+                sum += tap(6) * v_weights[6] + tap(7) * v_weights[7];
+            }
+            sum >> shift
+        };
+        emit(simd, out, 4, row, 0, values);
+        emit(simd, out, 4, row + 1, 0, values.slide::<4>(values));
+        for index in 0..V {
+            ring[index] = ring[index + 1];
+        }
+    }
 }
 
 /// The halved taps of a pass splatted into eight-lane vectors.

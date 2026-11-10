@@ -540,9 +540,9 @@ fn placed_compound_cells_match_the_compound_entry() {
     ));
 }
 
-/// A full-sample cell stores the materialized COMPOUND_AVERAGE of its two
-/// windows for every weight, at interior and storage-edge positions, and
-/// writes nothing beside its rows.
+/// A full-sample cell, and a wider full-sample block, store the
+/// materialized COMPOUND_AVERAGE of their two windows for every weight, at
+/// interior and storage-edge positions, and write nothing beside their rows.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn full_sample_cells_match_the_materialized_average() {
@@ -608,6 +608,34 @@ fn full_sample_cells_match_the_materialized_average() {
                     );
                     assert!(got[size..].iter().all(|&v| v == u8::MAX));
                 }
+            }
+        }
+    }
+    for (w, h) in [(16, 8), (24, 2), (8, 16), (4, 8)] {
+        let params = [(3, 5), (ref_w - w, ref_h - h)].map(|(x, y)| SubpelPredictParams {
+            start_x: (x as i32) << 10,
+            start_y: (y as i32) << 10,
+            ..full_pel_params(interp, w, h, 0, 0, ref_w as i32, ref_h as i32)
+        });
+        let preds = [0, 1].map(|reference| {
+            subpel_predict_block_compound_intermediate(&views[reference], &params[reference])
+                .unwrap()
+        });
+        for weight in [-4i16, 0, 8, 11, 16, 20] {
+            let want =
+                blend_compound_average_weighted(&preds[0], &preds[1], BitDepth::Eight, weight)
+                    .unwrap();
+            let stride = w + 3;
+            let mut got = vec![u8::MAX; stride * h];
+            subpel_predict_block_compound_average_unscaled_strided_into(
+                &views[0], &params[0], &views[1], &params[1], weight, &mut got, stride,
+            )
+            .unwrap();
+            for row in 0..h {
+                let got = &got[row * stride..(row + 1) * stride];
+                let want = want[row * w..(row + 1) * w].iter().map(|&v| v as u8);
+                assert!(got[..w].iter().copied().eq(want), "{w}x{h} {weight}");
+                assert!(got[w..].iter().all(|&v| v == u8::MAX));
             }
         }
     }

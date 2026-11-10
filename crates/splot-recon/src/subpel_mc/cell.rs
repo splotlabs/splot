@@ -210,7 +210,7 @@ fn fullpel_origins(
     size: usize,
     placements: [CellPlacement; 2],
 ) -> Option<[usize; 2]> {
-    let fraction = (SUBPEL_MASK << 6) as i32;
+    let fraction = SUBPEL_MASK << 6;
     let mut origins = [0; 2];
     for ((view, ([x, y], bounds)), origin) in references.iter().zip(placements).zip(&mut origins) {
         if (x | y) & fraction != 0 {
