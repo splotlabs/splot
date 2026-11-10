@@ -358,7 +358,11 @@ impl<T: SplitSample> SplitFrame<T> {
             .lock()
             .take()
             .unwrap_or_else(|| Arc::new(None));
-        deferred.attach_filters(pending, self.recon_state()?, shell)?;
+        let reused_ccso = self
+            .entropy
+            .get()
+            .map_or([None; 3], inter::EntropyDependencies::reused_ccso);
+        deferred.attach_filters(pending, self.recon_state()?, shell, reused_ccso)?;
         self.attached.store(true, Ordering::Release);
         Ok(())
     }
@@ -497,7 +501,12 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
             return Some(claim(PREPARE, row));
         }
         if let Some(row) = self.stages[ATTACH].claim(|_| {
-            self.parse_done.load(Ordering::Acquire) && self.prepared.load(Ordering::Acquire)
+            self.parse_done.load(Ordering::Acquire)
+                && self.prepared.load(Ordering::Acquire)
+                && self
+                    .entropy
+                    .get()
+                    .is_none_or(inter::EntropyDependencies::ccso_settled)
         }) {
             return Some(claim(ATTACH, row));
         }

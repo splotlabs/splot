@@ -280,20 +280,34 @@ impl FrameProductWriters {
         ccso_grid: Option<Arc<CcsoUnitGrid>>,
         segment_ids: Arc<FrameSegmentIdMap>,
     ) -> FrameProducts {
+        self.settle_entropy(frame_cdfs, segment_ids);
+        self.settle_ccso(ccso_grid)
+    }
+
+    /// Publishes the products a later frame's entropy pass reads; the CCSO
+    /// grid follows with [`Self::settle_ccso`].
+    pub(crate) fn settle_entropy(
+        &mut self,
+        frame_cdfs: Arc<FrameCdfSubset>,
+        segment_ids: Arc<FrameSegmentIdMap>,
+    ) {
         self.frame_cdfs.take();
+        self.segment_ids.take();
+        let _ = self.handles.frame_cdfs.0.set(Some(frame_cdfs));
+        let _ = self.handles.segment_ids.0.set(Some(segment_ids));
+    }
+
+    pub(crate) fn settle_ccso(mut self, ccso_grid: Option<Arc<CcsoUnitGrid>>) -> FrameProducts {
         let owned_ccso = self.ccso_grid.take();
         let ccso_spare = owned_ccso.filter(|owned| {
             ccso_grid
                 .as_ref()
                 .is_none_or(|visible| !Arc::ptr_eq(owned, visible))
         });
-        self.segment_ids.take();
-        let _ = self.handles.frame_cdfs.0.set(Some(frame_cdfs));
         let _ = self.handles.ccso_grid.0.set(Some(PublishedCcso {
             visible: ccso_grid,
             spare: ccso_spare,
         }));
-        let _ = self.handles.segment_ids.0.set(Some(segment_ids));
         self.settled = true;
         self.handles.clone()
     }
@@ -324,6 +338,47 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn a_pending_reused_ccso_grid_gates_the_filters_not_the_entropy_pass() {
+        let mut slots = FrameProducts::default();
+        let mut writers = slots.claim().unwrap();
+        let dependencies = super::super::EntropyDependencies {
+            cdfs: [Some(slots.frame_cdfs.clone()), None],
+            ccso_grids: [Some(slots.ccso_grid.clone()), None, None],
+            segment_ids: None,
+        };
+        assert!(!dependencies.is_settled());
+        let grid = Arc::new(CcsoUnitGrid::spare());
+        writers.settle_entropy(
+            Arc::new(FrameCdfSubset::from_defaults()),
+            Arc::new(FrameSegmentIdMap::new(1, 1).unwrap()),
+        );
+        assert!(dependencies.is_settled());
+        assert!(!dependencies.ccso_settled());
+        assert!(dependencies.reused_ccso()[0].is_none());
+        writers.settle_ccso(Some(Arc::clone(&grid)));
+        assert!(dependencies.ccso_settled());
+        assert!(core::ptr::eq(
+            dependencies.reused_ccso()[0].unwrap(),
+            Arc::as_ptr(&grid)
+        ));
+    }
+
+    #[test]
+    fn writers_dropped_after_the_entropy_products_fail_only_the_ccso_grid() {
+        let mut slots = FrameProducts::default();
+        let mut writers = slots.claim().unwrap();
+        writers.settle_entropy(
+            Arc::new(FrameCdfSubset::from_defaults()),
+            Arc::new(FrameSegmentIdMap::new(1, 1).unwrap()),
+        );
+        drop(writers);
+        assert!(slots.frame_cdfs.product().is_some());
+        assert!(slots.segment_ids.product().is_some());
+        assert!(slots.ccso_grid.is_settled());
+        assert!(slots.ccso_grid.product().is_none());
+    }
 
     #[test]
     fn failed_claim_keeps_completed_products_unchanged() {

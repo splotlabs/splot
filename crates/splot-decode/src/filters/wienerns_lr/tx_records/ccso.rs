@@ -26,6 +26,8 @@ pub(crate) struct CcsoState {
     pub(crate) col_start: usize,
     pub(crate) grid_rows: usize,
     pub(crate) grid_cols: usize,
+    /// Where a [`Self::load_reused_blocks`] error points.
+    reuse_offset: ByteOffset,
 }
 
 impl CcsoState {
@@ -87,17 +89,17 @@ impl CcsoState {
             col_start,
             grid_rows,
             grid_cols,
+            reuse_offset: self.reuse_offset,
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// The frame's state with no block read yet; the planes it reuses stay
+    /// zero until [`Self::load_reused_blocks`], which the parse never reads.
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
-        ref_frame_idx: &[u32],
-        ref_ccso_unit_grids: &[Option<Arc<CcsoUnitGrid>>],
         tile_offset: ByteOffset,
         blocks: [Vec<u8>; CCSO_PLANES],
     ) -> Result<Self> {
@@ -118,7 +120,7 @@ impl CcsoState {
                 .is_some_and(|params| params.sb_reuse_ccso)
         });
         let mut state = Self::active(shift, plane_enabled, sb_reuse, grid, blocks)?;
-        state.load_reused_blocks(core, ref_frame_idx, ref_ccso_unit_grids, tile_offset)?;
+        state.reuse_offset = tile_offset;
         Ok(state)
     }
 
@@ -154,6 +156,7 @@ impl CcsoState {
             col_start: 0,
             grid_rows,
             grid_cols,
+            reuse_offset: ByteOffset::new(0),
         })
     }
 
@@ -173,6 +176,7 @@ impl CcsoState {
             col_start: 0,
             grid_rows: 0,
             grid_cols: 0,
+            reuse_offset: ByteOffset::new(0),
         }
     }
 
@@ -336,44 +340,28 @@ impl CcsoState {
         Ok(())
     }
 
-    fn load_reused_blocks(
+    /// Copies the § 6.17.7.8 `sb_reuse_ccso` planes from `sources`, the
+    /// saved grid of each plane's reference.
+    pub(crate) fn load_reused_blocks(
         &mut self,
-        core: &FrameHeaderCore,
-        ref_frame_idx: &[u32],
-        ref_ccso_unit_grids: &[Option<Arc<CcsoUnitGrid>>],
-        tile_offset: ByteOffset,
+        sources: [Option<&CcsoUnitGrid>; CCSO_PLANES],
     ) -> Result<()> {
-        let Some(ccso) = core.ccso_params.as_ref() else {
-            return Ok(());
-        };
-        for plane in 0..CCSO_PLANES {
+        for (plane, source) in sources.into_iter().enumerate() {
             if !self.sb_reuse[plane] {
                 continue;
             }
-            let ref_index = ccso
-                .planes
-                .get(plane)
-                .and_then(|params| params.ccso_ref_idx)
-                .unwrap_or(0);
-            let slot = ref_frame_idx
-                .get(ref_index as usize)
-                .copied()
-                .ok_or_else(|| ccso_reuse_error(tile_offset))?;
-            let grid = ref_ccso_unit_grids
-                .get(slot as usize)
-                .and_then(Option::as_ref)
-                .ok_or_else(|| ccso_reuse_error(tile_offset))?;
-            let source = grid
+            let grid = source.ok_or_else(|| ccso_reuse_error(self.reuse_offset))?;
+            let blocks = grid
                 .plane_blocks(plane)
-                .ok_or_else(|| ccso_reuse_error(tile_offset))?;
+                .ok_or_else(|| ccso_reuse_error(self.reuse_offset))?;
             if grid.shift() != self.shift
                 || grid.grid_rows() != self.grid_rows
                 || grid.grid_cols() != self.grid_cols
-                || source.len() != self.blocks[plane].len()
+                || blocks.len() != self.blocks[plane].len()
             {
-                return Err(ccso_reuse_error(tile_offset));
+                return Err(ccso_reuse_error(self.reuse_offset));
             }
-            self.blocks[plane].copy_from_slice(source);
+            self.blocks[plane].copy_from_slice(blocks);
         }
         Ok(())
     }

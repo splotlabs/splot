@@ -575,7 +575,7 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
 }
 
 impl<T: ReconSample> DeferredInterWalk<T> {
-    pub(crate) fn publish_products(&mut self) -> Result<FrameProducts> {
+    pub(crate) fn publish_products(&mut self) -> Result<()> {
         self.parse.publish_products()
     }
     /// Hands the scheduled frontier the filter state the pass settles last.
@@ -584,10 +584,16 @@ impl<T: ReconSample> DeferredInterWalk<T> {
         pending: block::PendingFilterAttach<T>,
         reconstruction: &block::ScheduledTileRecon<T>,
         filter_shell: crate::filters::wienerns_lr::recon::OwnedFilterShell<T>,
+        reused_ccso: [Option<&crate::filters::ccso::CcsoUnitGrid>; 3],
     ) -> Result<()> {
         reconstruction.restore_payload_scratch(self.payload_scratch)?;
-        self.parse
-            .attach_filters(pending, reconstruction, &self.parse_progress, filter_shell)
+        self.parse.attach_filters(
+            pending,
+            reconstruction,
+            &self.parse_progress,
+            filter_shell,
+            reused_ccso,
+        )
     }
 }
 

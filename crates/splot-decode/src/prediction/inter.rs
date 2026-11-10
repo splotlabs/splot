@@ -487,15 +487,38 @@ pub(crate) struct EntropyDependencies {
 
 impl EntropyDependencies {
     /// Whether every product this parse reads has been published or failed.
+    /// The reused CCSO grids are not among them: the parse reads no flag of
+    /// a reused plane (§ 5.20.10.2).
     pub(crate) fn is_settled(&self) -> bool {
         self.cdfs.iter().flatten().all(FrameCdfHandle::is_settled)
-            && self
-                .ccso_grids
-                .iter()
-                .flatten()
-                .all(CcsoGridHandle::is_settled)
             && self.segment_ids.iter().all(SegmentIdMapHandle::is_settled)
     }
+
+    /// Whether the grids the frame's CCSO planes reuse have been published
+    /// or failed.
+    pub(crate) fn ccso_settled(&self) -> bool {
+        self.ccso_grids
+            .iter()
+            .flatten()
+            .all(CcsoGridHandle::is_settled)
+    }
+
+    /// The grid each CCSO plane reuses, once [`Self::ccso_settled`].
+    pub(crate) fn reused_ccso(&self) -> [Option<&crate::filters::ccso::CcsoUnitGrid>; 3] {
+        reused_ccso_sources(&self.ccso_grids)
+    }
+}
+
+/// The published grid behind each handle of [`reused_ccso_grids`].
+pub(crate) fn reused_ccso_sources(
+    grids: &[Option<CcsoGridHandle>; 3],
+) -> [Option<&crate::filters::ccso::CcsoUnitGrid>; 3] {
+    grids.each_ref().map(|handle| {
+        handle
+            .as_ref()
+            .and_then(CcsoGridHandle::product)
+            .and_then(Option::as_deref)
+    })
 }
 
 /// Resolves entropy-product identities before the current frame refreshes slots.
@@ -515,6 +538,30 @@ pub(crate) fn entropy_dependencies(
         }
     }
 
+    let ccso_grids = reused_ccso_grids(core, sequence, reference);
+    let needs_previous_segment_ids = core.segmentation_params.as_ref().is_some_and(|seg| {
+        seg.segmentation_enabled
+            && (!seg.segmentation_update_map || seg.segmentation_temporal_update)
+    });
+    let segment_ids = needs_previous_segment_ids
+        .then(|| previous_segment_slot(core, reference))
+        .flatten()
+        .and_then(|slot| reference.ref_segment_ids.get(slot))
+        .and_then(Option::as_ref)
+        .cloned();
+    EntropyDependencies {
+        cdfs,
+        ccso_grids,
+        segment_ids,
+    }
+}
+
+/// The saved grid handle each CCSO plane's `sb_reuse_ccso` copies from.
+pub(crate) fn reused_ccso_grids(
+    core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<impl ReconSample>,
+) -> [Option<CcsoGridHandle>; 3] {
     let mut ccso_grids = [None, None, None];
     if sequence
         .filter
@@ -544,21 +591,7 @@ pub(crate) fn entropy_dependencies(
             }
         }
     }
-    let needs_previous_segment_ids = core.segmentation_params.as_ref().is_some_and(|seg| {
-        seg.segmentation_enabled
-            && (!seg.segmentation_update_map || seg.segmentation_temporal_update)
-    });
-    let segment_ids = needs_previous_segment_ids
-        .then(|| previous_segment_slot(core, reference))
-        .flatten()
-        .and_then(|slot| reference.ref_segment_ids.get(slot))
-        .and_then(Option::as_ref)
-        .cloned();
-    EntropyDependencies {
-        cdfs,
-        ccso_grids,
-        segment_ids,
-    }
+    ccso_grids
 }
 
 fn previous_segment_slot(
