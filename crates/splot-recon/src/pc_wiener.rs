@@ -857,6 +857,7 @@ where
         pooled_feature_row(rows, [vertical, anti_diag, diag], pooled_width, columns);
         Ok(())
     };
+    let mut slots = [0, 1, 2];
     build_row(feature_rows, 0)?;
     for (cell_row, (cells, row_sums)) in output
         .chunks_mut(cell_cols)
@@ -867,13 +868,14 @@ where
         build_row(feature_rows, 2 * cell_row + 2)?;
         let mut planes: [[&[u16]; 3]; 3] = [[&[]; 3]; 3];
         for (feature, rows) in planes.iter_mut().enumerate() {
-            for (row, slot) in rows.iter_mut().enumerate() {
-                let start = ((2 * cell_row + row) % 3 * 3 + feature) * plane_width;
-                *slot = feature_rows
+            for (slot, row) in slots.iter().zip(rows) {
+                let start = (3 * slot + feature) * plane_width;
+                *row = feature_rows
                     .get(start..start + plane_width)
                     .ok_or_else(rows_missing)?;
             }
         }
+        slots = [slots[2], slots[0], slots[1]];
         crate::lr_madd::lr_simd!(simd => classify_cells(
             simd,
             planes,
@@ -901,20 +903,28 @@ fn classify_cells<S: Simd, O: ClassifiedCell>(
     cells: &mut [O],
 ) -> Option<()> {
     const EVENS: [i16; 16] = [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0];
-    let ones = i16x16::splat(simd, 1);
-    let evens = i16x16::from_slice(simd, &EVENS);
+    let weights: [_; 3] = core::array::from_fn(|feature| {
+        let scale = if O::SCALED {
+            PC_WIENER_NORMALIZER[feature + 1] as i16
+        } else {
+            1
+        };
+        let evens = EVENS.map(|even| even * scale);
+        (i16x16::splat(simd, scale), i16x16::from_slice(simd, &evens))
+    });
     for (group, (cells, skips)) in cells.chunks_mut(8).zip(skips.chunks(8)).enumerate() {
         let base = 16 * group;
         let mut sums = [i32x8::splat(simd, 0); 3];
-        for (sum, rows) in sums.iter_mut().zip(planes) {
+        for feature in 0..3 {
             let [mut pairs, mut next] = [u16x16::splat(simd, 0); 2];
-            for row in rows {
+            for row in planes[feature] {
                 let window = row.get(base..)?.first_chunk::<18>()?;
                 pairs += u16x16::from_slice(simd, &window[..16]);
                 next += u16x16::from_slice(simd, &window[2..]);
             }
-            *sum = simd.pairwise_dot_product_i16x16(pairs.bitcast(), ones)
-                + simd.pairwise_dot_product_i16x16(next.bitcast(), evens);
+            let (pair_weight, even_weight) = weights[feature];
+            sums[feature] = simd.pairwise_dot_product_i16x16(pairs.bitcast(), pair_weight)
+                + simd.pairwise_dot_product_i16x16(next.bitcast(), even_weight);
         }
         O::finish_lanes(
             simd,
@@ -1229,6 +1239,9 @@ fn finish_pc_wiener_classification(
 /// One cell of a grid classification, finished from its raw 6x6 window sums
 /// and the [`QvalOffsetsCache`] entry of its tx-skip sum.
 trait ClassifiedCell: Copy + Default {
+    /// Whether [`Self::finish_lanes`] takes the sums times `Pc_Wiener_Normalizer`.
+    const SCALED: bool;
+
     /// Finishes `cells` (at most eight) from the window sums of features
     /// `1..4` and the tx-skip sum of each lane; a class byte is `lut[lutInput]`.
     fn finish_lanes<S: Simd>(
@@ -1242,6 +1255,8 @@ trait ClassifiedCell: Copy + Default {
 }
 
 impl ClassifiedCell for PcWienerClassification {
+    const SCALED: bool = false;
+
     fn finish_lanes<S: Simd>(
         _simd: S,
         sums: [i32x8<S>; 3],
@@ -1266,6 +1281,8 @@ impl ClassifiedCell for PcWienerClassification {
 }
 
 impl ClassifiedCell for u8 {
+    const SCALED: bool = true;
+
     /// [`rounded_lut_input`] in eight lanes, then the class of each.
     #[allow(
         clippy::inline_always,
@@ -1291,8 +1308,7 @@ impl ClassifiedCell for u8 {
                 .min(i32x8::splat(simd, 7))
         };
         let mut input = qval(rounding(0)) << 9;
-        for (feature, sum) in (1..).zip(sums) {
-            let product = sum * i32x8::splat(simd, PC_WIENER_NORMALIZER[feature]);
+        for (feature, product) in (1..).zip(sums) {
             input += qval(product + rounding(feature)) << (9 - 3 * feature as u32);
         }
         let inputs: [i32; 8] = input.into();

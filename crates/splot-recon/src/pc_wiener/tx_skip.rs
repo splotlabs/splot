@@ -72,7 +72,7 @@ where
     let first_row = first_y >> 2;
     let row_count = (row_of(y_end) >> 2) - first_row + 1;
     let padded = stride + 2;
-    let total = padded + (row_count + cell_rows) * stride;
+    let total = padded + LANES + (row_count + cell_rows) * stride;
     buffer
         .try_reserve(total.saturating_sub(buffer.len()))
         .map_err(|_| ReconError::WorkspaceAllocationFailed {
@@ -80,7 +80,7 @@ where
             context: "PC-Wiener tx-skip sums",
         })?;
     buffer.resize(total, 0);
-    let (clipped, rest) = buffer.split_at_mut(padded);
+    let (clipped, rest) = buffer.split_at_mut(padded + LANES);
     let (column_sums, sums) = rest.split_at_mut(row_count * stride);
     let pre = ((col - (first - 1)).max(0) as usize).min(padded);
     let take = len.min(padded - pre);
@@ -99,23 +99,74 @@ where
             expected: len,
             actual: cells.len(),
         })?;
-        clipped[..pre].fill(cells[0]);
-        clipped[pre..pre + take].copy_from_slice(&cells[..take]); // splot-copy-ok: edge-replicated run every lane loads
-        clipped[pre + take..].fill(cells[take.max(1) - 1]);
+        crate::lr_madd::lr_simd!(simd => replicate_run(simd, clipped, pre, &cells[..take]));
         if crate::lr_madd::lr_simd!(simd => column_row(simd, clipped, sums_row, weights, split_blocks.then_some(first)))
         {
             check_tx_skip_cells(run, cells)?;
         }
     }
-    for (cell_row, out) in sums.chunks_exact_mut(stride).enumerate() {
-        let mut taps = [0; 6];
-        for (k, tap) in taps.iter_mut().enumerate() {
-            let y = y0 + (4 * cell_row + k) as isize;
-            *tap = ((row_of(y) >> 2) - first_row) * stride;
-        }
-        crate::lr_madd::lr_simd!(simd => add_rows(simd, column_sums, taps, out));
+    let rows = column_sums.as_chunks::<LANES>().0;
+    let row_stride = stride / LANES;
+    let phase_y = (y0 & 3) as usize;
+    let last_row = row_count as isize - 1;
+    for (cell_row, out) in sums
+        .as_chunks_mut::<LANES>()
+        .0
+        .chunks_exact_mut(row_stride)
+        .enumerate()
+    {
+        let base = (y0 >> 2) - first_row as isize + cell_row as isize;
+        let row = |offset: isize| {
+            let start = (base + offset).clamp(0, last_row) as usize * row_stride;
+            rows.get(start..start + row_stride).unwrap_or_default()
+        };
+        let rows = [row(0), row(1), row(2)];
+        crate::lr_madd::lr_simd!(simd => match phase_y {
+            0 => add_rows::<_, 4, 2, 0>(simd, rows, out),
+            1 => add_rows::<_, 3, 3, 0>(simd, rows, out),
+            2 => add_rows::<_, 2, 4, 0>(simd, rows, out),
+            _ => add_rows::<_, 1, 4, 1>(simd, rows, out),
+        });
     }
     Ok(sums)
+}
+
+/// Writes `cells` at `clipped[pre..]` and replicates its end values over the
+/// rest; `clipped` holds `LANES` bytes of slack past the edge-replicated run.
+#[inline]
+fn replicate_run<S: fearless_simd::Simd>(simd: S, clipped: &mut [u8], pre: usize, cells: &[u8]) {
+    let (Some(&first), Some(&last)) = (cells.first(), cells.last()) else {
+        return;
+    };
+    let end = pre + cells.len();
+    let Some((run, rest)) = clipped
+        .split_at_mut_checked(end)
+        .filter(|(run, _)| pre <= LANES && run.len() >= LANES)
+    else {
+        for (index, slot) in clipped.iter_mut().enumerate() {
+            *slot = cells
+                .get(index.saturating_sub(pre))
+                .copied()
+                .unwrap_or(last);
+        }
+        return;
+    };
+    u8x16::splat(simd, first).store_slice(&mut run[..LANES]);
+    match cells.last_chunk::<LANES>() {
+        Some(tail) => {
+            for (lanes, out) in cells
+                .chunks_exact(LANES)
+                .zip(run[pre..].chunks_exact_mut(LANES))
+            {
+                u8x16::from_slice(simd, lanes).store_slice(out);
+            }
+            u8x16::from_slice(simd, tail).store_slice(&mut run[end - LANES..]);
+        }
+        None => run[pre..].copy_from_slice(cells), // splot-copy-ok: short edge-replicated run
+    }
+    for out in rest.chunks_exact_mut(LANES) {
+        u8x16::splat(simd, last).store_slice(out);
+    }
 }
 
 /// One grid row's weighted column sums from its edge-replicated run
@@ -155,16 +206,18 @@ fn column_row<S: fearless_simd::Simd>(
     any.reduce_max() > 1
 }
 
-/// Sums the six grid rows at `taps` of `rows` into `out`.
+/// Sums grid rows `rows` with the weights of the six feature rows they hold.
 #[inline]
-fn add_rows<S: fearless_simd::Simd>(simd: S, rows: &[u8], taps: [usize; 6], out: &mut [u8]) {
-    for (c0, out) in (0..).step_by(LANES).zip(out.chunks_exact_mut(LANES)) {
-        let mut sum = u8x16::splat(simd, 0);
-        for tap in taps {
-            if let Some(lanes) = rows.get(tap + c0..tap + c0 + LANES) {
-                sum += u8x16::from_slice(simd, lanes);
-            }
-        }
-        sum.store_slice(out);
+fn add_rows<S: fearless_simd::Simd, const W0: u8, const W1: u8, const W2: u8>(
+    simd: S,
+    [a, b, c]: [&[[u8; LANES]]; 3],
+    out: &mut [[u8; LANES]],
+) {
+    let weigh = |lanes: &[u8; LANES], weight: u8| {
+        let row = u8x16::from_slice(simd, lanes);
+        (0..weight).fold(u8x16::splat(simd, 0), |sum, _| sum + row)
+    };
+    for (((out, a), b), c) in out.iter_mut().zip(a).zip(b).zip(c) {
+        (weigh(a, W0) + weigh(b, W1) + weigh(c, W2)).store_slice(out);
     }
 }
