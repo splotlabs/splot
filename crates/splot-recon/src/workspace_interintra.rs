@@ -4,6 +4,8 @@
 //! AV2 § 7.13.3.29 intra mode variant mask and § 7.13.3.30 interintra blend.
 
 use super::{CurrentFramePlane, CurrentFrameWorkspace, checked_sample_block_rect};
+#[cfg(target_arch = "x86_64")]
+use crate::intra_smooth::publish_rows;
 use crate::math::round2_i32;
 use crate::{IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result};
 use fearless_simd::{Simd, SimdBase, i32x4, i32x8, i32x16};
@@ -431,24 +433,26 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// AV2 § 7.13.3.25 block adaptive weighted prediction application:
     /// `CurrFrame = Clip1((orig * alpha + beta) >> 8)` in place over the
-    /// rect, dropping frame-edge overhang like the reconstruction writes.
+    /// rect, dropping frame-edge overhang like the reconstruction writes. A
+    /// rect whose origin lies outside storage scales nothing.
     ///
     /// # Errors
-    /// Returns [`ReconError`] when the plane is absent, the rectangle origin
-    /// is out of bounds, or a scaled sample cannot be stored.
+    /// Returns [`ReconError`] when the plane is absent or a scaled sample
+    /// cannot be stored.
     pub fn apply_bawp_rect(
         &mut self,
         plane: PlaneId,
-        x: usize,
-        y: usize,
-        size: IntraRectBlockSize,
+        rect: crate::PlaneRect,
         alpha: i16,
         beta: i32,
     ) -> Result<()> {
-        let rect = super::block_rect(x, y, size)?;
         let max_sample = i32::from(self.info().bit_depth().max_sample());
-        self.plane_mut(plane)?
-            .apply_bawp_rect(rect, alpha, beta, max_sample)
+        let plane = self.plane_mut(plane)?;
+        let storage = plane.storage_size();
+        if rect.x() >= storage.width() || rect.y() >= storage.height() {
+            return Ok(());
+        }
+        plane.apply_bawp_rect(rect, alpha, beta, max_sample)
     }
 }
 
@@ -465,22 +469,29 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     ) -> Result<()> {
         let rect = self.clamp_rect_to_storage(rect)?;
         let (stride, width, height) = (self.stride_samples(), rect.width(), rect.height());
+        let short = || ReconError::ArithmeticOverflow {
+            context: "bawp rectangle rows",
+        };
         let first = self.band_row(rect.y(), height)? * stride + rect.x();
         let rows = self
             .samples
             .get_mut(first..first + (height - 1) * stride + width)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "bawp rectangle rows",
-            })?;
+            .ok_or_else(short)?;
+        macro_rules! scale_lanes {
+            ($lanes:expr) => {{
+                let lanes = $lanes;
+                let orig = lanes.map(i32::from);
+                let scaled =
+                    baseline_simd!(simd => bawp_scale(simd, orig, alpha, beta, max_sample));
+                *lanes = scaled.map(|value| value as _);
+            }};
+        }
         macro_rules! scale_rows {
             ($rows:expr, $lanes:literal) => {
                 for row in $rows.chunks_mut(stride) {
                     let row = row.get_mut(..width).unwrap_or_default();
                     for lanes in row.as_chunks_mut::<$lanes>().0 {
-                        let orig = lanes.map(i32::from);
-                        let scaled =
-                            baseline_simd!(simd => bawp_scale(simd, orig, alpha, beta, max_sample));
-                        *lanes = scaled.map(|value| value as _);
+                        scale_lanes!(lanes);
                     }
                 }
             };
@@ -496,6 +507,15 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         }
         if width.is_multiple_of(4) {
             if let Some(rows) = T::u8_slice_mut(rows) {
+                #[cfg(target_arch = "x86_64")]
+                if let Some(token) = fearless_simd::Level::baseline().as_avx2()
+                    && max_sample == 0xff
+                    && (width.is_multiple_of(16)
+                        || matches!(width, 4 | 8) && height.is_multiple_of(16 / width))
+                {
+                    bawp_u8_avx2(token, rows, stride, width, alpha, beta);
+                    return Ok(());
+                }
                 scale_by_width!(rows);
                 return Ok(());
             }
@@ -520,6 +540,84 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         Ok(())
     }
 }
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    /// [`bawp_scale`] for 8-bit rows: `madd` of the zero-extended samples
+    /// with `(alpha, 0)` pairs is `orig * alpha`, and the saturating
+    /// `packs`/`packus` narrowing is the `Clip1`. Rows 4 and 8 wide scale
+    /// `16 / w` at a time, so `rows` holds whole groups of them.
+    #[inline]
+    fn bawp_u8_avx2(
+        token: Avx2,
+        rows: &mut [u8],
+        stride: usize,
+        width: usize,
+        alpha: i16,
+        beta: i32,
+    ) {
+        use core::arch::x86_64::{
+            __m128i, _mm_packus_epi16, _mm_set_epi64x, _mm_setr_epi32, _mm_srli_si128,
+            _mm256_add_epi32, _mm256_castsi256_si128, _mm256_cvtepu8_epi32,
+            _mm256_extracti128_si256, _mm256_madd_epi16, _mm256_packs_epi32,
+            _mm256_permute4x64_epi64, _mm256_set1_epi32, _mm256_srai_epi32,
+        };
+        use fearless_simd::{SimdFrom, u8x16};
+        let alpha = _mm256_set1_epi32(i32::from(alpha as u16));
+        let beta = _mm256_set1_epi32(beta);
+        let scale = |samples: __m128i| -> [u8; 16] {
+            let half = |samples: __m128i| {
+                let product = _mm256_madd_epi16(_mm256_cvtepu8_epi32(samples), alpha);
+                _mm256_srai_epi32::<8>(_mm256_add_epi32(product, beta))
+            };
+            let words = _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_packs_epi32(
+                half(samples),
+                half(_mm_srli_si128::<8>(samples)),
+            ));
+            u8x16::simd_from(
+                token,
+                _mm_packus_epi16(
+                    _mm256_castsi256_si128(words),
+                    _mm256_extracti128_si256::<1>(words),
+                ),
+            )
+            .into()
+        };
+        let mut rest = rows;
+        match width {
+            4 => {
+                while !rest.is_empty() {
+                    let lane = |k| {
+                        rest.get(k * stride..)
+                            .and_then(<[u8]>::first_chunk::<4>)
+                            .map_or(0, |&samples| i32::from_le_bytes(samples))
+                    };
+                    let lanes = scale(_mm_setr_epi32(lane(0), lane(1), lane(2), lane(3)));
+                    rest = publish_rows::<u8, 4>(&lanes, rest, stride);
+                }
+            }
+            8 => {
+                while !rest.is_empty() {
+                    let lane = |k| {
+                        rest.get(k * stride..)
+                            .and_then(<[u8]>::first_chunk::<8>)
+                            .map_or(0, |&samples| i64::from_le_bytes(samples))
+                    };
+                    let lanes = scale(_mm_set_epi64x(lane(1), lane(0)));
+                    rest = publish_rows::<u8, 8>(&lanes, rest, stride);
+                }
+            }
+            _ => {
+                for line in rest.chunks_mut(stride) {
+                    let line = line.get_mut(..width).unwrap_or_default();
+                    for lanes in line.as_chunks_mut::<16>().0 {
+                        *lanes = scale(u8x16::from_slice(token, lanes).into());
+                    }
+                }
+            }
+        }
+    }
+);
 
 /// `Clip3(0, max, (orig * alpha + beta) >> 8)` lane-wise, the BAWP scale.
 #[inline]

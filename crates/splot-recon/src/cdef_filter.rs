@@ -161,7 +161,10 @@ fn cdef_direction_strided<const STRIDE: usize, const AREA: usize>(
 /// the largest cost.
 fn cdef_best_direction(cost: [i32; 8]) -> (usize, i32) {
     let best_cost = cost.into_iter().max().unwrap_or(0);
-    let y_dir = cost.iter().position(|&cost| cost == best_cost).unwrap_or(0);
+    let ties = (0..8).fold(0u32, |ties, dir| {
+        ties | (u32::from(cost[dir] == best_cost) << dir)
+    });
+    let y_dir = (ties.trailing_zeros() & 7) as usize;
     (y_dir, (best_cost - cost[(y_dir + 4) & 7]) >> 10)
 }
 

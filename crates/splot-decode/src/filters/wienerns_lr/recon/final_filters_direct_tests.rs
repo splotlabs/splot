@@ -145,7 +145,8 @@ fn blocks_for_target(
 
 fn write_blocks(plane: &mut StripePlane, blocks: &[WienerNsLrSourceBlock], value: u16) {
     for block in blocks {
-        let (output, stride) = lr_block_destination(plane, block).unwrap();
+        let rect = PlaneRect::new(block.x, block.y, block.width, block.height).unwrap();
+        let (output, stride) = plane.rect_mut(rect).unwrap();
         for row in 0..block.height {
             output[row * stride..row * stride + block.width].fill(value);
         }
@@ -395,7 +396,8 @@ fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
         .and_then(StripeOutputPlane::as_u16_mut)
         .unwrap();
     let curr = FramePlane::new(&workspace, PlaneId::Y).unwrap();
-    let (samples, stride) = lr_block_destination(output, &block).unwrap();
+    let rect = PlaneRect::new(block.x, block.y, block.width, block.height).unwrap();
+    let (samples, stride) = output.rect_mut(rect).unwrap();
     for row in 0..block.height {
         samples[row * stride..row * stride + block.width].fill(777);
     }

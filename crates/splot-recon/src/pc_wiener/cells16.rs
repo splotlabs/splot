@@ -9,7 +9,7 @@ use super::{
     PC_WIENER_FULL_CLASSES, PC_WIENER_PREC_BITS, PC_WIENER_WINDOW_ROWS,
 };
 use crate::lr_madd::{self, MaddPattern, MaddWeights, TapPairs};
-use crate::wienerns_filter::LumaSimdSource;
+use crate::wienerns_filter::{LumaSimdOutput, LumaSimdSource};
 
 /// The § 7.20.4 taps for [`lr_madd`].
 pub(super) struct PcTaps;
@@ -90,8 +90,8 @@ pub(super) fn group_weights<T: LumaSimdSource>(
 /// The first `rows` rows of a 4x4-cell row group of one 16-column group.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-pub(super) fn filter_pc_wiener_group16<T: LumaSimdSource>(
-    output: &mut [u16],
+pub(super) fn filter_pc_wiener_group16<T: LumaSimdSource, O: LumaSimdOutput>(
+    output: &mut [O],
     (stride, rows): (usize, usize),
     lanes: &[&[T; 22]; PC_WIENER_BLOCK_SIZE + 2 * PC_WIENER_FILTER_TAP_RADIUS],
     weights: &[MaddWeights; 7],
@@ -105,9 +105,9 @@ pub(super) fn filter_pc_wiener_group16<T: LumaSimdSource>(
             lr_madd::filter16::<PcTaps, T, PC_WIENER_WINDOW_ROWS, 22>(window, weights, max_sample);
         if let Some(slot) = output
             .get_mut(k * stride..)
-            .and_then(<[u16]>::first_chunk_mut::<16>)
+            .and_then(<[O]>::first_chunk_mut::<16>)
         {
-            *slot = values;
+            O::store16(values, slot);
         }
     }
 }

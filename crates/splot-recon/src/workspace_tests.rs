@@ -1702,29 +1702,32 @@ fn u8_rect_target_matches_the_contiguous_writer() {
 
 #[test]
 fn bawp_rect_scales_every_width_like_the_scalar_formula() {
-    for width in [4usize, 8, 16, 32] {
+    let cases = [4usize, 8, 16, 32]
+        .into_iter()
+        .flat_map(|width| [(width, 8, 300, -900), (width, 16, -77, 70_000)]);
+    for (width, height, alpha, beta) in cases {
         let mut workspace =
-            CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 30, 4), 0).unwrap();
-        let rows: Vec<u8> = (0..120).map(|i| (i * 37 % 256) as u8).collect();
+            CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 30, 10), 0).unwrap();
+        let rows: Vec<u8> = (0..300).map(|i| (i * 37 % 256) as u8).collect();
         workspace
-            .write_rect(PlaneId::Y, rect(0, 0, 30, 4), &rows, 30)
+            .write_rect(PlaneId::Y, rect(0, 0, 30, 10), &rows, 30)
             .unwrap();
         let log2 = width.trailing_zeros() as u8;
         workspace
-            .apply_bawp_rect(PlaneId::Y, 2, 1, rect_block(log2, 2), 300, -900)
+            .apply_bawp_rect(PlaneId::Y, rect(2, 1, 1 << log2, height), alpha, beta)
             .unwrap();
         let reach = (1usize << log2).min(28);
         for (index, (&sample, &orig)) in
             packed(&workspace, PlaneId::Y).iter().zip(&rows).enumerate()
         {
             let (x, y) = (index % 30, index / 30);
-            let inside = (2..2 + reach).contains(&x) && y >= 1;
+            let inside = (2..2 + reach).contains(&x) && (1..=height).contains(&y);
             let expected = if inside {
-                ((i32::from(orig) * 300 - 900) >> 8).clamp(0, 255) as u8
+                ((i32::from(orig) * i32::from(alpha) + beta) >> 8).clamp(0, 255) as u8
             } else {
                 orig
             };
-            assert_eq!(sample, expected, "width {width} at {x},{y}");
+            assert_eq!(sample, expected, "{width}x{height} at {x},{y}");
         }
     }
 }
