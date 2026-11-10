@@ -253,20 +253,23 @@ impl InterReconCommand {
                 use_refinemv,
                 refinemv_switchable,
             } => {
-                let held = super::super::hold_inter_block_references(
-                    shared.ref_frame_idx,
-                    shared.reference,
-                    &self.placed,
-                )?;
-                let grid = mc::inter_block_motion_grid(
-                    sink,
-                    held.block_params(&self.placed, self.placed.motion_compensation_rect())?
-                        .with_refinemv(use_refinemv)
-                        .with_switchable_refinemv(refinemv_switchable),
-                    None,
-                    self.tile_offset,
-                )?;
-                drop(held);
+                let grid = if use_refinemv || self.placed.block.optflow_distances.is_some() {
+                    let held = super::super::hold_inter_block_references(
+                        shared.ref_frame_idx,
+                        shared.reference,
+                        &self.placed,
+                    )?;
+                    mc::inter_block_motion_grid(
+                        sink,
+                        held.block_params(&self.placed, self.placed.motion_compensation_rect())?
+                            .with_refinemv(use_refinemv)
+                            .with_switchable_refinemv(refinemv_switchable),
+                        None,
+                        self.tile_offset,
+                    )?
+                } else {
+                    None
+                };
                 append_compound_temporal_motion(
                     temporal_records,
                     shared.reference,
