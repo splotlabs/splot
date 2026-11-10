@@ -11,14 +11,12 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Avx2;
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::SimdMask;
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use fearless_simd::{
-    Bytes, Level, Select, SimdBase, SimdInt, SimdInto, i16x8, mask16x8, u16x8, u64x2,
-};
 #[cfg(target_arch = "aarch64")]
-use fearless_simd::{Neon, Simd};
+use fearless_simd::Neon;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use fearless_simd::{Bytes, Level, Select, SimdBase, i16x8, u16x8, u64x2};
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::{SimdInt, SimdInto, SimdMask, mask16x8};
 
 /// The token of the lane reads: AVX2 on x86-64, NEON on AArch64.
 #[cfg(target_arch = "x86_64")]
@@ -61,22 +59,9 @@ pub(crate) trait CdfStorage: Copy {
 
     /// The row as `u16` storage, which the lane reads search and
     /// adapt directly.
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     fn u16_row(_cdf: &mut [Self]) -> Option<&mut [u16]> {
         None
-    }
-
-    /// The `N - 1` probability entries of a row, with at least
-    /// `CDF_PROB_SCALE` in the lanes past them; [`multi_symbol_search`]
-    /// caps every lane at `CDF_PROB_SCALE`.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
-    fn probability_lanes<const N: usize>(cdf: &[Self]) -> [u16; 8] {
-        let mut lanes = [CDF_PROB_SCALE as u16; 8];
-        for (lane, entry) in lanes.iter_mut().zip(&cdf[..N - 1]) {
-            *lane = entry.to_u32().min(CDF_PROB_SCALE) as u16;
-        }
-        lanes
     }
 
     /// Adapts the `n - 1` probability entries of a row (§ 8.2.6).
@@ -111,21 +96,9 @@ impl CdfStorage for u16 {
         value as u16
     }
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     fn u16_row(cdf: &mut [u16]) -> Option<&mut [u16]> {
         Some(cdf)
-    }
-
-    /// Loads the row in at most two vector reads; `N` is a constant at
-    /// every inlined read, so the arity branches fold away.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
-    fn probability_lanes<const N: usize>(cdf: &[u16]) -> [u16; 8] {
-        let len = row_lanes::<N>();
-        let mut raw = [0; 8];
-        raw[..len].copy_from_slice(&cdf[..len]);
-        let past = const { past_row_lanes::<N>() };
-        core::array::from_fn(|lane| raw[lane] | past[lane])
     }
 
     /// Adapts whole rows in vector lanes; `n` is a constant at every inlined
@@ -284,19 +257,6 @@ fn mul_high(token: LaneToken, range7: u16, b: i16x8<LaneToken>) -> i16x8<LaneTok
     mul_high_avx2(token, i16x8::splat(token, range7 as i16), b)
 }
 
-#[cfg(target_arch = "aarch64")]
-fearless_simd::kernel!(
-    /// `(range7 * b) >> 16` in each lane, as `sqdmulh` of `range7 / 2`:
-    /// `range7` is even and below `2^15`, so the doubled product is exact
-    /// and never saturates.
-    #[inline]
-    fn mul_high(token: Neon, range7: u16, b: i16x8<Neon>) -> i16x8<Neon> {
-        use core::arch::aarch64::{vdupq_n_s16, vqdmulhq_s16};
-        debug_assert!(range7.is_multiple_of(2) && range7 < 1 << 15);
-        vqdmulhq_s16(vdupq_n_s16((range7 >> 1) as i16), b.into()).simd_into(token)
-    }
-);
-
 /// `3 + timeInterval + Para_Adjustment_List[ index ][ timeInterval ]`
 /// (§ 8.2.6) for every rate index and use count below 64, so a read takes
 /// the count-dependent part of its adaptation rate with one load. The rows
@@ -332,6 +292,7 @@ const ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS] = {
 };
 
 /// `CDF_PROB_SCALE` in the lanes past the `N - 1` probabilities of a row.
+#[cfg(target_arch = "x86_64")]
 const fn past_row_lanes<const N: usize>() -> [u16; 8] {
     let mut lanes = [0u16; 8];
     let mut i = N - 1;
@@ -343,6 +304,7 @@ const fn past_row_lanes<const N: usize>() -> [u16; 8] {
 }
 
 /// `Prob_Inc << 2` of an `N`-ary row in vector lanes.
+#[cfg(target_arch = "x86_64")]
 const fn prob_inc_lanes<const N: usize>() -> [u16; 8] {
     let mut lanes = [0u16; 8];
     let mut i = 0;
@@ -353,47 +315,36 @@ const fn prob_inc_lanes<const N: usize>() -> [u16; 8] {
     lanes
 }
 
-/// The § 8.2.6 boundary search over all `N - 1` boundaries at once. For
-/// non-decreasing rows the boundaries are non-increasing, so the number of
-/// boundaries above `symbol_value` is the symbol the sequential search
-/// stops at; lanes past the row hold a boundary of 0 and never count.
-/// `(r * pp) >> 7` (`r = range >> 8`) is the signed high half of
-/// `(r << 7) * (pp << 2)`, whose factors fit 15 bits; the result is below
-/// 2^13, so it compares signed against `symbol_value >> 3`.
+/// The § 8.2.6 boundary search of an `N`-ary row, stopping at the first
+/// boundary at or below `symbol_value`: a predicted branch per boundary
+/// keeps the symbol off the range's dependency chain.
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn multi_symbol_search<T: CdfStorage, const N: usize>(
+fn early_exit_search<T: CdfStorage, const N: usize>(
     cdf: &[T],
     symbol_value: u32,
     range: u32,
 ) -> (usize, u32, u32) {
-    let increments = const { prob_inc_lanes::<N>() };
-    let range7 = ((range >> 1) & 0x7f80) as u16;
-    let threshold = (symbol_value >> 3) as i16;
-    let probabilities = T::probability_lanes::<N>(cdf);
-    let mut above = 0;
-    let (mut cur, mut prev) = (0u16, range as u16);
-    for (&probability, &increment) in probabilities.iter().zip(&increments) {
-        let f = (CDF_PROB_SCALE as u16).saturating_sub(probability);
-        let pp4 = ((f >> EC_PROB_SHIFT) << 6).wrapping_add(increment);
-        let scaled = ((i32::from(range7 as i16) * i32::from(pp4 as i16)) >> 16) as i16;
-        let boundary = (scaled as u16) << 3;
-        if scaled > threshold {
-            above += 1;
-            prev = prev.min(boundary);
-        } else {
-            cur = cur.max(boundary);
+    let r8 = range >> 8;
+    let mut prev = range;
+    for symbol in 0..N - 1 {
+        let f = CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_u32());
+        let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_U32[N - 2][symbol];
+        let cur = ((r8 * pp) >> 7) << 3;
+        if symbol_value >= cur {
+            return (symbol, cur, prev);
         }
+        prev = cur;
     }
-    (above.min(N - 1), u32::from(cur), u32::from(prev))
+    (N - 1, 0, prev)
 }
 
-/// The lane search of [`multi_symbol_search`] in one register: the signed
+/// The lane search of [`early_exit_search`] in one register: the signed
 /// high-half multiply and the compare. The boundaries do not increase from
 /// lane to lane, so the symbol's two are the ones beside the last lane above
 /// the value, read back from memory. Returns the number of lanes above and
 /// the lanes above, which for such rows are the lanes below the symbol.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn search_lanes(
@@ -411,15 +362,7 @@ fn search_lanes(
     let scaled = mul_high(token, range7, pp4.bitcast());
     let boundaries: u16x8<LaneToken> = (scaled << 3).bitcast();
     let below = scaled.simd_gt(i16x8::splat(token, threshold));
-    #[cfg(target_arch = "x86_64")]
     let above = below.to_bitmask().count_ones();
-    // NEON has no `movemask`: one across-lane add of the `-1` lanes counts them.
-    #[cfg(target_arch = "aarch64")]
-    let above = u32::from(
-        token
-            .reduce_sum_i16x8(token.to_vector_mask16x8(below))
-            .unsigned_abs(),
-    );
     let mut lanes = [range; 9];
     boundaries.store_slice(&mut lanes[1..]);
     let symbol = above as usize & 7;
@@ -427,6 +370,7 @@ fn search_lanes(
 }
 
 /// The lane count [`load_row_lanes`] reads for an `N`-ary row.
+#[cfg(target_arch = "x86_64")]
 const fn row_lanes<const N: usize>() -> usize {
     if N >= 7 {
         8
@@ -442,7 +386,7 @@ const fn row_lanes<const N: usize>() -> usize {
 /// the § 8.2.6 invariants those lanes are the entries below the symbol, so
 /// they select [`adapt_lanes`] directly; lanes past the row's `N - 1`
 /// boundaries never count, so the symbol is at most `N - 1` without a clamp.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn row_search_lanes<const N: usize>(
@@ -466,7 +410,7 @@ fn row_search_lanes<const N: usize>(
 
 /// The § 8.2.6 step on the `N - 1` probabilities of the row `value` was
 /// loaded from, shrinking the lanes `below` the symbol.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn adapt_lanes<const N: usize>(
@@ -1035,7 +979,7 @@ impl<'a> SymbolDecoder<'a> {
         let count = cdf[N].to_i32();
         self.ensure_buffered(15);
         let symbol_value = (self.dif >> SV_SHIFT) as u32;
-        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        #[cfg(target_arch = "x86_64")]
         if N > 2
             && let Some(token) = lane_token()
             && let Some(row) = T::u16_row(cdf)
@@ -1067,7 +1011,7 @@ impl<'a> SymbolDecoder<'a> {
             let prev = next_cur ^ ((next_cur ^ self.symbol_range) & keep);
             (one as usize, next_cur & keep, prev)
         } else {
-            multi_symbol_search::<T, N>(cdf, symbol_value, self.symbol_range)
+            early_exit_search::<T, N>(cdf, symbol_value, self.symbol_range)
         };
 
         if prev.saturating_sub(cur) == 0 {
@@ -1209,7 +1153,7 @@ impl<'a> SymbolDecoder<'a> {
         }
         self.ensure_buffered(15);
         let symbol_value = (self.dif >> SV_SHIFT) as u32;
-        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        #[cfg(target_arch = "x86_64")]
         if N > 2
             && let Some(token) = lane_token()
         {
@@ -1224,7 +1168,7 @@ impl<'a> SymbolDecoder<'a> {
             let prev = next_cur ^ ((next_cur ^ self.symbol_range) & keep);
             (one as usize, next_cur & keep, prev)
         } else {
-            multi_symbol_search::<u16, N>(cdf, symbol_value, self.symbol_range)
+            early_exit_search::<u16, N>(cdf, symbol_value, self.symbol_range)
         };
         self.consume(cur, prev);
         if update {
@@ -1238,7 +1182,7 @@ impl<'a> SymbolDecoder<'a> {
 
     /// [`Self::read_trusted_arity`] for `N > 2` in vector lanes, see
     /// [`row_search_lanes`].
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_trusted_lanes<const N: usize>(
