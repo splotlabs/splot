@@ -1264,9 +1264,9 @@ fn unit_16x16_sums(weighted: &[i16; 256], difference: &[i16; 256]) -> [[i32; 5];
     baseline_simd!(simd => unit_16x16_lane_sums(simd, weighted, difference))
 }
 
-/// [`unit_16x16_sums`] with whole 16-lane rows: `pmaddwd` keeps the left
-/// unit's products in the low four `i32` lanes and the right unit's in the
-/// high four, so the halves separate only in the final reduction.
+/// [`unit_16x16_sums`] with whole 16-lane rows: each 8x8 unit accumulates
+/// the products of its half-row in its own `i32x4` lanes, with no pairwise
+/// add.
 #[inline]
 fn unit_16x16_lane_sums<S: Simd>(
     simd: S,
@@ -1275,8 +1275,6 @@ fn unit_16x16_lane_sums<S: Simd>(
 ) -> [[i32; 5]; 4] {
     let (rows, _) = weighted.as_chunks::<16>();
     let (diff_rows, _) = difference.as_chunks::<16>();
-    // Each unit's products accumulate in its own `i32x4`s (`smlal`), which
-    // needs no pairwise add.
     let half_sums = |half: core::ops::Range<usize>| {
         let mut sums = [[i32x4::splat(simd, 0); 2]; 5];
         for row in half {
@@ -1564,7 +1562,6 @@ mod tests {
             let plane = |scale: usize, span: usize, low: i16| -> [i16; 256] {
                 core::array::from_fn(|i| ((i * scale * seed + 31) % span) as i16 - low)
             };
-            // `2 * s0 - s1` spans the 766 weighted values of eight-bit samples.
             let (weighted, difference) = (plane(7919, 766, 255), plane(104_729, 2049, 1024));
             let (mut gradient_x, mut gradient_y) = ([0i16; 256], [0i16; 256]);
             gradients(&weighted, 16, 16, &mut gradient_x, &mut gradient_y);

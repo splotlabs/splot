@@ -437,7 +437,8 @@ fn samples<S: Simd>(
 }
 
 /// The halved-tap sums of the `2 * H` taps of a horizontal pass over the
-/// columns `(a, b)`, or the samples `a` without a horizontal pass.
+/// columns `(a, b)`, or the samples `a` without a horizontal pass. The
+/// pairs are spelled out: a loop over `slide` arms stayed a runtime loop.
 #[allow(clippy::inline_always, reason = "sub-pel hot path")]
 #[inline(always)]
 fn horizontal<S: Simd, const H: usize>(
@@ -447,8 +448,6 @@ fn horizontal<S: Simd, const H: usize>(
     if H == 0 {
         return a;
     }
-    // Spelled out per pair: as a loop over `slide` arms it compiled to a
-    // branchy runtime tap loop.
     let mut sum = a * weights[0] + a.slide::<1>(b) * weights[1];
     if H > 1 {
         sum += a.slide::<2>(b) * weights[2] + a.slide::<3>(b) * weights[3];
