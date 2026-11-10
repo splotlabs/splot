@@ -203,41 +203,6 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                                 *stride,
                             )?;
                         }
-                    } else if !cfg!(target_arch = "x86_64") {
-                        for (views, (output, stride)) in views.iter().zip(outputs.iter_mut()) {
-                            let (Some(views), Some(output)) =
-                                (views, output.get_mut(row * *stride + col..))
-                            else {
-                                continue;
-                            };
-                            if splot_recon::subpel_compound_cell_u8(
-                                [&views[0], &views[1]],
-                                self.block.interp,
-                                size,
-                                placements,
-                                grid.cwp_weight,
-                                output,
-                                *stride,
-                            ) {
-                                continue;
-                            }
-                            let params = placements.map(|placement| {
-                                unscaled_cell_params(
-                                    placement,
-                                    [size; 2],
-                                    (grid.bit_depth, self.block.interp),
-                                )
-                            });
-                            predict_grid_cell(
-                                views,
-                                (&params, true, [col, row, size, size]),
-                                &grid,
-                                pred,
-                                intermediate,
-                                output,
-                                *stride,
-                            )?;
-                        }
                     } else if !program.push([row, col], placements) {
                         run(program, &mut outputs, pred, intermediate)?;
                         program.push([row, col], placements);
