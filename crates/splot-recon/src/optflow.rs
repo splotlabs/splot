@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use fearless_simd::{i16x8, i16x16, i32x4, i32x8, mask16x8, prelude::*, u16x8};
+use fearless_simd::{i16x8, i16x16, i32x4, i32x8, mask16x8, prelude::*, u16x8, u64x2};
 
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2_signed_i32;
@@ -419,312 +419,54 @@ pub fn optflow_unit_8x8_u8(
             }
         }
     }
-    let threshold = sad_threshold.unwrap_or(0);
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let reduced = if distances.contains(&0) {
         [0; 2]
     } else {
         reduce_distances(distances)
     };
-    #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        let Some(sums) = avx2::unit_8x8(t, &rows, reduced, threshold) else {
-            return Ok(None);
-        };
-        if reduced == [0; 2] {
-            return Ok(Some([[0; 2]; 2]));
+    baseline_simd!(simd => unit_8x8(simd, &rows, reduced, sad_threshold.unwrap_or(0)))
+}
+
+/// [`optflow_unit_8x8_u8`] of its eight-byte rows and reduced `distances`:
+/// the SAD from the `i16` differences, then the sums of [`rows_8x8_sums`].
+#[inline]
+fn unit_8x8<S: Simd>(
+    simd: S,
+    rows: &[[u64; 8]; 2],
+    distances: [i32; 2],
+    sad_threshold: u32,
+) -> Result<Option<[[i32; 2]; 2]>> {
+    let widen = |rows: &[u64; 8]| -> [i16x8<S>; 8] {
+        let mut lanes = [i16x8::splat(simd, 0); 8];
+        for (pair, lanes) in rows
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(lanes.as_chunks_mut::<2>().0)
+        {
+            let (low, high) = simd.widen_u8x16(u64x2::load_array_ref(simd, pair).bitcast());
+            *lanes = [low.bitcast(), high.bitcast()];
         }
-        return solve_sums(unit_sums(sums, 64), reduced).map(Some);
-    }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
-        let Some(sums) = neon::unit_8x8(t, &rows, reduced, threshold) else {
-            return Ok(None);
-        };
-        if reduced == [0; 2] {
-            return Ok(Some([[0; 2]; 2]));
-        }
-        return solve_sums(unit_sums(sums, 64), reduced).map(Some);
-    }
-    let samples = rows.map(|rows| {
-        let mut samples = [0u16; 64];
-        for (lanes, row) in samples.chunks_exact_mut(8).zip(rows) {
-            for (lane, byte) in lanes.iter_mut().zip(row.to_le_bytes()) {
-                *lane = u16::from(byte);
-            }
-        }
-        samples
-    });
-    let sad = samples[0]
+        lanes
+    };
+    let (first, second) = (widen(&rows[0]), widen(&rows[1]));
+    let difference: [i16x8<S>; 8] = core::array::from_fn(|row| first[row] - second[row]);
+    let sad = difference
         .iter()
-        .zip(&samples[1])
-        .map(|(&a, &b)| u32::from(a.abs_diff(b)))
-        .sum::<u32>();
-    if sad < threshold {
+        .fold(i16x8::splat(simd, 0), |sum, row| sum + row.abs());
+    if u32::from(sad.reduce_sum().unsigned_abs()) < sad_threshold {
         return Ok(None);
     }
-    derive_optflow_mv_delta_8x8_strided_into(
-        &samples[0],
-        0,
-        &samples[1],
-        0,
-        8,
-        BitDepth::Eight,
+    if distances == [0; 2] {
+        return Ok(Some([[0; 2]; 2]));
+    }
+    let [near, far] = distances.map(|distance| distance as i16);
+    let weighted = core::array::from_fn(|row| first[row] * near - second[row] * far);
+    solve_sums(
+        whole_8x8(rows_8x8_sums(simd, &weighted, &difference)),
         distances,
     )
     .map(Some)
-}
-
-#[cfg(target_arch = "x86_64")]
-mod avx2 {
-    use core::arch::x86_64::*;
-    use fearless_simd::{Avx2, SimdBase, u8x32};
-
-    /// `pshufb` bytes picking, for every `i16` lane of an eight-lane row,
-    /// the lane `OFFSET` away clamped to the row.
-    const fn neighbours<const OFFSET: i32>() -> [u8; 32] {
-        let mut out = [0u8; 32];
-        let mut lane = 0;
-        while lane < 16 {
-            let mut source = (lane % 8) as i32 + OFFSET;
-            if source < 0 {
-                source = 0;
-            }
-            if source > 7 {
-                source = 7;
-            }
-            out[2 * lane] = 2 * source as u8;
-            out[2 * lane + 1] = 2 * source as u8 + 1;
-            lane += 1;
-        }
-        out
-    }
-
-    const NEXT: [u8; 32] = neighbours::<1>();
-    const PREV: [u8; 32] = neighbours::<-1>();
-    const NEXT2: [u8; 32] = neighbours::<2>();
-    const PREV2: [u8; 32] = neighbours::<-2>();
-
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn bytes(t: Avx2, bytes: [u8; 32]) -> __m256i {
-        u8x32::load_array(t, bytes).into()
-    }
-
-    /// `Round2Signed(42 * (next - prev) - 5 * (next2 - prev2), 7)` of `i16`
-    /// lanes, the edge lanes doubled first: the magnitude rounds unsigned as
-    /// `(m + add) * mul >> 16`, with `(add, mul)` `(64, 512)` for `>> 7` and
-    /// `(32, 1024)` for the doubled `>> 6`, and takes its sign back after.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn gradient(taps: [__m256i; 4], add: __m256i, mul: __m256i) -> __m256i {
-        let [next, prev, next2, prev2] = taps;
-        let near = _mm256_mullo_epi16(_mm256_sub_epi16(next, prev), _mm256_set1_epi16(42));
-        let far = _mm256_mullo_epi16(_mm256_sub_epi16(next2, prev2), _mm256_set1_epi16(5));
-        let magnitude = _mm256_sub_epi16(_mm256_max_epi16(near, far), _mm256_min_epi16(near, far));
-        let rounded = _mm256_mulhi_epu16(_mm256_add_epi16(magnitude, add), mul);
-        let sign = _mm256_cmpgt_epi16(far, near);
-        _mm256_sub_epi16(_mm256_xor_si256(rounded, sign), sign)
-    }
-
-    fearless_simd::kernel!(
-        /// The 8x8 SAD test and raw `[su2, sv2, suv, suw, svw]` sums of two
-        /// predictions held as eight-byte rows, row pairs `(2j, 2j + 1)` in
-        /// the two lanes of one `i16` vector.
-        #[inline]
-        pub(super) fn unit_8x8(
-            t: Avx2,
-            rows: &[[u64; 8]; 2],
-            distances: [i32; 2],
-            sad_threshold: u32,
-        ) -> Option<[i32; 5]> {
-            let pairs = |rows: &[u64; 8]| -> [__m128i; 4] {
-                core::array::from_fn(|j| _mm_set_epi64x(rows[2 * j + 1] as i64, rows[2 * j] as i64))
-            };
-            let (first, second) = (pairs(&rows[0]), pairs(&rows[1]));
-            let mut sad = _mm_setzero_si128();
-            for (&a, &b) in first.iter().zip(&second) {
-                sad = _mm_add_epi64(sad, _mm_sad_epu8(a, b));
-            }
-            if ((_mm_cvtsi128_si64(sad) + _mm_extract_epi64::<1>(sad)) as u32) < sad_threshold {
-                return None;
-            }
-            let [near, far] = distances.map(|distance| _mm256_set1_epi16(distance as i16));
-            let mut weighted = [_mm256_setzero_si256(); 4];
-            let mut difference = weighted;
-            for j in 0..4 {
-                let (a, b) = (
-                    _mm256_cvtepu8_epi16(first[j]),
-                    _mm256_cvtepu8_epi16(second[j]),
-                );
-                weighted[j] =
-                    _mm256_sub_epi16(_mm256_mullo_epi16(a, near), _mm256_mullo_epi16(b, far));
-                difference[j] = _mm256_sub_epi16(a, b);
-            }
-            let edge = |lanes: __m256i, edge: i16, inner: i16| {
-                _mm256_blendv_epi8(_mm256_set1_epi16(inner), _mm256_set1_epi16(edge), lanes)
-            };
-            let row_edges = _mm256_setr_epi16(-1, 0, 0, 0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0, -1);
-            let (h_add, h_mul) = (edge(row_edges, 32, 64), edge(row_edges, 1024, 512));
-            let top = _mm256_permute2x128_si256::<0x00>(weighted[0], weighted[0]);
-            let bottom = _mm256_permute2x128_si256::<0x11>(weighted[3], weighted[3]);
-            let middle: [__m256i; 3] = core::array::from_fn(|j| {
-                _mm256_permute2x128_si256::<0x21>(weighted[j], weighted[j + 1])
-            });
-            let (inner_add, inner_mul) = (_mm256_set1_epi16(64), _mm256_set1_epi16(512));
-            let first_rows =
-                _mm256_setr_epi16(-1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0);
-            let last_rows =
-                _mm256_setr_epi16(0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1, -1, -1);
-            let mut sums = [_mm256_setzero_si256(); 5];
-            for j in 0..4 {
-                let row = weighted[j];
-                let shuffle = |pattern: [u8; 32]| _mm256_shuffle_epi8(row, bytes(t, pattern));
-                let u = gradient(
-                    [shuffle(NEXT), shuffle(PREV), shuffle(NEXT2), shuffle(PREV2)],
-                    h_add,
-                    h_mul,
-                );
-                let taps = [
-                    if j < 3 { middle[j] } else { bottom },
-                    if j > 0 { middle[j - 1] } else { top },
-                    if j < 3 { weighted[j + 1] } else { bottom },
-                    if j > 0 { weighted[j - 1] } else { top },
-                ];
-                let v = match j {
-                    0 => gradient(taps, edge(first_rows, 32, 64), edge(first_rows, 1024, 512)),
-                    3 => gradient(taps, edge(last_rows, 32, 64), edge(last_rows, 1024, 512)),
-                    _ => gradient(taps, inner_add, inner_mul),
-                };
-                let w = difference[j];
-                sums[0] = _mm256_add_epi32(sums[0], _mm256_madd_epi16(u, u));
-                sums[1] = _mm256_add_epi32(sums[1], _mm256_madd_epi16(v, v));
-                sums[2] = _mm256_add_epi32(sums[2], _mm256_madd_epi16(u, v));
-                sums[3] = _mm256_add_epi32(sums[3], _mm256_madd_epi16(u, w));
-                sums[4] = _mm256_add_epi32(sums[4], _mm256_madd_epi16(v, w));
-            }
-            let quad = _mm256_hadd_epi32(
-                _mm256_hadd_epi32(sums[0], sums[1]),
-                _mm256_hadd_epi32(sums[2], sums[3]),
-            );
-            let quad = _mm_add_epi32(
-                _mm256_castsi256_si128(quad),
-                _mm256_extracti128_si256::<1>(quad),
-            );
-            let last = _mm_add_epi32(
-                _mm256_castsi256_si128(sums[4]),
-                _mm256_extracti128_si256::<1>(sums[4]),
-            );
-            let last = _mm_hadd_epi32(last, last);
-            let last = _mm_hadd_epi32(last, last);
-            Some([
-                _mm_cvtsi128_si32(quad),
-                _mm_extract_epi32::<1>(quad),
-                _mm_extract_epi32::<2>(quad),
-                _mm_extract_epi32::<3>(quad),
-                _mm_cvtsi128_si32(last),
-            ])
-        }
-    );
-}
-
-#[cfg(target_arch = "aarch64")]
-mod neon {
-    use core::arch::aarch64::*;
-    use fearless_simd::{SimdBase, u8x16};
-
-    /// `tbl` bytes picking, for every `i16` lane of an eight-lane row, the
-    /// lane `offset` away clamped to the row.
-    const fn neighbours(offset: i32) -> [u8; 16] {
-        let mut out = [0u8; 16];
-        let mut lane = 0;
-        while lane < 8 {
-            let source = match lane + offset {
-                ..0 => 0,
-                8.. => 7,
-                source => source as u8,
-            };
-            out[2 * lane as usize] = 2 * source;
-            out[2 * lane as usize + 1] = 2 * source + 1;
-            lane += 1;
-        }
-        out
-    }
-
-    const NEIGHBOURS: [[u8; 16]; 4] =
-        [neighbours(1), neighbours(-1), neighbours(2), neighbours(-2)];
-
-    /// `Round2Signed(42 * (next - prev) - 5 * (next2 - prev2), 7)` of `i16`
-    /// lanes, as [`super::gradient_i16`]: the wrapped magnitude rounds
-    /// unsigned by `(m + add) >> -shift` and takes its sign back after.
-    #[inline]
-    #[target_feature(enable = "neon")]
-    fn gradient(taps: [int16x8_t; 4], add: uint16x8_t, shift: int16x8_t) -> int16x8_t {
-        let [next, prev, next2, prev2] = taps;
-        let near = vmulq_n_s16(vsubq_s16(next, prev), 42);
-        let far = vmulq_n_s16(vsubq_s16(next2, prev2), 5);
-        let rounded = vshlq_u16(
-            vaddq_u16(vreinterpretq_u16_s16(vabdq_s16(near, far)), add),
-            shift,
-        );
-        let sign = vcgtq_s16(far, near);
-        vreinterpretq_s16_u16(vsubq_u16(veorq_u16(rounded, sign), sign))
-    }
-
-    fearless_simd::kernel!(
-        /// The 8x8 SAD test and raw `[su2, sv2, suv, suw, svw]` sums of two
-        /// predictions held as eight-byte rows, one row per `i16` vector.
-        #[inline]
-        pub(super) fn unit_8x8(
-            t: Neon,
-            rows: &[[u64; 8]; 2],
-            distances: [i32; 2],
-            sad_threshold: u32,
-        ) -> Option<[i32; 5]> {
-            let (first, second) = (
-                rows[0].map(|row| vcreate_u8(row)),
-                rows[1].map(|row| vcreate_u8(row)),
-            );
-            let mut sad = vabdl_u8(first[0], second[0]);
-            for (&a, &b) in first.iter().zip(&second).skip(1) {
-                sad = vabal_u8(sad, a, b);
-            }
-            if vaddlvq_u16(sad) < sad_threshold {
-                return None;
-            }
-            let [near, far] = distances.map(|distance| vdupq_n_s16(distance as i16));
-            let widen = |row: uint8x8_t| vreinterpretq_s16_u16(vmovl_u8(row));
-            let weighted: [int16x8_t; 8] = core::array::from_fn(|j| {
-                vmlsq_s16(vmulq_s16(widen(first[j]), near), widen(second[j]), far)
-            });
-            let neighbours =
-                NEIGHBOURS.map(|lanes| -> uint8x16_t { u8x16::load_array(t, lanes).into() });
-            let row_shift = vsetq_lane_s16::<7>(-6, vsetq_lane_s16::<0>(-6, vdupq_n_s16(-7)));
-            let row_add = vsetq_lane_u16::<7>(32, vsetq_lane_u16::<0>(32, vdupq_n_u16(64)));
-            let mut sums = [[vdupq_n_s32(0); 2]; 5];
-            for j in 0..8 {
-                let row = vreinterpretq_u8_s16(weighted[j]);
-                let taps = neighbours.map(|lanes| vreinterpretq_s16_u8(vqtbl1q_u8(row, lanes)));
-                let u = gradient(taps, row_add, row_shift);
-                let rows = [j + 1, j.saturating_sub(1), j + 2, j.saturating_sub(2)];
-                let (add, shift) = if j == 0 || j == 7 { (32, -6) } else { (64, -7) };
-                let v = gradient(
-                    rows.map(|row| weighted[row.min(7)]),
-                    vdupq_n_u16(add),
-                    vdupq_n_s16(shift),
-                );
-                let w = vsubq_s16(widen(first[j]), widen(second[j]));
-                for (sum, (a, b)) in sums
-                    .iter_mut()
-                    .zip([(u, u), (v, v), (u, v), (u, w), (v, w)])
-                {
-                    sum[0] = vmlal_s16(sum[0], vget_low_s16(a), vget_low_s16(b));
-                    sum[1] = vmlal_high_s16(sum[1], a, b);
-                }
-            }
-            Some(sums.map(|[low, high]| vaddvq_s32(vaddq_s32(low, high))))
-        }
-    );
 }
 
 /// The § 7.13.3.9 `weighted` and `difference` rows of eight predictor sample
