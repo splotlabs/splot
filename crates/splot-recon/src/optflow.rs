@@ -71,7 +71,8 @@ pub fn derive_optflow_mv_deltas(
 ///
 /// `scratch` retains its allocations between calls. The returned slice contains
 /// exactly one entry per `unit_size` square. Its internal output is cleared
-/// before validation and remains empty on error.
+/// before validation and remains empty on error. A zero difference plane
+/// zeroes `suw` and `svw`, so every unit takes a zero delta without a solve.
 ///
 /// # Errors
 ///
@@ -141,7 +142,7 @@ pub fn derive_optflow_mv_deltas_into<'a>(
     let (difference, scratch_samples) = scratch_samples.split_at_mut(expected);
     let (gradient_x, gradient_y) = scratch_samples.split_at_mut(expected);
     let max_sample = bit_depth.max_sample();
-    let peak = baseline_simd!(simd => weighted_difference_planes(
+    let (peak, changed) = baseline_simd!(simd => weighted_difference_planes(
         simd, pred0, pred1, weighted, difference, distances, downshift,
     ));
     if peak > max_sample {
@@ -157,6 +158,10 @@ pub fn derive_optflow_mv_deltas_into<'a>(
                 }
             }
         }
+    }
+    if !changed {
+        scratch.deltas.resize(unit_count, [[0; 2]; 2]);
+        return Ok(&scratch.deltas);
     }
 
     if let (Ok(weighted), Ok(difference)) = (
@@ -227,7 +232,8 @@ fn push_unit_deltas(
 }
 
 /// Fills the § 7.13.3.9 `weighted` and `difference` planes of two row-major
-/// predictors and returns their largest sample for the caller's range check.
+/// predictors and returns their largest sample, for the caller's range check,
+/// and whether any `difference` sample is nonzero.
 #[inline]
 fn weighted_difference_planes<S: Simd>(
     simd: S,
@@ -237,7 +243,7 @@ fn weighted_difference_planes<S: Simd>(
     difference: &mut [i16],
     distances: [i32; 2],
     downshift: u32,
-) -> u16 {
+) -> (u16, bool) {
     let (pred0_chunks, pred0_remainder) = pred0.as_chunks::<8>();
     let (pred1_chunks, pred1_remainder) = pred1.as_chunks::<8>();
     let (weighted_chunks, weighted_remainder) = weighted.as_chunks_mut::<8>();
@@ -246,7 +252,7 @@ fn weighted_difference_planes<S: Simd>(
     debug_assert!(pred1_remainder.is_empty());
     debug_assert!(weighted_remainder.is_empty());
     debug_assert!(difference_remainder.is_empty());
-    let mut peak = u16x8::splat(simd, 0);
+    let (mut peak, mut changed) = (u16x8::splat(simd, 0), u16x8::splat(simd, 0));
     for (((left, right), weighted), difference) in pred0_chunks
         .iter()
         .zip(pred1_chunks)
@@ -259,8 +265,9 @@ fn weighted_difference_planes<S: Simd>(
         let rows = weighted_difference_row(left, right, distances, downshift);
         rows.0.store_array(weighted);
         rows.1.store_array(difference);
+        changed |= rows.1.bitcast::<u16x8<S>>();
     }
-    peak.reduce_max()
+    (peak.reduce_max(), changed.reduce_max() != 0)
 }
 
 /// Derives one 8x8 optical-flow delta from strided predictors.
@@ -353,6 +360,14 @@ fn strided_8x8_delta<S: Simd>(
             pred0, pred1, stride, max_sample,
         ));
     }
+    let changed = difference
+        .iter()
+        .fold(u16x8::splat(simd, 0), |changed, row| {
+            changed | row.bitcast::<u16x8<S>>()
+        });
+    if changed.reduce_max() == 0 {
+        return Ok([[0; 2]; 2]);
+    }
     let sums = whole_8x8(rows_8x8_sums(simd, &weighted, &difference));
     solve_sums(sums, distances)
 }
@@ -390,7 +405,8 @@ fn strided_sample_out_of_range(
 /// The § 7.13.3.8 refinement of an eight-bit 8x8 optical-flow unit whose two
 /// predictions are the eight-sample rows of `preds` from `starts`, 16 bytes
 /// apart: `None` when their SAD is below `sad_threshold`, else the
-/// § 7.13.3.12 delta of [`derive_optflow_mv_delta_8x8_strided_into`].
+/// § 7.13.3.12 delta of [`derive_optflow_mv_delta_8x8_strided_into`], zero
+/// without a solve for equal predictions.
 ///
 /// # Errors
 ///
@@ -420,6 +436,9 @@ pub fn optflow_unit_8x8_u8(
         }
     }
     let threshold = sad_threshold.unwrap_or(0);
+    if rows[0] == rows[1] {
+        return Ok((threshold == 0).then_some([[0; 2]; 2]));
+    }
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let reduced = if distances.contains(&0) {
         [0; 2]
@@ -1603,6 +1622,53 @@ mod tests {
                 .unwrap(),
             vec![[[0; 2]; 2]],
         );
+    }
+
+    /// Ten-bit predictors one apart round to a zero difference plane, which
+    /// the derivation answers without solving; the full solve agrees.
+    #[test]
+    fn zero_difference_planes_skip_a_solve_that_yields_zero() {
+        for (width, height, unit_size) in [(8, 8, 8), (8, 8, 4), (16, 16, 8), (24, 16, 4)] {
+            let len = width * height;
+            let pred0: Vec<u16> = (0..len).map(|i| (i * 37 % 1000) as u16 + 8).collect();
+            let pred1: Vec<u16> = pred0.iter().map(|&v| v + 1).collect();
+            let distances = reduce_distances([2, -1]);
+            let (mut weighted, mut difference) = (vec![0i16; len], vec![0i16; len]);
+            let (_, changed) = baseline_simd!(simd => weighted_difference_planes(
+                simd, &pred0, &pred1, &mut weighted, &mut difference, distances, 2,
+            ));
+            assert!(!changed);
+            let (mut gradient_x, mut gradient_y) = (vec![0i16; len], vec![0i16; len]);
+            gradients(&weighted, width, height, &mut gradient_x, &mut gradient_y);
+            for unit_y in (0..height).step_by(unit_size) {
+                for unit_x in (0..width).step_by(unit_size) {
+                    let delta = solve_unit(
+                        &gradient_x,
+                        &gradient_y,
+                        &difference,
+                        width,
+                        unit_x,
+                        unit_y,
+                        unit_size,
+                        distances,
+                    );
+                    assert_eq!(delta.unwrap(), [[0; 2]; 2]);
+                }
+            }
+            let deltas = derive_optflow_mv_deltas(
+                &pred0,
+                &pred1,
+                width,
+                height,
+                unit_size,
+                BitDepth::Ten,
+                [2, -1],
+            );
+            assert_eq!(
+                deltas.unwrap(),
+                vec![[[0; 2]; 2]; len / unit_size / unit_size]
+            );
+        }
     }
 
     #[test]

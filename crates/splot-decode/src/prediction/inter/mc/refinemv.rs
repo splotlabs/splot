@@ -365,6 +365,12 @@ fn search_refinemv<T: ReconSample>(
     // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
     let allow_center = !block.refinemv_switchable;
     if T::u8_slice(&[]).is_some() {
+        if allow_center
+            && super::optflow::fullpel_center_ends_search(&mut luma, prediction_rect, candidates)?
+                == Some(true)
+        {
+            return Ok(candidates);
+        }
         let mut windows = [[0u8; 24 * 24]; 2];
         if super::optflow::search_windows_u8(&mut luma, prediction_rect, candidates, &mut windows)?
             && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
