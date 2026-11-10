@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use fearless_simd::{i16x8, i16x16, i32x8, mask16x8, prelude::*, u16x8};
+use fearless_simd::{i16x8, i16x16, i32x4, i32x8, mask16x8, prelude::*, u16x8};
 
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2_signed_i32;
@@ -1275,21 +1275,36 @@ fn unit_16x16_lane_sums<S: Simd>(
 ) -> [[i32; 5]; 4] {
     let (rows, _) = weighted.as_chunks::<16>();
     let (diff_rows, _) = difference.as_chunks::<16>();
+    // Each unit's products accumulate in its own `i32x4`s (`smlal`), which
+    // needs no pairwise add.
     let half_sums = |half: core::ops::Range<usize>| {
-        let mut sums = [i32x8::splat(simd, 0); 5];
+        let mut sums = [[i32x4::splat(simd, 0); 2]; 5];
         for row in half {
             let (u, v) = gradient_row(simd, rows, row);
             let w = i16x16::load_array_ref(simd, &diff_rows[row]);
-            accumulate_unit_sums(&mut sums, u, v, w);
+            for (sums, (left, right)) in
+                sums.iter_mut()
+                    .zip([(u, u), (v, v), (u, v), (u, w), (v, w)])
+            {
+                let halves = [left.split(), right.split()];
+                for (sum, (first, second)) in sums
+                    .iter_mut()
+                    .zip([(halves[0].0, halves[1].0), (halves[0].1, halves[1].1)])
+                {
+                    let (low, high) = first.widening_mul(second);
+                    *sum += low;
+                    *sum += high;
+                }
+            }
         }
-        sums.map(SimdSplit::split)
+        sums
     };
     let (top, bottom) = (half_sums(0..8), half_sums(8..16));
     [
-        top.map(|(left, _)| left.reduce_sum()),
-        top.map(|(_, right)| right.reduce_sum()),
-        bottom.map(|(left, _)| left.reduce_sum()),
-        bottom.map(|(_, right)| right.reduce_sum()),
+        top.map(|[left, _]| left.reduce_sum()),
+        top.map(|[_, right]| right.reduce_sum()),
+        bottom.map(|[left, _]| left.reduce_sum()),
+        bottom.map(|[_, right]| right.reduce_sum()),
     ]
     .map(|sums| unit_sums(sums, 64))
 }
