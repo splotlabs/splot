@@ -590,7 +590,7 @@ fn full_sample_cells_match_the_materialized_average() {
                         .unwrap();
                 let stride = size + 3;
                 let mut got = vec![u8::MAX; stride * size];
-                let handled = subpel_compound_cell_u8(
+                assert!(subpel_compound_cell_u8(
                     [&views[0], &views[1]],
                     interp,
                     size,
@@ -598,12 +598,7 @@ fn full_sample_cells_match_the_materialized_average() {
                     weight,
                     &mut got,
                     stride,
-                );
-                assert!(handled || !cfg!(target_arch = "aarch64"));
-                if !handled {
-                    assert!(got.iter().all(|&v| v == u8::MAX));
-                    continue;
-                }
+                ));
                 for row in 0..size {
                     let got = &got[row * stride..(row + 1) * stride];
                     let want = want[row * size..(row + 1) * size].iter().map(|&v| v as u8);

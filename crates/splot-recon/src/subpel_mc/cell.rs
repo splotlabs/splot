@@ -24,6 +24,7 @@ use super::{
     SCALE_SUBPEL_BITS, SUBPEL_FILTERS, SUBPEL_MASK, SubpelPredictParams,
 };
 use crate::format::ReconSample;
+use fearless_simd::{Simd, prelude::*, u8x16, u32x4, u64x2};
 
 /// One reference of a cell: window row `r` starts at `origin + r * stride`,
 /// or, for a window that crosses its clip bounds, at the bounded row
@@ -202,7 +203,6 @@ impl<'a> Cell<'a> {
 
 /// The window origins of a `size`-square cell whose references both sit at
 /// full-sample positions inside their clip bounds and storage, or `None`.
-#[cfg(target_arch = "aarch64")]
 #[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
 #[inline(always)]
 fn fullpel_origins(
@@ -273,26 +273,91 @@ pub(super) fn compound_at(
     if size != 4 && size != 8 {
         return false;
     }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_neon()
-        && let Some(origins) = fullpel_origins(references, size, placements)
+    if let Some(origins) = fullpel_origins(references, size, placements)
         && (0..=16).contains(&forward)
     {
         let sources = references.map(|view| (view.samples, view.stride));
-        if size == 4 {
-            super::eight_bit::neon::fullpel_cell::<_, 4>(
-                token, sources, origins, forward, output, stride,
-            );
+        baseline_simd!(simd => if size == 4 {
+            fullpel_cell::<_, 4>(simd, sources, origins, forward, output, stride);
         } else {
-            super::eight_bit::neon::fullpel_cell::<_, 8>(
-                token, sources, origins, forward, output, stride,
-            );
-        }
+            fullpel_cell::<_, 8>(simd, sources, origins, forward, output, stride);
+        });
         return true;
     }
     filtered_at(
         references, interp, size, placements, forward, output, stride,
     )
+}
+
+/// The COMPOUND_AVERAGE `(a * f + b * (16 - f) + 8) >> 4` of two
+/// full-sample `N`-square windows, `N` 4 or 8, read from `origins` of their
+/// `(samples, stride)` sources, into `output`; `forward` lies in `0..=16`.
+#[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
+#[inline(always)]
+fn fullpel_cell<S: Simd, const N: usize>(
+    simd: S,
+    sources: [(&[u8], usize); 2],
+    origins: [usize; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) {
+    let rows = |(samples, step): (&[u8], usize), origin: usize, row: usize| -> u8x16<S> {
+        let at = |lane: usize| origin + (row + lane) * step;
+        let word = |at: usize| {
+            samples
+                .get(at..)
+                .and_then(<[u8]>::first_chunk::<8>)
+                .map_or(0, |bytes| u64::from_le_bytes(*bytes))
+        };
+        if N == 8 {
+            u64x2::from_slice(simd, &[word(at(0)), word(at(1))]).bitcast()
+        } else {
+            let lanes: [u32; 4] = core::array::from_fn(|lane| {
+                samples
+                    .get(at(lane)..)
+                    .and_then(<[u8]>::first_chunk::<4>)
+                    .map_or(0, |bytes| u32::from_le_bytes(*bytes))
+            });
+            u32x4::from_slice(simd, &lanes).bitcast()
+        }
+    };
+    for row in (0..N).step_by(16 / N) {
+        let (a, b) = (
+            rows(sources[0], origins[0], row),
+            rows(sources[1], origins[1], row),
+        );
+        let (low, high) = if forward == 8 {
+            let (low, high) = simd.widening_add_u8x16(a, b);
+            ((low + 1) >> 1, (high + 1) >> 1)
+        } else {
+            let weights = (
+                u8x16::splat(simd, forward as u8),
+                u8x16::splat(simd, (16 - forward) as u8),
+            );
+            let (a0, a1) = simd.widening_mul_u8x16(a, weights.0);
+            let (b0, b1) = simd.widening_mul_u8x16(b, weights.1);
+            ((a0 + b0 + 8) >> 4, (a1 + b1 + 8) >> 4)
+        };
+        let bytes = simd.narrow_u16x8(low, high);
+        if N == 8 {
+            let words = bytes.bitcast::<u64x2<S>>();
+            for lane in 0..2 {
+                let at = (row + lane) * stride;
+                if let Some(slot) = output.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<8>) {
+                    *slot = words[lane].to_le_bytes();
+                }
+            }
+        } else {
+            let words = bytes.bitcast::<u32x4<S>>();
+            for lane in 0..4 {
+                let at = (row + lane) * stride;
+                if let Some(slot) = output.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<4>) {
+                    *slot = words[lane].to_le_bytes();
+                }
+            }
+        }
+    }
 }
 
 /// [`compound_at`] of a cell outside the full-sample register path.
