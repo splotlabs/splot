@@ -11,12 +11,14 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Avx2;
-#[cfg(target_arch = "aarch64")]
-use fearless_simd::Neon;
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use fearless_simd::{Bytes, Level, Select, SimdBase, i16x8, u16x8, u64x2};
 #[cfg(target_arch = "x86_64")]
-use fearless_simd::{SimdInt, SimdInto, SimdMask, mask16x8};
+use fearless_simd::SimdMask;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use fearless_simd::{
+    Bytes, Level, Select, SimdBase, SimdInt, SimdInto, i16x8, mask16x8, u16x8, u64x2,
+};
+#[cfg(target_arch = "aarch64")]
+use fearless_simd::{Neon, Simd};
 
 /// The token of the lane reads: AVX2 on x86-64, NEON on AArch64.
 #[cfg(target_arch = "x86_64")]
@@ -257,6 +259,19 @@ fn mul_high(token: LaneToken, range7: u16, b: i16x8<LaneToken>) -> i16x8<LaneTok
     mul_high_avx2(token, i16x8::splat(token, range7 as i16), b)
 }
 
+#[cfg(target_arch = "aarch64")]
+fearless_simd::kernel!(
+    /// `(range7 * b) >> 16` in each lane, as `sqdmulh` of `range7 / 2`:
+    /// `range7` is even and below `2^15`, so the doubled product is exact
+    /// and never saturates.
+    #[inline]
+    fn mul_high(token: Neon, range7: u16, b: i16x8<Neon>) -> i16x8<Neon> {
+        use core::arch::aarch64::{vdupq_n_s16, vqdmulhq_s16};
+        debug_assert!(range7.is_multiple_of(2) && range7 < 1 << 15);
+        vqdmulhq_s16(vdupq_n_s16((range7 >> 1) as i16), b.into()).simd_into(token)
+    }
+);
+
 /// `3 + timeInterval + Para_Adjustment_List[ index ][ timeInterval ]`
 /// (§ 8.2.6) for every rate index and use count below 64, so a read takes
 /// the count-dependent part of its adaptation rate with one load. The rows
@@ -292,7 +307,7 @@ const ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS] = {
 };
 
 /// `CDF_PROB_SCALE` in the lanes past the `N - 1` probabilities of a row.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const fn past_row_lanes<const N: usize>() -> [u16; 8] {
     let mut lanes = [0u16; 8];
     let mut i = N - 1;
@@ -304,7 +319,7 @@ const fn past_row_lanes<const N: usize>() -> [u16; 8] {
 }
 
 /// `Prob_Inc << 2` of an `N`-ary row in vector lanes.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const fn prob_inc_lanes<const N: usize>() -> [u16; 8] {
     let mut lanes = [0u16; 8];
     let mut i = 0;
@@ -345,7 +360,7 @@ fn early_exit_search<T: CdfStorage, const N: usize>(
 /// lane to lane, so the symbol's two are the ones beside the last lane above
 /// the value, read back from memory. Returns the number of lanes above and
 /// the lanes above, which for such rows are the lanes below the symbol.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn search_lanes(
@@ -363,7 +378,15 @@ fn search_lanes(
     let scaled = mul_high(token, range7, pp4.bitcast());
     let boundaries: u16x8<LaneToken> = (scaled << 3).bitcast();
     let below = scaled.simd_gt(i16x8::splat(token, threshold));
+    #[cfg(target_arch = "x86_64")]
     let above = below.to_bitmask().count_ones();
+    // NEON has no `movemask`: one across-lane add of the `-1` lanes counts them.
+    #[cfg(target_arch = "aarch64")]
+    let above = u32::from(
+        token
+            .reduce_sum_i16x8(token.to_vector_mask16x8(below))
+            .unsigned_abs(),
+    );
     let mut lanes = [range; 9];
     boundaries.store_slice(&mut lanes[1..]);
     let symbol = above as usize & 7;
@@ -371,7 +394,7 @@ fn search_lanes(
 }
 
 /// The lane count [`load_row_lanes`] reads for an `N`-ary row.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const fn row_lanes<const N: usize>() -> usize {
     if N >= 7 {
         8
@@ -387,7 +410,7 @@ const fn row_lanes<const N: usize>() -> usize {
 /// the § 8.2.6 invariants those lanes are the entries below the symbol, so
 /// they select [`adapt_lanes`] directly; lanes past the row's `N - 1`
 /// boundaries never count, so the symbol is at most `N - 1` without a clamp.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn row_search_lanes<const N: usize>(
@@ -411,7 +434,7 @@ fn row_search_lanes<const N: usize>(
 
 /// The § 8.2.6 step on the `N - 1` probabilities of the row `value` was
 /// loaded from, shrinking the lanes `below` the symbol.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn adapt_lanes<const N: usize>(
@@ -1150,7 +1173,7 @@ impl<'a> SymbolDecoder<'a> {
             return 0;
         }
         self.ensure_buffered(15);
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         if N > 2
             && let Some(token) = lane_token()
         {
@@ -1169,8 +1192,9 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     /// [`Self::read_trusted_arity`] for `N > 2` in vector lanes, see
-    /// [`row_search_lanes`].
-    #[cfg(target_arch = "x86_64")]
+    /// [`row_search_lanes`]. Branch-free on purpose: coefficient symbols
+    /// mispredict too often for [`early_exit_search`] on some streams.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_trusted_lanes<const N: usize>(
