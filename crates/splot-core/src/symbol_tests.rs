@@ -147,7 +147,7 @@ fn checkpoint_preserves_arithmetic_state() {
     assert_eq!(checkpoint.symbol_count, 1);
     assert_eq!(checkpoint.symbol_max_bits, decoder.symbol_max_bits());
     assert_eq!(checkpoint.symbol_value, decoder.symbol_value());
-    assert_eq!(checkpoint.symbol_range, decoder.symbol_range);
+    assert_eq!(checkpoint.symbol_range, decoder.range());
     assert_ne!(checkpoint, initial);
 }
 

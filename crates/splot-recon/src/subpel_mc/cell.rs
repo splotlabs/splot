@@ -200,6 +200,40 @@ impl<'a> Cell<'a> {
     }
 }
 
+/// The window origins of a `size`-square cell whose references both sit at
+/// full-sample positions inside their clip bounds and storage, or `None`.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
+#[inline(always)]
+fn fullpel_origins(
+    references: [&ReferencePlaneView<'_, u8>; 2],
+    size: usize,
+    placements: [CellPlacement; 2],
+) -> Option<[usize; 2]> {
+    let fraction = SUBPEL_MASK << 6;
+    let mut origins = [0; 2];
+    for ((view, ([x, y], bounds)), origin) in references.iter().zip(placements).zip(&mut origins) {
+        if (x | y) & fraction != 0 {
+            return None;
+        }
+        let bound = |value: i32, last: usize| value.max(0).min(last as i32 - 1);
+        let (column, row, size) = (x >> SCALE_SUBPEL_BITS, y >> SCALE_SUBPEL_BITS, size as i32);
+        let (width, height) = (view.width, view.readable_rows);
+        if column < bound(bounds[0], width)
+            || column + size > bound(bounds[2], width) + 1
+            || row < bound(bounds[1], height)
+            || row + size > bound(bounds[3], height) + 1
+        {
+            return None;
+        }
+        *origin = row as usize * view.stride + column as usize;
+        if *origin + (size as usize - 1) * view.stride + size as usize > view.samples.len() {
+            return None;
+        }
+    }
+    Some(origins)
+}
+
 /// Predicts both references of a 4x4 or 8x8 cell and stores their
 /// COMPOUND_AVERAGE, or returns `false` without writing outside the subset.
 pub(super) fn compound(
@@ -225,7 +259,8 @@ pub(super) fn compound(
 
 /// [`compound`] of a `size`-square cell whose references share `interp`,
 /// from each reference's [`CellPlacement`].
-#[inline]
+#[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
+#[inline(always)]
 pub(super) fn compound_at(
     references: [&ReferencePlaneView<'_, u8>; 2],
     interp: InterpolationFilter,
@@ -238,6 +273,39 @@ pub(super) fn compound_at(
     if size != 4 && size != 8 {
         return false;
     }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_neon()
+        && let Some(origins) = fullpel_origins(references, size, placements)
+        && (0..=16).contains(&forward)
+    {
+        let sources = references.map(|view| (view.samples, view.stride));
+        if size == 4 {
+            super::eight_bit::neon::fullpel_cell::<_, 4>(
+                token, sources, origins, forward, output, stride,
+            );
+        } else {
+            super::eight_bit::neon::fullpel_cell::<_, 8>(
+                token, sources, origins, forward, output, stride,
+            );
+        }
+        return true;
+    }
+    filtered_at(
+        references, interp, size, placements, forward, output, stride,
+    )
+}
+
+/// [`compound_at`] of a cell outside the full-sample register path.
+#[inline(never)]
+fn filtered_at(
+    references: [&ReferencePlaneView<'_, u8>; 2],
+    interp: InterpolationFilter,
+    size: usize,
+    placements: [CellPlacement; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
     let (Some(first), Some(second)) = (
         Cell::at(references[0], interp, size, placements[0]),
         Cell::at(references[1], interp, size, placements[1]),
@@ -345,6 +413,7 @@ impl CompoundCells {
 
     /// The output position and placements of cell `index`.
     #[must_use]
+    #[inline]
     pub fn get(&self, index: usize) -> Option<([usize; 2], [CellPlacement; 2])> {
         (index < self.len.min(PROGRAM_CELLS)).then(|| {
             let [row, col] = self.positions[index];
@@ -355,6 +424,7 @@ impl CompoundCells {
         })
     }
 
+    #[inline]
     fn placement(&self, index: usize, reference: usize) -> CellPlacement {
         let field = |values: &[i32; PROGRAM_CELLS]| values.get(index).copied().unwrap_or(0);
         let (starts, bounds) = (&self.starts[reference & 1], &self.bounds[reference & 1]);

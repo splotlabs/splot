@@ -175,6 +175,33 @@ pub(super) struct TileParser<'payload> {
     residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     output: TileParserOutput,
     parser_ordinal: usize,
+    /// The frame raster numbering of a scheduled tile's units.
+    numbering: Option<UnitNumbering>,
+    tile: usize,
+}
+
+/// Maps one tile's parse units to frame raster superblock indices, so the
+/// scheduled frame commits every tile's units in one superblock-row order.
+#[derive(Clone, Copy)]
+struct UnitNumbering {
+    sb_row0: usize,
+    sb_col0: usize,
+    tile_sb_cols: usize,
+    frame_sb_cols: usize,
+    tile_sbs: usize,
+    /// The frame's trailing empty unit, which only the last tile publishes.
+    trailing: Option<usize>,
+}
+
+impl UnitNumbering {
+    fn ordinal(self, unit: usize) -> usize {
+        if unit >= self.tile_sbs {
+            return self.trailing.unwrap_or(usize::MAX);
+        }
+        (self.sb_row0 + unit / self.tile_sb_cols) * self.frame_sb_cols
+            + self.sb_col0
+            + unit % self.tile_sb_cols
+    }
 }
 
 enum TileParserWalk<T> {
@@ -347,6 +374,8 @@ impl<'payload> TileParser<'payload> {
                 traversal: crate::bitstream::tile_payload::TileTraversalStorage::default(),
             },
             parser_ordinal: 0,
+            numbering: None,
+            tile: 0,
         })
     }
 
@@ -386,7 +415,10 @@ impl<'payload> TileParser<'payload> {
         } = buffers;
         self.residual_planes = residual_planes;
         let mut recon_row = ReconRow {
-            ordinal: self.parser_ordinal,
+            ordinal: self.numbering.map_or(self.parser_ordinal, |numbering| {
+                numbering.ordinal(self.parser_ordinal)
+            }),
+            tile: self.tile,
             superblocks,
             residual_coeffs,
             entries,
@@ -875,6 +907,8 @@ fn push_recon_entry<Entry>(
 
 pub(super) struct ReconRow {
     pub(super) ordinal: usize,
+    /// The frame tile whose parser produced this unit.
+    pub(super) tile: usize,
     pub(super) superblocks: Vec<ReconSuperblock>,
     /// The coefficients this row's transform blocks index into.
     pub(super) residual_coeffs: Vec<i32>,
@@ -1112,6 +1146,11 @@ impl<T: ReconSample> InterReconScratchPool<T> {
             available.push(deferred_recon::InterReconScratch::default());
             *allocated += 1;
         }
+    }
+
+    /// The worker count the pool was sized for.
+    pub(crate) fn workers(&self) -> usize {
+        self.available.lock().0.max(1)
     }
 
     fn with_scratch<R>(
@@ -1459,6 +1498,72 @@ impl ParsedTile {
         } = self.output;
         Ok((self.unit_count, cdef_state, gdf_state, ccso_state))
     }
+
+    /// Folds one tile of a multi-tile scheduled frame into the frame's filter
+    /// state and loop-restoration records, in tile order as [`decode_tiles`]
+    /// does, and keeps the tile's segment ids for the frame's map.
+    ///
+    /// Returns the tile's unit count.
+    pub(super) fn merge_scheduled_tile(
+        self,
+        tile: &DecodeTileWorkUnit,
+        parse_progress: &ParseProgress,
+        (cdef, gdf, ccso): &mut (CdefState, GdfState, CcsoState),
+        frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+        segment_ids: &mut Vec<TileSegmentIdState>,
+    ) -> Result<usize> {
+        let mut output = self.output;
+        merge_tile_filter_state(
+            cdef,
+            gdf,
+            ccso,
+            None,
+            &output,
+            tile.mi_row_range().start as usize..tile.mi_row_range().end as usize,
+            tile.mi_col_range().start as usize..tile.mi_col_range().end as usize,
+        )?;
+        append_lr_records(
+            &mut frame_filter_records.lr_source_blocks,
+            &mut frame_filter_records.lr_unit_filters,
+            &mut output.traversal.active_source_blocks,
+            &mut output.traversal.unit_filters,
+        )?;
+        let TileParserOutput {
+            cdef_state,
+            gdf_state,
+            ccso_state,
+            segment_id_state,
+            traversal,
+        } = output;
+        segment_ids
+            .try_reserve(1)
+            .map_err(|_| inter_allocation!("inter tile segment ids"))?;
+        segment_ids.push(segment_id_state);
+        let mut state = parse_progress.parser.lock();
+        state.traversal = traversal;
+        state.spent_filters = Some((cdef_state, gdf_state, ccso_state));
+        Ok(self.unit_count)
+    }
+}
+
+/// Lays one tile's filter states out of the frame's, over the states the last
+/// tile spent.
+pub(super) fn tile_filter_states(
+    (cdef, gdf, ccso): (&CdefState, &GdfState, &CcsoState),
+    tile: &DecodeTileWorkUnit,
+    spent: Option<(CdefState, GdfState, CcsoState)>,
+) -> Result<(CdefState, GdfState, CcsoState)> {
+    let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+    let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+    let (spent_cdef, spent_gdf, spent_ccso) = match spent {
+        Some((cdef, gdf, ccso)) => (Some(cdef), Some(gdf), Some(ccso)),
+        None => (None, None, None),
+    };
+    Ok((
+        cdef.try_for_tile(rows.clone(), cols.clone(), spent_cdef)?,
+        gdf.for_tile(rows.clone(), cols.clone(), spent_gdf)?,
+        ccso.try_for_tile(rows, cols, spent_ccso)?,
+    ))
 }
 
 /// How many parse units one tile yields, plus the terminating empty unit.
@@ -1482,14 +1587,31 @@ fn tile_unit_capacity(
     sb_rows * sb_cols + 1
 }
 
-/// The tile geometry the § 8.2 parser settles before it reads its first
+/// The frame geometry the § 8.2 parser settles before it reads its first
 /// unit, which is everything the scheduled reconstruction needs to lay out
-/// batches and surfaces.
+/// batches and surfaces. Units are numbered in frame superblock raster order,
+/// plus one trailing empty unit.
 pub(crate) struct TileGeometry {
-    pub(super) tile_offset: ByteOffset,
     pub(super) mi_rows: Range<usize>,
     pub(super) mi_cols: Range<usize>,
     pub(super) unit_count: usize,
+    /// Every tile in tile order.
+    pub(super) tiles: Vec<GeometryTile>,
+}
+
+#[derive(Clone)]
+pub(super) struct GeometryTile {
+    pub(super) tile_offset: ByteOffset,
+    pub(super) mi_rows: Range<usize>,
+    pub(super) mi_cols: Range<usize>,
+}
+
+/// Parsed units stored at their ordinal, which tiles reach out of order.
+#[derive(Default)]
+struct ParsedRows {
+    slots: Vec<Option<ReconRow>>,
+    /// Every unit before this one has been published.
+    prefix: usize,
 }
 
 #[derive(Default)]
@@ -1497,7 +1619,7 @@ pub(crate) struct ParseProgress {
     /// The decode's storage, which lends the units their row buffers.
     buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
     finished: splot_parallel::WatermarkCell,
-    rows: Mutex<Vec<Option<ReconRow>>>,
+    rows: Mutex<ParsedRows>,
     geometry: Mutex<GeometryState>,
     records: Mutex<crate::filters::wienerns_lr::FrameFilterRecords>,
     parser: Mutex<TileParseState>,
@@ -1517,7 +1639,9 @@ impl ParseProgress {
         &mut self,
         buffers: &Arc<crate::support::decode_buffers::DecodeBuffers>,
     ) -> bool {
-        self.rows.get_mut().clear();
+        let rows = self.rows.get_mut();
+        rows.slots.clear();
+        rows.prefix = 0;
         let geometry = self.geometry.get_mut();
         let geometry_reusable = match geometry {
             GeometryState::Unpublished => true,
@@ -1542,18 +1666,28 @@ impl ParseProgress {
         true
     }
 
-    /// Hands one finished unit to the scheduler and publishes the new count.
+    /// Stores one finished unit at its ordinal and publishes how many units
+    /// from the first are now all present.
     ///
-    /// The frame's § 7.17 and loop-restoration records leave the unit here, in
-    /// parse order, because the scheduler claims units on its own schedule and
-    /// the frame-level detach must not depend on when it does.
-    pub(super) fn publish_row(&self, row: ReconRow) {
+    /// Tiles parse one after another, so a later tile fills slots before an
+    /// earlier superblock row is complete; the watermark only covers the
+    /// contiguous prefix, which is what the scheduler claims in order.
+    pub(super) fn publish_row(&self, row: ReconRow) -> Result<()> {
         let finished = {
             let mut rows = self.rows.lock();
-            rows.push(Some(row));
-            rows.len()
+            let ParsedRows { slots, prefix } = &mut *rows;
+            let ordinal = row.ordinal;
+            match slots.get_mut(ordinal) {
+                Some(slot @ None) if ordinal >= *prefix => *slot = Some(row),
+                _ => return Err(invalid_inter_tile_scheduling_state()),
+            }
+            while slots.get(*prefix).is_some_and(Option::is_some) {
+                *prefix += 1;
+            }
+            *prefix
         };
         self.finished.publish(finished);
+        Ok(())
     }
 
     /// Publishes a unit's deblock and tx-skip records; units are pulled in
@@ -1576,7 +1710,7 @@ impl ParseProgress {
 
     /// Takes the unit at `index`, which a caller may claim exactly once.
     pub(super) fn take_row(&self, index: usize) -> Option<ReconRow> {
-        self.rows.lock().get_mut(index).and_then(Option::take)
+        self.rows.lock().slots.get_mut(index).and_then(Option::take)
     }
 
     /// Moves the deblock records published so far into `deblock`.
@@ -1609,33 +1743,77 @@ impl ParseProgress {
         target.append(&mut records);
     }
 
-    /// Reserves room for one tile's units up front, so the parser never
-    /// reallocates the shared buffer while a reader holds an index.
+    /// Lays out an empty slot for each of the frame's units up front.
     pub(super) fn reserve(&self, capacity: usize) -> Result<()> {
-        self.rows
-            .lock()
+        let mut rows = self.rows.lock();
+        rows.slots.clear();
+        rows.prefix = 0;
+        rows.slots
             .try_reserve_exact(capacity)
-            .map_err(|_| inter_allocation!("inter parsed rows"))
+            .map_err(|_| inter_allocation!("inter parsed rows"))?;
+        rows.slots.resize_with(capacity, || None);
+        Ok(())
     }
 
-    /// Publishes the tile geometry, which the parser settles before its
-    /// first unit.
-    pub(super) fn publish_geometry(&self, geometry: TileGeometry) -> Result<()> {
+    /// Hands back the row buffers of a unit that is not published: a tile's
+    /// trailing empty unit, which only the frame's last tile keeps.
+    fn recycle_unpublished(&self, row: ReconRow) {
+        let ReconRow {
+            superblocks,
+            residual_coeffs,
+            entries,
+            slots,
+            residual_blocks,
+            temporal,
+            residual_planes,
+            filter_records,
+            ..
+        } = row;
+        if let Some(shared) = &self.buffers {
+            shared.give_unit_buffers(ReconRowBuffers {
+                superblocks,
+                residual_coeffs,
+                entries,
+                slots,
+                residual_blocks,
+                temporal,
+                residual_planes,
+                filter_records,
+                lengths: Default::default(),
+            });
+        }
+    }
+
+    /// Publishes the frame geometry `fill` lays out, which the parser settles
+    /// before its first unit. A retired frame's geometry is laid out over, so
+    /// its tile list keeps its storage.
+    pub(super) fn publish_geometry(
+        &self,
+        fill: impl FnOnce(&mut TileGeometry) -> Result<()>,
+    ) -> Result<()> {
         let mut published = self.geometry.lock();
-        let geometry = match core::mem::take(&mut *published) {
-            GeometryState::Unpublished => Arc::new(geometry),
-            GeometryState::Spare(mut output) => {
-                *Arc::get_mut(&mut output).ok_or_else(invalid_inter_tile_scheduling_state)? =
-                    geometry;
-                output
-            }
+        let mut geometry = match core::mem::take(&mut *published) {
+            GeometryState::Unpublished => Arc::new(TileGeometry {
+                mi_rows: 0..0,
+                mi_cols: 0..0,
+                unit_count: 0,
+                tiles: Vec::new(),
+            }),
+            GeometryState::Spare(output) => output,
             GeometryState::Published(output) => {
                 *published = GeometryState::Published(output);
                 return Err(invalid_inter_tile_scheduling_state());
             }
         };
-        *published = GeometryState::Published(geometry);
-        Ok(())
+        let filled = Arc::get_mut(&mut geometry)
+            .ok_or_else(invalid_inter_tile_scheduling_state)
+            .and_then(fill);
+        *published = if filled.is_ok() {
+            GeometryState::Published(geometry)
+        } else {
+            GeometryState::Spare(geometry)
+        };
+        filled
     }
 
     /// The published tile geometry, if the parser has reached its first unit.
@@ -1675,41 +1853,77 @@ impl ParseProgress {
         }
     }
 
+    /// The filter states the last merged tile spent.
+    pub(super) fn take_spent_filters(&self) -> Option<(CdefState, GdfState, CcsoState)> {
+        self.parser.lock().spent_filters.take()
+    }
+
     /// The cell a batch waits on for its own units.
     pub(crate) fn cell(&self) -> &splot_parallel::WatermarkCell {
         &self.finished
     }
 }
 
-/// Settles the tile geometry and publishes it, before anything reads a unit.
+/// Settles the frame geometry and publishes it, before anything reads a unit.
 ///
 /// The scheduled reconstruction is built from this alone, and it is promoted
 /// while the § 8.2 pass still runs, so this must be called before the walk is
-/// promoted -- not as the pass's first act, which would race it.
+/// promoted -- not as the pass's first act, which would race it. The raster
+/// numbering needs every tile to start on a superblock.
 pub(crate) fn publish_tile_geometry(
-    tile: &DecodeTileWorkUnit,
+    tiles: &[DecodeTileWorkUnit],
     params: &TileWalkParams,
     parse_progress: &ParseProgress,
 ) -> Result<()> {
-    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
-    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+    let frame_rows = 0..params.mi_rows;
+    let frame_cols = 0..params.mi_cols;
     let capacity = tile_unit_capacity(
-        &mi_rows,
-        &mi_cols,
+        &frame_rows,
+        &frame_cols,
         params.mi_rows,
         params.mi_cols,
         params.sb_h4,
     );
     parse_progress.reserve(capacity)?;
-    parse_progress.publish_geometry(TileGeometry {
-        tile_offset: tile.tile_byte_span().start,
-        mi_rows,
-        mi_cols,
-        unit_count: capacity,
+    parse_progress.publish_geometry(|geometry| {
+        geometry.tiles.clear();
+        geometry
+            .tiles
+            .try_reserve(tiles.len())
+            .map_err(|_| inter_allocation!("inter frame tile geometry"))?;
+        let mut units = 1;
+        for tile in tiles {
+            let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+            let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+            if mi_rows.start % params.sb_h4 != 0 || mi_cols.start % params.sb_h4 != 0 {
+                return Err(invalid_inter_tile_scheduling_state());
+            }
+            units += tile_unit_capacity(
+                &mi_rows,
+                &mi_cols,
+                params.mi_rows,
+                params.mi_cols,
+                params.sb_h4,
+            ) - 1;
+            geometry.tiles.push(GeometryTile {
+                tile_offset: tile.tile_byte_span().start,
+                mi_rows,
+                mi_cols,
+            });
+        }
+        if units != capacity {
+            return Err(invalid_inter_tile_scheduling_state());
+        }
+        geometry.mi_rows = frame_rows;
+        geometry.mi_cols = frame_cols;
+        geometry.unit_count = capacity;
+        Ok(())
     })
 }
 
 impl<'payload> TileParser<'payload> {
+    /// Opens tile `index` of a scheduled frame of `tiles` tiles.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn scheduled<T: ReconSample>(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
@@ -1718,10 +1932,12 @@ impl<'payload> TileParser<'payload> {
         gdf_state: GdfState,
         ccso_state: CcsoState,
         parse_progress: &ParseProgress,
+        (index, tiles): (usize, usize),
     ) -> Result<Self> {
-        parse_progress
+        let unit_count = parse_progress
             .geometry()
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+            .ok_or_else(invalid_inter_tile_scheduling_state)?
+            .unit_count;
         let mut parser = Self::new(
             tile,
             tile_bytes,
@@ -1732,9 +1948,33 @@ impl<'payload> TileParser<'payload> {
             core::mem::take(&mut *parse_progress.parser.lock()),
         )?;
         parser.mv_grid.keep_edges_only();
+        let sb_h4 = context.params.sb_h4;
+        let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+        let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+        let tile_sb_cols = cols
+            .end
+            .min(context.params.mi_cols)
+            .saturating_sub(cols.start)
+            .div_ceil(sb_h4);
+        parser.numbering = Some(UnitNumbering {
+            sb_row0: rows.start / sb_h4,
+            sb_col0: cols.start / sb_h4,
+            tile_sb_cols: tile_sb_cols.max(1),
+            frame_sb_cols: context.params.mi_cols.div_ceil(sb_h4),
+            tile_sbs: tile_unit_capacity(
+                &rows,
+                &cols,
+                context.params.mi_rows,
+                context.params.mi_cols,
+                sb_h4,
+            ) - 1,
+            trailing: (index + 1 == tiles).then(|| unit_count.saturating_sub(1)),
+        });
+        parser.tile = index;
         Ok(parser)
     }
 
+    /// Parses and publishes the next unit, returning whether the tile ended.
     pub(super) fn parse_scheduled_unit<T: ReconSample>(
         &mut self,
         tile: &mut DecodeTileWorkUnit,
@@ -1747,7 +1987,18 @@ impl<'payload> TileParser<'payload> {
             ParserStep::Last(row) => (row, true),
         };
         row.return_terminal_error()?;
-        parse_progress.publish_row(row);
+        if last
+            && self
+                .numbering
+                .is_some_and(|numbering| numbering.trailing.is_none())
+        {
+            if !row.superblocks.is_empty() {
+                return Err(invalid_inter_tile_scheduling_state());
+            }
+            parse_progress.recycle_unpublished(row);
+        } else {
+            parse_progress.publish_row(row)?;
+        }
         Ok(last)
     }
 
@@ -1953,17 +2204,18 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let tile_mi_cols = cols;
         parse_state.row_buffers.reset(admission::PARSE_AHEAD_ROWS);
         let row_buffers = core::mem::take(&mut parse_state.row_buffers);
-        let (spent_cdef, spent_gdf, spent_ccso) = match parse_state.spent_filters.take() {
-            Some((cdef, gdf, ccso)) => (Some(cdef), Some(gdf), Some(ccso)),
-            None => (None, None, None),
-        };
+        let (tile_cdef, tile_gdf, tile_ccso) = tile_filter_states(
+            (&cdef_state, &gdf_state, &ccso_state),
+            tile,
+            parse_state.spent_filters.take(),
+        )?;
         let mut parser = TileParser::new(
             tile,
             tile_bytes,
             &context,
-            cdef_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), spent_cdef)?,
-            gdf_state.for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), spent_gdf)?,
-            ccso_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), spent_ccso)?,
+            tile_cdef,
+            tile_gdf,
+            tile_ccso,
             parse_state,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);

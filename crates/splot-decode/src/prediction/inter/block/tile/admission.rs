@@ -31,6 +31,8 @@ pub(super) struct TileCommit<T: ReconSample> {
     workspace: CurrentFrameWorkspace<T>,
     block_decoded: TileBlockDecodedState,
     current_block_decoded_superblock: Option<[usize; 2]>,
+    /// The tile `block_decoded` is laid out for, on the scheduled spine.
+    block_decoded_tile: Option<usize>,
     decoded_any: bool,
     surfaces: Arc<Mutex<SurfaceSource<T>>>,
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
@@ -52,6 +54,7 @@ impl<T: ReconSample> TileCommit<T> {
             workspace,
             block_decoded,
             current_block_decoded_superblock: None,
+            block_decoded_tile: None,
             decoded_any,
             surfaces,
             frame_filter_records,
@@ -136,11 +139,12 @@ struct ScheduledFrontier<T: ReconSample> {
     spare_filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
 }
 
+/// The resolve pass's tile-local § 7.12 state, one grid and bank set per tile.
 struct ScheduledResolve {
     next: usize,
     submitted_batches: usize,
-    grid: NeighbourMvGrid,
-    state: TileResolveState,
+    grids: Vec<NeighbourMvGrid>,
+    states: Vec<TileResolveState>,
 }
 
 fn take_active_commit<T: ReconSample>(
@@ -261,6 +265,8 @@ struct TileRecon<T: ReconSample> {
     units_per_row: usize,
     batches: Vec<core::ops::Range<usize>>,
     frontier_rows: usize,
+    /// Every tile of the frame, which a unit's `tile` indexes.
+    tiles: Vec<GeometryTile>,
     commit: Mutex<Option<TileCommit<T>>>,
     scratch: Mutex<Option<TileDecodeScratch<T>>>,
     /// The rest of the frame's decode scratch, parked until the tile returns.
@@ -286,7 +292,6 @@ pub(crate) struct ScheduledTileRecon<T: ReconSample> {
     resolve: Mutex<ScheduledResolve>,
     info: splot_recon::DecodedFrameInfo,
     temporal_plan: TemporalBandPlan,
-    tile_offset: ByteOffset,
     parse_progress: Arc<super::ParseProgress>,
     pending_surfaces: Arc<Mutex<SurfaceSource<T>>>,
     payload: Mutex<Option<crate::bitstream::tile_payload::TilePayloadScratch>>,
@@ -297,7 +302,9 @@ pub(crate) struct ScheduledTileRecon<T: ReconSample> {
 pub(crate) struct ScheduledTileWorkspace<T: ReconSample> {
     pub(crate) payload: crate::bitstream::tile_payload::TilePayloadScratch,
     prepass_block_decoded: TileBlockDecodedState,
-    grid: NeighbourMvGrid,
+    grids: Vec<NeighbourMvGrid>,
+    resolve_states: Vec<TileResolveState>,
+    tiles: Vec<GeometryTile>,
     surfaces: Option<Arc<Mutex<SurfaceSource<T>>>>,
     motion: Option<MotionFieldUnits>,
     batches: Vec<core::ops::Range<usize>>,
@@ -580,6 +587,21 @@ impl<T: ReconSample> TileRecon<T> {
         );
         let mut batch = batch;
         for ready in batch.drain(..) {
+            if commit.block_decoded_tile != Some(ready.row.tile) {
+                let tile = self
+                    .tiles
+                    .get(ready.row.tile)
+                    .ok_or_else(invalid_inter_tile_scheduling_state)?;
+                super::reset_tile_block_decoded(
+                    &mut commit.block_decoded,
+                    self.sequence.general.chroma_format_idc,
+                    &self.params,
+                    tile.mi_cols.end,
+                    tile.mi_rows.end,
+                )?;
+                commit.current_block_decoded_superblock = None;
+                commit.block_decoded_tile = Some(ready.row.tile);
+            }
             let spent = commit.replay(
                 ready,
                 &self.quantizer,
@@ -710,13 +732,16 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     pub(crate) fn retire(mut self) -> ScheduledTileWorkspace<T> {
         self.recon.motion.retire();
+        let resolve = self.resolve.into_inner();
         let mut filters = core::mem::take(&mut self.frontier.get_mut().spare_filters);
         filters.clear();
         let carry = core::mem::take(&mut self.frontier.get_mut().carry);
         ScheduledTileWorkspace {
             payload: self.payload.into_inner().unwrap_or_default(),
             prepass_block_decoded: self.recon.prepass_block_decoded,
-            grid: self.resolve.into_inner().grid,
+            grids: resolve.grids,
+            resolve_states: resolve.states,
+            tiles: self.recon.tiles,
             surfaces: Some(self.pending_surfaces),
             motion: Some(self.recon.motion),
             batches: self.recon.batches,
@@ -854,18 +879,23 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             else {
                 break;
             };
-            row.replay_flags(&mut resolve.grid, frame_mv_precision(context.core)?);
+            let ScheduledResolve { grids, states, .. } = &mut *resolve;
+            let (Some(grid), Some(state), Some(tile)) = (
+                grids.get_mut(row.tile),
+                states.get_mut(row.tile),
+                self.recon.tiles.get(row.tile),
+            ) else {
+                return Err(invalid_inter_tile_scheduling_state());
+            };
+            row.replay_flags(grid, frame_mv_precision(context.core)?);
             row.return_terminal_error()?;
-            {
-                let ScheduledResolve { grid, state, .. } = &mut *resolve;
-                state.resolve_unit(
-                    grid,
-                    &context,
-                    &self.recon.temporal,
-                    &mut row,
-                    self.tile_offset,
-                )
-            }?;
+            state.resolve_unit(
+                grid,
+                &context,
+                &self.recon.temporal,
+                &mut row,
+                tile.tile_offset,
+            )?;
             row.return_terminal_error()?;
             let bounds = row_gate.bounds_for_row(&row);
             TileRecon::accept_resolved(
@@ -1266,8 +1296,19 @@ fn safe_deblock_mi_end(
     )
 }
 
-/// Reconstruction units one row-bounded precompute batch prepares.
+/// Most superblocks one row-bounded precompute batch prepares.
 const RECON_BATCH_UNITS: usize = 4;
+
+/// Superblocks per precompute batch, so that a superblock row splits into
+/// about one batch per one and a half workers. Four 256-wide superblocks a
+/// batch put a 720p row in two batches, which serialized the frame's
+/// reconstruction and every frame that reads it. One batch per worker was
+/// 2% slower on a 1080p natural stream whose workers were already busy.
+fn recon_batch_units(units_per_row: usize, workers: usize) -> usize {
+    units_per_row
+        .div_ceil((workers * 2 / 3).max(1))
+        .clamp(1, RECON_BATCH_UNITS)
+}
 
 /// Splits the units into precompute batches that never cross a superblock row.
 ///
@@ -1314,25 +1355,30 @@ fn superblock_row_batches_into(
 #[allow(clippy::too_many_arguments)]
 fn prepare_scheduled_motion(
     reusable: &mut ScheduledTileWorkspace<impl ReconSample>,
-    mi_rows: core::ops::Range<usize>,
-    mi_cols: core::ops::Range<usize>,
+    tiles: &[GeometryTile],
     sb_h4: usize,
     motion_field: TemporalMotionField,
     units: usize,
     units_per_row: usize,
     motion_handle: MotionFieldHandle,
-) -> Result<(NeighbourMvGrid, MotionFieldUnits)> {
-    reusable
-        .grid
-        .reset_for_tile(mi_rows, mi_cols, sb_h4)
-        .map_err(|error| inter_tile_grid_error(&error, "inter admission MV grid"))?;
+) -> Result<(Vec<NeighbourMvGrid>, MotionFieldUnits)> {
+    let grids = &mut reusable.grids;
+    grids.truncate(tiles.len());
+    grids
+        .try_reserve(tiles.len() - grids.len())
+        .map_err(|_| inter_allocation!("inter admission MV grids"))?;
+    grids.resize_with(tiles.len(), NeighbourMvGrid::default);
+    for (grid, tile) in grids.iter_mut().zip(tiles) {
+        grid.reset_for_tile(tile.mi_rows.clone(), tile.mi_cols.clone(), sb_h4)
+            .map_err(|error| inter_tile_grid_error(&error, "inter admission MV grid"))?;
+    }
     let motion = if let Some(mut motion) = reusable.motion.take() {
         motion.reset_publishing(motion_field, units, units_per_row, motion_handle)?;
         motion
     } else {
         MotionFieldUnits::publishing(motion_field, units, units_per_row, motion_handle)?
     };
-    Ok((core::mem::take(&mut reusable.grid), motion))
+    Ok((core::mem::take(&mut reusable.grids), motion))
 }
 
 /// Resolves a parsed tile and turns each unit into owned admission state.
@@ -1362,7 +1408,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let geometry = parse_progress
         .geometry()
         .ok_or_else(invalid_inter_tile_scheduling_state)?;
-    let tile_offset = geometry.tile_offset;
     let unit_count = geometry.unit_count;
     let quantizer = FrameQuantizerSnapshot::capture();
     let units_per_row = geometry
@@ -1371,10 +1416,9 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .min(params.mi_cols)
         .saturating_sub(geometry.mi_cols.start)
         .div_ceil(params.sb_h4);
-    let (resolve_grid, motion) = prepare_scheduled_motion(
+    let (resolve_grids, motion) = prepare_scheduled_motion(
         reusable,
-        geometry.mi_rows.clone(),
-        geometry.mi_cols.clone(),
+        &geometry.tiles,
         params.sb_h4,
         motion_field,
         unit_count.saturating_sub(1),
@@ -1401,7 +1445,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     superblock_row_batches_into(
         unit_count,
         units_per_row.max(1),
-        RECON_BATCH_UNITS,
+        recon_batch_units(units_per_row, workers.workers()),
         &mut batches,
     );
     scratch.scheduled_rows.reset(unit_count, &batches)?;
@@ -1432,7 +1476,19 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         params.sb_h4,
         rects,
     )?;
-    let resolve_state = TileResolveState::new(&sequence);
+    let mut resolve_states = core::mem::take(&mut reusable.resolve_states);
+    resolve_states.clear();
+    resolve_states
+        .try_reserve(geometry.tiles.len())
+        .map_err(|_| inter_allocation!("inter admission resolve banks"))?;
+    resolve_states.extend(
+        geometry
+            .tiles
+            .iter()
+            .map(|_| TileResolveState::new(&sequence)),
+    );
+    let mut tiles = core::mem::take(&mut reusable.tiles);
+    tiles.clone_from(&geometry.tiles);
     let sealed = progress
         .frontier_rows()
         .ok_or_else(invalid_inter_tile_scheduling_state)?;
@@ -1446,6 +1502,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             units_per_row,
             batches,
             frontier_rows: unit_count.div_ceil(units_per_row.max(1)).max(1),
+            tiles,
             commit: Mutex::new(Some(TileCommit {
                 next: 0,
                 handed_rows: 0,
@@ -1453,6 +1510,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
                 workspace,
                 block_decoded,
                 current_block_decoded_superblock: None,
+                block_decoded_tile: None,
                 decoded_any: false,
                 surfaces: Arc::clone(&surface_source),
                 frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
@@ -1485,12 +1543,11 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         resolve: Mutex::new(ScheduledResolve {
             next: 0,
             submitted_batches: 0,
-            grid: resolve_grid,
-            state: resolve_state,
+            grids: resolve_grids,
+            states: resolve_states,
         }),
         info,
         temporal_plan,
-        tile_offset,
         parse_progress,
         pending_surfaces: Arc::clone(&surface_source),
         payload: Mutex::new(None),
@@ -1751,8 +1808,11 @@ mod tests {
 
         let result = super::prepare_scheduled_motion(
             &mut super::ScheduledTileWorkspace::<u8>::default(),
-            1..1,
-            0..1,
+            &[super::GeometryTile {
+                tile_offset: super::ByteOffset::new(0),
+                mi_rows: 1..1,
+                mi_cols: 0..1,
+            }],
             16,
             field,
             0,
@@ -1781,8 +1841,11 @@ mod tests {
 
         let _state = super::prepare_scheduled_motion(
             &mut super::ScheduledTileWorkspace::<u8>::default(),
-            0..8,
-            0..8,
+            &[super::GeometryTile {
+                tile_offset: super::ByteOffset::new(0),
+                mi_rows: 0..8,
+                mi_cols: 0..8,
+            }],
             16,
             field,
             0,
@@ -1862,6 +1925,16 @@ mod tests {
         for batch in &batches {
             assert_eq!(batch.start / 15, (batch.end - 1) / 15);
         }
+    }
+
+    #[test]
+    fn precompute_batches_split_a_row_by_the_worker_count() {
+        assert_eq!(super::recon_batch_units(15, 4), 4);
+        assert_eq!(super::recon_batch_units(15, 8), 3);
+        assert_eq!(super::recon_batch_units(8, 8), 2);
+        assert_eq!(super::recon_batch_units(5, 8), 1);
+        assert_eq!(super::recon_batch_units(40, 1), 4);
+        assert_eq!(super::recon_batch_units(0, 0), 1);
     }
 
     #[test]

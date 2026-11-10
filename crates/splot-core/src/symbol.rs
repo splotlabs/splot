@@ -61,22 +61,9 @@ pub(crate) trait CdfStorage: Copy {
 
     /// The row as `u16` storage, which the lane reads search and
     /// adapt directly.
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     fn u16_row(_cdf: &mut [Self]) -> Option<&mut [u16]> {
         None
-    }
-
-    /// The `N - 1` probability entries of a row, with at least
-    /// `CDF_PROB_SCALE` in the lanes past them; [`multi_symbol_search`]
-    /// caps every lane at `CDF_PROB_SCALE`.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
-    fn probability_lanes<const N: usize>(cdf: &[Self]) -> [u16; 8] {
-        let mut lanes = [CDF_PROB_SCALE as u16; 8];
-        for (lane, entry) in lanes.iter_mut().zip(&cdf[..N - 1]) {
-            *lane = entry.to_u32().min(CDF_PROB_SCALE) as u16;
-        }
-        lanes
     }
 
     /// Adapts the `n - 1` probability entries of a row (§ 8.2.6).
@@ -111,21 +98,9 @@ impl CdfStorage for u16 {
         value as u16
     }
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     fn u16_row(cdf: &mut [u16]) -> Option<&mut [u16]> {
         Some(cdf)
-    }
-
-    /// Loads the row in at most two vector reads; `N` is a constant at
-    /// every inlined read, so the arity branches fold away.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
-    fn probability_lanes<const N: usize>(cdf: &[u16]) -> [u16; 8] {
-        let len = row_lanes::<N>();
-        let mut raw = [0; 8];
-        raw[..len].copy_from_slice(&cdf[..len]);
-        let past = const { past_row_lanes::<N>() };
-        core::array::from_fn(|lane| raw[lane] | past[lane])
     }
 
     /// Adapts whole rows in vector lanes; `n` is a constant at every inlined
@@ -332,6 +307,7 @@ const ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS] = {
 };
 
 /// `CDF_PROB_SCALE` in the lanes past the `N - 1` probabilities of a row.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const fn past_row_lanes<const N: usize>() -> [u16; 8] {
     let mut lanes = [0u16; 8];
     let mut i = N - 1;
@@ -343,6 +319,7 @@ const fn past_row_lanes<const N: usize>() -> [u16; 8] {
 }
 
 /// `Prob_Inc << 2` of an `N`-ary row in vector lanes.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const fn prob_inc_lanes<const N: usize>() -> [u16; 8] {
     let mut lanes = [0u16; 8];
     let mut i = 0;
@@ -353,42 +330,32 @@ const fn prob_inc_lanes<const N: usize>() -> [u16; 8] {
     lanes
 }
 
-/// The § 8.2.6 boundary search over all `N - 1` boundaries at once. For
-/// non-decreasing rows the boundaries are non-increasing, so the number of
-/// boundaries above `symbol_value` is the symbol the sequential search
-/// stops at; lanes past the row hold a boundary of 0 and never count.
-/// `(r * pp) >> 7` (`r = range >> 8`) is the signed high half of
-/// `(r << 7) * (pp << 2)`, whose factors fit 15 bits; the result is below
-/// 2^13, so it compares signed against `symbol_value >> 3`.
+/// The § 8.2.6 boundary search of an `N`-ary row, stopping at the first
+/// boundary at or below `SymbolValue`: a predicted branch per boundary
+/// keeps the symbol off the range's dependency chain. Takes and returns
+/// the range and boundaries shifted left by 16, see [`SymbolDecoder`].
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn multi_symbol_search<T: CdfStorage, const N: usize>(
+fn early_exit_search<T: CdfStorage, const N: usize>(
     cdf: &[T],
-    symbol_value: u32,
-    range: u32,
+    dif: u64,
+    range_hi: u32,
 ) -> (usize, u32, u32) {
-    let increments = const { prob_inc_lanes::<N>() };
-    let range7 = ((range >> 1) & 0x7f80) as u16;
-    let threshold = (symbol_value >> 3) as i16;
-    let probabilities = T::probability_lanes::<N>(cdf);
-    let mut above = 0;
-    let (mut cur, mut prev) = (0u16, range as u16);
-    for (&probability, &increment) in probabilities.iter().zip(&increments) {
-        let f = (CDF_PROB_SCALE as u16).saturating_sub(probability);
-        let pp4 = ((f >> EC_PROB_SHIFT) << 6).wrapping_add(increment);
-        let scaled = ((i32::from(range7 as i16) * i32::from(pp4 as i16)) >> 16) as i16;
-        let boundary = (scaled as u16) << 3;
-        if scaled > threshold {
-            above += 1;
-            prev = prev.min(boundary);
-        } else {
-            cur = cur.max(boundary);
+    let r8 = range_hi >> 24;
+    let mut prev = range_hi;
+    for symbol in 0..N - 1 {
+        let f = CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_u32());
+        let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_U32[N - 2][symbol];
+        let cur = ((r8 * pp) >> 7) << 19;
+        if dif >= u64::from(cur) << 32 {
+            return (symbol, cur, prev);
         }
+        prev = cur;
     }
-    (above.min(N - 1), u32::from(cur), u32::from(prev))
+    (N - 1, 0, prev)
 }
 
-/// The lane search of [`multi_symbol_search`] in one register: the signed
+/// The lane search of [`early_exit_search`] in one register: the signed
 /// high-half multiply and the compare. The boundaries do not increase from
 /// lane to lane, so the symbol's two are the ones beside the last lane above
 /// the value, read back from memory. Returns the number of lanes above and
@@ -427,6 +394,7 @@ fn search_lanes(
 }
 
 /// The lane count [`load_row_lanes`] reads for an `N`-ary row.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const fn row_lanes<const N: usize>() -> usize {
     if N >= 7 {
         8
@@ -674,6 +642,9 @@ const DIF_BUFFER_BITS: i32 = 48;
 /// them (bits past the payload end buffer as ones, the inverted zero
 /// padding). Renormalization therefore only shifts `dif`; the payload is
 /// touched once per refill instead of once per symbol.
+///
+/// `range_hi` holds `SymbolRange << 16`, so renormalization shifts by its
+/// leading zeros directly and boundaries compare against `dif` unshifted.
 #[derive(Debug)]
 pub struct SymbolDecoder<'a> {
     data: &'a [u8],
@@ -681,7 +652,7 @@ pub struct SymbolDecoder<'a> {
     dif: u64,
     buffered: i32,
     fed_bits: u64,
-    symbol_range: u32,
+    range_hi: u32,
     /// `8 * sz`; `SymbolMaxBits` is derived from it (see
     /// [`Self::symbol_max_bits`]) instead of being updated on every read.
     payload_bits: i64,
@@ -732,7 +703,7 @@ impl<'a> SymbolDecoder<'a> {
             dif,
             buffered: DIF_BUFFER_BITS,
             fed_bits: 63,
-            symbol_range: SYMBOL_RANGE_INIT,
+            range_hi: SYMBOL_RANGE_INIT << 16,
             payload_bits,
             frame_symbol_count: 0,
             config,
@@ -809,7 +780,7 @@ impl<'a> SymbolDecoder<'a> {
             dif: self.dif,
             buffered: self.buffered,
             fed_bits: self.fed_bits,
-            symbol_range: self.symbol_range,
+            range_hi: self.range_hi,
             payload_bits: self.payload_bits,
             frame_symbol_count: self.frame_symbol_count,
             config: self.config,
@@ -840,6 +811,11 @@ impl<'a> SymbolDecoder<'a> {
         (self.dif >> SV_SHIFT) as u32
     }
 
+    /// Returns the current AV2 `SymbolRange` register.
+    const fn range(&self) -> u32 {
+        self.range_hi >> 16
+    }
+
     /// Returns a lossless checkpoint of the current arithmetic decoder state.
     #[must_use]
     pub fn checkpoint(&self) -> SymbolDecoderCheckpoint {
@@ -848,7 +824,7 @@ impl<'a> SymbolDecoder<'a> {
             symbol_count: self.frame_symbol_count,
             symbol_max_bits: self.symbol_max_bits(),
             symbol_value: self.symbol_value(),
-            symbol_range: self.symbol_range,
+            symbol_range: self.range(),
         }
     }
 
@@ -904,7 +880,7 @@ impl<'a> SymbolDecoder<'a> {
             return Ok(0);
         }
 
-        let mut split = u64::from(self.symbol_range) << max_bits;
+        let mut split = u64::from(self.range()) << max_bits;
         let mut value = 0u32;
         let mut consumed = 0u32;
         let mut scaled_value = self.scaled_bypass_value(max_bits);
@@ -1034,18 +1010,18 @@ impl<'a> SymbolDecoder<'a> {
         };
         let count = cdf[N].to_i32();
         self.ensure_buffered(15);
-        let symbol_value = (self.dif >> SV_SHIFT) as u32;
-        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        #[cfg(target_arch = "x86_64")]
         if N > 2
             && let Some(token) = lane_token()
             && let Some(row) = T::u16_row(cdf)
         {
+            let symbol_value = (self.dif >> SV_SHIFT) as u32;
             let (symbol, cur, prev, value, below) =
-                row_search_lanes::<N>(token, row, symbol_value, self.symbol_range);
+                row_search_lanes::<N>(token, row, symbol_value, self.range());
             if prev.saturating_sub(cur) == 0 {
                 return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
             }
-            self.consume(cur, prev);
+            self.consume(cur << 16, prev << 16);
             if self.config.cdf_update == CdfUpdateMode::Enabled {
                 let n_term = if N <= 3 { 1 } else { 2 };
                 let rate =
@@ -1057,18 +1033,7 @@ impl<'a> SymbolDecoder<'a> {
             }
             return Ok(Symbol::new(symbol as u8));
         }
-        let range8 = self.symbol_range >> 8;
-        let (symbol, cur, prev) = if N == 2 {
-            let f = CDF_PROB_SCALE.saturating_sub(cdf[0].to_u32());
-            let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_U32[0][0];
-            let next_cur = ((range8 * pp) >> 7) << 3;
-            let one = u32::from(symbol_value < next_cur);
-            let keep = one.wrapping_sub(1);
-            let prev = next_cur ^ ((next_cur ^ self.symbol_range) & keep);
-            (one as usize, next_cur & keep, prev)
-        } else {
-            multi_symbol_search::<T, N>(cdf, symbol_value, self.symbol_range)
-        };
+        let (symbol, cur, prev) = early_exit_search::<T, N>(cdf, self.dif, self.range_hi);
 
         if prev.saturating_sub(cur) == 0 {
             return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
@@ -1136,7 +1101,7 @@ impl<'a> SymbolDecoder<'a> {
     #[inline(always)]
     pub fn read_bool_trusted(&mut self) -> bool {
         let scaled = self.scaled_bypass_value(1);
-        let split = u64::from(self.symbol_range);
+        let split = u64::from(self.range());
         let one = scaled < split;
         let rest = if one { scaled } else { scaled - split };
         self.advance_bypass(1, rest as u32);
@@ -1168,7 +1133,7 @@ impl<'a> SymbolDecoder<'a> {
         };
         let dividend = self.dif >> (SV_SHIFT - bits);
         let quotient = run.quotient >> (run.left & 63);
-        let rest = dividend.wrapping_sub(quotient.wrapping_mul(self.symbol_range as u64));
+        let rest = dividend.wrapping_sub(quotient.wrapping_mul(self.range() as u64));
         self.dif = (rest << SV_SHIFT) | ((self.dif << bits) & ((1 << SV_SHIFT) - 1));
         self.buffered -= bits as i32;
         self.count_symbols(bits as u64);
@@ -1195,7 +1160,7 @@ impl<'a> SymbolDecoder<'a> {
         self.ensure_buffered(BYPASS_RUN_CHUNK_BITS);
         let dividend = self.dif >> (SV_SHIFT - BYPASS_RUN_CHUNK_BITS);
         BypassRun {
-            quotient: dividend / u64::from(self.symbol_range.max(1)),
+            quotient: dividend / u64::from(self.range().max(1)),
             left: BYPASS_RUN_CHUNK_BITS,
             len: BYPASS_RUN_CHUNK_BITS,
         }
@@ -1208,24 +1173,14 @@ impl<'a> SymbolDecoder<'a> {
             return 0;
         }
         self.ensure_buffered(15);
-        let symbol_value = (self.dif >> SV_SHIFT) as u32;
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         if N > 2
             && let Some(token) = lane_token()
         {
+            let symbol_value = (self.dif >> SV_SHIFT) as u32;
             return self.read_trusted_lanes::<N>(token, cdf, symbol_value, update);
         }
-        let (symbol, cur, prev) = if N == 2 {
-            let f = CDF_PROB_SCALE.saturating_sub(u32::from(cdf[0]));
-            let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_U32[0][0];
-            let next_cur = (((self.symbol_range >> 8) * pp) >> 7) << 3;
-            let one = u32::from(symbol_value < next_cur);
-            let keep = one.wrapping_sub(1);
-            let prev = next_cur ^ ((next_cur ^ self.symbol_range) & keep);
-            (one as usize, next_cur & keep, prev)
-        } else {
-            multi_symbol_search::<u16, N>(cdf, symbol_value, self.symbol_range)
-        };
+        let (symbol, cur, prev) = early_exit_search::<u16, N>(cdf, self.dif, self.range_hi);
         self.consume(cur, prev);
         if update {
             let count = cdf[N];
@@ -1237,7 +1192,8 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     /// [`Self::read_trusted_arity`] for `N > 2` in vector lanes, see
-    /// [`row_search_lanes`].
+    /// [`row_search_lanes`]. Branch-free on purpose: coefficient symbols
+    /// mispredict too often for [`early_exit_search`] on some streams.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
@@ -1249,8 +1205,8 @@ impl<'a> SymbolDecoder<'a> {
         update: bool,
     ) -> u32 {
         let (symbol, cur, prev, value, below) =
-            row_search_lanes::<N>(token, cdf, symbol_value, self.symbol_range);
-        self.consume(cur, prev);
+            row_search_lanes::<N>(token, cdf, symbol_value, self.range());
+        self.consume(cur << 16, prev << 16);
         if update {
             let count = cdf[N];
             adapt_lanes::<N>(token, cdf, value, below, trusted_rate::<N>(cdf));
@@ -1259,16 +1215,16 @@ impl<'a> SymbolDecoder<'a> {
         symbol
     }
 
-    /// Narrows the interval to `cur..prev` (§ 8.2.6) and renormalizes. The
-    /// interval is never empty for rows within the § 8.2.6 invariants; an
-    /// empty one leaves an arbitrary in-range state.
+    /// Narrows the interval to `cur..prev` (§ 8.2.6, both shifted left by
+    /// 16) and renormalizes. The interval is never empty for rows within the
+    /// § 8.2.6 invariants; an empty one leaves an arbitrary state.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn consume(&mut self, cur: u32, prev: u32) {
-        let new_range = prev.wrapping_sub(cur) & 0xffff;
-        let bits = (new_range as u16).leading_zeros();
-        self.symbol_range = new_range << bits;
-        self.dif = self.dif.wrapping_sub(u64::from(cur) << SV_SHIFT) << bits;
+        let new_range = prev.wrapping_sub(cur);
+        let bits = new_range.leading_zeros();
+        self.range_hi = new_range.wrapping_shl(bits);
+        self.dif = self.dif.wrapping_sub(u64::from(cur) << 32) << bits;
         self.buffered -= bits as i32;
         self.count_symbols(1);
     }
@@ -1365,7 +1321,7 @@ impl<'a> SymbolDecoder<'a> {
     #[inline]
     fn read_bypass_bits(&mut self, bits: u32) -> u32 {
         let dividend = self.scaled_bypass_value(bits);
-        let range = u64::from(self.symbol_range.max(1));
+        let range = u64::from(self.range().max(1));
         let quotient = dividend / range;
         self.advance_bypass(bits, (dividend - quotient * range) as u32);
         (!quotient & ((1 << bits) - 1)) as u32
@@ -1406,9 +1362,10 @@ impl<'a> SymbolDecoder<'a> {
     }
 }
 
-/// The payload tail, zero-padded; out of line so the refill fast path stays
-/// small where it inlines.
-#[cold]
+/// The payload tail, zero-padded. Inlined: a call in a hot loop forces the
+/// loop's decoder state out of caller-saved registers.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
 fn tail_window(data: &[u8], byte_index: usize) -> u64 {
     be_window(data, byte_index)
 }

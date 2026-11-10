@@ -1247,10 +1247,22 @@ fn predict_compound_average_into<T: ReconSample, O: CompoundAverageOutput>(
     params: &[SubpelPredictParams; 2],
     cwp_weight: i16,
     pred0_scratch: Option<&mut [i32]>,
-    intermediate_scratch: Option<&mut [i16]>,
+    mut intermediate_scratch: Option<&mut [i16]>,
     output: &mut [O],
     output_stride: usize,
 ) -> splot_recon::Result<()> {
+    if O::predict_fast(
+        &plane.views[0],
+        &params[0],
+        &plane.views[1],
+        &params[1],
+        cwp_weight,
+        intermediate_scratch.as_deref_mut().unwrap_or_default(),
+        output,
+        output_stride,
+    )? {
+        return Ok(());
+    }
     let sample_count =
         plane
             .block_w

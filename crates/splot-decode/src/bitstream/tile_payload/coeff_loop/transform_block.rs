@@ -101,9 +101,6 @@ static LEVEL_WORD: [u32; 16] = {
 /// bytes the neighbour sums read.
 const Q0_BIT: u32 = 24;
 
-/// The level byte of a grid word.
-const LEVEL_BYTE: u32 = 0xff << 16;
-
 /// Where a [`GRID_SCANS`] entry keeps its luma 2D `coeff_base` context
 /// class (§ 8.3.2), above the grid index: for a low-frequency position
 /// (`row + col < 4`) its `LF_2D_CONTEXT_CAP_AND_OFFSET` bucket, otherwise its
@@ -536,15 +533,17 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
         tcq: 0,
         tcq_q0: 0,
         ph: 0,
+        nonzero: [0; NONZERO_WORDS],
     };
     pass.levels_pass::<CLASS, LUMA, TCQ, PH>(scan, eob_entry, eob_level, lf_end);
-    let (mut owned, ph) = (pass.symbols, pass.ph);
+    let (mut owned, ph, nonzero) = (pass.symbols, pass.ph, pass.nonzero);
     let facts = SignFacts {
         lf_end,
         is_hidden: PH && (ph >> 1) >= PHTHRESH,
         sum_abs1: if PH { ph & 1 } else { 0 },
     };
-    let result = sign_pass::<CLASS, LUMA, TCQ>(cdfs, &mut owned, levels, quant, block, facts);
+    let result =
+        sign_pass::<CLASS, LUMA, TCQ>(cdfs, &mut owned, levels, quant, block, facts, &nonzero);
     symbols.restore(owned);
     if result.is_err() {
         levels.fill(0);
@@ -597,7 +596,12 @@ struct LevelPass<'a, 'r, const UPD: bool> {
     tcq_q0: usize,
     /// Bit 0 the `sumAbs1` parity, the bits above the nonzero count.
     ph: u32,
+    /// Bit `i` set when scan index `i > 0` has a nonzero level.
+    nonzero: [u64; NONZERO_WORDS],
 }
+
+/// One bit per scan index of the largest (32 by 32) block.
+const NONZERO_WORDS: usize = 16;
 
 impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     /// The sum of the grid words at `offsets` from `grid`.
@@ -772,8 +776,17 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         grid: usize,
         level: u32,
     ) {
-        let q0 = if TCQ { self.tcq_q0 as u32 & 1 } else { 0 };
+        let nonzero = level != 0;
+        let q0 = if TCQ {
+            self.tcq_q0 as u32 & u32::from(nonzero)
+        } else {
+            0
+        };
         self.levels[grid & LEVEL_WORDS_MASK] = LEVEL_WORD[level as usize & 15] | q0 << Q0_BIT;
+        if scan_index > 0 {
+            self.nonzero[(scan_index >> 6) & (NONZERO_WORDS - 1)] |=
+                u64::from(nonzero) << (scan_index & 63);
+        }
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;
             self.tcq = tcq_next(self.tcq, level);
@@ -781,6 +794,22 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         if PH && scan_index > 0 {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
             self.ph = (self.ph ^ (clipped & 1)) + (u32::from(level != 0) << 1);
+        }
+    }
+
+    /// The high-frequency indices of [`Self::levels_pass`], out of line so
+    /// the decoder state stays in registers across the loop.
+    #[inline(never)]
+    fn hf_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
+        &mut self,
+        hf: &[u32],
+        lf_end: usize,
+    ) {
+        for (offset, &entry) in hf.iter().enumerate().rev() {
+            let grid = entry_grid(entry);
+            let level = self.read_hf_base::<CLASS, LUMA>(entry);
+            let level = self.add_range::<CLASS, LUMA, false>(grid, false, level);
+            self.finish::<TCQ, PH>(lf_end + offset, grid, level);
         }
     }
 
@@ -808,13 +837,10 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         if eob_index == 0 {
             return;
         }
-        let hf = scan.get(lf_end..eob_index).unwrap_or_default();
-        for (offset, &entry) in hf.iter().enumerate().rev() {
-            let grid = entry_grid(entry);
-            let level = self.read_hf_base::<CLASS, LUMA>(entry);
-            let level = self.add_range::<CLASS, LUMA, false>(grid, false, level);
-            self.finish::<TCQ, PH>(lf_end + offset, grid, level);
-        }
+        self.hf_pass::<CLASS, LUMA, TCQ, PH>(
+            scan.get(lf_end..eob_index).unwrap_or_default(),
+            lf_end,
+        );
         let lf = scan.get(1..lf_end.min(eob_index)).unwrap_or_default();
         for (offset, &entry) in lf.iter().enumerate().rev() {
             let grid = entry_grid(entry);
@@ -842,9 +868,10 @@ struct SignFacts {
     sum_abs1: u32,
 }
 
-/// The sign and remainder pass: walks the scan from the EOB again, reads
-/// each nonzero level's sign and Golomb remainder, writes its `Quant`
-/// entry and clears the level grid behind it.
+/// The sign and remainder pass: visits the nonzero levels from the EOB
+/// again, reads each one's sign and Golomb remainder, writes its `Quant`
+/// entry and clears the level grid behind it. A zero level's grid word is
+/// already zero.
 #[allow(clippy::inline_always, reason = "measured: one loop per tool set")]
 #[inline(always)]
 fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
@@ -854,6 +881,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     quant: &mut [i32],
     block: &Block<'_>,
     facts: SignFacts,
+    nonzero: &[u64; NONZERO_WORDS],
 ) -> Result<BlockSummary, CoeffOrdinaryPassError> {
     let tx_class = [
         CoeffTransformClass::TwoD,
@@ -893,13 +921,12 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     macro_rules! sign_step {
         ($scan_index:expr, $max_level:expr) => {{
             let (scan_index, max_level) = ($scan_index, $max_level);
-            let scan_entry = scan[scan_index];
+            let Some(&scan_entry) = scan.get(scan_index) else {
+                continue;
+            };
             let grid = entry_grid(scan_entry);
             let word = levels[grid];
             levels[grid] = 0;
-            if word & LEVEL_BYTE == 0 {
-                continue;
-            }
             let pos = (scan_entry >> 16) as usize;
             let (level, tcq_q0) = ((word >> 16) & 0xff, word >> Q0_BIT != 0);
             let entry = CoeffScanEntry::new(scan_index, pos, pos >> wl, pos & col_mask);
@@ -952,11 +979,17 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         }};
     }
     let lf_end = facts.lf_end.min(eob);
-    for scan_index in (lf_end..eob).rev() {
-        sign_step!(scan_index, max_hf);
-    }
-    for scan_index in (1..lf_end).rev() {
-        sign_step!(scan_index, max_lf);
+    for word_index in (0..eob.div_ceil(64).min(NONZERO_WORDS)).rev() {
+        let mut bits = nonzero[word_index];
+        while bits != 0 {
+            let bit = 63 - bits.leading_zeros() as usize;
+            bits ^= 1 << bit;
+            let scan_index = word_index * 64 + bit;
+            sign_step!(
+                scan_index,
+                if scan_index < lf_end { max_lf } else { max_hf }
+            );
+        }
     }
     symbols.end_bypass_run(run);
     let mut quant_state = quant_state.with_cul_level(level_sum);

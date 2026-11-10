@@ -86,4 +86,48 @@ mod tests {
         assert_eq!(parallel.frames[2].visible_luma_width, 96);
         Ok(())
     }
+
+    /// Multi-tile frames: 1 thread keeps the fused tile loop, 8 threads run the
+    /// split path, whose units arrive out of frame raster order.
+    #[test]
+    fn scheduled_multi_tile_frames_match_serial() -> Result<(), Box<dyn std::error::Error>> {
+        let fixtures: [&[u8]; 6] = [
+            include_bytes!(
+                "../../../../../../../tests/conformance/vectors/valid/\
+                 syn-4frame-bawp-tile-column-256x128.ivf"
+            ),
+            include_bytes!(
+                "../../../../../../../tests/conformance/vectors/valid/\
+                 syn-tip-output-deblock-2tile-mono-128x64-q160.ivf"
+            ),
+            include_bytes!(
+                "../../../../../../../tests/conformance/vectors/valid/\
+                 syn-4tile-gdf-intra-128x128-q120.ivf"
+            ),
+            include_bytes!(
+                "../../../../../../../tests/conformance/vectors/valid/\
+                 syn-gdf-2x2-tiles-intra-256x128.ivf"
+            ),
+            include_bytes!(
+                "../../../../../../../tests/conformance/vectors/valid/\
+                 syn-wienerns-tilerows-intra-256x128.ivf"
+            ),
+            include_bytes!(
+                "../../../../../../../tests/conformance/vectors/valid/\
+                 syn-multi-tile-group-intra-256x128.ivf"
+            ),
+        ];
+        let serial = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))?;
+        let parallel = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(8usize)))?;
+        for fixture in fixtures {
+            let serial = serial.decode_hash_report_bytes(fixture, DecodeOptions::default())?;
+            let parallel = parallel.decode_hash_report_bytes(fixture, DecodeOptions::default())?;
+            assert!(!serial.frames.is_empty());
+            assert_eq!(serial.frames.len(), parallel.frames.len());
+            for (serial, parallel) in serial.frames.iter().zip(&parallel.frames) {
+                assert_eq!(serial.hashes, parallel.hashes);
+            }
+        }
+        Ok(())
+    }
 }

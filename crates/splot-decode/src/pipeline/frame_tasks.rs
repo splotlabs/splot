@@ -671,11 +671,13 @@ pub(crate) struct TipFrameInputs<T: SplitSample> {
 const TIP_INIT: usize = 0;
 const TIP_FINISH: usize = 1;
 const TIP_BAND: usize = 2;
+const TIP_PREDICT: usize = 3;
 
-/// One TIP output frame as row-scheduled stages: the projection, the bands
-/// (any order, concurrently, each admitted once its references published the
-/// rows it reads, each committing the finished prefix in band order), and the
-/// deblock plus freeze.
+/// One TIP output frame as row-scheduled stages: the projection, the bands'
+/// motion (any order, concurrently, each admitted once its references
+/// published the rows it reads, each folding the finished prefix in band
+/// order, the last one publishing the field the next TIP frame projects),
+/// the bands' prediction, and the deblock plus freeze.
 pub(crate) struct TipFrame<T: SplitSample> {
     wake: RowWake,
     options: DecodeOptions,
@@ -684,6 +686,7 @@ pub(crate) struct TipFrame<T: SplitSample> {
     spares: Arc<inter::TipSpares<T>>,
     stages: [Stage; 2],
     bands: ParallelStage,
+    predicts: ParallelStage,
     failed: AtomicBool,
     inputs: Mutex<Option<TipFrameInputs<T>>>,
     core: OnceLock<Arc<FrameHeaderCore>>,
@@ -708,6 +711,7 @@ impl<T: SplitSample> TipFrame<T> {
             spares,
             stages: core::array::from_fn(|_| Stage::new(0)),
             bands: ParallelStage::new(),
+            predicts: ParallelStage::new(),
             failed: AtomicBool::new(false),
             inputs: Mutex::new(None),
             core: OnceLock::new(),
@@ -727,6 +731,7 @@ impl<T: SplitSample> TipFrame<T> {
             stage.reset(0);
         }
         self.bands.set_rows(0);
+        self.predicts.set_rows(0);
         *self.failed.get_mut() = false;
         self.inputs.get_mut().take();
         self.core.take();
@@ -800,6 +805,9 @@ impl<T: SplitSample> TipFrame<T> {
             !self.inline,
         )?;
         self.bands.set_rows(work.band_count());
+        if work.split() {
+            self.predicts.set_rows(work.band_count());
+        }
         let _ = self.band_bounds.set(work.band_bounds().to_vec());
         *self.work.write() = Some(work);
         *self.reference.write() = Some(reference);
@@ -820,6 +828,10 @@ impl<T: SplitSample> TipFrame<T> {
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
         let field = if self.inline {
             work.band_in_place(index, sequence, core, reference)?
+        } else if work.split() {
+            let field = work.band_motion(index, sequence, core, reference)?;
+            self.predicts.ready(index);
+            field
         } else {
             work.band(index, sequence, core, reference)?;
             work.commit_ready()?
@@ -830,6 +842,21 @@ impl<T: SplitSample> TipFrame<T> {
             motion.publish(field);
         }
         Ok(())
+    }
+
+    fn predict(&self, index: usize) -> Result<()> {
+        let (Some(core), Some(sequence)) = (self.core.get(), self.sequence.get()) else {
+            return Err(inter::invalid_inter_tile_scheduling_state());
+        };
+        let reference = self.reference.read();
+        let reference = reference
+            .as_ref()
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+        self.work
+            .read()
+            .as_ref()
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?
+            .band_predict(index, sequence, core, reference)
     }
 
     fn finish_frame(&self) -> Result<()> {
@@ -921,7 +948,15 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
                 row,
             });
         }
-        if let Some(row) = self.stages[TIP_FINISH].claim(|_| self.bands.is_finished()) {
+        if let Some(row) = self.predicts.claim_ready() {
+            return Some(Claim {
+                stage: TIP_PREDICT,
+                row,
+            });
+        }
+        if let Some(row) = self.stages[TIP_FINISH]
+            .claim(|_| self.bands.is_finished() && self.predicts.is_finished())
+        {
             return Some(Claim {
                 stage: TIP_FINISH,
                 row,
@@ -934,12 +969,13 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
         let outcome = match claim.stage {
             TIP_INIT => self.init(),
             TIP_BAND => self.band(claim.row),
+            TIP_PREDICT => self.predict(claim.row),
             _ => self.finish_frame(),
         };
-        if claim.stage == TIP_BAND {
-            self.bands.finish(claim.row);
-        } else {
-            self.stages[claim.stage].finish(claim.row);
+        match claim.stage {
+            TIP_BAND => self.bands.finish(claim.row),
+            TIP_PREDICT => self.predicts.finish(claim.row),
+            stage => self.stages[stage].finish(claim.row),
         }
         if let Err(error) = outcome {
             self.fail(error);

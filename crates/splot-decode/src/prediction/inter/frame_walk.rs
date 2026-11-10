@@ -306,11 +306,9 @@ pub(super) fn required_inter_quantizer_deltas(
 /// Whether one frame's walk can run as an entropy pass now and a deferred
 /// reconstruction later.
 ///
-/// The split serves exactly one tile — a multi-tile frame already parses its
-/// tiles independently. A frame that allows global intra block copy keeps
-/// every reconstructed row in its workspace instead of one superblock row, so
-/// a copy from any row above reads raw samples. Every other frame keeps the
-/// fused walk.
+/// Inter tile groups and key frames split; a multi-tile frame parses its
+/// tiles one after another and numbers their units in frame superblock order.
+/// Every other frame keeps the fused walk.
 #[must_use]
 pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) -> bool {
     use splot_core::headers::frame::FrameHeaderParseStatus;
@@ -327,10 +325,6 @@ pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) 
         }
         _ => false,
     }) && core.frame_is_intra.is_some()
-        && core
-            .tile_info
-            .as_ref()
-            .is_some_and(|tiles| tiles.tile_cols == 1 && tiles.tile_rows == 1)
 }
 
 /// One inter frame whose entropy pass is done and whose reconstruction is
@@ -423,7 +417,7 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             &mut payload_scratch,
         );
         let InterWalkPrologue {
-            mut tile_plan,
+            tile_plan,
             workspace,
             setup,
             facts,
@@ -439,14 +433,9 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
         let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
         let quantizer = FrameQuantizerSnapshot::capture();
         let prepared = (|| {
-            let tile_count = tile_plan.work_units().len();
-            let [tile] = tile_plan.work_units_mut() else {
-                return Err(
-                    DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into(),
-                );
-            };
+            let work_units = tile_plan.work_units();
             let block_setup = super::block::derive_inter_block_setup(
-                std::slice::from_mut(tile),
+                work_units,
                 &sequence,
                 &core,
                 options,
@@ -459,8 +448,8 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             )?;
             motion.publish_metadata(block_setup.motion_field_metadata());
             let (parse_setup, params, prelude, motion_field) = block_setup.split();
-            block::publish_tile_geometry(tile, &params, &parse_progress)?;
-            let parser = InterFrameParser::new(parse_setup);
+            block::publish_tile_geometry(work_units, &params, &parse_progress)?;
+            let parser = InterFrameParser::new(parse_setup, work_units.len());
             let identities = reusable.install_identities(core, *reference)?;
             Ok((identities, parser, params, prelude, motion_field))
         })();
@@ -529,23 +518,24 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
     /// Parses at most `units` units, returning whether entropy has ended.
     pub(crate) fn parse_units(&mut self, units: core::num::NonZeroUsize) -> Result<bool> {
         let _quantizer_scopes = self.quantizer.install_frame();
-        let tile_count = self.tile_plan.work_units().len();
-        let Some((tile_bytes, tile)) = self.tile_plan.single_tile_mut() else {
-            self.parse_progress.fail();
-            return Err(
-                DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into(),
-            );
-        };
         for _ in 0..units.get() {
-            match self.parser.parse_unit(
-                tile,
-                tile_bytes,
-                &self.sequence,
-                &self.core,
-                self.ref_frame_idx.as_slice(),
-                &self.reference,
-                &self.parse_progress,
-            ) {
+            let parsed = self
+                .tile_plan
+                .tile_mut(self.parser.tile())
+                .ok_or_else(block::invalid_inter_tile_scheduling_state)
+                .and_then(|(tile_bytes, tile)| {
+                    self.parser.parse_unit(
+                        tile,
+                        tile_bytes,
+                        &self.sequence,
+                        &self.core,
+                        self.ref_frame_idx.as_slice(),
+                        &self.reference,
+                        &self.parse_progress,
+                        &mut self.records,
+                    )
+                });
+            match parsed {
                 Ok(true) => return Ok(true),
                 Ok(false) => {}
                 Err(error) => {
@@ -560,15 +550,8 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
     /// Finalizes entropy products after the last parsed unit.
     pub(crate) fn finish(mut self) -> Result<DeferredInterWalk<T>> {
         let _quantizer_scopes = self.quantizer.install_frame();
-        let tile_count = self.tile_plan.work_units().len();
-        let [tile] = self.tile_plan.work_units_mut() else {
-            self.parse_progress.fail();
-            return Err(
-                DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into(),
-            );
-        };
         let parse = match self.parser.finish(
-            tile,
+            self.tile_plan.work_units(),
             self.records,
             &self.core,
             &self.reference,

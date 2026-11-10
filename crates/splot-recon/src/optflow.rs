@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use fearless_simd::{i16x8, i16x16, i32x8, mask16x8, prelude::*, u16x8};
+use fearless_simd::{i16x8, i16x16, i32x4, i32x8, mask16x8, prelude::*, u16x8};
 
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2_signed_i32;
@@ -1264,9 +1264,9 @@ fn unit_16x16_sums(weighted: &[i16; 256], difference: &[i16; 256]) -> [[i32; 5];
     baseline_simd!(simd => unit_16x16_lane_sums(simd, weighted, difference))
 }
 
-/// [`unit_16x16_sums`] with whole 16-lane rows: `pmaddwd` keeps the left
-/// unit's products in the low four `i32` lanes and the right unit's in the
-/// high four, so the halves separate only in the final reduction.
+/// [`unit_16x16_sums`] with whole 16-lane rows: each 8x8 unit accumulates
+/// the products of its half-row in its own `i32x4` lanes, with no pairwise
+/// add.
 #[inline]
 fn unit_16x16_lane_sums<S: Simd>(
     simd: S,
@@ -1276,44 +1276,79 @@ fn unit_16x16_lane_sums<S: Simd>(
     let (rows, _) = weighted.as_chunks::<16>();
     let (diff_rows, _) = difference.as_chunks::<16>();
     let half_sums = |half: core::ops::Range<usize>| {
-        let mut sums = [i32x8::splat(simd, 0); 5];
+        let mut sums = [[i32x4::splat(simd, 0); 2]; 5];
         for row in half {
             let (u, v) = gradient_row(simd, rows, row);
             let w = i16x16::load_array_ref(simd, &diff_rows[row]);
-            accumulate_unit_sums(&mut sums, u, v, w);
+            for (sums, (left, right)) in
+                sums.iter_mut()
+                    .zip([(u, u), (v, v), (u, v), (u, w), (v, w)])
+            {
+                let halves = [left.split(), right.split()];
+                for (sum, (first, second)) in sums
+                    .iter_mut()
+                    .zip([(halves[0].0, halves[1].0), (halves[0].1, halves[1].1)])
+                {
+                    let (low, high) = first.widening_mul(second);
+                    *sum += low;
+                    *sum += high;
+                }
+            }
         }
-        sums.map(SimdSplit::split)
+        sums
     };
     let (top, bottom) = (half_sums(0..8), half_sums(8..16));
     [
-        top.map(|(left, _)| left.reduce_sum()),
-        top.map(|(_, right)| right.reduce_sum()),
-        bottom.map(|(left, _)| left.reduce_sum()),
-        bottom.map(|(_, right)| right.reduce_sum()),
+        top.map(|[left, _]| left.reduce_sum()),
+        top.map(|[_, right]| right.reduce_sum()),
+        bottom.map(|[left, _]| left.reduce_sum()),
+        bottom.map(|[_, right]| right.reduce_sum()),
     ]
     .map(|sums| unit_sums(sums, 64))
 }
 
 /// The horizontal and vertical § 7.13.3.9 gradients of `row` in one gradient
-/// unit of `rows`, with its clamped and doubled edges.
-///
-/// `weighted` comes from validated samples, so it stays within about
-/// `±1024` and every gradient fits the `i16` the planes would hold.
+/// unit of `rows`, with its clamped and doubled edges, in `i16` halves as
+/// [`row_8x8_gradients`] derives them: `weighted` has the span bound of
+/// [`unit_8x8_sums`].
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn gradient_row<S: Simd>(simd: S, rows: &[[i16; 16]], row: usize) -> (i16x16<S>, i16x16<S>) {
     let last = rows.len() - 1;
-    let lanes = |row: usize| i16x16::load_array_ref(simd, &rows[row]);
-    let vertical = gradient_lanes_16(
-        [
-            lanes((row + 1).min(last)),
-            lanes(row.saturating_sub(1)),
-            lanes((row + 2).min(last)),
-            lanes(row.saturating_sub(2)),
-        ],
-        row == 0 || row == last,
-    );
-    (horizontal_gradient_16(simd, &rows[row]), vertical)
+    let lanes = |row: usize| i16x16::load_array_ref(simd, &rows[row]).split();
+    let (low, high) = lanes(row);
+    let [first, end] = [rows[row][0], rows[row][15]].map(|sample| i16x8::splat(simd, sample));
+    let edge = |bits: u64| {
+        move |magnitude: u16x8<S>| {
+            let edge = mask16x8::from_bitmask(magnitude.simd, bits);
+            edge.select((magnitude + 32) >> 6, (magnitude + 64) >> 7)
+        }
+    };
+    let u = gradient_i16(
+        [low.slide::<1>(high), first.slide::<7>(low)],
+        [low.slide::<2>(high), first.slide::<6>(low)],
+        edge(1),
+    )
+    .combine(gradient_i16(
+        [high.slide::<1>(end), low.slide::<7>(high)],
+        [high.slide::<2>(end), low.slide::<6>(high)],
+        edge(1 << 7),
+    ));
+    let [next, prev, next2, prev2] = [
+        (row + 1).min(last),
+        row.saturating_sub(1),
+        (row + 2).min(last),
+        row.saturating_sub(2),
+    ]
+    .map(lanes);
+    let shift = if row == 0 || row == last { 6 } else { 7 };
+    let round = |magnitude: u16x8<S>| (magnitude + (1 << (shift - 1))) >> shift;
+    let v = gradient_i16([next.0, prev.0], [next2.0, prev2.0], round).combine(gradient_i16(
+        [next.1, prev.1],
+        [next2.1, prev2.1],
+        round,
+    ));
+    (u, v)
 }
 
 /// Adds the regularizing unit `area` to the `su2` and `sv2` diagonal of raw
@@ -1524,10 +1559,10 @@ mod tests {
     #[test]
     fn fused_16x16_sums_match_the_stored_gradient_planes() {
         for seed in [1usize, 7, 9973] {
-            let plane = |scale: usize| -> [i16; 256] {
-                core::array::from_fn(|i| ((i * scale * seed + 31) % 2049) as i16 - 1024)
+            let plane = |scale: usize, span: usize, low: i16| -> [i16; 256] {
+                core::array::from_fn(|i| ((i * scale * seed + 31) % span) as i16 - low)
             };
-            let (weighted, difference) = (plane(7919), plane(104_729));
+            let (weighted, difference) = (plane(7919, 766, 255), plane(104_729, 2049, 1024));
             let (mut gradient_x, mut gradient_y) = ([0i16; 256], [0i16; 256]);
             gradients(&weighted, 16, 16, &mut gradient_x, &mut gradient_y);
             let want = [(0, 0), (8, 0), (0, 8), (8, 8)].map(|(x, y)| {
