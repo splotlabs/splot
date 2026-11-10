@@ -1427,15 +1427,17 @@ pub(crate) fn find_mv_stack_upto(
     }
 
     let num_nearest = entries.len();
-    scan_mv_stack_col(
-        grid,
-        block,
-        -3,
-        &mut entries,
-        &mut prune_count,
-        &mut derived,
-        warp.as_mut(),
-    );
+    if num_nearest <= need || warp.is_some() {
+        scan_mv_stack_col(
+            grid,
+            block,
+            -3,
+            &mut entries,
+            &mut prune_count,
+            &mut derived,
+            warp.as_mut(),
+        );
+    }
     let use_sort = match drl_reorder {
         DrlReorder::Always => true,
         DrlReorder::Constraint => !use_temporal_first && num_nearest >= 4,
@@ -1522,7 +1524,9 @@ pub(crate) fn find_compound_mv_stack_upto(
     }
 
     let num_nearest = state.entries.len();
-    scan_compound_mv_stack_col(grid, block, -3, temporal, &mut state);
+    if num_nearest <= need {
+        scan_compound_mv_stack_col(grid, block, -3, temporal, &mut state);
+    }
     let use_sort = match drl_reorder {
         DrlReorder::Always => true,
         DrlReorder::Constraint => num_nearest >= 4,

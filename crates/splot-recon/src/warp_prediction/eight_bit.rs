@@ -350,39 +350,17 @@ mod avx2 {
         }
     );
 
-    /// The filters of output columns `0, 1 | 4, 5` and `2, 3 | 6, 7` whose
-    /// [`key`]s are the lanes of `keys` in that order.
+    /// The filters of output columns `0, 1 | 4, 5` and `2, 3 | 6, 7` of a
+    /// pass whose column-0 [`key`] is `first` and whose columns step by
+    /// `step`. The keys stay in general registers: a lane extract per
+    /// column costs more than the add and shift.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn filters(table: &[[u8; 8]; 512], keys: __m256i) -> (__m256i, __m256i) {
-        let rows = _mm256_srli_epi32::<23>(keys);
-        let tap = |row: i32| i64::from_le_bytes(table[row as usize & 511]);
-        let taps = |lanes: __m128i| {
-            _mm256_set_epi64x(
-                tap(_mm_extract_epi32::<3>(lanes)),
-                tap(_mm_extract_epi32::<2>(lanes)),
-                tap(_mm_extract_epi32::<1>(lanes)),
-                tap(_mm_cvtsi128_si32(lanes)),
-            )
-        };
+    fn filters(table: &[[u8; 8]; 512], first: u32, step: u32) -> (__m256i, __m256i) {
+        let at = |column: u32| tap(table, first.wrapping_add(column.wrapping_mul(step)));
         (
-            taps(_mm256_castsi256_si128(rows)),
-            taps(_mm256_extracti128_si256::<1>(rows)),
-        )
-    }
-
-    /// The [`key`]s of the eight columns, in [`filters`] order, of a pass
-    /// whose column-0 key is `first` and whose columns step by `shear`.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn column_keys(first: u32, shear: i32) -> __m256i {
-        let columns = _mm256_setr_epi32(0, 1, 4, 5, 2, 3, 6, 7);
-        _mm256_add_epi32(
-            _mm256_set1_epi32(first as i32),
-            _mm256_mullo_epi32(
-                _mm256_set1_epi32(shear << (23 - WARPEDDIFF_PREC_BITS)),
-                columns,
-            ),
+            _mm256_set_epi64x(at(5), at(4), at(1), at(0)),
+            _mm256_set_epi64x(at(7), at(6), at(3), at(2)),
         )
     }
 
@@ -404,25 +382,26 @@ mod avx2 {
         let shuffle_a: __m256i = u8x32::load_array(t, SHUFFLE_A).into();
         let shuffle_b: __m256i = u8x32::load_array(t, SHUFFLE_B).into();
         let (scale, bias) = (_mm256_set1_epi16(1 << 13), _mm256_set1_epi32(1 << 15));
-        let step = |shear: i32| _mm256_set1_epi32(shear << (23 - WARPEDDIFF_PREC_BITS));
-        let first = key(sx4.wrapping_sub(7 * beta).wrapping_sub(4 * alpha));
-        let mut keys = column_keys(first, alpha);
-        let row_step = step(beta);
-        let horizontal: [__m256i; 15] = core::array::from_fn(|row| {
+        let step = |shear: i32| (shear << (23 - WARPEDDIFF_PREC_BITS)) as u32;
+        let mut first = key(sx4.wrapping_sub(7 * beta).wrapping_sub(4 * alpha));
+        let (column_step, row_step) = (step(alpha), step(beta));
+        let mut source_at = window.column;
+        let horizontal: [__m256i; 15] = core::array::from_fn(|_| {
             let (taps_a, taps_b) = if alpha == 0 {
-                let taps = _mm256_set1_epi64x(tap(&EVEN_ODD, _mm256_cvtsi256_si32(keys) as u32));
+                let taps = _mm256_set1_epi64x(tap(&EVEN_ODD, first));
                 (taps, taps)
             } else {
-                filters(&EVEN_ODD, keys)
+                filters(&EVEN_ODD, first, column_step)
             };
-            keys = _mm256_add_epi32(keys, row_step);
+            first = first.wrapping_add(row_step);
             let source = window
                 .rows
-                .get(window.column + row * window.stride..)
+                .get(source_at..)
                 .and_then(<[u8]>::first_chunk::<16>)
                 .map_or(_mm_setzero_si128(), |bytes| {
                     u8x16::load_array_ref(t, bytes).into()
                 });
+            source_at += window.stride;
             let source = _mm256_broadcastsi128_si256(source);
             let a = _mm256_maddubs_epi16(_mm256_shuffle_epi8(source, shuffle_a), taps_a);
             let b = _mm256_maddubs_epi16(_mm256_shuffle_epi8(source, shuffle_b), taps_b);
@@ -436,12 +415,11 @@ mod avx2 {
         });
         let round = _mm256_set1_epi32(1 << (round1 + 7));
         let zero = _mm256_setzero_si256();
-        let first = key(sy4.wrapping_sub(4 * delta).wrapping_sub(4 * gamma));
-        let mut keys = column_keys(first, gamma);
-        let row_step = step(delta);
+        let mut first = key(sy4.wrapping_sub(4 * delta).wrapping_sub(4 * gamma));
+        let (column_step, row_step) = (step(gamma), step(delta));
         core::array::from_fn(|row| {
             let weights: [__m256i; 4] = if gamma == 0 {
-                let taps = tap(&NATURAL, _mm256_cvtsi256_si32(keys) as u32);
+                let taps = tap(&NATURAL, first);
                 let low = _mm256_unpacklo_epi8(zero, _mm256_set1_epi64x(taps));
                 [
                     _mm256_shuffle_epi32::<0b00_00_00_00>(low),
@@ -450,9 +428,9 @@ mod avx2 {
                     _mm256_shuffle_epi32::<0b11_11_11_11>(low),
                 ]
             } else {
-                let (first, second) = filters(&NATURAL, keys);
-                let low = _mm256_unpacklo_epi16(first, second);
-                let high = _mm256_unpackhi_epi16(first, second);
+                let (near, far) = filters(&NATURAL, first, column_step);
+                let low = _mm256_unpacklo_epi16(near, far);
+                let high = _mm256_unpackhi_epi16(near, far);
                 let near = _mm256_unpacklo_epi16(low, high);
                 let far = _mm256_unpackhi_epi16(low, high);
                 [
@@ -462,7 +440,7 @@ mod avx2 {
                     _mm256_unpackhi_epi8(zero, far),
                 ]
             };
-            keys = _mm256_add_epi32(keys, row_step);
+            first = first.wrapping_add(row_step);
             let mut sum = round;
             for (pair, &weights) in weights.iter().enumerate() {
                 sum = _mm256_add_epi32(sum, _mm256_madd_epi16(pairs[row + 2 * pair], weights));
