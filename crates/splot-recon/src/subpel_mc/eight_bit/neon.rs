@@ -264,22 +264,20 @@ fn horizontal<S: Simd, const H: usize>(
     (a, b): (i16x8<S>, i16x8<S>),
     weights: &[i16x8<S>; 8],
 ) -> i16x8<S> {
-    let column = |tap: usize| match tap {
-        0 => a,
-        1 => a.slide::<1>(b),
-        2 => a.slide::<2>(b),
-        3 => a.slide::<3>(b),
-        4 => a.slide::<4>(b),
-        5 => a.slide::<5>(b),
-        6 => a.slide::<6>(b),
-        _ => a.slide::<7>(b),
-    };
     if H == 0 {
         return a;
     }
-    let mut sum = column(0) * weights[0];
-    for (tap, &weight) in weights.iter().enumerate().take(2 * H).skip(1) {
-        sum += column(tap) * weight;
+    // Spelled out per pair: as a loop over `slide` arms it compiled to a
+    // branchy runtime tap loop.
+    let mut sum = a * weights[0] + a.slide::<1>(b) * weights[1];
+    if H > 1 {
+        sum += a.slide::<2>(b) * weights[2] + a.slide::<3>(b) * weights[3];
+    }
+    if H > 2 {
+        sum += a.slide::<4>(b) * weights[4] + a.slide::<5>(b) * weights[5];
+    }
+    if H > 3 {
+        sum += a.slide::<6>(b) * weights[6] + a.slide::<7>(b) * weights[7];
     }
     sum
 }
