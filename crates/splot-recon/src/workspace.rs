@@ -287,6 +287,36 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
     }
 }
 
+/// The span of `samples` from `rect`'s top-left sample at
+/// (`local_x`, `local_y`) through its last row, with row stride `stride`.
+#[inline]
+fn contiguous_span<T>(
+    samples: &mut [T],
+    stride: usize,
+    local_x: usize,
+    local_y: usize,
+    rect: PlaneRect,
+) -> Result<(&mut [T], usize)> {
+    let (base, end) = local_y
+        .checked_mul(stride)
+        .and_then(|start| start.checked_add(local_x))
+        .and_then(|base| {
+            let last = base.checked_add((rect.height() - 1).checked_mul(stride)?)?;
+            Some((base, last.checked_add(rect.width())?))
+        })
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "contiguous target span",
+        })?;
+    let available = samples.len();
+    let target = samples
+        .get_mut(base..end)
+        .ok_or(ReconError::BufferLengthMismatch {
+            expected: end,
+            actual: available,
+        })?;
+    Ok((target, stride))
+}
+
 fn ensure_surface_rect(plane: PlaneId, band: PlaneRect, rect: PlaneRect) -> Result<()> {
     if rect_is_within(rect, band) {
         Ok(())
@@ -566,8 +596,8 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         Some((T::u8_slice_mut(samples)?, stride))
     }
 
-    /// The [`Self::u8_rect_mut`] targets of `rect` in both chroma planes of
-    /// a whole-frame surface, or `None` wherever either is `None`.
+    /// The [`Self::u8_rect_mut`] targets of `rect` in both chroma planes, or
+    /// `None` wherever either is `None`.
     #[inline]
     pub fn u8_chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [u8], usize); 2]> {
         let [(u, u_stride), (v, v_stride)] = self.chroma_rects_mut(rect)?;
@@ -580,11 +610,28 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     /// [`Self::u8_chroma_rects_mut`] of samples of any depth.
     #[inline]
     pub fn chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [T], usize); 2]> {
-        let Self::Frame(workspace) = self else {
+        if let Self::Frame(workspace) = self {
+            let (u, v) = (workspace.u.as_mut()?, workspace.v.as_mut()?);
+            return Some([u.rect_mut(rect)?, v.rect_mut(rect)?]);
+        }
+        let storage = self.plane_storage_size(PlaneId::U).ok()?;
+        if clamp_rect_to_storage(PlaneId::U, storage, rect).ok()? != rect {
             return None;
+        }
+        let [u, v] = match self {
+            Self::Frame(_) => return None,
+            Self::Rect(surface) => [surface.u.as_mut()?, surface.v.as_mut()?]
+                .map(|target| (&mut target.samples[..], target.stride, 0, target.rect)),
+            Self::OwnedRect(surface) => surface.chroma_planes_mut()?.map(|target| {
+                let band = target.rect();
+                (target.into_samples_mut(), band.width(), band.x(), band)
+            }),
         };
-        let (u, v) = (workspace.u.as_mut()?, workspace.v.as_mut()?);
-        Some([u.rect_mut(rect)?, v.rect_mut(rect)?])
+        let span = |(samples, stride, x0, band): (_, _, usize, PlaneRect)| {
+            ensure_surface_rect(PlaneId::U, band, rect).ok()?;
+            contiguous_span(samples, stride, rect.x() - x0, rect.y() - band.y(), rect).ok()
+        };
+        Some([span(u)?, span(v)?])
     }
 
     /// The samples of the exact in-storage `rect` of `plane`, from its
@@ -626,24 +673,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                 )
             }
         };
-        let (base, end) = local_y
-            .checked_mul(stride)
-            .and_then(|start| start.checked_add(local_x))
-            .and_then(|base| {
-                let last = base.checked_add((rect.height() - 1).checked_mul(stride)?)?;
-                Some((base, last.checked_add(rect.width())?))
-            })
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "contiguous target span",
-            })?;
-        let available = samples.len();
-        let target = samples
-            .get_mut(base..end)
-            .ok_or(ReconError::BufferLengthMismatch {
-                expected: end,
-                actual: available,
-            })?;
-        Ok(Some((target, stride)))
+        contiguous_span(samples, stride, local_x, local_y, rect).map(Some)
     }
 
     /// Writes one contiguous rectangular prediction block.
