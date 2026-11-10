@@ -413,6 +413,7 @@ impl CompoundCells {
 
     /// The output position and placements of cell `index`.
     #[must_use]
+    #[inline]
     pub fn get(&self, index: usize) -> Option<([usize; 2], [CellPlacement; 2])> {
         (index < self.len.min(PROGRAM_CELLS)).then(|| {
             let [row, col] = self.positions[index];
@@ -423,6 +424,7 @@ impl CompoundCells {
         })
     }
 
+    #[inline]
     fn placement(&self, index: usize, reference: usize) -> CellPlacement {
         let field = |values: &[i32; PROGRAM_CELLS]| values.get(index).copied().unwrap_or(0);
         let (starts, bounds) = (&self.starts[reference & 1], &self.bounds[reference & 1]);
