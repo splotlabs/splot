@@ -47,23 +47,18 @@ fn transform_block_state_is_zero_initialized_and_row_major() {
     assert_eq!(state.width(), 4);
     assert_eq!(state.height(), 3);
     assert_eq!(stride, LEVEL_STRIDE);
-    assert_eq!(state.coeff_count(), 12);
     assert!(state.level().iter().all(|&level| level == 0));
     assert!(state.quant_sign.is_empty());
     assert_eq!(state.quant_sign(), vec![0; padded_len].as_slice());
-    assert!((0..state.coeff_count()).all(|pos| state.quant_at(pos).unwrap() == 0));
 
     state.set_level(2, 1, 7).unwrap();
     state.set_quant_sign(2, 1, -1).unwrap();
-    state.set_quant(9, -12).unwrap();
 
     assert!(!state.quant_sign.is_empty());
     assert_eq!(state.level_at(2, 1).unwrap(), 7);
     assert_eq!(state.quant_sign_at(2, 1).unwrap(), -1);
-    assert_eq!(state.quant_at(9).unwrap(), -12);
     assert_eq!(state.level()[2 * stride + 1], 7);
     assert_eq!(state.quant_sign()[2 * stride + 1], -1);
-    assert_eq!(state.quant_at(9).unwrap(), -12);
 }
 
 #[test]
@@ -114,10 +109,6 @@ fn transform_block_state_rejects_invalid_extents_and_coordinates() {
             height: 4,
             width: 4
         }
-    ));
-    assert!(matches!(
-        state.quant_at(16).unwrap_err(),
-        TileCoeffStateError::QuantPositionOutOfBounds { pos: 16, len: 16 }
     ));
     assert!(matches!(
         state.set_quant_sign(4, 0, 1).unwrap_err(),

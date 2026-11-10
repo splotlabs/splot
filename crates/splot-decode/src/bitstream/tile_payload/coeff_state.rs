@@ -60,11 +60,11 @@ fn zero_buffer<T: Default + Copy>(
 }
 
 /// A transform block's level grid with the length of its last used
-/// extent, and its sign and quantised-coefficient buffers.
+/// extent, and its sign buffer.
 ///
 /// The two extents are one past the highest index the last block wrote, so
 /// the next block only re-zeroes that dirt instead of the whole arrays.
-type CoeffBlockBuffers = (Vec<u8>, usize, Vec<i8>, usize, Vec<i32>, usize);
+type CoeffBlockBuffers = (Vec<u8>, usize, Vec<i8>, usize);
 
 std::thread_local! {
     /// One transform block's buffers, reused by the next block on this worker.
@@ -82,8 +82,6 @@ impl Drop for TransformCoeffBlockState {
                 self.level_len,
                 core::mem::take(&mut self.quant_sign),
                 self.sign_end,
-                core::mem::take(&mut self.quant),
-                self.quant_end,
             )));
         });
     }
@@ -98,9 +96,6 @@ pub(crate) struct TransformCoeffBlockState {
     /// [`LEVEL_GRID_LEN`] entries, zero past `level_len`.
     level: Vec<u8>,
     quant_sign: Vec<i8>,
-    quant: Vec<i32>,
-    /// One past the last nonzero entry of `quant`.
-    quant_end: usize,
     /// One past the highest `quant_sign` index the block wrote.
     sign_end: usize,
 }
@@ -118,9 +113,9 @@ impl TransformCoeffBlockState {
     )]
     #[inline(always)]
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
-        let allocation = Self::allocation(width, height)?;
+        Self::allocation(width, height)?;
         let level_len = LEVEL_STRIDE * (height + LEVEL_GRID_PAD);
-        let (mut level, used_len, mut quant_sign, sign_end, mut quant, quant_end) =
+        let (mut level, used_len, mut quant_sign, sign_end) =
             COEFF_BLOCK_BUFFERS.with(Cell::take).unwrap_or_default();
         if level.len() == LEVEL_GRID_LEN {
             if let Some(used) = level.get_mut(..used_len.max(level_len)) {
@@ -128,14 +123,6 @@ impl TransformCoeffBlockState {
             }
         } else {
             level = zero_buffer(level, LEVEL_GRID_LEN)?;
-        }
-        if quant.len() > allocation {
-            quant.truncate(allocation);
-        }
-        let dirty = quant_end.min(quant.len());
-        quant[..dirty].fill(0);
-        if quant.len() < allocation {
-            quant.resize(allocation, 0);
         }
         quant_sign.clear();
         Ok(Self {
@@ -145,8 +132,6 @@ impl TransformCoeffBlockState {
             level,
             quant_sign,
             sign_end,
-            quant,
-            quant_end: 0,
         })
     }
 
@@ -196,12 +181,6 @@ impl TransformCoeffBlockState {
         LEVEL_STRIDE
     }
 
-    /// Number of real (unpadded) coefficient positions in the block.
-    #[must_use]
-    pub(crate) const fn coeff_count(&self) -> usize {
-        self.quant.len()
-    }
-
     #[must_use]
     pub(crate) fn quant_sign(&self) -> &[i8] {
         if self.quant_sign.is_empty() {
@@ -209,22 +188,6 @@ impl TransformCoeffBlockState {
         } else {
             &self.quant_sign
         }
-    }
-
-    #[must_use]
-    /// The block's quantised coefficients.
-    ///
-    /// Borrowed, not taken: the caller copies them into its row's arena and
-    /// lets this state drop, which hands all three buffers to the next block
-    /// parsed on this worker.
-    #[cfg(test)]
-    pub(crate) fn quant(&self) -> &[i32] {
-        &self.quant
-    }
-
-    /// The quantised coefficients up to and including the last nonzero one.
-    pub(crate) fn nonzero_quant(&self) -> &[i32] {
-        &self.quant[..self.quant_end]
     }
 
     #[inline]
@@ -254,17 +217,7 @@ impl TransformCoeffBlockState {
         Ok(())
     }
 
-    #[inline]
-    pub(crate) fn set_quant(&mut self, pos: usize, value: i32) -> Result<(), TileCoeffStateError> {
-        let idx = self.quant_index(pos)?;
-        self.quant[idx] = value;
-        if value != 0 {
-            self.quant_end = self.quant_end.max(idx + 1);
-        }
-        Ok(())
-    }
-
-    #[inline]
+    #[cfg(test)]
     pub(crate) fn level_at(&self, row: usize, col: usize) -> Result<u32, TileCoeffStateError> {
         Ok(u32::from(self.level[self.index(row, col)?]))
     }
@@ -272,11 +225,6 @@ impl TransformCoeffBlockState {
     #[cfg(test)]
     pub(crate) fn quant_sign_at(&self, row: usize, col: usize) -> Result<i8, TileCoeffStateError> {
         Ok(self.quant_sign()[self.index(row, col)?])
-    }
-
-    #[cfg(test)]
-    pub(crate) fn quant_at(&self, pos: usize) -> Result<i32, TileCoeffStateError> {
-        Ok(self.quant[self.quant_index(pos)?])
     }
 
     #[inline]
@@ -291,17 +239,6 @@ impl TransformCoeffBlockState {
             });
         }
         Ok(row * LEVEL_STRIDE + col)
-    }
-
-    #[inline]
-    fn quant_index(&self, pos: usize) -> Result<usize, TileCoeffStateError> {
-        if pos >= self.quant.len() {
-            return Err(TileCoeffStateError::QuantPositionOutOfBounds {
-                pos,
-                len: self.quant.len(),
-            });
-        }
-        Ok(pos)
     }
 }
 
@@ -700,8 +637,6 @@ pub(crate) enum TileCoeffStateError {
         height: usize,
         width: usize,
     },
-    #[error("coefficient Quant position {pos} exceeds adjusted block coefficient count {len}")]
-    QuantPositionOutOfBounds { pos: usize, len: usize },
     #[error("invalid coefficient context subsampling {axis} shift {value}")]
     InvalidSubsampling { axis: &'static str, value: u32 },
 }

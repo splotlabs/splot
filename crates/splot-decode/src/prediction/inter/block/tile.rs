@@ -251,7 +251,6 @@ fn inter_tile_coeff_context_error(error: &TileCoeffStateError) -> crate::DecodeE
         | TileCoeffStateError::CoordinateOverflow { .. }
         | TileCoeffStateError::ContextRangeOutOfBounds { .. }
         | TileCoeffStateError::TransformCoordinateOutOfBounds { .. }
-        | TileCoeffStateError::QuantPositionOutOfBounds { .. }
         | TileCoeffStateError::InvalidSubsampling { .. } => {
             crate::DecodeHeaderStateError::InvalidInterTileConstructionState.into()
         }

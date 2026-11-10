@@ -85,7 +85,7 @@ const MAG_GRID: [[usize; 3]; 3] = {
 /// The grid word of a level: `min(level, 3)`, `min(level, 5)` and the level
 /// in bytes 0 to 2, so one sum over neighbour words sums both caps. Levels
 /// stay below 9, so five-word sums never carry between bytes.
-static LEVEL_WORD: [u32; 16] = {
+pub(super) static LEVEL_WORD: [u32; 16] = {
     let mut out = [0; 16];
     let mut level = 0;
     while level < 16 {
@@ -298,7 +298,7 @@ pub(crate) fn scan_extent(
 }
 
 /// The scan of a `width` by `height` block of `class` up to `eob`.
-fn grid_scan(
+pub(super) fn grid_scan(
     class: CoeffTransformClass,
     width: usize,
     height: usize,
@@ -337,7 +337,7 @@ fn half_capped(mag: u32, cap: usize) -> usize {
 /// pass derives is in range, so the clamp only keeps the read panic-free.
 #[allow(clippy::inline_always, reason = "measured: per-coefficient row")]
 #[inline(always)]
-fn row_at<T, const C: usize>(rows: &mut [T; C], ctx: usize) -> &mut T {
+pub(super) fn row_at<T, const C: usize>(rows: &mut [T; C], ctx: usize) -> &mut T {
     &mut rows[ctx.min(C - 1)]
 }
 
@@ -570,7 +570,7 @@ fn read_eob_base<const LUMA: bool, const UPD: bool>(
 
 #[allow(clippy::inline_always, reason = "measured: per-coefficient index")]
 #[inline(always)]
-const fn entry_grid(entry: u32) -> usize {
+pub(super) const fn entry_grid(entry: u32) -> usize {
     entry as usize & LEVEL_WORDS_MASK
 }
 

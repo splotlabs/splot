@@ -3,13 +3,7 @@
 
 //! Decode-side coefficient scan traversal helpers.
 //!
-//! Feature tracking: `DECODE-COEFF-SCAN-WALK`,
-//! `DECODE-COEFF-FSC-SCAN-WALK`, and
-//! `DECODE-COEFF-FSC-BRANCH-SCAN-ORDER`.
-
-use super::super::coeff_state::TransformCoeffBlockState;
-use super::CoeffLoopContextError;
-use super::branch::NonZeroCoeffBlockStart;
+//! Feature tracking: `DECODE-COEFF-SCAN-WALK`.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffScanEntry {
@@ -48,100 +42,4 @@ impl CoeffScanEntry {
     pub(crate) const fn col(self) -> usize {
         self.col
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct FscCoeffScanWalk {
-    scan: &'static [u16],
-    width_log2: u32,
-    coeff_count: usize,
-    bob: usize,
-    seg_eob: usize,
-}
-
-impl FscCoeffScanWalk {
-    #[must_use]
-    pub(crate) const fn bob(&self) -> usize {
-        self.bob
-    }
-
-    #[must_use]
-    pub(crate) const fn seg_eob(&self) -> usize {
-        self.seg_eob
-    }
-
-    /// Whether `block` has the geometry the walk validated its positions
-    /// against; then every entry indexes the block's level, sign and quant
-    /// buffers in range, and its row and column give back its position.
-    #[must_use]
-    pub(crate) fn matches_block(&self, block: &TransformCoeffBlockState) -> bool {
-        (1usize << self.width_log2) == block.width() && self.coeff_count == block.coeff_count()
-    }
-
-    pub(crate) fn entries(&self) -> impl ExactSizeIterator<Item = CoeffScanEntry> + '_ {
-        (0..self.len()).map(|index| self.entry(index))
-    }
-
-    #[must_use]
-    pub(crate) const fn len(&self) -> usize {
-        self.scan.len()
-    }
-
-    #[inline]
-    fn entry(&self, index: usize) -> CoeffScanEntry {
-        let pos = usize::from(self.scan[index]);
-        let col_mask = (1 << self.width_log2) - 1;
-        CoeffScanEntry::new(
-            self.bob + index,
-            pos,
-            pos >> self.width_log2,
-            pos & col_mask,
-        )
-    }
-}
-
-pub(crate) fn walk_fsc_coeff_scan(
-    start: &NonZeroCoeffBlockStart,
-    seg_eob: usize,
-    scan: &'static [u16],
-) -> Result<FscCoeffScanWalk, CoeffLoopContextError> {
-    let eob = start.eob_read().eob();
-    if eob == 0 {
-        return Err(CoeffLoopContextError::InvalidScanWalkEob { eob });
-    }
-    if eob > seg_eob {
-        return Err(CoeffLoopContextError::FscScanWalkEobOutOfRange { eob, seg_eob });
-    }
-    if seg_eob > scan.len() {
-        return Err(CoeffLoopContextError::ScanWalkEobOutOfRange {
-            eob: seg_eob,
-            scan_len: scan.len(),
-        });
-    }
-
-    let bob = seg_eob - eob;
-    let width = start.width();
-    if !width.is_power_of_two() {
-        return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width });
-    }
-    let coeff_count = start.coeff_count();
-    let scan = &scan[bob..seg_eob];
-    for (offset, scan_pos) in scan.iter().copied().enumerate() {
-        let pos = usize::from(scan_pos);
-        if pos >= coeff_count {
-            return Err(CoeffLoopContextError::ScanWalkPositionOutOfRange {
-                scan_index: bob + offset,
-                pos,
-                coeff_count,
-            });
-        }
-    }
-
-    Ok(FscCoeffScanWalk {
-        scan,
-        width_log2: width.trailing_zeros(),
-        coeff_count,
-        bob,
-        seg_eob,
-    })
 }

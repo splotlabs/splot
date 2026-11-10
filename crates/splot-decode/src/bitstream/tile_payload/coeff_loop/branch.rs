@@ -6,7 +6,6 @@
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::TileCdfSubset;
-use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
 use super::{
     CoeffLoopContextError, NonZeroCoeffEob, NonZeroCoeffEobSymbolInput, TxGeometry, eob_context,
     read_nonzero_coeff_eob,
@@ -32,27 +31,8 @@ impl NonZeroCoeffBlockStart {
     }
 
     #[must_use]
-    pub(crate) const fn width(&self) -> usize {
-        self.tx.width as usize
-    }
-
-    #[must_use]
     pub(crate) const fn coeff_count(&self) -> usize {
         self.tx.width as usize * self.tx.height as usize
-    }
-
-    #[allow(
-        clippy::inline_always,
-        reason = "measured: an out-of-line return spills the state through memory"
-    )]
-    #[inline(always)]
-    pub(crate) fn into_parts(
-        self,
-    ) -> Result<(NonZeroCoeffEob, TransformCoeffBlockState), TileCoeffStateError> {
-        Ok((
-            self.eob_read,
-            TransformCoeffBlockState::new(self.width(), usize::from(self.tx.height))?,
-        ))
     }
 }
 

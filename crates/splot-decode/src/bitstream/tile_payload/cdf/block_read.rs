@@ -6,9 +6,7 @@
 use splot_core::Error as CoreError;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder};
 
-use super::{
-    CoeffCdfRows, CoeffCdfSelector, EobPtSize, TileCdfError, TileCdfSelector, TileCdfSubset,
-};
+use super::{CoeffCdfRows, EobPtSize, TileCdfError, TileCdfSelector, TileCdfSubset};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum BlockSymbolTraceReadError {
@@ -34,22 +32,6 @@ impl TileCdfSubset {
             Some(symbol) => Ok(Symbol::new(symbol as u8)),
             None => Ok(symbol_decoder.read_symbol_u16(row)?),
         }
-    }
-
-    /// Reads a coefficient symbol from the coefficient rows directly,
-    /// skipping the generic tile-selector dispatch.
-    #[allow(
-        clippy::inline_always,
-        reason = "constant selectors fold into a direct row read"
-    )]
-    #[inline(always)]
-    pub(crate) fn read_coeff_symbol(
-        &mut self,
-        selector: CoeffCdfSelector,
-        symbol_decoder: &mut SymbolDecoder<'_>,
-    ) -> Result<u8, BlockSymbolTraceReadError> {
-        let row = self.rows.block.coeff.row_mut(selector)?;
-        Ok(symbol_decoder.read_symbol_u16(row)?.get())
     }
 
     /// Reads `all_zero` (§ 8.3.2); see [`Self::read_trusted_symbol`].

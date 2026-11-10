@@ -1036,7 +1036,6 @@ fn general_intra_coeff_context_error(error: &TileCoeffStateError) -> DecodeError
         | TileCoeffStateError::CoordinateOverflow { .. }
         | TileCoeffStateError::ContextRangeOutOfBounds { .. }
         | TileCoeffStateError::TransformCoordinateOutOfBounds { .. }
-        | TileCoeffStateError::QuantPositionOutOfBounds { .. }
         | TileCoeffStateError::InvalidSubsampling { .. } => {
             crate::DecodeHeaderStateError::InvalidGeneralIntraCoefficientContextState.into()
         }
