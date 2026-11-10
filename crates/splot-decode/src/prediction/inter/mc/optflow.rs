@@ -1365,12 +1365,8 @@ pub(super) fn predict_motion_grid_compound_average_into<
         && refine.2 >> sub_y == subblock_h;
     let lean_unscaled = unscaled && O::u8_slice(&[]).is_some();
     let check_uniform = !uniform_everywhere && implicit_mask && cwp_weight == CWP_EQUAL;
-    let programmed = |size: usize| {
-        cfg!(target_arch = "x86_64")
-            && O::u8_slice(&[]).is_some()
-            && size == subblock_w
-            && size == subblock_h
-    };
+    let programmed =
+        |size: usize| O::u8_slice(&[]).is_some() && size == subblock_w && size == subblock_h;
     macro_rules! cell_inputs {
         ($cell_row:expr, $cell_col:expr, [$col:expr, $row:expr, $height:expr], $lean:expr) => {{
             let (col, row, height) = ($col, $row, $height);
