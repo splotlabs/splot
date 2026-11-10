@@ -114,6 +114,77 @@ pub(in crate::subpel_mc) fn fullpel_compound<S: Simd>(
     }
 }
 
+/// The COMPOUND_AVERAGE `(a * f + b * (16 - f) + 8) >> 4` of two
+/// full-sample `N`-square windows, `N` 4 or 8, read from `origins` of their
+/// `(samples, stride)` sources, into `output`; `forward` lies in `0..=16`.
+#[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
+#[inline(always)]
+pub(in crate::subpel_mc) fn fullpel_cell<S: Simd, const N: usize>(
+    simd: S,
+    sources: [(&[u8], usize); 2],
+    origins: [usize; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) {
+    let rows = |(samples, step): (&[u8], usize), origin: usize, row: usize| -> u8x16<S> {
+        let at = |lane: usize| origin + (row + lane) * step;
+        let word = |at: usize| {
+            samples
+                .get(at..)
+                .and_then(<[u8]>::first_chunk::<8>)
+                .map_or(0, |bytes| u64::from_le_bytes(*bytes))
+        };
+        if N == 8 {
+            u64x2::from_slice(simd, &[word(at(0)), word(at(1))]).bitcast()
+        } else {
+            let lanes: [u32; 4] = core::array::from_fn(|lane| {
+                samples
+                    .get(at(lane)..)
+                    .and_then(<[u8]>::first_chunk::<4>)
+                    .map_or(0, |bytes| u32::from_le_bytes(*bytes))
+            });
+            u32x4::from_slice(simd, &lanes).bitcast()
+        }
+    };
+    for row in (0..N).step_by(16 / N) {
+        let (a, b) = (
+            rows(sources[0], origins[0], row),
+            rows(sources[1], origins[1], row),
+        );
+        let (low, high) = if forward == 8 {
+            let (low, high) = simd.widening_add_u8x16(a, b);
+            ((low + 1) >> 1, (high + 1) >> 1)
+        } else {
+            let weights = (
+                u8x16::splat(simd, forward as u8),
+                u8x16::splat(simd, (16 - forward) as u8),
+            );
+            let (a0, a1) = simd.widening_mul_u8x16(a, weights.0);
+            let (b0, b1) = simd.widening_mul_u8x16(b, weights.1);
+            ((a0 + b0 + 8) >> 4, (a1 + b1 + 8) >> 4)
+        };
+        let bytes = simd.narrow_u16x8(low, high);
+        if N == 8 {
+            let words = bytes.bitcast::<u64x2<S>>();
+            for lane in 0..2 {
+                let at = (row + lane) * stride;
+                if let Some(slot) = output.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<8>) {
+                    *slot = words[lane].to_le_bytes();
+                }
+            }
+        } else {
+            let words = bytes.bitcast::<u32x4<S>>();
+            for lane in 0..4 {
+                let at = (row + lane) * stride;
+                if let Some(slot) = output.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<4>) {
+                    *slot = words[lane].to_le_bytes();
+                }
+            }
+        }
+    }
+}
+
 /// Calls `$f::<_, H>` or `$f::<_, H, V>` for the tap-pair counts of a
 /// block's passes, zero for a skipped pass.
 macro_rules! by_pairs {

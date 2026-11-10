@@ -540,6 +540,79 @@ fn placed_compound_cells_match_the_compound_entry() {
     ));
 }
 
+/// A full-sample cell stores the materialized COMPOUND_AVERAGE of its two
+/// windows for every weight, at interior and storage-edge positions, and
+/// writes nothing beside its rows.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[test]
+fn full_sample_cells_match_the_materialized_average() {
+    let (ref_w, ref_h) = (24usize, 20usize);
+    let textures: [Vec<u8>; 2] = [
+        (0..ref_w * ref_h)
+            .map(|i| ((i * 17 + 3) % 256) as u8)
+            .collect(),
+        (0..ref_w * ref_h)
+            .map(|i| {
+                if (i + i / ref_w) % 3 == 0 {
+                    255
+                } else {
+                    (i % 7) as u8
+                }
+            })
+            .collect(),
+    ];
+    let views = textures
+        .each_ref()
+        .map(|bytes| ReferencePlaneView::new(bytes, ref_w, ref_h).unwrap());
+    let interp = InterpolationFilter::EightTapSharp;
+    for size in [4usize, 8] {
+        let last = [(ref_w - size) as i32, (ref_h - size) as i32];
+        for (x, y) in [(3, 5), (0, 0), (last[0], last[1]), (last[0] - 1, 2)] {
+            let placements: [CellPlacement; 2] =
+                [(x, y), (last[0] - x, last[1] - y)].map(|(x, y)| {
+                    (
+                        [x << 10, y << 10],
+                        [0, 0, ref_w as i32 - 1, ref_h as i32 - 1],
+                    )
+                });
+            let params = placements.map(|([start_x, start_y], _)| SubpelPredictParams {
+                start_x,
+                start_y,
+                ..full_pel_params(interp, size, size, 0, 0, ref_w as i32, ref_h as i32)
+            });
+            let preds = [0, 1].map(|reference| {
+                subpel_predict_block_compound_intermediate(&views[reference], &params[reference])
+                    .unwrap()
+            });
+            for weight in [0i16, 8, 11, 16] {
+                let want =
+                    blend_compound_average_weighted(&preds[0], &preds[1], BitDepth::Eight, weight)
+                        .unwrap();
+                let stride = size + 3;
+                let mut got = vec![u8::MAX; stride * size];
+                assert!(subpel_compound_cell_u8(
+                    [&views[0], &views[1]],
+                    interp,
+                    size,
+                    placements,
+                    weight,
+                    &mut got,
+                    stride,
+                ));
+                for row in 0..size {
+                    let got = &got[row * stride..(row + 1) * stride];
+                    let want = want[row * size..(row + 1) * size].iter().map(|&v| v as u8);
+                    assert!(
+                        got[..size].iter().copied().eq(want),
+                        "{size} {x},{y} {weight}"
+                    );
+                    assert!(got[size..].iter().all(|&v| v == u8::MAX));
+                }
+            }
+        }
+    }
+}
+
 /// The AArch64 byte-lane kernels against the portable kernels on the same
 /// blocks: every filter, both passes at phases of each tap-pair count, 4- to
 /// 32-wide blocks with clamped rows, column-remapped windows, every
