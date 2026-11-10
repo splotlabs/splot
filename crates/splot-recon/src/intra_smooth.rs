@@ -718,7 +718,7 @@ fearless_simd::kernel!(
 /// Writes the `16 / N` rows of `N` samples packed in `lanes` at the start of
 /// `rows`, `stride` apart, and returns the rows after them.
 #[inline]
-fn publish_rows<'a, T: Copy, const N: usize>(
+pub(crate) fn publish_rows<'a, T: Copy, const N: usize>(
     lanes: &[T; 16],
     mut rows: &'a mut [T],
     stride: usize,

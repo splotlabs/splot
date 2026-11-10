@@ -447,7 +447,8 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
         })
     }
 
-    pub(crate) fn row(&self, row: usize) -> &[T] {
+    /// Row `row` of the view, `width` samples, clamped like [`Self::sample`].
+    pub fn row(&self, row: usize) -> &[T] {
         let row = row.min(self.readable_rows - 1);
         let start = row * self.stride;
         &self.samples[start..start + self.width]
