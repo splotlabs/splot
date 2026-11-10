@@ -1427,8 +1427,6 @@ pub(crate) fn find_mv_stack_upto(
     }
 
     let num_nearest = entries.len();
-    // The column candidates weigh zero and land past the nearest ones, so they
-    // only matter to a stack that is still short or to the warp list.
     if num_nearest <= need || warp.is_some() {
         scan_mv_stack_col(
             grid,
