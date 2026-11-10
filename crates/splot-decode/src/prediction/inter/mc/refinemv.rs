@@ -711,6 +711,14 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         let mut sad = 0;
         for (&left, &right) in spans[0].iter().zip(&spans[1]) {
             let width = if left.len() > 8 { 12 } else { 8 };
+            if let (Some(left), Some(right)) = (T::u8_slice(left), T::u8_slice(right)) {
+                sad += if width == 8 {
+                    byte_sad::<8>(left, right)?
+                } else {
+                    byte_sad::<12>(left, right)?
+                };
+                continue;
+            }
             let (left, right) = (self.lanes(left, width)?, self.lanes(right, width)?);
             sad += abs_diff_sum(&left[..width], &right[..width]);
         }
@@ -727,6 +735,18 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         }
         Some(lanes)
     }
+}
+
+/// `Σ |left - right|` over the first `W` eight-bit samples, which need no
+/// clip to the maximum.
+fn byte_sad<const W: usize>(left: &[u8], right: &[u8]) -> Option<u32> {
+    let (left, right) = (left.first_chunk::<W>()?, right.first_chunk::<W>()?);
+    Some(
+        left.iter()
+            .zip(right)
+            .map(|(&a, &b)| u32::from(a.abs_diff(b)))
+            .sum(),
+    )
 }
 
 /// Refines one 8x8 TIP unit. The centre SAD and the centre optical flow read
