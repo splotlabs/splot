@@ -1295,25 +1295,47 @@ fn unit_16x16_lane_sums<S: Simd>(
 }
 
 /// The horizontal and vertical § 7.13.3.9 gradients of `row` in one gradient
-/// unit of `rows`, with its clamped and doubled edges.
-///
-/// `weighted` comes from validated samples, so it stays within about
-/// `±1024` and every gradient fits the `i16` the planes would hold.
+/// unit of `rows`, with its clamped and doubled edges, in `i16` halves as
+/// [`row_8x8_gradients`] derives them: `weighted` has the span bound of
+/// [`unit_8x8_sums`].
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn gradient_row<S: Simd>(simd: S, rows: &[[i16; 16]], row: usize) -> (i16x16<S>, i16x16<S>) {
     let last = rows.len() - 1;
-    let lanes = |row: usize| i16x16::load_array_ref(simd, &rows[row]);
-    let vertical = gradient_lanes_16(
-        [
-            lanes((row + 1).min(last)),
-            lanes(row.saturating_sub(1)),
-            lanes((row + 2).min(last)),
-            lanes(row.saturating_sub(2)),
-        ],
-        row == 0 || row == last,
-    );
-    (horizontal_gradient_16(simd, &rows[row]), vertical)
+    let lanes = |row: usize| i16x16::load_array_ref(simd, &rows[row]).split();
+    let (low, high) = lanes(row);
+    let [first, end] = [rows[row][0], rows[row][15]].map(|sample| i16x8::splat(simd, sample));
+    let edge = |bits: u64| {
+        move |magnitude: u16x8<S>| {
+            let edge = mask16x8::from_bitmask(magnitude.simd, bits);
+            edge.select((magnitude + 32) >> 6, (magnitude + 64) >> 7)
+        }
+    };
+    let u = gradient_i16(
+        [low.slide::<1>(high), first.slide::<7>(low)],
+        [low.slide::<2>(high), first.slide::<6>(low)],
+        edge(1),
+    )
+    .combine(gradient_i16(
+        [high.slide::<1>(end), low.slide::<7>(high)],
+        [high.slide::<2>(end), low.slide::<6>(high)],
+        edge(1 << 7),
+    ));
+    let [next, prev, next2, prev2] = [
+        (row + 1).min(last),
+        row.saturating_sub(1),
+        (row + 2).min(last),
+        row.saturating_sub(2),
+    ]
+    .map(lanes);
+    let shift = if row == 0 || row == last { 6 } else { 7 };
+    let round = |magnitude: u16x8<S>| (magnitude + (1 << (shift - 1))) >> shift;
+    let v = gradient_i16([next.0, prev.0], [next2.0, prev2.0], round).combine(gradient_i16(
+        [next.1, prev.1],
+        [next2.1, prev2.1],
+        round,
+    ));
+    (u, v)
 }
 
 /// Adds the regularizing unit `area` to the `su2` and `sv2` diagonal of raw
@@ -1524,10 +1546,11 @@ mod tests {
     #[test]
     fn fused_16x16_sums_match_the_stored_gradient_planes() {
         for seed in [1usize, 7, 9973] {
-            let plane = |scale: usize| -> [i16; 256] {
-                core::array::from_fn(|i| ((i * scale * seed + 31) % 2049) as i16 - 1024)
+            let plane = |scale: usize, span: usize, low: i16| -> [i16; 256] {
+                core::array::from_fn(|i| ((i * scale * seed + 31) % span) as i16 - low)
             };
-            let (weighted, difference) = (plane(7919), plane(104_729));
+            // `2 * s0 - s1` spans the 766 weighted values of eight-bit samples.
+            let (weighted, difference) = (plane(7919, 766, 255), plane(104_729, 2049, 1024));
             let (mut gradient_x, mut gradient_y) = ([0i16; 256], [0i16; 256]);
             gradients(&weighted, 16, 16, &mut gradient_x, &mut gradient_y);
             let want = [(0, 0), (8, 0), (0, 8), (8, 8)].map(|(x, y)| {
