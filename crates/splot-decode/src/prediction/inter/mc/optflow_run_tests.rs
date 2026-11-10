@@ -291,6 +291,111 @@ fn merged_fullpel_runs_match_per_cell_prediction() {
     merged_runs_match_per_cell::<u8>(BitDepth::Eight, PixelFormat::Yuv444);
 }
 
+/// Grids of one full-pel cell under each clipping source: a refine-MV
+/// candidate shared by the block or by every unit, an optical-flow subblock
+/// area, or the plane alone. The cell sits 0, 2 or 6 luma samples from its
+/// candidate, so the last reaches past the area's padding, and the blocks sit
+/// inside the frame and at its corners. The block prediction matches the
+/// per-cell one, and an interior still block takes the block path exactly
+/// when no area clips it.
+fn uniform_grids_match_per_cell<T: ReconSample + CompoundAverageOutput + Send>(
+    bit_depth: BitDepth,
+    format: PixelFormat,
+) {
+    let references = [13, 29].map(|seed| reference::<T>(bit_depth, format, (WIDTH, HEIGHT), seed));
+    let info = references[0].info();
+    let rects = [
+        McBlockRect::from_luma_rect(16, 8, 32, 16),
+        McBlockRect::from_luma_rect(0, 0, 32, 16),
+        McBlockRect::from_luma_rect(WIDTH - 32, HEIGHT - 16, 32, 16),
+        McBlockRect::from_luma_rect(24, 8, 8, 16),
+    ];
+    let candidates = [
+        [mv(0, 0); 2],
+        [mv(16, -16), mv(-16, 16)],
+        [mv(-64, 0), mv(64, 0)],
+    ];
+    let deltas = [[0, 0], [32, -32], [0, 96]];
+    for (rect, candidate, delta) in rects.into_iter().flat_map(|rect| {
+        candidates
+            .into_iter()
+            .flat_map(move |candidate| deltas.map(|delta| (rect, candidate, delta)))
+    }) {
+        let cell = MotionCell::from_optflow(candidate, [delta; 2]);
+        for (unit_size, kind) in [(16, 0), (8, 0), (8, 1), (8, 2), (4, 2)] {
+            if rect.luma_w < unit_size {
+                continue;
+            }
+            let columns = rect.luma_w / unit_size;
+            let count = columns * (rect.luma_h / unit_size);
+            let grid = |merge| CompoundMotionGrid {
+                unit_size,
+                columns,
+                cells: MotionCells::Heap(vec![cell; count]),
+                fullpel_runs: merge,
+                refinemv_candidates: match kind {
+                    0 => RefinemvCandidates::Uniform {
+                        candidates: candidate,
+                        unit_size: 16,
+                    },
+                    1 => RefinemvCandidates::PerCell {
+                        candidates: vec![candidate; count],
+                        unit_size,
+                    },
+                    _ => RefinemvCandidates::None,
+                },
+            };
+            let label = format!("{bit_depth:?} {format:?} {rect:?} {candidate:?} {delta:?} {kind}");
+            let merged = grid(true);
+            assert_eq!(
+                predict(&references, rect, &merged, false).0,
+                predict(&references, rect, &grid(false), false).0,
+                "{label}"
+            );
+            let block = InterBlockParams::compound_average(
+                ReferenceSamples::settled(&references[0]),
+                ReferenceSamples::settled(&references[1]),
+                rect,
+                candidate[0],
+                candidate[1],
+                InterpolationFilter::EightTap,
+                CompoundBlend::default(),
+            )
+            .into_compound()
+            .expect("compound block");
+            let prediction = super::super::compound_subpel_plane(
+                info,
+                block,
+                PlaneId::Y,
+                0,
+                0,
+                ByteOffset::new(0),
+            )
+            .expect("plane");
+            let area = (unit_size == 8).then_some((8, 8));
+            let params = uniform_fullpel_params(
+                &prediction,
+                merged.cells.as_slice(),
+                merged.refinemv_candidate_slice(),
+                (0, 0),
+                (info.bit_depth(), InterpolationFilter::EightTap, area),
+                (true, false, CWP_EQUAL, (WIDTH, HEIGHT)),
+            );
+            if candidate == candidates[0] && rect.luma_y == 8 && rect.luma_w == 32 {
+                let clipped = delta[1] == 96 && (kind < 2 || unit_size == 8);
+                assert_eq!(params.is_none(), clipped, "{label}");
+            }
+        }
+    }
+}
+
+#[test]
+fn uniform_fullpel_grids_match_per_cell_prediction() {
+    uniform_grids_match_per_cell::<u8>(BitDepth::Eight, PixelFormat::Yuv420);
+    uniform_grids_match_per_cell::<u16>(BitDepth::Ten, PixelFormat::Yuv420);
+    uniform_grids_match_per_cell::<u8>(BitDepth::Eight, PixelFormat::Yuv444);
+}
+
 fn lcg(state: &mut u64) -> u64 {
     *state = state
         .wrapping_mul(6_364_136_223_846_793_005)

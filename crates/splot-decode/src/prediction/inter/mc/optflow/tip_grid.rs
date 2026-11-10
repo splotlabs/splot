@@ -3,7 +3,8 @@
 
 //! The eight-bit TIP grid: every plane of a § 7.13.5 TIP block whose 8x8
 //! units each carry their own refine-MV candidates, predicted cell by cell
-//! straight into the frame, with U and V sharing one pass of placements.
+//! straight into the frame, with U and V sharing one pass of placements. A
+//! grid of equal full-pel units is predicted as one block.
 
 use super::*;
 
@@ -137,6 +138,41 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             cwp_weight: self.cwp_weight,
         };
         let views = [Some(prediction.views), second];
+        if self.motion.fullpel_runs
+            && let Some([params0, params1]) = uniform_fullpel_params(
+                &prediction,
+                cells,
+                (candidates, 1, 8),
+                (sub, sub),
+                (grid.bit_depth, self.block.interp, None),
+                (
+                    !self.check_uniform,
+                    self.check_uniform,
+                    self.cwp_weight,
+                    frame,
+                ),
+            )
+        {
+            let whole = |views: &Option<[ReferencePlaneView<'_, T>; 2]>,
+                         (output, stride): &mut (&mut [u8], usize)| {
+                views.as_ref().map_or(Ok(true), |views| {
+                    splot_recon::subpel_predict_block_compound_average_fast_validated_strided_into(
+                        &views[0],
+                        &params0,
+                        &views[1],
+                        &params1,
+                        self.cwp_weight,
+                        &mut [],
+                        output,
+                        *stride,
+                    )
+                })
+            };
+            let [first, second] = &mut outputs;
+            if whole(&views[0], first)? && whole(&views[1], second)? {
+                return Ok(true);
+            }
+        }
         let mut state = CELL_PROGRAM.take().unwrap_or_default();
         let GridProgram {
             cells: program,
