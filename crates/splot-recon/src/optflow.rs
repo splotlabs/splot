@@ -71,7 +71,8 @@ pub fn derive_optflow_mv_deltas(
 ///
 /// `scratch` retains its allocations between calls. The returned slice contains
 /// exactly one entry per `unit_size` square. Its internal output is cleared
-/// before validation and remains empty on error.
+/// before validation and remains empty on error. A zero difference plane
+/// zeroes `suw` and `svw`, so every unit takes a zero delta without a solve.
 ///
 /// # Errors
 ///
@@ -158,7 +159,6 @@ pub fn derive_optflow_mv_deltas_into<'a>(
             }
         }
     }
-    // A zero `difference` zeroes `suw` and `svw`, so every unit solves to a zero delta.
     if !changed {
         scratch.deltas.resize(unit_count, [[0; 2]; 2]);
         return Ok(&scratch.deltas);
@@ -405,7 +405,8 @@ fn strided_sample_out_of_range(
 /// The § 7.13.3.8 refinement of an eight-bit 8x8 optical-flow unit whose two
 /// predictions are the eight-sample rows of `preds` from `starts`, 16 bytes
 /// apart: `None` when their SAD is below `sad_threshold`, else the
-/// § 7.13.3.12 delta of [`derive_optflow_mv_delta_8x8_strided_into`].
+/// § 7.13.3.12 delta of [`derive_optflow_mv_delta_8x8_strided_into`], zero
+/// without a solve for equal predictions.
 ///
 /// # Errors
 ///
@@ -436,7 +437,6 @@ pub fn optflow_unit_8x8_u8(
     }
     let threshold = sad_threshold.unwrap_or(0);
     if rows[0] == rows[1] {
-        // Equal predictions have a zero SAD and solve to a zero delta.
         return Ok((threshold == 0).then_some([[0; 2]; 2]));
     }
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]

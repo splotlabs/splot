@@ -396,6 +396,64 @@ fn uniform_fullpel_grids_match_per_cell_prediction() {
     uniform_grids_match_per_cell::<u8>(BitDepth::Eight, PixelFormat::Yuv444);
 }
 
+/// The refine-MV centre SAD read from the references decides as the centre
+/// area of the full-sample search windows does, for still and moved
+/// candidates over equal and different references; a subpel candidate is
+/// left to the windows.
+#[test]
+fn fullpel_center_sad_matches_the_search_windows() {
+    let seeded =
+        |seed| reference::<u8>(BitDepth::Eight, PixelFormat::Yuv420, (WIDTH, HEIGHT), seed);
+    let mut decisions = [0; 2];
+    for references in [[seeded(13), seeded(29)], [seeded(13), seeded(13)]] {
+        let info = references[0].info();
+        for (unit, x, y) in [(16, 24, 8), (8, 16, 8), (16, 0, 0)] {
+            for candidates in [
+                [mv(0, 0); 2],
+                [mv(8, -16), mv(-8, 16)],
+                [mv(3, 0), mv(0, 0)],
+                [mv(-64, 0), mv(64, 0)],
+            ] {
+                let block = InterBlockParams::compound_average(
+                    ReferenceSamples::settled(&references[0]),
+                    ReferenceSamples::settled(&references[1]),
+                    McBlockRect::from_luma_rect(x, y, unit, unit),
+                    candidates[0],
+                    candidates[1],
+                    InterpolationFilter::EightTap,
+                    CompoundBlend::default(),
+                )
+                .into_compound()
+                .expect("compound block");
+                let rect = McBlockRect::from_luma_rect(x, y, unit + 8, unit + 8);
+                let mut luma = LumaReference::pair(info, &block, ByteOffset::new(0));
+                let ends = fullpel_center_ends_search(&mut luma, rect, candidates).expect("centre");
+                let mut windows = [[0u8; 24 * 24]; 2];
+                let built =
+                    search_windows_u8(&mut luma, rect, candidates, &mut windows).expect("windows");
+                if candidates.iter().any(|mv| (mv.row | mv.col) & 7 != 0) {
+                    assert_eq!(ends, None, "{candidates:?}");
+                    continue;
+                }
+                if !built {
+                    continue;
+                }
+                let (stride, sad_h) = (unit + 8, unit + 4);
+                let at = |row: usize, col: usize| (2 + row) * stride + 2 + col;
+                let sad: u32 = (0..sad_h)
+                    .step_by(2)
+                    .flat_map(|row| (0..stride - 4).map(move |col| at(row, col)))
+                    .map(|i| u32::from(windows[0][i].abs_diff(windows[1][i])))
+                    .sum();
+                let expected = sad - (sad >> 3) < (2 * (stride - 4) * sad_h) as u32;
+                assert_eq!(ends, Some(expected), "{unit} {x},{y} {candidates:?}");
+                decisions[usize::from(expected)] += 1;
+            }
+        }
+    }
+    assert!(decisions.iter().all(|&count| count > 0), "{decisions:?}");
+}
+
 fn lcg(state: &mut u64) -> u64 {
     *state = state
         .wrapping_mul(6_364_136_223_846_793_005)
