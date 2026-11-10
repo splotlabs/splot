@@ -46,7 +46,7 @@ pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32)
     ]
 }
 pub(crate) const CWP_EQUAL: i16 = 8;
-const MAX_MC_BLOCK_DIM: usize = 128;
+pub(crate) const MAX_MC_BLOCK_DIM: usize = 128;
 const MAX_MC_BLOCK_SAMPLES: usize = MAX_MC_BLOCK_DIM * MAX_MC_BLOCK_DIM;
 const MAX_OPTICAL_FLOW_CELLS: usize = (MAX_MC_BLOCK_DIM / 4) * (MAX_MC_BLOCK_DIM / 4);
 const MAX_REFINEMV_PREDICTION_DIM: usize = MAX_MC_BLOCK_DIM + 8;

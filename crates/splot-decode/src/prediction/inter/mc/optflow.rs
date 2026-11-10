@@ -392,7 +392,7 @@ impl CompoundMotionGrid {
         }
     }
 
-    pub(super) fn uniform_mvs(&self) -> Option<[[i32; 2]; 2]> {
+    pub(crate) fn uniform_mvs(&self) -> Option<[[i32; 2]; 2]> {
         match self.cells.as_slice() {
             [cell] => Some(cell.mvs),
             _ => None,
