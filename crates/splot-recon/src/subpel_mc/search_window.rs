@@ -43,39 +43,19 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     if last_load > view.samples.len() || u32::try_from(last_load).is_err() {
         return false;
     }
-    #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        let phases = [
-            ((params.start_x >> 6) & SUBPEL_MASK) as i16,
-            ((params.start_y >> 6) & SUBPEL_MASK) as i16,
-        ];
-        avx2::window(
-            t,
-            view.samples,
-            [origin as u32, view.stride as u32],
-            [w, h],
-            phases,
-            output,
-        );
-        return true;
-    }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
-        let phases = [
-            ((params.start_x >> 6) & SUBPEL_MASK) as u8,
-            ((params.start_y >> 6) & SUBPEL_MASK) as u8,
-        ];
-        neon::window(
-            t,
-            view.samples,
-            [origin, view.stride],
-            [w, h],
-            phases,
-            output,
-        );
-        return true;
-    }
-    false
+    let phases = [
+        ((params.start_x >> 6) & SUBPEL_MASK) as u8,
+        ((params.start_y >> 6) & SUBPEL_MASK) as u8,
+    ];
+    baseline_simd!(simd => lanes::window(
+        simd,
+        view.samples,
+        [origin, view.stride],
+        [w, h],
+        phases,
+        output,
+    ));
+    true
 }
 
 /// Predicts a bilinear block of eight-bit storage, `w` a multiple of 8 and
@@ -117,33 +97,13 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
     if last_load > view.samples.len() || u32::try_from(last_load).is_err() {
         return false;
     }
-    #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        let phases = [
-            ((params.start_x >> 6) & SUBPEL_MASK) as i16,
-            ((params.start_y >> 6) & SUBPEL_MASK) as i16,
-        ];
-        avx2::block(
-            t,
-            view.samples,
-            ([origin as u32, view.stride as u32], [w, h]),
-            phases,
-            output,
-            stride,
-        );
-        return true;
-    }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
-        let phases = [
-            ((params.start_x >> 6) & SUBPEL_MASK) as u8,
-            ((params.start_y >> 6) & SUBPEL_MASK) as u8,
-        ];
-        let geometry = ([origin, view.stride], [w, h]);
-        neon::block(t, view.samples, geometry, phases, output, stride);
-        return true;
-    }
-    false
+    let phases = [
+        ((params.start_x >> 6) & SUBPEL_MASK) as u8,
+        ((params.start_y >> 6) & SUBPEL_MASK) as u8,
+    ];
+    let geometry = ([origin, view.stride], [w, h]);
+    baseline_simd!(simd => lanes::block(simd, view.samples, geometry, phases, output, stride));
+    true
 }
 
 /// The § 7.13.3.6 search positions `(dy, dx)` in `Refinemv_Neighbors` order.
@@ -183,32 +143,12 @@ pub fn refinemv_search_u8(
     {
         return None;
     }
-    #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        return Some(avx2::search(t, windows, [stride, sad_h], allow_center));
-    }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
-        return Some(neon::search(t, windows, [stride, sad_h], allow_center));
-    }
-    let sad = |dy: i32, dx: i32| {
-        let at = |sign: i32, row: usize, col: usize| {
-            ((2 + sign * dy) as usize + row) * stride + (2 + sign * dx) as usize + col
-        };
-        (0..sad_h)
-            .step_by(2)
-            .flat_map(|row| (0..stride - 4).map(move |col| (row, col)))
-            .map(|(row, col)| {
-                u32::from(windows[0][at(1, row, col)].abs_diff(windows[1][at(-1, row, col)]))
-            })
-            .sum::<u32>()
-    };
-    Some(best_offset(
-        || sad(0, 0),
-        || REFINEMV_NEIGHBORS.map(|(dy, dx)| sad(dy, dx)),
-        (2 * (stride - 4) * sad_h) as u32,
+    Some(baseline_simd!(simd => lanes::search(
+        simd,
+        windows,
+        [stride, sad_h],
         allow_center,
-    ))
+    )))
 }
 
 /// The § 7.13.3.6 search over the biased `center` SAD, kept when below
@@ -239,380 +179,10 @@ fn best_offset(
     best
 }
 
-#[cfg(target_arch = "x86_64")]
-mod avx2 {
-    use crate::subpel_mc::eight_bit::avx2::row_bytes;
-    use core::arch::x86_64::*;
-    use fearless_simd::{Avx2, SimdBase, SimdFrom, u8x16, u8x32, u16x16};
-
-    /// The `(left, right)` source index pairs of output columns `first..first
-    /// + 16` of an `m`-sample row read from index `base`, both clamped to the
-    /// row, as `pshufb` bytes for two lanes of eight columns.
-    const fn pairs(first: usize, base: usize, m: usize) -> [u8; 32] {
-        let mut out = [0u8; 32];
-        let mut lane = 0;
-        while lane < 16 {
-            let column = first + lane;
-            let left = if column == 0 { 0 } else { column - 1 };
-            let left = if left > m - 1 { m - 1 } else { left };
-            let right = if column > m - 1 { m - 1 } else { column };
-            out[2 * lane] = (left - base) as u8;
-            out[2 * lane + 1] = (right - base) as u8;
-            lane += 1;
-        }
-        out
-    }
-
-    const PAIRS_16: [u8; 32] = pairs(0, 0, 15);
-    const PAIRS_24_LOW: [u8; 32] = pairs(0, 0, 23);
-    const PAIRS_24_HIGH: [u8; 32] = pairs(16, 15, 23);
-
-    /// Lanes below `n` set: the mask of an `n`-sample SAD row.
-    const fn row_mask(n: usize) -> [u8; 32] {
-        let mut out = [0u8; 32];
-        let mut lane = 0;
-        while lane < n {
-            out[lane] = u8::MAX;
-            lane += 1;
-        }
-        out
-    }
-
-    const MASK_12: [u8; 32] = {
-        let mut out = row_mask(12);
-        let mut lane = 16;
-        while lane < 28 {
-            out[lane] = u8::MAX;
-            lane += 1;
-        }
-        out
-    };
-    const MASK_20: [u8; 32] = row_mask(20);
-
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn load16(t: Avx2, bytes: &[u8], at: usize) -> __m128i {
-        match bytes.get(at..).and_then(<[u8]>::first_chunk::<16>) {
-            Some(bytes) => u8x16::load_array_ref(t, bytes).into(),
-            None => _mm_setzero_si128(),
-        }
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn load32(t: Avx2, bytes: &[u8], at: usize) -> __m256i {
-        match bytes.get(at..).and_then(<[u8]>::first_chunk::<32>) {
-            Some(bytes) => u8x32::load_array_ref(t, bytes).into(),
-            None => _mm256_setzero_si256(),
-        }
-    }
-
-    fearless_simd::kernel!(
-        #[inline]
-        pub(super) fn window(
-            t: Avx2,
-            source: &[u8],
-            at: [u32; 2],
-            size: [usize; 2],
-            phases: [i16; 2],
-            output: &mut [u8],
-        ) {
-            match size {
-                [16, 16] => window_for::<16, 16, 256>(t, source, at, phases, output),
-                [16, _] => window_for::<16, 24, 384>(t, source, at, phases, output),
-                [_, 16] => window_for::<24, 16, 384>(t, source, at, phases, output),
-                _ => window_for::<24, 24, 576>(t, source, at, phases, output),
-            };
-        }
-    );
-
-    /// [`window`] of a `W x H` window of `N` bytes, whose output rows sit at
-    /// fixed offsets.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn window_for<const W: usize, const H: usize, const N: usize>(
-        t: Avx2,
-        source: &[u8],
-        [origin, stride]: [u32; 2],
-        [h_phase, v_phase]: [i16; 2],
-        output: &mut [u8],
-    ) -> Option<()> {
-        let output = output.first_chunk_mut::<N>()?;
-        let weights = _mm256_set1_epi16((h_phase << 8) | (16 - h_phase));
-        let (low_pairs, high_pairs): (__m256i, __m256i) = if W == 24 {
-            (
-                u8x32::load_array(t, PAIRS_24_LOW).into(),
-                u8x32::load_array(t, PAIRS_24_HIGH).into(),
-            )
-        } else {
-            (
-                u8x32::load_array(t, PAIRS_16).into(),
-                _mm256_setzero_si256(),
-            )
-        };
-        let horizontal = |row: usize| -> Option<[__m256i; 2]> {
-            let at = origin + row as u32 * stride;
-            let half = |bytes: &[u8; 16]| -> __m256i {
-                _mm256_broadcastsi128_si256(u8x16::load_array_ref(t, bytes).into())
-            };
-            if W != 24 {
-                let low = half(row_bytes::<16>(source, at)?);
-                let low = _mm256_maddubs_epi16(_mm256_shuffle_epi8(low, low_pairs), weights);
-                return Some([low, low]);
-            }
-            let bytes = row_bytes::<31>(source, at)?;
-            let (low, high) = (half(bytes.first_chunk()?), half(bytes.last_chunk()?));
-            Some([
-                _mm256_maddubs_epi16(_mm256_shuffle_epi8(low, low_pairs), weights),
-                _mm256_maddubs_epi16(_mm256_shuffle_epi8(high, high_pairs), weights),
-            ])
-        };
-        let (top_weight, bottom_weight) =
-            (_mm256_set1_epi16(16 - v_phase), _mm256_set1_epi16(v_phase));
-        let bias = _mm256_set1_epi16(128);
-        let blend = |top: __m256i, bottom: __m256i| {
-            let sum = _mm256_add_epi16(
-                _mm256_mullo_epi16(top, top_weight),
-                _mm256_mullo_epi16(bottom, bottom_weight),
-            );
-            _mm256_srli_epi16::<8>(_mm256_add_epi16(sum, bias))
-        };
-        let rows = output.as_chunks_mut::<W>().0;
-        let mut write = |row: usize, top: [__m256i; 2], bottom: [__m256i; 2]| {
-            let low = blend(top[0], bottom[0]);
-            let high = if W == 24 {
-                blend(top[1], bottom[1])
-            } else {
-                low
-            };
-            let packed = _mm256_permute4x64_epi64::<0b1101_1000>(_mm256_packus_epi16(low, high));
-            let Some(slot) = rows.get_mut(row) else {
-                return;
-            };
-            if let Some(bytes) = slot.first_chunk_mut::<16>() {
-                u8x16::<Avx2>::simd_from(t, _mm256_castsi256_si128(packed)).store_array(bytes);
-            }
-            if W == 24
-                && let Some(bytes) = slot.last_chunk_mut::<8>()
-            {
-                *bytes = _mm_cvtsi128_si64(_mm256_extracti128_si256::<1>(packed)).to_le_bytes();
-            }
-        };
-        let mut top = horizontal(0)?;
-        write(0, top, top);
-        for row in 1..H - 1 {
-            let bottom = horizontal(row)?;
-            write(row, top, bottom);
-            top = bottom;
-        }
-        write(H - 1, top, top);
-        Some(())
-    }
-
-    /// The `(c, c + 1)` byte pairs of eight columns, in both lanes.
-    const PAIRS_8: [u8; 32] = {
-        let mut out = [0u8; 32];
-        let mut lane = 0;
-        while lane < 32 {
-            let column = (lane % 16) / 2;
-            out[lane] = (column + lane % 2) as u8;
-            lane += 1;
-        }
-        out
-    };
-
-    fearless_simd::kernel!(
-        #[inline]
-        pub(super) fn block(
-            t: Avx2,
-            source: &[u8],
-            geometry: ([u32; 2], [usize; 2]),
-            phases: [i16; 2],
-            output: &mut [u16],
-            stride: usize,
-        ) {
-            if geometry.1 == [8; 2] && stride == 8 {
-                block_rows::<8>(t, source, geometry, phases, output, 8);
-            } else {
-                block_rows::<0>(t, source, geometry, phases, output, stride);
-            }
-        }
-    );
-
-    /// [`block`] of a `w x h` block, or of an `N x N` one at stride `N`
-    /// when `N` is not zero.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn block_rows<const N: usize>(
-        t: Avx2,
-        source: &[u8],
-        ([origin, source_stride], [w, h]): ([u32; 2], [usize; 2]),
-        [h_phase, v_phase]: [i16; 2],
-        output: &mut [u16],
-        stride: usize,
-    ) {
-        let (w, h, stride) = if N > 0 { (N, N, N) } else { (w, h, stride) };
-        let weights = _mm256_set1_epi16((h_phase << 8) | (16 - h_phase));
-        let pairs: __m256i = u8x32::load_array(t, PAIRS_8).into();
-        let (top_weight, bottom_weight) =
-            (_mm256_set1_epi16(16 - v_phase), _mm256_set1_epi16(v_phase));
-        let bias = _mm256_set1_epi16(128);
-        for column in (0..w).step_by(8) {
-            let rows = |first: usize| {
-                let load = |row: usize| -> __m128i {
-                    let at = origin + column as u32 + row.min(h) as u32 * source_stride;
-                    row_bytes::<16>(source, at).map_or(_mm_setzero_si128(), |bytes| {
-                        u8x16::load_array_ref(t, bytes).into()
-                    })
-                };
-                let bytes = _mm256_set_m128i(load(first + 1), load(first));
-                _mm256_maddubs_epi16(_mm256_shuffle_epi8(bytes, pairs), weights)
-            };
-            let mut top = rows(0);
-            for pair in 0..h / 2 {
-                let next = rows(2 * pair + 2);
-                let bottom = _mm256_permute2x128_si256::<0x21>(top, next);
-                let sum = _mm256_add_epi16(
-                    _mm256_mullo_epi16(top, top_weight),
-                    _mm256_mullo_epi16(bottom, bottom_weight),
-                );
-                let values: [u16; 16] = *u16x16::<Avx2>::simd_from(
-                    t,
-                    _mm256_srli_epi16::<8>(_mm256_add_epi16(sum, bias)),
-                );
-                for (half, values) in values.as_chunks::<8>().0.iter().enumerate() {
-                    let at = (2 * pair + half) * stride + column;
-                    if let Some(slot) = output.get_mut(at..).and_then(<[u16]>::first_chunk_mut::<8>)
-                    {
-                        *slot = *values;
-                    }
-                }
-                top = next;
-            }
-        }
-    }
-
-    fearless_simd::kernel!(
-        #[inline]
-        pub(super) fn search(
-            t: Avx2,
-            windows: [&[u8]; 2],
-            geometry: [usize; 2],
-            allow_center: bool,
-        ) -> (i32, i32) {
-            match geometry {
-                [16, 12] => search_for::<16, 12, 176, 256>(t, windows, allow_center),
-                [16, _] => search_for::<16, 20, 304, 384>(t, windows, allow_center),
-                [_, 12] => search_for::<24, 12, 272, 384>(t, windows, allow_center),
-                _ => search_for::<24, 20, 464, 576>(t, windows, allow_center),
-            }
-        }
-    );
-
-    /// [`search`] of `STRIDE`-wide windows of `AREA` bytes and `SAD_H`-row
-    /// areas, each read as one `SPAN`-byte run: one masked 12-byte row per
-    /// `xmm` at stride 16, one masked 20-byte row per `ymm` at stride 24.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn search_for<const STRIDE: usize, const SAD_H: usize, const SPAN: usize, const AREA: usize>(
-        t: Avx2,
-        [first, second]: [&[u8]; 2],
-        allow_center: bool,
-    ) -> (i32, i32) {
-        let (Some(first), Some(second)) =
-            (first.first_chunk::<AREA>(), second.first_chunk::<AREA>())
-        else {
-            return (0, 0);
-        };
-        let mask: __m256i = if STRIDE == 16 {
-            u8x32::load_array(t, MASK_12).into()
-        } else {
-            u8x32::load_array(t, MASK_20).into()
-        };
-        macro_rules! sad {
-            ($dy:expr, $dx:expr) => {{
-                let start = |dy: i32, dx: i32| ((2 + dy) * STRIDE as i32 + 2 + dx) as usize;
-                match (
-                    first
-                        .get(start($dy, $dx)..)
-                        .and_then(<[u8]>::first_chunk::<SPAN>),
-                    second
-                        .get(start(-$dy, -$dx)..)
-                        .and_then(<[u8]>::first_chunk::<SPAN>),
-                ) {
-                    (Some(left), Some(right)) if STRIDE == 16 => {
-                        let mask = _mm256_castsi256_si128(mask);
-                        let mut sum = _mm_setzero_si128();
-                        for row in (0..SAD_H).step_by(2) {
-                            let a = _mm_and_si128(load16(t, left, row * STRIDE), mask);
-                            let b = _mm_and_si128(load16(t, right, row * STRIDE), mask);
-                            sum = _mm_add_epi64(sum, _mm_sad_epu8(a, b));
-                        }
-                        (_mm_cvtsi128_si64(sum) + _mm_extract_epi64::<1>(sum)) as u32
-                    }
-                    (Some(left), Some(right)) => {
-                        let mut sum = _mm256_setzero_si256();
-                        for row in (0..SAD_H).step_by(2) {
-                            let a = _mm256_and_si256(load32(t, left, row * STRIDE), mask);
-                            let b = _mm256_and_si256(load32(t, right, row * STRIDE), mask);
-                            sum = _mm256_add_epi64(sum, _mm256_sad_epu8(a, b));
-                        }
-                        let folded = _mm_add_epi64(
-                            _mm256_castsi256_si128(sum),
-                            _mm256_extracti128_si256::<1>(sum),
-                        );
-                        (_mm_cvtsi128_si64(folded) + _mm_extract_epi64::<1>(folded)) as u32
-                    }
-                    _ => u32::MAX,
-                }
-            }};
-        }
-        macro_rules! neighbours {
-            ($(($dy:literal, $dx:literal)),*) => {
-                [$(sad!($dy, $dx)),*]
-            };
-        }
-        super::best_offset(
-            || sad!(0, 0),
-            || {
-                neighbours!(
-                    (-2, -2),
-                    (-2, -1),
-                    (-2, 0),
-                    (-2, 1),
-                    (-2, 2),
-                    (-1, -2),
-                    (-1, -1),
-                    (-1, 0),
-                    (-1, 1),
-                    (-1, 2),
-                    (0, -2),
-                    (0, -1),
-                    (0, 1),
-                    (0, 2),
-                    (1, -2),
-                    (1, -1),
-                    (1, 0),
-                    (1, 1),
-                    (1, 2),
-                    (2, -2),
-                    (2, -1),
-                    (2, 0),
-                    (2, 1),
-                    (2, 2)
-                )
-            },
-            (2 * (STRIDE - 4) * SAD_H) as u32,
-            allow_center,
-        )
-    }
-}
-
-/// The bilinear windows and blocks in generic `u16` lanes, and the SADs in
-/// NEON byte lanes.
-#[cfg(target_arch = "aarch64")]
-mod neon {
-    use fearless_simd::{Neon, Simd, prelude::*, u8x16, u16x8, u64x2};
+/// The bilinear windows and blocks in `u16` lanes, and the SADs in byte
+/// lanes.
+mod lanes {
+    use fearless_simd::{Simd, prelude::*, u8x16, u8x32, u16x8, u16x16, u64x2};
 
     /// The source index, from `base`, of the left or right tap of output
     /// columns `first..first + 16` of an `m`-sample row, clamped to the row.
@@ -774,64 +344,90 @@ mod neon {
         }
     }
 
-    fearless_simd::kernel!(
-        #[inline]
-        pub(super) fn search(
-            t: Neon,
-            windows: [&[u8]; 2],
-            geometry: [usize; 2],
-            allow_center: bool,
-        ) -> (i32, i32) {
-            match geometry {
-                [16, 12] => search_for::<16, 12>(t, windows, allow_center),
-                [16, _] => search_for::<16, 20>(t, windows, allow_center),
-                [_, 12] => search_for::<24, 12>(t, windows, allow_center),
-                _ => search_for::<24, 20>(t, windows, allow_center),
-            }
+    /// The [`super::refinemv_search_u8`] search of `[stride, sad_h]` windows.
+    #[inline(never)]
+    pub(super) fn search<S: Simd>(
+        simd: S,
+        windows: [&[u8]; 2],
+        geometry: [usize; 2],
+        allow_center: bool,
+    ) -> (i32, i32) {
+        match geometry {
+            [16, 12] => search_for::<_, 16, 12, 176, 256>(simd, windows, allow_center),
+            [16, _] => search_for::<_, 16, 20, 304, 384>(simd, windows, allow_center),
+            [_, 12] => search_for::<_, 24, 12, 264, 384>(simd, windows, allow_center),
+            _ => search_for::<_, 24, 20, 456, 576>(simd, windows, allow_center),
         }
-    );
+    }
 
-    /// [`search`] of `STRIDE`-wide windows and `SAD_H`-row areas: `uabd` and
-    /// `uadalp` over each 12-byte row at stride 16, or 20-byte row at stride
-    /// 24 (its last four bytes from a second load), then one `uaddlv`.
-    #[inline]
-    #[target_feature(enable = "neon")]
-    fn search_for<const STRIDE: usize, const SAD_H: usize>(
-        t: Neon,
+    /// [`search`] of `STRIDE`-wide windows of `AREA` bytes and `SAD_H`-row
+    /// areas, each read as one `SPAN`-byte run of rows: the byte differences
+    /// of each masked 12-byte row at stride 16 in 16 lanes, or 20-byte row at
+    /// stride 24 in 32 lanes (bytes `0..16` and `8..24`), summed in pairs into
+    /// `u16` lanes.
+    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+    #[inline(always)]
+    fn search_for<
+        S: Simd,
+        const STRIDE: usize,
+        const SAD_H: usize,
+        const SPAN: usize,
+        const AREA: usize,
+    >(
+        simd: S,
         [first, second]: [&[u8]; 2],
         allow_center: bool,
     ) -> (i32, i32) {
-        use core::arch::aarch64::{
-            uint8x16_t, vabdq_u8, vaddlvq_u16, vandq_u8, vdupq_n_u16, vpadalq_u8,
+        let (Some(first), Some(second)) =
+            (first.first_chunk::<AREA>(), second.first_chunk::<AREA>())
+        else {
+            return (0, 0);
         };
-        let keep = |lanes: core::ops::Range<usize>| -> uint8x16_t {
-            u8x16::load_array(
-                t,
-                core::array::from_fn(|lane| if lanes.contains(&lane) { u8::MAX } else { 0 }),
-            )
-            .into()
+        let narrow_mask =
+            u8x16::load_array(simd, core::array::from_fn(|lane| u8::from(lane < 12) * 255));
+        let wide_mask = u8x32::load_array(
+            simd,
+            core::array::from_fn(|lane| u8::from(lane < 16 || (24..28).contains(&lane)) * 255),
+        );
+        let half = |bytes: Option<&[u8; 16]>| {
+            bytes.map_or(u8x16::splat(simd, 0), |bytes| {
+                u8x16::load_array_ref(simd, bytes)
+            })
         };
-        let (low, high) = (keep(0..12), keep(12..16));
         let sad = |dy: i32, dx: i32| -> u32 {
             let start = |dy: i32, dx: i32| ((2 + dy) * STRIDE as i32 + 2 + dx) as usize;
-            let (a, b) = (start(dy, dx), start(-dy, -dx));
-            let diff = |at: usize| -> uint8x16_t {
-                vabdq_u8(
-                    load(t, first, a + at).into(),
-                    load(t, second, b + at).into(),
-                )
+            let (Some(left), Some(right)) = (
+                first
+                    .get(start(dy, dx)..)
+                    .and_then(<[u8]>::first_chunk::<SPAN>),
+                second
+                    .get(start(-dy, -dx)..)
+                    .and_then(<[u8]>::first_chunk::<SPAN>),
+            ) else {
+                return u32::MAX;
             };
-            let mut sum = vdupq_n_u16(0);
-            for row in (0..SAD_H).step_by(2) {
-                let at = row * STRIDE;
-                if STRIDE == 16 {
-                    sum = vpadalq_u8(sum, vandq_u8(diff(at), low));
-                } else {
-                    sum = vpadalq_u8(sum, diff(at));
-                    sum = vpadalq_u8(sum, vandq_u8(diff(at + 4), high));
+            const { assert!(SPAN >= (SAD_H - 1) * STRIDE) };
+            let (left, right) = (left.as_chunks::<STRIDE>().0, right.as_chunks::<STRIDE>().0);
+            if STRIDE == 16 {
+                let mut sum = u16x8::splat(simd, 0);
+                for row in (0..SAD_H).step_by(2) {
+                    let (x, y) = (
+                        half(left[row].first_chunk()),
+                        half(right[row].first_chunk()),
+                    );
+                    sum += ((x.max(y) - x.min(y)) & narrow_mask).pairwise_widening_add();
                 }
+                return u32::from(sum.reduce_sum());
             }
-            vaddlvq_u16(sum)
+            let wide = |row: &[u8; STRIDE]| {
+                simd.combine_u8x16(half(row.first_chunk()), half(row.last_chunk()))
+            };
+            let mut sum = u16x16::splat(simd, 0);
+            for row in (0..SAD_H).step_by(2) {
+                let (x, y) = (wide(&left[row]), wide(&right[row]));
+                sum += ((x.max(y) - x.min(y)) & wide_mask).pairwise_widening_add();
+            }
+            u32::from(sum.reduce_sum())
         };
         super::best_offset(
             || sad(0, 0),
