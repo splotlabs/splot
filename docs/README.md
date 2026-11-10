@@ -46,6 +46,8 @@ cargo xtask ci
 It runs formatting, clippy, tests, doctests, rustdoc, optional external tool
 checks, dependency and concurrency policy, spec mirror integrity, diagnostic
 registry drift, the duplicate-code budget and the documentation budget.
+`cargo xtask ci --fast` keeps formatting, clippy and the repo checks and skips
+tests, rustdoc, external tools and the C ABI example, which GitHub CI runs.
 
 ## Documents
 

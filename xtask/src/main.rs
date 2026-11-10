@@ -99,7 +99,11 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Task {
     /// Run the local acceptance pipeline (fmt, clippy, build, test, repo checks).
-    Ci,
+    Ci {
+        /// Only fmt, clippy and the in-process repo checks; GitHub CI runs the rest.
+        #[arg(long)]
+        fast: bool,
+    },
     /// Verify commit subjects follow Conventional Commits.
     CheckConventionalCommits {
         /// Git revision range to inspect. Defaults to the current HEAD commit.
@@ -318,7 +322,7 @@ enum DecoderFixturesCmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Task::Ci => run_ci(),
+        Task::Ci { fast } => run_ci(fast),
         Task::CheckConventionalCommits { rev_range } => {
             check_conventional_commits(&workspace_root()?, rev_range.as_deref())
         }
@@ -446,7 +450,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_ci() -> Result<()> {
+fn run_ci(fast: bool) -> Result<()> {
     run_cargo(&["fmt", "--all", "--", "--check"])?;
     run_cargo(&[
         "clippy",
@@ -458,16 +462,18 @@ fn run_ci() -> Result<()> {
         "-D",
         "warnings",
     ])?;
-    run_cargo(&["test", "--workspace", "--all-targets", "--locked"])?;
-    run_cargo(&["test", "--doc", "--workspace", "--locked"])?;
-    run_cargo_with_env(
-        &[("RUSTDOCFLAGS", "-D warnings")],
-        &["doc", "--workspace", "--no-deps", "--locked"],
-    )?;
+    if !fast {
+        run_cargo(&["test", "--workspace", "--all-targets", "--locked"])?;
+        run_cargo(&["test", "--doc", "--workspace", "--locked"])?;
+        run_cargo_with_env(
+            &[("RUSTDOCFLAGS", "-D warnings")],
+            &["doc", "--workspace", "--no-deps", "--locked"],
+        )?;
 
-    run_typos()?;
-    run_cargo_machete()?;
-    run_cargo_deny_offline()?;
+        run_typos()?;
+        run_cargo_machete()?;
+        run_cargo_deny_offline()?;
+    }
 
     let root = workspace_root()?;
     check_license_headers(&root)?;
@@ -490,6 +496,10 @@ fn run_ci() -> Result<()> {
     fixtures::check_fixtures(&root)?;
     dupehound::check_duplication(&root)?;
     doc_budget::check_doc_budget(&root)?;
+    if fast {
+        eprintln!("ci --fast: passed; tests, rustdoc, external tools and the C ABI run in full CI");
+        return Ok(());
+    }
     check_capi_example(&root)?;
 
     eprintln!("ci: all checks passed");

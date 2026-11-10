@@ -98,7 +98,9 @@ fixture-named runtime modules.
 
 ## Acceptance
 
-Use `cargo xtask ci` as the gate. Focused commands:
+Use `cargo xtask ci` as the gate; GitHub CI runs it in full. Locally, run
+`cargo xtask ci --fast` (fmt, clippy, repo checks) plus the tests of the crates
+you touched. Focused commands:
 
 ```bash
 cargo fmt --all -- --check
