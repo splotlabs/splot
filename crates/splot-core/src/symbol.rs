@@ -1338,9 +1338,10 @@ impl<'a> SymbolDecoder<'a> {
     }
 }
 
-/// The payload tail, zero-padded; out of line so the refill fast path stays
-/// small where it inlines.
-#[cold]
+/// The payload tail, zero-padded. Inlined: a call in a hot loop forces the
+/// loop's decoder state out of caller-saved registers.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
 fn tail_window(data: &[u8], byte_index: usize) -> u64 {
     be_window(data, byte_index)
 }

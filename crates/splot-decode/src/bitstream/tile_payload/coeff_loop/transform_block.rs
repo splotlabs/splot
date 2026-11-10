@@ -797,6 +797,22 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         }
     }
 
+    /// The high-frequency indices of [`Self::levels_pass`], out of line so
+    /// the decoder state stays in registers across the loop.
+    #[inline(never)]
+    fn hf_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
+        &mut self,
+        hf: &[u32],
+        lf_end: usize,
+    ) {
+        for (offset, &entry) in hf.iter().enumerate().rev() {
+            let grid = entry_grid(entry);
+            let level = self.read_hf_base::<CLASS, LUMA>(entry);
+            let level = self.add_range::<CLASS, LUMA, false>(grid, false, level);
+            self.finish::<TCQ, PH>(lf_end + offset, grid, level);
+        }
+    }
+
     /// The base and range symbols of every scan index below the EOB, in
     /// reverse scan order: the high-frequency indices, the low-frequency
     /// indices above 0 (a scan prefix, see [`lf_scan_end`]), and DC, so each
@@ -821,13 +837,10 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         if eob_index == 0 {
             return;
         }
-        let hf = scan.get(lf_end..eob_index).unwrap_or_default();
-        for (offset, &entry) in hf.iter().enumerate().rev() {
-            let grid = entry_grid(entry);
-            let level = self.read_hf_base::<CLASS, LUMA>(entry);
-            let level = self.add_range::<CLASS, LUMA, false>(grid, false, level);
-            self.finish::<TCQ, PH>(lf_end + offset, grid, level);
-        }
+        self.hf_pass::<CLASS, LUMA, TCQ, PH>(
+            scan.get(lf_end..eob_index).unwrap_or_default(),
+            lf_end,
+        );
         let lf = scan.get(1..lf_end.min(eob_index)).unwrap_or_default();
         for (offset, &entry) in lf.iter().enumerate().rev() {
             let grid = entry_grid(entry);
