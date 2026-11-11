@@ -263,6 +263,10 @@ fn prepare_ccso_plane(
 }
 
 impl CcsoFrameConfig {
+    pub(crate) fn filters_plane(&self, plane: PlaneId) -> bool {
+        self.planes.get(plane.index()).is_some_and(Option::is_some)
+    }
+
     pub(crate) fn return_offset_luts(self, offset_luts: &mut [Vec<i32>; CCSO_PLANES]) {
         for (target, config) in offset_luts.iter_mut().zip(self.planes) {
             if let Some(config) = config {

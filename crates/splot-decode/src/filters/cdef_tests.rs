@@ -699,3 +699,37 @@ fn uv_dir_selection_tracks_luma_direction_only_when_uv_pri_nonzero() {
         "uv_pri == 0: direction is forced to 0, so the luma direction is ignored",
     );
 }
+
+#[test]
+fn stripe_identity_follows_strengths_and_skipped_blocks() {
+    let params = |y_sec, uv_pri| CdefFrameParams {
+        y_pri: 0,
+        y_sec,
+        uv_pri,
+        uv_sec: 0,
+        damping: 4,
+    };
+    let strengths = [params(0, 0), params(2, 0), params(0, 3)];
+    let grid = CdefUnitGrid::new(2, 1, vec![Some(1), Some(2)]).unwrap();
+    let identity = |strengths: Option<&[CdefFrameParams]>, skip: Option<&CdefSkipGrid>, rows| {
+        cdef_stripe_identity(strengths, Some(&grid), skip, (32, 16), rows)
+    };
+    assert_eq!(
+        cdef_stripe_identity(None, None, None, (32, 16), (0, 64)),
+        [true; 2]
+    );
+    assert_eq!(identity(Some(&strengths[..1]), None, (0, 64)), [false; 2]);
+    assert_eq!(identity(Some(&strengths), None, (0, 64)), [false, true]);
+    assert_eq!(identity(Some(&strengths), None, (64, 128)), [true, false]);
+    assert_eq!(identity(Some(&strengths), None, (0, 128)), [false; 2]);
+    let mut skipped = vec![true; 32 * 16];
+    let all = CdefSkipGrid::new(32, 16, skipped.clone()).unwrap();
+    assert_eq!(identity(Some(&strengths), Some(&all), (0, 128)), [true; 2]);
+    skipped[20 * 16 + 5] = false;
+    let one = CdefSkipGrid::new(32, 16, skipped).unwrap();
+    assert_eq!(identity(Some(&strengths), Some(&one), (0, 64)), [true; 2]);
+    assert_eq!(
+        identity(Some(&strengths), Some(&one), (64, 128)),
+        [true, false]
+    );
+}

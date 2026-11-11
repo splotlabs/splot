@@ -321,6 +321,59 @@ impl CdefPlaneGeometry {
     }
 }
 
+/// Whether § 7.18 leaves the luma and the chroma planes of the stripe on
+/// luma rows `luma_rows` as deblocked: each unit is off, has zero strengths
+/// for them, or has only skipped 8x8 blocks.
+pub(crate) fn cdef_stripe_identity(
+    strengths: Option<&[CdefFrameParams]>,
+    grid: Option<&CdefUnitGrid>,
+    skip_grid: Option<&CdefSkipGrid>,
+    (mi_rows, mi_cols): (usize, usize),
+    luma_rows: (usize, usize),
+) -> [bool; 2] {
+    let (Some(strengths), Some(grid)) = (strengths, grid) else {
+        return [true; 2];
+    };
+    let r_start = luma_rows.0 / MI_SIZE;
+    let r_end = luma_rows.1.div_ceil(MI_SIZE).min(mi_rows);
+    let unit = |unit_row: usize, unit_col: usize| -> Result<[bool; 2], CdefError> {
+        let (r0, c0) = (unit_row * CDEF_UNIT_MI, unit_col * CDEF_UNIT_MI);
+        let Some(index) = grid.strength_for_mi(r0, c0)? else {
+            return Ok([true; 2]);
+        };
+        let params = strengths.get(index).ok_or(CdefError::Geometry)?;
+        let zero = [
+            params.y_pri == 0 && params.y_sec == 0,
+            params.uv_pri == 0 && params.uv_sec == 0,
+        ];
+        let Some(skip_grid) = skip_grid.filter(|_| zero != [true; 2]) else {
+            return Ok(zero);
+        };
+        for r in (r0.max(r_start)..(r0 + CDEF_UNIT_MI).min(r_end)).step_by(STEP4) {
+            for c in (c0..(c0 + CDEF_UNIT_MI).min(mi_cols)).step_by(STEP4) {
+                if !skip_grid.all_skipped_8x8(r, c, mi_rows, mi_cols)? {
+                    return Ok(zero);
+                }
+            }
+        }
+        Ok([true; 2])
+    };
+    if !r_start.is_multiple_of(STEP4) {
+        return [false; 2];
+    }
+    let mut identity = [true; 2];
+    for unit_row in r_start / CDEF_UNIT_MI..r_end.div_ceil(CDEF_UNIT_MI) {
+        for unit_col in 0..mi_cols.div_ceil(CDEF_UNIT_MI) {
+            let [luma, chroma] = unit(unit_row, unit_col).unwrap_or([false; 2]);
+            identity = [identity[0] && luma, identity[1] && chroma];
+            if identity == [false; 2] {
+                return identity;
+            }
+        }
+    }
+    identity
+}
+
 fn cdef_params_guarantee_write(params: CdefFrameParams, plane: PlaneId) -> bool {
     match plane {
         PlaneId::Y => params.y_sec != 0,

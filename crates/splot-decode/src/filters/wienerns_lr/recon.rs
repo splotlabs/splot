@@ -730,7 +730,20 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             .ok_or_else(lr_pipeline_state_error)?;
         let mut window = self.take_window();
         let filled = self.window_reads().and_then(|read| {
-            window.copy_window(frame, Some(carry), range, self.window_margin(), read)
+            let chain = self.chain();
+            let [y_end, u_end] = self.lr_plane_ends;
+            let (y_runs, rest) = self.lr_source_blocks.split_at(y_end);
+            let (u_runs, v_runs) = rest.split_at(u_end - y_end);
+            let active_lr = chain.active_lr_planes(range.0, range.1, [y_runs, u_runs, v_runs]);
+            let gdf_active = crate::filters::gdf::is_active(
+                &self.core,
+                chain.gdf_grid,
+                self.bit_depth,
+                chain.gdf_reference,
+            )?;
+            let [all, chroma] = self.stripe_in_place(&chain, range, active_lr, gdf_active);
+            let skip = [all, chroma, chroma];
+            window.copy_window(frame, Some(carry), range, self.window_margin(), read, skip)
         });
         if let Err(error) = filled {
             self.give_window(window);
@@ -949,11 +962,38 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         Ok(overlap)
     }
 
+    /// Whether no filter changes stripe `(start, end)`, and whether none
+    /// changes its chroma planes, so their targets keep the deblocked rows.
+    fn stripe_in_place(
+        &self,
+        chain: &StripeChain<'_>,
+        (start, end): (usize, usize),
+        active_lr: [bool; 3],
+        gdf_active: bool,
+    ) -> [bool; 2] {
+        let [luma, chroma] = crate::filters::cdef::cdef_stripe_identity(
+            self.cdef_strengths.as_deref(),
+            chain.cdef_grid,
+            self.cdef_skip_grid.as_ref(),
+            (self.mi_rows, self.mi_cols),
+            (start, end),
+        );
+        let ccso = chain.ccso_grid.and(self.ccso_config.as_ref());
+        let unfiltered = |plane: PlaneId| {
+            !active_lr[plane.index()] && !ccso.is_some_and(|config| config.filters_plane(plane))
+        };
+        let chroma = chroma && unfiltered(PlaneId::U) && unfiltered(PlaneId::V);
+        [
+            chroma && luma && !gdf_active && unfiltered(PlaneId::Y),
+            chroma,
+        ]
+    }
+
     fn run_planes(
         &self,
         &(start, end): &(usize, usize),
         deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
-        target: crate::pipeline::frame_progress::DirectStripeTarget,
+        mut target: crate::pipeline::frame_progress::DirectStripeTarget,
     ) -> Result<final_filters::FilteredStripe> {
         let chain = self.chain();
         let [y_end, u_end] = self.lr_plane_ends;
@@ -968,6 +1008,41 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             self.bit_depth,
             chain.gdf_reference,
         )?;
+        let [all_in_place, chroma_in_place] =
+            self.stripe_in_place(&chain, (start, end), active_lr, gdf_active);
+        let mut in_place = |plane: PlaneId| {
+            target
+                .take(plane)
+                .map(|target| {
+                    target
+                        .holds_deblocked()
+                        .then(|| crate::filters::source::StripeOutputPlane::in_place(target))
+                        .and_then(core::result::Result::ok)
+                        .ok_or_else(lr_pipeline_state_error)
+                })
+                .transpose()
+        };
+        if all_in_place {
+            return Ok(final_filters::FilteredStripe {
+                y: in_place(PlaneId::Y)?.ok_or_else(lr_pipeline_state_error)?,
+                u: in_place(PlaneId::U)?,
+                v: in_place(PlaneId::V)?,
+            });
+        }
+        let chroma = if chroma_in_place {
+            Some([in_place(PlaneId::U)?, in_place(PlaneId::V)?])
+        } else {
+            None
+        };
+        let deblocked = if chroma_in_place {
+            crate::filters::source::DeblockedPlanes {
+                u: None,
+                v: None,
+                ..deblocked
+            }
+        } else {
+            deblocked
+        };
         let direct_u8_lr = core::array::from_fn(|index| {
             let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
             if self.bit_depth != BitDepth::Eight || !active_lr[index] {
@@ -1053,7 +1128,11 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 chain.gdf_reference,
             )?;
         }
-        Ok(frame.into_filtered())
+        let mut filtered = frame.into_filtered();
+        if let Some([u, v]) = chroma {
+            (filtered.u, filtered.v) = (u, v);
+        }
+        Ok(filtered)
     }
 
     /// Publishes every completed stripe, then consumes the sole output owner to

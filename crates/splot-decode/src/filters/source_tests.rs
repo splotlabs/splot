@@ -130,7 +130,14 @@ fn unread_window_planes_hold_no_rows_and_a_later_read_fails_closed() {
         for (start, end) in stripes {
             let carry = (!slide).then_some(&mut carry);
             window
-                .copy_window(&mut rows, carry, (start, end), 2, [true, false, false])
+                .copy_window(
+                    &mut rows,
+                    carry,
+                    (start, end),
+                    2,
+                    [true, false, false],
+                    [false; 3],
+                )
                 .expect("luma-only stripe window");
             let planes = window.planes().expect("window planes");
             let (first, last) = window_bounds((start, end), 0, 2, 129).expect("luma bounds");
@@ -152,14 +159,52 @@ fn unread_window_planes_hold_no_rows_and_a_later_read_fails_closed() {
                 stripes[0],
                 2,
                 [true, false, false],
+                [false; 3],
             )
             .expect("luma-only stripe window");
         let carry = (!slide).then_some(&mut carry);
         assert!(
             window
-                .copy_window(&mut rows, carry, stripes[1], 2, [true; 3])
+                .copy_window(&mut rows, carry, stripes[1], 2, [true; 3], [false; 3])
                 .is_err()
         );
+    }
+}
+
+#[test]
+fn skipped_window_planes_keep_only_the_rows_the_next_stripe_shares() {
+    let pattern = |y: usize| {
+        (0..16)
+            .map(|x| ((y * 17 + x * 3) & 255) as u16)
+            .collect::<Vec<_>>()
+    };
+    for slide in [false, true] {
+        let (_progress, mut rows) = crate::test_support::frontier_rows(workspace(16, 129));
+        assert!(rows.publish_final_rows(129));
+        let (mut window, mut carry) = (DeblockedWindow::default(), DeblockedWindow::default());
+        for ((start, end), skip) in [((0, 56), true), ((56, 120), false), ((120, 129), true)] {
+            let carry = (!slide).then_some(&mut carry);
+            window
+                .copy_window(
+                    &mut rows,
+                    carry,
+                    (start, end),
+                    2,
+                    [true; 3],
+                    [false, skip, skip],
+                )
+                .expect("stripe window");
+            let planes = window.planes().expect("window planes");
+            let (first, last) = window_bounds((start, end), 0, 2, 129).expect("luma bounds");
+            assert!((first..last).all(|y| planes.y.row(y) == Some(pattern(y).as_slice())));
+            let (first, last) = window_bounds((start, end), 1, 2, 65).expect("chroma bounds");
+            let tail = ((end >> 1) - 2).clamp(first, last);
+            for plane in [planes.u.expect("u plane"), planes.v.expect("v plane")] {
+                let held = if skip { tail } else { first };
+                assert_eq!((plane.origin_y(), plane.end_y()), (held, last));
+                assert!((held..last).all(|y| plane.row(y) == Some(&pattern(y)[..8])));
+            }
+        }
     }
 }
 

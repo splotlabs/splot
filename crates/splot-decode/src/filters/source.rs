@@ -316,7 +316,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
         luma: (usize, usize),
         margin: usize,
     ) -> crate::Result<()> {
-        self.copy_window(frame, Some(carry), luma, margin, [true; 3])
+        self.copy_window(frame, Some(carry), luma, margin, [true; 3], [false; 3])
     }
 
     /// Copies stripe `luma` and `margin` rows around it: rows the carry holds
@@ -326,7 +326,8 @@ impl<T: ReconSample> DeblockedWindow<T> {
     /// move down in place, so the window is its own carry.
     ///
     /// A plane that `read` clears gets no rows, so each read of it is refused.
-    /// Every stripe of a frame must pass the same `read`.
+    /// Every stripe of a frame must pass the same `read`. A plane that `skip`
+    /// sets gets only the rows the next stripe's window shares.
     pub(crate) fn copy_window(
         &mut self,
         frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
@@ -334,6 +335,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
         luma: (usize, usize),
         margin: usize,
         read: [bool; 3],
+        skip: [bool; 3],
     ) -> crate::Result<()> {
         let state = || crate::DecodeHeaderStateError::InvalidLoopRestorationFilterState;
         let sub_y = usize::from(frame.info().pixel_format().subsampling_y());
@@ -363,6 +365,8 @@ impl<T: ReconSample> DeblockedWindow<T> {
                 self.sizes[index] = (width, height);
                 continue;
             }
+            let tail = (luma.1 >> shift).saturating_sub(margin).clamp(start, end);
+            let start = if skip[index] { tail } else { start };
             let shared = |(held_start, held_end): (usize, usize)| {
                 (held_start <= start && start < held_end).then(|| {
                     let next = held_end.min(end);
@@ -403,7 +407,6 @@ impl<T: ReconSample> DeblockedWindow<T> {
                     .ok_or_else(state)?;
             }
             if let Some(carry) = carry.as_deref_mut() {
-                let tail = (luma.1 >> shift).saturating_sub(margin).clamp(start, end);
                 let kept = samples.get((tail - start) * width..).ok_or_else(state)?;
                 let carried = &mut carry.planes[index];
                 carried.clear();
@@ -992,6 +995,18 @@ impl StripeOutputPlane {
             return Err(StripeCopyError::Geometry);
         }
         Ok(Self::DirectU8(target))
+    }
+
+    /// The target as this stripe's output, for a stripe no filter changes
+    /// whose target already holds its deblocked rows.
+    pub(crate) fn in_place(
+        target: crate::pipeline::frame_progress::DirectPlaneTarget,
+    ) -> Result<Self, StripeCopyError> {
+        if target.is_u16() {
+            StripePlane::from_target(target).map(Self::U16)
+        } else {
+            Ok(Self::DirectU8(target))
+        }
     }
 
     pub(crate) const fn width(&self) -> usize {
