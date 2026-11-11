@@ -71,7 +71,7 @@ pub(crate) fn decode_fsc_transform_block(
             seg_eob,
         })
     })?;
-    let (_, _, levels) = state.dc_lines_and_levels(0)?;
+    let (_, _, levels, nonzero) = state.dc_lines_and_levels(0)?;
     let entries = &scan[bob..];
     let mut owned = symbols.snapshot();
     let block = Block {
@@ -81,13 +81,17 @@ pub(crate) fn decode_fsc_transform_block(
         width_log2: u32::from(tx.width_log2),
         size_ctx: usize::from(tx.size_ctx).min(2),
     };
+    let mut nonzero_len = 0;
+    let grids = (&mut *levels, &mut *nonzero, &mut nonzero_len);
     let result = if owned.cdf_update_mode() == CdfUpdateMode::Enabled {
-        block.decode::<true>(cdfs, &mut owned, levels, quant)
+        block.decode::<true>(cdfs, &mut owned, grids, quant)
     } else {
-        block.decode::<false>(cdfs, &mut owned, levels, quant)
+        block.decode::<false>(cdfs, &mut owned, grids, quant)
     };
-    for &entry in entries {
-        levels[grid(entry)] = 0;
+    for &index in nonzero.get(..nonzero_len).unwrap_or_default() {
+        if let Some(&entry) = entries.get(index as usize) {
+            levels[grid(entry)] = 0;
+        }
     }
     symbols.restore(owned);
     let (quant_end, summary) = result?;
@@ -125,7 +129,11 @@ impl Block<'_> {
         &self,
         cdfs: &mut TileCdfSubset,
         symbols: &mut SymbolDecoder<'_>,
-        levels: &mut super::super::coeff_state::CoeffLevelWords,
+        (levels, nonzero, nonzero_len): (
+            &mut super::super::coeff_state::CoeffLevelWords,
+            &mut super::super::coeff_state::CoeffNonzeroList,
+            &mut usize,
+        ),
         quant: &mut [i32],
     ) -> Result<(usize, super::quant_state::NonZeroCoeffQuantState), CoeffFscBranchError> {
         let rows = cdfs.coeff_rows_mut();
@@ -148,6 +156,8 @@ impl Block<'_> {
                 level += symbols.read_trusted::<5, UPD>(row_at(br, ctx));
             }
             levels[at] = LEVEL_WORD[level as usize & 15];
+            nonzero[*nonzero_len & (nonzero.len() - 1)] = index as u32;
+            *nonzero_len += usize::from(level != 0);
         }
 
         let signs = row_at(&mut rows.idtx_sign, self.size_ctx);
@@ -163,13 +173,14 @@ impl Block<'_> {
             lossless: false,
         });
         let mut end = 0;
-        for (index, &entry) in self.entries.iter().enumerate() {
+        for &index in nonzero.get(..*nonzero_len).unwrap_or_default() {
+            let index = index as usize;
+            let Some(&entry) = self.entries.get(index) else {
+                continue;
+            };
             let at = grid(entry);
             let word = levels[at];
             let level = (word >> 16) & 0xff;
-            if level == 0 {
-                continue;
-            }
             let near = levels[before(at, 1)]
                 + levels[before(at, LEVEL_STRIDE)]
                 + levels[before(at, LEVEL_STRIDE + 1)];

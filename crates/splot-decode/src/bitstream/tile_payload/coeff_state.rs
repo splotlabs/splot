@@ -42,6 +42,9 @@ pub(crate) const LEVEL_WORDS_MASK: usize = 2047;
 /// [`LEVEL_STRIDE`], zero outside a block while no block is being decoded,
 /// with room past every masked position for the largest neighbour offset.
 pub(crate) type CoeffLevelWords = [u32; LEVEL_WORDS_MASK + 1 + 256];
+/// The scan indices above 0 of one block's nonzero levels, in decode order.
+pub(crate) type CoeffNonzeroList = [u32; 1024];
+const LEVEL_WORDS: usize = core::mem::size_of::<CoeffLevelWords>() / 4;
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
 use core::cell::Cell;
@@ -335,7 +338,7 @@ impl TileCoeffContextState {
     }
 
     fn ensure_levels(&mut self) -> Result<(), TileCoeffStateError> {
-        const LEN: usize = core::mem::size_of::<CoeffLevelWords>() / 4;
+        const LEN: usize = LEVEL_WORDS + core::mem::size_of::<CoeffNonzeroList>() / 4;
         if self.levels.len() != LEN {
             self.levels = zero_buffer(core::mem::take(&mut self.levels), LEN)?;
         }
@@ -372,18 +375,22 @@ impl TileCoeffContextState {
         Ok(&self.left[validate_plane(plane)?])
     }
 
-    /// The above and left context lines of `plane` with the level grid of
-    /// the ordinary coefficient pass, allocated on first use.
+    /// The above and left context lines of `plane` with the level grid and
+    /// nonzero list of the coefficient passes, allocated on first use.
+    #[allow(clippy::type_complexity)]
     pub(crate) fn dc_lines_and_levels(
         &mut self,
         plane: usize,
-    ) -> Result<(&[u8], &[u8], &mut CoeffLevelWords), TileCoeffStateError> {
+    ) -> Result<(&[u8], &[u8], &mut CoeffLevelWords, &mut CoeffNonzeroList), TileCoeffStateError>
+    {
         let plane = validate_plane(plane)?;
         self.ensure_levels()?;
-        let Some(levels) = self.levels.first_chunk_mut() else {
+        let (levels, nonzero) = self.levels.split_at_mut(LEVEL_WORDS);
+        let (Some(levels), Some(nonzero)) = (levels.first_chunk_mut(), nonzero.first_chunk_mut())
+        else {
             return Err(TileCoeffStateError::InvalidPlane { plane });
         };
-        Ok((&self.above[plane], &self.left[plane], levels))
+        Ok((&self.above[plane], &self.left[plane], levels, nonzero))
     }
 
     pub(crate) fn local_x4(&self, plane: usize, x4: usize) -> Result<usize, TileCoeffStateError> {
