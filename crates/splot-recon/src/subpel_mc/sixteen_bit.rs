@@ -75,7 +75,7 @@ pub(super) fn compound(
             .iter()
             .any(|block| block.horizontal.is_some() || block.vertical.is_some())
     {
-        neon::compound(token, blocks, forward, max, stage, output, stride);
+        neon::compound(token, blocks, forward, max, output, stride);
         return true;
     }
     let _ = (blocks, forward, max, stage, output, stride);

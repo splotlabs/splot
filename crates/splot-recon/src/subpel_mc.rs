@@ -22,7 +22,7 @@ mod search_window;
 mod sixteen_bit;
 mod tip_overlap;
 use block::Sink;
-pub use cell::{CompoundCells, subpel_compound_cells_u8};
+pub use cell::{CompoundCells, subpel_compound_cells};
 pub use copy::{
     blend_compound_average_equal, blend_compound_average_weighted,
     blend_compound_average_weighted_sample,
@@ -1020,39 +1020,61 @@ pub fn subpel_predict_block_compound_average_fast_pair_into<T: ReconSample, O: R
     Ok(usize::from(first) + usize::from(first && second))
 }
 
-/// The eight-bit COMPOUND_AVERAGE of one unscaled `size`-square cell, 4 or
-/// 8, from each reference's [`CellPlacement`] into `output` rows `stride`
-/// apart, as [`subpel_predict_block_compound_average_fast_validated_strided_into`]
+/// The COMPOUND_AVERAGE, clipped to `bit_depth`, of one unscaled
+/// `size`-square cell, 4 or 8, from each reference's [`CellPlacement`] into
+/// `output` rows `stride` apart, as
+/// [`subpel_predict_block_compound_average_fast_validated_strided_into`]
 /// stores it; `false` without writing for a cell outside the register-cell
 /// subset or an output that cannot hold it.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 #[inline]
-pub fn subpel_compound_cell_u8<T: ReconSample>(
+pub fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
     interp: InterpolationFilter,
     size: usize,
     placements: [CellPlacement; 2],
-    cwp_weight: i16,
-    output: &mut [u8],
+    (cwp_weight, bit_depth): (i16, BitDepth),
+    output: &mut [O],
     stride: usize,
 ) -> bool {
-    let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) else {
-        return false;
-    };
-    stride >= size
+    let forward = i32::from(cwp_weight);
+    let fits = stride >= size
         && size
             .checked_sub(1)
-            .is_some_and(|rows| rows * stride + size <= output.len())
-        && cell::compound_at(
+            .is_some_and(|rows| rows * stride + size <= output.len());
+    if !fits {
+        return false;
+    }
+    if let ([Some(first), Some(second)], Some(output)) = (
+        references.map(ReferencePlaneView::as_u8),
+        O::u8_slice_mut(output),
+    ) {
+        return cell::compound_at(
             [&first, &second],
             interp,
             size,
             placements,
-            i32::from(cwp_weight),
+            forward,
             output,
             stride,
-        )
+        );
+    }
+    let ([Some(first), Some(second)], Some(output)) = (
+        references.map(ReferencePlaneView::as_u16),
+        O::u16_slice_mut(output),
+    ) else {
+        return false;
+    };
+    cell::compound_u16(
+        [&first, &second],
+        interp,
+        size,
+        placements,
+        (forward, bit_depth.max_sample()),
+        output,
+        stride,
+    )
 }
 
 /// Whether both blocks have one unscaled shape in `1..=MAX_BLOCK_DIM`, one

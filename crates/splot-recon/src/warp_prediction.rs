@@ -846,15 +846,13 @@ fn row_invariant_intermediate<S: Simd, T: ReconSample>(
     (first_col, first_row): (usize, usize),
     intermediate: &mut Intermediate,
 ) {
-    let taps = transpose_warp_taps(core::array::from_fn(|col| {
-        warp_taps(simd, projected.sx4 + shear.alpha * (col as i32 - 4))
-    }));
-    let weights: [_; WARP_FILTER_TAPS / 2] =
-        core::array::from_fn(|pair| interleave_columns(taps[2 * pair], taps[2 * pair + 1]));
+    let weights = column_weights(
+        simd,
+        core::array::from_fn(|col| warp_taps(simd, projected.sx4 + shear.alpha * (col as i32 - 4))),
+    );
     for (row, intermediate) in intermediate.iter_mut().enumerate() {
         let [lo, hi] = warp_span(simd, reference.row(first_row + row), first_col);
-        let windows = sliding_windows(lo, hi);
-        let sum = paired_sum(windows, &weights);
+        let sum = tap_sum(sliding_windows(lo, hi), &weights);
         *intermediate = round_intermediate(sum).to_array();
     }
 }
@@ -870,12 +868,12 @@ fn row_invariant_output<S: Simd>(
     round1: u32,
     mut store: impl FnMut(usize, i32x8<S>) -> Result<()>,
 ) -> Result<()> {
-    let weights = paired_column_taps(
+    let weights = column_weights(
         simd,
         core::array::from_fn(|col| warp_taps(simd, projected.sy4 + shear.gamma * (col as i32 - 4))),
     );
     for row in 0..WARPED_BLOCK_SIZE {
-        let sum = paired_rows_sum(simd, intermediate, row, &weights);
+        let sum = rows_sum(simd, intermediate, row, &weights);
         store(row, (sum + (1 << (round1 - 1))) >> round1)?;
     }
     Ok(())
@@ -1289,10 +1287,7 @@ fn build_interior_intermediate<S: Simd, T: ReconSample>(
 #[inline(always)]
 fn horizontal_row<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32) -> i16x8<S> {
     let sum = if alpha == 0 {
-        paired_sum(
-            sliding_windows(lo, hi),
-            &tap_pairs(simd, warp_taps(simd, sx)),
-        )
+        tap_sum(sliding_windows(lo, hi), &uniform_weights(simd, sx))
     } else {
         let taps = |col: usize| warp_taps(simd, sx + alpha * (col as i32 - 4));
         let near = lo.combine(lo.slide::<4>(hi));
@@ -1369,6 +1364,7 @@ fearless_simd::kernel!(
 /// accumulate work they feed. Each column's taps are contiguous, so they load
 /// as one vector; the three interleave stages below are the standard 8x8
 /// transpose of 16-, 32- and 64-bit lanes.
+#[cfg(not(target_arch = "x86_64"))]
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn transpose_warp_taps<S: Simd>(
@@ -1409,9 +1405,9 @@ fn build_output<S: Simd>(
     for row in 0..WARPED_BLOCK_SIZE {
         let i1 = row as i32 - 4;
         let weights = if shear.gamma == 0 {
-            tap_pairs(simd, warp_taps(simd, projected.sy4 + shear.delta * i1))
+            uniform_weights(simd, projected.sy4 + shear.delta * i1)
         } else {
-            paired_column_taps(
+            column_weights(
                 simd,
                 core::array::from_fn(|col| {
                     let i2 = col as i32 - 4;
@@ -1419,37 +1415,102 @@ fn build_output<S: Simd>(
                 }),
             )
         };
-        let sum = paired_rows_sum(simd, intermediate, row, &weights);
+        let sum = rows_sum(simd, intermediate, row, &weights);
         store(row, (sum + (1i32 << (round1 - 1))) >> round1)?;
     }
     Ok(())
 }
 
-/// The vertical sum of output row `row` with [`paired_column_taps`] weights:
-/// each pair of intermediate rows interleaves into one multiply-add.
+/// The weights of one pass over eight columns: on x86 each column's tap
+/// pairs `2j, 2j + 1` side by side for one multiply-add of two interleaved
+/// rows, elsewhere each tap across the columns for one widening
+/// multiply-accumulate.
+#[cfg(target_arch = "x86_64")]
+type TapWeights<S> = [i16x16<S>; WARP_FILTER_TAPS / 2];
+#[cfg(not(target_arch = "x86_64"))]
+type TapWeights<S> = [i16x8<S>; WARP_FILTER_TAPS];
+
+/// The [`TapWeights`] of eight per-column filters.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn paired_rows_sum<S: Simd>(
+fn column_weights<S: Simd>(simd: S, columns: [i16x8<S>; WARPED_BLOCK_SIZE]) -> TapWeights<S> {
+    #[cfg(target_arch = "x86_64")]
+    return paired_column_taps(simd, columns);
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = simd;
+        transpose_warp_taps(columns)
+    }
+}
+
+/// The [`TapWeights`] of the filter of `phase` in every column.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn uniform_weights<S: Simd>(simd: S, phase: i32) -> TapWeights<S> {
+    #[cfg(target_arch = "x86_64")]
+    return tap_pairs(simd, warp_taps(simd, phase));
+    #[cfg(not(target_arch = "x86_64"))]
+    WARPED_TAPS[filter_index(phase)].map(|tap| i16x8::splat(simd, tap))
+}
+
+/// The column sums of `rows[t][c]` weighed by tap `t` of column `c`.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn tap_sum<S: Simd>(rows: [i16x8<S>; WARP_FILTER_TAPS], weights: &TapWeights<S>) -> i32x8<S> {
+    #[cfg(target_arch = "x86_64")]
+    return paired_sum(rows, weights);
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let (mut low, mut high) = rows[0].widening_mul(weights[0]);
+        for (row, &weight) in rows.iter().zip(weights).skip(1) {
+            let (l, h) = row.widening_mul(weight);
+            low += l;
+            high += h;
+        }
+        low.combine(high)
+    }
+}
+
+/// The vertical sum of output row `row`: on x86 each pair of intermediate
+/// rows interleaves into one multiply-add.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn rows_sum<S: Simd>(
     simd: S,
     intermediate: &Intermediate,
     row: usize,
-    weights: &[i16x16<S>; WARP_FILTER_TAPS / 2],
+    weights: &TapWeights<S>,
 ) -> i32x8<S> {
-    let pair = |pair: usize| {
-        let rows = intermediate[row + 2 * pair..]
-            .as_flattened()
-            .first_chunk::<16>();
-        rows.map_or(i16x16::splat(simd, 0), |rows| {
-            i16x16::load_array_ref(simd, rows)
-        })
-        .split()
-    };
-    let [(r0, r1), (r2, r3), (r4, r5), (r6, r7)] = core::array::from_fn(pair);
-    paired_sum([r0, r1, r2, r3, r4, r5, r6, r7], weights)
+    #[cfg(target_arch = "x86_64")]
+    {
+        let pair = |pair: usize| {
+            let rows = intermediate[row + 2 * pair..]
+                .as_flattened()
+                .first_chunk::<16>();
+            rows.map_or(i16x16::splat(simd, 0), |rows| {
+                i16x16::load_array_ref(simd, rows)
+            })
+            .split()
+        };
+        let [(r0, r1), (r2, r3), (r4, r5), (r6, r7)] = core::array::from_fn(pair);
+        tap_sum([r0, r1, r2, r3, r4, r5, r6, r7], weights)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    tap_sum(
+        core::array::from_fn(|tap| {
+            intermediate
+                .get(row + tap)
+                .map_or(i16x8::splat(simd, 0), |lanes| {
+                    i16x8::load_array_ref(simd, lanes)
+                })
+        }),
+        weights,
+    )
 }
 
 /// The column sums of `rows[2p][c] * weights[p][2c] + rows[2p + 1][c] *
 /// weights[p][2c + 1]` over the four tap pairs `p`, one multiply-add each.
+#[cfg(target_arch = "x86_64")]
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn paired_sum<S: Simd>(
@@ -1462,6 +1523,7 @@ fn paired_sum<S: Simd>(
     product(0) + product(1) + (product(2) + product(3))
 }
 
+#[cfg(target_arch = "x86_64")]
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn interleave_columns<S: Simd>(a: i16x8<S>, b: i16x8<S>) -> i16x16<S> {
@@ -1471,6 +1533,7 @@ fn interleave_columns<S: Simd>(a: i16x8<S>, b: i16x8<S>) -> i16x16<S> {
 
 /// One `Warped_Filters` row's tap pairs `2j, 2j + 1`, each repeated across
 /// the eight columns.
+#[cfg(target_arch = "x86_64")]
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn tap_pairs<S: Simd>(simd: S, taps: i16x8<S>) -> [i16x16<S>; WARP_FILTER_TAPS / 2] {
@@ -1483,6 +1546,7 @@ fn tap_pairs<S: Simd>(simd: S, taps: i16x8<S>) -> [i16x16<S>; WARP_FILTER_TAPS /
 /// taps, so one multiply-add of two interleaved intermediate rows sums both
 /// taps of every column. The regrouping is a 4x4 transpose of 32-bit tap
 /// pairs within each 128-bit half.
+#[cfg(target_arch = "x86_64")]
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn paired_column_taps<S: Simd>(

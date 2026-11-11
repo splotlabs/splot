@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Fused § 7.13.3.18 prediction of 4x4 and 8x8 eight-bit blocks: both
-//! references of a compound cell and their § 7.13.3.15 COMPOUND_AVERAGE, or
-//! one single-reference block and its `Clip1`.
+//! Fused § 7.13.3.18 prediction of 4x4 and 8x8 blocks: both references of
+//! a compound cell and their § 7.13.3.15 COMPOUND_AVERAGE, or one eight-bit
+//! single-reference block and its `Clip1`.
 //!
-//! A block whose windows lie inside their clip bounds and storage runs every
-//! pass in registers, with the arithmetic of the byte-lane kernels: a
-//! horizontal pass is `Round2(sum, InterRound0)` of halved taps (or the
-//! single-pass put `Round2`), a vertical-only pass weighs the samples by the
-//! halved taps, and a two-pass vertical rounds the intermediates. Every other
-//! block takes the general path. On AArch64 a cell runs as a block of the
-//! eight-bit NEON kernels.
+//! An eight-bit block whose windows lie inside their clip bounds and storage
+//! runs every pass in registers, with the arithmetic of the byte-lane
+//! kernels: a horizontal pass is `Round2(sum, InterRound0)` of halved taps
+//! (or the single-pass put `Round2`), a vertical-only pass weighs the samples
+//! by the halved taps, and a two-pass vertical rounds the intermediates.
+//! Every other block takes the general path. On AArch64 an eight-bit cell,
+//! and everywhere a 16-bit cell, runs as a block of the vector kernels.
 
 #![cfg_attr(
     not(any(target_arch = "x86_64", target_arch = "aarch64")),
@@ -31,8 +31,8 @@ use fearless_simd::{Simd, SimdFrom, i32x8, prelude::*, u8x16, u32x4, u64x2};
 /// `Clip3(clamped[1], clamped[2], clamped[0] + r)` and window column `c`
 /// at `Clip3(0, clamped[4], c + clamped[3])` from `origin`.
 #[derive(Clone, Copy)]
-pub(super) struct Cell<'a> {
-    source: &'a [u8],
+pub(super) struct Cell<'a, T = u8> {
+    source: &'a [T],
     origin: u32,
     stride: u32,
     horizontal: Option<&'static Taps>,
@@ -40,14 +40,14 @@ pub(super) struct Cell<'a> {
     clamped: Option<[i32; 5]>,
 }
 
-impl<'a> Cell<'a> {
+impl<'a, T: ReconSample> Cell<'a, T> {
     /// The cell of a `size`-square block at 1/1024-sample `[x, y]` with clip
     /// bounds `[firstX, firstY, lastX, lastY]`, or `None` when its clip range
-    /// is empty or its window leaves the storage of 16 bytes per row.
+    /// is empty or its window leaves the storage of 16 samples per row.
     #[allow(clippy::inline_always, reason = "measured compound cell hot path")]
     #[inline(always)]
     fn at(
-        view: &ReferencePlaneView<'a, u8>,
+        view: &ReferencePlaneView<'a, T>,
         interp: InterpolationFilter,
         size: usize,
         ([start_x, start_y], bounds): CellPlacement,
@@ -106,6 +106,34 @@ impl<'a> Cell<'a> {
                 Some([row, first_y, last_y, columns[0], columns[1]]),
             )
         })
+    }
+
+    /// This `size`-square cell as a block of the vector kernels: the
+    /// bounded rows of a clamped window, and its column `Clip3` as a remap.
+    #[inline]
+    fn block(&self, size: usize) -> super::block::Block<'a, T> {
+        let (top, rows, remap) = match self.clamped {
+            Some([row, first, last, offset, limit]) => (
+                row as isize,
+                [first as isize, last as isize],
+                Some(core::array::from_fn(|column| {
+                    (column as i32 + offset).max(0).min(limit) as u8
+                })),
+            ),
+            None => (0, [0, isize::MAX], None),
+        };
+        super::block::Block {
+            source: self.source,
+            stride: self.stride as usize,
+            origin: self.origin as usize,
+            top,
+            rows,
+            w: size,
+            h: size,
+            horizontal: self.horizontal,
+            vertical: self.vertical,
+            remap,
+        }
     }
 }
 
@@ -169,35 +197,6 @@ impl<'a> Cell<'a> {
             super::eight_bit::neon::predict(token, &self.block(size), &mut sink);
         }
         let _ = (size, output, stride);
-    }
-
-    /// This `size`-square cell as a block of the byte-lane kernels: the
-    /// bounded rows of a clamped window, and its column `Clip3` as a remap.
-    #[cfg(target_arch = "aarch64")]
-    #[inline]
-    fn block(&self, size: usize) -> super::block::Block<'a, u8> {
-        let (top, rows, remap) = match self.clamped {
-            Some([row, first, last, offset, limit]) => (
-                row as isize,
-                [first as isize, last as isize],
-                Some(core::array::from_fn(|column| {
-                    (column as i32 + offset).max(0).min(limit) as u8
-                })),
-            ),
-            None => (0, [0, isize::MAX], None),
-        };
-        super::block::Block {
-            source: self.source,
-            stride: self.stride as usize,
-            origin: self.origin as usize,
-            top,
-            rows,
-            w: size,
-            h: size,
-            horizontal: self.horizontal,
-            vertical: self.vertical,
-            remap,
-        }
     }
 }
 
@@ -400,6 +399,67 @@ fn filtered_at(
     false
 }
 
+/// [`compound_at`] of 16-bit references, clipped to `max`: `false` without
+/// writing outside the word-lane kernels or for a column-clamped window
+/// without a horizontal pass.
+pub(super) fn compound_u16(
+    references: [&ReferencePlaneView<'_, u16>; 2],
+    interp: InterpolationFilter,
+    size: usize,
+    placements: [CellPlacement; 2],
+    (forward, max): (i32, u16),
+    output: &mut [u16],
+    stride: usize,
+) -> bool {
+    if size != 4 && size != 8 {
+        return false;
+    }
+    let (Some(first), Some(second)) = (
+        Cell::at(references[0], interp, size, placements[0]),
+        Cell::at(references[1], interp, size, placements[1]),
+    ) else {
+        return false;
+    };
+    compound_cells_u16([&first, &second], size, (forward, max), output, stride)
+}
+
+/// Stores the COMPOUND_AVERAGE of two 16-bit cells of [`compound_u16`].
+fn compound_cells_u16(
+    cells: [&Cell<'_, u16>; 2],
+    size: usize,
+    (forward, max): (i32, u16),
+    output: &mut [u16],
+    stride: usize,
+) -> bool {
+    let blocks = cells.map(|cell| cell.block(size));
+    let blocks = [&blocks[0], &blocks[1]];
+    if blocks
+        .iter()
+        .any(|block| block.remap.is_some() && block.horizontal.is_none())
+    {
+        return false;
+    }
+    if blocks
+        .iter()
+        .all(|block| block.horizontal.is_none() && block.vertical.is_none())
+    {
+        super::portable::compound_u16(blocks, forward, max, &mut [], output, stride);
+        return true;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let len = blocks.iter().fold(0, |len, block| {
+            let rows = size + block.vertical.map_or(0, |taps| taps.span() - 1);
+            len.max(super::block::stage_len(rows, size, block.vertical))
+        });
+        super::with_subpel_intermediate(len, |stage| {
+            super::sixteen_bit::compound(blocks, forward, max, stage, output, stride)
+        })
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    super::sixteen_bit::compound(blocks, forward, max, &mut [], output, stride)
+}
+
 /// The most cells one [`CompoundCells`] program holds.
 const PROGRAM_CELLS: usize = 256;
 
@@ -517,36 +577,59 @@ static WINDOWS: [[i32; NUM_PHASES]; NUM_FILTER_TYPES] = {
     table
 };
 
-type CellPlane<'a, 'b, T> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [u8], usize);
-type U8Plane<'a, 'b> = ([ReferencePlaneView<'b, u8>; 2], &'a mut [u8], usize);
+type CellPlane<'a, 'b, T, O> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [O], usize);
+type Plane<'a, 'b, P> = ([ReferencePlaneView<'b, P>; 2], &'a mut [P], usize);
+type Written = [[u64; PROGRAM_CELLS / 64]; 2];
 
-/// Runs a [`CompoundCells`] program of eight-bit `size`-square cells into
-/// each plane (U and V share one program). Each cell that
-/// [`super::subpel_compound_cell_u8`] would store from its position and
+/// Runs a [`CompoundCells`] program of `size`-square cells into each plane
+/// (U and V share one program), clipped to `bit_depth`. Each cell that
+/// [`super::subpel_compound_cell`] would store from its position and
 /// placements is stored the same way and sets bit `index % 64` of word
 /// `index / 64` of its plane's mask;
 /// every other cell is left unwritten for the caller to predict.
 #[doc(hidden)]
 #[inline]
-pub fn subpel_compound_cells_u8<T: ReconSample>(
-    planes: [Option<CellPlane<'_, '_, T>>; 2],
+pub fn subpel_compound_cells<T: ReconSample, O: ReconSample>(
+    mut planes: [Option<CellPlane<'_, '_, T, O>>; 2],
     interp: InterpolationFilter,
     size: usize,
     cells: &mut CompoundCells,
-    cwp_weight: i16,
-) -> [[u64; PROGRAM_CELLS / 64]; 2] {
-    let written = [[0; PROGRAM_CELLS / 64]; 2];
-    let planes = planes.map(|plane| {
-        let (views, output, stride) = plane?;
-        let [Some(first), Some(second)] = views.each_ref().map(ReferencePlaneView::as_u8) else {
-            return None;
-        };
-        (stride >= size).then_some(([first, second], output, stride))
-    });
+    (cwp_weight, bit_depth): (i16, crate::format::BitDepth),
+) -> Written {
     if size != 4 && size != 8 {
-        return written;
+        return [[0; PROGRAM_CELLS / 64]; 2];
     }
-    let geometry = |plane: &Option<U8Plane<'_, '_>>| {
+    let forward = i32::from(cwp_weight);
+    if O::u8_slice(&[]).is_some() {
+        let planes = planes.each_mut().map(|plane| {
+            let (views, output, stride) = plane.as_mut()?;
+            let views = [views[0].as_u8()?, views[1].as_u8()?];
+            (*stride >= size).then_some((views, O::u8_slice_mut(output)?, *stride))
+        });
+        return by_geometry(
+            planes,
+            |mut planes| baseline_simd!(simd => program(simd, &mut planes, interp, size, cells, forward)),
+        );
+    }
+    let planes = planes.each_mut().map(|plane| {
+        let (views, output, stride) = plane.as_mut()?;
+        let views = [views[0].as_u16()?, views[1].as_u16()?];
+        (*stride >= size).then_some((views, O::u16_slice_mut(output)?, *stride))
+    });
+    let clip = (forward, bit_depth.max_sample());
+    by_geometry(
+        planes,
+        |mut planes| baseline_simd!(simd => program_u16(simd, &mut planes, interp, size, cells, clip)),
+    )
+}
+
+/// Runs `run` on both planes when they share their reference geometry,
+/// else on each plane alone.
+fn by_geometry<P: ReconSample>(
+    planes: [Option<Plane<'_, '_, P>>; 2],
+    mut run: impl FnMut([Option<Plane<'_, '_, P>>; 2]) -> Written,
+) -> Written {
+    let geometry = |plane: &Option<Plane<'_, '_, P>>| {
         plane.as_ref().map(|(views, ..)| {
             views.each_ref().map(|view| {
                 (
@@ -558,8 +641,6 @@ pub fn subpel_compound_cells_u8<T: ReconSample>(
             })
         })
     };
-    let forward = i32::from(cwp_weight);
-    let mut run = |mut planes| baseline_simd!(simd => program(simd, &mut planes, interp, size, cells, forward));
     if planes[1].is_none() || geometry(&planes[0]) == geometry(&planes[1]) {
         return run(planes);
     }
@@ -583,13 +664,13 @@ struct Lanes {
 impl Lanes {
     /// The [`Cell`] of `lane` read from `source` at `stride`.
     #[inline]
-    fn cell<'a>(
+    fn cell<'a, T>(
         &self,
         lane: usize,
-        (source, stride): (&'a [u8], u32),
+        (source, stride): (&'a [T], u32),
         filters: &'static [Option<Taps>; NUM_PHASES],
         clamped: bool,
-    ) -> Cell<'a> {
+    ) -> Cell<'a, T> {
         let taps = |pass: usize| filters[self.phases[pass][lane] as usize & 15].as_ref();
         Cell {
             source,
@@ -618,9 +699,9 @@ struct Sources<'a> {
 /// [`Cell::at`] of eight cells at once.
 #[allow(clippy::inline_always, reason = "compound cell program setup")]
 #[inline(always)]
-fn lanes<S: Simd>(
+fn lanes<S: Simd, T: ReconSample>(
     simd: S,
-    view: &ReferencePlaneView<'_, u8>,
+    view: &ReferencePlaneView<'_, T>,
     windows: &[i32; NUM_PHASES],
     size: usize,
     (starts, bounds): (&[[i32; PROGRAM_CELLS]; 2], &[[i32; PROGRAM_CELLS]; 4]),
@@ -703,12 +784,12 @@ fn lanes<S: Simd>(
 #[inline(never)]
 fn program<S: Simd>(
     simd: S,
-    planes: &mut [Option<U8Plane<'_, '_>>; 2],
+    planes: &mut [Option<Plane<'_, '_, u8>>; 2],
     interp: InterpolationFilter,
     size: usize,
     cells: &mut CompoundCells,
     forward: i32,
-) -> [[u64; PROGRAM_CELLS / 64]; 2] {
+) -> Written {
     let mut written = [[0; PROGRAM_CELLS / 64]; 2];
     let Some((first_views, ..)) = &planes[0] else {
         return written;
@@ -791,6 +872,64 @@ fn program<S: Simd>(
                     )
                 };
                 if stored {
+                    written[index / 64 % 4] |= 1 << (index % 64);
+                }
+            }
+        }
+    }
+    written
+}
+
+/// [`program`] of 16-bit planes: every cell the [`Lanes`] admit goes
+/// through [`compound_cells_u16`].
+#[inline(never)]
+fn program_u16<S: Simd>(
+    simd: S,
+    planes: &mut [Option<Plane<'_, '_, u16>>; 2],
+    interp: InterpolationFilter,
+    size: usize,
+    cells: &CompoundCells,
+    clip: (i32, u16),
+) -> Written {
+    let mut written = [[0; PROGRAM_CELLS / 64]; 2];
+    let Some((first_views, ..)) = &planes[0] else {
+        return written;
+    };
+    let first_views = *first_views;
+    let strides = first_views.map(|view| u32::try_from(view.stride).unwrap_or(0));
+    let filter = interp.pass_index(size as u32) as usize;
+    let (filters, windows) = (&TAPS[filter], &WINDOWS[filter]);
+    let len = cells.len.min(PROGRAM_CELLS);
+    for batch in (0..len).step_by(8) {
+        let lanes = [0, 1].map(|reference| {
+            let program = (&cells.starts[reference], &cells.bounds[reference]);
+            lanes(simd, &first_views[reference], windows, size, program, batch)
+        });
+        let mut pending = lanes[0].valid & lanes[1].valid & ((1 << (len - batch).min(8)) - 1);
+        while pending != 0 {
+            let lane = pending.trailing_zeros() as usize;
+            pending &= pending - 1;
+            let index = batch + lane;
+            let Some(&[row, col]) = cells.positions.get(index) else {
+                continue;
+            };
+            for (slot, written) in planes.iter_mut().zip(&mut written) {
+                let Some((views, output, stride)) = slot else {
+                    continue;
+                };
+                let at = row as usize * *stride + col as usize;
+                let Some(output) = output
+                    .get_mut(at..)
+                    .filter(|output| (size - 1) * *stride + size <= output.len())
+                else {
+                    continue;
+                };
+                let cells = [0, 1].map(|reference| {
+                    let lanes = &lanes[reference];
+                    let source = (views[reference].samples, strides[reference]);
+                    lanes.cell(lane, source, filters, lanes.keys[lane] >= 25)
+                });
+                if compound_cells_u16([&cells[0], &cells[1]], size, clip, output, *stride) {
                     written[index / 64 % 4] |= 1 << (index % 64);
                 }
             }

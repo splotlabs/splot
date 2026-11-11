@@ -426,12 +426,12 @@ fn compound_cell_programs_match_the_placement_entry() {
             let mut expected = 0u64;
             for (index, ([row, col], placements)) in placed.iter().enumerate() {
                 let output = &mut want[row * stride + col..];
-                if subpel_compound_cell_u8(
+                if subpel_compound_cell(
                     [&view, &view],
                     interp,
                     size,
                     *placements,
-                    11,
+                    (11, BitDepth::Eight),
                     output,
                     stride,
                 ) {
@@ -439,12 +439,12 @@ fn compound_cell_programs_match_the_placement_entry() {
                 }
             }
             let mut got = vec![0u8; 4 * size * stride];
-            let written = subpel_compound_cells_u8(
+            let written = subpel_compound_cells(
                 [Some((&[view, view], &mut got[..], stride)), None],
                 interp,
                 size,
                 &mut program,
-                11,
+                (11, BitDepth::Eight),
             );
             assert_eq!(written[0], [expected, 0, 0, 0], "{interp:?} {size}");
             assert!(
@@ -506,12 +506,12 @@ fn placed_compound_cells_match_the_compound_entry() {
             )
             .unwrap();
             let mut got = vec![0u8; size * size];
-            assert!(subpel_compound_cell_u8(
+            assert!(subpel_compound_cell(
                 [&view, &view],
                 interp,
                 size,
                 placements,
-                11,
+                (11, BitDepth::Eight),
                 &mut got,
                 size
             ));
@@ -520,21 +520,21 @@ fn placed_compound_cells_match_the_compound_entry() {
     }
     let placement = ([8 << 10, 8 << 10], [0, 0, 39, 31]);
     let mut out = vec![0u8; 256];
-    assert!(!subpel_compound_cell_u8(
+    assert!(!subpel_compound_cell(
         [&view, &view],
         interp,
         16,
         [placement; 2],
-        8,
+        (8, BitDepth::Eight),
         &mut out,
         16
     ));
-    assert!(!subpel_compound_cell_u8(
+    assert!(!subpel_compound_cell(
         [&view, &view],
         interp,
         8,
         [placement; 2],
-        8,
+        (8, BitDepth::Eight),
         &mut out[..60],
         8
     ));
@@ -590,12 +590,12 @@ fn full_sample_cells_match_the_materialized_average() {
                         .unwrap();
                 let stride = size + 3;
                 let mut got = vec![u8::MAX; stride * size];
-                assert!(subpel_compound_cell_u8(
+                assert!(subpel_compound_cell(
                     [&views[0], &views[1]],
                     interp,
                     size,
                     placements,
-                    weight,
+                    (weight, BitDepth::Eight),
                     &mut got,
                     stride,
                 ));
@@ -790,4 +790,98 @@ fn neon_byte_lanes_match_the_portable_kernels() {
         ..full_pel_params(InterpolationFilter::EightTap, 8, 8, 0, 0, 72, 44)
     };
     assert!(cell::put_cell(&view, &params).is_some());
+}
+
+/// The 16-bit placement entry stores the § 7.13.3.18 oracle's
+/// COMPOUND_AVERAGE for every cell it takes, for 10-bit mixed and
+/// extreme-contrast samples at windows inside, across and outside their
+/// clip bounds, and a cell program stores the same cells.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[test]
+fn sixteen_bit_compound_cells_match_the_oracle() {
+    let (ref_w, ref_h) = (40usize, 32usize);
+    let textures: [Vec<u16>; 2] = [
+        (0..ref_w * ref_h)
+            .map(|i| ((i * 73 + i / ref_w * 29) % 1024) as u16)
+            .collect(),
+        (0..ref_w * ref_h)
+            .map(|i| if (i + i / ref_w) % 3 == 0 { 1023 } else { 0 })
+            .collect(),
+    ];
+    let mut seed = 11u32;
+    let mut next = |range: i32| {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        (seed >> 8) as i32 % range
+    };
+    let filters = [
+        InterpolationFilter::EightTap,
+        InterpolationFilter::EightTapSmooth,
+        InterpolationFilter::EightTapSharp,
+        InterpolationFilter::Bilinear,
+    ];
+    let mut taken = 0;
+    for (case, (texture, interp, size)) in textures
+        .iter()
+        .flat_map(|texture| filters.map(|interp| (texture, interp)))
+        .flat_map(|(texture, interp)| [4, 8].map(|size| (texture, interp, size)))
+        .enumerate()
+    {
+        let view = ReferencePlaneView::new(texture, ref_w, ref_h).unwrap();
+        let forward = [8, 4, 11, 0, 16][case % 5];
+        let weights = (forward as i16, BitDepth::Ten);
+        let stride = 6 * size;
+        let mut program = CompoundCells::default();
+        let (mut want, mut expected) = (vec![0u16; 4 * size * stride], 0u64);
+        for cell in 0..19 {
+            let mut placement = || -> CellPlacement {
+                let [x, y] = [next(ref_w as i32 + 8) - 4, next(ref_h as i32 + 8) - 4];
+                let [first_x, first_y] = [next(ref_w as i32) - 2, next(ref_h as i32) - 2];
+                let [last_x, last_y] = [first_x + next(30) - 3, first_y + next(30) - 3];
+                (
+                    [(x << 10) + (next(16) << 6), (y << 10) + (next(16) << 6)],
+                    [first_x, first_y, last_x, last_y],
+                )
+            };
+            let placements = [placement(), placement()];
+            let [row, col] = [(cell / 6) * size, (cell % 6) * size];
+            assert!(program.push([row, col], placements));
+            let output = &mut want[row * stride + col..];
+            if !subpel_compound_cell(
+                [&view; 2], interp, size, placements, weights, output, stride,
+            ) {
+                continue;
+            }
+            expected |= 1 << cell;
+            let [first, second] = placements.map(|([start_x, start_y], [fx, fy, lx, ly])| {
+                let params = SubpelPredictParams {
+                    start_x,
+                    start_y,
+                    first_x: fx,
+                    first_y: fy,
+                    last_x: lx,
+                    last_y: ly,
+                    bit_depth: BitDepth::Ten,
+                    ..full_pel_params(interp, size, size, 0, 0, ref_w as i32, ref_h as i32)
+                };
+                reference_subpel_compound(texture, ref_w, ref_h, &params)
+            });
+            for (index, (&a, &b)) in first.iter().zip(&second).enumerate() {
+                let got = i32::from(output[index / size * stride + index % size]);
+                let blended = super::super::block::blend(a, b, forward, 1023);
+                assert_eq!(got, blended, "{interp:?} {size} cell {cell}");
+            }
+        }
+        taken += expected.count_ones();
+        let mut got = vec![0u16; 4 * size * stride];
+        let written = subpel_compound_cells(
+            [Some((&[view, view], &mut got[..], stride)), None],
+            interp,
+            size,
+            &mut program,
+            weights,
+        );
+        assert_eq!(written[0], [expected, 0, 0, 0], "{interp:?} {size}");
+        assert_eq!(got, want, "{interp:?} {size}");
+    }
+    assert!(taken > 60, "{taken}");
 }

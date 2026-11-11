@@ -1277,10 +1277,9 @@ pub(super) fn predict_uniform_motion_compound_average_into<
         prediction.block_w,
         prediction.block_h,
     );
-    if let Some(output) = O::u8_slice_mut(output)
-        && prediction.block_w == prediction.block_h
+    if prediction.block_w == prediction.block_h
         && !prediction.scalings.into_iter().any(PlaneScaling::is_scaled)
-        && splot_recon::subpel_compound_cell_u8(
+        && splot_recon::subpel_compound_cell(
             [&prediction.views[0], &prediction.views[1]],
             block.interp,
             prediction.block_w,
@@ -1290,7 +1289,7 @@ pub(super) fn predict_uniform_motion_compound_average_into<
                     [params.first_x, params.first_y, params.last_x, params.last_y],
                 )
             }),
-            cwp_weight,
+            (cwp_weight, info.bit_depth()),
             output,
             output_stride,
         )
@@ -1469,10 +1468,8 @@ pub(super) fn predict_motion_grid_compound_average_into<
         && refine.1 == 1
         && refine.2 >> sub_x == subblock_w
         && refine.2 >> sub_y == subblock_h;
-    let lean_unscaled = unscaled && O::u8_slice(&[]).is_some();
     let check_uniform = !uniform_everywhere && implicit_mask && cwp_weight == CWP_EQUAL;
-    let programmed =
-        |size: usize| O::u8_slice(&[]).is_some() && size == subblock_w && size == subblock_h;
+    let programmed = |size: usize| size == subblock_w && size == subblock_h;
     macro_rules! cell_inputs {
         ($cell_row:expr, $cell_col:expr, [$col:expr, $row:expr, $height:expr], $lean:expr) => {{
             let (col, row, height) = ($col, $row, $height);
@@ -1500,7 +1497,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     unscaled_cell_params(placement, [width, height], (bit_depth, block.interp))
                 });
                 (params, uniform, [col, row, width, height])
-            } else if lean_unscaled {
+            } else if unscaled {
                 let bounds = compound_optflow_bounds(
                     subblock_area,
                     (sub_x, sub_y),
@@ -1601,20 +1598,17 @@ pub(super) fn predict_motion_grid_compound_average_into<
             }
             let mut lean = |placements, size| {
                 (programmed(size) && program.push([row, col], placements))
-                    || output
-                        .get_mut(col..)
-                        .and_then(O::u8_slice_mut)
-                        .is_some_and(|output| {
-                            splot_recon::subpel_compound_cell_u8(
-                                [&prediction.views[0], &prediction.views[1]],
-                                block.interp,
-                                size,
-                                placements,
-                                cwp_weight,
-                                output,
-                                output_stride,
-                            )
-                        })
+                    || output.get_mut(col..).is_some_and(|output| {
+                        splot_recon::subpel_compound_cell(
+                            [&prediction.views[0], &prediction.views[1]],
+                            block.interp,
+                            size,
+                            placements,
+                            (cwp_weight, bit_depth),
+                            output,
+                            output_stride,
+                        )
+                    })
             };
             let (params, uniform, rect) =
                 cell_inputs!(cell_row, cell_col, [col, row, height], lean);
@@ -1689,37 +1683,31 @@ pub(super) fn predict_motion_grid_compound_average_into<
             if skip == [true; 2] {
                 continue;
             }
-            let mut lean =
-                |placements, size| {
-                    skip == [false; 2]
-                        && (programmed(size) && program.push([row, col], placements)
-                            || output.get_mut(col..).and_then(O::u8_slice_mut).is_some_and(
-                                |output| {
-                                    splot_recon::subpel_compound_cell_u8(
-                                        [&prediction.views[0], &prediction.views[1]],
-                                        block.interp,
-                                        size,
-                                        placements,
-                                        cwp_weight,
-                                        output,
-                                        output_stride,
-                                    )
-                                },
-                            ) && second_output
-                                .get_mut(col..)
-                                .and_then(O::u8_slice_mut)
-                                .is_some_and(|output| {
-                                    splot_recon::subpel_compound_cell_u8(
-                                        [&second.views[0], &second.views[1]],
-                                        block.interp,
-                                        size,
-                                        placements,
-                                        cwp_weight,
-                                        output,
-                                        second_stride,
-                                    )
-                                }))
-                };
+            let mut lean = |placements, size| {
+                skip == [false; 2]
+                    && (programmed(size) && program.push([row, col], placements)
+                        || output.get_mut(col..).is_some_and(|output| {
+                            splot_recon::subpel_compound_cell(
+                                [&prediction.views[0], &prediction.views[1]],
+                                block.interp,
+                                size,
+                                placements,
+                                (cwp_weight, bit_depth),
+                                output,
+                                output_stride,
+                            )
+                        }) && second_output.get_mut(col..).is_some_and(|output| {
+                            splot_recon::subpel_compound_cell(
+                                [&second.views[0], &second.views[1]],
+                                block.interp,
+                                size,
+                                placements,
+                                (cwp_weight, bit_depth),
+                                output,
+                                second_stride,
+                            )
+                        }))
+            };
             let (params, uniform, rect) =
                 cell_inputs!(cell_row, cell_col, [col, row, height], lean);
             let cell = (&params, uniform, rect);
@@ -1801,15 +1789,15 @@ fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
     if program.is_empty() {
         return Ok(());
     }
-    let written = splot_recon::subpel_compound_cells_u8(
+    let written = splot_recon::subpel_compound_cells(
         planes.each_mut().map(|plane| {
             let (views, output, stride) = plane.as_mut()?;
-            Some((*views, O::u8_slice_mut(output)?, *stride))
+            Some((*views, &mut **output, *stride))
         }),
         interp,
         size,
         program,
-        grid.cwp_weight,
+        (grid.cwp_weight, grid.bit_depth),
     );
     for (plane, written) in planes.into_iter().zip(written) {
         let Some((views, output, stride)) = plane else {
