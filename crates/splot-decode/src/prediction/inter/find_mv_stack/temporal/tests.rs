@@ -1568,3 +1568,70 @@ fn frame_temporal_storage_reuses_bands_and_clears_previous_products() {
         }
     }
 }
+
+#[test]
+fn a_band_projects_once_the_same_band_of_every_reference_field_is_published() {
+    use crate::prediction::inter::MotionFieldHandle;
+    let layout = MotionFieldLayout::new(64, 16, 16).unwrap();
+    let source = TemporalMotionField::metadata_only(layout, true, (64, 256), &[Some(1)]);
+    let other = TemporalMotionField::metadata_only(layout, true, (64, 256), &[Some(3)]);
+    let metadata = [Some(source.metadata()), Some(other.metadata())];
+    let mut context = TemporalMvContext::empty();
+    let plan = context
+        .begin_banded_refresh(
+            layout,
+            2,
+            TemporalProjectionConfig {
+                frame_size: (64, 256),
+                step: 1,
+                unit_size8: 8,
+                enable_tip: false,
+                enable_trajectory: false,
+                reduced: false,
+            },
+            &[0, 1],
+            &[true, true],
+            &[3, 1],
+            &metadata,
+            &[Some(layout), Some(layout)],
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+    assert_eq!(plan.len(), 4);
+    let fields = [source, other].map(|field| {
+        let handle = MotionFieldHandle::pending_with_layout(layout);
+        handle.begin_bands(&field.metadata()).unwrap();
+        Some(handle)
+    });
+    let band = 1;
+    let reads: Vec<_> = plan.requirements(band).collect();
+    assert!(!reads.is_empty());
+    assert!(
+        reads.iter().all(|&(_, read)| read == band),
+        "§ 7.9.8 keeps a projection in its row"
+    );
+    for neighbour in [0, 2, 3] {
+        for field in fields.iter().flatten() {
+            field.publish_builder_band(neighbour);
+        }
+    }
+    assert!(
+        !plan.sources_settled(band, &fields),
+        "neighbour bands never admit a band"
+    );
+    let (last, first) = reads.split_last().unwrap();
+    for &(slot, read) in first {
+        fields[slot].as_ref().unwrap().publish_builder_band(read);
+    }
+    assert!(
+        !plan.sources_settled(band, &fields),
+        "one reference band is still owed"
+    );
+    fields[last.0]
+        .as_ref()
+        .unwrap()
+        .publish_builder_band(last.1);
+    assert!(plan.sources_settled(band, &fields));
+}

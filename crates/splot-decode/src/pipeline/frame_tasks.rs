@@ -679,23 +679,24 @@ pub(crate) struct TipFrameInputs<T: SplitSample> {
 
 const TIP_INIT: usize = 0;
 const TIP_FINISH: usize = 1;
-const TIP_BAND: usize = 2;
-const TIP_PREDICT: usize = 3;
+const TIP_PROJECT: usize = 2;
+const TIP_BAND: usize = 3;
 
-/// One TIP output frame as row-scheduled stages: the projection, the bands'
-/// motion (any order, concurrently, each admitted once its references
-/// published the rows it reads, each folding the finished prefix in band
-/// order, the last one publishing the field the next TIP frame projects),
-/// the bands' prediction, and the deblock plus freeze.
+/// One TIP output frame as row-scheduled stages: the header products, the
+/// projection of each motion-field band once the references published that
+/// band of their fields, the bands' motion (any order, concurrently, each
+/// admitted once its band is projected and its references published the rows
+/// it reads, each predicting its samples; the last band of a row publishes
+/// that row of the field the next TIP frame projects), and the deblock plus
+/// freeze.
 pub(crate) struct TipFrame<T: SplitSample> {
     wake: RowWake,
     options: DecodeOptions,
     /// Set when the stages run on the driver, which predicts bands in place.
     inline: bool,
     spares: Arc<inter::TipSpares<T>>,
-    stages: [Stage; 2],
+    stages: [Stage; 3],
     bands: ParallelStage,
-    predicts: ParallelStage,
     failed: AtomicBool,
     inputs: Mutex<Option<TipFrameInputs<T>>>,
     core: OnceLock<Arc<FrameHeaderCore>>,
@@ -705,7 +706,9 @@ pub(crate) struct TipFrame<T: SplitSample> {
     reference: RwLock<Option<inter::InterReferenceState<T>>>,
     entropy: Mutex<Option<inter::EntropyDependencies>>,
     motion_deps: Mutex<Option<RefSlots<Option<inter::MotionFieldHandle>>>>,
-    band_bounds: OnceLock<Vec<inter::RowReferenceBounds>>,
+    /// Each band's reference rows, set when its motion-field band is
+    /// projected; empty when the bands run in place.
+    band_bounds: OnceLock<Vec<OnceLock<inter::RowReferenceBounds>>>,
     work: RwLock<Option<inter::TipOutputStages<T>>>,
     motion: Mutex<Option<inter::MotionFieldHandle>>,
     finish: Mutex<Option<PendingFinish<T>>>,
@@ -720,7 +723,6 @@ impl<T: SplitSample> TipFrame<T> {
             spares,
             stages: core::array::from_fn(|_| Stage::new(0)),
             bands: ParallelStage::new(),
-            predicts: ParallelStage::new(),
             failed: AtomicBool::new(false),
             inputs: Mutex::new(None),
             core: OnceLock::new(),
@@ -740,7 +742,6 @@ impl<T: SplitSample> TipFrame<T> {
             stage.reset(0);
         }
         self.bands.set_rows(0);
-        self.predicts.set_rows(0);
         *self.failed.get_mut() = false;
         self.inputs.get_mut().take();
         self.core.take();
@@ -763,6 +764,7 @@ impl<T: SplitSample> TipFrame<T> {
         *self.motion.get_mut() = Some(inputs.motion.clone());
         self.stages[TIP_INIT].reset(1);
         self.stages[TIP_FINISH].reset(1);
+        self.stages[TIP_PROJECT].reset(0);
         *self.inputs.get_mut() = Some(inputs);
     }
 
@@ -776,7 +778,7 @@ impl<T: SplitSample> TipFrame<T> {
             reference,
             geometry,
             mut products,
-            motion: _,
+            motion,
             finish,
             entropy: _,
             motion_deps: _,
@@ -811,13 +813,18 @@ impl<T: SplitSample> TipFrame<T> {
             &reference,
             geometry,
             offset,
-            !self.inline,
+            (!self.inline).then_some(motion),
         )?;
         self.bands.set_rows(work.band_count());
-        if work.split() {
-            self.predicts.set_rows(work.band_count());
-        }
-        let _ = self.band_bounds.set(work.band_bounds().to_vec());
+        let gated = if work.projected_bands() == 0 {
+            0
+        } else {
+            work.band_count()
+        };
+        let _ = self
+            .band_bounds
+            .set((0..gated).map(|_| OnceLock::new()).collect());
+        self.stages[TIP_PROJECT].set_rows(work.projected_bands());
         *self.work.write() = Some(work);
         *self.reference.write() = Some(reference);
         Ok(())
@@ -835,26 +842,22 @@ impl<T: SplitSample> TipFrame<T> {
         let work = work
             .as_ref()
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        let field = if self.inline {
-            work.band_in_place(index, sequence, core, reference)?
-        } else if work.split() {
-            let field = work.band_motion(index, sequence, core, reference)?;
-            self.predicts.ready(index);
-            field
+        if self.inline {
+            if let Some(field) = work.band_in_place(index, sequence, core, reference)?
+                && let Some(motion) = self.motion.lock().take()
+            {
+                motion.publish(field);
+            }
         } else {
             work.band(index, sequence, core, reference)?;
-            work.commit_ready()?
-        };
-        if let Some(field) = field
-            && let Some(motion) = self.motion.lock().take()
-        {
-            motion.publish(field);
         }
         Ok(())
     }
 
-    fn predict(&self, index: usize) -> Result<()> {
-        let (Some(core), Some(sequence)) = (self.core.get(), self.sequence.get()) else {
+    /// Projects motion-field band `index` and records the reference rows of
+    /// the bands in it.
+    fn project(&self, index: usize) -> Result<()> {
+        let (Some(core), Some(bounds)) = (self.core.get(), self.band_bounds.get()) else {
             return Err(inter::invalid_inter_tile_scheduling_state());
         };
         let reference = self.reference.read();
@@ -865,7 +868,11 @@ impl<T: SplitSample> TipFrame<T> {
             .read()
             .as_ref()
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?
-            .band_predict(index, sequence, core, reference)
+            .project(index, core, reference, |band, needs| {
+                if let Some(slot) = bounds.get(band) {
+                    let _ = slot.set(needs);
+                }
+            })
     }
 
     fn finish_frame(&self) -> Result<()> {
@@ -922,7 +929,7 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
                 && motion_deps.as_ref().is_none_or(|deps| {
                     deps.iter()
                         .flatten()
-                        .all(inter::MotionFieldHandle::field_settled)
+                        .all(inter::MotionFieldHandle::metadata_settled)
                 })
         })?;
         Some(Claim {
@@ -945,29 +952,30 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
             .inter
             .as_ref()
             .map_or(&[][..], |inter| inter.ref_frame_idx.as_slice());
-        if let Some(row) = self.bands.claim(|band| {
-            self.reference.try_read().is_some_and(|reference| {
-                reference.as_ref().is_some_and(|reference| {
-                    bounds.get(band).is_none_or(|bound| {
-                        inter::bounds_satisfied(reference, core, ref_frame_idx, bound)
-                    })
-                })
-            })
+        if let Some(row) = self.stages[TIP_PROJECT].claim(|band| {
+            let (Some(work), Some(reference)) = (self.work.try_read(), self.reference.try_read())
+            else {
+                return false;
+            };
+            work.as_ref()
+                .zip(reference.as_ref())
+                .is_some_and(|(work, reference)| work.projection_ready(band, reference))
         }) {
+            return Some(Claim {
+                stage: TIP_PROJECT,
+                row,
+            });
+        }
+        if let Some(row) = self
+            .bands
+            .claim(|band| band_admitted(&self.reference, bounds, band, core, ref_frame_idx))
+        {
             return Some(Claim {
                 stage: TIP_BAND,
                 row,
             });
         }
-        if let Some(row) = self.predicts.claim_ready() {
-            return Some(Claim {
-                stage: TIP_PREDICT,
-                row,
-            });
-        }
-        if let Some(row) = self.stages[TIP_FINISH]
-            .claim(|_| self.bands.is_finished() && self.predicts.is_finished())
-        {
+        if let Some(row) = self.stages[TIP_FINISH].claim(|_| self.bands.is_finished()) {
             return Some(Claim {
                 stage: TIP_FINISH,
                 row,
@@ -979,13 +987,12 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
     fn run(&self, claim: Claim) {
         let outcome = match claim.stage {
             TIP_INIT => self.init(),
+            TIP_PROJECT => self.project(claim.row),
             TIP_BAND => self.band(claim.row),
-            TIP_PREDICT => self.predict(claim.row),
             _ => self.finish_frame(),
         };
         match claim.stage {
             TIP_BAND => self.bands.finish(claim.row),
-            TIP_PREDICT => self.predicts.finish(claim.row),
             stage => self.stages[stage].finish(claim.row),
         }
         if let Err(error) = outcome {
@@ -997,6 +1004,29 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
     fn done(&self) -> bool {
         self.failed.load(Ordering::Acquire) || self.stages[TIP_FINISH].is_finished()
     }
+}
+
+/// Whether TIP band `band` may run: its motion-field band is projected and
+/// the references published every row it reads. Bands that run in place have
+/// no bounds and are always admitted.
+fn band_admitted<T: SplitSample>(
+    reference: &RwLock<Option<inter::InterReferenceState<T>>>,
+    bounds: &[OnceLock<inter::RowReferenceBounds>],
+    band: usize,
+    core: &FrameHeaderCore,
+    ref_frame_idx: &[u32],
+) -> bool {
+    if bounds.is_empty() {
+        return true;
+    }
+    let Some(bound) = bounds.get(band).and_then(OnceLock::get) else {
+        return false;
+    };
+    reference.try_read().is_some_and(|reference| {
+        reference
+            .as_ref()
+            .is_some_and(|reference| inter::bounds_satisfied(reference, core, ref_frame_idx, bound))
+    })
 }
 
 /// Reserves the pending frame and product handles published by one TIP job.

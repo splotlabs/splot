@@ -12,6 +12,7 @@ use splot_recon::{PlaneId, ReconError};
 use super::*;
 
 mod admission;
+pub(super) use admission::project_temporal_band;
 
 use admission::TileCommit;
 pub(super) use admission::prepare_scheduled_tile;

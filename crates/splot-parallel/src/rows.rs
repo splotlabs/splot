@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 
-use parking_lot::{Condvar, Mutex, RwLock};
+use parking_lot::{Condvar, Mutex, RecursiveRwLock, RwLock};
 
 use crate::error::ParallelError;
 
@@ -330,7 +330,9 @@ struct Frames {
 /// worker made it and whichever worker popped the finished frame.
 #[derive(Default)]
 struct Core {
-    frames: RwLock<Frames>,
+    /// Readers never queue behind a waiting writer: under load, scans
+    /// convoyed behind one preempted push or pop.
+    frames: RecursiveRwLock<Frames>,
     generation: AtomicU64,
     waiters: AtomicUsize,
     parked: AtomicUsize,

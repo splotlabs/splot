@@ -96,6 +96,7 @@ pub(super) fn commit_temporal_motion_blocks(
 /// land there, so a frame's motion field can publish at the end of its prepass
 /// instead of at the end of its ordered pixel commit, which is what lets the
 /// next frame's § 7.9 prelude start while this one is still committing.
+#[derive(Debug)]
 pub(super) struct MotionFieldUnits {
     field: Mutex<Option<TemporalMotionField>>,
     owed: AtomicUsize,
@@ -105,6 +106,7 @@ pub(super) struct MotionFieldUnits {
     handle: Option<MotionFieldHandle>,
 }
 
+#[derive(Debug)]
 struct MotionBandUnits {
     owed: AtomicUsize,
 }
@@ -138,6 +140,22 @@ impl MotionFieldUnits {
     pub(super) fn retire(&mut self) {
         self.handle.take();
         self.field.get_mut().take();
+    }
+
+    /// Collects units into `field` with nothing to publish, for a caller that
+    /// takes the field with [`Self::take_field`].
+    pub(super) fn reset(&mut self, field: TemporalMotionField) {
+        self.retire();
+        *self.field.get_mut() = Some(field);
+        self.bands.clear();
+        *self.owed.get_mut() = 0;
+        self.units = 0;
+        self.units_per_row = 0;
+    }
+
+    /// Takes the collected field, or `None` once it has been taken.
+    pub(super) fn take_field(&self) -> Option<TemporalMotionField> {
+        self.locked().take()
     }
 
     pub(super) fn reset_publishing(

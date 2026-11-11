@@ -177,9 +177,10 @@ pub(super) struct TipReconstructScratch {
 
 /// The TIP output walk's reusable state: one entry per full-width row band.
 #[derive(Debug, Default)]
-pub(crate) struct TipOutputScratch<T: ReconSample> {
-    bands: Vec<parking_lot::Mutex<TipOutputBand<T>>>,
+pub(crate) struct TipOutputScratch {
+    bands: Vec<parking_lot::Mutex<TipOutputBand>>,
     rects: Vec<splot_recon::PlaneRect>,
+    motion: Option<super::temporal::MotionFieldUnits>,
 }
 
 /// The storage TIP output frames of one decode hand back when they finish,
@@ -187,12 +188,12 @@ pub(crate) struct TipOutputScratch<T: ReconSample> {
 #[derive(Debug, Default)]
 pub(crate) struct TipSpares<T: ReconSample> {
     temporal: parking_lot::Mutex<Vec<TemporalMvContext>>,
-    output: parking_lot::Mutex<Vec<TipOutputScratch<T>>>,
+    output: parking_lot::Mutex<Vec<TipOutputScratch>>,
     surfaces: parking_lot::Mutex<Vec<splot_recon::OwnedFrameRect<T>>>,
 }
 
 impl<T: ReconSample> TipSpares<T> {
-    pub(crate) fn take(&self) -> (TemporalMvContext, TipOutputScratch<T>) {
+    pub(crate) fn take(&self) -> (TemporalMvContext, TipOutputScratch) {
         (
             self.temporal
                 .lock()
@@ -202,7 +203,7 @@ impl<T: ReconSample> TipSpares<T> {
         )
     }
 
-    pub(crate) fn give(&self, temporal: TemporalMvContext, output: TipOutputScratch<T>) {
+    pub(crate) fn give(&self, temporal: TemporalMvContext, output: TipOutputScratch) {
         self.temporal.lock().push(temporal);
         self.output.lock().push(output);
     }
@@ -225,13 +226,9 @@ impl<T: ReconSample> TipSpares<T> {
 /// One TIP output band's scratch, the motion records it produced and the
 /// surface it predicts into, until the band is committed.
 #[derive(Debug, Default)]
-struct TipOutputBand<T: ReconSample> {
+struct TipOutputBand {
     scratch: TipReconstructScratch,
     records: Vec<TemporalMotionBlock>,
-    surface: Option<splot_recon::OwnedFrameRect<T>>,
-    grid: Option<mc::CompoundMotionGrid>,
-    /// Set by a scheduled motion half until its records are folded.
-    moved: bool,
 }
 
 const fn tip_uses_two_references(weight: i16) -> bool {
@@ -1087,20 +1084,10 @@ fn rect_placed(placed: &PlacedInterBlock, rect: splot_recon::PlaneRect) -> Place
 /// The whole frame is one TIP block, so predicting it in one pass sized the
 /// compound scratch at frame scale. Banding keeps that scratch bounded; both
 /// sizes are multiples of both prediction unit sizes and of chroma
-/// subsampling, so a band boundary never splits a unit. Scheduled bands are
-/// shorter: the frame's slowest band bounds the TIP output chain, and on a
-/// 270-row frame 64-row bands left at most five workers busy. 16-row bands
-/// were 7 to 9 us tasks whose scheduling and locks cost as much again at 12
-/// workers.
+/// subsampling, so a band boundary never splits a unit. A scheduled band is
+/// one motion-field band tall instead, see [`TipOutputStages::init`].
 const TIP_OUTPUT_BAND_LUMA_ROWS: usize = 64;
-const TIP_OUTPUT_SCHEDULED_BAND_LUMA_ROWS: usize = 32;
 
-/// The most scheduled bands whose motion and prediction run as tasks of their
-/// own, one prediction column each. The field the next TIP frame projects then
-/// waits only for the motion, which bounds a small frame whose few bands leave
-/// workers idle; a larger frame predicts each band right after its motion,
-/// with the references it read still in cache.
-const TIP_SPLIT_MAX_BANDS: usize = 64;
 const TIP_OUTPUT_BAND_LUMA_COLS: usize = 256;
 
 pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
@@ -1121,7 +1108,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         core::mem::take(&mut decode_scratch.tip_output),
     );
     let stages = TipOutputStages::init(
-        spares, recycled, sequence, core, reference, geometry, offset, false,
+        spares, recycled, sequence, core, reference, geometry, offset, None,
     )?;
     let mut motion_field = None;
     for band in 0..stages.band_count() {
@@ -1137,29 +1124,30 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
 }
 
 /// A `TIP_FRAME_AS_OUTPUT` reconstruction split into row-scheduled steps:
-/// [`init`](Self::init) projects the motion field and bounds every band's
-/// reference rows, [`band_motion`](Self::band_motion) derives one band's
-/// motion and folds the finished prefix of records in band order (so the
-/// field publishes before any band is predicted), [`band_predict`](Self::band_predict)
-/// predicts the band and copies it into the frame, and [`finish`](Self::finish)
-/// deblocks and freezes the frame.
+/// [`init`](Self::init) lays out the bands (and projects the whole motion
+/// field for a frame decoded in place), [`project`](Self::project) projects
+/// one motion-field band of a scheduled frame and bounds the reference rows
+/// of the bands in it, [`band`](Self::band) predicts one band, copies it into
+/// the frame and folds its records (a motion-field band publishes once all
+/// its bands folded), and [`finish`](Self::finish) deblocks and freezes the
+/// frame.
 pub(crate) struct TipOutputStages<T: ReconSample> {
     temporal: TemporalMvContext,
-    output: TipOutputScratch<T>,
+    output: TipOutputScratch,
     spares: Arc<TipSpares<T>>,
     info: splot_recon::DecodedFrameInfo,
     workspace: parking_lot::Mutex<CurrentFrameWorkspace<T>>,
-    /// Taken by the commit that completes the frame, so dependents read
-    /// the field before the deblock and freeze.
-    motion_field: parking_lot::Mutex<Option<TemporalMotionField>>,
-    /// The first band whose motion records are not yet folded.
-    commit_cursor: parking_lot::Mutex<usize>,
-    /// Whether motion and prediction run apart, see [`TIP_SPLIT_MAX_BANDS`].
-    split: bool,
-    /// Bands [`Self::band_predict`] copied into the frame.
-    predicted: core::sync::atomic::AtomicUsize,
+    /// The § 7.22 records every band folds in; a scheduled frame publishes
+    /// its field through it band by band.
+    motion: super::temporal::MotionFieldUnits,
+    /// The band-by-band § 7.9 projection of a scheduled frame.
+    plan: Option<super::super::find_mv_stack::TemporalBandPlan>,
+    /// Bands whose records were folded.
+    folded: core::sync::atomic::AtomicUsize,
     placed: PlacedInterBlock,
-    band_bounds: Vec<super::row_gate::RowReferenceBounds>,
+    /// Bands per row of bands. A scheduled band is one motion-field band
+    /// tall, so its records fold into that band alone.
+    columns: usize,
     band_w: usize,
     offset: ByteOffset,
 }
@@ -1178,7 +1166,7 @@ impl<T: ReconSample> TipOutputStages<T> {
         reference: &InterReferenceState<T>,
         geometry: super::super::FrameDecodeGeometry,
         offset: ByteOffset,
-        gate_bands: bool,
+        publish: Option<MotionFieldHandle>,
     ) -> Result<Self> {
         let (mut temporal, mut output) = spares.take();
         let info = geometry.info();
@@ -1198,49 +1186,74 @@ impl<T: ReconSample> TipOutputStages<T> {
         if sequence.partition.is_none() {
             return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
         }
-        let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
-        temporal.refresh_from_references(
-            (mi_rows, mi_cols),
-            current_order_hint,
-            TemporalProjectionConfig {
-                frame_size: (
-                    info.coded_luma_size().width(),
-                    info.coded_luma_size().height(),
-                ),
-                step: projection_step,
-                unit_size8: tmvp_unit_size8(projection_step, sb_h4),
-                enable_tip: sequence
-                    .inter
-                    .as_ref()
-                    .is_some_and(|tools| tools.enable_tip),
-                enable_trajectory: false, // only § 7.12.2 reads TrajMv/TrajValid, and a TIP_FRAME_AS_OUTPUT frame parses no blocks
-                reduced: sequence
-                    .inter
-                    .as_ref()
-                    .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
-            },
+        let config = TemporalProjectionConfig {
+            frame_size: (
+                info.coded_luma_size().width(),
+                info.coded_luma_size().height(),
+            ),
+            step: projection_step,
+            unit_size8: tmvp_unit_size8(projection_step, sb_h4),
+            enable_tip: sequence
+                .inter
+                .as_ref()
+                .is_some_and(|tools| tools.enable_tip),
+            enable_trajectory: false, // only § 7.12.2 reads TrajMv/TrajValid, and a TIP_FRAME_AS_OUTPUT frame parses no blocks
+            reduced: sequence
+                .inter
+                .as_ref()
+                .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
+        };
+        let hints = super::super::find_mv_stack::reference_order_hints(
             ref_frame_idx,
             &reference.ref_valid,
             &reference.ref_order_hint,
-            &ref_motion_fields,
-        )?;
-        let tip_pair = super::super::find_mv_stack::tip_reference_pair_from_hints(
-            current_order_hint,
-            temporal.reference_order_hints(),
         );
-        prepare_motion_field(&mut temporal, core, sb_h4, tip_pair)?;
+        let tip_pair =
+            super::super::find_mv_stack::tip_reference_pair_from_hints(current_order_hint, &hints);
+        let plan = if publish.is_some() {
+            let (metadata, layouts) =
+                scheduled_motion_field_inputs(&reference.ref_motion_fields, ref_frame_idx)?;
+            let fill_holes = inter
+                .allow_tip_hole_fill
+                .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?;
+            let pair = tip_pair.ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+            Some(
+                temporal
+                    .begin_banded_refresh(
+                        geometry.motion_layout(),
+                        current_order_hint,
+                        config,
+                        ref_frame_idx,
+                        &reference.ref_valid,
+                        &reference.ref_order_hint,
+                        &metadata,
+                        &layouts,
+                        Some(pair),
+                        true,
+                        fill_holes,
+                    )
+                    .ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState)?,
+            )
+        } else {
+            let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
+            temporal.refresh_from_references(
+                (mi_rows, mi_cols),
+                current_order_hint,
+                config,
+                ref_frame_idx,
+                &reference.ref_valid,
+                &reference.ref_order_hint,
+                &ref_motion_fields,
+            )?;
+            prepare_motion_field(&mut temporal, core, sb_h4, tip_pair)?;
+            None
+        };
         let global_mv = inter
             .tip_global_mv
             .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
         let workspace = CurrentFrameWorkspace::<T>::new_recycled_from(info, &mut recycled)?; // § 7.10.6 predicts every coded sample of the frame below before `freeze`
-        let motion_field = geometry
-            .new_motion_field(temporal.reference_order_hints())
-            .ok_or(ReconError::WorkspaceAllocationFailed {
-                plane: splot_recon::PlaneId::Y,
-                context: "TIP-output motion field",
-            })?;
-        let band_h = if gate_bands {
-            TIP_OUTPUT_SCHEDULED_BAND_LUMA_ROWS
+        let band_h = if publish.is_some() {
+            geometry.motion_layout().band_rows8() * 8
         } else {
             TIP_OUTPUT_BAND_LUMA_ROWS
         }
@@ -1278,12 +1291,8 @@ impl<T: ReconSample> TipOutputStages<T> {
             },
         };
         output.rects.clear();
-        let split = gate_bands
-            && height
-                .div_ceil(band_h)
-                .saturating_mul(width.div_ceil(band_w))
-                <= TIP_SPLIT_MAX_BANDS;
-        let rect_w = if split { band_w } else { width };
+        let rect_w = if publish.is_some() { band_w } else { width };
+        let columns = width.div_ceil(rect_w);
         for band_y in (0..height).step_by(band_h) {
             for band_x in (0..width).step_by(rect_w) {
                 output.rects.push(splot_recon::PlaneRect::new(
@@ -1298,26 +1307,39 @@ impl<T: ReconSample> TipOutputStages<T> {
         if output.bands.len() < band_count {
             output.bands.resize_with(band_count, Default::default);
         }
-        let gate =
-            super::row_gate::RowReferenceGate::new(reference, core, ref_frame_idx, info, &temporal);
-        let band_bounds = output
-            .rects
-            .iter()
-            .filter(|_| gate_bands)
-            .map(|rect| gate.tip_bounds(&rect_placed(&placed, *rect)))
-            .collect();
+        let mut motion = output.motion.take().unwrap_or_else(|| {
+            super::temporal::MotionFieldUnits::new(TemporalMotionField::empty())
+        });
+        match publish {
+            Some(handle) => {
+                if height.div_ceil(band_h) != handle.layout().band_count() {
+                    return Err(DecodeHeaderStateError::InvalidInterTemporalMotionState.into());
+                }
+                motion.reset_publishing(
+                    geometry.motion_field_header(&hints),
+                    band_count,
+                    columns,
+                    handle,
+                )?;
+            }
+            None => motion.reset(geometry.new_motion_field(&hints).ok_or(
+                ReconError::WorkspaceAllocationFailed {
+                    plane: splot_recon::PlaneId::Y,
+                    context: "TIP-output motion field",
+                },
+            )?),
+        }
         Ok(Self {
             temporal,
             output,
             spares,
             info,
             workspace: parking_lot::Mutex::new(workspace),
-            motion_field: parking_lot::Mutex::new(Some(motion_field)),
-            commit_cursor: parking_lot::Mutex::new(0),
-            split,
-            predicted: core::sync::atomic::AtomicUsize::new(0),
+            motion,
+            plan,
+            folded: core::sync::atomic::AtomicUsize::new(0),
             placed,
-            band_bounds,
+            columns,
             band_w,
             offset,
         })
@@ -1328,21 +1350,89 @@ impl<T: ReconSample> TipOutputStages<T> {
         self.output.rects.len()
     }
 
-    /// Whether the bands run [`Self::band_motion`] and [`Self::band_predict`]
-    /// apart instead of [`Self::band`].
-    pub(crate) const fn split(&self) -> bool {
-        self.split
+    /// The motion-field bands [`Self::project`] projects one at a time; zero
+    /// when init projected the whole frame.
+    pub(crate) fn projected_bands(&self) -> usize {
+        self.plan
+            .as_ref()
+            .map_or(0, super::super::find_mv_stack::TemporalBandPlan::len)
     }
 
-    /// The reference rows each band reads, for a scheduler that admits bands
-    /// as their references publish. Empty when the bands run in place, which
-    /// skips the whole-frame scan of the projected field.
-    pub(crate) fn band_bounds(&self) -> &[super::row_gate::RowReferenceBounds] {
-        &self.band_bounds
+    /// Whether every reference band field band `index` projects from was
+    /// published, so [`Self::project`] may run. § 7.9.8 keeps a projection in
+    /// its source's TMVP row and § 7.10.3 to § 7.10.5 stay inside one TMVP
+    /// unit, so a band reads only the same band of each reference field.
+    pub(crate) fn projection_ready(
+        &self,
+        index: usize,
+        reference: &InterReferenceState<T>,
+    ) -> bool {
+        self.plan
+            .as_ref()
+            .is_some_and(|plan| plan.sources_settled(index, &reference.ref_motion_fields))
     }
 
-    /// Predicts band `index` into its own surface. Bands are independent, so
-    /// any number of them run at once.
+    /// Projects motion-field band `index` and hands `bounds` the reference
+    /// rows each band in it reads, so a scheduler admits the band once
+    /// those rows are published.
+    ///
+    /// # Errors
+    /// Returns the projection's own diagnostic.
+    pub(crate) fn project(
+        &self,
+        index: usize,
+        core: &FrameHeaderCore,
+        reference: &InterReferenceState<T>,
+        mut bounds: impl FnMut(usize, super::row_gate::RowReferenceBounds),
+    ) -> Result<()> {
+        let plan = self
+            .plan
+            .as_ref()
+            .ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+        super::tile::project_temporal_band(
+            plan,
+            &self.temporal,
+            &reference.ref_motion_fields,
+            index,
+        )?;
+        let inter = core
+            .inter
+            .as_ref()
+            .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
+        let gate = super::row_gate::RowReferenceGate::new(
+            reference,
+            core,
+            &inter.ref_frame_idx,
+            self.info,
+            &self.temporal,
+        );
+        let first = index.saturating_mul(self.columns);
+        for (band, rect) in self
+            .output
+            .rects
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(self.columns)
+        {
+            bounds(band, gate.tip_bounds(&rect_placed(&self.placed, *rect)));
+        }
+        Ok(())
+    }
+
+    /// Folds band `index`'s § 7.22 records into the field, which publishes
+    /// the band's motion-field band once its last band lands.
+    fn fold(&self, index: usize, records: &mut Vec<TemporalMotionBlock>) -> Result<()> {
+        self.motion.fold_unit(index, records)?;
+        records.clear();
+        self.folded
+            .fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        self.motion.unit_landed_for(index);
+        Ok(())
+    }
+
+    /// Predicts band `index`, copies it into the frame and folds its records.
+    /// Bands are independent, so any number of them run at once.
     ///
     /// # Errors
     /// Returns the prediction's own diagnostic.
@@ -1358,132 +1448,9 @@ impl<T: ReconSample> TipOutputStages<T> {
         let mut surface = self.spares.take_surface(self.info, rect)?;
         let mut sink = mc::WorkspaceSink::OwnedRect(&mut surface);
         self.predict_band(&mut band, rect, &mut sink, sequence, core, reference)?;
-        band.surface = Some(surface);
-        Ok(())
-    }
-
-    /// Derives band `index`'s motion and
-    /// folds every finished band's records after the folded prefix, in band
-    /// order. Bands are independent, so any number of them run at once; the
-    /// call that completes the prefix returns the finished field.
-    ///
-    /// # Errors
-    /// Returns the motion derivation's own diagnostic.
-    pub(crate) fn band_motion(
-        &self,
-        index: usize,
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-        reference: &InterReferenceState<T>,
-    ) -> Result<Option<TemporalMotionField>> {
-        let (rect, slot) = self.band_slot(index)?;
-        let mut band = core::mem::take(&mut *slot.lock());
-        let mut surface = self.spares.take_surface(self.info, rect)?;
-        let inter = core
-            .inter
-            .as_ref()
-            .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
-        let frame = TipFramePlan::new(
-            self.info,
-            &self.temporal,
-            sequence,
-            core,
-            &inter.ref_frame_idx,
-            reference,
-        )?;
-        band.records.clear();
-        band.grid = motion(
-            &mut band.scratch,
-            &mut band.records,
-            &mc::WorkspaceSink::OwnedRect(&mut surface),
-            &rect_placed(&self.placed, rect),
-            &frame,
-            &self.temporal,
-            &inter.ref_frame_idx,
-            reference,
-            self.offset,
-        )?;
-        self.spares.surfaces.lock().push(surface);
-        band.moved = true;
-        *slot.lock() = band;
-        let mut cursor = self.commit_cursor.lock();
-        let mut motion_field = self.motion_field.lock();
-        while *cursor < self.output.rects.len() {
-            let Some(slot) = self.output.bands.get(*cursor) else {
-                break;
-            };
-            let mut band = slot.lock();
-            if !band.moved {
-                break;
-            }
-            band.moved = false;
-            if let Some(field) = motion_field.as_mut() {
-                super::temporal::commit_temporal_motion_blocks(field, &band.records);
-            }
-            band.records.clear();
-            *cursor += 1;
-        }
-        if *cursor == self.output.rects.len() {
-            return Ok(motion_field.take());
-        }
-        Ok(None)
-    }
-
-    /// Predicts band `index` from the motion [`Self::band_motion`] derived
-    /// and copies it into the frame.
-    ///
-    /// # Errors
-    /// Returns the prediction's or the copy's own diagnostic.
-    pub(crate) fn band_predict(
-        &self,
-        index: usize,
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-        reference: &InterReferenceState<T>,
-    ) -> Result<()> {
-        let (rect, slot) = self.band_slot(index)?;
-        let (mut scratch, grid) = {
-            let mut band = slot.lock();
-            (core::mem::take(&mut band.scratch), band.grid.take())
-        };
-        let mut surface = self.spares.take_surface(self.info, rect)?;
-        let inter = core
-            .inter
-            .as_ref()
-            .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
-        let frame = TipFramePlan::new(
-            self.info,
-            &self.temporal,
-            sequence,
-            core,
-            &inter.ref_frame_idx,
-            reference,
-        )?;
-        let grid = predict(
-            &mut scratch,
-            &mut InterResidualReconScratch::default(),
-            &mut mc::WorkspaceSink::OwnedRect(&mut surface),
-            grid,
-            true,
-            &rect_placed(&self.placed, rect),
-            &[],
-            &[],
-            &frame,
-            &self.temporal,
-            reference,
-            0,
-            false,
-            false,
-            self.info.bit_depth(),
-            self.offset,
-        )?;
-        retire_motion_grid(&mut scratch, grid);
-        slot.lock().scratch = scratch;
         surface.publish_into(&mut self.workspace.lock())?;
         self.spares.surfaces.lock().push(surface);
-        self.predicted
-            .fetch_add(1, core::sync::atomic::Ordering::AcqRel);
-        Ok(())
+        self.fold(index, &mut band.records)
     }
 
     /// Predicts band `index` straight into the frame and folds its records,
@@ -1507,29 +1474,18 @@ impl<T: ReconSample> TipOutputStages<T> {
                 let mut sink = mc::WorkspaceSink::Rect(&mut surface);
                 self.predict_band(&mut band, rect, &mut sink, sequence, core, reference)
             })?;
-        let mut cursor = self.commit_cursor.lock();
-        let mut motion_field = self.motion_field.lock();
-        if *cursor != index {
-            return Err(DecodeHeaderStateError::InvalidInterTipPredictionState.into());
-        }
-        if let Some(field) = motion_field.as_mut() {
-            super::temporal::commit_temporal_motion_blocks(field, &band.records);
-        }
-        band.records.clear();
-        *cursor += 1;
-        if *cursor == self.output.rects.len() {
-            return Ok(motion_field.take());
-        }
-        Ok(None)
+        self.fold(index, &mut band.records)?;
+        Ok(
+            (self.folded.load(core::sync::atomic::Ordering::Acquire) == self.output.rects.len())
+                .then(|| self.motion.take_field())
+                .flatten(),
+        )
     }
 
     fn band_slot(
         &self,
         index: usize,
-    ) -> Result<(
-        splot_recon::PlaneRect,
-        &parking_lot::Mutex<TipOutputBand<T>>,
-    )> {
+    ) -> Result<(splot_recon::PlaneRect, &parking_lot::Mutex<TipOutputBand>)> {
         let rect = *self
             .output
             .rects
@@ -1545,7 +1501,7 @@ impl<T: ReconSample> TipOutputStages<T> {
 
     fn predict_band(
         &self,
-        band: &mut TipOutputBand<T>,
+        band: &mut TipOutputBand,
         rect: splot_recon::PlaneRect,
         sink: &mut mc::WorkspaceSink<'_, '_, T>,
         sequence: &SequenceHeader,
@@ -1574,7 +1530,7 @@ impl<T: ReconSample> TipOutputStages<T> {
             ref_frame_idx,
             reference,
         )?;
-        for band_x in (0..width).step_by(self.band_w) {
+        for band_x in (rect.x()..rect.x() + rect.width()).step_by(self.band_w) {
             let cols = self.band_w.min(width - band_x);
             placed.luma_x = band_x;
             placed.luma_w = cols;
@@ -1614,38 +1570,6 @@ impl<T: ReconSample> TipOutputStages<T> {
         Ok(())
     }
 
-    /// Copies every predicted band after the committed prefix into the frame
-    /// and folds its § 7.22 records into the field, in band order, so the
-    /// field sees the records as a whole-frame reconstruction would. The band
-    /// that completes the prefix commits it, so no extra task is scheduled,
-    /// and the commit that completes the frame returns the finished field.
-    ///
-    /// # Errors
-    /// Returns the copy's own diagnostic.
-    pub(crate) fn commit_ready(&self) -> Result<Option<TemporalMotionField>> {
-        let mut cursor = self.commit_cursor.lock();
-        let mut motion_field = self.motion_field.lock();
-        while let Some(band) = self.output.bands.get(*cursor) {
-            let Some(mut band) = band.try_lock() else {
-                break;
-            };
-            let Some(surface) = band.surface.take() else {
-                break;
-            };
-            surface.publish_into(&mut self.workspace.lock())?;
-            if let Some(field) = motion_field.as_mut() {
-                super::temporal::commit_temporal_motion_blocks(field, &band.records);
-            }
-            band.records.clear();
-            self.spares.surfaces.lock().push(surface);
-            *cursor += 1;
-        }
-        if *cursor == self.output.rects.len() {
-            return Ok(motion_field.take());
-        }
-        Ok(None)
-    }
-
     /// Deblocks the TIP unit edges and freezes the frame.
     ///
     /// # Errors
@@ -1654,21 +1578,20 @@ impl<T: ReconSample> TipOutputStages<T> {
         self,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
-    ) -> Result<(DecodedFrame<T>, TipOutputScratch<T>, TemporalMvContext)> {
+    ) -> Result<(DecodedFrame<T>, TipOutputScratch, TemporalMvContext)> {
         let Self {
             temporal,
-            output,
+            mut output,
             workspace,
-            commit_cursor,
-            split,
-            predicted,
+            mut motion,
+            folded,
             ..
         } = self;
-        if commit_cursor.into_inner() != output.rects.len()
-            || (split && predicted.into_inner() != output.rects.len())
-        {
+        if folded.into_inner() != output.rects.len() {
             return Err(DecodeHeaderStateError::IncompleteTipOutput.into());
         }
+        motion.retire();
+        output.motion = Some(motion);
         let mut workspace = workspace.into_inner();
         let inter = core
             .inter

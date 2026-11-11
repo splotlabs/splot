@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "29bdb7c137147374ced6fc1213e6716a216b8264",
+  "audited_commit": "18501847b342e3971f55b6aced5c89a05407394e",
   "outcome": "success",
   "files": [
     {
@@ -3173,7 +3173,7 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/frame_tasks.rs",
-      "sha256": "421a67a4408916c4ea6460c67a2d0cf4987414daa8d7d19ad793882effaa32be",
+      "sha256": "6e6580d1dbb053f74b16086d4d27117194a81590b2d0ca0f1c620d417bbac7d1",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-FRAME-PIPELINING"
@@ -3520,7 +3520,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block.rs",
-      "sha256": "397c15520c44c990ed3f8f932d34809a84f0fa394680e77caa571251b5eedb6e",
+      "sha256": "d6de306e5c0c06011d4ac71ece8bd828d7e6c9c3693807988e8d14ba52e7bb83",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-RESIDUAL-DCT",
@@ -3711,14 +3711,14 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/temporal.rs",
-      "sha256": "b1eacd1a55b4ebf15a7825df88cb9cca137e8bcfb9be67e00b0ad8cd7fae6fea",
+      "sha256": "7f862eb3271583f1837ea1bcd30fa20880ebe5cabe176327a92b02dec37e4ee8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/tile.rs",
-      "sha256": "81109e3f76d11fed5904c603b4b1a8c672596e10dd4192f910470bd87c0435e7",
+      "sha256": "9163b60f1fb99a196ede4b11baa60470a20384c4b871b6c9ac3b02719fb9d636",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-PARALLEL-STAGES"
@@ -3727,7 +3727,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/tile/admission.rs",
-      "sha256": "df84a4332ab74d85640625021b2cfb5a7de9df0e98cfd3c68e09232b4c7550fb",
+      "sha256": "36e94fcd694b0204ae6e48c90948494e027631e75c4afdb3df6474437a9c50ec",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-FRAME-PIPELINING",
@@ -3751,7 +3751,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/tip.rs",
-      "sha256": "4dce20a885ea2c3031c5a97d72656f70fb0112fd996aefa932c3225fe50209a8",
+      "sha256": "331aa3a4ab09bb87776b41e8634cbbbacfd67cd0ef9b41711a1a7c0e57661bc4",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-TIP-OUTPUT"
@@ -3863,7 +3863,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs",
-      "sha256": "39a4e5223d938cb3bc8b979e32bc67c89cb527df7a7f364fa4f23a4a9b0d0147",
+      "sha256": "a3677bc947e4371e12e98eade5c43f65cfe4ed533b53891f2fbe2c4f95640b65",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3891,7 +3891,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal/tests.rs",
-      "sha256": "fdf8486c6db38a57491567c2bb3993a267ec4e7432ce97fba0e6d41f316f4698",
+      "sha256": "74490e53b67f9969fdb236184c027fcb3847d1b81feccb2c9d1bc0c47b765514",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -4030,7 +4030,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/motion_field.rs",
-      "sha256": "3217feb13ebd1d0a5943e7174dc32dca7a5a77d6667317bc08da86451944cb46",
+      "sha256": "f195a3f87f60abba4b398ceda36b9b141dd5ed72ca0ba0083feb7bdb6d4b5dd6",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -5219,7 +5219,7 @@
     },
     {
       "path": "crates/splot-parallel/src/rows.rs",
-      "sha256": "371180b595ebdecc007263cfb191cb486676cd2a887df512f851bbe926547cdb",
+      "sha256": "09ae59c91f91d7a5ec34187e67a385633431f10397788e0c0364c90a1e4ebbcf",
       "scope_kind": "workspace:splot-parallel",
       "feature_ids": [],
       "outcome": "success"

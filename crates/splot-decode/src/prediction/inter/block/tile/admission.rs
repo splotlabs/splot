@@ -168,7 +168,7 @@ fn restore_active_commit<T: ReconSample>(
     Ok(())
 }
 
-fn project_temporal_band(
+pub(in crate::prediction::inter::block) fn project_temporal_band(
     plan: &TemporalBandPlan,
     temporal: &TemporalMvContext,
     reference_fields: &[Option<MotionFieldHandle>],
@@ -769,14 +769,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     /// Whether every reference motion band step `index` projects has settled.
     pub(crate) fn resolve_ready(&self, index: usize) -> bool {
-        self.temporal_plan.requirements(index).all(|(slot, band)| {
-            self.recon
-                .reference
-                .ref_motion_fields
-                .get(slot)
-                .and_then(Option::as_ref)
-                .is_none_or(|field| field.band_settled(band))
-        })
+        self.temporal_plan
+            .sources_settled(index, &self.recon.reference.ref_motion_fields)
     }
 
     /// Precomputes one admitted batch without entering the ordered commit spine.
@@ -785,7 +779,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     /// Whether batch `index` is parsed, resolved, and admitted by its
-    /// references' published rows.
+    /// references' published rows. A busy row list reads as not ready: its
+    /// holder is a resolve or precompute run, which notifies when it ends.
     pub(crate) fn batch_ready(&self, index: usize) -> bool {
         let Some(range) = self.recon.batch_range(index) else {
             return false;
@@ -795,7 +790,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         }
         let mut bounds = row_gate::RowReferenceBounds::default();
         {
-            let rows = self.recon.slots.rows.lock();
+            let Some(rows) = self.recon.slots.rows.try_lock() else {
+                return false;
+            };
             let Some(rows) = rows.get(range) else {
                 return false;
             };

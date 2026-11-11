@@ -1092,6 +1092,21 @@ impl TemporalBandPlan {
             .map(move |(_, projection)| (projection.slot, index))
     }
 
+    /// Whether every reference band projection `index` reads is published
+    /// (or failed); a slot without a field reads nothing.
+    pub(crate) fn sources_settled(
+        &self,
+        index: usize,
+        fields: &[Option<crate::prediction::inter::MotionFieldHandle>],
+    ) -> bool {
+        self.requirements(index).all(|(slot, band)| {
+            fields
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_none_or(|field| field.band_settled(band))
+        })
+    }
+
     pub(crate) fn project<'a>(
         &self,
         context: &TemporalMvContext,
@@ -1627,10 +1642,6 @@ impl TemporalMvContext {
     #[cfg(test)]
     pub(crate) fn tip_reference_pair(&self) -> Option<TipReferencePair> {
         tip_reference_pair_from_hints(self.current_order_hint, &self.ref_order_hints)
-    }
-
-    pub(crate) fn reference_order_hints(&self) -> &[Option<u32>] {
-        &self.ref_order_hints
     }
 
     pub(crate) fn order_hint_mv_context(&self) -> OrderHintMvContext<'_> {
