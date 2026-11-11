@@ -15,11 +15,11 @@ use splot_recon::{
 use fearless_simd::{Simd, mask16x16, prelude::*, u8x32, u16x16};
 
 use super::facts::{COVERED, EDGE_H, EDGE_V, LOSSLESS, PlaneFacts, SKIP, padded_stride};
-use super::grid::MiGrid;
+use super::grid::{MiCell, MiGrid};
 use super::{
     DeblockBlock, DeblockError, EdgeContext, GATHER_HALF, MAX_WIDTHS, MI_SIZE, PerpLine, PlaneCtx,
-    PlanePass, SB_SIZE, StrengthCache, apply_edge_samples, cell_block, choose_filter_width,
-    edge_decision, starts_tile,
+    PlanePass, SB_SIZE, StrengthCache, apply_edge_samples, choose_filter_width, edge_decision,
+    on_sub_pu_edge, starts_tile,
 };
 
 /// The edges of one plane pass over the mode-info rows it owes, row-major by
@@ -252,6 +252,8 @@ impl PassEdges {
                 .build_from_facts::<PLANE, PASS>(facts, plane_pass, geometry, first, &strengths);
         }
         if PASS == 0 {
+            let reach = if PLANE == 0 { 16 } else { 8 };
+            let mut inner: Option<(MiCell, DeblockEdge)> = None;
             for row_index in 0..self.rows {
                 let r = first + row_index * row_step;
                 let row_out = row_index * self.stride;
@@ -259,25 +261,54 @@ impl PassEdges {
                 if self.cols <= 1 {
                     continue;
                 }
-                let mut prev = cell_block::<PLANE>(grid, r, 0)?;
-                for col_index in 1..self.cols {
-                    let c = col_index << sub_x;
-                    let curr = cell_block::<PLANE>(grid, r, c)?;
-                    if core::ptr::eq(curr, prev) && curr.sub_pu_size.is_none() {
-                        self.edges[row_out + col_index] = DeblockEdge::NONE;
+                let ids = grid.row_cells::<PLANE>(r, self.cols)?;
+                let mut prev = grid.record::<PLANE>(ids[0], r, 0)?;
+                let mut col_index = 1;
+                while col_index < self.cols {
+                    let (id, c) = (ids[col_index], col_index << sub_x);
+                    if id != ids[col_index - 1] {
+                        let curr = grid.record::<PLANE>(id, r, c)?;
+                        let edge = edge_at_blocks::<PLANE, 0>(
+                            (curr, prev),
+                            plane_pass.edge_context(r, c, starts_tile(geometry.tile_starts, c)),
+                            geometry,
+                            &strengths,
+                        )?;
                         prev = curr;
+                        self.edges[row_out + col_index] = edge;
+                        self.live[col_index] |= !edge.is_none();
+                        col_index += 1;
                         continue;
                     }
-                    let tile_edge = starts_tile(geometry.tile_starts, c);
-                    let edge = edge_at_blocks::<PLANE, 0>(
-                        (curr, prev),
-                        plane_pass.edge_context(r, c, tile_edge),
-                        geometry,
-                        &strengths,
-                    )?;
-                    prev = curr;
-                    self.edges[row_out + col_index] = edge;
-                    self.live[col_index] |= !edge.is_none();
+                    // Sub-PU edges of one record are alike unless a tile or frame edge clips.
+                    let run = ids[col_index..].iter().take_while(|&&cell| cell == id);
+                    let cells = col_index..col_index + run.count();
+                    col_index = cells.end;
+                    self.edges[row_out + cells.start..row_out + cells.end].fill(DeblockEdge::NONE);
+                    let Some(size) = prev.sub_pu_size else {
+                        continue;
+                    };
+                    for k in cells {
+                        if on_sub_pu_edge::<0>(prev, size, k * MI_SIZE, sub_x).is_none() {
+                            continue;
+                        }
+                        let tile_edge = starts_tile(geometry.tile_starts, k << sub_x);
+                        let alike = !tile_edge && k * MI_SIZE + reach <= geometry.width;
+                        let edge = match inner {
+                            Some((cached, edge)) if alike && cached == id => edge,
+                            _ => edge_at_blocks::<PLANE, 0>(
+                                (prev, prev),
+                                plane_pass.edge_context(r, k << sub_x, tile_edge),
+                                geometry,
+                                &strengths,
+                            )?,
+                        };
+                        if alike {
+                            inner = Some((id, edge));
+                        }
+                        self.edges[row_out + k] = edge;
+                        self.live[k] |= !edge.is_none();
+                    }
                 }
             }
             return Ok(());
@@ -290,35 +321,40 @@ impl PassEdges {
                 .ok_or(DeblockError::UncoveredMi { row: r, col: 0 })?;
             let row_tile_edge = starts_tile(geometry.tile_starts, r);
             let row_out = row_index * self.stride;
-            let mut last: Option<(&DeblockBlock, &DeblockBlock, DeblockEdge)> = None;
+            let (curr_ids, prev_ids) = (
+                grid.row_cells::<PLANE>(r, self.cols)?,
+                grid.row_cells::<PLANE>(prev_r, self.cols)?,
+            );
             let mut row_live = false;
-            for col_index in 0..self.cols {
+            let mut col_index = 0;
+            while col_index < self.cols {
                 let c = col_index << sub_x;
-                let curr = cell_block::<PLANE>(grid, r, c)?;
-                let prev = cell_block::<PLANE>(grid, prev_r, c)?;
+                let ids = (curr_ids[col_index], prev_ids[col_index]);
+                let curr = grid.record::<PLANE>(ids.0, r, c)?;
+                let prev = grid.record::<PLANE>(ids.1, prev_r, c)?;
                 let plain = curr.sub_pu_size.is_none() && prev.sub_pu_size.is_none();
-                let edge = if core::ptr::eq(curr, prev) && plain {
-                    DeblockEdge::NONE
-                } else if plain
-                    && let Some((last_curr, last_prev, last_edge)) = last
-                    && core::ptr::eq(curr, last_curr)
-                    && core::ptr::eq(prev, last_prev)
-                {
-                    last_edge
+                let run = if plain || ids.0 == ids.1 {
+                    curr_ids[col_index..]
+                        .iter()
+                        .zip(&prev_ids[col_index..])
+                        .take_while(|&(&curr, &prev)| (curr, prev) == ids)
+                        .count()
                 } else {
-                    let edge = edge_at_blocks::<PLANE, 1>(
+                    1
+                };
+                let edge = if ids.0 == ids.1 && plain {
+                    DeblockEdge::NONE
+                } else {
+                    edge_at_blocks::<PLANE, 1>(
                         (curr, prev),
                         plane_pass.edge_context(r, c, row_tile_edge),
                         geometry,
                         &strengths,
-                    )?;
-                    if plain {
-                        last = Some((curr, prev, edge));
-                    }
-                    edge
+                    )?
                 };
-                self.edges[row_out + col_index] = edge;
+                self.edges[row_out + col_index..row_out + col_index + run].fill(edge);
                 row_live |= !edge.is_none();
+                col_index += run;
             }
             self.live[row_index] = row_live;
         }

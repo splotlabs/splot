@@ -1167,19 +1167,14 @@ struct EdgeDecision {
     curr_lossless: bool,
 }
 
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
-#[inline(always)]
+#[cfg(test)]
 fn cell_block<'g, const PLANE: usize>(
     grid: &'g MiGrid,
     row: usize,
     col: usize,
 ) -> Result<&'g DeblockBlock, DeblockError> {
-    let edge = if PLANE == 0 {
-        grid.get_luma_edge(row, col)
-    } else {
-        grid.get_edge(row, col)
-    };
-    edge.ok_or(DeblockError::UncoveredMi { row, col })
+    grid.cell::<PLANE>(row, col)
+        .ok_or(DeblockError::UncoveredMi { row, col })
 }
 
 /// The current and previous records across the edge at mode-info
@@ -1341,17 +1336,12 @@ fn same_record_decision<const PASS: usize>(
     strengths: &StrengthCache,
 ) -> Option<EdgeDecision> {
     let size = record.sub_pu_size.filter(|_| ctx.allow_df_sub_pu)?;
-    let prediction = record.prediction;
-    let (at, base, sub, size) = if PASS == 0 {
-        (x_p, prediction.base_c, ctx.plane_sub_x, size.width)
+    let (at, sub) = if PASS == 0 {
+        (x_p, ctx.plane_sub_x)
     } else {
-        (y_p, prediction.base_r, ctx.plane_sub_y, size.height)
+        (y_p, ctx.plane_sub_y)
     };
-    let base = (base as usize * MI_SIZE) >> sub;
-    let sub_pu_size = (usize::from(size) >> sub).max(1);
-    if at <= base || round_down(at - base, sub_pu_size) != at - base {
-        return None;
-    }
+    let sub_pu_size = on_sub_pu_edge::<PASS>(record, size, at, sub)?;
     let tx = usize::from(record.tx);
     let tx_size = usize::try_from(if PASS == 0 {
         TX_WIDTH[tx]
@@ -1372,6 +1362,27 @@ fn same_record_decision<const PASS: usize>(
         prev_lossless: record.lossless,
         curr_lossless: record.lossless,
     })
+}
+
+/// The plane sub-PU size of `record` along the pass when plane position `at`
+/// lies on one of its sub-PU boundaries past the prediction base, the only
+/// place an edge inside one record filters.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn on_sub_pu_edge<const PASS: usize>(
+    record: &DeblockBlock,
+    size: DeblockSubPuSize,
+    at: usize,
+    sub: usize,
+) -> Option<usize> {
+    let (base, size) = if PASS == 0 {
+        (record.prediction.base_c, size.width)
+    } else {
+        (record.prediction.base_r, size.height)
+    };
+    let base = (base as usize * MI_SIZE) >> sub;
+    let sub_pu_size = (usize::from(size) >> sub).max(1);
+    (at > base && round_down(at - base, sub_pu_size) == at - base).then_some(sub_pu_size)
 }
 
 #[allow(clippy::too_many_arguments)]
