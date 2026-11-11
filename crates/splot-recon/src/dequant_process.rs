@@ -248,8 +248,8 @@ fn dequantize_flat_block(params: &DequantBlockParams, quant: &[i32], out: &mut [
 /// Each lane repeats [`dequant_coefficient`] literally: `sign`/`unsigned_abs`
 /// as the two's-complement `(c ^ s) - s` pair (exact for `i32::MIN`), the
 /// wrapping product masked to its normative low 24 bits,
-/// `Round2(·, QUANT_TABLE_BITS)` expanded as `(v >> n) + ((v >> (n - 1)) & 1)`,
-/// the power-of-two `dq_denom` divide as a shift, and the § 7.14.4 clamp. The
+/// `Round2(·, QUANT_TABLE_BITS)` and the power-of-two `dq_denom` divide as
+/// one rounding add and shift, and the § 7.14.4 clamp. The
 /// masked `Round2` result never exceeds `1 << 21`, so restoring the sign and
 /// narrowing to `i32` are both exact.
 #[allow(
@@ -293,8 +293,7 @@ pub(crate) fn dequant_lanes<S: Simd>(
     let magnitude: u32x8<S> = ((coeff ^ sign) - sign).bitcast();
     let product = (magnitude * q2) & 0x00FF_FFFF;
     let shift = QUANT_TABLE_BITS;
-    let rounded = (product >> shift) + ((product >> (shift - 1)) & 1);
-    let scaled: i32x8<S> = (rounded >> denom_shift).bitcast();
+    let scaled: i32x8<S> = ((product + (1 << (shift - 1))) >> (shift + denom_shift)).bitcast();
     let signed = (scaled ^ sign) - sign;
     signed
         .max(i32x8::splat(simd, -bound))

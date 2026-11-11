@@ -791,7 +791,8 @@ mod tests {
     /// shifts at both ends of `1..=20`, and dense extreme, sparse,
     /// single-coefficient, DC-only and first-column inputs, so that the
     /// input clamp, the row `Clip3`, the zero-group and zero-row skips and the
-    /// DC-only path all run.
+    /// DC-only path all run. The coded-row prefix goes into stale output and
+    /// scratch, so every sample must be written.
     #[test]
     fn eight_bit_lane_form_matches_the_reference_at_every_shift_and_sparsity() {
         use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
@@ -830,9 +831,15 @@ mod tests {
                         let p = params(
                             log2_w, log2_h, false, row_type, col_type, row_shift, col_shift,
                         );
-                        let mut got = vec![0i32; w * h];
-                        inverse_transform_2d(&p, &dequant, &mut got).unwrap();
-                        let mut scratch = [0i32; MAX_DIM * MAX_DIM];
+                        let rows = dequant
+                            .iter()
+                            .rposition(|&c| c != 0)
+                            .map_or(0, |i| i / w + 1);
+                        let mut got = vec![i32::MIN; w * h];
+                        let mut scratch = [i32::MAX; MAX_DIM * MAX_DIM];
+                        let coded = &dequant[..rows * w];
+                        inverse_transform_2d_with_scratch(&p, coded, &mut got, &mut scratch)
+                            .unwrap();
                         let mut expected = vec![0i32; w * h];
                         reference_transform_2d(&p, &dequant, &mut expected, &mut scratch);
                         assert_eq!(

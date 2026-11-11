@@ -54,9 +54,12 @@ fn fused_add_matches_residual_path() {
                 _ => 1 + rng.next((w * h) as u32) as usize,
             };
             let spread = if trial % 2 == 0 { 9 } else { 400 };
+            let extreme = [i32::MIN, i32::MAX, -65_536, 65_535, 1 << 20, -(1 << 23)];
             let mut quant: Vec<i32> = (0..len)
                 .map(|_| {
-                    if rng.next(3) == 0 {
+                    if trial == 5 && rng.next(2) == 0 {
+                        extreme[rng.next(extreme.len() as u32) as usize]
+                    } else if rng.next(3) == 0 {
                         rng.next(2 * spread) - spread as i32
                     } else {
                         0
@@ -87,7 +90,7 @@ fn fused_add_matches_residual_path() {
                     *out = (i32::from(*out) + r).clamp(0, 255) as u8;
                 }
             }
-            let mut scratch = [0; 32 * 32];
+            let mut scratch = [i32::MAX; 32 * 32];
             let table = InverseTransformAdd8::new(tx_type, log2_w, log2_h, use_ddt).unwrap();
             let flat = FlatDequant::new(dq.dc_quant, dq.ac_quant, dq.dq_denom);
             let mut dst = pred.clone();
@@ -157,7 +160,7 @@ fn secondary_add_matches_dequantized_prefix() {
             let stride = w + 5;
             let pred: Vec<u8> = (0..stride * h).map(|_| rng.next(256) as u8).collect();
             let mut dequant = vec![0; w * h];
-            let mut scratch = [0; 32 * 32];
+            let mut scratch = [i32::MAX; 32 * 32];
             let coded =
                 dequantize_with_secondary(&dq, &quant, Some(&secondary), &mut dequant).unwrap();
             let mut expected = pred.clone();
