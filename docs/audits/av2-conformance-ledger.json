@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "8463614389f5283fa0366136ee233daf66bf5e85",
+  "audited_commit": "384da439f30e0beabb13c4014b45f563a772a3fc",
   "outcome": "success",
   "files": [
     {
@@ -40,7 +40,7 @@
     },
     {
       "path": "AGENTS.md",
-      "sha256": "e3ce6e6d7aa648ff1e3aa68d7772f7453d263f94099d09a784007ae3bfc012c8",
+      "sha256": "de2550086718f86e7c30abbf149976ce64f1df5049ce6be1a71c0c044445e2b3",
       "scope_kind": "repository-process",
       "feature_ids": [],
       "outcome": "success"
@@ -7194,26 +7194,6 @@
       "scope_kind": "docs",
       "feature_ids": [
         "DECODE-RUNTIME-STRUCTURE"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "docs/DECODE-SCALING-MISSION.md",
-      "sha256": "3ada51b2fb723928f0b896dfd10c5f44a7b9ea0404cce447ee7665ca84c22d2a",
-      "scope_kind": "docs",
-      "feature_ids": [
-        "INFRA-DECODE-FRAME-PIPELINING",
-        "INFRA-DECODE-PARALLEL-STAGES"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "docs/DECODE-SCALING-OPEN-TASKS.md",
-      "sha256": "b5c2d7f3c006f2490faffdec61adc664f9d3972a3bdcfafff8381e186044e15c",
-      "scope_kind": "docs",
-      "feature_ids": [
-        "INFRA-DECODE-FRAME-PIPELINING",
-        "INFRA-DECODE-PARALLEL-STAGES"
       ],
       "outcome": "success"
     },
