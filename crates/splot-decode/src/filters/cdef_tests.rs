@@ -177,12 +177,7 @@ fn cdef_general_intra_frame_indexed<T: ReconSample>(
                 .enumerate()
             {
                 workspace
-                    .set_reconstructed_sample(
-                        plane,
-                        x,
-                        y,
-                        T::try_from_u16(sample).map_err(|_| CdefError::Workspace)?,
-                    )
+                    .set_reconstructed_sample(plane, x, y, sample)
                     .map_err(|_| CdefError::Workspace)?;
             }
         }
@@ -646,14 +641,7 @@ fn stripe_frames_match_full_frame_across_restoration_boundaries() {
             .unwrap();
             actual.extend_from_slice(filtered.samples());
         }
-        let expected = full
-            .samples(plane)
-            .unwrap()
-            .iter()
-            .copied()
-            .map(u16::from)
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected, "plane {plane:?}");
+        assert_eq!(actual, full.samples(plane).unwrap(), "plane {plane:?}");
     }
 }
 

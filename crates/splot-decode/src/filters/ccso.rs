@@ -344,23 +344,18 @@ fn ccso_plane<T: ReconSample>(
         lossless_grid,
         None,
     )?;
-    let samples = filtered
-        .samples()
-        .iter()
-        .map(|&sample| T::try_from_u16(sample).map_err(|_| CcsoError::Workspace))
-        .collect::<Result<Vec<_>, _>>()?;
     workspace
         .write_rect(
             plane_id,
             PlaneRect::new(0, 0, width, height).map_err(|_| CcsoError::Geometry)?,
-            &samples,
+            filtered.samples(),
             width,
         )
         .map_err(|_| CcsoError::Workspace)
 }
 
-fn ccso_apply<L: ReconSample>(
-    destination: &mut StripePlane,
+fn ccso_apply<D: ReconSample, L: ReconSample>(
+    destination: &mut StripePlane<D>,
     curr_luma: FramePlane<'_, L>,
     plane: usize,
     config: &CcsoPlaneConfig,
@@ -489,7 +484,9 @@ fn ccso_apply<L: ReconSample>(
                         .get((cls0 * config.max_edge_interval + cls1) * config.max_band + band)
                         .ok_or(CcsoError::Params)?;
                     let sample = plane_row.get_mut(x3).ok_or(CcsoError::Workspace)?;
-                    *sample = (i32::from(*sample) + offset).clamp(0, config.max_sample) as u16;
+                    let filtered =
+                        (i32::from(sample.to_u16()) + offset).clamp(0, config.max_sample);
+                    *sample = D::try_from_u16(filtered as u16).map_err(|_| CcsoError::Workspace)?;
                 }
             }
         }
@@ -498,6 +495,34 @@ fn ccso_apply<L: ReconSample>(
 }
 
 const CCSO_LANES: usize = 16;
+
+/// The first lanes of `samples`, widened to `u16`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn load_lanes<S: Simd, D: ReconSample>(simd: S, samples: &[D]) -> Option<u16x16<S>> {
+    if let Some(bytes) = D::u8_slice(samples) {
+        let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, bytes.get(..CCSO_LANES)?));
+        return Some(simd.combine_u16x8(low, high));
+    }
+    Some(u16x16::from_slice(
+        simd,
+        D::u16_slice(samples)?.get(..CCSO_LANES)?,
+    ))
+}
+
+/// Stores `lanes`, which fit `D`, into the first lanes of `samples`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn store_lanes<S: Simd, D: ReconSample>(lanes: u16x16<S>, samples: &mut [D]) {
+    if let Some(bytes) = D::u8_slice_mut(samples).and_then(|bytes| bytes.get_mut(..CCSO_LANES)) {
+        let (low, high) = lanes.simd.split_u16x16(lanes);
+        lanes.simd.narrow_u16x8(low, high).store_slice(bytes);
+    } else if let Some(samples) =
+        D::u16_slice_mut(samples).and_then(|samples| samples.get_mut(..CCSO_LANES))
+    {
+        lanes.store_slice(samples);
+    }
+}
 
 /// Loads lanes of 8-bit luma from the start of `row`; with `SUB_X == 1` it
 /// keeps the even columns, the luma a 2:1 chroma row samples.
@@ -531,8 +556,8 @@ fn luma_u16<S: Simd, const SUB_X: usize>(simd: S, row: &[u16]) -> Option<u16x16<
 /// ([`docs/spec/av2/1.0.0/07-decoding-process.md`](../../../../docs/spec/av2/1.0.0/07-decoding-process.md));
 /// the vector loop cannot clamp per lane, so its span keeps the centre and
 /// every tap inside that range.
-fn ccso_simd_row<L: ReconSample>(
-    destination: &mut [u16],
+fn ccso_simd_row<D: ReconSample, L: ReconSample>(
+    destination: &mut [D],
     center_row: &[L],
     offset_rows: Option<(&[L], &[L])>,
     x_start: usize,
@@ -542,16 +567,16 @@ fn ccso_simd_row<L: ReconSample>(
 ) -> (usize, usize) {
     let args = (destination, center_row, offset_rows, x_start, x_end);
     baseline_simd!(simd => match config.sub_x {
-        0 => ccso_lanes_span::<_, L, 0>(simd, args, tile_clamp, config),
-        1 => ccso_lanes_span::<_, L, 1>(simd, args, tile_clamp, config),
+        0 => ccso_lanes_span::<_, D, L, 0>(simd, args, tile_clamp, config),
+        1 => ccso_lanes_span::<_, D, L, 1>(simd, args, tile_clamp, config),
         _ => (x_end, x_end),
     })
 }
 
 /// The row arguments of [`ccso_lanes_span`]: the destination row, the
 /// centre and tap luma rows, and the destination columns to filter.
-type CcsoRowArgs<'a, L> = (
-    &'a mut [u16],
+type CcsoRowArgs<'a, D, L> = (
+    &'a mut [D],
     &'a [L],
     Option<(&'a [L], &'a [L])>,
     usize,
@@ -570,9 +595,9 @@ type CcsoRowArgs<'a, L> = (
 /// them, which start at or after `first`, take the new samples.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn ccso_lanes_span<S: Simd, L: ReconSample, const SUB_X: usize>(
+fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
     simd: S,
-    (destination, center_row, offset_rows, x_start, x_end): CcsoRowArgs<'_, L>,
+    (destination, center_row, offset_rows, x_start, x_end): CcsoRowArgs<'_, D, L>,
     tile_clamp: (usize, usize),
     config: &CcsoPlaneConfig,
 ) -> (usize, usize) {
@@ -700,7 +725,7 @@ fn ccso_lanes_span<S: Simd, L: ReconSample, const SUB_X: usize>(
         Some(index)
     };
     let max_sample = i16x16::splat(simd, config.max_sample as i16);
-    let filter = |rows: [&[L]; 3], output: &[u16; CCSO_LANES]| -> Option<u16x16<S>> {
+    let filter = |rows: [&[L]; 3], output: &[D]| -> Option<u16x16<S>> {
         let index = if L::u8_slice(rows[0]).is_some() {
             index_u8(rows)
         } else {
@@ -709,7 +734,7 @@ fn ccso_lanes_span<S: Simd, L: ReconSample, const SUB_X: usize>(
         let offset = lookup(index).bitcast::<i8x16<S>>();
         let offset = simd.widen_i8x32(simd.combine_i8x16(offset, offset)).0;
         Some(
-            (u16x16::from_slice(simd, output).bitcast::<i16x16<S>>() + offset)
+            (load_lanes(simd, output)?.bitcast::<i16x16<S>>() + offset)
                 .max(i16x16::splat(simd, 0))
                 .min(max_sample)
                 .bitcast(),
@@ -780,13 +805,28 @@ fn ccso_lanes_span<S: Simd, L: ReconSample, const SUB_X: usize>(
                     }
                 }
             }
-            let (low, high) = simd.widen_i8x32(offset.bitcast::<i8x32<S>>());
+            let offset = offset.bitcast::<i8x32<S>>();
+            if let Some(bytes) = D::u8_slice_mut(&mut *output)
+                && config.max_sample == i32::from(u8::MAX)
+            {
+                let zero = i8x32::splat(simd, 0);
+                let (up, down) = (offset.max(zero), (zero - offset).max(zero));
+                u8x32::from_slice(simd, bytes)
+                    .saturating_add(up.bitcast::<u8x32<S>>())
+                    .saturating_sub(down.bitcast::<u8x32<S>>())
+                    .store_slice(bytes);
+                x += 2 * CCSO_LANES;
+                continue;
+            }
+            let (low, high) = simd.widen_i8x32(offset);
             for (output, offset) in output.chunks_exact_mut(CCSO_LANES).zip([low, high]) {
-                (u16x16::from_slice(simd, output).bitcast::<i16x16<S>>() + offset)
+                let Some(lanes) = load_lanes(simd, output) else {
+                    break;
+                };
+                let lanes = (lanes.bitcast::<i16x16<S>>() + offset)
                     .max(i16x16::splat(simd, 0))
-                    .min(max_sample)
-                    .bitcast::<u16x16<S>>()
-                    .store_slice(output);
+                    .min(max_sample);
+                store_lanes(lanes.bitcast(), output);
             }
             x += 2 * CCSO_LANES;
         }
@@ -805,13 +845,10 @@ fn ccso_lanes_span<S: Simd, L: ReconSample, const SUB_X: usize>(
                 .chunks_exact_mut(CCSO_LANES),
         );
     for (((centers, taps0), taps1), output) in lanes {
-        let Some(output) = output.first_chunk_mut::<CCSO_LANES>() else {
-            break;
-        };
         let Some(samples) = filter([centers, taps0, taps1], output) else {
             break;
         };
-        samples.store_slice(output);
+        store_lanes(samples, output);
         x += CCSO_LANES;
     }
     let tail_end = x_end.min(match usize::try_from(max_luma_x as isize - max_dx) {
@@ -835,7 +872,9 @@ fn ccso_lanes_span<S: Simd, L: ReconSample, const SUB_X: usize>(
         && let Some(samples) = filter([centers, taps0, taps1], output)
     {
         let done = x - start;
-        output[done..].copy_from_slice(&samples.to_array()[done..]);
+        let mut lanes = [D::default(); CCSO_LANES];
+        store_lanes(samples, &mut lanes);
+        output[done..].copy_from_slice(&lanes[done..]);
         x = tail_end;
     }
     (first, x)

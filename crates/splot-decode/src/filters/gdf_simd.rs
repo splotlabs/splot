@@ -845,10 +845,8 @@ impl GdfSample for u8 {
     #[allow(clippy::inline_always)]
     #[inline(always)]
     fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S> {
-        let lanes = u8x16::from_slice(simd, samples);
-        simd.widen_u8x32(simd.combine_u8x16(lanes, lanes))
-            .0
-            .bitcast()
+        let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, samples));
+        simd.combine_u16x8(low, high).bitcast()
     }
 
     #[allow(clippy::inline_always)]
@@ -1334,6 +1332,7 @@ fn class_tables(block: &GdfBlock) -> [[i16; 16]; 4] {
 /// `block.base_stride` apart, the run at column `block.x`) whose top-left
 /// source sample sits at `origin`: per row pair it fills the next gradient
 /// row pair, then classifies and filters each 16-column chunk in one pass.
+#[inline(never)]
 pub(super) fn filter_run<O: GdfSample>(
     source: &GdfSource<'_>,
     origin: (usize, usize),

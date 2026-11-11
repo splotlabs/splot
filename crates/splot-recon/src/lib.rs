@@ -99,7 +99,7 @@ pub use cdef_filter::{
     cdef_direction_padded, cdef_direction_segment, cdef_filter_block_boundary_to_valid_stride,
     cdef_filter_block_chroma_pair, cdef_filter_block_chroma_pair_segment,
     cdef_filter_block_interior_to, cdef_filter_block_interior_to_valid_stride,
-    cdef_filter_block_segment, cdef_filter_sample, cdef_filter_segment,
+    cdef_filter_block_segment, cdef_filter_sample, cdef_filter_segment, cdef_publish_chroma_pair,
 };
 pub use coefficient_scan::{
     TransformClass, coefficient_scan_order, coefficient_scan_position, coefficient_scan_slice,
@@ -236,7 +236,7 @@ pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAPS,
     WIENER_NS_CONFIG_UV, WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch,
     wiener_ns_chroma_luma_plane, wiener_ns_filter_chroma_block,
-    wiener_ns_filter_chroma_block_padded_u8_into, wiener_ns_filter_chroma_block_padded_u16_into,
+    wiener_ns_filter_chroma_block_padded_into,
 };
 pub use wienerns_filter::{
     WIENER_NS_CONFIG_Y_PAIRS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,

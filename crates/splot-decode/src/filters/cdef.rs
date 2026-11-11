@@ -10,6 +10,7 @@ use splot_recon::{
     CdefPairSegment, CdefSegmentBlock, CdefStrengths, PlaneId, PlaneRect, ReconSample,
     cdef_direction_padded, cdef_filter_block_boundary_to_valid_stride,
     cdef_filter_block_chroma_pair, cdef_filter_block_interior_to_valid_stride, cdef_filter_segment,
+    cdef_publish_chroma_pair,
 };
 
 use super::source::{DeblockedPlanes, FramePlane, StripeInitialization, StripePlane};
@@ -250,13 +251,13 @@ fn validate_grid_len(rows: usize, cols: usize, len: usize) -> Result<(), CdefErr
     }
 }
 
-pub(crate) struct CdefFrame<'a, T> {
+pub(crate) struct CdefFrame<'a, T: ReconSample> {
     pub(crate) deblocked_y: FramePlane<'a, T>,
     pub(crate) deblocked_u: Option<FramePlane<'a, T>>,
     pub(crate) deblocked_v: Option<FramePlane<'a, T>>,
-    pub(crate) filtered_y: StripePlane,
-    pub(crate) filtered_u: Option<StripePlane>,
-    pub(crate) filtered_v: Option<StripePlane>,
+    pub(crate) filtered_y: StripePlane<T>,
+    pub(crate) filtered_u: Option<StripePlane<T>>,
+    pub(crate) filtered_v: Option<StripePlane<T>>,
 }
 
 struct CdefBlockLookup<'a> {
@@ -490,9 +491,9 @@ fn cdef_strengths(
     }
 }
 
-fn cdef_initializations(
+fn cdef_initializations<T>(
     lookup: Option<&CdefBlockLookup<'_>>,
-    target: Option<&crate::pipeline::frame_progress::DirectStripeTarget>,
+    target: Option<&crate::pipeline::frame_progress::DirectStripeTarget<T>>,
     geometry: [Option<CdefPlaneGeometry>; 3],
     luma_rows: (usize, usize),
 ) -> Result<[StripeInitialization; 3], CdefError> {
@@ -505,7 +506,6 @@ fn cdef_initializations(
         let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
         target
             .and_then(|target| target.get(plane))
-            .filter(|target| target.is_u16())
             .and(geometry[index])
             .and_then(|geometry| {
                 let (sub_x, sub_y) = if plane == PlaneId::Y {
@@ -627,7 +627,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
     tile_starts: Option<(&[u32], &[u32])>,
     luma_start: usize,
     luma_end: usize,
-    mut target: Option<crate::pipeline::frame_progress::DirectStripeTarget>,
+    mut target: Option<crate::pipeline::frame_progress::DirectStripeTarget<T>>,
 ) -> Result<CdefFrame<'a, T>, CdefError> {
     let (mi_rows, mi_cols) = mi_size;
     if luma_start >= luma_end || !luma_start.is_multiple_of(STEP4 * MI_SIZE) {
@@ -702,7 +702,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         if target
             .as_ref()
             .and_then(|target| target.get(plane))
-            .is_some_and(|target| target.is_u16() && target.holds_deblocked())
+            .is_some_and(crate::pipeline::frame_progress::DirectPlaneTarget::holds_deblocked)
         {
             initializations[plane.index()] = StripeInitialization::FullyOverwritten;
             fill_flat[plane.index()] = false;
@@ -910,48 +910,58 @@ fn flat_window<S: ReconSample, const W: usize, const H: usize>(
     let value = plane.row(top)?.get(left)?.to_u16();
     for row in top..top + H + 2 * CDEF_TAP_REACH {
         let samples = plane.row(row)?.get(left..)?.get(..W + 2 * CDEF_TAP_REACH)?;
-        let flat = match (S::u16_slice(samples), S::u8_slice(samples)) {
-            (Some(samples), _) => baseline_simd!(simd => {
-                let (value, zero) = (u16x16::splat(simd, value), u16x16::splat(simd, 0));
-                chunks_repeat(samples, zero, |lanes| u16x16::from_slice(simd, lanes) ^ value)
-                    .is_some_and(|diff| diff.simd_eq(zero).all_true())
-            }),
-            (_, Some(samples)) => {
-                let value = u8::try_from(value).ok()?;
-                baseline_simd!(simd => {
-                    let (value, zero) = (u8x16::splat(simd, value), u8x16::splat(simd, 0));
-                    chunks_repeat(samples, zero, |lanes| u8x16::from_slice(simd, lanes) ^ value)
-                        .is_some_and(|diff| diff.simd_eq(zero).all_true())
-                })
-            }
-            _ => false,
-        };
-        if !flat {
+        if holds_value(samples, value) != Some(true) {
             return None;
         }
     }
     Some(value)
 }
 
+/// Whether every one of `samples` is `value`, or `None` when they are fewer
+/// than 16.
+#[inline]
+pub(crate) fn holds_value<S: ReconSample>(samples: &[S], value: u16) -> Option<bool> {
+    match (S::u16_slice(samples), S::u8_slice(samples)) {
+        (Some(samples), _) => baseline_simd!(simd => {
+            let value = u16x16::splat(simd, value);
+            chunks_repeat(samples, |lanes| u16x16::load_array_ref(simd, lanes) ^ value)
+                .map(|diff| diff.reduce_max() == 0)
+        }),
+        (_, Some(samples)) => {
+            let Ok(value) = u8::try_from(value) else {
+                return (samples.len() >= 16).then_some(false);
+            };
+            baseline_simd!(simd => {
+                let value = u8x16::splat(simd, value);
+                chunks_repeat(samples, |lanes| u8x16::load_array_ref(simd, lanes) ^ value)
+                    .map(|diff| diff.reduce_max() == 0)
+            })
+        }
+        _ => None,
+    }
+}
+
 /// The bitwise or of `diff` over every 16-sample chunk of `samples`, or
 /// `None` when it is shorter than 16; the last chunk overlaps the one
 /// before it.
+#[allow(clippy::inline_always, reason = "measured CDEF and LR flat checks")]
+#[inline(always)]
 fn chunks_repeat<T, V: core::ops::BitOr<Output = V>>(
     samples: &[T],
-    zero: V,
-    mut diff: impl FnMut(&[T]) -> V,
+    diff: impl Fn(&[T; 16]) -> V,
 ) -> Option<V> {
-    let last = samples.len().checked_sub(16)?;
-    (0..last)
-        .step_by(16)
-        .chain([last])
-        .try_fold(zero, |acc, start| {
-            Some(acc | diff(samples.get(start..start + 16)?))
-        })
+    let last = samples.last_chunk::<16>()?;
+    Some(
+        samples
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .fold(diff(last), |acc, chunk| acc | diff(chunk)),
+    )
 }
 
 /// Writes a flat segment's values into the planes `lookup.fill_flat` marks.
-fn fill_flat_segment<T>(
+fn fill_flat_segment<T: ReconSample>(
     frame: &mut CdefFrame<'_, T>,
     lookup: &CdefBlockLookup<'_>,
     (r, c): (usize, usize),
@@ -1017,14 +1027,15 @@ fn window_flat<
     })
 }
 
-fn fill_rect(
-    plane: &mut StripePlane,
+fn fill_rect<T: ReconSample>(
+    plane: &mut StripePlane<T>,
     x: usize,
     y: usize,
     w: usize,
     h: usize,
     value: u16,
 ) -> Result<(), CdefError> {
+    let value = T::try_from_u16(value).map_err(|_| CdefError::Workspace)?;
     let rect = PlaneRect::new(x, y, w, h).map_err(|_| CdefError::Geometry)?;
     let (samples, stride) = plane.rect_mut(rect).ok_or(CdefError::Workspace)?;
     for row in samples.chunks_mut(stride) {
@@ -1157,11 +1168,11 @@ fn cdef_segment<S: ReconSample>(
 
 /// The rows of the `w`x`h` rectangle at `(x, y)` of `plane`, from its first
 /// sample on, and their stride.
-fn plane_rows(
-    plane: &mut StripePlane,
+fn plane_rows<T: ReconSample>(
+    plane: &mut StripePlane<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
-) -> Result<(&mut [u16], usize), CdefError> {
+) -> Result<(&mut [T], usize), CdefError> {
     let rect = PlaneRect::new(x, y, w, h).map_err(|_| CdefError::Geometry)?;
     plane.rect_mut(rect).ok_or(CdefError::Workspace)
 }
@@ -1195,9 +1206,9 @@ fn compute_cdef_block<S: ReconSample>(
     luma_snap: FramePlane<'_, S>,
     u_snap: Option<FramePlane<'_, S>>,
     v_snap: Option<FramePlane<'_, S>>,
-    filtered_y: &mut StripePlane,
-    filtered_u: Option<&mut StripePlane>,
-    filtered_v: Option<&mut StripePlane>,
+    filtered_y: &mut StripePlane<S>,
+    filtered_u: Option<&mut StripePlane<S>>,
+    filtered_v: Option<&mut StripePlane<S>>,
 ) -> Result<(), CdefError> {
     let x0 = ctx.c << MI_SIZE_LOG2;
     let y0 = ctx.r << MI_SIZE_LOG2;
@@ -1291,8 +1302,8 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
     ctx: &CdefBlockCtx,
     filter: &CdefBlockFilter,
     pad: &mut [u16; CDEF_PADDED_AREA],
-    filtered_u: &mut StripePlane,
-    filtered_v: &mut StripePlane,
+    filtered_u: &mut StripePlane<S>,
+    filtered_v: &mut StripePlane<S>,
 ) -> Result<bool, CdefError> {
     let x0 = (ctx.c * MI_SIZE) >> ctx.sub_x;
     let y0 = (ctx.r * MI_SIZE) >> ctx.sub_y;
@@ -1348,12 +1359,12 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
     reason = "measured: out of line it slowed 8-bit CDEF"
 )]
 #[inline(always)]
-fn write_chroma_pair(
+fn write_chroma_pair<T: ReconSample>(
     pad: &[u16],
     flat: bool,
     fill: [bool; 2],
     filter_pair: impl FnOnce(&mut [u16; CDEF_PAIR_OUTPUT]) -> bool,
-    (filtered_u, filtered_v): (&mut StripePlane, &mut StripePlane),
+    (filtered_u, filtered_v): (&mut StripePlane<T>, &mut StripePlane<T>),
     (x0, y0): (usize, usize),
 ) -> Result<(), CdefError> {
     if flat {
@@ -1373,40 +1384,18 @@ fn write_chroma_pair(
     }
     let u_rows = stripe_rows_from(filtered_u, x0, y0).ok_or(CdefError::Workspace)?;
     let v_rows = stripe_rows_from(filtered_v, x0, y0).ok_or(CdefError::Workspace)?;
-    publish_chroma_pair(&output, [u_rows, v_rows])
-}
-
-/// Writes the interleaved chroma pair `output` into the `CHROMA_PAIR_SIDE`
-/// rows of the U and V `planes`.
-fn publish_chroma_pair(
-    output: &[u16; CDEF_PAIR_OUTPUT],
-    planes: [(&mut [u16], usize); 2],
-) -> Result<(), CdefError> {
-    let (low, high) = output.split_at(CDEF_PAIR_OUTPUT / 2);
-    let lanes = baseline_simd!(simd => {
-        let (low, high) = (u16x16::from_slice(simd, low), u16x16::from_slice(simd, high));
-        [simd.unzip_low_u16x16(low, high), simd.unzip_high_u16x16(low, high)].map(SimdBase::to_array)
-    });
-    for (lanes, (out, stride)) in lanes.iter().zip(planes) {
-        let span = stride
-            .checked_mul(CHROMA_PAIR_SIDE - 1)
-            .and_then(|rows| rows.checked_add(CHROMA_PAIR_SIDE));
-        let rows = span
-            .and_then(|span| out.get_mut(..span))
-            .ok_or(CdefError::Workspace)?;
-        for (row, lanes) in lanes.chunks_exact(CHROMA_PAIR_SIDE).enumerate() {
-            let start = row * stride;
-            rows.get_mut(start..start + CHROMA_PAIR_SIDE)
-                .ok_or(CdefError::Workspace)?
-                .copy_from_slice(lanes); // splot-copy-ok: publish the pair's deinterleaved samples
-        }
-    }
-    Ok(())
+    cdef_publish_chroma_pair(&output, [u_rows, v_rows])
+        .then_some(())
+        .ok_or(CdefError::Workspace)
 }
 
 /// `plane`'s samples from `(x, y)` on, and its row stride, provided rows
 /// keep `CHROMA_PAIR_SIDE` samples from `x` on.
-fn stripe_rows_from(plane: &mut StripePlane, x: usize, y: usize) -> Option<(&mut [u16], usize)> {
+fn stripe_rows_from<T: ReconSample>(
+    plane: &mut StripePlane<T>,
+    x: usize,
+    y: usize,
+) -> Option<(&mut [T], usize)> {
     let stride = plane.stride();
     if x.checked_add(CHROMA_PAIR_SIDE)? > plane.width() {
         return None;
@@ -1459,7 +1448,7 @@ fn compute_cdef_filter_plane<S: ReconSample>(
     chroma: bool,
     filter: &CdefBlockFilter,
     pad: &mut [u16; CDEF_PADDED_AREA],
-    filtered: &mut StripePlane,
+    filtered: &mut StripePlane<S>,
 ) -> Result<(), CdefError> {
     let (sub_x, sub_y) = if chroma {
         (ctx.sub_x, ctx.sub_y)
@@ -1656,8 +1645,8 @@ fn gather_boundary_pad<S: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn filter_pad_into(
-    filtered: &mut StripePlane,
+fn filter_pad_into<T: ReconSample>(
+    filtered: &mut StripePlane<T>,
     pad: &[u16; CDEF_PADDED_AREA],
     x0: usize,
     y0: usize,

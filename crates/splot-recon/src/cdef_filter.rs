@@ -40,6 +40,8 @@ use fearless_simd::{
     u8x16, u16x8, u16x16,
 };
 
+use crate::ReconSample;
+
 /// AV2 § 7.18.2 `Div_Table[9]`: reciprocal-scaling weights for the direction cost.
 const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
 
@@ -674,17 +676,45 @@ fn cdef_round<S: SimdToken>(sum: i16x16<S>) -> i16x16<S> {
 /// `out`, `W` samples each; the second only when it is below `h`.
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn cdef_store_row_pair<S: SimdToken, const W: usize>(
+fn cdef_store_row_pair<S: SimdToken, const W: usize, T: ReconSample>(
     filtered: u16x16<S>,
-    out: &mut [u16],
+    out: &mut [T],
     out_stride: usize,
     row: usize,
     h: usize,
 ) -> Option<()> {
-    let filtered = filtered.to_array();
-    cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(&filtered[..W]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+    if let Some(out) = T::u8_slice_mut(out) {
+        let (low, high) = filtered.simd.split_u16x16(filtered);
+        return cdef_store_rows::<W, _>(
+            filtered.simd.saturating_narrow_u16x8(low, high).to_array(),
+            out,
+            out_stride,
+            row,
+            h,
+        );
+    }
+    cdef_store_rows::<W, _>(
+        filtered.to_array(),
+        T::u16_slice_mut(out)?,
+        out_stride,
+        row,
+        h,
+    )
+}
+
+/// [`cdef_store_row_pair`] of the row pair `lanes`.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_store_rows<const W: usize, E: Copy>(
+    lanes: [E; 16],
+    out: &mut [E],
+    out_stride: usize,
+    row: usize,
+    h: usize,
+) -> Option<()> {
+    cdef_output_row::<W, E>(out, out_stride, row)?.copy_from_slice(&lanes[..W]); // splot-copy-ok: publish paired SIMD-filtered rows into output
     if row + 1 < h {
-        cdef_output_row::<W>(out, out_stride, row + 1)?.copy_from_slice(&filtered[8..8 + W]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+        cdef_output_row::<W, E>(out, out_stride, row + 1)?.copy_from_slice(&lanes[8..8 + W]); // splot-copy-ok: publish paired SIMD-filtered rows into output
     }
     Some(())
 }
@@ -784,12 +814,12 @@ fn cdef_tap_views<
 
 /// The output rows and filter of a block kernel: `pad`, rows below `h`, the
 /// § 7.18.3 filter, the tap starts, and `out` with its stride.
-type CdefRowsArgs<'a, const AREA: usize> = (
+type CdefRowsArgs<'a, const AREA: usize, T> = (
     &'a [u16; AREA],
     usize,
     &'a CdefBlockFilter,
     &'a CdefTapStarts,
-    &'a mut [u16],
+    &'a mut [T],
     usize,
 );
 
@@ -805,6 +835,7 @@ type CdefRowsArgs<'a, const AREA: usize> = (
 #[inline(always)]
 fn cdef_filter_rows<
     S: SimdToken,
+    T: ReconSample,
     const W: usize,
     const HAS_UNAVAILABLE: bool,
     const STRIDE: usize,
@@ -816,7 +847,7 @@ fn cdef_filter_rows<
     const SEC: bool,
 >(
     simd: S,
-    (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA>,
+    (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA, T>,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
@@ -865,7 +896,7 @@ fn cdef_filter_rows<
         if PRI && SEC {
             filtered = filtered.max(min).min(max);
         }
-        cdef_store_row_pair::<S, W>(filtered.bitcast(), out, out_stride, row, h)
+        cdef_store_row_pair::<S, W, _>(filtered.bitcast(), out, out_stride, row, h)
     });
     Some(())
 }
@@ -930,6 +961,7 @@ fn cdef_u8_lanes_fit(filter: &CdefBlockFilter) -> bool {
 #[inline(always)]
 fn cdef_filter_rows_8bit<
     S: SimdToken,
+    T: ReconSample,
     const W: usize,
     const STRIDE: usize,
     const CENTER: usize,
@@ -940,7 +972,7 @@ fn cdef_filter_rows_8bit<
     const SEC: bool,
 >(
     simd: S,
-    (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA>,
+    (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA, T>,
     base: u16,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
@@ -993,18 +1025,18 @@ fn cdef_filter_rows_8bit<
         } else {
             (filtered + base as i16).bitcast()
         };
-        cdef_store_row_pair::<S, W>(filtered, out, out_stride, row, h)
+        cdef_store_row_pair::<S, W, _>(filtered, out, out_stride, row, h)
     });
     Some(())
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn cdef_output_row<const W: usize>(
-    out: &mut [u16],
+fn cdef_output_row<const W: usize, E>(
+    out: &mut [E],
     stride: usize,
     row: usize,
-) -> Option<&mut [u16; W]> {
+) -> Option<&mut [E; W]> {
     out.get_mut(row.checked_mul(stride)?..)?.first_chunk_mut()
 }
 
@@ -1031,16 +1063,27 @@ fn cdef_copy_centre_rows<
     const CENTER: usize,
     const ROWS: usize,
     const AREA: usize,
+    T: ReconSample,
 >(
     pad: &[u16; AREA],
     h: usize,
-    out: &mut [u16],
+    out: &mut [T],
     out_stride: usize,
 ) -> Option<()> {
     for row in 0..h.min(ROWS) {
         let start = (2 + row) * STRIDE + CENTER;
         let center = pad.get(start..)?.first_chunk::<W>()?;
-        cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(center); // splot-copy-ok: unfiltered block keeps its centre samples
+        if let Some(out) = T::u8_slice_mut(&mut *out) {
+            for (out, &sample) in cdef_output_row::<W, u8>(out, out_stride, row)?
+                .iter_mut()
+                .zip(center)
+            {
+                *out = u8::try_from(sample).ok()?;
+            }
+        } else {
+            let out = T::u16_slice_mut(&mut *out)?;
+            cdef_output_row::<W, u16>(out, out_stride, row)?.copy_from_slice(center); // splot-copy-ok: unfiltered block keeps its centre samples
+        }
     }
     Some(())
 }
@@ -1066,6 +1109,7 @@ fn cdef_i8_diffs_fit(filter: &CdefBlockFilter) -> bool {
 #[inline(always)]
 fn cdef_filter_rows_diff8<
     S: SimdToken,
+    T: ReconSample,
     const W: usize,
     const STRIDE: usize,
     const CENTER: usize,
@@ -1076,7 +1120,7 @@ fn cdef_filter_rows_diff8<
     const SEC: bool,
 >(
     simd: S,
-    (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA>,
+    (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA, T>,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
@@ -1120,7 +1164,7 @@ fn cdef_filter_rows_diff8<
         } else {
             center + offset
         };
-        cdef_store_row_pair::<S, W>(filtered.bitcast(), out, out_stride, row, h)
+        cdef_store_row_pair::<S, W, _>(filtered.bitcast(), out, out_stride, row, h)
     });
     Some(())
 }
@@ -1173,6 +1217,7 @@ fn shr_or_zero(value: i32, shift: i32) -> i32 {
 #[inline(always)]
 fn cdef_filter_rows_clamped<
     S: SimdToken,
+    T: ReconSample,
     const W: usize,
     const STRIDE: usize,
     const CENTER: usize,
@@ -1184,7 +1229,7 @@ fn cdef_filter_rows_clamped<
     const SEC: bool,
 >(
     simd: S,
-    (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA>,
+    (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA, T>,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
@@ -1229,7 +1274,7 @@ fn cdef_filter_rows_clamped<
         if PRI && SEC {
             filtered = filtered.max(min).min(max);
         }
-        cdef_store_row_pair::<S, W>(filtered.bitcast(), out, out_stride, row, h)
+        cdef_store_row_pair::<S, W, _>(filtered.bitcast(), out, out_stride, row, h)
     });
     Some(())
 }
@@ -1240,6 +1285,7 @@ fn cdef_filter_rows_clamped<
 #[inline(always)]
 fn cdef_filter_block_rows<
     S: SimdToken,
+    T: ReconSample,
     const W: usize,
     const HAS_UNAVAILABLE: bool,
     const STRIDE: usize,
@@ -1249,31 +1295,31 @@ fn cdef_filter_block_rows<
     const AREA: usize,
 >(
     simd: S,
-    (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA>,
+    (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA, T>,
 ) -> Option<()> {
     macro_rules! copy {
         () => {
-            cdef_copy_centre_rows::<W, STRIDE, CENTER, ROWS, AREA>(pad, h, out, out_stride)
+            cdef_copy_centre_rows::<W, STRIDE, CENTER, ROWS, AREA, _>(pad, h, out, out_stride)
         };
     }
     let args = (pad, h, filter, starts, &mut *out, out_stride);
     if !HAS_UNAVAILABLE && filter.coeff_shift == 0 && cdef_u8_lanes_fit(filter) {
         return cdef_by_families!(
             filter,
-            cdef_filter_rows_8bit::<S, W, STRIDE, CENTER, ROWS, SPAN, AREA>(simd, args, 0),
+            cdef_filter_rows_8bit::<S, _, W, STRIDE, CENTER, ROWS, SPAN, AREA>(simd, args, 0),
             copy!()
         );
     }
     if !HAS_UNAVAILABLE && filter.coeff_shift > 0 && cdef_i8_diffs_fit(filter) {
         return cdef_by_families!(
             filter,
-            cdef_filter_rows_diff8::<S, W, STRIDE, CENTER, ROWS, SPAN, AREA>(simd, args),
+            cdef_filter_rows_diff8::<S, _, W, STRIDE, CENTER, ROWS, SPAN, AREA>(simd, args),
             copy!()
         );
     }
     cdef_by_families!(
         filter,
-        cdef_filter_rows::<S, W, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, AREA>(simd, args),
+        cdef_filter_rows::<S, _, W, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, AREA>(simd, args),
         copy!()
     )
 }
@@ -1282,12 +1328,12 @@ fn cdef_filter_block_rows<
 ///
 /// Returns `false` when the output geometry cannot hold the 8- or 4-sample-wide
 /// CDEF block. The padded input layout matches [`cdef_direction_padded`].
-pub fn cdef_filter_block_interior_to(
+pub fn cdef_filter_block_interior_to<T: ReconSample>(
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
     h: usize,
     filter: &CdefBlockFilter,
-    out: &mut [u16],
+    out: &mut [T],
     out_stride: usize,
 ) -> bool {
     let w = w.min(8);
@@ -1299,15 +1345,15 @@ pub fn cdef_filter_block_interior_to(
 
 /// Variant of [`cdef_filter_block_interior_to`] for an already-validated output view.
 #[doc(hidden)]
-pub fn cdef_filter_block_interior_to_valid_stride(
+pub fn cdef_filter_block_interior_to_valid_stride<T: ReconSample>(
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
     h: usize,
     filter: &CdefBlockFilter,
-    out: &mut [u16],
+    out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    cdef_filter_block_padded_to_valid_stride::<false>(pad, w, h, filter, out, out_stride)
+    cdef_filter_block_padded_to_valid_stride::<false, _>(pad, w, h, filter, out, out_stride)
 }
 
 /// SIMD CDEF filtering for a padded boundary block.
@@ -1315,23 +1361,23 @@ pub fn cdef_filter_block_interior_to_valid_stride(
 /// Tap slots outside the active filter region must contain [`CDEF_UNAVAILABLE`].
 /// Returns `false` for unsupported output geometry.
 #[doc(hidden)]
-pub fn cdef_filter_block_boundary_to_valid_stride(
+pub fn cdef_filter_block_boundary_to_valid_stride<T: ReconSample>(
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
     h: usize,
     filter: &CdefBlockFilter,
-    out: &mut [u16],
+    out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    cdef_filter_block_padded_to_valid_stride::<true>(pad, w, h, filter, out, out_stride)
+    cdef_filter_block_padded_to_valid_stride::<true, _>(pad, w, h, filter, out, out_stride)
 }
 
-fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
+fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool, T: ReconSample>(
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
     h: usize,
     filter: &CdefBlockFilter,
-    out: &mut [u16],
+    out: &mut [T],
     out_stride: usize,
 ) -> bool {
     const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
@@ -1346,6 +1392,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
     match w.min(8) {
         8 => baseline_simd!(simd => cdef_filter_block_rows::<
             _,
+            _,
             8,
             HAS_UNAVAILABLE,
             CDEF_PADDED_SIDE,
@@ -1355,6 +1402,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
             CDEF_PADDED_AREA,
         >(simd, args)),
         4 => baseline_simd!(simd => cdef_filter_block_rows::<
+            _,
             _,
             4,
             HAS_UNAVAILABLE,
@@ -1366,9 +1414,9 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
         >(simd, args)),
         0 => None,
         w => {
-            let mut block = [0u16; 64];
+            let mut block = [T::default(); 64];
             let h = h.min(8);
-            if !cdef_filter_block_padded_to_valid_stride::<HAS_UNAVAILABLE>(
+            if !cdef_filter_block_padded_to_valid_stride::<HAS_UNAVAILABLE, T>(
                 pad, 8, h, filter, &mut block, 8,
             ) {
                 return false;
@@ -1416,6 +1464,7 @@ pub fn cdef_filter_block_chroma_pair(
     let args = (pad, h, filter, &CDEF_PAIR_TAP_STARTS, &mut out[..], 8);
     baseline_simd!(simd => cdef_filter_block_rows::<
         _,
+        _,
         8,
         false,
         CDEF_PAIR_STRIDE,
@@ -1431,6 +1480,7 @@ mod segment;
 pub use segment::{
     CdefLumaSegment, CdefPairSegment, CdefSegmentBlock, CdefSegmentOutput, CdefStrengths,
     cdef_filter_block_chroma_pair_segment, cdef_filter_block_segment, cdef_filter_segment,
+    cdef_publish_chroma_pair,
 };
 
 /// The `constrain` dampingAdj, which depends only on the per-call strengths

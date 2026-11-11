@@ -63,28 +63,8 @@ struct ProgressLayout {
 }
 
 #[derive(Clone, Copy)]
-enum DirectPlaneSamples {
-    U8(NonNull<u8>),
-    U16(NonNull<u16>),
-}
-
-impl DirectPlaneSamples {
-    fn offset(self, offset: usize) -> Option<Self> {
-        match self {
-            Self::U8(samples) => Some(Self::U8(NonNull::new(
-                samples.as_ptr().wrapping_add(offset),
-            )?)),
-            Self::U16(samples) => Some(Self::U16(NonNull::new(
-                samples.as_ptr().wrapping_add(offset),
-            )?)),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
 struct PlaneStorage<T> {
     samples: NonNull<T>,
-    direct_samples: Option<DirectPlaneSamples>,
     len: usize,
     stride: usize,
     height: usize,
@@ -125,25 +105,11 @@ impl<T: ReconSample> DirectWorkspace<T> {
                 };
                 let samples = view.samples_mut();
                 let len = samples.len();
-                let (samples, direct_samples) = if let Some(samples) = T::u16_slice_mut(samples) {
-                    let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
-                        continue;
-                    };
-                    (samples.cast(), Some(DirectPlaneSamples::U16(samples)))
-                } else if let Some(samples) = T::u8_slice_mut(samples) {
-                    let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
-                        continue;
-                    };
-                    (samples.cast(), Some(DirectPlaneSamples::U8(samples)))
-                } else {
-                    let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
-                        continue;
-                    };
-                    (samples, None)
+                let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
+                    continue;
                 };
                 planes[plane.index()] = Some(PlaneStorage {
                     samples,
-                    direct_samples,
                     len,
                     stride,
                     height: len / stride,
@@ -158,7 +124,12 @@ impl<T: ReconSample> DirectWorkspace<T> {
         })
     }
 
-    fn direct_region(&self, plane: PlaneId, start: usize, end: usize) -> Option<DirectPlaneRegion> {
+    fn direct_region(
+        &self,
+        plane: PlaneId,
+        start: usize,
+        end: usize,
+    ) -> Option<DirectPlaneRegion<T>> {
         let storage = self.planes[plane.index()]?;
         if start >= end || end > storage.height {
             return None;
@@ -168,7 +139,7 @@ impl<T: ReconSample> DirectWorkspace<T> {
         if start_sample.checked_add(len)? > storage.len {
             return None;
         }
-        let samples = storage.direct_samples?.offset(start_sample)?;
+        let samples = NonNull::new(storage.samples.as_ptr().wrapping_add(start_sample))?;
         Some(DirectPlaneRegion {
             samples,
             len,
@@ -199,8 +170,8 @@ impl<T: ReconSample> DirectWorkspace<T> {
     }
 }
 
-struct DirectPlaneRegion {
-    samples: DirectPlaneSamples,
+struct DirectPlaneRegion<T> {
+    samples: NonNull<T>,
     len: usize,
     width: usize,
     stride: usize,
@@ -208,17 +179,17 @@ struct DirectPlaneRegion {
     origin_y: usize,
 }
 
-pub(crate) struct DirectPlaneTarget {
-    region: DirectPlaneRegion,
+pub(crate) struct DirectPlaneTarget<T> {
+    region: DirectPlaneRegion<T>,
     progress: Arc<dyn DirectLeaseRelease>,
     stripe: usize,
     deblocked: bool,
 }
 
 /// SAFETY: moving this unique disjoint-band capability transfers ownership.
-unsafe impl Send for DirectPlaneTarget {}
+unsafe impl<T: Send> Send for DirectPlaneTarget<T> {}
 
-impl DirectPlaneTarget {
+impl<T> DirectPlaneTarget<T> {
     pub(crate) const fn width(&self) -> usize {
         self.region.width
     }
@@ -241,10 +212,6 @@ impl DirectPlaneTarget {
             .checked_add(self.region.len.checked_div(self.region.stride)?)
     }
 
-    pub(crate) const fn is_u16(&self) -> bool {
-        matches!(self.region.samples, DirectPlaneSamples::U16(_))
-    }
-
     /// The region still holds the deblocked rows the frontier released to
     /// this stripe's window.
     pub(crate) const fn holds_deblocked(&self) -> bool {
@@ -253,38 +220,32 @@ impl DirectPlaneTarget {
 
     #[inline]
     /// The target uniquely owns this non-overlapping stripe region.
-    pub(crate) fn u8_samples_mut(&mut self) -> Option<&mut [u8]> {
-        let DirectPlaneSamples::U8(samples) = self.region.samples else {
-            return None;
-        }; // SAFETY: this target owns a checked non-overlapping stripe region.
-        Some(unsafe { slice::from_raw_parts_mut(samples.as_ptr(), self.region.len) })
-    }
-
-    #[inline]
-    pub(crate) fn u16_samples_mut(&mut self) -> Option<&mut [u16]> {
-        let DirectPlaneSamples::U16(samples) = self.region.samples else {
-            return None;
-        };
-        Some(unsafe {
-            // SAFETY: the layout lends each non-overlapping stripe once.
-            slice::from_raw_parts_mut(samples.as_ptr(), self.region.len)
-        })
+    pub(crate) fn samples_mut(&mut self) -> &mut [T] {
+        // SAFETY: the layout lends each checked non-overlapping stripe once.
+        unsafe { slice::from_raw_parts_mut(self.region.samples.as_ptr(), self.region.len) }
     }
 }
 
-impl Drop for DirectPlaneTarget {
+#[cfg(test)]
+impl<T: ReconSample> DirectPlaneTarget<T> {
+    pub(crate) fn u8_samples_mut(&mut self) -> Option<&mut [u8]> {
+        T::u8_slice_mut(self.samples_mut())
+    }
+}
+
+impl<T> Drop for DirectPlaneTarget<T> {
     fn drop(&mut self) {
         self.progress.release_hold(self.stripe);
     }
 }
 
-impl DirectPlaneRegion {
+impl<T> DirectPlaneRegion<T> {
     fn into_target(
         self,
         progress: Arc<dyn DirectLeaseRelease>,
         stripe: usize,
         deblocked: bool,
-    ) -> DirectPlaneTarget {
+    ) -> DirectPlaneTarget<T> {
         DirectPlaneTarget {
             region: self,
             progress,
@@ -294,16 +255,16 @@ impl DirectPlaneRegion {
     }
 }
 
-pub(crate) struct DirectStripeTarget {
-    planes: [Option<DirectPlaneTarget>; 3],
+pub(crate) struct DirectStripeTarget<T> {
+    planes: [Option<DirectPlaneTarget<T>>; 3],
 }
 
-impl DirectStripeTarget {
-    pub(crate) fn get(&self, plane: PlaneId) -> Option<&DirectPlaneTarget> {
+impl<T> DirectStripeTarget<T> {
+    pub(crate) fn get(&self, plane: PlaneId) -> Option<&DirectPlaneTarget<T>> {
         self.planes[plane.index()].as_ref()
     }
 
-    pub(crate) fn take(&mut self, plane: PlaneId) -> Option<DirectPlaneTarget> {
+    pub(crate) fn take(&mut self, plane: PlaneId) -> Option<DirectPlaneTarget<T>> {
         self.planes[plane.index()].take()
     }
 
@@ -339,7 +300,7 @@ impl DirectStripeTarget {
 pub(crate) struct DirectStripeLease<T: ReconSample> {
     progress: Arc<FrameProgress<T>>,
     stripe: usize,
-    target: Option<DirectStripeTarget>,
+    target: Option<DirectStripeTarget<T>>,
 }
 
 impl<T: ReconSample> Drop for DirectStripeLease<T> {
@@ -349,7 +310,7 @@ impl<T: ReconSample> Drop for DirectStripeLease<T> {
 }
 
 impl<T: ReconSample> DirectStripeLease<T> {
-    pub(crate) fn take_target(&mut self) -> Option<DirectStripeTarget> {
+    pub(crate) fn take_target(&mut self) -> Option<DirectStripeTarget<T>> {
         self.target.take()
     }
 

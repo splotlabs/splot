@@ -821,7 +821,7 @@ fn apply_luma_lr(
     sink: &WienerNsLrReconSink<u8>,
     core: &FrameHeaderCore,
     blocks: &[WienerNsLrSourceBlock],
-    direct_u8: bool,
+    fully_overwritten: bool,
 ) -> Vec<u8> {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(sink.frame_info()).unwrap(),
@@ -832,8 +832,7 @@ fn apply_luma_lr(
     poison_target
         .take(PlaneId::Y)
         .unwrap()
-        .u8_samples_mut()
-        .unwrap()
+        .samples_mut()
         .fill(0xa5);
     drop(poison_target);
     drop(poison_lease);
@@ -865,15 +864,16 @@ fn apply_luma_lr(
             &[],
             super::LrStripeOutput {
                 active_planes: [true, false, false],
-                direct_u8_planes: [direct_u8, false, false],
-                initializations: [StripeInitialization::CopyAll; 3],
+                initializations: [if fully_overwritten {
+                    StripeInitialization::FullyOverwritten
+                } else {
+                    StripeInitialization::CopyAll
+                }; 3],
                 target,
             },
         )
         .unwrap()
         .into_filtered();
-    let mut filtered = filtered;
-    filtered.y.finish_direct().unwrap();
     drop(filtered);
     assert!(lease.submit());
     let frame = progress.freeze_workspace(core::convert::identity).unwrap();
@@ -914,7 +914,6 @@ fn inactive_filter_planes_reuse_cdef_storage() {
             &[],
             super::LrStripeOutput {
                 active_planes: [false; 3],
-                direct_u8_planes: [false; 3],
                 initializations: [StripeInitialization::CopyAll; 3],
                 target,
             },
@@ -922,7 +921,7 @@ fn inactive_filter_planes_reuse_cdef_storage() {
         .unwrap()
         .into_filtered();
 
-    assert_eq!(filtered.y.as_u16().unwrap().samples().as_ptr(), cdef_ptr);
+    assert_eq!(filtered.y.samples().as_ptr(), cdef_ptr);
 }
 
 fn merges(first: WienerNsLrSourceBlock, next: WienerNsLrSourceBlock) -> [Option<usize>; 2] {
@@ -1154,7 +1153,7 @@ fn loop_restoration_coverage_is_plane_independent_for_every_pixel_format() {
 }
 
 #[test]
-fn terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts() {
+fn fully_overwritten_luma_wiener_matches_copy_all_for_class_layouts() {
     let snapshot: Vec<u8> = (0..256)
         .map(|index| 32 + ((index * 37 + index / 16 * 19) % 192) as u8)
         .collect();
@@ -1177,9 +1176,9 @@ fn terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts() {
     luma.num_filter_classes = Some(2);
 
     for core in [&single_core, &cell_core] {
-        let staged = apply_luma_lr(&lr_sink(&snapshot), core, &blocks, false);
+        let copied = apply_luma_lr(&lr_sink(&snapshot), core, &blocks, false);
         let direct = apply_luma_lr(&lr_sink(&snapshot), core, &blocks, true);
-        assert_eq!(direct, staged);
+        assert_eq!(direct, copied);
         assert!(direct.iter().any(|&sample| sample != 0xa5));
     }
 }
@@ -1293,7 +1292,7 @@ fn apply_wide_luma_lr(
     let mut poison_lease = progress.direct_stripe(0).unwrap();
     let mut poison_target = poison_lease.take_target().unwrap();
     let mut poison = poison_target.take(PlaneId::Y).unwrap();
-    poison.u16_samples_mut().unwrap().fill(0x2a5);
+    poison.samples_mut().fill(0x2a5);
     drop((poison, poison_target, poison_lease));
     let mut lease = progress.direct_stripe(0).unwrap();
     let (target, _) = lease.take_target().unwrap().split([false, true, true]);
@@ -1307,7 +1306,6 @@ fn apply_wide_luma_lr(
             &[],
             super::LrStripeOutput {
                 active_planes: [true, false, false],
-                direct_u8_planes: [false; 3],
                 initializations: [initialization; 3],
                 target,
             },
@@ -1809,22 +1807,17 @@ fn lr_source_scratch_does_not_retain_oversized_buffers() {
 #[test]
 fn lr_block_destination_lands_in_its_rectangle() {
     fn filtered_plane() -> Vec<u16> {
-        let mut plane =
-            StripeOutputPlane::u16(StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap());
+        let mut plane = StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap();
         let mut source = block(0, 2, 5);
         source.width = 3;
         source.height = 2;
-        let (LrDestination::U16(output), stride) =
-            lr_block_destination(&mut plane, &source).unwrap()
-        else {
-            unreachable!()
-        };
+        let (output, stride) = lr_block_destination(&mut plane, &source).unwrap();
         for row in 0..source.height {
             for col in 0..source.width {
                 output[row * stride + col] = (row * source.width + col + 1) as u16;
             }
         }
-        plane.as_u16_mut().unwrap().samples().to_vec()
+        plane.samples().to_vec()
     }
 
     let expected = vec![
@@ -1838,13 +1831,11 @@ fn lr_block_destination_lands_in_its_rectangle() {
 
 #[test]
 fn lr_block_output_refuses_a_rectangle_wider_than_the_stripe() {
-    let mut plane =
-        StripeOutputPlane::u16(StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap());
+    let mut plane = StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap();
     let mut source = block(0, 6, 5);
     source.width = 3;
     source.height = 1;
     assert!(lr_block_destination(&mut plane, &source).is_err());
-    let plane = plane.as_u16_mut().unwrap();
     assert!(plane.samples().iter().all(|sample| *sample == 9));
 }
 

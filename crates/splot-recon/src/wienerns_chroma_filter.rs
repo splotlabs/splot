@@ -306,7 +306,8 @@ where
     Ok(())
 }
 
-/// Applies chroma Wiener NS filtering from padded source windows directly into `u16` storage.
+/// Applies chroma Wiener NS filtering from padded source windows directly into
+/// strided `O` storage.
 ///
 /// Both supported source storage types use the same SIMD arithmetic and may
 /// write an exact rectangle within a wider strided destination. All output and
@@ -315,37 +316,22 @@ where
 ///
 /// # Errors
 /// Returns the same parameter, source-range, output-shape, and allocation
-/// errors as [`wiener_ns_filter_chroma_block`].
-pub fn wiener_ns_filter_chroma_block_padded_u16_into<T: ReconSample>(
-    output: &mut [u16],
+/// errors as [`wiener_ns_filter_chroma_block`], and rejects a bit depth that
+/// `O` cannot represent.
+#[inline(never)]
+pub fn wiener_ns_filter_chroma_block_padded_into<O: ReconSample, T: ReconSample>(
+    output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
     source: &WienerNsChromaPaddedSource<'_, T>,
     scratch: &mut WienerNsChromaScratch,
 ) -> Result<()> {
+    validate_sample_type::<O>(params.bit_depth)?;
     prepare_chroma_padded(output.len(), params, source, scratch)?;
-    filter_chroma_padded_output(output, params, source, scratch);
-    Ok(())
-}
-
-/// Applies 8-bit chroma Wiener NS filtering directly into strided `u8` storage.
-///
-/// This uses the same rounded and clipped kernel as
-/// [`wiener_ns_filter_chroma_block_padded_u16_into`]. All output and source
-/// geometry and every fallible source transformation are validated before the
-/// first destination write.
-///
-/// # Errors
-/// Returns the same errors as the `u16` output path, and rejects a bit depth
-/// that cannot be represented by `u8`.
-pub fn wiener_ns_filter_chroma_block_padded_u8_into<T: ReconSample>(
-    output: &mut [u8],
-    params: &WienerNsChromaFilter<'_>,
-    source: &WienerNsChromaPaddedSource<'_, T>,
-    scratch: &mut WienerNsChromaScratch,
-) -> Result<()> {
-    validate_sample_type::<u8>(params.bit_depth)?;
-    prepare_chroma_padded(output.len(), params, source, scratch)?;
-    filter_chroma_padded_output(output, params, source, scratch);
+    if let Some(output) = O::u8_slice_mut(output) {
+        filter_chroma_padded_output(output, params, source, scratch);
+    } else if let Some(output) = O::u16_slice_mut(output) {
+        filter_chroma_padded_output(output, params, source, scratch);
+    }
     Ok(())
 }
 

@@ -42,8 +42,7 @@ fn direct_stripes_write_the_canonical_allocation_and_publish_out_of_order() {
     bottom_target
         .take(splot_recon::PlaneId::Y)
         .expect("bottom luma")
-        .u16_samples_mut()
-        .expect("u16 luma")
+        .samples_mut()
         .fill(22);
     assert!(bottom.submit());
     assert_eq!(progress.published_luma_rows(), 0);
@@ -53,8 +52,7 @@ fn direct_stripes_write_the_canonical_allocation_and_publish_out_of_order() {
     top_target
         .take(splot_recon::PlaneId::Y)
         .expect("top luma")
-        .u16_samples_mut()
-        .expect("u16 luma")
+        .samples_mut()
         .fill(11);
     assert!(top.submit());
     assert_eq!(progress.published_luma_rows(), 8);
@@ -105,7 +103,7 @@ fn detached_target_drop_hands_writes_back_before_submit() {
     let mut lease = progress.direct_stripe(0).expect("stripe lend");
     let mut target = lease.take_target().expect("stripe target");
     let mut plane = target.take(splot_recon::PlaneId::Y).expect("luma target");
-    std::thread::spawn(move || plane.u16_samples_mut().expect("u16 luma").fill(33))
+    std::thread::spawn(move || plane.samples_mut().fill(33))
         .join()
         .expect("target worker");
     assert!(lease.submit());
@@ -134,8 +132,7 @@ fn u8_direct_stripe_writes_the_canonical_allocation() {
     target
         .take(splot_recon::PlaneId::Y)
         .expect("luma target")
-        .u8_samples_mut()
-        .expect("u8 luma")
+        .samples_mut()
         .fill(77);
     assert!(lease.submit());
 
@@ -489,8 +486,7 @@ fn frontier_rows_lend_only_rows_no_stripe_or_reader_holds() {
         .take_target()
         .and_then(|mut target| target.take(splot_recon::PlaneId::Y))
         .expect("luma target")
-        .u16_samples_mut()
-        .expect("u16 luma")
+        .samples_mut()
         .fill(99);
     assert!(lease.submit());
     assert!(

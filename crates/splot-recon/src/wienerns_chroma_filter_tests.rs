@@ -353,7 +353,7 @@ fn padded_filter_matches_callback_path() {
                         .unwrap();
                     for source in &sources {
                         let mut padded = vec![0u16; width * height];
-                        wiener_ns_filter_chroma_block_padded_u16_into(
+                        wiener_ns_filter_chroma_block_padded_into(
                             &mut padded,
                             &params,
                             source,
@@ -377,7 +377,7 @@ fn padded_filter_matches_callback_path() {
                     )
                     .unwrap();
                     let mut padded8 = vec![0u8; width * height];
-                    wiener_ns_filter_chroma_block_padded_u8_into(
+                    wiener_ns_filter_chroma_block_padded_into(
                         &mut padded8,
                         &params8,
                         &source8,
@@ -422,7 +422,7 @@ fn padded_u16_filter_writes_strided_output() {
     packed_params.luma_end_x = 127;
     packed_params.mi_rows = 16;
     let mut packed = vec![0; width * height];
-    wiener_ns_filter_chroma_block_padded_u16_into(
+    wiener_ns_filter_chroma_block_padded_into(
         &mut packed,
         &packed_params,
         &source,
@@ -435,13 +435,8 @@ fn padded_u16_filter_writes_strided_output() {
     strided_params.output_stride = output_stride;
     let mut strided = vec![u16::MAX; output_stride * height];
     let mut scratch = WienerNsChromaScratch::default();
-    wiener_ns_filter_chroma_block_padded_u16_into(
-        &mut strided,
-        &strided_params,
-        &source,
-        &mut scratch,
-    )
-    .unwrap();
+    wiener_ns_filter_chroma_block_padded_into(&mut strided, &strided_params, &source, &mut scratch)
+        .unwrap();
 
     for row in 0..height {
         assert_eq!(
@@ -494,7 +489,7 @@ fn packed_and_u16_strided_match<T: ReconSample>(
     packed_params.mi_rows = (chroma_rows << sub_y).div_ceil(MI_SIZE);
 
     let mut packed = vec![0u16; width * height];
-    wiener_ns_filter_chroma_block_padded_u16_into(
+    wiener_ns_filter_chroma_block_padded_into(
         &mut packed,
         &packed_params,
         &source,
@@ -507,13 +502,8 @@ fn packed_and_u16_strided_match<T: ReconSample>(
     strided_params.output_stride = stride;
     let mut strided = vec![u16::MAX; stride * height];
     let mut scratch = WienerNsChromaScratch::default();
-    wiener_ns_filter_chroma_block_padded_u16_into(
-        &mut strided,
-        &strided_params,
-        &source,
-        &mut scratch,
-    )
-    .unwrap();
+    wiener_ns_filter_chroma_block_padded_into(&mut strided, &strided_params, &source, &mut scratch)
+        .unwrap();
 
     for row in 0..height {
         assert_eq!(
@@ -531,7 +521,7 @@ fn packed_and_u16_strided_match<T: ReconSample>(
 
     if bit_depth == BitDepth::Eight {
         let mut direct_u8 = vec![0xde; stride * height];
-        wiener_ns_filter_chroma_block_padded_u8_into(
+        wiener_ns_filter_chroma_block_padded_into(
             &mut direct_u8,
             &strided_params,
             &source,
@@ -621,8 +611,7 @@ fn u8_source_direct_simd_u16_output_has_a_mutation_sensitive_oracle() {
     let mut output = vec![u16::MAX; output_stride];
     let mut scratch = WienerNsChromaScratch::default();
 
-    wiener_ns_filter_chroma_block_padded_u16_into(&mut output, &params, &source, &mut scratch)
-        .unwrap();
+    wiener_ns_filter_chroma_block_padded_into(&mut output, &params, &source, &mut scratch).unwrap();
 
     assert_eq!(output[0], 101);
     assert!(output[1..width].iter().all(|&sample| sample == 100));
@@ -650,7 +639,7 @@ fn u8_source_direct_u16_output_validates_the_full_destination_first() {
     let params = chroma_params(width, height, 4, BitDepth::Eight, &ZERO_CHROMA);
     let mut output = [77u16; 5];
 
-    let error = wiener_ns_filter_chroma_block_padded_u16_into(
+    let error = wiener_ns_filter_chroma_block_padded_into(
         &mut output,
         &params,
         &source,
@@ -692,7 +681,7 @@ fn padded_u16_filter_validates_every_source_before_direct_output() {
     let mut scratch = WienerNsChromaScratch::default();
 
     let error =
-        wiener_ns_filter_chroma_block_padded_u16_into(&mut output, &params, &source, &mut scratch)
+        wiener_ns_filter_chroma_block_padded_into(&mut output, &params, &source, &mut scratch)
             .unwrap_err();
 
     assert_eq!(
@@ -727,7 +716,7 @@ fn chroma_only_source_filters_without_luma_taps_and_rejects_luma_taps() {
     .unwrap();
     let source = WienerNsChromaPaddedSource::chroma_only(&chroma, stride, width, height).unwrap();
     let mut simd = vec![0u8; width * height];
-    wiener_ns_filter_chroma_block_padded_u8_into(
+    wiener_ns_filter_chroma_block_padded_into(
         &mut simd,
         &params,
         &source,
@@ -739,7 +728,7 @@ fn chroma_only_source_filters_without_luma_taps_and_rejects_luma_taps() {
     coeffs[WIENER_NS_CHROMA_COEFFS - 1] = 1;
     let params = chroma_params(width, height, width, BitDepth::Eight, &coeffs);
     let mut output = vec![77u8; width * height];
-    let error = wiener_ns_filter_chroma_block_padded_u8_into(
+    let error = wiener_ns_filter_chroma_block_padded_into(
         &mut output,
         &params,
         &source,

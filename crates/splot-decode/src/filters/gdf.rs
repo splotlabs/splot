@@ -271,9 +271,9 @@ pub(crate) fn is_active(
 pub(crate) fn apply_stripe<T: ReconSample>(
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, T>,
-    separate_cdef_luma: Option<&StripePlane>,
-    cdef_overlap: &[StripePlane],
-    post_lr_luma: GdfLuma<'_>,
+    separate_cdef_luma: Option<&StripePlane<T>>,
+    cdef_overlap: &[StripePlane<T>],
+    post_lr_luma: &mut StripePlane<T>,
     block_grid: Option<&GdfBlockGrid>,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
     bit_depth: BitDepth,
@@ -303,9 +303,9 @@ pub(crate) fn apply_stripe<T: ReconSample>(
 pub(crate) fn error_stripe(
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, u16>,
-    separate_cdef_luma: Option<&StripePlane>,
-    cdef_overlap: &[StripePlane],
-    post_lr_luma: &mut StripePlane,
+    separate_cdef_luma: Option<&StripePlane<u16>>,
+    cdef_overlap: &[StripePlane<u16>],
+    post_lr_luma: &mut StripePlane<u16>,
     block_grid: Option<&GdfBlockGrid>,
     bit_depth: BitDepth,
     disable_loopfilters_across_tiles: bool,
@@ -323,7 +323,7 @@ pub(crate) fn error_stripe(
         config,
         core,
         (deblocked_luma, separate_cdef_luma, cdef_overlap),
-        GdfLuma::U16(post_lr_luma),
+        post_lr_luma,
         (block_grid, None),
         bit_depth,
         disable_loopfilters_across_tiles,
@@ -339,10 +339,10 @@ fn apply_stripe_config<T: ReconSample>(
     core: &FrameHeaderCore,
     (deblocked_luma, separate_cdef_luma, cdef_overlap): (
         FramePlane<'_, T>,
-        Option<&StripePlane>,
-        &[StripePlane],
+        Option<&StripePlane<T>>,
+        &[StripePlane<T>],
     ),
-    mut post_lr_luma: GdfLuma<'_>,
+    post_lr_luma: &mut StripePlane<T>,
     (block_grid, lossless_grid): (
         Option<&GdfBlockGrid>,
         Option<&crate::filters::lossless::LosslessBlockGrid>,
@@ -350,9 +350,15 @@ fn apply_stripe_config<T: ReconSample>(
     bit_depth: BitDepth,
     disable_loopfilters_across_tiles: bool,
 ) -> Result<()> {
-    let (width, stride, frame_height, y) = post_lr_luma.geometry();
+    let (width, stride, frame_height, y) = (
+        post_lr_luma.width(),
+        post_lr_luma.stride(),
+        post_lr_luma.frame_height(),
+        post_lr_luma.origin_y(),
+    );
     let Some(height) = post_lr_luma
-        .rows()
+        .end_y()
+        .and_then(|end_y| end_y.checked_sub(y))
         .filter(|&height| height >= 2 && height.is_multiple_of(2))
     else {
         return Err(gdf_state_error());
@@ -432,13 +438,10 @@ fn apply_stripe_config<T: ReconSample>(
                 let bounds = source_bounds(core, &run_block, disable_loopfilters_across_tiles)?;
                 if lossless_grid.is_none() {
                     let sources = (deblocked_luma, separate_cdef_luma, cdef_overlap);
-                    filter_run_tiles(sources, &bounds, &run_block, &mut post_lr_luma, scratch)?;
+                    filter_run_tiles(sources, &bounds, &run_block, post_lr_luma, scratch)?;
                     continue;
                 }
-                let GdfLuma::U16(post_lr_luma) = &mut post_lr_luma else {
-                    return Err(gdf_state_error());
-                };
-                let cdef_luma = separate_cdef_luma.unwrap_or(&**post_lr_luma);
+                let cdef_luma = separate_cdef_luma.unwrap_or(&*post_lr_luma);
                 let source = GdfSource::materialize_stripe(
                     &mut scratch.source,
                     deblocked_luma,
@@ -485,7 +488,7 @@ fn apply_stripe_config<T: ReconSample>(
                             height: block_height,
                             ..run_block
                         };
-                        let mut output = compute_block::<u16>(
+                        let mut output = compute_block::<T>(
                             &source,
                             post_lr_luma.samples(),
                             classes,
@@ -518,77 +521,18 @@ fn apply_stripe_config<T: ReconSample>(
     })
 }
 
-/// The luma rows GDF filters in place: a `u16` stripe, or the 8-bit frame
-/// rows `origin_y..origin_y + rows` of a direct stripe, `stride` apart.
-pub(crate) enum GdfLuma<'a> {
-    U16(&'a mut StripePlane),
-    U8 {
-        samples: &'a mut [u8],
-        width: usize,
-        stride: usize,
-        frame_height: usize,
-        origin_y: usize,
-        rows: usize,
-    },
-}
-
-impl GdfLuma<'_> {
-    /// Width, row stride, frame height and first frame row of the rows.
-    fn geometry(&self) -> (usize, usize, usize, usize) {
-        match self {
-            Self::U16(plane) => (
-                plane.width(),
-                plane.stride(),
-                plane.frame_height(),
-                plane.origin_y(),
-            ),
-            Self::U8 {
-                width,
-                stride,
-                frame_height,
-                origin_y,
-                ..
-            } => (*width, *stride, *frame_height, *origin_y),
-        }
-    }
-
-    /// The row count, when the samples hold every row.
-    fn rows(&self) -> Option<usize> {
-        match self {
-            Self::U16(plane) => {
-                let count = plane.samples().len();
-                let rows = count.checked_div(plane.stride())?;
-                (rows.checked_mul(plane.stride()) == Some(count)).then_some(rows)
-            }
-            Self::U8 {
-                samples,
-                width,
-                stride,
-                rows,
-                ..
-            } => {
-                let needed = rows
-                    .checked_sub(1)?
-                    .checked_mul(*stride)?
-                    .checked_add(*width)?;
-                (stride >= width && samples.len() >= needed).then_some(*rows)
-            }
-        }
-    }
-}
-
 /// Filters the run `run` in column tiles of at most [`simd::TILE_COLS`]
 /// columns. Every tile's source window is copied before any tile is
 /// filtered, since `post_lr_luma` may be the CDEF luma the windows read.
 fn filter_run_tiles<T: ReconSample>(
     (deblocked_luma, separate_cdef_luma, cdef_overlap): (
         FramePlane<'_, T>,
-        Option<&StripePlane>,
-        &[StripePlane],
+        Option<&StripePlane<T>>,
+        &[StripePlane<T>],
     ),
     bounds: &LoopRestorationSourceBounds,
     run: &GdfBlock,
-    post_lr_luma: &mut GdfLuma<'_>,
+    post_lr_luma: &mut StripePlane<T>,
     scratch: &mut GdfScratch,
 ) -> Result<()> {
     let tile = |index: usize| GdfBlock {
@@ -603,11 +547,7 @@ fn filter_run_tiles<T: ReconSample>(
         .ok_or_else(gdf_state_error)?;
     let total = tiles.checked_mul(area).ok_or_else(gdf_state_error)?;
     resize_overwrite_scratch(&mut scratch.source, total)?;
-    let cdef_luma = match (separate_cdef_luma, &*post_lr_luma) {
-        (Some(cdef_luma), _) => cdef_luma,
-        (None, GdfLuma::U16(post_lr_luma)) => &**post_lr_luma,
-        (None, GdfLuma::U8 { .. }) => return Err(gdf_state_error()),
-    };
+    let cdef_luma = separate_cdef_luma.unwrap_or(&*post_lr_luma);
     let sources = (deblocked_luma, cdef_luma, cdef_overlap);
     GdfSource::fill_stripe_tiles(&mut scratch.source, sources, bounds, run, area)?;
     let grads = 2 * ClassScratch::chunks(simd::TILE_COLS.min(run.width) >> 1);
@@ -621,13 +561,13 @@ fn filter_run_tiles<T: ReconSample>(
             .relative_position(tile.x, tile.y)
             .ok_or_else(gdf_state_error)?;
         let scratch = &mut scratch.class_scratch;
-        match post_lr_luma {
-            GdfLuma::U16(plane) => {
-                simd::filter_run(&source, origin, &tile, plane.samples_mut(), scratch)
-            }
-            GdfLuma::U8 { samples, .. } => {
-                simd::filter_run(&source, origin, &tile, samples, scratch)
-            }
+        let samples = post_lr_luma.samples_mut();
+        if let Some(samples) = T::u8_slice_mut(samples) {
+            simd::filter_run(&source, origin, &tile, samples, scratch)
+        } else if let Some(samples) = T::u16_slice_mut(samples) {
+            simd::filter_run(&source, origin, &tile, samples, scratch)
+        } else {
+            None
         }
         .ok_or_else(gdf_state_error)?;
     }
@@ -673,15 +613,15 @@ struct GdfBlock {
 }
 
 /// Reads the `W` base samples at `start` and in the next frame row.
-fn base_row_pair<const W: usize>(
-    base_luma: &[u16],
+fn base_row_pair<const W: usize, T: ReconSample>(
+    base_luma: &[T],
     start: usize,
     stride: usize,
 ) -> Result<[[u16; W]; 2]> {
     let row = |start: usize| {
         exact_slice(base_luma, start, W)
-            .and_then(|samples| <&[u16; W]>::try_from(samples).ok())
-            .copied()
+            .and_then(|samples| <&[T; W]>::try_from(samples).ok())
+            .map(|samples| samples.map(ReconSample::to_u16))
             .ok_or_else(gdf_state_error)
     };
     Ok([row(start)?, row(start + stride)?])
@@ -702,7 +642,7 @@ fn output_pair<'a, const W: usize>(
 
 fn compute_block<T: ReconSample>(
     source: &GdfSource<'_>,
-    base_luma: &[u16],
+    base_luma: &[T],
     classes: &[GdfClass],
     class_cols: usize,
     block: GdfBlock,
@@ -726,7 +666,7 @@ fn compute_block<T: ReconSample>(
             .and_then(|y| y.checked_mul(block.base_stride))
             .and_then(|index| index.checked_add(block.x))
             .ok_or_else(gdf_state_error)?;
-        let mut rows = base_row_pair::<MI_SIZE>(base_luma, base_start, block.base_stride)?;
+        let mut rows = base_row_pair::<MI_SIZE, T>(base_luma, base_start, block.base_stride)?;
         let origin = (source_origin.0, source_origin.1 + row);
         let window_rows = source_rows(source, origin, block.width + 2 * TAP_REACH)?;
         let [top, bottom] = &mut rows;
@@ -811,7 +751,7 @@ fn compute_enabled_segment(
 #[allow(clippy::too_many_arguments)]
 fn preserve_lossless_luma_samples<T: ReconSample>(
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
-    base_luma: &[u16],
+    base_luma: &[T],
     luma_stride: usize,
     origin_y: usize,
     x: usize,
@@ -841,7 +781,7 @@ fn preserve_lossless_luma_samples<T: ReconSample>(
                 .and_then(|start| start.checked_add(col))
                 .and_then(|index| output.get_mut(index))
                 .ok_or_else(gdf_state_error)?;
-            *dst = T::try_from_u16(src).map_err(|_| gdf_state_error())?;
+            *dst = src;
         }
     }
     Ok(())
@@ -996,24 +936,16 @@ struct GdfSource<'a> {
     origin_y: isize,
 }
 
-enum GdfSourceRow<'a, T> {
-    Frame(&'a [T]),
-    Stripe(&'a [u16]),
-}
+/// One § 7.20.5 source row: deblocked or CDEF samples.
+struct GdfSourceRow<'a, T>(&'a [T]);
 
 impl<T: ReconSample> GdfSourceRow<'_, T> {
-    fn len(&self) -> usize {
-        match self {
-            Self::Frame(row) => row.len(),
-            Self::Stripe(row) => row.len(),
-        }
+    const fn len(&self) -> usize {
+        self.0.len()
     }
 
     fn get(&self, index: usize) -> Option<u16> {
-        match self {
-            Self::Frame(row) => row.get(index).map(|sample| sample.to_u16()),
-            Self::Stripe(row) => row.get(index).copied(),
-        }
+        self.0.get(index).map(|sample| sample.to_u16())
     }
 
     fn copy_range_as<U: ReconSample>(
@@ -1024,21 +956,10 @@ impl<T: ReconSample> GdfSourceRow<'_, T> {
     ) -> Option<()> {
         let end = start.checked_add(dst.len())?;
         let mut max = 0;
-        let mut copy = |dst: &mut u16, sample: u16| {
+        for (dst, sample) in dst.iter_mut().zip(self.0.get(start..end)?) {
+            let sample = sample.to_u16();
             max = max.max(sample);
             *dst = sample << shift;
-        };
-        match self {
-            Self::Frame(row) => {
-                for (dst, sample) in dst.iter_mut().zip(row.get(start..end)?) {
-                    copy(dst, sample.to_u16());
-                }
-            }
-            Self::Stripe(row) => {
-                for (dst, &sample) in dst.iter_mut().zip(row.get(start..end)?) {
-                    copy(dst, sample);
-                }
-            }
         }
         (max <= U::MAX_VALUE).then_some(())
     }
@@ -1048,15 +969,15 @@ impl<T: ReconSample> GdfSourceRow<'_, T> {
 /// the stripe or of its fringes.
 fn stripe_rows<'b, T: ReconSample>(
     deblocked_luma: FramePlane<'b, T>,
-    cdef_luma: &'b StripePlane,
-    cdef_overlap: &'b [StripePlane],
+    cdef_luma: &'b StripePlane<T>,
+    cdef_overlap: &'b [StripePlane<T>],
 ) -> impl Fn(LoopRestorationSource, usize) -> Option<GdfSourceRow<'b, T>> {
     move |source, y| match source {
-        LoopRestorationSource::CurrFrame => deblocked_luma.row(y).map(GdfSourceRow::Frame),
+        LoopRestorationSource::CurrFrame => deblocked_luma.row(y).map(GdfSourceRow),
         LoopRestorationSource::CdefFrame => cdef_luma
             .row(y)
             .or_else(|| cdef_overlap.iter().find_map(|plane| plane.row(y)))
-            .map(GdfSourceRow::Stripe),
+            .map(GdfSourceRow),
     }
 }
 
@@ -1077,15 +998,15 @@ impl<'a> GdfSource<'a> {
             let start = y.checked_mul(block.frame_width)?;
             plane
                 .get(start..start.checked_add(block.frame_width)?)
-                .map(GdfSourceRow::Stripe)
+                .map(GdfSourceRow)
         })
     }
 
     fn materialize_stripe<T: ReconSample>(
         samples: &'a mut Vec<u16>,
         deblocked_luma: FramePlane<'_, T>,
-        cdef_luma: &StripePlane,
-        cdef_overlap: &[StripePlane],
+        cdef_luma: &StripePlane<T>,
+        cdef_overlap: &[StripePlane<T>],
         bounds: &LoopRestorationSourceBounds,
         block: &GdfBlock,
     ) -> Result<Self> {
@@ -1103,8 +1024,8 @@ impl<'a> GdfSource<'a> {
         samples: &mut [u16],
         (deblocked_luma, cdef_luma, cdef_overlap): (
             FramePlane<'_, T>,
-            &StripePlane,
-            &[StripePlane],
+            &StripePlane<T>,
+            &[StripePlane<T>],
         ),
         bounds: &LoopRestorationSourceBounds,
         block: &GdfBlock,
@@ -1923,7 +1844,7 @@ mod tests {
             };
             plane
                 .get(y * frame_width..(y + 1) * frame_width)
-                .map(GdfSourceRow::Stripe)
+                .map(GdfSourceRow)
         };
         let mut packed = Vec::new();
         let packed = GdfSource::materialize_rows::<u16, u16>(&mut packed, &bounds, &run, rows)
@@ -2012,7 +1933,7 @@ mod tests {
         }];
         let grid = LosslessBlockGrid::from_deblock_blocks(4, 4, &lossless, &[]);
         let grid = grid.expect("valid grid");
-        let base: Vec<u16> = (0..64).collect();
+        let base: Vec<u8> = (0..64).collect();
         let mut output = vec![200_u8; 32];
 
         let result =
@@ -2022,7 +1943,7 @@ mod tests {
         for row in 0..4 {
             for col in 0..8 {
                 let expected = if col < 4 {
-                    base[(4 + row) * 8 + 4 + col] as u8
+                    base[(4 + row) * 8 + 4 + col]
                 } else {
                     200
                 };

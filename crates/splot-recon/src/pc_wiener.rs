@@ -1614,7 +1614,7 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
 /// # Errors
 /// Returns the same typed [`ReconError`] values as [`pc_wiener_filter_block`],
 /// including source samples outside the active bit-depth range.
-#[inline]
+#[inline(never)]
 pub fn pc_wiener_filter_block_padded<T: ReconSample>(
     output: &mut [T],
     params: &PcWienerFilter<'_>,
@@ -1640,6 +1640,7 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
 ///
 /// # Errors
 /// As [`pc_wiener_filter_block_padded`], plus a non-8-bit `params.bit_depth`.
+#[inline(never)]
 pub fn pc_wiener_filter_block_padded_u8_into<T: ReconSample>(
     output: &mut [u8],
     params: &PcWienerFilter<'_>,
