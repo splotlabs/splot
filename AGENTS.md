@@ -151,6 +151,44 @@ Testing priority is parser unit tests, property/fuzz no-panic coverage,
 `inspect` snapshots, conformance vectors, then AVM differential testing. Parser
 changes need positive, negative, and EOF cases. See `docs/TESTING.md`.
 
+## Performance and SIMD
+
+The decoder must be faster than dav2d on every stream and at every thread
+count. dav2d is inspiration only: do not copy its code.
+
+Kernel shape. Each hot kernel has exactly one of these two forms:
+
+- One `fearless_simd` kernel, generic over the sample type (`u8` and `u16`)
+  where that costs neither bit depth anything. This is the default.
+- Three versions, only when a measurement shows that the generic kernel is not
+  the fastest: aarch64 NEON, x86_64 (AVX2 baseline, `x86-64-v3`), and the
+  generic `fearless_simd` kernel as the fallback. aarch64 and x86_64 have
+  priority.
+
+Rules:
+
+- No scalar twin of a SIMD kernel as a runtime path. When a kernel covers a
+  case, delete the scalar path for that case. A scalar reference stays only in
+  `#[cfg(test)]` code, as the oracle for the kernel test.
+- 8-bit and 10-bit are equal targets. A change that makes one bit depth faster
+  must not leave the other on a slower path. Measure both.
+- Measure first. Keep a change only if it is a repeatable win with no
+  regression above 0.1% on another stream. Prefer changes that delete work and
+  delete code; glue around kernels (per-block setup, copies, dispatch in loops)
+  is a defect.
+- Kernel and single-thread changes: compare instructions retired at
+  `--threads=1` (`/usr/bin/time -l`). Scheduling changes: compare wall time
+  with alternating runs and report the range.
+- Output stays byte-exact. Compare `decode --output-format hash` with `main`
+  on the EwoutH/AV2 samples, 8-bit and 10-bit, at `--threads=1` and
+  `--threads=12` (also an odd count for scheduling changes).
+- Each SIMD version has a unit test against the oracle on random and extreme
+  inputs. x86_64 code must pass clippy with `--target x86_64-apple-darwin`
+  (or another x86_64 target) when it cannot run on the host.
+- An arch-specific kernel uses safe `core::arch` intrinsics. A new `unsafe`
+  block needs human sign-off.
+- Do not tune by fixed caps or per-stream heuristics. Fix the root cause.
+
 ## Licensing
 
 Project code, docs, tests, fixtures, and automation are PolyForm Noncommercial
@@ -160,8 +198,8 @@ Project code, docs, tests, fixtures, and automation are PolyForm Noncommercial
 ## Human Sign-Off
 
 Ask before algorithmic encoder choices, ambiguous AV2 spec interpretation,
-adding a third-party dependency, changing crate dependency graph, or changing
-legal/licensing terms.
+adding a third-party dependency, changing crate dependency graph, adding an
+`unsafe` block, or changing legal/licensing terms.
 
 ## Comment and Documentation Policy
 
