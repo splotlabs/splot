@@ -611,6 +611,7 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
         luma_start,
         luma_end,
         None,
+        true,
     )
 }
 
@@ -628,6 +629,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
     luma_start: usize,
     luma_end: usize,
     mut target: Option<crate::pipeline::frame_progress::DirectStripeTarget<T>>,
+    luma_output: bool,
 ) -> Result<CdefFrame<'a, T>, CdefError> {
     let (mi_rows, mi_cols) = mi_size;
     if luma_start >= luma_end || !luma_start.is_multiple_of(STEP4 * MI_SIZE) {
@@ -708,17 +710,20 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
             fill_flat[plane.index()] = false;
         }
     }
+    fill_flat[PlaneId::Y.index()] &= luma_output;
     if let Some(lookup) = lookup.as_mut() {
         lookup.fill_flat = fill_flat;
     }
-    StripePlane::preflight_copy_from_into(
-        deblocked_y,
-        luma_start,
-        luma_end,
-        target.as_ref().and_then(|target| target.get(PlaneId::Y)),
-        initializations[PlaneId::Y.index()],
-    )
-    .map_err(CdefError::from)?;
+    if luma_output {
+        StripePlane::preflight_copy_from_into(
+            deblocked_y,
+            luma_start,
+            luma_end,
+            target.as_ref().and_then(|target| target.get(PlaneId::Y)),
+            initializations[PlaneId::Y.index()],
+        )
+        .map_err(CdefError::from)?;
+    }
     if let (Some(u), Some(v)) = (deblocked_u, deblocked_v) {
         StripePlane::preflight_copy_from_into(
             u,
@@ -737,14 +742,24 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         )
         .map_err(|error| CdefError::from(error.for_plane(PlaneId::V)))?;
     }
-    let filtered_y = StripePlane::copy_from_into_mode(
-        deblocked_y,
-        luma_start,
-        luma_end,
-        target.as_mut().and_then(|target| target.take(PlaneId::Y)),
-        initializations[PlaneId::Y.index()],
-    )
-    .map_err(CdefError::from)?;
+    let filtered_y = if luma_output {
+        StripePlane::copy_from_into_mode(
+            deblocked_y,
+            luma_start,
+            luma_end,
+            target.as_mut().and_then(|target| target.take(PlaneId::Y)),
+            initializations[PlaneId::Y.index()],
+        )
+        .map_err(CdefError::from)?
+    } else {
+        StripePlane::from_samples(
+            deblocked_y.width(),
+            deblocked_y.frame_height(),
+            luma_start,
+            Vec::new(),
+        )
+        .ok_or(CdefError::Geometry)?
+    };
     let filtered_u = deblocked_u
         .map(|u| {
             StripePlane::copy_from_into_mode(
@@ -1143,7 +1158,13 @@ fn cdef_segment<S: ReconSample>(
         }
     }
     let (x0, y0) = origin;
-    let luma_rows = plane_rows(&mut frame.filtered_y, (x0, y0), (width, 8))?;
+    let mut discarded;
+    let luma_rows = if frame.filtered_y.samples().is_empty() {
+        discarded = [S::default(); 8 * 8 * CDEF_SEGMENT_BLOCKS];
+        (&mut discarded[..], width)
+    } else {
+        plane_rows(&mut frame.filtered_y, (x0, y0), (width, 8))?
+    };
     let chroma_rows = match (chroma, frame.filtered_u.as_mut(), frame.filtered_v.as_mut()) {
         (Some(_), Some(u), Some(v)) => Some([
             plane_rows(u, (x0 >> 1, y0 >> 1), (width / 2, 4))?,

@@ -14,6 +14,7 @@
 
 use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
+#[cfg(test)]
 use crate::math::round2_i32;
 use crate::wienerns_filter::{LumaSimdSource, validated_source_sample};
 use crate::workspace::u16_samples_exceed;
@@ -261,7 +262,8 @@ fn validate_padded_window(
 /// Luma source samples are read and checked only when
 /// [`WienerNsChromaFilter::reads_luma`] is true. The caller output is not
 /// modified unless all validation and filtering succeeds.
-pub fn wiener_ns_filter_chroma_block<T, C, L>(
+#[cfg(test)]
+pub(crate) fn wiener_ns_filter_chroma_block<T, C, L>(
     output: &mut [T],
     params: &WienerNsChromaFilter<'_>,
     mut chroma_source_sample: C,
@@ -315,9 +317,8 @@ where
 /// before the first destination write.
 ///
 /// # Errors
-/// Returns the same parameter, source-range, output-shape, and allocation
-/// errors as [`wiener_ns_filter_chroma_block`], and rejects a bit depth that
-/// `O` cannot represent.
+/// Returns typed parameter, source-range, output-shape, and allocation
+/// errors, and rejects a bit depth that `O` cannot represent.
 #[inline(never)]
 pub fn wiener_ns_filter_chroma_block_padded_into<O: ReconSample, T: ReconSample>(
     output: &mut [O],
@@ -1343,6 +1344,7 @@ fn validate_chroma_params(
 /// times each; the cache resolves each position once. Entries are computed
 /// lazily on first read, so which positions reach the luma source — and the
 /// first out-of-range read that errors — match uncached filtering exactly.
+#[cfg(test)]
 struct LumaDsCache {
     values: Vec<Option<u16>>,
     origin_x: isize,
@@ -1350,6 +1352,7 @@ struct LumaDsCache {
     width: usize,
 }
 
+#[cfg(test)]
 impl LumaDsCache {
     fn new(params: &WienerNsChromaFilter<'_>) -> Result<Self> {
         const CONTEXT: &str = "Wiener NS chroma luma cache geometry";
@@ -1413,6 +1416,7 @@ impl LumaDsCache {
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn filter_chroma_sample<T, C, L>(
     params: &WienerNsChromaFilter<'_>,
@@ -1572,6 +1576,7 @@ where
     }
 }
 
+#[cfg(test)]
 fn block_coord(base: usize, offset: usize, context: &'static str) -> Result<isize> {
     let value = base
         .checked_add(offset)

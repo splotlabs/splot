@@ -150,6 +150,7 @@ fn direct_cdef_10bit(
         0,
         size.height(),
         Some(target),
+        true,
     )
     .unwrap();
     let samples = cdef_frame_samples(&frame);
@@ -361,6 +362,7 @@ fn disabled_cdef_initializes_u8_direct_target_from_source() {
         0,
         height,
         Some(target),
+        true,
     )
     .unwrap();
     for filtered in [
@@ -423,6 +425,7 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
             0,
             16,
             Some(target),
+            true,
         )
         .is_err()
     );
@@ -627,6 +630,7 @@ fn flat_blocks_keep_a_deblocked_direct_target() {
             0,
             24,
             lease.take_target(),
+            true,
         )
         .unwrap();
         let mut kept = cdef_frame_samples(&frame);

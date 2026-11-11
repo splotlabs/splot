@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+#[cfg(target_arch = "aarch64")]
+use fearless_simd::u16x8;
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, Level, kernel};
 use fearless_simd::{Simd, SimdIntWiden, i8x16, i16x8, i16x16, i32x8, prelude::*, u8x16, u16x16};
@@ -634,6 +636,7 @@ fn tap_diffs<S: Simd, W: WindowRows, const TAP: usize, const ROW: usize>(
 /// The negated comb, less [`COMB_BIAS`], of the offset negated reads
 /// `above` and `below`, each within its offset tap bounds: the saturating
 /// add clips the comb's upper end at 512 and the max its lower end at -511.
+/// Every lane of a bound holds one value, so NEON loads half of it.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn clipped_sum<S: Simd>(
@@ -642,6 +645,12 @@ fn clipped_sum<S: Simd>(
     below: u16x16<S>,
     bounds: &[[u16; 16]; 4],
 ) -> i16x16<S> {
+    #[cfg(target_arch = "aarch64")]
+    let bound = |index: usize| {
+        let half = u16x8::from_slice(simd, &bounds[index][..8]);
+        simd.combine_u16x8(half, half)
+    };
+    #[cfg(not(target_arch = "aarch64"))]
     let bound = |index: usize| u16x16::from_slice(simd, &bounds[index]);
     let above = above.max(bound(0)).min(bound(1));
     let below = below.max(bound(2)).min(bound(3));
@@ -652,13 +661,22 @@ fn clipped_sum<S: Simd>(
 }
 
 /// `a` and `b` with the lanes where `select` (all ones or zero per lane) is
-/// set exchanged: two xors of one masked difference, four operations where
-/// two blends are six micro-ops.
+/// set exchanged. NEON does it in two bit selects; elsewhere two xors of one
+/// masked difference, four operations where two AVX2 blends are six micro-ops.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn swap<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: u16x16<S>) -> (u16x16<S>, u16x16<S>) {
-    let moved = (a ^ b) & select;
-    (a ^ moved, b ^ moved)
+    #[cfg(target_arch = "aarch64")]
+    let swapped = {
+        let select = select.simd_ne(u16x16::splat(a.simd, 0));
+        (select.select(b, a), select.select(a, b))
+    };
+    #[cfg(not(target_arch = "aarch64"))]
+    let swapped = {
+        let moved = (a ^ b) & select;
+        (a ^ moved, b ^ moved)
+    };
+    swapped
 }
 
 /// The negated comb of tap `TAP` for row `ROW` less [`COMB_BIAS`], without

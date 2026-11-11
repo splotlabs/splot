@@ -686,7 +686,7 @@ impl<T: ReconSample> StripePlane<T> {
     }
 
     /// These rows as a frame-plane view.
-    fn view(&self) -> Result<FramePlane<'_, T>, StripeCopyError> {
+    pub(crate) fn view(&self) -> Result<FramePlane<'_, T>, StripeCopyError> {
         let end_y = self.end_y().ok_or(StripeCopyError::Geometry)?;
         Ok(FramePlane {
             width: self.width,

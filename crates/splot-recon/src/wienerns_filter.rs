@@ -20,6 +20,7 @@ use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
 use crate::loop_restoration::PaddedRows;
 use crate::lr_madd::{self, MaddPattern, MaddWeights, TapPairs};
+#[cfg(test)]
 use crate::math::round2_i32;
 use crate::workspace::u16_samples_exceed;
 use crate::{BitDepth, ReconError, ReconSample, Result};
@@ -197,8 +198,8 @@ struct PreparedLumaFilter {
 /// out-of-range subclass maps, and source samples outside the active bit-depth
 /// range. The caller output is not modified unless all validation and filtering
 /// succeeds.
-#[inline]
-pub fn wiener_ns_filter_luma_block<T, F>(
+#[cfg(test)]
+pub(crate) fn wiener_ns_filter_luma_block<T, F>(
     output: &mut [T],
     params: &WienerNsLumaFilter<'_>,
     mut source_sample: F,
@@ -276,16 +277,15 @@ impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
 }
 
 /// Applies AV2 § 7.20.3 luma non-separable Wiener filtering from a padded
-/// pre-resolved source, with the output and errors of
-/// [`wiener_ns_filter_luma_block`].
+/// pre-resolved source.
 ///
 /// `scratch` retains its allocations between calls, and `output` is not
 /// modified unless filtering succeeds.
 ///
 /// # Errors
-/// Returns the callback filter's errors, including source samples outside
-/// the active bit-depth range, plus a typed allocation error when the
-/// scratch buffers cannot reserve enough storage.
+/// Returns typed errors for parameter and output shape errors, missing
+/// coefficient classes, source samples outside the active bit-depth range,
+/// and scratch buffers that cannot reserve enough storage.
 #[inline]
 pub fn wiener_ns_filter_luma_block_padded_into<T: ReconSample>(
     output: &mut [T],
@@ -1232,6 +1232,7 @@ fn validate_subclass_layout(
     Ok(())
 }
 
+#[cfg(test)]
 fn coeffs_for_sample<'a>(
     params: &'a WienerNsLumaFilter<'_>,
     sample_index: usize,
@@ -1243,6 +1244,7 @@ fn coeffs_for_sample<'a>(
     &params.coeffs_by_class[subclass]
 }
 
+#[cfg(test)]
 #[allow(clippy::many_single_char_names)]
 fn filter_sample<T, F>(
     coeffs: &[i16; WIENER_NS_LUMA_COEFFS],

@@ -384,6 +384,12 @@ fn ccso_apply<D: ReconSample, L: ReconSample>(
         None => (None, None),
     };
     let width = destination.width();
+    let mut lossless_saved = Vec::new();
+    if lossless_grid.is_some() {
+        lossless_saved
+            .try_reserve_exact(width)
+            .map_err(|_| CcsoError::Allocation(plane_id))?;
+    }
     for y in (first_unit_y..destination_end_y).step_by(config.blk_h) {
         let (min_luma_y, max_luma_y) =
             luma_tile_clamp(tile_rows, (y << config.sub_y) / MI_SIZE, frame_max_luma_y);
@@ -434,64 +440,121 @@ fn ccso_apply<D: ReconSample, L: ReconSample>(
                     ))
                 };
                 let plane_row = destination.row_mut(y3).ok_or(CcsoError::Workspace)?;
-                let (simd_start, simd_end) = if lossless_grid.is_none() {
-                    ccso_simd_row(
-                        plane_row,
-                        center_row,
-                        offset_rows,
-                        x,
-                        x_end,
-                        (min_luma_x, max_luma_x),
-                        config,
-                    )
-                } else {
-                    (x_end, x_end)
-                };
-                for x3 in (x..simd_start).chain(simd_end..x_end) {
-                    if lossless_grid.is_some_and(|grid| {
-                        grid.plane_sample_lossless(plane_id, x3, y3, config.sub_x, config.sub_y)
-                    }) {
-                        continue;
-                    }
-                    let x_luma = x3 << config.sub_x;
-                    let center = center_row[x_luma.clamp(min_luma_x, max_luma_x)].to_u16();
-                    let band = usize::from(center >> config.band_shift);
-                    let (cls0, cls1) = match offset_rows {
-                        None => (0usize, 0usize),
-                        Some((row0, row1)) => {
-                            let sx0 = (x_luma as isize + config.sample_offsets[0].0)
-                                .clamp(min_luma_x as isize, max_luma_x as isize)
-                                as usize;
-                            let sx1 = (x_luma as isize + config.sample_offsets[1].0)
-                                .clamp(min_luma_x as isize, max_luma_x as isize)
-                                as usize;
-                            (
-                                ccso_score(
-                                    i32::from(row0[sx0].to_u16()) - i32::from(center),
-                                    config.quant_step,
-                                    config.edge_clf,
-                                ),
-                                ccso_score(
-                                    i32::from(row1[sx1].to_u16()) - i32::from(center),
-                                    config.quant_step,
-                                    config.edge_clf,
-                                ),
-                            )
-                        }
+                let lossless_runs = |plane_row: &mut [D], restore: bool, saved: &mut Vec<D>| {
+                    let Some(grid) = lossless_grid else {
+                        return Some(());
                     };
-                    let offset = *config
-                        .offset_lut
-                        .get((cls0 * config.max_edge_interval + cls1) * config.max_band + band)
-                        .ok_or(CcsoError::Params)?;
-                    let sample = plane_row.get_mut(x3).ok_or(CcsoError::Workspace)?;
-                    let filtered =
-                        (i32::from(sample.to_u16()) + offset).clamp(0, config.max_sample);
-                    *sample = D::try_from_u16(filtered as u16).map_err(|_| CcsoError::Workspace)?;
+                    let (mut column, mut at) = (x, 0);
+                    while column < x_end {
+                        let next = ((((column << config.sub_x) / MI_SIZE + 1) * MI_SIZE)
+                            >> config.sub_x)
+                            .clamp(column + 1, x_end);
+                        if grid.plane_sample_lossless(
+                            plane_id,
+                            column,
+                            y3,
+                            config.sub_x,
+                            config.sub_y,
+                        ) {
+                            let samples = plane_row.get_mut(column..next)?;
+                            if restore {
+                                samples.copy_from_slice(saved.get(at..at + samples.len())?);
+                            } else {
+                                saved.extend_from_slice(samples);
+                            }
+                            at += samples.len();
+                        }
+                        column = next;
+                    }
+                    Some(())
+                };
+                if lossless_grid.is_some() {
+                    lossless_saved.clear();
+                    lossless_runs(plane_row, false, &mut lossless_saved)
+                        .ok_or(CcsoError::Workspace)?;
+                }
+                let clamp = (min_luma_x, max_luma_x);
+                let (simd_start, simd_end) =
+                    ccso_simd_row(plane_row, center_row, offset_rows, x, x_end, clamp, config);
+                for span in [(x, simd_start), (simd_end, x_end)] {
+                    ccso_edge_span(plane_row, center_row, offset_rows, span, clamp, config)
+                        .ok_or(CcsoError::Geometry)?;
+                }
+                if lossless_grid.is_some() {
+                    lossless_runs(plane_row, true, &mut lossless_saved)
+                        .ok_or(CcsoError::Workspace)?;
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Destination columns an edge group stands after in its staging row: the
+/// taps of the group, one whole chunk of [`ccso_simd_row`], then stay in it.
+const CCSO_EDGE_PAD: usize = 2;
+
+/// Luma samples one edge group reads: two per staged destination column, and
+/// the tap reach.
+const CCSO_EDGE_LUMA: usize = 2 * (CCSO_EDGE_PAD + CCSO_LANES) + 4;
+
+/// Filters destination columns `start..end`, whose taps the § 7.19.1 luma
+/// range `(min, max)` cuts, in 16-column groups through [`ccso_simd_row`]:
+/// each group reads copies of its luma rows with the range's edge samples
+/// repeated past it, so the kernel's taps need no clamp.
+fn ccso_edge_span<D: ReconSample, L: ReconSample>(
+    destination: &mut [D],
+    center_row: &[L],
+    offset_rows: Option<(&[L], &[L])>,
+    (start, end): (usize, usize),
+    (min, max): (usize, usize),
+    config: &CcsoPlaneConfig,
+) -> Option<()> {
+    let stage = |row: &[L], origin: isize, out: &mut [L; CCSO_EDGE_LUMA]| -> Option<()> {
+        let (low, high) = (*row.get(min)?, *row.get(max)?);
+        let left = (min as isize - origin).clamp(0, CCSO_EDGE_LUMA as isize) as usize;
+        let inside = row
+            .get(min.max(origin.max(0) as usize)..=max)
+            .unwrap_or_default();
+        let inside = inside.get(..inside.len().min(CCSO_EDGE_LUMA - left))?;
+        out[..left].fill(low);
+        out[left..left + inside.len()].copy_from_slice(inside); // splot-copy-ok: the taps of one CCSO edge group
+        out[left + inside.len()..].fill(high);
+        Some(())
+    };
+    let mut x = start;
+    while x < end {
+        let n = (end - x).min(CCSO_LANES);
+        let origin = (x as isize - CCSO_EDGE_PAD as isize) << config.sub_x;
+        let mut luma = [[L::default(); CCSO_EDGE_LUMA]; 3];
+        let [center, tap0, tap1] = &mut luma;
+        stage(center_row, origin, center)?;
+        if let Some((row0, row1)) = offset_rows {
+            stage(row0, origin, tap0)?;
+            stage(row1, origin, tap1)?;
+        }
+        let mut group = [D::default(); CCSO_EDGE_PAD + CCSO_LANES];
+        let samples = destination.get(x..x + n)?;
+        group[CCSO_EDGE_PAD..CCSO_EDGE_PAD + n].copy_from_slice(samples); // splot-copy-ok: one CCSO edge group
+        let taps = offset_rows.map(|_| (&tap0[..], &tap1[..]));
+        let filtered = ccso_simd_row(
+            &mut group,
+            &center[..],
+            taps,
+            CCSO_EDGE_PAD,
+            CCSO_EDGE_PAD + CCSO_LANES,
+            (0, CCSO_EDGE_LUMA - 1),
+            config,
+        );
+        if filtered != (CCSO_EDGE_PAD, CCSO_EDGE_PAD + CCSO_LANES) {
+            return None;
+        }
+        destination
+            .get_mut(x..x + n)?
+            .copy_from_slice(&group[CCSO_EDGE_PAD..CCSO_EDGE_PAD + n]); // splot-copy-ok: one CCSO edge group
+        x += n;
+    }
+    Some(())
 }
 
 const CCSO_LANES: usize = 16;
@@ -549,10 +612,10 @@ fn luma_u16<S: Simd, const SUB_X: usize>(simd: S, row: &[u16]) -> Option<u16x16<
     Some(simd.unzip_low_u16x16(low, high))
 }
 
-/// Vectorises one CCSO row and returns the column span it filtered; the
-/// scalar loop covers the columns on either side.
+/// Vectorises one CCSO row and returns the column span it filtered;
+/// [`ccso_edge_span`] covers the columns on either side.
 ///
-/// `tile_clamp` is the § 7.19.1 luma range the scalar path clamps every tap to
+/// `tile_clamp` is the § 7.19.1 luma range every tap is clamped to
 /// ([`docs/spec/av2/1.0.0/07-decoding-process.md`](../../../../docs/spec/av2/1.0.0/07-decoding-process.md));
 /// the vector loop cannot clamp per lane, so its span keeps the centre and
 /// every tap inside that range.
@@ -923,6 +986,7 @@ fn luma_tile_clamp(starts: Option<&[u32]>, mi: usize, frame_max: usize) -> (usiz
     (min, max.max(min))
 }
 
+#[cfg(test)]
 fn ccso_score(diff: i32, quant_step: i32, edge_clf: bool) -> usize {
     if diff > quant_step && !edge_clf {
         2

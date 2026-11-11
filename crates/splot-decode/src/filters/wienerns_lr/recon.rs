@@ -724,8 +724,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 self.bit_depth,
                 chain.gdf_reference,
             )?;
-            let [all, chroma] = self.stripe_in_place(&chain, range, active_lr, gdf_active);
-            let skip = [all, chroma, chroma];
+            let [all, chroma, luma] = self.stripe_in_place(&chain, range, active_lr, gdf_active);
+            let skip = [all || luma, chroma, chroma];
             window.copy_window(frame, Some(carry), range, self.window_margin(), read, skip)
         });
         if let Err(error) = filled {
@@ -862,6 +862,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         start: usize,
         end: usize,
         target: Option<crate::pipeline::frame_progress::DirectStripeTarget<T>>,
+        luma_output: bool,
     ) -> Result<crate::filters::cdef::CdefFrame<'d, T>> {
         let mut cdef = crate::filters::cdef::cdef_stripe_into(
             deblocked,
@@ -876,6 +877,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             start,
             end,
             target,
+            luma_output,
         )
         .map_err(|error| cdef_filter_error(&error))?;
         if let Some((grid, config)) = chain.ccso_grid.zip(self.ccso_config.as_ref()) {
@@ -922,7 +924,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                           range_start: usize,
                           range_end: usize|
          -> Result<()> {
-            let fringe = self.cdef_ccso_range(deblocked, chain, range_start, range_end, None)?;
+            let fringe =
+                self.cdef_ccso_range(deblocked, chain, range_start, range_end, None, true)?;
             overlap.y.push(fringe.filtered_y);
             overlap.u.extend(fringe.filtered_u);
             overlap.v.extend(fringe.filtered_v);
@@ -945,15 +948,17 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         Ok(overlap)
     }
 
-    /// Whether no filter changes stripe `(start, end)`, and whether none
-    /// changes its chroma planes, so their targets keep the deblocked rows.
+    /// Whether no filter changes stripe `(start, end)`, whether none changes
+    /// its chroma planes, so their targets keep the deblocked rows, and
+    /// whether none changes its luma and the chroma filters read no luma past
+    /// the stripe, so the luma target serves as the deblocked luma.
     fn stripe_in_place(
         &self,
         chain: &StripeChain<'_>,
         (start, end): (usize, usize),
         active_lr: [bool; 3],
         gdf_active: bool,
-    ) -> [bool; 2] {
+    ) -> [bool; 3] {
         let [luma, chroma] = crate::filters::cdef::cdef_stripe_identity(
             self.cdef_strengths.as_deref(),
             chain.cdef_grid,
@@ -966,9 +971,16 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             !active_lr[plane.index()] && !ccso.is_some_and(|config| config.filters_plane(plane))
         };
         let chroma = chroma && unfiltered(PlaneId::U) && unfiltered(PlaneId::V);
+        let luma = luma && !gdf_active && unfiltered(PlaneId::Y);
+        let chroma_reads_luma = active_lr[PlaneId::U.index()]
+            || active_lr[PlaneId::V.index()]
+            || ccso.is_some_and(|config| {
+                config.filters_plane(PlaneId::U) || config.filters_plane(PlaneId::V)
+            });
         [
-            chroma && luma && !gdf_active && unfiltered(PlaneId::Y),
+            chroma && luma,
             chroma,
+            luma && !chroma && !chroma_reads_luma,
         ]
     }
 
@@ -991,7 +1003,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             self.bit_depth,
             chain.gdf_reference,
         )?;
-        let [all_in_place, chroma_in_place] =
+        let [all_in_place, chroma_in_place, luma_in_place] =
             self.stripe_in_place(&chain, (start, end), active_lr, gdf_active);
         let mut in_place = |plane: PlaneId| {
             target
@@ -1016,6 +1028,19 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         } else {
             None
         };
+        if luma_in_place {
+            let luma = in_place(PlaneId::Y)?.ok_or_else(lr_pipeline_state_error)?;
+            let deblocked = crate::filters::source::DeblockedPlanes {
+                y: luma.view().map_err(|_| lr_pipeline_state_error())?,
+                ..deblocked
+            };
+            let crate::filters::cdef::CdefFrame {
+                filtered_u: u,
+                filtered_v: v,
+                ..
+            } = self.cdef_ccso_range(deblocked, &chain, start, end, Some(target), false)?;
+            return Ok(final_filters::FilteredStripe { y: luma, u, v });
+        }
         let deblocked = if chroma_in_place {
             crate::filters::source::DeblockedPlanes {
                 u: None,
@@ -1036,7 +1061,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                     )
         });
         let (cdef_target, lr_target) = target.split(lr_copies);
-        let cdef = self.cdef_ccso_range(deblocked, &chain, start, end, Some(cdef_target))?;
+        let cdef = self.cdef_ccso_range(deblocked, &chain, start, end, Some(cdef_target), true)?;
         let cdef_overlap = self.cdef_overlap_planes(deblocked, &chain, start, end)?;
         let mut frame = chain.apply_lr_stripe(
             &self.core,
