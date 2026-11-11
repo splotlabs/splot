@@ -177,7 +177,7 @@ pub use loop_restoration::{
 };
 pub use optflow::{
     OptflowScratch, derive_optflow_mv_delta_8x8_strided_into, derive_optflow_mv_deltas,
-    derive_optflow_mv_deltas_into, optflow_unit_8x8_u8,
+    derive_optflow_mv_deltas_into, optflow_unit_8x8_u8, optflow_unit_8x8_u16,
 };
 pub use pc_wiener::{
     PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_FILTER_TAP_RADIUS,

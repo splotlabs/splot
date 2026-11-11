@@ -630,9 +630,9 @@ fn portable_chunk<S: Simd, E: EdgeSample, const VERTICAL: bool>(
 }
 
 mod portable {
-    use fearless_simd::{Bytes, Simd, SimdBase, i16x8, i16x16, i32x4, i32x8, i64x2, u8x32};
+    use fearless_simd::{Bytes, Simd, SimdBase, i16x8, i16x16, i32x4, i32x8, i64x2, u8x32, u64x4};
 
-    use super::{CLAMP, DeblockEdge, LANES, LINES, Q_FIRST, RAMP, REACH, ROWS, SEGMENTS};
+    use super::{CLAMP, DeblockEdge, LINES, Q_FIRST, RAMP, REACH, ROWS, SEGMENTS};
 
     /// Byte indices that copy lane `4g` (`FIRST`) or `4g + 3` (`LAST`) of
     /// every four-lane segment `g` over the whole segment.
@@ -740,15 +740,24 @@ mod portable {
         simd.narrow_i32x8(round(low), round(high))
     }
 
-    /// One [`LANES`]-lane vector of `field` over each segment's lines.
-    fn lanes<S: Simd>(
-        simd: S,
-        edges: &[DeblockEdge; SEGMENTS],
-        field: impl Fn(DeblockEdge) -> i16,
-    ) -> i16x16<S> {
-        let lanes: [i16; LANES] = core::array::from_fn(|lane| field(edges[lane / LINES]));
-        i16x16::from_slice(simd, &lanes)
+    /// Byte indices that set lane `l` to bytes `low` and `high` of packed
+    /// edge `l / LINES`; each 128-bit block holds the lanes of two edges.
+    const fn field_bytes(low: u8, high: u8) -> [u8; 32] {
+        let mut bytes = [0; 32];
+        let mut byte = 0;
+        while byte < 32 {
+            let edge = (byte % 16 / 2 / LINES * 8) as u8;
+            bytes[byte] = edge + if byte % 2 == 0 { low } else { high };
+            byte += 1;
+        }
+        bytes
     }
+
+    const Q_THR: [u8; 32] = field_bytes(0, 1);
+    const SIDE: [u8; 32] = field_bytes(2, 3);
+    const MAX_POS: [u8; 32] = field_bytes(4, 4);
+    const MAX_NEG: [u8; 32] = field_bytes(5, 5);
+    const FLAGS: [u8; 32] = field_bytes(6, 6);
 
     /// Filters the chunk whose sample rows across the edge are `rows`: row
     /// `REACH + j` is `s[j]` of every line. Returns `false` when no line can
@@ -765,12 +774,19 @@ mod portable {
         reach: usize,
         max_sample: i16,
     ) -> bool {
-        let q = lanes(simd, edges, DeblockEdge::q_thr);
-        let side = lanes(simd, edges, DeblockEdge::side);
-        let max_pos = lanes(simd, edges, |edge| edge.max_width_pos() as i16);
-        let max_neg = lanes(simd, edges, |edge| edge.max_width_neg() as i16);
-        let keep_prev = lanes(simd, edges, |edge| i16::from(!edge.prev_lossless()));
-        let keep_curr = lanes(simd, edges, |edge| i16::from(!edge.curr_lossless()));
+        let packed = u64x4::from_slice(simd, &edges.map(|edge| edge.0)).bitcast::<u8x32<S>>();
+        let field = |pattern: &[u8; 32]| {
+            simd.swizzle_dyn_within_blocks_u8x32(packed, u8x32::from_slice(simd, pattern))
+                .bitcast::<i16x16<S>>()
+        };
+        let (byte, one) = (i16x16::splat(simd, 0xff), i16x16::splat(simd, 1));
+        let q = field(&Q_THR);
+        let side = field(&SIDE);
+        let max_pos = field(&MAX_POS) & byte;
+        let max_neg = field(&MAX_NEG) & byte;
+        let flags = field(&FLAGS);
+        let keep_prev = one - (flags & one);
+        let keep_curr = one - ((flags >> 1) & one);
         let s = |j: isize| rows[(REACH as isize + j) as usize];
         let second = |j: isize| segment_mean(simd, (s(j - 1) + s(j + 1) - s(j) - s(j)).abs());
         let directional = |edge: isize, inner: isize, outer: isize, n: i16| {

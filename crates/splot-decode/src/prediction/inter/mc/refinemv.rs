@@ -676,44 +676,27 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
             }
             Some(rows)
         });
-        if let [Some(first), Some(second)] = rows {
-            let delta = splot_recon::optflow_unit_8x8_u8(
-                [first, second],
-                distances,
-                batch.optflow_sad_threshold,
-            )?;
-            return Ok(Some(delta.map_or_else(
-                || MotionCell::from_refinemv(mvs),
-                |delta| MotionCell::from_optflow(mvs, delta),
-            )));
-        }
-        let Some(sad) = self.sad(&spans) else {
-            return Ok(None);
-        };
-        if batch
-            .optflow_sad_threshold
-            .is_some_and(|threshold| sad >> self.shift < threshold)
-        {
-            return Ok(Some(MotionCell::from_refinemv(mvs)));
-        }
-        let mut predictions = [[0u16; 64]; 2];
-        for (prediction, spans) in predictions.iter_mut().zip(&spans) {
-            for (output, samples) in prediction.chunks_exact_mut(8).zip(spans) {
-                for (output, sample) in output.iter_mut().zip(*samples) {
-                    *output = sample.to_u16().min(self.max_sample);
+        let threshold = batch.optflow_sad_threshold;
+        let delta = if let [Some(first), Some(second)] = rows {
+            splot_recon::optflow_unit_8x8_u8([first, second], distances, threshold)?
+        } else {
+            let rows = spans.map(|spans| {
+                let mut rows = [[0u16; 8]; 8];
+                for (row, span) in rows.iter_mut().zip(spans) {
+                    *row = *T::u16_slice(span)?.first_chunk::<8>()?;
                 }
-            }
-        }
-        let delta = splot_recon::derive_optflow_mv_delta_8x8_strided_into(
-            &predictions[0],
-            0,
-            &predictions[1],
-            0,
-            8,
-            sink.info().bit_depth(),
-            distances,
-        )?;
-        Ok(Some(MotionCell::from_optflow(mvs, delta)))
+                Some(rows)
+            });
+            let [Some(first), Some(second)] = rows else {
+                return Ok(None);
+            };
+            let bit_depth = sink.info().bit_depth();
+            splot_recon::optflow_unit_8x8_u16([first, second], bit_depth, distances, threshold)?
+        };
+        Ok(Some(delta.map_or_else(
+            || MotionCell::from_refinemv(mvs),
+            |delta| MotionCell::from_optflow(mvs, delta),
+        )))
     }
 
     /// The `width`-sample spans from columns `xs` of each reference's `rows`,
@@ -743,21 +726,14 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
                 };
                 continue;
             }
-            let (left, right) = (self.lanes(left, width)?, self.lanes(right, width)?);
-            sad += abs_diff_sum(&left[..width], &right[..width]);
+            let (left, right) = (T::u16_slice(left)?, T::u16_slice(right)?);
+            sad += if width == 8 {
+                word_sad::<8>(left, right, self.max_sample)?
+            } else {
+                word_sad::<12>(left, right, self.max_sample)?
+            };
         }
         Some(sad)
-    }
-
-    /// The first `width` (at most 12) samples as the copy writes them:
-    /// clipped to the maximum.
-    fn lanes(&self, samples: &[T], width: usize) -> Option<[u16; 12]> {
-        let samples = samples.get(..width)?;
-        let mut lanes = [0; 12];
-        for (lane, sample) in lanes.iter_mut().zip(samples) {
-            *lane = sample.to_u16().min(self.max_sample);
-        }
-        Some(lanes)
     }
 }
 
@@ -769,6 +745,18 @@ fn byte_sad<const W: usize>(left: &[u8], right: &[u8]) -> Option<u32> {
         left.iter()
             .zip(right)
             .map(|(&a, &b)| u32::from(a.abs_diff(b)))
+            .sum(),
+    )
+}
+
+/// [`byte_sad`] of 16-bit samples, each clipped to `max` as the prediction
+/// copy writes them.
+fn word_sad<const W: usize>(left: &[u16], right: &[u16], max: u16) -> Option<u32> {
+    let (left, right) = (left.first_chunk::<W>()?, right.first_chunk::<W>()?);
+    Some(
+        left.iter()
+            .zip(right)
+            .map(|(&a, &b)| u32::from(a.min(max).abs_diff(b.min(max))))
             .sum(),
     )
 }

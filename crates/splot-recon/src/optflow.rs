@@ -471,6 +471,56 @@ fn unit_8x8<S: Simd>(
     .map(Some)
 }
 
+/// [`optflow_unit_8x8_u8`] of two 16-bit 8x8 predictions, each sample
+/// clipped to `bit_depth` first; the SAD is compared at eight bits, and
+/// differences that round to zero give a zero delta, as in
+/// [`derive_optflow_mv_delta_8x8_strided_into`].
+///
+/// # Errors
+///
+/// Returns the arithmetic errors of the solve.
+#[doc(hidden)]
+pub fn optflow_unit_8x8_u16(
+    rows: [[[u16; 8]; 8]; 2],
+    bit_depth: BitDepth,
+    distances: [i32; 2],
+    sad_threshold: Option<u32>,
+) -> Result<Option<[[i32; 2]; 2]>> {
+    let threshold = sad_threshold.unwrap_or(0);
+    if rows[0] == rows[1] {
+        return Ok((threshold == 0).then_some([[0; 2]; 2]));
+    }
+    let downshift = u32::from(bit_depth.bits().saturating_sub(8));
+    let max = bit_depth.max_sample();
+    baseline_simd!(simd => {
+        let load = |rows: &[[u16; 8]; 8]| {
+            rows.map(|row| u16x8::load_array(simd, row).min(u16x8::splat(simd, max)))
+        };
+        let (first, second) = (load(&rows[0]), load(&rows[1]));
+        let sad = first.iter().zip(&second).fold(0, |sum, (a, b)| {
+            sum + u32::from((a.max(*b) - a.min(*b)).reduce_sum())
+        });
+        if sad >> downshift < threshold {
+            return Ok(None);
+        }
+        if distances.contains(&0) {
+            return Ok(Some([[0; 2]; 2]));
+        }
+        let distances = reduce_distances(distances);
+        let rows: [(i16x8<_>, i16x8<_>); 8] = core::array::from_fn(|row| {
+            weighted_difference_row(first[row], second[row], distances, downshift)
+        });
+        let (weighted, difference) = (rows.map(|row| row.0), rows.map(|row| row.1));
+        let changed = difference.iter().fold(u16x8::splat(simd, 0), |changed, row| {
+            changed | row.bitcast::<u16x8<_>>()
+        });
+        if changed.reduce_max() == 0 {
+            return Ok(Some([[0; 2]; 2]));
+        }
+        solve_sums(whole_8x8(rows_8x8_sums(simd, &weighted, &difference)), distances).map(Some)
+    })
+}
+
 /// The § 7.13.3.9 `weighted` and `difference` rows of eight predictor sample
 /// pairs, in `i16` lanes.
 ///
@@ -1211,6 +1261,53 @@ mod tests {
                     let expected =
                         (threshold.is_none_or(|threshold| sad >= threshold)).then_some(delta);
                     let actual = optflow_unit_8x8_u8(rows, distances, threshold).unwrap();
+                    assert_eq!(
+                        actual, expected,
+                        "{distances:?} {first}/{second} {threshold:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The 10-bit unit kernel matches the strided derivation, including
+    /// differences that round to zero, and skips exactly when the eight-bit
+    /// SAD is below the threshold.
+    #[test]
+    fn word_8x8_units_match_the_strided_derivation() {
+        let fills: [fn(usize) -> u16; 4] = [
+            |i| ((i * 73 + i / 13 * 29 + (i * i) % 7) % 1024) as u16,
+            |i| if (i + i / 13) % 3 == 0 { 1023 } else { 0 },
+            |i| ((i * 7919) % 1024) as u16,
+            |i| (i % 2) as u16 + 500,
+        ];
+        for distances in [[1, -1], [3, 2], [-4, 1], [0, 2]] {
+            for (first, second) in [(0, 1), (1, 2), (2, 0), (3, 3), (0, 0)] {
+                let a: Vec<u16> = (0..64).map(fills[first]).collect();
+                let b: Vec<u16> = (0..64).map(|i| fills[second](i + 5)).collect();
+                let sad: u32 = a
+                    .iter()
+                    .zip(&b)
+                    .map(|(&x, &y)| u32::from(x.abs_diff(y)))
+                    .sum();
+                let delta = derive_optflow_mv_delta_8x8_strided_into(
+                    &a,
+                    0,
+                    &b,
+                    0,
+                    8,
+                    BitDepth::Ten,
+                    distances,
+                )
+                .unwrap();
+                let rows = [&a, &b].map(|pred| {
+                    core::array::from_fn(|row| core::array::from_fn(|col| pred[row * 8 + col]))
+                });
+                for threshold in [None, Some(sad >> 2), Some((sad >> 2) + 1)] {
+                    let expected =
+                        (threshold.is_none_or(|threshold| sad >> 2 >= threshold)).then_some(delta);
+                    let actual =
+                        optflow_unit_8x8_u16(rows, BitDepth::Ten, distances, threshold).unwrap();
                     assert_eq!(
                         actual, expected,
                         "{distances:?} {first}/{second} {threshold:?}"
