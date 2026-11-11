@@ -229,10 +229,10 @@ fn portable<S: Simd, F: TapPairs, T: LumaSimdSource, const ROWS: usize, const RE
         simd.combine_i32x4(sums[0], sums[1]),
         simd.combine_i32x4(sums[2], sums[3]),
     ];
-    let max = i32x8::splat(simd, i32::from(max_sample));
-    let [low, high] = sums.map(|sum| (sum >> 7).clamp(i32x8::splat(simd, 0), max));
+    let [low, high] =
+        sums.map(|sum| (sum >> 7).clamp(i32x8::splat(simd, 0), i32x8::splat(simd, 65535)));
     let values: u16x16<S> = low.narrow(high).bitcast();
-    values.into()
+    values.min(u16x16::splat(simd, max_sample)).into()
 }
 
 /// Implements [`TapPairs::avx2`] for a tap table with one x86 kernel over

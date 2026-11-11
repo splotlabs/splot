@@ -970,7 +970,7 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
     };
     #[cfg(target_arch = "aarch64")]
     let narrow_done = match T::u16_slice(chroma) {
-        Some(chroma) if params.width >= 8 => {
+        Some(chroma) if (8..16).contains(&params.width) => {
             filter_chroma_lanes8(
                 simd,
                 output,

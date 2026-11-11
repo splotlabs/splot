@@ -4,14 +4,14 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
-use crate::filters::gdf::simd::{WINDOW_ROWS, sym_rows, sym_rows_interleaved};
+use crate::filters::gdf::simd::{WINDOW_ROWS, sym_rows, sym_rows_portable};
 
 /// A 16-sample row-pair kernel.
 type Kernel =
     fn(&[&[u16; 28]; WINDOW_ROWS], [&mut [u16; 16]; 2], &[GdfClass; 8], &GdfBlock, &GdfSymParams);
 
 /// The target's kernel and the portable one.
-const KERNELS: [Kernel; 2] = [sym_rows, sym_rows_interleaved];
+const KERNELS: [Kernel; 2] = [sym_rows, sym_rows_portable];
 
 /// A two-row window of `width` samples with the full tap reach around it.
 fn test_source(width: usize, max_sample: u16, case: usize) -> (Vec<u16>, usize) {

@@ -817,26 +817,30 @@ fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput
 /// weights; returns the columns done. Sample-subclass layouts are left to
 /// the segment filter.
 #[allow(clippy::too_many_arguments)]
-fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
+fn filter_luma_cell_groups<'a, T: LumaSimdSource, O: LumaSimdOutput>(
     output: &mut [O],
     output_stride: usize,
-    source: &[&[T]; LUMA_WINDOW_ROWS + 3],
+    source: &[&'a [T]; LUMA_WINDOW_ROWS + 3],
     (first, end, origin): (usize, usize, usize),
     (mut x, width): (usize, usize),
     prepared_classes: &[PreparedLumaClass],
     subclasses: LumaSubclassLayout<'_>,
     (max_sample, flat): (u16, &FlatChunks<WIENER_NS_LUMA_TAP_RADIUS>),
 ) -> Result<usize> {
-    let cell_class = |cell: usize| -> Option<&PreparedLumaClass> {
-        let class = match subclasses {
-            LumaSubclassLayout::Uniform => 0,
-            LumaSubclassLayout::Cells { values, cols } => {
-                usize::from(*values.get((first / 4) * cols + cell)?)
-            }
-            LumaSubclassLayout::Samples(_) => return None,
-        };
-        prepared_classes.get(class)
+    let cell_row = match subclasses {
+        LumaSubclassLayout::Uniform => None,
+        LumaSubclassLayout::Cells { values, cols } => {
+            Some(values.get((first / 4) * cols..).unwrap_or_default())
+        }
+        LumaSubclassLayout::Samples(_) => return Ok(x),
     };
+    let padded = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+    let rows = end - first + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+    let span = |row: &&'a [T]| row.get(..padded).ok_or_else(|| luma_segment_error(width));
+    let mut window = [span(&source[0])?; LUMA_WINDOW_ROWS + 3];
+    for (slot, row) in window.iter_mut().zip(source).take(rows) {
+        *slot = span(row)?;
+    }
     let mut mixed = [[[0; 16]; 2]; MADD_PAIRS + 1];
     while x + 16 <= width {
         if let Some(value) = flat.chunk_value(x / 32) {
@@ -851,13 +855,18 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
             x += 16;
             continue;
         }
-        let classes: [Option<&PreparedLumaClass>; 4] =
-            core::array::from_fn(|cell| cell_class(x / 4 + cell));
+        let cells = match cell_row {
+            None => [0; 4],
+            Some(row) => match row.get(x / 4..).and_then(<[u8]>::first_chunk::<4>) {
+                Some(&cells) => cells,
+                None => break,
+            },
+        };
+        let classes = cells.map(|class| prepared_classes.get(usize::from(class)));
         let [Some(c0), Some(c1), Some(c2), Some(c3)] = classes else {
             break;
         };
-        let uniform = core::ptr::eq(c0, c1) && core::ptr::eq(c1, c2) && core::ptr::eq(c2, c3);
-        let weights = if uniform {
+        let weights = if cells == [cells[0]; 4] {
             c0.cell_weights.as_ref()
         } else if let [Some(m0), Some(m1), Some(m2), Some(m3)] =
             [c0, c1, c2, c3].map(|class| class.madd_pairs.as_ref())
@@ -872,8 +881,7 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
         let Some(weights) = weights else {
             break;
         };
-        let rows = end - first + 2 * WIENER_NS_LUMA_TAP_RADIUS;
-        let Some(group) = source.get(..rows).and_then(|rows| cell_window(rows, x)) else {
+        let Some(group) = cell_window(&window, x) else {
             return Err(luma_segment_error(width));
         };
         for r in first..end {

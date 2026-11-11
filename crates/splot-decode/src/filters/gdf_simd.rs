@@ -3,7 +3,7 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, Level, kernel};
-use fearless_simd::{Simd, i8x16, i16x16, i32x8, prelude::*, u8x16, u16x16};
+use fearless_simd::{Simd, SimdIntWiden, i8x16, i16x8, i16x16, i32x8, prelude::*, u8x16, u16x16};
 
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
@@ -143,19 +143,17 @@ const TAP_COLUMN_REACH: [usize; TAP_REACH + 1] = {
     reach
 };
 
-/// Whether every sample that the row pair's taps read equals the center
-/// sample, i.e. the window's `tap_range` is zero. The center rows go first:
-/// in textured windows they alone usually prove the window uneven. The rows
-/// are unrolled so that each row's tap reach is a constant.
+/// The largest minus the smallest sample that the row pair's taps read, the
+/// window's `tap_range`, or [`ROUGH`] once it exceeds [`LINEAR_RANGE`]. The
+/// center rows go first: in textured windows they alone usually exceed it.
+/// The rows are unrolled so that each row's tap reach is a constant.
 #[inline]
-fn window_is_flat<S: Simd, W: WindowRows>(simd: S, window: &W) -> bool {
-    let expected = u16x16::splat(simd, window.row(TAP_REACH)[TAP_REACH]);
-    let even = |row: &[u16; 28], col: usize| {
-        u16x16::from_slice(simd, &row[col..col + 16])
-            .simd_eq(expected)
-            .all_true()
+fn window_range<S: Simd, W: WindowRows>(simd: S, window: &W) -> u16 {
+    let (mut low, mut high) = (u16x16::splat(simd, u16::MAX), u16x16::splat(simd, 0));
+    let range = |low: u16x16<S>, high: u16x16<S>| {
+        simd.reduce_max_u16x16(high) - simd.reduce_min_u16x16(low)
     };
-    macro_rules! rows_even {
+    macro_rules! rows_range {
         ($($row:literal)*) => {
             $({
                 const ROW: usize = $row;
@@ -163,12 +161,44 @@ fn window_is_flat<S: Simd, W: WindowRows>(simd: S, window: &W) -> bool {
                     let (above, below) = (ROW.abs_diff(TAP_REACH), ROW.abs_diff(TAP_REACH + 1));
                     TAP_COLUMN_REACH[if above < below { above } else { below }]
                 };
-                even(window.row(ROW), TAP_REACH - REACH) && even(window.row(ROW), TAP_REACH + REACH)
-            })&&*
+                let row = window.row(ROW);
+                for col in [TAP_REACH - REACH, TAP_REACH + REACH] {
+                    let samples = u16x16::from_slice(simd, &row[col..col + 16]);
+                    low = low.min(samples);
+                    high = high.max(samples);
+                }
+            })*
         };
     }
-    rows_even!(6 7 0 1 2 3 4 5 8 9 10 11 12 13)
+    rows_range!(6 7);
+    if range(low, high) > LINEAR_RANGE {
+        return ROUGH;
+    }
+    rows_range!(0 1 2 3 4 5 8 9 10 11 12 13);
+    match range(low, high) {
+        range if range > LINEAR_RANGE => ROUGH,
+        range => range,
+    }
 }
+
+/// The widest `tap_range` whose combs may skip the § 7.20.5 comb clip:
+/// two tap differences within it sum to at most 510.
+const LINEAR_RANGE: u16 = 255;
+/// [`window_range`] of a window wider than [`LINEAR_RANGE`].
+const ROUGH: u16 = u16::MAX;
+
+/// The taps of each [`row_pairs`] group, whose combs select among the same
+/// diff pairs.
+const TAP_GROUPS: [&[usize]; 8] = [
+    &[0, 12],
+    &[1, 13],
+    &[2, 14],
+    &[3, 15],
+    &[4, 6, 7, 11],
+    &[8, 10],
+    &[9, 17],
+    &[5, 16],
+];
 
 /// The tap that class `class` reads in place of class-0 tap `k`: class bit 0
 /// transposes the tap and bit 1 mirrors it horizontally. A tap and its
@@ -349,6 +379,9 @@ pub(super) struct GdfSymParams {
     /// The weights of each `SYM_PAIRS` entry in alternating lanes.
     pair_weights: [[i16; 16]; SYM_PAIRS.len()],
     bias: [i32; 3],
+    /// The widest `tap_range` at which each `TAP_GROUPS` entry skips the
+    /// clips: its smallest clip bound, at most [`LINEAR_RANGE`].
+    group_bounds: [u16; TAP_GROUPS.len()],
     /// The bias less [`COMB_BIAS`] times the weights of each sum, which the
     /// biased combs add back.
     tap_bias: [i32; 3],
@@ -388,6 +421,10 @@ impl GdfSymParams {
                 core::array::from_fn(|lane| table[sum][if lane & 1 == 0 { a } else { b }][0])
             }),
             bias,
+            group_bounds: TAP_GROUPS.map(|taps| {
+                taps.iter()
+                    .fold(LINEAR_RANGE, |bound, &k| bound.min(alpha[k][0]))
+            }),
             tap_bias: core::array::from_fn(|sum| {
                 let weights: i32 = SYM_PAIRS
                     .iter()
@@ -402,30 +439,55 @@ impl GdfSymParams {
     }
 }
 
-/// How a kernel pairs comb lanes for its `i16` multiply-adds. The halves of
-/// [`Lanes::pairs`] and of [`Lanes::spread`] hold the same samples, and
-/// [`Lanes::digits`] reads its sums in that order.
+/// How a kernel pairs comb lanes for its `i16` multiply-adds. The sums of
+/// [`Lanes::madd`] and the halves of [`Lanes::spread`] hold the same
+/// samples, and [`Lanes::digits`] reads its sums in that order.
 trait Lanes<S: Simd>: Copy {
-    /// `a` and `b` interleaved, in two halves.
+    /// The combs `a` and `b` as [`Lanes::madd`] reads them.
     fn pairs(self, simd: S, a: i16x16<S>, b: i16x16<S>) -> [i16x16<S>; 2];
+    /// Subtracts from `sum` the combs of [`Lanes::pairs`] times their
+    /// weights, which alternate in `weights`.
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn madd(self, simd: S, sum: &mut [i32x8<S>; 2], pair: [i16x16<S>; 2], weights: &[i16; 16]) {
+        let weights = i16x16::from_slice(simd, weights);
+        for (sum, half) in sum.iter_mut().zip(pair) {
+            *sum -= simd.pairwise_dot_product_i16x16(half, weights);
+        }
+    }
     /// Sums of the 8 two-sample class blocks, per sample in the order of
-    /// [`Lanes::pairs`].
+    /// the sums of [`Lanes::madd`].
     fn spread(self, simd: S, blocks: i32x8<S>) -> [i32x8<S>; 2];
     /// The § 7.20.5 digit `Clip3(-scale, scale - 1, Round2Signed(sum * scale, 15))`
     /// of every sample, in sample order.
     fn digits(self, simd: S, sums: [i32x8<S>; 2], scale: i16) -> i16x16<S>;
 }
 
-/// Pairs by whole-vector interleaves: the first half holds samples `0..8`.
+/// Keeps each comb whole and multiplies it by its weight in widening lanes:
+/// the first half of a sum holds samples `0..8`.
 #[derive(Clone, Copy)]
-struct Interleaved;
+struct Widening;
 
-impl<S: Simd> Lanes<S> for Interleaved {
+impl<S: Simd> Lanes<S> for Widening {
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn pairs(self, simd: S, a: i16x16<S>, b: i16x16<S>) -> [i16x16<S>; 2] {
-        let (low, high) = simd.interleave_i16x16(a, b);
-        [low, high]
+    fn pairs(self, _simd: S, a: i16x16<S>, b: i16x16<S>) -> [i16x16<S>; 2] {
+        [a, b]
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn madd(self, simd: S, sum: &mut [i32x8<S>; 2], pair: [i16x16<S>; 2], weights: &[i16; 16]) {
+        let products = |comb: i16x16<S>, weight: i16| {
+            let weight = i16x8::splat(simd, weight);
+            let (low, high) = simd.split_i16x16(comb);
+            let (p0, p1) = low.widening_mul(weight);
+            let (p2, p3) = high.widening_mul(weight);
+            [simd.combine_i32x4(p0, p1), simd.combine_i32x4(p2, p3)]
+        };
+        let ([a0, a1], [b0, b1]) = (products(pair[0], weights[0]), products(pair[1], weights[1]));
+        sum[0] = sum[0] - a0 - b0;
+        sum[1] = sum[1] - a1 - b1;
     }
 
     #[allow(clippy::inline_always)]
@@ -597,6 +659,32 @@ fn clipped_sum<S: Simd>(
 fn swap<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: u16x16<S>) -> (u16x16<S>, u16x16<S>) {
     let moved = (a ^ b) & select;
     (a ^ moved, b ^ moved)
+}
+
+/// The negated comb of tap `TAP` for row `ROW` less [`COMB_BIAS`], without
+/// the clips: `center2` is the centre doubled less [`COMB_BIAS`]. It equals
+/// the clipped comb when no tap read differs from the centre by more than the
+/// tap's bound or by more than [`LINEAR_RANGE`].
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn linear_comb<S: Simd, W: WindowRows, const TAP: usize, const ROW: usize>(
+    simd: S,
+    window: &W,
+    center2: u16x16<S>,
+) -> u16x16<S> {
+    let (dy, dx) = GDF_COORDS[TAP];
+    let row = TAP_REACH + ROW;
+    center2
+        - samples(
+            simd,
+            window.row(row - dy as usize),
+            (TAP_REACH as isize - dx) as usize,
+        )
+        - samples(
+            simd,
+            window.row(row + dy as usize),
+            (TAP_REACH as isize + dx) as usize,
+        )
 }
 
 /// The class lane masks that transpose and mirror the taps.
@@ -771,8 +859,8 @@ impl GdfSample for u8 {
     }
 }
 
-/// The interleaved negated combs of one row for each `COMB_PAIRS` slot, in
-/// the halves of [`Lanes::pairs`].
+/// The negated combs of one row for each `COMB_PAIRS` slot, as
+/// [`Lanes::pairs`] gives them.
 type RowPairs<S> = [[i16x16<S>; 2]; COMB_PAIRS.len()];
 
 /// The negated combs of row `ROW` of 16 samples of any class mix, paired
@@ -781,36 +869,69 @@ type RowPairs<S> = [[i16x16<S>; 2]; COMB_PAIRS.len()];
 /// mirrored offsets, and taps `4`, `6`, `7`, `11` form a cycle. Kept apart
 /// from the multiply-adds, whose six sums would otherwise force LLVM to
 /// spill the combs.
+///
+/// Bit `g` of `linear` marks the `TAP_GROUPS` entries whose combs skip the
+/// clips: the swaps then act on the combs instead of each diff.
 #[inline(never)]
 fn row_pairs<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
     simd: S,
     lanes: L,
     window: &W,
-    masks: Masks<S>,
+    (masks, linear): (Masks<S>, u8),
     params: &GdfSymParams,
 ) -> RowPairs<S> {
     let center = samples(simd, window.row(TAP_REACH + ROW), TAP_REACH);
     let centers = (center + ABOVE_OFFSET, center + BELOW_OFFSET);
+    let center2 = centers.0 + centers.1;
     let (transposed, mirrored) = masks;
+    macro_rules! pair {
+        ($group:literal, $k:literal, $t:literal, $select:expr) => {
+            if linear >> $group & 1 != 0 {
+                let (k, t) = swap(
+                    linear_comb::<S, W, $k, ROW>(simd, window, center2),
+                    linear_comb::<S, W, $t, ROW>(simd, window, center2),
+                    $select,
+                );
+                [k.bitcast(), t.bitcast()]
+            } else {
+                paired_combs::<S, W, $k, $t, ROW>(simd, window, centers, $select, params)
+            }
+        };
+    }
     let mut out = [[i16x16::splat(simd, 0); 2]; COMB_PAIRS.len()];
-    let [tap0, tap12] = paired_combs::<S, W, 0, 12, ROW>(simd, window, centers, transposed, params);
-    let [tap1, tap13] = paired_combs::<S, W, 1, 13, ROW>(simd, window, centers, transposed, params);
+    let [tap0, tap12] = pair!(0, 0, 12, transposed);
+    let [tap1, tap13] = pair!(1, 1, 13, transposed);
     out[0] = lanes.pairs(simd, tap0, tap1);
     out[1] = lanes.pairs(simd, tap12, tap13);
-    let [tap2, tap14] = paired_combs::<S, W, 2, 14, ROW>(simd, window, centers, transposed, params);
-    let [tap3, tap15] = paired_combs::<S, W, 3, 15, ROW>(simd, window, centers, transposed, params);
+    let [tap2, tap14] = pair!(2, 2, 14, transposed);
+    let [tap3, tap15] = pair!(3, 3, 15, transposed);
     out[2] = lanes.pairs(simd, tap2, tap3);
     out[3] = lanes.pairs(simd, tap14, tap15);
     out[4] = lanes.pairs(simd, tap3, tap15);
-    let [tap4, tap6, tap7, tap11] =
-        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params);
+    let [tap4, tap6, tap7, tap11] = if linear >> 4 & 1 != 0 {
+        let comb = |tap: u16x16<S>| tap.bitcast::<i16x16<S>>();
+        let (a, b) = swap(
+            linear_comb::<S, W, 4, ROW>(simd, window, center2),
+            linear_comb::<S, W, 6, ROW>(simd, window, center2),
+            mirrored,
+        );
+        let (c, d) = swap(
+            linear_comb::<S, W, 7, ROW>(simd, window, center2),
+            linear_comb::<S, W, 11, ROW>(simd, window, center2),
+            mirrored,
+        );
+        let ((first, third), (second, fourth)) = (swap(a, c, transposed), swap(b, d, transposed));
+        [comb(first), comb(second), comb(third), comb(fourth)]
+    } else {
+        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params)
+    };
     out[5] = lanes.pairs(simd, tap4, tap6);
     out[6] = lanes.pairs(simd, tap7, tap11);
-    let [tap8, tap10] = paired_combs::<S, W, 8, 10, ROW>(simd, window, centers, mirrored, params);
+    let [tap8, tap10] = pair!(5, 8, 10, mirrored);
     out[7] = lanes.pairs(simd, tap8, tap10);
-    let [tap9, tap17] = paired_combs::<S, W, 9, 17, ROW>(simd, window, centers, transposed, params);
+    let [tap9, tap17] = pair!(6, 9, 17, transposed);
     out[8] = lanes.pairs(simd, tap9, tap17);
-    let [tap5, tap16] = paired_combs::<S, W, 5, 16, ROW>(simd, window, centers, transposed, params);
+    let [tap5, tap16] = pair!(7, 5, 16, transposed);
     out[9] = lanes.pairs(simd, tap5, tap16);
     out
 }
@@ -829,11 +950,8 @@ fn row_index<S: Simd, L: Lanes<S>>(
     macro_rules! add_pairs {
         ($($pair:literal)*) => {$({
             const PAIR: usize = $pair;
-            let weights = i16x16::from_slice(simd, &params.pair_weights[PAIR]);
             let sum = &mut sums[SYM_PAIRS[PAIR].2];
-            for (sum, half) in sum.iter_mut().zip(pairs[PAIR_SLOT[PAIR]]) {
-                *sum -= simd.pairwise_dot_product_i16x16(half, weights);
-            }
+            lanes.madd(simd, sum, pairs[PAIR_SLOT[PAIR]], &params.pair_weights[PAIR]);
         })*};
     }
     add_pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
@@ -855,7 +973,8 @@ fn sym_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
     block: &GdfBlock,
     params: &GdfSymParams,
 ) {
-    let flat = window_is_flat(simd, window);
+    let range = window_range(simd, window);
+    let flat = range == 0;
     if flat && params.keeps_flat && (classes >> 2).simd_eq(i32x8::splat(simd, 0)).all_true() {
         sink.keep(simd);
         return;
@@ -878,10 +997,17 @@ fn sym_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
     let class = (class | (class << 16)).bitcast::<u16x16<S>>();
     let zero = u16x16::splat(simd, 0);
     let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
-    let pairs = row_pairs::<S, L, W, 0>(simd, lanes, window, masks, params);
+    let linear = params
+        .group_bounds
+        .iter()
+        .enumerate()
+        .fold(0, |linear, (group, &bound)| {
+            linear | u8::from(range <= bound) << group
+        });
+    let pairs = row_pairs::<S, L, W, 0>(simd, lanes, window, (masks, linear), params);
     let pos = row_index(simd, lanes, &pairs, &init, params);
     sink.row(simd, 0, &pos, block);
-    let pairs = row_pairs::<S, L, W, 1>(simd, lanes, window, masks, params);
+    let pairs = row_pairs::<S, L, W, 1>(simd, lanes, window, (masks, linear), params);
     let pos = row_index(simd, lanes, &pairs, &init, params);
     sink.row(simd, 1, &pos, block);
 }
@@ -967,11 +1093,11 @@ pub(super) fn sym_rows<O: GdfSample>(
         let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
         return sym_rows_with(avx2, InLane, window, output, classes, block, params);
     }
-    sym_rows_interleaved(window, output, classes, block, params);
+    sym_rows_portable(window, output, classes, block, params);
 }
 
 /// [`sym_rows_with`] through the portable kernel.
-pub(super) fn sym_rows_interleaved<O: GdfSample>(
+pub(super) fn sym_rows_portable<O: GdfSample>(
     window: &Window<'_>,
     output: [&mut [O; 16]; 2],
     classes: &[GdfClass; 8],
@@ -980,7 +1106,7 @@ pub(super) fn sym_rows_interleaved<O: GdfSample>(
 ) {
     crate::baseline_simd!(simd => sym_rows_with(
         simd,
-        Interleaved,
+        Widening,
         window,
         output,
         i32x8::from_slice(simd, &classes.map(|class| class.0)),
@@ -1220,7 +1346,7 @@ pub(super) fn filter_run<O: GdfSample>(
         return filter_run_with(avx2, InLane, source, origin, block, output, scratch);
     }
     crate::baseline_simd!(simd => filter_run_with(
-        simd, Interleaved, source, origin, block, output, scratch,
+        simd, Widening, source, origin, block, output, scratch,
     ))
 }
 
