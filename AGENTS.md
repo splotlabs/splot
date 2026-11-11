@@ -167,9 +167,11 @@ Kernel shape. Each hot kernel has exactly one of these two forms:
 
 Rules:
 
-- No scalar twin of a SIMD kernel as a runtime path. When a kernel covers a
-  case, delete the scalar path for that case. A scalar reference stays only in
-  `#[cfg(test)]` code, as the oracle for the kernel test.
+- No scalar sample-processing path at runtime: not as a twin of a SIMD kernel,
+  not for tails, borders, odd sizes or rare modes. Cover those cases in the
+  kernel (padded loads, masked or overlapping stores) and delete the scalar
+  code. Scalar sample code is allowed only in `#[cfg(test)]`, as the oracle
+  for correctness checks.
 - 8-bit and 10-bit are equal targets. A change that makes one bit depth faster
   must not leave the other on a slower path. Measure both.
 - Measure first. Keep a change only if it is a repeatable win with no
