@@ -609,8 +609,10 @@ fn coefficient_entropy_and_geometry_failures_are_typed_header_state() {
     let source = tile
         .read_block_symbol_trace(selector, &mut symbols)
         .expect_err("out-of-range selector");
-    let entropy =
-        general_intra_residual_error(GeneralIntraResidualError::AllZeroRead { source }, offset);
+    let entropy = general_intra_residual_error(
+        GeneralIntraResidualError::TransformTypeRead { source },
+        offset,
+    );
     assert!(matches!(
         entropy,
         DecodeError::HeaderState {
@@ -637,15 +639,6 @@ fn coefficient_entropy_and_geometry_failures_are_typed_header_state() {
 fn coefficient_defensive_eof_keeps_each_syntax_owner() {
     let offset = ByteOffset::new(42);
     for (failure, expected_section) in [
-        (
-            GeneralIntraResidualError::AllZeroRead {
-                source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
-                    offset,
-                    needed: 1,
-                }),
-            },
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ),
         (
             GeneralIntraResidualError::TransformPartitionRead {
                 source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {

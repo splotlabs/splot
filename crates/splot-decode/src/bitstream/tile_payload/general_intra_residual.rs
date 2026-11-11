@@ -20,10 +20,11 @@ use splot_recon::{
     reconstruct_transform_block_residual_with_secondary, tx_size_index,
 };
 
+use super::cdf::BlockCdfRows;
 use super::cdf::TileCdfSelector;
 use super::cdf::block_context::IntraYMode;
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
-use super::cdf::block_read::BlockSymbolTraceReadError;
+use super::cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 use super::coeff_loop::fsc_block::{CoeffFscBranchError, decode_fsc_transform_block};
 use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::CoeffOrdinaryBranchError;
@@ -663,8 +664,6 @@ pub(crate) struct PositionedLumaCoeffBlock {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GeneralIntraResidualError {
-    #[error("general intra luma all_zero symbol read failed: {source}")]
-    AllZeroRead { source: BlockSymbolTraceReadError },
     #[error("transform block coefficient span lies outside its row arena")]
     CoeffSpanOutOfRange,
     #[error("general intra luma coefficient context state failed: {source}")]
@@ -683,8 +682,6 @@ pub(crate) enum GeneralIntraResidualError {
     InvalidTransformPartitionDimensions { width: usize, height: usize },
     #[error("general intra luma transform_type symbol read failed: {source}")]
     TransformTypeRead { source: BlockSymbolTraceReadError },
-    #[error("general intra chroma cctx_type symbol read failed: {source}")]
-    CctxTypeRead { source: BlockSymbolTraceReadError },
     #[error("general intra luma palette token symbol read failed: {source}")]
     PaletteSymbolRead { source: BlockSymbolTraceReadError },
     #[error("general intra luma palette token literal read failed for {reason}: {source}")]
@@ -1148,23 +1145,26 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             [block.x >> 2, block.y >> 2, tx.w4.into(), tx.h4.into()],
         )
         .map_err(coeff_ctx_err)?;
-    let selector = txb_skip_selector_from_lines(
+    let ctx = txb_skip_ctx(
         context,
         &lines,
-        usize::from(tx.size_ctx),
         [
             block.tx_fills_block,
             block.eob_u_nonzero,
             block.fsc_mode && work_unit.coeff_frame_facts().enable_fsc(),
         ],
-        usize::from(block.is_inter || block.txb_skip_fsc_mode),
     );
-    let all_zero = work_unit
-        .cdf_mut()
-        .tile_cdfs_mut()
-        .read_all_zero(selector, symbols)
-        .map_err(|source| GeneralIntraResidualError::AllZeroRead { source })?;
-    if all_zero {
+    let rows = work_unit.cdf_mut().tile_cdfs_mut().block_rows_mut();
+    let row = if block.plane == 2 {
+        row_at(&mut rows.v_txb_skip, ctx)
+    } else {
+        let plane_type = usize::from(block.is_inter || block.txb_skip_fsc_mode);
+        row_at(
+            row_at(row_at(&mut rows.txb_skip, plane_type), tx.size_ctx.into()),
+            ctx,
+        )
+    };
+    if read_row(symbols, row) != 0 {
         context.commit_block(&lines, 0, 0);
         return Ok(if lossless {
             const { LumaCoeffBlock::empty(DCT_DCT, true) }
@@ -1195,53 +1195,38 @@ pub(crate) fn txb_skip_selector(
     fsc_active: bool,
 ) -> Result<TileCdfSelector, TileCoeffStateError> {
     let lines = context.block_lines(plane, block)?;
-    Ok(txb_skip_selector_from_lines(
-        context,
-        &lines,
-        txb_skip_tx_size_ctx(tx_size),
-        [tx_fills_block, eob_u_nonzero, fsc_active],
-        txb_skip_intra_inter,
-    ))
-}
-
-/// [`txb_skip_selector`] from the block's checked context spans.
-#[allow(
-    clippy::inline_always,
-    reason = "measured: an out-of-line selector returns through memory"
-)]
-#[inline(always)]
-fn txb_skip_selector_from_lines(
-    context: &TileCoeffContextState,
-    lines: &CoeffBlockLines,
-    tx_size_ctx: usize,
-    [tx_fills_block, eob_u_nonzero, fsc_active]: [bool; 3],
-    txb_skip_intra_inter: usize,
-) -> TileCdfSelector {
-    let [above_or, left_or] = context.line_or(lines);
-    let plane = lines.plane;
-    if plane == 0 {
-        return TileCdfSelector::TxbSkip {
-            plane_type: txb_skip_intra_inter,
-            tx_size: tx_size_ctx,
-            ctx: txb_skip_ctx_luma(
-                u32::from(above_or & CUL_LEVEL_MASK),
-                u32::from(left_or & CUL_LEVEL_MASK),
-                tx_fills_block,
-                fsc_active,
-            ),
-        };
-    }
-    let (above_nz, left_nz) = (above_or != 0, left_or != 0);
-    if plane == 2 {
-        TileCdfSelector::VTxbSkip {
-            ctx: v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),
-        }
+    let ctx = txb_skip_ctx(context, &lines, [tx_fills_block, eob_u_nonzero, fsc_active]);
+    Ok(if plane == 2 {
+        TileCdfSelector::VTxbSkip { ctx }
     } else {
         TileCdfSelector::TxbSkip {
             plane_type: txb_skip_intra_inter,
-            tx_size: tx_size_ctx,
-            ctx: usize::from(above_nz) + usize::from(left_nz) + 6,
+            tx_size: txb_skip_tx_size_ctx(tx_size),
+            ctx,
         }
+    })
+}
+
+/// The `all_zero` context of [`txb_skip_selector`] from the block's checked
+/// context spans: a `v_txb_skip` context for the V plane, else a `txb_skip` one.
+#[allow(clippy::inline_always, reason = "measured: once per transform block")]
+#[inline(always)]
+fn txb_skip_ctx(
+    context: &TileCoeffContextState,
+    lines: &CoeffBlockLines,
+    [tx_fills_block, eob_u_nonzero, fsc_active]: [bool; 3],
+) -> usize {
+    let [above_or, left_or] = context.line_or(lines);
+    let (above_nz, left_nz) = (above_or != 0, left_or != 0);
+    match lines.plane {
+        0 => txb_skip_ctx_luma(
+            u32::from(above_or & CUL_LEVEL_MASK),
+            u32::from(left_or & CUL_LEVEL_MASK),
+            tx_fills_block,
+            fsc_active,
+        ),
+        2 => v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),
+        _ => usize::from(above_nz) + usize::from(left_nz) + 6,
     }
 }
 
@@ -1480,11 +1465,7 @@ fn ensure_transform_tool_residual_handoff(
         && input.cctx_allowed
         && (is_inter || eob != 1)
     {
-        let cctx_type = usize::from(
-            cdfs.read_trusted_symbol(TileCdfSelector::CctxType, symbols)
-                .map_err(|source| GeneralIntraResidualError::CctxTypeRead { source })?,
-        );
-        metadata.cctx_type = Some(cctx_type);
+        metadata.cctx_type = Some(read_row(symbols, &mut cdfs.block_rows_mut().cctx_type));
     }
     if lossless {
         if !is_inter && input.fsc_mode {
@@ -1531,14 +1512,8 @@ fn ensure_transform_tool_residual_handoff(
         && inter_ist_can_read_sec_tx(tx_size, eob)?
     {
         let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
-        let sec_tx_type = read_transform_symbol(
-            cdfs,
-            symbols,
-            TileCdfSelector::SecTxType {
-                is_inter: 1,
-                tx_size_sqr,
-            },
-        )?;
+        let row = row_at(&mut cdfs.block_rows_mut().sec_tx_type[1], tx_size_sqr);
+        let sec_tx_type = read_row(symbols, row);
         metadata.intra_ist = Some(IntraIstSyntax {
             sec_tx_type: sec_tx_type as u8,
             most_probable_stx_set: None,
@@ -1597,22 +1572,14 @@ fn read_intra_ist_sec_tx(
     }
 
     let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
-    let sec_tx_type = read_transform_symbol(
-        cdfs,
-        symbols,
-        TileCdfSelector::SecTxType {
-            is_inter: 0,
-            tx_size_sqr,
-        },
-    )?;
+    let rows = cdfs.block_rows_mut();
+    let sec_tx_type = read_row(symbols, row_at(&mut rows.sec_tx_type[0], tx_size_sqr));
     let most_probable_stx_set = if sec_tx_type == 0 {
         None
+    } else if most_probable_stx_uses_adst(tx_size, luma_tx_type)? {
+        Some(read_row(symbols, &mut rows.most_probable_stx_set_adst))
     } else {
-        Some(read_transform_symbol(
-            cdfs,
-            symbols,
-            intra_ist_most_probable_stx_selector(tx_size, luma_tx_type)?,
-        )?)
+        Some(read_row(symbols, &mut rows.most_probable_stx_set))
     };
     let syntax = IntraIstSyntax {
         sec_tx_type: sec_tx_type as u8,
@@ -1637,12 +1604,19 @@ pub(crate) fn intra_ist_most_probable_stx_selector(
     tx_size: usize,
     luma_tx_type: usize,
 ) -> Result<TileCdfSelector, GeneralIntraResidualError> {
-    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
-    if luma_tx_type == ADST_ADST && tx_width >= 8 && tx_height >= 8 {
-        Ok(TileCdfSelector::MostProbableStxSetAdst)
+    Ok(if most_probable_stx_uses_adst(tx_size, luma_tx_type)? {
+        TileCdfSelector::MostProbableStxSetAdst
     } else {
-        Ok(TileCdfSelector::MostProbableStxSet)
-    }
+        TileCdfSelector::MostProbableStxSet
+    })
+}
+
+fn most_probable_stx_uses_adst(
+    tx_size: usize,
+    luma_tx_type: usize,
+) -> Result<bool, GeneralIntraResidualError> {
+    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
+    Ok(luma_tx_type == ADST_ADST && tx_width >= 8 && tx_height >= 8)
 }
 
 pub(crate) fn ist_eob_limit(
@@ -1672,48 +1646,22 @@ fn read_active_luma_transform_type(
 ) -> Result<usize, GeneralIntraResidualError> {
     let luma_context = require_luma_context(luma_context, "active luma transform context")?;
     let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
-    let tx_type = match tx_set {
-        TX_SET_INTRA_2 => {
-            let intra_tx_type = read_transform_symbol(
-                cdfs,
-                symbols,
-                TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr },
-            )?;
-            md_idx_luma_tx_type(tx_size, luma_context, intra_tx_type)?
-        }
+    let rows = cdfs.block_rows_mut();
+    let intra_tx_type = match tx_set {
+        TX_SET_INTRA_2 => read_row(symbols, row_at(&mut rows.intra_tx_type_set2, tx_size_sqr)),
         TX_SET_WIDE_64 | TX_SET_HIGH_64 | TX_SET_WIDE_32 | TX_SET_HIGH_32 => {
-            read_active_luma_long_tx_type(cdfs, symbols, tx_set, tx_size_sqr)?
+            let shape = long_tx_set_shape(tx_set);
+            let is_long_side_dct = read_long_side_dct_symbol(rows, symbols, shape, 0);
+            let row = row_at(&mut rows.intra_tx_type_long, tx_size_sqr);
+            return Ok(long_tx_type_from_index(
+                shape,
+                is_long_side_dct,
+                read_row(symbols, row),
+            ));
         }
-        _ => {
-            let intra_tx_type = read_transform_symbol(
-                cdfs,
-                symbols,
-                TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr },
-            )?;
-            md_idx_luma_tx_type(tx_size, luma_context, intra_tx_type)?
-        }
+        _ => read_row(symbols, row_at(&mut rows.intra_tx_type_set1, tx_size_sqr)),
     };
-    Ok(tx_type)
-}
-
-fn read_active_luma_long_tx_type(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    tx_set: usize,
-    tx_size_sqr: usize,
-) -> Result<usize, GeneralIntraResidualError> {
-    let shape = long_tx_set_shape(tx_set);
-    let is_long_side_dct = read_long_side_dct_symbol(cdfs, symbols, shape, 0)?;
-    let intra_tx_type = read_transform_symbol(
-        cdfs,
-        symbols,
-        TileCdfSelector::IntraTxTypeLong { tx_size_sqr },
-    )?;
-    Ok(long_tx_type_from_index(
-        shape,
-        is_long_side_dct,
-        intra_tx_type,
-    ))
+    md_idx_luma_tx_type(tx_size, luma_context, intra_tx_type)
 }
 
 /// Reads the signalled inter transform type for `tx_set`.
@@ -1729,68 +1677,58 @@ fn read_active_inter_transform_type(
 ) -> Result<usize, GeneralIntraResidualError> {
     let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
     let ctx = inter_tx_type_long_ctx(tx_size, eob)?;
-    match tx_set {
+    let rows = cdfs.block_rows_mut();
+    let (inversion, index): (&[usize], usize) = match tx_set {
         TX_SET_WIDE_64 | TX_SET_WIDE_32 | TX_SET_HIGH_64 | TX_SET_HIGH_32 => {
-            read_active_inter_long_tx_type(cdfs, symbols, tx_set, tx_size_sqr, ctx)
+            let shape = long_tx_set_shape(tx_set);
+            let is_long_side_dct = read_long_side_dct_symbol(rows, symbols, shape, 1);
+            let row = row_at(row_at(&mut rows.inter_tx_type_long, ctx), tx_size_sqr);
+            return Ok(long_tx_type_from_index(
+                shape,
+                is_long_side_dct,
+                read_row(symbols, row),
+            ));
         }
-        TX_SET_INTER_1 => read_inter_tx_type_signaling_set(
-            cdfs,
-            symbols,
-            InterTxTypeSignalingSet::Inter1,
-            tx_size_sqr,
-            ctx,
-        ),
-        TX_SET_INTER_2 => read_inter_tx_type_signaling_set(
-            cdfs,
-            symbols,
-            InterTxTypeSignalingSet::Inter2,
-            tx_size_sqr,
-            ctx,
-        ),
-        TX_SET_DCT_IDTX => {
-            let inter_tx_type = read_transform_symbol(
-                cdfs,
+        TX_SET_INTER_1 => {
+            let set = read_row(
                 symbols,
-                TileCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr },
-            )?;
-            TX_TYPE_INTER_INV_SET3
-                .get(inter_tx_type)
-                .copied()
-                .ok_or_else(invalid_inter_tx_type)
+                row_at(row_at(&mut rows.inter_tx_type_set1, ctx), tx_size_sqr),
+            );
+            let offset = if set == 0 {
+                read_row(symbols, row_at(&mut rows.inter_tx_type_index_set1, ctx))
+            } else {
+                read_row(symbols, row_at(&mut rows.inter_tx_type_offset_set1, ctx))
+            };
+            (
+                &TX_TYPE_INTER_INV_SET1,
+                set * INTER_TX_TYPE_INDEX_COUNT + offset,
+            )
+        }
+        TX_SET_INTER_2 => {
+            let set = read_row(symbols, row_at(&mut rows.inter_tx_type_set2, ctx));
+            let offset = if set == 0 {
+                read_row(symbols, row_at(&mut rows.inter_tx_type_index_set2, ctx))
+            } else {
+                read_row(symbols, row_at(&mut rows.inter_tx_type_offset_set2, ctx))
+            };
+            (
+                &TX_TYPE_INTER_INV_SET2,
+                set * INTER_TX_TYPE_INDEX_COUNT + offset,
+            )
+        }
+        TX_SET_DCT_IDTX => {
+            let row = row_at(row_at(&mut rows.inter_tx_type_set3, ctx), tx_size_sqr);
+            (&TX_TYPE_INTER_INV_SET3, read_row(symbols, row))
         }
         _ => {
-            let inter_tx_type = read_transform_symbol(
-                cdfs,
-                symbols,
-                TileCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr },
-            )?;
-            TX_TYPE_INTER_INV_SET4
-                .get(inter_tx_type)
-                .copied()
-                .ok_or_else(invalid_inter_tx_type)
+            let row = row_at(row_at(&mut rows.inter_tx_type_set4, ctx), tx_size_sqr);
+            (&TX_TYPE_INTER_INV_SET4, read_row(symbols, row))
         }
-    }
-}
-
-fn read_active_inter_long_tx_type(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    tx_set: usize,
-    tx_size_sqr: usize,
-    ctx: usize,
-) -> Result<usize, GeneralIntraResidualError> {
-    let shape = long_tx_set_shape(tx_set);
-    let is_long_side_dct = read_long_side_dct_symbol(cdfs, symbols, shape, 1)?;
-    let inter_tx_type = read_transform_symbol(
-        cdfs,
-        symbols,
-        TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr },
-    )?;
-    Ok(long_tx_type_from_index(
-        shape,
-        is_long_side_dct,
-        inter_tx_type,
-    ))
+    };
+    inversion
+        .get(index)
+        .copied()
+        .ok_or_else(invalid_inter_tx_type)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1811,15 +1749,15 @@ pub(crate) const fn long_tx_set_shape(tx_set: usize) -> LongTxSetShape {
 }
 
 fn read_long_side_dct_symbol(
-    cdfs: &mut TileCdfSubset,
+    rows: &mut BlockCdfRows,
     symbols: &mut SymbolDecoder<'_>,
     shape: LongTxSetShape,
     is_inter: usize,
-) -> Result<usize, GeneralIntraResidualError> {
+) -> usize {
     if shape.long_side_dct_is_forced {
-        Ok(1)
+        1
     } else {
-        read_transform_symbol(cdfs, symbols, TileCdfSelector::IsLongSideDct { is_inter })
+        read_row(symbols, row_at(&mut rows.is_long_side_dct, is_inter))
     }
 }
 
@@ -1851,51 +1789,6 @@ pub(crate) const fn long_tx_type_from_index(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum InterTxTypeSignalingSet {
-    Inter1,
-    Inter2,
-}
-
-fn read_inter_tx_type_signaling_set(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    set: InterTxTypeSignalingSet,
-    tx_size_sqr: usize,
-    ctx: usize,
-) -> Result<usize, GeneralIntraResidualError> {
-    let (set_selector, index_selector, offset_selector, inversion): (
-        TileCdfSelector,
-        TileCdfSelector,
-        TileCdfSelector,
-        &[usize],
-    ) = match set {
-        InterTxTypeSignalingSet::Inter1 => (
-            TileCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr },
-            TileCdfSelector::InterTxTypeIndexSet1 { ctx },
-            TileCdfSelector::InterTxTypeOffsetSet1 { ctx },
-            &TX_TYPE_INTER_INV_SET1,
-        ),
-        InterTxTypeSignalingSet::Inter2 => (
-            TileCdfSelector::InterTxTypeSet2 { ctx },
-            TileCdfSelector::InterTxTypeIndexSet2 { ctx },
-            TileCdfSelector::InterTxTypeOffsetSet2 { ctx },
-            &TX_TYPE_INTER_INV_SET2,
-        ),
-    };
-    let inter_tx_type = read_transform_symbol(cdfs, symbols, set_selector)?;
-    let inter_tx_type_offset = if inter_tx_type == 0 {
-        read_transform_symbol(cdfs, symbols, index_selector)?
-    } else {
-        read_transform_symbol(cdfs, symbols, offset_selector)?
-    };
-    let tx_type_idx = inter_tx_type * INTER_TX_TYPE_INDEX_COUNT + inter_tx_type_offset;
-    inversion
-        .get(tx_type_idx)
-        .copied()
-        .ok_or_else(invalid_inter_tx_type)
-}
-
 const fn invalid_inter_tx_type() -> GeneralIntraResidualError {
     invalid_reconstruction_state_error("inter transform type")
 }
@@ -1922,22 +1815,6 @@ fn inter_tx_type_long_ctx(tx_size: usize, eob: usize) -> Result<usize, GeneralIn
     } else {
         0
     })
-}
-
-#[allow(
-    clippy::inline_always,
-    reason = "constant selectors fold into a direct row read"
-)]
-#[inline(always)]
-fn read_transform_symbol(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    selector: TileCdfSelector,
-) -> Result<usize, GeneralIntraResidualError> {
-    Ok(usize::from(
-        cdfs.read_trusted_symbol(selector, symbols)
-            .map_err(|source| GeneralIntraResidualError::TransformTypeRead { source })?,
-    ))
 }
 
 /// Resolves the § 9 `Md_Idx_To_Type` transform type for a signalled intra index.

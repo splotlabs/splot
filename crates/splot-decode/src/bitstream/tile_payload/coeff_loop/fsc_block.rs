@@ -11,6 +11,7 @@
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoder};
 
 use super::super::cdf::TileCdfSubset;
+use super::super::cdf::block_read::row_at;
 use super::super::cdf::coeff_context::coeff_base_bob_ctx;
 use super::super::coeff_state::{
     CoeffBlockLines, LEVEL_STRIDE, LEVEL_WORDS_MASK, TileCoeffContextState, TileCoeffStateError,
@@ -25,7 +26,7 @@ use super::read_quant::{
     CoeffReadQuantConfig, CoeffReadQuantError, CoeffReadQuantInput, CoeffReadQuantState,
 };
 use super::scan_walk::CoeffScanEntry;
-use super::transform_block::{LEVEL_WORD, entry_grid, grid_scan, row_at};
+use super::transform_block::{LEVEL_WORD, entry_grid, grid_scan};
 
 const FSC_MAX_LEVEL: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
 /// Grid-word fields counting the decoded positive and negative signs, above

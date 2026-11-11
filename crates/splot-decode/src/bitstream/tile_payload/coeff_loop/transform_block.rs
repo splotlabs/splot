@@ -11,13 +11,13 @@ use splot_core::coefficient::LF_SIG_COEF_CONTEXTS_2D;
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoder};
 use splot_recon::{TransformClass, coefficient_scan_position};
 
-use super::super::cdf::block_read::BlockSymbolTraceReadError;
+use super::super::cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 use super::super::cdf::coeff_context::{
     CHROMA_2D_PLANE_CONTEXT_OFFSET, HF_2D_CONTEXT_OFFSET, LF_2D_CONTEXT_CAP_AND_OFFSET,
     LF_SIG_COEF_CONTEXTS_2D_UV, MAG_REF_OFFSET_WITH_TX_CLASS, MAX_BASE_BR_RANGE, SIG_OFFSETS,
     coeff_base_eob_ctx, dc_sign_ctx,
 };
-use super::super::cdf::{CoeffLevelRows, TileCdfSelector, TileCdfSubset};
+use super::super::cdf::{CoeffLevelRows, TileCdfSubset};
 use super::super::coeff_state::{
     CoeffBlockLines, CoeffLevelWords, CoeffNonzeroList, LEVEL_STRIDE, LEVEL_WORDS_MASK,
     TileCoeffContextState, TileCoeffStateError,
@@ -40,8 +40,8 @@ use super::quant_state::{
 use super::read_quant::{CoeffReadQuantConfig, CoeffReadQuantInput, CoeffReadQuantState};
 use super::scan_walk::CoeffScanEntry;
 use super::sign_symbol::{
-    CoeffSignReadError, CoeffSignReadSymbol, CoeffSignSourceDeriveConfig,
-    derive_nonzero_coeff_sign_input, read_preflighted_nonzero_coeff_sign,
+    CoeffSignReadSymbol, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_input,
+    read_preflighted_nonzero_coeff_sign,
 };
 
 const PHTHRESH: u32 = 4;
@@ -333,14 +333,6 @@ pub(super) fn grid_scan(
 #[inline(always)]
 fn half_capped(mag: u32, cap: usize) -> usize {
     usize::from(HALF_CAPPED[cap & 15][mag as usize & 31])
-}
-
-/// `rows[ctx]` with the context clamped into the array: every context the
-/// pass derives is in range, so the clamp only keeps the read panic-free.
-#[allow(clippy::inline_always, reason = "measured: per-coefficient row")]
-#[inline(always)]
-pub(super) fn row_at<T, const C: usize>(rows: &mut [T; C], ctx: usize) -> &mut T {
-    &mut rows[ctx.min(C - 1)]
 }
 
 /// One past the last low-frequency scan index of `get_lf_limits`
@@ -999,14 +991,10 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         let sign = if LUMA {
             let dc = &block.dc;
             let ctx = dc_sign_ctx(dc.above_dc, dc.left_dc, dc.x4, dc.y4, dc.w4, dc.h4);
-            let selector = TileCdfSelector::DcSign {
-                plane_type: 0,
-                group: 0,
-                ctx,
-            };
-            cdfs.read_trusted_symbol(selector, symbols)
-                .map_err(CoeffSignReadError::from)?
-                != 0
+            read_row(
+                symbols,
+                row_at(&mut cdfs.block_rows_mut().dc_sign[0][0], ctx),
+            ) != 0
         } else {
             symbols.read_bool_trusted()
         };

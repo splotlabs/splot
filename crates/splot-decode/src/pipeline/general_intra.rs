@@ -950,19 +950,17 @@ fn general_intra_residual_error(
         GeneralIntraResidualError::CoeffSpanOutOfRange => {
             DecodeError::from(crate::DecodeHeaderStateError::InvalidInterResidualReconstruction)
         }
-        error @ (GeneralIntraResidualError::AllZeroRead { .. }
-        | GeneralIntraResidualError::NonZeroStart { .. }
+        error @ (GeneralIntraResidualError::NonZeroStart { .. }
         | GeneralIntraResidualError::StagedNonZeroPass { .. }
-        | GeneralIntraResidualError::StagedFscPass { .. }
-        | GeneralIntraResidualError::CctxTypeRead { .. }) => {
+        | GeneralIntraResidualError::StagedFscPass { .. }) => {
             general_intra_coeff_error(&error, offset, GENERAL_INTRA_RESIDUAL_SPEC_SECTION)
+        }
+        error @ GeneralIntraResidualError::TransformTypeRead { .. } => {
+            general_intra_coeff_error(&error, offset, "5.20.8.2")
         }
         error @ (GeneralIntraResidualError::TransformPartitionRead { .. }
         | GeneralIntraResidualError::TransformPartitionGeometry { .. }) => {
             general_intra_coeff_error(&error, offset, "5.20.6.3")
-        }
-        error @ GeneralIntraResidualError::TransformTypeRead { .. } => {
-            general_intra_coeff_error(&error, offset, "5.20.8.2")
         }
         GeneralIntraResidualError::InvalidTransformPartitionDimensions { .. } => {
             malformed_tile_payload(offset, "6.19.6.3", error)
