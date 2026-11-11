@@ -64,9 +64,6 @@ pub(crate) trait IntraLaneSample: ReconSample {
     /// Converts one in-range sample.
     fn from_lane(value: u16) -> Self;
 
-    /// Stores in-range `values` over `output`, which has the same length.
-    fn store(values: &[u16], output: &mut [Self]);
-
     /// Loads sixteen samples as `u16` lanes.
     fn load16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S>;
 
@@ -84,11 +81,6 @@ impl IntraLaneSample for u16 {
     #[inline]
     fn from_lane(value: u16) -> Self {
         value
-    }
-
-    #[inline]
-    fn store(values: &[u16], output: &mut [Self]) {
-        output.copy_from_slice(values); // splot-copy-ok: publish intra prediction lanes
     }
 
     #[inline]
@@ -116,13 +108,6 @@ impl IntraLaneSample for u8 {
     #[inline]
     fn from_lane(value: u16) -> Self {
         value as u8
-    }
-
-    #[inline]
-    fn store(values: &[u16], output: &mut [Self]) {
-        for (slot, &value) in output.iter_mut().zip(values) {
-            *slot = value as u8;
-        }
     }
 
     #[inline]

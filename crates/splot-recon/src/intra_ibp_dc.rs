@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Scalar IBP DC intra prediction modifier.
+//! IBP DC intra prediction modifier.
 //!
 //! Feature tracking: `RECON-INTRA-IBP-DC-PREDICTION`.
 
@@ -38,7 +38,7 @@ pub fn apply_intra_ibp_dc_rect<T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
-    let required = validate_output_shape(
+    validate_output_shape(
         size,
         pred.len(),
         stride_samples,
@@ -59,74 +59,33 @@ pub fn apply_intra_ibp_dc_rect<T: ReconSample>(
     )?
     .is_some();
 
-    if let Some(pred) = T::u16_slice_mut(pred) {
+    let blended = if let Some(pred) = T::u16_slice_mut(pred) {
         let left = edges.left_samples().and_then(T::u16_slice);
         let above = edges.above_samples().and_then(T::u16_slice);
-        if blend_ibp_dc_lanes(bit_depth, size, left, above, pred, stride_samples) {
-            return Ok(());
-        }
+        blend_ibp_dc_lanes(bit_depth, size, left, above, pred, stride_samples)
     } else if let Some(pred) = T::u8_slice_mut(pred) {
         let left = edges.left_samples().and_then(T::u8_slice);
         let above = edges.above_samples().and_then(T::u8_slice);
-        if left.is_some() == have_left
+        left.is_some() == have_left
             && above.is_some() == have_above
             && blend_ibp_dc_lanes(bit_depth, size, left, above, pred, stride_samples)
-        {
-            return Ok(());
-        }
+    } else {
+        false
+    };
+    if blended {
+        Ok(())
+    } else {
+        Err(ReconError::SampleTypeUnsupportedBitDepth {
+            sample_type: T::TYPE_NAME,
+            bit_depth,
+        })
     }
-
-    validate_pred_samples(bit_depth, size, have_left, have_above, pred, stride_samples)?;
-
-    for (edge, samples, have_edge, have_other) in [
-        (
-            IntraDcEdge::Above,
-            edges.above_samples(),
-            have_above,
-            have_left,
-        ),
-        (
-            IntraDcEdge::Left,
-            edges.left_samples(),
-            have_left,
-            have_above,
-        ),
-    ] {
-        let Some(samples) = samples.filter(|_| have_edge) else {
-            continue;
-        };
-        visit_ibp_zone(
-            edge,
-            size,
-            have_other,
-            stride_samples,
-            |edge_index, log2_dimension, weight_index, pred_index| {
-                let edge_sample = samples.get(edge_index).copied().ok_or_else(|| {
-                    ReconError::IntraPredictionEdgeLengthMismatch {
-                        edge,
-                        expected: edge_len(edge, size),
-                        actual: samples.len(),
-                    }
-                })?;
-                let weight = ibp_weight(log2_dimension, weight_index)?;
-                let sample = blend_sample(
-                    bit_depth,
-                    edge_sample,
-                    pred_sample(pred, pred_index)?,
-                    weight,
-                )?;
-                set_pred_sample(pred, pred_index, sample, required)
-            },
-        )?;
-    }
-
-    Ok(())
 }
 
-/// The lane form of the § 7.13.2.12 blend over in-range edges: each above-zone
-/// row blends with one weight and each left-zone row with the `w / 4` column
-/// weights. Returns `false` without writing when a zone sample is above
-/// `bit_depth`, so the checked path reports it.
+/// The lane form of the § 7.13.2.12 blend over in-range edges and DC
+/// samples: each above-zone row blends with one weight and each left-zone row
+/// with the `w / 4` column weights. Returns `false` without writing for a block
+/// size without IBP weights.
 fn blend_ibp_dc_lanes<E: IntraLaneSample, O: IntraLaneSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
@@ -157,20 +116,7 @@ fn blend_ibp_dc_lanes<E: IntraLaneSample, O: IntraLaneSample>(
     } else {
         0
     };
-    let max = bit_depth.max_sample();
-    let in_range = |rows: Range<usize>, columns: Range<usize>| {
-        rows.into_iter().all(|row| {
-            pred.get(row * stride + columns.start..row * stride + columns.end)
-                .is_some_and(|run| run.iter().all(|&value| value.to_u16() <= max))
-        })
-    };
-    if O::MAX_VALUE > max
-        && ((above.is_some() && !in_range(0..height >> 2, above_start..width))
-            || (left.is_some() && !in_range(left_start..height, 0..width >> 2)))
-    {
-        return false;
-    }
-    let wide = max > MAX_NARROW_BLEND_SAMPLE;
+    let wide = bit_depth.max_sample() > MAX_NARROW_BLEND_SAMPLE;
     let zones = IbpDcZones {
         above: above
             .and_then(|edge| edge.get(above_start..))
@@ -392,193 +338,6 @@ fn blend_ibp_value(edge: u16, pred: u16, weight: u16) -> u16 {
     round2_u32(sum, IBP_WEIGHT_SHIFT) as u16
 }
 
-fn validate_pred_samples<T: ReconSample>(
-    bit_depth: BitDepth,
-    size: IntraRectBlockSize,
-    have_left: bool,
-    have_above: bool,
-    pred: &[T],
-    stride_samples: usize,
-) -> Result<()> {
-    for (edge, have_edge, have_other) in [
-        (IntraDcEdge::Above, have_above, have_left),
-        (IntraDcEdge::Left, have_left, have_above),
-    ] {
-        if have_edge {
-            visit_ibp_zone(
-                edge,
-                size,
-                have_other,
-                stride_samples,
-                |_, _, _, pred_index| validate_pred_sample(bit_depth, pred, pred_index),
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-fn visit_ibp_zone(
-    edge: IntraDcEdge,
-    size: IntraRectBlockSize,
-    have_other: bool,
-    stride_samples: usize,
-    mut visit: impl FnMut(usize, u8, usize, usize) -> Result<()>,
-) -> Result<()> {
-    let (rows, columns, log2_dimension) = match edge {
-        IntraDcEdge::Above => {
-            let start_column = if size.width() < size.height() && have_other {
-                size.width() >> 2
-            } else {
-                0
-            };
-            (
-                0..(size.height() >> 2),
-                start_column..size.width(),
-                size.log2_height(),
-            )
-        }
-        IntraDcEdge::Left => {
-            let start_row = if size.width() >= size.height() && have_other {
-                size.height() >> 2
-            } else {
-                0
-            };
-            (
-                start_row..size.height(),
-                0..(size.width() >> 2),
-                size.log2_width(),
-            )
-        }
-    };
-
-    for row in rows {
-        for column in columns.clone() {
-            let (edge_index, weight_index) = match edge {
-                IntraDcEdge::Above => (column, row),
-                IntraDcEdge::Left => (row, column),
-            };
-            visit(
-                edge_index,
-                log2_dimension,
-                weight_index,
-                pred_index(row, column, stride_samples)?,
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_pred_sample<T: ReconSample>(
-    bit_depth: BitDepth,
-    pred: &[T],
-    sample_index: usize,
-) -> Result<()> {
-    let value = pred_sample(pred, sample_index)?.to_u16();
-    let max = bit_depth.max_sample();
-    if value > max {
-        Err(ReconError::IntraPredictionOutputSampleOutOfRange {
-            sample_index,
-            value,
-            max,
-        })
-    } else {
-        Ok(())
-    }
-}
-
-fn blend_sample<T: ReconSample>(bit_depth: BitDepth, edge: T, pred: T, weight: u16) -> Result<T> {
-    let inverse_weight =
-        IBP_WEIGHT_MAX
-            .checked_sub(weight)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "IBP DC inverse weight",
-            })?;
-    let edge_product = u32::from(edge.to_u16())
-        .checked_mul(u32::from(inverse_weight))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "IBP DC edge blend product",
-        })?;
-    let pred_product = u32::from(pred.to_u16())
-        .checked_mul(u32::from(weight))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "IBP DC prediction blend product",
-        })?;
-    let blended = edge_product
-        .checked_add(pred_product)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "IBP DC blend sum",
-        })?;
-    let sample = round2_u32(blended, IBP_WEIGHT_SHIFT) as u16;
-    if sample > bit_depth.max_sample() {
-        return Err(ReconError::IntraPredictionOutputSampleOutOfRange {
-            sample_index: 0,
-            value: sample,
-            max: bit_depth.max_sample(),
-        });
-    }
-
-    T::try_from_u16(sample)
-}
-
-fn ibp_weight(log2_dimension: u8, index: usize) -> Result<u16> {
-    let row = usize::from(
-        log2_dimension
-            .checked_sub(2)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "IBP DC weight row",
-            })?,
-    );
-    IBP_WEIGHTS
-        .get(row)
-        .and_then(|weights| weights.get(index))
-        .copied()
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "IBP DC weight lookup",
-        })
-}
-
-fn pred_index(row: usize, column: usize, stride_samples: usize) -> Result<usize> {
-    row.checked_mul(stride_samples)
-        .and_then(|row_start| row_start.checked_add(column))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "IBP DC prediction sample index",
-        })
-}
-
-fn pred_sample<T: ReconSample>(pred: &[T], index: usize) -> Result<T> {
-    pred.get(index)
-        .copied()
-        .ok_or(ReconError::IntraPredictionOutputTooSmall {
-            expected: index.saturating_add(1),
-            actual: pred.len(),
-        })
-}
-
-fn set_pred_sample<T: ReconSample>(
-    pred: &mut [T],
-    index: usize,
-    sample: T,
-    required: usize,
-) -> Result<()> {
-    let Some(slot) = pred.get_mut(index) else {
-        return Err(ReconError::IntraPredictionOutputTooSmall {
-            expected: required,
-            actual: pred.len(),
-        });
-    };
-    *slot = sample;
-    Ok(())
-}
-
-const fn edge_len(edge: IntraDcEdge, size: IntraRectBlockSize) -> usize {
-    match edge {
-        IntraDcEdge::Left => size.height(),
-        IntraDcEdge::Above => size.width(),
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -586,6 +345,81 @@ mod tests {
 
     fn rect_size(log2_width: u8, log2_height: u8) -> IntraRectBlockSize {
         IntraRectBlockSize::new(log2_width, log2_height).unwrap()
+    }
+
+    fn visit_ibp_zone(
+        edge: IntraDcEdge,
+        size: IntraRectBlockSize,
+        have_other: bool,
+        stride_samples: usize,
+        mut visit: impl FnMut(usize, u8, usize, usize) -> Result<()>,
+    ) -> Result<()> {
+        let (rows, columns, log2_dimension) = match edge {
+            IntraDcEdge::Above => {
+                let start_column = if size.width() < size.height() && have_other {
+                    size.width() >> 2
+                } else {
+                    0
+                };
+                (
+                    0..(size.height() >> 2),
+                    start_column..size.width(),
+                    size.log2_height(),
+                )
+            }
+            IntraDcEdge::Left => {
+                let start_row = if size.width() >= size.height() && have_other {
+                    size.height() >> 2
+                } else {
+                    0
+                };
+                (
+                    start_row..size.height(),
+                    0..(size.width() >> 2),
+                    size.log2_width(),
+                )
+            }
+        };
+
+        for row in rows {
+            for column in columns.clone() {
+                let (edge_index, weight_index) = match edge {
+                    IntraDcEdge::Above => (column, row),
+                    IntraDcEdge::Left => (row, column),
+                };
+                visit(
+                    edge_index,
+                    log2_dimension,
+                    weight_index,
+                    pred_index(row, column, stride_samples)?,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn ibp_weight(log2_dimension: u8, index: usize) -> Result<u16> {
+        let row = usize::from(log2_dimension.checked_sub(2).ok_or(
+            ReconError::ArithmeticOverflow {
+                context: "IBP DC weight row",
+            },
+        )?);
+        IBP_WEIGHTS
+            .get(row)
+            .and_then(|weights| weights.get(index))
+            .copied()
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "IBP DC weight lookup",
+            })
+    }
+
+    fn pred_index(row: usize, column: usize, stride_samples: usize) -> Result<usize> {
+        row.checked_mul(stride_samples)
+            .and_then(|row_start| row_start.checked_add(column))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "IBP DC prediction sample index",
+            })
     }
 
     fn expected_blend(edge: u16, pred: u16, weight: u16) -> u16 {
@@ -856,33 +690,8 @@ mod tests {
         assert_eq!(pred, [9u8; 16]);
     }
 
-    #[test]
-    fn ibp_dc_rejects_invalid_prediction_output_without_mutation() {
-        let size = rect_size(2, 2);
-        let above = [1u16; 4];
-        let mut pred = [9u16; 16];
-        pred[0] = 300;
-        let before = pred;
-
-        assert!(matches!(
-            apply_intra_ibp_dc_rect(
-                BitDepth::Eight,
-                size,
-                IntraDcEdges::above(&above),
-                &mut pred,
-                4
-            ),
-            Err(ReconError::IntraPredictionOutputSampleOutOfRange {
-                sample_index: 0,
-                value: 300,
-                max: 255
-            })
-        ));
-        assert_eq!(pred, before);
-    }
-
     /// The `u16` lane blend must match the checked § 7.13.2.12 zone walk for
-    /// every block shape and edge set, and fall back to its error unchanged.
+    /// every block shape and edge set.
     /// At 8 bits `u8` storage must write the same samples as `u16` storage.
     #[test]
     fn ibp_dc_u16_lanes_match_the_scalar_zone_walk() {
@@ -955,24 +764,6 @@ mod tests {
                     )
                     .unwrap();
                     assert_eq!(narrow(&wide_pred), narrow_pred);
-
-                    let mut bad = pred.clone();
-                    let at = if have_left {
-                        (height - 1) * stride
-                    } else {
-                        width - 1
-                    };
-                    bad[at] = 1024;
-                    let before = bad.clone();
-                    assert_eq!(
-                        apply_intra_ibp_dc_rect(BitDepth::Ten, size, edges, &mut bad, stride),
-                        Err(ReconError::IntraPredictionOutputSampleOutOfRange {
-                            sample_index: at,
-                            value: 1024,
-                            max: 1023
-                        })
-                    );
-                    assert_eq!(bad, before);
                 }
             }
         }

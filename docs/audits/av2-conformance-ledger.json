@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "7fed7cd5d62c31c101664291440b406e7d4a32f8",
+  "audited_commit": "aa43df7ba5670dfd81904b771766e72d27315392",
   "outcome": "success",
   "files": [
     {
@@ -5411,7 +5411,7 @@
     },
     {
       "path": "crates/splot-recon/src/intra_dc_math.rs",
-      "sha256": "31552931533ad6042d00002b8dbb0919f30f20f21186db378b9bcfa4a570cfd0",
+      "sha256": "827d71cb69132d75cc58b338c11869bafe3c35b7bab39d5b60198d118f1f82bb",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5445,7 +5445,7 @@
     },
     {
       "path": "crates/splot-recon/src/intra_directional_angle.rs",
-      "sha256": "7a95fb8c15c2705034ba862e3d510e7e8abed73426d607ef25b41688ddffc142",
+      "sha256": "5e151df17d6d50d10589e85fba4357611009309bf6f0c862407b88b926535b30",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION",
@@ -5455,7 +5455,14 @@
     },
     {
       "path": "crates/splot-recon/src/intra_directional_angle_tests.rs",
-      "sha256": "7e502d6b70baac4832c2dc59a0d29ce147f38108e7e15084540545a8b27bdb79",
+      "sha256": "b8111a884e5acb62774d0cc834f384f7d04e7a482762fe8c6ca7d84f2f6cf80f",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/intra_directional_lines.rs",
+      "sha256": "60a9883b198c2cf3ab8a1546b5f0aea1ee2f113e06d12d63292eddf4af107553",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5463,13 +5470,6 @@
     {
       "path": "crates/splot-recon/src/intra_directional_small.rs",
       "sha256": "828528938543fa38f535c206cd5fcb84c91299bb3b297773d39f1fe860d5f1f9",
-      "scope_kind": "workspace:splot-recon",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "crates/splot-recon/src/intra_directional_u8.rs",
-      "sha256": "a20092216e466611c8c81474b72bda87345eb339b9597d412020e954ed486394",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5499,7 +5499,7 @@
     },
     {
       "path": "crates/splot-recon/src/intra_ibp_dc.rs",
-      "sha256": "cc243fc6f41be7e731c21dcc2083d657252cc570cf82bf0fcd4042fe6368febd",
+      "sha256": "b7fd0abd6bd33a6c3aac13fbed6511242c3f8fa366eabaae8c7c591e81c6cf27",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-INTRA-IBP-DC-PREDICTION"
@@ -5730,7 +5730,7 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/cell.rs",
-      "sha256": "86c56ab33de14f05fd065487bc6eba4811ebf5784eef0776daf5e93e355c3a0f",
+      "sha256": "3c45a0984694bb999bfb61808d8a780affca46960f789b313b010e5f8440b037",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
