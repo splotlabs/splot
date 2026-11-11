@@ -936,12 +936,12 @@ fn filter_stage<S: Simd, const P: usize>(
 
 #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
-fn load4_pred0<S: Simd>(simd: S, pred0: &[i32], at: usize) -> i32x4<S> {
-    if let Some(lanes) = pred0.get(at..).and_then(<[i32]>::first_chunk::<4>) {
-        return i32x4::load_array_ref(simd, lanes);
+fn load4_pred0<S: Simd, P: Copy + Into<i32>>(simd: S, pred0: &[P], at: usize) -> i32x4<S> {
+    if let Some(lanes) = pred0.get(at..).and_then(<[P]>::first_chunk::<4>) {
+        return i32x4::from_slice(simd, &lanes.map(Into::into));
     }
     let tail = pred0.get(at..).unwrap_or(&[]);
-    let get = |i: usize| tail.get(i).copied().unwrap_or(0);
+    let get = |i: usize| tail.get(i).map_or(0, |&value| value.into());
     i32x4::load_array_ref(simd, &[get(0), get(1), get(2), get(3)])
 }
 
@@ -949,8 +949,7 @@ fn load4_pred0<S: Simd>(simd: S, pred0: &[i32], at: usize) -> i32x4<S> {
 #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn emit4<S: Simd>(simd: S, sink: &mut Sink<'_>, w: usize, row: usize, low: i32x4<S>) {
-    let blended = |pred0: &[i32], forward: i32| {
-        let first = load4_pred0(simd, pred0, row * w);
+    let blended = |first: i32x4<S>, forward: i32| {
         if forward == 8 {
             (first + low + 16) >> 5
         } else {
@@ -986,7 +985,23 @@ fn emit4<S: Simd>(simd: S, sink: &mut Sink<'_>, w: usize, row: usize, low: i32x4
             output,
             stride,
         } => {
-            let lanes = blended(pred0, *forward)
+            let lanes = blended(load4_pred0(simd, pred0, row * w), *forward)
+                .max(0)
+                .min(255)
+                .to_array()
+                .map(|v| v as u8);
+            store4(output, row * *stride, w, lanes);
+        }
+        Sink::PrepNarrow { output, stride } => {
+            store4(output, row * *stride, w, low.to_array().map(|v| v as i16));
+        }
+        Sink::AverageNarrow {
+            pred0,
+            forward,
+            output,
+            stride,
+        } => {
+            let lanes = blended(load4_pred0(simd, pred0, row * w), *forward)
                 .max(0)
                 .min(255)
                 .to_array()
@@ -1000,7 +1015,7 @@ fn emit4<S: Simd>(simd: S, sink: &mut Sink<'_>, w: usize, row: usize, low: i32x4
             stride,
             max,
         } => {
-            let lanes = blended(pred0, *forward)
+            let lanes = blended(load4_pred0(simd, pred0, row * w), *forward)
                 .max(0)
                 .min(i32::from(*max))
                 .to_array()
@@ -1051,8 +1066,8 @@ fn emit<S: Simd>(
             .narrow(high.max(0).min(max))
             .bitcast::<u16x8<S>>()
     };
-    let blended = |pred0: &[i32], forward: i32| {
-        let at = row * w + col;
+    let at = row * w + col;
+    let blended = |(first, second): (i32x4<S>, i32x4<S>), forward: i32| {
         let blend = |first: i32x4<S>, second: i32x4<S>| {
             if forward == 8 {
                 (first + second + 16) >> 5
@@ -1060,10 +1075,7 @@ fn emit<S: Simd>(
                 (first * forward + second * (16 - forward) + 128) >> 8
             }
         };
-        (
-            blend(load4_pred0(simd, pred0, at), low),
-            blend(load4_pred0(simd, pred0, at + 4), high),
-        )
+        (blend(first, low), blend(second, high))
     };
     match sink {
         Sink::Put { output, stride } => {
@@ -1109,13 +1121,51 @@ fn emit<S: Simd>(
                 }
             }
         }
+        Sink::PrepNarrow { output, stride } => {
+            let (low, high) = (low.to_array(), high.to_array());
+            let lanes = core::array::from_fn(|lane| {
+                if lane < 4 {
+                    low[lane] as i16
+                } else {
+                    high[lane - 4] as i16
+                }
+            });
+            store(output, row * *stride + col, count, lanes);
+        }
+        Sink::AverageNarrow {
+            pred0,
+            forward,
+            output,
+            stride,
+        } => {
+            let (first, second) = blended(
+                (
+                    load4_pred0(simd, pred0, at),
+                    load4_pred0(simd, pred0, at + 4),
+                ),
+                *forward,
+            );
+            let lanes = clipped(first, second, 255).to_array();
+            store(
+                output,
+                row * *stride + col,
+                count,
+                lanes.map(|lane| lane as u8),
+            );
+        }
         Sink::Average {
             pred0,
             forward,
             output,
             stride,
         } => {
-            let (first, second) = blended(pred0, *forward);
+            let (first, second) = blended(
+                (
+                    load4_pred0(simd, pred0, at),
+                    load4_pred0(simd, pred0, at + 4),
+                ),
+                *forward,
+            );
             let lanes = clipped(first, second, 255).to_array();
             store(
                 output,
@@ -1131,7 +1181,13 @@ fn emit<S: Simd>(
             stride,
             max,
         } => {
-            let (first, second) = blended(pred0, *forward);
+            let (first, second) = blended(
+                (
+                    load4_pred0(simd, pred0, at),
+                    load4_pred0(simd, pred0, at + 4),
+                ),
+                *forward,
+            );
             store_wide(
                 output,
                 row * *stride + col,

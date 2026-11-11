@@ -109,6 +109,7 @@ fearless_simd::kernel!(
                     store_words(t, output, width, row * stride + col, stride, values);
                 });
             }
+            Sink::PrepNarrow { .. } | Sink::AverageNarrow { .. } => {}
         }
     }
 );

@@ -17,7 +17,7 @@
     allow(dead_code, reason = "AVX2 and NEON cells only")
 )]
 
-use super::block::{Block, TAPS, even_tap_span};
+use super::block::{Block, TAPS, Taps, even_tap_span};
 use super::{
     CellPlacement, InterpolationFilter, NUM_FILTER_TYPES, NUM_PHASES, ReferencePlaneView,
     SCALE_SUBPEL_BITS, SUBPEL_FILTERS, SUBPEL_MASK, SubpelPredictParams,
@@ -152,6 +152,18 @@ pub(super) trait CellSample: ReconSample {
         stride: usize,
     );
 
+    /// Runs the cells of a program that the vector kernels read in place
+    /// into `planes`, and returns their bits; none by default.
+    fn program(
+        _: &mut [Option<Plane<'_, '_, Self>>; 2],
+        _: usize,
+        _: usize,
+        _: &[Cell],
+        _: (i32, u16),
+    ) -> Written {
+        [[0; PROGRAM_CELLS / 64]; 2]
+    }
+
     /// Stores the COMPOUND_AVERAGE, clipped to `clip.1`, of a cell's blocks,
     /// or returns `false` without writing.
     fn compound(
@@ -164,6 +176,41 @@ pub(super) trait CellSample: ReconSample {
 }
 
 impl CellSample for u8 {
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn program(
+        planes: &mut [Option<Plane<'_, '_, u8>>; 2],
+        filter: usize,
+        size: usize,
+        cells: &[Cell],
+        (forward, _): (i32, u16),
+    ) -> Written {
+        let (Some(token), Some((views, ..))) =
+            (fearless_simd::Level::baseline().as_neon(), &planes[0])
+        else {
+            return [[0; PROGRAM_CELLS / 64]; 2];
+        };
+        let view = &views[0];
+        let geometry = Geometry {
+            stride: view.stride,
+            width: view.width,
+            rows: view.readable_rows,
+            len: view.samples.len(),
+        };
+        let planes = planes.each_mut().map(|plane| {
+            let (views, output, stride) = plane.as_mut()?;
+            Some(([views[0].samples, views[1].samples], &mut **output, *stride))
+        });
+        let program = super::eight_bit::neon::Program {
+            planes,
+            geometry,
+            filter,
+            cells,
+            forward,
+        };
+        super::eight_bit::neon::program(token, program, size)
+    }
+
     #[inline]
     fn fullpel(
         sources: [(&[u8], usize); 2],
@@ -648,7 +695,78 @@ static WINDOWS: [[i32; NUM_PHASES]; NUM_FILTER_TYPES] = {
 
 type CellPlane<'a, 'b, T, O> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [O], usize);
 type Plane<'a, 'b, P> = ([ReferencePlaneView<'b, P>; 2], &'a mut [P], usize);
-type Written = [[u64; PROGRAM_CELLS / 64]; 2];
+pub(super) type Written = [[u64; PROGRAM_CELLS / 64]; 2];
+/// A [`CompoundCells`] cell: output `[row, col]` and both placements.
+pub(super) type Cell = ([u32; 2], [CellPlacement; 2]);
+
+/// The reference geometry the planes of a program share.
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    allow(dead_code, reason = "the NEON program kernel reads it")
+)]
+#[derive(Clone, Copy)]
+pub(super) struct Geometry {
+    pub(super) stride: usize,
+    pub(super) width: usize,
+    pub(super) rows: usize,
+    pub(super) len: usize,
+}
+
+/// One reference of a cell read in place: window row 0, column 0 at `base`.
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    allow(dead_code, reason = "the NEON program kernel reads it")
+)]
+#[derive(Clone, Copy)]
+pub(super) struct Placed {
+    pub(super) base: usize,
+    pub(super) horizontal: Option<&'static Taps>,
+    pub(super) vertical: Option<&'static Taps>,
+}
+
+/// The in-place window of a `size`-square cell reference of filter row
+/// `filter`, as [`cell_block`] reads it without a row clamp or column
+/// remap: `None` when its window crosses the clip bounds or the storage of
+/// 16 samples per row.
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    allow(dead_code, reason = "the NEON program kernel reads it")
+)]
+#[allow(clippy::inline_always, reason = "per-cell program hot path")]
+#[inline(always)]
+pub(super) fn placed(
+    geometry: Geometry,
+    filter: usize,
+    size: usize,
+    ([x, y], bounds): CellPlacement,
+) -> Option<Placed> {
+    let phase = |start: i32| ((start >> 6) & SUBPEL_MASK) as usize & 15;
+    let (phase_x, phase_y) = (phase(x), phase(y));
+    let windows = &WINDOWS[filter % NUM_FILTER_TYPES];
+    let window = |start: i32, phase: usize| {
+        let packed = windows[phase];
+        (
+            (start >> SCALE_SUBPEL_BITS) + (packed << 24 >> 24),
+            size as i32 + (packed >> 8 & 0xff),
+        )
+    };
+    let ((column, columns), (row, rows)) = (window(x, phase_x), window(y, phase_y));
+    let bound = |value: i32, last: usize| value.max(0).min(last as i32 - 1);
+    let inside = column >= bound(bounds[0], geometry.width)
+        && column + columns <= bound(bounds[2], geometry.width) + 1
+        && row >= bound(bounds[1], geometry.rows)
+        && row + rows <= bound(bounds[3], geometry.rows) + 1;
+    if !inside {
+        return None;
+    }
+    let base = row as usize * geometry.stride + column as usize;
+    let taps = &TAPS[filter % NUM_FILTER_TYPES];
+    (base + (rows as usize - 1) * geometry.stride + 16 <= geometry.len).then(|| Placed {
+        base,
+        horizontal: taps[phase_x].as_ref(),
+        vertical: taps[phase_y].as_ref(),
+    })
+}
 
 /// Runs a [`CompoundCells`] program of `size`-square cells into each plane
 /// (U and V share one program), clipped to `bit_depth`. Each cell that
@@ -727,7 +845,12 @@ fn program<P: CellSample>(
     let first_views = *first_views;
     let filter = interp.pass_index(size as u32) as usize;
     let len = cells.len.min(PROGRAM_CELLS);
+    let done = P::program(&mut planes, filter, size, &cells.cells[..len], clip);
+    written = done;
     for (index, &([row, col], placements)) in cells.cells[..len].iter().enumerate() {
+        if done[0][index / 64 % 4] & 1 << (index % 64) != 0 {
+            continue;
+        }
         let (Some(first), Some(second)) = (
             cell_block(&first_views[0], filter, size, placements[0]),
             cell_block(&first_views[1], filter, size, placements[1]),

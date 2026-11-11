@@ -20,6 +20,13 @@ macro_rules! kernels {
                     compound_cell(t, blocks, size, forward, output, stride);
                 }
                 Job::PutCell(block, output, stride) => put_cell(t, block, output, stride),
+                Job::Program(program, size, written) => {
+                    *written = if size == 4 {
+                        run_program::<4>(t, program)
+                    } else {
+                        run_program::<8>(t, program)
+                    };
+                }
             }
         }
 
@@ -28,6 +35,30 @@ macro_rules! kernels {
         #[target_feature(enable = $features)]
         fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut Sink<'_>) {
             let w = block.w;
+            if strip_fits(block) {
+                match sink {
+                    Sink::Put { output, stride } => {
+                        return strips(t, block, &mut Put { output, stride: *stride });
+                    }
+                    Sink::Prep { output, stride } => {
+                        return strips(t, block, &mut Prep { output, stride: *stride });
+                    }
+                    Sink::PrepNarrow { output, stride } => {
+                        return strips(t, block, &mut Prep { output, stride: *stride });
+                    }
+                    Sink::AverageNarrow { pred0, forward, output, stride } => {
+                        let forward = *forward;
+                        let stride = *stride;
+                        return strips(t, block, &mut Average { pred0, w, forward, output, stride });
+                    }
+                    Sink::Average { pred0, forward, output, stride } => {
+                        let forward = *forward;
+                        let stride = *stride;
+                        return strips(t, block, &mut Average { pred0, w, forward, output, stride });
+                    }
+                    _ => {}
+                }
+            }
             match sink {
                 Sink::Put { output, stride } => {
                     let (output, stride) = (&mut **output, *stride);
@@ -69,7 +100,162 @@ macro_rules! kernels {
                         store_bytes(output, if four { 4 } else { 8 }, row * stride + col, stride, values);
                     });
                 }
+                Sink::PrepNarrow { output, stride } => {
+                    let (output, stride) = (&mut **output, *stride);
+                    passes::<false>(t, block, &mut move |four, _, row, col, values| {
+                        let at = row * stride + col;
+                        let next = if four { at + stride } else { at + 4 };
+                        store_i16(t, output, at, vget_low_s16(values));
+                        store_i16(t, output, next, vget_high_s16(values));
+                    });
+                }
+                Sink::AverageNarrow {
+                    pred0,
+                    forward,
+                    output,
+                    stride,
+                } => {
+                    let (pred0, forward, output, stride) = (&**pred0, *forward, &mut **output, *stride);
+                    passes::<false>(t, block, &mut move |four, _, row, col, values| {
+                        let at = row * w + col;
+                        let first = vcombine_s16(load_i16(pred0, at), load_i16(pred0, at + 4));
+                        let values = vqmovun_s16(blend(first, values, forward));
+                        store_bytes(output, if four { 4 } else { 8 }, row * stride + col, stride, values);
+                    });
+                }
                 Sink::AverageWide { .. } => {}
+            }
+        }
+
+        /// Predicts a block of [`strip_fits`] into `out` in strips of 16
+        /// columns, else 8.
+        #[inline]
+        #[target_feature(enable = $features)]
+        fn strips<O: Out>(t: Neon, block: &Block<'_, u8>, out: &mut O) {
+            let h = match block.horizontal.map_or(0, |taps| taps.count) {
+                0 => 0,
+                1 | 2 => 2,
+                _ => 4,
+            };
+            let v = block.vertical.map_or(0, |taps| taps.count);
+            strip_shapes!(block.w.is_multiple_of(16) && (h == 0 || v == 0), h, v, strip_block::<O>(t, block, out));
+        }
+
+        /// The strips of `N` columns of a block of [`strip_fits`] whose passes
+        /// have `H` and `V` tap pairs: each window row of a strip read once,
+        /// its horizontal sums or samples kept in a register ring for the
+        /// vertical pass.
+        #[inline(never)]
+        #[target_feature(enable = $features)]
+        fn strip_block<const H: usize, const V: usize, const N: usize, O: Out>(
+            t: Neon,
+            block: &Block<'_, u8>,
+            out: &mut O,
+        ) {
+            let window = block.h + if V > 0 { 2 * V - 1 } else { 0 };
+            let reach = if H > 0 && N == 16 { 24 } else { 16 };
+            let (base, stride) = (block.start(0), block.stride);
+            let (h_taps, v_weights) = (taps(t, block.horizontal), weights(t, block.vertical));
+            let forward = out.forward();
+            let bias = if V == 0 && O::PUT { 34 } else { 2 };
+            let line = |row: &[u8]| -> Option<[int16x8_t; 2]> {
+                let a = u8x16::load_array_ref(t, row.first_chunk::<16>()?).into();
+                if H == 0 {
+                    let a: uint8x16_t = a;
+                    return Some([widen(vget_low_u8(a)), vreinterpretq_s16_u16(vmovl_high_u8(a))]);
+                }
+                let b = if N == 16 {
+                    u8x16::load_array_ref(t, row.get(8..)?.first_chunk::<16>()?).into()
+                } else {
+                    a
+                };
+                let sums = hline::<H, N>(a, b, h_taps, bias);
+                Some(if V == 0 && O::PUT { sums } else { sums.map(|x| vshrq_n_s16::<2>(x)) })
+            };
+            let vsum = |phase: usize, ring: &[[int16x8_t; 2]; 8], next: [int16x8_t; 2], half: usize| {
+                let tap = |k: usize| {
+                    if k + 1 < 2 * V { ring[(phase + k) % (2 * V)][half] } else { next[half] }
+                };
+                if H == 0 {
+                    let sums = sums16::<V>(v_weights, tap);
+                    if O::PUT { sums } else { vrshrq_n_s16::<2>(sums) }
+                } else {
+                    let (low, high) = sums32::<V>(v_weights, tap);
+                    if O::PUT {
+                        vrshrn_high_n_s32::<10>(vrshrn_n_s32::<10>(low), high)
+                    } else {
+                        vrshrn_high_n_s32::<6>(vrshrn_n_s32::<6>(low), high)
+                    }
+                }
+            };
+            let emit = |row: O::Row<'_>, values: [int16x8_t; 2]| {
+                if O::PUT {
+                    let bytes = match (H, V) {
+                        (0, 0) => vqmovun_high_s16(vqmovun_s16(values[0]), values[1]),
+                        (_, 0) => vqshrun_high_n_s16::<6>(vqshrun_n_s16::<6>(values[0]), values[1]),
+                        (0, _) => vqrshrun_high_n_s16::<6>(vqrshrun_n_s16::<6>(values[0]), values[1]),
+                        _ => vqmovun_high_s16(vqmovun_s16(values[0]), values[1]),
+                    };
+                    O::bytes::<N>(t, row, bytes);
+                } else {
+                    let values = if H == 0 && V == 0 { values.map(|x| vshlq_n_s16::<4>(x)) } else { values };
+                    if O::AVERAGE {
+                        let first = O::first::<N>(t, &row);
+                        let bytes = if forward == 8 {
+                            let low = vqrshrun_n_s16::<5>(vaddq_s16(first[0], values[0]));
+                            vqrshrun_high_n_s16::<5>(low, vaddq_s16(first[1], values[1]))
+                        } else {
+                            let low = vqmovun_s16(blend(first[0], values[0], forward));
+                            vqmovun_high_s16(low, blend(first[1], values[1], forward))
+                        };
+                        O::bytes::<N>(t, row, bytes);
+                    } else {
+                        O::preds::<N>(t, row, values);
+                    }
+                }
+            };
+            let zero = vdupq_n_s16(0);
+            let period = 2 * V;
+            'strips: for col in (0..block.w).step_by(N) {
+                let (Some((mut source, last)), Some((targets, target))) = (
+                    rows(block.source, base + col, stride, reach, window),
+                    out.rows(col, N, block.h),
+                ) else {
+                    return;
+                };
+                if V == 0 {
+                    for (row, target) in source.zip(targets) {
+                        let Some(values) = line(row) else { return };
+                        emit(target, values);
+                    }
+                    if let Some(values) = line(last) {
+                        emit(target, values);
+                    }
+                    continue;
+                }
+                let mut ring = [[zero; 2]; 8];
+                unroll!(k < period - 1, [0 1 2 3 4 5 6] => {
+                    let Some(values) = source.next().and_then(line) else { return };
+                    ring[k] = values;
+                });
+                let vertical = |phase: usize, ring: &[[int16x8_t; 2]; 8], next: [int16x8_t; 2]| {
+                    let low = vsum(phase, ring, next, 0);
+                    [low, if N == 16 { vsum(phase, ring, next, 1) } else { low }]
+                };
+                let (mut rows, mut target) = (source.zip(targets), Some(target));
+                loop {
+                    unroll!(phase < period, [0 1 2 3 4 5 6 7] => {
+                        let Some((row, next_target)) = rows.next() else {
+                            if let (Some(next), Some(target)) = (line(last), target.take()) {
+                                emit(target, vertical(phase, &ring, next));
+                            }
+                            continue 'strips;
+                        };
+                        let Some(next) = line(row) else { return };
+                        emit(next_target, vertical(phase, &ring, next));
+                        ring[(phase + period - 1) % period] = next;
+                    });
+                }
             }
         }
 
@@ -184,16 +370,64 @@ macro_rules! kernels {
             });
         }
 
+        /// The cells of `program` whose windows are read in place: the
+        /// geometry and taps of each cell's references derived once, both
+        /// planes stored from them.
+        #[inline(never)]
+        #[target_feature(enable = $features)]
+        fn run_program<const W: usize>(
+            t: Neon,
+            program: Program<'_, '_>,
+        ) -> super::super::super::cell::Written {
+            let Program { mut planes, geometry, filter, cells, forward } = program;
+            let mut written = [[0u64; 4]; 2];
+            let stride = geometry.stride;
+            for (index, &([row, col], placements)) in cells.iter().enumerate() {
+                let place = |placement| super::super::super::cell::placed(geometry, filter, W, placement);
+                let (Some(first), Some(second)) = (place(placements[0]), place(placements[1])) else {
+                    continue;
+                };
+                for (plane, written) in planes.iter_mut().zip(&mut written) {
+                    let Some((sources, output, out_stride)) = plane else { continue };
+                    let at = row as usize * *out_stride + col as usize;
+                    let Some(output) = output
+                        .get_mut(at..)
+                        .filter(|output| (W - 1) * *out_stride + W <= output.len())
+                    else {
+                        continue;
+                    };
+                    let groups = |source: &[u8], place: super::super::super::cell::Placed| {
+                        let pairs = |taps: Option<&Taps>| taps.map_or(0, |taps| taps.count);
+                        let (horizontal, vertical) = (place.horizontal, place.vertical);
+                        cells!(
+                            pairs(horizontal),
+                            pairs(vertical),
+                            false(t, source, place.base, stride, horizontal, vertical)
+                        )
+                    };
+                    if let (Some(first), Some(second)) =
+                        (groups(sources[0], first), groups(sources[1], second))
+                    {
+                        store_cell(first, second, forward, output, *out_stride);
+                        written[index / 64 % 4] |= 1 << (index % 64);
+                    }
+                }
+            }
+            written
+        }
+
         /// The compound predictors of a `W`-square register cell, the rows of an
         /// 8x8 cell or the row pairs of a 4x4 one.
         #[inline]
         #[target_feature(enable = $features)]
         fn cell<const W: usize>(t: Neon, block: &Block<'_, u8>) -> Option<[int16x8_t; W]> {
             let pairs = |taps: Option<&Taps>| taps.map_or(0, |taps| taps.count);
+            let (source, base, stride) = (block.source, block.start(0), block.stride);
+            let (horizontal, vertical) = (block.horizontal, block.vertical);
             cells!(
-                pairs(block.horizontal),
-                pairs(block.vertical),
-                false(t, block)
+                pairs(horizontal),
+                pairs(vertical),
+                false(t, source, base, stride, horizontal, vertical)
             )
         }
 
@@ -203,10 +437,12 @@ macro_rules! kernels {
         #[target_feature(enable = $features)]
         fn put_groups<const W: usize>(t: Neon, block: &Block<'_, u8>) -> Option<[int16x8_t; W]> {
             let pairs = |taps: Option<&Taps>| taps.map_or(0, |taps| taps.count);
+            let (source, base, stride) = (block.source, block.start(0), block.stride);
+            let (horizontal, vertical) = (block.horizontal, block.vertical);
             cells!(
-                pairs(block.horizontal),
-                pairs(block.vertical),
-                true(t, block)
+                pairs(horizontal),
+                pairs(vertical),
+                true(t, source, base, stride, horizontal, vertical)
             )
         }
 
@@ -217,11 +453,14 @@ macro_rules! kernels {
         #[target_feature(enable = $features)]
         fn cell_groups<const PUT: bool, const W: usize, const H: usize, const V: usize>(
             t: Neon,
-            block: &Block<'_, u8>,
-        ) -> [int16x8_t; W] {
+            source: &[u8],
+            base: usize,
+            stride: usize,
+            horizontal: Option<&Taps>,
+            vertical: Option<&Taps>,
+        ) -> Option<[int16x8_t; W]> {
             let rows = if V > 0 { W + 2 * V - 1 } else { W };
-            let (base, stride, source) = (block.start(0), block.stride, block.source);
-            let (h_weights, v_weights) = (taps(t, block.horizontal), weights(t, block.vertical));
+            let (h_weights, v_weights) = (taps(t, horizontal), weights(t, vertical));
             let zero = vdupq_n_s16(0);
             let mut groups = [zero; W];
             let horizontal = |sums: int16x8_t| match (V, PUT) {
@@ -262,9 +501,9 @@ macro_rules! kernels {
                         _ => vertical32(sums32::<V>(v_weights, line)),
                     };
                 });
-                return groups;
+                return Some(groups);
             }
-            let columns = pair_columns(t, block);
+            let columns = pair_columns(t, None);
             let mut pairs = [zero; 8];
             unroll!(pair < rows.div_ceil(2), [0 1 2 3 4 5 6 7] => {
                 let starts = [base + 2 * pair * stride, base + (2 * pair + 1) * stride];
@@ -291,7 +530,7 @@ macro_rules! kernels {
                     _ => vertical32(sums32::<V>(v_weights, tap)),
                 };
             });
-            groups
+            Some(groups)
         }
 
         /// Runs the passes of `block`, handing `out` each
@@ -347,7 +586,7 @@ macro_rules! kernels {
             };
             let start = starts(block, rows);
             if W == 4 {
-                let columns = pair_columns(t, block);
+                let columns = pair_columns(t, block.remap);
                 for row in (0..rows).step_by(2) {
                     let starts = [start(row), start(row + 1)];
                     out(
@@ -391,7 +630,7 @@ macro_rules! kernels {
             };
             let start = starts(block, rows + 2 * V - 1);
             if W == 4 {
-                let columns = pair_columns(t, block);
+                let columns = pair_columns(t, block.remap);
                 let line = |row: usize| {
                     let starts = [start(row), start(row + 1)];
                     vrshrq_n_s16::<2>(hpair::<H>(block.source, starts, h_weights, &columns))

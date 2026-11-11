@@ -205,8 +205,8 @@ pub use secondary_transform::{
 /// `splot-tables` directly.
 pub use splot_tables::tables::quantizer::QM_OFFSET;
 pub use subpel_mc::{
-    BilinearOverlapCarry, CellPlacement, CompoundCells, InterpolationFilter, REFINEMV_NEIGHBORS,
-    ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams, UnscaledPut,
+    BilinearOverlapCarry, CellPlacement, CompoundCells, CompoundPredictor, InterpolationFilter,
+    REFINEMV_NEIGHBORS, ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams, UnscaledPut,
     blend_compound_average_equal, blend_compound_average_weighted,
     blend_compound_average_weighted_sample, refinemv_search_u8, subpel_compound_cell,
     subpel_compound_cells, subpel_predict_12x12_bilinear_overlap_into,

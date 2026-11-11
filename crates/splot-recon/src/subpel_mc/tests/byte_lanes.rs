@@ -75,8 +75,36 @@ fn byte_lane_sinks_match_the_oracle_for_every_shape_and_phase() {
                             "prep {label}"
                         );
                     }
+                    let mut narrow = vec![i16::MIN; stride * h];
+                    subpel_predict_block_compound_intermediate_into(
+                        &view,
+                        &params,
+                        None,
+                        &mut narrow,
+                        stride,
+                    )
+                    .unwrap();
+                    for row in 0..h {
+                        let got = narrow[row * stride..][..w].iter().map(|&v| i32::from(v));
+                        assert!(
+                            got.eq(prep[row * w..][..w].iter().copied()),
+                            "prep16 {label}"
+                        );
+                    }
                     let pred0 = prep.iter().rev().copied().collect::<Vec<_>>();
+                    let pred0_narrow = pred0.iter().map(|&v| v as i16).collect::<Vec<_>>();
                     for weight in [8i16, 4, 11, 0, 16] {
+                        let mut narrow = vec![0x5au8; stride * h];
+                        subpel_predict_block_compound_average_strided_into_u8(
+                            &view,
+                            &params,
+                            &pred0_narrow,
+                            weight,
+                            None,
+                            &mut narrow,
+                            stride,
+                        )
+                        .unwrap();
                         let mut actual = vec![0xa5u8; stride * h];
                         subpel_predict_block_compound_average_strided_into_u8(
                             &view,
@@ -101,6 +129,11 @@ fn byte_lane_sinks_match_the_oracle_for_every_shape_and_phase() {
                                     u16::from(actual[row * stride + col]),
                                     want,
                                     "average {weight} {label} ({row}, {col})"
+                                );
+                                assert_eq!(
+                                    u16::from(narrow[row * stride + col]),
+                                    want,
+                                    "average16 {weight} {label} ({row}, {col})"
                                 );
                             }
                         }

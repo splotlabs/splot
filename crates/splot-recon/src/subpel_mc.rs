@@ -659,18 +659,27 @@ pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
 /// [`ReconError::StrideTooSmall`] when `output_stride < params.w`, and
 /// [`ReconError::BufferLengthMismatch`] when `output` cannot hold the strided
 /// prediction rectangle.
-pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample>(
+pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample, P: CompoundPredictor>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     scratch: Option<&mut [i16]>,
-    output: &mut [i32],
+    output: &mut [P],
     output_stride: usize,
 ) -> Result<()> {
     validate_subpel_params(params)?;
     validate_output_len(params, output.len(), output_stride)?;
-    let sink = Sink::Prep {
-        output,
-        stride: output_stride,
+    let sink = match P::slice_mut(output) {
+        Ok(output) => Sink::Prep {
+            output,
+            stride: output_stride,
+        },
+        Err(output) => {
+            narrow_admitted(reference, params)?;
+            Sink::PrepNarrow {
+                output,
+                stride: output_stride,
+            }
+        }
     };
     block::predict(reference, params, sink, scratch);
     Ok(())
@@ -705,11 +714,60 @@ pub fn subpel_predict_block_compound_average_into<T: ReconSample>(
     )
 }
 
+/// A § 7.13.3.18 compound predictor sample: `i32` at every bit depth, or
+/// `i16` for eight-bit references, whose predictors span `-5132..=9212`.
+pub trait CompoundPredictor: Copy + sealed::Sealed {
+    /// `Ok` of `i32` storage, `Err` of `i16` storage.
+    #[doc(hidden)]
+    fn slice(values: &[Self]) -> core::result::Result<&[i32], &[i16]>;
+    /// [`Self::slice`] of mutable storage.
+    #[doc(hidden)]
+    fn slice_mut(values: &mut [Self]) -> core::result::Result<&mut [i32], &mut [i16]>;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for i16 {}
+    impl Sealed for i32 {}
+}
+
+impl CompoundPredictor for i32 {
+    fn slice(values: &[i32]) -> core::result::Result<&[i32], &[i16]> {
+        Ok(values)
+    }
+    fn slice_mut(values: &mut [i32]) -> core::result::Result<&mut [i32], &mut [i16]> {
+        Ok(values)
+    }
+}
+
+impl CompoundPredictor for i16 {
+    fn slice(values: &[i16]) -> core::result::Result<&[i32], &[i16]> {
+        Err(values)
+    }
+    fn slice_mut(values: &mut [i16]) -> core::result::Result<&mut [i32], &mut [i16]> {
+        Err(values)
+    }
+}
+
+/// Rejects `i16` compound predictors of a reference that is not eight-bit.
+fn narrow_admitted<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+) -> Result<()> {
+    if params.bit_depth == BitDepth::Eight && reference.as_u8().is_some() {
+        return Ok(());
+    }
+    Err(ReconError::SampleTypeUnsupportedBitDepth {
+        sample_type: "i16",
+        bit_depth: params.bit_depth,
+    })
+}
+
 /// Validates the parameters, the first predictor and the strided output of
 /// a compound-average prediction.
-fn validate_compound_average(
+fn validate_compound_average<P>(
     params: &SubpelPredictParams,
-    pred0: &[i32],
+    pred0: &[P],
     output_len: usize,
     output_stride: usize,
 ) -> Result<()> {
@@ -763,10 +821,13 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
 ///
 /// # Errors
 /// Returns the same validation and output-layout errors as the `u16` variant.
-pub fn subpel_predict_block_compound_average_strided_into_u8<T: ReconSample>(
+pub fn subpel_predict_block_compound_average_strided_into_u8<
+    T: ReconSample,
+    P: CompoundPredictor,
+>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
-    pred0: &[i32],
+    pred0: &[P],
     cwp_weight: i16,
     scratch: Option<&mut [i16]>,
     output: &mut [u8],
@@ -774,11 +835,23 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<T: ReconSample>(
 ) -> Result<()> {
     crate::intra_dc_math::validate_sample_type::<u8>(params.bit_depth)?;
     validate_compound_average(params, pred0, output.len(), output_stride)?;
-    let sink = Sink::Average {
-        pred0,
-        forward: i32::from(cwp_weight),
-        output,
-        stride: output_stride,
+    let forward = i32::from(cwp_weight);
+    let sink = match P::slice(pred0) {
+        Ok(pred0) => Sink::Average {
+            pred0,
+            forward,
+            output,
+            stride: output_stride,
+        },
+        Err(pred0) => {
+            narrow_admitted(reference, params)?;
+            Sink::AverageNarrow {
+                pred0,
+                forward,
+                output,
+                stride: output_stride,
+            }
+        }
     };
     block::predict(reference, params, sink, scratch);
     Ok(())
@@ -916,6 +989,25 @@ fn compound_average<T: ReconSample, O: ReconSample>(
     if O::u8_slice(&[]).is_none() && O::u16_slice(&[]).is_none() {
         return false;
     }
+    if references[0].as_u8().is_some()
+        && let Some(output) = O::u8_slice_mut(output)
+    {
+        return with_compound_pred0_narrow(w * h, |pred0| {
+            let sink = Sink::PrepNarrow {
+                output: pred0,
+                stride: w,
+            };
+            block::predict(references[0], params[0], sink, Some(&mut *scratch));
+            let sink = Sink::AverageNarrow {
+                pred0,
+                forward,
+                output,
+                stride: output_stride,
+            };
+            block::predict(references[1], params[1], sink, Some(scratch));
+            true
+        });
+    }
     with_compound_pred0(w * h, |pred0| {
         let sink = Sink::Prep {
             output: pred0,
@@ -949,6 +1041,21 @@ fn compound_average<T: ReconSample, O: ReconSample>(
 std::thread_local! {
     /// Retained storage of the first compound predictor of a fused pair.
     static COMPOUND_PRED0: std::cell::Cell<Vec<i32>> = const { std::cell::Cell::new(Vec::new()) };
+    /// [`COMPOUND_PRED0`] of eight-bit references.
+    static COMPOUND_PRED0_NARROW: std::cell::Cell<Vec<i16>> =
+        const { std::cell::Cell::new(Vec::new()) };
+}
+
+fn with_compound_pred0_narrow<R>(len: usize, f: impl FnOnce(&mut [i16]) -> R) -> R {
+    COMPOUND_PRED0_NARROW.with(|slot| {
+        let mut pred0 = slot.take();
+        if pred0.len() < len {
+            pred0.resize(len, 0);
+        }
+        let result = f(&mut pred0[..len]);
+        slot.set(pred0);
+        result
+    })
 }
 
 pub(super) fn with_compound_pred0<R>(len: usize, f: impl FnOnce(&mut [i32]) -> R) -> R {

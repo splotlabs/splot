@@ -35,10 +35,24 @@ pub(super) enum Sink<'a> {
         output: &'a mut [i32],
         stride: usize,
     },
+    /// [`Self::Prep`] of an eight-bit block, whose compound predictors
+    /// fit `i16` (see [`super::eight_bit`]).
+    PrepNarrow {
+        output: &'a mut [i16],
+        stride: usize,
+    },
     /// The § 7.13.3.15 COMPOUND_AVERAGE of the contiguous `w * h` first
     /// predictor `pred0` and this block's compound predictor, into `u8`.
     Average {
         pred0: &'a [i32],
+        forward: i32,
+        output: &'a mut [u8],
+        stride: usize,
+    },
+    /// [`Self::Average`] of an eight-bit block and its `i16` first
+    /// predictor.
+    AverageNarrow {
+        pred0: &'a [i16],
         forward: i32,
         output: &'a mut [u8],
         stride: usize,
@@ -67,6 +81,11 @@ impl Sink<'_> {
         matches!(self, Self::Put { .. } | Self::PutWide { .. })
     }
 
+    /// Whether the sink takes `i16` eight-bit compound predictors.
+    pub(super) const fn is_narrow(&self) -> bool {
+        matches!(self, Self::PrepNarrow { .. } | Self::AverageNarrow { .. })
+    }
+
     /// `InterRound1` of the values the sink takes.
     pub(super) const fn inter_round1(&self) -> u32 {
         if self.is_put() {
@@ -83,6 +102,13 @@ impl Sink<'_> {
             Self::Put { output, stride } => output.len() >= end(*stride),
             Self::PutWide { output, stride, .. } => output.len() >= end(*stride),
             Self::Prep { output, stride } => output.len() >= end(*stride),
+            Self::PrepNarrow { output, stride } => output.len() >= end(*stride),
+            Self::AverageNarrow {
+                pred0,
+                output,
+                stride,
+                ..
+            } => output.len() >= end(*stride) && pred0.len() >= w * h,
             Self::Average {
                 pred0,
                 output,
@@ -118,6 +144,24 @@ impl Sink<'_> {
             Self::Prep { output, stride } => {
                 if let Some(slot) = output.get_mut(row * *stride + col) {
                     *slot = value;
+                }
+            }
+            Self::PrepNarrow { output, stride } => {
+                if let Some(slot) = output.get_mut(row * *stride + col) {
+                    *slot = value as i16;
+                }
+            }
+            Self::AverageNarrow {
+                pred0,
+                forward,
+                output,
+                stride,
+            } => {
+                if let (Some(slot), Some(&first)) = (
+                    output.get_mut(row * *stride + col),
+                    pred0.get(row * w + col),
+                ) {
+                    *slot = blend(i32::from(first), value, *forward, i32::from(u8::MAX)) as u8;
                 }
             }
             Self::Average {
@@ -467,7 +511,9 @@ pub(super) fn put_admitted<const N: usize>(
         }
         true
     };
+    let neon = cfg!(target_arch = "aarch64") && super::eight_bit::stageless(&block);
     match stage_len(layout.rows, w, layout.vertical) {
+        _ if neon => put(&mut []),
         0 => put(&mut []),
         len if len <= PUT_STAGE => put(&mut [0; PUT_STAGE][..len]),
         len => with_subpel_intermediate(len, put),
@@ -663,6 +709,13 @@ fn unscaled_block<T: Sample>(
     scratch: Option<&mut [i16]>,
 ) {
     let layout = Layout::new(params);
+    if let Some(block) = layout.in_place(view, params)
+        && let Some(source) = T::u8_slice(block.source)
+        && super::eight_bit::stageless(&block.with_source(source))
+        && super::eight_bit::predict(&block, &mut sink, &mut [])
+    {
+        return;
+    }
     let len = stage_len(layout.rows, params.w, layout.vertical);
     let sink = &mut sink;
     match scratch {

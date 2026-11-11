@@ -30,6 +30,7 @@ pub(super) fn predict<T: ReconSample>(
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
         && let Some(source) = T::u16_slice(block.source)
         && fits(block)
+        && !sink.is_narrow()
     {
         avx2::predict(token, &block.with_source(source), sink, stage);
         return true;
@@ -39,6 +40,7 @@ pub(super) fn predict<T: ReconSample>(
         && let Some(source) = T::u16_slice(block.source)
         && fits(block)
         && (block.horizontal.is_some() || block.vertical.is_some())
+        && !sink.is_narrow()
     {
         neon::predict(token, &block.with_source(source), sink, stage);
         return true;
@@ -191,6 +193,7 @@ mod avx2 {
         ) {
             let w = block.w;
             match sink {
+                Sink::PrepNarrow { .. } | Sink::AverageNarrow { .. } => {}
                 Sink::Put { output, stride } => {
                     let stride = *stride;
                     passes(

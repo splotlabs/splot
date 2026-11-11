@@ -13,9 +13,305 @@
 //! a compound cell keeps its first predictors in a group array for the
 //! average, so no pass stages through memory.
 
+#![allow(
+    clippy::inline_always,
+    reason = "measured strip-kernel row and store helpers"
+)]
+
 use super::super::block::{Block, Sink, Taps};
 use core::arch::aarch64::*;
-use fearless_simd::{Neon, SimdBase, SimdFrom, i32x4, u8x16, u16x8};
+use core::slice::{ChunksExact, ChunksExactMut};
+use fearless_simd::{Bytes, Neon, Simd, SimdBase, SimdFrom, i16x8, i32x4, u8x16, u16x8, u64x2};
+
+/// Rows `0..n` of a 2-D array in `data` from `at`, `stride` apart and `len`
+/// wide: the first `n - 1` as whole strides, then the last, `len` long.
+/// `None` when they leave `data`, `n` is zero or `stride < len`.
+#[inline(always)]
+fn rows<T>(
+    data: &[T],
+    at: usize,
+    stride: usize,
+    len: usize,
+    n: usize,
+) -> Option<(ChunksExact<'_, T>, &[T])> {
+    let span = n.checked_sub(1)?.checked_mul(stride)?;
+    let rows = data.get(at..)?.get(..span.checked_add(len)?)?;
+    let (body, last) = rows.split_at_checked(span)?;
+    (stride >= len && len > 0).then(|| (body.chunks_exact(stride), last))
+}
+
+/// [`rows`] of mutable `data`.
+#[inline(always)]
+fn rows_mut<T>(
+    data: &mut [T],
+    at: usize,
+    stride: usize,
+    len: usize,
+    n: usize,
+) -> Option<(ChunksExactMut<'_, T>, &mut [T])> {
+    let span = n.checked_sub(1)?.checked_mul(stride)?;
+    let rows = data.get_mut(at..)?.get_mut(..span.checked_add(len)?)?;
+    let (body, last) = rows.split_at_mut_checked(span)?;
+    (stride >= len && len > 0).then(|| (body.chunks_exact_mut(stride), last))
+}
+
+/// What a strip kernel stores: `N` outputs of a row at a time, `N` 8 or
+/// 16, as `Clip1` bytes ([`Self::bytes`]) or compound predictors
+/// ([`Self::preds`]).
+pub(in crate::subpel_mc) trait Out {
+    /// Whether the outputs are single-reference predictions.
+    const PUT: bool;
+    /// Whether the outputs average a first predictor ([`Self::first`]).
+    const AVERAGE: bool = false;
+    /// One output row of a strip.
+    type Row<'r>
+    where
+        Self: 'r;
+    /// Output rows of a strip.
+    type Rows<'r>: Iterator<Item = Self::Row<'r>>
+    where
+        Self: 'r;
+    /// The COMPOUND_AVERAGE weight of [`Self::first`].
+    fn forward(&self) -> i32 {
+        8
+    }
+    /// Rows `0..n` of the strip `len` wide from column `col`, as [`rows`].
+    fn rows(&mut self, col: usize, len: usize, n: usize)
+    -> Option<(Self::Rows<'_>, Self::Row<'_>)>;
+    /// The `N` first predictors of `row`.
+    fn first<const N: usize>(t: Neon, _: &Self::Row<'_>) -> [int16x8_t; 2] {
+        [i16x8::splat(t, 0).into(); 2]
+    }
+    /// Stores `N` bytes.
+    fn bytes<const N: usize>(_: Neon, _: Self::Row<'_>, _: uint8x16_t) {}
+    /// Stores `N` compound predictors, the second eight in `values[1]`.
+    fn preds<const N: usize>(_: Neon, _: Self::Row<'_>, _: [int16x8_t; 2]) {}
+}
+
+/// `N` bytes into `row`.
+#[inline(always)]
+fn store_row<const N: usize>(t: Neon, row: &mut [u8], values: uint8x16_t) {
+    let values = u8x16::<Neon>::simd_from(t, values);
+    if N == 16 {
+        if let Some(slot) = row.first_chunk_mut::<16>() {
+            values.store_array(slot);
+        }
+    } else if let Some(slot) = row.first_chunk_mut::<8>() {
+        *slot = values.bitcast::<u64x2<Neon>>()[0].to_le_bytes();
+    }
+}
+
+/// The `Clip1` single-reference prediction into `u8` storage.
+pub(in crate::subpel_mc) struct Put<'a> {
+    pub(in crate::subpel_mc) output: &'a mut [u8],
+    pub(in crate::subpel_mc) stride: usize,
+}
+
+impl Out for Put<'_> {
+    const PUT: bool = true;
+    type Row<'r>
+        = &'r mut [u8]
+    where
+        Self: 'r;
+    type Rows<'r>
+        = ChunksExactMut<'r, u8>
+    where
+        Self: 'r;
+    #[inline(always)]
+    fn rows(
+        &mut self,
+        col: usize,
+        len: usize,
+        n: usize,
+    ) -> Option<(Self::Rows<'_>, Self::Row<'_>)> {
+        rows_mut(self.output, col, self.stride, len, n)
+    }
+    #[inline(always)]
+    fn bytes<const N: usize>(t: Neon, row: &mut [u8], values: uint8x16_t) {
+        store_row::<N>(t, row, values);
+    }
+}
+
+/// A compound predictor sample: eight-bit predictors fit `i16`, 16-bit
+/// ones need `i32`.
+pub(in crate::subpel_mc) trait Pred: Copy {
+    /// Stores `N` predictors.
+    fn store<const N: usize>(t: Neon, row: &mut [Self], values: [int16x8_t; 2]);
+    /// Loads `N` predictors, zero past the slice.
+    fn load<const N: usize>(t: Neon, row: &[Self]) -> [int16x8_t; 2];
+}
+
+impl Pred for i16 {
+    #[inline(always)]
+    fn store<const N: usize>(t: Neon, row: &mut [i16], values: [int16x8_t; 2]) {
+        if let Some(slot) = row.first_chunk_mut::<8>() {
+            i16x8::<Neon>::simd_from(t, values[0]).store_array(slot);
+        }
+        if N == 16
+            && let Some(slot) = row.get_mut(8..).and_then(<[i16]>::first_chunk_mut::<8>)
+        {
+            i16x8::<Neon>::simd_from(t, values[1]).store_array(slot);
+        }
+    }
+    #[inline(always)]
+    fn load<const N: usize>(t: Neon, row: &[i16]) -> [int16x8_t; 2] {
+        let lanes = |at: usize| {
+            row.get(at..)
+                .and_then(<[i16]>::first_chunk::<8>)
+                .map_or(i16x8::splat(t, 0), |lanes| i16x8::load_array_ref(t, lanes))
+                .into()
+        };
+        [lanes(0), if N == 16 { lanes(8) } else { lanes(0) }]
+    }
+}
+
+impl Pred for i32 {
+    #[inline(always)]
+    fn store<const N: usize>(t: Neon, row: &mut [i32], values: [int16x8_t; 2]) {
+        let mut store = |at: usize, values: int16x8_t| {
+            let (low, high) = t.widen_i16x8(i16x8::simd_from(t, values));
+            if let Some(slot) = row.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<8>)
+                && let (first, second) = slot.split_at_mut(4)
+                && let (Some(first), Some(second)) =
+                    (first.first_chunk_mut::<4>(), second.first_chunk_mut::<4>())
+            {
+                low.store_array(first);
+                high.store_array(second);
+            }
+        };
+        store(0, values[0]);
+        if N == 16 {
+            store(8, values[1]);
+        }
+    }
+    #[inline(always)]
+    fn load<const N: usize>(t: Neon, row: &[i32]) -> [int16x8_t; 2] {
+        let lanes = |at: usize| {
+            row.get(at..)
+                .and_then(<[i32]>::first_chunk::<8>)
+                .map_or(i16x8::splat(t, 0), |lanes| {
+                    let (first, second) = lanes.split_at(4);
+                    match (first.first_chunk::<4>(), second.first_chunk::<4>()) {
+                        (Some(first), Some(second)) => t.narrow_i32x4(
+                            i32x4::load_array_ref(t, first),
+                            i32x4::load_array_ref(t, second),
+                        ),
+                        _ => i16x8::splat(t, 0),
+                    }
+                })
+                .into()
+        };
+        [lanes(0), if N == 16 { lanes(8) } else { lanes(0) }]
+    }
+}
+
+/// The compound predictor into `P` storage.
+pub(in crate::subpel_mc) struct Prep<'a, P> {
+    pub(in crate::subpel_mc) output: &'a mut [P],
+    pub(in crate::subpel_mc) stride: usize,
+}
+
+impl<P: Pred> Out for Prep<'_, P> {
+    const PUT: bool = false;
+    type Row<'r>
+        = &'r mut [P]
+    where
+        Self: 'r;
+    type Rows<'r>
+        = ChunksExactMut<'r, P>
+    where
+        Self: 'r;
+    #[inline(always)]
+    fn rows(
+        &mut self,
+        col: usize,
+        len: usize,
+        n: usize,
+    ) -> Option<(Self::Rows<'_>, Self::Row<'_>)> {
+        rows_mut(self.output, col, self.stride, len, n)
+    }
+    #[inline(always)]
+    fn preds<const N: usize>(t: Neon, row: &mut [P], values: [int16x8_t; 2]) {
+        P::store::<N>(t, row, values);
+    }
+}
+
+/// The § 7.13.3.15 COMPOUND_AVERAGE of the contiguous `w`-wide first
+/// predictor `pred0` and the block's compound predictor, into `u8`.
+pub(in crate::subpel_mc) struct Average<'a, P> {
+    pub(in crate::subpel_mc) pred0: &'a [P],
+    pub(in crate::subpel_mc) w: usize,
+    pub(in crate::subpel_mc) forward: i32,
+    pub(in crate::subpel_mc) output: &'a mut [u8],
+    pub(in crate::subpel_mc) stride: usize,
+}
+
+impl<P: Pred> Out for Average<'_, P> {
+    const PUT: bool = false;
+    const AVERAGE: bool = true;
+    type Row<'r>
+        = (&'r [P], &'r mut [u8])
+    where
+        Self: 'r;
+    type Rows<'r>
+        = core::iter::Zip<ChunksExact<'r, P>, ChunksExactMut<'r, u8>>
+    where
+        Self: 'r;
+    #[inline(always)]
+    fn forward(&self) -> i32 {
+        self.forward
+    }
+    #[inline(always)]
+    fn rows(
+        &mut self,
+        col: usize,
+        len: usize,
+        n: usize,
+    ) -> Option<(Self::Rows<'_>, Self::Row<'_>)> {
+        let (first, first_last) = rows(self.pred0, col, self.w, len, n)?;
+        let (output, last) = rows_mut(self.output, col, self.stride, len, n)?;
+        Some((first.zip(output), (first_last, last)))
+    }
+    #[inline(always)]
+    fn first<const N: usize>(t: Neon, (pred0, _): &(&[P], &mut [u8])) -> [int16x8_t; 2] {
+        P::load::<N>(t, pred0)
+    }
+    #[inline(always)]
+    fn bytes<const N: usize>(t: Neon, (_, row): (&[P], &mut [u8]), values: uint8x16_t) {
+        store_row::<N>(t, row, values);
+    }
+}
+
+/// Calls `$f::<H, V, N>` for the strip width `N`, 16 or 8, and the tap-pair
+/// classes of both passes, `H` 0, 2 or 4 and `V` 0 to 4.
+macro_rules! strip_shapes {
+    ($sixteen:expr, $h:expr, $v:expr, $f:ident::<$o:ident> $args:tt) => {
+        strip_shapes!(@ $sixteen, $h, $v, $f $o $args,
+            [0 0, 0 1, 0 2, 0 3, 0 4, 2 0, 2 1, 2 2, 2 3, 2 4, 4 0, 4 1, 4 2, 4 3, 4 4])
+    };
+    (@ $sixteen:expr, $h:expr, $v:expr, $f:ident $o:ident $args:tt, [$($hh:literal $vv:literal),*]) => {
+        match ($sixteen, $h, $v) {
+            $((true, $hh, $vv) => $f::<$hh, $vv, 16, $o> $args,)*
+            $((false, $hh, $vv) => $f::<$hh, $vv, 8, $o> $args,)*
+            _ => {}
+        }
+    };
+}
+
+/// Whether the strip kernels take `block`: a multiple of 8 columns read in
+/// place without a column remap, every window row inside its clip rows and
+/// the storage.
+#[inline]
+fn strip_fits(block: &Block<'_, u8>) -> bool {
+    let rows = block.h + block.vertical.map_or(0, |taps| taps.span() - 1);
+    let last = block.top + rows as isize - 1;
+    block.w.is_multiple_of(8)
+        && block.remap.is_none()
+        && block.stride >= 24
+        && block.top >= block.rows[0]
+        && last <= block.rows[1]
+        && block.start(rows - 1) + super::super::block::reach(block.w) <= block.source.len()
+}
 
 /// Whether the kernels cover `block`: strips of 8 columns, or 4 columns in
 /// pairs of rows with at most two horizontal tap pairs.
@@ -59,7 +355,7 @@ macro_rules! cells {
     };
     (@ $h:expr, $v:expr, $put:literal $args:tt, [$($hh:literal $vv:literal),*]) => {
         match ($h, $v) {
-            $(($hh, $vv) => Some(cell_groups::<$put, W, $hh, $vv> $args),)*
+            $(($hh, $vv) => cell_groups::<$put, W, $hh, $vv> $args,)*
             _ => None,
         }
     };
@@ -78,8 +374,38 @@ macro_rules! unroll {
     };
 }
 
+/// Both references' samples, the output and its stride of one plane of a
+/// [`Program`].
+pub(in crate::subpel_mc) type ProgramPlane<'a, 'b> = ([&'b [u8]; 2], &'a mut [u8], usize);
+
+/// A program of compound cells of `subpel_mc::cell` for the kernels: each
+/// cell whose windows [`super::super::cell::placed`] reads in place is stored
+/// into both `planes` (U and V share the geometry) and marked in the result.
+pub(in crate::subpel_mc) struct Program<'a, 'b> {
+    pub(in crate::subpel_mc) planes: [Option<ProgramPlane<'a, 'b>>; 2],
+    pub(in crate::subpel_mc) geometry: super::super::cell::Geometry,
+    pub(in crate::subpel_mc) filter: usize,
+    pub(in crate::subpel_mc) cells: &'a [super::super::cell::Cell],
+    pub(in crate::subpel_mc) forward: i32,
+}
+
+/// Runs the cells of `program` that it covers, `size` 4 or 8, and returns
+/// their bits.
+#[inline]
+pub(in crate::subpel_mc) fn program(
+    t: Neon,
+    program: Program<'_, '_>,
+    size: usize,
+) -> super::super::cell::Written {
+    let mut written = [[0; 4]; 2];
+    dot::run(t, Job::Program(program, size, &mut written));
+    written
+}
+
 /// One call of the kernels.
 pub(in crate::subpel_mc) enum Job<'a, 'b, 's> {
+    /// [`program`].
+    Program(Program<'a, 'b>, usize, &'a mut super::super::cell::Written),
     /// [`predict`].
     Predict(&'a Block<'b, u8>, &'a mut Sink<'s>),
     /// [`compound`].
@@ -151,7 +477,8 @@ mod kernels;
 mod mla {
     use super::*;
     use super::{
-        pair_sums as hpair, pair_taps as pair_columns, row_sums_of as hrow, weights as taps,
+        mla_line as hline, pair_sums as hpair, pair_taps as pair_columns, row_sums_of as hrow,
+        weights as taps,
     };
 
     super::kernels::kernels!("neon");
@@ -161,8 +488,8 @@ mod mla {
 mod sdot {
     use super::*;
     use super::{
-        dot_pair_columns as pair_columns, dot_pair_sums as hpair, dot_row_sums as hrow,
-        dot_taps as taps,
+        dot_line as hline, dot_pair_columns as pair_columns, dot_pair_sums as hpair,
+        dot_row_sums as hrow, dot_taps as taps,
     };
 
     super::kernels::kernels!("neon,dotprod");
@@ -227,14 +554,66 @@ fn dot_row_sums<const P: usize>(bytes: uint8x16_t, taps: int8x16_t) -> int16x8_t
     vuzp1q_s16(vreinterpretq_s16_s32(low), vreinterpretq_s16_s32(high))
 }
 
+/// The halved-tap sums plus `bias` of `N` outputs, 8 or 16, of a window row
+/// whose columns `0..16` are `a` and `8..24` are `b`, as [`dot_row_sums`].
+#[inline]
+#[target_feature(enable = "neon,dotprod")]
+fn dot_line<const P: usize, const N: usize>(
+    a: uint8x16_t,
+    b: uint8x16_t,
+    taps: int8x16_t,
+    bias: i32,
+) -> [int16x8_t; 2] {
+    let flip = vdupq_n_u8(0x80);
+    let (a, b) = (
+        vreinterpretq_s8_u8(veorq_u8(a, flip)),
+        vreinterpretq_s8_u8(veorq_u8(b, flip)),
+    );
+    let bias = vdupq_n_s32(128 * 64 + bias);
+    let windows = [dot_windows::<0>(), dot_windows::<1>(), dot_windows::<2>()];
+    let a = windows.map(|window| vqtbl1q_s8(a, window));
+    let sum = |first: int8x16_t, second: int8x16_t| {
+        let sum = vdotq_laneq_s32::<0>(bias, first, taps);
+        if P > 2 {
+            vdotq_laneq_s32::<1>(sum, second, taps)
+        } else {
+            sum
+        }
+    };
+    let pack = |low, high| vuzp1q_s16(vreinterpretq_s16_s32(low), vreinterpretq_s16_s32(high));
+    let low = pack(sum(a[0], a[1]), sum(a[1], a[2]));
+    if N == 8 {
+        return [low, low];
+    }
+    let (b1, b2) = (vqtbl1q_s8(b, windows[1]), vqtbl1q_s8(b, windows[2]));
+    [low, pack(sum(a[2], b1), sum(b1, b2))]
+}
+
+/// [`dot_line`] in multiply-accumulate lanes.
+#[inline]
+#[target_feature(enable = "neon")]
+fn mla_line<const P: usize, const N: usize>(
+    a: uint8x16_t,
+    b: uint8x16_t,
+    weights: int16x8_t,
+    bias: i32,
+) -> [int16x8_t; 2] {
+    let bias = vdupq_n_s16(bias as i16);
+    let low = vaddq_s16(row_sums_of::<P>(a, weights), bias);
+    if N == 8 {
+        return [low, low];
+    }
+    [low, vaddq_s16(row_sums_of::<P>(b, weights), bias)]
+}
+
 /// The `tbl` indices of the 4-byte windows of a row pair's four outputs, the
 /// first row's in bytes `0..8` and the second's in bytes `8..16`, read
 /// through the column remap of a 4-column block.
 #[inline]
 #[target_feature(enable = "neon")]
-fn dot_pair_columns(t: Neon, block: &Block<'_, u8>) -> [uint8x16_t; 2] {
+fn dot_pair_columns(t: Neon, remap: Option<[i8; 2]>) -> [uint8x16_t; 2] {
     let windows = [dot_windows::<0>(), dot_windows::<2>()];
-    let Some(remap) = columns(t, block) else {
+    let Some(remap) = remap_columns(t, remap) else {
         return windows;
     };
     let (rows, cols) = (vdupq_n_u8(8), vdupq_n_u8(7));
@@ -454,6 +833,32 @@ fn load8(samples: &[u8], at: usize) -> uint8x8_t {
     vcreate_u8(word)
 }
 
+/// Four `i16` values from `at`, zero past the slice.
+#[inline]
+#[target_feature(enable = "neon")]
+fn load_i16(values: &[i16], at: usize) -> int16x4_t {
+    let word = values
+        .get(at..)
+        .and_then(<[i16]>::first_chunk::<4>)
+        .map_or(0, |lanes| {
+            lanes
+                .iter()
+                .rev()
+                .fold(0, |word, &lane| word << 16 | u64::from(lane as u16))
+        });
+    vcreate_s16(word)
+}
+
+/// Four `i16` values into `output` from `at`.
+#[inline]
+#[target_feature(enable = "neon")]
+fn store_i16(_: Neon, output: &mut [i16], at: usize, values: int16x4_t) {
+    if let Some(slot) = output.get_mut(at..).and_then(<[i16]>::first_chunk_mut::<4>) {
+        let word = vget_lane_u64::<0>(vreinterpret_u64_s16(values));
+        *slot = core::array::from_fn(|lane| (word >> (16 * lane)) as i16);
+    }
+}
+
 /// Four `i32` values from `at`, zero past the slice.
 #[inline]
 #[target_feature(enable = "neon")]
@@ -484,7 +889,14 @@ fn weights(t: Neon, taps: Option<&Taps>) -> int16x8_t {
 #[inline]
 #[target_feature(enable = "neon")]
 fn columns(t: Neon, block: &Block<'_, u8>) -> Option<uint8x16_t> {
-    block.remap.map(|[offset, limit]| {
+    remap_columns(t, block.remap)
+}
+
+/// The `tbl` indices of a column remap.
+#[inline]
+#[target_feature(enable = "neon")]
+fn remap_columns(t: Neon, remap: Option<[i8; 2]>) -> Option<uint8x16_t> {
+    remap.map(|[offset, limit]| {
         let iota = core::array::from_fn::<u8, 16, _>(|lane| lane as u8);
         let lanes = vaddq_s8(vreinterpretq_s8_u8(load16(t, &iota, 0)), vdupq_n_s8(offset));
         vreinterpretq_u8_s8(vminq_s8(vmaxq_s8(lanes, vdupq_n_s8(0)), vdupq_n_s8(limit)))
@@ -534,9 +946,9 @@ const PAIR_TAPS: [[u8; 16]; 2] = {
 /// [`PAIR_TAPS`] read through the column remap of a 4-column block.
 #[inline]
 #[target_feature(enable = "neon")]
-fn pair_taps(t: Neon, block: &Block<'_, u8>) -> [uint8x16_t; 2] {
+fn pair_taps(t: Neon, remap: Option<[i8; 2]>) -> [uint8x16_t; 2] {
     let taps = PAIR_TAPS.map(|taps| load16(t, &taps, 0));
-    let Some(remap) = columns(t, block) else {
+    let Some(remap) = remap_columns(t, remap) else {
         return taps;
     };
     let (rows, cols) = (vdupq_n_u8(8), vdupq_n_u8(7));

@@ -12,6 +12,14 @@
 //! one row lie in `-7140..=23460`, so `i16` lanes are exact, and each byte
 //! pair stays below the `pmaddubsw` saturation bound.
 //!
+//! Eight-bit compound predictors fit `i16` ([`Sink::PrepNarrow`]): with
+//! the § 7.13.3.16 `InterRound0 = 3` and compound `InterRound1 = 7` and
+//! the § 7.13.3.18 filter rows (taps sum to 128, positive taps at most 184,
+//! negative at least -56), the horizontal pass spans `-1785..=5865` and
+//! the vertical pass `Round2(-656880, 7)..=Round2(1179120, 7)`, that is
+//! `-5132..=9212`; a zero phase stores `sample << 4 <= 4080`. The sum of two
+//! predictors, the equal-weight average, stays in `i16` too.
+//!
 //! A vector covers 16 outputs: one strip row of a block at least 16 wide, two
 //! rows of an 8-wide block or four rows of a 4-wide block. On AArch64 the
 //! [`neon`] kernels take the same blocks. Other widths, 10-bit sinks and
@@ -57,6 +65,17 @@ pub(super) fn predict<T: ReconSample>(
         return true;
     }
     let _ = (block, sink, stage);
+    false
+}
+
+/// Whether [`put`] takes `block` without a stage.
+#[inline]
+pub(super) fn stageless(block: &Block<'_, u8>) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    if fearless_simd::Level::baseline().as_neon().is_some() {
+        return neon::fits(block);
+    }
+    let _ = block;
     false
 }
 
@@ -336,6 +355,28 @@ pub(super) mod avx2 {
                     passes(t, block, false, stage, &mut |width, row, strip, values| {
                         let at = row * stride + strip * width;
                         by_width!(width, store_prep(t, output, at, stride, values));
+                    });
+                }
+                Sink::PrepNarrow { output, stride } => {
+                    let stride = *stride;
+                    passes(t, block, false, stage, &mut |width, row, strip, values| {
+                        let at = row * stride + strip * width;
+                        by_width!(width, store_prep16(t, output, at, stride, values));
+                    });
+                }
+                Sink::AverageNarrow {
+                    pred0,
+                    forward,
+                    output,
+                    stride,
+                } => {
+                    let (pred0, forward, stride) = (&**pred0, *forward, *stride);
+                    passes(t, block, false, stage, &mut |width, row, strip, values| {
+                        let first =
+                            by_width!(width, first_group16(t, pred0, row * w + strip * width, w));
+                        let at = row * stride + strip * width;
+                        let blended = average(first, values, forward);
+                        by_width!(width, store_bytes(t, output, at, stride, blended));
                     });
                 }
                 Sink::Average {
@@ -918,6 +959,50 @@ pub(super) mod avx2 {
                 put8(at + 8, high);
             }
         }
+    }
+
+    /// [`store_prep`] of `i16` predictors.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn store_prep16<const W: usize>(
+        t: Avx2,
+        output: &mut [i16],
+        at: usize,
+        stride: usize,
+        values: __m256i,
+    ) {
+        if W == 16 {
+            if let Some(slot) = output
+                .get_mut(at..)
+                .and_then(<[i16]>::first_chunk_mut::<16>)
+            {
+                i16x16::<Avx2>::simd_from(t, values).store_array(slot);
+            }
+            return;
+        }
+        let lanes = i16x16::<Avx2>::simd_from(t, values).to_array();
+        for (row, lanes) in lanes.as_chunks::<W>().0.iter().enumerate() {
+            if let Some(slot) = output
+                .get_mut(at + row * stride..)
+                .and_then(<[i16]>::first_chunk_mut::<W>)
+            {
+                *slot = *lanes;
+            }
+        }
+    }
+
+    /// [`first_group`] of `i16` predictors.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn first_group16<const W: usize>(t: Avx2, pred0: &[i16], at: usize, w: usize) -> __m256i {
+        let mut lanes = [0i16; 16];
+        for (row, slot) in lanes.as_chunks_mut::<W>().0.iter_mut().enumerate() {
+            let from = if W == 16 { at } else { at + row * w };
+            if let Some(first) = pred0.get(from..).and_then(<[i16]>::first_chunk::<W>) {
+                *slot = *first;
+            }
+        }
+        i16x16::load_array(t, lanes).into()
     }
 
     /// The first predictors of the group at `at` of the contiguous `w`-wide
