@@ -635,7 +635,7 @@ fn pair_segment_with<S: SimdToken, Q: QuadLanes<S>>(
     let args = (pad, 4, filter, starts, &mut out[..], 8);
     macro_rules! copy {
         () => {
-            cdef_copy_centre_rows::<8, STRIDE, 4, 4, AREA, _>(pad, 4, out, 8)
+            cdef_copy_centre_rows::<S, 8, STRIDE, 4, 4, AREA, _>(simd, pad, 4, out, 8)
         };
     }
     macro_rules! clamped {
@@ -996,7 +996,7 @@ fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     let range = i32::from(max) - i32::from(base);
     macro_rules! copy {
         () => {
-            cdef_copy_centre_rows::<8, STRIDE, 2, 8, AREA, _>(pad, 8, out, out_stride)
+            cdef_copy_centre_rows::<S, 8, STRIDE, 2, 8, AREA, _>(simd, pad, 8, out, out_stride)
         };
     }
     macro_rules! clamped {

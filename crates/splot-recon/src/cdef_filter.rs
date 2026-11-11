@@ -1054,10 +1054,12 @@ macro_rules! cdef_by_families {
 }
 
 /// Copies a block's centre samples, the output of a block with no active
-/// tap family.
+/// tap family; into `u8` storage, `W <= 8` centre samples narrow as one
+/// zero-padded lane group, and a sample above 255 fails the copy.
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_copy_centre_rows<
+    S: SimdToken,
     const W: usize,
     const STRIDE: usize,
     const CENTER: usize,
@@ -1065,6 +1067,7 @@ fn cdef_copy_centre_rows<
     const AREA: usize,
     T: ReconSample,
 >(
+    simd: S,
     pad: &[u16; AREA],
     h: usize,
     out: &mut [T],
@@ -1074,12 +1077,15 @@ fn cdef_copy_centre_rows<
         let start = (2 + row) * STRIDE + CENTER;
         let center = pad.get(start..)?.first_chunk::<W>()?;
         if let Some(out) = T::u8_slice_mut(&mut *out) {
-            for (out, &sample) in cdef_output_row::<W, u8>(out, out_stride, row)?
-                .iter_mut()
-                .zip(center)
-            {
-                *out = u8::try_from(sample).ok()?;
+            let mut lanes = [0u16; 8];
+            lanes.get_mut(..W)?.copy_from_slice(center); // splot-copy-ok: zero-padded lane group
+            let lanes = u16x8::load_array(simd, lanes);
+            if simd.any_true_mask16x8(lanes.simd_gt(u16x8::splat(simd, 255))) {
+                return None;
             }
+            let bytes = simd.narrow_u16x8(lanes, lanes).bitcast::<u8x16<S>>();
+            let out = cdef_output_row::<W, u8>(out, out_stride, row)?;
+            out.copy_from_slice(bytes.as_slice().get(..W)?); // splot-copy-ok: the group's own lanes
         } else {
             let out = T::u16_slice_mut(&mut *out)?;
             cdef_output_row::<W, u16>(out, out_stride, row)?.copy_from_slice(center); // splot-copy-ok: unfiltered block keeps its centre samples
@@ -1299,7 +1305,9 @@ fn cdef_filter_block_rows<
 ) -> Option<()> {
     macro_rules! copy {
         () => {
-            cdef_copy_centre_rows::<W, STRIDE, CENTER, ROWS, AREA, _>(pad, h, out, out_stride)
+            cdef_copy_centre_rows::<S, W, STRIDE, CENTER, ROWS, AREA, _>(
+                simd, pad, h, out, out_stride,
+            )
         };
     }
     let args = (pad, h, filter, starts, &mut *out, out_stride);

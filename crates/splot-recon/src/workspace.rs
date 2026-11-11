@@ -730,20 +730,20 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         Ok(())
     }
 
-    /// The 8-bit samples of a residual block from its origin and their row
-    /// stride, for a reconstruction added in place, after the same checks as
-    /// [`Self::add_residual_rect_block`]; `None` when the samples are not
-    /// 8-bit or the block overhangs storage.
+    /// The samples of a residual block from its origin and their row stride,
+    /// for a reconstruction added in place, after the same checks as
+    /// [`Self::add_residual_rect_block`]; `None` when the block overhangs
+    /// storage.
     ///
     /// # Errors
     /// Returns the [`Self::add_residual_rect_block`] geometry errors.
-    pub fn u8_residual_rect_mut(
+    pub fn residual_rect_mut(
         &mut self,
         plane: PlaneId,
         x: usize,
         y: usize,
         size: IntraRectBlockSize,
-    ) -> Result<Option<(&mut [u8], usize)>> {
+    ) -> Result<Option<(&mut [T], usize)>> {
         let rect = block_rect(x, y, size)?;
         if let Self::Frame(workspace) = self {
             let target = workspace.plane_mut(plane)?;
@@ -753,9 +753,9 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             let stride = target.stride;
             let base = target.band_row(rect.y(), rect.height())? * stride + rect.x();
             let end = base + (rect.height() - 1) * stride + rect.width();
-            let samples = T::u8_slice_mut(&mut target.samples[..]);
-            return Ok(samples
-                .and_then(|samples| samples.get_mut(base..end))
+            return Ok(target
+                .samples
+                .get_mut(base..end)
                 .map(|samples| (samples, stride)));
         }
         let target = self.residual_rect_target(plane, rect)?;
@@ -763,8 +763,10 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             return Ok(None);
         }
         let stride = target.stride;
-        let samples = target.samples.get_mut(target.base..).unwrap_or_default();
-        Ok(T::u8_slice_mut(samples).map(|samples| (samples, stride)))
+        Ok(target
+            .samples
+            .get_mut(target.base..)
+            .map(|samples| (samples, stride)))
     }
 
     /// Adds an adjusted-size signed residual block directly to reconstructed

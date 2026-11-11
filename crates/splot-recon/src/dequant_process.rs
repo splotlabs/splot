@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use fearless_simd::{Bytes as _, Simd, SimdBase as _, i32x8, u32x8};
+use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase as _, i32x8, u32x8};
 
 use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
 
@@ -172,74 +172,123 @@ pub fn dequantize_block(
     let written = quant.len().next_multiple_of(tx_width);
     let (out, tail) = out[..written].split_at_mut(quant.len());
     tail.fill(0);
-    if params.qm.is_none() && dequantize_flat_block(params, quant, out) {
-        return Ok(written);
+    let denom = params.dq_denom.max(1);
+    if !denom.is_power_of_two() {
+        return Err(ReconError::InvalidDequantDenominator {
+            dq_denom: params.dq_denom,
+        });
     }
-    for (idx, (slot, &coeff)) in out.iter_mut().zip(quant).enumerate() {
-        let (i, j) = (idx / tx_width, idx % tx_width);
-        let base_q = if idx == 0 {
-            params.dc_quant
-        } else {
-            params.ac_quant
-        };
-        let q2 = match params.qm.as_ref() {
-            Some(qm) => {
-                let m = if let Some(user) = &qm.user {
-                    user_quantization_matrix_weight(user, i, j, tx_width, tx_height)?
-                } else {
-                    quantization_matrix_weight(&QmWeightIndex {
-                        seg_level: qm.seg_level,
-                        plane_is_chroma: qm.plane_is_chroma,
-                        qm_offset: qm.qm_offset,
-                        row: i,
-                        col: j,
-                        tx_width,
-                        tx_height,
-                    })?
-                };
-                qm_weighted_quantizer(base_q, m)
-            }
-            None => base_q,
-        };
-        *slot = dequant_coefficient(coeff, q2, params.dq_denom, params.bit_depth);
-    }
+    baseline_simd!(simd => dequantize_groups(simd, params, quant, out))?;
     Ok(written)
 }
 
-/// Dequantizes a whole `useQm == 0` block with the § 7.14.4 quantizer carried in
-/// registers, widest lane group first.
+/// Dequantizes `quant` into the as long `out` with the § 7.14.4 quantizer
+/// carried in registers, eight coefficients a group, for a power-of-two
+/// `dq_denom`.
 ///
 /// Every coefficient but `(0, 0)` takes `ac_quant`, so the first lane group
-/// takes `dc_quant` in lane 0 and the rest `ac_quant` throughout — the same
-/// values the per-coefficient loop writes, in the same slots. A last group
-/// shorter than eight loads zero-padded and stores only its own lanes.
-/// Returns `false` when `dq_denom` is not a power of two, which leaves the
-/// § 7.14.4 divide to the caller's per-coefficient loop.
-fn dequantize_flat_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i32]) -> bool {
-    let denom = params.dq_denom.max(1);
-    if !denom.is_power_of_two() {
-        return false;
-    }
-    let denom_shift = denom.trailing_zeros();
+/// takes `dc_quant` in lane 0 and the rest `ac_quant` throughout, each
+/// weighted by its quantization-matrix row under `useQm` — the values the
+/// per-coefficient [`dequant_coefficient`] writes, in the same slots. A last
+/// group shorter than eight loads zero-padded and stores only its own lanes.
+#[allow(
+    clippy::inline_always,
+    reason = "measured § 7.14.4 dequantization hot path"
+)]
+#[inline(always)]
+fn dequantize_groups<S: Simd>(
+    simd: S,
+    params: &DequantBlockParams,
+    quant: &[i32],
+    out: &mut [i32],
+) -> Result<()> {
+    let denom_shift = params.dq_denom.max(1).trailing_zeros();
     let bound = 1i32 << (7 + u32::from(params.bit_depth.bits()));
     let ac = params.ac_quant;
-    baseline_simd!(simd => {
-        let mut q2 = u32x8::load_array(simd, [params.dc_quant, ac, ac, ac, ac, ac, ac, ac]);
-        let (out_groups, out_tail) = out.as_chunks_mut::<8>();
-        let (groups, tail) = quant.as_chunks::<8>();
-        for (out, &quant) in out_groups.iter_mut().zip(groups) {
-            let v = i32x8::load_array(simd, quant);
-            *out = dequant_lanes(simd, v, q2, denom_shift, bound).into();
-            q2 = u32x8::splat(simd, ac);
-        }
-        if !tail.is_empty() {
-            let mut lanes = [0i32; 8];
-            lanes[..tail.len()].copy_from_slice(tail); // splot-copy-ok: zero-padded lane group
-            let v = dequant_lanes(simd, i32x8::load_array(simd, lanes), q2, denom_shift, bound);
-            out_tail.copy_from_slice(&v.as_array()[..out_tail.len()]); // splot-copy-ok: the group's own lanes
-        }
-    });
-    true
+    let quantizers = |group: usize, len: usize| -> Result<u32x8<S>> {
+        let base = if group == 0 {
+            u32x8::load_array(simd, [params.dc_quant, ac, ac, ac, ac, ac, ac, ac])
+        } else {
+            u32x8::splat(simd, ac)
+        };
+        let Some(qm) = params.qm.as_ref() else {
+            return Ok(base);
+        };
+        let weights = qm_weights(params, qm, 8 * group, len)?;
+        Ok(qm_weighted_lanes(
+            simd,
+            base,
+            i32x8::load_array(simd, weights),
+        ))
+    };
+    let (out_groups, out_tail) = out.as_chunks_mut::<8>();
+    let (groups, tail) = quant.as_chunks::<8>();
+    for (group, (out, &quant)) in out_groups.iter_mut().zip(groups).enumerate() {
+        let v = i32x8::load_array(simd, quant);
+        *out = dequant_lanes(simd, v, quantizers(group, 8)?, denom_shift, bound).into();
+    }
+    if !tail.is_empty() {
+        let mut lanes = [0i32; 8];
+        lanes[..tail.len()].copy_from_slice(tail); // splot-copy-ok: zero-padded lane group
+        let q2 = quantizers(groups.len(), tail.len())?;
+        let v = dequant_lanes(simd, i32x8::load_array(simd, lanes), q2, denom_shift, bound);
+        out_tail.copy_from_slice(&v.as_array()[..out_tail.len()]); // splot-copy-ok: the group's own lanes
+    }
+    Ok(())
+}
+
+/// The § 7.14.4 quantization-matrix weights of the `len <= 8` coefficients
+/// from raster index `start`, zero past them: a slice of the built-in
+/// `Quantizer_Matrix` row, or the per-coefficient lookup of a user matrix
+/// (and of a built-in row the table does not cover, to report its error).
+fn qm_weights(
+    params: &DequantBlockParams,
+    qm: &QmDequant,
+    start: usize,
+    len: usize,
+) -> Result<[i32; 8]> {
+    let mut weights = [0i32; 8];
+    let at = qm.qm_offset + start;
+    if qm.user.is_none()
+        && let Some(row) = QUANTIZER_MATRIX
+            .get(qm.seg_level)
+            .and_then(|level| level[usize::from(qm.plane_is_chroma)].get(at..at + len))
+    {
+        weights[..len].copy_from_slice(row); // splot-copy-ok: one weight-row group
+        return Ok(weights);
+    }
+    let (tx_width, tx_height) = (params.tx_width, params.tx_height);
+    for (index, weight) in (start..).zip(&mut weights[..len]) {
+        let (row, col) = (index / tx_width, index % tx_width);
+        *weight = match &qm.user {
+            Some(user) => user_quantization_matrix_weight(user, row, col, tx_width, tx_height)?,
+            None => quantization_matrix_weight(&QmWeightIndex {
+                seg_level: qm.seg_level,
+                plane_is_chroma: qm.plane_is_chroma,
+                qm_offset: qm.qm_offset,
+                row,
+                col,
+                tx_width,
+                tx_height,
+            })?,
+        };
+    }
+    Ok(weights)
+}
+
+/// [`qm_weighted_quantizer`] of eight lanes, `Round2(q * m, 5)` saturating
+/// at `u32::MAX`, for weights below `2^16`: with `q = qh * 2^16 + ql` the
+/// result is `qh * m * 2^11 + Round2(ql * m, 5)`, and every product fits
+/// `u32`. A negative weight counts as zero, as the clamp does.
+#[inline]
+fn qm_weighted_lanes<S: Simd>(simd: S, q: u32x8<S>, m: i32x8<S>) -> u32x8<S> {
+    let m: u32x8<S> = m.max(i32x8::splat(simd, 0)).bitcast();
+    let high = (q >> 16) * m;
+    let low = ((q & 0xFFFF) * m + (1 << (QM_WEIGHT_SHIFT - 1))) >> QM_WEIGHT_SHIFT;
+    let wide = high << (16 - QM_WEIGHT_SHIFT);
+    let sum = wide + low;
+    let over = (high >> (16 + QM_WEIGHT_SHIFT)).simd_ne(u32x8::splat(simd, 0)) | sum.simd_lt(wide);
+    over.select(u32x8::splat(simd, u32::MAX), sum)
 }
 
 /// [`dequant_coefficient`] of eight lanes with per-lane quantizers `q2`, a
@@ -518,11 +567,48 @@ mod tests {
         );
     }
 
-    /// The `useQm == 0` lane groups must reproduce [`dequant_coefficient`]
-    /// exactly for every block shape, bit depth, and `dq_denom` shift, over
-    /// randomized coefficients including the `i32` extremes.
+    /// The per-coefficient § 7.14.4 oracle of [`dequantize_groups`].
+    fn reference_dequantize(params: &DequantBlockParams, quant: &[i32]) -> Result<Vec<i32>> {
+        let (tw, th) = (params.tx_width, params.tx_height);
+        let mut out = vec![0; quant.len()];
+        for (idx, (slot, &coeff)) in out.iter_mut().zip(quant).enumerate() {
+            let (row, col) = (idx / tw, idx % tw);
+            let base_q = if idx == 0 {
+                params.dc_quant
+            } else {
+                params.ac_quant
+            };
+            let q2 = match &params.qm {
+                Some(qm) => {
+                    let m = match &qm.user {
+                        Some(user) => user_quantization_matrix_weight(user, row, col, tw, th)?,
+                        None => quantization_matrix_weight(&QmWeightIndex {
+                            seg_level: qm.seg_level,
+                            plane_is_chroma: qm.plane_is_chroma,
+                            qm_offset: qm.qm_offset,
+                            row,
+                            col,
+                            tx_width: tw,
+                            tx_height: th,
+                        })?,
+                    };
+                    qm_weighted_quantizer(base_q, m)
+                }
+                None => base_q,
+            };
+            *slot = dequant_coefficient(coeff, q2, params.dq_denom, params.bit_depth);
+        }
+        Ok(out)
+    }
+
+    /// The lane groups must reproduce the per-coefficient oracle exactly for
+    /// every block shape, bit depth and `dq_denom` shift, flat and under a
+    /// built-in or user quantization matrix, over randomized coefficients
+    /// including the `i32` extremes and huge quantizers, for every prefix
+    /// length a lane group can end in; a matrix lookup past the table
+    /// reports the oracle's first error.
     #[test]
-    fn flat_lane_groups_match_the_per_coefficient_reference() {
+    fn lane_groups_match_the_per_coefficient_reference() {
         let mut state = 0x2545_f491_4f6c_dd1du64;
         let mut next = move || {
             state ^= state << 13;
@@ -533,15 +619,45 @@ mod tests {
         for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
             for &tx_width in &[4usize, 8, 16, 32] {
                 for &tx_height in &[4usize, 8, 16, 32] {
-                    for dq_shift in 0..4u32 {
+                    for (dq_shift, matrix) in
+                        (0..4u32).flat_map(|s| [(s, 0), (s, 1), (s, 2), (s, 3)])
+                    {
+                        let user = QmUserPlane {
+                            width: 8,
+                            height: if tx_width > tx_height { 4 } else { 8 },
+                            values: (0..64).map(|v| (v * 7 % 255 + 1) as u8).collect(),
+                        };
+                        let (seg_level, chroma) = ((next() % 15) as usize, next() % 2 == 1);
+                        let offset = (next() % 2000) as usize;
+                        let qm = |qm_offset: usize, user: Option<QmUserPlane>| {
+                            Some(QmDequant {
+                                seg_level,
+                                plane_is_chroma: chroma,
+                                qm_offset,
+                                user,
+                            })
+                        };
+                        let huge = next() % 4 == 0;
+                        let quantizer = |n: u64| {
+                            if huge {
+                                u32::MAX - (n % 9) as u32
+                            } else {
+                                (n % 8192) as u32 + 1
+                            }
+                        };
                         let params = DequantBlockParams {
-                            dc_quant: (next() % 8192) as u32 + 1,
-                            ac_quant: (next() % 8192) as u32 + 1,
+                            dc_quant: quantizer(next()),
+                            ac_quant: quantizer(next()),
                             tx_width,
                             tx_height,
                             dq_denom: 1 << dq_shift,
                             bit_depth,
-                            qm: None,
+                            qm: match matrix {
+                                0 => None,
+                                1 => qm(offset, None),
+                                2 => qm(3600 - 13, None),
+                                _ => qm(0, Some(user)),
+                            },
                         };
                         let samples = tx_width * tx_height;
                         let mut quant = vec![0i32; samples];
@@ -553,28 +669,24 @@ mod tests {
                                 _ => (next() as i32) >> (next() % 24) as i32,
                             };
                         }
-                        let mut expected = vec![0i32; samples];
-                        for (index, slot) in expected.iter_mut().enumerate() {
-                            let base_q = if index == 0 {
-                                params.dc_quant
-                            } else {
-                                params.ac_quant
-                            };
-                            *slot = dequant_coefficient(
-                                quant[index],
-                                base_q,
-                                params.dq_denom,
-                                bit_depth,
-                            );
-                        }
                         for len in [samples, 1, 3, 7, 9, samples - 5] {
+                            let expected = reference_dequantize(&params, &quant[..len]);
                             let mut actual = vec![0i32; len];
-                            assert!(dequantize_flat_block(&params, &quant[..len], &mut actual));
-                            assert_eq!(
-                                actual,
-                                expected[..len],
-                                "{tx_width}x{tx_height} {bit_depth:?} shift {dq_shift} len {len}"
+                            let got = baseline_simd!(simd => dequantize_groups(simd, &params, &quant[..len], &mut actual));
+                            let label = format!(
+                                "{tx_width}x{tx_height} {bit_depth:?} shift {dq_shift} matrix {matrix} len {len}"
                             );
+                            match expected {
+                                Ok(expected) => {
+                                    got.unwrap();
+                                    assert_eq!(actual, expected, "{label}");
+                                }
+                                Err(error) => assert_eq!(
+                                    got.unwrap_err().to_string(),
+                                    error.to_string(),
+                                    "{label}"
+                                ),
+                            }
                         }
                     }
                 }
@@ -582,21 +694,18 @@ mod tests {
         }
     }
 
-    /// A non-power-of-two `dq_denom` has no shift identity, so the fast path
-    /// must decline and leave the § 7.14.4 divide to the per-coefficient loop.
+    /// A `dq_denom` that is not the § 7.14.4 `1 << shift` is rejected.
     #[test]
-    fn flat_block_declines_a_non_power_of_two_denominator() {
+    fn dequantize_block_rejects_a_non_power_of_two_denominator() {
         let params = DequantBlockParams {
             dq_denom: 3,
             ..params(4, 4)
         };
         let mut out = [0i32; 16];
-        assert!(!dequantize_flat_block(&params, &[7i32; 16], &mut out));
-        dequantize_block(&params, &[7i32; 16], &mut out).unwrap();
-        assert_eq!(
-            out[1],
-            dequant_coefficient(7, params.ac_quant, 3, params.bit_depth)
-        );
+        assert!(matches!(
+            dequantize_block(&params, &[7i32; 16], &mut out),
+            Err(ReconError::InvalidDequantDenominator { dq_denom: 3 })
+        ));
     }
 
     #[test]

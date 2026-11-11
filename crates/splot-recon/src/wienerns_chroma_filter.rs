@@ -944,27 +944,26 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
         }
         _ => false,
     };
-    #[cfg(target_arch = "aarch64")]
-    let narrow_done = match T::u16_slice(chroma) {
-        Some(chroma) if (8..16).contains(&params.width) => {
-            filter_chroma_lanes8(
-                simd,
-                output,
-                params,
-                (chroma, chroma_stride),
-                (luma_ds, luma_stride),
-                max_sample,
-            );
-            true
-        }
-        _ => false,
-    };
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[cfg(not(target_arch = "x86_64"))]
     let narrow_done = false;
-    for r in (0..params.height).filter(|_| !narrow_done) {
+    if narrow_done {
+        return;
+    }
+    if params.width < 16 {
+        filter_chroma_lanes8(
+            simd,
+            output,
+            params,
+            (chroma, chroma_stride),
+            (luma_ds, luma_stride),
+            max_sample,
+        );
+        return;
+    }
+    for r in 0..params.height {
         let output = &mut output[r * params.output_stride..][..params.width];
         let mut c = 0;
-        while c < params.width && params.width >= 16 {
+        while c < params.width {
             c = c.min(params.width - 16);
             #[cfg(target_arch = "x86_64")]
             if let (Some((token, chroma)), Some(vectors)) = (wide, vectors.as_ref())
@@ -1049,18 +1048,6 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
             O::write_lanes::<16>(&mut output[c..c + 16], values.into());
             c += 16;
         }
-        for (offset, slot) in output[c..].iter_mut().enumerate() {
-            *slot = O::from_clamped_u16(filter_chroma_padded_sample(
-                params,
-                chroma,
-                chroma_stride,
-                luma_ds,
-                luma_stride,
-                r,
-                c + offset,
-                max_sample,
-            ));
-        }
     }
 }
 
@@ -1123,50 +1110,56 @@ fn filter_chroma_narrow<O: ChromaOutputSample>(
     true
 }
 
-/// [`filter_chroma_rows`] on aarch64 for a block at least 8 samples wide:
-/// 8-lane groups, the last one of a row overlapping the one before it when
-/// the width is not a multiple of 8. A group whose window is short takes the
-/// scalar kernel.
-#[cfg(target_arch = "aarch64")]
-fn filter_chroma_lanes8<S: Simd, O: ChromaOutputSample>(
+/// [`filter_chroma_rows`] for a block narrower than 16 samples: 8-lane
+/// groups, the last one of a row overlapping the one before it, or one group
+/// whose lanes past a block narrower than 8 are discarded. A group whose
+/// source is not a whole `u16` window reads a zero-padded `u16` copy.
+fn filter_chroma_lanes8<S: Simd, O: ChromaOutputSample, T: ReconSample>(
     simd: S,
     output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
-    (chroma, chroma_stride): (&[u16], usize),
+    (chroma, chroma_stride): (&[T], usize),
     (luma_ds, luma_stride): (&[u16], usize),
     max_sample: u16,
 ) {
     let reads_luma = params.reads_luma();
     let weights = lanes8::weights(simd, params.coeffs);
-    let last = params.width - 8;
+    let last = params.width.saturating_sub(8);
+    let (mut chroma_copy, mut luma_copy) = ([[0; lanes8::REACH]; 5], [[0; lanes8::REACH]; 5]);
     for r in 0..params.height {
         let output = &mut output[r * params.output_stride..][..params.width];
         let mut c = 0;
         while c < params.width {
             c = c.min(last);
-            let window = |samples, stride| lanes8::window(samples, r * stride + c, stride);
-            let chroma_window = window(chroma, chroma_stride);
-            let windows = if reads_luma {
-                chroma_window.zip(window(luma_ds, luma_stride))
-            } else {
-                chroma_window.map(|window| (window, window))
+            let chroma_base = r * chroma_stride + c;
+            let chroma = match T::u16_slice(chroma)
+                .and_then(|samples| lanes8::window(samples, chroma_base, chroma_stride))
+            {
+                Some(window) => window,
+                None => lanes8::padded_window(
+                    simd,
+                    chroma,
+                    chroma_base,
+                    chroma_stride,
+                    &mut chroma_copy,
+                ),
             };
-            if let Some((chroma, luma)) = windows {
-                let values =
-                    lanes8::filter8(simd, &chroma, &luma, &weights, reads_luma, max_sample);
-                O::write_lanes::<8>(&mut output[c..c + 8], values);
+            let luma = if reads_luma {
+                let base = r * luma_stride + c;
+                match lanes8::window(luma_ds, base, luma_stride) {
+                    Some(window) => window,
+                    None => lanes8::padded_window(simd, luma_ds, base, luma_stride, &mut luma_copy),
+                }
             } else {
-                for (offset, slot) in output[c..c + 8].iter_mut().enumerate() {
-                    *slot = O::from_clamped_u16(filter_chroma_padded_sample(
-                        params,
-                        chroma,
-                        chroma_stride,
-                        luma_ds,
-                        luma_stride,
-                        r,
-                        c + offset,
-                        max_sample,
-                    ));
+                chroma
+            };
+            let values = lanes8::filter8(simd, &chroma, &luma, &weights, reads_luma, max_sample);
+            match output.get_mut(c..c + 8) {
+                Some(output) => O::write_lanes::<8>(output, values),
+                None => {
+                    for (slot, value) in output[c..].iter_mut().zip(values) {
+                        *slot = O::from_clamped_u16(value);
+                    }
                 }
             }
             c += 8;
@@ -1202,6 +1195,7 @@ fn filter_chroma_padded_u16_scalar<O: ChromaOutputSample, T: ReconSample>(
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn filter_chroma_padded_sample<T: ReconSample>(
     params: &WienerNsChromaFilter<'_>,
@@ -1612,9 +1606,10 @@ mod tests;
 
 /// The 8-lane kernel of [`filter_chroma_lanes8`], with only `fearless_simd`
 /// operations: each tap term widens into `i32` lanes by its coefficient.
-#[cfg(target_arch = "aarch64")]
 mod lanes8 {
-    use fearless_simd::{Simd, SimdIntWiden, i16x8, i32x4, prelude::*, u16x8};
+    use fearless_simd::{Simd, SimdIntWiden, i16x8, i32x4, prelude::*, u8x16, u16x8};
+
+    use crate::ReconSample;
 
     use super::{
         WIENER_NS_CHROMA_COEFF_SLOTS, WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS,
@@ -1622,7 +1617,7 @@ mod lanes8 {
     };
 
     const R: usize = WIENER_NS_CHROMA_TAP_RADIUS;
-    const REACH: usize = 8 + 2 * R;
+    pub(super) const REACH: usize = 8 + 2 * R;
     const TERMS: usize = WIENER_NS_CHROMA_COEFF_SLOTS + WIENER_NS_CONFIG_UV.len();
 
     /// The padded rows of one 8-sample group: row `R + dy` from column
@@ -1635,6 +1630,33 @@ mod lanes8 {
     pub(super) fn window(samples: &[u16], base: usize, stride: usize) -> Option<Window<'_>> {
         let row = |dy: usize| samples.get(base + dy * stride..)?.first_chunk::<REACH>();
         Some([row(0)?, row(1)?, row(2)?, row(3)?, row(4)?])
+    }
+
+    /// The [`Window`] of `samples` from `base` as [`window`] reads it,
+    /// widened into `copy` and zero past the end of `samples`.
+    #[inline]
+    pub(super) fn padded_window<'c, S: Simd, T: ReconSample>(
+        simd: S,
+        samples: &[T],
+        base: usize,
+        stride: usize,
+        copy: &'c mut [[u16; REACH]; 2 * R + 1],
+    ) -> Window<'c> {
+        for (dy, row) in copy.iter_mut().enumerate() {
+            let source = samples.get(base + dy * stride..).unwrap_or_default();
+            let source = &source[..source.len().min(REACH)];
+            *row = [0; REACH];
+            if let Some(source) = T::u16_slice(source) {
+                row[..source.len()].copy_from_slice(source); // splot-copy-ok: zero-padded window row
+            } else if let Some(source) = T::u8_slice(source) {
+                let mut bytes = [0u8; 16];
+                bytes[..source.len()].copy_from_slice(source); // splot-copy-ok: zero-padded window row
+                let (low, high) = simd.widen_u8x16(u8x16::load_array(simd, bytes));
+                let wide: [u16; 16] = simd.combine_u16x8(low, high).into();
+                row.copy_from_slice(&wide[..REACH]); // splot-copy-ok: zero-padded window row
+            }
+        }
+        copy.each_ref()
     }
 
     #[inline]

@@ -836,8 +836,10 @@ fn padded_cells_partial_cell_rows_match_the_callback_reference() {
     }
 }
 
+/// A class whose centre scale leaves `i16` (only coefficients outside the
+/// § 5.20.2.1 ranges give one) is rejected by the padded filter.
 #[test]
-fn padded_center_scale_outside_i16_matches_the_callback_reference() {
+fn padded_center_scale_outside_i16_is_rejected() {
     let (width, height) = (37, 2);
     let coeffs = [[2000; WIENER_NS_LUMA_COEFFS]];
     let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
@@ -854,14 +856,74 @@ fn padded_center_scale_outside_i16_matches_the_callback_reference() {
     let mut actual = vec![0u16; width * height];
     let source_lines: Vec<_> = padded.chunks(stride).collect();
     let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
-    wiener_ns_filter_luma_block_padded_into(
+    let error = wiener_ns_filter_luma_block_padded_into(
         &mut actual,
         &params,
         &source,
         &mut WienerNsLumaScratch::default(),
     )
-    .unwrap();
-    assert_eq!(actual, reference);
+    .unwrap_err();
+    assert_eq!(
+        error,
+        ReconError::WienerNsFilterCenterScaleOutOfRange {
+            center_scale: 128 - 2 * 2000 * WIENER_NS_LUMA_COEFFS as i32
+        }
+    );
+    assert!(reference.iter().any(|&v| v != 0));
+}
+
+/// With out-of-range samples anywhere in the padded window (read taps or
+/// unread corners) and narrow, odd-width and per-sample subclass segments,
+/// the padded filter returns exactly the callback reference: the same
+/// samples, or the same first read-order error.
+#[test]
+fn padded_out_of_range_samples_and_segments_match_the_callback_reference() {
+    let mut state = 0x0bad_c0de_u64;
+    let mut next = move |range: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % range as u64) as usize
+    };
+    let classes = [
+        [3, -2, 5, 1, -4, 2, 0, 1, -1, 2, 3, -3, 1, 0, 2, -1],
+        [-5, 4, 2, -2, 1, 0, 3, -1, 2, -2, 1, 1, -3, 2, 0, 1],
+    ];
+    for trial in 0..120 {
+        let (width, height) = (1 + next(40), 1 + next(5));
+        let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+        let mut padded: Vec<u16> = (0..(height + 2 * WIENER_NS_LUMA_TAP_RADIUS) * stride)
+            .map(|_| next(1024) as u16)
+            .collect();
+        for _ in 0..trial % 3 {
+            let spot = next(padded.len());
+            padded[spot] = 1024 + next(100) as u16;
+        }
+        let subclasses: Vec<usize> = (0..width * height)
+            .map(|i| (i / (1 + trial % 5)) % 2)
+            .collect();
+        let layout = (trial % 2 == 1).then_some(&subclasses[..]);
+        let params = params(width, height, width, BitDepth::Ten, &classes, layout);
+        let source_at = |x: isize, y: isize| {
+            let radius = WIENER_NS_LUMA_TAP_RADIUS as isize;
+            padded[((y + radius) as usize) * stride + (x + radius) as usize]
+        };
+        let mut reference = vec![0u16; width * height];
+        let expected = wiener_ns_filter_luma_block(&mut reference, &params, source_at);
+        let source_lines: Vec<_> = padded.chunks(stride).collect();
+        let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
+        let mut actual = vec![0u16; width * height];
+        let got = wiener_ns_filter_luma_block_padded_into(
+            &mut actual,
+            &params,
+            &source,
+            &mut WienerNsLumaScratch::default(),
+        );
+        assert_eq!(got, expected, "trial {trial} {width}x{height}");
+        if got.is_ok() {
+            assert_eq!(actual, reference, "trial {trial} {width}x{height}");
+        }
+    }
 }
 
 #[test]

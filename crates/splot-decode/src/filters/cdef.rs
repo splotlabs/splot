@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use fearless_simd::{SimdBase, prelude::*, u8x16, u16x16};
+use fearless_simd::{SimdBase, prelude::*, u8x16, u16x8, u16x16, u64x2};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
@@ -1413,33 +1413,53 @@ fn stripe_rows_from<T: ReconSample>(
 /// Kept out of line: inlined into the stripe loop, it reloaded its plane
 /// bases, lengths and stride from the stack for every row.
 #[inline(never)]
-fn gather_chroma_pair<T: Copy>(
+fn gather_chroma_pair<T: ReconSample>(
     u_samples: &[T],
     v_samples: &[T],
+    base: usize,
+    stride: usize,
+    pad: &mut [u16; CDEF_PADDED_AREA],
+) -> Result<(), CdefError> {
+    let gathered = baseline_simd!(simd => gather_chroma_pair_lanes(simd, (u_samples, v_samples), base, stride, pad));
+    gathered.ok_or(CdefError::Workspace)
+}
+
+/// [`gather_chroma_pair`] with one `u` and one `v` row zipped per vector:
+/// `u8` rows byte-interleaved then widened, `u16` rows interleaved as they are.
+#[allow(clippy::inline_always, reason = "one dispatch per pair block")]
+#[inline(always)]
+fn gather_chroma_pair_lanes<S: Simd, T: ReconSample>(
+    simd: S,
+    (u_samples, v_samples): (&[T], &[T]),
     mut base: usize,
     stride: usize,
     pad: &mut [u16; CDEF_PADDED_AREA],
-) -> Result<(), CdefError>
-where
-    u16: From<T>,
-{
+) -> Option<()> {
     for row in 0..CHROMA_PAIR_SIDE + 2 * CDEF_TAP_REACH {
-        let u_row = u_samples
-            .get(base..base + CHROMA_PAIR_SPAN)
-            .ok_or(CdefError::Workspace)?;
-        let v_row = v_samples
-            .get(base..base + CHROMA_PAIR_SPAN)
-            .ok_or(CdefError::Workspace)?;
+        let u_row = u_samples.get(base..)?.first_chunk::<CHROMA_PAIR_SPAN>()?;
+        let v_row = v_samples.get(base..)?.first_chunk::<CHROMA_PAIR_SPAN>()?;
         let lanes = pad
-            .get_mut(row * CDEF_PAIR_STRIDE..)
-            .and_then(<[u16]>::first_chunk_mut::<{ 2 * CHROMA_PAIR_SPAN }>)
-            .ok_or(CdefError::Workspace)?;
-        for (pair, (&u, &v)) in lanes.chunks_exact_mut(2).zip(u_row.iter().zip(v_row)) {
-            pair.copy_from_slice(&[u16::from(u), u16::from(v)]); // splot-copy-ok: interleave the chroma pair's taps
+            .get_mut(row * CDEF_PAIR_STRIDE..)?
+            .first_chunk_mut::<{ 2 * CHROMA_PAIR_SPAN }>()?;
+        if let (Some(u), Some(v)) = (T::u8_slice(u_row), T::u8_slice(v_row)) {
+            let bytes = |row: &[u8]| {
+                let word = row
+                    .first_chunk::<8>()
+                    .map_or(0, |row| u64::from_le_bytes(*row));
+                u64x2::load_array(simd, [word, 0]).bitcast::<u8x16<S>>()
+            };
+            let (low, high) = simd.widen_u8x16(simd.zip_low_u8x16(bytes(u), bytes(v)));
+            *lanes = simd.combine_u16x8(low, high).into();
+        } else {
+            let (u, v) = (T::u16_slice(u_row)?, T::u16_slice(v_row)?);
+            let (u, v) = (u16x8::from_slice(simd, u), u16x8::from_slice(simd, v));
+            *lanes = simd
+                .combine_u16x8(simd.zip_low_u16x8(u, v), simd.zip_high_u16x8(u, v))
+                .into();
         }
         base += stride;
     }
-    Ok(())
+    Some(())
 }
 
 fn compute_cdef_filter_plane<S: ReconSample>(
@@ -1518,12 +1538,8 @@ fn gather_interior_pad<S: ReconSample>(
         let dst = pad
             .get_mut(dst_start..dst_start + src.len())
             .ok_or(CdefError::Workspace)?;
-        if let Some(src) = S::u16_slice(src) {
-            dst.copy_from_slice(src);
-        } else {
-            for (dst, src) in dst.iter_mut().zip(src) {
-                *dst = src.to_u16();
-            }
+        for (dst, src) in dst.iter_mut().zip(src) {
+            *dst = src.to_u16();
         }
     }
     Ok(())
@@ -1532,7 +1548,7 @@ fn gather_interior_pad<S: ReconSample>(
 /// [`gather_interior_rows`] for the block sizes CDEF filters, or `None` for
 /// any other size.
 #[allow(clippy::too_many_arguments)]
-fn gather_interior_window<T: Copy>(
+fn gather_interior_window<T: ReconSample>(
     samples: &[T],
     width: usize,
     stride: usize,
@@ -1541,10 +1557,7 @@ fn gather_interior_window<T: Copy>(
     y0: usize,
     w: usize,
     h: usize,
-) -> Option<Result<(), CdefError>>
-where
-    u16: From<T>,
-{
+) -> Option<Result<(), CdefError>> {
     Some(match (w, h) {
         (8, 8) => gather_interior_rows::<12, 12, CDEF_PADDED_SIDE, CDEF_PADDED_AREA, _>(
             samples, width, stride, pad, x0, y0,
@@ -1566,7 +1579,7 @@ fn gather_interior_rows<
     const ROWS: usize,
     const DST_STRIDE: usize,
     const AREA: usize,
-    T: Copy,
+    T: ReconSample,
 >(
     samples: &[T],
     width: usize,
@@ -1574,10 +1587,7 @@ fn gather_interior_rows<
     pad: &mut [u16; AREA],
     x0: usize,
     y0: usize,
-) -> Result<(), CdefError>
-where
-    u16: From<T>,
-{
+) -> Result<(), CdefError> {
     let left = x0.checked_sub(CDEF_TAP_REACH).ok_or(CdefError::Workspace)?;
     if left + SPAN > width {
         return Err(CdefError::Workspace);
@@ -1597,7 +1607,7 @@ where
             .and_then(<[u16]>::first_chunk_mut::<SPAN>)
             .ok_or(CdefError::Workspace)?;
         for (dst, &src) in dst.iter_mut().zip(src) {
-            *dst = u16::from(src);
+            *dst = src.to_u16();
         }
         base += stride;
     }

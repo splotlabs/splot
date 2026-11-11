@@ -162,7 +162,7 @@ pub use intra_smooth::{
 };
 pub use inverse_transform::{InverseTransform1dType, inverse_transform_1d};
 pub use inverse_transform_2d::{InverseTransform2d, InverseTransform2dDim, inverse_transform_2d};
-pub use inverse_transform_2d_8bit::{FlatDequant, InverseTransformAdd8};
+pub use inverse_transform_2d_8bit::{FlatDequant, InverseTransformAdd};
 pub use inverse_transform_2d_outer::{
     DpcmDirection, InverseTransform2dOuter, inverse_transform_2d_outer,
     inverse_transform_2d_outer_adjusted, inverse_transform_2d_outer_with_scratch,

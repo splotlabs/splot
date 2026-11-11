@@ -117,19 +117,16 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
         ];
         for (setup, dequant, prediction, out) in pairs {
             if let Some(fused) = setup.fused()
-                && let (Some(pred), Some(samples)) = (T::u8_slice(prediction), T::u8_slice_mut(out))
-                && pred.len() == samples.len()
-            {
-                samples.copy_from_slice(pred); // splot-copy-ok: prediction under the fused add
-                if fused.add(
+                && fused.add_onto(
+                    prediction,
                     &dequant[..coded],
-                    None,
-                    samples,
+                    (None, bit_depth),
+                    out,
                     1 << log2_width,
                     &mut scratch.transform,
-                ) {
-                    continue;
-                }
+                )
+            {
+                continue;
             }
             let residual = &mut scratch.residual[..setup.samples];
             inverse_transform_2d_outer_with_scratch(

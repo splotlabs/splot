@@ -30,11 +30,12 @@ use crate::secondary_transform::{
     SecondaryInverseTransform, secondary_inverse_transform_quant,
     secondary_inverse_transform_quant_rows8,
 };
+use crate::{BitDepth, ReconSample};
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
 
-/// One 8-bit § 7.15.4.1 kernel-by-kernel transform.
+/// One § 7.15.4.1 kernel-by-kernel transform.
 #[derive(Clone, Copy)]
 pub(crate) struct Transform8 {
     pub bit_depth: crate::BitDepth,
@@ -52,14 +53,14 @@ pub(crate) struct Transform8 {
     pub dequant: Option<FlatDequant>,
 }
 
-/// The § 7.14.4 `useQm == 0` dequantization of an 8-bit transform block with
-/// a power-of-two `dq_denom`, applied as the row pass loads its input.
+/// The § 7.14.4 `useQm == 0` dequantization of a transform block with a
+/// power-of-two `dq_denom`, applied as the row pass loads its input; its
+/// clamp `±2^(BitDepth + 7)` is the row input clamp.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FlatDequant {
     dc: u32,
     ac: u32,
     denom_shift: u32,
-    bound: i32,
 }
 
 impl FlatDequant {
@@ -74,7 +75,6 @@ impl FlatDequant {
             dc: dc_quant,
             ac: ac_quant,
             denom_shift: dq_denom.trailing_zeros(),
-            bound: 1 << (7 + 8),
         })
     }
 }
@@ -89,10 +89,16 @@ struct Load {
 
 impl Load {
     /// Up to eight coefficients of `row` from `start`, zero past its end,
-    /// dequantized when the input is quantized; `dc` marks lane 0 as the DC
-    /// coefficient. No rescale or clamp.
+    /// dequantized to `±bound` when the input is quantized; `dc` marks lane
+    /// 0 as the DC coefficient. No rescale or row clamp.
     #[inline]
-    fn coeffs<S: Simd>(self, simd: S, row: &[i32], start: usize, dc: bool) -> i32x8<S> {
+    fn coeffs<S: Simd>(
+        self,
+        simd: S,
+        row: &[i32],
+        (start, bound): (usize, i32),
+        dc: bool,
+    ) -> i32x8<S> {
         let v = if let Some(chunk) = row.get(start..start + 8) {
             i32x8::from_slice(simd, chunk)
         } else {
@@ -103,11 +109,11 @@ impl Load {
             let padded: [i32; 8] = core::array::from_fn(|i| tail.get(i).copied().unwrap_or(0));
             i32x8::from_slice(simd, &padded)
         };
-        self.dequantize(simd, v, dc)
+        self.dequantize(simd, v, dc, bound)
     }
 
     #[inline]
-    fn dequantize<S: Simd>(self, simd: S, v: i32x8<S>, dc: bool) -> i32x8<S> {
+    fn dequantize<S: Simd>(self, simd: S, v: i32x8<S>, dc: bool, bound: i32) -> i32x8<S> {
         let Some(dq) = self.dequant else {
             return v;
         };
@@ -117,7 +123,7 @@ impl Load {
         } else {
             u32x8::splat(simd, dq.ac)
         };
-        dequant_lanes(simd, v, q2, dq.denom_shift, dq.bound)
+        dequant_lanes(simd, v, q2, dq.denom_shift, bound)
     }
 }
 
@@ -197,6 +203,69 @@ impl Output for AddU8<'_> {
     }
 }
 
+/// The § 7.14.3 `Clip1(prediction + residual)` of the column pass into a
+/// `w`-wide 16-bit block of `dst` with row stride `stride`, in place, for
+/// samples up to `max`.
+pub(crate) struct AddU16<'a> {
+    dst: &'a mut [u16],
+    stride: usize,
+    /// `log2(w / 8)`, or `None` for a 4-wide block.
+    chunks_log2: Option<u32>,
+    max: i16,
+}
+
+impl Output for AddU16<'_> {
+    const ADDS: bool = true;
+
+    #[inline]
+    fn put<S: Simd>(&mut self, simd: S, index: usize, v: i32x8<S>) {
+        let (stride, max) = (self.stride, self.max);
+        let Some(log2) = self.chunks_log2 else {
+            let first = 2 * index * stride;
+            let half =
+                |dst: &[u16], at: usize| dst.get(at..).and_then(<[u16]>::first_chunk::<4>).copied();
+            let (Some(a), Some(b)) = (half(self.dst, first), half(self.dst, first + stride)) else {
+                return;
+            };
+            let sum = add_u16x8(
+                simd,
+                [a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]],
+                v,
+                max,
+            );
+            for (at, half) in [(first, &sum[..4]), (first + stride, &sum[4..])] {
+                if let Some(out) = self.dst.get_mut(at..at + 4) {
+                    out.copy_from_slice(half); // splot-copy-ok: one row of a 4-wide lane group
+                }
+            }
+            return;
+        };
+        let at = (index >> log2) * stride + 8 * (index & ((1 << log2) - 1));
+        if let Some(out) = self
+            .dst
+            .get_mut(at..)
+            .and_then(<[u16]>::first_chunk_mut::<8>)
+        {
+            *out = add_u16x8(simd, *out, v, max);
+        }
+    }
+}
+
+/// Eight `Clip1(p + Clip3(-2^BitDepth, 2^BitDepth - 1, r))` of `pred` and
+/// the column sums `res`, as `Clip1(p + Sat16(r))`: both saturate alike for a
+/// `p` up to `max < 2^15`.
+#[inline]
+fn add_u16x8<S: Simd>(simd: S, pred: [u16; 8], res: i32x8<S>, max: i16) -> [u16; 8] {
+    let (lo, hi) = simd.split_i32x8(res);
+    let res: i16x8<S> = simd.saturating_narrow_i32x4(lo, hi);
+    let pred = u16x8::load_array(simd, pred).bitcast::<i16x8<S>>();
+    let sum = simd
+        .saturating_add_i16x8(pred, res)
+        .max(i16x8::splat(simd, 0))
+        .min(i16x8::splat(simd, max));
+    sum.bitcast::<u16x8<S>>().into()
+}
+
 /// Eight `Clip1(p + Clip3(-256, 255, r))` of the eight bytes of `pred` and
 /// the column sums `res`, as `Clip1(p + Sat16(r))`: both saturate alike for
 /// an 8-bit `p`.
@@ -213,11 +282,11 @@ fn add_u8x8<S: Simd>(simd: S, pred: u64, res: i32x8<S>) -> u64 {
     packed.bitcast::<u64x2<S>>().as_array()[0]
 }
 
-/// One transform shape and type that has the fused 8-bit form of the
+/// One transform shape and type that has the fused form of the
 /// § 7.15.4 process: the § 7.15.4.1 transform added in place as the § 7.14.3
 /// `Clip1(prediction + Residual)`. A block resolves it with one table lookup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct InverseTransformAdd8 {
+pub struct InverseTransformAdd {
     row: InverseTransform2dDim,
     col: InverseTransform2dDim,
     w_log2: u8,
@@ -231,21 +300,21 @@ pub struct InverseTransformAdd8 {
     passes: (avx2::Pass, avx2::Pass),
 }
 
-/// [`InverseTransformAdd8`] by `[log2W - 2][log2H - 2][PlaneTxType][useDdt]`
+/// [`InverseTransformAdd`] by `[log2W - 2][log2H - 2][PlaneTxType][useDdt]`
 /// for sides of 4 to 32 samples.
-static FUSED: [[[[Option<InverseTransformAdd8>; 2]; 16]; 4]; 4] = {
+static FUSED: [[[[Option<InverseTransformAdd>; 2]; 16]; 4]; 4] = {
     let mut out = [[[[None; 2]; 16]; 4]; 4];
     let mut i = 0;
     while i < 4 * 4 * 16 * 2 {
         let (w, h, tx_type, ddt) = (i / 128, i / 32 % 4, i / 2 % 16, i % 2 == 1);
         out[w][h][tx_type][ddt as usize] =
-            InverseTransformAdd8::resolve(tx_type, w as u32 + 2, h as u32 + 2, ddt);
+            InverseTransformAdd::resolve(tx_type, w as u32 + 2, h as u32 + 2, ddt);
         i += 1;
     }
     out
 };
 
-impl InverseTransformAdd8 {
+impl InverseTransformAdd {
     /// The fused form of `PlaneTxType` `plane_tx_type` on the original
     /// `log2_width x log2_height` transform with the `use_ddt` substitution,
     /// as [`InverseTransform2dOuter::resolve`] derives its transform, or
@@ -344,27 +413,36 @@ impl InverseTransformAdd8 {
         1 << self.h_log2
     }
 
-    /// Adds the transform of `coeffs` to the 8-bit block at the start of
-    /// `dst`, whose rows are `stride` apart.
+    /// Adds the transform of `coeffs` at `bit_depth` to the block at the
+    /// start of `dst`, whose rows are `stride` apart.
     ///
     /// With `dequant`, `coeffs` holds the quantized coefficients in raster
     /// order up to the last nonzero one, dequantized as they load; with
     /// `None` it is an already dequantized prefix of the block. Returns
-    /// `false` with `dst` untouched when `coeffs` is longer than the block or
-    /// the block does not fit `dst`.
+    /// `false` with `dst` untouched when `coeffs` is longer than the block,
+    /// the block does not fit `dst`, or `T` does not hold `bit_depth`.
     #[inline]
-    pub fn add(
+    pub fn add<T: ReconSample>(
         self,
         coeffs: &[i32],
-        dequant: Option<FlatDequant>,
-        dst: &mut [u8],
+        (dequant, bit_depth): (Option<FlatDequant>, BitDepth),
+        dst: &mut [T],
         stride: usize,
         scratch: &mut [i32; 32 * 32],
     ) -> bool {
         let (w, h) = (self.w(), self.h());
-        if !self.fits(dst, stride) || coeffs.len() > w * h {
+        if !self.fits(dst.len(), stride) || coeffs.len() > w * h {
             return false;
         }
+        let Some(dst) = T::u8_slice_mut(dst).filter(|_| bit_depth == BitDepth::Eight) else {
+            return self.run_add(
+                self.transform8(dequant, bit_depth),
+                (coeffs, w),
+                dst,
+                stride,
+                scratch,
+            );
+        };
         #[cfg(target_arch = "x86_64")]
         if let Some(token) = Level::baseline().as_avx2() {
             let small = self.w_log2 <= 3 && self.h_log2 <= 4;
@@ -381,18 +459,80 @@ impl InverseTransformAdd8 {
             }
             return true;
         }
-        run(
-            self.transform8(dequant),
+        self.run_add(
+            self.transform8(dequant, bit_depth),
             (coeffs, w),
-            &mut self.add_u8(dst, stride),
+            dst,
+            stride,
             scratch,
         )
     }
 
+    /// [`Self::put_prediction`], then [`Self::add`] onto it; `false` with
+    /// `dst` untouched where either would return it.
+    #[inline]
+    pub fn add_onto<T: ReconSample>(
+        self,
+        prediction: &[T],
+        coeffs: &[i32],
+        (dequant, bit_depth): (Option<FlatDequant>, BitDepth),
+        dst: &mut [T],
+        stride: usize,
+        scratch: &mut [i32; 32 * 32],
+    ) -> bool {
+        coeffs.len() <= self.w() * self.h()
+            && self.put_prediction(prediction, bit_depth, dst, stride)
+            && self.add(coeffs, (dequant, bit_depth), dst, stride, scratch)
+    }
+
+    /// Writes the `w x h` block `prediction` (rows `w` apart) into the block
+    /// at the start of `dst`, rows `stride` apart. Returns `false` with `dst`
+    /// untouched when the block does not fit `dst`, `prediction` is not the
+    /// block, or a sample of it is above `bit_depth` or `T` does not hold it.
+    #[inline]
+    pub fn put_prediction<T: ReconSample>(
+        self,
+        prediction: &[T],
+        bit_depth: BitDepth,
+        dst: &mut [T],
+        stride: usize,
+    ) -> bool {
+        let w = self.w();
+        let in_range = match T::u16_slice(prediction) {
+            Some(samples) => {
+                !crate::sample_range::u16_samples_exceed(samples, bit_depth.max_sample())
+            }
+            None => bit_depth == BitDepth::Eight,
+        };
+        if !self.fits(dst.len(), stride) || prediction.len() != w * self.h() || !in_range {
+            return false;
+        }
+        macro_rules! put_rows {
+            ($n:literal) => {
+                for (row, pred) in prediction.as_chunks::<$n>().0.iter().enumerate() {
+                    if let Some(out) = dst
+                        .get_mut(row * stride..)
+                        .and_then(<[T]>::first_chunk_mut::<$n>)
+                    {
+                        *out = *pred;
+                    }
+                }
+            };
+        }
+        match w {
+            4 => put_rows!(4),
+            8 => put_rows!(8),
+            16 => put_rows!(16),
+            _ => put_rows!(32),
+        }
+        true
+    }
+
     /// Adds the transform of the § 7.15.3 secondary inverse transform of
     /// `quant`, under the flat § 7.14.4 dequantization by the `(dc_quant,
-    /// ac_quant, dq_denom)` `quantizers`, to the 8-bit block at the start of
-    /// `dst` as [`Self::add`] does, with the block's `Dequant` in `dequant`.
+    /// ac_quant, dq_denom)` `quantizers`, to the block at the start of `dst`
+    /// as [`Self::add`] does at the bit depth of `secondary`, with the
+    /// block's `Dequant` in `dequant`.
     /// A block at least 16 wide, without an identity row pass, keeps only the
     /// 8 columns the secondary transform writes and runs the row pass
     /// straight from them.
@@ -401,18 +541,21 @@ impl InverseTransformAdd8 {
     /// Returns the [`secondary_inverse_transform`](crate::secondary_inverse_transform)
     /// errors for invalid `secondary` parameters or a `dequant` that is not
     /// the block.
-    pub fn add_secondary(
+    pub fn add_secondary<T: ReconSample>(
         self,
         (quantizers, secondary): ((u32, u32, u32), &SecondaryInverseTransform),
         quant: &[i32],
         dequant: &mut [i32],
-        (dst, stride): (&mut [u8], usize),
+        (dst, stride): (&mut [T], usize),
         scratch: &mut [i32; 32 * 32],
     ) -> crate::Result<bool> {
+        let bit_depth = secondary.bit_depth;
         #[cfg(target_arch = "x86_64")]
         if self.w_log2 >= 4
             && self.row != InverseTransform2dDim::Identity
-            && self.fits(dst, stride)
+            && self.fits(dst.len(), stride)
+            && bit_depth == BitDepth::Eight
+            && let Some(dst) = T::u8_slice_mut(dst)
             && let Some(token) = Level::baseline().as_avx2()
             && let Some(rows) = dequant.first_chunk_mut::<64>()
         {
@@ -421,40 +564,71 @@ impl InverseTransformAdd8 {
             avx2::transform(token, &self, None, &rows[..len], true, sink, scratch);
             return Ok(true);
         }
+        #[cfg(target_arch = "x86_64")]
+        let wide_rows = self.w_log2 >= 4
+            && (bit_depth != BitDepth::Eight || Level::baseline().as_avx2().is_none());
         #[cfg(not(target_arch = "x86_64"))]
-        if self.w_log2 >= 4
-            && self.fits(dst, stride)
+        let wide_rows = self.w_log2 >= 4;
+        if wide_rows
+            && self.fits(dst.len(), stride)
             && let Some(rows) = dequant.first_chunk_mut::<64>()
         {
             let len = secondary_inverse_transform_quant_rows8(quant, quantizers, secondary, rows)?;
-            let sink = &mut self.add_u8(dst, stride);
-            return Ok(run(self.transform8(None), (&rows[..len], 8), sink, scratch));
+            let t = self.transform8(None, bit_depth);
+            return Ok(self.run_add(t, (&rows[..len], 8), dst, stride, scratch));
         }
         let coded = secondary_inverse_transform_quant(quant, quantizers, secondary, dequant)?;
-        Ok(self.add(&dequant[..coded], None, dst, stride, scratch))
+        Ok(self.add(&dequant[..coded], (None, bit_depth), dst, stride, scratch))
     }
 
-    /// The column-pass sink adding to the block at the start of `dst`.
-    fn add_u8(self, dst: &mut [u8], stride: usize) -> AddU8<'_> {
+    /// Runs `t` over `input` onto the block at the start of `dst`, through
+    /// the `u8` or `u16` column-pass sink.
+    fn run_add<T: ReconSample>(
+        self,
+        t: Transform8,
+        input: (&[i32], usize),
+        dst: &mut [T],
+        stride: usize,
+        scratch: &mut [i32; 32 * 32],
+    ) -> bool {
         let w = self.w();
-        AddU8 {
-            dst,
-            stride,
-            chunks_log2: (w >= 8).then(|| (w / 8).trailing_zeros()),
+        let chunks_log2 = (w >= 8).then(|| (w / 8).trailing_zeros());
+        if let Some(dst) = T::u8_slice_mut(&mut *dst) {
+            let sink = &mut AddU8 {
+                dst,
+                stride,
+                chunks_log2,
+            };
+            return t.bit_depth == BitDepth::Eight && run(t, input, sink, scratch);
         }
+        let Some(dst) = T::u16_slice_mut(dst) else {
+            return false;
+        };
+        let max = t.bit_depth.max_sample() as i16;
+        run(
+            t,
+            input,
+            &mut AddU16 {
+                dst,
+                stride,
+                chunks_log2,
+                max,
+            },
+            scratch,
+        )
     }
 
-    /// Whether a `w x h` block with rows `stride` apart fits `dst`.
-    fn fits(self, dst: &[u8], stride: usize) -> bool {
+    /// Whether a `w x h` block with rows `stride` apart fits `len` samples.
+    fn fits(self, len: usize, stride: usize) -> bool {
         (self.h() - 1)
             .checked_mul(stride)
             .and_then(|span| span.checked_add(self.w()))
-            .is_some_and(|span| stride >= self.w() && span <= dst.len())
+            .is_some_and(|span| stride >= self.w() && span <= len)
     }
 
-    const fn transform8(self, dequant: Option<FlatDequant>) -> Transform8 {
+    const fn transform8(self, dequant: Option<FlatDequant>, bit_depth: BitDepth) -> Transform8 {
         Transform8 {
-            bit_depth: crate::BitDepth::Eight,
+            bit_depth,
             row: self.row,
             col: self.col,
             w: self.w(),
@@ -466,12 +640,17 @@ impl InverseTransformAdd8 {
         }
     }
 
-    /// The constant residual of a `DCT_DCT` block whose only nonzero
-    /// coefficient is the first of `coeffs` (as [`Self::add`] takes them), or
-    /// `None` when the block's residual is not constant.
+    /// The constant residual at `bit_depth` of a `DCT_DCT` block whose only
+    /// nonzero coefficient is the first of `coeffs` (as [`Self::add`] takes
+    /// them), or `None` when the block's residual is not constant.
     #[inline]
     #[must_use]
-    pub fn flat_residual(&self, coeffs: &[i32], dequant: Option<FlatDequant>) -> Option<i32> {
+    pub fn flat_residual(
+        &self,
+        coeffs: &[i32],
+        dequant: Option<FlatDequant>,
+        bit_depth: BitDepth,
+    ) -> Option<i32> {
         if !self.flat {
             return None;
         }
@@ -480,17 +659,18 @@ impl InverseTransformAdd8 {
             return None;
         }
         let dc = dequant.map_or(dc, |dq| {
-            dequant_coefficient(dc, dq.dc, 1 << dq.denom_shift, crate::BitDepth::Eight)
+            dequant_coefficient(dc, dq.dc, 1 << dq.denom_shift, bit_depth)
         });
+        let (row_bound, col_bound) = bounds(bit_depth);
         let round = |v: i32, shift: u8| (v + (1 << (shift - 1))) >> shift;
         let dc = if self.rescale {
             dc.wrapping_mul(2896).wrapping_add(1 << 11) >> 12
         } else {
             dc
         };
-        let dc = dc.clamp(i16::MIN.into(), i16::MAX.into());
-        let row = round(dc * 64, self.row_shift).clamp(i16::MIN.into(), i16::MAX.into());
-        Some(round(row * 64, self.col_shift).clamp(-256, 255))
+        let dc = dc.clamp(-row_bound, row_bound - 1);
+        let row = round(dc * 64, self.row_shift).clamp(-row_bound, row_bound - 1);
+        Some(round(row * 64, self.col_shift).clamp(-col_bound, col_bound - 1))
     }
 }
 
@@ -509,7 +689,7 @@ pub(crate) fn inverse_transform_2d_8bit(
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = Level::baseline().as_avx2()
         && t.bit_depth == crate::BitDepth::Eight
-        && let Some(shape) = InverseTransformAdd8::of(
+        && let Some(shape) = InverseTransformAdd::of(
             t.row,
             t.col,
             (t.w.trailing_zeros(), t.h.trailing_zeros()),
@@ -881,7 +1061,7 @@ impl Rows<'_> {
     #[inline]
     fn inputs<S: Simd>(self, simd: S, row: &[i32], k: usize, dc: bool) -> i32x8<S> {
         row_input(
-            self.load.coeffs(simd, row, 8 * k, dc),
+            self.load.coeffs(simd, row, (8 * k, self.bound), dc),
             self.load.rescale,
             self.bound,
         )

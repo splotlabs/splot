@@ -702,10 +702,11 @@ fn build_padded_source_cache_into<T: ReconSample>(
                     actual: 0,
                 })?;
         let cached_start = source_cache.len();
-        source_cache.extend(row_samples.iter().map(|sample| sample.to_u16()));
-        if let Some(col) = source_cache[cached_start..]
-            .iter()
-            .position(|&value| value > max_sample)
+        source_cache.resize(cached_start + row_samples.len(), 0);
+        crate::reconstruct::widen_to_u16(row_samples, &mut source_cache[cached_start..]);
+        let cached = &source_cache[cached_start..];
+        if crate::workspace::u16_samples_exceed(cached, max_sample)
+            && let Some(col) = cached.iter().position(|&value| value > max_sample)
         {
             return Err(ReconError::PcWienerSourceSampleOutOfRange {
                 x: geo.source_start_x + col as isize,

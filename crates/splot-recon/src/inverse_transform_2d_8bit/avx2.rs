@@ -26,7 +26,7 @@ use splot_tables::tables::transform_1d::{
     DCT_KERNEL32, DDTX_KERNEL8, DDTX_KERNEL16, FDST_KERNEL4, FDST_KERNEL8, FDST_KERNEL16,
 };
 
-use super::{FlatDequant, InverseTransformAdd8};
+use super::{FlatDequant, InverseTransformAdd};
 use crate::inverse_transform::InverseTransform1dType;
 use crate::inverse_transform_2d::InverseTransform2dDim;
 
@@ -1029,7 +1029,7 @@ fn row_pass8<const N: usize, const H: usize, const KIND: u8>(
 /// no pairs for an identity row pass, which has no secondary transform.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn rows8_pass(t: Avx2, shape: &InverseTransformAdd8, rows: Rows8<'_>, scratch: &mut [i32]) -> u32 {
+fn rows8_pass(t: Avx2, shape: &InverseTransformAdd, rows: Rows8<'_>, scratch: &mut [i32]) -> u32 {
     let p = (
         pairs_of(shape.passes.1, shape.h()),
         u32::from(shape.row_shift),
@@ -1523,7 +1523,7 @@ fn pairs_of(col: Pass, h: usize) -> &'static [(u8, u8)] {
 #[target_feature(enable = "avx2")]
 fn rows(
     t: Avx2,
-    shape: &InverseTransformAdd8,
+    shape: &InverseTransformAdd,
     staged: &[i32],
     coded: usize,
     scratch: &mut [i32],
@@ -1566,7 +1566,7 @@ fn rows(
 #[target_feature(enable = "avx2")]
 fn rows_direct(
     t: Avx2,
-    shape: &InverseTransformAdd8,
+    shape: &InverseTransformAdd,
     (coeffs, dq, quantized): (&[i32], &FlatDequant, bool),
     scratch: &mut [i32],
 ) -> u32 {
@@ -1807,7 +1807,7 @@ fn small<
 #[target_feature(enable = "avx2")]
 fn add_small(
     t: Avx2,
-    shape: &InverseTransformAdd8,
+    shape: &InverseTransformAdd,
     (coeffs, dq, quantized): (&[i32], &FlatDequant, bool),
     out: (&mut [u8], usize),
 ) -> bool {
@@ -1847,7 +1847,7 @@ fn add_small(
 #[target_feature(enable = "avx2")]
 fn cols<const OUT: u8>(
     t: Avx2,
-    shape: &InverseTransformAdd8,
+    shape: &InverseTransformAdd,
     pairs: &[i32; 16 * 32],
     mask: u32,
     out: &mut [i32; 512],
@@ -1921,7 +1921,7 @@ fearless_simd::kernel!(
     /// for any other shape.
     pub(super) fn add_small_block(
         t: Avx2,
-        shape: &InverseTransformAdd8,
+        shape: &InverseTransformAdd,
         dequant: Option<FlatDequant>,
         coeffs: &[i32],
         dst: &mut [u8],
@@ -1930,7 +1930,7 @@ fearless_simd::kernel!(
         if shape.w_log2 > 3 || shape.h_log2 > 4 {
             return false;
         }
-        if let Some(value) = shape.flat_residual(coeffs, dequant) {
+        if let Some(value) = shape.flat_residual(coeffs, dequant, crate::BitDepth::Eight) {
             let out = (dst, stride);
             if shape.w_log2 == 2 {
                 flat::<4, true>(t, value, shape.h(), out, &mut []);
@@ -1943,7 +1943,6 @@ fearless_simd::kernel!(
             dc: 0,
             ac: 0,
             denom_shift: 0,
-            bound: 0,
         };
         let dq = dequant.as_ref().unwrap_or(&none);
         add_small(t, shape, (coeffs, dq, dequant.is_some()), (dst, stride))
@@ -1958,7 +1957,7 @@ fearless_simd::kernel!(
     /// coded rows, row `r` at `coeffs[8 * r..]`, dequantized.
     pub(super) fn transform(
         t: Avx2,
-        shape: &InverseTransformAdd8,
+        shape: &InverseTransformAdd,
         dequant: Option<FlatDequant>,
         coeffs: &[i32],
         rows8: bool,
@@ -1971,7 +1970,7 @@ fearless_simd::kernel!(
             Sink::Residual(residual) => (&mut [][..], 0, Some(residual)),
         };
         let mut empty = [];
-        if let Some(value) = shape.flat_residual(coeffs, dequant) {
+        if let Some(value) = shape.flat_residual(coeffs, dequant, crate::BitDepth::Eight) {
             let out = (dst, stride);
             match (residual, shape.w_log2) {
                 (None, 2) => flat::<4, true>(t, value, h, out, &mut empty),
@@ -1989,7 +1988,6 @@ fearless_simd::kernel!(
             dc: 0,
             ac: 0,
             denom_shift: 0,
-            bound: 0,
         };
         let dq = dequant.as_ref().unwrap_or(&none);
         let Some((pairs, staged)) = scratch.split_first_chunk_mut::<{ 16 * 32 }>() else {

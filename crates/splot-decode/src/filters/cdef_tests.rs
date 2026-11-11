@@ -185,6 +185,31 @@ fn cdef_general_intra_frame_indexed<T: ReconSample>(
     Ok(())
 }
 
+/// The chroma-pair
+/// gather interleaves `u` and `v` lane by lane, from either storage type.
+#[test]
+fn pair_gather_matches_the_scalar_copy() {
+    let side = CHROMA_PAIR_SIDE + 2 * CDEF_TAP_REACH;
+    let u: Vec<u8> = (0..side * 9).map(|i| (i * 7 % 256) as u8).collect();
+    let v: Vec<u8> = (0..side * 9).map(|i| (i * 11 % 256) as u8).collect();
+    let mut pad = [0u16; CDEF_PADDED_AREA];
+    gather_chroma_pair(&u, &v, 1, 9, &mut pad).unwrap();
+    let wide = |x: &[u8]| x.iter().map(|&b| u16::from(b)).collect::<Vec<_>>();
+    let mut pad16 = [0u16; CDEF_PADDED_AREA];
+    gather_chroma_pair(&wide(&u), &wide(&v), 1, 9, &mut pad16).unwrap();
+    assert_eq!(pad16, pad);
+    for row in 0..side {
+        for col in 0..CHROMA_PAIR_SPAN {
+            let at = row * CDEF_PAIR_STRIDE + 2 * col;
+            let source = 1 + row * 9 + col;
+            assert_eq!(
+                pad[at..at + 2],
+                [u16::from(u[source]), u16::from(v[source])]
+            );
+        }
+    }
+}
+
 #[test]
 fn tap_reach_covers_direction_table() {
     let max_offset = CDEF_DIRECTIONS

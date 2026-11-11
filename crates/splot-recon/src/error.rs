@@ -820,6 +820,13 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
+    /// A § 7.20.3 Wiener NS luma class had a centre scale outside `i16`,
+    /// which only coefficients outside the § 5.20.2.1 ranges produce.
+    #[error("Wiener NS luma centre scale {center_scale} does not fit i16")]
+    WienerNsFilterCenterScaleOutOfRange {
+        /// `(1 << 7) - 2 * sum(coeffs)` of the class.
+        center_scale: i32,
+    },
     /// A § 7.20.3 Wiener NS chroma filter was supplied an invalid
     /// `cfl_ds_filter_index`.
     #[error("invalid Wiener NS chroma cfl_ds_filter_index {index}; expected 0..=3")]
@@ -943,6 +950,12 @@ pub enum ReconError {
         quant_len: usize,
         /// Supplied dequantized-output buffer length.
         out_len: usize,
+    },
+    /// A § 7.14.4 `dq_denom` was not the power of two `1 << shift`.
+    #[error("dequantization denominator {dq_denom} is not a power of two")]
+    InvalidDequantDenominator {
+        /// Supplied `dq_denom`.
+        dq_denom: u32,
     },
     /// A § 7.14.4 quantization-matrix weight lookup index was out of range for
     /// the generated `Quantizer_Matrix`.

@@ -6,7 +6,7 @@
 use splot_recon::math::round2_i32;
 use splot_recon::{
     BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DequantBlockParams, DpcmDirection,
-    FlatDequant, IntraRectBlockSize, InverseTransform2dOuter, InverseTransformAdd8, PlaneId,
+    FlatDequant, IntraRectBlockSize, InverseTransform2dOuter, InverseTransformAdd, PlaneId,
     ReconSample, SecondaryInverseTransform, dequant_coefficient, dequantize_block,
     dequantize_with_secondary, inverse_transform_2d_outer_adjusted,
     inverse_transform_2d_outer_with_scratch, tx_class,
@@ -45,17 +45,13 @@ impl ReconstructBlockSetup {
         )
     }
 
-    /// The fused 8-bit transform and add of the block, when it has one.
-    pub(super) fn fused(&self) -> Option<InverseTransformAdd8> {
+    /// The fused transform and add of the block, when it has one.
+    pub(super) fn fused(&self) -> Option<InverseTransformAdd> {
         let (plane_tx_type, log2_width, log2_height, use_ddt, lossless, dpcm) = self.resolve;
-        if self.params.bit_depth != BitDepth::Eight
-            || lossless
-            || dpcm.is_some()
-            || self.params.qm.is_some()
-        {
+        if lossless || dpcm.is_some() || self.params.qm.is_some() {
             return None;
         }
-        InverseTransformAdd8::new(plane_tx_type, log2_width, log2_height, use_ddt)
+        InverseTransformAdd::new(plane_tx_type, log2_width, log2_height, use_ddt)
     }
 }
 
@@ -232,54 +228,31 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
     };
     let written = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
         super::with_residual_scratch(|scratch| {
-            let width = block_size.width();
-            if let (Some((dst, stride)), Some(pred)) =
-                (rows.u8_samples_mut(), T::u8_slice(prediction))
+            let (dst, stride) = rows.prediction_target();
+            if let Some((fused, flat)) = fused
+                && fused.add_onto(
+                    prediction,
+                    block.quant,
+                    (Some(flat), bit_depth),
+                    dst,
+                    stride,
+                    &mut scratch.dequant_pair,
+                )
             {
-                match width {
-                    4 => put_rows::<4>(pred, dst, stride),
-                    8 => put_rows::<8>(pred, dst, stride),
-                    16 => put_rows::<16>(pred, dst, stride),
-                    32 => put_rows::<32>(pred, dst, stride),
-                    _ => {
-                        for (row, pred) in pred.chunks_exact(width).enumerate() {
-                            if let Some(out) = dst.get_mut(row * stride..row * stride + width) {
-                                out.copy_from_slice(pred); // splot-copy-ok: prediction row into the frame
-                            }
-                        }
-                    }
-                }
-                if let Some((fused, flat)) = fused
-                    && fused.add(
-                        block.quant,
-                        Some(flat),
-                        dst,
-                        stride,
-                        &mut scratch.dequant_pair,
-                    )
-                {
-                    return Ok(());
-                }
-                if let Some(luma_context) = luma_context
-                    && bit_depth == BitDepth::Eight
-                    && has_secondary(block)
-                    && add_secondary_fused(
-                        block,
-                        (block_size, PlaneId::Y),
-                        (qindex, use_tcq && block.use_tcq, false),
-                        Some(luma_context),
-                        (dst, stride),
-                        scratch,
-                    )?
-                {
-                    return Ok(());
-                }
-                let (setup, secondary) = general()?;
-                let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)
-                    .map_err(reconstruct_error)?;
-                return rows
-                    .add_block_residual(prediction, residual)
-                    .map_err(reconstruct_error);
+                return Ok(());
+            }
+            if let Some(luma_context) = luma_context
+                && has_secondary(block)
+                && add_secondary_fused(
+                    block,
+                    (block_size, PlaneId::Y, bit_depth),
+                    (qindex, use_tcq && block.use_tcq, false),
+                    Some(luma_context),
+                    (Some(prediction), dst, stride),
+                    scratch,
+                )?
+            {
+                return Ok(());
             }
             let (setup, secondary) = general()?;
             let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)
@@ -291,25 +264,11 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
     Ok(written.is_some())
 }
 
-/// Writes the `N`-wide prediction rows `pred` into the frame rows of `dst`,
-/// `stride` apart, as fixed-size row moves.
-#[inline]
-fn put_rows<const N: usize>(pred: &[u8], dst: &mut [u8], stride: usize) {
-    for (row, pred) in pred.as_chunks::<N>().0.iter().enumerate() {
-        if let Some(out) = dst
-            .get_mut(row * stride..)
-            .and_then(<[u8]>::first_chunk_mut::<N>)
-        {
-            *out = *pred;
-        }
-    }
-}
-
 const fn reconstruct_error(source: splot_recon::ReconError) -> GeneralIntraResidualError {
     GeneralIntraResidualError::Reconstruct { source }
 }
 
-/// The fused 8-bit transform and add of an intra block (see
+/// The fused transform and add of an intra block (see
 /// [`fused_residual_setup`]).
 #[allow(clippy::too_many_arguments)]
 fn fused_intra_setup(
@@ -321,7 +280,7 @@ fn fused_intra_setup(
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
-) -> Option<(InverseTransformAdd8, FlatDequant)> {
+) -> Option<(InverseTransformAdd, FlatDequant)> {
     let (plane_id, dpcm) = match luma_context {
         Some(luma_context) => (PlaneId::Y, luma_context.dpcm),
         None => (plane_id, dpcm),
@@ -338,9 +297,9 @@ fn fused_intra_setup(
     )
 }
 
-/// The fused 8-bit transform and add of a block without a secondary
-/// transform, with its flat dequantization; `None` sends the block down the
-/// general path, which also reports a block of the wrong length.
+/// The fused transform and add of a block without a secondary transform,
+/// with its flat dequantization; `None` sends the block down the general
+/// path, which also reports a block of the wrong length.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn fused_residual_setup(
@@ -352,8 +311,8 @@ fn fused_residual_setup(
     use_ddt: bool,
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
-) -> Option<(InverseTransformAdd8, FlatDequant)> {
-    if bit_depth != BitDepth::Eight || block.lossless || dpcm.is_some() || has_secondary(block) {
+) -> Option<(InverseTransformAdd, FlatDequant)> {
+    if block.lossless || dpcm.is_some() || has_secondary(block) {
         return None;
     }
     let fused = fused_transform(block, block_size, plane_id, use_ddt)?;
@@ -369,21 +328,21 @@ fn has_secondary(block: CoeffBlock<'_>) -> bool {
     block.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0)
 }
 
-/// Adds the residual of an 8-bit block of `plane_id` with a secondary
-/// transform onto the block at the start of `dst` through the fused
-/// transform, its coefficients dequantized through the secondary transform
-/// first; `luma_context` holds its intra luma context, `None` for an inter
-/// block. `false` with `dst` untouched sends the block down the general path.
+/// Adds the residual of a block of `plane_id` with a secondary transform
+/// onto the block at the start of `dst` through the fused transform, its
+/// coefficients dequantized through the secondary transform first, after
+/// writing `prediction` there when it is given; `luma_context` holds its
+/// intra luma context, `None` for an inter block. `false` with `dst`
+/// untouched sends the block down the general path.
 #[inline(never)]
-fn add_secondary_fused(
+fn add_secondary_fused<T: ReconSample>(
     block: CoeffBlock<'_>,
-    (block_size, plane_id): (IntraRectBlockSize, PlaneId),
+    (block_size, plane_id, bit_depth): (IntraRectBlockSize, PlaneId, BitDepth),
     (qindex, use_tcq, use_ddt): (u32, bool, bool),
     luma_context: Option<LumaTransformTypeContext>,
-    (dst, stride): (&mut [u8], usize),
+    (prediction, dst, stride): (Option<&[T]>, &mut [T], usize),
     scratch: &mut super::ResidualScratch,
 ) -> Result<bool, GeneralIntraResidualError> {
-    let bit_depth = BitDepth::Eight;
     if block.lossless || luma_context.is_some_and(|context| context.dpcm.is_some()) {
         return Ok(false);
     }
@@ -407,6 +366,11 @@ fn add_secondary_fused(
     let (dc_quant, ac_quant) = current_quantizers(plane_id, qindex, bit_depth);
     let samples = block_size.sample_count();
     let dq_denom = dq_denom(samples, use_tcq, block.plane_tx_type());
+    if let Some(prediction) = prediction
+        && !fused.put_prediction(prediction, bit_depth, dst, stride)
+    {
+        return Ok(false);
+    }
     fused
         .add_secondary(
             ((dc_quant, ac_quant, dq_denom), &secondary),
@@ -418,7 +382,7 @@ fn add_secondary_fused(
         .map_err(reconstruct_error)
 }
 
-/// The fused 8-bit transform of a block of `plane_id`; `None` for a shape
+/// The fused transform of a block of `plane_id`; `None` for a shape
 /// it does not cover, a block of the wrong length or a block weighted by a
 /// quantization matrix.
 #[inline]
@@ -427,10 +391,10 @@ fn fused_transform(
     block_size: IntraRectBlockSize,
     plane_id: PlaneId,
     use_ddt: bool,
-) -> Option<InverseTransformAdd8> {
+) -> Option<InverseTransformAdd> {
     let plane_tx_type = block.plane_tx_type();
     let (log2_w, log2_h) = (block_size.log2_width(), block_size.log2_height());
-    let fused = InverseTransformAdd8::new(plane_tx_type, log2_w.into(), log2_h.into(), use_ddt)?;
+    let fused = InverseTransformAdd::new(plane_tx_type, log2_w.into(), log2_h.into(), use_ddt)?;
     let (w, h) = (block_size.width(), block_size.height());
     let flat = block_qm_level(plane_id, plane_tx_type, w, h).is_none();
     (block.dense_len() == w * h && flat).then_some(fused)
@@ -485,11 +449,11 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
         let mut surface = splot_recon::CurrentFrameSurface::Frame(&mut *workspace);
         if let Some((fused, flat)) = fused
             && let Some((dst, stride)) = surface
-                .u8_residual_rect_mut(plane_id, x, y, block_size)
+                .residual_rect_mut(plane_id, x, y, block_size)
                 .map_err(reconstruct_error)?
             && fused.add(
                 block.quant,
-                Some(flat),
+                (Some(flat), bit_depth),
                 dst,
                 stride,
                 &mut scratch.dequant_pair,
@@ -498,17 +462,16 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
             return Ok(());
         }
         if let Some(luma_context) = luma_context
-            && bit_depth == BitDepth::Eight
             && has_secondary(block)
-            && let Some(target) = surface
-                .u8_residual_rect_mut(plane_id, x, y, block_size)
+            && let Some((dst, stride)) = surface
+                .residual_rect_mut(plane_id, x, y, block_size)
                 .map_err(reconstruct_error)?
-            && add_secondary_fused(
+            && add_secondary_fused::<T>(
                 block,
-                (block_size, PlaneId::Y),
+                (block_size, PlaneId::Y, bit_depth),
                 (qindex, use_tcq && block.use_tcq, false),
                 Some(luma_context),
-                target,
+                (None, dst, stride),
                 scratch,
             )?
         {
@@ -615,17 +578,17 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
         bit_depth,
     );
     if let Some((fused, flat)) = fused {
-        if let Some(residual) = fused.flat_residual(block.quant, Some(flat)) {
+        if let Some(residual) = fused.flat_residual(block.quant, Some(flat), bit_depth) {
             sink.add_constant_residual_rect_block(plane_id, x, y, block_size, residual)?;
             return Ok(());
         }
         let added = super::with_residual_scratch(|scratch| {
-            sink.u8_residual_rect_mut(plane_id, x, y, block_size)
+            sink.residual_rect_mut(plane_id, x, y, block_size)
                 .map(|target| {
                     target.is_some_and(|(dst, stride)| {
                         fused.add(
                             block.quant,
-                            Some(flat),
+                            (Some(flat), bit_depth),
                             dst,
                             stride,
                             &mut scratch.dequant_pair,
@@ -637,16 +600,15 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
             return Ok(());
         }
     }
-    if bit_depth == BitDepth::Eight
-        && has_secondary(block)
+    if has_secondary(block)
         && super::with_residual_scratch(|scratch| {
-            match sink.u8_residual_rect_mut(plane_id, x, y, block_size)? {
-                Some(target) => add_secondary_fused(
+            match sink.residual_rect_mut(plane_id, x, y, block_size)? {
+                Some((dst, stride)) => add_secondary_fused::<T>(
                     block,
-                    (block_size, plane_id),
+                    (block_size, plane_id, bit_depth),
                     (qindex, use_block_tcq, use_ddt),
                     None,
-                    target,
+                    (None, dst, stride),
                     scratch,
                 ),
                 None => Ok(false),
