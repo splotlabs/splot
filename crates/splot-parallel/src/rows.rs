@@ -19,7 +19,7 @@
 
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 
@@ -193,9 +193,16 @@ const DONE: u8 = 3;
 
 /// A stage whose rows are independent: any ready row runs, several at a
 /// time.
+///
+/// Scans only read-lock the row list, a row changes state by an atomic
+/// exchange, and the counts of pending, ready and unfinished rows let a scan
+/// of a stage with nothing to hand out return without touching the lock.
 #[derive(Debug, Default)]
 pub struct ParallelStage {
-    rows: Mutex<Vec<u8>>,
+    rows: RwLock<Vec<AtomicU8>>,
+    pending: AtomicUsize,
+    ready: AtomicUsize,
+    unfinished: AtomicUsize,
 }
 
 impl ParallelStage {
@@ -203,52 +210,79 @@ impl ParallelStage {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            rows: Mutex::new(Vec::new()),
+            rows: RwLock::new(Vec::new()),
+            pending: AtomicUsize::new(0),
+            ready: AtomicUsize::new(0),
+            unfinished: AtomicUsize::new(0),
         }
     }
 
     /// Sets the row count once the frame's geometry is known. Every row
     /// starts pending.
     pub fn set_rows(&self, rows: usize) {
-        let mut states = self.rows.lock();
+        let mut states = self.rows.write();
         states.clear();
-        states.resize(rows, PENDING);
+        states.resize_with(rows, || AtomicU8::new(PENDING));
+        self.pending.store(rows, Ordering::Release);
+        self.ready.store(0, Ordering::Release);
+        self.unfinished.store(rows, Ordering::Release);
     }
 
     /// Claims the first pending row when `ready(row)` holds. Rows are
     /// admitted in order: a later row never runs ahead of an earlier pending
     /// one, so a scan evaluates one predicate per stage.
-    pub fn claim(&self, ready: impl FnOnce(usize) -> bool) -> Option<usize> {
-        let mut states = self.rows.lock();
-        let row = states.iter().position(|state| *state == PENDING)?;
-        if !ready(row) {
+    pub fn claim(&self, ready: impl Fn(usize) -> bool) -> Option<usize> {
+        if self.pending.load(Ordering::Acquire) == 0 {
             return None;
         }
-        states[row] = RUNNING;
-        Some(row)
+        let states = self.rows.read();
+        let mut from = 0;
+        loop {
+            let row = from + first_in(&states[from..], PENDING)?;
+            if !ready(row) {
+                return None;
+            }
+            if exchange(&states[row], PENDING, RUNNING) {
+                self.pending.fetch_sub(1, Ordering::AcqRel);
+                return Some(row);
+            }
+            from = row + 1;
+        }
     }
 
     /// Marks `row` as runnable, for a producer that knows when its input lands.
     pub fn ready(&self, row: usize) {
-        if let Some(state) = self.rows.lock().get_mut(row)
-            && *state == PENDING
+        if let Some(state) = self.rows.read().get(row)
+            && exchange(state, PENDING, READY)
         {
-            *state = READY;
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+            self.ready.fetch_add(1, Ordering::AcqRel);
         }
     }
 
     /// Claims the first row a producer marked [`ready`](Self::ready).
     pub fn claim_ready(&self) -> Option<usize> {
-        let mut states = self.rows.lock();
-        let row = states.iter().position(|state| *state == READY)?;
-        states[row] = RUNNING;
-        Some(row)
+        if self.ready.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        let states = self.rows.read();
+        let mut from = 0;
+        loop {
+            let row = from + first_in(&states[from..], READY)?;
+            if exchange(&states[row], READY, RUNNING) {
+                self.ready.fetch_sub(1, Ordering::AcqRel);
+                return Some(row);
+            }
+            from = row + 1;
+        }
     }
 
     /// Marks the claimed `row` as run.
     pub fn finish(&self, row: usize) {
-        if let Some(state) = self.rows.lock().get_mut(row) {
-            *state = DONE;
+        if let Some(state) = self.rows.read().get(row)
+            && state.swap(DONE, Ordering::AcqRel) != DONE
+        {
+            self.unfinished.fetch_sub(1, Ordering::AcqRel);
         }
     }
 
@@ -256,16 +290,28 @@ impl ParallelStage {
     #[must_use]
     pub fn is_done(&self, row: usize) -> bool {
         self.rows
-            .lock()
+            .read()
             .get(row)
-            .is_some_and(|state| *state == DONE)
+            .is_some_and(|state| state.load(Ordering::Acquire) == DONE)
     }
 
     /// Whether every row has run.
     #[must_use]
     pub fn is_finished(&self) -> bool {
-        self.rows.lock().iter().all(|state| *state == DONE)
+        self.unfinished.load(Ordering::Acquire) == 0
     }
+}
+
+fn first_in(states: &[AtomicU8], wanted: u8) -> Option<usize> {
+    states
+        .iter()
+        .position(|state| state.load(Ordering::Acquire) == wanted)
+}
+
+fn exchange(state: &AtomicU8, from: u8, to: u8) -> bool {
+    state
+        .compare_exchange(from, to, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
 }
 
 #[derive(Default)]
@@ -747,6 +793,39 @@ mod tests {
         stage.ready(1);
         assert_eq!(stage.claim_ready(), Some(1));
         stage.finish(1);
+        assert!(stage.is_finished());
+    }
+
+    #[test]
+    fn concurrent_claims_of_a_parallel_stage_hand_out_each_row_once() {
+        const ROWS: usize = 64;
+        let stage = ParallelStage::new();
+        stage.set_rows(ROWS);
+        for row in (0..ROWS).step_by(2) {
+            stage.ready(row);
+        }
+        let claimed: Vec<usize> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut mine = Vec::new();
+                        while let Some(row) = stage.claim_ready().or_else(|| stage.claim(|_| true))
+                        {
+                            stage.finish(row);
+                            mine.push(row);
+                        }
+                        mine
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|w| w.join().unwrap())
+                .collect()
+        });
+        let mut sorted = claimed;
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..ROWS).collect::<Vec<_>>());
         assert!(stage.is_finished());
     }
 

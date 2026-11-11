@@ -1089,9 +1089,11 @@ fn rect_placed(placed: &PlacedInterBlock, rect: splot_recon::PlaneRect) -> Place
 /// sizes are multiples of both prediction unit sizes and of chroma
 /// subsampling, so a band boundary never splits a unit. Scheduled bands are
 /// shorter: the frame's slowest band bounds the TIP output chain, and on a
-/// 270-row frame 64-row bands left at most five workers busy.
+/// 270-row frame 64-row bands left at most five workers busy. 16-row bands
+/// were 7 to 9 us tasks whose scheduling and locks cost as much again at 12
+/// workers.
 const TIP_OUTPUT_BAND_LUMA_ROWS: usize = 64;
-const TIP_OUTPUT_SCHEDULED_BAND_LUMA_ROWS: usize = 16;
+const TIP_OUTPUT_SCHEDULED_BAND_LUMA_ROWS: usize = 32;
 
 /// The most scheduled bands whose motion and prediction run as tasks of their
 /// own, one prediction column each. The field the next TIP frame projects then

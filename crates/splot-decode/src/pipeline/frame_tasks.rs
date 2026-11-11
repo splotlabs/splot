@@ -911,7 +911,7 @@ impl<T: SplitSample> TipFrame<T> {
 impl<T: SplitSample> FrameWork for TipFrame<T> {
     /// The init, which settles the CDFs the next frame's parse loads.
     fn claim_critical(&self) -> Option<Claim> {
-        if self.failed.load(Ordering::Acquire) {
+        if self.failed.load(Ordering::Acquire) || self.stages[TIP_INIT].is_finished() {
             return None;
         }
         let (entropy, motion_deps) = (self.entropy.try_lock()?, self.motion_deps.try_lock()?);
@@ -941,16 +941,18 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
         let (Some(core), Some(bounds)) = (self.core.get(), self.band_bounds.get()) else {
             return None;
         };
-        let reference = self.reference.try_read()?;
-        let reference = reference.as_ref()?;
         let ref_frame_idx = core
             .inter
             .as_ref()
             .map_or(&[][..], |inter| inter.ref_frame_idx.as_slice());
         if let Some(row) = self.bands.claim(|band| {
-            bounds
-                .get(band)
-                .is_none_or(|bound| inter::bounds_satisfied(reference, core, ref_frame_idx, bound))
+            self.reference.try_read().is_some_and(|reference| {
+                reference.as_ref().is_some_and(|reference| {
+                    bounds.get(band).is_none_or(|bound| {
+                        inter::bounds_satisfied(reference, core, ref_frame_idx, bound)
+                    })
+                })
+            })
         }) {
             return Some(Claim {
                 stage: TIP_BAND,

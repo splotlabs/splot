@@ -1304,10 +1304,13 @@ const RECON_BATCH_UNITS: usize = 4;
 /// batch put a 720p row in two batches, which serialized the frame's
 /// reconstruction and every frame that reads it. One batch per worker was
 /// 2% slower on a 1080p natural stream whose workers were already busy.
+/// A batch holds at least two: one-superblock batches doubled the precompute
+/// time of a 480x270 stream at 12 workers, whose frames in flight already
+/// kept the workers busy.
 fn recon_batch_units(units_per_row: usize, workers: usize) -> usize {
     units_per_row
         .div_ceil((workers * 2 / 3).max(1))
-        .clamp(1, RECON_BATCH_UNITS)
+        .clamp(2, RECON_BATCH_UNITS)
 }
 
 /// Splits the units into precompute batches that never cross a superblock row.
@@ -1932,9 +1935,10 @@ mod tests {
         assert_eq!(super::recon_batch_units(15, 4), 4);
         assert_eq!(super::recon_batch_units(15, 8), 3);
         assert_eq!(super::recon_batch_units(8, 8), 2);
-        assert_eq!(super::recon_batch_units(5, 8), 1);
+        assert_eq!(super::recon_batch_units(5, 8), 2);
+        assert_eq!(super::recon_batch_units(4, 12), 2);
         assert_eq!(super::recon_batch_units(40, 1), 4);
-        assert_eq!(super::recon_batch_units(0, 0), 1);
+        assert_eq!(super::recon_batch_units(0, 0), 2);
     }
 
     #[test]
