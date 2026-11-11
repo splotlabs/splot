@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "3f8087d1ef842e4fa561bd92657e7e683b88f58a",
+  "audited_commit": "6443f6e0362aab4759c98190fdf87900da657239",
   "outcome": "success",
   "files": [
     {
@@ -2710,7 +2710,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/cdef.rs",
-      "sha256": "477d7721dc507d5c15fb3828649b4a1efcefcba126e4789a422f5521390d70ba",
+      "sha256": "f07b0418848cdc634b8915564f84be623daad64d46f77d7e025c3b94838ba421",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-CDEF"
@@ -2719,14 +2719,14 @@
     },
     {
       "path": "crates/splot-decode/src/filters/cdef_direct_tests.rs",
-      "sha256": "db1a921cbf04b21c36137e3e8f779c07378474db90a7a22a6f88867dc2cf2ad7",
+      "sha256": "b30a0df67674a5f2f6a49171615b4299a25891cbc236892f7c97cfcaa7c9959f",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/filters/cdef_tests.rs",
-      "sha256": "7a0d9e24714cb2ac3270526eeaad4576e7e9ea7b0280625ccdad050e7a346246",
+      "sha256": "d2149fb95fc5679cefb6081445e8177e0c4ca2d03702c76622054a0696a77658",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2828,7 +2828,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/source.rs",
-      "sha256": "864414dc445f9d779bd76abec655f338412140976bd3f5109b2a8007d14aff29",
+      "sha256": "31a4dbf7f5981e16104787041f8b7b28c3da7bee0e8c998ec18fb4543e3e3c7a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -5247,7 +5247,7 @@
     },
     {
       "path": "crates/splot-recon/src/cdef_filter.rs",
-      "sha256": "2916dd66f325131c9d22458d9f232d4e9cc071a352ff919dd4d861b02f4e92bf",
+      "sha256": "c3efa9e231166e14781a3bccf6a8d6f18e2810f8b9f2c4970cc6342b599e1049",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-CDEF-FILTER"
@@ -5256,7 +5256,7 @@
     },
     {
       "path": "crates/splot-recon/src/cdef_filter/segment.rs",
-      "sha256": "2156ea1f3d7643f71a2e36b7f19ad2659a2c7af22944853ea2eb7aed7358ec55",
+      "sha256": "2c24982b62d1627eb67210ef6628437127078171bbf5204efd6d4779f57f8323",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"

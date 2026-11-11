@@ -5,12 +5,11 @@ use fearless_simd::{SimdBase, prelude::*, u8x16, u16x16};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
-    BitDepth, CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT,
-    CDEF_PAIR_STRIDE, CDEF_SEGMENT_BLOCKS, CDEF_UNAVAILABLE, CDEF_UV_DIR, CdefBlockFilter,
-    CdefLumaSegment, CdefPairSegment, CdefSampleTaps, CdefSegmentBlock, CdefStrengths, CdefTap,
-    PlaneId, PlaneRect, ReconSample, cdef_direction_padded,
-    cdef_filter_block_boundary_to_valid_stride, cdef_filter_block_chroma_pair,
-    cdef_filter_block_interior_to_valid_stride, cdef_filter_sample, cdef_filter_segment,
+    BitDepth, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT, CDEF_PAIR_STRIDE,
+    CDEF_SEGMENT_BLOCKS, CDEF_UNAVAILABLE, CDEF_UV_DIR, CdefBlockFilter, CdefLumaSegment,
+    CdefPairSegment, CdefSegmentBlock, CdefStrengths, PlaneId, PlaneRect, ReconSample,
+    cdef_direction_padded, cdef_filter_block_boundary_to_valid_stride,
+    cdef_filter_block_chroma_pair, cdef_filter_block_interior_to_valid_stride, cdef_filter_segment,
 };
 
 use super::source::{DeblockedPlanes, FramePlane, StripeInitialization, StripePlane};
@@ -40,11 +39,6 @@ pub(crate) fn tile_span(starts: Option<&[u32]>, pos: usize, frame_end: usize) ->
         })
         .unwrap_or((0, frame_end))
 }
-
-const UNAVAILABLE_TAP: CdefTap = CdefTap {
-    value: 0,
-    available: false,
-};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CdefFrameParams {
@@ -278,7 +272,6 @@ struct CdefBlockLookup<'a> {
     sub_y: usize,
     has_chroma: bool,
     coeff_shift: u32,
-    max_sample: i32,
     /// Planes whose stripe does not yet hold the deblocked samples, so a flat
     /// block must still be written.
     fill_flat: [bool; 3],
@@ -406,7 +399,6 @@ impl CdefBlockLookup<'_> {
             mi_col_start,
             params,
             coeff_shift: self.coeff_shift,
-            max_sample: self.max_sample,
             mi_rows,
             mi_cols,
             sub_x: self.sub_x,
@@ -642,7 +634,6 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         return Err(CdefError::Geometry);
     }
     let coeff_shift = u32::from(bit_depth.bits()) - 8;
-    let max_sample = i32::from(bit_depth.max_sample());
     let (sub_x, sub_y) = subsampling;
     let has_chroma = deblocked.u.is_some();
     let deblocked_y = deblocked.y;
@@ -670,7 +661,6 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
             sub_y,
             has_chroma,
             coeff_shift,
-            max_sample,
             fill_flat: [true; 3],
             bytes_suffice: core::array::from_fn(|index| {
                 strengths.get(index).is_some_and(|&params| {
@@ -922,18 +912,16 @@ fn flat_window<S: ReconSample, const W: usize, const H: usize>(
         let samples = plane.row(row)?.get(left..)?.get(..W + 2 * CDEF_TAP_REACH)?;
         let flat = match (S::u16_slice(samples), S::u8_slice(samples)) {
             (Some(samples), _) => baseline_simd!(simd => {
-                let value = u16x16::splat(simd, value);
-                chunks_repeat(samples, |lanes| {
-                    u16x16::from_slice(simd, lanes).simd_eq(value).all_true()
-                })
+                let (value, zero) = (u16x16::splat(simd, value), u16x16::splat(simd, 0));
+                chunks_repeat(samples, zero, |lanes| u16x16::from_slice(simd, lanes) ^ value)
+                    .is_some_and(|diff| diff.simd_eq(zero).all_true())
             }),
             (_, Some(samples)) => {
                 let value = u8::try_from(value).ok()?;
                 baseline_simd!(simd => {
-                    let value = u8x16::splat(simd, value);
-                    chunks_repeat(samples, |lanes| {
-                        u8x16::from_slice(simd, lanes).simd_eq(value).all_true()
-                    })
+                    let (value, zero) = (u8x16::splat(simd, value), u8x16::splat(simd, 0));
+                    chunks_repeat(samples, zero, |lanes| u8x16::from_slice(simd, lanes) ^ value)
+                        .is_some_and(|diff| diff.simd_eq(zero).all_true())
                 })
             }
             _ => false,
@@ -945,14 +933,21 @@ fn flat_window<S: ReconSample, const W: usize, const H: usize>(
     Some(value)
 }
 
-/// Whether every 16-sample chunk of `samples`, at least 16 long, passes
-/// `even`; the last chunk overlaps the one before it.
-fn chunks_repeat<T>(samples: &[T], mut even: impl FnMut(&[T]) -> bool) -> bool {
-    let last = samples.len().saturating_sub(16);
+/// The bitwise or of `diff` over every 16-sample chunk of `samples`, or
+/// `None` when it is shorter than 16; the last chunk overlaps the one
+/// before it.
+fn chunks_repeat<T, V: core::ops::BitOr<Output = V>>(
+    samples: &[T],
+    zero: V,
+    mut diff: impl FnMut(&[T]) -> V,
+) -> Option<V> {
+    let last = samples.len().checked_sub(16)?;
     (0..last)
         .step_by(16)
         .chain([last])
-        .all(|start| samples.get(start..start + 16).is_some_and(&mut even))
+        .try_fold(zero, |acc, start| {
+            Some(acc | diff(samples.get(start..start + 16)?))
+        })
 }
 
 /// Writes a flat segment's values into the planes `lookup.fill_flat` marks.
@@ -1184,7 +1179,6 @@ struct CdefBlockCtx {
     mi_col_start: usize,
     params: CdefFrameParams,
     coeff_shift: u32,
-    max_sample: i32,
     mi_rows: usize,
     mi_cols: usize,
     sub_x: usize,
@@ -1494,44 +1488,10 @@ fn compute_cdef_filter_plane<S: ReconSample>(
         return filter_pad_into(filtered, pad, x0, y0, w, h, filter, false);
     }
 
-    if matches!(w, 4 | 8) {
-        gather_boundary_pad(
-            snap, pad, x0, y0, w, h, start_x, start_y, inside_x, inside_y,
-        )?;
-        return filter_pad_into(filtered, pad, x0, y0, w, h, filter, true);
-    }
-    let mut filtered_block = [0u16; 64];
-    let offsets = CdefTapOffsets::for_direction(filter.dir);
-    for i in 0..h {
-        for j in 0..w {
-            let center = snap
-                .get((x0 + j) as isize, (y0 + i) as isize)
-                .ok_or(CdefError::Geometry)?;
-            let taps = gather_taps(
-                snap,
-                &offsets,
-                x0 + j,
-                y0 + i,
-                start_x,
-                start_y,
-                inside_x,
-                inside_y,
-                center,
-            );
-            let filtered = cdef_filter_sample(
-                &taps,
-                filter.pri_str,
-                filter.sec_str,
-                filter.damping,
-                filter.coeff_shift,
-            );
-            filtered_block[i * w + j] = storage_sample(filtered, ctx.max_sample)?;
-        }
-    }
-    let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
-    filtered
-        .write_rect(rect, &filtered_block, w)
-        .ok_or(CdefError::Workspace)
+    gather_boundary_pad(
+        snap, pad, x0, y0, w, h, start_x, start_y, inside_x, inside_y,
+    )?;
+    filter_pad_into(filtered, pad, x0, y0, w, h, filter, true)
 }
 
 /// Gathers the `w`x`h` block plus a two-sample border from `snap` into `pad`, in the
@@ -1720,89 +1680,7 @@ fn filter_pad_into(
     }
 }
 
-fn storage_sample(filtered: i32, max_sample: i32) -> Result<u16, CdefError> {
-    let clipped = filtered.clamp(0, max_sample);
-    u16::try_from(clipped).map_err(|_| CdefError::Geometry)
-}
-
 const CDEF_TAP_REACH: usize = 2;
-
-struct CdefTapOffsets {
-    primary: [[(isize, isize); 2]; 2],
-    secondary: [[[(isize, isize); 2]; 2]; 2],
-}
-
-impl CdefTapOffsets {
-    fn for_direction(dir: usize) -> Self {
-        let offset = |dir: usize, k: usize, sign: isize| -> (isize, isize) {
-            (
-                sign * CDEF_DIRECTIONS[dir & 7][k][0] as isize,
-                sign * CDEF_DIRECTIONS[dir & 7][k][1] as isize,
-            )
-        };
-        let mut primary = [[(0isize, 0isize); 2]; 2];
-        let mut secondary = [[[(0isize, 0isize); 2]; 2]; 2];
-        for k in 0..2 {
-            for (sign_index, sign) in [-1isize, 1].into_iter().enumerate() {
-                primary[k][sign_index] = offset(dir, k, sign);
-                for (dir_off_index, dir_off) in [6usize, 2].into_iter().enumerate() {
-                    secondary[k][sign_index][dir_off_index] = offset(dir + dir_off, k, sign);
-                }
-            }
-        }
-        Self { primary, secondary }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn gather_taps<T: ReconSample>(
-    snap: FramePlane<'_, T>,
-    offsets: &CdefTapOffsets,
-    x: usize,
-    y: usize,
-    start_x: usize,
-    start_y: usize,
-    inside_x: usize,
-    inside_y: usize,
-    center: i32,
-) -> CdefSampleTaps {
-    let fetch = |(dy, dx): (isize, isize)| -> CdefTap {
-        let y = y as isize + dy;
-        let x = x as isize + dx;
-        if x >= start_x as isize
-            && y >= start_y as isize
-            && (x as usize) < inside_x
-            && (y as usize) < inside_y
-        {
-            match snap.row(y as usize).and_then(|row| row.get(x as usize)) {
-                Some(value) => CdefTap {
-                    value: i32::from(value.to_u16()),
-                    available: true,
-                },
-                None => UNAVAILABLE_TAP,
-            }
-        } else {
-            UNAVAILABLE_TAP
-        }
-    };
-
-    let mut primary = [[UNAVAILABLE_TAP; 2]; 2];
-    let mut secondary = [[[UNAVAILABLE_TAP; 2]; 2]; 2];
-    for k in 0..2 {
-        for sign_index in 0..2 {
-            primary[k][sign_index] = fetch(offsets.primary[k][sign_index]);
-            for (dir_off_index, tap) in secondary[k][sign_index].iter_mut().enumerate() {
-                *tap = fetch(offsets.secondary[k][sign_index][dir_off_index]);
-            }
-        }
-    }
-
-    CdefSampleTaps {
-        center,
-        primary,
-        secondary,
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CdefError {

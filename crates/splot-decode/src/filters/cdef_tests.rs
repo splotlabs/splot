@@ -7,9 +7,91 @@ use super::*;
 use crate::filters::source::DeblockedWindow;
 use crate::test_support::yuv420_workspace as workspace_8bit;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize, cdef_direction,
-    cdef_filter_sample,
+    CDEF_DIRECTIONS, CdefSampleTaps, CdefTap, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex,
+    PixelFormat, PlaneSize, cdef_direction, cdef_filter_sample,
 };
+
+const UNAVAILABLE_TAP: CdefTap = CdefTap {
+    value: 0,
+    available: false,
+};
+
+struct CdefTapOffsets {
+    primary: [[(isize, isize); 2]; 2],
+    secondary: [[[(isize, isize); 2]; 2]; 2],
+}
+
+impl CdefTapOffsets {
+    fn for_direction(dir: usize) -> Self {
+        let offset = |dir: usize, k: usize, sign: isize| -> (isize, isize) {
+            (
+                sign * CDEF_DIRECTIONS[dir & 7][k][0] as isize,
+                sign * CDEF_DIRECTIONS[dir & 7][k][1] as isize,
+            )
+        };
+        let mut primary = [[(0isize, 0isize); 2]; 2];
+        let mut secondary = [[[(0isize, 0isize); 2]; 2]; 2];
+        for k in 0..2 {
+            for (sign_index, sign) in [-1isize, 1].into_iter().enumerate() {
+                primary[k][sign_index] = offset(dir, k, sign);
+                for (dir_off_index, dir_off) in [6usize, 2].into_iter().enumerate() {
+                    secondary[k][sign_index][dir_off_index] = offset(dir + dir_off, k, sign);
+                }
+            }
+        }
+        Self { primary, secondary }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gather_taps<T: ReconSample>(
+    snap: FramePlane<'_, T>,
+    offsets: &CdefTapOffsets,
+    x: usize,
+    y: usize,
+    start_x: usize,
+    start_y: usize,
+    inside_x: usize,
+    inside_y: usize,
+    center: i32,
+) -> CdefSampleTaps {
+    let fetch = |(dy, dx): (isize, isize)| -> CdefTap {
+        let y = y as isize + dy;
+        let x = x as isize + dx;
+        if x >= start_x as isize
+            && y >= start_y as isize
+            && (x as usize) < inside_x
+            && (y as usize) < inside_y
+        {
+            match snap.row(y as usize).and_then(|row| row.get(x as usize)) {
+                Some(value) => CdefTap {
+                    value: i32::from(value.to_u16()),
+                    available: true,
+                },
+                None => UNAVAILABLE_TAP,
+            }
+        } else {
+            UNAVAILABLE_TAP
+        }
+    };
+
+    let mut primary = [[UNAVAILABLE_TAP; 2]; 2];
+    let mut secondary = [[[UNAVAILABLE_TAP; 2]; 2]; 2];
+    for k in 0..2 {
+        for sign_index in 0..2 {
+            primary[k][sign_index] = fetch(offsets.primary[k][sign_index]);
+            for (dir_off_index, tap) in secondary[k][sign_index].iter_mut().enumerate() {
+                *tap = fetch(offsets.secondary[k][sign_index][dir_off_index]);
+            }
+        }
+    }
+
+    CdefSampleTaps {
+        center,
+        primary,
+        secondary,
+    }
+}
 
 pub(super) fn constant_cdef_grid(
     mi_rows: usize,
@@ -391,7 +473,6 @@ fn assert_cdef_block_matches_per_sample_reference(
                     damping: 4,
                 },
                 coeff_shift: 0,
-                max_sample: 255,
                 mi_rows: 16,
                 mi_cols: 16,
                 sub_x: 1,
@@ -424,7 +505,7 @@ fn assert_cdef_block_matches_per_sample_reference(
                         filter.damping,
                         filter.coeff_shift,
                     )
-                    .clamp(0, ctx.max_sample);
+                    .clamp(0, 255);
                     assert_eq!(
                         i32::from(filtered.row(y).unwrap()[x]),
                         expected,

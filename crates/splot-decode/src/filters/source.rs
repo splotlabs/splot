@@ -238,6 +238,7 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
         self.samples
     }
 
+    #[cfg(test)]
     pub(crate) fn get(self, x: isize, y: isize) -> Option<i32> {
         let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
         if x >= self.width || y >= self.height {
@@ -931,22 +932,6 @@ impl StripePlane {
         let width = self.width;
         let start = row.checked_mul(self.stride)?;
         self.samples_mut().get_mut(start..start.checked_add(width)?)
-    }
-
-    pub(crate) fn write_rect(
-        &mut self,
-        rect: PlaneRect,
-        samples: &[u16],
-        stride: usize,
-    ) -> Option<()> {
-        for row in 0..rect.height() {
-            let src_start = row.checked_mul(stride)?;
-            let src = samples.get(src_start..src_start.checked_add(rect.width())?)?;
-            let dst = self.row_mut(rect.y().checked_add(row)?)?;
-            dst.get_mut(rect.x()..rect.x().checked_add(rect.width())?)?
-                .copy_from_slice(src);
-        }
-        Some(())
     }
 
     #[inline]

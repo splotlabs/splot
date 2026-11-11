@@ -104,7 +104,6 @@ fn direct_cdef_10bit(
         sub_y: subsampling.1,
         has_chroma: true,
         coeff_shift: 2,
-        max_sample: 1023,
         fill_flat: [true; 3],
         bytes_suffice: [false; 8],
     };
@@ -693,7 +692,6 @@ fn run_segment(
         sub_y: 1,
         has_chroma: true,
         coeff_shift: 2,
-        max_sample: 1023,
         fill_flat: [true; 3],
         bytes_suffice: [false; 8],
     };
@@ -786,7 +784,6 @@ fn edge_segment_falls_back_to_the_per_block_path() {
         sub_y: 1,
         has_chroma: true,
         coeff_shift: 2,
-        max_sample: 1023,
         fill_flat: [true; 3],
         bytes_suffice: [false; 8],
     };
