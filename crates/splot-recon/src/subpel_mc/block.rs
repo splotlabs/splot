@@ -162,10 +162,6 @@ pub(super) struct Taps {
         allow(dead_code, reason = "read by the AVX2 kernels")
     )]
     pub(super) bytes: [i16; NUM_TAPS / 2],
-    #[cfg_attr(
-        not(target_arch = "x86_64"),
-        allow(dead_code, reason = "read by the AVX2 kernels")
-    )]
     pub(super) words: [i32; NUM_TAPS / 2],
     pub(super) full: [i32; NUM_TAPS / 2],
 }

@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "ec119ecf9732deb93de727801841d952bb7bad98",
+  "audited_commit": "3b0332a3edc5af0d149a5961bebf543d29303bdf",
   "outcome": "success",
   "files": [
     {
@@ -5723,7 +5723,7 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/block.rs",
-      "sha256": "2f7ddb077713a5155654e1a9adc5463d3ac579b15d4fc07ec2d7a23541f984ac",
+      "sha256": "7d7db14ee8b2eeedbd84ab5a1e40726ead9ee434d32e26c23f40b040c4fb9eb0",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5751,7 +5751,7 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/eight_bit/neon.rs",
-      "sha256": "150ce2db29a0d004591c5df2ec0db743d4a8a9c86b56afe16a7cb604da9fc643",
+      "sha256": "806179ed745bb24f38a5c088b8d34177faba9726127cffb0aa8f2074595a92d2",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5807,7 +5807,7 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/tests/byte_lanes.rs",
-      "sha256": "9f8ab31f7dd31bd7e8cc04476d8f03fca0fa349b81d99cca2e7210b62a6dc5d5",
+      "sha256": "fc824916e1955ee4c861a4df11e022da3c3af98415138c606eafa49ed3e5f50e",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"

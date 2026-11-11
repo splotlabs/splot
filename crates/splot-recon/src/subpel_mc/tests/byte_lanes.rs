@@ -660,10 +660,11 @@ fn neon_byte_lanes_match_the_portable_kernels() {
     let remap: [u8; 16] = core::array::from_fn(|lane| (lane as u8).saturating_sub(2).min(9));
     for source in &textures {
         for filter in 0..NUM_FILTER_TYPES {
-            for (case, [x_phase, y_phase]) in [[0, 0], [7, 0], [0, 9], [1, 15], [8, 8], [13, 4]]
+            let phases = [[0, 0], [8, 8], [1, 15], [13, 4]]
                 .into_iter()
-                .enumerate()
-            {
+                .chain((1..16).flat_map(|phase| [[phase, 0], [0, phase], [phase, phase * 7 % 16]]));
+            for (case, [x_phase, y_phase]) in phases.enumerate() {
+                let case = case % 6;
                 let taps = |phase: usize| block::TAPS[filter][phase].as_ref();
                 for (w, h) in [(4, 4), (4, 16), (8, 2), (8, 8), (16, 4), (16, 16), (32, 8)] {
                     for remapped in [false, true] {
@@ -687,10 +688,10 @@ fn neon_byte_lanes_match_the_portable_kernels() {
                         let span = block.vertical.map_or(1, block::Taps::span);
                         let len = block::stage_len(h + span - 1, w, block.vertical);
                         let mut stage = vec![0i16; len];
+                        let fits = eight_bit::neon::fits(&block);
                         let run = |sink: &mut block::Sink<'_>, stage: &mut [i16], neon: bool| {
-                            if neon {
-                                assert!(eight_bit::predict(&block, sink, &mut []), "{label}");
-                            } else {
+                            if !neon || !eight_bit::predict(&block, sink, &mut []) {
+                                assert!(!neon || !fits, "declined {label}");
                                 portable::predict(&block, sink, stage);
                             }
                         };
@@ -758,16 +759,18 @@ fn neon_byte_lanes_match_the_portable_kernels() {
                                 out_stride,
                             );
                             let mut declined = vec![3u8; out_stride * h];
-                            assert!(
-                                eight_bit::compound(
-                                    [&block, &other],
-                                    forward,
-                                    &mut [],
-                                    &mut declined,
-                                    out_stride
-                                ),
-                                "{label}"
+                            let taken = eight_bit::compound(
+                                [&block, &other],
+                                forward,
+                                &mut [],
+                                &mut declined,
+                                out_stride,
                             );
+                            let both = fits && eight_bit::neon::fits(&other);
+                            assert_eq!(taken, both, "{label}");
+                            if !both {
+                                continue;
+                            }
                             // The cells run every compound in the NEON kernel.
                             let token = fearless_simd::Level::baseline().as_neon().unwrap();
                             eight_bit::neon::compound(
@@ -778,6 +781,7 @@ fn neon_byte_lanes_match_the_portable_kernels() {
                                 out_stride,
                             );
                             assert_eq!(fused[0], fused[1], "compound {forward} {label}");
+                            assert_eq!(fused[0], declined, "dispatch {forward} {label}");
                         }
                     }
                 }
