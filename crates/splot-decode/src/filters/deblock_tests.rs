@@ -1009,7 +1009,17 @@ fn batched_passes_match_every_edge_alone_across_frame_edges_and_chroma() {
             lossless: true,
             ..block(4, 24, 8, 4, 1, (4, 24), None, false, 70)
         },
-        block(0, 32, 8, 8, 2, (0, 32), None, false, 150),
+        block(
+            0,
+            32,
+            8,
+            8,
+            2,
+            (0, 32),
+            Some(DeblockSubPuSize::square(4)),
+            false,
+            150,
+        ),
         block(0, 40, 1, 8, 0, (0, 40), None, false, 120),
         block(0, 41, 3, 8, 0, (0, 41), None, false, 200),
         block(8, 0, 8, 12, 1, (8, 0), tall, false, 90),
@@ -1117,9 +1127,7 @@ fn filter_edge_alone<const PLANE: usize, const PASS: usize>(
             (col * MI_SIZE) >> plane_pass.plane_sub_x,
             (row * MI_SIZE) >> plane_pass.plane_sub_y,
         );
-        edges::LoneEdge { x_p, y_p, edge }
-            .filter_lines::<u8, PASS>(ctx, BitDepth::Eight)
-            .unwrap();
+        filter_edge_lines::<u8, PASS>((x_p, y_p, edge), ctx, BitDepth::Eight).unwrap();
     }
 }
 

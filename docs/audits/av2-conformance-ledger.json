@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "18501847b342e3971f55b6aced5c89a05407394e",
+  "audited_commit": "c599c4d59c0a559f810bba849e1674b64cabda7e",
   "outcome": "success",
   "files": [
     {
@@ -2733,7 +2733,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/deblock.rs",
-      "sha256": "63746f6c014066adb77d2ae8481a410bc812f35b65438a15fcfe569ac70490ba",
+      "sha256": "1929598c0327986dad7fc51a553d64bdbd3e880bd1de8c7c68454a516647af86",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-DEBLOCK"
@@ -2742,7 +2742,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/deblock/edges.rs",
-      "sha256": "13f7e01ce824ea4a395be1b5b27154996f70bb2b675ba2f14e735281f3746ebd",
+      "sha256": "3d36aa6792ce224144e784595d89393e79a1d417549e537c9a0b7d9a41b5fd10",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2757,6 +2757,13 @@
     {
       "path": "crates/splot-decode/src/filters/deblock/grid.rs",
       "sha256": "321328a594e74f7fafc25f6c4bc8c89add74c83e1463150d9b4e54bce1074152",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/filters/deblock/oracle.rs",
+      "sha256": "e58a3c1b545eea06ec53e692ebdf904b1ceb39834088800331477bd41cef7730",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2777,7 +2784,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/deblock_tests.rs",
-      "sha256": "e2d39aff82db663c57a07ab60cb990ef4bd0722223c5af5493f50d8e5bc7caae",
+      "sha256": "313e6310a35adab9edef2162c7e244150fd4ad16a6631f3a788dc30997a48234",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -5285,14 +5292,14 @@
     },
     {
       "path": "crates/splot-recon/src/deblock_filter/edges.rs",
-      "sha256": "48ddd0881558e3f261774c5ccc03cdd651377692840e5414b32484ea30e69993",
+      "sha256": "6211d70caf8a62b1e360e998ce690784037451403d3f9cedce38d6a7d0ec9eb1",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/deblock_filter/edges_tests.rs",
-      "sha256": "3df56945f687f609158a47c9d1ff46c206010252903d51d1a7292dc150244760",
+      "sha256": "e40785185ff52bdb02126ca6572d4cd78353322b69acb8471e6ccd1f7d506f5c",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"

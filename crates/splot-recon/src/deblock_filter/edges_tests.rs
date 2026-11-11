@@ -402,10 +402,18 @@ fn check_from_words<S: Simd>(simd: S) {
             field(|edge| (edge.max_width_pos() | edge.max_width_neg() << 8) as u16),
             field(|edge| u16::from(edge.prev_lossless()) | u16::from(edge.curr_lossless()) << 1),
         ];
-        assert_eq!(DeblockEdge::from_words(simd, words), edges);
+        let mut out = [DeblockEdge::NONE; 16];
+        DeblockEdge::from_words(simd, words, &mut out);
+        assert_eq!(out, edges);
     }
     let over = u16x16::splat(simd, 0xffff);
-    let clamped = DeblockEdge::from_words(simd, [over, over, u16x16::splat(simd, 0x0808), over])[0];
+    let mut clamped = [DeblockEdge::NONE; 16];
+    DeblockEdge::from_words(
+        simd,
+        [over, over, u16x16::splat(simd, 0x0808), over],
+        &mut clamped,
+    );
+    let clamped = clamped[0];
     assert_eq!(
         (
             clamped.q_thr(),

@@ -2,21 +2,21 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::frame::{DeblockingFilterParams, QuantizationParams, TileInfo};
-use splot_core::tables::conversion::{
-    Q_FIRST, Q_THRESH_MULTS, SIDE_THRESHOLDS, TX_HEIGHT, TX_WIDTH, W_MULT,
-};
+use splot_core::tables::conversion::{SIDE_THRESHOLDS, TX_HEIGHT, TX_WIDTH};
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DeblockEdge, DeblockFilterChoice, DeblockSampleFilter,
-    PixelFormat, PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_filter_choice,
-    deblock_filter_choice_strided, deblock_filter_max_width, deblock_horizontal_edges,
-    deblock_sample_filter, deblock_sample_filter_strided, deblock_sample_filter_strided_4,
-    deblock_side_threshold_index, deblock_vertical_edges, max_quantizer_index,
+    BitDepth, CurrentFrameWorkspace, DeblockEdge, PixelFormat, PlaneId, ReconSample,
+    deblock_adaptive_filter_strength, deblock_filter_max_width, deblock_side_threshold_index,
+    max_quantizer_index,
 };
-use std::{cell::Cell, num::NonZeroUsize, ops::Range};
+use std::{cell::Cell, ops::Range};
 
 mod edges;
 mod facts;
 mod grid;
+#[cfg(test)]
+mod oracle;
+#[cfg(test)]
+use oracle::*;
 
 use edges::{PassEdges, PassGeometry};
 pub(crate) use grid::DeblockGridStorage;
@@ -588,11 +588,10 @@ impl FrameDeblock {
     }
 }
 
-/// Deblocks the TIP unit edges of a `TIP_FRAME_AS_OUTPUT` frame. Each unit
-/// column, then each unit row, goes to the run kernels as one run when its
-/// samples 8 either side of the edge are in the plane. An edge changes and
-/// reads only its own 4 lines, so the result is the same as in the per-edge
-/// order.
+/// Deblocks the TIP unit edges of a `TIP_FRAME_AS_OUTPUT` frame: every unit
+/// column, then every unit row, of each plane through the batched passes. An
+/// edge changes and reads only its own 4 lines, so the result is the same as
+/// in the per-edge order.
 pub(crate) fn deblock_tip_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     luma_unit_size: usize,
@@ -627,6 +626,7 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
             .map(|(view, size)| (plane, view, size))
     });
     let mut slots: [_; 3] = core::array::from_fn(|_| planes.next().flatten());
+    let mut edges = PassEdges::default();
     let deblock_plane =
         |slot: &mut Option<(usize, splot_recon::PlaneMut<'_, T>, (usize, usize))>| {
             let Some((plane, view, (width, height))) = slot.as_mut() else {
@@ -656,86 +656,30 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
             let stride = view.stride_samples();
             let mut band = PlaneBand::plane(view.samples_mut(), stride, width, height);
             let mut plane_ctx = PlaneCtx::new(&mut band)?;
-            let mut run = Vec::new();
-            let mut run_edges =
-                |plane_ctx: &mut PlaneCtx<'_, '_, T>,
-                 vertical: bool,
-                 first: usize,
-                 edges: usize,
-                 (max_width_neg, max_width_pos): (usize, usize)| {
-                    let edge =
-                        DeblockEdge::new(q_thr, side, max_width_neg, max_width_pos, false, false)
-                            .ok_or(DeblockError::SampleFilter)?;
-                    run.clear();
-                    run.resize(edges, edge);
-                    let (samples, stride) = plane_ctx.rows.contiguous_mut();
-                    let kernel = if vertical {
-                        deblock_vertical_edges::<T>
-                    } else {
-                        deblock_horizontal_edges::<T>
-                    };
-                    kernel(samples, stride, first, &run, bit_depth)
-                        .map_err(|_| DeblockError::SampleFilter)
-                };
-            let full_rows = height / MI_SIZE;
-            for x in (unit_width..width).step_by(unit_width) {
+            let edge = |tile_edge: bool, (max_width_neg, max_width_pos): (usize, usize)| {
+                if disable_loopfilters_across_tiles && tile_edge {
+                    return Ok(DeblockEdge::NONE);
+                }
+                DeblockEdge::new(q_thr, side, max_width_neg, max_width_pos, false, false)
+                    .ok_or(DeblockError::SampleFilter)
+            };
+            edges.tip::<0>((width, height), unit_width, |x| {
                 let tile_edge = tip_tile_edge(tile_starts.map(|(cols, _)| cols), x, sub_x);
-                if disable_loopfilters_across_tiles && tile_edge {
-                    continue;
-                }
-                let max_widths = deblock_filter_max_width(unit_width, plane != 0, tile_edge);
-                let mut first_y = 0;
-                if full_rows > 0 && x >= GATHER_HALF && x <= width.saturating_sub(GATHER_HALF) {
-                    run_edges(&mut plane_ctx, true, x, full_rows, max_widths)?;
-                    first_y = full_rows * MI_SIZE;
-                }
-                for y in (first_y..height).step_by(MI_SIZE) {
-                    apply_tip_filter_edge(
-                        &mut plane_ctx,
-                        x,
-                        y,
-                        1,
-                        0,
-                        height.saturating_sub(y).min(MI_SIZE),
-                        q_thr,
-                        side,
-                        max_widths,
-                        bit_depth,
-                    )?;
-                }
-            }
-            let full_cols = width / MI_SIZE;
-            for y in (unit_height..height).step_by(unit_height) {
+                edge(
+                    tile_edge,
+                    deblock_filter_max_width(unit_width, plane != 0, tile_edge),
+                )
+            })?;
+            edges.apply::<T, 0>(&mut plane_ctx, bit_depth)?;
+            edges.tip::<1>((width, height), unit_height, |y| {
                 let tile_edge = tip_tile_edge(tile_starts.map(|(_, rows)| rows), y, sub_y);
-                if disable_loopfilters_across_tiles && tile_edge {
-                    continue;
-                }
-                let max_widths = deblock_filter_max_width(
-                    unit_height,
-                    plane != 0,
-                    y.is_multiple_of(64 >> sub_y),
-                );
-                let mut first_x = 0;
-                if y >= GATHER_HALF && y <= height.saturating_sub(GATHER_HALF) {
-                    run_edges(&mut plane_ctx, false, y * stride, full_cols, max_widths)?;
-                    first_x = full_cols * MI_SIZE;
-                }
-                for x in (first_x..width).step_by(MI_SIZE) {
-                    apply_tip_filter_edge(
-                        &mut plane_ctx,
-                        x,
-                        y,
-                        0,
-                        1,
-                        width.saturating_sub(x).min(MI_SIZE),
-                        q_thr,
-                        side,
-                        max_widths,
-                        bit_depth,
-                    )?;
-                }
-            }
-            Ok(())
+                let sb_edge = y.is_multiple_of(64 >> sub_y);
+                edge(
+                    tile_edge,
+                    deblock_filter_max_width(unit_height, plane != 0, sb_edge),
+                )
+            })?;
+            edges.apply::<T, 1>(&mut plane_ctx, bit_depth)
         };
     slots.iter_mut().try_for_each(deblock_plane)
 }
@@ -753,50 +697,6 @@ fn tip_tile_edge(starts: Option<&[u32]>, coordinate: usize, subsampling: usize) 
     starts
         .get(1..starts.len().saturating_sub(1))
         .is_some_and(|starts| starts.contains(&mi_coordinate))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn apply_tip_filter_edge<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
-    x: usize,
-    y: usize,
-    dx: usize,
-    dy: usize,
-    lanes: usize,
-    q_thr: i32,
-    side: i32,
-    (max_width_neg, max_width_pos): (usize, usize),
-    bit_depth: BitDepth,
-) -> Result<(), DeblockError> {
-    let width = choose_filter_width(
-        plane_ctx,
-        x,
-        y,
-        dx,
-        dy,
-        q_thr,
-        side,
-        max_width_neg,
-        max_width_pos,
-    )?;
-    if width == 0 {
-        return Ok(());
-    }
-    let eff_neg = width.min(max_width_neg);
-    let eff_pos = width.min(max_width_pos);
-    let params = DeblockSampleFilter {
-        boundary: GATHER_HALF,
-        q_thr,
-        max_width_neg: eff_neg,
-        max_width_pos: eff_pos,
-        q_thresh_mult: Q_THRESH_MULTS[eff_neg.max(eff_pos) - 1],
-        w_mult_neg: W_MULT[eff_neg - 1],
-        w_mult_pos: W_MULT[eff_pos - 1],
-        prev_lossless: false,
-        curr_lossless: false,
-        bit_depth,
-    };
-    apply_edge_samples(plane_ctx, PerpLine::new(x, y, dx, dy), lanes, params)
 }
 
 struct PlaneRows<'samples, T> {
@@ -817,6 +717,7 @@ impl<T> PlaneRows<'_, T> {
         self.samples.get_mut(start..end)
     }
 
+    #[cfg(test)]
     fn contiguous(&self) -> (&[T], usize) {
         (self.samples, self.stride)
     }
@@ -888,6 +789,7 @@ impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
         })
     }
 
+    #[cfg(test)]
     fn local_coords(&self, x: usize, y: usize) -> Option<(usize, usize)> {
         let row = y
             .checked_sub(self.y_origin)
@@ -896,6 +798,7 @@ impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
         Some((row, column))
     }
 
+    #[cfg(test)]
     fn sample(&self, x: usize, y: usize) -> T {
         self.local_coords(x, y)
             .and_then(|(row, column)| self.rows.row(row)?.get(column))
@@ -903,6 +806,7 @@ impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     fn set_sample(&mut self, x: usize, y: usize, value: T) -> Result<(), DeblockError> {
         let (row, column) = self.local_coords(x, y).ok_or(DeblockError::Workspace)?;
         *self
@@ -1153,7 +1057,7 @@ fn deblock_filter_edge<T: ReconSample>(
         return Ok(());
     }
     let (x_p, y_p) = (ctx.col * MI_SIZE, ctx.row * MI_SIZE);
-    edges::LoneEdge { x_p, y_p, edge }.filter::<T, 0>(plane_ctx, BitDepth::Eight)
+    filter_edge_lines::<T, 0>((x_p, y_p, edge), plane_ctx, BitDepth::Eight)
 }
 
 /// What the records on both sides of an edge decide, before the clamps that
@@ -1385,81 +1289,6 @@ fn on_sub_pu_edge<const PASS: usize>(
     (at > base && round_down(at - base, sub_pu_size) == at - base).then_some(sub_pu_size)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn choose_filter_width<T: ReconSample>(
-    plane_ctx: &PlaneCtx<'_, '_, T>,
-    x_p: usize,
-    y_p: usize,
-    dx: usize,
-    dy: usize,
-    q_thr: i32,
-    side: i32,
-    max_width_neg: usize,
-    max_width_pos: usize,
-) -> Result<usize, DeblockError> {
-    if q_thr == 0 || side == 0 {
-        return Ok(0);
-    }
-    let boundary = GATHER_HALF;
-    let horizontal = dx == 1
-        && dy == 0
-        && x_p >= GATHER_HALF
-        && x_p <= plane_ctx.width.saturating_sub(GATHER_HALF)
-        && y_p >= plane_ctx.y_origin
-        && y_p
-            .checked_add(MI_SIZE)
-            .is_some_and(|end| end <= plane_ctx.height);
-    let vertical = dx == 0
-        && dy == 1
-        && y_p >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
-        && y_p <= plane_ctx.height.saturating_sub(GATHER_HALF)
-        && x_p
-            .checked_add(MI_SIZE)
-            .is_some_and(|end| end <= plane_ctx.width);
-    if horizontal || vertical {
-        let (samples, stride) = plane_ctx.rows.contiguous();
-        let first_boundary = (y_p - plane_ctx.y_origin) * stride + x_p;
-        let perpendicular_stride = if horizontal { 1 } else { stride };
-        let lane_stride = if horizontal { stride } else { 1 };
-        let params = DeblockFilterChoice {
-            boundary: first_boundary,
-            q_thr,
-            side_thr: side,
-            max_width_pos,
-            max_width_neg,
-            q_first: Q_FIRST,
-        };
-        return deblock_filter_choice_strided(
-            samples,
-            first_boundary + (MI_SIZE - 1) * lane_stride,
-            NonZeroUsize::new(perpendicular_stride).ok_or(DeblockError::Workspace)?,
-            &params,
-        )
-        .map_err(|_| DeblockError::FilterChoice);
-    }
-
-    let s = gather_line(plane_ctx, PerpLine::new(x_p, y_p, dx, dy));
-    let end = MI_SIZE - 1;
-    let t_x = x_p + dy * end;
-    let t_y = y_p + dx * end;
-    let t = gather_line(plane_ctx, PerpLine::new(t_x, t_y, dx, dy));
-
-    let width = deblock_filter_choice(
-        &s,
-        &t,
-        &DeblockFilterChoice {
-            boundary,
-            q_thr,
-            side_thr: side,
-            max_width_pos,
-            max_width_neg,
-            q_first: Q_FIRST,
-        },
-    )
-    .map_err(|_| DeblockError::FilterChoice)?;
-    Ok(width)
-}
-
 fn coded_plane_dimensions<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
@@ -1471,179 +1300,7 @@ fn coded_plane_dimensions<T: ReconSample>(
     Ok((storage_size.width(), storage_size.height()))
 }
 
-#[derive(Clone, Copy)]
-struct PerpLine {
-    x: usize,
-    y: usize,
-    dx: usize,
-    dy: usize,
-}
-
-impl PerpLine {
-    const fn new(x: usize, y: usize, dx: usize, dy: usize) -> Self {
-        Self { x, y, dx, dy }
-    }
-
-    fn offset(self, offset: isize) -> Result<(usize, usize), DeblockError> {
-        let fx = (self.x as isize + offset * self.dx as isize)
-            .try_into()
-            .map_err(|_| DeblockError::Workspace)?;
-        let fy = (self.y as isize + offset * self.dy as isize)
-            .try_into()
-            .map_err(|_| DeblockError::Workspace)?;
-        Ok((fx, fy))
-    }
-}
-
 const GATHER_HALF: usize = 8;
-
-fn apply_edge_samples<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
-    perp: PerpLine,
-    lanes: usize,
-    params: DeblockSampleFilter,
-) -> Result<(), DeblockError> {
-    let PerpLine { x, y, dx, dy } = perp;
-    let lanes = lanes.min(if dx == 1 {
-        plane_ctx.height.saturating_sub(y)
-    } else {
-        plane_ctx.width.saturating_sub(x)
-    });
-    if lanes == 0 {
-        return Ok(());
-    }
-    let horizontal = dx == 1
-        && dy == 0
-        && x >= GATHER_HALF
-        && x <= plane_ctx.width.saturating_sub(GATHER_HALF)
-        && y >= plane_ctx.y_origin
-        && y.checked_add(lanes)
-            .is_some_and(|end| end <= plane_ctx.height);
-    let vertical = dx == 0
-        && dy == 1
-        && y >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
-        && y <= plane_ctx.height.saturating_sub(GATHER_HALF)
-        && x.checked_add(lanes)
-            .is_some_and(|end| end <= plane_ctx.width);
-    if lanes <= MI_SIZE && params.boundary == GATHER_HALF && (horizontal || vertical) {
-        let y_origin = plane_ctx.y_origin;
-        let (samples, stride) = plane_ctx.rows.contiguous_mut();
-        let boundary = (y - y_origin) * stride + x;
-        let perpendicular_stride = if horizontal { 1 } else { stride };
-        let lane_stride = if horizontal { stride } else { 1 };
-        let perpendicular_stride =
-            NonZeroUsize::new(perpendicular_stride).ok_or(DeblockError::Workspace)?;
-        if lanes == MI_SIZE {
-            deblock_sample_filter_strided_4(
-                samples,
-                perpendicular_stride,
-                NonZeroUsize::new(lane_stride).ok_or(DeblockError::Workspace)?,
-                &DeblockSampleFilter { boundary, ..params },
-            )
-            .map_err(|_| DeblockError::SampleFilter)?;
-        } else {
-            for lane in 0..lanes {
-                deblock_sample_filter_strided(
-                    samples,
-                    perpendicular_stride,
-                    &DeblockSampleFilter {
-                        boundary: boundary + lane * lane_stride,
-                        ..params
-                    },
-                )
-                .map_err(|_| DeblockError::SampleFilter)?;
-            }
-        }
-        return Ok(());
-    }
-    for lane in 0..lanes {
-        apply_sample_filter(
-            plane_ctx,
-            PerpLine::new(x + dy * lane, y + dx * lane, dx, dy),
-            params,
-        )?;
-    }
-    Ok(())
-}
-
-fn apply_sample_filter<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
-    perp: PerpLine,
-    params: DeblockSampleFilter,
-) -> Result<(), DeblockError> {
-    let before = gather_line(plane_ctx, perp);
-    let mut line = before;
-
-    deblock_sample_filter(&mut line, &params).map_err(|_| DeblockError::SampleFilter)?;
-
-    for (idx, (&new, &old)) in line.iter().zip(before.iter()).enumerate() {
-        let changed = new.to_u16() != old.to_u16();
-        if !changed {
-            continue;
-        }
-        let (fx, fy) = perp.offset(idx as isize - params.boundary as isize)?;
-        if fx >= plane_ctx.width || fy >= plane_ctx.height {
-            return Err(DeblockError::Workspace);
-        }
-        plane_ctx.set_sample(fx, fy, new)?;
-    }
-    Ok(())
-}
-
-fn gather_line<T: ReconSample>(
-    plane_ctx: &PlaneCtx<'_, '_, T>,
-    perp: PerpLine,
-) -> [T; 2 * GATHER_HALF] {
-    let mut line = [T::default(); 2 * GATHER_HALF];
-    if perp.x >= GATHER_HALF
-        && perp.y >= plane_ctx.y_origin
-        && perp.x <= plane_ctx.width.saturating_sub(GATHER_HALF)
-        && perp.dx == 1
-        && perp.dy == 0
-    {
-        let row = perp.y - plane_ctx.y_origin;
-        let start = perp.x - GATHER_HALF;
-        if let Some(src) = plane_ctx
-            .rows
-            .row(row)
-            .and_then(|row| row.get(start..start + 2 * GATHER_HALF))
-        {
-            line.copy_from_slice(src);
-            return line;
-        }
-    }
-    if perp.y >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
-        && perp.x < plane_ctx.width
-        && perp.y <= plane_ctx.height.saturating_sub(GATHER_HALF)
-        && perp.dx == 0
-        && perp.dy == 1
-    {
-        let start = perp.y - GATHER_HALF - plane_ctx.y_origin;
-        let x = perp.x;
-        let row_range = start..start + 2 * GATHER_HALF;
-        if row_range
-            .clone()
-            .all(|row| plane_ctx.rows.row(row).is_some_and(|row| x < row.len()))
-        {
-            for (lane, row) in line.iter_mut().zip(row_range) {
-                if let Some(row) = plane_ctx.rows.row(row) {
-                    *lane = row[x];
-                }
-            }
-            return line;
-        }
-    }
-    let max_x = plane_ctx.width.saturating_sub(1) as isize;
-    let min_y = plane_ctx.y_origin as isize;
-    let max_y = (plane_ctx.y_origin + plane_ctx.band_rows).saturating_sub(1) as isize;
-    for (idx, lane) in line.iter_mut().enumerate() {
-        let offset = idx as isize - GATHER_HALF as isize;
-        let sx = (perp.x as isize + offset * perp.dx as isize).clamp(0, max_x) as usize;
-        let sy = (perp.y as isize + offset * perp.dy as isize).clamp(min_y, max_y) as usize;
-        *lane = plane_ctx.sample(sx, sy);
-    }
-    line
-}
 
 const DF_DELTA_SCALE: i32 = 8;
 
@@ -1704,6 +1361,7 @@ impl From<crate::filters::source::StripeCopyError> for DeblockError {
 pub(crate) enum DeblockError {
     #[error("deblocking MI ({row}, {col}) is not covered by any decoded block")]
     UncoveredMi { row: usize, col: usize },
+    #[cfg(test)]
     #[error("deblocking filter-choice primitive rejected its inputs")]
     FilterChoice,
     #[error("deblocking sample-filter primitive rejected its inputs")]

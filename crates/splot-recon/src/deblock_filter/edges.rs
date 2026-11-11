@@ -136,13 +136,13 @@ impl DeblockEdge {
         Self(self.0 & !(3 << 48) | flags << 48)
     }
 
-    /// The sixteen edges whose `qThr`, `sideThr`, `maxWidthPos |
-    /// maxWidthNeg << 8` and lossless flags (`prev | curr << 1`) are the lanes
-    /// of `words`, the thresholds capped at the largest values
-    /// [`DeblockEdge::new`] accepts and the widths taken as § 7.17.3 gives
-    /// them.
+    /// Writes to `out` the sixteen edges whose `qThr`, `sideThr`,
+    /// `maxWidthPos | maxWidthNeg << 8` and lossless flags (`prev | curr <<
+    /// 1`) are the lanes of `words`, the thresholds capped at the largest
+    /// values [`DeblockEdge::new`] accepts and the widths taken as § 7.17.3
+    /// gives them.
     #[inline]
-    pub fn from_words<S: Simd>(simd: S, words: [u16x16<S>; 4]) -> [Self; 16] {
+    pub fn from_words<S: Simd>(simd: S, words: [u16x16<S>; 4], out: &mut [Self; 16]) {
         let [q_thr, side, widths, flags] = words;
         let q_thr = q_thr.min(u16x16::splat(simd, MAX_Q_THR as u16));
         let side = side.min(u16x16::splat(simd, MAX_SIDE as u16));
@@ -157,8 +157,11 @@ impl DeblockEdge {
         };
         let (a, b) = edges(low, high);
         let (c, d) = edges(low_high, high_high);
-        let quads = [a, b, c, d];
-        core::array::from_fn(|lane| Self(quads[lane / 4][lane % 4]))
+        for (out, quad) in out.chunks_exact_mut(4).zip([a, b, c, d]) {
+            for (out, edge) in out.iter_mut().zip(quad) {
+                *out = Self(edge);
+            }
+        }
     }
 
     /// Whether the edge filters nothing.
@@ -318,12 +321,8 @@ pub fn deblock_vertical_edge_band<T: ReconSample>(
     Ok(())
 }
 
-/// Segments one [`band`] call gathers per column at a time: a multiple of
-/// [`SEGMENTS`], so only a column's last piece ends in a partial chunk.
-const BAND_PIECE: usize = 16 * SEGMENTS;
-
 /// [`deblock_vertical_edge_band`] through [`run`], one live column at a
-/// time, its segments gathered in pieces.
+/// time.
 fn band<E: Chunk>(
     samples: &mut [E],
     stride: usize,
@@ -332,17 +331,15 @@ fn band<E: Chunk>(
     live: &[bool],
     max_sample: i16,
 ) {
-    let mut run_edges = [DeblockEdge::NONE; BAND_PIECE];
     for (column, _) in live.iter().enumerate().filter(|(_, live)| **live) {
-        for piece in (0..segments).step_by(BAND_PIECE) {
-            let len = (segments - piece).min(BAND_PIECE);
-            for (k, slot) in run_edges[..len].iter_mut().enumerate() {
-                let at = column + (piece + k) * edge_stride;
-                *slot = edges.get(at).copied().unwrap_or_default();
-            }
-            let first = first + LINES * column + piece * LINES * stride;
-            run::<E, true>(samples, stride, first, &run_edges[..len], max_sample);
-        }
+        let column_edges = |k: usize| {
+            edges
+                .get(column + k * edge_stride)
+                .copied()
+                .unwrap_or_default()
+        };
+        let first = first + LINES * column;
+        run::<E, true>(samples, stride, first, segments, column_edges, max_sample);
     }
 }
 
@@ -376,10 +373,16 @@ pub fn deblock_horizontal_edges<T: ReconSample>(
         return Err(too_short(first, samples.len()));
     }
     let max_sample = bit_depth.max_sample() as i16;
+    let row_edges = |k: usize| edges.get(k).copied().unwrap_or_default();
     if let Some(samples) = T::u8_slice_mut(samples) {
-        run_u8(samples, stride, first, edges, max_sample);
+        #[cfg(target_arch = "x86_64")]
+        if let Some(token) = Level::baseline().as_avx2() {
+            avx2_u8::horizontal_run(token, samples, stride, first, edges);
+            return Ok(());
+        }
+        run::<u8, false>(samples, stride, first, edges.len(), row_edges, max_sample);
     } else if let Some(samples) = T::u16_slice_mut(samples) {
-        run::<u16, false>(samples, stride, first, edges, max_sample);
+        run::<u16, false>(samples, stride, first, edges.len(), row_edges, max_sample);
     } else {
         return Err(too_short(first, samples.len()));
     }
@@ -470,43 +473,32 @@ impl EdgeSample for u16 {
     }
 }
 
-/// [`run`] over 8-bit horizontal edges, through the eight-segment kernels
-/// where the level has them.
-#[inline]
-fn run_u8(samples: &mut [u8], stride: usize, first: usize, edges: &[DeblockEdge], max_sample: i16) {
-    #[cfg(target_arch = "x86_64")]
-    if let Some(token) = Level::baseline().as_avx2() {
-        return avx2_u8::horizontal_run(token, samples, stride, first, edges);
-    }
-    run::<u8, false>(samples, stride, first, edges, max_sample);
-}
-
-/// Runs the validated segments `edges` in chunks of
+/// Runs the `count` validated segments `edge(0..count)` in chunks of
 /// [`SEGMENTS`]. A last partial chunk filters a copy of its window, so no
 /// load or store leaves the run.
 fn run<E: Chunk, const VERTICAL: bool>(
     samples: &mut [E],
     stride: usize,
     first: usize,
-    edges: &[DeblockEdge],
+    count: usize,
+    edge: impl Fn(usize) -> DeblockEdge,
     max_sample: i16,
 ) {
     let step = if VERTICAL { LANES * stride } else { LANES };
-    let count = edges.len();
-    let segment = |k: usize| edges.get(k).copied().unwrap_or_default();
     let chunks = count / SEGMENTS;
+    let mut at = first;
     for index in 0..chunks {
-        let chunk: [DeblockEdge; SEGMENTS] =
-            core::array::from_fn(|lane| segment(index * SEGMENTS + lane));
-        if chunk.iter().all(|edge| edge.is_none()) {
-            continue;
+        let k = index * SEGMENTS;
+        let chunk = [edge(k), edge(k + 1), edge(k + 2), edge(k + 3)];
+        if chunk.iter().any(|edge| !edge.is_none()) {
+            E::chunk::<VERTICAL>(samples, stride, at, &chunk, max_sample);
         }
-        E::chunk::<VERTICAL>(samples, stride, first + index * step, &chunk, max_sample);
+        at += step;
     }
     let tail = count % SEGMENTS;
     let padded: [DeblockEdge; SEGMENTS] = core::array::from_fn(|lane| {
         if lane < tail {
-            segment(chunks * SEGMENTS + lane)
+            edge(chunks * SEGMENTS + lane)
         } else {
             DeblockEdge::NONE
         }
@@ -515,7 +507,7 @@ fn run<E: Chunk, const VERTICAL: bool>(
         return;
     }
     let lines = tail * LINES;
-    let origin = first + chunks * step;
+    let origin = at;
     let mut window = [E::default(); ROWS * LANES];
     for (line, copy) in window.chunks_exact_mut(ROWS).enumerate() {
         let (start, len) = window_line::<VERTICAL>(origin, stride, line, lines);
@@ -705,12 +697,18 @@ fn portable_class<S: Simd, E: EdgeSample, const VERTICAL: bool, const WIDEST: us
         return;
     }
     let (mut halves, mut sides) = ([[zero; ROWS]; 2], [zero; ROWS]);
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "iterators here measured 20% more instructions per decided chunk"
+    )]
     for j in REACH - read..REACH + read {
         (halves[0][j], halves[1][j]) = simd.split_i16x16(E::load16(simd, samples, j * stride));
-        sides[j] = portable::sides(simd, halves[0][j], halves[1][j]);
     }
     if still(simd, &halves[0]) && still(simd, &halves[1]) {
         return;
+    }
+    for j in REACH - read..REACH + read {
+        sides[j] = portable::sides(simd, halves[0][j], halves[1][j]);
     }
     let Some((width, ramp)) = decide(simd, &sides, edges, WIDEST) else {
         return;
