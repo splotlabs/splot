@@ -209,11 +209,12 @@ pub fn dequantize_block(
 /// Dequantizes a whole `useQm == 0` block with the § 7.14.4 quantizer carried in
 /// registers, widest lane group first.
 ///
-/// Every coefficient but `(0, 0)` takes `ac_quant`, so the lane groups run the
-/// AC quantizer over the whole block and the DC coefficient is rewritten
-/// afterwards — the same values the per-coefficient loop writes, in the same
-/// slots. Returns `false` when `dq_denom` is not a power of two, which leaves
-/// the § 7.14.4 divide to the caller's per-coefficient loop.
+/// Every coefficient but `(0, 0)` takes `ac_quant`, so the first lane group
+/// takes `dc_quant` in lane 0 and the rest `ac_quant` throughout — the same
+/// values the per-coefficient loop writes, in the same slots. A last group
+/// shorter than eight loads zero-padded and stores only its own lanes.
+/// Returns `false` when `dq_denom` is not a power of two, which leaves the
+/// § 7.14.4 divide to the caller's per-coefficient loop.
 fn dequantize_flat_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i32]) -> bool {
     let denom = params.dq_denom.max(1);
     if !denom.is_power_of_two() {
@@ -221,58 +222,24 @@ fn dequantize_flat_block(params: &DequantBlockParams, quant: &[i32], out: &mut [
     }
     let denom_shift = denom.trailing_zeros();
     let bound = 1i32 << (7 + u32::from(params.bit_depth.bits()));
-    let mut index = 0usize;
+    let ac = params.ac_quant;
     baseline_simd!(simd => {
-        while let (Some(out), Some(quant)) = (
-            out.get_mut(index..index + 8),
-            quant.get(index..index + 8),
-        ) {
-            dequant_flat_lanes(simd, out, quant, params.ac_quant, denom_shift, bound);
-            index += 8;
+        let mut q2 = u32x8::load_array(simd, [params.dc_quant, ac, ac, ac, ac, ac, ac, ac]);
+        let (out_groups, out_tail) = out.as_chunks_mut::<8>();
+        let (groups, tail) = quant.as_chunks::<8>();
+        for (out, &quant) in out_groups.iter_mut().zip(groups) {
+            let v = i32x8::load_array(simd, quant);
+            *out = dequant_lanes(simd, v, q2, denom_shift, bound).into();
+            q2 = u32x8::splat(simd, ac);
+        }
+        if !tail.is_empty() {
+            let mut lanes = [0i32; 8];
+            lanes[..tail.len()].copy_from_slice(tail); // splot-copy-ok: zero-padded lane group
+            let v = dequant_lanes(simd, i32x8::load_array(simd, lanes), q2, denom_shift, bound);
+            out_tail.copy_from_slice(&v.as_array()[..out_tail.len()]); // splot-copy-ok: the group's own lanes
         }
     });
-    for (slot, &coeff) in out[index..].iter_mut().zip(&quant[index..]) {
-        let magnitude = coeff.unsigned_abs().wrapping_mul(params.ac_quant) & 0x00FF_FFFF;
-        let scaled = (round2_u32(magnitude, QUANT_TABLE_BITS as u8) >> denom_shift) as i32;
-        let signed = if coeff < 0 { -scaled } else { scaled };
-        *slot = signed.clamp(-bound, bound - 1);
-    }
-    if let (Some(slot), Some(&coeff)) = (out.first_mut(), quant.first()) {
-        *slot = dequant_coefficient(coeff, params.dc_quant, denom, params.bit_depth);
-    }
     true
-}
-
-/// One eight-lane group of [`dequantize_flat_block`].
-///
-/// Each lane repeats [`dequant_coefficient`] literally: `sign`/`unsigned_abs`
-/// as the two's-complement `(c ^ s) - s` pair (exact for `i32::MIN`), the
-/// wrapping product masked to its normative low 24 bits,
-/// `Round2(·, QUANT_TABLE_BITS)` and the power-of-two `dq_denom` divide as
-/// one rounding add and shift, and the § 7.14.4 clamp. The
-/// masked `Round2` result never exceeds `1 << 21`, so restoring the sign and
-/// narrowing to `i32` are both exact.
-#[allow(
-    clippy::inline_always,
-    reason = "measured § 7.14.4 dequantization hot path"
-)]
-#[inline(always)]
-fn dequant_flat_lanes<S: Simd>(
-    simd: S,
-    out: &mut [i32],
-    quant: &[i32],
-    q2: u32,
-    denom_shift: u32,
-    bound: i32,
-) {
-    dequant_lanes(
-        simd,
-        i32x8::from_slice(simd, quant),
-        u32x8::splat(simd, q2),
-        denom_shift,
-        bound,
-    )
-    .store_slice(out);
 }
 
 /// [`dequant_coefficient`] of eight lanes with per-lane quantizers `q2`, a
@@ -600,12 +567,15 @@ mod tests {
                                 bit_depth,
                             );
                         }
-                        let mut actual = vec![0i32; samples];
-                        assert!(dequantize_flat_block(&params, &quant, &mut actual));
-                        assert_eq!(
-                            actual, expected,
-                            "{tx_width}x{tx_height} {bit_depth:?} shift {dq_shift}"
-                        );
+                        for len in [samples, 1, 3, 7, 9, samples - 5] {
+                            let mut actual = vec![0i32; len];
+                            assert!(dequantize_flat_block(&params, &quant[..len], &mut actual));
+                            assert_eq!(
+                                actual,
+                                expected[..len],
+                                "{tx_width}x{tx_height} {bit_depth:?} shift {dq_shift} len {len}"
+                            );
+                        }
                     }
                 }
             }

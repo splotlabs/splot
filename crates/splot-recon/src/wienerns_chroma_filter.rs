@@ -363,16 +363,6 @@ fn filter_chroma_padded_output<O: ChromaOutputSample, T: ReconSample>(
             luma_stride,
             max_sample,
         );
-    } else {
-        filter_chroma_padded_u16_scalar(
-            output,
-            params,
-            source.chroma_samples,
-            source.chroma_stride,
-            &scratch.luma_ds,
-            luma_stride,
-            max_sample,
-        );
     }
 }
 
@@ -1184,7 +1174,8 @@ fn filter_chroma_lanes8<S: Simd, O: ChromaOutputSample>(
     }
 }
 
-#[inline(never)]
+/// The scalar oracle of the padded chroma filter.
+#[cfg(test)]
 fn filter_chroma_padded_u16_scalar<O: ChromaOutputSample, T: ReconSample>(
     output: &mut [O],
     params: &WienerNsChromaFilter<'_>,

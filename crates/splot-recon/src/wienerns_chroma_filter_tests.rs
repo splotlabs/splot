@@ -56,7 +56,9 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
         .flat_map(|depth| [(depth, &mixed), (depth, &extreme), (depth, &chroma_only)])
     {
         let max = bit_depth.max_sample();
-        for &width in &[8, 9, 12, 15, 16, 17, 24, 64, 65, 70, 127, 128, 191, 200] {
+        for &width in &[
+            1, 2, 3, 4, 7, 8, 9, 12, 15, 16, 17, 24, 64, 65, 70, 127, 128, 191, 200,
+        ] {
             let height = 3;
             let stride = width + 2 * RADIUS;
             let plane = |seed: usize| -> Vec<u16> {
@@ -84,6 +86,20 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
                 max,
             );
             assert_eq!(lanes, scalar, "{bit_depth:?} width {width}");
+            if bit_depth == BitDepth::Eight {
+                let bytes: Vec<u8> = chroma.iter().map(|&s| s as u8).collect();
+                let mut from_bytes = vec![0u16; width * height];
+                filter_chroma_padded_simd(
+                    &mut from_bytes,
+                    &params,
+                    &bytes,
+                    stride,
+                    &luma_ds,
+                    stride,
+                    max,
+                );
+                assert_eq!(from_bytes, scalar, "u8 chroma width {width}");
+            }
         }
     }
 }

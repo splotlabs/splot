@@ -25,10 +25,9 @@
 //! dimensions, exactly as the spec specifies, so transforms with a 64-sample
 //! dimension (whose adjusted parity differs) rescale correctly.
 
-use crate::inverse_transform::{
-    ColumnPass, InverseTransform1dType, RowQuad, inverse_identity_transform, inverse_transform_1d,
-    inverse_transform_1d_columns, inverse_transform_1d_row_quad, inverse_walsh_hadamard,
-};
+use fearless_simd::{Bytes as _, Simd, SimdBase as _, i32x4, i64x2};
+
+use crate::inverse_transform::InverseTransform1dType;
 use crate::inverse_transform_2d_8bit::{Transform8, inverse_transform_2d_8bit};
 use crate::{BitDepth, ReconError, Result};
 
@@ -148,205 +147,117 @@ pub(super) fn inverse_transform_2d_with_scratch(
         });
     }
 
-    let odd_ratio = log2_w.abs_diff(log2_h) % 2 == 1;
+    if params.lossless {
+        baseline_simd!(simd => walsh_hadamard_4x4(simd, dequant, residual));
+        return Ok(());
+    }
+    let transform = Transform8 {
+        bit_depth: params.bit_depth,
+        row: params.row_type,
+        col: params.col_type,
+        w,
+        h,
+        rescale: log2_w.abs_diff(log2_h) % 2 == 1,
+        row_shift: params.row_shift,
+        col_shift: params.col_shift,
+        dequant: None,
+    };
+    if inverse_transform_2d_8bit(transform, dequant, residual, intermediate) {
+        return Ok(());
+    }
+    Err(ReconError::InverseTransform2dBufferMismatch {
+        expected,
+        dequant_len: dequant.len(),
+        residual_len: residual.len(),
+    })
+}
 
-    if params.bit_depth == BitDepth::Eight
-        && !params.lossless
-        && inverse_transform_2d_8bit(
-            Transform8 {
-                row: params.row_type,
-                col: params.col_type,
-                w,
-                h,
-                rescale: odd_ratio,
-                row_shift: params.row_shift,
-                col_shift: params.col_shift,
-                dequant: None,
-            },
-            dequant,
-            residual,
-            intermediate,
+/// The lossless § 7.15.2.2 Walsh-Hadamard row pass (`shift` 3) and column
+/// pass (`shift` 0) of the 4x4 whole-row prefix `dequant` into `residual`:
+/// the rows load as vectors and transpose, so one butterfly runs all four
+/// rows, and the row outputs transpose back for the column butterfly.
+#[inline]
+fn walsh_hadamard_4x4<S: Simd>(simd: S, dequant: &[i32], residual: &mut [i32]) {
+    let row = |r: usize| {
+        dequant
+            .get(4 * r..4 * r + 4)
+            .map_or(i32x4::splat(simd, 0), |v| i32x4::from_slice(simd, v))
+    };
+    let columns = transpose_4x4(simd, [row(0), row(1), row(2), row(3)]);
+    let rows = walsh_hadamard_lanes(simd, columns, 3);
+    let out = walsh_hadamard_lanes(simd, transpose_4x4(simd, rows), 0);
+    for (dst, v) in residual.chunks_exact_mut(4).zip(out) {
+        v.store_slice(dst);
+    }
+}
+
+/// The § 7.15.2.2 butterfly with input `[src[0], src[1], src[2], src[3]]`
+/// one vector each, each input clamped to the § 7.14.4 dequant range
+/// `±2^17` and shifted down by `shift` first.
+#[allow(clippy::many_single_char_names, reason = "the § 7.15.2.2 names")]
+#[inline]
+fn walsh_hadamard_lanes<S: Simd>(simd: S, src: [i32x4<S>; 4], shift: u32) -> [i32x4<S>; 4] {
+    let bound = 1 << 17;
+    let [mut a, mut c, mut d, mut b] = src.map(|v| {
+        v.max(i32x4::splat(simd, -bound))
+            .min(i32x4::splat(simd, bound - 1))
+            >> shift
+    });
+    a += c;
+    d -= b;
+    let e = (a - d) >> 1;
+    b = e - b;
+    c = e - c;
+    a -= b;
+    d += c;
+    [a, b, c, d]
+}
+
+/// The transpose of the 4x4 block whose rows are `rows`.
+#[inline]
+fn transpose_4x4<S: Simd>(simd: S, [r0, r1, r2, r3]: [i32x4<S>; 4]) -> [i32x4<S>; 4] {
+    let pairs = |a: i32x4<S>, b: i32x4<S>| -> (i64x2<S>, i64x2<S>) {
+        (
+            simd.zip_low_i32x4(a, b).bitcast(),
+            simd.zip_high_i32x4(a, b).bitcast(),
         )
-    {
-        return Ok(());
-    }
-
-    let mut buf_in = [0i32; MAX_DIM];
-    let mut buf_out = [0i32; MAX_DIM];
-
-    let row_pass = Pass {
-        lossless: params.lossless,
-        dim: params.row_type,
-        shift: params.row_shift,
-        col_tx: false,
-        log2_size: log2_w,
-        bit_depth: params.bit_depth,
     };
-    let col_pass = Pass {
-        lossless: params.lossless,
-        dim: params.col_type,
-        shift: params.col_shift,
-        col_tx: true,
-        log2_size: log2_h,
-        bit_depth: params.bit_depth,
-    };
-    let masked = !params.lossless && matches!(params.col_type, InverseTransform2dDim::Kernel(_));
-    let quad_type = match params.row_type {
-        InverseTransform2dDim::Kernel(tx_type) if !params.lossless && w <= 8 => Some(tx_type),
-        _ => None,
-    };
-    let quad = RowQuad {
-        len: w,
-        shift: params.row_shift,
-        rescale: odd_ratio,
-        bit_depth: params.bit_depth,
-    };
-    let coded_rows = dequant.len() / w;
-    let intermediate = &mut intermediate[..expected];
-    let mut nonzero_rows = 0u32;
-    let mut row = 0;
-    while row < coded_rows {
-        let rows = &dequant[row * w..];
-        if let Some(tx_type) = quad_type
-            && row + 4 <= coded_rows
-            && inverse_transform_1d_row_quad(rows, &mut intermediate[row * w..], tx_type, quad)
-        {
-            for (offset, quad_row) in rows.chunks_exact(w).take(4).enumerate() {
-                if quad_row.iter().fold(0, |any, &coeff| any | coeff) != 0 {
-                    nonzero_rows |= 1u32 << (row + offset);
-                }
-            }
-            row += 4;
-            continue;
-        }
-        let dequant_row = &rows[..w];
-        let intermediate_row = &mut intermediate[row * w..(row + 1) * w];
-        row += 1;
-        if dequant_row.iter().fold(0, |any, &coeff| any | coeff) == 0 {
-            if !masked {
-                intermediate_row.fill(0);
-            }
-            continue;
-        }
-        if odd_ratio {
-            for (slot, &coeff) in buf_in.iter_mut().zip(dequant_row.iter()) {
-                *slot = round2_2896(coeff);
-            }
-            run_1d(&buf_in[..w], intermediate_row, row_pass)?;
-        } else {
-            run_1d(dequant_row, intermediate_row, row_pass)?;
-        }
-        nonzero_rows |= 1u32 << (row - 1);
-    }
-    if !masked {
-        intermediate[dequant.len()..].fill(0);
-    }
-
-    if column_pass_lane_groups(intermediate, residual, w, nonzero_rows, col_pass) {
-        return Ok(());
-    }
-    if masked {
-        for (row, intermediate_row) in intermediate.chunks_exact_mut(w).take(h).enumerate() {
-            if nonzero_rows & (1u32 << row) == 0 {
-                intermediate_row.fill(0);
-            }
-        }
-    }
-    for j in 0..w {
-        for i in 0..h {
-            buf_in[i] = intermediate[i * w + j];
-        }
-        run_1d(&buf_in[..h], &mut buf_out[..h], col_pass)?;
-        for i in 0..h {
-            residual[i * w + j] = buf_out[i];
-        }
-    }
-    Ok(())
+    let ((low01, high01), (low23, high23)) = (pairs(r0, r1), pairs(r2, r3));
+    [
+        simd.zip_low_i64x2(low01, low23).bitcast(),
+        simd.zip_high_i64x2(low01, low23).bitcast(),
+        simd.zip_low_i64x2(high01, high23).bitcast(),
+        simd.zip_high_i64x2(high01, high23).bitcast(),
+    ]
 }
 
-/// Runs the whole § 7.15.4.1 column pass without the per-column gather and
-/// scatter, returning `false` when the pass has no such form.
-///
-/// The identity column transform is per-sample, so it runs over the whole block
-/// in one call; a kernel column transform runs in adjacent-column lane groups,
-/// which read and write contiguous samples of each row instead of striding one
-/// column at a time. Lossless blocks keep the per-column Walsh-Hadamard path.
-fn column_pass_lane_groups(
-    intermediate: &[i32],
-    residual: &mut [i32],
-    w: usize,
-    nonzero_rows: u32,
-    pass: Pass,
-) -> bool {
-    if pass.lossless {
-        return false;
-    }
-    let tx_type = match pass.dim {
-        InverseTransform2dDim::Identity => {
-            return inverse_identity_transform(
-                intermediate,
-                identity_scale(pass.log2_size),
-                pass.shift,
-                true,
-                pass.bit_depth,
-                residual,
-            )
-            .is_ok();
-        }
-        InverseTransform2dDim::Kernel(tx_type) => tx_type,
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::inverse_transform::{
+        inverse_identity_transform, inverse_transform_1d, inverse_walsh_hadamard,
     };
-    let column = ColumnPass {
-        stride: w,
-        len: 1usize << pass.log2_size.min(5),
-        nonzero_rows,
-        shift: pass.shift,
-        bit_depth: pass.bit_depth,
-    };
-    let mut base = 0usize;
-    macro_rules! column_lane_group {
-        ($lanes:literal) => {
-            while base + $lanes <= w {
-                if !inverse_transform_1d_columns::<$lanes>(
-                    &intermediate[base..],
-                    &mut residual[base..],
-                    tx_type,
-                    column,
-                ) {
-                    return false;
-                }
-                base += $lanes;
-            }
-        };
+
+    /// Resolved parameters for one § 7.15.4.1 1D pass of the scalar oracle.
+    #[derive(Clone, Copy)]
+    struct Pass {
+        lossless: bool,
+        dim: InverseTransform2dDim,
+        shift: u8,
+        col_tx: bool,
+        log2_size: u32,
+        bit_depth: BitDepth,
     }
-    column_lane_group!(8);
-    column_lane_group!(4);
-    base == w
-}
 
-/// Resolved parameters for one § 7.15.4.1 1D pass.
-#[derive(Clone, Copy)]
-struct Pass {
-    lossless: bool,
-    dim: InverseTransform2dDim,
-    shift: u8,
-    col_tx: bool,
-    log2_size: u32,
-    bit_depth: BitDepth,
-}
-
-/// Runs one § 7.15.4.1 1D pass over `src`, writing `out` (same length).
-fn run_1d(src: &[i32], out: &mut [i32], pass: Pass) -> Result<()> {
-    if pass.lossless {
-        let walsh_shift = if pass.col_tx { 0 } else { 3 };
-        let input = [src[0], src[1], src[2], src[3]];
-        for (dst, value) in out
-            .iter_mut()
-            .zip(inverse_walsh_hadamard(input, walsh_shift))
-        {
-            *dst = value;
+    /// The scalar oracle of one § 7.15.4.1 1D pass over `src` into `out`.
+    fn run_1d(src: &[i32], out: &mut [i32], pass: Pass) -> Result<()> {
+        if pass.lossless {
+            let walsh_shift = if pass.col_tx { 0 } else { 3 };
+            let input = [src[0], src[1], src[2], src[3]];
+            out.copy_from_slice(&inverse_walsh_hadamard(input, walsh_shift)); // splot-copy-ok: test oracle output row
+            return Ok(());
         }
-        Ok(())
-    } else {
         match pass.dim {
             InverseTransform2dDim::Identity => inverse_identity_transform(
                 src,
@@ -361,29 +272,21 @@ fn run_1d(src: &[i32], out: &mut [i32], pass: Pass) -> Result<()> {
             }
         }
     }
-}
 
-/// AV2 § 7.15.4.1 `get_identity_scale( log2Sz )`.
-fn identity_scale(log2_size: u32) -> i32 {
-    match log2_size {
-        2 => 128,
-        3 => 181,
-        4 => 256,
-        _ => 362,
+    /// AV2 § 7.15.4.1 `get_identity_scale( log2Sz )`.
+    fn identity_scale(log2_size: u32) -> i32 {
+        match log2_size {
+            2 => 128,
+            3 => 181,
+            4 => 256,
+            _ => 362,
+        }
     }
-}
 
-/// AV2 § 7.15.4.1 rectangular rescale `Round2( x * 2896, 12 )` (the √2 factor for
-/// transforms whose width/height log2 ratio is odd). The § 7.14.4 coefficient
-/// bound keeps the `i32` product in range.
-fn round2_2896(x: i32) -> i32 {
-    (x * 2896 + (1 << 11)) >> 12
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
+    /// AV2 § 7.15.4.1 rectangular rescale `Round2( x * 2896, 12 )`.
+    fn round2_2896(x: i32) -> i32 {
+        (x * 2896 + (1 << 11)) >> 12
+    }
 
     fn params(
         log2_width: u32,
@@ -440,6 +343,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(residual, [2i32; 16]);
+    }
+
+    /// The vector Walsh-Hadamard matches the per-row and per-column oracle
+    /// on random and extreme coefficients, for every coded-row prefix.
+    #[test]
+    fn lossless_walsh_hadamard_matches_the_reference() {
+        let mut state = 0x005e_ed0f_ab1e_u64;
+        for trial in 0..200 {
+            let mut dequant = [0i32; 16];
+            for slot in &mut dequant {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *slot = match trial % 4 {
+                    0 => [i32::MIN, i32::MAX, 1 << 17, -(1 << 17) - 1][(state % 4) as usize],
+                    1 => (state % (1 << 18)) as i32 - (1 << 17),
+                    _ => (state % 512) as i32 - 256,
+                };
+            }
+            let p = params(2, 2, true, dct(), dct(), 0, 0);
+            for coded in [16, 12, 8, 4, 0] {
+                let mut full = [0i32; 16];
+                full[..coded].copy_from_slice(&dequant[..coded]); // splot-copy-ok: test coded-row prefix
+                let mut expected = [0i32; 16];
+                let scratch = &mut [0; MAX_DIM * MAX_DIM];
+                reference_transform_2d(&p, &full, &mut expected, scratch);
+                let mut got = [i32::MIN; 16];
+                inverse_transform_2d(&p, &dequant[..coded], &mut got).unwrap();
+                assert_eq!(got, expected, "trial {trial} coded {coded}");
+            }
+        }
     }
 
     #[test]
@@ -786,15 +720,15 @@ mod tests {
         }
     }
 
-    /// The 8-bit lane form must reproduce the per-row and per-column
-    /// reference for every adjusted shape and pass pair, row and column
-    /// shifts at both ends of `1..=20`, and dense extreme, sparse,
+    /// The lane form must reproduce the per-row and per-column reference at
+    /// both bit depths for every adjusted shape and pass pair, row and column
+    /// shifts at both ends of `1..=20` and past them, and dense extreme, sparse,
     /// single-coefficient, DC-only and first-column inputs, so that the
     /// input clamp, the row `Clip3`, the zero-group and zero-row skips and the
     /// DC-only path all run. The coded-row prefix goes into stale output and
     /// scratch, so every sample must be written.
     #[test]
-    fn eight_bit_lane_form_matches_the_reference_at_every_shift_and_sparsity() {
+    fn lane_form_matches_the_reference_at_every_shift_and_sparsity() {
         use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
         let types = [
             InverseTransform2dDim::Identity,
@@ -814,7 +748,9 @@ mod tests {
         for (log2_w, log2_h) in (2..=5u32).flat_map(|w| (2..=5u32).map(move |h| (w, h))) {
             let (w, h) = (1usize << log2_w, 1usize << log2_h);
             for (row_type, col_type) in types.into_iter().flat_map(|r| types.map(|c| (r, c))) {
-                for (row_shift, col_shift) in [(1u8, 20u8), (20, 1), (5, 12), (12, 4)] {
+                let shifts = [(1u8, 20u8), (20, 1), (5, 12), (12, 4), (0, 31), (40, 0)];
+                let cases = shifts.into_iter().flat_map(|s| [(s, false), (s, true)]);
+                for ((row_shift, col_shift), ten) in cases {
                     for pattern in 0..5 {
                         let mut dequant = vec![0i32; w * h];
                         let spot = next((w * h) as u32) as usize;
@@ -828,9 +764,12 @@ mod tests {
                                 _ => 0,
                             };
                         }
-                        let p = params(
+                        let mut p = params(
                             log2_w, log2_h, false, row_type, col_type, row_shift, col_shift,
                         );
+                        if ten {
+                            p.bit_depth = BitDepth::Ten;
+                        }
                         let rows = dequant
                             .iter()
                             .rposition(|&c| c != 0)

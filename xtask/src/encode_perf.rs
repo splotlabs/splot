@@ -118,15 +118,6 @@ const KERNELS: &[(&str, Kind)] = &[
     ("ForwardTransform2d::input", Kind::Scalar),
     ("quantize::quantize_simd", Kind::Simd),
     ("quantize::", Kind::Scalar),
-    ("inverse_transform::kernel_row_quad", Kind::Simd),
-    (
-        "inverse_transform::inverse_transform_1d_row_quad",
-        Kind::Simd,
-    ),
-    (
-        "inverse_transform::inverse_transform_1d_columns",
-        Kind::Simd,
-    ),
     ("inverse_transform::inverse_transform_1d", Kind::Simd),
     ("inverse_transform::", Kind::Scalar),
     ("subpel_mc::", Kind::Simd),

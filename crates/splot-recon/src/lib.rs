@@ -160,10 +160,7 @@ pub use intra_smooth::{
     IntraSmoothEdge, IntraSmoothEdges, IntraSmoothFrameRequest, IntraSmoothMode,
     predict_intra_smooth_rect_into,
 };
-pub use inverse_transform::{
-    InverseTransform1dType, inverse_identity_transform, inverse_transform_1d,
-    inverse_walsh_hadamard,
-};
+pub use inverse_transform::{InverseTransform1dType, inverse_transform_1d};
 pub use inverse_transform_2d::{InverseTransform2d, InverseTransform2dDim, inverse_transform_2d};
 pub use inverse_transform_2d_8bit::{FlatDequant, InverseTransformAdd8};
 pub use inverse_transform_2d_outer::{

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 7.15.4.1 kernel-by-kernel 2D matrix transform at 8-bit depth.
+//! AV2 § 7.15.4.1 kernel-by-kernel 2D matrix transform.
 //!
-//! At `BitDepth == 8` every § 7.15.2.1 input lies in the row clamp
-//! `[-2^15, 2^15 - 1]`, every row output in the row `Clip3` bound of the same
-//! range, and every kernel entry below `2^7`, so `|sum| < 32 * 2^7 * 2^15`
-//! never wraps an `i32` and the re-associated sums are the scalar sums.
+//! Every § 7.15.2.1 input lies in the row clamp `±2^(BitDepth + 7)`, every
+//! row output in the row `Clip3` bound of the same range (§ 7.15.2.1,
+//! `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-1`), and every kernel
+//! entry below `2^7`, so at 10 bits `|sum| < 32 * 2^7 * 2^17` never wraps an
+//! `i32` and the re-associated sums are the scalar sums.
 //!
 //! The lane form here is one `i32` multiply-add per input and output, four
 //! outputs per vector: the row pass vectorizes over a row's outputs, the
@@ -36,6 +37,7 @@ mod avx2;
 /// One 8-bit § 7.15.4.1 kernel-by-kernel transform.
 #[derive(Clone, Copy)]
 pub(crate) struct Transform8 {
+    pub bit_depth: crate::BitDepth,
     pub row: InverseTransform2dDim,
     pub col: InverseTransform2dDim,
     /// Adjusted width and height.
@@ -452,6 +454,7 @@ impl InverseTransformAdd8 {
 
     const fn transform8(self, dequant: Option<FlatDequant>) -> Transform8 {
         Transform8 {
+            bit_depth: crate::BitDepth::Eight,
             row: self.row,
             col: self.col,
             w: self.w(),
@@ -493,7 +496,7 @@ impl InverseTransformAdd8 {
 
 /// Runs the transform of `dequant` (a whole-row prefix of the `w * h` block)
 /// into the `w * h` `residual`, or returns `false` with nothing written when
-/// the shape or a shift has no lane form.
+/// the shape has no lane form.
 pub(crate) fn inverse_transform_2d_8bit(
     t: Transform8,
     dequant: &[i32],
@@ -504,17 +507,17 @@ pub(crate) fn inverse_transform_2d_8bit(
         return false;
     }
     #[cfg(target_arch = "x86_64")]
-    if let Some(token) = Level::baseline().as_avx2() {
-        let shape = InverseTransformAdd8::of(
+    if let Some(token) = Level::baseline().as_avx2()
+        && t.bit_depth == crate::BitDepth::Eight
+        && let Some(shape) = InverseTransformAdd8::of(
             t.row,
             t.col,
             (t.w.trailing_zeros(), t.h.trailing_zeros()),
             (t.row_shift, t.col_shift),
             t.rescale,
-        );
-        let Some(shape) = shape.filter(|s| s.w() == t.w && s.h() == t.h) else {
-            return false;
-        };
+        )
+        .filter(|s| s.w() == t.w && s.h() == t.h)
+    {
         let sink = avx2::Sink::Residual(residual);
         avx2::transform(token, &shape, t.dequant, dequant, false, sink, scratch);
         return true;
@@ -524,12 +527,7 @@ pub(crate) fn inverse_transform_2d_8bit(
 
 /// Whether `t` and `dequant` have a lane form.
 fn valid(t: &Transform8, dequant: &[i32]) -> bool {
-    let shifts = 1..=20u8;
-    shifts.contains(&t.row_shift)
-        && shifts.contains(&t.col_shift)
-        && dequant.len() <= t.w * t.h
-        && matches!(t.w, 4 | 8 | 16 | 32)
-        && matches!(t.h, 4 | 8 | 16 | 32)
+    dequant.len() <= t.w * t.h && matches!(t.w, 4 | 8 | 16 | 32) && matches!(t.h, 4 | 8 | 16 | 32)
 }
 
 /// The DC coefficient of a block whose only non-zero coefficient it is, with
@@ -538,9 +536,15 @@ fn dc_only(t: &Transform8, dequant: &[i32], in_w: usize) -> Option<i32> {
     let (&dc, rest) = dequant.split_first()?;
     (rest.len() < in_w && rest.iter().all(|&coeff| coeff == 0)).then(|| {
         t.dequant.map_or(dc, |dq| {
-            dequant_coefficient(dc, dq.dc, 1 << dq.denom_shift, crate::BitDepth::Eight)
+            dequant_coefficient(dc, dq.dc, 1 << dq.denom_shift, t.bit_depth)
         })
     })
+}
+
+/// The row and column `Clip3` bounds `2^(BitDepth + 7)` and `2^BitDepth`.
+const fn bounds(bit_depth: crate::BitDepth) -> (i32, i32) {
+    let bits = bit_depth.bits() as u32;
+    (1 << (bits + 7), 1 << bits)
 }
 
 /// One resolved pass: `None` for the § 7.15.2.3 identity, or the § 7.15.2.1
@@ -594,6 +598,7 @@ fn run<O: Output + ?Sized>(
         baseline_simd!(simd => dc_only_transform(simd, t, dc, (row, col), residual));
         return true;
     }
+    let (row_bound, col_bound) = bounds(t.bit_depth);
     let rows = Rows {
         input: dequant,
         in_w,
@@ -602,12 +607,14 @@ fn run<O: Output + ?Sized>(
             rescale: t.rescale,
             dequant: t.dequant,
         },
-        shift: u32::from(t.row_shift),
+        shift: u32::from(t.row_shift).min(31),
+        bound: row_bound,
     };
     let pass = ColPass {
         w: t.w,
         h: t.h,
-        shift: u32::from(t.col_shift),
+        shift: u32::from(t.col_shift).min(31),
+        bound: col_bound,
     };
     baseline_simd!(simd => transform(simd, (row, col), rows, pass, residual, scratch));
     true
@@ -633,6 +640,7 @@ fn transform<S: Simd, O: Output + ?Sized>(
             inner: residual,
             scale: identity_scale(pass.h),
             shift: pass.shift,
+            bound: pass.bound,
         };
         row_dispatch(simd, row, pass.w, rows, out);
         if !O::ADDS {
@@ -701,12 +709,13 @@ struct IdentityCol<'a, O: ?Sized> {
     inner: &'a mut O,
     scale: i32,
     shift: u32,
+    bound: i32,
 }
 
 impl<O: Output + ?Sized> Output for IdentityCol<'_, O> {
     #[inline]
     fn put<S: Simd>(&mut self, simd: S, index: usize, v: i32x8<S>) {
-        let v = clip_lanes(simd, v * self.scale, self.shift, !O::ADDS);
+        let v = clip_lanes(simd, v * self.scale, self.shift, self.bound, !O::ADDS);
         self.inner.put(simd, index, v);
     }
 }
@@ -755,17 +764,21 @@ fn dc_only_transform<S: Simd, O: Output + ?Sized>(
     (row, col): (Pass1d, Pass1d),
     residual: &mut O,
 ) {
-    let dc = row_input(i32x8::splat(simd, dc), t.rescale);
-    let (row_shift, col_shift) = (u32::from(t.row_shift), u32::from(t.col_shift));
+    let (row_bound, col_bound) = bounds(t.bit_depth);
+    let dc = row_input(i32x8::splat(simd, dc), t.rescale, row_bound);
+    let (row_shift, col_shift) = (
+        u32::from(t.row_shift).min(31),
+        u32::from(t.col_shift).min(31),
+    );
     let kr = first_kernel_row(row, t.w);
     let kc = first_kernel_row(col, t.h);
     let row0 = |c: usize| {
         let k = kr.as_chunks::<8>().0.get(c).map_or([0; 8], |k| *k);
-        clip_row(i32x8::from_slice(simd, &k) * dc, row_shift)
+        clip_row(i32x8::from_slice(simd, &k) * dc, row_shift, row_bound)
     };
     let dct = |dim| dim == InverseTransform2dDim::Kernel(InverseTransform1dType::Dct);
     if dct(t.row) && dct(t.col) {
-        let value: [i32; 8] = clip_col(row0(0) * kc[0], col_shift).into();
+        let value: [i32; 8] = clip_col(row0(0) * kc[0], col_shift, col_bound).into();
         let value = i32x8::splat(simd, value[0]);
         for index in 0..t.w * t.h / 8 {
             residual.put(simd, index, value);
@@ -777,7 +790,7 @@ fn dc_only_transform<S: Simd, O: Output + ?Sized>(
         let row0 = simd.combine_i32x4(row0, row0);
         for (index, &[a, b]) in kc.as_chunks::<2>().0.iter().take(t.h / 2).enumerate() {
             let k = i32x8::from_slice(simd, &[a, a, a, a, b, b, b, b]);
-            residual.put(simd, index, clip_col(row0 * k, col_shift));
+            residual.put(simd, index, clip_col(row0 * k, col_shift, col_bound));
         }
         return;
     }
@@ -788,7 +801,11 @@ fn dc_only_transform<S: Simd, O: Output + ?Sized>(
     }
     for (r, &k) in kc.iter().take(t.h).enumerate() {
         for (c, &row0) in row0s.iter().take(chunks).enumerate() {
-            residual.put(simd, r * chunks + c, clip_col(row0 * k, col_shift));
+            residual.put(
+                simd,
+                r * chunks + c,
+                clip_col(row0 * k, col_shift, col_bound),
+            );
         }
     }
 }
@@ -803,40 +820,41 @@ fn rescaled<S: Simd>(v: i32x8<S>, rescale: bool) -> i32x8<S> {
     }
 }
 
-/// The optional rescale and the row input clamp.
+/// The optional rescale and the row input clamp to `±bound`.
 #[inline]
-fn row_input<S: Simd>(v: i32x8<S>, rescale: bool) -> i32x8<S> {
+fn row_input<S: Simd>(v: i32x8<S>, rescale: bool, bound: i32) -> i32x8<S> {
     let v = rescaled(v, rescale);
-    v.max(i32x8::splat(v.simd, i32::from(i16::MIN)))
-        .min(i32x8::splat(v.simd, i32::from(i16::MAX)))
+    v.max(i32x8::splat(v.simd, -bound))
+        .min(i32x8::splat(v.simd, bound - 1))
 }
 
-/// `Round2(sum, shift)` for `1 <= shift <= 20` and `|sum| < 2^28`.
+/// The row `Clip3` to `±bound` of `Round2(sum, shift)`.
 #[inline]
-fn round<S: Simd>(sum: i32x8<S>, shift: u32) -> i32x8<S> {
-    (sum + (1 << (shift - 1))) >> shift
+fn clip_row<S: Simd>(sum: i32x8<S>, shift: u32, bound: i32) -> i32x8<S> {
+    clip_lanes(sum.simd, sum, shift, bound, true)
 }
 
-/// The row `Clip3` of `Round2(sum, shift)`.
+/// The column `Clip3` to `±bound` of `Round2(sum, shift)`.
 #[inline]
-fn clip_row<S: Simd>(sum: i32x8<S>, shift: u32) -> i32x8<S> {
-    round(sum, shift)
-        .max(i32x8::splat(sum.simd, i32::from(i16::MIN)))
-        .min(i32x8::splat(sum.simd, i32::from(i16::MAX)))
+fn clip_col<S: Simd>(sum: i32x8<S>, shift: u32, bound: i32) -> i32x8<S> {
+    clip_lanes(sum.simd, sum, shift, bound, true)
 }
 
-/// The column `Clip3` of `Round2(sum, shift)`.
+/// `Round2(sum, shift)` over `V` lanes for `shift <= 31` and `|sum| < 2^30`
+/// (zero at 31), then with `clip` its `Clip3` to `±bound`.
 #[inline]
-fn clip_col<S: Simd>(sum: i32x8<S>, shift: u32) -> i32x8<S> {
-    clip_lanes(sum.simd, sum, shift, true)
-}
-
-/// [`clip_col`] over `V` lanes, or only its `Round2` without `clip`.
-#[inline]
-fn clip_lanes<S: Simd, V: SimdInt<S, Element = i32>>(simd: S, sum: V, shift: u32, clip: bool) -> V {
-    let rounded = (sum + (1 << (shift - 1))) >> shift;
+fn clip_lanes<S: Simd, V: SimdInt<S, Element = i32>>(
+    simd: S,
+    sum: V,
+    shift: u32,
+    bound: i32,
+    clip: bool,
+) -> V {
+    let rounded = (sum + ((1u32 << shift) >> 1) as i32) >> shift;
     if clip {
-        rounded.max(V::splat(simd, -256)).min(V::splat(simd, 255))
+        rounded
+            .max(V::splat(simd, -bound))
+            .min(V::splat(simd, bound - 1))
     } else {
         rounded
     }
@@ -851,8 +869,10 @@ struct Rows<'a> {
     /// Rows the prefix holds, at most the block height.
     coded: usize,
     load: Load,
-    /// Row-pass down-shift.
+    /// Row-pass down-shift, at most 31.
     shift: u32,
+    /// The row input and output clamp `2^(BitDepth + 7)`.
+    bound: i32,
 }
 
 impl Rows<'_> {
@@ -860,7 +880,11 @@ impl Rows<'_> {
     /// `8 * k`; `dc` marks lane 0 as the DC coefficient.
     #[inline]
     fn inputs<S: Simd>(self, simd: S, row: &[i32], k: usize, dc: bool) -> i32x8<S> {
-        row_input(self.load.coeffs(simd, row, 8 * k, dc), self.load.rescale)
+        row_input(
+            self.load.coeffs(simd, row, 8 * k, dc),
+            self.load.rescale,
+            self.bound,
+        )
     }
 }
 
@@ -933,7 +957,7 @@ fn row_pass<S: Simd, O: Output + ?Sized, const N: usize, const SPLIT: bool, cons
                 };
             }
             for (j, y) in y.as_chunks::<2>().0.iter().take(N / 8).enumerate() {
-                let v = clip_row(simd.combine_i32x4(y[0], y[1]), rows.shift);
+                let v = clip_row(simd.combine_i32x4(y[0], y[1]), rows.shift, rows.bound);
                 out.put(simd, r * N / 8 + j, v);
             }
         }
@@ -952,7 +976,7 @@ fn row_pass_4<S: Simd, O: Output + ?Sized>(
     for q in 0..rows.coded.div_ceil(2) {
         let (a, b) = simd.split_i32x8(rows.inputs(simd, rows.input, q, q == 0));
         let sum = simd.combine_i32x4(transform(a), transform(b));
-        out.put(simd, q, clip_row(sum, rows.shift));
+        out.put(simd, q, clip_row(sum, rows.shift, rows.bound));
     }
 }
 
@@ -960,7 +984,7 @@ fn row_pass_4<S: Simd, O: Output + ?Sized>(
 /// its own clamped input times the identity scale, in the row `Clip3`.
 fn row_pass_identity<S: Simd, O: Output + ?Sized>(simd: S, w: usize, rows: Rows<'_>, out: &mut O) {
     let scale = identity_scale(w);
-    let scaled = |v: i32x8<S>| clip_row(v * scale, rows.shift);
+    let scaled = |v: i32x8<S>| clip_row(v * scale, rows.shift, rows.bound);
     if rows.in_w == w {
         for k in 0..(rows.coded * w).div_ceil(8) {
             out.put(simd, k, scaled(rows.inputs(simd, rows.input, k, k == 0)));
@@ -982,8 +1006,10 @@ struct ColPass {
     /// Block width and height.
     w: usize,
     h: usize,
-    /// Column-pass down-shift.
+    /// Column-pass down-shift, at most 31.
     shift: u32,
+    /// The column `Clip3` bound `2^BitDepth`.
+    bound: i32,
 }
 
 /// The column lanes of one column pass: 4 for a 4-wide block, else 8.
@@ -1094,13 +1120,18 @@ fn col_pass<
     simd: S,
     kernel: &[[i32; M]; M],
     scratch: &[i32; 32 * 32],
-    (ColPass { w, shift, .. }, coded): (ColPass, usize),
+    (
+        ColPass {
+            w, shift, bound, ..
+        },
+        coded,
+    ): (ColPass, usize),
     residual: &mut O,
 ) {
     let rows = if M < 32 { M } else { coded.min(M) };
     let zero = V::splat(simd, 0);
     let outputs = if SPLIT { M / 2 } else { M };
-    let clip = |v: V| clip_lanes(simd, v, shift, !O::ADDS);
+    let clip = |v: V| clip_lanes(simd, v, shift, bound, !O::ADDS);
     for c in 0..w / V::LEN {
         let at = |r: usize| {
             let start = r * w + c * V::LEN;

@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "ab4cc2c2e4758755659f1cf6aafa1613e9386a61",
+  "audited_commit": "e21858b1cd5d7b151170d270dd01aa3c28c06b12",
   "outcome": "success",
   "files": [
     {
@@ -5323,7 +5323,7 @@
     },
     {
       "path": "crates/splot-recon/src/dequant_process.rs",
-      "sha256": "49a97fc218e7c31251067b47387d73417ed381c1e0ba78ed46ff195a0abbe5ab",
+      "sha256": "b0f4005d3ebe52499b975aeeae03233b0f9a8b8295a2af1262fae8fa9f4880e5",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-DEQUANT-PROCESS",
@@ -5517,7 +5517,7 @@
     },
     {
       "path": "crates/splot-recon/src/inverse_transform.rs",
-      "sha256": "727493f3902f33704e997eb1fd83cab97cd9dd7e1df00780f0412e55b4823f56",
+      "sha256": "1e0d7e2e7040f14f1b1fff1779b4bbdb276d582c3e7be71054c6bf0646fbe01e",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-INVERSE-TRANSFORM-1D",
@@ -5527,7 +5527,7 @@
     },
     {
       "path": "crates/splot-recon/src/inverse_transform_2d.rs",
-      "sha256": "b67b83e5d9537949c19b2f534f335a2413cd38b82d6e5e3eadc6c90137daf8c8",
+      "sha256": "94c91fec29f8da164bb6dc523df3382f01e1512cf6f797d3c8c13aba74e9f548",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-INVERSE-TRANSFORM-2D"
@@ -5536,7 +5536,7 @@
     },
     {
       "path": "crates/splot-recon/src/inverse_transform_2d_8bit.rs",
-      "sha256": "005e960ec81b49b03d435231a8184de03131a50965448452fa31f89dbdcd7ab8",
+      "sha256": "b60e100b5cefc39c63b5eff4765ab11e70dd77c06de119b6094fff31436f7000",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5550,7 +5550,7 @@
     },
     {
       "path": "crates/splot-recon/src/inverse_transform_2d_outer.rs",
-      "sha256": "9f9c9d3f78d08d6aca73a05fd47eebb20b4ea5d5fbdcf6e07a6ac035ada345c0",
+      "sha256": "b5866ce118fc6f5fd4e14899a30b6e3413ac8d64e843274e12ac90e4f9e4d9cf",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-GET-TRANSFORM-1D-TYPE",
@@ -5569,7 +5569,7 @@
     },
     {
       "path": "crates/splot-recon/src/lib.rs",
-      "sha256": "708d971fbde52039085229b6f13913027a16fc891a5bb26d069409ffc821074a",
+      "sha256": "1e1cdbbb9326bdfb880840f9f994e96f854ff0390501c6117fa6b585187d0a05",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "INFRA-RECON-FRAME-PLANE-TYPES",
@@ -5669,7 +5669,7 @@
     },
     {
       "path": "crates/splot-recon/src/reconstruct.rs",
-      "sha256": "e88088382eb7822b55def22c7765ef58103eb010c04bddf5c1640b38607524f4",
+      "sha256": "d24b40197eecb2346e5ec11cb1d9618498e2953911ef23f537a8770b39f65b76",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-RESIDUAL-ADDITION"
@@ -5872,7 +5872,7 @@
     },
     {
       "path": "crates/splot-recon/src/wienerns_chroma_filter.rs",
-      "sha256": "1a5b4e4ca82e3044f04e47e2c2ff1ca239ea323540aa05034eb728984bed4c26",
+      "sha256": "43a0e93f1d02987571250900286bca414f7f41dc62a352d4edea734da1e7004e",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE"
@@ -5881,7 +5881,7 @@
     },
     {
       "path": "crates/splot-recon/src/wienerns_chroma_filter_tests.rs",
-      "sha256": "e1c060aeac9d2b2702070c9d8bb2973c7d2b601aa33cc0a3b03acd5165859eb7",
+      "sha256": "a02641c63d4f8bf8fff490e4da9c2c09773950522be551e6595df3c041144fcd",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5919,7 +5919,7 @@
     },
     {
       "path": "crates/splot-recon/src/workspace.rs",
-      "sha256": "74c1f9972ebd49971020db281fbbd4b88b041940d3c5c8890b24d9e06addd153",
+      "sha256": "f0355a0b9b4081bc1edbba10f9aea2f69e875093b579d3ac28adf25d0e4f0f68",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-CURRENT-FRAME-WORKSPACE",
@@ -10764,7 +10764,7 @@
     },
     {
       "path": "xtask/src/encode_perf.rs",
-      "sha256": "ea571fd5715aae824951c6da6e664a5bda8f58e7deae15f8a74ab02a6df9bf00",
+      "sha256": "9a3a6e1228b09c54869e88260db3af6987bde88eaab7cd185294e56a77fc9a9c",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "ENC-PERF-HARNESS"
