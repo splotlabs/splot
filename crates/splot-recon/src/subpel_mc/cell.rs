@@ -254,8 +254,8 @@ fn store<P: CellSample>(
     reach(blocks[0]) && reach(blocks[1]) && P::compound(blocks, size, clip, output, stride)
 }
 
-/// The COMPOUND_AVERAGE of an eight-bit cell's blocks in the NEON or AVX2
-/// kernels, or `false` without writing.
+/// The COMPOUND_AVERAGE of an eight-bit cell's blocks in the NEON, AVX2 or
+/// portable kernels, or `false` without writing.
 #[inline]
 fn compound_u8(
     blocks: [&Block<'_, u8>; 2],
@@ -273,12 +273,22 @@ fn compound_u8(
         super::eight_bit::neon::compound_cell(token, blocks, size, forward, output, stride);
         return true;
     }
-    let _ = (blocks, size, forward, output, stride);
-    false
+    super::with_subpel_intermediate(stage_len(blocks, size), |stage| {
+        super::portable::compound_u8(blocks, forward, stage, output, stride);
+        true
+    })
 }
 
-/// The COMPOUND_AVERAGE, clipped to `max`, of a 16-bit cell's blocks:
-/// `false` without writing outside the word-lane kernels or for a
+/// The stage the kernels take for the blocks of a `size`-square cell.
+fn stage_len<T>(blocks: [&Block<'_, T>; 2], size: usize) -> usize {
+    blocks.iter().fold(0, |len, block| {
+        let rows = size + block.vertical.map_or(0, |taps| taps.span() - 1);
+        len.max(super::block::stage_len(rows, size, block.vertical))
+    })
+}
+
+/// The COMPOUND_AVERAGE, clipped to `max`, of a 16-bit cell's blocks in the
+/// word-lane or portable kernels: `false` without writing for a
 /// column-clamped window without a horizontal pass.
 fn compound_u16(
     blocks: [&Block<'_, u16>; 2],
@@ -300,25 +310,23 @@ fn compound_u16(
         super::portable::compound_u16(blocks, forward, max, &mut [], output, stride);
         return true;
     }
-    #[cfg(target_arch = "x86_64")]
+    if cfg!(not(target_arch = "x86_64"))
+        && super::sixteen_bit::compound(blocks, forward, max, &mut [], output, stride)
     {
-        let len = blocks.iter().fold(0, |len, block| {
-            let rows = size + block.vertical.map_or(0, |taps| taps.span() - 1);
-            len.max(super::block::stage_len(rows, size, block.vertical))
-        });
-        super::with_subpel_intermediate(len, |stage| {
-            super::sixteen_bit::compound(blocks, forward, max, stage, output, stride)
-        })
+        return true;
     }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let _ = size;
-        super::sixteen_bit::compound(blocks, forward, max, &mut [], output, stride)
-    }
+    super::with_subpel_intermediate(stage_len(blocks, size), |stage| {
+        if !super::sixteen_bit::compound(blocks, forward, max, stage, output, stride) {
+            super::portable::compound_u16(blocks, forward, max, stage, output, stride);
+        }
+        true
+    })
 }
 
-/// Predicts both references of a 4x4 or 8x8 eight-bit cell and stores their
-/// COMPOUND_AVERAGE, or returns `false` without writing outside the subset.
+/// Predicts both references of a 4x4 or 8x8 eight-bit cell, or of two
+/// full-sample windows at least 16 wide inside their clip bounds, and stores
+/// their COMPOUND_AVERAGE, or returns `false` without writing outside that
+/// subset.
 pub(super) fn compound(
     references: [&ReferencePlaneView<'_, u8>; 2],
     params: [&SubpelPredictParams; 2],
@@ -327,6 +335,9 @@ pub(super) fn compound(
     stride: usize,
 ) -> bool {
     let size = params[0].w;
+    if size >= 16 {
+        return wide_fullpel(references, params, forward, output, stride);
+    }
     params[0].h == size
         && params[1].interp == params[0].interp
         && compound_at(
@@ -338,6 +349,57 @@ pub(super) fn compound(
             output,
             stride,
         )
+}
+
+/// [`compound`] of two full-sample windows of `w >= 16` columns inside their
+/// clip bounds and storage, whose rows the kernel reads as whole slices.
+fn wide_fullpel(
+    references: [&ReferencePlaneView<'_, u8>; 2],
+    params: [&SubpelPredictParams; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    fn window<'a>(
+        view: &ReferencePlaneView<'a, u8>,
+        params: &SubpelPredictParams,
+        [w, h]: [usize; 2],
+    ) -> Option<Block<'a, u8>> {
+        let fraction = SUBPEL_MASK << 6;
+        let ([x, y], bounds) = ([params.start_x, params.start_y], params.bounds());
+        let bound = |value: i32, last: usize| value.max(0).min(last as i32 - 1);
+        let (column, row) = (x >> SCALE_SUBPEL_BITS, y >> SCALE_SUBPEL_BITS);
+        let inside = (x | y) & fraction == 0
+            && (params.w, params.h) == (w, h)
+            && column >= bound(bounds[0], view.width)
+            && column + w as i32 <= bound(bounds[2], view.width) + 1
+            && row >= bound(bounds[1], view.readable_rows)
+            && row + h as i32 <= bound(bounds[3], view.readable_rows) + 1;
+        if !inside {
+            return None;
+        }
+        let origin = row as usize * view.stride + column as usize;
+        (origin + (h - 1) * view.stride + w <= view.samples.len()).then_some(Block {
+            source: view.samples,
+            stride: view.stride,
+            origin,
+            top: 0,
+            rows: [0, isize::MAX],
+            w,
+            h,
+            horizontal: None,
+            vertical: None,
+            remap: None,
+        })
+    }
+    let (w, h) = (params[0].w, params[0].h);
+    let (Some(first), Some(second)) = (
+        window(references[0], params[0], [w, h]),
+        window(references[1], params[1], [w, h]),
+    ) else {
+        return false;
+    };
+    super::eight_bit::compound([&first, &second], forward, &mut [], output, stride)
 }
 
 /// [`compound`] of a `size`-square cell of either sample depth whose
