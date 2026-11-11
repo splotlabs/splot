@@ -38,6 +38,7 @@ pub(crate) struct CoeffQuantStateWrite {
 }
 
 impl CoeffQuantStateWrite {
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn entry(self) -> CoeffScanEntry {
         self.entry

@@ -12,7 +12,7 @@ use splot_core::tables::conversion::{
 
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{EobPtSize, TileCdfSelector, TileCdfSubset};
-use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
+use super::coeff_state::TileCoeffStateError;
 
 const EOB_MULTISIZE_OFFSET: usize = 4;
 const MIN_NONZERO_EOB_PT: usize = 1;
@@ -74,9 +74,7 @@ pub(crate) mod base_level_pass;
 pub(crate) mod base_symbol;
 mod branch;
 pub(crate) use branch::read_nonzero_coeff_block_start;
-pub(crate) mod fsc_level_pass;
-pub(crate) mod fsc_quant_pass;
-pub(crate) mod fsc_sign_pass;
+pub(crate) mod fsc_block;
 pub(crate) mod max_level;
 pub(crate) mod ordinary_pass;
 pub(crate) mod quant_pass;
@@ -154,31 +152,6 @@ pub(crate) fn classify_coeff_parse_error(
     CoeffParseErrorClass::CoefficientState
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AllZeroCoeffBlockInput {
-    pub(crate) plane: usize,
-    pub(crate) x4: usize,
-    pub(crate) y4: usize,
-    pub(crate) w4: usize,
-    pub(crate) h4: usize,
-}
-
-pub(crate) fn commit_nonzero_coeff_context(
-    state: &mut TileCoeffContextState,
-    context: AllZeroCoeffBlockInput,
-    quant_state: &quant_state::NonZeroCoeffQuantState,
-) -> Result<(), TileCoeffStateError> {
-    state.update_after_coeffs(CoeffContextUpdate {
-        plane: context.plane,
-        x4: context.x4,
-        y4: context.y4,
-        w4: context.w4,
-        h4: context.h4,
-        cul_level: quant_state.cul_level(),
-        dc_category: quant_state.dc_category(),
-    })
-}
-
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEobInput {
@@ -245,14 +218,6 @@ pub(crate) enum CoeffLoopContextError {
     FscScanWalkEobOutOfRange { eob: usize, seg_eob: usize },
     #[error("coefficient scan walk block width {width} is not a power of two")]
     ScanWalkWidthNotPowerOfTwo { width: usize },
-    #[error(
-        "coefficient scan index {scan_index} points to position {pos}, outside coefficient count {coeff_count}"
-    )]
-    ScanWalkPositionOutOfRange {
-        scan_index: usize,
-        pos: usize,
-        coeff_count: usize,
-    },
 }
 
 pub(crate) fn nonzero_coeff_eob(

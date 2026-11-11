@@ -669,6 +669,24 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         let Some(spans) = self.spans(xs, rows, 8) else {
             return Ok(None);
         };
+        let rows = spans.map(|spans| {
+            let mut rows = [0u64; 8];
+            for (row, span) in rows.iter_mut().zip(spans) {
+                *row = u64::from_le_bytes(*T::u8_slice(span)?.first_chunk::<8>()?);
+            }
+            Some(rows)
+        });
+        if let [Some(first), Some(second)] = rows {
+            let delta = splot_recon::optflow_unit_8x8_u8(
+                [first, second],
+                distances,
+                batch.optflow_sad_threshold,
+            )?;
+            return Ok(Some(delta.map_or_else(
+                || MotionCell::from_refinemv(mvs),
+                |delta| MotionCell::from_optflow(mvs, delta),
+            )));
+        }
         let Some(sad) = self.sad(&spans) else {
             return Ok(None);
         };
@@ -791,12 +809,17 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
             )
         {
             let base_mvs = refined_mvs(candidates, dx, dy);
-            let delta = splot_recon::optflow_unit_8x8_u8(
-                [&windows[0], &windows[1]],
-                [unit_start(dx, dy), unit_start(-dx, -dy)],
-                distances,
-                block.optflow_sad_threshold,
-            )?;
+            let starts = [unit_start(dx, dy), unit_start(-dx, -dy)];
+            let rows = [0, 1].map(|reference| {
+                core::array::from_fn(|row| {
+                    windows[reference]
+                        .get(starts[reference] + row * PREDICTION_SIZE..)
+                        .and_then(<[u8]>::first_chunk::<8>)
+                        .map_or(0, |bytes| u64::from_le_bytes(*bytes))
+                })
+            });
+            let delta =
+                splot_recon::optflow_unit_8x8_u8(rows, distances, block.optflow_sad_threshold)?;
             return Ok(Some(delta.map_or_else(
                 || MotionCell::from_refinemv(base_mvs),
                 |delta| MotionCell::from_optflow(base_mvs, delta),

@@ -24,10 +24,7 @@ use super::cdf::TileCdfSelector;
 use super::cdf::block_context::IntraYMode;
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
-use super::coeff_loop::fsc_quant_pass::{
-    CoeffFscBranchError, CoeffFscStagedTxSizeNonZeroInput,
-    apply_staged_nonzero_coeff_fsc_branch_from_tx_size,
-};
+use super::coeff_loop::fsc_block::{CoeffFscBranchError, decode_fsc_transform_block};
 use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::CoeffOrdinaryBranchError;
 use super::coeff_loop::ordinary_pass::geometry::{
@@ -38,11 +35,8 @@ use super::coeff_loop::ordinary_pass::geometry::{
 };
 use super::coeff_loop::transform_block::scan_extent;
 use super::coeff_loop::{
-    AllZeroCoeffBlockInput, CoeffLoopContextError, TX_GEOMETRY, TxGeometry,
-    read_nonzero_coeff_block_start,
+    CoeffLoopContextError, TX_GEOMETRY, TxGeometry, read_nonzero_coeff_block_start,
 };
-#[cfg(test)]
-use super::coeff_state::TransformCoeffBlockState;
 use super::coeff_state::{
     CUL_LEVEL_MASK, CoeffBlockLines, TileCoeffContextState, TileCoeffStateError,
 };
@@ -589,18 +583,18 @@ impl LumaCoeffBlock {
         Some(self)
     }
 
-    /// Appends the block's coefficients up to the last nonzero one to
+    /// Appends the dense coefficients `quant` up to the last nonzero one to
     /// `arena` and records the span they landed in.
     #[cfg(test)]
-    pub(crate) fn with_coeffs(
-        self,
-        arena: &mut Vec<i32>,
-        block: &TransformCoeffBlockState,
-    ) -> Self {
+    pub(crate) fn with_coeffs(self, arena: &mut Vec<i32>, quant: &[i32]) -> Self {
         let start = arena.len();
-        arena.extend_from_slice(block.nonzero_quant());
+        let end = quant
+            .iter()
+            .rposition(|&value| value != 0)
+            .map_or(0, |i| i + 1);
+        arena.extend_from_slice(&quant[..end]);
         self.clone()
-            .with_span(start..arena.len(), block.quant().len())
+            .with_span(start..arena.len(), quant.len())
             .unwrap_or(self)
     }
 }
@@ -1328,25 +1322,17 @@ fn decode_nonzero_plane_coeffs(
     let start_idx = arena.len();
     let coeff_count = start.coeff_count();
     if use_fsc {
-        let coeffs = apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
+        arena.resize(start_idx + coeff_count, 0);
+        let quant_end = decode_fsc_transform_block(
             context,
             work_unit.cdf_mut().tile_cdfs_mut(),
             symbols,
-            CoeffFscStagedTxSizeNonZeroInput {
-                block: AllZeroCoeffBlockInput {
-                    plane,
-                    x4: block.x >> 2,
-                    y4: block.y >> 2,
-                    w4: tx.w4.into(),
-                    h4: tx.h4.into(),
-                },
-                start,
-                tx_size,
-                plane_tx_type: metadata.luma_tx_type,
-            },
-        )
-        .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
-        arena.extend_from_slice(coeffs.nonzero_quant());
+            &start,
+            lines,
+            &mut arena[start_idx..],
+        );
+        arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
+        quant_end.map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
     } else {
         let extent = scan_extent(
             CoeffTransformClass::from_plane_tx_type(plane_tx_type),

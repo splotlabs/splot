@@ -210,12 +210,13 @@ impl CcsoBlockMap {
             frame.mi_cols(),
             seq,
             core,
-            &[],
-            &[],
             ByteOffset::new(0),
             Default::default(),
         )
-        .and_then(|state| state.try_for_tile(rows, cols, None))
+        .and_then(|mut state| {
+            state.load_reused_blocks([None; 3])?;
+            state.try_for_tile(rows, cols, None)
+        })
         .map_err(rule("CCSO state"))?;
         Ok(Self {
             state,

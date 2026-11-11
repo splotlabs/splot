@@ -39,8 +39,8 @@ use super::read_mv::{
 };
 use super::single_ref::SingleRefReadError;
 use super::{
-    BawpSyntax, CcsoGridHandle, InterBlock, InterIntraPrediction, InterReferenceState,
-    InterResidual, InterResidualBlock, MotionFieldHandle, MotionFieldLayout, Mv, PlacedInterBlock,
+    BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
+    InterResidualBlock, MotionFieldHandle, MotionFieldLayout, Mv, PlacedInterBlock,
     SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO, mc,
 };
 use crate::bitstream::tile_payload::{
@@ -407,14 +407,6 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
     let cdef_state =
         CdefState::new_reusing(mi_rows, mi_cols, sequence, frame_is_intra, cdef_grid_values)?;
     let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core)?;
-    let mut ref_ccso_unit_grids = RefSlots::default();
-    ref_ccso_unit_grids.extend_within(reference.ref_ccso_unit_grids.iter().map(|handle| {
-        handle
-            .as_ref()
-            .and_then(CcsoGridHandle::product)
-            .and_then(Option::as_ref)
-            .cloned()
-    }));
     let ccso_active = sequence
         .filter
         .as_ref()
@@ -429,8 +421,6 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         mi_cols,
         sequence,
         core,
-        ref_frame_idx,
-        &ref_ccso_unit_grids,
         first_tile_offset,
         products.take_ccso_blocks(ccso_active)?,
     )?;
@@ -582,7 +572,10 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     )?;
     scratch.tile = Some(tile_scratch);
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, products)?;
-    let ccso_grid = products.finish_ccso(walked.ccso_state)?;
+    let mut ccso_state = walked.ccso_state;
+    let reused = super::reused_ccso_grids(core, sequence, reference);
+    ccso_state.load_reused_blocks(super::reused_ccso_sources(&reused))?;
+    let ccso_grid = products.finish_ccso(ccso_state)?;
     let filter_inputs = InterFilterInputs {
         records,
         cdef_grid: walked.cdef_state.into_grid()?,

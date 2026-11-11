@@ -46,7 +46,7 @@ fn read_start(tile: &mut TileCdfSubset, symbols: &mut SymbolDecoder<'_>) -> NonZ
 }
 
 fn levels_clear(state: &mut TileCoeffContextState) -> bool {
-    let (_, _, levels) = state.dc_lines_and_levels(0).unwrap();
+    let (_, _, levels, _) = state.dc_lines_and_levels(0).unwrap();
     levels.iter().all(|&word| word == 0)
 }
 

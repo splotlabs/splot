@@ -14,12 +14,9 @@
 use super::super::block::{Block, Sink, Taps};
 use fearless_simd::{Simd, i16x8, i32x4, prelude::*, u8x16, u16x8, u32x4, u64x2};
 
-/// Whether the kernels cover `block`: a width of 4 or a multiple of 8, and at
-/// most one pass. A block with both passes is faster in the staged portable
-/// kernel (measured +3.9% decode time on an 8-bit 4:2:2 stream here).
+/// Whether the kernels cover `block`: a width of 4 or a multiple of 8.
 pub(in crate::subpel_mc) const fn fits<T>(block: &Block<'_, T>) -> bool {
-    (block.w == 4 || block.w.is_multiple_of(8))
-        && (block.horizontal.is_none() || block.vertical.is_none())
+    block.w == 4 || block.w.is_multiple_of(8)
 }
 
 /// Where the eight final-pass values of a strip row go.
@@ -323,24 +320,35 @@ fn paired_passes<S: Simd, const H: usize, const V: usize>(
     }
 }
 
-/// The halved taps of a pass splatted into eight-lane vectors.
+/// The halved taps of a pass, each broadcast from one vector of all eight so
+/// the multiplies read their tap by lane instead of from its own register.
 #[allow(clippy::inline_always, reason = "sub-pel hot path")]
 #[inline(always)]
 fn halved<S: Simd>(simd: S, taps: Option<&Taps>) -> [i16x8<S>; 8] {
-    core::array::from_fn(|tap| {
-        let pair = taps.map_or(0, |taps| taps.full[tap / 2]);
+    let pair = |tap: usize| taps.map_or(0, |taps| taps.full[tap / 2]);
+    let all = core::array::from_fn::<i16, 8, _>(|tap| {
         let full = if tap % 2 == 0 {
-            pair as i16
+            pair(tap) as i16
         } else {
-            (pair >> 16) as i16
+            (pair(tap) >> 16) as i16
         };
-        i16x8::splat(simd, full / 2)
-    })
+        full / 2
+    });
+    let all = i16x8::simd_from(simd, all);
+    let half = |value, high| {
+        if high {
+            simd.zip_high_i16x8(value, value)
+        } else {
+            simd.zip_low_i16x8(value, value)
+        }
+    };
+    core::array::from_fn(|tap| half(half(half(all, tap & 4 != 0), tap & 2 != 0), tap & 1 != 0))
 }
 
 /// The samples of window row `row` from column `col`, widened: columns
 /// `col..col + 8` and `col + 8..col + 16`, through the remap of a
-/// column-clamped window.
+/// column-clamped window. Without a remap each half widens from its own
+/// eight-byte load, so the taps slide widened lanes.
 #[allow(clippy::inline_always, reason = "sub-pel hot path")]
 #[inline(always)]
 fn samples<S: Simd>(
@@ -350,19 +358,28 @@ fn samples<S: Simd>(
     row: usize,
     col: usize,
 ) -> (i16x8<S>, i16x8<S>) {
-    let bytes = block
-        .source
-        .get(block.start(row) + col..)
-        .and_then(<[u8]>::first_chunk::<16>)
-        .map_or(u8x16::splat(simd, 0), |bytes| {
-            u8x16::load_array_ref(simd, bytes)
-        });
-    let bytes = match remap {
-        Some(remap) => simd.swizzle_dyn_within_blocks_u8x16(bytes, remap),
-        None => bytes,
+    let source = block.source.get(block.start(row) + col..);
+    let Some(bytes) = source.and_then(<[u8]>::first_chunk::<16>) else {
+        return outside(simd);
     };
-    let (low, high) = bytes.widen();
-    (low.bitcast(), high.bitcast())
+    let widen = |bytes: u8x16<S>| bytes.widen().0.bitcast();
+    let half = |half: &[u8; 8]| widen(u64x2::splat(simd, u64::from_le_bytes(*half)).bitcast());
+    match (remap, bytes.as_chunks::<8>().0) {
+        (Some(remap), _) => {
+            let bytes =
+                simd.swizzle_dyn_within_blocks_u8x16(u8x16::load_array_ref(simd, bytes), remap);
+            (widen(bytes), bytes.widen().1.bitcast())
+        }
+        (None, [low, high]) => (half(low), half(high)),
+        _ => outside(simd),
+    }
+}
+
+/// The samples of a row outside the source, which no validated block reads.
+#[cold]
+#[inline(never)]
+fn outside<S: Simd>(simd: S) -> (i16x8<S>, i16x8<S>) {
+    (i16x8::splat(simd, 0), i16x8::splat(simd, 0))
 }
 
 /// The halved-tap sums of the `2 * H` taps of a horizontal pass over the

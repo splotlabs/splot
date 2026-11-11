@@ -330,6 +330,30 @@ impl<T: ReconSample> OwnedFrameRect<T> {
         })
     }
 
+    /// Both chroma planes at once, or `None` without them.
+    pub(super) fn chroma_planes_mut(&mut self) -> Option<[OwnedPlaneMut<'_, T>; 2]> {
+        let (u, v) = (self.u?, self.v?);
+        let (first, second) = if u.start <= v.start { (u, v) } else { (v, u) };
+        let (head, tail) = self.samples.split_at_mut(second.start);
+        let first_samples = head.get_mut(first.start..first.end())?;
+        let second_samples = tail.get_mut(..second.len)?;
+        let [first, second] = [
+            OwnedPlaneMut {
+                region: first,
+                samples: first_samples,
+            },
+            OwnedPlaneMut {
+                region: second,
+                samples: second_samples,
+            },
+        ];
+        Some(if u.start <= v.start {
+            [first, second]
+        } else {
+            [second, first]
+        })
+    }
+
     /// Publishes this completed rectangle into its matching frame workspace.
     ///
     /// # Errors

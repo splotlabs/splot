@@ -19,8 +19,8 @@ use super::super::cdf::coeff_context::{
 };
 use super::super::cdf::{CoeffLevelRows, TileCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{
-    CoeffBlockLines, CoeffLevelWords, LEVEL_STRIDE, LEVEL_WORDS_MASK, TileCoeffContextState,
-    TileCoeffStateError,
+    CoeffBlockLines, CoeffLevelWords, CoeffNonzeroList, LEVEL_STRIDE, LEVEL_WORDS_MASK,
+    TileCoeffContextState, TileCoeffStateError,
 };
 use super::CoeffLoopContextError;
 use super::base_level_pass::{
@@ -84,14 +84,16 @@ const MAG_GRID: [[usize; 3]; 3] = {
 
 /// The grid word of a level: `min(level, 3)`, `min(level, 5)` and the level
 /// in bytes 0 to 2, so one sum over neighbour words sums both caps. Levels
-/// stay below 9, so five-word sums never carry between bytes.
-static LEVEL_WORD: [u32; 16] = {
-    let mut out = [0; 16];
+/// stay below 9, so five-word sums never carry between bytes. Entry
+/// `16 + level` adds the [`Q0_BIT`] of a nonzero level.
+pub(super) static LEVEL_WORD: [u32; 32] = {
+    let mut out = [0; 32];
     let mut level = 0;
     while level < 16 {
         let lo = if level < 3 { level } else { 3 };
         let hi = if level < 5 { level } else { 5 };
         out[level as usize] = lo | (hi << 8) | (level << 16);
+        out[16 + level as usize] = out[level as usize] | ((level != 0) as u32) << Q0_BIT;
         level += 1;
     }
     out
@@ -298,7 +300,7 @@ pub(crate) fn scan_extent(
 }
 
 /// The scan of a `width` by `height` block of `class` up to `eob`.
-fn grid_scan(
+pub(super) fn grid_scan(
     class: CoeffTransformClass,
     width: usize,
     height: usize,
@@ -337,7 +339,7 @@ fn half_capped(mag: u32, cap: usize) -> usize {
 /// pass derives is in range, so the clamp only keeps the read panic-free.
 #[allow(clippy::inline_always, reason = "measured: per-coefficient row")]
 #[inline(always)]
-fn row_at<T, const C: usize>(rows: &mut [T; C], ctx: usize) -> &mut T {
+pub(super) fn row_at<T, const C: usize>(rows: &mut [T; C], ctx: usize) -> &mut T {
     &mut rows[ctx.min(C - 1)]
 }
 
@@ -387,7 +389,7 @@ pub(crate) fn decode_ordinary_transform_block(
     )?;
     let lines = input.lines;
     let plane = config.plane;
-    let (above_dc, left_dc, levels) = state.dc_lines_and_levels(plane)?;
+    let (above_dc, left_dc, levels, nonzero) = state.dc_lines_and_levels(plane)?;
     let block = Block {
         scan,
         config,
@@ -407,9 +409,9 @@ pub(crate) fn decode_ordinary_transform_block(
         lossless: input.lossless,
     };
     let summary = if symbols.cdf_update_mode() == CdfUpdateMode::Enabled {
-        dispatch::<true>(cdfs, symbols, levels, quant, &block)
+        dispatch::<true>(cdfs, symbols, (levels, nonzero), quant, &block)
     } else {
-        dispatch::<false>(cdfs, symbols, levels, quant, &block)
+        dispatch::<false>(cdfs, symbols, (levels, nonzero), quant, &block)
     }?;
     state.commit_block(
         lines,
@@ -470,7 +472,7 @@ struct BlockSummary {
 fn dispatch<const UPD: bool>(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    levels: &mut CoeffLevelWords,
+    levels: (&mut CoeffLevelWords, &mut CoeffNonzeroList),
     quant: &mut [i32],
     block: &Block<'_>,
 ) -> Result<BlockSummary, CoeffOrdinaryPassError> {
@@ -499,7 +501,7 @@ fn dispatch<const UPD: bool>(
 type RunArgs<'r, 'a, 'b> = (
     &'r mut TileCdfSubset,
     &'r mut SymbolDecoder<'a>,
-    &'r mut CoeffLevelWords,
+    (&'r mut CoeffLevelWords, &'r mut CoeffNonzeroList),
     &'r mut [i32],
     &'r Block<'b>,
 );
@@ -508,7 +510,7 @@ type RunArgs<'r, 'a, 'b> = (
 /// of line so its loops own the registers.
 #[inline(never)]
 fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, const UPD: bool>(
-    (cdfs, symbols, levels, quant, block): RunArgs<'_, '_, '_>,
+    (cdfs, symbols, (levels, nonzero), quant, block): RunArgs<'_, '_, '_>,
 ) -> Result<BlockSummary, CoeffOrdinaryPassError> {
     let config = block.config;
     let scan = block.scan;
@@ -533,17 +535,19 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
         tcq: 0,
         tcq_q0: 0,
         ph: 0,
-        nonzero: [0; NONZERO_WORDS],
+        nonzero: &mut *nonzero,
+        nonzero_len: 0,
     };
     pass.levels_pass::<CLASS, LUMA, TCQ, PH>(scan, eob_entry, eob_level, lf_end);
-    let (mut owned, ph, nonzero) = (pass.symbols, pass.ph, pass.nonzero);
+    let (mut owned, ph, nonzero_len) = (pass.symbols, pass.ph, pass.nonzero_len);
+    let nonzero = nonzero.get(..nonzero_len).unwrap_or_default();
     let facts = SignFacts {
         lf_end,
         is_hidden: PH && (ph >> 1) >= PHTHRESH,
         sum_abs1: if PH { ph & 1 } else { 0 },
     };
     let result =
-        sign_pass::<CLASS, LUMA, TCQ>(cdfs, &mut owned, levels, quant, block, facts, &nonzero);
+        sign_pass::<CLASS, LUMA, TCQ>(cdfs, &mut owned, levels, quant, block, facts, nonzero);
     symbols.restore(owned);
     if result.is_err() {
         levels.fill(0);
@@ -570,7 +574,7 @@ fn read_eob_base<const LUMA: bool, const UPD: bool>(
 
 #[allow(clippy::inline_always, reason = "measured: per-coefficient index")]
 #[inline(always)]
-const fn entry_grid(entry: u32) -> usize {
+pub(super) const fn entry_grid(entry: u32) -> usize {
     entry as usize & LEVEL_WORDS_MASK
 }
 
@@ -596,12 +600,14 @@ struct LevelPass<'a, 'r, const UPD: bool> {
     tcq_q0: usize,
     /// Bit 0 the `sumAbs1` parity, the bits above the nonzero count.
     ph: u32,
-    /// Bit `i` set when scan index `i > 0` has a nonzero level.
-    nonzero: [u64; NONZERO_WORDS],
+    /// The scan indices above 0 of the nonzero levels so far, in decode
+    /// order, as its first `nonzero_len` entries.
+    nonzero: &'r mut CoeffNonzeroList,
+    nonzero_len: usize,
 }
 
-/// One bit per scan index of the largest (32 by 32) block.
-const NONZERO_WORDS: usize = 16;
+/// One entry per scan index of the largest (32 by 32) block.
+const NONZERO_LIST: usize = 1024;
 
 impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     /// The sum of the grid words at `offsets` from `grid`.
@@ -777,15 +783,11 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         level: u32,
     ) {
         let nonzero = level != 0;
-        let q0 = if TCQ {
-            self.tcq_q0 as u32 & u32::from(nonzero)
-        } else {
-            0
-        };
-        self.levels[grid & LEVEL_WORDS_MASK] = LEVEL_WORD[level as usize & 15] | q0 << Q0_BIT;
+        let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
+        self.levels[grid & LEVEL_WORDS_MASK] = LEVEL_WORD[(q0 << 4) | (level as usize & 15)];
         if scan_index > 0 {
-            self.nonzero[(scan_index >> 6) & (NONZERO_WORDS - 1)] |=
-                u64::from(nonzero) << (scan_index & 63);
+            self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = scan_index as u32;
+            self.nonzero_len += usize::from(nonzero);
         }
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;
@@ -881,7 +883,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     quant: &mut [i32],
     block: &Block<'_>,
     facts: SignFacts,
-    nonzero: &[u64; NONZERO_WORDS],
+    nonzero: &[u32],
 ) -> Result<BlockSummary, CoeffOrdinaryPassError> {
     let tx_class = [
         CoeffTransformClass::TwoD,
@@ -979,17 +981,12 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         }};
     }
     let lf_end = facts.lf_end.min(eob);
-    for word_index in (0..eob.div_ceil(64).min(NONZERO_WORDS)).rev() {
-        let mut bits = nonzero[word_index];
-        while bits != 0 {
-            let bit = 63 - bits.leading_zeros() as usize;
-            bits ^= 1 << bit;
-            let scan_index = word_index * 64 + bit;
-            sign_step!(
-                scan_index,
-                if scan_index < lf_end { max_lf } else { max_hf }
-            );
-        }
+    for &scan_index in nonzero {
+        let scan_index = scan_index as usize;
+        sign_step!(
+            scan_index,
+            if scan_index < lf_end { max_lf } else { max_hf }
+        );
     }
     symbols.end_bypass_run(run);
     let mut quant_state = quant_state.with_cul_level(level_sum);

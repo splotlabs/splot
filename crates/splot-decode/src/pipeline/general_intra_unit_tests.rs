@@ -505,10 +505,6 @@ fn coefficient_context_state_failures_have_exhaustive_typed_taxonomy() {
             height: 4,
             width: 4,
         },
-        crate::bitstream::tile_payload::TileCoeffStateError::QuantPositionOutOfBounds {
-            pos: 16,
-            len: 16,
-        },
         crate::bitstream::tile_payload::TileCoeffStateError::InvalidSubsampling {
             axis: "x",
             value: 2,

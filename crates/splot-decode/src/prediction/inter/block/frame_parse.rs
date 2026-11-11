@@ -28,8 +28,9 @@ pub(crate) struct InterFrameParse {
     /// The end-of-walk CDF subset published to the canonical `PipelineFrame`.
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     cdef_grid: crate::filters::cdef::CdefUnitGrid,
-    /// The walk-parsed CCSO unit grid published to the canonical `PipelineFrame`.
-    pub(crate) ccso_grid: Option<Arc<crate::filters::ccso::CcsoUnitGrid>>,
+    /// The walk-parsed CCSO blocks, whose reused planes are copied once the
+    /// grids they reuse are published.
+    ccso_state: crate::filters::wienerns_lr::tx_records::ccso::CcsoState,
     pub(crate) segment_ids: Arc<FrameSegmentIdMap>,
     gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
     products: Option<super::super::FrameProductWriters>,
@@ -186,7 +187,6 @@ impl<'payload> InterFrameParser<'payload> {
             (self.merged_units, cdef, gdf, ccso)
         };
         let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, &mut products)?;
-        let ccso_grid = products.finish_ccso(ccso_state)?;
         if let Some(previous) = previous {
             products.inherit_segment_ids(previous)?;
         }
@@ -196,7 +196,7 @@ impl<'payload> InterFrameParser<'payload> {
             records,
             frame_cdfs,
             cdef_grid: cdef_state.into_grid()?,
-            ccso_grid,
+            ccso_state,
             segment_ids,
             gdf_grid: gdf_state.into_grid()?,
             products: Some(products),
@@ -205,16 +205,13 @@ impl<'payload> InterFrameParser<'payload> {
 }
 
 impl InterFrameParse {
-    pub(crate) fn publish_products(&mut self) -> Result<super::super::FrameProducts> {
-        let products = self
-            .products
-            .take()
-            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-        Ok(products.settle(
-            Arc::clone(&self.frame_cdfs),
-            self.ccso_grid.clone(),
-            Arc::clone(&self.segment_ids),
-        ))
+    /// Publishes the products the next frames' entropy passes read.
+    pub(crate) fn publish_products(&mut self) -> Result<()> {
+        self.products
+            .as_mut()
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?
+            .settle_entropy(Arc::clone(&self.frame_cdfs), Arc::clone(&self.segment_ids));
+        Ok(())
     }
     /// Hands the frontier the filter state the § 8.2 pass settles last.
     ///
@@ -226,17 +223,23 @@ impl InterFrameParse {
         tile: &tile::ScheduledTileRecon<T>,
         parse_progress: &Arc<super::tile::ParseProgress>,
         filter_shell: crate::filters::wienerns_lr::recon::OwnedFilterShell<T>,
+        reused_ccso: [Option<&crate::filters::ccso::CcsoUnitGrid>; 3],
     ) -> Result<()> {
         let Self {
             unit_count,
             mut records,
             frame_cdfs: _,
             cdef_grid,
-            ccso_grid,
+            mut ccso_state,
             segment_ids: _,
             gdf_grid,
-            products: _,
+            products,
         } = self;
+        let mut products =
+            products.ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+        ccso_state.load_reused_blocks(reused_ccso)?;
+        let ccso_grid = products.finish_ccso(ccso_state)?;
+        products.settle_ccso(ccso_grid.clone());
         let PendingFilterAttach {
             info,
             plane_sizes,

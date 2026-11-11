@@ -11,14 +11,14 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Avx2;
+#[cfg(target_arch = "aarch64")]
+use fearless_simd::Neon;
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::SimdMask;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use fearless_simd::{
-    Bytes, Level, Select, SimdBase, SimdInt, SimdInto, i16x8, mask16x8, u16x8, u64x2,
+    Bytes, Level, Select, Simd, SimdBase, SimdInt, SimdInto, i16x8, mask16x8, u16x8, u64x2,
 };
-#[cfg(target_arch = "aarch64")]
-use fearless_simd::{Neon, Simd};
 
 /// The token of the lane reads: AVX2 on x86-64, NEON on AArch64.
 #[cfg(target_arch = "x86_64")]
@@ -358,12 +358,15 @@ fn early_exit_search<T: CdfStorage, const N: usize>(
 /// The lane search of [`early_exit_search`] in one register: the signed
 /// high-half multiply and the compare. The boundaries do not increase from
 /// lane to lane, so the symbol's two are the ones beside the last lane above
-/// the value, read back from memory. Returns the number of lanes above and
+/// the value, read back from memory. For rows of at most four symbols the
+/// lanes fit one word each, so the count of lanes above (a prefix) and the
+/// two boundaries are word shifts instead of an across-lane add and a
+/// memory round trip. Returns the number of lanes above and
 /// the lanes above, which for such rows are the lanes below the symbol.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn search_lanes(
+fn search_lanes<const N: usize>(
     token: LaneToken,
     row: u16x8<LaneToken>,
     past: [u16; 8],
@@ -378,6 +381,15 @@ fn search_lanes(
     let scaled = mul_high(token, range7, pp4.bitcast());
     let boundaries: u16x8<LaneToken> = (scaled << 3).bitcast();
     let below = scaled.simd_gt(i16x8::splat(token, threshold));
+    if N <= 4 {
+        let word = |lanes: i16x8<LaneToken>| lanes.bitcast::<u64x2<LaneToken>>().as_array()[0];
+        let mask = word(token.to_vector_mask16x8(below));
+        let above = (u64::BITS - mask.leading_zeros()) >> 4;
+        let low = word(boundaries.bitcast());
+        let cur = low.wrapping_shr(16 * above) as u16;
+        let prev = ((low << 16) | u64::from(range)).wrapping_shr(16 * above) as u16;
+        return (above, cur, prev, below);
+    }
     #[cfg(target_arch = "x86_64")]
     let above = below.to_bitmask().count_ones();
     // NEON has no `movemask`: one across-lane add of the `-1` lanes counts them.
@@ -420,7 +432,7 @@ fn row_search_lanes<const N: usize>(
     range: u32,
 ) -> (u32, u32, u32, u16x8<LaneToken>, mask16x8<LaneToken>) {
     let value = load_row_lanes(token, cdf, row_lanes::<N>());
-    let (above, cur, prev, below) = search_lanes(
+    let (above, cur, prev, below) = search_lanes::<N>(
         token,
         value,
         const { past_row_lanes::<N>() },

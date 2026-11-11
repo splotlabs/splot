@@ -170,6 +170,9 @@ pub(super) struct TipReconstructScratch {
     /// comes back here as each unit is published.
     grid_candidates: Vec<[Mv; 2]>,
     motion_plan: Option<TipBlockPlan>,
+    /// Each unit's [`whole_sample_mvs`] from the motion half, so a fresh
+    /// prediction skips the refine-MV search it already ran.
+    whole_mvs: Vec<Option<[Mv; 2]>>,
 }
 
 /// The TIP output walk's reusable state: one entry per full-width row band.
@@ -782,18 +785,24 @@ pub(super) fn motion<T: ReconSample>(
         .as_ref()
         .map(|held| held.prediction(&plan.plan))
         .transpose()?;
+    scratch.whole_mvs.clear();
     for (index, unit) in scratch.units.iter().enumerate() {
-        let stored_mvs = match (grid.as_ref(), refining.as_ref()) {
-            (Some(grid), _) => grid.stored_mvs_at_index(index)?,
+        let (stored_mvs, whole) = match (grid.as_ref(), refining.as_ref()) {
+            (Some(grid), _) => (grid.stored_mvs_at_index(index)?, None),
             (None, Some(prediction)) => match prediction.block_params(unit).into_compound() {
                 Some(compound) => {
-                    mc::compound_block_motion_grid(sink, compound, None, tile_offset)?
-                        .map_or(Ok(unit.mvs), |refined| refined.stored_mvs_at_index(0))?
+                    let refined =
+                        mc::compound_block_motion_grid(sink, compound, None, tile_offset)?;
+                    let whole = whole_sample_mvs(unit, refined.as_ref());
+                    let stored =
+                        refined.map_or(Ok(unit.mvs), |refined| refined.stored_mvs_at_index(0))?;
+                    (stored, whole)
                 }
-                None => unit.mvs,
+                None => (unit.mvs, whole_sample_mvs(unit, None)),
             },
-            (None, None) => unit.mvs,
+            (None, None) => (unit.mvs, whole_sample_mvs(unit, None)),
         };
+        scratch.whole_mvs.push(whole);
         temporal_records.push(plan.temporal_record(
             reference,
             ref_frame_idx,
@@ -867,22 +876,113 @@ fn publish_unit_outputs<T: ReconSample>(
     } else {
         plan.block_w.div_ceil(plan.unit_size).max(1)
     };
-    for batch in scratch.units.chunks(units_per_hold) {
+    for (batch_index, batch) in scratch.units.chunks(units_per_hold).enumerate() {
         let held = first.take().map_or_else(|| plan.hold(reference), Ok)?;
         let prediction = held.prediction(&plan.plan)?;
-        for unit in batch {
+        let mut run: Option<TipUnit> = None;
+        for (offset, unit) in batch.iter().enumerate() {
             let params = prediction.block_params(unit);
+            let known = scratch.whole_mvs.get(batch_index * units_per_hold + offset);
             if plan.use_optflow {
                 let compound = params
                     .into_compound()
                     .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
                 grid = mc::predict_compound_into(sink, compound, grid.take(), tile_offset)?;
-            } else {
-                mc::motion_compensate_inter_block_into(sink, params, tile_offset)?;
+                continue;
             }
+            let (motion, mvs) = if let Some(&Some(mvs)) = known {
+                (None, Some(mvs))
+            } else {
+                let motion = mc::inter_block_motion_grid(sink, params, None, tile_offset)?;
+                let mvs = whole_sample_mvs(unit, motion.as_ref());
+                (motion, mvs)
+            };
+            let Some(mvs) = mvs else {
+                if let Some(run) = run.take() {
+                    predict_run(sink, &prediction, &run, tile_offset)?;
+                }
+                mc::predict_inter_block_from_grid(sink, params, motion, tile_offset)?;
+                continue;
+            };
+            let next = TipUnit {
+                rect: unit.rect,
+                has_chroma: unit.has_chroma,
+                mvs,
+            };
+            if !run.as_mut().is_some_and(|run| run.extend(&next))
+                && let Some(run) = run.replace(next)
+            {
+                predict_run(sink, &prediction, &run, tile_offset)?;
+            }
+        }
+        if let Some(run) = run {
+            predict_run(sink, &prediction, &run, tile_offset)?;
         }
     }
     Ok(grid)
+}
+
+/// The vectors a unit predicts with when they land on whole luma and chroma
+/// samples, so its prediction reads no neighbour and adjacent units with the
+/// same vectors predict as one rectangle.
+fn whole_sample_mvs(unit: &TipUnit, motion: Option<&mc::CompoundMotionGrid>) -> Option<[Mv; 2]> {
+    let whole = |value: i32| value % 16 == 0;
+    let mvs = match motion {
+        None => unit.mvs,
+        Some(grid) => {
+            let cells = grid.uniform_mvs()?;
+            if cells.iter().flatten().any(|&value| value % 32 != 0) {
+                return None;
+            }
+            cells.map(|[row, col]| Mv {
+                row: row / 2,
+                col: col / 2,
+            })
+        }
+    };
+    let chroma_matches = !unit.has_chroma
+        || (
+            unit.rect.chroma_luma_x,
+            unit.rect.chroma_luma_y,
+            unit.rect.chroma_luma_w,
+            unit.rect.chroma_luma_h,
+        ) == (
+            unit.rect.luma_x,
+            unit.rect.luma_y,
+            unit.rect.luma_w,
+            unit.rect.luma_h,
+        );
+    (chroma_matches && mvs.iter().all(|mv| whole(mv.row) && whole(mv.col))).then_some(mvs)
+}
+
+impl TipUnit {
+    /// Grows this run by the unit to its right when both predict alike.
+    fn extend(&mut self, next: &TipUnit) -> bool {
+        let fits = self.mvs == next.mvs
+            && self.has_chroma == next.has_chroma
+            && self.rect.luma_y == next.rect.luma_y
+            && self.rect.luma_h == next.rect.luma_h
+            && self.rect.luma_x + self.rect.luma_w == next.rect.luma_x
+            && self.rect.luma_w + next.rect.luma_w <= mc::MAX_MC_BLOCK_DIM;
+        if fits {
+            self.rect.luma_w += next.rect.luma_w;
+            self.rect.chroma_luma_w += next.rect.chroma_luma_w;
+        }
+        fits
+    }
+}
+
+fn predict_run<T: ReconSample>(
+    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    prediction: &TipPrediction<'_, T>,
+    run: &TipUnit,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    let params = prediction
+        .block_params(run)
+        .with_refinemv(false)
+        .with_refinemv_search(false);
+    mc::predict_inter_block_from_grid(sink, params, None, tile_offset).map(drop)
 }
 
 pub(super) fn retire_motion_grid(
@@ -928,6 +1028,7 @@ pub(super) fn predict<T: ReconSample>(
         let plan = frame.block(placed)?;
         let first_only = plan.batched();
         build_units(scratch, &plan, placed, temporal, first_only)?;
+        scratch.whole_mvs.clear();
         plan
     };
     let grid = if plan.batched() {
