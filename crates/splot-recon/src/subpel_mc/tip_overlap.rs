@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use fearless_simd::{Simd, SimdBase, SimdNarrow, SimdWiden, u8x16, u16x8, u32x4};
+use fearless_simd::{Simd, SimdBase, SimdIntWiden, SimdNarrow, SimdWiden, u8x16, u16x8, u32x4};
 
 /// Output columns 4..12 of the last block that
 /// [`subpel_predict_12x12_bilinear_overlap_into`] predicted, with the reference
@@ -132,10 +132,9 @@ fn bilinear_12x12_block<S: Simd, T: ReconSample, const REUSE: bool>(
             });
         }
         _ => bilinear_12x12_rows::<S, T, REUSE>(block, horizontal, |top, bottom| {
-            let ((top_low, top_high), (bottom_low, bottom_high)) = (top.widen(), bottom.widen());
-            let blend = |top: u32x4<S>, bottom: u32x4<S>| {
-                (top * u32::from(top_weight) + bottom * u32::from(bottom_weight) + 128) >> 8
-            };
+            let (top_low, top_high) = top.widening_mul(u16x8::splat(simd, top_weight));
+            let (bottom_low, bottom_high) = bottom.widening_mul(u16x8::splat(simd, bottom_weight));
+            let blend = |top: u32x4<S>, bottom: u32x4<S>| (top + bottom + 128) >> 8;
             blend(top_low, bottom_low).narrow(blend(top_high, bottom_high))
         }),
     }

@@ -512,15 +512,12 @@ pub(super) fn tip_optflow_motion_cell_strided(
     base_mvs: [Mv; 2],
 ) -> Result<MotionCell> {
     if sad_threshold.is_some_and(|threshold| {
-        let sad = (0..8)
-            .map(|row| {
-                let offset = row * stride;
-                super::refinemv::abs_diff_sum(
-                    &pred0[start0 + offset..][..8],
-                    &pred1[start1 + offset..][..8],
-                )
-            })
-            .sum::<u32>();
+        let rows = (0..8).map(|row| {
+            let at = |start: usize| start + row * stride..;
+            let (left, right) = (pred0.get(at(start0)), pred1.get(at(start1)));
+            (left.unwrap_or_default(), right.unwrap_or_default())
+        });
+        let sad = super::refinemv::sad_rows::<8>(rows, u16::MAX);
         sad >> bit_depth.bits().saturating_sub(8) < threshold
     }) {
         return Ok(MotionCell::from_refinemv(base_mvs));
@@ -2156,7 +2153,7 @@ mod fullpel_runs;
 mod tip_grid;
 
 use fullpel_runs::{predict_fullpel_runs, uniform_fullpel_params};
-pub(super) use tip_grid::predict_tip_grid_u8;
+pub(super) use tip_grid::predict_tip_grid;
 
 #[cfg(test)]
 #[path = "optflow_run_tests.rs"]

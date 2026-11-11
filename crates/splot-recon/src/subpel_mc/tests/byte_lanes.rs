@@ -794,8 +794,9 @@ fn neon_byte_lanes_match_the_portable_kernels() {
 
 /// The 16-bit placement entry stores the § 7.13.3.18 oracle's
 /// COMPOUND_AVERAGE for every cell it takes, for 10-bit mixed and
-/// extreme-contrast samples at windows inside, across and outside their
-/// clip bounds, and a cell program stores the same cells.
+/// extreme-contrast samples at sub-pel and full-sample windows inside,
+/// across and outside their clip bounds, and a cell program stores the
+/// same cells.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn sixteen_bit_compound_cells_match_the_oracle() {
@@ -826,15 +827,23 @@ fn sixteen_bit_compound_cells_match_the_oracle() {
         .flat_map(|(texture, interp)| [4, 8].map(|size| (texture, interp, size)))
         .enumerate()
     {
+        let (depth, max) = (BitDepth::Ten, 1023u16);
         let view = ReferencePlaneView::new(texture, ref_w, ref_h).unwrap();
         let forward = [8, 4, 11, 0, 16][case % 5];
-        let weights = (forward as i16, BitDepth::Ten);
+        let weights = (forward as i16, depth);
         let stride = 6 * size;
         let mut program = CompoundCells::default();
         let (mut want, mut expected) = (vec![0u16; 4 * size * stride], 0u64);
         for cell in 0..19 {
             let mut placement = || -> CellPlacement {
                 let [x, y] = [next(ref_w as i32 + 8) - 4, next(ref_h as i32 + 8) - 4];
+                if cell % 3 == 0 {
+                    let [x, y] = [x.clamp(0, 24), y.clamp(0, 16)];
+                    return (
+                        [x << 10, y << 10],
+                        [0, 0, ref_w as i32 - 1, ref_h as i32 - 1],
+                    );
+                }
                 let [first_x, first_y] = [next(ref_w as i32) - 2, next(ref_h as i32) - 2];
                 let [last_x, last_y] = [first_x + next(30) - 3, first_y + next(30) - 3];
                 (
@@ -860,14 +869,14 @@ fn sixteen_bit_compound_cells_match_the_oracle() {
                     first_y: fy,
                     last_x: lx,
                     last_y: ly,
-                    bit_depth: BitDepth::Ten,
+                    bit_depth: depth,
                     ..full_pel_params(interp, size, size, 0, 0, ref_w as i32, ref_h as i32)
                 };
                 reference_subpel_compound(texture, ref_w, ref_h, &params)
             });
             for (index, (&a, &b)) in first.iter().zip(&second).enumerate() {
                 let got = i32::from(output[index / size * stride + index % size]);
-                let blended = super::super::block::blend(a, b, forward, 1023);
+                let blended = super::super::block::blend(a, b, forward, i32::from(max));
                 assert_eq!(got, blended, "{interp:?} {size} cell {cell}");
             }
         }

@@ -214,7 +214,7 @@ impl PreparedWarpPrediction {
         })
     }
 
-    #[inline]
+    #[inline(never)]
     fn clipped_sections<S: Simd, T: ReconSample>(
         &self,
         simd: S,
@@ -333,13 +333,25 @@ impl PreparedWarpPrediction {
             return Ok(false);
         }
         let (first_col, first_row) = (first_col as usize, first_row as usize);
-        let lanes = |row, col| warp_source_lanes(simd, reference.row(row), col);
-        let wide = |row, col| lanes(row, col).combine(lanes(row, col + 8));
+        let lanes = |source: &[T], col| warp_source_lanes(simd, source, col);
+        let wide = |source: &[T], col| {
+            let [lo, hi] = warp_span(simd, source, col);
+            lo.combine(hi)
+        };
         let mut col = 0;
         while col + 16 <= width {
             let strip = [first_col + col, first_row, height, high];
             let target = &mut output[col..];
-            two_tap_strip(simd, wide, strip, vertical_high, target, stride, max_sample)?;
+            two_tap_strip(
+                simd,
+                reference,
+                wide,
+                strip,
+                vertical_high,
+                target,
+                stride,
+                max_sample,
+            )?;
             col += 16;
         }
         if col < width {
@@ -347,6 +359,7 @@ impl PreparedWarpPrediction {
             let target = &mut output[col..];
             two_tap_strip(
                 simd,
+                reference,
                 lanes,
                 strip,
                 vertical_high,
@@ -362,11 +375,16 @@ impl PreparedWarpPrediction {
 /// Filters one `N`-column strip of a translation block down all `height`
 /// rows from `[first_col, first_row, height, high]`, keeping the previous
 /// horizontal row in registers for the vertical taps.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[allow(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "measured warp hot path"
+)]
 #[inline(always)]
 fn two_tap_strip<S, T, V, const N: usize>(
     simd: S,
-    load: impl Fn(usize, usize) -> V,
+    reference: &ReferencePlaneView<'_, T>,
+    load: impl Fn(&[T], usize) -> V,
     [first_col, first_row, height, high]: [usize; 4],
     vertical_high: usize,
     output: &mut [T],
@@ -378,7 +396,10 @@ where
     T: ReconSample,
     V: SimdInt<S, Element = i16, Array = [i16; N]>,
 {
-    let horizontal = |row| two_tap_horizontal(|col| load(row, col), first_col, high);
+    let horizontal = |row| {
+        let source = reference.row(row);
+        two_tap_horizontal(|col| load(source, col), first_col, high)
+    };
     let mut top = horizontal(first_row);
     for row in 0..height {
         let bottom = horizontal(first_row + row + 1);
@@ -398,13 +419,22 @@ where
 /// narrowing the row to `i16` before the clamp is exact.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn store_clipped_row<S: Simd, T: ReconSample, V: SimdInt<S, Element = i16>>(
+fn store_clipped_row<S, T, V, const N: usize>(
     simd: S,
     target: &mut [T],
     rounded: V,
     max_sample: i16,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: Simd,
+    T: ReconSample,
+    V: SimdInt<S, Element = i16, Array = [i16; N]>,
+{
     let clipped = rounded.clamp(0, max_sample);
+    if let Some(target) = T::u16_slice_mut(target).and_then(<[u16]>::first_chunk_mut::<N>) {
+        *target = clipped.to_array().map(|lane| lane as u16);
+        return Ok(());
+    }
     let rows = clipped.as_slice().as_chunks::<WARPED_BLOCK_SIZE>().0;
     for (target, lanes) in target.chunks_mut(WARPED_BLOCK_SIZE).zip(rows) {
         let lanes = i16x8::load_array_ref(simd, lanes).bitcast::<u16x8<S>>();

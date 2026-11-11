@@ -630,7 +630,7 @@ pub(super) fn predict_compound_into<T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<Option<CompoundMotionGrid>> {
     if let Some(grid) = motion.as_ref()
-        && optflow::predict_tip_grid_u8(sink, block, grid, offset)?
+        && optflow::predict_tip_grid(sink, block, grid, offset)?
     {
         return Ok(motion);
     }

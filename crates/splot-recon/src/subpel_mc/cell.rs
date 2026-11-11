@@ -24,7 +24,7 @@ use super::{
     SCALE_SUBPEL_BITS, SUBPEL_FILTERS, SUBPEL_MASK, SubpelPredictParams,
 };
 use crate::format::ReconSample;
-use fearless_simd::{Simd, SimdFrom, i32x8, prelude::*, u8x16, u32x4, u64x2};
+use fearless_simd::{Simd, SimdFrom, i32x8, prelude::*, u8x16, u16x8, u32x4, u64x2};
 
 /// One reference of a cell: window row `r` starts at `origin + r * stride`,
 /// or, for a window that crosses its clip bounds, at the bounded row
@@ -354,6 +354,73 @@ fn fullpel_cell<S: Simd, const N: usize>(
                 if let Some(slot) = output.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<4>) {
                     *slot = words[lane].to_le_bytes();
                 }
+            }
+        }
+    }
+}
+
+/// [`fullpel_cell`] of 16-bit windows, clipped to `max`.
+#[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
+#[inline(always)]
+fn fullpel_cell_u16<S: Simd, const N: usize>(
+    simd: S,
+    sources: [(&[u16], usize); 2],
+    origins: [usize; 2],
+    (forward, max): (i32, u16),
+    output: &mut [u16],
+    stride: usize,
+) {
+    let rows = |(samples, step): (&[u16], usize), origin: usize, row: usize| -> u16x8<S> {
+        let at = |lane: usize| origin + (row + lane) * step;
+        if N == 8 {
+            return samples
+                .get(at(0)..)
+                .and_then(<[u16]>::first_chunk::<8>)
+                .map_or(u16x8::splat(simd, 0), |lanes| {
+                    u16x8::load_array_ref(simd, lanes)
+                });
+        }
+        let word = |lane: usize| {
+            samples
+                .get(at(lane)..)
+                .and_then(<[u16]>::first_chunk::<4>)
+                .map_or(0, |lanes| {
+                    lanes
+                        .iter()
+                        .rev()
+                        .fold(0, |word, &lane| word << 16 | u64::from(lane))
+                })
+        };
+        u64x2::from_slice(simd, &[word(0), word(1)]).bitcast()
+    };
+    let max = u16x8::splat(simd, max);
+    for row in (0..N).step_by(8 / N) {
+        let (a, b) = (
+            rows(sources[0], origins[0], row),
+            rows(sources[1], origins[1], row),
+        );
+        let average = if forward == 8 {
+            (a + b + 1) >> 1
+        } else {
+            let (a0, a1) = simd.widening_mul_u16x8(a, u16x8::splat(simd, forward as u16));
+            let (b0, b1) = simd.widening_mul_u16x8(b, u16x8::splat(simd, (16 - forward) as u16));
+            simd.narrow_u32x4((a0 + b0 + 8) >> 4, (a1 + b1 + 8) >> 4)
+        }
+        .min(max);
+        if N == 8 {
+            if let Some(slot) = output
+                .get_mut(row * stride..)
+                .and_then(<[u16]>::first_chunk_mut)
+            {
+                average.store_array(slot);
+            }
+            continue;
+        }
+        let lanes = average.to_array();
+        for lane in 0..2 {
+            let at = (row + lane) * stride;
+            if let Some(slot) = output.get_mut(at..).and_then(<[u16]>::first_chunk_mut::<4>) {
+                *slot = core::array::from_fn(|column| lanes[4 * lane + column]);
             }
         }
     }
@@ -913,23 +980,36 @@ fn program_u16<S: Simd>(
             let Some(&[row, col]) = cells.positions.get(index) else {
                 continue;
             };
+            let fullpel =
+                lanes[0].keys[lane] == 0 && lanes[1].keys[lane] == 0 && (0..=16).contains(&clip.0);
             for (slot, written) in planes.iter_mut().zip(&mut written) {
                 let Some((views, output, stride)) = slot else {
                     continue;
                 };
-                let at = row as usize * *stride + col as usize;
+                let (at, stride) = (row as usize * *stride + col as usize, *stride);
                 let Some(output) = output
                     .get_mut(at..)
-                    .filter(|output| (size - 1) * *stride + size <= output.len())
+                    .filter(|output| (size - 1) * stride + size <= output.len())
                 else {
                     continue;
                 };
+                if fullpel {
+                    let sources = views.each_ref().map(|view| (view.samples, view.stride));
+                    let origins = lanes.each_ref().map(|lanes| lanes.origin[lane] as usize);
+                    if size == 4 {
+                        fullpel_cell_u16::<_, 4>(simd, sources, origins, clip, output, stride);
+                    } else {
+                        fullpel_cell_u16::<_, 8>(simd, sources, origins, clip, output, stride);
+                    }
+                    written[index / 64 % 4] |= 1 << (index % 64);
+                    continue;
+                }
                 let cells = [0, 1].map(|reference| {
                     let lanes = &lanes[reference];
                     let source = (views[reference].samples, strides[reference]);
                     lanes.cell(lane, source, filters, lanes.keys[lane] >= 25)
                 });
-                if compound_cells_u16([&cells[0], &cells[1]], size, clip, output, *stride) {
+                if compound_cells_u16([&cells[0], &cells[1]], size, clip, output, stride) {
                     written[index / 64 % 4] |= 1 << (index % 64);
                 }
             }

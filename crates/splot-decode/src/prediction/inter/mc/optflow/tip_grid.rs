@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The eight-bit TIP grid: every plane of a § 7.13.5 TIP block whose 8x8
+//! The TIP grid: every plane of a § 7.13.5 TIP block whose 8x8
 //! units each carry their own refine-MV candidates, predicted cell by cell
 //! straight into the frame, with U and V sharing one pass of placements. A
 //! grid of equal full-pel units is predicted as one block.
@@ -16,7 +16,7 @@ type Intermediate = [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
 /// other block, a scaled reference, or a plane the frame edge clips. A
 /// declined block may have had planes written; the general path rewrites
 /// them.
-pub(in crate::prediction::inter::mc) fn predict_tip_grid_u8<T: ReconSample>(
+pub(in crate::prediction::inter::mc) fn predict_tip_grid<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     motion: &CompoundMotionGrid,
@@ -49,7 +49,7 @@ pub(in crate::prediction::inter::mc) fn predict_tip_grid_u8<T: ReconSample>(
         PlaneRect::new(x, y, w, h)
     };
     let luma = rect(PlaneId::Y, 0)?;
-    let Some(output) = sink.u8_rect_mut(PlaneId::Y, luma) else {
+    let Some(output) = sink.rect_mut(PlaneId::Y, luma) else {
         return Ok(false);
     };
     let pass = GridPass {
@@ -66,13 +66,13 @@ pub(in crate::prediction::inter::mc) fn predict_tip_grid_u8<T: ReconSample>(
     if !block.has_chroma {
         return Ok(true);
     }
-    let Some([u, v]) = sink.u8_chroma_rects_mut(rect(PlaneId::U, 1)?) else {
+    let Some([u, v]) = sink.chroma_rects_mut(rect(PlaneId::U, 1)?) else {
         return Ok(false);
     };
     pass.plane(PlaneId::U, 1, [u, v])
 }
 
-/// The block-wide inputs of a [`predict_tip_grid_u8`] plane pass.
+/// The block-wide inputs of a [`predict_tip_grid`] plane pass.
 struct GridPass<'a, 'b, T: ReconSample> {
     info: DecodedFrameInfo,
     block: CompoundMcBlock<'b, T>,
@@ -87,11 +87,24 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
     /// the V plane into `outputs[1]` from the same placements; `false`
     /// without writing for a scaled reference or a grid that does not tile
     /// the plane.
-    fn plane(
+    fn plane(&self, plane: PlaneId, sub: u32, outputs: [(&mut [T], usize); 2]) -> Result<bool> {
+        let [(first, first_stride), (second, second_stride)] = outputs;
+        if let (Some(first), Some(second)) = (T::u8_slice_mut(first), T::u8_slice_mut(second)) {
+            return self.plane_into(plane, sub, [(first, first_stride), (second, second_stride)]);
+        }
+        match (T::u16_slice_mut(first), T::u16_slice_mut(second)) {
+            (Some(first), Some(second)) => {
+                self.plane_into(plane, sub, [(first, first_stride), (second, second_stride)])
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn plane_into<O: CompoundAverageOutput>(
         &self,
         plane: PlaneId,
         sub: u32,
-        mut outputs: [(&mut [u8], usize); 2],
+        mut outputs: [(&mut [O], usize); 2],
     ) -> Result<bool> {
         let prediction = super::super::compound_subpel_plane(
             self.info,
@@ -154,7 +167,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             )
         {
             let whole = |views: &Option<[ReferencePlaneView<'_, T>; 2]>,
-                         (output, stride): &mut (&mut [u8], usize)| {
+                         (output, stride): &mut (&mut [O], usize)| {
                 views.as_ref().map_or(Ok(true), |views| {
                     splot_recon::subpel_predict_block_compound_average_fast_validated_strided_into(
                         &views[0],
@@ -181,7 +194,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         } = &mut *state;
         program.clear();
         let run = |program: &mut CompoundCells,
-                   outputs: &mut [(&mut [u8], usize); 2],
+                   outputs: &mut [(&mut [O], usize); 2],
                    pred: &mut Pred,
                    intermediate: &mut Intermediate|
          -> Result<()> {

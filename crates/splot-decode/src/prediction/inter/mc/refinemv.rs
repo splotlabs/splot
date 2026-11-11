@@ -4,7 +4,7 @@
 use super::*;
 use crate::prediction::inter::mv_scaling::PlaneScaling;
 use crate::prediction::inter::read_mv::{MV_LOW, MV_UPP};
-use fearless_simd::{Simd, SimdBase, SimdNarrow, SimdWiden, u16x8, u16x16, u32x4, u32x8};
+use fearless_simd::{Simd, SimdBase, SimdIntWiden, SimdNarrow, SimdWiden, u16x8, u32x4};
 
 const REFINEMV_UNIT_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_SIZE: usize = 16;
@@ -188,13 +188,11 @@ fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>
             let mut lanes = [u16x8::splat(simd, 0); G];
             for (group, lanes) in lanes.iter_mut().enumerate() {
                 let (left, right) = if group == 0 {
-                    let samples = sample_lanes(simd, span, 0).to_array();
-                    let shifted = core::array::from_fn(|lane| samples[lane.saturating_sub(1)]);
-                    (u16x8::load_array(simd, shifted), u16x8::load_array(simd, samples))
+                    let samples = sample_lanes(simd, span, 0);
+                    (u16x8::splat(simd, samples[0]).slide::<7>(samples), samples)
                 } else if group == G - 1 {
-                    let samples = sample_lanes(simd, span, 8 * group - 1).to_array();
-                    let shifted = core::array::from_fn(|lane| samples[(lane + 1).min(7)]);
-                    (u16x8::load_array(simd, samples), u16x8::load_array(simd, shifted))
+                    let samples = sample_lanes(simd, span, 8 * group - 1);
+                    (samples, samples.slide::<1>(u16x8::splat(simd, samples[7])))
                 } else {
                     (sample_lanes(simd, span, 8 * group - 1), sample_lanes(simd, span, 8 * group))
                 };
@@ -240,51 +238,12 @@ fn sample_lanes<S: Simd, T: ReconSample>(simd: S, span: &[T], at: usize) -> u16x
 /// `Min(Round2(top * (16 - v) + bottom * v, 8), max)` of two horizontal rows.
 #[inline]
 fn vertical_blend<S: Simd>(simd: S, top: u16x8<S>, bottom: u16x8<S>, v: u16, max: u16) -> u16x8<S> {
-    let ((top_low, top_high), (bottom_low, bottom_high)) = (top.widen(), bottom.widen());
-    let blend = |top: u32x4<S>, bottom: u32x4<S>| {
-        (top * u32::from(16 - v) + bottom * u32::from(v) + 128) >> 8
-    };
+    let (top_low, top_high) = top.widening_mul(u16x8::splat(simd, 16 - v));
+    let (bottom_low, bottom_high) = bottom.widening_mul(u16x8::splat(simd, v));
+    let blend = |top: u32x4<S>, bottom: u32x4<S>| (top + bottom + 128) >> 8;
     blend(top_low, bottom_low)
         .narrow(blend(top_high, bottom_high))
         .min(u16x8::splat(simd, max))
-}
-
-/// `Σ |left - right|` over the common length of two runs.
-#[inline]
-pub(super) fn abs_diff_sum(left: &[u16], right: &[u16]) -> u32 {
-    baseline_simd!(simd => abs_diff_lanes(simd, left, right))
-}
-
-#[inline]
-fn abs_diff_lanes<S: Simd>(simd: S, left: &[u16], right: &[u16]) -> u32 {
-    let (left_chunks, left_tail) = left.as_chunks::<16>();
-    let (right_chunks, right_tail) = right.as_chunks::<16>();
-    let mut sums = u32x8::splat(simd, 0);
-    for (left, right) in left_chunks.iter().zip(right_chunks) {
-        let (left, right) = (
-            u16x16::load_array_ref(simd, left),
-            u16x16::load_array_ref(simd, right),
-        );
-        let (low, high) = (left.max(right) - left.min(right)).widen();
-        sums = sums + low + high;
-    }
-    let (left_eights, left_rest) = left_tail.as_chunks::<8>();
-    let (right_eights, right_rest) = right_tail.as_chunks::<8>();
-    let mut quads = u32x4::splat(simd, 0);
-    for (left, right) in left_eights.iter().zip(right_eights) {
-        let (left, right) = (
-            u16x8::load_array_ref(simd, left),
-            u16x8::load_array_ref(simd, right),
-        );
-        let (low, high) = (left.max(right) - left.min(right)).widen();
-        quads = quads + low + high;
-    }
-    let rest = left_rest
-        .iter()
-        .zip(right_rest)
-        .map(|(&left, &right)| u32::from(left.abs_diff(right)))
-        .sum::<u32>();
-    sums.reduce_sum() + quads.reduce_sum() + rest
 }
 
 pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
@@ -727,10 +686,11 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
                 continue;
             }
             let (left, right) = (T::u16_slice(left)?, T::u16_slice(right)?);
+            let rows = core::iter::once((left, right));
             sad += if width == 8 {
-                word_sad::<8>(left, right, self.max_sample)?
+                sad_rows::<8>(rows, self.max_sample)
             } else {
-                word_sad::<12>(left, right, self.max_sample)?
+                sad_rows::<12>(rows, self.max_sample)
             };
         }
         Some(sad)
@@ -745,18 +705,6 @@ fn byte_sad<const W: usize>(left: &[u8], right: &[u8]) -> Option<u32> {
         left.iter()
             .zip(right)
             .map(|(&a, &b)| u32::from(a.abs_diff(b)))
-            .sum(),
-    )
-}
-
-/// [`byte_sad`] of 16-bit samples, each clipped to `max` as the prediction
-/// copy writes them.
-fn word_sad<const W: usize>(left: &[u16], right: &[u16], max: u16) -> Option<u32> {
-    let (left, right) = (left.first_chunk::<W>()?, right.first_chunk::<W>()?);
-    Some(
-        left.iter()
-            .zip(right)
-            .map(|(&a, &b)| u32::from(a.min(max).abs_diff(b.min(max))))
             .sum(),
     )
 }
@@ -939,15 +887,19 @@ fn tip_refinemv_sad(
         return u32::MAX;
     };
     let shift = bit_depth.bits().saturating_sub(8);
-    let mut sad = 0;
-    for row in (0..12).step_by(2) {
-        let at = row * TIP_PREDICTION_SIZE;
-        sad += abs_diff_sum(&left[at..at + 12], &right[at..at + 12]);
-        if row == 4 && sad >> shift >= limit {
-            return limit;
-        }
+    let rows = |range: core::ops::Range<usize>| {
+        let pairs = left[range.clone()].chunks(2 * TIP_PREDICTION_SIZE);
+        sad_rows::<12>(
+            pairs.zip(right[range].chunks(2 * TIP_PREDICTION_SIZE)),
+            u16::MAX,
+        )
+    };
+    let half = 6 * TIP_PREDICTION_SIZE;
+    let sad = rows(0..half);
+    if sad >> shift >= limit {
+        return limit;
     }
-    sad >> shift
+    (sad + rows(half..SPAN)) >> shift
 }
 
 fn search_range_allowed(candidates: [Mv; 2]) -> bool {
@@ -1068,8 +1020,8 @@ fn refinemv_sad<'a>(
     })?;
     let rows = left.chunks(2 * stride).zip(right.chunks(2 * stride));
     let sad = match width {
-        12 => sad_rows::<12>(rows),
-        20 => sad_rows::<20>(rows),
+        12 => sad_rows::<12>(rows, u16::MAX),
+        20 => sad_rows::<20>(rows, u16::MAX),
         _ => rows
             .map(
                 |(left, right)| match (left.get(..width), right.get(..width)) {
@@ -1090,29 +1042,35 @@ fn refinemv_sad<'a>(
 /// row, past the samples of the full vectors.
 const HIGH_HALF: [u16; 8] = [0, 0, 0, 0, u16::MAX, u16::MAX, u16::MAX, u16::MAX];
 
-/// `Σ |left - right|` over the first `W` samples of each row pair, `W % 8`
-/// being 4: each column's differences add up in `u16` lanes for up to 16
-/// rows at a time, which 12-bit samples keep below `2^16`.
-fn sad_rows<'a, const W: usize>(rows: impl Iterator<Item = (&'a [u16], &'a [u16])>) -> u32 {
-    baseline_simd!(simd => sad_row_lanes::<_, W>(simd, rows))
+/// `Σ |Min(left, max) - Min(right, max)|` over the first `W` samples, 8 or
+/// `W % 8 == 4`, of each row pair: each column's differences add up in `u16`
+/// lanes for up to 16 rows at a time, which 12-bit samples keep below `2^16`.
+pub(super) fn sad_rows<'a, const W: usize>(
+    rows: impl Iterator<Item = (&'a [u16], &'a [u16])>,
+    max: u16,
+) -> u32 {
+    baseline_simd!(simd => sad_row_lanes::<_, W>(simd, rows, max))
 }
 
 #[inline]
 fn sad_row_lanes<'a, S: Simd, const W: usize>(
     simd: S,
     rows: impl Iterator<Item = (&'a [u16], &'a [u16])>,
+    max: u16,
 ) -> u32 {
-    let zero = u16x8::splat(simd, 0);
+    let (zero, max) = (u16x8::splat(simd, 0), u16x8::splat(simd, max));
     let mut lanes = [zero; 3];
     let mut sad = 0;
     let flush = |lanes: &mut [u16x8<S>; 3]| -> u32 {
         let total = lanes
             .iter()
-            .flat_map(|lanes| lanes.to_array())
-            .map(u32::from)
-            .sum::<u32>();
+            .take(W.div_ceil(8))
+            .fold(u32x4::splat(simd, 0), |total, lanes| {
+                let (low, high) = lanes.widen();
+                total + low + high
+            });
         *lanes = [zero; 3];
-        total
+        total.reduce_sum()
     };
     for (row, (left, right)) in rows.enumerate() {
         let (Some(left), Some(right)) = (left.first_chunk::<W>(), right.first_chunk::<W>()) else {
@@ -1128,7 +1086,10 @@ fn sad_row_lanes<'a, S: Simd, const W: usize>(
             }),
         };
         for (vector, lanes) in lanes.iter_mut().enumerate().take(W.div_ceil(8)) {
-            let (left, right) = (load(left, 8 * vector), load(right, 8 * vector));
+            let (left, right) = (
+                load(left, 8 * vector).min(max),
+                load(right, 8 * vector).min(max),
+            );
             *lanes += left.max(right) - left.min(right);
         }
         if row % 16 == 15 {

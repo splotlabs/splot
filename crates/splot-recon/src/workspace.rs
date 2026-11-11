@@ -585,14 +585,20 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     contiguous_rect_writer!(with_contiguous_u16_rect_mut, u16, T::u16_slice_mut);
     contiguous_rect_writer!(with_contiguous_u8_rect_mut, u8, T::u8_slice_mut);
 
-    /// The target [`Self::with_contiguous_u8_rect_mut`] runs its writer on,
+    /// The target [`Self::with_contiguous_rect_mut`] runs its writer on,
     /// or `None` wherever that returns `Ok(None)` or an error.
     #[inline]
-    pub fn u8_rect_mut(&mut self, plane: PlaneId, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
+    pub fn rect_mut(&mut self, plane: PlaneId, rect: PlaneRect) -> Option<(&mut [T], usize)> {
         if let Self::Frame(workspace) = self {
-            return workspace.plane_mut(plane).ok()?.u8_rect_mut(rect);
+            return workspace.plane_mut(plane).ok()?.rect_mut(rect);
         }
-        let (samples, stride) = self.contiguous_rect(plane, rect).ok()??;
+        self.contiguous_rect(plane, rect).ok()?
+    }
+
+    /// [`Self::rect_mut`] of eight-bit samples.
+    #[inline]
+    pub fn u8_rect_mut(&mut self, plane: PlaneId, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
+        let (samples, stride) = self.rect_mut(plane, rect)?;
         Some((T::u8_slice_mut(samples)?, stride))
     }
 
@@ -1559,13 +1565,6 @@ pub struct CurrentFramePlane<T: ReconSample> {
 }
 
 impl<T: ReconSample> CurrentFramePlane<T> {
-    /// [`Self::rect_mut`] of eight-bit samples.
-    #[inline]
-    fn u8_rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
-        let (samples, stride) = self.rect_mut(rect)?;
-        Some((T::u8_slice_mut(samples)?, stride))
-    }
-
     /// The in-storage `rect` of this plane from its top-left sample through
     /// its last row, and their row stride.
     #[inline]
