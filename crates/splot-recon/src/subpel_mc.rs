@@ -1046,16 +1046,17 @@ pub fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
     if !fits {
         return false;
     }
+    let clip = (forward, bit_depth.max_sample());
     if let ([Some(first), Some(second)], Some(output)) = (
         references.map(ReferencePlaneView::as_u8),
         O::u8_slice_mut(output),
     ) {
         return cell::compound_at(
-            [&first, &second],
+            [first, second],
             interp,
             size,
             placements,
-            forward,
+            clip,
             output,
             stride,
         );
@@ -1066,12 +1067,12 @@ pub fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
     ) else {
         return false;
     };
-    cell::compound_u16(
-        [&first, &second],
+    cell::compound_at(
+        [first, second],
         interp,
         size,
         placements,
-        (forward, bit_depth.max_sample()),
+        clip,
         output,
         stride,
     )

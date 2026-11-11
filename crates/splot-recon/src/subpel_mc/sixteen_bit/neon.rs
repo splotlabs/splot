@@ -278,7 +278,7 @@ fn weights(t: Neon, taps: &Taps) -> int16x8_t {
 #[inline]
 #[target_feature(enable = "neon")]
 fn remap(t: Neon, block: &Block<'_, u16>) -> Option<[uint8x16_t; 2]> {
-    let columns: uint8x16_t = u8x16::load_array(t, block.remap?).into();
+    let columns: uint8x16_t = u8x16::load_array(t, block.remap_lanes()?).into();
     let even = vaddq_u8(columns, columns);
     let odd = vaddq_u8(even, vdupq_n_u8(1));
     Some([vzip1q_u8(even, odd), vzip2q_u8(even, odd)])

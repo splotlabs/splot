@@ -677,7 +677,7 @@ fn horizontal<S: Simd, T: Lanes, const P: usize>(
     sink: &mut Sink<'_>,
 ) {
     let weights = weights(simd, taps);
-    let remap = remap_indices(simd, block.remap);
+    let remap = remap_indices(simd, block.remap_lanes());
     let put = sink.is_put();
     if block.w <= 4 {
         for row in 0..block.h {
@@ -793,7 +793,7 @@ fn stage_rows<S: Simd, T: Lanes, const P: usize>(
     stage: &mut [i16],
 ) {
     let weights = weights(simd, taps);
-    let remap = remap_indices(simd, block.remap);
+    let remap = remap_indices(simd, block.remap_lanes());
     if block.w <= 4 {
         for r in (0..rows).step_by(2) {
             let sum0 = (horizontal_sums4::<S, T, P>(

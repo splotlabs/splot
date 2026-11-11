@@ -677,7 +677,9 @@ pub(super) mod avx2 {
         out: &mut impl FnMut(usize, usize, usize, __m256i),
     ) {
         let filter = Horizontal::new::<W, P>(t, taps);
-        let remap = block.remap.map(|remap| u8x16::load_array(t, remap).into());
+        let remap = block
+            .remap_lanes()
+            .map(|remap| u8x16::load_array(t, remap).into());
         let (bias, round) = (_mm256_set1_epi16(34), _mm256_set1_epi16(1 << 13));
         for strip in 0..block.w / W {
             for row in (0..block.h).step_by(16 / W) {
@@ -762,7 +764,9 @@ pub(super) mod avx2 {
         stage: &mut [i16],
     ) {
         let filter = Horizontal::new::<W, P>(t, taps);
-        let remap = block.remap.map(|remap| u8x16::load_array(t, remap).into());
+        let remap = block
+            .remap_lanes()
+            .map(|remap| u8x16::load_array(t, remap).into());
         let round = _mm256_set1_epi16(1 << 13);
         for (group, slot) in stage
             .chunks_exact_mut(16)

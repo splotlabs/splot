@@ -4,7 +4,9 @@
 use super::*;
 use crate::prediction::inter::mv_scaling::PlaneScaling;
 use crate::prediction::inter::read_mv::{MV_LOW, MV_UPP};
-use fearless_simd::{Simd, SimdBase, SimdIntWiden, SimdNarrow, SimdWiden, u16x8, u32x4};
+use fearless_simd::{
+    Bytes, Simd, SimdBase, SimdIntWiden, SimdNarrow, SimdWiden, u8x16, u16x8, u32x4, u64x2,
+};
 
 const REFINEMV_UNIT_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_SIZE: usize = 16;
@@ -697,16 +699,32 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     }
 }
 
-/// `Σ |left - right|` over the first `W` eight-bit samples, which need no
-/// clip to the maximum.
+/// `Σ |left - right|` over the first `W` eight-bit samples, 8 or 12, which
+/// need no clip to the maximum.
 fn byte_sad<const W: usize>(left: &[u8], right: &[u8]) -> Option<u32> {
-    let (left, right) = (left.first_chunk::<W>()?, right.first_chunk::<W>()?);
-    Some(
-        left.iter()
-            .zip(right)
-            .map(|(&a, &b)| u32::from(a.abs_diff(b)))
-            .sum(),
-    )
+    let words = |samples: &[u8]| -> Option<[u64; 2]> {
+        let low = u64::from_le_bytes(*samples.first_chunk::<8>()?);
+        if W == 8 {
+            return Some([low, 0]);
+        }
+        let high = samples.get(8..)?.first_chunk::<4>()?;
+        Some([low, u64::from(u32::from_le_bytes(*high))])
+    };
+    let (left, right) = (words(left)?, words(right)?);
+    Some(baseline_simd!(simd => byte_sad_lanes(simd, left, right)))
+}
+
+/// `Σ |left - right|` over the bytes of two pairs of words.
+#[inline]
+fn byte_sad_lanes<S: Simd>(simd: S, left: [u64; 2], right: [u64; 2]) -> u32 {
+    let (left, right): (u8x16<S>, u8x16<S>) = (
+        u64x2::from_slice(simd, &left).bitcast(),
+        u64x2::from_slice(simd, &right).bitcast(),
+    );
+    let (low, high) =
+        simd.widening_add_u8x16(left.max(right) - left.min(right), u8x16::splat(simd, 0));
+    let (low, high) = (low + high).widen();
+    (low + high).reduce_sum()
 }
 
 /// Refines one 8x8 TIP unit. The centre SAD and the centre optical flow read
@@ -1022,18 +1040,12 @@ fn refinemv_sad<'a>(
     let sad = match width {
         12 => sad_rows::<12>(rows, u16::MAX),
         20 => sad_rows::<20>(rows, u16::MAX),
-        _ => rows
-            .map(
-                |(left, right)| match (left.get(..width), right.get(..width)) {
-                    (Some(left), Some(right)) => left
-                        .iter()
-                        .zip(right)
-                        .map(|(&left, &right)| u32::from(left.abs_diff(right)))
-                        .sum::<u32>(),
-                    _ => u32::MAX,
-                },
-            )
-            .fold(0, u32::saturating_add),
+        _ => {
+            return Err(ReconError::SubpelBlockDimensionUnsupported {
+                w: width,
+                h: height,
+            });
+        }
     };
     Ok(sad >> downshift)
 }

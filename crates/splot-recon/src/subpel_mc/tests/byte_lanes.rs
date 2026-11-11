@@ -657,7 +657,7 @@ fn neon_byte_lanes_match_the_portable_kernels() {
             .map(|i| if (i + i / stride) % 3 == 0 { 255 } else { 0 })
             .collect(),
     ];
-    let remap: [u8; 16] = core::array::from_fn(|lane| (lane as u8).saturating_sub(2).min(9));
+    let remap = [-2, 9];
     for source in &textures {
         for filter in 0..NUM_FILTER_TYPES {
             let phases = [[0, 0], [8, 8], [1, 15], [13, 4]]

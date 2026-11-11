@@ -456,7 +456,7 @@ mod avx2 {
     #[inline]
     #[target_feature(enable = "avx2")]
     fn remap(t: Avx2, block: &Block<'_, u16>) -> Option<Remap> {
-        let columns: __m128i = u8x16::load_array(t, block.remap?).into();
+        let columns: __m128i = u8x16::load_array(t, block.remap_lanes()?).into();
         let doubled = _mm_add_epi8(columns, columns);
         let half = |words: __m128i| -> [__m128i; 2] {
             [

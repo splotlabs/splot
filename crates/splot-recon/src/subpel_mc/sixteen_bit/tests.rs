@@ -33,12 +33,8 @@ fn taps(filter: usize, phase: usize) -> Option<&'static Taps> {
 }
 
 /// Column remaps of a window clamped on the left and on the right.
-fn remaps() -> [Option<[u8; 16]>; 3] {
-    [
-        None,
-        Some(core::array::from_fn(|lane| lane.saturating_sub(3) as u8)),
-        Some(core::array::from_fn(|lane| lane.min(6) as u8)),
-    ]
+fn remaps() -> [Option<[i8; 2]>; 3] {
+    [None, Some([-3, 15]), Some([0, 6])]
 }
 
 /// Every sink of the NEON `predict` against the portable kernels.

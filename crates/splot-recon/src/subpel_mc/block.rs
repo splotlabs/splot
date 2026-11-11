@@ -243,8 +243,9 @@ pub(super) struct Block<'a, T> {
     pub(super) horizontal: Option<&'static Taps>,
     pub(super) vertical: Option<&'static Taps>,
     /// For a column-clamped window of at most 16 columns read from `origin`:
-    /// the source sample of each window column, the `Clip3` read.
-    pub(super) remap: Option<[u8; 16]>,
+    /// `[offset, limit]`, window column `c` reads source column
+    /// `Clip3(0, limit, c + offset)`, the `Clip3` read.
+    pub(super) remap: Option<[i8; 2]>,
 }
 
 impl<'a, T> Block<'a, T> {
@@ -262,6 +263,17 @@ impl<'a, T> Block<'a, T> {
             vertical: self.vertical,
             remap: self.remap,
         }
+    }
+
+    /// The source column of each of the 16 window columns of a remap.
+    pub(super) fn remap_lanes(&self) -> Option<[u8; 16]> {
+        self.remap.map(|[offset, limit]| {
+            core::array::from_fn(|column| {
+                (column as i32 + i32::from(offset))
+                    .max(0)
+                    .min(i32::from(limit)) as u8
+            })
+        })
     }
 
     /// The source index of column 0 of window row `row`.
@@ -428,9 +440,9 @@ pub(super) fn put_admitted<const N: usize>(
     mut outputs: [(&mut [u8], usize); N],
 ) -> bool {
     let (w, view) = (params.w, views[0]);
-    if let Some(cell) = super::cell::put_cell(view, params) {
+    if let Some(block) = super::cell::put_cell(view, params) {
         for (view, (output, stride)) in views.into_iter().zip(&mut outputs) {
-            cell.with_source(view.samples).put(w, output, *stride);
+            super::cell::put(&block.with_source(view.samples), w, output, *stride);
         }
         return true;
     }
@@ -521,7 +533,7 @@ impl Layout {
         view: &ReferencePlaneView<'a, T>,
         params: &SubpelPredictParams,
     ) -> Option<Block<'a, T>> {
-        let block = |origin: usize, remap: Option<[u8; 16]>| Block {
+        let block = |origin: usize, remap: Option<[i8; 2]>| Block {
             source: view.samples,
             stride: view.stride,
             origin,
@@ -547,9 +559,10 @@ impl Layout {
         (params.w <= 8 && self.horizontal.is_some() && fits(base, 16)).then(|| {
             block(
                 base as usize,
-                Some(core::array::from_fn(|lane| {
-                    ((self.column + lane as i32).clamp(params.first_x, params.last_x) - base) as u8
-                })),
+                Some([
+                    (self.column - base).clamp(-16, 16) as i8,
+                    (params.last_x - base).min(15) as i8,
+                ]),
             )
         })
     }
