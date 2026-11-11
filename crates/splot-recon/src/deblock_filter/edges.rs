@@ -662,7 +662,7 @@ fn portable_class<S: Simd, E: EdgeSample, const VERTICAL: bool, const WIDEST: us
 ) {
     use portable::{
         DECISION_LINES, HALF_SEGMENTS, OTHER_LINES, OTHER_SEGMENTS, decide, filter, load_lines,
-        store_lines,
+        still, store_lines,
     };
     let read = (WIDEST.min(7) + 1).max(3);
     let wide = read > REACH / 2;
@@ -670,6 +670,13 @@ fn portable_class<S: Simd, E: EdgeSample, const VERTICAL: bool, const WIDEST: us
     if VERTICAL {
         let mut rows = [zero; ROWS];
         load_lines(simd, samples, stride, &DECISION_LINES, &mut rows, wide);
+        if still(simd, &rows) {
+            let mut other = [zero; ROWS];
+            load_lines(simd, samples, stride, &OTHER_LINES, &mut other, false);
+            if still(simd, &other) {
+                return;
+            }
+        }
         let Some((width, ramp)) = decide(simd, &rows, edges, WIDEST) else {
             return;
         };
@@ -701,6 +708,9 @@ fn portable_class<S: Simd, E: EdgeSample, const VERTICAL: bool, const WIDEST: us
     for j in REACH - read..REACH + read {
         (halves[0][j], halves[1][j]) = simd.split_i16x16(E::load16(simd, samples, j * stride));
         sides[j] = portable::sides(simd, halves[0][j], halves[1][j]);
+    }
+    if still(simd, &halves[0]) && still(simd, &halves[1]) {
+        return;
     }
     let Some((width, ramp)) = decide(simd, &sides, edges, WIDEST) else {
         return;
@@ -933,6 +943,21 @@ mod portable {
         let pattern = u8x16::from_slice(simd, &SIDES);
         simd.concat_swizzle_dyn_u8x16(low.bitcast(), high.bitcast(), pattern)
             .bitcast()
+    }
+
+    /// Whether no line whose rows across the edge are `rows` (row `REACH + j`
+    /// is `s[j]` of every line) can move: § 7.17.7.1 rounds every ramp step
+    /// to zero when `|p1 - q1 + 3 * (q0 - p0)| <= 2`, as `W_Mult[w - 1] * w`
+    /// stays below 128.
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
+    #[inline(always)]
+    pub(super) fn still<S: Simd>(simd: S, rows: &[i16x8<S>; ROWS]) -> bool {
+        let s = |j: usize| rows[REACH - 2 + j];
+        let inner = (s(0) - s(3) + (s(2) - s(1)) * 3).abs();
+        !simd.any_true_mask16x8(inner.simd_gt(i16x8::splat(simd, 2)))
     }
 
     /// Looks the 8-entry `table` up by the compressed width index in each

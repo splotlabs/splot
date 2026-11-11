@@ -303,6 +303,40 @@ fn edge_runs_match_the_per_edge_spec_primitives_10bit() {
     assert!(WIDTHS.iter().all(|&width| widths[width] > 20), "{widths:?}");
 }
 
+/// No § 7.17.7.1 width moves a line whose `|p1 - q1 + 3 * (q0 - p0)|` is at
+/// most 2, which lets the portable chunk skip such chunks.
+#[test]
+fn lines_with_a_small_step_never_move() {
+    for (neg, pos) in NEG
+        .iter()
+        .flat_map(|&neg| POS.iter().map(move |&pos| (neg, pos)))
+    {
+        for (a, b) in (-8..=8).flat_map(|a| (-2..=2).map(move |b| (a, b))) {
+            if i32::abs(a + 3 * b) > 2 || neg > pos {
+                continue;
+            }
+            let mut line = [512u16; 16];
+            line[REACH] = (512 + b) as u16;
+            line[REACH + 1] = (512 - a) as u16;
+            let before = line;
+            let params = DeblockSampleFilter {
+                boundary: REACH,
+                q_thr: 700,
+                max_width_neg: neg,
+                max_width_pos: pos,
+                q_thresh_mult: Q_THRESH_MULTS[neg.max(pos) - 1],
+                w_mult_neg: W_MULT[neg - 1],
+                w_mult_pos: W_MULT[pos - 1],
+                prev_lossless: false,
+                curr_lossless: false,
+                bit_depth: BitDepth::Ten,
+            };
+            deblock_sample_filter(&mut line, &params).unwrap();
+            assert_eq!(line, before, "neg={neg} pos={pos} a={a} b={b}");
+        }
+    }
+}
+
 #[test]
 fn edge_packing_rejects_what_section_7_17_never_derives() {
     assert_eq!(
