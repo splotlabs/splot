@@ -156,7 +156,7 @@ where
     }
 
     let max = bit_depth.max_sample();
-    if T::MAX_VALUE <= max {
+    if !crate::sample_range::samples_exceed(samples, max) {
         return Ok(());
     }
     for (sample_index, sample) in samples.iter().copied().enumerate() {
@@ -250,11 +250,11 @@ fn dense_dc_edge_sum<T: ReconSample>(samples: &[T], max: u16) -> Option<u32> {
     }
     if let Some(wide) = T::u16_slice(samples) {
         return (!crate::sample_range::u16_samples_exceed(wide, max))
-            .then(|| wide.iter().map(|&value| u32::from(value)).sum());
+            .then(|| crate::sum_samples(wide, false));
     }
     T::u8_slice(samples)
         .filter(|_| max >= u16::from(u8::MAX))
-        .map(|narrow| narrow.iter().map(|&value| u32::from(value)).sum())
+        .map(|narrow| crate::sum_samples(narrow, false))
 }
 
 /// Validates intra prediction output buffer geometry, returning the required

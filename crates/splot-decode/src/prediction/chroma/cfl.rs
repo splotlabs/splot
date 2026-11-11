@@ -763,11 +763,11 @@ impl CflLumaEdges {
         let mut sum = 0u32;
         let mut count = 0u32;
         if neighbours.has_above() && block.y > 0 {
-            sum += edge_sum(&self.above[..block.width], |q3| q3 as u32);
+            sum += edge_sum(&self.above[..block.width]);
             count += (block.width / dc_step(block.width)) as u32;
         }
         if neighbours.has_left() && block.x > 0 {
-            sum += edge_sum(&self.left[..block.height], |q3| q3 as u32);
+            sum += edge_sum(&self.left[..block.height]);
             count += (block.height / dc_step(block.height)) as u32;
         }
         let bits = block.bit_depth.bits();
@@ -840,7 +840,7 @@ impl CflLumaEdges {
         derive: bool,
     ) -> core::result::Result<[(i32, i32); N], GeneralIntraResidualError> {
         let CflBlock { width, height, .. } = block;
-        let sum = |edge: &[T]| edge_sum(edge, |sample| u32::from(sample.to_u16()));
+        let sum = sample_edge_sum::<T>;
         let mut models = [(0, 0); N];
         for (plane, model) in models.iter_mut().enumerate() {
             let dc: T = splot_recon::predict_intra_dc_value_from_edge_sums(
@@ -937,12 +937,17 @@ const fn dc_step(len: usize) -> usize {
 /// The sum of an edge's samples at its [`dc_step`]; every sample is at most
 /// `8 << 10`, so a 64-sample edge cannot overflow.
 #[inline]
-fn edge_sum<V: Copy>(edge: &[V], value: impl Fn(V) -> u32) -> u32 {
-    if dc_step(edge.len()) == 1 {
-        edge.iter().map(|&sample| value(sample)).sum()
-    } else {
-        edge.iter().step_by(2).map(|&sample| value(sample)).sum()
-    }
+fn edge_sum<V: splot_recon::SummedSample>(edge: &[V]) -> u32 {
+    splot_recon::sum_samples(edge, dc_step(edge.len()) == 2)
+}
+
+/// [`edge_sum`] of `u8` or `u16` sample storage.
+#[inline]
+fn sample_edge_sum<T: ReconSample>(edge: &[T]) -> u32 {
+    T::u8_slice(edge)
+        .map(edge_sum)
+        .or_else(|| T::u16_slice(edge).map(edge_sum))
+        .unwrap_or(0)
 }
 
 fn cfl_above_min_luma_ref_y(

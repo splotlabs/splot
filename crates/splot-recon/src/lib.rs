@@ -80,6 +80,7 @@ mod reconstruct;
 mod reconstruct_block;
 mod reference;
 mod sample_range;
+pub use sample_range::{SummedSample, sum_samples};
 mod secondary_transform;
 mod subpel_mc;
 mod transform_params;
@@ -131,9 +132,9 @@ pub use geometry::{OutputIndex, PlaneRect, PlaneSize};
 pub use hash_input::{DecodedFrameHash, DecodedFrameHashInput, visible_byte_len};
 pub use intra::{
     IntraDcEdge, IntraDcEdges, IntraRectBlockSize, IntraSquareBlockSize,
-    SquareIntraPredictionBlock, SquareIntraPredictionRows, predict_intra_dc_rect_into,
-    predict_intra_dc_rect_value, predict_intra_dc_square, predict_intra_dc_square_into,
-    predict_intra_dc_square_value,
+    SquareIntraPredictionBlock, SquareIntraPredictionRows, average_intra_predictions,
+    predict_intra_dc_rect_into, predict_intra_dc_rect_value, predict_intra_dc_square,
+    predict_intra_dc_square_into, predict_intra_dc_square_value, predict_intra_palette_into,
 };
 pub use intra_basic::{IntraPaethEdge, IntraPaethEdges, predict_intra_paeth_rect_into};
 pub use intra_dc_math::resolve_divisor;

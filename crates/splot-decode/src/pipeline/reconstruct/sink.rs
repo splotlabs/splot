@@ -192,18 +192,19 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
         block_size.sample_count(),
         T::default(),
     )?;
-    let fill_result = prediction.iter_mut().zip(color_map).try_for_each(
-        |(output, &color_index)| -> core::result::Result<(), GeneralIntraResidualError> {
-            let sample = palette.sample(color_index).ok_or_else(|| {
-                GeneralIntraResidualError::PaletteColorIndex {
-                    color_index: usize::from(color_index),
-                    palette_size: palette.size(),
+    let fill_result =
+        splot_recon::predict_intra_palette_into(&palette.colors(), color_map, &mut prediction)
+            .map_err(GeneralIntraResidualError::from)
+            .and_then(|max_index| {
+                if usize::from(max_index) < palette.size() {
+                    Ok(())
+                } else {
+                    Err(GeneralIntraResidualError::PaletteColorIndex {
+                        color_index: usize::from(max_index),
+                        palette_size: palette.size(),
+                    })
                 }
-            })?;
-            *output = T::try_from_u16(sample)?;
-            Ok(())
-        },
-    );
+            });
     if let Err(error) = fill_result {
         workspace
             .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
@@ -283,19 +284,6 @@ fn noneighbour_sample<T: ReconSample>(value: u16) -> T {
     T::try_from_u16(value).unwrap_or_default()
 }
 
-pub(super) fn average_luma_prediction_with<T: ReconSample>(
-    prediction: &mut [T],
-    secondary: &[T],
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    for (primary, secondary) in prediction.iter_mut().zip(secondary) {
-        let average = (u32::from(primary.to_u16()) + u32::from(secondary.to_u16()) + 1) >> 1;
-        let average = u16::try_from(average)
-            .map_err(|_| GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
-        *primary = T::try_from_u16(average)?;
-    }
-    Ok(())
-}
-
 pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block_size: IntraRectBlockSize,
@@ -320,8 +308,9 @@ pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
             block_size.sample_count(),
             T::default(),
         )?;
-        let result = predict(workspace, true, &mut secondary)
-            .and_then(|()| average_luma_prediction_with(&mut prediction, &secondary));
+        let result = predict(workspace, true, &mut secondary).and_then(|()| {
+            splot_recon::average_intra_predictions(&mut prediction, &secondary).map_err(Into::into)
+        });
         workspace
             .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, secondary);
         result?;

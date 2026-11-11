@@ -913,7 +913,10 @@ fn validate_edges<T: ReconSample>(
         });
     }
 
-    if T::MAX_VALUE <= bit_depth.max_sample() {
+    let max = bit_depth.max_sample();
+    if !crate::sample_range::samples_exceed(edges.left, max)
+        && !crate::sample_range::samples_exceed(edges.above, max)
+    {
         return Ok(());
     }
     for (sample_index, sample) in edges.left[..size.height()].iter().copied().enumerate() {

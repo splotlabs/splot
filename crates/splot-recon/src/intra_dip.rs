@@ -445,9 +445,10 @@ fn interpolate_lanes<S: Simd, P: IntraLaneSample>(
             continue;
         }
         if grid.step_x == 1 {
-            for (x, slot) in row.iter_mut().enumerate() {
-                *slot = P::from_lane(*row_values.get(x * grid.down_x)? as u16);
-            }
+            let values = grid_row();
+            let mut lanes = [P::from_lane(0); 8];
+            P::store8(simd, simd.unzip_low_u16x8(values, values), &mut lanes);
+            *row.first_chunk_mut::<4>()? = *lanes.first_chunk::<4>()?;
             continue;
         }
         let mut points = [0u16; 16];
@@ -504,12 +505,18 @@ fn interpolate_lanes<S: Simd, P: IntraLaneSample>(
                 }?
                 .first_chunk()?;
                 let b: [P; 4] = *output.get(last..)?.first_chunk()?;
+                let lanes = |run: [P; 4]| {
+                    let mut lanes = [P::from_lane(0); 8];
+                    lanes[..4].copy_from_slice(&run); // splot-copy-ok: widen one 4-sample run
+                    P::load8(simd, &lanes)
+                };
+                let (a, b) = (lanes(a), lanes(b));
                 for z in 1..step {
+                    let (w0, w1) = ((step - z) as u16, z as u16);
+                    let mut values = [P::from_lane(0); 8];
+                    P::store8(simd, (a * w0 + b * w1) >> shift, &mut values);
                     let row = output.get_mut((top + z - 1) * stride..)?;
-                    for ((out, a), b) in row.iter_mut().zip(a).zip(b) {
-                        let (w0, w1) = ((step - z) as u16, z as u16);
-                        *out = P::from_lane((a.to_u16() * w0 + b.to_u16() * w1) >> shift);
-                    }
+                    *row.first_chunk_mut::<4>()? = *values.first_chunk::<4>()?;
                 }
             }
         }

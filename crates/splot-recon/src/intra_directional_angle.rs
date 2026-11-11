@@ -1040,7 +1040,7 @@ where
     }
 
     let max = bit_depth.max_sample();
-    if T::MAX_VALUE <= max {
+    if !crate::sample_range::samples_exceed(samples, max) {
         return Ok(());
     }
     for (sample_index, sample) in samples.iter().copied().enumerate() {
@@ -1061,16 +1061,6 @@ fn write_prediction<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    if size.width() * size.height() <= small::SMALL_BLOCK_SAMPLES {
-        if let (Some(edge), Some(output)) = (T::u8_slice(edge), T::u8_slice_mut(output)) {
-            small::write_one_sided(size, angle.branch(), edge, output, stride_samples);
-            return Ok(());
-        }
-        if let (Some(edge), Some(output)) = (T::u16_slice(edge), T::u16_slice_mut(output)) {
-            small::write_one_sided(size, angle.branch(), edge, output, stride_samples);
-            return Ok(());
-        }
-    }
     if let (Some(edge), Some(output)) = (T::u8_slice(edge), T::u8_slice_mut(output)) {
         return write_bilinear_lines(bit_depth, size, angle, edge, output, stride_samples);
     }
@@ -1090,7 +1080,6 @@ fn write_bilinear_lines<P: lines::LineSample>(
     stride_samples: usize,
 ) -> Result<()> {
     let max_base = size.width() + size.height() - 1;
-    let padded = lines::PaddedEdge::new(edge, 1, bit_depth.max_sample())?;
     let last = *edge.get(max_base).ok_or(ReconError::ArithmeticOverflow {
         context: "one-sided directional angle maxBase sample",
     })?;
@@ -1106,6 +1095,20 @@ fn write_bilinear_lines<P: lines::LineSample>(
             active: max_base.saturating_sub(first),
         })
     };
+    if lines::is_small_one_sided(size, branch) {
+        return lines::write_one_sided_small(
+            size,
+            branch,
+            lines::LineFilter::Bilinear,
+            (edge, 1),
+            bit_depth.max_sample(),
+            last,
+            line,
+            output,
+            stride_samples,
+        );
+    }
+    let padded = lines::PaddedEdge::new(edge, 1, bit_depth.max_sample())?;
     lines::write_one_sided(
         size,
         branch,
@@ -1324,7 +1327,6 @@ fn write_one_sided_idif_lines<P: lines::LineSample>(
     output: &mut [P],
     stride_samples: usize,
 ) -> Result<()> {
-    let padded = lines::PaddedEdge::new(edge, 0, bit_depth.max_sample())?;
     let (derivative, branch) = (one_sided_idif_derivative(angle), angle.branch());
     let max_base = one_sided_max_base(size, mrl_index)?;
     let last = edge[logical_idif_edge_offset(max_base, edge.len())?];
@@ -1337,6 +1339,20 @@ fn write_one_sided_idif_lines<P: lines::LineSample>(
             active: usize::try_from(max_base - base + 1).unwrap_or(0),
         })
     };
+    if lines::is_small_one_sided(size, branch) {
+        return lines::write_one_sided_small(
+            size,
+            branch,
+            lines::LineFilter::Idif,
+            (edge, 0),
+            bit_depth.max_sample(),
+            last,
+            line,
+            output,
+            stride_samples,
+        );
+    }
+    let padded = lines::PaddedEdge::new(edge, 0, bit_depth.max_sample())?;
     lines::write_one_sided(
         size,
         branch,
@@ -1358,24 +1374,6 @@ fn write_middle_prediction<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    if size.width() * size.height() <= small::SMALL_BLOCK_SAMPLES {
-        if let (Some(left), Some(above), Some(output)) = (
-            T::u8_slice(left),
-            T::u8_slice(above),
-            T::u8_slice_mut(output),
-        ) {
-            small::write_middle(size, angle.branch(), [left, above], output, stride_samples);
-            return Ok(());
-        }
-        if let (Some(left), Some(above), Some(output)) = (
-            T::u16_slice(left),
-            T::u16_slice(above),
-            T::u16_slice_mut(output),
-        ) {
-            small::write_middle(size, angle.branch(), [left, above], output, stride_samples);
-            return Ok(());
-        }
-    }
     if let (Some(left), Some(above), Some(output)) = (
         T::u8_slice(left),
         T::u8_slice(above),
@@ -1417,6 +1415,19 @@ fn write_middle_bilinear_lines<P: lines::LineSample>(
     stride_samples: usize,
 ) -> Result<()> {
     let max = bit_depth.max_sample();
+    if lines::is_small_middle(size) {
+        return lines::write_middle_small(
+            size,
+            angle,
+            lines::LineFilter::Bilinear,
+            0,
+            [left, above],
+            (1, 1),
+            max,
+            output,
+            stride_samples,
+        );
+    }
     let (padded_left, padded_above) = (
         lines::PaddedEdge::new(left, 1, max)?,
         lines::PaddedEdge::new(above, 1, max)?,
@@ -1507,11 +1518,24 @@ fn write_middle_idif_lines<T: ReconSample, P: lines::LineSample>(
     output: &mut [P],
 ) -> Result<()> {
     let max = params.bit_depth.max_sample();
+    let mrl = params.mrl_index;
+    if lines::is_small_middle(params.size) {
+        return lines::write_middle_small(
+            params.size,
+            params.angle,
+            lines::LineFilter::Idif,
+            mrl,
+            [left, above],
+            (0, mrl as i32 + 1),
+            max,
+            output,
+            params.stride_samples,
+        );
+    }
     let (padded_left, padded_above) = (
         lines::PaddedEdge::new(left, 0, max)?,
         lines::PaddedEdge::new(above, 0, max)?,
     );
-    let mrl = params.mrl_index;
     lines::write_middle(
         params.size,
         params.angle,
@@ -1577,8 +1601,6 @@ fn logical_edge_offset(logical_index: i32, len: usize) -> Result<usize> {
 
 #[path = "intra_directional_lines.rs"]
 mod lines;
-#[path = "intra_directional_small.rs"]
-mod small;
 
 #[cfg(test)]
 #[path = "intra_directional_angle_tests.rs"]
