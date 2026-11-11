@@ -138,7 +138,16 @@ fn check_runs(bit_depth: BitDepth, seed: u64, widths: &mut [usize; REACH + 1]) {
             } else {
                 (edges_len * LINES + 3 + noise.below(5) as usize, 18)
             };
-            let original = plane(&mut noise, stride * rows, max_sample);
+            let mut original = plane(&mut noise, stride * rows, max_sample);
+            if seed.is_multiple_of(4) {
+                for v in &mut original {
+                    *v = if i32::from(*v) > max_sample / 2 {
+                        max_sample as u16
+                    } else {
+                        0
+                    };
+                }
+            }
             let first = if vertical {
                 stride + REACH + noise.below((stride - 2 * REACH + 1) as u64) as usize
             } else {
@@ -251,6 +260,7 @@ fn check_portable(
         };
         let mut portable = original.to_vec(); // splot-copy-ok: per-path test copies
         let mut dispatched = original.to_vec(); // splot-copy-ok: per-path test copies
+        let mut narrow: Vec<u8> = original.iter().map(|&v| v as u8).collect();
         if vertical {
             portable_chunk::<_, u16, true>(simd, &mut portable, stride, start, chunk, max_sample);
             u16::chunk::<true>(&mut dispatched, stride, start, chunk, max_sample);
@@ -259,6 +269,19 @@ fn check_portable(
             u16::chunk::<false>(&mut dispatched, stride, start, chunk, max_sample);
         }
         assert_eq!(portable, dispatched);
+        if bit_depth == BitDepth::Eight {
+            if vertical {
+                portable_chunk::<_, u8, true>(simd, &mut narrow, stride, start, chunk, max_sample);
+            } else {
+                portable_chunk::<_, u8, false>(simd, &mut narrow, stride, start, chunk, max_sample);
+            }
+            assert!(
+                narrow
+                    .iter()
+                    .zip(&portable)
+                    .all(|(&a, &b)| u16::from(a) == b)
+            );
+        }
     }
 }
 

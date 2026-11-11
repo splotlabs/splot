@@ -19,7 +19,7 @@ use super::grid::{MiCell, MiGrid};
 use super::{
     DeblockBlock, DeblockError, EdgeContext, GATHER_HALF, MAX_WIDTHS, MI_SIZE, PerpLine, PlaneCtx,
     PlanePass, SB_SIZE, StrengthCache, apply_edge_samples, choose_filter_width, edge_decision,
-    on_sub_pu_edge, starts_tile,
+    on_sub_pu_edge, starts_tile, sub_pu_base,
 };
 
 /// The edges of one plane pass over the mode-info rows it owes, row-major by
@@ -40,6 +40,9 @@ pub(crate) struct PassEdges {
     /// Whether each column (vertical pass) or row (horizontal pass) holds
     /// an edge to filter.
     live: Vec<bool>,
+    /// The last left and current cells of each vertical-pass column that
+    /// differ, and their edge, which every row they meet again repeats.
+    seen: Vec<(MiCell, MiCell, DeblockEdge)>,
 }
 
 /// Where one plane pass's edges sit: its plane geometry and the frame
@@ -254,6 +257,8 @@ impl PassEdges {
         if PASS == 0 {
             let reach = if PLANE == 0 { 16 } else { 8 };
             let mut inner: Option<(MiCell, DeblockEdge)> = None;
+            self.seen.clear();
+            self.seen.resize(self.cols, Default::default());
             for row_index in 0..self.rows {
                 let r = first + row_index * row_step;
                 let row_out = row_index * self.stride;
@@ -262,24 +267,37 @@ impl PassEdges {
                     continue;
                 }
                 let ids = grid.row_cells::<PLANE>(r, self.cols)?;
-                let mut prev = grid.record::<PLANE>(ids[0], r, 0)?;
                 let mut col_index = 1;
                 while col_index < self.cols {
                     let (id, c) = (ids[col_index], col_index << sub_x);
-                    if id != ids[col_index - 1] {
-                        let curr = grid.record::<PLANE>(id, r, c)?;
-                        let edge = edge_at_blocks::<PLANE, 0>(
-                            (curr, prev),
-                            plane_pass.edge_context(r, c, starts_tile(geometry.tile_starts, c)),
-                            geometry,
-                            &strengths,
-                        )?;
-                        prev = curr;
+                    let left = ids[col_index - 1];
+                    if id != left {
+                        let edge = match self.seen[col_index] {
+                            (seen_left, seen, edge) if (seen_left, seen) == (left, id) => edge,
+                            _ => {
+                                let blocks = (
+                                    grid.record::<PLANE>(id, r, c)?,
+                                    grid.record::<PLANE>(left, r, c)?,
+                                );
+                                let ctx = plane_pass.edge_context(
+                                    r,
+                                    c,
+                                    starts_tile(geometry.tile_starts, c),
+                                );
+                                let edge =
+                                    edge_at_blocks::<PLANE, 0>(blocks, ctx, geometry, &strengths)?;
+                                if repeats::<0>(blocks, ctx) {
+                                    self.seen[col_index] = (left, id, edge);
+                                }
+                                edge
+                            }
+                        };
                         self.edges[row_out + col_index] = edge;
                         self.live[col_index] |= !edge.is_none();
                         col_index += 1;
                         continue;
                     }
+                    let prev = grid.record::<PLANE>(id, r, c)?;
                     // Sub-PU edges of one record are alike unless a tile or frame edge clips.
                     let run = ids[col_index..].iter().take_while(|&&cell| cell == id);
                     let cells = col_index..col_index + run.count();
@@ -333,7 +351,8 @@ impl PassEdges {
                 let curr = grid.record::<PLANE>(ids.0, r, c)?;
                 let prev = grid.record::<PLANE>(ids.1, prev_r, c)?;
                 let plain = curr.sub_pu_size.is_none() && prev.sub_pu_size.is_none();
-                let run = if plain || ids.0 == ids.1 {
+                let ctx = plane_pass.edge_context(r, c, row_tile_edge);
+                let run = if repeats::<1>((curr, prev), ctx) {
                     curr_ids[col_index..]
                         .iter()
                         .zip(&prev_ids[col_index..])
@@ -345,12 +364,7 @@ impl PassEdges {
                 let edge = if ids.0 == ids.1 && plain {
                     DeblockEdge::NONE
                 } else {
-                    edge_at_blocks::<PLANE, 1>(
-                        (curr, prev),
-                        plane_pass.edge_context(r, c, row_tile_edge),
-                        geometry,
-                        &strengths,
-                    )?
+                    edge_at_blocks::<PLANE, 1>((curr, prev), ctx, geometry, &strengths)?
                 };
                 self.edges[row_out + col_index..row_out + col_index + run].fill(edge);
                 row_live |= !edge.is_none();
@@ -666,6 +680,29 @@ fn edge_at_blocks<const PLANE: usize, const PASS: usize>(
         decision.curr_lossless,
     )
     .ok_or(DeblockError::SampleFilter)
+}
+
+/// Whether the edge `ctx` between two records repeats along its pass's
+/// other axis: § 7.17.2 reads that axis only through whether their sub-PU
+/// bases match, which holds or fails all along it unless both bases move.
+fn repeats<const PASS: usize>(
+    (curr, prev): (&DeblockBlock, &DeblockBlock),
+    ctx: EdgeContext,
+) -> bool {
+    let (sub_x, sub_y) = (ctx.plane_sub_x, ctx.plane_sub_y);
+    let (x_p, y_p) = ((ctx.col * MI_SIZE) >> sub_x, (ctx.row * MI_SIZE) >> sub_y);
+    let (dx, dy) = if PASS == 0 { (1, 0) } else { (0, 1) };
+    let fixed = |(x, y): (usize, usize)| if PASS == 0 { x } else { y };
+    curr.sub_pu_size.is_none() && prev.sub_pu_size.is_none()
+        || (curr.prediction, curr.sub_pu_size) == (prev.prediction, prev.sub_pu_size)
+        || fixed(sub_pu_base(curr, x_p, y_p, sub_x, sub_y))
+            != fixed(sub_pu_base(
+                prev,
+                x_p.saturating_sub(dx),
+                y_p.saturating_sub(dy),
+                sub_x,
+                sub_y,
+            ))
 }
 
 /// An edge at plane position (`x_p`, `y_p`) that the batched kernels cannot

@@ -10,7 +10,7 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Level;
-use fearless_simd::{Bytes, Simd, SimdBase, i16x16, u16x16, u64x4};
+use fearless_simd::{Bytes, Simd, SimdBase, i16x8, i16x16, u16x8, u16x16, u64x4};
 use splot_core::tables::conversion::{Q_FIRST, Q_THRESH_MULTS, W_MULT};
 
 use crate::intra_dc_math::validate_sample_type;
@@ -33,6 +33,7 @@ const WIDTHS: [usize; 7] = [0, 1, 2, 3, 4, 6, 8];
 /// `W_Mult[w - 1] * (w - j) * 64` by row `j` from the edge and compressed
 /// width index: the per-sample ramp weight, scaled so that a high-half
 /// multiply leaves `deltaM2 * weight >> 10`.
+#[cfg(target_arch = "x86_64")]
 const RAMP: [[i16; 8]; REACH] = {
     let mut table = [[0; 8]; REACH];
     let mut j = 0;
@@ -199,6 +200,7 @@ impl DeblockEdge {
 /// The rows either side of the edge a chunk must hold: the § 7.17.7.2
 /// cascade of its widest edge reads `maxWidthPos + 1` samples past it, at
 /// least 3, and the `dist2 = 7` stage reads 8.
+#[cfg(target_arch = "x86_64")]
 #[inline]
 fn chunk_reach(edges: &[DeblockEdge; SEGMENTS]) -> usize {
     let widest = edges
@@ -213,6 +215,7 @@ fn chunk_reach(edges: &[DeblockEdge; SEGMENTS]) -> usize {
 
 /// The rows either side of the edge a chunk of `reach` can change: every
 /// width of an edge is at most its `maxWidthPos`.
+#[cfg(target_arch = "x86_64")]
 const fn chunk_writes(reach: usize) -> usize {
     match reach {
         3 => 1,
@@ -397,6 +400,8 @@ fn too_short(boundary: usize, len: usize) -> ReconError {
 trait EdgeSample: Copy + Default {
     fn load16<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x16<S>;
     fn store16<S: Simd>(simd: S, samples: &mut [Self], at: usize, values: i16x16<S>);
+    fn load8<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x8<S>;
+    fn store8<S: Simd>(simd: S, samples: &mut [Self], at: usize, values: i16x8<S>);
 }
 
 impl EdgeSample for u8 {
@@ -415,6 +420,24 @@ impl EdgeSample for u8 {
         simd.narrow_u16x8(low, high)
             .store_slice(&mut samples[at..at + LANES]);
     }
+
+    fn load8<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x8<S> {
+        let mut bytes = [0; LANES];
+        for (byte, &sample) in bytes.iter_mut().zip(&samples[at..at + 8]) {
+            *byte = sample;
+        }
+        simd.widen_u8x16(fearless_simd::u8x16::from_slice(simd, &bytes))
+            .0
+            .bitcast()
+    }
+
+    fn store8<S: Simd>(simd: S, samples: &mut [Self], at: usize, values: i16x8<S>) {
+        let values = values.bitcast();
+        let bytes = simd.narrow_u16x8(values, values).to_array();
+        for (sample, byte) in samples[at..at + 8].iter_mut().zip(bytes) {
+            *sample = byte;
+        }
+    }
 }
 
 impl EdgeSample for u16 {
@@ -430,6 +453,20 @@ impl EdgeSample for u16 {
         values
             .bitcast::<u16x16<S>>()
             .store_slice(&mut samples[at..at + LANES]);
+    }
+
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn load8<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x8<S> {
+        u16x8::from_slice(simd, &samples[at..at + 8]).bitcast()
+    }
+
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn store8<S: Simd>(_simd: S, samples: &mut [Self], at: usize, values: i16x8<S>) {
+        values
+            .bitcast::<u16x8<S>>()
+            .store_slice(&mut samples[at..at + 8]);
     }
 }
 
@@ -543,10 +580,6 @@ impl Chunk for u8 {
         edges: &[DeblockEdge; SEGMENTS],
         max_sample: i16,
     ) {
-        #[cfg(target_arch = "aarch64")]
-        if let Some(token) = fearless_simd::Level::baseline().as_neon() {
-            return neon_u8::chunk(token, samples, stride, first, edges, VERTICAL);
-        }
         baseline_simd!(simd => portable_chunk::<_, Self, VERTICAL>(
             simd, samples, stride, first, edges, max_sample,
         ));
@@ -578,8 +611,9 @@ impl Chunk for u16 {
     }
 }
 
-/// The portable chunk: loads the active rows across the edge into lane
-/// vectors, filters, and stores the modified rows back when any line moved.
+/// The portable chunk: decides the four segments on one vector of their
+/// first and last lines, then filters eight lines at a time across the
+/// widest width chosen, storing back the lines of a half that moved.
 #[inline]
 fn portable_chunk<S: Simd, E: EdgeSample, const VERTICAL: bool>(
     simd: S,
@@ -589,65 +623,198 @@ fn portable_chunk<S: Simd, E: EdgeSample, const VERTICAL: bool>(
     edges: &[DeblockEdge; SEGMENTS],
     max_sample: i16,
 ) {
-    let reach = chunk_reach(edges);
-    let mut rows = [i16x16::splat(simd, 0); ROWS];
-    if VERTICAL {
-        let origin = first - REACH;
-        for (line, row) in rows.iter_mut().enumerate() {
-            *row = E::load16(simd, samples, origin + line * stride);
-        }
-        portable::transpose(simd, &mut rows);
-        if !portable::filter(simd, &mut rows, edges, reach, max_sample) {
-            return;
-        }
-        portable::transpose(simd, &mut rows);
-        for (line, row) in rows.iter().enumerate() {
-            E::store16(simd, samples, origin + line * stride, *row);
-        }
+    let origin = if VERTICAL {
+        first - REACH
     } else {
-        let origin = first - REACH * stride;
-        for (j, row) in rows
-            .iter_mut()
-            .enumerate()
-            .take(REACH + reach)
-            .skip(REACH - reach)
-        {
-            *row = E::load16(simd, samples, origin + j * stride);
-        }
-        if !portable::filter(simd, &mut rows, edges, reach, max_sample) {
+        first - REACH * stride
+    };
+    let Ok(stride) = u32::try_from(stride).map(|stride| stride as usize) else {
+        return;
+    };
+    let Some(samples) = samples.get_mut(origin..) else {
+        return;
+    };
+    if samples.len() < (ROWS - 1) * stride + ROWS {
+        return;
+    }
+    let chunk = (samples, stride, edges, max_sample);
+    match edges
+        .iter()
+        .fold(0, |widest, edge| widest.max(edge.max_width_pos()))
+    {
+        0 => {}
+        1 => portable_class::<S, E, VERTICAL, 1>(simd, chunk),
+        3 => portable_class::<S, E, VERTICAL, 3>(simd, chunk),
+        4 => portable_class::<S, E, VERTICAL, 4>(simd, chunk),
+        6 => portable_class::<S, E, VERTICAL, 6>(simd, chunk),
+        _ => portable_class::<S, E, VERTICAL, 8>(simd, chunk),
+    }
+}
+
+/// [`portable_chunk`] for the window from `s[-8]` of the chunk's first line
+/// (vertical edges) or row (horizontal edges), whose widest `maxWidthPos`
+/// is `WIDEST`.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn portable_class<S: Simd, E: EdgeSample, const VERTICAL: bool, const WIDEST: usize>(
+    simd: S,
+    (samples, stride, edges, max_sample): (&mut [E], usize, &[DeblockEdge; SEGMENTS], i16),
+) {
+    use portable::{
+        DECISION_LINES, HALF_SEGMENTS, OTHER_LINES, OTHER_SEGMENTS, decide, filter, load_lines,
+        store_lines,
+    };
+    let read = (WIDEST.min(7) + 1).max(3);
+    let wide = read > REACH / 2;
+    let zero = i16x8::splat(simd, 0);
+    if VERTICAL {
+        let mut rows = [zero; ROWS];
+        load_lines(simd, samples, stride, &DECISION_LINES, &mut rows, wide);
+        let Some((width, ramp)) = decide(simd, &rows, edges, WIDEST) else {
             return;
+        };
+        let narrow = width <= REACH / 2;
+        let mut rows = [rows];
+        if filter::<S, WIDEST, 1>(simd, &mut rows, [ramp.0], width, max_sample) {
+            store_lines(
+                simd,
+                samples,
+                stride,
+                &DECISION_LINES,
+                &rows[0],
+                wide && !narrow,
+            );
         }
-        let writes = chunk_writes(reach);
-        for (j, &row) in rows
-            .iter()
-            .enumerate()
-            .take(REACH + writes)
-            .skip(REACH - writes)
-        {
-            E::store16(simd, samples, origin + j * stride, row);
+        load_lines(simd, samples, stride, &OTHER_LINES, &mut rows[0], !narrow);
+        if filter::<S, WIDEST, 1>(
+            simd,
+            &mut rows,
+            [ramp.spread(simd, &OTHER_SEGMENTS)],
+            width,
+            max_sample,
+        ) {
+            store_lines(simd, samples, stride, &OTHER_LINES, &rows[0], !narrow);
+        }
+        return;
+    }
+    let (mut halves, mut sides) = ([[zero; ROWS]; 2], [zero; ROWS]);
+    for j in REACH - read..REACH + read {
+        (halves[0][j], halves[1][j]) = simd.split_i16x16(E::load16(simd, samples, j * stride));
+        sides[j] = portable::sides(simd, halves[0][j], halves[1][j]);
+    }
+    let Some((width, ramp)) = decide(simd, &sides, edges, WIDEST) else {
+        return;
+    };
+    let ramp = HALF_SEGMENTS.map(|segments| ramp.spread(simd, &segments));
+    if filter::<S, WIDEST, 2>(simd, &mut halves, ramp, width, max_sample) {
+        let [low, high] = halves;
+        for j in REACH - width..REACH + width {
+            E::store16(
+                simd,
+                samples,
+                j * stride,
+                simd.combine_i16x8(low[j], high[j]),
+            );
         }
     }
 }
 
 mod portable {
-    use fearless_simd::{Bytes, Simd, SimdBase, i16x8, i16x16, i32x4, i32x8, i64x2, u8x32, u64x4};
+    use fearless_simd::{Bytes, Simd, SimdBase, i16x8, i32x4, i64x2, u8x16, u16x8, u64x2};
 
-    use super::{CLAMP, DeblockEdge, LINES, Q_FIRST, RAMP, REACH, ROWS, SEGMENTS};
+    use super::{
+        CLAMP, DeblockEdge, EdgeSample, LINES, Q_FIRST, REACH, ROWS, SEGMENTS, W_MULT, WIDTHS,
+    };
 
-    /// Byte indices that copy lane `4g` (`FIRST`) or `4g + 3` (`LAST`) of
-    /// every four-lane segment `g` over the whole segment.
-    const FIRST: [u8; 32] = segment_bytes(0);
-    const LAST: [u8; 32] = segment_bytes(3);
+    /// The lines whose samples decide the segments, in the lane order of a
+    /// decision vector: each segment's first line, then each one's last.
+    pub(super) const DECISION_LINES: [usize; 8] = [0, 4, 8, 12, 3, 7, 11, 15];
+    /// The chunk's other lines.
+    pub(super) const OTHER_LINES: [usize; 8] = [1, 2, 5, 6, 9, 10, 13, 14];
 
-    const fn segment_bytes(line: usize) -> [u8; 32] {
-        let mut bytes = [0; 32];
+    /// Byte indices that copy each segment's decision word to the lanes of
+    /// [`OTHER_LINES`], then to the lanes of the two halves of a row across a
+    /// horizontal edge (lines `0..8` and `8..16`).
+    pub(super) const OTHER_SEGMENTS: [u8; 16] = segments(OTHER_LINES);
+    pub(super) const HALF_SEGMENTS: [[u8; 16]; 2] = [
+        segments([0, 1, 2, 3, 4, 5, 6, 7]),
+        segments([8, 9, 10, 11, 12, 13, 14, 15]),
+    ];
+
+    const fn segments(lines: [usize; 8]) -> [u8; 16] {
+        let mut segments = [0; 8];
+        let mut lane = 0;
+        while lane < 8 {
+            segments[lane] = lines[lane] / LINES;
+            lane += 1;
+        }
+        words(segments)
+    }
+
+    /// Byte indices that pick each lane's 16-bit word from a vector by the
+    /// word index `words[lane]`.
+    const fn words(words: [usize; 8]) -> [u8; 16] {
+        let mut bytes = [0; 16];
         let mut byte = 0;
-        while byte < 32 {
-            let lane = byte % 16 / 2;
-            bytes[byte] = ((lane / LINES * LINES + line) * 2 + byte % 2) as u8;
+        while byte < 16 {
+            bytes[byte] = (words[byte / 2] * 2 + byte % 2) as u8;
             byte += 1;
         }
         bytes
+    }
+
+    /// The [`DECISION_LINES`] of the two halves of a row of 16 lines.
+    const SIDES: [u8; 16] = words(DECISION_LINES);
+
+    /// The bytes of the four packed edges that set decision word `w` to
+    /// bytes `low` and `high` of edge `w % 4`; byte 7 of an edge is zero.
+    const fn field(low: u8, high: u8) -> [u8; 16] {
+        let mut bytes = [0; 16];
+        let mut byte = 0;
+        while byte < 16 {
+            let edge = (byte / 2 % SEGMENTS * 8) as u8;
+            bytes[byte] = edge + if byte % 2 == 0 { low } else { high };
+            byte += 1;
+        }
+        bytes
+    }
+
+    /// `W_Mult[w - 1] * w * 64` and `W_Mult[w - 1] * 64` by compressed width
+    /// index: the ramp weight of row 0 and its step outwards.
+    const START: [i16; 8] = ramp_table(true);
+    const STEP: [i16; 8] = ramp_table(false);
+
+    const fn ramp_table(start: bool) -> [i16; 8] {
+        let mut table = [0; 8];
+        let mut index = 1;
+        while index < WIDTHS.len() {
+            let width = WIDTHS[index];
+            let scale = if start { width as i32 } else { 1 };
+            table[index] = (W_MULT[width - 1] * scale * 64) as i16;
+            index += 1;
+        }
+        table
+    }
+
+    /// The § 7.17.7.1 ramp inputs of the four segments, one word each in a
+    /// decision vector: `qThrClamp`, then the weights of row 0 and their
+    /// steps, current side then previous.
+    pub(super) struct Ramp<S: Simd>(pub(super) [i16x8<S>; 5]);
+
+    impl<S: Simd> Ramp<S> {
+        /// The ramp over lanes whose segment words `pattern` picks.
+        #[allow(
+            clippy::inline_always,
+            reason = "keeps the portable lanes in registers"
+        )]
+        #[inline(always)]
+        pub(super) fn spread(&self, simd: S, pattern: &[u8; 16]) -> [i16x8<S>; 5] {
+            let pattern = u8x16::from_slice(simd, pattern);
+            self.0.map(|words| {
+                simd.swizzle_dyn_within_blocks_u8x16(words.bitcast(), pattern)
+                    .bitcast()
+            })
+        }
     }
 
     #[allow(
@@ -688,185 +855,249 @@ mod portable {
         ]
     }
 
+    /// Loads `lines` across a vertical edge into `rows`: row `REACH + j`
+    /// holds `s[j]` of each line, over `s[-8..8]` when `wide`, else over
+    /// `s[-4..4]` (the other rows are left as they were).
     #[allow(
         clippy::inline_always,
         reason = "keeps the portable lanes in registers"
     )]
     #[inline(always)]
-    pub(super) fn transpose<S: Simd>(simd: S, rows: &mut [i16x16<S>; ROWS]) {
-        let mut q00 = [i16x8::splat(simd, 0); 8];
-        let mut q01 = [i16x8::splat(simd, 0); 8];
-        let mut q10 = [i16x8::splat(simd, 0); 8];
-        let mut q11 = [i16x8::splat(simd, 0); 8];
-        for i in 0..8 {
-            (q00[i], q01[i]) = simd.split_i16x16(rows[i]);
-            (q10[i], q11[i]) = simd.split_i16x16(rows[i + 8]);
-        }
-        let q00 = transpose8(simd, q00);
-        let q01 = transpose8(simd, q01);
-        let q10 = transpose8(simd, q10);
-        let q11 = transpose8(simd, q11);
-        for i in 0..8 {
-            rows[i] = simd.combine_i16x8(q00[i], q10[i]);
-            rows[i + 8] = simd.combine_i16x8(q01[i], q11[i]);
-        }
-    }
-
-    /// The § 7.17.7.2 `(derivS + derivT + 1) >> 1` of each segment's first
-    /// and last line, over the segment's lanes.
-    #[allow(
-        clippy::inline_always,
-        reason = "keeps the portable lanes in registers"
-    )]
-    #[inline(always)]
-    fn segment_mean<S: Simd>(simd: S, x: i16x16<S>) -> i16x16<S> {
-        let bytes = x.bitcast::<u8x32<S>>();
-        let pick = |pattern: &[u8; 32]| {
-            simd.swizzle_dyn_within_blocks_u8x32(bytes, u8x32::from_slice(simd, pattern))
-                .bitcast::<i16x16<S>>()
-        };
-        (pick(&FIRST) + pick(&LAST) + 1) >> 1
-    }
-
-    /// `Round2(delta * weight / 64, 11)` for the 64-scaled [`RAMP`] weights.
-    #[allow(
-        clippy::inline_always,
-        reason = "keeps the portable lanes in registers"
-    )]
-    #[inline(always)]
-    fn ramp<S: Simd>(simd: S, delta: i16x16<S>, weight: i16x16<S>) -> i16x16<S> {
-        let (low, high) = simd.widening_mul_i16x16(delta, weight);
-        let round = |x: i32x8<S>| ((x >> 16) + 1) >> 1;
-        simd.narrow_i32x8(round(low), round(high))
-    }
-
-    /// Byte indices that set lane `l` to bytes `low` and `high` of packed
-    /// edge `l / LINES`; each 128-bit block holds the lanes of two edges.
-    const fn field_bytes(low: u8, high: u8) -> [u8; 32] {
-        let mut bytes = [0; 32];
-        let mut byte = 0;
-        while byte < 32 {
-            let edge = (byte % 16 / 2 / LINES * 8) as u8;
-            bytes[byte] = edge + if byte % 2 == 0 { low } else { high };
-            byte += 1;
-        }
-        bytes
-    }
-
-    const Q_THR: [u8; 32] = field_bytes(0, 1);
-    const SIDE: [u8; 32] = field_bytes(2, 3);
-    const MAX_POS: [u8; 32] = field_bytes(4, 4);
-    const MAX_NEG: [u8; 32] = field_bytes(5, 5);
-    const FLAGS: [u8; 32] = field_bytes(6, 6);
-
-    /// Filters the chunk whose sample rows across the edge are `rows`: row
-    /// `REACH + j` is `s[j]` of every line. Returns `false` when no line can
-    /// move.
-    #[allow(
-        clippy::inline_always,
-        reason = "keeps the portable lanes in registers"
-    )]
-    #[inline(always)]
-    pub(super) fn filter<S: Simd>(
+    pub(super) fn load_lines<S: Simd, E: EdgeSample>(
         simd: S,
-        rows: &mut [i16x16<S>; ROWS],
-        edges: &[DeblockEdge; SEGMENTS],
-        reach: usize,
-        max_sample: i16,
-    ) -> bool {
-        let packed = u64x4::from_slice(simd, &edges.map(|edge| edge.0)).bitcast::<u8x32<S>>();
-        let field = |pattern: &[u8; 32]| {
-            simd.swizzle_dyn_within_blocks_u8x32(packed, u8x32::from_slice(simd, pattern))
-                .bitcast::<i16x16<S>>()
-        };
-        let (byte, one) = (i16x16::splat(simd, 0xff), i16x16::splat(simd, 1));
-        let q = field(&Q_THR);
-        let side = field(&SIDE);
-        let max_pos = field(&MAX_POS) & byte;
-        let max_neg = field(&MAX_NEG) & byte;
-        let flags = field(&FLAGS);
-        let keep_prev = one - (flags & one);
-        let keep_curr = one - ((flags >> 1) & one);
-        let s = |j: isize| rows[(REACH as isize + j) as usize];
-        let second = |j: isize| segment_mean(simd, (s(j - 1) + s(j + 1) - s(j) - s(j)).abs());
-        let directional = |edge: isize, inner: isize, outer: isize, n: i16| {
-            let edge = s(edge);
-            segment_mean(simd, (edge - s(outer) - (edge - s(inner)) * n).abs())
-        };
-        let zero = i16x16::splat(simd, 0);
-        let all = i16x16::splat(simd, -1);
-        let mask = |condition| simd.select_i16x16(condition, all, zero);
-        let le = |a: i16x16<S>, b: i16x16<S>| mask(a.simd_le(b));
-        let high = second(-2).max(second(1));
-        let transition = second(-1) + second(0);
-        let one_mask = high.simd_le(side) & q.simd_gt(zero) & side.simd_gt(zero);
-        let one = mask(one_mask);
-        let inner = s(-2) - s(1) + (s(0) - s(-1)) * 3;
-        let noop = i16x16::splat(simd, 2) - mask(max_pos.simd_eq(i16x16::splat(simd, 1)));
-        if !simd.any_true_mask16x16(one_mask & inner.abs().simd_gt(noop)) {
-            return false;
-        }
-        let two = one
-            & mask(max_pos.simd_gt(i16x16::splat(simd, 1)))
-            & le(high, side >> 2)
-            & le(transition, q * 4);
-        let three = two & le(high, side >> 3) & le(transition, q * 3);
-        let mut index = zero - one - two;
-        let neg_ok = |at: i16, deriv: i16x16<S>, threshold: i16x16<S>| {
-            mask(max_neg.simd_lt(i16x16::splat(simd, at))) | le(deriv, threshold)
-        };
-        if reach > 3 {
-            let end = (side * 3) >> 4;
-            let three = three
-                & neg_ok(3, directional(-1, -2, -4, 3), end)
-                & le(directional(0, 1, 3, 3), end);
-            let wide = |previous: i16x16<S>, dist: i16, q_first: i32, end: i16x16<S>| {
-                let dist2 = dist.min(7) as isize;
-                previous
-                    & mask(max_pos.simd_ge(i16x16::splat(simd, dist)))
-                    & le(transition, (q * q_first as i16) >> 4)
-                    & neg_ok(
-                        dist.min(7),
-                        directional(-1, -2, -dist2 - 1, dist2 as i16),
-                        end,
-                    )
-                    & le(directional(0, 1, dist2, dist2 as i16), end)
-            };
-            let four = wide(three, 4, Q_FIRST[0], side >> 2);
-            index = index - three - four;
-            if reach > 5 {
-                let six = wide(four, 6, Q_FIRST[2], (side * 6) >> 4);
-                let eight = wide(six, 8, Q_FIRST[4], side >> 1);
-                index = index - six - eight;
+        samples: &[E],
+        stride: usize,
+        lines: &[usize; 8],
+        rows: &mut [i16x8<S>; ROWS],
+        wide: bool,
+    ) {
+        let zero = i16x8::splat(simd, 0);
+        let (mut low, mut high) = ([zero; 8], [zero; 8]);
+        if wide {
+            for (k, &line) in lines.iter().enumerate() {
+                (low[k], high[k]) = simd.split_i16x16(E::load16(simd, samples, line * stride));
+            }
+            let (low, high) = (transpose8(simd, low), transpose8(simd, high));
+            for (j, (low, high)) in low.into_iter().zip(high).enumerate() {
+                (rows[j], rows[REACH + j]) = (low, high);
+            }
+        } else {
+            for (k, &line) in lines.iter().enumerate() {
+                low[k] = E::load8(simd, samples, line * stride + REACH / 2);
+            }
+            for (row, values) in rows[REACH / 2..].iter_mut().zip(transpose8(simd, low)) {
+                *row = values;
             }
         }
-        let neg_index = index.min(
-            max_neg
-                + mask(max_neg.simd_gt(i16x16::splat(simd, 4)))
-                + mask(max_neg.simd_gt(i16x16::splat(simd, 6))),
+    }
+
+    /// Stores `rows` back to `lines` as [`load_lines`] loaded them.
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
+    #[inline(always)]
+    pub(super) fn store_lines<S: Simd, E: EdgeSample>(
+        simd: S,
+        samples: &mut [E],
+        stride: usize,
+        lines: &[usize; 8],
+        rows: &[i16x8<S>; ROWS],
+        wide: bool,
+    ) {
+        let block = |at: usize| core::array::from_fn(|k| rows[at + k]);
+        if wide {
+            let (low, high) = (transpose8(simd, block(0)), transpose8(simd, block(REACH)));
+            for (k, &line) in lines.iter().enumerate() {
+                E::store16(
+                    simd,
+                    samples,
+                    line * stride,
+                    simd.combine_i16x8(low[k], high[k]),
+                );
+            }
+        } else {
+            for (k, values) in transpose8(simd, block(REACH / 2)).into_iter().enumerate() {
+                E::store8(simd, samples, lines[k] * stride + REACH / 2, values);
+            }
+        }
+    }
+
+    /// The [`DECISION_LINES`] of a row of 16 lines split into halves.
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
+    #[inline(always)]
+    pub(super) fn sides<S: Simd>(simd: S, low: i16x8<S>, high: i16x8<S>) -> i16x8<S> {
+        let pattern = u8x16::from_slice(simd, &SIDES);
+        simd.concat_swizzle_dyn_u8x16(low.bitcast(), high.bitcast(), pattern)
+            .bitcast()
+    }
+
+    /// Looks the 8-entry `table` up by the compressed width index in each
+    /// word of `index`.
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
+    #[inline(always)]
+    fn lookup<S: Simd>(simd: S, table: &[i16; 8], index: i16x8<S>) -> i16x8<S> {
+        let bytes = (index * 0x0202 + 0x0100).bitcast::<u8x16<S>>();
+        let table = i16x8::from_slice(simd, table).bitcast::<u8x16<S>>();
+        simd.swizzle_dyn_within_blocks_u8x16(table, bytes).bitcast()
+    }
+
+    /// The § 7.17.7.2 widths of the four segments whose decision vectors are
+    /// `sides`: vector `REACH + j` holds `s[j]` of every [`DECISION_LINES`]
+    /// line, over `s[-n..n]`, `n = Clip3(3, 8, widest + 1)`. Returns the widest
+    /// width chosen and the segments' [`Ramp`], or `None` when every width is 0.
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
+    #[inline(always)]
+    pub(super) fn decide<S: Simd>(
+        simd: S,
+        sides: &[i16x8<S>; ROWS],
+        edges: &[DeblockEdge; SEGMENTS],
+        widest: usize,
+    ) -> Option<(usize, Ramp<S>)> {
+        let packed = edges.map(|edge| edge.0);
+        let (low, high) = (
+            u64x2::from_slice(simd, &packed[..2]).bitcast::<u8x16<S>>(),
+            u64x2::from_slice(simd, &packed[2..]).bitcast::<u8x16<S>>(),
         );
-        let table_bytes = |idx: i16x16<S>| (idx * 0x0202 + 0x0100).bitcast::<u8x32<S>>();
-        let pos_bytes = table_bytes(index);
-        let neg_bytes = table_bytes(neg_index);
-        let table = |values: &[i16; 8], bytes: u8x32<S>| {
-            let mut dup = [0i16; 16];
-            dup[..8].copy_from_slice(values); // splot-copy-ok: duplicate 8-entry table across both 128-bit blocks
-            dup[8..].copy_from_slice(values); // splot-copy-ok: duplicate 8-entry table across both 128-bit blocks
-            let lut = i16x16::from_slice(simd, &dup).bitcast::<u8x32<S>>();
-            simd.swizzle_dyn_within_blocks_u8x32(lut, bytes)
-                .bitcast::<i16x16<S>>()
+        let pick = |pattern: &[u8; 16]| -> i16x8<S> {
+            let pattern = u8x16::from_slice(simd, pattern);
+            simd.concat_swizzle_dyn_u8x16(low, high, pattern).bitcast()
         };
-        let q_clamp = q * table(&CLAMP, pos_bytes);
-        let delta = (inner << 2).max(zero - q_clamp).min(q_clamp);
-        let high_sample = i16x16::splat(simd, max_sample);
-        let writes = super::chunk_writes(reach);
-        for j in 0..writes {
-            let pos = table(&RAMP[j], pos_bytes) * keep_curr;
-            let neg = table(&RAMP[j], neg_bytes) * keep_prev;
-            let curr = &mut rows[REACH + j];
-            *curr = (*curr - ramp(simd, delta, pos)).max(zero).min(high_sample);
-            let prev = &mut rows[REACH - 1 - j];
-            *prev = (*prev + ramp(simd, delta, neg)).max(zero).min(high_sample);
+        let (q, side) = (pick(&field(0, 1)), pick(&field(2, 3)));
+        let (max_pos, max_neg) = (pick(&field(4, 7)), pick(&field(5, 7)));
+        let flags = pick(&field(6, 7));
+        let e = |j: isize| sides[(REACH as isize + j) as usize];
+        let splat = |value: i16| i16x8::splat(simd, value);
+        let zero = splat(0);
+        let count = |mask| simd.select_i16x8(mask, splat(1), zero);
+        let mean = |x: i16x8<S>| {
+            let x = x.bitcast::<u16x8<S>>();
+            ((x + simd.slide_u16x8::<4>(x, x) + 1) >> 1).bitcast::<i16x8<S>>()
+        };
+        let second = |a: i16x8<S>, b: i16x8<S>, c: i16x8<S>| mean((a + c - b - b).abs());
+        let (em2, em1, e0, e1) = (e(-2), e(-1), e(0), e(1));
+        let high_deriv = second(e(-3), em2, em1).max(second(e0, e1, e(2)));
+        let one = q.min(side).simd_gt(zero) & high_deriv.simd_le(side);
+        let mut index = count(one);
+        if widest > 1 {
+            let transition = second(em2, em1, e0) + second(em1, e0, e1);
+            let passes = |side_limit: i16x8<S>, q_limit: i16x8<S>| {
+                high_deriv.simd_le(side_limit) & transition.simd_le(q_limit)
+            };
+            let two = one & max_pos.simd_gt(splat(1)) & passes(side >> 2, q << 2);
+            let three = two & passes(side >> 3, q * 3);
+            let toward = |edge: i16x8<S>, inner: i16x8<S>, outer: i16x8<S>, n: i16| {
+                mean((edge - outer - (edge - inner) * n).abs())
+            };
+            let ends = |dist: i16, end: i16x8<S>| {
+                let reach = dist as isize;
+                let neg = max_neg.simd_lt(splat(dist))
+                    | toward(em1, em2, e(-reach - 1), dist).simd_le(end);
+                neg & toward(e0, e1, e(reach), dist).simd_le(end)
+            };
+            let three = three & ends(3, (side * 3) >> 4);
+            index += count(two) + count(three);
+            if widest > 3 {
+                let wide = |previous, dist: i16, q_first: i32, end| {
+                    let q_limit = (q * q_first as i16) >> 4;
+                    previous
+                        & max_pos.simd_ge(splat(dist))
+                        & transition.simd_le(q_limit)
+                        & ends(dist.min(7), end)
+                };
+                let four = wide(three, 4, Q_FIRST[0], side >> 2);
+                index += count(four);
+                if widest > 4 {
+                    let six = wide(four, 6, Q_FIRST[2], (side * 6) >> 4);
+                    index += count(six);
+                    if widest > 6 {
+                        index += count(wide(six, 8, Q_FIRST[4], side >> 1));
+                    }
+                }
+            }
+        }
+        let widest = simd.reduce_max_i16x8(index);
+        if widest <= 0 {
+            return None;
+        }
+        let neg_cap = max_neg - count(max_neg.simd_gt(splat(4))) - count(max_neg.simd_gt(splat(6)));
+        let keep =
+            |index: i16x8<S>, bit: i16| simd.select_i16x8((flags & bit).simd_eq(zero), index, zero);
+        let (pos, neg) = (keep(index, 2), keep(index.min(neg_cap), 1));
+        let ramp = Ramp([
+            q * lookup(simd, &CLAMP, index),
+            lookup(simd, &START, pos),
+            lookup(simd, &STEP, pos),
+            lookup(simd, &START, neg),
+            lookup(simd, &STEP, neg),
+        ]);
+        Some((WIDTHS[widest as usize], ramp))
+    }
+
+    /// Filters the lines of `N` halves whose sample rows across the edge are
+    /// `halves` (row `REACH + j` is `s[j]` of every line) over
+    /// `s[-width..width]` by their [`Ramp::spread`]. Returns `false`, having
+    /// changed nothing, when no line moves.
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
+    #[inline(always)]
+    pub(super) fn filter<S: Simd, const WIDEST: usize, const N: usize>(
+        simd: S,
+        halves: &mut [[i16x8<S>; ROWS]; N],
+        mut ramps: [[i16x8<S>; 5]; N],
+        width: usize,
+        max_sample: i16,
+    ) -> bool {
+        let zero = i16x8::splat(simd, 0);
+        let high_sample = i16x8::splat(simd, max_sample);
+        let deltas: [i16x8<S>; N] = core::array::from_fn(|h| {
+            let s = |j: isize| halves[h][(REACH as isize + j) as usize];
+            let clamp = ramps[h][0];
+            ((s(-2) - s(1) + (s(0) - s(-1)) * 3) << 2)
+                .max(zero - clamp)
+                .min(clamp)
+        });
+        let diff = |delta: i16x8<S>, weight: i16x8<S>| {
+            let (low, high) = simd.widening_mul_i16x8(delta, weight);
+            (simd.unzip_high_i16x8(low.bitcast(), high.bitcast()) + 1) >> 1
+        };
+        for j in 0..WIDEST {
+            if j == width {
+                break;
+            }
+            let diffs: [[i16x8<S>; 2]; N] = core::array::from_fn(|h| {
+                [diff(deltas[h], ramps[h][1]), diff(deltas[h], ramps[h][3])]
+            });
+            if j == 0 {
+                let moved = diffs
+                    .iter()
+                    .fold(zero, |moved, [curr, prev]| moved | *curr | *prev);
+                if !simd.any_true_mask16x8(moved.simd_ne(zero)) {
+                    return false;
+                }
+            }
+            for (h, [curr, prev]) in diffs.into_iter().enumerate() {
+                let rows = &mut halves[h];
+                rows[REACH + j] = (rows[REACH + j] - curr).max(zero).min(high_sample);
+                rows[REACH - 1 - j] = (rows[REACH - 1 - j] + prev).max(zero).min(high_sample);
+                let ramp = &mut ramps[h];
+                for k in [1, 3] {
+                    ramp[k] = simd
+                        .saturating_sub_u16x8(ramp[k].bitcast(), ramp[k + 1].bitcast())
+                        .bitcast();
+                }
+            }
         }
         true
     }
@@ -1238,10 +1469,6 @@ mod avx2 {
 #[cfg(target_arch = "x86_64")]
 #[path = "edges_u8.rs"]
 mod avx2_u8;
-
-#[cfg(target_arch = "aarch64")]
-#[path = "edges_u8_neon.rs"]
-mod neon_u8;
 
 #[cfg(test)]
 #[path = "edges_tests.rs"]
