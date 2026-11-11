@@ -153,8 +153,8 @@ changes need positive, negative, and EOF cases. See `docs/TESTING.md`.
 
 ## Performance and SIMD
 
-The decoder must be faster than dav2d on every stream and at every thread
-count. dav2d is inspiration only: do not copy its code.
+Decode speed is a product requirement, on every stream and at every thread
+count. Other decoders are inspiration only: do not copy their code.
 
 Kernel shape. Each hot kernel has exactly one of these two forms:
 
