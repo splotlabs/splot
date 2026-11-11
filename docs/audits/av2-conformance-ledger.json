@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "1ebfd52fc9b11287eed8032f971b3b7f636e8494",
+  "audited_commit": "047ca2454773cb16b9199de8935a22cccc5d8bcf",
   "outcome": "success",
   "files": [
     {
@@ -5226,7 +5226,7 @@
     },
     {
       "path": "crates/splot-parallel/src/rows.rs",
-      "sha256": "09ae59c91f91d7a5ec34187e67a385633431f10397788e0c0364c90a1e4ebbcf",
+      "sha256": "0885a8e340cdbf00045df93d015ee95efc91252782b9af7c341b374923d2f74f",
       "scope_kind": "workspace:splot-parallel",
       "feature_ids": [],
       "outcome": "success"

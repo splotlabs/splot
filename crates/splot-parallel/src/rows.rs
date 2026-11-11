@@ -330,9 +330,12 @@ struct Frames {
 /// worker made it and whichever worker popped the finished frame.
 #[derive(Default)]
 struct Core {
-    /// Readers never queue behind a waiting writer: under load, scans
-    /// convoyed behind one preempted push or pop.
+    /// Readers never queue behind a waiting writer (under load, scans
+    /// convoyed behind one preempted push or pop); see [`Self::read_frames`]
+    /// for why a writer still cannot starve.
     frames: RecursiveRwLock<Frames>,
+    /// Writers waiting for or holding `frames`.
+    writers: AtomicUsize,
     generation: AtomicU64,
     waiters: AtomicUsize,
     parked: AtomicUsize,
@@ -394,6 +397,24 @@ impl core::fmt::Debug for Core {
 }
 
 impl Core {
+    /// Read-locks the frames once no writer is announced. A writer announces
+    /// itself before it waits, so after that only a thread that checked
+    /// earlier can still enter: the writer waits at most for one scan per
+    /// thread, which run side by side, so for the longest single scan.
+    fn read_frames(&self) -> parking_lot::RecursiveRwLockReadGuard<'_, Frames> {
+        while self.writers.load(Ordering::SeqCst) != 0 {
+            std::thread::yield_now();
+        }
+        self.frames.read()
+    }
+
+    fn write_frames(&self) -> parking_lot::RecursiveRwLockWriteGuard<'_, Frames> {
+        self.writers.fetch_add(1, Ordering::SeqCst);
+        let frames = self.frames.write();
+        self.writers.fetch_sub(1, Ordering::SeqCst);
+        frames
+    }
+
     /// Raises the generation and signals one waiter, or all of them.
     ///
     /// A single-worker signal is skipped while one is already pending; a
@@ -466,7 +487,7 @@ impl Core {
         let mut woken = false;
         loop {
             let observed = self.generation.load(Ordering::SeqCst);
-            let frames = self.frames.read();
+            let frames = self.read_frames();
             let claimed = frames
                 .live
                 .iter()
@@ -497,7 +518,7 @@ impl Core {
             let done = frame.done();
             drop(frame);
             if done {
-                let mut frames = self.frames.write();
+                let mut frames = self.write_frames();
                 while frames.live.front().is_some_and(|front| front.done()) {
                     frames.live.pop_front();
                 }
@@ -592,7 +613,7 @@ impl RowScheduler {
 
     /// Adds the newest frame. Its rows run after every older frame's ready rows.
     pub fn push(&self, frame: Arc<dyn FrameWork>) {
-        let mut frames = self.core.frames.write();
+        let mut frames = self.core.write_frames();
         frames.live.push_back(frame);
         drop(frames);
         self.core.notify(false);
@@ -607,7 +628,7 @@ impl RowScheduler {
     /// Frames pushed and not yet done.
     #[must_use]
     pub fn in_flight(&self) -> usize {
-        self.core.frames.read().live.len()
+        self.core.read_frames().live.len()
     }
 
     /// Blocks the driver until `ready()` holds. `ready` runs under the
@@ -615,7 +636,7 @@ impl RowScheduler {
     pub fn wait(&self, mut ready: impl FnMut() -> bool) {
         loop {
             let observed = self.core.generation.load(Ordering::SeqCst);
-            let frames = self.core.frames.read();
+            let frames = self.core.read_frames();
             let done = ready();
             drop(frames);
             if done {
@@ -634,7 +655,7 @@ impl RowScheduler {
 
 impl Drop for RowScheduler {
     fn drop(&mut self) {
-        self.core.frames.write().shutdown = true;
+        self.core.write_frames().shutdown = true;
         self.core.notify(true);
         for worker in self.workers.drain(..) {
             let _ = worker.join();
@@ -796,6 +817,83 @@ mod tests {
         assert_eq!(stage.claim_ready(), Some(1));
         stage.finish(1);
         assert!(stage.is_finished());
+    }
+
+    /// A frame whose every scan is slow and finds nothing.
+    struct SlowScan;
+
+    impl FrameWork for SlowScan {
+        fn claim(&self) -> Option<Claim> {
+            let until = Instant::now() + Duration::from_millis(1);
+            while Instant::now() < until {
+                std::hint::spin_loop();
+            }
+            None
+        }
+
+        fn run(&self, _: Claim) {}
+
+        fn done(&self) -> bool {
+            false
+        }
+    }
+
+    /// A frame with nothing to run.
+    struct Finished;
+
+    impl FrameWork for Finished {
+        fn claim(&self) -> Option<Claim> {
+            None
+        }
+
+        fn run(&self, _: Claim) {}
+
+        fn done(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_push_completes_while_every_worker_scans_without_pause() {
+        let scheduler = Arc::new(RowScheduler::new(threads(8)).unwrap());
+        scheduler.push(Arc::new(SlowScan));
+        let stop = Arc::new(AtomicBool::new(false));
+        let notifier = {
+            let (wake, stop) = (scheduler.wake(), Arc::clone(&stop));
+            spawn_thread("notifier", move || {
+                while !stop.load(Ordering::Relaxed) {
+                    wake.notify();
+                }
+            })
+            .unwrap()
+        };
+        let slowest_nanos = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let pusher = {
+            let (scheduler, slowest_nanos) = (Arc::clone(&scheduler), Arc::clone(&slowest_nanos));
+            spawn_thread("pusher", move || {
+                for _ in 0..200 {
+                    let started = Instant::now();
+                    scheduler.push(Arc::new(Finished));
+                    let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    slowest_nanos.fetch_max(nanos, Ordering::Relaxed);
+                }
+            })
+            .unwrap()
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !pusher.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let finished = pusher.is_finished();
+        stop.store(true, Ordering::Relaxed);
+        notifier.join().unwrap();
+        assert!(finished, "the driver's pushes starved behind scans");
+        pusher.join().unwrap();
+        let slowest = Duration::from_nanos(slowest_nanos.load(Ordering::Relaxed));
+        assert!(
+            slowest < Duration::from_millis(150),
+            "a push waited {slowest:?}"
+        );
     }
 
     #[test]
