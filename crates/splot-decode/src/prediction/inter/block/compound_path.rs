@@ -872,6 +872,7 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
     } else {
         (8, 8)
     };
+    let first = records.len();
     for y in (0..placed.luma_h).step_by(step_h) {
         for x in (0..placed.luma_w).step_by(step_w) {
             let mvs = if let Some(grid) = motion_grid {
@@ -905,7 +906,7 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
                 [false, true] => (compound.ref_frame1, None, [mvs[1], Mv::ZERO]),
                 _ => (compound.ref_frame0, Some(compound.ref_frame1), mvs),
             };
-            records.push(temporal_motion_block(
+            let record = temporal_motion_block(
                 reference,
                 ref_frame_idx,
                 mi_row + y / 4,
@@ -920,7 +921,8 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
                 mvs[0],
                 mvs[1],
                 [None, None],
-            ));
+            );
+            TemporalMotionBlock::push_merged(records, first, record);
         }
     }
     Ok(())

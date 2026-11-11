@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "384da439f30e0beabb13c4014b45f563a772a3fc",
+  "audited_commit": "51f567dd4a7a06fdaa1c82bc3c857fb0ea050aa5",
   "outcome": "success",
   "files": [
     {
@@ -3537,7 +3537,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/compound_path.rs",
-      "sha256": "9d2d69e1023f74c615aa96bead03cfe3e5b5956637510ef633f61f6b2b01e21c",
+      "sha256": "c65c69ce3b651e59d0a0817da512000125fe8b93d232bda7a582233bbe02ebd4",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-LOCALWARP"
@@ -3751,7 +3751,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/tip.rs",
-      "sha256": "b8d3d663dea46a3818b7b2206d998927fcb2bb1ab389b13f0f6bc50aa25d0435",
+      "sha256": "e1fccc87550f0f8d22450756de6e9537b7c2480c6feb0deb3b33804a8ad8b4bb",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-TIP-OUTPUT"
@@ -3863,7 +3863,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs",
-      "sha256": "81f74d674ef2b85cefccacb285f0a0b42de18089a8ffea538d059d8630f56455",
+      "sha256": "39a4e5223d938cb3bc8b979e32bc67c89cb527df7a7f364fa4f23a4a9b0d0147",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3891,7 +3891,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal/tests.rs",
-      "sha256": "b26c5f9311c8922019e98967be49bd3c427bfaec9de0eea8aaf441307c767669",
+      "sha256": "fdf8486c6db38a57491567c2bb3993a267ec4e7432ce97fba0e6d41f316f4698",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"

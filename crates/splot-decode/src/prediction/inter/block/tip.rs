@@ -786,6 +786,7 @@ pub(super) fn motion<T: ReconSample>(
         .map(|held| held.prediction(&plan.plan))
         .transpose()?;
     scratch.whole_mvs.clear();
+    let first_record = temporal_records.len();
     for (index, unit) in scratch.units.iter().enumerate() {
         let (stored_mvs, whole) = match (grid.as_ref(), refining.as_ref()) {
             (Some(grid), _) => (grid.stored_mvs_at_index(index)?, None),
@@ -803,13 +804,14 @@ pub(super) fn motion<T: ReconSample>(
             (None, None) => (unit.mvs, whole_sample_mvs(unit, None)),
         };
         scratch.whole_mvs.push(whole);
-        temporal_records.push(plan.temporal_record(
+        let record = plan.temporal_record(
             reference,
             ref_frame_idx,
             frame.current_order_hint,
             unit,
             stored_mvs,
-        ));
+        );
+        TemporalMotionBlock::push_merged(temporal_records, first_record, record);
     }
     scratch.motion_plan = Some(plan);
     Ok(grid)

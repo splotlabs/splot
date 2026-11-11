@@ -755,6 +755,38 @@ impl TemporalMotionBlock {
         (self.mi_row, self.mi_col)
     }
 
+    /// Appends `record`, or grows the last record past `first` by it when that
+    /// record is its left neighbour with the same motion. Records past `first`
+    /// cover disjoint cells, so the merge writes the same field.
+    pub(crate) fn push_merged(records: &mut Vec<Self>, first: usize, record: Self) {
+        let merged = records.len() > first
+            && records
+                .last_mut()
+                .is_some_and(|last| last.extend_right(&record));
+        if !merged {
+            records.push(record);
+        }
+    }
+
+    /// Grows this record by `next`, the record to its right, when both store
+    /// one cell value over the same rows and this record ends on an 8x8 cell
+    /// boundary, so the grown record writes exactly the cells of the two.
+    fn extend_right(&mut self, next: &Self) -> bool {
+        let fits = matches!(self.motion, TemporalBlockMotion::Mvs(_))
+            && self.motion == next.motion
+            && self.ref_order_hints == next.ref_order_hints
+            && self.current_order_hint == next.current_order_hint
+            && (self.mi_row, self.n4h, self.mi_rows, self.mi_cols)
+                == (next.mi_row, next.n4h, next.mi_rows, next.mi_cols)
+            && self.mi_col.is_multiple_of(2)
+            && self.n4w.is_multiple_of(2)
+            && self.mi_col + self.n4w == next.mi_col;
+        if fits {
+            self.n4w += next.n4w;
+        }
+        fits
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         mi_row: usize,

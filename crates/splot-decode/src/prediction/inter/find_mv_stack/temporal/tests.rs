@@ -499,6 +499,54 @@ fn carried_slots_match_delayed_resolution_for_every_reference_pair() {
 }
 
 #[test]
+fn merged_neighbour_records_write_the_same_field() {
+    let (mi_rows, mi_cols) = (4, 11);
+    let hints = [Some(2), Some(6)];
+    let mv = Mv { row: 8, col: -12 };
+    let record = |mi_col: usize, n4w: usize, mvs: [Mv; 2]| {
+        TemporalMotionBlock::new(
+            0, mi_col, n4w, 2, mi_rows, mi_cols, 4, hints, mvs, [None; 2],
+        )
+    };
+    let blocks = [
+        record(0, 2, [mv, Mv::ZERO]),
+        record(2, 2, [mv, Mv::ZERO]),
+        record(4, 2, [Mv::ZERO, mv]),
+        record(6, 2, [Mv::ZERO, mv]),
+        record(8, 2, [Mv::ZERO, mv]),
+        record(10, 1, [Mv::ZERO, mv]),
+    ];
+    let mut merged = Vec::new();
+    for block in blocks {
+        TemporalMotionBlock::push_merged(&mut merged, 0, block);
+    }
+    assert_eq!(merged.len(), 2);
+    let mut kept = vec![record(0, 2, [mv, Mv::ZERO])];
+    TemporalMotionBlock::push_merged(&mut kept, 1, record(2, 2, [mv, Mv::ZERO]));
+    TemporalMotionBlock::push_merged(&mut kept, 0, record(4, 1, [mv, Mv::ZERO]));
+    TemporalMotionBlock::push_merged(&mut kept, 0, record(5, 2, [mv, Mv::ZERO]));
+    assert_eq!(
+        kept.len(),
+        3,
+        "records before `first` and after an odd width stay apart"
+    );
+
+    let field = |records: &[TemporalMotionBlock]| {
+        let mut field = TemporalMotionField::new_with_metadata(
+            mi_rows,
+            mi_cols,
+            true,
+            (mi_cols * 4, mi_rows * 4),
+            &hints,
+        )
+        .unwrap();
+        field.record_blocks(records);
+        field
+    };
+    assert_eq!(field(&merged), field(&blocks));
+}
+
+#[test]
 fn compressed_component_matches_the_saturating_step_formula() {
     for value in -(1i32 << 17)..=(1 << 17) {
         let abs_value = value.unsigned_abs();
