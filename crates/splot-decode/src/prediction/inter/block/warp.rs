@@ -302,13 +302,7 @@ fn read_warp_newmv_tail(
     max_drl_bits_minus_1: u32,
     tile_offset: ByteOffset,
 ) -> Result<WarpNewmvTail> {
-    let ref_mv_idx = read_drl_idx(
-        cdfs,
-        symbols,
-        new_mv_context,
-        max_drl_bits_minus_1,
-        tile_offset,
-    )?;
+    let ref_mv_idx = read_drl_idx(cdfs, symbols, new_mv_context, max_drl_bits_minus_1);
     let precision = read_block_mv_precision_syntax(
         cdfs,
         symbols,

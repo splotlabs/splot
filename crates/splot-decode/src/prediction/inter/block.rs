@@ -37,7 +37,6 @@ use super::read_mv::{
     mv_clamp_to_integer, read_newmv_amvd_block_mvd,
     read_newmv_block_mvd_magnitude_with_config as read_newmv_block_mvd_magnitude,
 };
-use super::single_ref::SingleRefReadError;
 use super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
     InterResidualBlock, MotionFieldHandle, MotionFieldLayout, Mv, PlacedInterBlock,
@@ -54,6 +53,7 @@ use crate::bitstream::tile_payload::{
     TileSegmentIdStateError, TransformToolResidualPolicy, chroma_subsampling,
     current_frame_qm_segment_id, current_segment_lossless, decode_general_intra_plane_coeffs,
     get_plane_residual_size, is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
+    read_row, row_at,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -1322,8 +1322,7 @@ fn decode_block<T: ReconSample>(
             frontier,
             comp_ref_allowed,
             neighbour_ctx.as_ref().map_or(0, |ctx| ctx.skip_mode_ctx),
-            tile_offset,
-        )?
+        )
     };
 
     let is_inter = if general_intra {
@@ -1332,15 +1331,13 @@ fn decode_block<T: ReconSample>(
     {
         1
     } else {
-        let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-        cdfs.read_block_symbol_trace(
-            TileCdfSelector::IsInter {
-                ctx: neighbour_ctx.as_ref().map_or(0, |ctx| ctx.is_inter_ctx),
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?
-        .get()
+        let rows = &mut work_unit
+            .cdf_mut()
+            .tile_cdfs_mut()
+            .block_rows_mut()
+            .is_inter;
+        let ctx = neighbour_ctx.as_ref().map_or(0, |ctx| ctx.is_inter_ctx);
+        read_row(symbols, row_at(rows, ctx)) as u8
     };
     if is_inter == 0 {
         let mut prelude = IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip::default());
@@ -1569,15 +1566,9 @@ fn decode_block<T: ReconSample>(
     let skip = if segment_skips {
         1
     } else {
-        let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-        cdfs.read_block_symbol_trace(
-            TileCdfSelector::Skip {
-                ctx: inter_skip_txfm_ctx(neighbour_ctx.skip_ctx, skip_mode == 1),
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?
-        .get()
+        let rows = &mut work_unit.cdf_mut().tile_cdfs_mut().block_rows_mut().skip;
+        let ctx = inter_skip_txfm_ctx(neighbour_ctx.skip_ctx, skip_mode == 1);
+        read_row(symbols, row_at(rows, ctx)) as u8
     };
     if !frontier.is_chroma_part() && !seg_pre_skip {
         segment_id = read_inter_segment_id(
@@ -1656,21 +1647,14 @@ fn decode_block<T: ReconSample>(
             frontier,
             &neighbour_ctx,
             (n4w, n4h),
-            tile_offset,
-        )?
+        )
     };
     let uses_compound = if !segment_forces_globalmv
         && !tip_ref
         && params.reference_select
         && is_comp_ref_allowed(n4w, n4h)
     {
-        compound_path::read_reference_mode(
-            cdfs,
-            symbols,
-            &neighbour_ctx,
-            &params.ref_facts,
-            tile_offset,
-        )?
+        compound_path::read_reference_mode(cdfs, symbols, &neighbour_ctx, &params.ref_facts)
     } else {
         false
     };
@@ -1714,7 +1698,7 @@ fn decode_block<T: ReconSample>(
             .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
         let selected =
             super::single_ref::read_single_ref(cdfs, symbols, params.num_total_refs, &contexts)
-                .map_err(|error| single_ref_read_error(error, tile_offset))?;
+                .map_err(|_| crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
         selected as i8
     } else {
         SINGLE_REF_FRAME0
@@ -1877,25 +1861,19 @@ fn decode_block<T: ReconSample>(
     let single_mode = if segment_forces_globalmv {
         SINGLE_MODE_GLOBALMV
     } else if tip_ref {
-        if cdfs
-            .read_block_symbol_trace(TileCdfSelector::TipPredMode, symbols)
-            .map_err(|error| symbol_read_error(error, tile_offset))?
-            .get()
-            == 0
-        {
+        if read_row(symbols, &mut cdfs.block_rows_mut().tip_pred_mode) == 0 {
             SINGLE_MODE_NEARMV
         } else {
             SINGLE_MODE_NEWMV
         }
     } else {
-        cdfs.read_block_symbol_trace(
-            TileCdfSelector::SingleMode {
-                ctx: mode_ctx.new_mv_context,
-            },
+        read_row(
             symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?
-        .get()
+            row_at(
+                &mut cdfs.block_rows_mut().single_mode,
+                mode_ctx.new_mv_context,
+            ),
+        ) as u8
     };
     let use_amvd = read_use_amvd_syntax(
         cdfs,
@@ -1951,8 +1929,7 @@ fn decode_block<T: ReconSample>(
                 symbols,
                 mode_ctx.new_mv_context,
                 params.max_drl_bits_minus_1,
-                tile_offset,
-            )?
+            )
         }
     } else {
         0
@@ -2014,7 +1991,6 @@ fn decode_block<T: ReconSample>(
             params.frame_interpolation_filter,
             single_inter_needs_interp_filter(n4w, n4h, single_mode),
             interp_ctx,
-            tile_offset,
         )?
     };
     let residual = if skip == 0 {
@@ -2278,27 +2254,6 @@ fn symbol_read_error(
         BlockSymbolTraceReadError::Symbol(error) => {
             crate::pipeline::malformed_tile_payload(tile_offset, SPEC_MODE_INFO, error)
         }
-    }
-}
-
-fn single_ref_read_error(
-    error: SingleRefReadError,
-    tile_offset: ByteOffset,
-) -> crate::error::DecodeError {
-    match error {
-        SingleRefReadError::InsufficientRefs { .. } | SingleRefReadError::MissingContext { .. } => {
-            crate::DecodeHeaderStateError::InvalidInterReferenceMap.into()
-        }
-        SingleRefReadError::SymbolRead {
-            source:
-                BlockSymbolTraceReadError::Cdf(_)
-                | BlockSymbolTraceReadError::Symbol(splot_core::Error::InvalidSymbolCdf { .. }),
-            ..
-        } => crate::DecodeHeaderStateError::InvalidSingleReferenceCdfState.into(),
-        SingleRefReadError::SymbolRead {
-            source: BlockSymbolTraceReadError::Symbol(error),
-            ..
-        } => crate::pipeline::malformed_tile_payload(tile_offset, "5.20.7.12", error),
     }
 }
 

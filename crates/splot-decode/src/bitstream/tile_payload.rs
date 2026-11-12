@@ -43,7 +43,7 @@ pub(crate) use cdf::block_context::{
     IntraYMode, IntraYModeClass, MrlSelection, SupportedChromaMode, SupportedDirectionalLumaMode,
     SupportedNonDcLumaMode,
 };
-pub(crate) use cdf::block_read::BlockSymbolTraceReadError;
+pub(crate) use cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 pub(crate) use cdf::{
     COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, FrameCdfSubset,
     MvCdfSelector, PB_MV_PRECISION_CDF_ROW_LEN, TileCdfSelector, TileCdfSubset,

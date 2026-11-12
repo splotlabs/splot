@@ -411,21 +411,13 @@ pub(super) fn read_reference(
     frontier: &DecodeBlockFrontier,
     neighbour_ctx: &BlockNeighbourContext,
     n4: (usize, usize),
-    tile_offset: ByteOffset,
-) -> Result<bool> {
+) -> bool {
     let (n4w, n4h) = n4;
     if tip_frame_mode == TipFrameMode::Disabled || !tip_block_allowed(frontier, n4w, n4h) {
-        return Ok(false);
+        return false;
     }
-    let tip_ref = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::TipMode {
-                ctx: neighbour_ctx.tip_mode_ctx(),
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    Ok(tip_ref.get() != 0)
+    let rows = &mut cdfs.block_rows_mut().tip_mode;
+    read_row(symbols, row_at(rows, neighbour_ctx.tip_mode_ctx())) != 0
 }
 
 pub(super) fn tip_block_allowed(frontier: &DecodeBlockFrontier, n4w: usize, n4h: usize) -> bool {

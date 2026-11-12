@@ -13,7 +13,6 @@ use splot_recon::{
     PlaneSize,
 };
 
-use super::super::single_ref::{SingleRefReadError, read_single_ref};
 use super::interintra::InterIntraScratch;
 use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
 use super::resolve::effective_intrabc_sb_h4;
@@ -21,8 +20,7 @@ use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_all
 use super::{
     frame_segment_id_map, frame_superblock_h4, inter_skip_txfm_ctx, leaf_uses_general_intra,
     map_inter_multiblock_error, predict_interintra_planes, read_inter_intra_syntax_enabled,
-    scheduled_motion_field_inputs, single_ref_read_error, skip_segment_reference,
-    symbol_read_error, validate_segment_id,
+    scheduled_motion_field_inputs, skip_segment_reference, symbol_read_error, validate_segment_id,
 };
 
 #[test]
@@ -292,101 +290,6 @@ fn block_mode_failures_keep_typed_boundary() -> TestResult {
         DecodeError::HeaderState {
             source: DecodeHeaderStateError::InvalidInterBlockModeState,
         }
-    ));
-    Ok(())
-}
-
-#[test]
-fn single_ref_read_failures_keep_typed_boundary() -> TestResult {
-    let offset = ByteOffset::new(44);
-    for invariant in [
-        SingleRefReadError::InsufficientRefs { num_total_refs: 0 },
-        SingleRefReadError::MissingContext {
-            needed: 2,
-            got: 1,
-            num_total_refs: 3,
-        },
-    ] {
-        assert!(matches!(
-            single_ref_read_error(invariant, offset),
-            DecodeError::HeaderState {
-                source: DecodeHeaderStateError::InvalidInterReferenceMap,
-            }
-        ));
-    }
-
-    let eof = splot_core::Error::UnexpectedEof {
-        offset: ByteOffset::new(46),
-        needed: 1,
-    };
-    let expected_message = eof.to_string();
-    assert!(matches!(
-        single_ref_read_error(
-            SingleRefReadError::SymbolRead {
-                ref_idx: 0,
-                source: BlockSymbolTraceReadError::Symbol(eof),
-            },
-            offset,
-        ),
-        DecodeError::MalformedSource { issue }
-            if issue.offset() == Some(offset)
-                && issue.spec_section() == Some("5.20.7.12")
-                && issue.message() == expected_message
-    ));
-
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = SymbolDecoder::new(&[0x80])?;
-    let Err(source) = tile.read_block_symbol_trace(
-        TileCdfSelector::SingleRef {
-            ctx: usize::MAX,
-            ref_idx: 0,
-        },
-        &mut symbols,
-    ) else {
-        return Err("invalid single-ref context must fail before reading input".into());
-    };
-    assert!(matches!(
-        single_ref_read_error(
-            SingleRefReadError::SymbolRead { ref_idx: 0, source },
-            offset,
-        ),
-        DecodeError::HeaderState {
-            source: DecodeHeaderStateError::InvalidSingleReferenceCdfState,
-        }
-    ));
-
-    let selector = TileCdfSelector::SingleRef { ctx: 0, ref_idx: 0 };
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    tile.with_row_mut(selector, |row| row[0] = 0)?;
-    let mut symbols = SymbolDecoder::new(&[])?;
-    let Err(error) = read_single_ref(&mut tile, &mut symbols, 2, &[0]) else {
-        return Err("invalid single-ref CDF row must fail before reading input".into());
-    };
-    assert!(matches!(
-        single_ref_read_error(error, offset),
-        DecodeError::HeaderState {
-            source: DecodeHeaderStateError::InvalidSingleReferenceCdfState,
-        }
-    ));
-
-    let invalid = splot_core::Error::InvalidSymbolDecoderState {
-        offset: ByteOffset::new(47),
-        bit_offset: splot_core::span::BitOffset::from_bits(3),
-        kind: splot_core::error::SymbolDecoderErrorKind::InvalidArithmeticRange,
-    };
-    let expected_message = invalid.to_string();
-    assert!(matches!(
-        single_ref_read_error(
-            SingleRefReadError::SymbolRead {
-                ref_idx: 0,
-                source: BlockSymbolTraceReadError::Symbol(invalid),
-            },
-            offset,
-        ),
-        DecodeError::MalformedSource { issue }
-            if issue.offset() == Some(offset)
-                && issue.spec_section() == Some("5.20.7.12")
-                && issue.message() == expected_message
     ));
     Ok(())
 }
@@ -830,7 +733,7 @@ fn regular_interintra_syntax_precedes_drl() -> TestResult {
         2,
         ByteOffset::new(0),
     )?;
-    let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3, ByteOffset::new(0))?;
+    let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3);
 
     assert_eq!(
         interintra,
@@ -893,7 +796,7 @@ fn regular_interintra_wedge_syntax_couples_index_to_wedge() -> TestResult {
         2,
         ByteOffset::new(0),
     )?;
-    let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3, ByteOffset::new(0))?;
+    let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3);
 
     assert_eq!(
         interintra,

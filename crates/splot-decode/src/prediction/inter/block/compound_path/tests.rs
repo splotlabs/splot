@@ -771,7 +771,6 @@ fn compound_optflow_forces_sharp_interp_without_symbols() {
         true,
         true,
         0,
-        TILE_OFFSET,
     )
     .unwrap();
 

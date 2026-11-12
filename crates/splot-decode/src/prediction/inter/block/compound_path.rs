@@ -13,7 +13,7 @@ use super::super::read_mv::apply_inter_mvd_sign_pair;
 use super::temporal::temporal_motion_block;
 use super::warp::mvd_sign_derivation_block_scope_allowed;
 use super::*;
-use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
+use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset, read_row, row_at};
 
 const REFINE_SWITCHABLE: u32 = 1;
 const REFINE_ALL: u32 = 2;
@@ -307,17 +307,9 @@ pub(super) fn read_reference_mode(
     symbols: &mut SymbolDecoder<'_>,
     neighbour_ctx: &BlockNeighbourContext,
     facts: &FrameRefFacts,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
+) -> bool {
     let ctx = neighbour_ctx.comp_mode_ctx(facts.backward());
-    let mode = cdfs
-        .read_block_symbol_trace(TileCdfSelector::CompMode { ctx }, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?
-        .get();
-    match mode {
-        0 => Ok(false),
-        _ => Ok(true),
-    }
+    read_row(symbols, row_at(&mut cdfs.block_rows_mut().comp_mode, ctx)) != 0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -439,13 +431,8 @@ pub(super) fn decode_compound_inter_block(
     let mut ref_mv_idx1 = 0;
     if compound.y_mode.reads_drl_idx() {
         if compound_reads_second_drl(compound) {
-            ref_mv_idx0 = read_drl_idx(
-                cdfs,
-                symbols,
-                mode_ctx.new_mv_context,
-                max_drl_bits_minus_1,
-                tile_offset,
-            )?;
+            ref_mv_idx0 =
+                read_drl_idx(cdfs, symbols, mode_ctx.new_mv_context, max_drl_bits_minus_1);
             let second_min_idx = if compound.ref_frame0 == compound.ref_frame1
                 && compound.y_mode == CompoundYMode::NearNear
             {
@@ -459,16 +446,9 @@ pub(super) fn decode_compound_inter_block(
                 mode_ctx.new_mv_context,
                 max_drl_bits_minus_1,
                 second_min_idx,
-                tile_offset,
-            )?;
+            );
         } else {
-            ref_mv_idx = read_drl_idx(
-                cdfs,
-                symbols,
-                mode_ctx.new_mv_context,
-                max_drl_bits_minus_1,
-                tile_offset,
-            )?;
+            ref_mv_idx = read_drl_idx(cdfs, symbols, mode_ctx.new_mv_context, max_drl_bits_minus_1);
         }
     }
     let frame_mv_config = params.mv_config(core)?;
@@ -584,7 +564,6 @@ pub(super) fn decode_compound_inter_block(
         compound.use_optflow || refinemv_signalled,
         compound_needs_interp_filter(n4w, n4h, compound.y_mode, local_warp),
         neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
-        tile_offset,
     )?;
     let temporal_allowed = compound.ref_frame0 != compound.ref_frame1;
     let temporal_first = |ref_frame| temporal_first_frame && facts.temporal_near(ref_frame);
@@ -644,7 +623,6 @@ fn resolve_compound_interp_filter(
     force_sharp: bool,
     needs_interp_filter: bool,
     ctx: usize,
-    tile_offset: ByteOffset,
 ) -> Result<ReconInterpolationFilter> {
     if force_sharp {
         return Ok(ReconInterpolationFilter::EightTapSharp);
@@ -655,7 +633,6 @@ fn resolve_compound_interp_filter(
         frame_interpolation_filter,
         needs_interp_filter,
         ctx,
-        tile_offset,
     )
 }
 
