@@ -1717,8 +1717,7 @@ fn decode_block<T: ReconSample>(
             n4w,
             n4h,
             mode_ctx.warp_mv_count,
-            tile_offset,
-        )?
+        )
     };
     if let Some(warp_mode) = warp_mode {
         let derive_wrl = n4w >= 2 && n4h >= 2;
@@ -1881,8 +1880,7 @@ fn decode_block<T: ReconSample>(
         params.enable_adaptive_mvd,
         single_mode,
         neighbour_ctx.amvd_ctx(ref_frame0),
-        tile_offset,
-    )?;
+    );
     let reference_scaled = if tip_ref {
         false
     } else {
@@ -2228,10 +2226,11 @@ fn read_inter_intra_syntax_enabled(
         return Ok(None);
     }
     let bsize_group = SIZE_GROUP_LOOKUP[b_size];
-    let inter_intra = cdfs
-        .read_block_symbol_trace(TileCdfSelector::InterIntra { bsize_group }, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    if inter_intra.get() == 0 {
+    if read_row(
+        symbols,
+        row_at(&mut cdfs.block_rows_mut().inter_intra, bsize_group),
+    ) == 0
+    {
         return Ok(None);
     }
 

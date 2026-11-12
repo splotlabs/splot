@@ -143,15 +143,9 @@ pub(super) fn read_use_amvd_syntax(
     enable_adaptive_mvd: bool,
     single_mode: u8,
     ctx: usize,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    let Some(selector) = single_use_amvd_selector(enable_adaptive_mvd, single_mode, ctx) else {
-        return Ok(false);
-    };
-    let use_amvd = cdfs
-        .read_block_symbol_trace(selector, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    Ok(use_amvd.get() != 0)
+) -> bool {
+    single_use_amvd_selector(enable_adaptive_mvd, single_mode, ctx).is_some()
+        && read_row(symbols, row_at(&mut cdfs.block_rows_mut().use_amvd[4], ctx)) != 0
 }
 
 /// The `use_amvd` selector of a single-reference block coding `single_mode`

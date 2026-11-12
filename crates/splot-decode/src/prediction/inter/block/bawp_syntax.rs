@@ -43,10 +43,7 @@ pub(crate) fn read_bawp_syntax(
         return Ok(BawpSyntax::default());
     }
 
-    let use_bawp = cdfs
-        .read_block_symbol_trace(TileCdfSelector::UseBawp, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    if use_bawp.get() == 0 {
+    if read_row(symbols, &mut cdfs.block_rows_mut().use_bawp) == 0 {
         return Ok(BawpSyntax::default());
     }
 

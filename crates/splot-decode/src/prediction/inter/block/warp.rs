@@ -19,28 +19,18 @@ pub(crate) fn read_warp_inter_mode_syntax(
     n4w: usize,
     n4h: usize,
     ctx: usize,
-    tile_offset: ByteOffset,
-) -> Result<Option<WarpInterMode>> {
+) -> Option<WarpInterMode> {
     if !allow_warpmv_mode || n4w < 2 || n4h < 2 {
-        return Ok(None);
+        return None;
     }
-    let is_warp = cdfs
-        .read_block_symbol_trace(TileCdfSelector::IsWarp { ctx }, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    if is_warp.get() == 0 {
-        return Ok(None);
+    let rows = cdfs.block_rows_mut();
+    if read_row(symbols, row_at(&mut rows.is_warp, ctx)) == 0 {
+        return None;
     }
-    if force_integer_mv {
-        return Ok(Some(WarpInterMode::Warpmv));
+    if force_integer_mv || read_row(symbols, &mut rows.warp_mv) != 0 {
+        return Some(WarpInterMode::Warpmv);
     }
-    let warp_mv = cdfs
-        .read_block_symbol_trace(TileCdfSelector::WarpMv, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    Ok(Some(if warp_mv.get() == 0 {
-        WarpInterMode::WarpNewmv
-    } else {
-        WarpInterMode::Warpmv
-    }))
+    Some(WarpInterMode::WarpNewmv)
 }
 
 pub(crate) fn read_warp_newmv_motion_mode_syntax(
