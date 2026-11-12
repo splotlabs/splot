@@ -284,14 +284,14 @@ impl Taps {
 
 /// Per filter type and phase, the [`TAPS`] of a pass with the offset of its
 /// first window column from the sample position and its extra columns.
-static PASSES: [[(Option<&Taps>, i32, usize); NUM_PHASES]; NUM_FILTER_TYPES] = {
+static PASSES: [[(Option<&Taps>, i32, u32); NUM_PHASES]; NUM_FILTER_TYPES] = {
     let mut table = [[(None, 0, 0); NUM_PHASES]; NUM_FILTER_TYPES];
     let mut filter = 0;
     while filter < NUM_FILTER_TYPES {
         let mut phase = 0;
         while phase < NUM_PHASES {
             if let Some(taps) = &TAPS[filter][phase] {
-                table[filter][phase] = (Some(taps), taps.start as i32 - 3, taps.span() - 1);
+                table[filter][phase] = (Some(taps), taps.start as i32 - 3, taps.span() as u32 - 1);
             }
             phase += 1;
         }
@@ -457,7 +457,11 @@ impl Window {
         let pass = |filter: usize, size: usize, start: i32| {
             let (taps, offset, extent) =
                 PASSES[filter % NUM_FILTER_TYPES][((start >> 6) & SUBPEL_MASK) as usize];
-            (taps, (start >> SCALE_SUBPEL_BITS) + offset, size + extent)
+            (
+                taps,
+                (start >> SCALE_SUBPEL_BITS) + offset,
+                size + extent as usize,
+            )
         };
         let (horizontal, column, columns) = pass(filters[0], w, x);
         let (vertical, row, rows) = pass(filters[1], h, y);

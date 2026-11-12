@@ -1560,17 +1560,15 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     #[inline]
     fn rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [T], usize)> {
         let (stride, storage) = (self.stride, self.storage_size);
-        let (right, bottom) = (
-            rect.x().saturating_add(rect.width()),
-            rect.y().saturating_add(rect.height()),
-        );
         let local_y = rect.y().checked_sub(self.origin_y)?;
-        let rows = (bottom - self.origin_y).saturating_mul(stride);
-        if right > storage.width() || bottom > storage.height() || rows > self.samples.len() {
+        if rect.x().saturating_add(rect.width()) > storage.width()
+            || rect.y().saturating_add(rect.height()) > storage.height()
+        {
             return None;
         }
-        let base = local_y * stride + rect.x();
-        Some((self.samples.get_mut(base..rows - stride + right)?, stride))
+        let len = (rect.height() - 1) * stride + rect.width();
+        let rows = self.samples.get_mut(local_y * stride + rect.x()..)?;
+        Some((rows.get_mut(..len)?, stride))
     }
 }
 

@@ -9,7 +9,7 @@
     reason = "enters the dot-product kernels on a CPU detected to have them"
 )]
 
-use super::{Compound, Out, Programs, Strips, Windows};
+use super::{Compound, Out, Programs, Strip, Strips, Windows};
 use core::arch::aarch64::{int8x16_t, int32x4_t, uint8x16_t};
 use fearless_simd::Neon;
 
@@ -86,17 +86,43 @@ pub(super) fn usdot_lane<const L: usize>(
     acc
 }
 
-impl<O: Out, const P: usize> Job for Strips<'_, '_, O, P> {
+impl<O: Out> Job for Strip<'_, '_, O> {
     type Output = ();
 
     #[inline]
     fn usdot_wins(&self) -> bool {
-        self.0[0].horizontal.is_some() && self.0[0].w >= 8
+        self.0.horizontal.is_some() && self.0.w >= 8
     }
 
     #[inline]
     fn mla(self, t: Neon) {
-        for (block, out) in self.0.into_iter().zip(self.1) {
+        super::mla_strips(t, self.0, self.1);
+    }
+
+    /// Safety: as [`Job::sdot`].
+    #[target_feature(enable = "neon,dotprod")]
+    unsafe fn sdot(self, t: Neon) {
+        super::sdot::strips(t, self.0, self.1);
+    }
+
+    /// Safety: as [`Job::usdot`].
+    #[target_feature(enable = "neon,dotprod,i8mm")]
+    unsafe fn usdot(self, t: Neon) {
+        super::usdot::strips(t, self.0, self.1);
+    }
+}
+
+impl<O: Out> Job for Strips<'_, '_, O> {
+    type Output = ();
+
+    #[inline]
+    fn usdot_wins(&self) -> bool {
+        self.0[0].usdot_wins()
+    }
+
+    #[inline]
+    fn mla(self, t: Neon) {
+        for Strip(block, out) in self.0 {
             super::mla_strips(t, block, out);
         }
     }
@@ -104,7 +130,7 @@ impl<O: Out, const P: usize> Job for Strips<'_, '_, O, P> {
     /// Safety: as [`Job::sdot`].
     #[target_feature(enable = "neon,dotprod")]
     unsafe fn sdot(self, t: Neon) {
-        for (block, out) in self.0.into_iter().zip(self.1) {
+        for Strip(block, out) in self.0 {
             super::sdot::strips(t, block, out);
         }
     }
@@ -112,7 +138,7 @@ impl<O: Out, const P: usize> Job for Strips<'_, '_, O, P> {
     /// Safety: as [`Job::usdot`].
     #[target_feature(enable = "neon,dotprod,i8mm")]
     unsafe fn usdot(self, t: Neon) {
-        for (block, out) in self.0.into_iter().zip(self.1) {
+        for Strip(block, out) in self.0 {
             super::usdot::strips(t, block, out);
         }
     }

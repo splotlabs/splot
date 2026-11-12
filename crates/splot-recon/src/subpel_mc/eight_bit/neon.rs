@@ -578,11 +578,11 @@ pub(in crate::subpel_mc) struct Program<'a, 'b> {
     pub(in crate::subpel_mc) forward: i32,
 }
 
-/// The kernels of `P` blocks of one window, each into its `O`.
-pub(in crate::subpel_mc) struct Strips<'a, 'b, O, const P: usize = 1>(
-    [&'a Block<'b, u8>; P],
-    [&'a mut O; P],
-);
+/// The kernels of a block into its `O`.
+pub(in crate::subpel_mc) struct Strip<'a, 'b, O>(&'a Block<'b, u8>, &'a mut O);
+
+/// The [`Strip`]s of two blocks of one window.
+pub(in crate::subpel_mc) struct Strips<'a, 'b, O>([Strip<'a, 'b, O>; 2]);
 
 /// The kernels of `P` compound pairs of one window shape, each into its
 /// `u8` storage: with `CELL` 4x4 or 8x8 register cells, else the first
@@ -671,48 +671,48 @@ pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) 
         Sink::Put { output, stride } => {
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut Put {
+                Strip(
+                    block,
+                    &mut Put {
                         output,
                         stride: *stride,
-                    }],
+                    },
                 ),
             );
         }
         Sink::PutWide { output, stride, .. } => {
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut PutWide {
+                Strip(
+                    block,
+                    &mut PutWide {
                         output,
                         stride: *stride,
-                    }],
+                    },
                 ),
             );
         }
         Sink::Prep { output, stride } => {
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut Prep {
+                Strip(
+                    block,
+                    &mut Prep {
                         output,
                         stride: *stride,
-                    }],
+                    },
                 ),
             );
         }
         Sink::PrepNarrow { output, stride } => {
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut Prep {
+                Strip(
+                    block,
+                    &mut Prep {
                         output,
                         stride: *stride,
-                    }],
+                    },
                 ),
             );
         }
@@ -725,15 +725,15 @@ pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) 
             let (forward, stride) = (*forward, *stride);
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut Average {
+                Strip(
+                    block,
+                    &mut Average {
                         pred0,
                         w,
                         forward,
                         output,
                         stride,
-                    }],
+                    },
                 ),
             );
         }
@@ -746,15 +746,15 @@ pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) 
             let (forward, stride) = (*forward, *stride);
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut Average {
+                Strip(
+                    block,
+                    &mut Average {
                         pred0,
                         w,
                         forward,
                         output,
                         stride,
-                    }],
+                    },
                 ),
             );
         }
@@ -765,7 +765,7 @@ pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) 
 /// Stores the `Clip1` single-reference prediction of `block`.
 #[inline]
 pub(in crate::subpel_mc) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
-    run(Strips([block], [&mut Put { output, stride }]));
+    run(Strip(block, &mut Put { output, stride }));
 }
 
 /// Runs `job` in the kernel family [`dot::run`] picks.
@@ -790,7 +790,7 @@ pub(in crate::subpel_mc) fn put_pair(
         output: second,
         stride: second_stride,
     };
-    run(Strips(blocks, [first, second]));
+    run(Strips([Strip(blocks[0], first), Strip(blocks[1], second)]));
 }
 
 /// The COMPOUND_AVERAGE of each of `P` 4x4 or 8x8 register cell pairs into
