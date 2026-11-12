@@ -18,9 +18,10 @@
 //! never parks on it.
 
 use core::num::NonZeroUsize;
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 
 use parking_lot::{Condvar, Mutex, RecursiveRwLock, RwLock};
@@ -352,16 +353,28 @@ struct Core {
     driver_changed: Condvar,
 }
 
-/// Every live scheduler, so publications made through other primitives can
-/// wake row workers while both scheduler families coexist.
-static SCHEDULERS: Mutex<Vec<Weak<Core>>> = Mutex::new(Vec::new());
+thread_local! {
+    /// The scheduler this thread works for: a row worker's own, or the one
+    /// its driver last pushed to or waited on.
+    static BOUND: RefCell<Option<Arc<Core>>> = const { RefCell::new(None) };
+}
 
-/// Wakes one worker of every live scheduler.
-pub(crate) fn wake_all() {
-    let schedulers = SCHEDULERS.lock();
-    for core in schedulers.iter().filter_map(Weak::upgrade) {
-        core.notify(false);
-    }
+/// Wakes the scheduler the calling thread works for, after a publication
+/// through a primitive that holds no [`RowWake`].
+pub(crate) fn wake_bound() {
+    BOUND.with_borrow(|core| {
+        if let Some(core) = core {
+            core.notify(false);
+        }
+    });
+}
+
+fn bind(core: &Arc<Core>) {
+    BOUND.with_borrow_mut(|bound| {
+        if !bound.as_ref().is_some_and(|held| Arc::ptr_eq(held, core)) {
+            *bound = Some(Arc::clone(core));
+        }
+    });
 }
 
 /// A handle that makes [`RowProgress`] counters for one scheduler.
@@ -387,6 +400,11 @@ impl RowWake {
     /// Wakes one worker after a frame advanced a counter of its own.
     pub fn notify(&self) {
         self.0.notify(false);
+    }
+
+    #[cfg(test)]
+    fn parked_workers(&self) -> usize {
+        self.0.parked.load(Ordering::Relaxed)
     }
 }
 
@@ -584,15 +602,11 @@ impl RowScheduler {
     /// Returns [`ParallelError::PoolBuild`] when a thread cannot start.
     pub fn new(threads: NonZeroUsize) -> Result<Self, ParallelError> {
         let core = Arc::new(Core::default());
-        {
-            let mut schedulers = SCHEDULERS.lock();
-            schedulers.retain(|weak| weak.strong_count() != 0);
-            schedulers.push(Arc::downgrade(&core));
-        }
         let mut workers = Vec::with_capacity(threads.get());
         for index in 0..threads.get() {
             let core = Arc::clone(&core);
             workers.push(spawn_thread(&format!("splot-row-{index}"), move || {
+                bind(&core);
                 core.worker();
             })?);
         }
@@ -613,6 +627,7 @@ impl RowScheduler {
 
     /// Adds the newest frame. Its rows run after every older frame's ready rows.
     pub fn push(&self, frame: Arc<dyn FrameWork>) {
+        bind(&self.core);
         let mut frames = self.core.write_frames();
         frames.live.push_back(frame);
         drop(frames);
@@ -622,7 +637,7 @@ impl RowScheduler {
     /// Workers parked with nothing to run, for tests.
     #[cfg(test)]
     pub(crate) fn parked_workers(&self) -> usize {
-        self.core.parked.load(Ordering::Relaxed)
+        self.wake().parked_workers()
     }
 
     /// Frames pushed and not yet done.
@@ -634,6 +649,7 @@ impl RowScheduler {
     /// Blocks the driver until `ready()` holds. `ready` runs under the
     /// frames lock and is re-checked after every publication.
     pub fn wait(&self, mut ready: impl FnMut() -> bool) {
+        bind(&self.core);
         loop {
             let observed = self.core.generation.load(Ordering::SeqCst);
             let frames = self.core.read_frames();
@@ -660,6 +676,7 @@ impl Drop for RowScheduler {
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
+        drop(core::mem::take(&mut self.core.write_frames().live));
     }
 }
 
@@ -1022,6 +1039,101 @@ mod tests {
         assert!(!frame.done());
         gate.publish(1);
         wait_done(&scheduler, &[frame]);
+    }
+
+    /// A one-row frame gated on a watermark that holds no [`RowWake`].
+    struct OnCell {
+        cell: Arc<crate::WatermarkCell>,
+        stage: Stage,
+    }
+
+    impl FrameWork for OnCell {
+        fn claim(&self) -> Option<Claim> {
+            self.stage
+                .claim(|_| self.cell.current() != 0)
+                .map(|row| Claim { stage: 0, row })
+        }
+
+        fn run(&self, claim: Claim) {
+            self.stage.finish(claim.row);
+        }
+
+        fn done(&self) -> bool {
+            self.stage.is_finished()
+        }
+    }
+
+    /// Waits for `frame`, failing when only a watchdog's wake after three
+    /// seconds would end the wait.
+    fn wait_without_rescue(scheduler: &RowScheduler, frame: &OnCell, what: &str) {
+        let rescue = scheduler.progress();
+        let _watchdog = spawn_thread("watchdog", move || {
+            std::thread::sleep(Duration::from_secs(3));
+            rescue.publish(1);
+        })
+        .unwrap();
+        let started = Instant::now();
+        scheduler.wait(|| frame.done() || started.elapsed() > Duration::from_secs(3));
+        assert!(
+            frame.done() && started.elapsed() < Duration::from_secs(2),
+            "a {what} publication was lost"
+        );
+    }
+
+    /// Publishes `gate` once the other worker parked, then holds its worker
+    /// until `waiter` ran, so only the publication can wake it.
+    struct Publish(Arc<OnCell>, Arc<crate::WatermarkCell>, Stage, RowWake);
+
+    impl FrameWork for Publish {
+        fn claim(&self) -> Option<Claim> {
+            self.2.claim(|_| true).map(|row| Claim { stage: 0, row })
+        }
+
+        fn run(&self, claim: Claim) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            for _ in 0..2 {
+                std::thread::sleep(Duration::from_millis(20));
+                while self.3.parked_workers() == 0 && Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+            }
+            self.1.publish(1);
+            while !self.0.done() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            self.2.finish(claim.row);
+        }
+
+        fn done(&self) -> bool {
+            self.2.is_finished()
+        }
+    }
+
+    #[test]
+    fn a_cell_published_on_the_driver_or_a_worker_wakes_its_scheduler() {
+        let scheduler = RowScheduler::new(threads(2)).unwrap();
+        let cell = Arc::new(crate::WatermarkCell::new());
+        let waiter = Arc::new(OnCell {
+            cell: Arc::clone(&cell),
+            stage: Stage::new(1),
+        });
+        scheduler.push(Arc::clone(&waiter) as Arc<dyn FrameWork>);
+        std::thread::sleep(Duration::from_millis(20));
+        cell.publish(1);
+        wait_without_rescue(&scheduler, &waiter, "driver");
+        let gate = Arc::new(crate::WatermarkCell::new());
+        let waiter = Arc::new(OnCell {
+            cell: Arc::clone(&gate),
+            stage: Stage::new(1),
+        });
+        scheduler.push(Arc::clone(&waiter) as Arc<dyn FrameWork>);
+        scheduler.push(Arc::new(Publish(
+            Arc::clone(&waiter),
+            gate,
+            Stage::new(1),
+            scheduler.wake(),
+        )));
+        wait_without_rescue(&scheduler, &waiter, "worker");
     }
 
     #[test]
