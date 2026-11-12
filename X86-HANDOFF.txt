@@ -82,6 +82,17 @@ PART 2. BRANCH PROTOCOL (two orchestrators in parallel)
   commit with the prefix `x86-shared:` in the commit body, and list it in your log.
 - The aarch64 orchestrator merges your branch into the PR branch after it runs the aarch64
   hashes. Do not open a second PR. Do not merge to main.
+- Communication between the two orchestrators is through git only. No person copies text.
+  From aarch64 to you: this file. After EACH merge of `origin/perf/faster-than-dav2d`, read
+  the section "CURRENT STATE" at the end of this file again (`git diff ORIG_HEAD HEAD -- X86-HANDOFF.txt`
+  shows what changed) and obey changes of file ownership and of task order in it.
+  From you to aarch64: `X86-STATUS.txt` (Part 5). With EACH push, add a dated entry to its
+  section "For the aarch64 orchestrator". The aarch64 orchestrator fetches your branch and
+  reads that section.
+- Neither session can wake the other. If you must wait for the aarch64 side (for example
+  for an ownership change or a merge of your branch), write the request in `X86-STATUS.txt`,
+  push, continue with a task that does not depend on it, and tell the user in one line what
+  you wait for.
 - Never use bare `git stash`. Remove each agent worktree when its work is merged.
 
 ==========================================================================================
@@ -164,6 +175,8 @@ T12. Final report for the user: the T2 table again on the final head, the T3 tab
 ==========================================================================================
 PART 5. YOUR LOG
 ==========================================================================================
+Push your branch after T1, after T3, and then after each accepted change, so that the
+aarch64 orchestrator sees your state.
 Keep `X86-STATUS.txt` at the repository root on your branch (temporary, plain text): the
 machine, the dav2d commit, the T2 and T3 tables, one line per commit (what, measured delta,
 checks run), open problems, and a section "For the aarch64 orchestrator" that lists each
