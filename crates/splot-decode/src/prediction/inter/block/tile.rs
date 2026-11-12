@@ -652,7 +652,10 @@ impl TileResolveState {
                 order_hints: temporal_context.order_hint_mv_context(),
                 drl_reorder: sequence_drl_reorder(context.sequence),
                 max_drl_bits_minus_1: context.params.max_drl_bits_minus_1,
-                frame_precision: 0,
+                frame_precision: context
+                    .params
+                    .mv_config
+                    .map_or(0, super::super::read_mv::MvReadConfig::precision),
                 tile_offset,
                 sb_h4: context.params.sb_h4,
                 mi_rows: context.params.mi_rows,

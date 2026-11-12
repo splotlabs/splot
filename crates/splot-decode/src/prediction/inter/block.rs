@@ -1797,7 +1797,6 @@ fn decode_block<T: ReconSample>(
                 ..parsed_inter_block(ref_frame0, None, ReconInterpolationFilter::EightTap)
             },
             None,
-            mv_config.precision(),
             (n4w, n4h),
             (skip, segment_id, block_qindex),
             tile_offset,
@@ -1988,7 +1987,6 @@ fn decode_block<T: ReconSample>(
         tip_ref.then_some(crate::filters::deblock::DeblockSubPuSize::square(
             if tip_uses_16x16_units { 16 } else { 8 },
         )),
-        frame_mv_config.precision(),
         (n4w, n4h),
         (skip, segment_id, block_qindex),
         tile_offset,
@@ -2048,7 +2046,6 @@ fn finish_inter_leaf(
     syntax: InterBlockSyntax,
     mut block: InterBlock,
     sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
-    frame_precision: u8,
     (n4w, n4h): (usize, usize),
     (skip, segment_id, block_qindex): (u8, u8, u32),
     tile_offset: ByteOffset,
@@ -2125,7 +2122,6 @@ fn finish_inter_leaf(
         deferred_recon::InterReconCommand::new(
             geometry.place(block),
             syntax,
-            frame_precision,
             segment_id,
             block_qindex,
             tile_offset,

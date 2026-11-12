@@ -34,7 +34,6 @@ pub(super) struct InterReconCommand {
     placed: PlacedInterBlock,
     /// The parsed syntax § 7.12 resolution reads.
     syntax: InterBlockSyntax,
-    frame_precision: u8,
     segment_id: u8,
     qindex: u32,
     motion_derived: bool,
@@ -101,7 +100,6 @@ impl InterReconCommand {
     pub(super) const fn new(
         placed: PlacedInterBlock,
         syntax: InterBlockSyntax,
-        frame_precision: u8,
         segment_id: u8,
         qindex: u32,
         tile_offset: ByteOffset,
@@ -110,7 +108,6 @@ impl InterReconCommand {
         Self {
             placed,
             syntax,
-            frame_precision,
             segment_id,
             qindex,
             motion_derived: false,
@@ -148,7 +145,6 @@ impl InterReconCommand {
     /// `force_integer_mv` frame keeps its stored warp model but predicts by
     /// translation (`useWarp = 0`, § 7.13.3.14).
     pub(super) fn resolve(&mut self, state: &mut MvResolutionState<'_>) -> Result<()> {
-        state.frame_precision = self.frame_precision;
         let placed = &self.placed;
         let block = MvBlockContext {
             mi_row: placed.luma_y / 4,
@@ -791,7 +787,6 @@ mod tests {
                 tip_size_16x16: false,
                 blend: mc::CompoundBlend::default(),
             },
-            0,
             0,
             0,
             ByteOffset::new(0),

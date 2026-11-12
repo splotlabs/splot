@@ -608,7 +608,6 @@ pub(super) fn decode_compound_inter_block(
             n4w * MI_SIZE,
             n4h * MI_SIZE,
         ),
-        frame_mv_config.precision(),
         (n4w, n4h),
         leaf,
         tile_offset,
@@ -1086,7 +1085,6 @@ pub(super) fn decode_skip_mode_inter_block(
             )
         },
         None,
-        precision,
         (block_ctx.bw4, block_ctx.bh4),
         leaf,
         tile_offset,
