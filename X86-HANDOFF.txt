@@ -363,3 +363,23 @@ lock in the pipeline, the tile-parallel parse. Queued: predict straight into the
 4. Your branch (X86-STATUS.txt only) is merged into `perf/faster-than-dav2d`.
 5. A newer dav2d with 16-bit assembly would make the 10-bit comparison useful. Ask the
    user to build it on your machine if the permission system refuses the clone.
+
+## 2026-11-13, aarch64 push: 10-bit MC on the shared row module
+- New `subpel_mc/rows.rs` (generic over u8/u16): validated row spans (`span`, `rows`,
+  `rows_mut`), the strip loop (`strips`), a 4-column row-pair loop (`pairs`), the sinks
+  `Put<T>`, `Prep<P>`, `Average<P, T>`. `sixteen_bit/neon.rs` is rewritten on it: one
+  validation per block, no bounds check or index arithmetic in a row, the put rounds and
+  narrows in one saturating narrow. 10-bit classes on aarch64: -21% to -34% instructions
+  per call; Meridian -2.9%, test.ivf -1.5% whole decode.
+- x86 does not use `rows.rs` yet (it is `allow(dead_code)` there). Port plan for
+  `sixteen_bit/avx2.rs`: it still computes `at = row * stride + strip * width` per group
+  and loads through `chunk(samples, at)` / `get(at..)`, with its own `store_words`,
+  `store_bytes`, `store_prep`. Run its `horizontal`, `filter_stage` and `copy` on
+  `rows::strips` and `rows::pairs`; implement a `WordOut`-like store trait for the `rows`
+  sinks with AVX2 stores; validate rows once per block; use a constant-shift rounding
+  narrow for the put. This is your ranked 10-bit gap "inter compound strips".
+- The fuzz target `symbol_encoder_bytes` now builds rows in the packed CDF layout.
+- Pipeline experiments that were built, measured and NOT kept (patches exist on the
+  aarch64 machine): an atomic ready mark per batch for the row list; the tile-parallel
+  parse (no gain on the only multi-tile sample, RSS +14%; it is under test again with new
+  parse-bound multi-tile streams).
