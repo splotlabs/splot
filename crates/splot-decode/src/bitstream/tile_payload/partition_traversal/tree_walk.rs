@@ -228,6 +228,9 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         if sb_col == tile_bounds.mi_col_start {
             mi_size_state.enter_sb_row(sb_row);
         }
+        mi_size_state
+            .check_extent(sb_row, sb_col, self.sb_size4, self.sb_size4)
+            .map_err(GeneralIntraTreeWalkError::MiSize)?;
         let mut hooks = LeafHooks {
             work_unit,
             mi_size_state,

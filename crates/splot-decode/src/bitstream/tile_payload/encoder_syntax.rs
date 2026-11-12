@@ -878,6 +878,10 @@ impl IntraTileSyntax {
         if !options.allows(partition) {
             return Err(EncoderSyntaxError::Unsupported("partition not allowed"));
         }
+        let [high, wide] = node.0.b_size.num_4x4();
+        self.mi_sizes
+            .check_extent(node.0.r(), node.0.c(), high, wide)
+            .map_err(rule("partition context"))?;
         let (partition_context, square_context) =
             partition_context_inputs(node.0, self.bounds, &self.mi_sizes)
                 .map_err(rule("partition context"))?;

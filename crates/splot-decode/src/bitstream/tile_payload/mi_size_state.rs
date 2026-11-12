@@ -84,6 +84,10 @@ pub(crate) struct TileMiSizeState {
     origin_col: usize,
     rows: usize,
     above_len: usize,
+    /// `above_len` rounded up to `SB_ROW_SPAN`: the distance between the
+    /// above lines, which [`Self::partition_neighbours`] reads in
+    /// `SB_ROW_SPAN` chunks.
+    above_stride: usize,
     /// The tile's rows and columns inside the frame; facts beyond read as
     /// outside the tile.
     tile_rows: usize,
@@ -112,7 +116,11 @@ impl TileMiSizeState {
         }
         let padded_rows = padded_dimension("rows", mi_rows, sb_size.num_4x4_high()?)?;
         let padded_cols = padded_dimension("cols", mi_cols, sb_size.num_4x4_wide()?)?;
-        let entry_count = checked_mul_usize("padded_cols * planes", padded_cols, PLANE_COUNT)?;
+        let entry_count = checked_mul_usize(
+            "padded_cols * planes",
+            padded_cols.next_multiple_of(SB_ROW_SPAN),
+            PLANE_COUNT,
+        )?;
         Ok(TileMiSizeStateAllocation {
             padded_rows,
             padded_cols,
@@ -139,6 +147,7 @@ impl TileMiSizeState {
             origin_col: col_range.start,
             rows: allocation.padded_rows,
             above_len: allocation.padded_cols,
+            above_stride: allocation.entry_count / PLANE_COUNT,
             tile_rows: mi_rows,
             tile_cols: mi_cols,
             sb_size4: sb_size.num_4x4_high()?,
@@ -151,7 +160,7 @@ impl TileMiSizeState {
     }
 
     const fn above_base(&self, plane: usize) -> usize {
-        plane * self.above_len
+        plane * self.above_stride
     }
 
     #[cfg(test)]
@@ -352,9 +361,39 @@ impl TileMiSizeState {
         .map(drop)
     }
 
+    /// Checks that the `rows` x `cols` block at (`r`, `c`) lies in the tile's
+    /// padded extent: the superblock of a walk, whose blocks
+    /// [`Self::partition_neighbours`] then reads without a check of its own.
+    pub(crate) fn check_extent(
+        &self,
+        r: usize,
+        c: usize,
+        rows: usize,
+        cols: usize,
+    ) -> Result<(), TileMiSizeStateError> {
+        match (
+            r.checked_sub(self.origin_row),
+            c.checked_sub(self.origin_col),
+        ) {
+            (Some(row), Some(col))
+                if row.saturating_add(rows) <= self.rows
+                    && col.saturating_add(cols) <= self.above_len =>
+            {
+                Ok(())
+            }
+            _ => Err(TileMiSizeStateError::BlockOutOfBounds {
+                plane: LUMA_PLANE,
+                r,
+                c,
+            }),
+        }
+    }
+
     /// The § 8.3.2 partition-context entries of the block at tile position
     /// (`r`, `c`): plane `plane` lines at `r`, `r + half_h`, `c` and
-    /// `c + half_w`, and the luma lines at `r` and `c`.
+    /// `c + half_w`, and the luma lines at `r` and `c`. The block lies in a
+    /// superblock that [`Self::check_extent`] accepted, so its columns share
+    /// one `SB_ROW_SPAN` chunk of each above line.
     #[inline]
     pub(crate) fn partition_neighbours(
         &self,
@@ -364,23 +403,19 @@ impl TileMiSizeState {
         half_h: usize,
         half_w: usize,
     ) -> Option<PartitionNeighbours> {
-        let local_r = r.checked_sub(self.origin_row)?;
-        let local_c = c.checked_sub(self.origin_col)?;
-        if plane >= PLANE_COUNT
-            || local_r + half_h >= self.rows
-            || local_c + half_w >= self.above_len
-        {
+        if plane >= PLANE_COUNT {
             return None;
         }
-        let (left, luma_left) = (&self.left[plane & 1], &self.left[LUMA_PLANE]);
-        let row = r % SB_ROW_SPAN;
-        let above = |at: usize| self.above.get(at).copied();
-        let base = self.above_base(plane) + local_c;
+        let col = c.wrapping_sub(self.origin_col);
+        let (chunk, at) = (col / SB_ROW_SPAN, col % SB_ROW_SPAN);
+        let lines = self.above.as_chunks::<SB_ROW_SPAN>().0;
+        let above = lines.get(self.above_base(plane) / SB_ROW_SPAN + chunk)?;
+        let (left, row) = (&self.left[plane], r % SB_ROW_SPAN);
         Some(PartitionNeighbours {
             left: [left[row], left[(row + half_h) % SB_ROW_SPAN]],
-            above: [above(base)?, above(base + half_w)?],
-            luma_left: luma_left[row],
-            luma_above: above(local_c)?,
+            above: [above[at], above[(at + half_w) % SB_ROW_SPAN]],
+            luma_left: self.left[LUMA_PLANE][row],
+            luma_above: lines.get(chunk)?[at],
         })
     }
 
