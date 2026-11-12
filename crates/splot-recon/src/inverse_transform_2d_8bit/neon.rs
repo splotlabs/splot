@@ -24,8 +24,18 @@ use splot_tables::tables::transform_1d::{
 };
 
 use super::{FlatDequant, InverseTransformAdd, identity_scale};
+
+#[macro_use]
+mod rows;
+#[macro_use]
+mod columns;
+mod blocks;
+
 use crate::inverse_transform::InverseTransform1dType;
 use crate::inverse_transform_2d::InverseTransform2dDim;
+use blocks::{block4x4, block4x8, block8, block8x4};
+use columns::{Columns, col_pass};
+use rows::{row_pass, scaled};
 
 /// Eight `i16` table entries, one vector.
 type Lanes = [i16; 8];
@@ -179,8 +189,8 @@ fn tables() -> &'static DctTables {
 }
 
 /// One resolved pass.
-#[derive(Clone, Copy)]
-enum Pass {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Pass {
     /// The § 7.15.2.3 identity with its scale.
     Identity(i16),
     /// A 4-point kernel.
@@ -196,7 +206,7 @@ enum Pass {
 impl Pass {
     /// The pass of `dim` over `len` samples, as
     /// [`crate::inverse_transform::select_kernel`] resolves it.
-    fn of(dim: InverseTransform2dDim, len: usize) -> Self {
+    pub(super) const fn of(dim: InverseTransform2dDim, len: usize) -> Self {
         use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
         let InverseTransform2dDim::Kernel(kind) = dim else {
             return Self::Identity(identity_scale(len) as i16);
@@ -225,121 +235,12 @@ fn lanes(t: Neon, lanes: &Lanes) -> int16x8_t {
     i16x8::load_array_ref(t, lanes).into()
 }
 
-/// `acc += k[j][0][0..4] * x[l]` for each `(j, l)`.
-macro_rules! mac4 {
-    ($t:ident, $acc:ident, $k:expr, $x:expr; $($j:literal $l:literal),*) => {
-        $(
-            $acc = vmlal_laneq_s16::<$l>($acc, vget_low_s16(lanes($t, &$k[$j][0])), $x);
-        )*
-    };
-}
-
-/// `(lo, hi) += k[j0 + l][g] * x[l]` for each lane `l`.
-macro_rules! mac8 {
-    ($t:ident, $lo:ident, $hi:ident, $k:expr, $j0:literal, $g:literal, $x:expr) => {
-        mac8!(@ $t, $lo, $hi, $k, $j0, $g, $x; 0 1 2 3 4 5 6 7)
-    };
-    (@ $t:ident, $lo:ident, $hi:ident, $k:expr, $j0:literal, $g:literal, $x:expr; $($l:literal)*) => {
-        $(
-            let kv = lanes($t, &$k[$j0 + $l][$g]);
-            $lo = vmlal_laneq_s16::<$l>($lo, vget_low_s16(kv), $x);
-            $hi = vmlal_high_laneq_s16::<$l>($hi, kv, $x);
-        )*
-    };
-}
-
 /// The four lanes of `v` reversed.
 #[inline]
 #[target_feature(enable = "neon")]
 fn reverse(v: int32x4_t) -> int32x4_t {
     let pairs = vrev64q_s32(v);
     vextq_s32::<2>(pairs, pairs)
-}
-
-/// Two 4-wide rows in the low and high lanes of `x` by the 4-point kernel
-/// `k`.
-macro_rules! four {
-    ($t:ident, $k:expr, $x:expr) => {{
-        let (mut a, mut b, k, x) = (vdupq_n_s32(0), vdupq_n_s32(0), $k, $x);
-        mac4!($t, a, k, x; 0 0, 1 1, 2 2, 3 3);
-        mac4!($t, b, k, x; 0 4, 1 5, 2 6, 3 7);
-        [a, b]
-    }};
-}
-
-/// One 8-wide row `x` by the 8-point kernel `k`.
-macro_rules! eight {
-    ($t:ident, $k:expr, $x:expr) => {{
-        let (mut lo, mut hi, k, x) = (vdupq_n_s32(0), vdupq_n_s32(0), $k, $x);
-        mac8!($t, lo, hi, k, 0, 0, x);
-        [lo, hi]
-    }};
-}
-
-/// One 16-wide row `x` by the 16-point kernel `k`.
-macro_rules! sixteen {
-    ($t:ident, $k:expr, $x:expr) => {{
-        let ([mut a, mut b, mut c, mut d], k, [x0, x1]) = ([vdupq_n_s32(0); 4], $k, $x);
-        mac8!($t, a, b, k, 0, 0, x0);
-        mac8!($t, c, d, k, 0, 1, x0);
-        mac8!($t, a, b, k, 8, 0, x1);
-        mac8!($t, c, d, k, 8, 1, x1);
-        [a, b, c, d]
-    }};
-}
-
-/// The 8-point `DCT` of `x`: the even lanes by the 4-point `DCT`, the odd
-/// lanes by the odd rows.
-macro_rules! dct8 {
-    ($t:ident, $k:expr, $x:expr) => {{
-        let (mut even, mut odd, [x]) = (vdupq_n_s32(0), vdupq_n_s32(0), $x);
-        let k: &DctTables = $k;
-        mac4!($t, even, k.0, x; 0 0, 1 2, 2 4, 3 6);
-        mac4!($t, odd, k.1, x; 0 1, 1 3, 2 5, 3 7);
-        [vaddq_s32(even, odd), reverse(vsubq_s32(even, odd))]
-    }};
-}
-
-/// The 16-point `DCT` of `x`.
-macro_rules! dct16 {
-    ($t:ident, $k:expr, $x:expr) => {{
-        let ([x0, x1], k): ([int16x8_t; 2], &DctTables) = ($x, $k);
-        let [e0, e1] = dct8!($t, k, [vuzp1q_s16(x0, x1)]);
-        let [o0, o1] = eight!($t, k.2, vuzp2q_s16(x0, x1));
-        [
-            vaddq_s32(e0, o0),
-            vaddq_s32(e1, o1),
-            reverse(vsubq_s32(e1, o1)),
-            reverse(vsubq_s32(e0, o0)),
-        ]
-    }};
-}
-
-/// The 32-point `DCT` of `x`.
-macro_rules! dct32 {
-    ($t:ident, $k:expr, $x:expr) => {{
-        let ([x0, x1, x2, x3], k): ([int16x8_t; 4], &DctTables) = ($x, $k);
-        let even = dct16!($t, k, [vuzp1q_s16(x0, x1), vuzp1q_s16(x2, x3)]);
-        let odd = sixteen!($t, k.3, [vuzp2q_s16(x0, x1), vuzp2q_s16(x2, x3)]);
-        let mut out = [vdupq_n_s32(0); 8];
-        for i in 0..4 {
-            out[i] = vaddq_s32(even[i], odd[i]);
-            out[7 - i] = reverse(vsubq_s32(even[i], odd[i]));
-        }
-        out
-    }};
-}
-
-/// The products of `x` and the identity scale `s`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn scaled<const N: usize, const M: usize>(x: [int16x8_t; N], s: i16) -> [int32x4_t; M] {
-    let mut sums = [vdupq_n_s32(0); M];
-    for (k, x) in x.into_iter().enumerate() {
-        sums[2 * k] = vmull_n_s16(vget_low_s16(x), s);
-        sums[2 * k + 1] = vmull_high_n_s16(x, s);
-    }
-    sums
 }
 
 /// `Sat16(Round2(v, shift))` of two vectors, for `shift` holding `-shift`.
@@ -551,73 +452,6 @@ fn scale(v: int16x8_t, scale: i16, shift: int32x4_t) -> int16x8_t {
     )
 }
 
-/// Whether any lane of the vectors of `x` from `from` is nonzero.
-#[inline]
-#[target_feature(enable = "neon")]
-fn nonzero_from<const N: usize>(x: &[int16x8_t; N], from: usize) -> bool {
-    let any = x
-        .iter()
-        .skip(from)
-        .fold(vdupq_n_s16(0), |a, &v| vorrq_s16(a, v));
-    from < N && vmaxvq_u16(vreinterpretq_u16_s16(any)) != 0
-}
-
-/// The row pass of `$kernel` over the `$n` input vectors `$x` of each of
-/// the first `coded` rows of `$rows`, each output vector `k` of row `r`
-/// handed to `$put(r, k, v)`. Inputs past a row's last nonzero vector are
-/// zero: each expansion of `$kernel` sees them as literal zero vectors, so
-/// their products fold away.
-macro_rules! row_loop {
-    ($t:ident, $geometry:expr, $rows:expr, $put:expr, |$x:ident: $n:literal| $kernel:expr) => {{
-        let (coded, w, shift): (usize, usize, int32x4_t) = $geometry;
-        let rows: &Half = $rows;
-        let step = if w == 4 { 2 } else { 1 };
-        for r in (0..coded).step_by(step) {
-            let x: [int16x8_t; $n] = core::array::from_fn(|k| get16($t, rows, r * w + 8 * k));
-            let zero = vdupq_n_s16(0);
-            let sums: [int32x4_t; 2 * $n] = if nonzero_from(&x, 2) {
-                let $x = x;
-                $kernel
-            } else if nonzero_from(&x, 1) {
-                let $x: [int16x8_t; $n] = core::array::from_fn(|k| if k < 2 { x[k] } else { zero });
-                $kernel
-            } else {
-                let $x: [int16x8_t; $n] = core::array::from_fn(|k| if k < 1 { x[k] } else { zero });
-                $kernel
-            };
-            for k in 0..$n {
-                $put(r, k, narrow(sums[2 * k], sums[2 * k + 1], shift));
-            }
-        }
-    }};
-}
-
-/// The row pass of `pass` over the first `coded` rows of `rows`, each output
-/// vector `k` of row `r` handed to `put(r, k, v)`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn row_pass(
-    t: Neon,
-    pass: Pass,
-    geometry: (usize, usize, int32x4_t),
-    rows: &Half,
-    mut put: impl FnMut(usize, usize, int16x8_t),
-) {
-    match (pass, geometry.1) {
-        (Pass::Identity(s), 4 | 8) => row_loop!(t, geometry, rows, put, |x: 1| scaled(x, s)),
-        (Pass::Identity(s), 16) => row_loop!(t, geometry, rows, put, |x: 2| scaled(x, s)),
-        (Pass::Identity(s), _) => row_loop!(t, geometry, rows, put, |x: 4| scaled(x, s)),
-        (Pass::Four(k), _) => row_loop!(t, geometry, rows, put, |x: 1| four!(t, k, x[0])),
-        (Pass::Eight(k), _) => row_loop!(t, geometry, rows, put, |x: 1| eight!(t, k, x[0])),
-        (Pass::Sixteen(k), _) => row_loop!(t, geometry, rows, put, |x: 2| sixteen!(t, k, x)),
-        (Pass::Dct(8), _) => row_loop!(t, geometry, rows, put, |x: 1| dct8!(t, &DCT_TABLES, x)),
-        (Pass::Dct(16), _) => {
-            row_loop!(t, geometry, rows, put, |x: 2| dct16!(t, &DCT_TABLES, x));
-        }
-        (Pass::Dct(_), _) => row_loop!(t, geometry, rows, put, |x: 4| dct32!(t, tables(), x)),
-    }
-}
-
 /// `Clip1(p + v)` of the eight bytes from `at`.
 #[inline]
 #[target_feature(enable = "neon")]
@@ -654,270 +488,6 @@ fn add_bytes(pred: u64, v: int16x8_t) -> u64 {
     vget_lane_u64::<0>(vreinterpret_u64_u8(vqmovun_s16(vqaddq_s16(v, pred))))
 }
 
-/// The row outputs of a block and its destination.
-struct Columns<'a> {
-    /// The `i16` row outputs, rows `w` apart.
-    rows: &'a Half,
-    w: usize,
-    /// Rows of `rows` to read, even.
-    coded: usize,
-    /// `-colShift`.
-    shift: int32x4_t,
-    dst: &'a mut [u8],
-    stride: usize,
-}
-
-impl Columns<'_> {
-    /// Row `r`, columns `8 * c..8 * c + 8` (rows `r` and `r + 1` of a
-    /// 4-wide block).
-    #[inline]
-    #[target_feature(enable = "neon")]
-    fn row(&self, t: Neon, r: usize, c: usize) -> int16x8_t {
-        get16(t, self.rows, r * self.w + 8 * c)
-    }
-
-    /// Adds output row `o` of column chunk `c` from its sums.
-    #[inline]
-    #[target_feature(enable = "neon")]
-    fn put(&mut self, o: usize, c: usize, [lo, hi]: [int32x4_t; 2]) {
-        add8(
-            self.dst,
-            o * self.stride + 8 * c,
-            narrow(lo, hi, self.shift),
-        );
-    }
-
-    /// Adds output rows `o` and `o + 1` of a 4-wide block from their sums.
-    #[inline]
-    #[target_feature(enable = "neon")]
-    fn put4(&mut self, o: usize, a: int32x4_t, b: int32x4_t) {
-        add4x2(
-            self.dst,
-            o * self.stride,
-            self.stride,
-            narrow(a, b, self.shift),
-        );
-    }
-}
-
-/// `acc[o] += y * kv[l]` for each pair `o l`, both halves of `y`.
-macro_rules! col_mac {
-    ($acc:ident, $y:expr, $kv:expr; $($o:literal $l:literal)*) => {
-        $(
-            $acc[$o][0] = vmlal_laneq_s16::<$l>($acc[$o][0], vget_low_s16($y), $kv);
-            $acc[$o][1] = vmlal_high_laneq_s16::<$l>($acc[$o][1], $y, $kv);
-        )*
-    };
-}
-
-/// `a[o] += low(y) * k0[l0]` and `b[o] += high(y) * k1[l1]` for each `o l0 l1`.
-macro_rules! col_mac4 {
-    ($a:ident, $b:ident, $y:expr, $k0:expr, $k1:expr; $($o:literal $l0:literal $l1:literal)*) => {
-        $(
-            $a[$o] = vmlal_laneq_s16::<$l0>($a[$o], vget_low_s16($y), $k0);
-            $b[$o] = vmlal_high_laneq_s16::<$l1>($b[$o], $y, $k1);
-        )*
-    };
-}
-
-/// The § 7.15.2.3 identity column pass of `scale`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn col_identity(t: Neon, scale: i16, cols: &mut Columns<'_>) {
-    if cols.w == 4 {
-        for r in (0..cols.coded).step_by(2) {
-            let y = cols.row(t, r, 0);
-            cols.put4(
-                r,
-                vmull_n_s16(vget_low_s16(y), scale),
-                vmull_high_n_s16(y, scale),
-            );
-        }
-        return;
-    }
-    for r in 0..cols.coded {
-        for c in 0..cols.w / 8 {
-            let y = cols.row(t, r, c);
-            cols.put(
-                r,
-                c,
-                [
-                    vmull_n_s16(vget_low_s16(y), scale),
-                    vmull_high_n_s16(y, scale),
-                ],
-            );
-        }
-    }
-}
-
-/// The column pass of an `M`-point kernel `k` other than a split `DCT`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn col_matrix<const M: usize, const G: usize>(
-    t: Neon,
-    k: &[[Lanes; G]; M],
-    cols: &mut Columns<'_>,
-) {
-    let zero = vdupq_n_s32(0);
-    let kernel = |r: usize, g: usize| lanes(t, &k[r % M][g % G]);
-    if cols.w == 4 {
-        for g in 0..G {
-            let (mut upper, mut lower) = ([zero; 8], [zero; 8]);
-            for r in (0..cols.coded).step_by(2) {
-                let (y, k0, k1) = (cols.row(t, r, 0), kernel(r, g), kernel(r + 1, g));
-                if M == 4 {
-                    col_mac4!(upper, lower, y, k0, k1; 0 0 0 1 1 1 2 2 2 3 3 3);
-                } else {
-                    col_mac4!(upper, lower, y, k0, k1; 0 0 0 1 1 1 2 2 2 3 3 3 4 4 4 5 5 5 6 6 6 7 7 7);
-                }
-            }
-            for o in (0..M.min(8)).step_by(2) {
-                let sum = |i: usize| vaddq_s32(upper[i], lower[i]);
-                cols.put4(8 * g + o, sum(o), sum(o + 1));
-            }
-        }
-        return;
-    }
-    for c in 0..cols.w / 8 {
-        for g in 0..G {
-            let mut acc = [[zero; 2]; 8];
-            for r in 0..cols.coded {
-                let (y, kv) = (cols.row(t, r, c), kernel(r, g));
-                if M == 4 {
-                    col_mac!(acc, y, kv; 0 0 1 1 2 2 3 3);
-                } else {
-                    col_mac!(acc, y, kv; 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7);
-                }
-            }
-            for (o, &acc) in acc.iter().enumerate().take(M.min(8)) {
-                cols.put(8 * g + o, c, acc);
-            }
-        }
-    }
-}
-
-/// The column pass of the `M`-point `DCT` by its row pairs `k`: the even
-/// rows sum `E` and the odd rows `O` over the first `M / 2` outputs, and
-/// output `M - 1 - o` is `E - O` where output `o` is `E + O`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn col_dct<const M: usize, const H: usize, const G: usize>(
-    t: Neon,
-    k: &[[Lanes; G]; H],
-    cols: &mut Columns<'_>,
-) {
-    let zero = vdupq_n_s32(0);
-    let kernel = |r: usize, g: usize| lanes(t, &k[(r / 2) % H][g % G]);
-    if cols.w == 4 {
-        for g in 0..G {
-            let (mut even, mut odd) = ([zero; 4], [zero; 4]);
-            for r in (0..cols.coded).step_by(2) {
-                let (y, kv) = (cols.row(t, r, 0), kernel(r, g));
-                col_mac4!(even, odd, y, kv, kv; 0 0 4 1 1 5 2 2 6 3 3 7);
-            }
-            let sum = |i: usize| vaddq_s32(even[i], odd[i]);
-            let diff = |i: usize| vsubq_s32(even[i], odd[i]);
-            for o in [0, 2] {
-                cols.put4(4 * g + o, sum(o), sum(o + 1));
-                cols.put4(M - 2 - 4 * g - o, diff(o + 1), diff(o));
-            }
-        }
-        return;
-    }
-    for c in 0..cols.w / 8 {
-        for g in 0..G {
-            let (mut even, mut odd) = ([[zero; 2]; 4], [[zero; 2]; 4]);
-            for r in (0..cols.coded).step_by(2) {
-                let kv = kernel(r, g);
-                col_mac!(even, cols.row(t, r, c), kv; 0 0 1 1 2 2 3 3);
-                col_mac!(odd, cols.row(t, r + 1, c), kv; 0 4 1 5 2 6 3 7);
-            }
-            for (o, (e, d)) in even.iter().zip(&odd).enumerate() {
-                cols.put(4 * g + o, c, [vaddq_s32(e[0], d[0]), vaddq_s32(e[1], d[1])]);
-                cols.put(
-                    M - 1 - 4 * g - o,
-                    c,
-                    [vsubq_s32(e[0], d[0]), vsubq_s32(e[1], d[1])],
-                );
-            }
-        }
-    }
-}
-
-/// The column pass of the `M`-point `DCT`, `M >= 16`, over a block at
-/// least 8 wide, split twice: rows `0 mod 4` sum `EE` and rows `2 mod 4`
-/// sum `EO` over the first `M / 4` outputs, giving the even-row sums `E`
-/// over the first `M / 2` (`EE + EO`, then `EE - EO` reversed), which
-/// combine with the odd-row sums `O` as in [`col_dct`]. `even` and `odd`
-/// are the [`quads`] of the kernel.
-#[allow(
-    clippy::needless_range_loop,
-    reason = "the group index also places the outputs"
-)]
-#[inline]
-#[target_feature(enable = "neon")]
-fn col_dct2<const M: usize, const Q: usize, const GE: usize, const GO: usize>(
-    t: Neon,
-    (even, odd): (&[[Lanes; GE]; Q], &[[Lanes; GO]; Q]),
-    cols: &mut Columns<'_>,
-) {
-    let zero = vdupq_n_s32(0);
-    let quads = cols.coded.div_ceil(4);
-    for c in 0..cols.w / 8 {
-        let mut e = [[zero; 2]; 16];
-        for g in 0..GE {
-            let (mut ee, mut eo) = ([[zero; 2]; 4], [[zero; 2]; 4]);
-            for q in 0..quads {
-                let kv = lanes(t, &even[q % Q][g]);
-                col_mac!(ee, cols.row(t, 4 * q, c), kv; 0 0 1 1 2 2 3 3);
-                col_mac!(eo, cols.row(t, 4 * q + 2, c), kv; 0 4 1 5 2 6 3 7);
-            }
-            for o in 0..4 {
-                let (a, b) = (ee[o], eo[o]);
-                e[(4 * g + o) % 16] = [vaddq_s32(a[0], b[0]), vaddq_s32(a[1], b[1])];
-                e[(M / 2 - 1 - 4 * g - o) % 16] = [vsubq_s32(a[0], b[0]), vsubq_s32(a[1], b[1])];
-            }
-        }
-        for g in 0..GO {
-            let mut o4 = [[zero; 2]; 4];
-            let mut o4b = [[zero; 2]; 4];
-            for q in 0..quads {
-                let kv = lanes(t, &odd[q % Q][g]);
-                col_mac!(o4, cols.row(t, 4 * q + 1, c), kv; 0 0 1 1 2 2 3 3);
-                col_mac!(o4b, cols.row(t, 4 * q + 3, c), kv; 0 4 1 5 2 6 3 7);
-            }
-            for o in 0..4 {
-                let i = 4 * g + o;
-                let ev = e[i % 16];
-                let d = [0, 1].map(|half| vaddq_s32(o4[o][half], o4b[o][half]));
-                cols.put(i, c, [vaddq_s32(ev[0], d[0]), vaddq_s32(ev[1], d[1])]);
-                cols.put(
-                    M - 1 - i,
-                    c,
-                    [vsubq_s32(ev[0], d[0]), vsubq_s32(ev[1], d[1])],
-                );
-            }
-        }
-    }
-}
-
-/// The column pass of `pass`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn col_pass(t: Neon, pass: Pass, cols: &mut Columns<'_>) {
-    match pass {
-        Pass::Identity(scale) => col_identity(t, scale, cols),
-        Pass::Four(k) => col_matrix(t, k, cols),
-        Pass::Eight(k) => col_matrix(t, k, cols),
-        Pass::Sixteen(k) => col_matrix(t, k, cols),
-        Pass::Dct(8) => col_dct::<8, 4, 1>(t, &COL8, cols),
-        Pass::Dct(16) if cols.w == 4 => col_dct::<16, 8, 2>(t, &COL16, cols),
-        Pass::Dct(16) => col_dct2::<16, 4, 1, 2>(t, (&EVEN16, &ODD16C), cols),
-        Pass::Dct(_) if cols.w == 4 => col_dct::<32, 16, 4>(t, &COL32, cols),
-        Pass::Dct(_) => col_dct2::<32, 8, 2, 4>(t, (&EVEN32, &ODD32C), cols),
-    }
-}
-
 /// Adds the constant `residual` to the `w x h` block at the start of `dst`.
 #[inline]
 #[target_feature(enable = "neon")]
@@ -931,8 +501,7 @@ fn add_constant(t: Neon, dst: &mut [u8], (w, h, stride): (usize, usize, usize), 
         let sum = apply(vcombine_u8(vcreate_u8(bytes), vcreate_u8(0)));
         vgetq_lane_u64::<0>(vreinterpretq_u64_u8(sum))
     };
-    for row in 0..h {
-        let rest = dst.get_mut(row * stride..).unwrap_or_default();
+    for rest in dst.chunks_mut(stride.max(1)).take(h) {
         if w == 4 {
             if let Some(out) = rest.first_chunk_mut::<4>() {
                 *out = (apply8(u64::from(u32::from_le_bytes(*out))) as u32).to_le_bytes();
@@ -950,72 +519,38 @@ fn add_constant(t: Neon, dst: &mut [u8], (w, h, stride): (usize, usize, usize), 
     }
 }
 
-/// An 8x8 block with its rows in registers: no scratch and no loops over
-/// a runtime size.
-#[inline]
-#[target_feature(enable = "neon")]
-fn block8(
-    t: Neon,
-    (row, col): (Pass, Pass),
-    (coeffs, load): (&[i32], (Option<FlatDequant>, bool)),
-    (row_shift, col_shift): (int32x4_t, int32x4_t),
-    (dst, stride): (&mut [u8], usize),
-) {
-    let zero = vdupq_n_s16(0);
-    let mut inputs = [zero; 8];
-    let coded = load_prefix::<false>(t, coeffs, load, true, |i, v| inputs[i % 8] = v);
-    macro_rules! rows {
-        (|$x:ident| $kernel:expr) => {
-            core::array::from_fn(|r| {
-                if r < coded {
-                    let $x = inputs[r];
-                    let [lo, hi]: [int32x4_t; 2] = $kernel;
-                    narrow(lo, hi, row_shift)
-                } else {
-                    zero
-                }
-            })
+fearless_simd::kernel!(
+    /// Adds the transform of a `DCT_DCT` block whose only coefficient is
+    /// `dc` to the 8-bit block at the start of `dst`: one constant residual.
+    #[inline(never)]
+    pub(super) fn add_flat(
+        t: Neon,
+        shape: InverseTransformAdd,
+        coefficient: (i32, Option<FlatDequant>),
+        target: (&mut [u8], usize),
+    ) {
+        let ((dc, dequant), (dst, stride)) = (coefficient, target);
+        let x = vdupq_n_s32(dc);
+        let x = match dequant {
+            Some(dq) => {
+                let denom = vdupq_n_s32(-(dq.denom_shift as i32));
+                dequantize::<true>(x, vdupq_n_u32(dq.dc << 8), denom)
+            }
+            None => x,
         };
+        let x = vqmovn_s32(x);
+        let x = if shape.rescale {
+            vqrdmulh_n_s16(x, 2896 * 8)
+        } else {
+            x
+        };
+        let shift = |s: u8| vdupq_n_s32(-i32::from(s));
+        let row = vqmovn_s32(vrshlq_s32(vmull_n_s16(x, 64), shift(shape.row_shift)));
+        let col = vqmovn_s32(vrshlq_s32(vmull_n_s16(row, 64), shift(shape.col_shift)));
+        let r = i32::from(vget_lane_s16::<0>(col)).clamp(-256, 255);
+        add_constant(t, dst, (shape.w(), shape.h(), stride), r);
     }
-    let y: [int16x8_t; 8] = match row {
-        Pass::Identity(s) => rows!(|x| [vmull_n_s16(vget_low_s16(x), s), vmull_high_n_s16(x, s)]),
-        Pass::Eight(k) => rows!(|x| eight!(t, k, x)),
-        _ => rows!(|x| dct8!(t, &DCT_TABLES, [x])),
-    };
-    let put = |dst: &mut [u8], o: usize, [lo, hi]: [int32x4_t; 2]| {
-        add8(dst, o * stride, narrow(lo, hi, col_shift));
-    };
-    let zero32 = vdupq_n_s32(0);
-    match col {
-        Pass::Identity(s) => {
-            for (r, &y) in y.iter().enumerate().take(coded) {
-                add8(dst, r * stride, scale(y, s, col_shift));
-            }
-        }
-        Pass::Eight(k) => {
-            let mut acc = [[zero32; 2]; 8];
-            for (r, &y) in y.iter().enumerate() {
-                let kv = lanes(t, &k[r][0]);
-                col_mac!(acc, y, kv; 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7);
-            }
-            for (o, &acc) in acc.iter().enumerate() {
-                put(dst, o, acc);
-            }
-        }
-        _ => {
-            let (mut even, mut odd) = ([[zero32; 2]; 4], [[zero32; 2]; 4]);
-            for (p, pair) in y.as_chunks::<2>().0.iter().enumerate() {
-                let kv = lanes(t, &COL8[p][0]);
-                col_mac!(even, pair[0], kv; 0 0 1 1 2 2 3 3);
-                col_mac!(odd, pair[1], kv; 0 4 1 5 2 6 3 7);
-            }
-            for (o, (e, d)) in even.iter().zip(&odd).enumerate() {
-                put(dst, o, [vaddq_s32(e[0], d[0]), vaddq_s32(e[1], d[1])]);
-                put(dst, 7 - o, [vsubq_s32(e[0], d[0]), vsubq_s32(e[1], d[1])]);
-            }
-        }
-    }
-}
+);
 
 /// [`add`] of a block with more than a DC coefficient or another type than
 /// `DCT_DCT`. With identity rows and columns each output depends on its own
@@ -1042,7 +577,7 @@ fn transform(
     };
     let row_shift = vdupq_n_s32(-i32::from(shape.row_shift));
     let col_shift = vdupq_n_s32(-i32::from(shape.col_shift));
-    let (row, col) = (Pass::of(shape.row, w), Pass::of(shape.col, h));
+    let (row, col) = shape.passes;
     let add = |dst: &mut [u8], at: usize, v: int16x8_t| {
         if w == 4 {
             add4x2(dst, at / 4 * stride, stride, v);
@@ -1111,37 +646,6 @@ fn transform(
     col_pass(t, col, cols);
 }
 
-/// [`add`] of a `DCT_DCT` block whose only coefficient is `dc`: one
-/// constant residual.
-#[inline(never)]
-#[target_feature(enable = "neon")]
-fn flat(
-    t: Neon,
-    shape: InverseTransformAdd,
-    (dc, dequant): (i32, Option<FlatDequant>),
-    (dst, stride): (&mut [u8], usize),
-) {
-    let x = vdupq_n_s32(dc);
-    let x = match dequant {
-        Some(dq) => {
-            let denom = vdupq_n_s32(-(dq.denom_shift as i32));
-            dequantize::<true>(x, vdupq_n_u32(dq.dc << 8), denom)
-        }
-        None => x,
-    };
-    let x = vqmovn_s32(x);
-    let x = if shape.rescale {
-        vqrdmulh_n_s16(x, 2896 * 8)
-    } else {
-        x
-    };
-    let shift = |s: u8| vdupq_n_s32(-i32::from(s));
-    let row = vqmovn_s32(vrshlq_s32(vmull_n_s16(x, 64), shift(shape.row_shift)));
-    let col = vqmovn_s32(vrshlq_s32(vmull_n_s16(row, 64), shift(shape.col_shift)));
-    let r = i32::from(vget_lane_s16::<0>(col)).clamp(-256, 255);
-    add_constant(t, dst, (shape.w(), shape.h(), stride), r);
-}
-
 fearless_simd::kernel!(
     /// Adds the transform of the coefficients (rows `in_w` apart) to the
     /// 8-bit block at the start of `dst`, as [`InverseTransformAdd::add`]
@@ -1155,10 +659,42 @@ fearless_simd::kernel!(
         target: (&mut [u8], usize),
         scratch: &mut [i32; 32 * 32],
     ) {
-        match input {
-            ([], ..) => {}
-            (&[dc], _, dequant) if shape.flat => flat(t, shape, (dc, dequant), target),
-            _ => transform(t, shape, input, target, scratch),
+        transform(t, shape, input, target, scratch);
+    }
+);
+
+fearless_simd::kernel!(
+    /// [`add`] of a 4x4, 8x4 or 4x8 block, its rows and columns in registers;
+    /// a separate entry, so that the general kernel keeps its code layout.
+    #[inline(never)]
+    pub(super) fn add_small(
+        t: Neon,
+        shape: InverseTransformAdd,
+        input: (&[i32], Option<FlatDequant>),
+        target: (&mut [u8], usize),
+    ) {
+        let (coeffs, dequant) = input;
+        let (dst, stride) = target;
+        let w = shape.w();
+        let passes = shape.passes;
+        let shift = |s: u8| vdupq_n_s32(-i32::from(s));
+        let shifts = (shift(shape.row_shift), shift(shape.col_shift));
+        let mut x = [vdupq_n_s16(0); 4];
+        load_prefix::<false>(t, coeffs, (dequant, shape.rescale), true, |i, v| {
+            x[i % 4] = v;
+        });
+        if shape.h() == 4 && w == 4 {
+            let [a, b] = block4x4(t, passes, [x[0], x[1]], shifts);
+            add4x2(dst, 0, stride, a);
+            add4x2(dst, 2 * stride, stride, b);
+        } else if w == 8 {
+            for (r, y) in block8x4(t, passes, x, shifts).into_iter().enumerate() {
+                add8(dst, r * stride, y);
+            }
+        } else {
+            for (p, y) in block4x8(t, passes, x, shifts).into_iter().enumerate() {
+                add4x2(dst, 2 * p * stride, stride, y);
+            }
         }
     }
 );

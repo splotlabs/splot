@@ -254,6 +254,32 @@ impl Output for AddU16<'_> {
     }
 }
 
+/// `Clip1(p + residual)` over the `w x h` block at the start of `dst`, `w`
+/// at least 8, for the column-clamped constant `residual` and samples up to
+/// `max`.
+#[inline]
+fn add_constant_u16<S: Simd>(
+    simd: S,
+    dst: &mut [u16],
+    (w, h, stride): (usize, usize, usize),
+    (residual, max): (i32, i16),
+) {
+    let residual = i16x8::splat(simd, residual as i16);
+    for row in dst.chunks_mut(stride.max(1)).take(h) {
+        let Some(row) = row.get_mut(..w) else {
+            continue;
+        };
+        for out in row.as_chunks_mut::<8>().0 {
+            let pred = u16x8::load_array(simd, *out).bitcast::<i16x8<S>>();
+            let sum = simd
+                .saturating_add_i16x8(pred, residual)
+                .max(i16x8::splat(simd, 0))
+                .min(i16x8::splat(simd, max));
+            *out = sum.bitcast::<u16x8<S>>().into();
+        }
+    }
+}
+
 /// Eight `Clip1(p + Clip3(-2^BitDepth, 2^BitDepth - 1, r))` of `pred` and
 /// the column sums `res`, as `Clip1(p + Sat16(r))`: both saturate alike for a
 /// `p` up to `max < 2^15`.
@@ -301,6 +327,8 @@ pub struct InverseTransformAdd {
     flat: bool,
     #[cfg(target_arch = "x86_64")]
     passes: (avx2::Pass, avx2::Pass),
+    #[cfg(target_arch = "aarch64")]
+    passes: (neon::Pass, neon::Pass),
 }
 
 /// [`InverseTransformAdd`] by `[log2W - 2][log2H - 2][PlaneTxType][useDdt]`
@@ -403,6 +431,11 @@ impl InverseTransformAdd {
             ),
             #[cfg(target_arch = "x86_64")]
             passes: (row_pass, col_pass),
+            #[cfg(target_arch = "aarch64")]
+            passes: (
+                neon::Pass::of(row, 1 << w_log2),
+                neon::Pass::of(col, 1 << h_log2),
+            ),
         })
     }
 
@@ -464,7 +497,12 @@ impl InverseTransformAdd {
         }
         #[cfg(target_arch = "aarch64")]
         if let Some(token) = fearless_simd::Level::baseline().as_neon() {
-            neon::add(token, self, (coeffs, w, dequant), (dst, stride), scratch);
+            match coeffs {
+                [] => {}
+                &[dc] if self.flat => neon::add_flat(token, self, (dc, dequant), (dst, stride)),
+                _ if w * h <= 32 => neon::add_small(token, self, (coeffs, dequant), (dst, stride)),
+                _ => neon::add(token, self, (coeffs, w, dequant), (dst, stride), scratch),
+            }
             return true;
         }
         self.run_add(
@@ -588,7 +626,9 @@ impl InverseTransformAdd {
                 T::u8_slice_mut(&mut *dst),
                 bit_depth,
             ) {
-                neon::add(token, self, (&rows[..len], 8, None), (dst, stride), scratch);
+                if len > 0 {
+                    neon::add(token, self, (&rows[..len], 8, None), (dst, stride), scratch);
+                }
                 return Ok(true);
             }
             let t = self.transform8(None, bit_depth);
@@ -622,6 +662,14 @@ impl InverseTransformAdd {
             return false;
         };
         let max = t.bit_depth.max_sample() as i16;
+        if w >= 8
+            && input.1 == w
+            && let Some(residual) = self.flat_residual(input.0, t.dequant, t.bit_depth)
+        {
+            let geometry = (w, self.h(), stride);
+            baseline_simd!(simd => add_constant_u16(simd, dst, geometry, (residual, max)));
+            return true;
+        }
         run(
             t,
             input,
