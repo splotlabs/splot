@@ -905,6 +905,13 @@ fn check_byte_lanes() {
                     assert_eq!(narrow[0], narrow[1], "prep16 {label}");
                     assert_eq!(put[0], put[1], "put {label}");
                     assert_eq!(wide[0], wide[1], "put wide {label}");
+                    let mut direct = [vec![7u8; out_stride * h], vec![7u8; out_stride * h]];
+                    eight_bit::put(&block, &mut direct[0], out_stride);
+                    assert_eq!(direct[0], put[0], "direct put {label}");
+                    let [first, second] = &mut direct;
+                    let outputs = [(&mut first[..], out_stride), (&mut second[..], out_stride)];
+                    eight_bit::put_pair([&block, &block], outputs);
+                    assert_eq!(direct, [put[0].clone(), put[0].clone()], "put pair {label}");
                     let pred0: Vec<i32> =
                         (0..w * h).map(|i| (i as i32 * 397) % 8200 - 1100).collect();
                     let pred0_narrow: Vec<i16> = pred0.iter().map(|&v| v as i16).collect();

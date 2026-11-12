@@ -20,16 +20,21 @@
 //! `-5132..=9212`; a zero phase stores `sample << 4 <= 4080`. The sum of two
 //! predictors, the equal-weight average, stays in `i16` too.
 //!
-//! The kernels are the [`neon`] ones on AArch64 and the portable ones
-//! elsewhere; blocks no kernel takes decline to the portable kernels.
+//! The kernels are the [`neon`] ones on AArch64, the [`avx2`] ones on
+//! x86_64 and the portable ones elsewhere; blocks no kernel takes decline
+//! to the portable kernels.
 
 use super::ReferencePlaneView;
 use super::block::{self, Block, Sink, Taps, Window, is_cell};
 use super::cell::{Cell, Plane, Written};
 use crate::format::ReconSample;
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 use generic as kernel;
+#[cfg(target_arch = "x86_64")]
+pub(super) mod avx2;
+#[cfg(target_arch = "x86_64")]
+use avx2 as kernel;
 #[cfg(target_arch = "aarch64")]
 pub(super) mod neon;
 #[cfg(target_arch = "aarch64")]
@@ -266,10 +271,14 @@ pub(super) fn program(
     kernel::program(planes, (filter, size), cells, clip)
 }
 
-/// The kernels of this module on targets without [`neon`]: the portable
-/// kernels on a stage, each compound pair through its staged first
-/// predictor.
+/// The kernels of this module on targets without [`neon`], and those
+/// [`avx2`] declines to: the portable kernels on a stage, each compound
+/// pair through its staged first predictor.
 #[cfg(not(target_arch = "aarch64"))]
+#[cfg_attr(
+    target_arch = "x86_64",
+    allow(dead_code, reason = "the AVX2 kernels decline to part of these")
+)]
 mod generic {
     use super::super::ReferencePlaneView;
     use super::super::block::{self, Block, Sink, Window};

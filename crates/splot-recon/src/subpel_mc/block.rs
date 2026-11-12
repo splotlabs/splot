@@ -206,13 +206,13 @@ pub(super) struct Taps {
     pub(super) start: usize,
     pub(super) count: usize,
     #[cfg_attr(
-        not(target_arch = "aarch64"),
-        allow(dead_code, reason = "read by the NEON kernels")
+        not(any(target_arch = "aarch64", target_arch = "x86_64")),
+        allow(dead_code, reason = "read by the NEON and AVX2 kernels")
     )]
     pub(super) dot: u64,
     #[cfg_attr(
-        not(target_arch = "aarch64"),
-        allow(dead_code, reason = "read by the NEON kernels")
+        not(any(target_arch = "aarch64", target_arch = "x86_64")),
+        allow(dead_code, reason = "read by the NEON and AVX2 kernels")
     )]
     pub(super) words: [i32; NUM_TAPS / 2],
     pub(super) full: [i32; NUM_TAPS / 2],

@@ -14,8 +14,12 @@ use super::block::{Block, Sink, Window, is_cell};
 use super::cell::{Cell, Plane, Written};
 use crate::format::ReconSample;
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 use generic as kernel;
+#[cfg(target_arch = "x86_64")]
+mod avx2;
+#[cfg(target_arch = "x86_64")]
+use avx2 as kernel;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 #[cfg(target_arch = "aarch64")]
@@ -88,8 +92,8 @@ pub(super) fn program(
     kernel::program(planes, shape, cells, clip)
 }
 
-/// The kernels of this module on targets without [`neon`]: the portable
-/// kernels on a stage.
+/// The kernels of this module on targets without [`neon`], and those
+/// [`avx2`] declines to: the portable kernels on a stage.
 #[cfg(not(target_arch = "aarch64"))]
 mod generic {
     use super::super::ReferencePlaneView;
