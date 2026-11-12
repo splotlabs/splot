@@ -355,11 +355,12 @@ pub(crate) fn decode_ordinary_transform_block(
     quant: &mut [i32],
 ) -> Result<usize, CoeffOrdinaryPassError> {
     preflight(&input, quant.len())?;
-    if symbols.cdf_update_mode() == CdfUpdateMode::Enabled {
-        dispatch::<true>((state, cdfs, symbols, &input, quant))
+    let run = if symbols.cdf_update_mode() == CdfUpdateMode::Enabled {
+        dispatch::<true>(input.config)
     } else {
-        dispatch::<false>((state, cdfs, symbols, &input, quant))
-    }
+        dispatch::<false>(input.config)
+    };
+    run(state, cdfs, symbols, &input, quant)
 }
 
 fn preflight(
@@ -410,41 +411,44 @@ struct BlockSummary {
 
 #[allow(clippy::inline_always, reason = "measured: one body per tool set")]
 #[inline(always)]
-fn dispatch<const UPD: bool>(args: RunArgs<'_, '_, '_>) -> Result<usize, CoeffOrdinaryPassError> {
+fn dispatch<const UPD: bool>(config: CoeffBaseDerivedLevelPassConfig) -> RunFn {
     use CoeffTransformClass::{Horizontal, TwoD, Vertical};
-    let config = args.3.config;
     match (
         config.tx_class,
         config.plane == 0,
         config.use_tcq,
         config.parity_hiding,
     ) {
-        (TwoD, true, true, _) => run::<0, true, true, false, UPD>(args),
-        (TwoD, true, false, true) => run::<0, true, false, true, UPD>(args),
-        (TwoD, true, false, false) => run::<0, true, false, false, UPD>(args),
-        (Horizontal, true, _, true) => run::<1, true, false, true, UPD>(args),
-        (Horizontal, true, _, false) => run::<1, true, false, false, UPD>(args),
-        (Vertical, true, _, true) => run::<2, true, false, true, UPD>(args),
-        (Vertical, true, _, false) => run::<2, true, false, false, UPD>(args),
-        (TwoD, false, ..) => run::<0, false, false, false, UPD>(args),
-        (Horizontal, false, ..) => run::<1, false, false, false, UPD>(args),
-        (Vertical, false, ..) => run::<2, false, false, false, UPD>(args),
+        (TwoD, true, true, _) => run::<0, true, true, false, UPD>,
+        (TwoD, true, false, true) => run::<0, true, false, true, UPD>,
+        (TwoD, true, false, false) => run::<0, true, false, false, UPD>,
+        (Horizontal, true, _, true) => run::<1, true, false, true, UPD>,
+        (Horizontal, true, _, false) => run::<1, true, false, false, UPD>,
+        (Vertical, true, _, true) => run::<2, true, false, true, UPD>,
+        (Vertical, true, _, false) => run::<2, true, false, false, UPD>,
+        (TwoD, false, ..) => run::<0, false, false, false, UPD>,
+        (Horizontal, false, ..) => run::<1, false, false, false, UPD>,
+        (Vertical, false, ..) => run::<2, false, false, false, UPD>,
     }
 }
 
-type RunArgs<'r, 'a, 'l> = (
-    &'r mut TileCoeffContextState,
-    &'r mut TileCdfSubset,
-    &'r mut SymbolDecoder<'a>,
-    &'r CoeffTransformBlockInput<'l>,
-    &'r mut [i32],
-);
+type RunFn = fn(
+    &mut TileCoeffContextState,
+    &mut TileCdfSubset,
+    &mut SymbolDecoder<'_>,
+    &CoeffTransformBlockInput<'_>,
+    &mut [i32],
+) -> Result<usize, CoeffOrdinaryPassError>;
 
 /// One specialised block body per class, plane type and tool set, kept out
 /// of line so its loops own the registers.
 #[inline(never)]
 fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, const UPD: bool>(
-    (state, cdfs, symbols, input, quant): RunArgs<'_, '_, '_>,
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: &CoeffTransformBlockInput<'_>,
+    quant: &mut [i32],
 ) -> Result<usize, CoeffOrdinaryPassError> {
     let config = input.config;
     let tx_class = [
