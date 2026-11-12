@@ -392,9 +392,9 @@ impl<T: SplitSample> SplitFrame<T> {
         self.recon_state()?.precompute(batch, worker)
     }
 
-    fn commit(&self, batch: usize) -> Result<()> {
+    fn commit(&self, batch: usize, worker: usize) -> Result<()> {
         let recon = self.recon_state()?;
-        let progress = recon.commit(batch)?;
+        let progress = recon.commit(batch, worker)?;
         if progress.recon_complete {
             *self.scratch.lock() = Some(recon.take_scheduled_scratch()?);
         }
@@ -555,7 +555,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 PREPARE => self.prepare().map(|()| true),
                 ATTACH => self.attach().map(|()| true),
                 RESOLVE => self.resolve(claim.row),
-                COMMIT => self.commit(claim.row).map(|()| true),
+                COMMIT => self.commit(claim.row, worker).map(|()| true),
                 FRONTIER => self.frontier(claim.row).map(|()| true),
                 PRECOMPUTE => self.precompute(claim.row, worker).map(|()| true),
                 FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row)

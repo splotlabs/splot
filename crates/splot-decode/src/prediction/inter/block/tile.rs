@@ -1125,7 +1125,7 @@ struct ReadyReconRow<T: ReconSample> {
 /// worker, so a precompute never waits for another worker's scratch.
 pub(crate) struct InterReconScratchPool<T: ReconSample> {
     workers: Vec<Mutex<deferred_recon::InterReconScratch<T>>>,
-    surfaces: std::sync::OnceLock<admission::SpareSurfaces<T>>,
+    surfaces: std::sync::OnceLock<std::sync::Arc<admission::SpareSurfaces<T>>>,
 }
 
 impl<T: ReconSample> InterReconScratchPool<T> {
@@ -1156,8 +1156,12 @@ impl<T: ReconSample> InterReconScratchPool<T> {
         Ok(f(&mut slot.lock()))
     }
 
-    fn spare_surfaces(&self) -> admission::SpareSurfaces<T> {
-        std::sync::Arc::clone(self.surfaces.get_or_init(std::sync::Arc::default))
+    fn spare_surfaces(&self) -> std::sync::Arc<admission::SpareSurfaces<T>> {
+        std::sync::Arc::clone(
+            self.surfaces.get_or_init(|| {
+                std::sync::Arc::new(admission::SpareSurfaces::new(self.workers.len()))
+            }),
+        )
     }
 }
 
@@ -2217,7 +2221,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
             workspace,
             commit_block_decoded,
             decoded_any,
-            std::sync::Arc::clone(&surface_source),
             core::mem::take(frame_filter_records),
         );
         let commit = admission::run_ordinary_tile(

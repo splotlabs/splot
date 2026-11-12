@@ -37,7 +37,6 @@ pub(super) struct TileCommit<T: ReconSample> {
     /// The tile `block_decoded` is laid out for, on the scheduled spine.
     block_decoded_tile: Option<usize>,
     decoded_any: bool,
-    surfaces: Arc<SurfaceSource<T>>,
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
 }
 
@@ -47,7 +46,6 @@ impl<T: ReconSample> TileCommit<T> {
         workspace: CurrentFrameWorkspace<T>,
         block_decoded: TileBlockDecodedState,
         decoded_any: bool,
-        surfaces: Arc<SurfaceSource<T>>,
         frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
     ) -> Self {
         Self {
@@ -60,7 +58,6 @@ impl<T: ReconSample> TileCommit<T> {
             current_block_decoded_superblock: None,
             block_decoded_tile: None,
             decoded_any,
-            surfaces,
             frame_filter_records,
         }
     }
@@ -76,10 +73,6 @@ impl<T: ReconSample> TileCommit<T> {
         ready.row.return_terminal_error()?;
         if ready.row.ordinal != self.next {
             return Err(invalid_inter_tile_scheduling_state());
-        }
-        if let Some(surface) = ready.surface.take() {
-            surface.publish_into(&mut self.workspace)?;
-            self.surfaces.give(surface);
         }
         self.ordered.with_installed(|scratch| {
             pixel_commit::replay_recon_row(
@@ -392,17 +385,39 @@ impl<T: ReconSample> ScheduledTileWorkspace<T> {
 pub(super) struct SurfaceSource<T: ReconSample> {
     info: splot_recon::DecodedFrameInfo,
     rects: Vec<splot_recon::PlaneRect>,
-    free: SpareSurfaces<T>,
+    free: Arc<SpareSurfaces<T>>,
 }
 
-/// The decode's spare reconstruction surfaces.
-pub(super) type SpareSurfaces<T> = Arc<Mutex<Vec<splot_recon::OwnedFrameRect<T>>>>;
+/// The decode's spare reconstruction surfaces: a list per scheduler worker,
+/// which only that worker takes from and gives to, beside a shared list that
+/// takes what a worker list cannot hold.
+#[derive(Default)]
+pub(super) struct SpareSurfaces<T: ReconSample> {
+    workers: Vec<Mutex<Vec<splot_recon::OwnedFrameRect<T>>>>,
+    pub(super) shared: Mutex<Vec<splot_recon::OwnedFrameRect<T>>>,
+}
+
+/// Spare surfaces one worker list holds: two precompute batches' worth.
+const WORKER_SPARE_SURFACES: usize = 2 * RECON_BATCH_UNITS;
+
+impl<T: ReconSample> SpareSurfaces<T> {
+    pub(super) fn new(workers: usize) -> Self {
+        Self {
+            workers: (0..workers).map(|_| Mutex::default()).collect(),
+            shared: Mutex::default(),
+        }
+    }
+
+    fn worker(&self, worker: usize) -> Option<&Mutex<Vec<splot_recon::OwnedFrameRect<T>>>> {
+        self.workers.get(worker.checked_rem(self.workers.len())?)
+    }
+}
 
 impl<T: ReconSample> SurfaceSource<T> {
     pub(super) fn new(
         info: splot_recon::DecodedFrameInfo,
         rects: Vec<splot_recon::PlaneRect>,
-        free: SpareSurfaces<T>,
+        free: Arc<SpareSurfaces<T>>,
     ) -> Self {
         Self { info, rects, free }
     }
@@ -412,7 +427,7 @@ impl<T: ReconSample> SurfaceSource<T> {
     pub(super) fn reset(
         &mut self,
         info: splot_recon::DecodedFrameInfo,
-        free: SpareSurfaces<T>,
+        free: Arc<SpareSurfaces<T>>,
     ) -> &mut Vec<splot_recon::PlaneRect> {
         self.info = info;
         self.free = free;
@@ -426,10 +441,10 @@ impl<T: ReconSample> SurfaceSource<T> {
     pub(super) fn take(
         &self,
         unit: usize,
+        worker: usize,
     ) -> Option<splot_recon::Result<splot_recon::OwnedFrameRect<T>>> {
         let rect = *self.rects.get(unit)?;
-        let spare = {
-            let mut free = self.free.lock();
+        let pick = |free: &mut Vec<splot_recon::OwnedFrameRect<T>>| {
             let reusable = free.iter().position(|surface| {
                 let held = surface.luma_rect();
                 surface.info() == self.info
@@ -443,6 +458,11 @@ impl<T: ReconSample> SurfaceSource<T> {
                 None => free.pop(),
             }
         };
+        let spare = self
+            .free
+            .worker(worker)
+            .and_then(|own| pick(&mut own.lock()))
+            .or_else(|| pick(&mut self.free.shared.lock()));
         let Some(mut surface) = spare else {
             return Some(splot_recon::OwnedFrameRect::new(
                 self.info,
@@ -463,13 +483,28 @@ impl<T: ReconSample> SurfaceSource<T> {
         }))
     }
 
-    pub(super) fn give(&self, surface: splot_recon::OwnedFrameRect<T>) {
-        self.free.lock().push(surface);
+    pub(super) fn give(&self, surface: splot_recon::OwnedFrameRect<T>, worker: usize) {
+        if let Some(mut own) = self
+            .free
+            .worker(worker)
+            .map(|own| own.lock())
+            .filter(|own| own.len() < WORKER_SPARE_SURFACES)
+        {
+            own.push(surface);
+            return;
+        }
+        self.free.shared.lock().push(surface);
     }
 
     #[cfg(test)]
     pub(super) fn free_len(&self) -> usize {
-        self.free.lock().len()
+        self.free.shared.lock().len()
+            + self
+                .free
+                .workers
+                .iter()
+                .map(|own| own.lock().len())
+                .sum::<usize>()
     }
 }
 
@@ -537,7 +572,11 @@ impl<T: ReconSample> TileRecon<T> {
                 .into_iter()
                 .map(|mut ready| {
                     if ready.surface.is_none() && !ready.row.superblocks.is_empty() {
-                        ready.surface = surfaces.take(ready.row.ordinal).transpose().ok().flatten();
+                        ready.surface = surfaces
+                            .take(ready.row.ordinal, worker)
+                            .transpose()
+                            .ok()
+                            .flatten();
                     }
                     scratch.with_installed(|scratch| {
                         precompute_recon_row(
@@ -577,6 +616,8 @@ impl<T: ReconSample> TileRecon<T> {
         &self,
         index: usize,
         parse_progress: &super::ParseProgress,
+        surfaces: &SurfaceSource<T>,
+        worker: usize,
     ) -> Result<CommittedBatch<T>> {
         let mut commit = take_active_commit(&self.commit)?;
         let batch = {
@@ -594,7 +635,7 @@ impl<T: ReconSample> TileRecon<T> {
             self.ref_frame_idx.as_slice(),
         );
         let mut batch = batch;
-        for ready in batch.drain(..) {
+        for mut ready in batch.drain(..) {
             if commit.block_decoded_tile != Some(ready.row.tile) {
                 let tile = self
                     .tiles
@@ -609,6 +650,10 @@ impl<T: ReconSample> TileRecon<T> {
                 )?;
                 commit.current_block_decoded_superblock = None;
                 commit.block_decoded_tile = Some(ready.row.tile);
+            }
+            if let Some(surface) = ready.surface.take() {
+                surface.publish_into(&mut commit.workspace)?;
+                surfaces.give(surface, worker);
             }
             let spent = commit.replay(
                 ready,
@@ -1251,8 +1296,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// Commits one precomputed unit after its predecessor has completed.
     ///
     /// The one caller that commits the final unit receives the completed tile.
-    pub(crate) fn commit(&self, index: usize) -> Result<ScheduledCommitProgress> {
-        let mut committed = self.recon.commit_batch(index, &self.parse_progress)?;
+    pub(crate) fn commit(&self, index: usize, worker: usize) -> Result<ScheduledCommitProgress> {
+        let mut committed =
+            self.recon
+                .commit_batch(index, &self.parse_progress, &self.pending_surfaces, worker)?;
         if !committed.frontier_rows.is_empty() {
             self.seal_committed_rows(&mut committed.state, committed.frontier_rows.end)?;
         }
@@ -1556,7 +1603,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
                 current_block_decoded_superblock: None,
                 block_decoded_tile: None,
                 decoded_any: false,
-                surfaces: Arc::clone(&surface_source),
                 frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
             })),
             scratch: Mutex::new(None),
