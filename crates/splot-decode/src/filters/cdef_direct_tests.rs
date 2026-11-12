@@ -156,7 +156,7 @@ fn direct_cdef_10bit(
     let samples = cdef_frame_samples(&frame);
     drop(frame);
     assert!(lease.submit());
-    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
     for (plane, expected) in [PlaneId::Y, PlaneId::U, PlaneId::V]
         .into_iter()
         .zip(&samples)
@@ -381,7 +381,7 @@ fn disabled_cdef_initializes_u8_direct_target_from_source() {
     }
     drop(frame);
     assert!(lease.submit());
-    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
     assert!(
         crate::test_support::packed(frame.y())
             .iter()

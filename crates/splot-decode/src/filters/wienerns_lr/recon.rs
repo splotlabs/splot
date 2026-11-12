@@ -15,6 +15,7 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrame, PlaneId, ReconS
 use std::sync::Arc;
 
 use crate::Result;
+use crate::pipeline::inflight::FrameSlotWriter;
 use parking_lot::Mutex;
 
 const MI_SIZE: usize = 4;
@@ -75,13 +76,16 @@ impl<T: ReconSample> FilteredFrameSink<T> {
         Ok(())
     }
 
-    /// Freezes the filtered output and hands the frozen frame to `publish`.
-    ///
-    /// A published frame freezes under its own lock, so the slot `publish`
-    /// settles is visible to every consumer before the published prefix stops
-    /// being readable.
-    fn freeze<R>(self, publish: impl FnOnce(DecodedFrame<T>) -> R) -> Result<R> {
-        self.progress.freeze_workspace(publish)
+    /// Freezes the filtered output into the paired slot `writer` settles, or
+    /// returns the frozen frame of a private sink.
+    fn freeze(mut self, writer: Option<FrameSlotWriter<T>>) -> Result<Option<DecodedFrame<T>>> {
+        match writer {
+            Some(writer) => self.progress.freeze_workspace(writer).map(|()| None),
+            None => Arc::get_mut(&mut self.progress)
+                .ok_or_else(lr_pipeline_state_error)?
+                .freeze()
+                .map(Some),
+        }
     }
 }
 
@@ -146,6 +150,10 @@ pub(crate) struct OwnedFilterSetup<T: ReconSample> {
 }
 
 pub(crate) type OwnedFilterShell<T> = Arc<Option<OwnedFilterSetup<T>>>;
+
+/// The terminal freeze's result: the frame of a private sink, or `None` once a
+/// slot writer settled it, plus the records handed back to the scratch.
+pub(crate) type FrozenFrame<T> = Result<(Option<DecodedFrame<T>>, super::FrameFilterRecords)>;
 
 /// One completed stripe whose index and samples move together into publication.
 pub(crate) struct OwnedFilteredStripe<T: ReconSample> {
@@ -453,21 +461,21 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         })
     }
 
-    pub(crate) fn into_filtered_frame<R>(
+    pub(crate) fn into_filtered_frame(
         self,
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
-        progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        publish: impl FnOnce(DecodedFrame<T>) -> R,
-    ) -> Result<(R, super::FrameFilterRecords)> {
+        writer: Option<FrameSlotWriter<T>>,
+    ) -> FrozenFrame<T> {
+        let progress = writer.as_ref().map(FrameSlotWriter::progress_handle);
         let setup =
             self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress)?;
         let mut frontier = OwnedFilterFrontier::start(setup, deblock_quant_deltas, None)?;
         while let Some(job) = frontier.advance()? {
             job.run()?;
         }
-        let (frame, _shell) = frontier.finish()?.finish(publish);
+        let (frame, _shell) = frontier.finish()?.finish(writer);
         frame
     }
 }
@@ -1104,10 +1112,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
 
     /// Publishes every completed stripe, then consumes the sole output owner to
     /// freeze exactly once.
-    pub(crate) fn finish<R>(
-        mut self,
-        publish: impl FnOnce(DecodedFrame<T>) -> R,
-    ) -> Result<(R, super::FrameFilterRecords)> {
+    pub(crate) fn finish(mut self, writer: Option<FrameSlotWriter<T>>) -> FrozenFrame<T> {
         let complete = self
             .stripe_state
             .get_mut()
@@ -1146,7 +1151,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         if let Some(config) = self.ccso_config.take() {
             config.return_offset_luts(&mut self.filter_records.ccso_offset_luts);
         }
-        let frame = self.sink.freeze(publish)?;
+        let frame = self.sink.freeze(writer)?;
         Ok((frame, self.filter_records))
     }
 }
@@ -1169,15 +1174,15 @@ impl<T: ReconSample> OwnedFilterJob<T> {
 
 impl<T: ReconSample> OwnedFilterFinish<T> {
     /// Freezes only when this is the last live setup owner.
-    pub(crate) fn finish<R>(
+    pub(crate) fn finish(
         self,
-        publish: impl FnOnce(DecodedFrame<T>) -> R,
-    ) -> (Result<(R, super::FrameFilterRecords)>, OwnedFilterShell<T>) {
+        writer: Option<FrameSlotWriter<T>>,
+    ) -> (FrozenFrame<T>, OwnedFilterShell<T>) {
         let mut setup = self.setup;
         let result = Arc::get_mut(&mut setup)
             .ok_or_else(lr_pipeline_state_error)
             .and_then(|setup| setup.take().ok_or_else(lr_pipeline_state_error))
-            .and_then(|setup| setup.finish(publish));
+            .and_then(|setup| setup.finish(writer));
         (result, setup)
     }
 }

@@ -263,8 +263,9 @@ fn u8_direct_stripe_initializes_strided_u8_rows() {
     output.row_mut(1).expect("second row")[3] = 201;
     drop(output);
     assert!(lease.submit());
-    let frame = progress
-        .freeze_workspace(core::convert::identity)
+    let frame = Arc::into_inner(progress)
+        .expect("sole progress owner")
+        .freeze()
         .expect("frozen frame");
     assert_eq!(
         crate::test_support::packed(frame.y()),

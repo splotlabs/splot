@@ -220,7 +220,7 @@ fn poisoned_u16_targets_are_fully_written_for_all_plane_formats_and_odd_dimensio
         }
         drop(frame.into_filtered());
         assert!(lease.submit());
-        let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+        let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
             if let Some(plane) = frame.plane(plane) {
                 let rows = crate::test_support::packed(plane);

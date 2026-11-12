@@ -307,12 +307,17 @@ impl<T: ReconSample> RefFrameSlot<T> {
 /// way the phase ended instead of waiting for a row that will never land.
 pub(crate) struct FrameSlotWriter<T: ReconSample> {
     cell: Arc<CompletionCell<SlotValue<T>>>,
-    progress: Arc<FrameProgress<T>>,
+    pub(super) progress: Arc<FrameProgress<T>>,
     info: DecodedFrameInfo,
     shell: Option<splot_recon::SharedFrameShell<T>>,
 }
 
 impl<T: ReconSample> FrameSlotWriter<T> {
+    /// Shares the progress this writer's frame publishes its stripes through.
+    pub(crate) fn progress_handle(&self) -> Arc<FrameProgress<T>> {
+        Arc::clone(&self.progress)
+    }
+
     /// Publishes the filtered samples and wakes the driver.
     ///
     /// The geometry the slot published before the samples must be the geometry
@@ -828,9 +833,9 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
             progress: _,
             mut report,
         } = self;
-        let (outcome, shell) = filter.finish(|frame| writer.complete(frame));
+        let (outcome, shell) = filter.finish(Some(writer));
         match outcome {
-            Ok(((), records)) => {
+            Ok((_, records)) => {
                 report.outcome.records = Some(records);
             }
             Err(error) => {

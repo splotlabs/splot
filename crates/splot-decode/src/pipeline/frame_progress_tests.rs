@@ -8,6 +8,7 @@
 use splot_recon::{BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
 
 use super::FrameProgress;
+use crate::pipeline::inflight::{FrameSlotWriter, RefFrameSlot};
 use std::sync::Arc;
 
 fn info(width: usize, height: usize, format: PixelFormat) -> DecodedFrameInfo {
@@ -25,19 +26,24 @@ fn new_progress(width: usize, height: usize, format: PixelFormat) -> FrameProgre
     FrameProgress::new(info(width, height, format)).expect("frame progress")
 }
 
+/// A pending slot, its writer, and the progress both share.
+fn pending<T: splot_recon::ReconSample>(
+    width: usize,
+    height: usize,
+    format: PixelFormat,
+) -> (RefFrameSlot<T>, FrameSlotWriter<T>, Arc<FrameProgress<T>>) {
+    let (slot, writer) = RefFrameSlot::pending(info(width, height, format)).expect("pending slot");
+    let progress = writer.progress_handle();
+    (slot, writer, progress)
+}
+
 #[test]
 fn direct_stripes_write_the_canonical_allocation_and_publish_out_of_order() {
-    let progress = Arc::new(
-        FrameProgress::<u16>::new(info(8, 8, PixelFormat::Monochrome)).expect("frame progress"),
-    );
+    let (slot, writer, progress) = pending::<u16>(8, 8, PixelFormat::Monochrome);
     progress.begin(&[(0, 4), (4, 8)]).expect("stripe geometry");
 
     let mut bottom = progress.direct_stripe(1).expect("bottom stripe lend");
     assert!(progress.direct_stripe(1).is_none(), "a live lend is unique");
-    assert!(
-        progress.freeze_workspace(core::convert::identity).is_err(),
-        "freeze must refuse a live direct lend"
-    );
     let mut bottom_target = bottom.take_target().expect("bottom target");
     bottom_target
         .take(splot_recon::PlaneId::Y)
@@ -67,18 +73,15 @@ fn direct_stripes_write_the_canonical_allocation_and_publish_out_of_order() {
     assert!(samples[half..].iter().all(|&sample| sample == 22));
     drop(published);
 
-    let frame = progress
-        .freeze_workspace(core::convert::identity)
-        .expect("frozen frame");
+    progress.freeze_workspace(writer).expect("frozen frame");
+    let frame = slot.try_frozen().expect("settled slot");
     assert_eq!(&frame.y().samples()[..half], vec![11; half]);
     assert_eq!(&frame.y().samples()[half..], vec![22; half]);
 }
 
 #[test]
 fn detached_direct_target_keeps_its_stripe_leased() {
-    let progress = Arc::new(
-        FrameProgress::<u16>::new(info(8, 4, PixelFormat::Monochrome)).expect("frame progress"),
-    );
+    let (slot, writer, progress) = pending::<u16>(8, 4, PixelFormat::Monochrome);
     progress.begin(&[(0, 4)]).expect("stripe geometry");
 
     let mut lease = progress.direct_stripe(0).expect("stripe lend");
@@ -86,7 +89,14 @@ fn detached_direct_target_keeps_its_stripe_leased() {
     let plane = target.take(splot_recon::PlaneId::Y).expect("luma target");
     assert!(!lease.submit(), "a detached target cannot be published");
     assert!(progress.direct_stripe(0).is_none());
-    assert!(progress.freeze_workspace(drop).is_err());
+    assert!(
+        progress.freeze_workspace(writer).is_err(),
+        "freeze must refuse a live direct lend"
+    );
+    assert!(
+        slot.ready().is_err(),
+        "a refused freeze settles the slot failed"
+    );
 
     drop(plane);
     assert!(progress.direct_stripe(0).is_some());
@@ -122,9 +132,7 @@ fn detached_target_drop_hands_writes_back_before_submit() {
 
 #[test]
 fn u8_direct_stripe_writes_the_canonical_allocation() {
-    let progress = Arc::new(
-        FrameProgress::<u8>::new(info(8, 4, PixelFormat::Monochrome)).expect("frame progress"),
-    );
+    let (slot, writer, progress) = pending::<u8>(8, 4, PixelFormat::Monochrome);
     progress.begin(&[(0, 4)]).expect("stripe geometry");
 
     let mut lease = progress.direct_stripe(0).expect("stripe lend");
@@ -136,9 +144,8 @@ fn u8_direct_stripe_writes_the_canonical_allocation() {
         .fill(77);
     assert!(lease.submit());
 
-    let frame = progress
-        .freeze_workspace(core::convert::identity)
-        .expect("frozen frame");
+    progress.freeze_workspace(writer).expect("frozen frame");
+    let frame = slot.try_frozen().expect("settled slot");
     assert_eq!(
         frame.y().samples(),
         vec![77; 4 * frame.y().stride_samples()]
@@ -320,7 +327,7 @@ fn a_complete_odd_height_frame_publishes_its_terminal_chroma_row() {
 
 #[test]
 fn reads_are_refused_before_the_first_stripe_and_after_the_freeze() {
-    let progress = new_progress(64, 128, PixelFormat::Monochrome);
+    let (slot, writer, progress) = pending::<u8>(64, 128, PixelFormat::Monochrome);
     progress
         .begin(&[(0, 64), (64, 128)])
         .expect("stripe geometry");
@@ -338,18 +345,16 @@ fn reads_are_refused_before_the_first_stripe_and_after_the_freeze() {
     ));
     drop(published);
 
-    let frame = progress
-        .freeze_workspace(|frame| frame)
-        .expect("the frozen frame");
+    progress.freeze_workspace(writer).expect("the frozen frame");
     assert!(
         progress.read().is_none(),
         "the freeze closes every banded read"
     );
-    assert!(
-        progress.freeze_workspace(|frame| frame).is_err(),
-        "the workspace is frozen once"
-    );
-    drop(frame);
+    assert!(slot.try_frozen().is_some());
+
+    let mut owned = new_progress(64, 128, PixelFormat::Monochrome);
+    assert!(owned.freeze().is_ok());
+    assert!(owned.freeze().is_err(), "the workspace is frozen once");
 }
 
 #[test]
@@ -394,24 +399,42 @@ fn a_finished_phase_publishes_the_whole_frame() {
 }
 
 #[test]
-fn the_freeze_publishes_before_it_releases_the_workspace() {
-    let progress = new_progress(64, 128, PixelFormat::Monochrome);
+fn the_freeze_settles_the_slot_before_it_releases_the_workspace() {
+    let (slot, writer, progress) = pending::<u8>(64, 128, PixelFormat::Monochrome);
     progress
         .begin(&[(0, 64), (64, 128)])
         .expect("stripe geometry");
     progress.publish(0);
 
-    let published_inside = progress
-        .freeze_workspace(|frame| {
-            drop(frame);
-            true
-        })
-        .expect("the frozen frame");
+    progress.freeze_workspace(writer).expect("the frozen frame");
+    assert!(matches!(
+        slot.hold_samples(),
+        Some(crate::prediction::inter::reference::HeldFrameSamples::Settled(_))
+    ));
+    let (_, other, _) = pending::<u8>(64, 128, PixelFormat::Monochrome);
+    assert!(
+        progress.freeze_workspace(other).is_err(),
+        "only the paired writer freezes a frame"
+    );
+}
+
+#[test]
+fn a_failed_freeze_keeps_the_workspace_and_its_buffers() {
+    let (slot, writer, progress) = pending::<u16>(8, 4, PixelFormat::Monochrome);
+    progress.begin(&[(0, 4)]).expect("stripe geometry");
+    let mut lease = progress.direct_stripe(0).expect("stripe lend");
+    let mut target = lease.take_target().expect("stripe target");
+    let mut luma = target.take(splot_recon::PlaneId::Y).expect("luma target");
+    luma.samples_mut().fill(300);
+    drop((luma, target));
+    assert!(lease.submit());
 
     assert!(
-        published_inside,
-        "a reader arriving mid-freeze blocks on the workspace lock, so what this hook publishes is visible before any read resumes"
+        progress.freeze_workspace(writer).is_err(),
+        "an 8-bit frame cannot hold 300"
     );
+    assert!(slot.ready().is_err());
+    assert!(progress.workspace.read().is_some(), "the workspace is kept");
 }
 
 #[test]
@@ -454,9 +477,7 @@ fn resetting_progress_retains_stripes_and_clears_terminal_publication() {
 
 #[test]
 fn frontier_rows_lend_only_rows_no_stripe_or_reader_holds() {
-    let progress = Arc::new(
-        FrameProgress::<u16>::new(info(4, 32, PixelFormat::Monochrome)).expect("frame progress"),
-    );
+    let (_slot, writer, progress) = pending::<u16>(4, 32, PixelFormat::Monochrome);
     progress
         .begin(&[(0, 16), (16, 32)])
         .expect("stripe geometry");
@@ -516,7 +537,10 @@ fn frontier_rows_lend_only_rows_no_stripe_or_reader_holds() {
         "carried deblocked row"
     );
     assert_eq!(planes.y.row(20), Some(&[20; 4][..]));
-    assert!(progress.freeze_workspace(drop).is_err(), "a live frontier");
+    assert!(
+        progress.freeze_workspace(writer).is_err(),
+        "a live frontier"
+    );
     drop(rows);
     assert!(progress.direct_stripe(1).is_some());
 }

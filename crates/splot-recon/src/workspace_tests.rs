@@ -1579,6 +1579,47 @@ fn workspace_freezes_into_hash_y4m_and_reference_store_inputs() {
 }
 
 #[test]
+fn a_rejected_freeze_in_place_keeps_every_buffer_where_it_was() {
+    let mut workspace = CurrentFrameWorkspace::<u16>::new(yuv420_info(4, 4), 8).unwrap();
+    let pointers = |workspace: &CurrentFrameWorkspace<u16>| {
+        [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| workspace.samples(plane).unwrap().as_ptr())
+    };
+    let before = pointers(&workspace);
+    workspace
+        .as_frame_mut()
+        .unwrap()
+        .plane_mut(PlaneId::V)
+        .unwrap()
+        .samples_mut()[0] = 300;
+
+    assert!(matches!(
+        workspace.freeze_in_place(),
+        Err(ReconError::SampleOutOfRange {
+            plane: PlaneId::V,
+            ..
+        })
+    ));
+    assert_eq!(pointers(&workspace), before);
+    assert_eq!(workspace.samples(PlaneId::V).unwrap()[0], 300);
+
+    workspace
+        .as_frame_mut()
+        .unwrap()
+        .plane_mut(PlaneId::V)
+        .unwrap()
+        .samples_mut()[0] = 8;
+    let frame = workspace.freeze_in_place().unwrap();
+    assert_eq!(
+        [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| frame
+            .plane(plane)
+            .unwrap()
+            .samples()
+            .as_ptr()),
+        before
+    );
+}
+
+#[test]
 fn workspace_reconstructed_sample_reads_arbitrary_in_storage_samples() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 3), 1).unwrap();

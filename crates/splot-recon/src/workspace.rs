@@ -1486,11 +1486,38 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// Returns [`ReconError`] if the existing immutable plane/frame validators
     /// reject the workspace storage.
-    pub fn freeze(self) -> Result<DecodedFrame<T>> {
-        let y = self.y.freeze()?;
-        let u = self.u.map(CurrentFramePlane::freeze).transpose()?;
-        let v = self.v.map(CurrentFramePlane::freeze).transpose()?;
-        DecodedFrame::try_new(self.info, FramePlanes::new(y, u, v))
+    pub fn freeze(mut self) -> Result<DecodedFrame<T>> {
+        self.freeze_in_place()
+    }
+
+    /// [`Self::freeze`] that moves each plane's sample buffer without copying
+    /// or reallocating it, and on error leaves every buffer in this workspace.
+    ///
+    /// # Errors
+    /// As [`Self::freeze`].
+    pub fn freeze_in_place(&mut self) -> Result<DecodedFrame<T>> {
+        for plane in [Some(&self.y), self.u.as_ref(), self.v.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            plane.check_freeze()?;
+        }
+        let planes = FramePlanes::new(
+            self.y.take_frozen(),
+            self.u.as_mut().map(CurrentFramePlane::take_frozen),
+            self.v.as_mut().map(CurrentFramePlane::take_frozen),
+        );
+        if let Err(error) = DecodedFrame::validate(self.info, &planes) {
+            let (y, u, v) = planes.into_parts();
+            self.y.samples = y.into_samples();
+            for (plane, frozen) in [(self.u.as_mut(), u), (self.v.as_mut(), v)] {
+                if let (Some(plane), Some(frozen)) = (plane, frozen) {
+                    plane.samples = frozen.into_samples();
+                }
+            }
+            return Err(error);
+        }
+        Ok(DecodedFrame::from_validated(self.info, planes))
     }
 
     fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlane<T>> {
@@ -1925,11 +1952,20 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         )
     }
 
-    fn freeze(mut self) -> Result<Plane<T>> {
-        let stride_samples = self.stride_samples();
-        Plane::from_buf(
+    fn check_freeze(&self) -> Result<()> {
+        Plane::<T>::check_buf(
             self.storage_size,
-            stride_samples,
+            self.stride_samples(),
+            self.visible_rect,
+            self.samples.len(),
+        )
+    }
+
+    /// Moves the samples into a plane once [`Self::check_freeze`] accepted them.
+    fn take_frozen(&mut self) -> Plane<T> {
+        Plane::from_checked_buf(
+            self.storage_size,
+            self.stride_samples(),
             self.visible_rect,
             mem::take(&mut self.samples),
         )

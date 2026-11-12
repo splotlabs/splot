@@ -679,22 +679,27 @@ impl<T: ReconSample> FrameProgress<T> {
         )
     }
 
-    /// Freezes the filtered workspace and publishes the frozen frame, both
-    /// under the exclusive lock.
+    /// Freezes the filtered workspace into the paired slot, under the
+    /// exclusive lock.
     ///
     /// The freeze is the one moment the published prefix stops being readable,
-    /// so `publish` — which settles the frame's slot — runs before the lock is
-    /// released. A reader that arrives during the freeze waits for the lock and
-    /// then finds the slot settled, instead of finding neither storage.
+    /// so the slot settles before the lock is released. A reader that arrives
+    /// during the freeze waits for the lock and then finds the slot settled,
+    /// instead of finding neither storage. A failed freeze leaves the
+    /// workspace and its buffers in place.
     ///
     /// # Errors
     ///
     /// Returns the freeze's own diagnostic, or an internal diagnostic when the
-    /// workspace has already been taken.
-    pub(crate) fn freeze_workspace<R>(
+    /// writer belongs to another frame, a stripe or the frontier is still live,
+    /// or the workspace has already been taken.
+    pub(crate) fn freeze_workspace(
         &self,
-        publish: impl FnOnce(splot_recon::DecodedFrame<T>) -> R,
-    ) -> Result<R> {
+        writer: super::inflight::FrameSlotWriter<T>,
+    ) -> Result<()> {
+        if !core::ptr::eq(Arc::as_ptr(&writer.progress), self) {
+            return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
+        }
         if self.frontier_live() {
             return Err(live_direct_lease());
         }
@@ -706,8 +711,41 @@ impl<T: ReconSample> FrameProgress<T> {
             layout.freezing = true;
         }
         let mut guard = self.workspace.write();
-        let workspace = guard.take().ok_or_else(taken_workspace)?;
-        Ok(publish(workspace.into_workspace().freeze()?))
+        let workspace = guard.as_mut().ok_or_else(taken_workspace)?;
+        let window = AbortOnUnwind;
+        let frame = workspace.workspace.get_mut().freeze_in_place()?;
+        writer.complete(frame);
+        drop(window);
+        *guard = None;
+        Ok(())
+    }
+
+    /// Freezes the workspace of a progress no slot shares, which no reader or
+    /// stripe can hold since the caller has it exclusively.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::freeze_workspace`].
+    pub(crate) fn freeze(&mut self) -> Result<splot_recon::DecodedFrame<T>> {
+        let workspace = self
+            .workspace
+            .get_mut()
+            .take()
+            .ok_or_else(taken_workspace)?;
+        Ok(workspace.into_workspace().freeze()?)
+    }
+}
+
+/// Aborts the process when the freeze window unwinds: readers may hold rows of
+/// the buffers it moves, so dropping them on the way out would free memory
+/// still in use.
+struct AbortOnUnwind;
+
+impl Drop for AbortOnUnwind {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
     }
 }
 

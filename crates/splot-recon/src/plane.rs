@@ -70,6 +70,23 @@ impl<T: ReconSample> Plane<T> {
         visible_rect: PlaneRect,
         samples: PlaneBuf<T>,
     ) -> Result<Self> {
+        Self::check_buf(storage_size, stride_samples, visible_rect, samples.len())?;
+        Ok(Self::from_checked_buf(
+            storage_size,
+            stride_samples,
+            visible_rect,
+            samples,
+        ))
+    }
+
+    /// The checks of [`Self::from_buf`] on a buffer of `len` samples, so a
+    /// caller can run them before it gives the buffer up.
+    pub(crate) fn check_buf(
+        storage_size: PlaneSize,
+        stride_samples: usize,
+        visible_rect: PlaneRect,
+        len: usize,
+    ) -> Result<()> {
         if stride_samples < storage_size.width() {
             return Err(ReconError::StrideTooSmall {
                 stride_samples,
@@ -84,10 +101,10 @@ impl<T: ReconSample> Plane<T> {
                 context: "plane required sample count",
             },
         )?;
-        if samples.len() != required_samples {
+        if len != required_samples {
             return Err(ReconError::BufferLengthMismatch {
                 expected: required_samples,
-                actual: samples.len(),
+                actual: len,
             });
         }
 
@@ -96,13 +113,22 @@ impl<T: ReconSample> Plane<T> {
                 context: "plane allocation byte count",
             },
         )?;
+        Ok(())
+    }
 
-        Ok(Self {
+    /// [`Self::from_buf`] after [`Self::check_buf`] accepted these parts.
+    pub(crate) const fn from_checked_buf(
+        storage_size: PlaneSize,
+        stride_samples: usize,
+        visible_rect: PlaneRect,
+        samples: PlaneBuf<T>,
+    ) -> Self {
+        Self {
             storage_size,
             stride_samples,
             visible_rect,
             samples,
-        })
+        }
     }
 
     /// Returns the full storage dimensions in samples.

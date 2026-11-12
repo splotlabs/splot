@@ -120,6 +120,11 @@ impl<T: ReconSample> FramePlanes<T> {
         &self.y
     }
 
+    /// Splits the set back into its Y, U and V planes.
+    pub(crate) fn into_parts(self) -> (Plane<T>, Option<Plane<T>>, Option<Plane<T>>) {
+        (self.y, self.u, self.v)
+    }
+
     /// Returns the U plane when present.
     pub const fn u(&self) -> Option<&Plane<T>> {
         self.u.as_ref()
@@ -226,6 +231,17 @@ impl<T: ReconSample> DecodedFrame<T> {
     /// Returns a [`ReconError`] if plane presence, storage or visible sizes, sample
     /// type, or sample ranges do not match the requested decoded frame format.
     pub fn try_new(info: DecodedFrameInfo, planes: FramePlanes<T>) -> Result<Self> {
+        Self::validate(info, &planes)?;
+        Ok(Self { info, planes })
+    }
+
+    /// [`Self::try_new`] after [`Self::validate`] accepted `planes`.
+    pub(crate) const fn from_validated(info: DecodedFrameInfo, planes: FramePlanes<T>) -> Self {
+        Self { info, planes }
+    }
+
+    /// The checks of [`Self::try_new`], run before it takes `planes`.
+    pub(crate) fn validate(info: DecodedFrameInfo, planes: &FramePlanes<T>) -> Result<()> {
         validate_sample_type::<T>(info.bit_depth)?;
 
         let luma_visible_size = info.visible_luma_rect.size();
@@ -272,8 +288,7 @@ impl<T: ReconSample> DecodedFrame<T> {
                 });
             }
         }
-
-        Ok(Self { info, planes })
+        Ok(())
     }
 
     /// Hands this frame's sample buffers to the frame that replaces it.
