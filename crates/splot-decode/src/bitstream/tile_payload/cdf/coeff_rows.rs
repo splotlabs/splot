@@ -16,6 +16,7 @@ use splot_core::tables::cdf::{
     DEFAULT_IDTX_SIGN_CDF,
 };
 
+use super::block_read::row_at;
 use super::coeff_context::CoeffBaseSelection;
 use super::util::checked_context;
 use super::{
@@ -215,43 +216,47 @@ pub(crate) enum CoeffBaseRow<'a> {
     Lf(&'a mut [u16; COEFF_BASE_LF_ROW_LEN]),
 }
 
-/// The base and base-range rows of one transform-size context, borrowed
+/// The coefficient rows and one checked transform-size context, borrowed
 /// once per block so the per-coefficient reads index them directly.
 pub(crate) struct CoeffLevelRows<'a> {
-    pub(crate) base:
-        &'a mut [[[u16; COEFF_BASE_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_CONTEXTS],
-    pub(crate) base_lf:
-        &'a mut [[[u16; COEFF_BASE_LF_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_LF_CONTEXTS],
-    pub(crate) base_ph: &'a mut CoeffBasePhCdfRows,
-    pub(crate) base_uv: &'a mut CoeffBaseUvCdfRows,
-    pub(crate) base_lf_uv: &'a mut CoeffBaseLfUvCdfRows,
-    pub(crate) br: &'a mut CoeffBrCdfRows,
-    pub(crate) br_lf: &'a mut CoeffBrLfCdfRows,
-    pub(crate) br_uv: &'a mut CoeffBrUvCdfRows,
-    pub(crate) base_eob: &'a mut [[u16; COEFF_BASE_EOB_ROW_LEN]; COEFF_BASE_EOB_CONTEXTS],
-    pub(crate) base_lf_eob: &'a mut [[u16; COEFF_BASE_LF_EOB_ROW_LEN]; COEFF_BASE_EOB_CONTEXTS],
-    pub(crate) base_eob_uv: &'a mut CoeffBaseEobUvCdfRows,
-    pub(crate) base_lf_eob_uv: &'a mut CoeffBaseLfEobUvCdfRows,
+    pub(crate) cdf: &'a mut CoeffCdfRows,
+    tx_size: usize,
 }
 
+type BaseRows = [[[u16; COEFF_BASE_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_CONTEXTS];
+type BaseLfRows = [[[u16; COEFF_BASE_LF_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_LF_CONTEXTS];
+
 impl CoeffLevelRows<'_> {
-    #[allow(dead_code)]
     #[inline]
     pub(crate) fn reborrow(&mut self) -> CoeffLevelRows<'_> {
         CoeffLevelRows {
-            base: self.base,
-            base_lf: self.base_lf,
-            base_ph: self.base_ph,
-            base_uv: self.base_uv,
-            base_lf_uv: self.base_lf_uv,
-            br: self.br,
-            br_lf: self.br_lf,
-            br_uv: self.br_uv,
-            base_eob: self.base_eob,
-            base_lf_eob: self.base_lf_eob,
-            base_eob_uv: self.base_eob_uv,
-            base_lf_eob_uv: self.base_lf_eob_uv,
+            cdf: self.cdf,
+            tx_size: self.tx_size,
         }
+    }
+
+    #[inline]
+    pub(crate) fn base(&mut self) -> &mut BaseRows {
+        row_at(&mut self.cdf.coeff_base, self.tx_size)
+    }
+
+    #[inline]
+    pub(crate) fn base_lf(&mut self) -> &mut BaseLfRows {
+        row_at(&mut self.cdf.coeff_base_lf, self.tx_size)
+    }
+
+    #[inline]
+    pub(crate) fn base_eob(
+        &mut self,
+    ) -> &mut [[u16; COEFF_BASE_EOB_ROW_LEN]; COEFF_BASE_EOB_CONTEXTS] {
+        row_at(&mut self.cdf.coeff_base_eob, self.tx_size)
+    }
+
+    #[inline]
+    pub(crate) fn base_lf_eob(
+        &mut self,
+    ) -> &mut [[u16; COEFF_BASE_LF_EOB_ROW_LEN]; COEFF_BASE_EOB_CONTEXTS] {
+        row_at(&mut self.cdf.coeff_base_lf_eob, self.tx_size)
     }
 }
 
@@ -265,22 +270,24 @@ impl<'a> CoeffLevelRows<'a> {
         tcq_ctx: usize,
     ) -> Result<CoeffBaseRow<'a>, TileCdfError> {
         use TileCdfArray::{CoeffBase, CoeffBaseLf, CoeffBaseLfUv, CoeffBasePh, CoeffBaseUv};
-        let tcq_ctx = tcq_ctx & 1;
+        let (cdf, tx_size, tcq_ctx) = (self.cdf, self.tx_size, tcq_ctx & 1);
         Ok(match selection {
             CoeffBaseSelection::Hf { ctx } => {
-                CoeffBaseRow::Base(&mut row2(self.base, CoeffBase, ctx)?[tcq_ctx])
+                let rows = row_at(&mut cdf.coeff_base, tx_size);
+                CoeffBaseRow::Base(&mut row2(rows, CoeffBase, ctx)?[tcq_ctx])
             }
             CoeffBaseSelection::Ph { ctx } => {
-                CoeffBaseRow::Base(row2(self.base_ph, CoeffBasePh, ctx)?)
+                CoeffBaseRow::Base(row2(&mut cdf.coeff_base_ph, CoeffBasePh, ctx)?)
             }
             CoeffBaseSelection::Uv { ctx } => {
-                CoeffBaseRow::Base(row2(self.base_uv, CoeffBaseUv, ctx)?)
+                CoeffBaseRow::Base(row2(&mut cdf.coeff_base_uv, CoeffBaseUv, ctx)?)
             }
             CoeffBaseSelection::Lf { ctx } => {
-                CoeffBaseRow::Lf(&mut row2(self.base_lf, CoeffBaseLf, ctx)?[tcq_ctx])
+                let rows = row_at(&mut cdf.coeff_base_lf, tx_size);
+                CoeffBaseRow::Lf(&mut row2(rows, CoeffBaseLf, ctx)?[tcq_ctx])
             }
             CoeffBaseSelection::LfUv { ctx } => {
-                CoeffBaseRow::Lf(row2(self.base_lf_uv, CoeffBaseLfUv, ctx)?)
+                CoeffBaseRow::Lf(row2(&mut cdf.coeff_base_lf_uv, CoeffBaseLfUv, ctx)?)
             }
         })
     }
@@ -293,12 +300,13 @@ impl<'a> CoeffLevelRows<'a> {
         is_lf: bool,
         ctx: usize,
     ) -> Result<&'a mut [u16; COEFF_BR_ROW_LEN], TileCdfError> {
+        let cdf = self.cdf;
         if plane > 0 {
-            row2(self.br_uv, TileCdfArray::CoeffBrUv, ctx)
+            row2(&mut cdf.coeff_br_uv, TileCdfArray::CoeffBrUv, ctx)
         } else if is_lf {
-            row2(self.br_lf, TileCdfArray::CoeffBrLf, ctx)
+            row2(&mut cdf.coeff_br_lf, TileCdfArray::CoeffBrLf, ctx)
         } else {
-            row2(self.br, TileCdfArray::CoeffBr, ctx)
+            row2(&mut cdf.coeff_br, TileCdfArray::CoeffBr, ctx)
         }
     }
 }
@@ -334,20 +342,7 @@ impl CoeffCdfRows {
         tx_size: usize,
     ) -> Result<CoeffLevelRows<'_>, TileCdfError> {
         let tx_size = checked_tx_size(TileCdfArray::CoeffBase, tx_size)?;
-        Ok(CoeffLevelRows {
-            base: &mut self.coeff_base[tx_size],
-            base_lf: &mut self.coeff_base_lf[tx_size],
-            base_ph: &mut self.coeff_base_ph,
-            base_uv: &mut self.coeff_base_uv,
-            base_lf_uv: &mut self.coeff_base_lf_uv,
-            br: &mut self.coeff_br,
-            br_lf: &mut self.coeff_br_lf,
-            br_uv: &mut self.coeff_br_uv,
-            base_eob: &mut self.coeff_base_eob[tx_size],
-            base_lf_eob: &mut self.coeff_base_lf_eob[tx_size],
-            base_eob_uv: &mut self.coeff_base_eob_uv,
-            base_lf_eob_uv: &mut self.coeff_base_lf_eob_uv,
-        })
+        Ok(CoeffLevelRows { cdf: self, tx_size })
     }
 
     #[inline]
