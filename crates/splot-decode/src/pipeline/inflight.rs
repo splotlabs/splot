@@ -33,7 +33,7 @@ use splot_recon::{
 };
 
 use super::frame_engine::finish::WalkStage;
-use super::frame_progress::FrameProgress;
+use super::frame_progress::{FrameProgress, PublishedFrame};
 use super::frame_tasks::RowPools;
 use super::{PipelineDecodedFrame, unsupported};
 use crate::error::{DecodeError, Result};
@@ -225,14 +225,14 @@ impl<T: ReconSample> RefFrameSlot<T> {
     ///
     /// A settled slot lends its decoded frame directly; a slot whose filter
     /// phase is still running lends the row prefix that phase has published,
-    /// keeping the shared borrow alive for the handle's lifetime. The settled
-    /// check runs again when the published prefix is gone, since the freeze can
-    /// take the workspace between the two.
+    /// for the handle's lifetime. The settled check runs again when no prefix
+    /// is lent, since the freeze settles the slot before it publishes that the
+    /// prefix moved there.
     pub(crate) fn hold_samples(&self) -> Option<HeldFrameSamples<'_, T>> {
         if let Some(frame) = self.try_frozen() {
             return Some(HeldFrameSamples::Settled(frame));
         }
-        if let Some(published) = self.progress().and_then(FrameProgress::read) {
+        if let Some(published) = PublishedFrame::of_slot(self) {
             return Some(HeldFrameSamples::Filtering(published));
         }
         self.try_frozen().map(HeldFrameSamples::Settled)

@@ -7,9 +7,13 @@
 
 use splot_recon::{BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
 
-use super::FrameProgress;
+use super::{FROZEN, FrameProgress, PublishedFrame};
 use crate::pipeline::inflight::{FrameSlotWriter, RefFrameSlot};
+use crate::prediction::inter::reference::HeldFrameSamples;
+use splot_recon::PlaneId;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread::JoinHandle;
 
 fn info(width: usize, height: usize, format: PixelFormat) -> DecodedFrameInfo {
     DecodedFrameInfo::new(
@@ -66,12 +70,10 @@ fn direct_stripes_write_the_canonical_allocation_and_publish_out_of_order() {
     let published = progress.read().expect("published frame");
     let plane = published
         .plane(splot_recon::PlaneId::Y)
-        .expect("published luma")
-        .expect("present luma");
+        .expect("published luma");
     let (samples, half) = (plane.samples, 4 * plane.stride);
     assert!(samples[..half].iter().all(|&sample| sample == 11));
     assert!(samples[half..].iter().all(|&sample| sample == 22));
-    drop(published);
 
     progress.freeze_workspace(writer).expect("frozen frame");
     let frame = slot.try_frozen().expect("settled slot");
@@ -123,7 +125,6 @@ fn detached_target_drop_hands_writes_back_before_submit() {
         published
             .plane(splot_recon::PlaneId::Y)
             .expect("published luma")
-            .expect("present luma")
             .samples
             .iter()
             .all(|&sample| sample == 33)
@@ -332,25 +333,30 @@ fn reads_are_refused_before_the_first_stripe_and_after_the_freeze() {
         .begin(&[(0, 64), (64, 128)])
         .expect("stripe geometry");
     assert!(
-        progress.read().is_none(),
+        PublishedFrame::of_slot(&slot).is_none(),
         "an unpublished frame exposes no rows"
     );
 
     progress.publish(0);
-    let published = progress.read().expect("a published prefix");
+    let published = PublishedFrame::of_slot(&slot).expect("a published prefix");
     assert_eq!(published.luma_rows(), 64);
-    assert!(matches!(
-        published.plane(splot_recon::PlaneId::Y),
-        Ok(Some(_))
-    ));
-    drop(published);
+    let rows = published.plane(PlaneId::Y).expect("published luma").samples;
 
     progress.freeze_workspace(writer).expect("the frozen frame");
     assert!(
-        progress.read().is_none(),
-        "the freeze closes every banded read"
+        PublishedFrame::of_slot(&slot).is_none(),
+        "the freeze closes every new banded read"
     );
-    assert!(slot.try_frozen().is_some());
+    let frame = slot.try_frozen().expect("the settled frame");
+    assert!(
+        core::ptr::eq(rows.as_ptr(), frame.y().samples().as_ptr()),
+        "a read taken before the freeze keeps reading the frozen frame's own rows"
+    );
+    assert_eq!(rows, &frame.y().samples()[..rows.len()]);
+    assert!(matches!(
+        slot.hold_samples(),
+        Some(HeldFrameSamples::Settled(_))
+    ));
 
     let mut owned = new_progress(64, 128, PixelFormat::Monochrome);
     assert!(owned.freeze().is_ok());
@@ -390,16 +396,19 @@ fn a_finished_phase_publishes_the_whole_frame() {
 
     progress.publish_terminal(true);
     assert!(progress.terminal_published.is_set());
-    assert_eq!(progress.published_luma_rows(), 128);
     assert_eq!(
-        progress.read().expect("a published frame").luma_rows(),
+        progress.published_luma_rows(),
         128,
-        "a phase that filtered every row publishes every row"
+        "a phase that filtered every row admits every row threshold"
+    );
+    assert!(
+        progress.read().is_none(),
+        "a finished phase's rows are read from its settled slot"
     );
 }
 
 #[test]
-fn the_freeze_settles_the_slot_before_it_releases_the_workspace() {
+fn the_freeze_settles_the_slot_before_it_publishes_frozen() {
     let (slot, writer, progress) = pending::<u8>(64, 128, PixelFormat::Monochrome);
     progress
         .begin(&[(0, 64), (64, 128)])
@@ -407,9 +416,11 @@ fn the_freeze_settles_the_slot_before_it_releases_the_workspace() {
     progress.publish(0);
 
     progress.freeze_workspace(writer).expect("the frozen frame");
+    assert_eq!(progress.published_luma_rows.current(), FROZEN);
+    assert_eq!(progress.published_luma_rows(), 128);
     assert!(matches!(
         slot.hold_samples(),
-        Some(crate::prediction::inter::reference::HeldFrameSamples::Settled(_))
+        Some(HeldFrameSamples::Settled(_))
     ));
     let (_, other, _) = pending::<u8>(64, 128, PixelFormat::Monochrome);
     assert!(
@@ -419,22 +430,118 @@ fn the_freeze_settles_the_slot_before_it_releases_the_workspace() {
 }
 
 #[test]
-fn a_failed_freeze_keeps_the_workspace_and_its_buffers() {
+fn a_failed_freeze_keeps_the_rows_a_reader_holds() {
     let (slot, writer, progress) = pending::<u16>(8, 4, PixelFormat::Monochrome);
     progress.begin(&[(0, 4)]).expect("stripe geometry");
     let mut lease = progress.direct_stripe(0).expect("stripe lend");
     let mut target = lease.take_target().expect("stripe target");
-    let mut luma = target.take(splot_recon::PlaneId::Y).expect("luma target");
-    luma.samples_mut().fill(300);
-    drop((luma, target));
+    target
+        .take(PlaneId::Y)
+        .expect("luma target")
+        .samples_mut()
+        .fill(300);
+    drop(target);
     assert!(lease.submit());
+    let published = PublishedFrame::of_slot(&slot).expect("the published frame");
+    let rows = published.plane(PlaneId::Y).expect("held luma").samples;
 
     assert!(
         progress.freeze_workspace(writer).is_err(),
         "an 8-bit frame cannot hold 300"
     );
     assert!(slot.ready().is_err());
-    assert!(progress.workspace.read().is_some(), "the workspace is kept");
+    assert!(PublishedFrame::of_slot(&slot).is_none());
+    assert!(
+        published
+            .plane(PlaneId::Y)
+            .is_some_and(|plane| plane.samples.is_empty()),
+        "a failed phase lends no further row"
+    );
+    assert!(
+        rows.iter().all(|&sample| sample == 300),
+        "rows lent before the failure stay allocated"
+    );
+    assert!(progress.workspace.lock().is_some(), "the workspace is kept");
+}
+
+/// Two writers lease and publish stripes while two readers spin on the
+/// published prefix, then a freeze through the slot's own writer; the readers
+/// keep reading the rows they hold across the freeze and check them against
+/// the frozen frame.
+#[test]
+fn readers_check_published_rows_across_concurrent_stripes_and_the_freeze() {
+    const STRIPES: usize = 6;
+    const ROWS: usize = 4;
+    const HEIGHT: usize = STRIPES * ROWS;
+    fn value(row: usize) -> u16 {
+        u16::try_from(row * 7 + 3).expect("8-bit sample")
+    }
+    fn check(published: PublishedFrame<'_, u16>) {
+        let plane = published.plane(PlaneId::Y).expect("published luma");
+        for (row, samples) in plane.samples.chunks(plane.stride).enumerate() {
+            assert!(row < published.luma_rows());
+            assert!(samples[..8].iter().all(|&sample| sample == value(row)));
+        }
+    }
+    let (slot, writer, progress) = pending::<u16>(8, HEIGHT, PixelFormat::Monochrome);
+    let ranges: Vec<_> = (0..STRIPES)
+        .map(|stripe| (stripe * ROWS, (stripe + 1) * ROWS))
+        .collect();
+    progress.begin(&ranges).expect("stripe geometry");
+    let (next, whole) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let writers = (0..2).map(|_| {
+        let (progress, next) = (Arc::clone(&progress), Arc::clone(&next));
+        splot_parallel::spawn_thread("stripe writer", move || {
+            loop {
+                let stripe = next.fetch_add(1, Ordering::Relaxed);
+                if stripe >= STRIPES {
+                    break;
+                }
+                let mut lease = progress.direct_stripe(stripe).expect("stripe lend");
+                let mut target = lease.take_target().expect("stripe target");
+                let mut luma = target.take(PlaneId::Y).expect("luma target");
+                let (origin, stride) = (luma.origin_y(), luma.stride());
+                for (row, samples) in luma.samples_mut().chunks_mut(stride).enumerate() {
+                    samples.fill(value(origin + row));
+                }
+                drop((luma, target));
+                assert!(lease.submit());
+            }
+        })
+    });
+    let readers = (0..2).map(|_| {
+        let (slot, whole) = (slot.share(), Arc::clone(&whole));
+        splot_parallel::spawn_thread("prefix reader", move || {
+            let mut held = None;
+            loop {
+                if let Some(published) = PublishedFrame::of_slot(&slot) {
+                    check(published);
+                    if held.is_none() && published.luma_rows() == HEIGHT {
+                        whole.fetch_add(1, Ordering::Release);
+                        held = Some(published);
+                    }
+                } else if let Some(frame) = slot.try_frozen() {
+                    let held = held.expect("the freeze waits for this reader");
+                    check(held);
+                    let rows = held.plane(PlaneId::Y).expect("held luma").samples;
+                    assert_eq!(rows, &frame.y().samples()[..rows.len()]);
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        })
+    });
+    let threads: Vec<_> = writers
+        .chain(readers)
+        .collect::<Result<_, _>>()
+        .expect("test threads");
+    while whole.load(Ordering::Acquire) < 2 && !threads[2..].iter().any(JoinHandle::is_finished) {
+        std::thread::yield_now();
+    }
+    progress.freeze_workspace(writer).expect("the frozen frame");
+    for thread in threads {
+        thread.join().expect("test thread");
+    }
 }
 
 #[test]

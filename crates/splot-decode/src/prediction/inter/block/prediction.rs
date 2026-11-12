@@ -184,7 +184,6 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             tile_offset,
         )?;
     }
-    drop(held);
     if let Some(interintra) = placed.block.interintra {
         for (prediction, samples) in interintra_scratch.planes() {
             let blend = match interintra {
@@ -261,7 +260,6 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
         motion,
         tile_offset,
     )?;
-    drop(held);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
             residual_scratch,

@@ -89,9 +89,13 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         }
     }
 
-    pub(crate) fn publishing(published: &'a PublishedFrame<'_, T>) -> Result<Self> {
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the motion-compensation tests still call it as fallible"
+    )]
+    pub(crate) fn publishing(published: &PublishedFrame<'a, T>) -> Result<Self> {
         Ok(Self {
-            source: SampleSource::Publishing(published.storage()?),
+            source: SampleSource::Publishing(published.storage()),
             published: Some(PublishedRows {
                 luma: published.luma_rows(),
                 chroma: published.chroma_rows(),
@@ -353,12 +357,9 @@ pub(crate) fn warp_plane_last_row(
 
 /// A borrow of one reference slot's samples, held for one block's reads.
 ///
-/// A still-filtering frame's published prefix is only readable while its shared
-/// borrow lives, so the holder is kept on the reading thread's stack for the
-/// block and never across a wait. A reader must also hold at most one borrow per
-/// pending frame at a time: the filter phase takes the same lock exclusively
-/// once per stripe, so borrowing one frame twice while that writer is queued
-/// would deadlock.
+/// A still-filtering frame lends the rows below the watermark it published
+/// when the borrow was taken; the borrow takes no lock, so it may live across
+/// that frame's later stripes and its freeze.
 pub(crate) enum HeldFrameSamples<'a, T: ReconSample> {
     /// The slot has settled; every row is final.
     Settled(&'a DecodedFrame<T>),
@@ -371,8 +372,7 @@ impl<T: ReconSample> HeldFrameSamples<'_, T> {
     ///
     /// # Errors
     ///
-    /// Returns an internal diagnostic when a still-filtering frame's workspace
-    /// was taken by its freeze, which the live borrow already rules out.
+    /// As [`ReferenceSamples::publishing`].
     pub(crate) fn samples(&self) -> Result<ReferenceSamples<'_, T>> {
         Ok(match self {
             Self::Settled(frame) => ReferenceSamples::settled(frame),

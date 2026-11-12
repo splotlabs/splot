@@ -106,7 +106,7 @@ struct TipReferencePlan {
     optflow_sad_threshold: Option<u32>,
 }
 
-/// One batch of TIP prediction units' borrow of the block's reference pair.
+/// One TIP block's borrow of its reference pair.
 struct TipHeldReferences<'a, T: ReconSample> {
     past: HeldFrameSamples<'a, T>,
     /// The future reference's borrow, absent when it names the past slot.
@@ -114,13 +114,7 @@ struct TipHeldReferences<'a, T: ReconSample> {
 }
 
 impl TipReferencePlan {
-    /// Borrows the reference pair for one batch of prediction units.
-    ///
-    /// A still-filtering reference is readable only while the borrow lives, and
-    /// that borrow holds the reference's shared workspace lock, so the batch —
-    /// not the whole TIP block — is the unit of the hold: the § 7.2 filter phase
-    /// publishing that same frame's later stripes waits out one batch instead of
-    /// every unit the block covers.
+    /// Borrows the reference pair for one block's prediction units.
     fn hold<'a, T: ReconSample>(
         &self,
         reference: &'a InterReferenceState<T>,
@@ -131,14 +125,7 @@ impl TipReferencePlan {
 }
 
 impl<T: ReconSample> TipHeldReferences<'_, T> {
-    /// Whether both borrows name settled frames, which hold no lock and never
-    /// unsettle, so one borrow covers every unit the block predicts.
-    const fn settled(&self) -> bool {
-        matches!(self.past, HeldFrameSamples::Settled(_))
-            && !matches!(self.future, Some(HeldFrameSamples::Filtering(_)))
-    }
-
-    /// Resolves the borrow into the samples one batch's units read.
+    /// Resolves the borrow into the samples the block's units read.
     fn prediction(&self, plan: &TipReferencePlan) -> Result<TipPrediction<'_, T>> {
         let compound_reference = match self.future.as_ref() {
             Some(future) => future,
@@ -861,54 +848,46 @@ fn publish_unit_outputs<T: ReconSample>(
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
-    let mut first = Some(plan.hold(reference)?);
-    let units_per_hold = if first.as_ref().is_some_and(TipHeldReferences::settled) {
-        scratch.units.len().max(1)
-    } else {
-        plan.block_w.div_ceil(plan.unit_size).max(1)
-    };
-    for (batch_index, batch) in scratch.units.chunks(units_per_hold).enumerate() {
-        let held = first.take().map_or_else(|| plan.hold(reference), Ok)?;
-        let prediction = held.prediction(&plan.plan)?;
-        let mut run: Option<TipUnit> = None;
-        for (offset, unit) in batch.iter().enumerate() {
-            let params = prediction.block_params(unit);
-            let known = scratch.whole_mvs.get(batch_index * units_per_hold + offset);
-            if plan.use_optflow {
-                let compound = params
-                    .into_compound()
-                    .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-                grid = mc::predict_compound_into(sink, compound, grid.take(), tile_offset)?;
-                continue;
-            }
-            let (motion, mvs) = if let Some(&Some(mvs)) = known {
-                (None, Some(mvs))
-            } else {
-                let motion = mc::inter_block_motion_grid(sink, params, None, tile_offset)?;
-                let mvs = whole_sample_mvs(unit, motion.as_ref());
-                (motion, mvs)
-            };
-            let Some(mvs) = mvs else {
-                if let Some(run) = run.take() {
-                    predict_run(sink, &prediction, &run, tile_offset)?;
-                }
-                mc::predict_inter_block_from_grid(sink, params, motion, tile_offset)?;
-                continue;
-            };
-            let next = TipUnit {
-                rect: unit.rect,
-                has_chroma: unit.has_chroma,
-                mvs,
-            };
-            if !run.as_mut().is_some_and(|run| run.extend(&next))
-                && let Some(run) = run.replace(next)
-            {
+    let held = plan.hold(reference)?;
+    let prediction = held.prediction(&plan.plan)?;
+    let mut run: Option<TipUnit> = None;
+    for (index, unit) in scratch.units.iter().enumerate() {
+        let params = prediction.block_params(unit);
+        let known = scratch.whole_mvs.get(index);
+        if plan.use_optflow {
+            let compound = params
+                .into_compound()
+                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+            grid = mc::predict_compound_into(sink, compound, grid.take(), tile_offset)?;
+            continue;
+        }
+        let (motion, mvs) = if let Some(&Some(mvs)) = known {
+            (None, Some(mvs))
+        } else {
+            let motion = mc::inter_block_motion_grid(sink, params, None, tile_offset)?;
+            let mvs = whole_sample_mvs(unit, motion.as_ref());
+            (motion, mvs)
+        };
+        let Some(mvs) = mvs else {
+            if let Some(run) = run.take() {
                 predict_run(sink, &prediction, &run, tile_offset)?;
             }
-        }
-        if let Some(run) = run {
+            mc::predict_inter_block_from_grid(sink, params, motion, tile_offset)?;
+            continue;
+        };
+        let next = TipUnit {
+            rect: unit.rect,
+            has_chroma: unit.has_chroma,
+            mvs,
+        };
+        if !run.as_mut().is_some_and(|run| run.extend(&next))
+            && let Some(run) = run.replace(next)
+        {
             predict_run(sink, &prediction, &run, tile_offset)?;
         }
+    }
+    if let Some(run) = run {
+        predict_run(sink, &prediction, &run, tile_offset)?;
     }
     Ok(grid)
 }

@@ -651,10 +651,6 @@ const fn cdf_blending_enabled(enable_avg_cdf: bool, tip_frame_mode: Option<TipFr
 }
 
 /// The reference frames one inter block reads, borrowed for the block only.
-///
-/// A still-filtering reference is readable only while its shared borrow lives,
-/// so the borrows are taken once per block, kept on the reconstructing thread's
-/// stack, and released before it waits on anything.
 pub(in crate::prediction::inter) struct HeldInterBlockReferences<'a, T: ReconSample> {
     reference0: reference::HeldFrameSamples<'a, T>,
     /// The second list's borrow, absent when it names the first list's slot.
@@ -664,8 +660,7 @@ pub(in crate::prediction::inter) struct HeldInterBlockReferences<'a, T: ReconSam
 
 /// Borrows the reference frames one placed inter block names.
 ///
-/// Two lists that name the same slot share one borrow, since borrowing a
-/// still-filtering frame twice at once would deadlock against its filter phase.
+/// Two lists that name the same slot share one borrow.
 ///
 /// # Errors
 ///
@@ -811,9 +806,7 @@ fn hold_reference_slot<T: ReconSample>(
         .map_err(Into::into)
 }
 
-/// Borrows two named references in a stable lock order while returning them in
-/// list order. This prevents two compound readers from each holding one live
-/// frame's progress lock while waiting behind the other frame's writer.
+/// Borrows two named references in list order, once when both name one slot.
 pub(in crate::prediction::inter) fn hold_reference_pair<T: ReconSample>(
     reference: &InterReferenceState<T>,
     first: u32,
@@ -822,28 +815,12 @@ pub(in crate::prediction::inter) fn hold_reference_pair<T: ReconSample>(
     reference::HeldFrameSamples<'_, T>,
     Option<reference::HeldFrameSamples<'_, T>>,
 )> {
-    let Some(second) = second.filter(|second| *second != first) else {
-        return Ok((hold_reference_slot(reference, first)?, None));
-    };
-    let first_progress = reference.slot(first).and_then(RefFrameSlot::progress);
-    let second_progress = reference.slot(second).and_then(RefFrameSlot::progress);
-    if first_progress
-        .zip(second_progress)
-        .is_some_and(|(first, second)| core::ptr::eq(first, second))
-    {
-        return Ok((hold_reference_slot(reference, first)?, None));
-    }
-    let first_key = first_progress.map_or(0, |progress| core::ptr::from_ref(progress).addr());
-    let second_key = second_progress.map_or(0, |progress| core::ptr::from_ref(progress).addr());
-    if first_key <= second_key {
-        let first = hold_reference_slot(reference, first)?;
-        let second = hold_reference_slot(reference, second)?;
-        Ok((first, Some(second)))
-    } else {
-        let second = hold_reference_slot(reference, second)?;
-        let first = hold_reference_slot(reference, first)?;
-        Ok((first, Some(second)))
-    }
+    let first_held = hold_reference_slot(reference, first)?;
+    let second = second
+        .filter(|second| *second != first)
+        .map(|second| hold_reference_slot(reference, second))
+        .transpose()?;
+    Ok((first_held, second))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
