@@ -117,6 +117,16 @@ fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     }
 }
 
+/// The sample maxima a kernel is exact for: the AVX2 stage holds `i16`, which
+/// fits 10-bit samples only (the deepest the decoder stores).
+fn maxes() -> &'static [u16] {
+    if cfg!(target_arch = "x86_64") {
+        &[1023]
+    } else {
+        &[1023, 4095]
+    }
+}
+
 /// Every word-lane shape, filter and phase pair of 10- and 12-bit samples at
 /// several window origins.
 #[test]
@@ -141,7 +151,7 @@ fn neon_predict_matches_portable_for_every_shape_phase_and_sink() {
         (128, 2),
     ];
     let phases = [0, 1, 4, 7, 8, 9, 15];
-    for max in [1023, 4095] {
+    for &max in maxes() {
         for plane in &planes(max) {
             for (case, &(w, h)) in shapes.iter().enumerate() {
                 for (index, &(h_phase, v_phase)) in phases
@@ -179,7 +189,7 @@ fn neon_predict_matches_portable_for_every_shape_phase_and_sink() {
 fn neon_compound_matches_portable() {
     let shapes = [(4, 2), (4, 4), (4, 16), (8, 2), (8, 8), (16, 4), (32, 32)];
     let phases = [0, 1, 7, 8, 15];
-    for max in [1023, 4095] {
+    for &max in maxes() {
         let planes = planes(max);
         for (case, &(w, h)) in shapes.iter().enumerate() {
             for (index, &(h_phase, v_phase)) in phases
