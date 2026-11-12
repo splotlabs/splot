@@ -29,7 +29,7 @@ fn test_source(width: usize, max_sample: u16, case: usize) -> (Vec<u16>, usize) 
             }
             3 => ((index * 73 + index / stride * 29) % (usize::from(max_sample) + 1)) as u16,
             _ => {
-                let spread = [9, 100, 256][case - 4].min(usize::from(max_sample) + 1);
+                let spread = [9, 100, 256, 400][case - 4].min(usize::from(max_sample) + 1);
                 (usize::from(max_sample) / 3 + (index * 73 + index / stride * 29) % spread) as u16
             }
         })
@@ -117,7 +117,7 @@ fn class_patterns() -> [[u8; 8]; 6] {
 #[test]
 fn sixteen_lanes_match_scalar_samples_for_all_tables_and_classes() {
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        for case in 0..7 {
+        for case in 0..8 {
             let (samples, stride) = test_source(16, bit_depth.max_sample(), case);
             for ref_dst_idx in 0..GDF_ALPHA.len() {
                 for qp_idx in 0..GDF_ALPHA[0].len() {

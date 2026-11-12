@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#[cfg(target_arch = "aarch64")]
-use fearless_simd::u16x8;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use fearless_simd::Level;
 #[cfg(target_arch = "x86_64")]
-use fearless_simd::{Avx2, Level, kernel};
+use fearless_simd::{Avx2, kernel};
+#[cfg(target_arch = "aarch64")]
+use fearless_simd::{Neon, u16x8};
 use fearless_simd::{Simd, SimdIntWiden, i8x16, i16x8, i16x16, i32x8, prelude::*, u8x16, u16x16};
 
 use splot_core::tables::loop_restoration::{
@@ -146,7 +148,7 @@ const TAP_COLUMN_REACH: [usize; TAP_REACH + 1] = {
 };
 
 /// The largest minus the smallest sample that the row pair's taps read, the
-/// window's `tap_range`, or [`ROUGH`] once it exceeds [`LINEAR_RANGE`]. The
+/// window's `tap_range`, or [`ROUGH`] once it exceeds [`CLIP_RANGE`]. The
 /// center rows go first: in textured windows they alone usually exceed it.
 /// The rows are unrolled so that each row's tap reach is a constant.
 #[inline]
@@ -173,23 +175,37 @@ fn window_range<S: Simd, W: WindowRows>(simd: S, window: &W) -> u16 {
         };
     }
     rows_range!(6 7);
-    if range(low, high) > LINEAR_RANGE {
+    if range(low, high) > CLIP_RANGE {
         return ROUGH;
     }
     rows_range!(0 1 2 3 4 5 8 9 10 11 12 13);
     match range(low, high) {
-        range if range > LINEAR_RANGE => ROUGH,
+        range if range > CLIP_RANGE => ROUGH,
         range => range,
     }
 }
 
+/// Bit `lane` in each lane.
+const LANE_BITS: [u16; 16] = {
+    let mut bits = [0; 16];
+    let mut lane = 0;
+    while lane < 16 {
+        bits[lane] = 1 << lane;
+        lane += 1;
+    }
+    bits
+};
+
 /// The widest `tap_range` whose combs may skip the § 7.20.5 comb clip:
 /// two tap differences within it sum to at most 510.
 const LINEAR_RANGE: u16 = 255;
-/// [`window_range`] of a window wider than [`LINEAR_RANGE`].
+/// The widest `tap_range` at which some tap's differences may skip the
+/// § 7.20.5 clip: the largest clip bound.
+const CLIP_RANGE: u16 = 511;
+/// [`window_range`] of a window wider than [`CLIP_RANGE`].
 const ROUGH: u16 = u16::MAX;
 
-/// The taps of each [`row_pairs`] group, whose combs select among the same
+/// The taps of each [`row_index`] group, whose combs select among the same
 /// diff pairs.
 const TAP_GROUPS: [&[usize]; 8] = [
     &[0, 12],
@@ -266,7 +282,7 @@ const SYM_PAIRS: [(usize, usize, usize); 15] = [
 ];
 const CLASS0_ZERO_WEIGHTS: u64 = zero_weight_taps(0b0001);
 
-/// The distinct tap pairs of `SYM_PAIRS`, in the order [`row_pairs`] interleaves them.
+/// The distinct tap pairs of `SYM_PAIRS`, in the order [`row_index`] interleaves them.
 const COMB_PAIRS: [(usize, usize); 10] = [
     (0, 1),
     (12, 13),
@@ -378,12 +394,16 @@ pub(super) struct GdfSymParams {
     /// Each tap's clip bounds `[-alpha, alpha]` plus [`ABOVE_OFFSET`], then
     /// plus [`BELOW_OFFSET`], as whole vectors that the clamps read from memory.
     bounds: [[[u16; 16]; 4]; GDF_COORDS.len()],
+    /// Each tap's clip bound, then each `TAP_GROUPS` entry's widest
+    /// `tap_range` at which its combs skip the clips (its smallest clip
+    /// bound, at most [`LINEAR_RANGE`]), then `u16::MAX`: a window marks the
+    /// bounds below its `tap_range`.
+    bounds_below: [u16; 32],
     /// The weights of each `SYM_PAIRS` entry in alternating lanes.
     pair_weights: [[i16; 16]; SYM_PAIRS.len()],
+    /// The two weights of each `SYM_PAIRS` entry times `2 * scale`.
+    scaled_weights: [i16; 32],
     bias: [i32; 3],
-    /// The widest `tap_range` at which each `TAP_GROUPS` entry skips the
-    /// clips: its smallest clip bound, at most [`LINEAR_RANGE`].
-    group_bounds: [u16; TAP_GROUPS.len()],
     /// The bias less [`COMB_BIAS`] times the weights of each sum, which the
     /// biased combs add back.
     tap_bias: [i32; 3],
@@ -419,14 +439,22 @@ impl GdfSymParams {
                     [BELOW_OFFSET + alpha; 16],
                 ]
             }),
+            bounds_below: core::array::from_fn(|lane| match lane.checked_sub(GDF_COORDS.len()) {
+                None => alpha[lane][0],
+                Some(group) => TAP_GROUPS.get(group).map_or(u16::MAX, |taps| {
+                    taps.iter()
+                        .fold(LINEAR_RANGE, |bound, &k| bound.min(alpha[k][0]))
+                }),
+            }),
             pair_weights: SYM_PAIRS.map(|(a, b, sum)| {
                 core::array::from_fn(|lane| table[sum][if lane & 1 == 0 { a } else { b }][0])
             }),
-            bias,
-            group_bounds: TAP_GROUPS.map(|taps| {
-                taps.iter()
-                    .fold(LINEAR_RANGE, |bound, &k| bound.min(alpha[k][0]))
+            scaled_weights: core::array::from_fn(|index| {
+                SYM_PAIRS.get(index / 2).map_or(0, |&(a, b, sum)| {
+                    table[sum][if index & 1 == 0 { a } else { b }][0] * 2 * scale
+                })
             }),
+            bias,
             tap_bias: core::array::from_fn(|sum| {
                 let weights: i32 = SYM_PAIRS
                     .iter()
@@ -442,26 +470,47 @@ impl GdfSymParams {
 }
 
 /// How a kernel pairs comb lanes for its `i16` multiply-adds. The sums of
-/// [`Lanes::madd`] and the halves of [`Lanes::spread`] hold the same
+/// [`Lanes::accumulate`] and the halves of [`Lanes::spread`] hold the same
 /// samples, and [`Lanes::digits`] reads its sums in that order.
 trait Lanes<S: Simd>: Copy {
-    /// The combs `a` and `b` as [`Lanes::madd`] reads them.
+    /// The combs `a` and `b` as [`Lanes::accumulate`] reads them.
     fn pairs(self, simd: S, a: i16x16<S>, b: i16x16<S>) -> [i16x16<S>; 2];
-    /// Subtracts from `sum` the combs of [`Lanes::pairs`] times their
-    /// weights, which alternate in `weights`.
+    /// The factor of the sums that [`Lanes::accumulate`] and
+    /// [`Lanes::digits`] use.
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn madd(self, simd: S, sum: &mut [i32x8<S>; 2], pair: [i16x16<S>; 2], weights: &[i16; 16]) {
-        let weights = i16x16::from_slice(simd, weights);
-        for (sum, half) in sum.iter_mut().zip(pair) {
-            *sum -= simd.pairwise_dot_product_i16x16(half, weights);
+    fn sum_scale(self, _params: &GdfSymParams) -> i32 {
+        1
+    }
+    /// Subtracts from `sums` the combs `pair` of `COMB_PAIRS` slot `slot`
+    /// times their weights in each `SYM_PAIRS` entry of the slot.
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn accumulate(
+        self,
+        simd: S,
+        sums: &mut Sums<S>,
+        (slot, pair): (usize, [i16x16<S>; 2]),
+        params: &GdfSymParams,
+    ) {
+        macro_rules! add_pairs {
+            ($($pair:literal)*) => {$(if PAIR_SLOT[$pair] == slot {
+                const PAIR: usize = $pair;
+                let weights = i16x16::from_slice(simd, &params.pair_weights[PAIR]);
+                let sum = &mut sums[SYM_PAIRS[PAIR].2];
+                for (sum, half) in sum.iter_mut().zip(pair) {
+                    *sum -= simd.pairwise_dot_product_i16x16(half, weights);
+                }
+            })*};
         }
+        add_pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
     }
     /// Sums of the 8 two-sample class blocks, per sample in the order of
-    /// the sums of [`Lanes::madd`].
+    /// the sums of [`Lanes::accumulate`].
     fn spread(self, simd: S, blocks: i32x8<S>) -> [i32x8<S>; 2];
     /// The § 7.20.5 digit `Clip3(-scale, scale - 1, Round2Signed(sum * scale, 15))`
-    /// of every sample, in sample order.
+    /// of every sample, in sample order, from the sums times
+    /// [`Lanes::sum_scale`].
     fn digits(self, simd: S, sums: [i32x8<S>; 2], scale: i16) -> i16x16<S>;
 }
 
@@ -477,19 +526,40 @@ impl<S: Simd> Lanes<S> for Widening {
         [a, b]
     }
 
+    /// `2 * scale`, so that each digit is the upper half of its rounded sum.
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn madd(self, simd: S, sum: &mut [i32x8<S>; 2], pair: [i16x16<S>; 2], weights: &[i16; 16]) {
-        let products = |comb: i16x16<S>, weight: i16| {
-            let weight = i16x8::splat(simd, weight);
+    fn sum_scale(self, params: &GdfSymParams) -> i32 {
+        2 * i32::from(params.scale)
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn accumulate(
+        self,
+        simd: S,
+        sums: &mut Sums<S>,
+        (slot, pair): (usize, [i16x16<S>; 2]),
+        params: &GdfSymParams,
+    ) {
+        let products = |comb: i16x16<S>, index: usize| {
+            let weight = i16x8::splat(simd, params.scaled_weights[index]);
             let (low, high) = simd.split_i16x16(comb);
             let (p0, p1) = low.widening_mul(weight);
             let (p2, p3) = high.widening_mul(weight);
             [simd.combine_i32x4(p0, p1), simd.combine_i32x4(p2, p3)]
         };
-        let ([a0, a1], [b0, b1]) = (products(pair[0], weights[0]), products(pair[1], weights[1]));
-        sum[0] = sum[0] - a0 - b0;
-        sum[1] = sum[1] - a1 - b1;
+        macro_rules! add_pairs {
+            ($($pair:literal)*) => {$(if PAIR_SLOT[$pair] == slot {
+                const PAIR: usize = $pair;
+                let [a, b] = pair;
+                let ([a0, a1], [b0, b1]) = (products(a, 2 * PAIR), products(b, 2 * PAIR + 1));
+                let sum = &mut sums[SYM_PAIRS[PAIR].2];
+                sum[0] = sum[0] - a0 - b0;
+                sum[1] = sum[1] - a1 - b1;
+            })*};
+        }
+        add_pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
     }
 
     #[allow(clippy::inline_always)]
@@ -499,16 +569,99 @@ impl<S: Simd> Lanes<S> for Widening {
         [low, high]
     }
 
+    /// The sums are `2 * scale` times the § 7.20.5 sums: `Round2Signed` by
+    /// 15 bits of half of one is the upper half of it plus `1 << 15`, less
+    /// one when it is negative.
     #[allow(clippy::inline_always)]
     #[inline(always)]
     fn digits(self, simd: S, sums: [i32x8<S>; 2], scale: i16) -> i16x16<S> {
-        let scale = i32::from(scale);
-        let [low, high] = sums.map(|sum| {
-            let scaled = sum * scale;
-            ((scaled + (scaled >> 31) + (1 << 14)) >> 15)
-                .clamp(i32x8::splat(simd, -scale), i32x8::splat(simd, scale - 1))
+        let [low, high] = sums.map(|sum| (sum + (sum >> 31) + (1 << 15)).bitcast::<i16x16<S>>());
+        simd.unzip_high_i16x16(low, high)
+            .clamp(i16x16::splat(simd, -scale), i16x16::splat(simd, scale - 1))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fearless_simd::kernel!(
+    /// [`Lanes::accumulate`] of [`ByLane`].
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn lane_accumulate(
+        simd: Neon,
+        sums: &mut Sums<Neon>,
+        slot: usize,
+        pair: [i16x16<Neon>; 2],
+        scaled_weights: &[i16; 32],
+    ) {
+        use core::arch::aarch64::{int16x8_t, vget_low_s16, vmlsl_high_laneq_s16, vmlsl_laneq_s16};
+        let weights: [int16x8_t; 4] = core::array::from_fn(|index| {
+            i16x8::from_slice(simd, &scaled_weights[8 * index..8 * index + 8]).into()
         });
-        simd.narrow_i32x8(low, high)
+        macro_rules! add_pairs {
+            ($($pair:literal)*) => {$(if PAIR_SLOT[$pair] == slot {
+                const PAIR: usize = $pair;
+                const LANE: i32 = (2 * PAIR % 8) as i32;
+                let weights = weights[2 * PAIR / 8];
+                let [a, b] = pair.map(|comb| simd.split_i16x16(comb));
+                let sum = &mut sums[SYM_PAIRS[PAIR].2];
+                for (sum, (a, b)) in sum.iter_mut().zip([(a.0, b.0), (a.1, b.1)]) {
+                    let (a, b): (int16x8_t, int16x8_t) = (a.into(), b.into());
+                    let (low, high) = simd.split_i32x8(*sum);
+                    let low = vmlsl_laneq_s16::<LANE>(low.into(), vget_low_s16(a), weights);
+                    let low = vmlsl_laneq_s16::<{ LANE + 1 }>(low, vget_low_s16(b), weights);
+                    let high = vmlsl_high_laneq_s16::<LANE>(high.into(), a, weights);
+                    let high = vmlsl_high_laneq_s16::<{ LANE + 1 }>(high, b, weights);
+                    *sum = simd.combine_i32x4(low.simd_into(simd), high.simd_into(simd));
+                }
+            })*};
+        }
+        add_pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
+    }
+);
+
+/// [`Widening`] with the weights in four registers, each multiply-add
+/// reading its weight's lane: a splat per weight costs a load and an
+/// address add.
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+struct ByLane;
+
+#[cfg(target_arch = "aarch64")]
+impl Lanes<Neon> for ByLane {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn pairs(self, simd: Neon, a: i16x16<Neon>, b: i16x16<Neon>) -> [i16x16<Neon>; 2] {
+        Widening.pairs(simd, a, b)
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn sum_scale(self, params: &GdfSymParams) -> i32 {
+        <Widening as Lanes<Neon>>::sum_scale(Widening, params)
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn accumulate(
+        self,
+        simd: Neon,
+        sums: &mut Sums<Neon>,
+        (slot, pair): (usize, [i16x16<Neon>; 2]),
+        params: &GdfSymParams,
+    ) {
+        lane_accumulate(simd, sums, slot, pair, &params.scaled_weights);
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn spread(self, simd: Neon, blocks: i32x8<Neon>) -> [i32x8<Neon>; 2] {
+        Widening.spread(simd, blocks)
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn digits(self, simd: Neon, sums: [i32x8<Neon>; 2], scale: i16) -> i16x16<Neon> {
+        Widening.digits(simd, sums, scale)
     }
 }
 
@@ -634,8 +787,9 @@ fn tap_diffs<S: Simd, W: WindowRows, const TAP: usize, const ROW: usize>(
 }
 
 /// The negated comb, less [`COMB_BIAS`], of the offset negated reads
-/// `above` and `below`, each within its offset tap bounds: the saturating
-/// add clips the comb's upper end at 512 and the max its lower end at -511.
+/// `above` and `below`, each clipped to its offset tap bounds when `clip` is
+/// set (else each is within them): the saturating add clips the comb's upper
+/// end at 512 and the max its lower end at -511.
 /// Every lane of a bound holds one value, so NEON loads half of it.
 #[allow(clippy::inline_always)]
 #[inline(always)]
@@ -644,6 +798,7 @@ fn clipped_sum<S: Simd>(
     above: u16x16<S>,
     below: u16x16<S>,
     bounds: &[[u16; 16]; 4],
+    clip: bool,
 ) -> i16x16<S> {
     #[cfg(target_arch = "aarch64")]
     let bound = |index: usize| {
@@ -652,8 +807,14 @@ fn clipped_sum<S: Simd>(
     };
     #[cfg(not(target_arch = "aarch64"))]
     let bound = |index: usize| u16x16::from_slice(simd, &bounds[index]);
-    let above = above.max(bound(0)).min(bound(1));
-    let below = below.max(bound(2)).min(bound(3));
+    let (above, below) = if clip {
+        (
+            above.max(bound(0)).min(bound(1)),
+            below.max(bound(2)).min(bound(3)),
+        )
+    } else {
+        (above, below)
+    };
     above
         .saturating_add(below)
         .max(u16x16::splat(simd, COMB_OFFSET - 511))
@@ -721,14 +882,21 @@ fn paired_combs<S: Simd, W: WindowRows, const K: usize, const T: usize, const RO
     centers: Centers<S>,
     select: u16x16<S>,
     params: &GdfSymParams,
+    clips: u32,
 ) -> [i16x16<S>; 2] {
     let (above, below) = tap_diffs::<S, W, K, ROW>(simd, window, centers);
     let (t_above, t_below) = tap_diffs::<S, W, T, ROW>(simd, window, centers);
     let (above, t_above) = swap(above, t_above, select);
     let (below, t_below) = swap(below, t_below, select);
     [
-        clipped_sum(simd, above, below, &params.bounds[K]),
-        clipped_sum(simd, t_above, t_below, &params.bounds[T]),
+        clipped_sum(simd, above, below, &params.bounds[K], clips >> K & 1 != 0),
+        clipped_sum(
+            simd,
+            t_above,
+            t_below,
+            &params.bounds[T],
+            clips >> T & 1 != 0,
+        ),
     ]
 }
 
@@ -751,6 +919,7 @@ fn cycle_combs<
     centers: Centers<S>,
     (transposed, mirrored): Masks<S>,
     params: &GdfSymParams,
+    clips: u32,
 ) -> [i16x16<S>; 4] {
     let (a_above, a_below) = tap_diffs::<S, W, A, ROW>(simd, window, centers);
     let (b_above, b_below) = tap_diffs::<S, W, B, ROW>(simd, window, centers);
@@ -765,10 +934,34 @@ fn cycle_combs<
     let above = select4(a_above, b_above, c_above, d_above);
     let below = select4(a_below, b_below, c_below, d_below);
     [
-        clipped_sum(simd, above[0], below[0], &params.bounds[A]),
-        clipped_sum(simd, above[1], below[1], &params.bounds[B]),
-        clipped_sum(simd, above[2], below[2], &params.bounds[C]),
-        clipped_sum(simd, above[3], below[3], &params.bounds[D]),
+        clipped_sum(
+            simd,
+            above[0],
+            below[0],
+            &params.bounds[A],
+            clips >> A & 1 != 0,
+        ),
+        clipped_sum(
+            simd,
+            above[1],
+            below[1],
+            &params.bounds[B],
+            clips >> B & 1 != 0,
+        ),
+        clipped_sum(
+            simd,
+            above[2],
+            below[2],
+            &params.bounds[C],
+            clips >> C & 1 != 0,
+        ),
+        clipped_sum(
+            simd,
+            above[3],
+            below[3],
+            &params.bounds[D],
+            clips >> D & 1 != 0,
+        ),
     ]
 }
 
@@ -875,27 +1068,25 @@ impl GdfSample for u8 {
     }
 }
 
-/// The negated combs of one row for each `COMB_PAIRS` slot, as
-/// [`Lanes::pairs`] gives them.
-type RowPairs<S> = [[i16x16<S>; 2]; COMB_PAIRS.len()];
-
-/// The negated combs of row `ROW` of 16 samples of any class mix, paired
-/// for [`row_index`]. Taps are grouped so that each group's combs share
-/// their candidate samples and selects: a tap and its transpose read
-/// mirrored offsets, and taps `4`, `6`, `7`, `11` form a cycle. Kept apart
-/// from the multiply-adds, whose six sums would otherwise force LLVM to
-/// spill the combs.
+/// The § 7.20.5 error indices of row `ROW` of 16 samples of any class mix:
+/// each `COMB_PAIRS` slot's negated combs, paired by [`Lanes::pairs`], go
+/// into the sums from `init` as soon as they exist. Taps are grouped so that
+/// each group's combs share their candidate samples and selects: a tap and
+/// its transpose read mirrored offsets, and taps `4`, `6`, `7`, `11` form a
+/// cycle.
 ///
 /// Bit `g` of `linear` marks the `TAP_GROUPS` entries whose combs skip the
-/// clips: the swaps then act on the combs instead of each diff.
+/// clips: the swaps then act on the combs instead of each diff. Bit `k` of
+/// `clips` marks the taps whose diffs exceed their bounds somewhere.
 #[inline(never)]
-fn row_pairs<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
+fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
     simd: S,
     lanes: L,
     window: &W,
-    (masks, linear): (Masks<S>, u8),
+    (masks, linear, clips): (Masks<S>, u8, u32),
+    init: &Sums<S>,
     params: &GdfSymParams,
-) -> RowPairs<S> {
+) -> [u16; 16] {
     let center = samples(simd, window.row(TAP_REACH + ROW), TAP_REACH);
     let centers = (center + ABOVE_OFFSET, center + BELOW_OFFSET);
     let center2 = centers.0 + centers.1;
@@ -910,20 +1101,23 @@ fn row_pairs<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
                 );
                 [k.bitcast(), t.bitcast()]
             } else {
-                paired_combs::<S, W, $k, $t, ROW>(simd, window, centers, $select, params)
+                paired_combs::<S, W, $k, $t, ROW>(simd, window, centers, $select, params, clips)
             }
         };
     }
-    let mut out = [[i16x16::splat(simd, 0); 2]; COMB_PAIRS.len()];
+    let mut sums = *init;
+    let mut add = |slot: usize, a: i16x16<S>, b: i16x16<S>| {
+        lanes.accumulate(simd, &mut sums, (slot, lanes.pairs(simd, a, b)), params);
+    };
     let [tap0, tap12] = pair!(0, 0, 12, transposed);
     let [tap1, tap13] = pair!(1, 1, 13, transposed);
-    out[0] = lanes.pairs(simd, tap0, tap1);
-    out[1] = lanes.pairs(simd, tap12, tap13);
+    add(0, tap0, tap1);
+    add(1, tap12, tap13);
     let [tap2, tap14] = pair!(2, 2, 14, transposed);
     let [tap3, tap15] = pair!(3, 3, 15, transposed);
-    out[2] = lanes.pairs(simd, tap2, tap3);
-    out[3] = lanes.pairs(simd, tap14, tap15);
-    out[4] = lanes.pairs(simd, tap3, tap15);
+    add(2, tap2, tap3);
+    add(3, tap14, tap15);
+    add(4, tap3, tap15);
     let [tap4, tap6, tap7, tap11] = if linear >> 4 & 1 != 0 {
         let comb = |tap: u16x16<S>| tap.bitcast::<i16x16<S>>();
         let (a, b) = swap(
@@ -939,38 +1133,16 @@ fn row_pairs<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
         let ((first, third), (second, fourth)) = (swap(a, c, transposed), swap(b, d, transposed));
         [comb(first), comb(second), comb(third), comb(fourth)]
     } else {
-        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params)
+        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params, clips)
     };
-    out[5] = lanes.pairs(simd, tap4, tap6);
-    out[6] = lanes.pairs(simd, tap7, tap11);
+    add(5, tap4, tap6);
+    add(6, tap7, tap11);
     let [tap8, tap10] = pair!(5, 8, 10, mirrored);
-    out[7] = lanes.pairs(simd, tap8, tap10);
+    add(7, tap8, tap10);
     let [tap9, tap17] = pair!(6, 9, 17, transposed);
-    out[8] = lanes.pairs(simd, tap9, tap17);
+    add(8, tap9, tap17);
     let [tap5, tap16] = pair!(7, 5, 16, transposed);
-    out[9] = lanes.pairs(simd, tap5, tap16);
-    out
-}
-
-/// The error indices of a row from its paired combs: each `SYM_PAIRS` entry
-/// subtracts its weighted combs from its sum.
-#[inline(never)]
-fn row_index<S: Simd, L: Lanes<S>>(
-    simd: S,
-    lanes: L,
-    pairs: &RowPairs<S>,
-    init: &Sums<S>,
-    params: &GdfSymParams,
-) -> [u16; 16] {
-    let mut sums = *init;
-    macro_rules! add_pairs {
-        ($($pair:literal)*) => {$({
-            const PAIR: usize = $pair;
-            let sum = &mut sums[SYM_PAIRS[PAIR].2];
-            lanes.madd(simd, sum, pairs[PAIR_SLOT[PAIR]], &params.pair_weights[PAIR]);
-        })*};
-    }
-    add_pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
+    add(9, tap5, tap16);
     error_index(simd, lanes, sums, params)
 }
 
@@ -995,36 +1167,38 @@ fn sym_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
         sink.keep(simd);
         return;
     }
-    let biases = |bias: [i32; 3]| {
-        [
-            lanes.spread(simd, i32x8::splat(simd, bias[0])),
-            lanes.spread(simd, i32x8::splat(simd, bias[1])),
-            lanes.spread(simd, (classes >> 2) + bias[2]),
-        ]
-    };
+    let factor = lanes.sum_scale(params);
+    let bias = if flat { &params.bias } else { &params.tap_bias };
+    let init = [
+        lanes.spread(simd, i32x8::splat(simd, bias[0] * factor)),
+        lanes.spread(simd, i32x8::splat(simd, bias[1] * factor)),
+        lanes.spread(simd, ((classes >> 2) + bias[2]) * factor),
+    ];
     if flat {
-        let pos = error_index(simd, lanes, biases(params.bias), params);
+        let pos = error_index(simd, lanes, init, params);
         sink.row(simd, 0, &pos, block);
         sink.row(simd, 1, &pos, block);
         return;
     }
-    let init = biases(params.tap_bias);
     let class = classes & 3;
     let class = (class | (class << 16)).bitcast::<u16x16<S>>();
     let zero = u16x16::splat(simd, 0);
     let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
-    let linear = params
-        .group_bounds
-        .iter()
-        .enumerate()
-        .fold(0, |linear, (group, &bound)| {
-            linear | u8::from(range <= bound) << group
-        });
-    let pairs = row_pairs::<S, L, W, 0>(simd, lanes, window, (masks, linear), params);
-    let pos = row_index(simd, lanes, &pairs, &init, params);
+    let below = {
+        let (range, bits) = (
+            u16x16::splat(simd, range),
+            u16x16::from_slice(simd, &LANE_BITS),
+        );
+        let mask = |bounds: &[u16]| {
+            let below = u16x16::from_slice(simd, bounds).simd_lt(range);
+            u32::from(simd.reduce_sum_u16x16(below.select(bits, u16x16::splat(simd, 0))))
+        };
+        mask(&params.bounds_below[..16]) | mask(&params.bounds_below[16..]) << 16
+    };
+    let (linear, clips) = (!(below >> GDF_COORDS.len()) as u8, below);
+    let pos = row_index::<S, L, W, 0>(simd, lanes, window, (masks, linear, clips), &init, params);
     sink.row(simd, 0, &pos, block);
-    let pairs = row_pairs::<S, L, W, 1>(simd, lanes, window, (masks, linear), params);
-    let pos = row_index(simd, lanes, &pairs, &init, params);
+    let pos = row_index::<S, L, W, 1>(simd, lanes, window, (masks, linear, clips), &init, params);
     sink.row(simd, 1, &pos, block);
 }
 
@@ -1108,6 +1282,11 @@ pub(super) fn sym_rows<O: GdfSample>(
     if let Some(avx2) = Level::baseline().as_avx2() {
         let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
         return sym_rows_with(avx2, InLane, window, output, classes, block, params);
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(neon) = Level::baseline().as_neon() {
+        let classes = i32x8::from_slice(neon, &classes.map(|class| class.0));
+        return sym_rows_with(neon, ByLane, window, output, classes, block, params);
     }
     sym_rows_portable(window, output, classes, block, params);
 }
@@ -1361,6 +1540,10 @@ pub(super) fn filter_run<O: GdfSample>(
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = Level::baseline().as_avx2() {
         return filter_run_with(avx2, InLane, source, origin, block, output, scratch);
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(neon) = Level::baseline().as_neon() {
+        return filter_run_with(neon, ByLane, source, origin, block, output, scratch);
     }
     crate::baseline_simd!(simd => filter_run_with(
         simd, Widening, source, origin, block, output, scratch,
