@@ -255,6 +255,12 @@ fn put_window<T: ReconSample>(
     stride: usize,
 ) -> bool {
     if let (Some(view), Some(output)) = (view.as_u8(), T::u8_slice_mut(&mut *output)) {
+        // In place, the kernel inlines here; through `with_block` it is an outlined closure.
+        if let Some(origin) = window.origin(view.geometry(), bounds) {
+            let block = window.block(view.samples, view.stride, origin);
+            super::eight_bit::put(&block, output, stride);
+            return true;
+        }
         return block::with_block(window, &view, bounds, 0, |block| {
             super::eight_bit::put(block, output, stride);
         })
@@ -263,18 +269,19 @@ fn put_window<T: ReconSample>(
     let (Some(view), Some(output)) = (view.as_u16(), T::u16_slice_mut(output)) else {
         return false;
     };
-    block::with_block(window, &view, bounds, 0, |block| {
-        block::kernels(
-            block,
-            &mut Sink::PutWide {
-                output,
-                stride,
-                max,
-            },
-            None,
-        );
-    })
-    .is_some()
+    let mut put = |block: &block::Block<'_, u16>| {
+        let sink = &mut Sink::PutWide {
+            output: &mut *output,
+            stride,
+            max,
+        };
+        block::kernels(block, sink, None);
+    };
+    if let Some(origin) = window.origin(view.geometry(), bounds) {
+        put(&window.block(view.samples, view.stride, origin));
+        return true;
+    }
+    block::with_block(window, &view, bounds, 0, put).is_some()
 }
 
 fn validate_subpel_u8_output(
