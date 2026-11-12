@@ -1,0 +1,308 @@
+X86 HANDOFF: coding-agent prompt for an x86_64 machine
+TEMPORARY FILE. Delete it before the PR leaves draft state. It is plain text (not Markdown)
+so that the doc gate (`cargo xtask check-doc-budget`) needs no allow-list entry for it.
+
+==========================================================================================
+PART 1. YOUR ROLE AND METHOD
+==========================================================================================
+You are the orchestrator for the x86_64 part of this work. Model: Fable. You decide what
+to do, you write the briefs, you verify, you accept or reject, you commit. You do not write
+the kernels yourself: delegate each implementation task to a cheaper subagent (Opus) in its
+own git worktree. A second orchestrator does the same work on an Apple M2 (aarch64) at the
+same time and pushes to `perf/faster-than-dav2d` (draft PR splotlabs/splot#1709).
+
+Goal: `splot` (Rust AV2 decoder) must decode much faster than dav2d on x86_64 on every
+stream, at 1 thread and at all cores. Each kernel must be faster than the dav2d kernel of
+the same function (dav2d built with its x86 assembly). Thread scaling must be better than
+dav2d's. The code must be lean: prefer deletion.
+
+Read first: `AGENTS.md` (all of it; the section "Performance and SIMD" is the policy), then
+this file. AV2 semantics come only from `docs/spec/av2/1.0.0/`.
+
+Method that worked on aarch64 (use the same):
+1. Measure before each decision. Primary metric: instructions retired at 1 thread
+   (`perf stat -e instructions:u,cycles:u`). For the entropy parse use cycles (it is
+   latency-bound). For thread scaling use wall time with alternating runs and medians
+   (n >= 7) on a quiet machine. Report ranges. A delta smaller than the noise is not evidence.
+2. Find the gap per stage and per kernel against dav2d: exclusive per-stage counters, a
+   per-kernel class harness (instructions per call for each block size and filter class),
+   and disassembly of both decoders.
+3. One brief per subagent, one area per brief (files must not overlap between agents that
+   run at the same time). Each brief gives: the goal as a number, the files, the baseline
+   binary, the checks, the rules below, and the report format. Tell the agent to stop and
+   report at about 80% of its context, with the exact next edits.
+4. Do not trust a report. Before you commit agent work: apply its diff on the integration
+   tree, build, run the hash check, the gate, the tests, and your own measurement.
+5. Commit each accepted change as its own Conventional Commit, with a body that says what
+   and why. Push after verification.
+6. Keep a running log (see Part 5) so that the other orchestrator can read your state.
+
+Rules for every agent (put them in each brief):
+- Output must stay byte-exact. Frame hashes must equal the baseline:
+  `splot decode --quiet --output-format hash -o - --threads=N FILE 2>&1 | grep -v thread_policy | md5sum`
+  at threads 1, an odd count, and the core count, on all sample streams and on a 10-bit
+  1080p stream. A hash difference means that the change is wrong.
+- SIMD policy: one generic `fearless_simd` kernel (generic over u8/u16) when it is the
+  fastest. If it is not, three versions: NEON, x86_64 (AVX2, `x86-64-v3` baseline), generic.
+  No scalar sample-processing path at runtime (scalar code only in `#[cfg(test)]` as the
+  oracle). Each SIMD version has a test against the portable kernel.
+- Kernels can differ per architecture. Control flow, dispatch order, entry points and data
+  layouts must NOT differ: `cfg(target_arch)` selects only a kernel module. A kernel that
+  does not cover a shape declines to the shared portable path.
+- An x86-only kernel module is deleted only after a measurement on x86 shows that the
+  generic kernel is not slower. An aarch64 kernel is never changed without a check that
+  aarch64 still compiles: `cargo clippy --workspace --all-targets --locked --target aarch64-unknown-linux-gnu -- -D warnings`
+  (install the target with rustup). You cannot run aarch64 code: do not change NEON
+  arithmetic. If shared code changes, the aarch64 orchestrator runs the hashes there.
+- No new `unsafe` block without the maintainer's sign-off (ask the user). No new dependency.
+  No `unwrap`/`expect`/`panic` in library code. No fixed caps on threads or frames.
+- dav2d is inspiration only. Do not copy its code. Always improve on it.
+- Gate before each commit: `cargo xtask ci --fast`, the tests of the touched crates in debug
+  (`cargo test -p <crate> --locked`), clippy with `-D warnings`. Run the full `cargo xtask ci`
+  before each push. Never pipe the gate through `tail`; read its exit code.
+- The comment-density budget has no headroom: add no comments beyond a one-line "why".
+  Add no Markdown files (the doc gate has an allow-list).
+- Text style for briefs, commits and reports: ASD-STE100 Simplified Technical English.
+
+==========================================================================================
+PART 2. BRANCH PROTOCOL (two orchestrators in parallel)
+==========================================================================================
+- Your branch: `perf/faster-than-dav2d-x86`. Create it from `origin/perf/faster-than-dav2d`.
+  Do not push to `perf/faster-than-dav2d`. Do not force-push after the first push.
+- At the start of each work session and before each push: `git fetch origin` and merge
+  `origin/perf/faster-than-dav2d` into your branch (merge, not rebase, so that pushed
+  history stays stable). Run the hash check after each merge.
+- File ownership. Yours: x86-only modules (`**/avx2*.rs`, `**/avx2/**`, `*_x86*`, x86 `cfg`
+  kernel bodies) and new x86 kernels. The aarch64 orchestrator's: NEON modules and, at this
+  time, shared code in `crates/splot-recon/src/subpel_mc/`, the mode-info parse
+  (`crates/splot-decode/src/bitstream/tile_payload/`, `prediction/inter/block/`), the entropy
+  decoder (`crates/splot-core/src/symbol.rs`, `coeff_loop/`), the row scheduler
+  (`crates/splot-parallel/src/rows.rs`) and `crates/splot-decode/src/pipeline/`.
+  If you must change shared code in those areas, keep the change small, put it in its own
+  commit with the prefix `x86-shared:` in the commit body, and list it in your log.
+- The aarch64 orchestrator merges your branch into the PR branch after it runs the aarch64
+  hashes. Do not open a second PR. Do not merge to main.
+- Never use bare `git stash`. Remove each agent worktree when its work is merged.
+
+==========================================================================================
+PART 3. SETUP ON THE X86 MACHINE
+==========================================================================================
+1. Toolchain: stable Rust 1.99.1 (see `rust-toolchain.toml`). Record `lscpu` (model, cores,
+   SMT, AVX2 / AVX-512 / VNNI flags) in your log.
+2. Build: `cargo build --release -p splot-cli --locked` (fat LTO). Keep these binaries
+   outside `target/`: `splot-main` (main at dd566e10f, the base of the branch) and
+   `splot-branch-<sha>` for each head that you measure.
+3. dav2d: clone https://code.videolan.org/videolan/dav2d, build it with meson in release
+   mode with assembly on. Record its commit.
+4. Streams: the EwoutH AV2 samples (see `.github/workflows/ci.yml`, job `ewouth-av2-samples`,
+   and `tests/conformance/ewouth-av2.toml` for the pinned revision; 88 `.ivf` streams), and a
+   10-bit 1080p stream (ask the user for `test.ivf` or use the 10-bit samples of the set).
+5. Write a hash script (all streams, three thread counts, exit non-zero on a mismatch
+   against `splot-main`) and a benchmark script (alternating runs of splot and dav2d,
+   medians, per-stream ratio, geomean and total).
+
+==========================================================================================
+PART 4. TASKS, IN ORDER
+==========================================================================================
+T1. Correctness of the branch on x86. `cargo xtask ci` (full). Hashes of the branch against
+    `splot-main` on all streams at 1 thread, an odd count and the core count. Then a stress
+    run for the new scheduler: at least 3,000 decodes of small streams at 2, 3, 4 threads
+    and the core count, several processes at a time, each under a time limit; 0 failures
+    and 0 timeouts are required. Stop and report to the user if anything fails.
+T2. Baseline numbers. For each stream: branch against `splot-main` and against dav2d, at
+    1 thread (instructions, cycles, wall) and at 4, 8 and all cores (wall, CPU time).
+    Record geomean, total, and the ten worst streams at each thread count. On aarch64 the
+    1-thread geomean against dav2d is about 2.5x to 3x and no stream loses.
+T3. Per-stage and per-kernel gap table against dav2d x86 asm: entropy parse, mode info,
+    inverse transform (8-bit, 10-bit), intra, MC by class (put / compound / cell, block
+    size, H / V / HV, 8-bit and 10-bit), optical flow, warp, TIP, deblock, CDEF, CCSO, GDF,
+    Wiener NS, PC-Wiener. This table selects the order of T4 to T6.
+T4. Verify the x86 code that was edited without a run (marked AVX2-TOUCHED in Part 6).
+    Highest risk first: the restored AVX2 MC kernels (`subpel_mc/eight_bit/avx2.rs`,
+    `eight_bit/avx2/cell.rs`, `sixteen_bit/avx2.rs`), the AVX2 `search_window` signatures,
+    warp `sheared_sum` and `column_dot_products`, GDF `InLane`, CDEF `InLane`/`MinPos`.
+    Run `cargo test -p splot-recon --locked` and the hashes.
+T5. Port each aarch64-only gain (marked ARM-ONLY in Part 6) to x86: write the AVX2 kernel
+    behind the same kernel interface as the NEON kernel, or show by measurement that the
+    generic `fearless_simd` kernel is at least as fast and use it. The largest ones:
+    - MC: pair put kernel (`put_pair`), register cell kernels for 4x4 / 8x8 (rows unrolled
+      at compile time, clamped windows), program kernel, stage-free strips, fused one-call
+      compound, 10-bit register-ring two-pass, chunked fullpel. On aarch64 the 8-bit dot
+      product (`sdot`/`usdot`) is selected per kernel class: measure `pmaddubsw` and, if
+      the CPU has it, AVX-VNNI `vpdpbusd` per class in the same way.
+    - 8-bit inverse transform: the structure of the NEON / generic kernel (no zero-skip
+      masks below 32 wide, fixed trip counts, identity columns in the row pass, clamp
+      folded into the add, DC-only and small paths) against the old AVX2 file.
+    - Deblock: `portable_chunk` with the `still` early exit against the two AVX2 chunk kernels.
+    - GDF: 8 lanes x 2 rows tap kernel against AVX2 `gdf_inlane.rs`.
+    - Wiener NS and PC-Wiener by-lane kernels (one run flow, kernel choice differs per arch).
+T6. For each module marked DELETE? in Part 6: measure the generic kernel against the AVX2
+    module on 8-bit and 10-bit streams. Delete the AVX2 module where the generic kernel is
+    not slower. Keep it, and say why, where it is faster.
+T7. Control flow. Confirm with `grep -rn "target_arch" crates/` that each `cfg(target_arch)`
+    selects only a kernel module or a kernel body. List each place where flow still differs
+    and correct it (Part 6 has the known list).
+T8. Scalar runtime paths that remain (scaled-reference MC `block::general` and `Sink::store`,
+    `ext_warp_intermediate` border gather, `ext_warp_predict_scaled`, TIP per-cell gather,
+    CDEF widening gathers): replace each with a generic `fearless_simd` kernel, if the
+    aarch64 orchestrator has not done it when you reach this task (fetch first).
+T9. Shared scalar code to re-measure on x86 (it was tuned on aarch64): the symbol decoder
+    word path and CDF adapt (cycles), the mode-info parse (instructions per inter leaf
+    against dav2d), the inter command build (a 320-byte memcpy), the inlining attributes of
+    the generic post-deblock filter chain.
+T10. Thread scaling on x86 (many cores, SMT). Measure per stream at each power-of-two
+    thread count up to the core count against dav2d. Examine: the SeqCst fence on each
+    dispatch (`mfence` or a locked instruction), the 128-byte padding, contention on the
+    shared `ready` mutex and the `queued` counter at 32+ threads, wake placement on SMT
+    siblings (`first_idle` wakes the lowest-index idle worker), the idle bitmask above 64
+    threads (not tested), wake latency with futex park/unpark.
+T11. Optional, only with a measured gain and the maintainer's agreement (ask the user):
+    AVX-512 versions. The baseline stays `x86-64-v3`.
+T12. Final report for the user: the T2 table again on the final head, the T3 table again,
+    the list of deleted and kept x86 modules with numbers, what you did not check.
+
+==========================================================================================
+PART 5. YOUR LOG
+==========================================================================================
+Keep `X86-STATUS.txt` at the repository root on your branch (temporary, plain text): the
+machine, the dav2d commit, the T2 and T3 tables, one line per commit (what, measured delta,
+checks run), open problems, and a section "For the aarch64 orchestrator" that lists each
+change of shared code and each finding that needs work on the NEON side.
+
+==========================================================================================
+PART 6. STATE OF THE BRANCH (log of the aarch64 orchestrator; newest entries at the end)
+==========================================================================================
+# x86 tracker for branch perf/faster-than-dav2d (running log; becomes the x86 handoff prompt)
+
+Host for all work so far: Apple M2 (aarch64). x86_64 code was only compiled and
+linted (`cargo clippy --target x86_64-apple-darwin`). No x86 test, hash check or
+timing has run. Base of the branch: main at dd566e10f.
+
+Legend: SHARED = same code runs on x86, behaviour must be verified there.
+AVX2-TOUCHED = x86-only code was edited without a run. ARM-ONLY = gain exists
+only on aarch64; x86 needs the matching work. DELETE? = x86-only module that the
+generic kernel may replace after a measurement on x86.
+
+## Per commit
+
+| Commit | Area | x86 status | What to do on x86 |
+|---|---|---|---|
+| 5e1270780 | entropy parse: typed CDF row reads | SHARED | tests + hashes |
+| f5f993ad7 | deblock sub-PU edge decisions by runs | SHARED | tests + hashes |
+| 28b9b62a1 | u16 optflow unit kernel (fearless_simd), fixed-width SAD, portable deblock chunk field reads | SHARED (generic kernels) | tests + hashes; time 10-bit |
+| b44aadf4e | unfiltered stripes skip the filter chain | SHARED | tests + hashes |
+| cbe8b8d3d | 8-bit inverse transform, generic fearless_simd file `inverse_transform_2d_8bit.rs`; `dequant_process.rs` single rounding shift | dequant: SHARED. Transform: ARM-ONLY (x86 uses its AVX2 file, about 2000 lines, unchanged) | port the structural ideas to AVX2 (no zero-skip masks under 32 wide, fixed trip counts, identity columns inside the row pass, clamp folded into the add) or measure the generic file against the AVX2 file and DELETE? the slower one |
+| ae39ee1f7 | GDF: unclipped low-range groups (SHARED logic; AVX2 `InLane` keeps `pmaddwd` through a trait default), `Widening` lanes for non-AVX2; `lr_madd.rs` epilogue (SHARED); Wiener NS row slicing (SHARED); chroma kernel width choice (aarch64 cfg) | SHARED + AVX2-TOUCHED (trait default) | tests + hashes; time GDF and Wiener on 8-bit and 10-bit |
+| 5850c3917 | compound cell generic over sample type; NEON register-ring 16-bit two-pass; warp `TapWeights` (x86 keeps pmaddwd pairs behind cfg); TIP field fearless_simd i32x8 | cells: AVX2-TOUCHED (u16 cells now run on the AVX2 word-lane kernels with a thread-local stage). Ring kernel: ARM-ONLY. TIP field: SHARED | tests + hashes; 16-bit cell path on x86 needs the register-ring structure (ARM got -0.72G of 46G on test.ivf from it) |
+| 3f8087d1e | one generic deblock chunk kernel `portable_chunk` (u8 + u16); NEON u8 kernel deleted | ARM-ONLY gain. x86 keeps `edges_u8.rs` and the AVX2 u16 kernel in `edges.rs` | measure `portable_chunk` against both AVX2 kernels; DELETE? them if the generic one is not slower |
+| 6443f6e03 | TIP grid path generic (u8/u16), `fullpel_cell_u16`, shared `sad_rows`, widening-mul blends, warp translation strip | SHARED (fearless_simd) | tests + hashes; time 10-bit |
+| ec119ecf9 | CDEF: unrolled row kernels (macro), vector direction pick, 8-lane gathers, wide8 bytes-only with MODE, scalar boundary path removed; `cdef_best_direction` is now x86-only (used by the AVX2 cost kernel) | SHARED + AVX2-TOUCHED (`InLane`, `MinPos`, AVX2 direction costs) | tests + hashes; time CDEF 8-bit and 10-bit |
+| 3b0332a3e | deblock: decisions reuse the row above (SHARED); `still` early exit in `portable_chunk` only | decisions: SHARED. Early exit: ARM-ONLY | port the `still` early exit to the AVX2 chunk kernels (or delete them, see 3f8087d1e) |
+| 846361438 | 8-bit subpel kernel rewritten with NEON intrinsics; `Taps.words` no longer AVX2-only | ARM-ONLY | apply the same structure to the AVX2 8-bit module (per-sink output closures outside the row loop, no ring copy per row, row starts stepped by stride, widen once then slide) |
+| a6dc670dc | one post-deblock filter chain generic over the sample type (`StripePlane<T>`); CCSO byte-native adds; `#[inline(never)]` on four kernels to keep old function boundaries | SHARED | tests + hashes; check AVX2 codegen of the generic chain (the inlining fix was tuned on aarch64); time 8-bit and 10-bit |
+| ab4cc2c2e | merged temporal-motion records | SHARED | tests + hashes |
+| (MC round 2, see git log) | one compound cell path; NEON register kernels for 4x4/8x8 cells; fullpel rows in 16-byte chunks; 8-bit SAD as fearless_simd kernel; `Block::remap` is `Option<[i8; 2]>` | AVX2-TOUCHED: AVX2 cell `predict` takes `&Block` (one by-key dispatch per block); AVX2 `run`, `cells`, `run_items`, `store_item` deleted. Register cell kernels and fullpel rewrite: ARM-ONLY. SAD: SHARED | tests + hashes first (highest x86 risk on the branch); then give the AVX2 module register cell kernels (rows unrolled at compile time, no per-row remap/clip branches) and the chunked fullpel |
+| 7fed7cd5d | inverse transform kernel generic over bit depth (10-bit, lossless WHT), vector dequant tail, vector residual adds | SHARED: 10-bit transforms and 8-bit shapes outside the AVX2 file now run the generic fearless_simd kernel on x86 | tests + hashes; time 10-bit transform against the old scalar path |
+| 32fdd1904 | 8-bit subpel kernels as a macro expanded for NEON and NEON+dotprod; one `unsafe` entry (aarch64 only); generic cell kernel on other targets; `cell::compound` wide full-sample fast path (shared) | ARM-ONLY (dot product). SHARED: `wide_fullpel` in `cell.rs` (had a debug overflow, fixed) | x86 equivalent is `pmaddubsw` (AVX2) / VNNI `vpdpbusd`: check what the AVX2 8-bit module uses for the horizontal pass and bring it to the same per-row cost |
+| aa43df7ba | lock-free `ParallelStage` claims, min precompute batch 2, TIP bands 32 rows | SHARED (scheduling) | re-measure wall and CPU inflation at 1..N threads on the x86 core layout; the two constants were tuned on 8P+4E |
+| e385367f5 | one directional intra line kernel (u8/u16) with fixed-size stores; IBP DC scan removed | SHARED for u16 and the framework. AVX2-TOUCHED: the x86 AVX2 8-bit line kernel still has a variable-length tail copy (memcpy per line) | tests + hashes; give the AVX2 line kernel fixed-size overlapping stores or delete it for the generic `LineSample` kernel after a measurement |
+| 29bdb7c13 | generic `InverseTransformAdd` with `AddU16` sink (10-bit fused add, IST, CCTX), Wiener chroma `lanes8` on all arches, luma tail and vector range check, `widen_to_u16`, `dequantize_groups` (QM), CDEF `cdef_copy_centre_rows` / pair gather | SHARED (all via the AVX2 level of the generic kernels). AVX2-TOUCHED: `inverse_transform_2d_8bit/avx2.rs` (`bound` field removed, `BitDepth::Eight` argument, AVX2 branch of `add_secondary` gated on 8-bit so 10-bit IST uses the generic path); `filter_chroma_rows` now falls from AVX2 `filter_chroma_narrow` to generic `lanes8` | tests + hashes; time 10-bit; DELETE? `inverse_transform_2d_8bit/avx2.rs` (8-bit only now) and `avx2::filter8x2` against the generic kernels; consider an AVX2 `pmaddwd` form of `AddU16` if generic is slower |
+| 803eea7e9 | 8-bit strip kernels (`chunks_exact` rows, no checks in the inner loop, ring unrolled by 2V), i16 compound intermediate (`Sink::PrepNarrow` / `AverageNarrow`, `CompoundPredictor` trait), program kernel without per-cell `Block` | Strip and program kernels, stageless put, in-place fast path in `block.rs`: ARM-ONLY. Narrow sinks and the i16 `pred0`: SHARED. AVX2-TOUCHED: `eight_bit.rs` AVX2 `PrepNarrow` / `AverageNarrow` arms (`store_prep16`, `first_group16`), a no-op arm in `sixteen_bit.rs` AVX2 | tests + hashes (the byte-lane test covers the narrow arms on x86); port strip kernels to AVX2 `horizontal` / `vertical` / `stage_rows`, program kernel from `placed()`, un-gate the stageless put and in-place path |
+| 18501847b | small directional intra kernel, palette, MRL average, IBP groups, DIP 4-wide, `sum_samples`, vector range checks | SHARED. AVX2-TOUCHED: `line_avx2` / `short_line_avx2` now store through `store_chunks::<u8,32>` / `<u8,16>` (new 32-lane case in `store_short`) | tests + hashes; measure 8-bit directional lines of 17-31 samples; DELETE? `line_avx2` if the generic `line_lanes` is within 1% at 8, 16, 32 samples per line |
+| c599c4d59 | banded TIP chain (TIP_PROJECT stage, MotionFieldUnits), TIP split deleted, frames list RecursiveRwLock, batch_ready try_lock | SHARED (scheduling) | re-measure on the x86 core layout: writer starvation of the reader-preferring frames lock, TIP band size (one SB row x 256 columns), no-split decision on 1080p TIP streams, min precompute batch 2 |
+| 1ebfd52fc | deblock: edges read in place (`run` without piece buffer), decision gather after `still`, pass-0 controls cache, quiet-row skip, TIP frames and borders through `PassEdges` + padded `LoneRun`; per-edge primitives test-only | SHARED (decode side, recon `band`/`run`). AVX2-TOUCHED: dispatch to `avx2_u8::horizontal_run` moved into `deblock_horizontal_edges`. ARM-ONLY: `still` early exit and gather-after-still exist only in the portable kernel | tests + hashes; route u16 `Chunk::chunk`, the u8 band and u8 `horizontal_run` to `portable_chunk` and compare per-chunk instructions (flat/step/noise, 8/10-bit, V/H) and whole decode; DELETE? `edges_u8.rs` and the AVX2 u16 kernel if the portable one is not slower |
+| (post-filters r1, see git log) | GDF bit-select swaps and half-width bound loads (aarch64 only); CCSO edge groups and lossless restore; luma-in-place stripes with CDEF `luma_output`; Wiener references test-only | GDF change: ARM-ONLY (x86 keeps xor swap and full loads). Rest: SHARED | tests + hashes; measure `vpblendvb` swaps and `vpbroadcastw` bounds for GDF; CCSO edge-group cost |
+| (frames-lock fix, see git log) | writer announcement on the frames list + stress test | SHARED | run the stress test with more than 8 workers on a many-core / SMT machine |
+| (transform NEON kernel, see git log) | `inverse_transform_2d_8bit/neon.rs`: i16 rows, dequant fused into loads, row kernel by nonzero inputs, even/odd splits, fused identity, register 8x8, DC-only add | ARM-ONLY (behind cfg(aarch64)); x86 keeps `avx2.rs` at 8-bit and the generic kernel at 10-bit | port to `avx2.rs`: skip all-zero chunks in fused identity blocks; row kernel by nonzero input vectors (16/32-wide rows); register-resident 8x8; two-level even/odd column split for 16/32-tall; DC-only saturating byte add. The `q2 << 8` dequant trick needs a rounding shift x86 lacks |
+| f8c7181d5 | one subpel kernel family: `block.rs` front end (`Window`, `PASSES`, vector padded border copy via `swizzle_dyn_u8x16`), strips, row pairs, cells, program, full-sample; old closure path, `cell_block`, `staged`, in-kernel clamps and remaps deleted in every backend | SHARED: `block.rs` front end, border copy, compound front end, full-sample cells, `portable.rs` remap deletion. AVX2-TOUCHED (blind): `cell.rs` AVX2 (clamped variants removed, `put` returns bool, `compound_x86` / `put_x86` wrappers); `eight_bit.rs` AVX2 (`tap_bytes` without remap, remap removed from `horizontal` / `stage_rows`, `avx2::put` entry removed; compound order = cell kernel -> <=64-sample `avx2::compound` with a 448-entry stack stage -> two-pass); `sixteen_bit.rs` AVX2 (`Remap` removed). ARM-ONLY: strip and row-pair kernels, one-call fused compound above 64 samples, program kernel (x86 `CellSample::program` is the empty default) | tests + hashes FIRST (largest blind x86 edit on the branch); then port strips (`chunks_exact` rows, register ring), fused compound, program kernel to AVX2 |
+| (transform round 2, see git log) | size-dispatched `add_flat` / `add_small` / `add` entries (aarch64), `passes` field, `add_constant_u16` (10-bit DC-only, fearless_simd), NEON file split | SHARED: `add_constant_u16`, `passes`. ARM-ONLY: flat/small entries, IDTX raw-zero chunk skip | `avx2.rs` already has zero skips, factored DCT columns, a DC-only path and a small-block path; add a size-dispatched flat/small entry ahead of the general kernel and the IDTX skip of raw all-zero chunks before dequant |
+| (post-filters round 2, see git log) | CCSO edge fold (`edge_taps`: slides, zips, unzips), lossless run copies, Wiener luma partial store | SHARED | tests + hashes; measure CCSO |
+| (optflow/warp/projection fix, see git log) | non-x86 `rows_8x8_sums` (smlal lanes) and warp `tap_sum` / `horizontal_row` / `round_intermediate`; `END_MV` lanes removed from the temporal scan (lazy `project_component`) | SHARED: `END_MV` removal (`scan.rs`, `temporal.rs`; the AVX2 lane kernel does less work), `column_halves`. x86 arms of the optflow and warp kernels are unchanged | tests + hashes; measure x86 optical-flow 8x8 and warp sheared paths against 1d635bcce; `warp_prediction/eight_bit.rs` AVX2 needs its own measurement against the generic path |
+| 35441778f | 10-bit puts on NEON for widths that are not a multiple of 8 (overlapped last strip, also 8-bit), portable full-sample copy by proven rows, overflow-free compound average, vector border copy for narrow planes, `scratch` argument removed | SHARED: border copy (`Sample::bytes` PADDED flag), portable copy and average, `compound_blocks` u16 branch, argument removal. ARM-ONLY: overlapped strip, period-unrolled vertical ring | tests + hashes; 12-wide blocks still fall to portable on x86: add the overlapped last strip to AVX2 `eight_bit.rs` / `sixteen_bit.rs` (`fits` / `width`) and the unrolled ring to AVX2 `vertical` |
+| (reference-facts table, see git log) | `FrameRefFacts` built per frame; compound, skip-mode, single and BAWP parse read it | SHARED (scalar parse code; the encoder facade builds the same table per tile) | tests + hashes |
+| (GDF round 1, see git log) | GDF: scaled weights + high-half digits (shared `Widening` lanes), `ByLane` multiply-adds (aarch64 `kernel!` block), per-tap clip bits with range up to 511, `row_pairs` + `row_index` merged, biases folded per chunk | SHARED: merged `row_index`, clip bits, 511 range, vector bound masks, bias fold. `InLane` (AVX2) keeps `pmaddwd` and its own `packed_digits`; only the `accumulate` trait signature changed. ARM-ONLY: `ByLane`, high-half digit trick | tests + hashes; measure the GDF stage: the fused `row_index` may spill on AVX2 (16 ymm registers) — if so keep the two-step form for `InLane`; the high-half digits may not pay on x86 (`pmulhrsw` is cheap) |
+| (MC round 7, see git log) | 16-bit NEON register cell kernel (in place or clamped rows + tbl-gathered columns), 16-bit program kernel, 8+4 width split, ring in `two_pass`; portable vector row copy for 16-bit full-sample puts | SHARED: `portable.rs` row copy, `Window` field visibility, `sixteen_bit.rs` dispatch (x86 branch unchanged). ARM-ONLY: everything else; x86 `CellSample for u16` program entry returns nothing | in `sixteen_bit.rs` `mod avx2`: a 16-bit register cell kernel with clamped reads (row clamp + `pshufb` gather), a 16-bit program kernel, the 8+4 width split, a period-unrolled ring in `two_pass`; x86 border cells still use the window copy |
+| (GDF round 2, see git log) | GDF: `rough_half` / `rough_rows` (8 lanes x 2 rows, per-lane bounds and weights via `swizzle_dyn_within_blocks_u8x16`) on aarch64 and other targets; x86 keeps the AVX2 `InLane` slot kernel in `gdf_inlane.rs` behind cfg(x86_64); `RowPairs` trait picks one | SHARED: `filter_run_with`, classification, gradients, range scan, `ErrorRows`, `add_residuals`; `GdfSymParams::new` on x86 also builds the unused `rough_half` lane tables (a few hundred instructions per `filter_run`). AVX2-TOUCHED (mechanical move only): `gdf_inlane.rs` | EXPERIMENT: (1) port `rough_half` to x86 with `vpmaddwd` — 128-bit: interleave the combs of two taps that feed one sum, interleaved per-lane weight pairs via `vpshufb`; or 256-bit `i16x16` with one `vpshufb` per 128-bit lane; (2) measure InLane vs generic `rough_half` (skip the AVX2 branch in `filter_run`) vs the port: GDF stage guard on Meridian_talk, TunnelFlag qp160, RitualDance qp160, crowd_run first 178 frames, whole decode on 9 streams, and stack spills in the hot function (generic 128-bit `rough_half` had about 51 spill stores); (3) if the port (or generic alone) wins all four with no stream above +0.1%, DELETE `gdf_inlane.rs` (about 720 lines) and its cfg field and dispatch; else keep InLane |
+| (MC round 8, see git log) | per-block descriptor in the decoder (`subpel_put_block<T>`, `subpel_compound_block<T>`, `unscaled_put`, `luma_view`, `predict_unscaled`); clamped 8-bit register cells; 16-bit by-value closures + bilinear path; vector optflow gradient tails; program geometry per reference (race fix) | SHARED: descriptor paths, `put_window`, `compound_windows`, optflow tails, `cell_by_cell` (x86 `CellSample::program` now runs every cell), `clamped_cell` -> `copied`, `stage_needed`, shared `kernels()` / `compound_blocks` flow. AVX2-TOUCHED (blind): AVX2 `predict` / `compound` in `eight_bit.rs` and `sixteen_bit.rs` decline when `stage.len() < stage_needed`; x86 makes one declined stageless call before the staged one; x86 u16 compound pairs that need a stage now go to the two-pass path (expect a speed loss to recover) | tests + hashes; then: AVX2 clamped register cell (`cell.rs` avx2 `predict` with clamped row addresses + `pshufb` column gather), by-value `out` closures in the AVX2 passes, u16 bilinear shortcut in AVX2 `sixteen_bit`, tune the stage admission |
+| (mode-info commits, see git log: zero warp MV, in-place inter command, frame constants, direct CDF row reads x4) | inter mode-info parse and resolve | SHARED (scalar parse code) | tests + hashes; instruction counts |
+| (Wiener NS luma by-lane kernel, see git log) | `lr_madd.rs` `by_lane` (aarch64 intrinsics), run hook in `filter_luma_cell_groups`, `PreparedLumaClass.by_lane` | ARM-ONLY, and a FLOW FORK until the Wiener round-2 change lands (run structure shared on all targets). SHARED: lazy `mixed` init, `uniform_weights` | in `madd_avx2!` and the call site: one `#[target_feature(enable = "avx2")]` function per uniform run (not per 16-sample group); the 8 uniform `pmaddwd` weight vectors and the centre/round pair loaded once per run; rows outer / groups inner with slices advancing in lockstep; const variants that drop trailing all-zero madd pairs; group body written inside the run loop |
+| (entropy word path, see git log) | `read_trusted_word` for alphabets of 3-5 (later 3-6): one u64 CDF row, SWAR search and adaptation | SHARED: on x86 it replaces the AVX2 lane path for trusted reads of those alphabets | measure parse cycles on x86 (cmov chains, 3-cycle imul) against the AVX2 lane path; keep whichever wins per alphabet size, same flow on both architectures |
+| (lock-free rows, see git log: non-destructive freeze; published rows read without a lock) | `frame_progress.rs`, `inflight.rs`, `reference.rs`, `tip.rs`, `inter.rs`, `splot-recon` freeze | SHARED | tests + hashes at 1, 2, 5, 8, N threads with timeouts; repeat the 8- and 12-thread timing; Miri if available |
+
+## Pending (not on the branch yet)
+Superseded: see "CURRENT STATE" at the end of this file.
+
+## Checks to run on the x86 machine
+
+1. `cargo xtask ci` (full), then `cargo test --workspace --all-targets --locked`.
+2. Frame hashes: branch against main on all EwoutH samples and a 10-bit 1080p
+   stream, at `--threads=1`, an odd count and the core count.
+3. Timing, branch against main, 8-bit and 10-bit, 1 thread (instructions via
+   `perf stat -e instructions`) and all cores (wall, alternating runs).
+4. Timing against dav2d built with its x86 assembly.
+5. Per-kernel instruction counts against dav2d's x86 asm functions, as done on ARM.
+
+## CI
+Draft PR for CI only: https://github.com/splotlabs/splot/pull/1709 (opened 2026-11-11, auto-merge off). x86 test results from CI go here.
+
+## x86 data from CI (`perf` job, DynamoRIO instruction counts, x86_64 Linux runner)
+Tiny synthetic fixtures (start-up dominated), so they show direction only.
+| Fixture | main dd566e10f | branch 0a466bab2 | change |
+|---|---|---|---|
+| gdf (syn-gdf-intra-128x128) | 4,264,943 | 4,192,672 | -1.7% |
+| wienerns-luma | 4,265,562 | 4,193,291 | -1.7% |
+| pc-wiener | 4,265,516 | 4,193,245 | -1.7% |
+| deblock-cdef (syn-2sb-deblockwide) | 414,939 | 389,401 | -6.2% |
+| inter-subpel-optflow (syn-8frame-opfl) | 6,683,657 | 6,454,772 | -3.4% |
+| warp-subpel (syn-warp-inter-128x128) | 18,383,177 | 18,102,512 | -1.5% |
+Full CI (x86 tests, fuzz, AVM oracle, EwoutH samples at 1 and 8 threads) passed on 0a466bab2.
+
+## Maintainer ruling to enforce on x86 (PR #1701): no per-arch control-flow forks
+Kernels may differ per architecture; flow must not. Known forks on the branch to unify
+(each path must exist on x86_64 too, through AVX2 or the generic kernel).
+NOTE: the four `subpel_mc` / `eight_bit` / `sixteen_bit` entries below are closed by MC rounds
+10 and 11 (one shared flow; AVX2 kernels decline to the portable path). Verify them on x86:
+- `subpel_mc/block.rs`: stageless put and in-place fast path are aarch64-gated.
+- `subpel_mc/cell.rs`: program kernel entry is aarch64-only for u8 and u16 (x86 default is empty).
+- `eight_bit::compound`: x86 order (cell kernel -> <=64-sample `avx2::compound` with a stack
+  stage -> two-pass) differs from the aarch64 one-call fused compound.
+- `sixteen_bit`: register cell with clamped reads, 8+4 width split and the overlapped last strip
+  are aarch64-only; x86 border cells use the window copy; 12-wide blocks fall to portable.
+- `inverse_transform_2d_8bit.rs`: `add_flat` / `add_small` size dispatch and the NEON kernel are
+  aarch64-only (x86 uses `avx2.rs`, which has its own DC-only and small paths).
+- `gdf_simd.rs`: x86 runs `InLane` (slot form), other targets `rough_half` (see experiment).
+- Non-x86 arms in `optflow.rs` (`rows_8x8_sums`), `warp_prediction.rs` (`tap_sum`,
+  `horizontal_row`, `round_intermediate`): kernel-level differences (allowed), listed for review.
+
+| `f7142a489` | core: word path for 6-symbol alphabets, carried FSC row | shared code, no arch fork | re-measure cycles on x86 (EuroTruck +0.4% instructions, −0.6% cycles on M2) |
+| `ce95eec2b` | recon: usdot per kernel class (`usdot_lane` asm wrapper, aarch64 i8mm), two-row put, vector warp window, TIP hole fill | NEON-only dot path; x86 keeps its 8-bit kernels | x86: check `pmaddubsw` class selection matches; measure put/avg small blocks; run recon tests |
+Pending (not pushed at this entry): Wiener round 2 (one run flow; kernel choices differ per arch in `lr_madd::filter_run`, `filter_chroma_block`, x86 `filter_chroma_narrow`, `wienerns_luma_u8` byte-pair class rejection), mode info round 4 (shared scalar code; `PENDING` template memcpy to re-measure on x86), scheduler v2 (SeqCst fence per dispatch, 128-byte padding, `ready` mutex at 32+ threads, SMT wake placement, idle bitmask above 64 threads untested).
+| `d8a5d1a3a` | recon: PC-Wiener and Wiener NS chroma by-lane kernels, one run flow, scalar path removed | shared flow; kernel choices differ per arch (`lr_madd::filter_run`, `filter_chroma_block`, x86 `filter_chroma_narrow`, `wienerns_luma_u8` byte-pair class rejection) | x86: run recon tests; measure Wiener stages on a 10-bit and an 8-bit stream |
+| `79777e450`, `da2a6477c` | decode: one inter-leaf tail, command 416 -> 328 B, direct leaf-record motion writes | shared scalar code | x86: re-measure (`PENDING` template memcpy lowers differently) |
+Held back: MC round 10 deleted the AVX2 MC kernels (eight_bit::avx2, cell::avx2, sixteen_bit::avx2); round 11 must restore them behind the unified kernel interfaces (decline -> portable). On x86: measure each restored AVX2 kernel against the portable one; delete only where portable is not slower.
+CI note: coverage job failed once on ce95eec2b in `a_dropped_picture_gives_its_storage_back_to_the_decoder` (decoder_api.rs:197); main ci job passed; 200/200 locally. Watch on x86/Linux.
+| `52f1e296f`, `466b31e12`, `5ab70fb75` | decode: inter command built once, shifts in ref-MV bank budget, frame MV precision from tile params | shared scalar code | none beyond CI |
+
+## CURRENT STATE (2026-11-12, written when this file was committed)
+On the branch after this commit: row scheduler v2 (5 commits: direct wake, lock-free
+frame-list snapshot, wake only for a row that exists, two liveness fixes). SHARED; see T1
+stress run and T10.
+In verification on aarch64, pushed soon (fetch to get them):
+- MC rounds 10 and 11 (4 commits): one decision sequence per MC entry on every architecture;
+  AVX2 MC kernels moved to `subpel_mc/eight_bit/avx2.rs`, `eight_bit/avx2/cell.rs`,
+  `sixteen_bit/avx2.rs` behind the NEON interfaces (AVX2-TOUCHED: `start32` free function,
+  tap bytes read from `taps.dot`, `avx2::stage_len`, interface wrappers); TIP vector scaling
+  in lanes for every vector (SHARED). Shapes that the AVX2 kernels decline to the portable
+  kernel: width not a multiple of 4; 4-wide with height not a multiple of 4 or more than 2
+  horizontal tap pairs; 8-column strips with odd height; cell put covers only filtered 4x4
+  and 8x8; `compound_windows` and `program` always generic; register compound only for
+  pairs of at most 64 samples. On x86 `put_pair` is `put` twice.
+- Entropy round 3 (1 commit): CDF adapt step selected by the symbol through a table
+  (`LOWER_LANES`), TCQ next state as ALU operations. SHARED; re-measure cycles on x86.
+In progress on aarch64 (do not duplicate; these areas are owned by the aarch64 orchestrator):
+MC fixed cost per call (round 12), mode info walk and neighbour context (round 6), entropy
+instructions per coefficient (round 4). Queued there: one writer per slot in the pipeline,
+predict straight into the frame, tile-parallel parse.
+Known flaky test on Linux: `a_dropped_picture_gives_its_storage_back_to_the_decoder`
+(`crates/splot-decode/tests/decoder_api.rs`) failed one time in the coverage job; it
+compares memory addresses.
