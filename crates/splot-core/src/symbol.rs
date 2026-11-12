@@ -488,6 +488,17 @@ const KEEP_LANES: [u64; 16] = {
     keep
 };
 
+/// The row-word lanes below a symbol, at most four.
+const LOWER_LANES: [u64; 8] = {
+    let mut lanes = [u64::MAX; 8];
+    let mut symbol = 0;
+    while symbol < 4 {
+        lanes[symbol] = (1 << (16 * symbol)) - 1;
+        symbol += 1;
+    }
+    lanes
+};
+
 /// The entries of an `N`-ary row that its word holds, entry `i` in lane `i`:
 /// the whole row up to four entries.
 const fn word_entries<const N: usize>() -> usize {
@@ -1268,10 +1279,10 @@ impl<'a> SymbolDecoder<'a> {
     /// vector round trip, and the § 8.2.6 step adapts the row as one word.
     /// Each lane holds `p` and `gap = CDF_PROB_SCALE - p`, neither borrowing
     /// from the next lane for entries up to `CDF_PROB_SCALE`; a boundary
-    /// `((r8 * pp) >> 7) << 19` is one product and a mask. The lanes below
-    /// the symbol come from the compares, and adapt as `p + y - 2 * y` with
-    /// `y = p >> rate`, the others as `p + y` with `y = gap >> rate`; lanes
-    /// without a probability add zero.
+    /// `((r8 * pp) >> 7) << 19` is one product and a mask. Both steps,
+    /// `p >> rate` and `gap >> rate`, are ready before the symbol, which only
+    /// selects them through [`LOWER_LANES`]: the lanes below the symbol
+    /// shrink, the others grow; lanes without a probability stay.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_trusted_word<const N: usize>(
@@ -1295,18 +1306,15 @@ impl<'a> SymbolDecoder<'a> {
         }
         let value = (self.dif >> 32) as u32;
         let (mut cur, mut prev, mut symbol) = (boundaries[0], self.range_hi, 0);
-        let mut below = 0u64;
         for i in 0..N - 1 {
             let above = value < boundaries[i];
             cur = if above { boundaries[i + 1] } else { cur };
             prev = if above { boundaries[i] } else { prev };
             symbol += u32::from(above);
-            if i < 4 {
-                below |= (0xffff << (16 * i)) & 0u64.wrapping_sub(u64::from(above));
-            }
         }
         self.consume(cur, prev);
         if update {
+            let below = LOWER_LANES[symbol as usize & 7];
             let (index, count) = if N < 4 {
                 ((word >> (16 * (N - 1))) as u16, (word >> (16 * N)) as u16)
             } else {
@@ -1316,9 +1324,11 @@ impl<'a> SymbolDecoder<'a> {
                 ADAPTATION_RATES[usize::from(index) & (RATE_ROWS - 1)]
                     [usize::from(count) & (2 * MAX_CDF_COUNT as usize - 1)],
             ) + if N <= 3 { 1 } else { 2 };
-            let x = gap ^ ((word ^ gap) & below);
-            let y = (x >> rate) & KEEP_LANES[rate as usize & 15] & probability_lanes::<N>();
-            let adapted = word.wrapping_add(y).wrapping_sub((y & below) << 1);
+            let keep = KEEP_LANES[rate as usize & 15] & probability_lanes::<N>();
+            let (shrink, grow) = ((word >> rate) & keep, (gap >> rate) & keep);
+            let adapted = word
+                .wrapping_add(grow & !below)
+                .wrapping_sub(shrink & below);
             let grown = u16::from(count < MAX_CDF_COUNT as u16);
             if N < 4 {
                 let adapted = adapted + (u64::from(grown) << (16 * N));

@@ -164,23 +164,6 @@ static HALF_CAPPED: [[u8; 32]; 16] = {
     table
 };
 
-/// `Tcq_Next_State[state][parity]` at `state << 1 | parity`.
-static TCQ_NEXT: [u8; 16] = {
-    let mut out = [0; 16];
-    let mut index = 0;
-    while index < 16 {
-        out[index] = next_tcq_state(index >> 1, (index & 1) as u32) as u8;
-        index += 1;
-    }
-    out
-};
-
-#[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
-#[inline(always)]
-fn tcq_next(state: usize, level: u32) -> usize {
-    usize::from(TCQ_NEXT[((state << 1) | (level as usize & 1)) & 15])
-}
-
 const SCAN_DIMS: usize = 4;
 const GRID_SCAN_LEN: usize = 3600;
 
@@ -783,7 +766,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         }
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;
-            self.tcq = tcq_next(self.tcq, level);
+            self.tcq = next_tcq_state(self.tcq, level);
         }
         if PH && scan_index > 0 {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
