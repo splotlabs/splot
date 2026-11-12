@@ -723,13 +723,7 @@ pub(super) fn with_block<T: Sample, R>(
     slot: usize,
     f: impl FnOnce(&Block<'_, T>) -> R,
 ) -> Option<R> {
-    let geometry = [
-        view.stride,
-        view.width,
-        view.readable_rows,
-        view.samples.len(),
-    ];
-    if let Some(origin) = window.origin(geometry, bounds) {
+    if let Some(origin) = window.origin(view.geometry(), bounds) {
         return Some(f(&window.block(view.samples, view.stride, origin)));
     }
     emulated(*window, view, bounds, slot, f)
@@ -845,13 +839,7 @@ pub(super) fn compound<T: Sample, O: ReconSample>(
     stride: usize,
 ) -> bool {
     let place = |window: &Window, view: &ReferencePlaneView<'_, T>, bounds: [i32; 4]| {
-        let geometry = [
-            view.stride,
-            view.width,
-            view.readable_rows,
-            view.samples.len(),
-        ];
-        window.origin(geometry, bounds)
+        window.origin(view.geometry(), bounds)
     };
     if let (Some(first), Some(second)) = (
         place(&windows[0], references[0], bounds[0]),
@@ -922,15 +910,7 @@ fn clamped_cell<T: Sample, O: ReconSample>(
             O::u8_slice_mut(&mut *output),
         ) && let Some(token) = fearless_simd::Level::baseline().as_neon()
         {
-            let sources = [&first, &second].map(|view| {
-                let geometry = [
-                    view.stride,
-                    view.width,
-                    view.readable_rows,
-                    view.samples.len(),
-                ];
-                (view.samples, geometry)
-            });
+            let sources = [&first, &second].map(|view| (view.samples, view.geometry()));
             let windows = [&windows[0], &windows[1]];
             return super::eight_bit::neon::compound_windows(
                 token, sources, windows, bounds, clip.0, output, stride,

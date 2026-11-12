@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The choice between the `sdot` and the multiply-accumulate kernels.
+//! The choice between the `usdot`, the `sdot` and the multiply-accumulate
+//! kernels, and the `usdot` instruction, which has no intrinsic yet.
 
 #![allow(
     unsafe_code,
@@ -9,13 +10,18 @@
 )]
 
 use super::{Compound, Out, Programs, Strips, Windows};
+use core::arch::aarch64::{int8x16_t, int32x4_t, uint8x16_t};
 use fearless_simd::Neon;
 
-/// One call of the kernels, compiled once with `sdot` horizontal sums and
-/// once with multiply-accumulates.
+/// One call of the kernels, compiled with `usdot`, with `sdot` and with
+/// multiply-accumulate horizontal sums.
 pub(super) trait Job {
     /// What the call returns.
     type Output;
+
+    /// Whether the `usdot` kernels take fewer instructions than the `sdot`
+    /// ones for this call's kernel class, once their call is paid.
+    fn usdot_wins(&self) -> bool;
 
     /// Runs the call in the multiply-accumulate kernels.
     fn mla(self, t: Neon) -> Self::Output;
@@ -26,39 +32,99 @@ pub(super) trait Job {
     ///
     /// Safety: the CPU has `FEAT_DotProd`.
     unsafe fn sdot(self, t: Neon) -> Self::Output;
+
+    /// Runs the call in the `usdot` kernels.
+    ///
+    /// # Safety
+    ///
+    /// Safety: the CPU has `FEAT_DotProd` and `FEAT_I8MM`.
+    unsafe fn usdot(self, t: Neon) -> Self::Output;
 }
 
-/// Runs `job` in the `sdot` kernels when the CPU has `FEAT_DotProd`, which
-/// the standard library detects once and caches, else in the
+/// Runs `job` in the `usdot` kernels when its kernel class wins with them
+/// ([`Job::usdot_wins`]) and the CPU has `FEAT_DotProd` and `FEAT_I8MM`,
+/// which the standard library detects once and caches, else in
+/// the `sdot` kernels when it has `FEAT_DotProd`, else in the
 /// multiply-accumulate kernels.
 #[allow(clippy::inline_always, reason = "one dispatch per kernel call")]
 #[inline(always)]
 pub(super) fn run<J: Job>(t: Neon, job: J) -> J::Output {
-    if std::arch::is_aarch64_feature_detected!("dotprod") && !mla_only() {
-        // SAFETY: the CPU has `FEAT_DotProd`, detected above.
-        unsafe { job.sdot(t) }
-    } else {
-        job.mla(t)
+    if !std::arch::is_aarch64_feature_detected!("dotprod") || families() == 0 {
+        return job.mla(t);
+    }
+    let i8mm = job.usdot_wins() && std::arch::is_aarch64_feature_detected!("i8mm");
+    // SAFETY: the CPU has `FEAT_DotProd`, and with `i8mm` `FEAT_I8MM`, detected above.
+    unsafe {
+        if i8mm && families() > 1 {
+            job.usdot(t)
+        } else {
+            job.sdot(t)
+        }
     }
 }
 
-impl<O: Out> Job for Strips<'_, '_, O> {
+/// `usdot` of the unsigned bytes `samples` by the signed bytes of word `L`
+/// of `taps`, added to `acc`.
+#[inline]
+#[target_feature(enable = "neon,i8mm")]
+pub(super) fn usdot_lane<const L: usize>(
+    mut acc: int32x4_t,
+    samples: uint8x16_t,
+    taps: int8x16_t,
+) -> int32x4_t {
+    // SAFETY: one `usdot` on the named registers; `i8mm` is enabled here.
+    unsafe {
+        core::arch::asm!(
+            "usdot {acc:v}.4s, {a:v}.16b, {b:v}.4b[{l}]",
+            acc = inout(vreg) acc,
+            a = in(vreg) samples,
+            b = in(vreg) taps,
+            l = const L,
+            options(pure, nomem, nostack, preserves_flags),
+        );
+    }
+    acc
+}
+
+impl<O: Out, const P: usize> Job for Strips<'_, '_, O, P> {
     type Output = ();
 
     #[inline]
+    fn usdot_wins(&self) -> bool {
+        self.0[0].horizontal.is_some() && self.0[0].w >= 8
+    }
+
+    #[inline]
     fn mla(self, t: Neon) {
-        super::mla_strips(t, self.0, self.1);
+        for (block, out) in self.0.into_iter().zip(self.1) {
+            super::mla_strips(t, block, out);
+        }
     }
 
     /// Safety: as [`Job::sdot`].
     #[target_feature(enable = "neon,dotprod")]
     unsafe fn sdot(self, t: Neon) {
-        super::sdot::strips(t, self.0, self.1);
+        for (block, out) in self.0.into_iter().zip(self.1) {
+            super::sdot::strips(t, block, out);
+        }
+    }
+
+    /// Safety: as [`Job::usdot`].
+    #[target_feature(enable = "neon,dotprod,i8mm")]
+    unsafe fn usdot(self, t: Neon) {
+        for (block, out) in self.0.into_iter().zip(self.1) {
+            super::usdot::strips(t, block, out);
+        }
     }
 }
 
 impl Job for Compound<'_, '_> {
     type Output = bool;
+
+    #[inline]
+    fn usdot_wins(&self) -> bool {
+        self.0[0].w >= 16 && self.0[0].horizontal.is_some()
+    }
 
     #[inline]
     fn mla(self, t: Neon) -> bool {
@@ -70,10 +136,23 @@ impl Job for Compound<'_, '_> {
     unsafe fn sdot(self, t: Neon) -> bool {
         super::sdot::compound(t, self.0, self.1, self.2, self.3)
     }
+
+    /// Safety: as [`Job::usdot`].
+    #[target_feature(enable = "neon,dotprod,i8mm")]
+    unsafe fn usdot(self, t: Neon) -> bool {
+        super::usdot::compound(t, self.0, self.1, self.2, self.3)
+    }
 }
 
 impl Job for Windows<'_, '_> {
     type Output = bool;
+
+    #[inline]
+    fn usdot_wins(&self) -> bool {
+        self.1
+            .iter()
+            .all(|window| window.w == 8 && window.horizontal.is_some() && window.vertical.is_some())
+    }
 
     #[inline]
     fn mla(self, t: Neon) -> bool {
@@ -89,10 +168,25 @@ impl Job for Windows<'_, '_> {
             super::sdot::windows_cell::<8>(t, self)
         }
     }
+
+    /// Safety: as [`Job::usdot`].
+    #[target_feature(enable = "neon,dotprod,i8mm")]
+    unsafe fn usdot(self, t: Neon) -> bool {
+        if self.1[0].w == 4 {
+            super::usdot::windows_cell::<4>(t, self)
+        } else {
+            super::usdot::windows_cell::<8>(t, self)
+        }
+    }
 }
 
 impl Job for Programs<'_, '_> {
     type Output = ();
+
+    #[inline]
+    fn usdot_wins(&self) -> bool {
+        self.1 == 8
+    }
 
     #[inline]
     fn mla(self, t: Neon) {
@@ -108,21 +202,32 @@ impl Job for Programs<'_, '_> {
             super::sdot::run_program::<8>(t, self.0)
         };
     }
+
+    /// Safety: as [`Job::usdot`].
+    #[target_feature(enable = "neon,dotprod,i8mm")]
+    unsafe fn usdot(self, t: Neon) {
+        *self.2 = if self.1 == 4 {
+            super::usdot::run_program::<4>(t, self.0)
+        } else {
+            super::usdot::run_program::<8>(t, self.0)
+        };
+    }
 }
 
 #[cfg(test)]
 std::thread_local! {
-    /// Whether this test thread runs the multiply-accumulate kernels.
-    pub(in crate::subpel_mc) static MLA_ONLY: core::cell::Cell<bool> =
-        const { core::cell::Cell::new(false) };
+    /// The kernel families this test thread may run past multiply-accumulates:
+    /// 0, 1 (`sdot`) or 2 (`sdot` and `usdot`).
+    pub(in crate::subpel_mc) static FAMILIES: core::cell::Cell<u8> =
+        const { core::cell::Cell::new(2) };
 }
 
 #[cfg(test)]
-fn mla_only() -> bool {
-    MLA_ONLY.with(core::cell::Cell::get)
+fn families() -> u8 {
+    FAMILIES.with(core::cell::Cell::get)
 }
 
 #[cfg(not(test))]
-const fn mla_only() -> bool {
-    false
+const fn families() -> u8 {
+    2
 }

@@ -16,7 +16,9 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, Level};
-use fearless_simd::{i16x8, i16x16, i32x4, i32x8, i64x2, prelude::*, u8x16, u16x8, u16x16, u64x2};
+use fearless_simd::{
+    i16x8, i16x16, i32x4, i32x8, i64x2, prelude::*, u8x16, u8x32, u16x8, u16x16, u64x2,
+};
 use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 
 use crate::error::{ReconError, Result};
@@ -271,7 +273,8 @@ impl PreparedWarpPrediction {
                     let start = (local_y + row) * stride + local_x;
                     let (low, high) = rounded.split();
                     let target = &mut output[start..start + section_w];
-                    store_clipped_row(simd, target, low.saturating_narrow(high), max_sample)
+                    store_clipped_row(simd, target, low.saturating_narrow(high), max_sample);
+                    Ok(())
                 };
                 warp_predict_section(
                     simd,
@@ -351,7 +354,7 @@ impl PreparedWarpPrediction {
                 target,
                 stride,
                 max_sample,
-            )?;
+            );
             col += 16;
         }
         if col < width {
@@ -366,7 +369,7 @@ impl PreparedWarpPrediction {
                 target,
                 stride,
                 max_sample,
-            )?;
+            );
         }
         Ok(true)
     }
@@ -390,8 +393,7 @@ fn two_tap_strip<S, T, V, const N: usize>(
     output: &mut [T],
     stride: usize,
     max_sample: i16,
-) -> Result<()>
-where
+) where
     S: Simd,
     T: ReconSample,
     V: SimdInt<S, Element = i16, Array = [i16; N]>,
@@ -405,10 +407,9 @@ where
         let bottom = horizontal(first_row + row + 1);
         let rounded = two_tap_vertical(top, bottom, vertical_high, INTER_ROUND1_NON_COMPOUND);
         let at = row * stride;
-        store_clipped_row(simd, &mut output[at..at + N], rounded, max_sample)?;
+        store_clipped_row(simd, &mut output[at..at + N], rounded, max_sample);
         top = bottom;
     }
-    Ok(())
 }
 
 /// Stores the leading `target.len()` lanes of one non-compound warp output row
@@ -416,7 +417,10 @@ where
 ///
 /// An `i16` intermediate times filter taps of absolute sum at most 222, after
 /// `Round2(_, InterRound1)` with the non-compound 11, stays within 3552, so
-/// narrowing the row to `i16` before the clamp is exact.
+/// narrowing the row to `i16` before the clamp is exact. A target shorter
+/// than the row (a block clipped at the frame edge) takes a partial copy of
+/// the leading lanes: a full-width store would write past the block, into
+/// the next row when the stride equals the width.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn store_clipped_row<S, T, V, const N: usize>(
@@ -424,8 +428,7 @@ fn store_clipped_row<S, T, V, const N: usize>(
     target: &mut [T],
     rounded: V,
     max_sample: i16,
-) -> Result<()>
-where
+) where
     S: Simd,
     T: ReconSample,
     V: SimdInt<S, Element = i16, Array = [i16; N]>,
@@ -433,7 +436,7 @@ where
     let clipped = rounded.clamp(0, max_sample);
     if let Some(target) = T::u16_slice_mut(target).and_then(<[u16]>::first_chunk_mut::<N>) {
         *target = clipped.to_array().map(|lane| lane as u16);
-        return Ok(());
+        return;
     }
     let rows = clipped.as_slice().as_chunks::<WARPED_BLOCK_SIZE>().0;
     for (target, lanes) in target.chunks_mut(WARPED_BLOCK_SIZE).zip(rows) {
@@ -441,29 +444,22 @@ where
         if let Some(target) = T::u16_slice_mut(target) {
             match target.first_chunk_mut() {
                 Some(target) => lanes.store_array(target),
-                None => store_lanes(target, lanes.to_array()),
+                None => store_lanes(target, &lanes.to_array()),
             }
         } else if let Some(target) = T::u8_slice_mut(target) {
             let bytes = lanes.narrow(lanes).bitcast::<u64x2<S>>()[0].to_le_bytes();
             match target.first_chunk_mut() {
                 Some(target) => *target = bytes,
-                None => store_lanes(target, bytes),
-            }
-        } else {
-            for (target, sample) in target.iter_mut().zip(lanes.to_array()) {
-                *target = T::try_from_u16(sample)?;
+                None => store_lanes(target, &bytes),
             }
         }
     }
-    Ok(())
 }
 
 #[cold]
 #[inline(never)]
-fn store_lanes<E: Copy, const N: usize>(target: &mut [E], lanes: [E; N]) {
-    for (target, lane) in target.iter_mut().zip(lanes) {
-        *target = lane;
-    }
+fn store_lanes<E: Copy>(target: &mut [E], lanes: &[E]) {
+    target.copy_from_slice(&lanes[..target.len()]); // splot-copy-ok: partial store of a vector row clipped at the frame edge
 }
 
 /// AV2 § 3 `EXT_WARP_TAPS`.
@@ -1236,7 +1232,14 @@ fn checked_shift_left(value: i32, shift: u8, context: &'static str) -> Result<i3
         .ok_or(ReconError::ArithmeticOverflow { context })
 }
 
-#[inline]
+/// Runs the § 7.13.3.19 horizontal pass of a section whose taps clip at the
+/// reference bounds.
+///
+/// Tap column `first_col + k` reads `clamp(first_col + k, low, high)`, which
+/// always lies in `start..start + SPAN`: one span load per row and one byte
+/// swizzle build the clipped window. The index clamps saturate to `-16..=16`
+/// without changing a lane, as every lane lands in `0..SPAN`.
+#[inline(never)]
 fn build_intermediate<S: Simd, T: ReconSample>(
     simd: S,
     reference: &ReferencePlaneView<'_, T>,
@@ -1245,53 +1248,33 @@ fn build_intermediate<S: Simd, T: ReconSample>(
     projected: &ProjectedCenter,
     intermediate: &mut Intermediate,
 ) {
-    const SOURCE_WINDOW: usize = WARPED_BLOCK_SIZE + WARP_FILTER_TAPS - 1;
+    const SPAN: usize = 2 * WARPED_BLOCK_SIZE;
     let first_col = projected.x4_int.saturating_sub(7);
-    let last_col = projected.x4_int.saturating_add(7);
-    let view_last = i32::try_from(reference.width().saturating_sub(1)).unwrap_or(i32::MAX);
-    let bounded_first = first_x.min(view_last);
-    let bounded_last = last_x.min(view_last);
-    let copy_first = first_col.max(bounded_first);
-    let copy_last = last_col.min(bounded_last);
-    let copy_len = if copy_first <= copy_last {
-        (copy_last - copy_first) as usize + 1
-    } else {
-        0
-    };
-    let prefix_len = if copy_len == 0 {
-        SOURCE_WINDOW
-    } else {
-        (copy_first - first_col) as usize
-    };
-    let mut window = [0u16; SOURCE_WINDOW + 1];
+    let width = reference.width();
+    let view_last = i32::try_from(width.saturating_sub(1)).unwrap_or(i32::MAX);
+    let (low, high) = (first_x.min(view_last), last_x.min(view_last));
+    let span_last = i32::try_from(width.saturating_sub(SPAN)).unwrap_or(i32::MAX);
+    let start = first_col.clamp(low, high).min(span_last);
+    let lanes = i16x16::load_array(simd, core::array::from_fn(|lane| lane as i16))
+        + first_col.saturating_sub(start).clamp(-16, 16) as i16;
+    let lanes = lanes
+        .max((low - start).max(0) as i16)
+        .min((high - start) as i16);
+    let bytes = (lanes * 0x0202 + 0x0100).bitcast::<u8x32<S>>();
+    let start = start as usize;
+    let mut padded = [T::default(); SPAN];
     for i1 in -7i32..8 {
-        let ref_row = (projected.y4_int + i1).clamp(first_y, last_y) as usize;
-        let source = reference.row(ref_row);
-        if copy_len == 0 {
-            let source_col = first_col.clamp(bounded_first, bounded_last) as usize;
-            window.fill(source[source_col].to_u16());
+        let source = reference.row((projected.y4_int + i1).clamp(first_y, last_y) as usize);
+        let [lo, hi] = if source.len() >= SPAN {
+            warp_span(simd, source, start)
         } else {
-            let source_start = copy_first as usize;
-            let source_end = source_start + copy_len;
-            let copied_end = prefix_len + copy_len;
-            window[..prefix_len].fill(source[source_start].to_u16());
-            if let Some(source) = T::u16_slice(source) {
-                window[prefix_len..copied_end].copy_from_slice(&source[source_start..source_end]); // splot-copy-ok: materialize one clipped warp tap window from its contiguous span
-            } else {
-                for (destination, source) in window[prefix_len..copied_end]
-                    .iter_mut()
-                    .zip(&source[source_start..source_end])
-                {
-                    *destination = source.to_u16();
-                }
-            }
-            window[copied_end..].fill(source[source_end - 1].to_u16());
-        }
-        let (halves, _) = window.as_chunks::<WARPED_BLOCK_SIZE>();
-        let half = |half: usize| u16x8::load_array_ref(simd, &halves[half]).bitcast();
+            padded[..source.len()].copy_from_slice(source); // splot-copy-ok: zero-pad a plane row narrower than one warp span
+            warp_span(simd, &padded, 0)
+        };
+        let span = lo.combine(hi).swizzle_dyn(bytes).split();
         let sx = projected.sx4 + shear.beta * i1;
-        let span = [half(0), half(1)];
-        intermediate[(i1 + 7) as usize] = horizontal_row(simd, span, sx, shear.alpha).into();
+        intermediate[(i1 + 7) as usize] =
+            horizontal_row(simd, [span.0, span.1], sx, shear.alpha).into();
     }
 }
 

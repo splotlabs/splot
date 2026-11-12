@@ -4,7 +4,7 @@
 //! AV2 § 7.10.4 TIP motion field: the projected field scaled to the TIP pair,
 //! hole-filled and averaged inside each TMVP unit.
 
-use fearless_simd::{Simd, i32x8, prelude::*};
+use fearless_simd::{Simd, i32x8, i32x16, prelude::*};
 
 use super::{
     DIV_MULT, MAX_FRAME_DISTANCE, Mv, ProjectedTemporalMotionCell, ProjectedTemporalMotionField,
@@ -149,7 +149,7 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
                 plane[below..below + 8 * C].fill(0);
             }
             if fill_holes && valid_count != 0 && valid_count != (rows * cols) as i32 {
-                fill_tip_holes(&mut planes, rows, cols);
+                fill_tip_holes(simd, &mut planes, rows, cols);
             }
             for y in 0..unit_rows {
                 let start = (block_y + y) * width8 + block_x;
@@ -228,33 +228,126 @@ fn scale_tip_mv(cell: ProjectedTemporalMotionCell, references: TipReferencePair)
 
 /// Copies each sample into its invalid neighbours inside the unit, in raster
 /// order, so a filled sample can fill further ones.
-fn fill_tip_holes(planes: &mut TipPlanes, rows: usize, cols: usize) {
+///
+/// The raster pass settles row by row. A sample enters its row's scan as
+/// `own`: its value, else the scan value of the sample above. Scanning left
+/// to right, it holds the nearest valid `own` on or before it (`swept`),
+/// which it also hands up and down. A sample with none takes `own` of its
+/// right neighbour (`held`), and one still invalid takes `swept` of the
+/// sample below. Lanes past `cols` stay zero.
+///
+/// A sample travels packed in one lane as `row << 20 | col << 8 | valid`:
+/// both components are clamped to `REFMVS_LIMIT`, so they fit 12 bits, and
+/// only an invalid sample packs to zero.
+fn fill_tip_holes<S: Simd>(simd: S, planes: &mut TipPlanes, rows: usize, cols: usize) {
+    let zero = i32x16::splat(simd, 0);
+    let lane = i32x16::load_array(simd, core::array::from_fn(|lane| lane as i32));
+    let inside = lane.simd_lt(i32x16::splat(simd, cols as i32));
+    let pick = |a: i32x16<S>, b: i32x16<S>| a.simd_ne(zero).select(a, b);
+    let load = |planes: &TipPlanes, at: usize| {
+        let [valid, row, col] = planes.each_ref().map(|plane| {
+            plane
+                .get(at..)
+                .and_then(<[i32]>::first_chunk::<MAX_TIP_UNIT8>)
+                .map_or(zero, |lanes| i32x16::from_slice(simd, lanes))
+        });
+        (row << 20) | ((col & 0xfff) << 8) | valid
+    };
+    let (mut swept_above, mut held_above) = (zero, zero);
     for row in 1..=rows {
-        for col in 1..=cols {
-            let index = row * TIP_GRID + col;
-            let source = planes.each_ref().map(|plane| plane[index]);
-            let mut fill = |destination: usize| {
-                if planes[0][destination] == 0 {
-                    for (plane, value) in planes.iter_mut().zip(source) {
-                        plane[destination] = value;
-                    }
-                }
-            };
-            if row > 1 {
-                fill(index - TIP_GRID);
-            }
-            if col > 1 {
-                fill(index - 1);
-            }
-            if row < rows {
-                fill(index + TIP_GRID);
-            }
-            if col < cols {
-                fill(index + 1);
-            }
+        let at = row * TIP_GRID + 1;
+        let own = pick(load(planes, at), swept_above);
+        let mut swept = own;
+        if (own.simd_eq(zero) & inside).any_true() {
+            swept = pick(swept, zero.slide::<15>(swept));
+            swept = pick(swept, zero.slide::<14>(swept));
+            swept = pick(swept, zero.slide::<12>(swept));
+            swept = inside.select(pick(swept, zero.slide::<8>(swept)), zero);
+        }
+        let held = pick(swept, own.slide::<1>(zero));
+        if row > 1 {
+            store_tip_lanes(planes, at - TIP_GRID, pick(held_above, swept));
+        }
+        (swept_above, held_above) = (swept, held);
+    }
+    store_tip_lanes(planes, rows * TIP_GRID + 1, held_above);
+}
+
+/// Unpacks a row of [`fill_tip_holes`] samples into the planes at `at`.
+fn store_tip_lanes<S: Simd>(planes: &mut TipPlanes, at: usize, packed: i32x16<S>) {
+    let lanes = [packed & 1, packed >> 20, (packed << 12) >> 20];
+    for (plane, value) in planes.iter_mut().zip(lanes) {
+        if let Some(slot) = plane
+            .get_mut(at..)
+            .and_then(<[i32]>::first_chunk_mut::<MAX_TIP_UNIT8>)
+        {
+            value.store_array(slot);
         }
     }
 }
 
 /// AV2 § 7.10.4 `Weight_Div_Mult` per sample count.
 pub(super) const TIP_AVERAGE_WEIGHTS: [i32; 6] = [0, 65_536, 32_768, 21_845, 16_384, 13_107];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The raster pass of § 7.10.3 as written, one sample at a time.
+    fn fill_tip_holes_scalar(planes: &mut TipPlanes, rows: usize, cols: usize) {
+        for row in 1..=rows {
+            for col in 1..=cols {
+                let index = row * TIP_GRID + col;
+                let source = planes.each_ref().map(|plane| plane[index]);
+                let mut fill = |destination: usize| {
+                    if planes[0][destination] == 0 {
+                        for (plane, value) in planes.iter_mut().zip(source) {
+                            plane[destination] = value;
+                        }
+                    }
+                };
+                if row > 1 {
+                    fill(index - TIP_GRID);
+                }
+                if col > 1 {
+                    fill(index - 1);
+                }
+                if row < rows {
+                    fill(index + TIP_GRID);
+                }
+                if col < cols {
+                    fill(index + 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vector_hole_fill_matches_the_raster_pass_on_random_masks() {
+        let mut state = 0x9e37_79b9u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state >> 8
+        };
+        for case in 0..4000 {
+            let rows = 1 + next() as usize % MAX_TIP_UNIT8;
+            let cols = 1 + next() as usize % MAX_TIP_UNIT8;
+            let density = [1, 2, 8, 30, 60][case % 5];
+            let mut planes: TipPlanes = [[0; TIP_GRID * TIP_GRID]; 3];
+            for row in 1..=rows {
+                for col in 1..=cols {
+                    if (next() % 64) < density {
+                        let at = row * TIP_GRID + col;
+                        planes[0][at] = 1;
+                        planes[1][at] = next() as i32 % 4095 - 2047;
+                        planes[2][at] = [-2047, 2047, 0, 5][case % 4];
+                    }
+                }
+            }
+            let mut want = planes;
+            fill_tip_holes_scalar(&mut want, rows, cols);
+            crate::baseline_simd!(simd => fill_tip_holes(simd, &mut planes, rows, cols));
+            assert!(planes == want, "case {case}: {rows}x{cols}");
+        }
+    }
+}

@@ -116,10 +116,7 @@ pub fn subpel_put_block<T: ReconSample>(
         };
         surface
             .chroma_rects_mut(put.rect)
-            .is_some_and(|[(u_out, u_stride), (v_out, v_stride)]| {
-                put_window(&window, bounds, u, max, u_out, u_stride)
-                    && put_window(&window, bounds, v, max, v_out, v_stride)
-            })
+            .is_some_and(|[u_out, v_out]| put_pair(&window, bounds, [u, v], max, [u_out, v_out]))
     });
     [luma_put, chroma_put]
 }
@@ -168,6 +165,39 @@ pub fn subpel_compound_block<T: ReconSample>(
         )
     });
     [luma_put, chroma_put]
+}
+
+/// [`put_window`] of two views of one geometry, U and V, into their
+/// outputs: eight-bit planes read in place in one pair call.
+#[allow(clippy::inline_always, reason = "measured put hot path")]
+#[inline(always)]
+fn put_pair<T: ReconSample>(
+    window: &block::Window,
+    bounds: [i32; 4],
+    views: [&ReferencePlaneView<'_, T>; 2],
+    max: u16,
+    [(first, first_stride), (second, second_stride)]: [(&mut [T], usize); 2],
+) -> bool {
+    if let ([Some(u), Some(v)], Some(first), Some(second)) = (
+        views.map(ReferencePlaneView::as_u8),
+        T::u8_slice_mut(&mut *first),
+        T::u8_slice_mut(&mut *second),
+    ) && let (Some(u_origin), Some(v_origin)) = (
+        window.origin(u.geometry(), bounds),
+        window.origin(v.geometry(), bounds),
+    ) {
+        let blocks = [
+            window.block(u.samples, u.stride, u_origin),
+            window.block(v.samples, v.stride, v_origin),
+        ];
+        super::eight_bit::put_pair(
+            [&blocks[0], &blocks[1]],
+            [(first, first_stride), (second, second_stride)],
+        );
+        return true;
+    }
+    put_window(window, bounds, views[0], max, first, first_stride)
+        && put_window(window, bounds, views[1], max, second, second_stride)
 }
 
 /// The `Clip1` single-reference prediction of `window` read from `view`

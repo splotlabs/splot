@@ -64,6 +64,8 @@ pub(super) fn predict<T: ReconSample>(
 
 /// Stores the `Clip1` single-reference prediction of `block` into `output`
 /// rows `stride` apart.
+#[allow(clippy::inline_always, reason = "measured put hot path")]
+#[inline(always)]
 pub(super) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
     if block.horizontal.is_none() && block.vertical.is_none() && copy(block, output, stride) {
         return;
@@ -79,6 +81,53 @@ pub(super) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
         return;
     }
     block::kernels(block, &mut Sink::Put { output, stride }, None);
+}
+
+/// [`put`] of two blocks of one window, the U and V planes of a block, each
+/// into its `(output, stride)`: a filtered pair in one call of the pair
+/// kernel where the target has one.
+#[inline]
+pub(super) fn put_pair(blocks: [&Block<'_, u8>; 2], outputs: [(&mut [u8], usize); 2]) {
+    let [(first, first_stride), (second, second_stride)] = outputs;
+    let filtered = blocks[0].horizontal.is_some() || blocks[0].vertical.is_some();
+    if filtered
+        && put_pair_kernel(
+            blocks,
+            [(&mut *first, first_stride), (&mut *second, second_stride)],
+        )
+    {
+        return;
+    }
+    put(blocks[0], first, first_stride);
+    put(blocks[1], second, second_stride);
+}
+
+/// The NEON pair kernel of [`put_pair`], `false` without writing when it
+/// does not cover the pair.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn put_pair_kernel(blocks: [&Block<'_, u8>; 2], outputs: [(&mut [u8], usize); 2]) -> bool {
+    let [(first, first_stride), (second, second_stride)] = outputs;
+    fearless_simd::Level::baseline()
+        .as_neon()
+        .is_some_and(|token| {
+            let first = &mut neon::Put {
+                output: first,
+                stride: first_stride,
+            };
+            let second = &mut neon::Put {
+                output: second,
+                stride: second_stride,
+            };
+            neon::put_pair(token, blocks, [first, second])
+        })
+}
+
+/// No pair kernel: [`put_pair`] stores each block through [`put`].
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn put_pair_kernel(_: [&Block<'_, u8>; 2], _: [(&mut [u8], usize); 2]) -> bool {
+    false
 }
 
 /// Stores a zero-phase block (no filter pass): its prediction is its

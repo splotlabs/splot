@@ -53,14 +53,7 @@ impl CellSample for u8 {
         else {
             return [[0; PROGRAM_CELLS / 64]; 2];
         };
-        let geometry = views.each_ref().map(|view| {
-            [
-                view.stride,
-                view.width,
-                view.readable_rows,
-                view.samples.len(),
-            ]
-        });
+        let geometry = views.each_ref().map(ReferencePlaneView::geometry);
         let planes = planes.each_mut().map(|plane| {
             let (views, output, stride) = plane.as_mut()?;
             Some(([views[0].samples, views[1].samples], &mut **output, *stride))
@@ -89,14 +82,7 @@ impl CellSample for u16 {
         let Some((views, ..)) = &planes[0] else {
             return [[0; PROGRAM_CELLS / 64]; 2];
         };
-        let geometry = views.each_ref().map(|view| {
-            [
-                view.stride,
-                view.width,
-                view.readable_rows,
-                view.samples.len(),
-            ]
-        });
+        let geometry = views.each_ref().map(ReferencePlaneView::geometry);
         let mut planes = planes.each_mut().map(|plane| {
             let (views, output, stride) = plane.as_mut()?;
             Some(([views[0].samples, views[1].samples], &mut **output, *stride))
@@ -412,16 +398,9 @@ fn by_geometry<P: CellSample>(
     mut run: impl FnMut([Option<Plane<'_, '_, P>>; 2]) -> Written,
 ) -> Written {
     let geometry = |plane: &Option<Plane<'_, '_, P>>| {
-        plane.as_ref().map(|(views, ..)| {
-            views.each_ref().map(|view| {
-                (
-                    view.stride,
-                    view.width,
-                    view.readable_rows,
-                    view.samples.len(),
-                )
-            })
-        })
+        plane
+            .as_ref()
+            .map(|(views, ..)| views.each_ref().map(ReferencePlaneView::geometry))
     };
     if planes[1].is_none() || geometry(&planes[0]) == geometry(&planes[1]) {
         return run(planes);

@@ -433,6 +433,17 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
         i32::from(self.samples[row * self.stride + col].to_u16())
     }
 
+    /// The `[stride, width, readable rows, storage length]` of the view.
+    #[inline]
+    pub(crate) fn geometry(&self) -> [usize; 4] {
+        [
+            self.stride,
+            self.width,
+            self.readable_rows,
+            self.samples.len(),
+        ]
+    }
+
     /// The samples from row `row` on, rows `stride` apart, and the stride.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     pub(crate) fn rows_from(&self, row: usize) -> Option<(&'a [T], usize)> {

@@ -1158,3 +1158,106 @@ fn eight_bit_kernels_match_the_spec_trace_for_random_models() {
     }
     assert!(checked >= 24, "only {checked} valid models");
 }
+
+/// The clipped-window swizzle and the partial row store against the
+/// § 7.13.3.19 trace: random models on noise with extreme runs, blocks on
+/// and past every plane edge, planes narrower than one 16-sample span,
+/// reference bounds inside the plane, and widths that are not a multiple
+/// of eight. A store must not touch the stride padding.
+#[test]
+fn clipped_windows_and_partial_rows_match_the_spec_trace_at_plane_edges() {
+    let unit = 1 << WARPEDMODEL_PREC_BITS;
+    let mut state = 0x6d2b_79f5u32;
+    let mut next = |span: i32| {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (state >> 8) as i32 % (2 * span + 1) - span
+    };
+    let mut checked = 0;
+    for seed in 0..160u32 {
+        let (ref_w, ref_h) =
+            [(5, 9), (12, 12), (15, 20), (16, 16), (17, 11), (40, 33)][seed as usize % 6];
+        let ten_bit = seed % 2 == 0;
+        let max = if ten_bit { 1023 } else { 255 };
+        let samples = noise_samples(ref_w * ref_h, max, seed);
+        let mut params = default_params(0, 0, ref_w as i32, ref_h as i32);
+        params.warp_params = [
+            translation(next(24), next(0xffff).abs(), 0),
+            translation(next(24), next(0xffff).abs(), 0),
+            unit + next(6000),
+            next(6000),
+            next(6000),
+            unit + next(6000),
+        ];
+        if seed % 5 == 1 {
+            params.warp_params = [
+                params.warp_params[0],
+                params.warp_params[1],
+                unit,
+                0,
+                0,
+                unit,
+            ];
+        }
+        params.bit_depth = if ten_bit {
+            BitDepth::Ten
+        } else {
+            BitDepth::Eight
+        };
+        if seed % 3 == 0 {
+            params.first_x = next(3).abs();
+            params.last_x = params.first_x + next(6).abs();
+            params.last_y = (ref_h as i32 - 1).min(4 + next(3).abs());
+        }
+        if seed % 7 == 0 {
+            params.last_x = ref_w as i32 + 9;
+        }
+        let Ok(prepared) = PreparedWarpPrediction::new(&params) else {
+            continue;
+        };
+        checked += 1;
+        let width = 1 + next(12).unsigned_abs() as usize;
+        let height = 1 + next(12).unsigned_abs() as usize;
+        let (x, y) = (
+            next(20).unsigned_abs() as usize,
+            next(20).unsigned_abs() as usize,
+        );
+        let stride = width + 3;
+        let mut want = vec![77u16; stride * height];
+        for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
+            for local_x in (0..width).step_by(WARPED_BLOCK_SIZE) {
+                let section = WarpPredictBlockParams {
+                    block_x: (x + local_x) as i32,
+                    block_y: (y + local_y) as i32,
+                    ..params
+                };
+                let trace = reference_warp_8x8(&samples, ref_w, ref_h, &section);
+                for row in 0..WARPED_BLOCK_SIZE.min(height - local_y) {
+                    for col in 0..WARPED_BLOCK_SIZE.min(width - local_x) {
+                        want[(local_y + row) * stride + local_x + col] =
+                            trace[row * WARPED_BLOCK_SIZE + col];
+                    }
+                }
+            }
+        }
+        let block = [x, y, width, height];
+        let span = (height - 1) * stride + width;
+        let got = if ten_bit {
+            let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+            let mut got = vec![77u16; stride * height];
+            prepared
+                .predict_clipped_into(&view, block, &mut got[..span], stride)
+                .unwrap();
+            got
+        } else {
+            let bytes = samples.iter().map(|&s| s as u8).collect::<Vec<u8>>();
+            let view = ReferencePlaneView::new(&bytes, ref_w, ref_h).unwrap();
+            let mut got = vec![77u8; stride * height];
+            prepared
+                .predict_clipped_into(&view, block, &mut got[..span], stride)
+                .unwrap();
+            got.into_iter().map(u16::from).collect()
+        };
+        assert_eq!(got, want, "{params:?} {block:?} on {ref_w}x{ref_h}");
+    }
+    assert!(checked >= 100, "only {checked} valid models");
+}

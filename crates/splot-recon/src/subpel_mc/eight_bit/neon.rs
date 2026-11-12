@@ -524,8 +524,11 @@ pub(in crate::subpel_mc) struct Program<'a, 'b> {
     pub(in crate::subpel_mc) forward: i32,
 }
 
-/// The kernels of one block into `O`.
-pub(in crate::subpel_mc) struct Strips<'a, 'b, O>(&'a Block<'b, u8>, &'a mut O);
+/// The kernels of `P` blocks of one window, each into its `O`.
+pub(in crate::subpel_mc) struct Strips<'a, 'b, O, const P: usize = 1>(
+    [&'a Block<'b, u8>; P],
+    [&'a mut O; P],
+);
 
 /// The kernels of a compound pair into `u8` storage.
 pub(in crate::subpel_mc) struct Compound<'a, 'b>([&'a Block<'b, u8>; 2], i32, &'a mut [u8], usize);
@@ -593,11 +596,11 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
             dot::run(
                 t,
                 Strips(
-                    block,
-                    &mut Put {
+                    [block],
+                    [&mut Put {
                         output,
                         stride: *stride,
-                    },
+                    }],
                 ),
             );
         }
@@ -609,11 +612,11 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
             dot::run(
                 t,
                 Strips(
-                    block,
-                    &mut PutWide {
+                    [block],
+                    [&mut PutWide {
                         output,
                         stride: *stride,
-                    },
+                    }],
                 ),
             );
         }
@@ -621,11 +624,11 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
             dot::run(
                 t,
                 Strips(
-                    block,
-                    &mut Prep {
+                    [block],
+                    [&mut Prep {
                         output,
                         stride: *stride,
-                    },
+                    }],
                 ),
             );
         }
@@ -633,11 +636,11 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
             dot::run(
                 t,
                 Strips(
-                    block,
-                    &mut Prep {
+                    [block],
+                    [&mut Prep {
                         output,
                         stride: *stride,
-                    },
+                    }],
                 ),
             );
         }
@@ -651,14 +654,14 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
             dot::run(
                 t,
                 Strips(
-                    block,
-                    &mut Average {
+                    [block],
+                    [&mut Average {
                         pred0,
                         w,
                         forward,
                         output,
                         stride,
-                    },
+                    }],
                 ),
             );
         }
@@ -672,14 +675,14 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
             dot::run(
                 t,
                 Strips(
-                    block,
-                    &mut Average {
+                    [block],
+                    [&mut Average {
                         pred0,
                         w,
                         forward,
                         output,
                         stride,
-                    },
+                    }],
                 ),
             );
         }
@@ -698,7 +701,20 @@ pub(in crate::subpel_mc) fn put(
     stride: usize,
 ) -> bool {
     fits(block) && {
-        dot::run(t, Strips(block, &mut Put { output, stride }));
+        dot::run(t, Strips([block], [&mut Put { output, stride }]));
+        true
+    }
+}
+
+/// [`put`] of two blocks of one window into `outputs`, both or neither.
+#[inline]
+pub(in crate::subpel_mc) fn put_pair(
+    t: Neon,
+    blocks: [&Block<'_, u8>; 2],
+    [first, second]: [&mut Put<'_>; 2],
+) -> bool {
+    fits(blocks[0]) && {
+        dot::run(t, Strips(blocks, [first, second]));
         true
     }
 }
@@ -766,6 +782,16 @@ mod mla {
     use super::{mla_line as hline, pair_sums as hpair, row_sums_of as hrow, weights as taps};
 
     super::kernels::kernels!("neon");
+}
+
+/// The kernels whose horizontal sums are `usdot` dot products.
+mod usdot {
+    use super::*;
+    use super::{
+        dot_pair_sums as hpair, dot_taps as taps, usdot_line as hline, usdot_row_sums as hrow,
+    };
+
+    super::kernels::kernels!("neon,dotprod,i8mm");
 }
 
 /// The kernels whose horizontal sums are `sdot` dot products.
@@ -896,6 +922,42 @@ fn dot_pair_sums(a: uint8x8_t, b: uint8x8_t, taps: int8x16_t, bias: i32) -> int1
     let low = vdotq_laneq_s32::<0>(bias, vqtbl1q_s8(samples, windows[0]), taps);
     let high = vdotq_laneq_s32::<0>(bias, vqtbl1q_s8(samples, windows[1]), taps);
     vuzp1q_s16(vreinterpretq_s16_s32(low), vreinterpretq_s16_s32(high))
+}
+
+/// [`dot_row_sums`] in `usdot`, which weighs the unbiased samples.
+#[inline]
+#[target_feature(enable = "neon,i8mm")]
+fn usdot_row_sums<const P: usize>(bytes: uint8x16_t, taps: int8x16_t) -> int16x8_t {
+    usdot_line::<P, 8>(bytes, bytes, taps, 0)[0]
+}
+
+/// [`dot_line`] in `usdot`.
+#[inline]
+#[target_feature(enable = "neon,i8mm")]
+fn usdot_line<const P: usize, const N: usize>(
+    a: uint8x16_t,
+    b: uint8x16_t,
+    taps: int8x16_t,
+    bias: i32,
+) -> [int16x8_t; 2] {
+    let bias = vdupq_n_s32(bias);
+    let windows = [dot_windows::<0>(), dot_windows::<1>(), dot_windows::<2>()];
+    let a = windows.map(|window| vqtbl1q_u8(a, window));
+    let sum = |first: uint8x16_t, second: uint8x16_t| {
+        let sum = dot::usdot_lane::<0>(bias, first, taps);
+        if P > 2 {
+            dot::usdot_lane::<1>(sum, second, taps)
+        } else {
+            sum
+        }
+    };
+    let pack = |low, high| vuzp1q_s16(vreinterpretq_s16_s32(low), vreinterpretq_s16_s32(high));
+    let low = pack(sum(a[0], a[1]), sum(a[1], a[2]));
+    if N == 8 {
+        return [low, low];
+    }
+    let (b1, b2) = (vqtbl1q_u8(b, windows[1]), vqtbl1q_u8(b, windows[2]));
+    [low, pack(sum(a[2], b1), sum(b1, b2))]
 }
 
 /// Byte indices of window columns `k..k + 4` (lanes `0..4`) and `k + 1..k +

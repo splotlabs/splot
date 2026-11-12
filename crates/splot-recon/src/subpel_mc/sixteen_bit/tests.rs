@@ -32,7 +32,8 @@ fn taps(filter: usize, phase: usize) -> Option<&'static Taps> {
     TAPS[filter][phase].as_ref()
 }
 
-/// Every sink of the NEON `predict` against the portable kernels.
+/// Every sink of the NEON `predict` against the portable kernels; full-pel
+/// blocks stay on the portable copy, which is faster.
 fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     let (w, h) = (block.w, block.h);
     let rows = h + block.vertical.map_or(0, |taps| taps.span() - 1);
@@ -40,7 +41,6 @@ fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     let stride = w + 3;
     let run = |neon: bool, sink: &mut Sink<'_>| {
         let mut stage = vec![0x5a5a_u16 as i16; len];
-        // Full-pel blocks stay on the portable copy, which is faster.
         let filtered = block.horizontal.is_some() || block.vertical.is_some();
         if !neon || !super::predict(block, sink, &mut stage) {
             assert!(!neon || !filtered, "declined {label}");

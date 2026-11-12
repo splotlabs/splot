@@ -101,15 +101,7 @@ pub(super) fn compound_windows(
 ) -> bool {
     let w = windows[0].w;
     let square = |window: &super::block::Window| window.w == w && window.h == w;
-    let references = references.map(|view| {
-        let geometry = [
-            view.stride,
-            view.width,
-            view.readable_rows,
-            view.samples.len(),
-        ];
-        (view.samples, geometry)
-    });
+    let references = references.map(|view| (view.samples, view.geometry()));
     (w == 4 || w == 8)
         && windows.iter().all(square)
         && fearless_simd::Level::baseline()

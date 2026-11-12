@@ -787,16 +787,19 @@ fn full_sample_cells_match_the_materialized_average() {
 /// 32-wide blocks with clamped rows, column-remapped windows, every
 /// eight-bit sink and the fused compound, over noise and extreme contrast,
 /// in the multiply-accumulate kernels and, on a CPU with `FEAT_DotProd`, in
-/// the `sdot` kernels.
+/// the `sdot` kernels, and with `FEAT_I8MM` too in the `usdot` kernels.
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn neon_byte_lanes_match_the_portable_kernels() {
     let dot = std::arch::is_aarch64_feature_detected!("dotprod");
-    for mla in [true, false].into_iter().filter(|&mla| mla || dot) {
-        eight_bit::neon::dot::MLA_ONLY.with(|only| only.set(mla));
-        check_neon_byte_lanes();
+    let i8mm = dot && std::arch::is_aarch64_feature_detected!("i8mm");
+    for families in [0, 1, 2] {
+        if families == 0 || (families == 1 && dot) || i8mm {
+            eight_bit::neon::dot::FAMILIES.with(|cap| cap.set(families));
+            check_neon_byte_lanes();
+        }
     }
-    eight_bit::neon::dot::MLA_ONLY.with(|only| only.set(false));
+    eight_bit::neon::dot::FAMILIES.with(|cap| cap.set(2));
 }
 
 #[cfg(target_arch = "aarch64")]
