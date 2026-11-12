@@ -167,19 +167,19 @@ pub(super) struct TipReconstructScratch {
 pub(crate) struct TipOutputScratch {
     bands: Vec<parking_lot::Mutex<TipOutputBand>>,
     rects: Vec<splot_recon::PlaneRect>,
+    rows: Vec<(usize, usize)>,
     motion: Option<super::temporal::MotionFieldUnits>,
 }
 
 /// The storage TIP output frames of one decode hand back when they finish,
 /// shared by every TIP work so the frames in flight bound it, not the slots.
 #[derive(Debug, Default)]
-pub(crate) struct TipSpares<T: ReconSample> {
+pub(crate) struct TipSpares {
     temporal: parking_lot::Mutex<Vec<TemporalMvContext>>,
     output: parking_lot::Mutex<Vec<TipOutputScratch>>,
-    surfaces: parking_lot::Mutex<Vec<splot_recon::OwnedFrameRect<T>>>,
 }
 
-impl<T: ReconSample> TipSpares<T> {
+impl TipSpares {
     pub(crate) fn take(&self) -> (TemporalMvContext, TipOutputScratch) {
         (
             self.temporal
@@ -193,20 +193,6 @@ impl<T: ReconSample> TipSpares<T> {
     pub(crate) fn give(&self, temporal: TemporalMvContext, output: TipOutputScratch) {
         self.temporal.lock().push(temporal);
         self.output.lock().push(output);
-    }
-
-    fn take_surface(
-        &self,
-        info: splot_recon::DecodedFrameInfo,
-        rect: splot_recon::PlaneRect,
-    ) -> Result<splot_recon::OwnedFrameRect<T>> {
-        let Some(mut surface) = self.surfaces.lock().pop() else {
-            return Ok(splot_recon::OwnedFrameRect::new(info, rect, T::default())?);
-        };
-        if surface.info() != info || surface.retarget(rect).is_err() {
-            surface.reshape(info, rect, T::default())?;
-        }
-        Ok(surface)
     }
 }
 
@@ -1063,7 +1049,7 @@ const TIP_OUTPUT_BAND_LUMA_COLS: usize = 256;
 
 pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     decode_scratch: &mut super::InterDecodeScratch<T>,
-    recycled: splot_recon::FramePlaneSamples<T>,
+    mut recycled: splot_recon::FramePlaneSamples<T>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
@@ -1073,22 +1059,40 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let mut lease = crate::support::decode_buffers::DecodeBuffers::lend_temporal(
         decode_scratch.buffers.as_deref(),
     );
-    let spares = Arc::new(TipSpares::default());
+    let spares = TipSpares::default();
     spares.give(
         core::mem::replace(&mut lease.temporal, TemporalMvContext::empty()),
         core::mem::take(&mut decode_scratch.tip_output),
     );
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::from_workspace(
+            CurrentFrameWorkspace::<T>::new_recycled_from(geometry.info(), &mut recycled)?,
+            None,
+        )?,
+    );
     let stages = TipOutputStages::init(
-        spares, recycled, sequence, core, reference, geometry, offset, None,
+        &spares,
+        Arc::clone(&progress),
+        sequence,
+        core,
+        reference,
+        geometry,
+        offset,
+        None,
     )?;
     let mut motion_field = None;
     for band in 0..stages.band_count() {
         motion_field = stages
-            .band_in_place(band, sequence, core, reference)?
+            .band(band, sequence, core, reference)?
             .or(motion_field);
     }
     let motion_field = motion_field.ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
-    let (frame, output, temporal) = stages.finish(sequence, core)?;
+    let (output, temporal) = stages.finish()?;
+    let mut progress =
+        Arc::into_inner(progress).ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
+    progress
+        .with_unpublished_workspace(|workspace| deblock_output(workspace, sequence, core))??;
+    let frame = progress.freeze()?;
     lease.temporal = temporal;
     decode_scratch.tip_output = output;
     Ok((frame, motion_field))
@@ -1098,16 +1102,15 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
 /// [`init`](Self::init) lays out the bands (and projects the whole motion
 /// field for a frame decoded in place), [`project`](Self::project) projects
 /// one motion-field band of a scheduled frame and bounds the reference rows
-/// of the bands in it, [`band`](Self::band) predicts one band, copies it into
-/// the frame and folds its records (a motion-field band publishes once all
-/// its bands folded), and [`finish`](Self::finish) deblocks and freezes the
-/// frame.
+/// of the bands in it, [`band`](Self::band) predicts one full-width band
+/// into the frame's own rows and folds its records (a motion-field band
+/// publishes once all its bands folded), and [`finish`](Self::finish) ends
+/// the walk; [`deblock_output`] then runs before the freeze.
 pub(crate) struct TipOutputStages<T: ReconSample> {
     temporal: TemporalMvContext,
     output: TipOutputScratch,
-    spares: Arc<TipSpares<T>>,
     info: splot_recon::DecodedFrameInfo,
-    workspace: parking_lot::Mutex<CurrentFrameWorkspace<T>>,
+    progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
     /// The § 7.22 records every band folds in; a scheduled frame publishes
     /// its field through it band by band.
     motion: super::temporal::MotionFieldUnits,
@@ -1116,9 +1119,8 @@ pub(crate) struct TipOutputStages<T: ReconSample> {
     /// Bands whose records were folded.
     folded: core::sync::atomic::AtomicUsize,
     placed: PlacedInterBlock,
-    /// Bands per row of bands. A scheduled band is one motion-field band
-    /// tall, so its records fold into that band alone.
-    columns: usize,
+    /// Bands per motion-field band, whose records fold into it alone.
+    parts: usize,
     band_w: usize,
     offset: ByteOffset,
 }
@@ -1130,8 +1132,8 @@ impl<T: ReconSample> TipOutputStages<T> {
     /// Returns the header, projection or workspace diagnostic.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn init(
-        spares: Arc<TipSpares<T>>,
-        mut recycled: splot_recon::FramePlaneSamples<T>,
+        spares: &TipSpares,
+        progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
         reference: &InterReferenceState<T>,
@@ -1222,7 +1224,6 @@ impl<T: ReconSample> TipOutputStages<T> {
         let global_mv = inter
             .tip_global_mv
             .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
-        let workspace = CurrentFrameWorkspace::<T>::new_recycled_from(info, &mut recycled)?; // § 7.10.6 predicts every coded sample of the frame below before `freeze`
         let band_h = if publish.is_some() {
             geometry.motion_layout().band_rows8() * 8
         } else {
@@ -1262,18 +1263,31 @@ impl<T: ReconSample> TipOutputStages<T> {
             },
         };
         output.rects.clear();
-        let rect_w = if publish.is_some() { band_w } else { width };
-        let columns = width.div_ceil(rect_w);
+        output.rows.clear();
+        let columns = if publish.is_some() {
+            width.div_ceil(band_w)
+        } else {
+            1
+        };
+        let strip_h = band_h
+            .div_ceil(columns.min(band_h / 16).max(1))
+            .next_multiple_of(16)
+            .min(band_h);
+        let parts = band_h.div_ceil(strip_h);
         for band_y in (0..height).step_by(band_h) {
-            for band_x in (0..width).step_by(rect_w) {
+            let band_end = (band_y + band_h).min(height);
+            for strip_y in (band_y..band_end).step_by(strip_h) {
+                let strip_end = (strip_y + strip_h).min(band_end);
                 output.rects.push(splot_recon::PlaneRect::new(
-                    band_x,
-                    band_y,
-                    rect_w.min(width - band_x),
-                    band_h.min(height - band_y),
+                    0,
+                    strip_y,
+                    width,
+                    strip_end - strip_y,
                 )?);
+                output.rows.push((strip_y, strip_end));
             }
         }
+        progress.begin(&output.rows)?; // § 7.10.6 predicts every coded sample of these rows before the freeze
         let band_count = output.rects.len();
         if output.bands.len() < band_count {
             output.bands.resize_with(band_count, Default::default);
@@ -1289,7 +1303,7 @@ impl<T: ReconSample> TipOutputStages<T> {
                 motion.reset_publishing(
                     geometry.motion_field_header(&hints),
                     band_count,
-                    columns,
+                    parts,
                     handle,
                 )?;
             }
@@ -1303,14 +1317,13 @@ impl<T: ReconSample> TipOutputStages<T> {
         Ok(Self {
             temporal,
             output,
-            spares,
             info,
-            workspace: parking_lot::Mutex::new(workspace),
+            progress,
             motion,
             plan,
             folded: core::sync::atomic::AtomicUsize::new(0),
             placed,
-            columns,
+            parts,
             band_w,
             offset,
         })
@@ -1377,14 +1390,14 @@ impl<T: ReconSample> TipOutputStages<T> {
             self.info,
             &self.temporal,
         );
-        let first = index.saturating_mul(self.columns);
+        let first = index.saturating_mul(self.parts);
         for (band, rect) in self
             .output
             .rects
             .iter()
             .enumerate()
             .skip(first)
-            .take(self.columns)
+            .take(self.parts)
         {
             bounds(band, gate.tip_bounds(&rect_placed(&self.placed, *rect)));
         }
@@ -1402,8 +1415,9 @@ impl<T: ReconSample> TipOutputStages<T> {
         Ok(())
     }
 
-    /// Predicts band `index`, copies it into the frame and folds its records.
-    /// Bands are independent, so any number of them run at once.
+    /// Predicts band `index` into the frame's rows it leases and folds its
+    /// records. Bands are disjoint, so any number of them run at once.
+    /// Returns the field of a frame that collects it, with the last band.
     ///
     /// # Errors
     /// Returns the prediction's own diagnostic.
@@ -1413,38 +1427,29 @@ impl<T: ReconSample> TipOutputStages<T> {
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
         reference: &InterReferenceState<T>,
-    ) -> Result<()> {
-        let (rect, band) = self.band_slot(index)?;
-        let mut band = band.lock();
-        let mut surface = self.spares.take_surface(self.info, rect)?;
-        let mut sink = mc::WorkspaceSink::OwnedRect(&mut surface);
-        self.predict_band(&mut band, rect, &mut sink, sequence, core, reference)?;
-        surface.publish_into(&mut self.workspace.lock())?;
-        self.spares.surfaces.lock().push(surface);
-        self.fold(index, &mut band.records)
-    }
-
-    /// Predicts band `index` straight into the frame and folds its records,
-    /// for a caller that runs the bands in order on one thread. Returns the
-    /// finished field with the last band.
-    ///
-    /// # Errors
-    /// Returns the prediction's own diagnostic.
-    pub(crate) fn band_in_place(
-        &self,
-        index: usize,
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-        reference: &InterReferenceState<T>,
     ) -> Result<Option<TemporalMotionField>> {
         let (rect, band) = self.band_slot(index)?;
         let mut band = band.lock();
-        self.workspace
-            .lock()
-            .for_each_rect_surface(&[rect], |mut surface| {
-                let mut sink = mc::WorkspaceSink::Rect(&mut surface);
-                self.predict_band(&mut band, rect, &mut sink, sequence, core, reference)
-            })?;
+        let mut lease = self
+            .progress
+            .direct_stripe(index)
+            .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+        let mut target = lease
+            .take_target()
+            .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+        let mut planes = {
+            use splot_recon::PlaneId::{U, V, Y};
+            [Y, U, V].map(|plane| target.take(plane))
+        };
+        let [y, u, v] = planes.each_mut().map(|plane| {
+            plane.as_mut().map(|plane| {
+                let stride = plane.stride();
+                (plane.samples_mut(), stride)
+            })
+        });
+        let mut surface = splot_recon::CurrentFrameRect::from_bands(self.info, rect, [y, u, v])?;
+        let mut sink = mc::WorkspaceSink::Rect(&mut surface);
+        self.predict_band(&mut band, rect, &mut sink, sequence, core, reference)?;
         self.fold(index, &mut band.records)?;
         Ok(
             (self.folded.load(core::sync::atomic::Ordering::Acquire) == self.output.rects.len())
@@ -1541,19 +1546,15 @@ impl<T: ReconSample> TipOutputStages<T> {
         Ok(())
     }
 
-    /// Deblocks the TIP unit edges and freezes the frame.
+    /// Ends the walk once every band folded, handing back its scratch.
     ///
     /// # Errors
-    /// Returns the deblock or freeze diagnostic.
-    pub(crate) fn finish(
-        self,
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-    ) -> Result<(DecodedFrame<T>, TipOutputScratch, TemporalMvContext)> {
+    /// Returns [`DecodeHeaderStateError::IncompleteTipOutput`] when a band
+    /// did not fold.
+    pub(crate) fn finish(self) -> Result<(TipOutputScratch, TemporalMvContext)> {
         let Self {
             temporal,
             mut output,
-            workspace,
             mut motion,
             folded,
             ..
@@ -1563,43 +1564,54 @@ impl<T: ReconSample> TipOutputStages<T> {
         }
         motion.retire();
         output.motion = Some(motion);
-        let mut workspace = workspace.into_inner();
-        let inter = core
+        Ok((output, temporal))
+    }
+}
+
+/// Deblocks the TIP unit edges of a frame written whole.
+///
+/// # Errors
+/// Returns the deblock diagnostic.
+pub(crate) fn deblock_output<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+) -> Result<()> {
+    let inter = core
+        .inter
+        .as_ref()
+        .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
+    let bit_depth = workspace.info().bit_depth();
+    if inter.apply_deblocking_filter_tip == Some(true) {
+        let quant = core
+            .quantization_params
+            .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
+        let tq = sequence
+            .transform_quant_entropy
+            .as_ref()
+            .ok_or(DecodeHeaderStateError::MissingSequenceTransformQuantEntropy)?;
+        let seq_quant = CoreSeqQuantView::from_sequence_configs(&sequence.general, tq);
+        let interpolation_filter = output_interpolation_filter(inter)?;
+        let enable_tip_refinemv = sequence
             .inter
             .as_ref()
-            .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
-        let bit_depth = workspace.info().bit_depth();
-        if inter.apply_deblocking_filter_tip == Some(true) {
-            let quant = core
-                .quantization_params
-                .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
-            let tq = sequence
-                .transform_quant_entropy
+            .is_some_and(|tools| tools.enable_tip_refinemv);
+        crate::filters::deblock::deblock_tip_frame(
+            workspace,
+            output_prediction_unit_size(enable_tip_refinemv, interpolation_filter),
+            quant,
+            seq_quant.base_uv_ac_delta_q,
+            core.tile_info
                 .as_ref()
-                .ok_or(DecodeHeaderStateError::MissingSequenceTransformQuantEntropy)?;
-            let seq_quant = CoreSeqQuantView::from_sequence_configs(&sequence.general, tq);
-            let interpolation_filter = output_interpolation_filter(inter)?;
-            let enable_tip_refinemv = sequence
-                .inter
-                .as_ref()
-                .is_some_and(|tools| tools.enable_tip_refinemv);
-            crate::filters::deblock::deblock_tip_frame(
-                &mut workspace,
-                output_prediction_unit_size(enable_tip_refinemv, interpolation_filter),
-                quant,
-                seq_quant.base_uv_ac_delta_q,
-                core.tile_info
-                    .as_ref()
-                    .map(|tile| (tile.mi_col_starts.as_ref(), tile.mi_row_starts.as_ref())),
-                sequence
-                    .filter
-                    .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
-                bit_depth,
-            )
-            .map_err(|_| DecodeHeaderStateError::IncompleteTipOutput)?;
-        }
-        Ok((workspace.freeze()?, output, temporal))
+                .map(|tile| (tile.mi_col_starts.as_ref(), tile.mi_row_starts.as_ref())),
+            sequence
+                .filter
+                .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
+            bit_depth,
+        )
+        .map_err(|_| DecodeHeaderStateError::IncompleteTipOutput)?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

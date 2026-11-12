@@ -161,7 +161,8 @@ impl<T> DirectPlaneTarget<T> {
     #[inline]
     /// The target uniquely owns this non-overlapping stripe region.
     pub(crate) fn samples_mut(&mut self) -> &mut [T] {
-        // SAFETY: the layout lends each checked non-overlapping stripe once.
+        // SAFETY: the layout lends each checked non-overlapping stripe once,
+        // and the whole workspace only while it leases no stripe.
         unsafe { slice::from_raw_parts_mut(self.region.samples.as_ptr(), self.region.len) }
     }
 }
@@ -281,8 +282,8 @@ pub(crate) struct FrameProgress<T: ReconSample> {
     /// to the scratch it is scheduled with.
     buffers: Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
     /// The filtered workspace while it owns the frame's sample buffers. Only
-    /// `begin`, the freeze and a plane take lock it; readers and stripes reach
-    /// the samples through `planes`.
+    /// `begin`, the freeze and an unpublished pass lock it; readers and
+    /// stripes reach the samples through `planes`.
     workspace: Mutex<Option<CurrentFrameWorkspace<T>>>,
     layout: OnceLock<Mutex<ProgressLayout>>,
     spare_stripes: Mutex<Vec<StripeProgress>>,
@@ -631,19 +632,30 @@ impl<T: ReconSample> FrameProgress<T> {
         published.min(self.luma_height)
     }
 
-    /// Takes the filtered workspace's planes from a frame that is published
-    /// whole instead of filtered, so its reconstruction writes into them.
-    pub(crate) fn take_unfiltered_planes(&self) -> Option<splot_recon::FramePlaneSamples<T>> {
-        let mut workspace = self.workspace.lock();
-        if self.layout.get().is_some() || self.frontier_live() {
-            return None;
+    /// Lends the whole workspace to a pass of a frame that publishes no row
+    /// before its freeze. The layout lock it holds lets no stripe lease
+    /// start, and no lease, frontier or published row is live.
+    pub(crate) fn with_unpublished_workspace<R>(
+        &self,
+        f: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> R,
+    ) -> Result<R> {
+        let layout = self.layout.get().map(|layout| layout.lock());
+        let released = self.frontier.compare_exchange(
+            UNCLAIMED,
+            RELEASED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        if layout
+            .as_ref()
+            .is_some_and(|layout| layout.stripes.iter().any(|stripe| stripe.leased))
+            || released.is_err_and(|frontier| frontier != RELEASED)
+            || self.published_luma_rows.current() != 0
+        {
+            return Err(live_direct_lease());
         }
-        Some(
-            workspace
-                .take()?
-                .into_plane_samples()
-                .with_pool(self.buffers.as_ref().map(|buffers| buffers.planes())),
-        )
+        let mut workspace = self.workspace.lock();
+        Ok(f(workspace.as_mut().ok_or_else(taken_workspace)?))
     }
 
     /// Freezes the filtered workspace into the paired slot.
@@ -930,9 +942,8 @@ impl<'a, T: ReconSample> PublishedFrame<'a, T> {
     ///
     /// Returns `None` before the first stripe lands, after a failed phase
     /// (whose rows must fail closed) and after the freeze, whose frame the
-    /// caller then reads from the settled slot. A frame published whole
-    /// instead of filtered never installs a stripe layout, so its plane table
-    /// is never read.
+    /// caller then reads from the settled slot. A frame written whole
+    /// publishes no row before its freeze, so its plane table is never read.
     pub(crate) fn of_slot(slot: &'a RefFrameSlot<T>) -> Option<Self> {
         Self::of_progress(slot.progress()?)
     }

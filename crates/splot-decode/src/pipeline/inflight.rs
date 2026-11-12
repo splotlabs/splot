@@ -811,16 +811,21 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
         Arc::clone(&self.progress)
     }
 
-    /// Publishes a frame whose reconstruction is already terminal and has no
-    /// filter records to return to the driver's scratch pool.
-    pub(crate) fn complete_frame(self, frame: DecodedFrame<T>) {
+    /// Runs `pass` over a frame written whole into its workspace, then
+    /// freezes it into the slot; the frame has no filter records to return.
+    pub(crate) fn freeze_written(
+        self,
+        pass: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<()>,
+    ) -> Result<()> {
         let Self {
             writer,
-            progress: _,
+            progress,
             report,
         } = self;
-        writer.complete(frame);
+        progress.with_unpublished_workspace(pass)??;
+        progress.freeze_workspace(writer)?;
         drop(report);
+        Ok(())
     }
 
     /// Freezes one scheduler-owned setup after every stripe job has settled.

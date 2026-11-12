@@ -2206,7 +2206,7 @@ mod syntax;
 mod temporal;
 mod tile;
 pub(super) mod tip;
-pub(crate) use tip::{TipOutputStages, TipSpares};
+pub(crate) use tip::{TipOutputStages, TipSpares, deblock_output as deblock_tip_output};
 mod warp;
 
 use self::interintra::predict_interintra_planes;

@@ -23,8 +23,9 @@
 
 use super::owned_rect::OwnedFrameRectRows;
 use super::{
-    CurrentFramePlane, CurrentFrameWorkspace, IntraPredictionScratch, block_rect,
-    chroma_plane_geometry,
+    CurrentFramePlane, CurrentFramePlaneRect, CurrentFrameRect, CurrentFrameWorkspace,
+    IntraPredictionScratch, block_rect, chroma_plane_geometry, ensure_rect_in_storage,
+    subsampled_rect,
 };
 use crate::reconstruct::add_block_residual_into_rows;
 use crate::{
@@ -179,6 +180,78 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             )?;
         }
         Ok(Some(core::mem::replace(self, next)))
+    }
+}
+
+impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
+    /// The rectangle over full-width plane bands `(samples, stride)` the
+    /// caller holds exclusively, as [`CurrentFrameWorkspace::rect_surfaces`]
+    /// would split them off.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when a band does not span exactly the rows of
+    /// `luma_rect` or its chroma rectangle, or `luma_rect` is not full width.
+    pub fn from_bands(
+        info: DecodedFrameInfo,
+        luma_rect: PlaneRect,
+        [y, u, v]: [Option<(&'storage mut [T], usize)>; 3],
+    ) -> Result<Self> {
+        let luma = info.storage_luma_size();
+        let chroma = chroma_plane_geometry(info.pixel_format(), luma, info.visible_luma_rect())?
+            .map(|(size, _)| size);
+        let chroma_rect = chroma
+            .map(|size| {
+                let format = info.pixel_format();
+                subsampled_rect(
+                    luma_rect,
+                    format.subsampling_x(),
+                    format.subsampling_y(),
+                    size,
+                )
+            })
+            .transpose()?;
+        let band =
+            |plane, storage_size: PlaneSize, rect: PlaneRect, band: (&'storage mut [T], _)| {
+                let (samples, stride) = band;
+                let fits = rect.x() == 0
+                    && rect.width() == storage_size.width()
+                    && stride >= rect.width()
+                    && rect.height().checked_mul(stride) == Some(samples.len());
+                ensure_rect_in_storage(plane, storage_size, rect)?;
+                fits.then_some(CurrentFramePlaneRect {
+                    plane,
+                    storage_size,
+                    rect,
+                    stride,
+                    samples,
+                })
+                .ok_or(ReconError::WorkspaceRectSurfaceNotABand {
+                    plane,
+                    storage: storage_size,
+                    rect,
+                    settled_rows: rect.y(),
+                })
+            };
+        let missing = |plane| ReconError::WorkspaceRectOutOfBounds {
+            plane,
+            storage: luma,
+            rect: luma_rect,
+        };
+        let y = band(
+            PlaneId::Y,
+            luma,
+            luma_rect,
+            y.ok_or_else(|| missing(PlaneId::Y))?,
+        )?;
+        let (u, v) = match (chroma.zip(chroma_rect), u, v) {
+            (None, None, None) => (None, None),
+            (Some((size, rect)), Some(u), Some(v)) => (
+                Some(band(PlaneId::U, size, rect, u)?),
+                Some(band(PlaneId::V, size, rect, v)?),
+            ),
+            _ => return Err(missing(PlaneId::U)),
+        };
+        Ok(Self { info, y, u, v })
     }
 }
 

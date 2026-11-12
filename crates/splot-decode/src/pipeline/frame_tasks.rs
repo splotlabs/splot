@@ -695,7 +695,7 @@ pub(crate) struct TipFrame<T: SplitSample> {
     options: DecodeOptions,
     /// Set when the stages run on the driver, which predicts bands in place.
     inline: bool,
-    spares: Arc<inter::TipSpares<T>>,
+    spares: Arc<inter::TipSpares>,
     stages: [Stage; 3],
     bands: ParallelStage,
     failed: AtomicBool,
@@ -716,7 +716,7 @@ pub(crate) struct TipFrame<T: SplitSample> {
 }
 
 impl<T: SplitSample> TipFrame<T> {
-    fn new(wake: RowWake, options: DecodeOptions, spares: Arc<inter::TipSpares<T>>) -> Self {
+    fn new(wake: RowWake, options: DecodeOptions, spares: Arc<inter::TipSpares>) -> Self {
         Self {
             wake,
             options,
@@ -791,10 +791,6 @@ impl<T: SplitSample> TipFrame<T> {
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
         let progress = finish.progress_handle();
         *self.finish.lock() = Some(finish);
-        let planes = progress.take_unfiltered_planes().unwrap_or_else(|| {
-            splot_recon::FramePlaneSamples::default()
-                .with_pool(progress.buffers().map(|buffers| buffers.planes()))
-        });
         let (cdfs, segments) = inter::tip_output_products(
             &core,
             &candidate,
@@ -807,8 +803,8 @@ impl<T: SplitSample> TipFrame<T> {
         )?;
         let _ = products.settle(cdfs, None, segments);
         let work = inter::TipOutputStages::init(
-            Arc::clone(&self.spares),
-            planes,
+            &self.spares,
+            progress,
             &sequence,
             &core,
             &reference,
@@ -843,14 +839,10 @@ impl<T: SplitSample> TipFrame<T> {
         let work = work
             .as_ref()
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        if self.inline {
-            if let Some(field) = work.band_in_place(index, sequence, core, reference)?
-                && let Some(motion) = self.motion.lock().take()
-            {
-                motion.publish(field);
-            }
-        } else {
-            work.band(index, sequence, core, reference)?;
+        if let Some(field) = work.band(index, sequence, core, reference)?
+            && let Some(motion) = self.motion.lock().take()
+        {
+            motion.publish(field);
         }
         Ok(())
     }
@@ -890,12 +882,12 @@ impl<T: SplitSample> TipFrame<T> {
             .lock()
             .take()
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        let (frame, output, temporal) = work.finish(sequence, core)?;
+        let (output, temporal) = work.finish()?;
         self.reference.write().take();
         if let Some(motion) = self.motion.lock().take() {
             motion.fail();
         }
-        finish.complete_frame(frame);
+        finish.freeze_written(|workspace| inter::deblock_tip_output(workspace, sequence, core))?;
         self.spares.give(temporal, output);
         Ok(())
     }
@@ -1304,7 +1296,7 @@ pub(crate) struct SamplePools<T: SplitSample> {
     pub(super) scratch: inter::InterDecodeScratch<T>,
     pub(super) split: SplitFrames<T>,
     tip: WorkPool<TipFrame<T>>,
-    tip_spares: Arc<inter::TipSpares<T>>,
+    tip_spares: Arc<inter::TipSpares>,
     finish: WorkPool<FinishFrame<T>>,
 }
 
