@@ -672,8 +672,12 @@ impl MvStack {
     }
 }
 
-/// AV2 § 7.12.2.2 `get_warp_motion_vector()` for a block center.
+/// AV2 § 7.12.2.2 `get_warp_motion_vector()` for a block center. The identity
+/// model moves no sample, and the precision and border clamps keep zero.
 pub(crate) fn warp_predicted_mv(params: [i32; 6], block: &MvBlockContext, precision: u8) -> Mv {
+    if params == DEFAULT_WARP_PARAMS {
+        return Mv::ZERO;
+    }
     let x = block.mi_col as i32 * 4 + (block.bw4 as i32 * 4) / 2 - 1;
     let y = block.mi_row as i32 * 4 + (block.bh4 as i32 * 4) / 2 - 1;
     let (row, col) = projected_warp_mv(params, x, y);
