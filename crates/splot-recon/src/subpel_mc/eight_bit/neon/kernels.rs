@@ -34,7 +34,6 @@ macro_rules! kernels {
             block: &Block<'_, u8>,
             out: &mut O,
         ) {
-            let window = block.h + if V > 0 { 2 * V - 1 } else { 0 };
             let reach = if H > 0 && N == 16 { 24 } else { 16 };
             let (base, stride) = (block.origin, block.stride);
             let (h_taps, v_weights) = (taps(t, block.horizontal), weights(t, block.vertical));
@@ -98,13 +97,21 @@ macro_rules! kernels {
             };
             let zero = vdupq_n_s16(0);
             let period = 2 * V;
+            let Some((stride, rows)) = span(stride, block.h) else { return };
+            let stride = stride.get() as usize;
+            let (head, body) = ((period.max(1) - 1) * stride, usize::from(rows) * stride);
+            if stride < reach {
+                return;
+            }
             'strips: for col in (0..block.w).step_by(N).map(|col| col.min(block.w - N)) {
-                let (Some((mut source, last)), Some((targets, target))) = (
-                    rows(block.source, base + col, stride, reach, window),
-                    out.rows(col, N, block.h),
-                ) else {
+                let Some((head, source)) = block.source.get(base + col..)
+                    .and_then(|strip| strip.get(..head + body + reach)?.split_at_checked(head))
+                else {
                     return;
                 };
+                let Some((source, last)) = source.split_at_checked(body) else { return };
+                let source = source.chunks_exact(stride);
+                let Some((targets, target)) = out.rows(col, N, block.h) else { return };
                 if V == 0 {
                     for (row, target) in source.zip(targets) {
                         let Some(values) = line(row) else { return };
@@ -115,22 +122,20 @@ macro_rules! kernels {
                     }
                     continue;
                 }
+                let mut head = head.chunks_exact(stride);
                 let mut ring = [[zero; 2]; 8];
                 unroll!(k < period - 1, [0 1 2 3 4 5 6] => {
-                    let Some(values) = source.next().and_then(line) else { return };
+                    let Some(values) = head.next().and_then(line) else { return };
                     ring[k] = values;
                 });
                 let vertical = |phase: usize, ring: &[[int16x8_t; 2]; 8], next: [int16x8_t; 2]| {
                     let low = vsum(phase, ring, next, 0);
                     [low, if N == 16 { vsum(phase, ring, next, 1) } else { low }]
                 };
-                let (mut rows, mut target) = (source.zip(targets), Some(target));
+                let (mut rows, mut final_row) = (source.zip(targets), Some((last, target)));
                 loop {
                     unroll!(phase < period, [0 1 2 3 4 5 6 7] => {
-                        let Some((row, next_target)) = rows.next() else {
-                            if let (Some(next), Some(target)) = (line(last), target.take()) {
-                                emit(target, vertical(phase, &ring, next));
-                            }
+                        let Some((row, next_target)) = rows.next().or_else(|| final_row.take()) else {
                             continue 'strips;
                         };
                         let Some(next) = line(row) else { return };
