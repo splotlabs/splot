@@ -5,7 +5,7 @@
 use libfuzzer_sys::fuzz_target;
 use splot_core::error::{Error, SymbolDecoderErrorKind};
 use splot_core::symbol::{
-    CdfUpdateMode, SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderConfig,
+    CDF_COUNT_SHIFT, CdfUpdateMode, SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderConfig,
 };
 
 const UPDATE_MODE_FLAG: u8 = 0b0000_0001;
@@ -133,8 +133,9 @@ fn assert_valid_cdf_after_read(mode: CdfUpdateMode, before: &[i32], after: &[i32
             assert!(value > after[index - 1]);
         }
     }
-    assert!((0..i32::from(CDF_RATE_ROWS)).contains(&after[n - 1]));
-    assert!((0..=i32::from(MAX_CDF_COUNT)).contains(&after[n]));
+    assert!((0..i32::from(CDF_RATE_ROWS)).contains(&(after[n - 1] & 127)));
+    assert!((0..=i32::from(MAX_CDF_COUNT)).contains(&(after[n - 1] >> CDF_COUNT_SHIFT)));
+    assert_eq!(after[n], 0);
 }
 
 fn assert_checkpoint_monotonic(before: SymbolDecoderCheckpoint, after: SymbolDecoderCheckpoint) {
@@ -163,8 +164,10 @@ fn valid_cdf_row(n: usize, cursor: &mut std::iter::Copied<std::slice::Iter<'_, u
         let value = ((index + 1) * 32_768 / n) as i32;
         row.push(value.clamp(1, CDF_PROB_MAX));
     }
-    row.push(i32::from(cursor.next().unwrap_or(0) % CDF_RATE_ROWS));
-    row.push(i32::from(cursor.next().unwrap_or(0) % (MAX_CDF_COUNT + 1)));
+    let rate_index = i32::from(cursor.next().unwrap_or(0) % CDF_RATE_ROWS);
+    let count = i32::from(cursor.next().unwrap_or(0) % (MAX_CDF_COUNT + 1));
+    row.push(rate_index | count << CDF_COUNT_SHIFT);
+    row.push(0);
     row
 }
 
@@ -175,10 +178,14 @@ fn malformed_cdf_row(cursor: &mut std::iter::Copied<std::slice::Iter<'_, u8>>) -
         2 => vec![100, 100, 0, 0],
         3 => vec![
             16_384,
-            i32::from(CDF_RATE_ROWS) + i32::from(cursor.next().unwrap_or(0)),
+            i32::from(CDF_RATE_ROWS) + i32::from(cursor.next().unwrap_or(0) % 3),
             0,
         ],
-        4 => vec![16_384, 0, 33 + i32::from(cursor.next().unwrap_or(0))],
+        4 => vec![
+            16_384,
+            (33 + i32::from(cursor.next().unwrap_or(0))) << CDF_COUNT_SHIFT,
+            0,
+        ],
         _ => vec![-(1 + i32::from(cursor.next().unwrap_or(0))), 0, 0],
     }
 }

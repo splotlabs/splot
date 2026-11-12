@@ -5,7 +5,7 @@
 
 use super::*;
 use splot_core::span::ByteOffset;
-use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::{CDF_COUNT_SHIFT, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::tables::cdf::{
     DEFAULT_CCTX_TYPE_CDF, DEFAULT_CFL_ALPHA_CDF, DEFAULT_CFL_INDEX_CDF, DEFAULT_CFL_MH_DIR_CDF,
     DEFAULT_CFL_MHCCP_CDF, DEFAULT_CFL_SIGN_CDF, DEFAULT_COEFF_BASE_BOB_CDF,
@@ -135,13 +135,29 @@ fn frame_cdf_subset_blends_saved_rows() {
     let mut frame = FrameCdfSubset::from_defaults();
     let mut saved = FrameCdfSubset::from_defaults();
     frame.rows.delta_q = [
-        9000, 12_000, 15_000, 18_000, 21_000, 24_000, 27_000, 30_000, 40,
+        9000,
+        12_000,
+        15_000,
+        18_000,
+        21_000,
+        24_000,
+        27_000,
+        30 + (40 << CDF_COUNT_SHIFT),
+        0,
     ];
     saved.rows.delta_q = [
-        11_000, 13_000, 17_000, 19_000, 22_000, 26_000, 28_000, 31_000, 80,
+        11_000,
+        13_000,
+        17_000,
+        19_000,
+        22_000,
+        26_000,
+        28_000,
+        31 + (80 << CDF_COUNT_SHIFT),
+        0,
     ];
-    frame.rows.block.tip_mode[1] = [10_000, 28_000, 20];
-    saved.rows.block.tip_mode[1] = [14_000, 30_000, 100];
+    frame.rows.block.tip_mode[1] = [10_000, 28 + (20 << CDF_COUNT_SHIFT), 0];
+    saved.rows.block.tip_mode[1] = [14_000, 30 + (100 << CDF_COUNT_SHIFT), 0];
 
     let original_delta_q = frame.rows.delta_q;
     let saved_delta_q = saved.rows.delta_q;
@@ -158,23 +174,16 @@ fn frame_cdf_subset_blends_saved_rows() {
     }
     assert_eq!(
         frame.rows.delta_q[DELTA_Q_CDF_ROW_LEN - 2],
-        original_delta_q[DELTA_Q_CDF_ROW_LEN - 2]
+        30 + (expected_blend_count(40, 80) << CDF_COUNT_SHIFT)
     );
-    assert_eq!(
-        frame.rows.delta_q[DELTA_Q_CDF_ROW_LEN - 1],
-        expected_blend_count(
-            original_delta_q[DELTA_Q_CDF_ROW_LEN - 1],
-            saved_delta_q[DELTA_Q_CDF_ROW_LEN - 1]
-        )
-    );
+    assert_eq!(frame.rows.delta_q[DELTA_Q_CDF_ROW_LEN - 1], 0);
     assert_eq!(
         frame.rows.block.tip_mode[1][0],
         expected_blend_prob(original_tip[0], saved_tip[0])
     );
-    assert_eq!(frame.rows.block.tip_mode[1][1], original_tip[1]);
     assert_eq!(
-        frame.rows.block.tip_mode[1][2],
-        expected_blend_count(original_tip[2], saved_tip[2])
+        frame.rows.block.tip_mode[1][1..],
+        [28 + (expected_blend_count(20, 100) << CDF_COUNT_SHIFT), 0]
     );
 }
 
@@ -961,41 +970,82 @@ fn cdf_save_policy_matches_spec() {
 fn saved_copy_and_average_are_exact_for_supported_subset() {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
-    tile.rows.do_split[0][0] = [20_000, 7, 4];
-    tile.rows.do_ext_partition[0][4] = [22_000, 5, 8];
-    tile.rows.do_square_split[0][0] = [21_000, 6, 2];
-    tile.rows.rect_type[1][63] = [24_000, 3, 16];
-    tile.rows.do_uneven_4way_partition[0][8] = [23_000, 4, 12];
-    tile.rows.block.y_mode_set = [20_000, 21_000, 22_000, 9, 8];
+    tile.rows.do_split[0][0] = [20_000, 7 + (4 << 7), 0];
+    tile.rows.do_ext_partition[0][4] = [22_000, 5 + (8 << 7), 0];
+    tile.rows.do_square_split[0][0] = [21_000, 6 + (2 << 7), 0];
+    tile.rows.rect_type[1][63] = [24_000, 3 + (16 << 7), 0];
+    tile.rows.do_uneven_4way_partition[0][8] = [23_000, 4 + (12 << 7), 0];
+    tile.rows.block.y_mode_set = [20_000, 21_000, 22_000, 9 + (8 << 7), 0];
     tile.rows.block.y_mode_index[0] = [
-        20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
+        20_000,
+        21_000,
+        22_000,
+        23_000,
+        24_000,
+        25_000,
+        26_000,
+        11 + (12 << 7),
+        0,
     ];
-    tile.rows.block.y_mode_offset[0] = [20_000, 21_000, 22_000, 23_000, 24_000, 11, 12];
-    tile.rows.block.jmvd_scale_mode = [20_000, 21_000, 22_000, 23_000, 11, 12];
-    tile.rows.block.jmvd_adaptive_scale_mode = [20_000, 21_000, 11, 12];
-    tile.rows.block.use_optflow[0] = [25_000, 31, 12];
-    tile.rows.block.txb_skip[0][0][0] = [25_000, 13, 20];
+    tile.rows.block.y_mode_offset[0] = [20_000, 21_000, 22_000, 23_000, 24_000, 11 + (12 << 7), 0];
+    tile.rows.block.jmvd_scale_mode = [20_000, 21_000, 22_000, 23_000, 11 + (12 << 7), 0];
+    tile.rows.block.jmvd_adaptive_scale_mode = [20_000, 21_000, 11 + (12 << 7), 0];
+    tile.rows.block.use_optflow[0] = [25_000, 31 + (12 << 7), 0];
+    tile.rows.block.txb_skip[0][0][0] = [25_000, 13 + (20 << 7), 0];
     tile.rows.block.uv_mode_cfl_not_allowed[0] = [
-        20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
+        20_000,
+        21_000,
+        22_000,
+        23_000,
+        24_000,
+        25_000,
+        26_000,
+        11 + (12 << 7),
+        0,
     ];
-    tile.rows.block.cfl_index = [25_500, 13, 20];
+    tile.rows.block.cfl_index = [25_500, 13 + (20 << 7), 0];
     tile.rows.block.cfl_sign = [
-        20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
+        20_000,
+        21_000,
+        22_000,
+        23_000,
+        24_000,
+        25_000,
+        26_000,
+        11 + (12 << 7),
+        0,
     ];
     tile.rows.block.cfl_alpha[4] = [
-        20_100, 21_100, 22_100, 23_100, 24_100, 25_100, 26_100, 11, 12,
+        20_100,
+        21_100,
+        22_100,
+        23_100,
+        24_100,
+        25_100,
+        26_100,
+        11 + (12 << 7),
+        0,
     ];
-    tile.rows.block.cfl_mhccp = [26_000, 14, 24];
-    tile.rows.block.cfl_mh_dir[2] = [20_000, 21_000, 22_000, 9];
-    tile.rows.block.v_txb_skip[3] = [26_000, 14, 24];
-    tile.rows.block.coeff.coeff_base[2][3][1] = [20_000, 21_000, 22_000, 9, 8];
-    tile.rows.block.coeff.coeff_base_idtx[2][3] = [20_000, 21_000, 22_000, 9, 8];
-    tile.rows.block.coeff.idtx_sign[2][3] = [20_000, 9, 8];
-    tile.rows.intrabc_mode = [25_500, 13, 20];
-    tile.rows.intrabc_precision = [26_000, 14, 24];
-    tile.rows.mrl_index[1] = [20_000, 21_000, 22_000, 23_000, 20];
-    tile.rows.mrl_sec_index[2] = [20_000, 21_000, 20];
-    tile.rows.block.cctx_type = [20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 20];
+    tile.rows.block.cfl_mhccp = [26_000, 14 + (24 << 7), 0];
+    tile.rows.block.cfl_mh_dir[2] = [20_000, 21_000, 22 + (9 << 7), 0];
+    tile.rows.block.v_txb_skip[3] = [26_000, 14 + (24 << 7), 0];
+    tile.rows.block.coeff.coeff_base[2][3][1] = [20_000, 21_000, 22_000, 9 + (8 << 7), 0];
+    tile.rows.block.coeff.coeff_base_idtx[2][3] = [20_000, 21_000, 22_000, 9 + (8 << 7), 0];
+    tile.rows.block.coeff.idtx_sign[2][3] = [20_000, 9 + (8 << 7), 0];
+    tile.rows.intrabc_mode = [25_500, 13 + (20 << 7), 0];
+    tile.rows.intrabc_precision = [26_000, 14 + (24 << 7), 0];
+    tile.rows.mrl_index[1] = [20_000, 21_000, 22_000, 23 + (20 << 7), 0];
+    tile.rows.mrl_sec_index[2] = [20_000, 21 + (20 << 7), 0];
+    tile.rows.block.cctx_type = [
+        20_000,
+        21_000,
+        22_000,
+        23_000,
+        24_000,
+        25_000,
+        26 + (20 << 7),
+        0,
+    ];
 
     let mut saved = Some(SavedCdfSubset::from_frame(&frame));
     SavedCdfSubset::apply_completed_tile(
@@ -1023,10 +1073,13 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
             avg_cdf: true,
         },
     );
-    assert_eq!(saved.as_ref().unwrap().rows.do_split[0][0], [29_576, 7, 1]);
+    assert_eq!(
+        saved.as_ref().unwrap().rows.do_split[0][0],
+        [29_576, 7 + (1 << 7), 0]
+    );
     assert_eq!(
         saved.as_ref().unwrap().rows.do_ext_partition[0][4],
-        [30_076, 5, 2]
+        [30_076, 5 + (2 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.do_square_split[0][0],
@@ -1034,104 +1087,148 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.rect_type[1][63],
-        [30_576, 3, 4]
+        [30_576, 3 + (4 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.do_uneven_4way_partition[0][8],
-        [30_326, 4, 3]
+        [30_326, 4 + (3 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.y_mode_set,
-        [29_576, 29_826, 30_076, 9, 2]
+        [29_576, 29_826, 30_076, 9 + (2 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.y_mode_index[0],
         [
-            29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 31_076, 11, 3
+            29_576,
+            29_826,
+            30_076,
+            30_326,
+            30_576,
+            30_826,
+            31_076,
+            11 + (3 << 7),
+            0
         ]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.y_mode_offset[0],
-        [29_576, 29_826, 30_076, 30_326, 30_576, 11, 3]
+        [29_576, 29_826, 30_076, 30_326, 30_576, 11 + (3 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.jmvd_scale_mode,
-        [29_576, 29_826, 30_076, 30_326, 11, 3]
+        [29_576, 29_826, 30_076, 30_326, 11 + (3 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.jmvd_adaptive_scale_mode,
-        [29_576, 29_826, 11, 3]
+        [29_576, 29_826, 11 + (3 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.use_optflow[0],
-        [30_826, 31, 3]
+        [30_826, 31 + (3 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.txb_skip[0][0][0],
-        [30_826, 13, 5]
+        [30_826, 13 + (5 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.uv_mode_cfl_not_allowed[0],
         [
-            29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 31_076, 11, 3
+            29_576,
+            29_826,
+            30_076,
+            30_326,
+            30_576,
+            30_826,
+            31_076,
+            11 + (3 << 7),
+            0
         ]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.cfl_index,
-        [30_951, 13, 5]
+        [30_951, 13 + (5 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.cfl_sign,
         [
-            29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 31_076, 11, 3
+            29_576,
+            29_826,
+            30_076,
+            30_326,
+            30_576,
+            30_826,
+            31_076,
+            11 + (3 << 7),
+            0
         ]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.cfl_alpha[4],
         [
-            29_601, 29_851, 30_101, 30_351, 30_601, 30_851, 31_101, 11, 3
+            29_601,
+            29_851,
+            30_101,
+            30_351,
+            30_601,
+            30_851,
+            31_101,
+            11 + (3 << 7),
+            0
         ]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.cfl_mhccp,
-        [31_076, 14, 6]
+        [31_076, 14 + (6 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.cfl_mh_dir[2],
-        [29_576, 29_826, 22_000, 2]
+        [29_576, 29_826, 22 + (2 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.v_txb_skip[3],
-        [31_076, 14, 6]
+        [31_076, 14 + (6 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.coeff.coeff_base[2][3][1],
-        [29_576, 29_826, 30_076, 9, 2]
+        [29_576, 29_826, 30_076, 9 + (2 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.coeff.coeff_base_idtx[2][3],
-        [29_576, 29_826, 30_076, 9, 2]
+        [29_576, 29_826, 30_076, 9 + (2 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.coeff.idtx_sign[2][3],
-        [29_576, 9, 2]
+        [29_576, 9 + (2 << 7), 0]
     );
-    assert_eq!(saved.as_ref().unwrap().rows.intrabc_mode, [30_951, 13, 5]);
+    assert_eq!(
+        saved.as_ref().unwrap().rows.intrabc_mode,
+        [30_951, 13 + (5 << 7), 0]
+    );
     assert_eq!(
         saved.as_ref().unwrap().rows.intrabc_precision,
-        [31_076, 14, 6]
+        [31_076, 14 + (6 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.mrl_index[1],
-        [29_576, 29_826, 30_076, 23_000, 5]
+        [29_576, 29_826, 30_076, 23 + (5 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.mrl_sec_index[2],
-        [29_576, 21_000, 5]
+        [29_576, 21 + (5 << 7), 0]
     );
     assert_eq!(
         saved.as_ref().unwrap().rows.block.cctx_type,
-        [29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 26_000, 5]
+        [
+            29_576,
+            29_826,
+            30_076,
+            30_326,
+            30_576,
+            30_826,
+            26 + (5 << 7),
+            0
+        ]
     );
 }
 
@@ -1176,40 +1273,81 @@ fn disabled_cdf_update_keeps_saved_subset_at_initial_rows() {
 fn frame_end_update_copies_saved_rows_and_scales_counts() {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
-    tile.rows.do_split[0][0] = [20_000, 7, 20];
-    tile.rows.do_ext_partition[0][4] = [22_000, 5, 8];
-    tile.rows.do_square_split[0][0] = [21_000, 6, 2];
-    tile.rows.rect_type[1][63] = [24_000, 3, 16];
-    tile.rows.do_uneven_4way_partition[0][8] = [23_000, 4, 12];
-    tile.rows.block.y_mode_set = [20_000, 21_000, 22_000, 9, 20];
+    tile.rows.do_split[0][0] = [20_000, 7 + (20 << 7), 0];
+    tile.rows.do_ext_partition[0][4] = [22_000, 5 + (8 << 7), 0];
+    tile.rows.do_square_split[0][0] = [21_000, 6 + (2 << 7), 0];
+    tile.rows.rect_type[1][63] = [24_000, 3 + (16 << 7), 0];
+    tile.rows.do_uneven_4way_partition[0][8] = [23_000, 4 + (12 << 7), 0];
+    tile.rows.block.y_mode_set = [20_000, 21_000, 22_000, 9 + (20 << 7), 0];
     tile.rows.block.y_mode_index[0] = [
-        20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
+        20_000,
+        21_000,
+        22_000,
+        23_000,
+        24_000,
+        25_000,
+        26_000,
+        11 + (12 << 7),
+        0,
     ];
-    tile.rows.block.y_mode_offset[0] = [20_000, 21_000, 22_000, 23_000, 24_000, 11, 12];
-    tile.rows.block.jmvd_scale_mode = [20_000, 21_000, 22_000, 23_000, 11, 12];
-    tile.rows.block.jmvd_adaptive_scale_mode = [20_000, 21_000, 11, 12];
-    tile.rows.block.use_optflow[0] = [25_000, 31, 12];
-    tile.rows.block.txb_skip[0][0][0] = [25_000, 13, 20];
+    tile.rows.block.y_mode_offset[0] = [20_000, 21_000, 22_000, 23_000, 24_000, 11 + (12 << 7), 0];
+    tile.rows.block.jmvd_scale_mode = [20_000, 21_000, 22_000, 23_000, 11 + (12 << 7), 0];
+    tile.rows.block.jmvd_adaptive_scale_mode = [20_000, 21_000, 11 + (12 << 7), 0];
+    tile.rows.block.use_optflow[0] = [25_000, 31 + (12 << 7), 0];
+    tile.rows.block.txb_skip[0][0][0] = [25_000, 13 + (20 << 7), 0];
     tile.rows.block.uv_mode_cfl_not_allowed[0] = [
-        20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 16,
+        20_000,
+        21_000,
+        22_000,
+        23_000,
+        24_000,
+        25_000,
+        26_000,
+        11 + (16 << 7),
+        0,
     ];
-    tile.rows.block.cfl_index = [25_500, 13, 20];
+    tile.rows.block.cfl_index = [25_500, 13 + (20 << 7), 0];
     tile.rows.block.cfl_sign = [
-        20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 16,
+        20_000,
+        21_000,
+        22_000,
+        23_000,
+        24_000,
+        25_000,
+        26_000,
+        11 + (16 << 7),
+        0,
     ];
     tile.rows.block.cfl_alpha[4] = [
-        20_100, 21_100, 22_100, 23_100, 24_100, 25_100, 26_100, 11, 16,
+        20_100,
+        21_100,
+        22_100,
+        23_100,
+        24_100,
+        25_100,
+        26_100,
+        11 + (16 << 7),
+        0,
     ];
-    tile.rows.block.cfl_mhccp = [26_000, 14, 24];
-    tile.rows.block.cfl_mh_dir[2] = [20_000, 21_000, 22_000, 20];
-    tile.rows.block.v_txb_skip[3] = [26_000, 14, 24];
-    tile.rows.block.coeff.coeff_base[2][3][1] = [20_000, 21_000, 22_000, 9, 20];
-    tile.rows.block.coeff.coeff_base_bob[2][1] = [20_000, 21_000, 9, 20];
-    tile.rows.block.coeff.coeff_br_idtx[2][3] = [20_000, 21_000, 22_000, 9, 20];
-    tile.rows.block.coeff.idtx_sign[2][3] = [20_000, 9, 20];
-    tile.rows.mrl_index[1] = [20_000, 21_000, 22_000, 23_000, 20];
-    tile.rows.mrl_sec_index[2] = [20_000, 21_000, 20];
-    tile.rows.block.cctx_type = [20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 20];
+    tile.rows.block.cfl_mhccp = [26_000, 14 + (24 << 7), 0];
+    tile.rows.block.cfl_mh_dir[2] = [20_000, 21_000, 22 + (20 << 7), 0];
+    tile.rows.block.v_txb_skip[3] = [26_000, 14 + (24 << 7), 0];
+    tile.rows.block.coeff.coeff_base[2][3][1] = [20_000, 21_000, 22_000, 9 + (20 << 7), 0];
+    tile.rows.block.coeff.coeff_base_bob[2][1] = [20_000, 21_000, 9 + (20 << 7), 0];
+    tile.rows.block.coeff.coeff_br_idtx[2][3] = [20_000, 21_000, 22_000, 9 + (20 << 7), 0];
+    tile.rows.block.coeff.idtx_sign[2][3] = [20_000, 9 + (20 << 7), 0];
+    tile.rows.mrl_index[1] = [20_000, 21_000, 22_000, 23 + (20 << 7), 0];
+    tile.rows.mrl_sec_index[2] = [20_000, 21 + (20 << 7), 0];
+    tile.rows.block.cctx_type = [
+        20_000,
+        21_000,
+        22_000,
+        23_000,
+        24_000,
+        25_000,
+        26 + (20 << 7),
+        0,
+    ];
 
     let mut saved = Some(SavedCdfSubset::from_frame(&frame));
     SavedCdfSubset::apply_completed_tile(
@@ -1225,75 +1363,131 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
     );
     let frame = FrameCdfSubset::frame_end_updated(&frame, saved);
 
-    assert_eq!(frame.rows.do_split[0][0], [20_000, 7, 15]);
-    assert_eq!(frame.rows.do_ext_partition[0][4], [22_000, 5, 6]);
-    assert_eq!(frame.rows.do_square_split[0][0], [21_000, 6, 1]);
-    assert_eq!(frame.rows.rect_type[1][63], [24_000, 3, 12]);
-    assert_eq!(frame.rows.do_uneven_4way_partition[0][8], [23_000, 4, 9]);
-    assert_eq!(frame.rows.block.y_mode_set, [20_000, 21_000, 22_000, 9, 15]);
+    assert_eq!(frame.rows.do_split[0][0], [20_000, 7 + (15 << 7), 0]);
+    assert_eq!(frame.rows.do_ext_partition[0][4], [22_000, 5 + (6 << 7), 0]);
+    assert_eq!(frame.rows.do_square_split[0][0], [21_000, 6 + (1 << 7), 0]);
+    assert_eq!(frame.rows.rect_type[1][63], [24_000, 3 + (12 << 7), 0]);
+    assert_eq!(
+        frame.rows.do_uneven_4way_partition[0][8],
+        [23_000, 4 + (9 << 7), 0]
+    );
+    assert_eq!(
+        frame.rows.block.y_mode_set,
+        [20_000, 21_000, 22_000, 9 + (15 << 7), 0]
+    );
     assert_eq!(
         frame.rows.block.y_mode_index[0],
         [
-            20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 9
+            20_000,
+            21_000,
+            22_000,
+            23_000,
+            24_000,
+            25_000,
+            26_000,
+            11 + (9 << 7),
+            0
         ]
     );
     assert_eq!(
         frame.rows.block.y_mode_offset[0],
-        [20_000, 21_000, 22_000, 23_000, 24_000, 11, 9]
+        [20_000, 21_000, 22_000, 23_000, 24_000, 11 + (9 << 7), 0]
     );
     assert_eq!(
         frame.rows.block.jmvd_scale_mode,
-        [20_000, 21_000, 22_000, 23_000, 11, 9]
+        [20_000, 21_000, 22_000, 23_000, 11 + (9 << 7), 0]
     );
     assert_eq!(
         frame.rows.block.jmvd_adaptive_scale_mode,
-        [20_000, 21_000, 11, 9]
+        [20_000, 21_000, 11 + (9 << 7), 0]
     );
-    assert_eq!(frame.rows.block.use_optflow[0], [25_000, 31, 9]);
-    assert_eq!(frame.rows.block.txb_skip[0][0][0], [25_000, 13, 15]);
+    assert_eq!(frame.rows.block.use_optflow[0], [25_000, 31 + (9 << 7), 0]);
+    assert_eq!(
+        frame.rows.block.txb_skip[0][0][0],
+        [25_000, 13 + (15 << 7), 0]
+    );
     assert_eq!(
         frame.rows.block.uv_mode_cfl_not_allowed[0],
         [
-            20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12
+            20_000,
+            21_000,
+            22_000,
+            23_000,
+            24_000,
+            25_000,
+            26_000,
+            11 + (12 << 7),
+            0
         ]
     );
-    assert_eq!(frame.rows.block.cfl_index, [25_500, 13, 15]);
+    assert_eq!(frame.rows.block.cfl_index, [25_500, 13 + (15 << 7), 0]);
     assert_eq!(
         frame.rows.block.cfl_sign,
         [
-            20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12
+            20_000,
+            21_000,
+            22_000,
+            23_000,
+            24_000,
+            25_000,
+            26_000,
+            11 + (12 << 7),
+            0
         ]
     );
     assert_eq!(
         frame.rows.block.cfl_alpha[4],
         [
-            20_100, 21_100, 22_100, 23_100, 24_100, 25_100, 26_100, 11, 12
+            20_100,
+            21_100,
+            22_100,
+            23_100,
+            24_100,
+            25_100,
+            26_100,
+            11 + (12 << 7),
+            0
         ]
     );
-    assert_eq!(frame.rows.block.cfl_mhccp, [26_000, 14, 18]);
-    assert_eq!(frame.rows.block.cfl_mh_dir[2], [20_000, 21_000, 22_000, 15]);
-    assert_eq!(frame.rows.block.v_txb_skip[3], [26_000, 14, 18]);
+    assert_eq!(frame.rows.block.cfl_mhccp, [26_000, 14 + (18 << 7), 0]);
+    assert_eq!(
+        frame.rows.block.cfl_mh_dir[2],
+        [20_000, 21_000, 22 + (15 << 7), 0]
+    );
+    assert_eq!(frame.rows.block.v_txb_skip[3], [26_000, 14 + (18 << 7), 0]);
     assert_eq!(
         frame.rows.block.coeff.coeff_base[2][3][1],
-        [20_000, 21_000, 22_000, 9, 15]
+        [20_000, 21_000, 22_000, 9 + (15 << 7), 0]
     );
     assert_eq!(
         frame.rows.block.coeff.coeff_base_bob[2][1],
-        [20_000, 21_000, 9, 15]
+        [20_000, 21_000, 9 + (15 << 7), 0]
     );
     assert_eq!(
         frame.rows.block.coeff.coeff_br_idtx[2][3],
-        [20_000, 21_000, 22_000, 9, 15]
+        [20_000, 21_000, 22_000, 9 + (15 << 7), 0]
     );
-    assert_eq!(frame.rows.block.coeff.idtx_sign[2][3], [20_000, 9, 15]);
+    assert_eq!(
+        frame.rows.block.coeff.idtx_sign[2][3],
+        [20_000, 9 + (15 << 7), 0]
+    );
     assert_eq!(
         frame.rows.mrl_index[1],
-        [20_000, 21_000, 22_000, 23_000, 15]
+        [20_000, 21_000, 22_000, 23 + (15 << 7), 0]
     );
-    assert_eq!(frame.rows.mrl_sec_index[2], [20_000, 21_000, 15]);
+    assert_eq!(frame.rows.mrl_sec_index[2], [20_000, 21 + (15 << 7), 0]);
     assert_eq!(
         frame.rows.block.cctx_type,
-        [20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 15]
+        [
+            20_000,
+            21_000,
+            22_000,
+            23_000,
+            24_000,
+            25_000,
+            26 + (15 << 7),
+            0
+        ]
     );
 }
 
@@ -1324,8 +1518,8 @@ fn work_unit_boundary_applies_saved_and_frame_updates_transactionally() {
         },
         Arc::new(FrameCdfSubset::from_defaults()),
     );
-    boundary.tile_cdfs_mut().rows.do_split[0][0] = [20_000, 7, 20];
-    boundary.tile_cdfs_mut().rows.block.y_mode_set = [20_000, 21_000, 22_000, 9, 20];
+    boundary.tile_cdfs_mut().rows.do_split[0][0] = [20_000, 7 + (20 << 7), 0];
+    boundary.tile_cdfs_mut().rows.block.y_mode_set = [20_000, 21_000, 22_000, 9 + (20 << 7), 0];
 
     let frame_cdfs = boundary.frame_cdfs_shared();
     assert_eq!(frame_cdfs.rows, expected_frame.rows);
@@ -1339,18 +1533,18 @@ fn work_unit_boundary_applies_saved_and_frame_updates_transactionally() {
         boundary.save_policy(),
     );
     let saved_ref = saved.as_ref().unwrap();
-    assert_eq!(saved_ref.rows.do_split[0][0], [20_000, 7, 20]);
+    assert_eq!(saved_ref.rows.do_split[0][0], [20_000, 7 + (20 << 7), 0]);
     assert_eq!(
         saved_ref.rows.block.y_mode_set,
-        [20_000, 21_000, 22_000, 9, 20]
+        [20_000, 21_000, 22_000, 9 + (20 << 7), 0]
     );
     assert_eq!(frame_cdfs.rows, expected_frame.rows);
 
     let updated = FrameCdfSubset::frame_end_updated(frame_cdfs.as_ref(), saved);
-    assert_eq!(updated.rows.do_split[0][0], [20_000, 7, 15]);
+    assert_eq!(updated.rows.do_split[0][0], [20_000, 7 + (15 << 7), 0]);
     assert_eq!(
         updated.rows.block.y_mode_set,
-        [20_000, 21_000, 22_000, 9, 15]
+        [20_000, 21_000, 22_000, 9 + (15 << 7), 0]
     );
     assert_eq!(frame_cdfs.rows, expected_frame.rows);
 }

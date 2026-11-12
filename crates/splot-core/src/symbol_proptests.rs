@@ -15,7 +15,7 @@ proptest! {
         let mut decoder = SymbolDecoder::new(&data).unwrap();
         let _ = decoder.read_bool();
         let _ = decoder.read_literal(literal_width);
-        let mut cdf = [8192, 16_384, 24_576, 0, count];
+        let mut cdf = [8192, 16_384, 24_576, count << CDF_COUNT_SHIFT, 0];
         let _ = decoder.read_symbol(&mut cdf);
         let _ = decoder.finish();
     }
@@ -41,8 +41,7 @@ proptest! {
             acc += *gap; // gap >= 1 keeps the cumulative values strictly increasing
             *entry = acc; // bounded by (MAX_SYMBOLS - 1) * 4000 < CDF_PROB_MAX
         }
-        row[n - 1] = rate_index as i32;
-        row[n] = count;
+        row[n - 1] = rate_index as i32 | count << CDF_COUNT_SHIFT;
 
         let config = SymbolDecoderConfig::new().with_cdf_update_mode(if update_enabled {
             CdfUpdateMode::Enabled
@@ -66,7 +65,7 @@ proptest! {
             for value in first_row.iter().take(n - 1) {
                 prop_assert!(*value >= 1 && *value <= CDF_PROB_MAX);
             }
-            prop_assert!(first_row[n] <= MAX_CDF_COUNT);
+            prop_assert!(first_row[n - 1] >> CDF_COUNT_SHIFT <= MAX_CDF_COUNT);
         } else {
             prop_assert_eq!(&first_row, &before);
         }
@@ -86,8 +85,7 @@ proptest! {
         probs[..n - 1].sort_unstable();
         let mut row = vec![0i32; n + 1];
         row[..n - 1].copy_from_slice(&probs[..n - 1]);
-        row[n - 1] = rate_index as i32;
-        row[n] = count;
+        row[n - 1] = rate_index as i32 | count << CDF_COUNT_SHIFT;
         let mut compact: Vec<u16> = row.iter().map(|&value| value as u16).collect();
         let trusted = SymbolDecoderConfig::new().with_cdf_validation_mode(CdfValidationMode::Trusted);
 
@@ -121,8 +119,7 @@ proptest! {
             acc += *gap;
             *entry = acc;
         }
-        row[n - 1] = rate_index as i32;
-        row[n] = count;
+        row[n - 1] = rate_index as i32 | count << CDF_COUNT_SHIFT;
 
         let trusted_config =
             SymbolDecoderConfig::new().with_cdf_validation_mode(CdfValidationMode::Trusted);
@@ -158,8 +155,7 @@ proptest! {
             acc += gap;
             *entry = acc;
         }
-        row[n - 1] = rate_index;
-        row[n] = count;
+        row[n - 1] = rate_index | count << CDF_COUNT_SHIFT;
         let mode = if update { CdfUpdateMode::Enabled } else { CdfUpdateMode::Disabled };
         let config = SymbolDecoderConfig::new().with_cdf_update_mode(mode);
         let mut checked = SymbolDecoder::with_config(&data, config).unwrap();
@@ -262,8 +258,7 @@ proptest! {
     ) {
         let mut row = vec![0i32; n + 1];
         row[..n - 1].copy_from_slice(&probs[..n - 1]);
-        row[n - 1] = rate_index as i32;
-        row[n] = count;
+        row[n - 1] = rate_index as i32 | count << CDF_COUNT_SHIFT;
 
         let trusted_config =
             SymbolDecoderConfig::new().with_cdf_validation_mode(CdfValidationMode::Trusted);
