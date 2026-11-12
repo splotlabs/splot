@@ -297,10 +297,9 @@ CI note: coverage job failed once on ce95eec2b in `a_dropped_picture_gives_its_s
 | `52f1e296f`, `466b31e12`, `5ab70fb75` | decode: inter command built once, shifts in ref-MV bank budget, frame MV precision from tile params | shared scalar code | none beyond CI |
 
 ## CURRENT STATE (2026-11-12, written when this file was committed)
-On the branch after this commit: row scheduler v2 (5 commits: direct wake, lock-free
-frame-list snapshot, wake only for a row that exists, two liveness fixes). SHARED; see T1
-stress run and T10.
-In verification on aarch64, pushed soon (fetch to get them):
+On the branch: row scheduler v2 (5 commits: direct wake, lock-free frame-list snapshot,
+wake only for a row that exists, two liveness fixes). SHARED; see T1 stress run and T10.
+On the branch since 2026-11-12 evening:
 - MC rounds 10 and 11 (4 commits): one decision sequence per MC entry on every architecture;
   AVX2 MC kernels moved to `subpel_mc/eight_bit/avx2.rs`, `eight_bit/avx2/cell.rs`,
   `sixteen_bit/avx2.rs` behind the NEON interfaces (AVX2-TOUCHED: `start32` free function,
@@ -312,6 +311,8 @@ In verification on aarch64, pushed soon (fetch to get them):
   pairs of at most 64 samples. On x86 `put_pair` is `put` twice.
 - Entropy round 3 (1 commit): CDF adapt step selected by the symbol through a table
   (`LOWER_LANES`), TCQ next state as ALU operations. SHARED; re-measure cycles on x86.
+- Mode info round 6 (2 commits): partition decision inlined (`walk_call` grew from 7.8 KB
+  to 24 KB on aarch64: check i-cache and instructions on x86), neighbour contexts on demand.
 In progress on aarch64 (do not duplicate; these areas are owned by the aarch64 orchestrator):
 MC fixed cost per call (round 12), mode info walk and neighbour context (round 6), entropy
 instructions per coefficient (round 4). Queued there: one writer per slot in the pipeline,
