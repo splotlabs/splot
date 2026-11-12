@@ -905,12 +905,14 @@ pub(super) struct ReconRow {
 impl ReconRow {
     /// Publishes the flags of the unit's luma-tree leaves onto `grid`, in leaf
     /// order, as the parser published them on its own grid.
-    pub(super) fn replay_flags(&self, grid: &mut NeighbourMvGrid, frame_precision: u8) {
+    /// Each inter command takes its leaf index in `grid`.
+    pub(super) fn replay_flags(&mut self, grid: &mut NeighbourMvGrid, frame_precision: u8) {
         for entry in &self.entries {
             let Some((r, c, n4w, n4h)) = entry.publication.luma_tree_block() else {
                 continue;
             };
-            let syntax = match (entry.slot(&self.slots), &entry.state) {
+            let slot = entry.slot_mut(&mut self.slots);
+            let syntax = match (&slot, &entry.state) {
                 (
                     Some(slot @ (LeafSlot::Command(ReconCommand::Inter(_)) | LeafSlot::Intrabc(_))),
                     _,
@@ -918,7 +920,10 @@ impl ReconRow {
                 (None, EntryState::Intra { .. }) => non_inter_flag_syntax(None, frame_precision),
                 _ => continue,
             };
-            grid.record_flags(r, c, n4w, n4h, syntax);
+            let leaf = grid.record_flags(r, c, n4w, n4h, syntax);
+            if let Some(LeafSlot::Command(ReconCommand::Inter(command))) = slot {
+                command.leaf = leaf;
+            }
         }
     }
 

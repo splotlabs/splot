@@ -496,6 +496,7 @@ impl CompoundMotionSyntax {
 pub(super) fn resolve_inter_block(
     block: &MvBlockContext,
     syntax: &InterBlockSyntax,
+    leaf: u32,
     state: &mut MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
     let resolved = match &syntax.motion {
@@ -527,7 +528,8 @@ pub(super) fn resolve_inter_block(
             (stored_warp, global_mv.unwrap_or([false; 2]))
         }
     };
-    state.grid.record_motion(
+    state.grid.record_leaf_motion(
+        leaf,
         block.mi_row,
         block.mi_col,
         block.bw4,

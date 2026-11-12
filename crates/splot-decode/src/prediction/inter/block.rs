@@ -2115,7 +2115,7 @@ fn finish_inter_leaf(
         (n4w, n4h),
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
     )?;
-    mv_grid.record_flags(
+    let leaf = mv_grid.record_flags(
         frontier.r,
         frontier.c,
         n4w,
@@ -2138,6 +2138,7 @@ fn finish_inter_leaf(
         block_qindex,
         tile_offset,
     );
+    command.leaf = leaf;
     Ok((
         GeneralIntraLeafMode::no_luma_mode(),
         LeafResolveRecord::Slot(index),

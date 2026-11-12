@@ -667,7 +667,7 @@ impl EncoderInterTile {
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<[Mv; 2]> {
         let (block, syntax, parsed) = self.inter_syntax(frontier, motion, skip)?;
-        self.grid.record_flags(
+        let leaf = self.grid.record_flags(
             block.mi_row,
             block.mi_col,
             block.bw4,
@@ -675,7 +675,7 @@ impl EncoderInterTile {
             syntax.flag_syntax(block.ref_frame0),
         );
         let mut state = self.resolution_state(&block);
-        let resolved = resolve_inter_block(&block, &syntax, &mut state)?;
+        let resolved = resolve_inter_block(&block, &syntax, leaf, &mut state)?;
         let refined = match syntax.motion {
             InterMotionSyntax::Compound(compound)
                 if compound.use_refinemv || compound.use_optflow =>

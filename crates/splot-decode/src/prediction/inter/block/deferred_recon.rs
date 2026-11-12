@@ -40,6 +40,8 @@ pub(super) struct InterReconCommand {
     motion_derived: bool,
     derived_motion: Option<Box<mc::CompoundMotionGrid>>,
     tile_offset: ByteOffset,
+    /// The leaf's record in the grid the resolve pass publishes into.
+    pub(super) leaf: u32,
 }
 
 #[derive(Default)]
@@ -136,6 +138,7 @@ impl InterReconCommand {
         motion_derived: false,
         derived_motion: None,
         tile_offset: ByteOffset::new(0),
+        leaf: super::super::find_mv_stack::NO_LEAF,
     };
 
     /// Writes one parsed leaf into this slot command. `segment_id` is the
@@ -200,7 +203,7 @@ impl InterReconCommand {
             mi_rows: state.mi_rows,
             mi_cols: state.mi_cols,
         };
-        let mut resolved = resolve_inter_block(&block, &self.syntax, state)?;
+        let mut resolved = resolve_inter_block(&block, &self.syntax, self.leaf, state)?;
         predict_by_translation_under_integer_mv(&self.syntax, state.core, &mut resolved);
         resolved.apply(&mut self.placed.block);
         Ok(())
@@ -754,7 +757,7 @@ mod tests {
 
     #[test]
     fn slot_command_sizes_stay_bounded() {
-        assert!(core::mem::size_of::<InterReconCommand>() <= 320);
+        assert!(core::mem::size_of::<InterReconCommand>() <= 328);
         assert!(core::mem::size_of::<super::InterBlockSyntax>() <= 104);
     }
 

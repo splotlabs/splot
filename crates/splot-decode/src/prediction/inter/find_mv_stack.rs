@@ -98,8 +98,9 @@ use derived::{CompoundScanState, DerivedMvState};
 use extra_search::{compound_extra_search, extra_search};
 use neighbour_grid::{ABSENT_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags};
 pub(crate) use neighbour_grid::{
-    BlockPrecisionRecord, GridCheckpoint, GridEdge, NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax,
-    NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES, compound_motion_mode,
+    BlockPrecisionRecord, GridCheckpoint, GridEdge, NO_LEAF, NON_INTER_FLAG_SYNTAX,
+    NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES,
+    compound_motion_mode,
 };
 pub(crate) use temporal::{
     MotionFieldLayout, OrderHintMvContext, TemporalBandPlan, TemporalMotionBand,
@@ -937,6 +938,7 @@ impl RefMvBank {
         }
     }
 
+    #[inline]
     pub(crate) fn reset_for_leaf(
         &mut self,
         grid: &NeighbourMvGrid,
@@ -946,9 +948,18 @@ impl RefMvBank {
         seed_from_above: bool,
     ) {
         let sb = superblock_of(mi_row, mi_col, sb_size4);
-        if self.current_sb == Some(sb) {
-            return;
+        if self.current_sb != Some(sb) {
+            self.enter_superblock(grid, sb, sb_size4, seed_from_above);
         }
+    }
+
+    fn enter_superblock(
+        &mut self,
+        grid: &NeighbourMvGrid,
+        sb: (usize, usize),
+        sb_size4: usize,
+        seed_from_above: bool,
+    ) {
         let new_sb_row = self.current_sb.is_none_or(|(row, _)| row != sb.0);
         self.current_sb = Some(sb);
         self.sb_hits = 0;
