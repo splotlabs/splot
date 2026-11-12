@@ -28,7 +28,6 @@ pub(super) trait CompoundAverageOutput: ReconSample {
         _reference1: &ReferencePlaneView<'_, T>,
         _params1: &SubpelPredictParams,
         _cwp_weight: i16,
-        _scratch: &mut [i16],
         _output: &mut [Self],
         _output_stride: usize,
     ) -> splot_recon::Result<bool> {
@@ -65,7 +64,6 @@ impl CompoundAverageOutput for u16 {
         reference1: &ReferencePlaneView<'_, T>,
         params1: &SubpelPredictParams,
         cwp_weight: i16,
-        scratch: &mut [i16],
         output: &mut [Self],
         output_stride: usize,
     ) -> splot_recon::Result<bool> {
@@ -75,7 +73,6 @@ impl CompoundAverageOutput for u16 {
             reference1,
             params1,
             cwp_weight,
-            scratch,
             output,
             output_stride,
         )
@@ -111,7 +108,6 @@ impl CompoundAverageOutput for u8 {
         reference1: &ReferencePlaneView<'_, T>,
         params1: &SubpelPredictParams,
         cwp_weight: i16,
-        scratch: &mut [i16],
         output: &mut [Self],
         output_stride: usize,
     ) -> splot_recon::Result<bool> {
@@ -121,7 +117,6 @@ impl CompoundAverageOutput for u8 {
             reference1,
             params1,
             cwp_weight,
-            scratch,
             output,
             output_stride,
         )
@@ -1406,14 +1401,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
     {
         let predict = |views: &[ReferencePlaneView<'_, T>; 2], output: &mut [O], stride| {
             O::predict_fast(
-                &views[0],
-                &params0,
-                &views[1],
-                &params1,
-                cwp_weight,
-                &mut [],
-                output,
-                stride,
+                &views[0], &params0, &views[1], &params1, cwp_weight, output, stride,
             )
             .map(|done| if done { u64::MAX } else { 0 })
         };
@@ -1432,7 +1420,6 @@ pub(super) fn predict_motion_grid_compound_average_into<
     };
     let fullpel_runs = |cell_row: usize,
                         [row, height]: [usize; 2],
-                        intermediate_scratch: &mut [i16],
                         output: &mut [O],
                         output_stride: usize,
                         second: Option<SecondPlane<'_, '_, T, O>>|
@@ -1454,7 +1441,6 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 cwp_weight,
                 (frame_w, frame_h),
             ),
-            intermediate_scratch,
             output,
             output_stride,
             second,
@@ -1576,14 +1562,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
                        program: &mut CompoundCells|
      -> Result<()> {
         let height = subblock_h.min(prediction.block_h - row);
-        let [mut merged, _] = fullpel_runs(
-            cell_row,
-            [row, height],
-            intermediate_scratch,
-            output,
-            output_stride,
-            None,
-        )?;
+        let [mut merged, _] = fullpel_runs(cell_row, [row, height], output, output_stride, None)?;
         merged |= whole[0];
         for (cell_col, col) in
             (0..prediction.block_w.div_ceil(subblock_w)).map(|c| (c, c * subblock_w))
@@ -1664,7 +1643,6 @@ pub(super) fn predict_motion_grid_compound_average_into<
         let [mut merged, mut second_merged] = fullpel_runs(
             cell_row,
             [row, height],
-            &mut intermediate_scratch[..],
             output,
             output_stride,
             Some((&second.views, &mut *second_output, second_stride)),

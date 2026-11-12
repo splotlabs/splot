@@ -16,6 +16,14 @@ use fearless_simd::{Neon, SimdBase, SimdFrom, i16x8, i32x4, u16x8};
 /// The `i32` sums of a group: outputs `0..4` and `4..8`.
 type Sums = (int32x4_t, int32x4_t);
 
+/// The first columns of the 8-column strips of a block at least 8 wide:
+/// the last strip of a width that is not a multiple of 8 overlaps the one
+/// before it and stores the same values again.
+#[inline]
+fn strips(w: usize) -> impl Iterator<Item = usize> {
+    (0..w).step_by(8).map(move |col| col.min(w - 8))
+}
+
 /// Calls `$f::<W, P>` for the run-time group width and pair count.
 macro_rules! specialize {
     ($width:expr, $pairs:expr, $f:ident($($arg:expr),*)) => {
@@ -129,7 +137,7 @@ fearless_simd::kernel!(
             if width == 4 {
                 row / 2
             } else {
-                row * strips + col / 8
+                row * strips + col.div_ceil(8)
             }
         };
         let zero = (vdupq_n_s32(0), vdupq_n_s32(0));
@@ -377,7 +385,11 @@ fn copy<const W: usize>(
     out: &mut impl FnMut(usize, usize, usize, int16x8_t),
 ) {
     for row in (0..block.h).step_by(8 / W) {
-        for col in (0..block.w).step_by(8) {
+        if W == 4 {
+            out(W, row, 0, group::<W>(t, block, row, 0));
+            continue;
+        }
+        for col in strips(block.w) {
             out(W, row, col, group::<W>(t, block, row, col));
         }
     }
@@ -409,7 +421,10 @@ fn horizontal<const W: usize, const P: usize>(
     for row in 0..block.h {
         let start = block.start(row);
         let mut a = load(t, block.source, start);
-        for col in (0..block.w).step_by(8) {
+        for col in strips(block.w) {
+            if !col.is_multiple_of(8) {
+                a = load(t, block.source, start + col);
+            }
             let b = load(t, block.source, start + col + 8);
             let window = (a, b);
             a = b;
@@ -462,20 +477,44 @@ fn vertical<const W: usize, const P: usize>(
         }
         return;
     }
-    for col in (0..block.w).step_by(8) {
-        let mut r: [int16x8_t; 7] = core::array::from_fn(|k| {
-            if k + 1 < 2 * P {
-                line(k, col)
-            } else {
-                vdupq_n_s16(0)
+    for col in strips(block.w) {
+        ring::<P>(
+            block.h,
+            weights,
+            |row| line(row, col),
+            |row, sums| out(8, row, col, round(sums, shift)),
+        );
+    }
+}
+
+/// The vertical tap sums of `h` output rows of one 8-column strip whose
+/// window row `row` is `line(row)`, handed to `out` by output row: the last
+/// `2 * P - 1` rows stay in a register ring unrolled by its period.
+#[inline]
+#[target_feature(enable = "neon")]
+fn ring<const P: usize>(
+    h: usize,
+    weights: int16x8_t,
+    mut line: impl FnMut(usize) -> int16x8_t,
+    mut out: impl FnMut(usize, Sums),
+) {
+    let period = 2 * P;
+    let mut ring = [vdupq_n_s16(0); 8];
+    unroll!(k < period - 1, [0 1 2 3 4 5 6] => {
+        ring[k] = line(k);
+    });
+    let mut row = 0;
+    loop {
+        unroll!(phase < period, [0 1 2 3 4 5 6 7] => {
+            if row == h {
+                return;
             }
+            let next = line(row + period - 1);
+            let tap = |k: usize| if k + 1 < period { ring[(phase + k) % period] } else { next };
+            out(row, sums::<P>(weights, tap));
+            ring[(phase + period - 1) % period] = next;
+            row += 1;
         });
-        for row in 0..block.h {
-            let next = line(row + 2 * P - 1, col);
-            let tap = |k: usize| if k + 1 < 2 * P { r[k] } else { next };
-            out(8, row, col, round(sums::<P>(weights, tap), shift));
-            r = core::array::from_fn(|k| tap(k + 1));
-        }
     }
 }
 
@@ -517,7 +556,7 @@ fn two_pass<const W: usize, const H: usize, const V: usize>(
         }
         return;
     }
-    for col in (0..block.w).step_by(8) {
+    for col in strips(block.w) {
         let line = |row: usize| {
             let (a, b) = load16(t, block.source, block.start(row) + col);
             narrow(sums::<H>(h_weights, |k| slide(a, b, k)))

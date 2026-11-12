@@ -369,8 +369,10 @@ pub(super) trait Sample: ReconSample + super::portable::Lanes {
     /// Runs `f` on retained storage `slot`, 0 or 1, of at least `len`
     /// samples.
     fn with_storage<R>(slot: usize, len: usize, f: impl FnOnce(&mut [Self]) -> R) -> R;
-    /// The 16 bytes of the samples from `at`, `None` past them.
-    fn bytes<S: Simd>(simd: S, samples: &[Self], at: usize) -> Option<u8x16<S>>;
+    /// The 16 bytes of the samples from `at`, `None` past them, or with
+    /// `PADDED` the samples left zero-padded.
+    fn bytes<S: Simd, const PADDED: bool>(simd: S, samples: &[Self], at: usize)
+    -> Option<u8x16<S>>;
     /// Stores 16 bytes into the samples from `at`.
     fn put_bytes<S: Simd>(samples: &mut [Self], at: usize, bytes: u8x16<S>);
 }
@@ -400,9 +402,19 @@ macro_rules! retained {
 
             #[allow(clippy::inline_always, reason = "border window copy")]
             #[inline(always)]
-            fn bytes<S: Simd>(simd: S, samples: &[Self], at: usize) -> Option<u8x16<S>> {
-                let lanes = samples.get(at..)?.first_chunk::<$n>()?;
-                Some($lanes::load_array_ref(simd, lanes).bitcast())
+            fn bytes<S: Simd, const PADDED: bool>(
+                simd: S,
+                samples: &[Self],
+                at: usize,
+            ) -> Option<u8x16<S>> {
+                let tail = samples.get(at..)?;
+                if let Some(lanes) = tail.first_chunk::<$n>() {
+                    return Some($lanes::load_array_ref(simd, lanes).bitcast());
+                }
+                let mut lanes = [0; $n];
+                // splot-copy-ok: a zero-padded load of the last bytes of a narrow plane
+                lanes.get_mut(..tail.len())?.copy_from_slice(tail);
+                PADDED.then(|| $lanes::load_array(simd, lanes).bitcast())
             }
 
             #[allow(clippy::inline_always, reason = "border window copy")]
@@ -532,20 +544,21 @@ impl Window {
         }
         let clip = [first_x, first_y, last_x, last_y];
         let stride = reach(self.w);
-        if view.width * size_of::<T>() >= 16 {
-            baseline_simd!(simd => self.emulate_chunks(simd, view, clip, stride, storage))?;
+        if view.width * size_of::<T>() < 16 {
+            baseline_simd!(simd => self.emulate_chunks::<_, _, true>(simd, view, clip, stride, storage))?;
         } else {
-            self.emulate_rows(view, clip, stride, storage)?;
+            baseline_simd!(simd => self.emulate_chunks::<_, _, false>(simd, view, clip, stride, storage))?;
         }
         Some(self.block(storage, stride, 0))
     }
 
     /// The copy of [`Self::emulate`] in chunks of 16 bytes: each chunk of
     /// window columns gathers every row's clipped samples from one load of
-    /// that row through one byte index vector.
+    /// that row, zero-padded past a plane narrower than 16 bytes, through
+    /// one byte index vector.
     #[allow(clippy::inline_always, reason = "border window copy")]
     #[inline(always)]
-    fn emulate_chunks<S: Simd, T: Sample>(
+    fn emulate_chunks<S: Simd, T: Sample, const PADDED: bool>(
         &self,
         simd: S,
         view: &ReferencePlaneView<'_, T>,
@@ -558,7 +571,7 @@ impl Window {
         let lanes = u8x16::load_array(simd, core::array::from_fn(|lane| lane as u8));
         let within: i8x16<S> = (lanes >> (size as u32 - 1)).bitcast();
         let parity = lanes & u8x16::splat(simd, size as u8 - 1);
-        let last = size * view.width - 16;
+        let last = (size * view.width).saturating_sub(16);
         let plan = |chunk: usize| {
             let x = self.column + (chunk * per) as i32;
             let first = x.clamp(first_x, last_x);
@@ -575,10 +588,14 @@ impl Window {
         };
         let rows = [first_y, last_y];
         match self.columns.div_ceil(per) {
-            1 => self.copy_rows(simd, view, rows, stride, storage, [plan(0)]),
-            2 => self.copy_rows(simd, view, rows, stride, storage, [plan(0), plan(1)]),
+            1 => self.copy_rows::<S, T, 1, PADDED>(simd, view, rows, stride, storage, [plan(0)]),
+            2 => {
+                let plans = [plan(0), plan(1)];
+                self.copy_rows::<S, T, 2, PADDED>(simd, view, rows, stride, storage, plans)
+            }
             chunks => (0..chunks).try_for_each(|chunk| {
-                self.copy_rows(simd, view, rows, stride, storage, [plan(chunk)])
+                let plans = [plan(chunk)];
+                self.copy_rows::<S, T, 1, PADDED>(simd, view, rows, stride, storage, plans)
             }),
         }
     }
@@ -588,7 +605,7 @@ impl Window {
     /// `first_y` and below `last_y` store the gather of that row.
     #[allow(clippy::inline_always, reason = "border window copy")]
     #[inline(always)]
-    fn copy_rows<S: Simd, T: Sample, const C: usize>(
+    fn copy_rows<S: Simd, T: Sample, const C: usize, const PADDED: bool>(
         &self,
         simd: S,
         view: &ReferencePlaneView<'_, T>,
@@ -601,7 +618,7 @@ impl Window {
             let row = y as usize * view.stride;
             let mut values = [u8x16::splat(simd, 0); C];
             for (value, &(offset, _, indices)) in values.iter_mut().zip(&plans) {
-                let bytes = T::bytes(simd, view.samples, row + offset)?;
+                let bytes = T::bytes::<S, PADDED>(simd, view.samples, row + offset)?;
                 *value = simd.swizzle_dyn_u8x16(bytes, indices);
             }
             Some(values)
@@ -624,38 +641,6 @@ impl Window {
         let edge = gather(last_y)?;
         for line in lines {
             put(line, edge);
-        }
-        Some(())
-    }
-
-    /// The copy of [`Self::emulate`] of a plane narrower than 16 bytes, row
-    /// by row: its clipped edges filled and its in-bounds columns copied.
-    fn emulate_rows<T: ReconSample>(
-        &self,
-        view: &ReferencePlaneView<'_, T>,
-        [first_x, first_y, last_x, last_y]: [i32; 4],
-        stride: usize,
-        storage: &mut [T],
-    ) -> Option<()> {
-        let columns = self.columns as i32;
-        let left = (first_x - self.column).clamp(0, columns);
-        let right = (last_x + 1 - self.column).clamp(left, columns);
-        let inside = if right > left {
-            (self.column + left) as usize..(self.column + right) as usize
-        } else {
-            0..0
-        };
-        let [left, right] = [left as usize, right as usize];
-        for (r, line) in storage.chunks_exact_mut(stride).take(self.rows).enumerate() {
-            let y = (self.row + r as i32).clamp(first_y, last_y) as usize;
-            let source = view.samples.get(y * view.stride..)?.get(..view.width)?;
-            let (line, tail) = line.split_at_mut_checked(right)?;
-            let (head, middle) = line.split_at_mut_checked(left)?;
-            head.fill(*source.get(first_x as usize)?);
-            // splot-copy-ok: the in-bounds columns of an emulated border window
-            middle.copy_from_slice(source.get(inside.clone())?);
-            tail.get_mut(..self.columns - right)?
-                .fill(*source.get(last_x as usize)?);
         }
         Some(())
     }
@@ -965,23 +950,29 @@ fn compound_blocks<T: Sample, O: ReconSample>(
     {
         let blocks = [blocks[0].with_source(first), blocks[1].with_source(second)];
         let blocks = [&blocks[0], &blocks[1]];
-        if cfg!(target_arch = "aarch64")
-            && super::sixteen_bit::compound(blocks, forward, max, &mut [], output, stride)
-        {
+        if still {
+            super::portable::compound_u16(blocks, forward, max, &mut [], output, stride);
             return true;
         }
-        let rows = |block: &Block<'_, u16>| block.h + block.vertical.map_or(0, |t| t.span() - 1);
-        let len = stage_len(rows(blocks[0]), w, blocks[0].vertical).max(stage_len(
-            rows(blocks[1]),
-            w,
-            blocks[1].vertical,
-        ));
-        return with_stage(len, None, |stage| {
-            if !super::sixteen_bit::compound(blocks, forward, max, stage, output, stride) {
-                super::portable::compound_u16(blocks, forward, max, stage, output, stride);
+        if cfg!(target_arch = "aarch64") {
+            if super::sixteen_bit::compound(blocks, forward, max, &mut [], output, stride) {
+                return true;
             }
-            true
-        });
+        } else {
+            let rows =
+                |block: &Block<'_, u16>| block.h + block.vertical.map_or(0, |t| t.span() - 1);
+            let len = stage_len(rows(blocks[0]), w, blocks[0].vertical).max(stage_len(
+                rows(blocks[1]),
+                w,
+                blocks[1].vertical,
+            ));
+            return with_stage(len, None, |stage| {
+                if !super::sixteen_bit::compound(blocks, forward, max, stage, output, stride) {
+                    super::portable::compound_u16(blocks, forward, max, stage, output, stride);
+                }
+                true
+            });
+        }
     }
     with_compound_pred0(w * h, |pred0| {
         kernels(

@@ -31,7 +31,6 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
         Option<(usize, usize)>,
     ),
     (uniform_everywhere, implicit_mask, cwp_weight, frame): (bool, bool, i16, (usize, usize)),
-    intermediate_scratch: &mut [i16],
     output: &mut [O],
     output_stride: usize,
     mut second: Option<SecondPlane<'_, '_, T, O>>,
@@ -80,7 +79,6 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
                 &prediction.views[1],
                 &params[1],
                 cwp_weight,
-                intermediate_scratch,
                 &mut output[col..],
                 output_stride,
             )? {
@@ -93,7 +91,6 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
                     &views[1],
                     &params[1],
                     cwp_weight,
-                    intermediate_scratch,
                     &mut output[col..],
                     *output_stride,
                 )?

@@ -143,9 +143,8 @@ pub(super) fn compound(
 ) {
     #[cfg(target_arch = "aarch64")]
     if let Some(token) = fearless_simd::Level::baseline().as_neon()
-        && blocks.iter().all(|block| neon::fits(block))
+        && neon::compound(token, blocks, forward, output, stride)
     {
-        neon::compound(token, blocks, forward, output, stride);
         return;
     }
     #[cfg(target_arch = "x86_64")]

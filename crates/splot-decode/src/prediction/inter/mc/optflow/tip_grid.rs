@@ -175,7 +175,6 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                         &views[1],
                         &params1,
                         self.cwp_weight,
-                        &mut [],
                         output,
                         *stride,
                     )

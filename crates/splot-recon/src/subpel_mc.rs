@@ -12,6 +12,21 @@
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
 use crate::math::round2_i32;
+
+/// Expands `$body` with `$row` bound to each listed index below `$rows`, a
+/// constant, so a kernel's rows or ring phases unroll.
+#[cfg_attr(not(target_arch = "aarch64"), allow(unused_macros))]
+macro_rules! unroll {
+    ($row:ident < $rows:expr, [$($n:literal)*] => $body:block) => {
+        $(
+            if $n < $rows {
+                let $row: usize = $n;
+                $body
+            }
+        )*
+    };
+}
+
 mod block;
 mod cell;
 mod copy;
@@ -915,7 +930,6 @@ pub fn subpel_predict_block_compound_average_unscaled_strided_into<
         reference1,
         params1,
         cwp_weight,
-        &mut [],
         output,
         output_stride,
     )
@@ -945,7 +959,6 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
     reference1: &ReferencePlaneView<'_, T>,
     params1: &SubpelPredictParams,
     cwp_weight: i16,
-    scratch: &mut [i16],
     output: &mut [O],
     output_stride: usize,
 ) -> Result<bool> {
@@ -954,7 +967,6 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
         return Ok(false);
     }
     validate_compound_output(params0, output, output_stride)?;
-    let _ = scratch;
     Ok(compound_average(
         [reference0, reference1],
         [params0, params1],

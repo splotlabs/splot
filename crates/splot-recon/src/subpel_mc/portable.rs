@@ -20,6 +20,11 @@ pub(super) trait Lanes: Copy {
 
     /// Sixteen samples from `at` as two eight-lane vectors, zero past the slice.
     fn lanes16<S: Simd>(simd: S, samples: &[Self], at: usize) -> (i16x8<S>, i16x8<S>);
+
+    /// The samples as `u16` storage, `None` for eight-bit storage.
+    fn words(_: &[Self]) -> Option<&[u16]> {
+        None
+    }
 }
 
 impl Lanes for u8 {
@@ -46,6 +51,10 @@ impl Lanes for u8 {
 }
 
 impl Lanes for u16 {
+    fn words(samples: &[Self]) -> Option<&[u16]> {
+        Some(samples)
+    }
+
     #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     fn lanes<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x8<S> {
@@ -137,7 +146,6 @@ fn copy_compound_u16<S: Simd>(
 ) {
     let (w, h) = (blocks[0].w, blocks[0].h);
     let max_v = u16x8::splat(simd, max);
-    let one = u16x8::splat(simd, 1);
     if forward == 8 {
         if w == 4 {
             for row in 0..h {
@@ -145,7 +153,7 @@ fn copy_compound_u16<S: Simd>(
                     u16::lanes(simd, blocks[0].source, blocks[0].start(row)).bitcast::<u16x8<S>>();
                 let b =
                     u16::lanes(simd, blocks[1].source, blocks[1].start(row)).bitcast::<u16x8<S>>();
-                let lanes = (((a + b + one) >> 1).min(max_v)).to_array();
+                let lanes = ((a | b) - ((a ^ b) >> 1)).min(max_v).to_array();
                 if let Some(slot) = output
                     .get_mut(row * stride..)
                     .and_then(<[u16]>::first_chunk_mut::<4>)
@@ -174,7 +182,7 @@ fn copy_compound_u16<S: Simd>(
                 {
                     let a = u16x8::load_array_ref(simd, a);
                     let b = u16x8::load_array_ref(simd, b);
-                    (((a + b + one) >> 1).min(max_v)).store_array(slot);
+                    ((a | b) - ((a ^ b) >> 1)).min(max_v).store_array(slot);
                 }
             }
             return;
@@ -184,7 +192,7 @@ fn copy_compound_u16<S: Simd>(
             for col in (0..w).step_by(8) {
                 let a = u16::lanes(simd, blocks[0].source, s0 + col).bitcast::<u16x8<S>>();
                 let b = u16::lanes(simd, blocks[1].source, s1 + col).bitcast::<u16x8<S>>();
-                let avg = ((a + b + one) >> 1).min(max_v);
+                let avg = ((a | b) - ((a ^ b) >> 1)).min(max_v);
                 store_wide(output, out_row + col, (w - col).min(8), avg);
             }
         }
@@ -437,17 +445,20 @@ fn copy<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>) {
                 }
                 return;
             }
-            if w.is_multiple_of(8) {
+            if w.is_multiple_of(8)
+                && let Some(source) = T::words(block.source)
+            {
                 for row in 0..h {
                     let (row_start, out_row) = (block.start(row), row * stride);
-                    let Some(dst) = output.get_mut(out_row..out_row + w) else {
+                    let (Some(src), Some(dst)) = (
+                        source.get(row_start..row_start + w),
+                        output.get_mut(out_row..out_row + w),
+                    ) else {
                         continue;
                     };
-                    for (col, slot) in dst.as_chunks_mut::<8>().0.iter_mut().enumerate() {
-                        T::lanes(simd, block.source, row_start + col * 8)
-                            .bitcast::<u16x8<S>>()
-                            .min(max_v)
-                            .store_array(slot);
+                    let rows = dst.as_chunks_mut::<8>().0.iter_mut();
+                    for (slot, lanes) in rows.zip(src.as_chunks::<8>().0) {
+                        *slot = *lanes;
                     }
                 }
                 return;

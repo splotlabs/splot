@@ -458,25 +458,12 @@ fn is_cell(w: usize, horizontal: Option<&Taps>, vertical: Option<&Taps>) -> bool
     w == 8 || (w == 4 && pairs(horizontal) <= 2 && pairs(vertical) <= 2)
 }
 
-/// Expands `$body` with `$row` bound to each listed index below `$rows`, a
-/// constant, so a cell's rows unroll.
-macro_rules! unroll {
-    ($row:ident < $rows:expr, [$($n:literal)*] => $body:block) => {
-        $(
-            if $n < $rows {
-                let $row: usize = $n;
-                $body
-            }
-        )*
-    };
-}
-
-/// Whether the kernels cover `block`: strips of 8 columns, or 4 columns in
-/// pairs of rows with at most two horizontal tap pairs.
+/// Whether the kernels cover `block`: strips of 8 columns, the last
+/// overlapping the one before it, or 4 columns in pairs of rows with at most
+/// two horizontal tap pairs.
 #[inline(always)]
 pub(in crate::subpel_mc) fn fits<T>(block: &Block<'_, T>) -> bool {
-    (block.w > 0 && block.w.is_multiple_of(8))
-        || (block.w == 4 && block.h.is_multiple_of(2) && pairs(block.horizontal) <= 2)
+    block.w >= 8 || (block.w == 4 && block.h.is_multiple_of(2) && pairs(block.horizontal) <= 2)
 }
 
 /// The tap pairs of a pass, zero for a skipped pass.
@@ -649,8 +636,9 @@ pub(in crate::subpel_mc) fn put(
     }
 }
 
-/// Predicts both blocks of a compound pair of one shape, which [`fits`],
-/// and stores their COMPOUND_AVERAGE into `output`.
+/// Predicts both blocks of a compound pair of one shape and stores their
+/// COMPOUND_AVERAGE into `output`, or returns `false` without writing when
+/// the kernels do not cover the pair.
 #[inline]
 pub(in crate::subpel_mc) fn compound(
     t: Neon,
@@ -658,8 +646,8 @@ pub(in crate::subpel_mc) fn compound(
     forward: i32,
     output: &mut [u8],
     stride: usize,
-) {
-    dot::run(t, Compound(blocks, forward, output, stride));
+) -> bool {
+    dot::run(t, Compound(blocks, forward, output, stride))
 }
 
 fearless_simd::kernel!(
@@ -673,8 +661,8 @@ fearless_simd::kernel!(
 fearless_simd::kernel!(
     /// [`mla::compound`] entered through the NEON token.
     #[inline]
-    fn mla_compound(t: Neon, job: Compound<'_, '_>) {
-        mla::compound(t, job.0, job.1, job.2, job.3);
+    fn mla_compound(t: Neon, job: Compound<'_, '_>) -> bool {
+        mla::compound(t, job.0, job.1, job.2, job.3)
     }
 );
 
@@ -965,14 +953,22 @@ fn fullpel_rows<'a>(
                 load16(t, first.source, first.start(row)),
                 load16(t, second.source, second.start(row)),
             );
-            let bytes = vgetq_lane_u64::<0>(vreinterpretq_u64_u8(bytes)).to_le_bytes();
-            if w == 8
-                && let Some(slot) = out.first_chunk_mut::<8>()
-            {
-                *slot = bytes;
-            } else if let (Some(slot), Some(bytes)) =
-                (out.first_chunk_mut::<4>(), bytes.first_chunk())
-            {
+            let bytes = u8x16::<Neon>::simd_from(t, bytes).to_array();
+            if w == 4 {
+                if let (Some(slot), Some(bytes)) = (out.first_chunk_mut::<4>(), bytes.first_chunk())
+                {
+                    *slot = *bytes;
+                }
+                continue;
+            }
+            let tail = w - 8;
+            if let (Some(slot), Some(bytes)) = (out.first_chunk_mut::<8>(), bytes.first_chunk()) {
+                *slot = *bytes;
+            }
+            if let (Some(slot), Some(bytes)) = (
+                out.get_mut(tail..).and_then(<[u8]>::first_chunk_mut::<8>),
+                bytes.get(tail..).and_then(<[u8]>::first_chunk::<8>),
+            ) {
                 *slot = *bytes;
             }
         }

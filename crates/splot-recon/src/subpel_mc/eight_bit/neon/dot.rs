@@ -14,15 +14,18 @@ use fearless_simd::Neon;
 /// One call of the kernels, compiled once with `sdot` horizontal sums and
 /// once with multiply-accumulates.
 pub(super) trait Job {
+    /// What the call returns.
+    type Output;
+
     /// Runs the call in the multiply-accumulate kernels.
-    fn mla(self, t: Neon);
+    fn mla(self, t: Neon) -> Self::Output;
 
     /// Runs the call in the `sdot` kernels.
     ///
     /// # Safety
     ///
     /// Safety: the CPU has `FEAT_DotProd`.
-    unsafe fn sdot(self, t: Neon);
+    unsafe fn sdot(self, t: Neon) -> Self::Output;
 }
 
 /// Runs `job` in the `sdot` kernels when the CPU has `FEAT_DotProd`, which
@@ -30,16 +33,18 @@ pub(super) trait Job {
 /// multiply-accumulate kernels.
 #[allow(clippy::inline_always, reason = "one dispatch per kernel call")]
 #[inline(always)]
-pub(super) fn run(t: Neon, job: impl Job) {
+pub(super) fn run<J: Job>(t: Neon, job: J) -> J::Output {
     if std::arch::is_aarch64_feature_detected!("dotprod") && !mla_only() {
         // SAFETY: the CPU has `FEAT_DotProd`, detected above.
         unsafe { job.sdot(t) }
     } else {
-        job.mla(t);
+        job.mla(t)
     }
 }
 
 impl<O: Out> Job for Strips<'_, '_, O> {
+    type Output = ();
+
     #[inline]
     fn mla(self, t: Neon) {
         super::mla_strips(t, self.0, self.1);
@@ -53,19 +58,23 @@ impl<O: Out> Job for Strips<'_, '_, O> {
 }
 
 impl Job for Compound<'_, '_> {
+    type Output = bool;
+
     #[inline]
-    fn mla(self, t: Neon) {
-        super::mla_compound(t, self);
+    fn mla(self, t: Neon) -> bool {
+        super::mla_compound(t, self)
     }
 
     /// Safety: as [`Job::sdot`].
     #[target_feature(enable = "neon,dotprod")]
-    unsafe fn sdot(self, t: Neon) {
-        super::sdot::compound(t, self.0, self.1, self.2, self.3);
+    unsafe fn sdot(self, t: Neon) -> bool {
+        super::sdot::compound(t, self.0, self.1, self.2, self.3)
     }
 }
 
 impl Job for Programs<'_, '_> {
+    type Output = ();
+
     #[inline]
     fn mla(self, t: Neon) {
         super::mla_program(t, self);

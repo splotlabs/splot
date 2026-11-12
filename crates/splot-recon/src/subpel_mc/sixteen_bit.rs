@@ -72,7 +72,7 @@ pub(super) fn compound(
     #[cfg(target_arch = "aarch64")]
     if let Some(token) = fearless_simd::Level::baseline().as_neon()
         && blocks.iter().all(|block| fits(block))
-        && blocks[0].w * blocks[0].h <= 64
+        && (blocks[0].w == 4 || blocks[0].w.div_ceil(8) * blocks[0].h <= 8)
         && blocks
             .iter()
             .any(|block| block.horizontal.is_some() || block.vertical.is_some())
@@ -93,10 +93,10 @@ fn fits<T>(block: &Block<'_, T>) -> bool {
 }
 
 /// Whether the NEON kernels cover the shape of `block`: 4 columns in pairs
-/// of rows, or strips of 8 columns.
+/// of rows, or strips of 8 columns, the last overlapping the one before it.
 #[cfg(target_arch = "aarch64")]
 fn fits<T>(block: &Block<'_, T>) -> bool {
-    (block.w == 4 && block.h.is_multiple_of(2)) || (block.w > 0 && block.w.is_multiple_of(8))
+    (block.w == 4 && block.h.is_multiple_of(2)) || block.w >= 8
 }
 
 /// The strip width of a block: 16 columns, else strips of 8 columns in

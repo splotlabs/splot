@@ -836,13 +836,13 @@ fn check_neon_byte_lanes() {
                             stride: out_stride,
                         };
                         portable::predict(&other, sink, &mut other_stage);
-                        eight_bit::neon::compound(
+                        assert!(eight_bit::neon::compound(
                             token,
                             [&block, &other],
                             forward,
                             &mut fused[1],
                             out_stride,
-                        );
+                        ));
                         assert_eq!(fused[0], fused[1], "compound {forward} {label}");
                     }
                 }

@@ -141,7 +141,6 @@ fn predict<T: ReconSample + CompoundAverageOutput + Send>(
                     Some((8, 8)),
                 ),
                 (!implicit_mask, implicit_mask, CWP_EQUAL, (WIDTH, HEIGHT)),
-                &mut [0; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
                 &mut output,
                 rect.luma_w,
                 None,

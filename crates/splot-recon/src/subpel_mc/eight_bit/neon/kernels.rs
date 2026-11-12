@@ -98,7 +98,7 @@ macro_rules! kernels {
             };
             let zero = vdupq_n_s16(0);
             let period = 2 * V;
-            'strips: for col in (0..block.w).step_by(N) {
+            'strips: for col in (0..block.w).step_by(N).map(|col| col.min(block.w - N)) {
                 let (Some((mut source, last)), Some((targets, target))) = (
                     rows(block.source, base + col, stride, reach, window),
                     out.rows(col, N, block.h),
@@ -230,10 +230,11 @@ macro_rules! kernels {
             }
         }
 
-        /// Predicts both blocks of a compound pair of one shape, which
-        /// [`fits`], and stores their COMPOUND_AVERAGE into `output`: two
-        /// full-sample blocks averaged directly, a 4x4 or 8x8 cell in
-        /// registers, else the first predictor staged for the second.
+        /// Predicts both blocks of a compound pair of one shape and stores
+        /// their COMPOUND_AVERAGE into `output`: a 4x4 or 8x8 cell in
+        /// registers, two full-sample blocks averaged directly, else the
+        /// first predictor staged for the second; `false` without writing
+        /// for a pair the kernels do not cover.
         #[inline]
         #[target_feature(enable = $features)]
         pub(super) fn compound(
@@ -242,12 +243,7 @@ macro_rules! kernels {
             forward: i32,
             output: &mut [u8],
             stride: usize,
-        ) {
-            let still = |block: &Block<'_, u8>| block.horizontal.is_none() && block.vertical.is_none();
-            if still(blocks[0]) && still(blocks[1]) {
-                fullpel(t, blocks, forward, output, stride);
-                return;
-            }
+        ) -> bool {
             let (w, h) = (blocks[0].w, blocks[0].h);
             let cell = |block: &Block<'_, u8>| is_cell(w, block.horizontal, block.vertical);
             if w == h && cell(blocks[0]) && cell(blocks[1]) {
@@ -256,12 +252,21 @@ macro_rules! kernels {
                 } else {
                     store_cell(t, cell_of::<4>(t, blocks[0]), cell_of::<4>(t, blocks[1]), forward, output, stride);
                 }
-                return;
+                return true;
+            }
+            if !fits(blocks[0]) || !fits(blocks[1]) {
+                return false;
+            }
+            let still = |block: &Block<'_, u8>| block.horizontal.is_none() && block.vertical.is_none();
+            if still(blocks[0]) && still(blocks[1]) {
+                fullpel(t, blocks, forward, output, stride);
+                return true;
             }
             super::super::super::with_compound_pred0_narrow(w * h, |pred0| {
                 strips(t, blocks[0], &mut Prep { output: &mut *pred0, stride: w });
                 strips(t, blocks[1], &mut Average { pred0, w, forward, output, stride });
             });
+            true
         }
 
         /// The cells of `program` whose windows are read in place: the

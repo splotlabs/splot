@@ -1606,7 +1606,6 @@ fn fullpel_compound_average_matches_materialized_predictors() {
                 &view1,
                 &params1,
                 cwp_weight,
-                &mut [],
                 &mut actual,
                 stride,
             )
@@ -1644,7 +1643,6 @@ fn fullpel_average_of_samples_past_the_bit_depth_stays_clipped() {
             &view1,
             &params,
             8,
-            &mut [],
             &mut output,
             9,
         )
@@ -1775,7 +1773,6 @@ fn clipped_horizontal_compound_matches_materialized_predictors() {
             blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight).unwrap();
         let stride = params0.w + 3;
         let mut output = vec![u16::MAX; stride * params0.h];
-        let mut scratch = [0i16; (8 + NUM_TAPS - 1) * 8];
         assert!(
             subpel_predict_block_compound_average_fast_validated_strided_into(
                 &view0,
@@ -1783,7 +1780,6 @@ fn clipped_horizontal_compound_matches_materialized_predictors() {
                 &view1,
                 &params1,
                 weight,
-                &mut scratch,
                 &mut output,
                 stride,
             )
@@ -1848,7 +1844,6 @@ fn clipped_horizontal_compound_rows_match_materialized_predictors() {
     let pred1 = subpel_predict_block_compound_intermediate(&view1, &expected_params1).unwrap();
     let expected = blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, 12).unwrap();
     let mut actual = vec![u16::MAX; params0.w * params0.h];
-    let mut scratch = [0i16; (8 + NUM_TAPS - 1) * 8];
 
     assert!(
         subpel_predict_block_compound_average_fast_validated_strided_into(
@@ -1857,7 +1852,6 @@ fn clipped_horizontal_compound_rows_match_materialized_predictors() {
             &view1,
             &params1,
             12,
-            &mut scratch,
             &mut actual,
             params0.w,
         )
@@ -1906,7 +1900,6 @@ fn fused_two_axis_compound_matches_materialized_predictors() {
                 blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight).unwrap();
             let stride = width + 3;
             let mut output = vec![u16::MAX; stride * params0.h];
-            let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
             assert!(
                 subpel_predict_block_compound_average_fast_validated_strided_into(
                     &view0,
@@ -1914,7 +1907,6 @@ fn fused_two_axis_compound_matches_materialized_predictors() {
                     &view1,
                     &params1,
                     weight,
-                    &mut scratch,
                     &mut output,
                     stride,
                 )
@@ -1982,7 +1974,6 @@ fn compound_fast_path_u8_matches_materialized_predictors() {
                             .unwrap();
                     let stride = w + 3;
                     let mut output = vec![u8::MAX; stride * h];
-                    let mut scratch = [0i16; (8 + NUM_TAPS - 1) * 8];
                     assert!(
                         subpel_predict_block_compound_average_fast_validated_strided_into(
                             &view0,
@@ -1990,7 +1981,6 @@ fn compound_fast_path_u8_matches_materialized_predictors() {
                             &view1,
                             &params1,
                             weight,
-                            &mut scratch,
                             &mut output,
                             stride,
                         )
@@ -2061,7 +2051,6 @@ fn clipped_two_axis_compound_matches_materialized_predictors() {
                     blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight).unwrap();
                 let stride = width + 3;
                 let mut output = vec![u16::MAX; stride * params0.h];
-                let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
                 assert!(
                     subpel_predict_block_compound_average_fast_validated_strided_into(
                         &view0,
@@ -2069,7 +2058,6 @@ fn clipped_two_axis_compound_matches_materialized_predictors() {
                         &view1,
                         &params1,
                         weight,
-                        &mut scratch,
                         &mut output,
                         stride,
                     )
