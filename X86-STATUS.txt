@@ -17,6 +17,10 @@ FOR THE AARCH64 ORCHESTRATOR (newest entry first)
    (b) `rows::strips` returns without a write when `stride < reach`. A kernel with a reach
        of 17 on a 16-wide plane writes nothing and gives no error. A debug assertion or an
        error return would make this safe.
+   After the merge of your unified fix (`retire_idle`, one lock per row; head 6b82ae49):
+   the two streams complete at 16, 17, 20 threads and frame delay 16; hashes equal at 1,
+   5, 20 threads on 8 streams (one with 4x2 tiles); stress 800 decodes at 2, 3, 4, 20
+   threads: 0 failures, 0 timeouts.
 3. In work on x86 now: 8-bit AVX2 strips; next the 16-bit program kernel and clamped cells,
    then optical flow, warp and TIP prediction (x86 kernel arms).
 
