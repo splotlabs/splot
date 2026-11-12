@@ -1318,6 +1318,17 @@ fn build_interior_intermediate<S: Simd, T: ReconSample>(
 fn horizontal_row<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32) -> i16x8<S> {
     let sum = if alpha == 0 {
         tap_sum(sliding_windows(lo, hi), &uniform_weights(simd, sx))
+    } else if cfg!(not(target_arch = "x86_64")) {
+        let windows = sliding_windows(lo, hi);
+        let column = |col: usize| {
+            let taps = warp_taps(simd, sx + alpha * (col as i32 - 4)).widen();
+            let window = windows[col].widen();
+            window.0 * taps.0 + window.1 * taps.1
+        };
+        let pairwise = |a: i32x4<S>, b: i32x4<S>| a.unzip_low(b) + a.unzip_high(b);
+        let quads: [i32x4<S>; 4] =
+            core::array::from_fn(|pair| pairwise(column(2 * pair), column(2 * pair + 1)));
+        pairwise(quads[0], quads[1]).combine(pairwise(quads[2], quads[3]))
     } else {
         let taps = |col: usize| warp_taps(simd, sx + alpha * (col as i32 - 4));
         let near = lo.combine(lo.slide::<4>(hi));
@@ -1342,7 +1353,10 @@ fn horizontal_row<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32
 #[inline(always)]
 fn round_intermediate<S: Simd>(sum: i32x8<S>) -> i16x8<S> {
     let (low, high) = ((sum + (1i32 << (INTER_ROUND0 - 1))) >> INTER_ROUND0).split();
-    low.saturating_narrow(high)
+    #[cfg(target_arch = "x86_64")]
+    return low.saturating_narrow(high);
+    #[cfg(not(target_arch = "x86_64"))]
+    low.narrow(high)
 }
 
 /// Sums the pair sums of each column's tap products, `quads[k]` holding columns
@@ -1491,9 +1505,13 @@ fn tap_sum<S: Simd>(rows: [i16x8<S>; WARP_FILTER_TAPS], weights: &TapWeights<S>)
     return paired_sum(rows, weights);
     #[cfg(not(target_arch = "x86_64"))]
     {
-        let (mut low, mut high) = rows[0].widening_mul(weights[0]);
+        let product = |row: i16x8<S>, weight: i16x8<S>| {
+            let ((row_low, row_high), (weight_low, weight_high)) = (row.widen(), weight.widen());
+            (row_low * weight_low, row_high * weight_high)
+        };
+        let (mut low, mut high) = product(rows[0], weights[0]);
         for (row, &weight) in rows.iter().zip(weights).skip(1) {
-            let (l, h) = row.widening_mul(weight);
+            let (l, h) = product(*row, weight);
             low += l;
             high += h;
         }

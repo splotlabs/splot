@@ -942,10 +942,7 @@ fn unit_4x4_sums(weighted: &[i16; 64], difference: &[i16; 64]) -> [[i32; 5]; 4] 
         let mut units = [[0; 5]; 4];
         for (half, sums) in halves.iter().enumerate() {
             for (sum, &lanes) in sums.iter().enumerate() {
-                let (first, second) = lanes.split();
-                let [a, b, c, d] = *(first + second);
-                units[2 * half][sum] = a + b;
-                units[2 * half + 1][sum] = c + d;
+                [units[2 * half][sum], units[2 * half + 1][sum]] = column_halves(lanes);
             }
         }
         units.map(|sums| unit_sums(sums, 16))
@@ -959,6 +956,8 @@ fn plane_rows_8x8<S: Simd>(simd: S, plane: &[i16; 64]) -> [i16x8<S>; 8] {
 
 /// The lane sums of the top and bottom halves of an 8x8 unit held in lanes,
 /// one row per call so that every row's clamped neighbours are constants.
+/// x86 pairs rows for [`accumulate_unit_sums`]; other targets widen each
+/// row's products into one lane per column (`smlal`).
 #[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn rows_8x8_sums<S: Simd>(
@@ -977,15 +976,33 @@ fn rows_8x8_sums<S: Simd>(
         row_8x8_gradients::<S, 7>(weighted),
     ];
     let mut halves = [[i32x8::splat(simd, 0); 5]; 2];
-    for pair in 0..4 {
-        let (top, bottom) = (gradients[2 * pair], gradients[2 * pair + 1]);
-        accumulate_unit_sums(
-            &mut halves[pair / 2],
-            top.0.combine(bottom.0),
-            top.1.combine(bottom.1),
-            difference[2 * pair].combine(difference[2 * pair + 1]),
-        );
+    if cfg!(target_arch = "x86_64") {
+        for pair in 0..4 {
+            let (top, bottom) = (gradients[2 * pair], gradients[2 * pair + 1]);
+            accumulate_unit_sums(
+                &mut halves[pair / 2],
+                top.0.combine(bottom.0),
+                top.1.combine(bottom.1),
+                difference[2 * pair].combine(difference[2 * pair + 1]),
+            );
+        }
+        return halves;
     }
+    let accumulate =
+        |sums: &mut [i32x8<S>; 5], rows: &[(i16x8<S>, i16x8<S>)], difference: &[i16x8<S>]| {
+            for (&(u, v), &w) in rows.iter().zip(difference) {
+                for (sum, (left, right)) in
+                    sums.iter_mut()
+                        .zip([(u, u), (v, v), (u, v), (u, w), (v, w)])
+                {
+                    let (low, high) = left.widening_mul(right);
+                    *sum += low.combine(high);
+                }
+            }
+        };
+    let (top, bottom) = gradients.split_at(4);
+    accumulate(&mut halves[0], top, &difference[..4]);
+    accumulate(&mut halves[1], bottom, &difference[4..]);
     halves
 }
 
@@ -1013,6 +1030,22 @@ fn accumulate_unit_sums<S: Simd>(
     sums[2] += u.pairwise_dot_product(v);
     sums[3] += u.pairwise_dot_product(w);
     sums[4] += v.pairwise_dot_product(w);
+}
+
+/// The sums of columns 0..4 and 4..8 in the lanes [`rows_8x8_sums`] fills.
+#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[inline(always)]
+fn column_halves<S: Simd>(lanes: i32x8<S>) -> [i32; 2] {
+    let (first, second) = lanes.split();
+    #[cfg(target_arch = "x86_64")]
+    {
+        let [a, b, c, d] = *(first + second);
+        [a + b, c + d]
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        [first.reduce_sum(), second.reduce_sum()]
+    }
 }
 
 /// The horizontal and vertical gradients of one row of an 8x8 unit; a doubled
