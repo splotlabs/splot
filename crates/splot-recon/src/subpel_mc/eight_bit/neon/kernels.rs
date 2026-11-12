@@ -13,7 +13,7 @@ macro_rules! kernels {
         /// block.
         #[inline]
         #[target_feature(enable = $features)]
-        pub(super) fn strips<O: Out>(t: Neon, block: &Block<'_, u8>, out: &mut O) {
+        pub(super) fn strips<O: ByteOut>(t: Neon, block: &Block<'_, u8>, out: &mut O) {
             let (h, v) = (pairs(block.horizontal), pairs(block.vertical));
             let key = 5 * h.div_ceil(2) + v;
             if block.w == 4 {
@@ -29,13 +29,12 @@ macro_rules! kernels {
         /// sums or samples kept in a register ring for the vertical pass.
         #[inline(never)]
         #[target_feature(enable = $features)]
-        fn strip_block<const H: usize, const V: usize, const N: usize, O: Out>(
+        fn strip_block<const H: usize, const V: usize, const N: usize, O: ByteOut>(
             t: Neon,
             block: &Block<'_, u8>,
             out: &mut O,
         ) {
             let reach = if H > 0 && N == 16 { 24 } else { 16 };
-            let (base, stride) = (block.origin, block.stride);
             let (h_taps, v_weights) = (taps(t, block.horizontal), weights(t, block.vertical));
             let forward = out.forward();
             let bias = if V == 0 && O::PUT { 34 } else { 2 };
@@ -95,83 +94,44 @@ macro_rules! kernels {
                     }
                 }
             };
-            let zero = vdupq_n_s16(0);
-            let period = 2 * V;
-            let Some((stride, rows)) = span(stride, block.h) else { return };
-            let stride = stride.get() as usize;
-            let (head, body) = ((period.max(1) - 1) * stride, usize::from(rows) * stride);
-            if stride < reach {
-                return;
-            }
-            'strips: for col in (0..block.w).step_by(N).map(|col| col.min(block.w - N)) {
-                let Some((head, source)) = block.source.get(base + col..)
-                    .and_then(|strip| strip.get(..head + body + reach)?.split_at_checked(head))
-                else {
-                    return;
-                };
-                let Some((source, last)) = source.split_at_checked(body) else { return };
-                let source = source.chunks_exact(stride);
-                let Some((targets, target)) = out.rows(col, N, block.h) else { return };
+            let vertical = |phase: usize, ring: &[[int16x8_t; 2]; 8], next: [int16x8_t; 2]| {
                 if V == 0 {
-                    for (row, target) in source.zip(targets) {
-                        let Some(values) = line(row) else { return };
-                        emit(target, values);
-                    }
-                    if let Some(values) = line(last) {
-                        emit(target, values);
-                    }
-                    continue;
+                    return next;
                 }
-                let mut head = head.chunks_exact(stride);
-                let mut ring = [[zero; 2]; 8];
-                unroll!(k < period - 1, [0 1 2 3 4 5 6] => {
-                    let Some(values) = head.next().and_then(line) else { return };
-                    ring[k] = values;
-                });
-                let vertical = |phase: usize, ring: &[[int16x8_t; 2]; 8], next: [int16x8_t; 2]| {
-                    let low = vsum(phase, ring, next, 0);
-                    [low, if N == 16 { vsum(phase, ring, next, 1) } else { low }]
-                };
-                let (mut rows, mut final_row) = (source.zip(targets), Some((last, target)));
-                loop {
-                    unroll!(phase < period, [0 1 2 3 4 5 6 7] => {
-                        let Some((row, next_target)) = rows.next().or_else(|| final_row.take()) else {
-                            continue 'strips;
-                        };
-                        let Some(next) = line(row) else { return };
-                        emit(next_target, vertical(phase, &ring, next));
-                        ring[(phase + period - 1) % period] = next;
-                    });
-                }
-            }
+                let low = vsum(phase, ring, next, 0);
+                [low, if N == 16 { vsum(phase, ring, next, 1) } else { low }]
+            };
+            let zero = [vdupq_n_s16(0); 2];
+            crate::subpel_mc::rows::strips::<u8, _, _, O, V>(block, out, (N, reach), zero, line, vertical, emit);
         }
 
         /// A 4-column `block` whose passes have `H` and `V` tap pairs, two rows
         /// per vector: the horizontal sums or samples of each window row pair
-        /// in a register ring, whose last pair reads a row past the window
-        /// that no tap weighs.
+        /// in a register ring, whose last pair repeats the last window row,
+        /// which no tap weighs.
         #[inline(never)]
         #[target_feature(enable = $features)]
-        fn pair_block<const H: usize, const V: usize, O: Out>(
+        fn pair_block<const H: usize, const V: usize, O: ByteOut>(
             t: Neon,
             block: &Block<'_, u8>,
             out: &mut O,
         ) {
-            let (source, stride) = (block.source, block.stride);
-            let start = |row: usize| block.origin + row * stride;
             let (h_taps, v_weights) = (taps(t, block.horizontal), weights(t, block.vertical));
             let forward = out.forward();
             let bias = if V == 0 && O::PUT { 34 } else { 2 };
-            let line = |row: usize| -> int16x8_t {
+            let line = |a: &[u8], b: &[u8]| -> Option<int16x8_t> {
                 if H == 0 {
-                    let (a, b) = (load_u32(source, start(row)), load_u32(source, start(row + 1)));
-                    return widen(vcreate_u8(u64::from(a) | u64::from(b) << 32));
+                    let word = |row: &[u8]| Some(u64::from(u32::from_le_bytes(*row.first_chunk::<4>()?)));
+                    return Some(widen(vcreate_u8(word(a)? | word(b)? << 32)));
                 }
-                let (a, b) = (load8(source, start(row)), load8(source, start(row + 1)));
-                let sums = hpair(a, b, h_taps, bias);
-                if V == 0 && O::PUT { sums } else { vshrq_n_s16::<2>(sums) }
+                let word = |row: &[u8]| Some(vcreate_u8(u64::from_le_bytes(*row.first_chunk::<8>()?)));
+                let sums = hpair(word(a)?, word(b)?, h_taps, bias);
+                Some(if V == 0 && O::PUT { sums } else { vshrq_n_s16::<2>(sums) })
             };
             let vertical = |pairs: &[int16x8_t; 4], next: int16x8_t| -> int16x8_t {
+                if V == 0 {
+                    return next;
+                }
                 let pair = |k: usize| if k < V { pairs[k] } else { next };
                 let tap = |k: usize| {
                     if k % 2 == 0 { pair(k / 2) } else { vextq_s16::<4>(pair(k / 2), pair(k / 2 + 1)) }
@@ -212,27 +172,7 @@ macro_rules! kernels {
                     O::preds_pair(t, a, b, values);
                 }
             };
-            let Some((mut targets, last)) = out.rows(0, 4, block.h) else {
-                return;
-            };
-            let mut last = Some(last);
-            let mut ring = [vdupq_n_s16(0); 4];
-            unroll!(k < V, [0 1 2 3] => {
-                ring[k] = line(2 * k);
-            });
-            for row in (0..block.h).step_by(2) {
-                let (Some(a), Some(b)) = (targets.next(), targets.next().or_else(|| last.take()))
-                else {
-                    return;
-                };
-                if V == 0 {
-                    emit(a, b, line(row));
-                    continue;
-                }
-                let next = line(row + 2 * V);
-                emit(a, b, vertical(&ring, next));
-                ring = core::array::from_fn(|k| if k + 1 < V { ring[k + 1] } else { next });
-            }
+            crate::subpel_mc::rows::pairs::<u8, _, _, O, V>(block, out, 8, vdupq_n_s16(0), line, vertical, emit);
         }
 
         /// Stores the COMPOUND_AVERAGE of a 4x4 or 8x8 [`is_cell`] pair
