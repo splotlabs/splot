@@ -4,6 +4,42 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 2 (deadlock fix, T4 tests):
+1. DEADLOCK FIX, shared code (the user asked for it on this branch). Commit
+   "fix(decode): release idle frame work before the frame store waits".
+   x86-shared: crates/splot-decode/src/pipeline/mod.rs (1 line in the store-full branch
+   of the frame loop), crates/splot-decode/src/pipeline/frame_tasks.rs (`release_idle`
+   next to `SamplePools::drain` and in `impl RowPools`, plus one unit test).
+   Root cause: the frame store has 2 * MAX_REF_FRAMES + depth + 1 entries. A finished
+   `SplitFrame` (also a TIP and a finish slot) keeps the reference state and the motion
+   and product handles of its last frame until `reserve` resets the slot for the next
+   frame. That reuse needs a free store entry first. At an effective depth of 16
+   (min(frame delay, workers)) on the two streams the idle slots pin all 49 entries: the
+   driver waits for an entry and no thread can release one. Proof at the hang: a reset of
+   the 16 idle split slots gives `has_space` and the decode completes; a reset of the TIP
+   slots only does not.
+   The fix: when the store is full, the driver resets each idle slot (`Arc::get_mut`
+   succeeds) with the reset that reuse does, then reclaims. No cap on threads or depth.
+   Checks on x86: the two streams complete at 16, 17, 20, 32 threads and at frame delay
+   16 and 20; hashes equal at 1, 5, 16, 20 threads; stress 3,200 decodes at 2, 3, 4, 20
+   threads, 0 failures, 0 timeouts; wall time at 8 and 20 threads inside the noise.
+   If your fix is different, keep yours and drop this commit; tell me in the handoff.
+   Related weakness, not changed: `WorkPool::reserve` resets only the first idle slot,
+   and the store size assumes that only live work pins frames.
+   Please run the aarch64 hashes and your 15 / 16 thread case with this commit.
+2. T4 is complete: no defect in an AVX2 kernel. Each AVX2-TOUCHED kernel fails a test when
+   it is broken on purpose. Commit "test(recon): check the AVX2 kernels on more shapes and
+   extreme inputs" adds tests only (6 test files; they compile on aarch64, clippy clean).
+   The new shapes in `subpel_mc/tests/byte_lanes.rs` and the all-maximum plane in
+   `sixteen_bit/tests.rs` also run on the NEON kernels: run the recon tests there.
+3. Remaining flow fork (T7): `inverse_transform_2d_8bit.rs` lines 599-617, an x86-only
+   `add_secondary` arm before the shared `wide_rows` path.
+4. dav2d was updated to 9b5cef22. Its instruction counts are the same within 0.1% on all
+   88 streams (upstream added 16-bit assembly for small transforms only). The T2 and T3
+   tables stay valid.
+5. In work on x86 now: GDF kernel, 8-bit AVX2 MC kernels (cells first). Next: the port of
+   `sixteen_bit/avx2.rs` to `rows.rs` (your plan of 2026-11-13).
+
 2026-11-12, push 1 (T1 to T3 complete, no code change, head = 35dcc651 + this file):
 1. DEADLOCK in shared code, also on main: a frame-pipelining depth of 16 or more never
    completes on BlueSky_360p25_v2_qp210 and FourPeople_480x270_60_qp210 (`--threads=16` or
@@ -79,7 +115,11 @@ Head 6421575e against ab8d3d3e (1 thread, instructions, main / branch): 1.031x a
 ==========================================================================================
 COMMITS ON THIS BRANCH
 ==========================================================================================
-(this commit) docs: X86-STATUS.txt. No code change. Checks: `cargo xtask ci` full on
+fix(decode): release idle frame work before the frame store waits. Wall time unchanged.
+Checks: see the note of push 2 above; `cargo xtask ci --fast`; subset hashes on the branch head.
+test(recon): check the AVX2 kernels on more shapes and extreme inputs. Tests only. Checks:
+recon tests 756 pass, `cargo xtask ci --fast`, aarch64 clippy.
+docs: X86-STATUS.txt (push 1). No code change. Checks: `cargo xtask ci` full on
 c5f0bed4 (pass), `cargo xtask ci --fast` on this head, hashes 89/89 at 1 and 5 threads and
 87/89 at 20 threads (deadlock streams).
 

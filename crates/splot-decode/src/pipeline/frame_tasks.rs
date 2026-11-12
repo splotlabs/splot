@@ -1338,6 +1338,18 @@ impl<T: SplitSample> SamplePools<T> {
         self.tip.drain(rows);
         self.finish.drain(rows);
     }
+
+    fn release_idle(&mut self) {
+        self.split.retire_idle();
+        release_idle(&mut self.tip.slots, TipFrame::reset);
+        release_idle(&mut self.finish.slots, FinishFrame::reset);
+    }
+}
+
+fn release_idle<W>(slots: &mut [Arc<W>], reset: impl Fn(&mut W) -> bool) {
+    for work in slots.iter_mut().filter_map(Arc::get_mut) {
+        reset(work);
+    }
 }
 
 /// The per-sample-type decode state of one decode, for both sample types.
@@ -1369,8 +1381,8 @@ impl RowPools {
 
     /// Releases what the finished split frames of both sample types still hold.
     pub(crate) fn retire_idle(&mut self) {
-        self.eight.split.retire_idle();
-        self.ten.split.retire_idle();
+        self.eight.release_idle();
+        self.ten.release_idle();
     }
 
     /// Hands one TIP output frame to the scheduler, or decodes it inline.
@@ -1444,6 +1456,52 @@ fn run_filter_stripe<T: SplitSample>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::decoded_frame;
+    use splot_core::bitio::BitReader;
+    use splot_core::headers::frame::{
+        FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView,
+        parse_frame_header_core,
+    };
+    use splot_core::types::ObuType;
+    use splot_recon::{ReferenceFrameStore, ReferenceSlot, SharedFrame};
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn release_idle_frees_the_references_a_finished_split_frame_pins() {
+        let data = [0xA0];
+        let input = FrameHeaderParseInput {
+            obu_type: ObuType::ClosedLoopKey,
+            first_picture_in_tu: true,
+            active_sequence: None,
+            mfh_record: None,
+            reference_state: FrameReferenceStateView::unknown(),
+            mode: FrameHeaderParseMode::Core,
+        };
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let core = parse_frame_header_core(&mut reader, &input).expect("key core");
+        let pinned = RefFrameSlot::<u8>::completed(SharedFrame::new(decoded_frame(8, 8)));
+        let mut state = inter::InterReferenceState::<u8>::empty().expect("reference state");
+        state.store = ReferenceFrameStore::with_capacity(1).expect("reference store");
+        let slot = ReferenceSlot::new(0).expect("slot");
+        state
+            .store
+            .put(slot, pinned.share())
+            .expect("store reference");
+        let mut pools = RowPools::new(1, 1, &DecodeBuffers::new());
+        let split = &mut pools.eight.split;
+        let workers = Arc::clone(&split.workers);
+        let mut frame = SplitFrame::new(RowWake::detached(), DecodeOptions::default(), workers);
+        let workspace = frame.workspace.get_mut();
+        let _ = workspace
+            .install_identities(Arc::new(core), state)
+            .expect("identities");
+        split.slots.push(Arc::new(frame));
+        assert!(!pinned.is_sole_handle());
+
+        pools.retire_idle();
+
+        assert!(pinned.is_sole_handle());
+    }
 
     #[test]
     fn finish_advance_is_not_claimable_until_init_publishes_the_frontier() {

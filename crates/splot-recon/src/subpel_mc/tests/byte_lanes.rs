@@ -182,20 +182,26 @@ fn byte_search_window_and_sads_match_the_general_path() {
         .flat_map(|dy| (-2..=2).map(move |dx| (dy, dx)))
         .filter(|&offset| offset != (0, 0))
         .collect();
-    for seed in 0..12usize {
+    for seed in 0..15usize {
         let noise = |i: usize, salt: usize| ((i * 37 + i / 5 + seed * salt) % 256) as u8;
-        let windows: [Vec<u8>; 2] = [
-            (0..576).map(|i| noise(i, 11)).collect(),
-            (0..576)
-                .map(|i| {
-                    if seed % 3 == 0 {
-                        noise(i, 11) / 2 + 3
-                    } else {
-                        noise(i * 91 + 13, 7)
-                    }
-                })
-                .collect(),
-        ];
+        let extreme = |period: usize| (0..576).map(move |i| u8::MAX * u8::from(i % period == 0));
+        let windows: [Vec<u8>; 2] = match seed {
+            12 => [vec![u8::MAX; 576], vec![0; 576]],
+            13 => [extreme(2).collect(), extreme(3).collect()],
+            14 => [vec![0; 576], vec![0; 576]],
+            _ => [
+                (0..576).map(|i| noise(i, 11)).collect(),
+                (0..576)
+                    .map(|i| {
+                        if seed % 3 == 0 {
+                            noise(i, 11) / 2 + 3
+                        } else {
+                            noise(i * 91 + 13, 7)
+                        }
+                    })
+                    .collect(),
+            ],
+        };
         for (sad_w, sad_h) in [(12, 12), (12, 20), (20, 12), (20, 20)] {
             let stride = sad_w + 4;
             let sad = |dy: i32, dx: i32| -> u32 {
@@ -787,8 +793,9 @@ fn full_sample_cells_match_the_materialized_average() {
 
 /// The byte-lane kernels against the portable kernels on the same blocks:
 /// every filter, both passes at phases of each tap-pair count, 4- to
-/// 32-wide blocks with clamped rows, column-remapped windows, every
-/// eight-bit sink and the fused compound, over noise and extreme contrast;
+/// 48-wide blocks of one or more 4-, 8- and 16-column strips with clamped
+/// rows, column-remapped windows, every eight-bit sink and the fused
+/// compound, over noise, extreme contrast, all-maximum and checkerboard;
 /// on AArch64 in the multiply-accumulate kernels and, on a CPU with
 /// `FEAT_DotProd`, in the `sdot` kernels, and with `FEAT_I8MM` too in the
 /// `usdot` kernels.
@@ -812,12 +819,16 @@ fn byte_lanes_match_the_portable_kernels() {
 
 fn check_byte_lanes() {
     let (stride, rows) = (72usize, 44usize);
-    let textures: [Vec<u8>; 2] = [
+    let textures: [Vec<u8>; 4] = [
         (0..stride * rows)
             .map(|i| ((i * 7919 + i / stride * 104_729) % 256) as u8)
             .collect(),
         (0..stride * rows)
             .map(|i| if (i + i / stride) % 3 == 0 { 255 } else { 0 })
+            .collect(),
+        vec![u8::MAX; stride * rows],
+        (0..stride * rows)
+            .map(|i| if (i + i / stride) % 2 == 0 { 255 } else { 0 })
             .collect(),
     ];
     for source in &textures {
@@ -831,14 +842,22 @@ fn check_byte_lanes() {
                 for (w, h) in [
                     (4, 2),
                     (4, 4),
+                    (4, 8),
                     (4, 16),
                     (8, 1),
                     (8, 2),
+                    (8, 4),
                     (8, 8),
+                    (12, 4),
+                    (12, 8),
                     (16, 4),
                     (16, 16),
+                    (20, 8),
                     (24, 3),
+                    (24, 4),
                     (32, 8),
+                    (40, 2),
+                    (48, 6),
                 ] {
                     let block = block::Block {
                         source,

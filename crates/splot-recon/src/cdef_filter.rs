@@ -1633,6 +1633,17 @@ mod tests {
             let expected = spec_direction(&block);
             directions[expected.0] += 1;
             assert_eq!(cdef_direction(&block), expected, "case {case}");
+            let mut pad = [0u16; CDEF_PADDED_AREA];
+            for (i, row) in block.iter().enumerate() {
+                for (j, &cell) in row.iter().enumerate() {
+                    pad[(i + 2) * CDEF_PADDED_SIDE + j + 2] = (cell + 128) as u16;
+                }
+            }
+            assert_eq!(
+                cdef_direction_padded(&pad, 0),
+                expected,
+                "padded case {case}"
+            );
         }
         assert!(directions.iter().all(|&count| count > 0), "{directions:?}");
     }
