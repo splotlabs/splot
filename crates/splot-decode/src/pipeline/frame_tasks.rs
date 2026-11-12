@@ -388,8 +388,8 @@ impl<T: SplitSample> SplitFrame<T> {
         Ok(awaiting.is_none())
     }
 
-    fn precompute(&self, batch: usize) -> Result<()> {
-        self.recon_state()?.precompute(batch)
+    fn precompute(&self, batch: usize, worker: usize) -> Result<()> {
+        self.recon_state()?.precompute(batch, worker)
     }
 
     fn commit(&self, batch: usize) -> Result<()> {
@@ -548,7 +548,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
 
     /// Runs the claimed row, then the row it released when that one is next
     /// (a batch's commit, a commit's frontier row), without a scan or a wake.
-    fn run(&self, mut claim: Claim) {
+    fn run(&self, mut claim: Claim, worker: usize) {
         loop {
             let outcome = match claim.stage {
                 PARSE => self.parse().map(|()| true),
@@ -557,7 +557,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 RESOLVE => self.resolve(claim.row),
                 COMMIT => self.commit(claim.row).map(|()| true),
                 FRONTIER => self.frontier(claim.row).map(|()| true),
-                PRECOMPUTE => self.precompute(claim.row).map(|()| true),
+                PRECOMPUTE => self.precompute(claim.row, worker).map(|()| true),
                 FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row)
                     .map(|()| true),
                 _ => self.output().map(|()| true),
@@ -611,8 +611,7 @@ pub(crate) struct SplitFrames<T: SplitSample> {
 
 impl<T: SplitSample> SplitFrames<T> {
     pub(crate) fn new(depth: usize, threads: usize) -> Self {
-        let workers: Arc<inter::InterReconScratchPool<T>> = Arc::default();
-        workers.ensure_workers(threads.max(1));
+        let workers = Arc::new(inter::InterReconScratchPool::new(threads));
         Self {
             slots: Vec::new(),
             next: 0,
@@ -988,7 +987,7 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
         None
     }
 
-    fn run(&self, claim: Claim) {
+    fn run(&self, claim: Claim, _worker: usize) {
         let outcome = match claim.stage {
             TIP_INIT => self.init(),
             TIP_PROJECT => self.project(claim.row),
@@ -1220,7 +1219,7 @@ impl<T: SplitSample> FrameWork for FinishFrame<T> {
         None
     }
 
-    fn run(&self, claim: Claim) {
+    fn run(&self, claim: Claim, _worker: usize) {
         let outcome = match claim.stage {
             FINISH_INIT => self.init(),
             FINISH_ADVANCE => self.advance(claim.row),
@@ -1283,7 +1282,7 @@ impl<W: FrameWork + 'static> WorkPool<W> {
             return Ok(());
         }
         while let Some(claim) = slot.claim() {
-            slot.run(claim);
+            slot.run(claim, 0);
         }
         if slot.done() {
             Ok(())

@@ -493,7 +493,7 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn precompute(&self, index: usize, surfaces: &SurfaceSource<T>) -> Result<()> {
+    fn precompute(&self, index: usize, worker: usize, surfaces: &SurfaceSource<T>) -> Result<()> {
         let range = self
             .batch_range(index)
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
@@ -531,7 +531,7 @@ impl<T: ReconSample> TileRecon<T> {
             }
             ready
         };
-        let batch = self.workers.with_scratch(|scratch| {
+        let batch = self.workers.with_scratch(worker, |scratch| {
             let _quantizer_scopes = self.quantizer.install_frame();
             ready
                 .into_iter()
@@ -786,9 +786,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .sources_settled(index, &self.recon.reference.ref_motion_fields)
     }
 
-    /// Precomputes one admitted batch without entering the ordered commit spine.
-    pub(crate) fn precompute(&self, index: usize) -> Result<()> {
-        self.recon.precompute(index, &self.pending_surfaces)
+    /// Precomputes one admitted batch on scheduler worker `worker` without
+    /// entering the ordered commit spine.
+    pub(crate) fn precompute(&self, index: usize, worker: usize) -> Result<()> {
+        self.recon.precompute(index, worker, &self.pending_surfaces)
     }
 
     /// Whether batch `index` is parsed, resolved, and admitted by its
@@ -1447,7 +1448,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     parse_progress: Arc<super::ParseProgress>,
 ) -> Result<ScheduledTileRecon<T>> {
     let buffers = scratch.buffers.clone();
-    workers.ensure_workers(1);
     let info = workspace.info();
     let geometry = parse_progress
         .geometry()

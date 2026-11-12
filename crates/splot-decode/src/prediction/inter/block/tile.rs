@@ -1121,39 +1121,39 @@ struct ReadyReconRow<T: ReconSample> {
     bounds: row_gate::RowReferenceBounds,
 }
 
+/// One reconstruction scratch per scheduler worker, each used only by its
+/// worker, so a precompute never waits for another worker's scratch.
 pub(crate) struct InterReconScratchPool<T: ReconSample> {
-    available: Mutex<(usize, Vec<deferred_recon::InterReconScratch<T>>)>,
+    workers: Vec<Mutex<deferred_recon::InterReconScratch<T>>>,
     surfaces: std::sync::OnceLock<admission::SpareSurfaces<T>>,
 }
 
 impl<T: ReconSample> InterReconScratchPool<T> {
-    pub(crate) fn ensure_workers(&self, workers: usize) {
-        let mut pool = self.available.lock();
-        let (allocated, available) = &mut *pool;
-        while *allocated < workers {
-            available.push(deferred_recon::InterReconScratch::default());
-            *allocated += 1;
+    /// A pool for `workers` scheduler workers.
+    pub(crate) fn new(workers: usize) -> Self {
+        Self {
+            workers: (0..workers.max(1)).map(|_| Mutex::default()).collect(),
+            surfaces: std::sync::OnceLock::new(),
         }
     }
 
     /// The worker count the pool was sized for.
     pub(crate) fn workers(&self) -> usize {
-        self.available.lock().0.max(1)
+        self.workers.len().max(1)
     }
 
+    /// Lends worker `worker` its own scratch. The lock is only ever taken by
+    /// that worker, unless the pool has fewer slots than the scheduler.
     fn with_scratch<R>(
         &self,
+        worker: usize,
         f: impl FnOnce(&mut deferred_recon::InterReconScratch<T>) -> R,
     ) -> Result<R> {
-        let mut scratch = self
-            .available
-            .lock()
-            .1
-            .pop()
+        let slot = worker
+            .checked_rem(self.workers.len())
+            .and_then(|slot| self.workers.get(slot))
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        let result = f(&mut scratch);
-        self.available.lock().1.push(scratch);
-        Ok(result)
+        Ok(f(&mut slot.lock()))
     }
 
     fn spare_surfaces(&self) -> admission::SpareSurfaces<T> {
@@ -1164,7 +1164,7 @@ impl<T: ReconSample> InterReconScratchPool<T> {
 impl<T: ReconSample> Default for InterReconScratchPool<T> {
     fn default() -> Self {
         Self {
-            available: Mutex::new((0, Vec::new())),
+            workers: Vec::new(),
             surfaces: std::sync::OnceLock::new(),
         }
     }
