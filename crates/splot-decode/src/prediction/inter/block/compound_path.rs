@@ -332,28 +332,31 @@ pub(super) fn decode_compound_inter_block(
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
     mv_grid: &mut NeighbourMvGrid,
-    tip_ref_pair: Option<(i8, i8)>,
+    params: &tile::TileWalkParams,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
     filter_records: &mut tile::TileFilterRecords,
     slots: &mut Vec<tile::LeafSlot>,
     intrabc_state: &mut TileIntrabcPreludeState,
-    facts: &FrameRefFacts,
-    num_total_refs: usize,
-    num_same_ref_compound: u8,
     skip: u8,
     n4w: usize,
     n4h: usize,
-    mi_rows: usize,
-    mi_cols: usize,
-    max_drl_bits_minus_1: u32,
-    temporal_first_frame: bool,
-    enable_adaptive_mvd: bool,
-    residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
-    frame_interpolation_filter: FrameInterpolationFilter,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
+    let tile::TileWalkParams {
+        tip_ref_pair,
+        ref ref_facts,
+        num_total_refs,
+        num_same_ref_compound,
+        max_drl_bits_minus_1,
+        temporal_first_frame,
+        enable_adaptive_mvd,
+        frame_interpolation_filter,
+        force_integer_mv,
+        ..
+    } = *params;
+    let facts = ref_facts;
     let opfl_refine_type = core
         .inter
         .as_ref()
@@ -412,7 +415,7 @@ pub(super) fn decode_compound_inter_block(
         compound,
         n4w,
         n4h,
-        effective_force_integer_mv(core),
+        force_integer_mv,
         opfl_refine_type,
         [mode_ctx.warp_sample_found, mode_ctx.warp_sample_found1],
         frame_modes[splot_core::headers::frame::LOCALWARP],
@@ -468,7 +471,7 @@ pub(super) fn decode_compound_inter_block(
             )?;
         }
     }
-    let frame_mv_config = inter_mv_read_config(core)?;
+    let frame_mv_config = params.mv_config(core)?;
     let precision = read_block_mv_precision_syntax(
         cdfs,
         symbols,
@@ -596,11 +599,11 @@ pub(super) fn decode_compound_inter_block(
         core,
         frontier,
         mv_grid,
+        params,
         frame_mv_config.precision(),
         filter_records,
         slots,
         intrabc_state,
-        facts,
         ParsedCompoundBlock {
             block_ctx: *block_ctx,
             motion: CompoundMotionSyntax {
@@ -629,9 +632,6 @@ pub(super) fn decode_compound_inter_block(
             precision,
         },
         skip,
-        mi_rows,
-        mi_cols,
-        residual_tool_policy,
         block_qindex,
         tile_offset,
     )
@@ -830,19 +830,18 @@ pub(super) fn finish_compound_inter_block(
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
     mv_grid: &mut NeighbourMvGrid,
+    params: &tile::TileWalkParams,
     frame_precision: u8,
     filter_records: &mut tile::TileFilterRecords,
     slots: &mut Vec<tile::LeafSlot>,
     intrabc_state: &mut TileIntrabcPreludeState,
-    facts: &FrameRefFacts,
     parsed: ParsedCompoundBlock,
     skip: u8,
-    mi_rows: usize,
-    mi_cols: usize,
-    residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
+    let (facts, mi_rows, mi_cols) = (&params.ref_facts, params.mi_rows, params.mi_cols);
+    let lossless = current_residual_lossless(work_unit);
     let ParsedCompoundBlock {
         block_ctx,
         motion,
@@ -872,9 +871,9 @@ pub(super) fn finish_compound_inter_block(
             n4h,
             mi_rows,
             mi_cols,
-            current_residual_lossless(work_unit),
+            lossless,
             InterResidualLumaTxSizeMode::Inter,
-            residual_tool_policy,
+            params.residual_tool_policy,
             tile_offset,
         )?)
     } else {
@@ -899,7 +898,7 @@ pub(super) fn finish_compound_inter_block(
         residual.as_ref(),
         sub_pu_size,
         block_qindex,
-        current_residual_lossless(work_unit),
+        lossless,
     );
     let geometry = inter_leaf_geometry(
         frontier,
@@ -1188,25 +1187,19 @@ pub(super) fn decode_skip_mode_inter_block(
     mv_grid: &mut NeighbourMvGrid,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
-    tip_ref_pair: Option<(i8, i8)>,
+    params: &tile::TileWalkParams,
     filter_records: &mut tile::TileFilterRecords,
     slots: &mut Vec<tile::LeafSlot>,
     intrabc_state: &mut TileIntrabcPreludeState,
-    facts: &FrameRefFacts,
-    num_total_refs: usize,
     skip: u8,
-    mi_rows: usize,
-    mi_cols: usize,
-    max_drl_bits_minus_1: u32,
-    residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
     let (ref_frame0, ref_frame1) = skip_mode_reference_pair(
-        facts,
-        num_total_refs,
+        &params.ref_facts,
+        params.num_total_refs,
         neighbour_ctx,
-        tip_ref_pair,
+        params.tip_ref_pair,
         tile_offset,
     )?;
     block_ctx.ref_frame0 = ref_frame0;
@@ -1214,10 +1207,10 @@ pub(super) fn decode_skip_mode_inter_block(
     let ref_mv_idx = read_skip_drl_idx(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
-        max_drl_bits_minus_1,
+        params.max_drl_bits_minus_1,
         tile_offset,
     )?;
-    let precision = frame_mv_precision(core)?;
+    let precision = params.mv_config(core)?.precision();
     finish_compound_inter_block(
         work_unit,
         symbols,
@@ -1229,11 +1222,11 @@ pub(super) fn decode_skip_mode_inter_block(
         core,
         frontier,
         mv_grid,
+        params,
         precision,
         filter_records,
         slots,
         intrabc_state,
-        facts,
         ParsedCompoundBlock {
             block_ctx: *block_ctx,
             motion: CompoundMotionSyntax {
@@ -1260,9 +1253,6 @@ pub(super) fn decode_skip_mode_inter_block(
             precision: BlockPrecisionRecord::most_probable(precision),
         },
         skip,
-        mi_rows,
-        mi_cols,
-        residual_tool_policy,
         block_qindex,
         tile_offset,
     )

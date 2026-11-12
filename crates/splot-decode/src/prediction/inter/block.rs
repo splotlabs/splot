@@ -463,6 +463,23 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         ),
         tip_ref_pair: expected_tip_pair.map(|pair| (pair.past_ref, pair.future_ref)),
         intra_tools: crate::pipeline::general_intra::GeneralIntraFrameTools::new(sequence, core),
+        segment_skip: segment_feature_mask(core, SEG_LVL_SKIP),
+        segment_globalmv: segment_feature_mask(core, SEG_LVL_GLOBALMV),
+        seg_pre_skip: core
+            .segmentation_params
+            .as_ref()
+            .is_some_and(|seg| seg.segmentation_enabled && seg.seg_id_pre_skip),
+        skip_mode_present: core
+            .inter_tail
+            .as_ref()
+            .is_some_and(|tail| tail.skip_mode_present),
+        tip_frame_mode: core
+            .inter
+            .as_ref()
+            .and_then(|inter| inter.tip_frame_mode)
+            .unwrap_or(TipFrameMode::Disabled),
+        force_integer_mv: effective_force_integer_mv(core),
+        mv_config: inter_mv_read_config(core).ok(),
         ref_facts: compound_path::FrameRefFacts::new(
             core,
             reference,
@@ -1014,12 +1031,26 @@ fn read_enabled_segment_id(
     Ok(segment_id)
 }
 
-fn segment_feature_active(core: &FrameHeaderCore, segment_id: u8, feature: usize) -> bool {
-    core.segmentation_params
-        .as_ref()
-        .and_then(|seg| seg.features.get(usize::from(segment_id)))
-        .and_then(|features| features.get(feature))
-        .is_some_and(|feature| feature.enabled)
+/// Bit `s` set: segment feature `feature` is enabled for segment `s`.
+fn segment_feature_mask(core: &FrameHeaderCore, feature: usize) -> u16 {
+    let Some(seg) = core.segmentation_params.as_ref() else {
+        return 0;
+    };
+    (0..splot_core::segment::MAX_SEGMENTS).fold(0, |mask, segment| {
+        let enabled = seg
+            .features
+            .get(segment)
+            .and_then(|features| features.get(feature))
+            .is_some_and(|feature| feature.enabled);
+        mask | u16::from(enabled) << segment
+    })
+}
+
+const fn segment_has(mask: u16, segment_id: u8) -> bool {
+    match mask.checked_shr(segment_id as u32) {
+        Some(bits) => bits & 1 != 0,
+        None => false,
+    }
 }
 
 fn skip_segment_reference(
@@ -1254,10 +1285,7 @@ fn decode_block<T: ReconSample>(
         frontier.is_chroma_part(),
     );
     let neighbour_ctx = (!general_intra).then(|| block_neighbour_ctx(mv_grid, &block_ctx));
-    let seg_pre_skip = core
-        .segmentation_params
-        .as_ref()
-        .is_some_and(|seg| seg.segmentation_enabled && seg.seg_id_pre_skip);
+    let seg_pre_skip = params.seg_pre_skip;
     let previous_segment_ids =
         super::previous_segment_ids(core, reference, params.mi_rows, params.mi_cols)
             .map(Arc::as_ref);
@@ -1282,17 +1310,15 @@ fn decode_block<T: ReconSample>(
             tile_offset,
         )?;
     }
-    let segment_skips = segment_feature_active(core, segment_id, SEG_LVL_SKIP);
-    let segment_globalmv = segment_feature_active(core, segment_id, SEG_LVL_GLOBALMV);
+    let segment_skips = segment_has(params.segment_skip, segment_id);
+    let segment_globalmv = segment_has(params.segment_globalmv, segment_id);
     let skip_mode = if segment_skips || segment_globalmv {
         0
     } else {
         read_skip_mode_syntax(
             work_unit.cdf_mut().tile_cdfs_mut(),
             symbols,
-            core.inter_tail
-                .as_ref()
-                .is_some_and(|tail| tail.skip_mode_present),
+            params.skip_mode_present,
             frontier,
             comp_ref_allowed,
             neighbour_ctx.as_ref().map_or(0, |ctx| ctx.skip_mode_ctx),
@@ -1608,27 +1634,17 @@ fn decode_block<T: ReconSample>(
             mv_grid,
             &mut block_ctx,
             &neighbour_ctx,
-            params.tip_ref_pair,
+            params,
             filter_records,
             slots,
             intrabc_state,
-            &params.ref_facts,
-            params.num_total_refs,
             skip,
-            params.mi_rows,
-            params.mi_cols,
-            params.max_drl_bits_minus_1,
-            params.residual_tool_policy,
             block_qindex,
             tile_offset,
         );
     }
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-    let tip_frame_mode = core
-        .inter
-        .as_ref()
-        .and_then(|inter| inter.tip_frame_mode)
-        .unwrap_or(TipFrameMode::Disabled);
+    let tip_frame_mode = params.tip_frame_mode;
     let segment_forces_globalmv = segment_skips || segment_globalmv;
     let tip_ref = if segment_forces_globalmv {
         false
@@ -1670,26 +1686,16 @@ fn decode_block<T: ReconSample>(
             core,
             frontier,
             mv_grid,
-            params.tip_ref_pair,
+            params,
             &mut block_ctx,
             &neighbour_ctx,
             filter_records,
             slots,
             intrabc_state,
-            &params.ref_facts,
-            params.num_total_refs,
-            params.num_same_ref_compound,
             skip,
             n4w,
             n4h,
-            params.mi_rows,
-            params.mi_cols,
-            params.max_drl_bits_minus_1,
-            params.temporal_first_frame,
-            params.enable_adaptive_mvd,
-            params.residual_tool_policy,
             block_qindex,
-            params.frame_interpolation_filter,
             tile_offset,
         );
     }
@@ -1715,7 +1721,7 @@ fn decode_block<T: ReconSample>(
     };
     block_ctx.ref_frame0 = ref_frame0;
     let mode_ctx = mode_ctx_from_neighbours(mv_grid, &block_ctx, None, &neighbour_ctx);
-    let force_integer_mv = effective_force_integer_mv(core);
+    let force_integer_mv = params.force_integer_mv;
     let warp_mode = if tip_ref || segment_forces_globalmv {
         None
     } else {
@@ -1734,7 +1740,7 @@ fn decode_block<T: ReconSample>(
         let derive_wrl = n4w >= 2 && n4h >= 2;
         let use_temporal_first =
             params.temporal_first_frame && params.ref_facts.temporal_near(ref_frame0);
-        let mv_config = inter_mv_read_config(core)?;
+        let mv_config = params.mv_config(core)?;
         let motion_mode = if warp_mode == WarpInterMode::WarpNewmv {
             read_warp_newmv_motion_mode_syntax(
                 cdfs,
@@ -1862,7 +1868,7 @@ fn decode_block<T: ReconSample>(
                 syntax,
                 inter_leaf_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
                 block_qindex,
-                frame_mv_precision(core)?,
+                mv_config.precision(),
                 tile_offset,
             ),
         ));
@@ -1951,7 +1957,7 @@ fn decode_block<T: ReconSample>(
     } else {
         0
     };
-    let frame_mv_config = inter_mv_read_config(core)?;
+    let frame_mv_config = params.mv_config(core)?;
     let precision = read_block_mv_precision_syntax(
         cdfs,
         symbols,
@@ -2102,7 +2108,7 @@ fn decode_block<T: ReconSample>(
             syntax,
             inter_leaf_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
             block_qindex,
-            frame_mv_precision(core)?,
+            frame_mv_config.precision(),
             tile_offset,
         ),
     ))

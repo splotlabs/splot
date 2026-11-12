@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "eeab8e09badff52667bd0b4a8f17bb0d7068332d",
+  "audited_commit": "7b1ca62873ee814c5f74e5795b3e4e1d6f0d3a3a",
   "outcome": "success",
   "files": [
     {
@@ -3534,7 +3534,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block.rs",
-      "sha256": "e279e915827f2f91b6715d5988da8c6f770bd0f2be3ade0bb2ef1f3b7125e05c",
+      "sha256": "75b36008177b72cf2183798cd716659bbd3e3b30f03c8026fed6e0211f42ee08",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-RESIDUAL-DCT",
@@ -3551,7 +3551,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/compound_path.rs",
-      "sha256": "4efc40a376f2b4e6763ad7e7f1209d0ef5fd92ab9216d80fdf3f88cf04a6d054",
+      "sha256": "9cd77f4440b35ea0881bd72964c633e5d3eeb1a611a9afc1386eee454ce5cda5",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-LOCALWARP"
@@ -3732,7 +3732,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/tile.rs",
-      "sha256": "57e8e592e3d86c3acca3670afcfd661774c3ca6f7c8d7a1c0d5dd10001ca692d",
+      "sha256": "f16d07b5c0bc36561336bc56113b2ff36fd1e4d3d9947a1e8f7fb4bb060437b0",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-PARALLEL-STAGES"

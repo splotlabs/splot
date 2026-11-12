@@ -129,10 +129,29 @@ pub(crate) struct TileWalkParams {
     /// alone so the entropy pass never reads the projected temporal field.
     pub(super) tip_ref_pair: Option<(i8, i8)>,
     pub(super) intra_tools: crate::pipeline::general_intra::GeneralIntraFrameTools,
+    /// Bit `s`: segment `s` enables `SEG_LVL_SKIP`, then `SEG_LVL_GLOBALMV`.
+    pub(super) segment_skip: u16,
+    pub(super) segment_globalmv: u16,
+    pub(super) seg_pre_skip: bool,
+    pub(super) skip_mode_present: bool,
+    pub(super) tip_frame_mode: TipFrameMode,
+    pub(super) force_integer_mv: bool,
+    /// `None` when the header has no MV precision; each block that reads it
+    /// then returns the header error.
+    pub(super) mv_config: Option<super::super::read_mv::MvReadConfig>,
     pub(super) ref_facts: super::compound_path::FrameRefFacts,
 }
 
 impl TileWalkParams {
+    /// The frame MV read configuration, or the error of a header without one.
+    pub(super) fn mv_config(
+        &self,
+        core: &FrameHeaderCore,
+    ) -> Result<super::super::read_mv::MvReadConfig> {
+        self.mv_config
+            .map_or_else(|| super::inter_mv_read_config(core), Ok)
+    }
+
     pub(super) fn context<'a, T: ReconSample>(
         &self,
         sequence: &'a SequenceHeader,
