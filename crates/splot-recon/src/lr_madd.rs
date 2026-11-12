@@ -329,3 +329,180 @@ macro_rules! madd_avx2 {
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) use madd_avx2;
+
+/// The AArch64 kernel for runs of 16-column groups that share one class,
+/// and for single groups of four 4-column cells of different classes.
+///
+/// The weights stay in registers for the whole run, each tap pair is its
+/// symmetric sum times a weight lane (one `smlal` per 4-output cell), and a
+/// run whose last pairs weigh zero takes a variant that stops before them:
+/// the far taps that end both tap tables are the ones classes zero most.
+/// Tap sums of samples validated against a `BitDepth` of at most 10 (§ 6
+/// Table 6.3) stay below `2^11`, so they are `i16` lanes; `sqrshrun` by 7 is
+/// `Round2` and the clip to `0`, `umin` the clip to the maximum sample.
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod by_lane {
+    use core::arch::aarch64::*;
+    use fearless_simd::{Neon, SimdBase, SimdFrom, i16x8, u16x8};
+
+    use super::TapPairs;
+
+    /// One class: the weight of each pair of `F`, then the center weight.
+    pub(crate) type Class = ([i16; 16], i16);
+
+    /// Filters the 16-column groups from column `x` to `end` of `rows`
+    /// output rows, row `r` stored at `r * stride + x` of `output`, cell `k`
+    /// of every group with `classes[k]`, or every cell with `classes[0]`
+    /// when `uniform`. Window row `k` of output row `r` is `window[r + k]`,
+    /// read from the group's column on; returns `false` when a row or the
+    /// output is short.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    #[target_feature(enable = "neon")]
+    pub(crate) fn filter_run<F: TapPairs, const ROWS: usize, const REACH: usize>(
+        t: Neon,
+        window: &[&[u16]],
+        rows: usize,
+        span: (usize, usize),
+        (classes, uniform): (&[Class; 4], bool),
+        output: (&mut [u16], usize),
+        max_sample: u16,
+    ) -> bool {
+        if !uniform {
+            return run::<F, true, 16, ROWS, REACH>(
+                t, window, rows, span, classes, output, max_sample,
+            );
+        }
+        let pairs = F::TAPS.len().min(16);
+        let used = classes[0].0[..pairs]
+            .iter()
+            .rposition(|&weight| weight != 0)
+            .map_or(0, |last| last + 1);
+        macro_rules! variant {
+            ($used:literal) => {
+                run::<F, false, $used, ROWS, REACH>(
+                    t, window, rows, span, classes, output, max_sample,
+                )
+            };
+        }
+        match used {
+            0..=6 => variant!(6),
+            7..=10 => variant!(10),
+            11 | 12 => variant!(12),
+            13 | 14 => variant!(14),
+            _ => variant!(16),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    #[target_feature(enable = "neon")]
+    fn run<
+        F: TapPairs,
+        const MIXED: bool,
+        const USED: usize,
+        const ROWS: usize,
+        const REACH: usize,
+    >(
+        t: Neon,
+        window: &[&[u16]],
+        rows: usize,
+        (x, end): (usize, usize),
+        classes: &[Class; 4],
+        (output, stride): (&mut [u16], usize),
+        max_sample: u16,
+    ) -> bool {
+        let Some(first) = window.first() else {
+            return false;
+        };
+        let class = |k: usize| &classes[if MIXED { k } else { 0 }];
+        let half = |k: usize, at: usize| -> int16x8_t {
+            match class(k).0.get(at..).and_then(<[i16]>::first_chunk::<8>) {
+                Some(lanes) => i16x8::load_array_ref(t, lanes).into(),
+                None => vdupq_n_s16(0),
+            }
+        };
+        let low: [int16x8_t; 4] = core::array::from_fn(|k| half(k, 0));
+        let high: [int16x8_t; 4] = core::array::from_fn(|k| half(k, 8));
+        let center: int16x8_t =
+            i16x8::load_array(t, core::array::from_fn(|k| class(k % 4).1)).into();
+        let max = vdupq_n_u16(max_sample);
+        let tap = |offset: isize| F::RADIUS.wrapping_add_signed(offset);
+        let reach = (end - x + REACH).saturating_sub(16);
+        for r in 0..rows {
+            let (Some(window_rows), Some(target)) = (
+                window.get(r..).and_then(<[_]>::first_chunk::<ROWS>),
+                output.get_mut(r * stride + x..r * stride + end),
+            ) else {
+                return false;
+            };
+            let mut source = [*first; ROWS];
+            for (slot, row) in source.iter_mut().zip(window_rows) {
+                match row.get(x..x + reach) {
+                    Some(row) => *slot = row,
+                    None => return false,
+                }
+            }
+            for target in target.chunks_exact_mut(16) {
+                let Some(row) = source.first().and_then(|row| row.first_chunk::<REACH>()) else {
+                    return false;
+                };
+                let mut group = [row; ROWS];
+                for (slot, row) in group.iter_mut().zip(&mut source) {
+                    match (row.first_chunk::<REACH>(), row.get(16..)) {
+                        (Some(window), Some(rest)) => (*slot, *row) = (window, rest),
+                        _ => return false,
+                    }
+                }
+                let (low_out, high_out) = target.split_at_mut(8);
+                let (Some(low_out), Some(high_out)) = (
+                    low_out.first_chunk_mut::<8>(),
+                    high_out.first_chunk_mut::<8>(),
+                ) else {
+                    return false;
+                };
+                let load = |row: usize, col: usize| -> int16x8_t {
+                    match group
+                        .get(row)
+                        .and_then(|row| row.get(col..))
+                        .and_then(<[u16]>::first_chunk::<8>)
+                    {
+                        Some(lanes) => {
+                            vreinterpretq_s16_u16(u16x8::load_array_ref(t, lanes).into())
+                        }
+                        None => vdupq_n_s16(0),
+                    }
+                };
+                let (m0, m1) = (load(tap(0), tap(0)), load(tap(0), tap(8)));
+                let mut acc = [
+                    vmull_laneq_s16::<0>(vget_low_s16(m0), center),
+                    vmull_high_laneq_s16::<1>(m0, center),
+                    vmull_laneq_s16::<2>(vget_low_s16(m1), center),
+                    vmull_high_laneq_s16::<3>(m1, center),
+                ];
+                macro_rules! pairs {
+                    ($($j:literal)*) => {$(
+                        if $j < F::TAPS.len() && $j < USED {
+                            const L: i32 = $j % 8;
+                            let (dy, dx) = F::TAPS[$j];
+                            let (p, q) = ((tap(dy), tap(dx)), (tap(-dy), tap(-dx)));
+                            let s0 = vaddq_s16(load(p.0, p.1), load(q.0, q.1));
+                            let s1 = vaddq_s16(load(p.0, p.1 + 8), load(q.0, q.1 + 8));
+                            let w = if $j < 8 { &low } else { &high };
+                            acc[0] = vmlal_laneq_s16::<L>(acc[0], vget_low_s16(s0), w[0]);
+                            acc[1] = vmlal_high_laneq_s16::<L>(acc[1], s0, w[1]);
+                            acc[2] = vmlal_laneq_s16::<L>(acc[2], vget_low_s16(s1), w[2]);
+                            acc[3] = vmlal_high_laneq_s16::<L>(acc[3], s1, w[3]);
+                        }
+                    )*};
+                }
+                pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
+                let narrow =
+                    |a, b| vminq_u16(vqrshrun_high_n_s32::<7>(vqrshrun_n_s32::<7>(a), b), max);
+                u16x8::<Neon>::simd_from(t, narrow(acc[0], acc[1])).store_array(low_out);
+                u16x8::<Neon>::simd_from(t, narrow(acc[2], acc[3])).store_array(high_out);
+            }
+        }
+        true
+    }
+}

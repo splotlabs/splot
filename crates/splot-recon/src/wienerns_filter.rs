@@ -137,8 +137,30 @@ struct PreparedLumaClass {
     /// with the rounding offset.
     madd_pairs: Option<[MaddPattern; MADD_PAIRS + 1]>,
     /// [`PreparedLumaClass::madd_pairs`] as the weights of four cells of
-    /// this class, reused whenever four cells share it.
+    /// this class, reused whenever four cells share it; AArch64, which runs
+    /// the by-lane kernel, derives them only where needed.
     cell_weights: Option<[MaddWeights; MADD_PAIRS + 1]>,
+    /// The coefficients and the center scale for [`lr_madd::by_lane`].
+    #[cfg(target_arch = "aarch64")]
+    by_lane: lr_madd::by_lane::Class,
+}
+
+impl PreparedLumaClass {
+    /// [`PreparedLumaClass::cell_weights`], derived into `slot` when not
+    /// prepared.
+    #[inline]
+    fn uniform_weights<'a>(
+        &'a self,
+        slot: &'a mut Option<[MaddWeights; MADD_PAIRS + 1]>,
+    ) -> Option<&'a [MaddWeights; MADD_PAIRS + 1]> {
+        if self.cell_weights.is_some() {
+            return self.cell_weights.as_ref();
+        }
+        *slot = self
+            .madd_pairs
+            .map(|pairs| pairs.each_ref().map(lr_madd::uniform));
+        slot.as_ref()
+    }
 }
 
 /// The § 7.20.3 luma taps for [`lr_madd`].
@@ -453,10 +475,12 @@ fn prepare_luma_padded<T: ReconSample>(
                 });
             [low, high, low, high, low, high, low, high]
         });
-        let cell_weights = madd_pairs.each_ref().map(lr_madd::uniform);
         scratch.prepared_classes.push(PreparedLumaClass {
             madd_pairs: Some(madd_pairs),
-            cell_weights: Some(cell_weights),
+            cell_weights: (!cfg!(target_arch = "aarch64"))
+                .then(|| madd_pairs.each_ref().map(lr_madd::uniform)),
+            #[cfg(target_arch = "aarch64")]
+            by_lane: (coeffs, center),
         });
     }
     let staged = params.bit_depth == BitDepth::Eight
@@ -875,7 +899,18 @@ fn filter_luma_cell_groups<'a, T: LumaSimdSource, O: LumaSimdOutput>(
     for (slot, row) in window.iter_mut().zip(source).take(rows) {
         *slot = span(row)?;
     }
-    let mut mixed = [[[0; 16]; 2]; MADD_PAIRS + 1];
+    let mut mixed = None;
+    #[cfg(target_arch = "aarch64")]
+    let wide = fearless_simd::Level::baseline()
+        .as_neon()
+        .filter(|_| x + 16 <= width && O::u16_samples_mut(&mut []).is_some())
+        .and_then(|t| {
+            let mut rows = [&[][..]; LUMA_WINDOW_ROWS + 3];
+            rows.iter_mut()
+                .zip(&window)
+                .all(|(slot, row)| T::u16_samples(row).map(|row| *slot = row).is_some())
+                .then_some((t, rows))
+        });
     while x + 16 <= width {
         if let Some(value) = flat.chunk_value(x / 32) {
             let value = O::from_u16(value.min(max_sample));
@@ -900,15 +935,53 @@ fn filter_luma_cell_groups<'a, T: LumaSimdSource, O: LumaSimdOutput>(
         let [Some(c0), Some(c1), Some(c2), Some(c3)] = classes else {
             break;
         };
+        #[cfg(target_arch = "aarch64")]
+        if let Some((t, rows)) = wide
+            && let Some(out) = output
+                .get_mut((first - origin) * output_stride..)
+                .and_then(O::u16_samples_mut)
+        {
+            let uniform = cells == [cells[0]; 4];
+            let mut run_end = x + 16;
+            while uniform
+                && run_end + 16 <= width
+                && flat.chunk_value(run_end / 32).is_none()
+                && cell_row.is_none_or(|row| {
+                    row.get(run_end / 4..).and_then(<[u8]>::first_chunk::<4>) == Some(&cells)
+                })
+            {
+                run_end += 16;
+            }
+            let classes = if uniform {
+                [c0.by_lane; 4]
+            } else {
+                [c0, c1, c2, c3].map(|class| class.by_lane)
+            };
+            if !luma_run(
+                t,
+                &rows,
+                end - first,
+                (x, run_end),
+                (&classes, uniform),
+                (out, output_stride),
+                max_sample,
+            ) {
+                return Err(luma_segment_error(width));
+            }
+            x = run_end;
+            continue;
+        }
+        let mut derived = None;
         let weights = if cells == [cells[0]; 4] {
-            c0.cell_weights.as_ref()
+            c0.uniform_weights(&mut derived)
         } else if let [Some(m0), Some(m1), Some(m2), Some(m3)] =
             [c0, c1, c2, c3].map(|class| class.madd_pairs.as_ref())
         {
+            let mixed = mixed.get_or_insert([[[0; 16]; 2]; MADD_PAIRS + 1]);
             for (pair, weights) in mixed.iter_mut().enumerate() {
                 lr_madd::arrange_into::<T>(weights, [&m0[pair], &m1[pair], &m2[pair], &m3[pair]]);
             }
-            Some(&mixed)
+            Some(&*mixed)
         } else {
             None
         };
@@ -940,6 +1013,25 @@ fn filter_luma_cell_groups<'a, T: LumaSimdSource, O: LumaSimdOutput>(
     Ok(x)
 }
 
+#[cfg(target_arch = "aarch64")]
+fearless_simd::kernel!(
+    /// [`lr_madd::by_lane::filter_run`] over the § 7.20.3 luma taps.
+    #[inline]
+    fn luma_run(
+        t: Neon,
+        window: &[&[u16]],
+        rows: usize,
+        span: (usize, usize),
+        classes: (&[lr_madd::by_lane::Class; 4], bool),
+        output: (&mut [u16], usize),
+        max_sample: u16,
+    ) -> bool {
+        lr_madd::by_lane::filter_run::<LumaTaps, LUMA_WINDOW_ROWS, CELL_REACH>(
+            t, window, rows, span, classes, output, max_sample,
+        )
+    }
+);
+
 /// The [`CELL_REACH`] columns from `x` of up to [`LUMA_WINDOW_ROWS`]` + 3`
 /// window rows; unused trailing slots repeat the first row.
 #[allow(
@@ -964,6 +1056,10 @@ pub(crate) trait LumaSimdOutput: Copy + eight_bit::ByteLaneOutput {
 
     /// Stores 16 values already within the sample range.
     fn store16(values: [u16; 16], output: &mut [Self; 16]);
+
+    /// The output as `u16` samples when it is `u16`.
+    #[cfg(target_arch = "aarch64")]
+    fn u16_samples_mut(output: &mut [Self]) -> Option<&mut [u16]>;
 }
 
 impl LumaSimdOutput for u16 {
@@ -976,6 +1072,12 @@ impl LumaSimdOutput for u16 {
     fn store16(values: [u16; 16], output: &mut [Self; 16]) {
         *output = values;
     }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn u16_samples_mut(output: &mut [Self]) -> Option<&mut [u16]> {
+        Some(output)
+    }
 }
 
 impl LumaSimdOutput for u8 {
@@ -987,6 +1089,12 @@ impl LumaSimdOutput for u8 {
     #[inline]
     fn store16(values: [u16; 16], output: &mut [Self; 16]) {
         *output = values.map(|value| value as u8);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn u16_samples_mut(_output: &mut [Self]) -> Option<&mut [u16]> {
+        None
     }
 }
 
@@ -1005,6 +1113,10 @@ pub(crate) trait LumaSimdSource: Copy + Default {
     ) -> Option<[&'a [u16; REACH]; ROWS]>;
 
     fn scalar(samples: &[Self], index: usize) -> u16;
+
+    /// The samples as `u16` samples when they are `u16`.
+    #[cfg(target_arch = "aarch64")]
+    fn u16_samples(samples: &[Self]) -> Option<&[u16]>;
 }
 
 impl LumaSimdSource for u16 {
@@ -1026,6 +1138,12 @@ impl LumaSimdSource for u16 {
     #[inline]
     fn scalar(samples: &[Self], index: usize) -> u16 {
         samples[index]
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn u16_samples(samples: &[Self]) -> Option<&[u16]> {
+        Some(samples)
     }
 }
 
@@ -1051,6 +1169,12 @@ impl LumaSimdSource for u8 {
     fn scalar(samples: &[Self], index: usize) -> u16 {
         u16::from(samples[index])
     }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn u16_samples(_samples: &[Self]) -> Option<&[u16]> {
+        None
+    }
 }
 
 /// Filters output columns `c0..c0 + filtered.len()` of one row from its nine
@@ -1070,7 +1194,8 @@ fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput>(
     class: &PreparedLumaClass,
     max_sample: u16,
 ) {
-    let Some(weights) = class.cell_weights.as_ref() else {
+    let mut derived = None;
+    let Some(weights) = class.uniform_weights(&mut derived) else {
         return;
     };
     let len = filtered.len();

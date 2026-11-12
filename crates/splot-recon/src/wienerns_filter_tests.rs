@@ -1306,3 +1306,104 @@ fn eight_bit_pair_weights_take_every_ranged_class() {
     past[6] = 26;
     assert!(eight_bit::pair_weights(&past).is_none());
 }
+
+/// The by-lane run kernel matches the § 7.20.3 per-sample sum for random
+/// and extreme § 5.20.2.1 classes and samples, for one class per run, with
+/// every count of trailing zero weights, and for a class per cell, over runs
+/// that cover a row or start and end inside it, on one to four rows, and
+/// writes nothing outside the run.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn by_lane_runs_match_the_scalar_filter() {
+    const MIN: [i16; WIENER_NS_LUMA_COEFFS] = [
+        -24, -24, -14, -14, -16, -16, -8, -8, -8, -8, -8, -8, -8, -8, -8, -8,
+    ];
+    const K: [u32; WIENER_NS_LUMA_COEFFS] = [6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4];
+    const UNTOUCHED: u16 = 0xdead;
+    let t = fearless_simd::Level::baseline().as_neon().unwrap();
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move |limit: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % limit
+    };
+    let r = WIENER_NS_LUMA_TAP_RADIUS;
+    for case in 0..900 {
+        let max = [255u16, 1023][case % 2];
+        let groups = 1 + next(5) as usize;
+        let lead = 16 * next(3) as usize;
+        let width = lead + 16 * groups + 16 * next(2) as usize;
+        let rows = 1 + next(4) as usize;
+        let uniform = case % 3 != 2;
+        let mut class = || {
+            let style = next(4) as usize;
+            let mut coeffs: [i16; WIENER_NS_LUMA_COEFFS] = core::array::from_fn(|j| {
+                let span = 1u64 << K[j];
+                MIN[j] + [0, span - 1, next(span), next(span)][style] as i16
+            });
+            let zero_tail = WIENER_NS_LUMA_COEFFS - next(17) as usize;
+            for (j, coeff) in coeffs.iter_mut().enumerate() {
+                if j >= zero_tail || next(4) == 0 {
+                    *coeff = 0;
+                }
+            }
+            (coeffs, 128 - 2 * coeffs.iter().sum::<i16>())
+        };
+        let first = class();
+        let classes = if uniform {
+            [first; 4]
+        } else {
+            [first, class(), class(), class()]
+        };
+        let source: Vec<Vec<u16>> = (0..rows + 2 * r)
+            .map(|_| {
+                let extreme = next(3) == 0;
+                (0..width + 2 * r)
+                    .map(|_| {
+                        if extreme {
+                            [0, max][next(2) as usize]
+                        } else {
+                            next(u64::from(max) + 1) as u16
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let window: Vec<&[u16]> = source.iter().map(Vec::as_slice).collect();
+        let stride = width + 3;
+        let mut output = vec![UNTOUCHED; rows * stride];
+        let span = (lead, lead + 16 * groups);
+        let run = (&classes, uniform);
+        assert!(luma_run(
+            t,
+            &window,
+            rows,
+            span,
+            run,
+            (&mut output, stride),
+            max
+        ));
+        for y in 0..rows {
+            for x in 0..width {
+                let got = output[y * stride + x];
+                if !(span.0..span.1).contains(&x) {
+                    assert_eq!(got, UNTOUCHED, "case {case} ({x}, {y})");
+                    continue;
+                }
+                let coeffs = &classes[(x / 4) % 4].0;
+                let at = |dy: isize, dx: isize| {
+                    let row = &source[(y + r).wrapping_add_signed(dy)];
+                    i32::from(row[(x + r).wrapping_add_signed(dx)])
+                };
+                let m = at(0, 0);
+                let mut sum = m << WIENER_NS_PREC_BITS;
+                for &(dy, dx, j) in &WIENER_NS_CONFIG_Y {
+                    sum += (at(dy, dx) - m) * i32::from(coeffs[j]);
+                }
+                let expected = round2_i32(sum, WIENER_NS_PREC_BITS).clamp(0, i32::from(max));
+                assert_eq!(i32::from(got), expected, "case {case} ({x}, {y})");
+            }
+        }
+    }
+}
