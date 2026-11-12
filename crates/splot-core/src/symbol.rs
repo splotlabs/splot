@@ -260,24 +260,23 @@ fearless_simd::kernel!(
     }
 );
 
-/// `3 + timeInterval + Para_Adjustment_List[ index ][ timeInterval ]`
-/// (§ 8.2.6) for every rate index and use count below 64, so a read takes
-/// the count-dependent part of its adaptation rate with one load. The rows
-/// past the list repeat row 0, so a masked index is always in bounds. A
-/// `const`, so each crate inlining a read addresses its own copy directly
-/// instead of through the global offset table.
+/// The § 8.2.6 adaptation rate `3 + timeInterval + n_term +
+/// Para_Adjustment_List[ index ][ timeInterval ]`, `n_term` being
+/// `Min(FloorLog2(N), 2)`, for every rate index and use count below 64, so a
+/// read takes its whole rate with one load. The rows past the list repeat
+/// row 0, so a masked index is always in bounds.
 const RATE_ROWS: usize = PARA_ADJUSTMENT_LIST.len().next_power_of_two();
-const ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS] = {
+const fn adaptation_rates(n_term: i32) -> [[u8; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS] {
     let mut rates = [[0; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS];
     let mut index = 0;
-    while index < rates.len() {
+    while index < RATE_ROWS {
         let list = if index < PARA_ADJUSTMENT_LIST.len() {
             index
         } else {
             0
         };
         let mut count = 0;
-        while count < rates[index].len() {
+        while count < 2 * MAX_CDF_COUNT as usize {
             let time_interval = if count > 31 {
                 2
             } else if count > 15 {
@@ -286,13 +285,27 @@ const ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS] = {
                 0
             };
             rates[index][count] =
-                (3 + time_interval as i32 + PARA_ADJUSTMENT_LIST[list][time_interval]) as u8;
+                (3 + time_interval as i32 + n_term + PARA_ADJUSTMENT_LIST[list][time_interval])
+                    as u8;
             count += 1;
         }
         index += 1;
     }
     rates
-};
+}
+
+/// The [`adaptation_rates`] of an `N`-ary row, one constant per `n_term` so
+/// each crate inlining a read addresses its own copy directly instead of
+/// through the global offset table.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn arity_rates<const N: usize>() -> &'static [[u8; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS] {
+    if N <= 3 {
+        &const { adaptation_rates(1) }
+    } else {
+        &const { adaptation_rates(2) }
+    }
+}
 
 /// `CDF_PROB_SCALE` in the lanes past the `N - 1` probabilities of a row.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -468,25 +481,25 @@ fn adapt_lanes<const N: usize>(
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn trusted_rate<const N: usize>(cdf: &[u16]) -> u32 {
-    let rates = &ADAPTATION_RATES[usize::from(cdf[N - 1]) & (RATE_ROWS - 1)];
-    let n_term = if N <= 3 { 1 } else { 2 };
-    u32::from(rates[usize::from(cdf[N]) & (2 * MAX_CDF_COUNT as usize - 1)]) + n_term
+    let rates = &arity_rates::<N>()[usize::from(cdf[N - 1]) & (RATE_ROWS - 1)];
+    u32::from(rates[usize::from(cdf[N]) & (2 * MAX_CDF_COUNT as usize - 1)])
 }
 
 /// One in each 16-bit lane of a row word.
 const LANES: u64 = 0x0001_0001_0001_0001;
 
-/// `0xffff >> rate` in each lane: the bits of a lane shifted right by
-/// `rate` that came from the lane itself.
-const KEEP_LANES: [u64; 16] = {
-    let mut keep = [0; 16];
+/// `0xffff >> rate` in each probability lane of an `N`-ary row word, by any
+/// `u8` rate: the bits of a lane shifted right by `rate` that came from the
+/// lane itself.
+const fn keep_lanes<const N: usize>() -> [u64; 256] {
+    let mut keep = [0; 256];
     let mut rate = 0;
     while rate < 16 {
-        keep[rate] = (0xffff >> rate) * LANES;
+        keep[rate] = ((0xffff >> rate) * LANES) & probability_lanes::<N>();
         rate += 1;
     }
     keep
-};
+}
 
 /// The row-word lanes below a symbol, at most four.
 const LOWER_LANES: [u64; 8] = {
@@ -1059,7 +1072,7 @@ impl<'a> SymbolDecoder<'a> {
         let Some(rates) = usize::try_from(rate_index)
             .ok()
             .filter(|&index| index < PARA_ADJUSTMENT_LIST.len())
-            .and_then(|index| ADAPTATION_RATES.get(index))
+            .and_then(|index| arity_rates::<N>().get(index))
         else {
             return Err(
                 self.cdf_error(SymbolCdfErrorKind::AdaptationRateOutOfRange {
@@ -1078,8 +1091,7 @@ impl<'a> SymbolDecoder<'a> {
         self.consume(cur, prev);
 
         if self.config.cdf_update == CdfUpdateMode::Enabled {
-            let n_term = if N <= 3 { 1 } else { 2 };
-            let rate = u32::from(rates[count.clamp(0, MAX_CDF_COUNT * 2 - 1) as usize]) + n_term;
+            let rate = u32::from(rates[count.clamp(0, MAX_CDF_COUNT * 2 - 1) as usize]);
             T::adapt_probabilities(cdf, N, rate, symbol);
             if count < MAX_CDF_COUNT {
                 cdf[N] = T::from_i32(count + 1);
@@ -1320,11 +1332,10 @@ impl<'a> SymbolDecoder<'a> {
             } else {
                 (cdf[N - 1], cdf[N])
             };
-            let rate = u32::from(
-                ADAPTATION_RATES[usize::from(index) & (RATE_ROWS - 1)]
-                    [usize::from(count) & (2 * MAX_CDF_COUNT as usize - 1)],
-            ) + if N <= 3 { 1 } else { 2 };
-            let keep = KEEP_LANES[rate as usize & 15] & probability_lanes::<N>();
+            let rate = arity_rates::<N>()[usize::from(index) & (RATE_ROWS - 1)]
+                [usize::from(count) & (2 * MAX_CDF_COUNT as usize - 1)];
+            let keep = const { keep_lanes::<N>() }[usize::from(rate)];
+            let rate = u32::from(rate);
             let (shrink, grow) = ((word >> rate) & keep, (gap >> rate) & keep);
             let adapted = word
                 .wrapping_add(grow & !below)
