@@ -313,6 +313,16 @@ On the branch since 2026-11-12 evening:
   (`LOWER_LANES`), TCQ next state as ALU operations. SHARED; re-measure cycles on x86.
 - Mode info round 6 (2 commits): partition decision inlined (`walk_call` grew from 7.8 KB
   to 24 KB on aarch64: check i-cache and instructions on x86), neighbour contexts on demand.
+- Pipeline, one writer per state (5 commits): motion band folded in the ordered commit,
+  filled bands handed to the frontier (new safe `CurrentFrameWorkspace::split_band`), surface
+  source lock removed, row-list lock only for slot changes, one reconstruction scratch per
+  scheduler worker (`FrameWork::run(claim, worker)`). SHARED. On x86 re-measure lock-wait
+  shares at 8 threads and at the core count (see T10).
+- Entropy round 4 (1 commit): rate and keep tables per alphabet size. SHARED.
+- MC round 12 and mode info round 7 (register-passed partition call, boxed walk error). SHARED.
+- Test changes: the storage-reuse test now uses a 256x128 stream (planes below 16384 samples
+  are not pooled); the word-lane kernel tests use the 10-bit maximum only on x86_64, because
+  the AVX2 stage holds i16 (the decoder stores 8-bit and 10-bit samples only).
 In progress on aarch64 (do not duplicate; these areas are owned by the aarch64 orchestrator):
 MC fixed cost per call (round 12), mode info walk and neighbour context (round 6), entropy
 instructions per coefficient (round 4). Queued there: one writer per slot in the pipeline,

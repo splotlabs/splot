@@ -220,10 +220,13 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             );
             has_intra = false;
         }
+        if !motion_owed && row_has_entries && !temporal.is_empty() {
+            motion.fold_unit(ordinal, &temporal)?;
+        }
         if !folded.is_empty() {
             motion.fold_unit(ordinal, &folded)?;
         }
-        if motion_owed {
+        if motion_owed || row_has_entries {
             motion.unit_landed_for(ordinal);
         }
         *decoded_any |= row_has_entries;

@@ -138,6 +138,48 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         }
         Ok(())
     }
+
+    /// Moves a band down as [`Self::move_band`] does, but into the buffers it
+    /// takes from `spare`, and returns the band that stores the rows above
+    /// `luma_row`, so they can be read while this band takes the next
+    /// superblock row.
+    ///
+    /// A workspace that stores every row is left as it is: it returns `None`
+    /// and does not take `spare`.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the band would move up, or when the new
+    /// band cannot be allocated.
+    pub fn split_band(
+        &mut self,
+        luma_row: usize,
+        spare: &mut Option<Self>,
+    ) -> Result<Option<Self>> {
+        let stride = self.y.stride_samples();
+        if self.y.samples.len() >= stride * self.y.storage_size.height() {
+            return Ok(None);
+        }
+        let rows = (self.y.samples.len() / stride).saturating_sub(BAND_EDGE_ROWS);
+        let mut next = Self::new_band(self.info, rows, spare.take())?;
+        core::mem::swap(
+            &mut next.intra_prediction_scratch,
+            &mut self.intra_prediction_scratch,
+        );
+        let subsampling_y = self.info.pixel_format().subsampling_y();
+        next.y
+            .carry_band(&self.y, luma_row.saturating_sub(BAND_EDGE_ROWS))?;
+        for (to, from) in [next.u.as_mut(), next.v.as_mut()]
+            .into_iter()
+            .flatten()
+            .zip([self.u.as_ref(), self.v.as_ref()].into_iter().flatten())
+        {
+            to.carry_band(
+                from,
+                (luma_row >> subsampling_y).saturating_sub(BAND_EDGE_ROWS),
+            )?;
+        }
+        Ok(Some(core::mem::replace(self, next)))
+    }
 }
 
 /// Plane rows a band keeps above its superblock row.
@@ -210,6 +252,27 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             });
         }
         self.samples.copy_within(skip.., 0); // splot-copy-ok: keep the edge rows the next superblock row reads
+        self.origin_y = origin_y;
+        Ok(())
+    }
+
+    /// Lays this empty band out at `origin_y` with the rows of `from` it
+    /// still stores, as [`Self::move_band`] keeps them.
+    fn carry_band(&mut self, from: &Self, origin_y: usize) -> Result<()> {
+        let kept = origin_y
+            .checked_sub(from.origin_y)
+            .and_then(|rows| from.samples.get(rows.saturating_mul(from.stride)..))
+            .filter(|kept| !kept.is_empty() && from.stride == self.stride);
+        let Some((to, kept)) =
+            kept.and_then(|kept| Some((self.samples.get_mut(..kept.len())?, kept)))
+        else {
+            return Err(ReconError::WorkspaceRectOutOfBounds {
+                plane: self.plane,
+                storage: self.storage_size,
+                rect: PlaneRect::new(0, origin_y, self.stride, 1)?,
+            });
+        };
+        to.copy_from_slice(kept); // splot-copy-ok: keep the edge rows the next superblock row reads
         self.origin_y = origin_y;
         Ok(())
     }
@@ -684,6 +747,46 @@ mod tests {
         assert!(bottom.plane(PlaneId::Y).unwrap().rows(191, 200).is_ok());
         assert!(bottom.plane(PlaneId::Y).unwrap().rows(200, 201).is_err());
         assert!(bottom.reconstructed_sample(PlaneId::Y, 0, 200).is_err());
+    }
+
+    /// A split band hands back the filled rows and goes on as a moved band.
+    #[test]
+    fn a_split_band_hands_back_its_rows_and_keeps_the_edge_row() {
+        let frame = |height| {
+            DecodedFrameInfo::new(
+                OutputIndex::new(0),
+                BitDepth::Ten,
+                PixelFormat::Yuv420,
+                PlaneSize::new(64, height).unwrap(),
+                PlaneRect::new(0, 0, 64, height).unwrap(),
+            )
+            .unwrap()
+        };
+        let mut band = CurrentFrameWorkspace::<u16>::new_band(frame(200), 64, None).unwrap();
+        let mut moved = CurrentFrameWorkspace::<u16>::new_band(frame(200), 64, None).unwrap();
+        for (plane, y) in [(PlaneId::Y, 63), (PlaneId::Y, 10), (PlaneId::U, 31)] {
+            for target in [&mut band, &mut moved] {
+                target.set_reconstructed_sample(plane, 5, y, 99).unwrap();
+            }
+        }
+        moved.move_band(64).unwrap();
+        let mut spare = Some(CurrentFrameWorkspace::<u16>::new_band(frame(8), 4, None).unwrap());
+        let filled = band.split_band(64, &mut spare).unwrap().unwrap();
+        assert!(spare.is_none());
+        assert_eq!(filled.reconstructed_sample(PlaneId::Y, 5, 10).unwrap(), 99);
+        for (plane, y) in [(PlaneId::Y, 63), (PlaneId::U, 31)] {
+            assert_eq!(
+                band.reconstructed_sample(plane, 5, y).unwrap(),
+                moved.reconstructed_sample(plane, 5, y).unwrap()
+            );
+        }
+        assert!(band.reconstructed_sample(PlaneId::Y, 5, 62).is_err());
+        assert!(band.split_band(0, &mut None).is_err());
+
+        let mut whole = CurrentFrameWorkspace::<u16>::new_band(frame(64), 64, None).unwrap();
+        let mut kept = Some(filled);
+        assert!(whole.split_band(64, &mut kept).unwrap().is_none());
+        assert!(kept.is_some());
     }
 
     /// The write-through path must reproduce the buffered reference exactly for

@@ -899,8 +899,9 @@ pub(super) struct ReconRow {
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     /// The unit's deblock and tx-skip records, published by its resolve.
     pub(super) filter_records: TileFilterRecords,
-    /// Whether the prepass already folded this unit's records into the frame's
-    /// motion field, which it does for a unit it reconstructed in full.
+    /// Whether the prepass derived this unit's motion records into `temporal`,
+    /// which it does for a unit it reconstructed in full; the in-order commit
+    /// folds them, so it is the band's one writer.
     pub(super) motion_folded: bool,
     failure: ReconRowFailure,
 }
@@ -1120,39 +1121,39 @@ struct ReadyReconRow<T: ReconSample> {
     bounds: row_gate::RowReferenceBounds,
 }
 
+/// One reconstruction scratch per scheduler worker, each used only by its
+/// worker, so a precompute never waits for another worker's scratch.
 pub(crate) struct InterReconScratchPool<T: ReconSample> {
-    available: Mutex<(usize, Vec<deferred_recon::InterReconScratch<T>>)>,
+    workers: Vec<Mutex<deferred_recon::InterReconScratch<T>>>,
     surfaces: std::sync::OnceLock<admission::SpareSurfaces<T>>,
 }
 
 impl<T: ReconSample> InterReconScratchPool<T> {
-    pub(crate) fn ensure_workers(&self, workers: usize) {
-        let mut pool = self.available.lock();
-        let (allocated, available) = &mut *pool;
-        while *allocated < workers {
-            available.push(deferred_recon::InterReconScratch::default());
-            *allocated += 1;
+    /// A pool for `workers` scheduler workers.
+    pub(crate) fn new(workers: usize) -> Self {
+        Self {
+            workers: (0..workers.max(1)).map(|_| Mutex::default()).collect(),
+            surfaces: std::sync::OnceLock::new(),
         }
     }
 
     /// The worker count the pool was sized for.
     pub(crate) fn workers(&self) -> usize {
-        self.available.lock().0.max(1)
+        self.workers.len().max(1)
     }
 
+    /// Lends worker `worker` its own scratch. The lock is only ever taken by
+    /// that worker, unless the pool has fewer slots than the scheduler.
     fn with_scratch<R>(
         &self,
+        worker: usize,
         f: impl FnOnce(&mut deferred_recon::InterReconScratch<T>) -> R,
     ) -> Result<R> {
-        let mut scratch = self
-            .available
-            .lock()
-            .1
-            .pop()
+        let slot = worker
+            .checked_rem(self.workers.len())
+            .and_then(|slot| self.workers.get(slot))
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        let result = f(&mut scratch);
-        self.available.lock().1.push(scratch);
-        Ok(result)
+        Ok(f(&mut slot.lock()))
     }
 
     fn spare_surfaces(&self) -> admission::SpareSurfaces<T> {
@@ -1163,7 +1164,7 @@ impl<T: ReconSample> InterReconScratchPool<T> {
 impl<T: ReconSample> Default for InterReconScratchPool<T> {
     fn default() -> Self {
         Self {
-            available: Mutex::new((0, Vec::new())),
+            workers: Vec::new(),
             surfaces: std::sync::OnceLock::new(),
         }
     }
@@ -1196,8 +1197,8 @@ pub(in crate::prediction::inter) struct TileParseState {
 pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     parse: TileParseState,
     /// The surface source the tile's units draw their reconstruction
-    /// rectangles from, kept whole so its lock and handle outlive the tile.
-    surface_source: Option<std::sync::Arc<Mutex<admission::SurfaceSource<T>>>>,
+    /// rectangles from, kept whole so its handle outlives the tile.
+    surface_source: Option<std::sync::Arc<admission::SurfaceSource<T>>>,
     ordered: deferred_recon::InterReconScratch<T>,
     workers: InterReconScratchPool<T>,
     /// The ordinary walk's parsed rows waiting for their replay.
@@ -1246,7 +1247,6 @@ fn precompute_recon_row<T: ReconSample>(
     mut ready: ReadyReconRow<T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
-    motion: &MotionFieldUnits,
     quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
@@ -1270,7 +1270,6 @@ fn precompute_recon_row<T: ReconSample>(
         &mut surface,
         scratch,
         block_decoded,
-        motion,
         quantizer,
         temporal_context,
         reference,
@@ -1302,7 +1301,6 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     surface: &mut super::super::mc::WorkspaceSink<'_, '_, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
-    motion: &MotionFieldUnits,
     quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
@@ -1435,13 +1433,6 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         }
     }
     row.motion_folded = matches!(row.failure, ReconRowFailure::None);
-    if row.motion_folded && !row.superblocks.is_empty() {
-        if let Err(error) = motion.fold_unit(row.ordinal, &row.temporal) {
-            row.record_terminal_error(error);
-        } else {
-            motion.unit_landed_for(row.ordinal);
-        }
-    }
     row
 }
 
@@ -2210,16 +2201,16 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut surface_source = reusable_surface_source
             .filter(|source| std::sync::Arc::strong_count(source) == 1)
             .unwrap_or_else(|| {
-                std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
+                std::sync::Arc::new(admission::SurfaceSource::new(
                     info,
                     Vec::new(),
                     workers.spare_surfaces(),
-                )))
+                ))
             });
         let Some(source) = std::sync::Arc::get_mut(&mut surface_source) else {
             return Err(invalid_inter_tile_scheduling_state());
         };
-        let rects = source.get_mut().reset(info, workers.spare_surfaces());
+        let rects = source.reset(info, workers.spare_surfaces());
         rects.clear();
         let commit = TileCommit::direct(
             ordered,

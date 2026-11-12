@@ -22,6 +22,7 @@ use super::super::cell::{Cell, Plane, Written};
 use super::super::{CellPlacement, ReferencePlaneView};
 use super::pairs;
 use core::arch::aarch64::*;
+use core::num::NonZeroU32;
 use core::slice::{ChunksExact, ChunksExactMut};
 use fearless_simd::{Bytes, Neon, Simd, SimdBase, SimdFrom, i8x16, i16x8, i32x4, u8x16, u64x2};
 
@@ -82,24 +83,35 @@ pub(in crate::subpel_mc) fn reads(
     Some((reads, true))
 }
 
-/// Rows `0..n` of a 2-D array in `data` from `at`, `stride` apart and `len`
-/// wide: the first `n - 1` as whole strides, then the last, `len` long.
-/// `None` when they leave `data`, `n` is zero or `stride < len`.
+/// The stride and the count of the first `n - 1` rows of [`rows`] in narrow
+/// types, `None` for a zero `stride` or one of 2^32 or more, or `n` zero or
+/// above 2^16: their product, the length of those rows, divides by the
+/// stride exactly, so no row iterator divides.
+#[inline(always)]
+fn span(stride: usize, n: usize) -> Option<(NonZeroU32, u16)> {
+    let stride = NonZeroU32::new(u32::try_from(stride).ok()?)?;
+    Some((stride, u16::try_from(n.wrapping_sub(1)).ok()?))
+}
+
+/// Rows `0..n` of a 2-D array in `data` from `at`, of the [`span`] of their
+/// stride and `n`, `len` wide: the first `n - 1` as whole strides, then the
+/// last, `len` long. `None` when they leave `data`.
 #[inline(always)]
 fn rows<T>(
     data: &[T],
     at: usize,
-    stride: usize,
+    (stride, n): (NonZeroU32, u16),
     len: usize,
-    n: usize,
 ) -> Option<(ChunksExact<'_, T>, &[T])> {
-    let span = n.checked_sub(1)?.checked_mul(stride)?;
-    let rows = data.get(at..)?.get(..span.checked_add(len)?)?;
-    let (body, last) = rows.split_at_checked(span)?;
-    (stride >= len && len > 0).then(|| (body.chunks_exact(stride), last))
+    let (stride, span) = (
+        stride.get() as usize,
+        usize::from(n) * stride.get() as usize,
+    );
+    let (body, last) = data.get(at..)?.get(..span + len)?.split_at_checked(span)?;
+    Some((body.chunks_exact(stride), last))
 }
 
-/// [`rows`] of mutable `data`.
+/// [`rows`] of mutable `data`, `stride` apart.
 #[inline(always)]
 fn rows_mut<T>(
     data: &mut [T],
@@ -108,10 +120,16 @@ fn rows_mut<T>(
     len: usize,
     n: usize,
 ) -> Option<(ChunksExactMut<'_, T>, &mut [T])> {
-    let span = n.checked_sub(1)?.checked_mul(stride)?;
-    let rows = data.get_mut(at..)?.get_mut(..span.checked_add(len)?)?;
-    let (body, last) = rows.split_at_mut_checked(span)?;
-    (stride >= len && len > 0).then(|| (body.chunks_exact_mut(stride), last))
+    let (stride, n) = span(stride, n)?;
+    let (stride, span) = (
+        stride.get() as usize,
+        usize::from(n) * stride.get() as usize,
+    );
+    let (body, last) = data
+        .get_mut(at..)?
+        .get_mut(..span + len)?
+        .split_at_mut_checked(span)?;
+    (stride >= len).then(|| (body.chunks_exact_mut(stride), last))
 }
 
 /// What a kernel stores: `N` outputs of a row at a time, `N` 8 or 16, or
@@ -425,7 +443,7 @@ impl<P: Pred> Out for Average<'_, P> {
         len: usize,
         n: usize,
     ) -> Option<(Self::Rows<'_>, Self::Row<'_>)> {
-        let (first, first_last) = rows(self.pred0, col, self.w, len, n)?;
+        let (first, first_last) = rows(self.pred0, col, span(self.w, n)?, len)?;
         let (output, last) = rows_mut(self.output, col, self.stride, len, n)?;
         Some((first.zip(output), (first_last, last)))
     }
@@ -560,11 +578,11 @@ pub(in crate::subpel_mc) struct Program<'a, 'b> {
     pub(in crate::subpel_mc) forward: i32,
 }
 
-/// The kernels of `P` blocks of one window, each into its `O`.
-pub(in crate::subpel_mc) struct Strips<'a, 'b, O, const P: usize = 1>(
-    [&'a Block<'b, u8>; P],
-    [&'a mut O; P],
-);
+/// The kernels of a block into its `O`.
+pub(in crate::subpel_mc) struct Strip<'a, 'b, O>(&'a Block<'b, u8>, &'a mut O);
+
+/// The [`Strip`]s of two blocks of one window.
+pub(in crate::subpel_mc) struct Strips<'a, 'b, O>([Strip<'a, 'b, O>; 2]);
 
 /// The kernels of `P` compound pairs of one window shape, each into its
 /// `u8` storage: with `CELL` 4x4 or 8x8 register cells, else the first
@@ -653,48 +671,48 @@ pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) 
         Sink::Put { output, stride } => {
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut Put {
+                Strip(
+                    block,
+                    &mut Put {
                         output,
                         stride: *stride,
-                    }],
+                    },
                 ),
             );
         }
         Sink::PutWide { output, stride, .. } => {
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut PutWide {
+                Strip(
+                    block,
+                    &mut PutWide {
                         output,
                         stride: *stride,
-                    }],
+                    },
                 ),
             );
         }
         Sink::Prep { output, stride } => {
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut Prep {
+                Strip(
+                    block,
+                    &mut Prep {
                         output,
                         stride: *stride,
-                    }],
+                    },
                 ),
             );
         }
         Sink::PrepNarrow { output, stride } => {
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut Prep {
+                Strip(
+                    block,
+                    &mut Prep {
                         output,
                         stride: *stride,
-                    }],
+                    },
                 ),
             );
         }
@@ -707,15 +725,15 @@ pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) 
             let (forward, stride) = (*forward, *stride);
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut Average {
+                Strip(
+                    block,
+                    &mut Average {
                         pred0,
                         w,
                         forward,
                         output,
                         stride,
-                    }],
+                    },
                 ),
             );
         }
@@ -728,15 +746,15 @@ pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) 
             let (forward, stride) = (*forward, *stride);
             dot::run(
                 t,
-                Strips(
-                    [block],
-                    [&mut Average {
+                Strip(
+                    block,
+                    &mut Average {
                         pred0,
                         w,
                         forward,
                         output,
                         stride,
-                    }],
+                    },
                 ),
             );
         }
@@ -747,7 +765,7 @@ pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) 
 /// Stores the `Clip1` single-reference prediction of `block`.
 #[inline]
 pub(in crate::subpel_mc) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
-    run(Strips([block], [&mut Put { output, stride }]));
+    run(Strip(block, &mut Put { output, stride }));
 }
 
 /// Runs `job` in the kernel family [`dot::run`] picks.
@@ -772,7 +790,7 @@ pub(in crate::subpel_mc) fn put_pair(
         output: second,
         stride: second_stride,
     };
-    run(Strips(blocks, [first, second]));
+    run(Strips([Strip(blocks[0], first), Strip(blocks[1], second)]));
 }
 
 /// The COMPOUND_AVERAGE of each of `P` 4x4 or 8x8 register cell pairs into
@@ -1117,7 +1135,11 @@ fn store_cell<const W: usize>(
     output: &mut [u8],
     stride: usize,
 ) {
-    let groups = first.into_iter().zip(second).enumerate().take(W * W / 8);
+    let averages: [uint8x8_t; W] = if forward == 8 {
+        core::array::from_fn(|group| vqrshrun_n_s16::<5>(vaddq_s16(first[group], second[group])))
+    } else {
+        core::array::from_fn(|group| vqmovun_s16(blend(first[group], second[group], forward)))
+    };
     let at = |group: usize| {
         if W == 4 {
             2 * group * stride
@@ -1125,12 +1147,7 @@ fn store_cell<const W: usize>(
             group * stride
         }
     };
-    for (group, (first, second)) in groups {
-        let values = if forward == 8 {
-            vqrshrun_n_s16::<5>(vaddq_s16(first, second))
-        } else {
-            vqmovun_s16(blend(first, second, forward))
-        };
+    for (group, values) in averages.into_iter().enumerate().take(W * W / 8) {
         let Some(row) = output.get_mut(at(group)..) else {
             return;
         };
@@ -1232,7 +1249,7 @@ fn fullpel_rows<'a>(
         }
         return;
     }
-    let line = |block: &Block<'a, u8>| rows(block.source, block.origin, block.stride, w, h);
+    let line = |block: &Block<'a, u8>| rows(block.source, block.origin, span(block.stride, h)?, w);
     let (Some((rows0, last0)), Some((rows1, last1))) = (line(first), line(second)) else {
         return;
     };

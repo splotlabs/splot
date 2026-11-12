@@ -56,8 +56,10 @@ pub trait FrameWork: Send + Sync {
     }
     /// Runs the claimed row off the lock, publishes its progress, and calls
     /// [`Stage::finish`] for it. Its worker hands out what the row released
-    /// after it takes its own next row.
-    fn run(&self, claim: Claim);
+    /// after it takes its own next row. `worker` is the index of the running
+    /// worker, below [`RowScheduler::threads`], so a frame can keep state that
+    /// only that worker uses.
+    fn run(&self, claim: Claim, worker: usize);
     /// Whether every stage has finished, including after a failure.
     fn done(&self) -> bool;
 }
@@ -696,7 +698,7 @@ impl Core {
         };
         let _ = slot.thread.set(std::thread::current());
         while let Some((frame, claim)) = self.next_job(index, slot) {
-            frame.run(claim);
+            frame.run(claim, index);
             let done = frame.done();
             drop(frame);
             if done {
@@ -886,7 +888,7 @@ mod tests {
                 .map(|row| Claim { stage: 0, row })
         }
 
-        fn run(&self, claim: Claim) {
+        fn run(&self, claim: Claim, _worker: usize) {
             self.log.lock().push((self.id, claim.row));
             if self.fail_at == Some(claim.row) {
                 self.done_rows.fail();
@@ -1055,7 +1057,7 @@ mod tests {
             None
         }
 
-        fn run(&self, _: Claim) {}
+        fn run(&self, _: Claim, _: usize) {}
 
         fn done(&self) -> bool {
             false
@@ -1070,7 +1072,7 @@ mod tests {
             None
         }
 
-        fn run(&self, _: Claim) {}
+        fn run(&self, _: Claim, _: usize) {}
 
         fn done(&self) -> bool {
             true
@@ -1147,7 +1149,7 @@ mod tests {
                 .map(|row| Claim { stage: 0, row })
         }
 
-        fn run(&self, claim: Claim) {
+        fn run(&self, claim: Claim, _worker: usize) {
             self.started.store(true, Ordering::SeqCst);
             let deadline = Instant::now() + Duration::from_secs(5);
             while (self.held.load(Ordering::SeqCst)
@@ -1260,7 +1262,7 @@ mod tests {
             self.stage.claim_ready().map(|row| Claim { stage: 0, row })
         }
 
-        fn run(&self, claim: Claim) {
+        fn run(&self, claim: Claim, _worker: usize) {
             if let Some(runs) = self.runs.get(claim.row) {
                 runs.fetch_add(1, Ordering::SeqCst);
             }
@@ -1464,7 +1466,7 @@ mod tests {
                 .map(|row| Claim { stage: 0, row })
         }
 
-        fn run(&self, claim: Claim) {
+        fn run(&self, claim: Claim, _worker: usize) {
             self.stage.finish(claim.row);
         }
 
@@ -1499,7 +1501,7 @@ mod tests {
             self.2.claim(|_| true).map(|row| Claim { stage: 0, row })
         }
 
-        fn run(&self, claim: Claim) {
+        fn run(&self, claim: Claim, _worker: usize) {
             let deadline = Instant::now() + Duration::from_secs(5);
             for _ in 0..2 {
                 std::thread::sleep(Duration::from_millis(20));

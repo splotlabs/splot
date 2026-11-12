@@ -172,13 +172,12 @@ fn reconstruction_pools_reuse_owned_storage() {
     assert_eq!(reused.temporal.capacity(), 8);
     assert!(core::ptr::eq(reused.temporal.as_ptr(), pointer));
 
-    let workers = InterReconScratchPool::<u8>::default();
-    workers.ensure_workers(1);
+    let workers = InterReconScratchPool::<u8>::new(1);
     let first = workers
-        .with_scratch(core::ptr::from_mut)
+        .with_scratch(0, core::ptr::from_mut)
         .expect("available scratch");
     let second = workers
-        .with_scratch(core::ptr::from_mut)
+        .with_scratch(0, core::ptr::from_mut)
         .expect("available scratch");
     assert_eq!(first, second);
 }
@@ -422,38 +421,26 @@ fn a_tile_row_pool_without_a_decode_still_hands_out_buffers() {
     assert_eq!(pool.take().residual_coeffs.capacity(), 0);
 }
 
-#[cfg(test)]
 #[test]
-fn reconstruction_scratch_is_bounded_while_all_workers_hold_it() {
-    let workers = InterReconScratchPool::<u16>::default();
-    workers.ensure_workers(12);
-    let barrier = std::sync::Barrier::new(13);
-    std::thread::scope(|scope| {
-        let mut joins = Vec::new();
-        for _ in 0..12 {
-            let workers = &workers;
-            let barrier = &barrier;
-            joins.push(scope.spawn(move || {
-                workers.with_scratch(|_| {
-                    barrier.wait();
-                    barrier.wait();
-                })
-            }));
-        }
-        barrier.wait();
-        workers.ensure_workers(12);
-        let allocated = workers.available.lock().0;
-        let exhausted = workers.with_scratch(|_| ()).is_err();
-        barrier.wait();
-        for join in joins {
-            join.join().expect("worker").expect("scratch");
-        }
-        assert_eq!(allocated, 12);
-        assert!(exhausted);
-    });
-    let pool = workers.available.lock();
-    assert_eq!(pool.0, 12);
-    assert_eq!(pool.1.len(), 12);
+fn each_worker_reuses_its_own_reconstruction_scratch() {
+    let workers = InterReconScratchPool::<u16>::new(12);
+    let held: Vec<_> = (0..12)
+        .map(|worker| {
+            workers
+                .with_scratch(worker, core::ptr::from_mut)
+                .expect("scratch")
+        })
+        .collect();
+    for (worker, &scratch) in held.iter().enumerate() {
+        assert_eq!(held.iter().filter(|&&other| other == scratch).count(), 1);
+        let again = workers.with_scratch(worker + 12, core::ptr::from_mut);
+        assert_eq!(again.expect("scratch"), scratch);
+    }
+    assert!(
+        InterReconScratchPool::<u16>::default()
+            .with_scratch(0, |_| ())
+            .is_err()
+    );
 }
 
 #[test]
