@@ -12,11 +12,12 @@
 //! the blocks [`super`] sends it; a shape these kernels do not cover, or a
 //! CPU without AVX2, declines to the portable kernels of [`super::generic`].
 
-use super::super::block::{self, Block, Sink, Taps};
+use super::super::ReferencePlaneView;
+use super::super::block::{self, Block, Sink, Taps, Window};
+use super::super::cell::{Cell, Plane, Written};
 use super::generic;
 use core::arch::x86_64::*;
 use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x8, i16x16, i32x4, i32x8, u8x16, u8x32};
-pub(super) use generic::{compound_windows, program};
 
 mod cell;
 
@@ -88,7 +89,6 @@ pub(super) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
     let cell = block.h == size && (size == 4 || size == 8) && filtered && !narrow;
     if cell
         && let Some(t) = token()
-        && cell::addressable(block)
         && cell::put(t, block, size, output, stride)
     {
         return;
@@ -150,6 +150,34 @@ pub(super) fn compound_strips<const P: usize>(
     for (blocks, (output, stride)) in pairs.into_iter().zip(outputs) {
         compound_fullpel(blocks, forward, output, stride);
     }
+}
+
+/// Stores the COMPOUND_AVERAGE of the 4x4 or 8x8 cell of `windows`
+/// within `bounds`, read in place or by clamped rows and columns of
+/// `views`, or returns `false` without writing.
+pub(super) fn compound_windows(
+    views: [&ReferencePlaneView<'_, u8>; 2],
+    windows: &[Window; 2],
+    bounds: [[i32; 4]; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    token()
+        .is_some_and(|t| cell::compound_windows(t, views, windows, bounds, forward, output, stride))
+}
+
+/// Runs the cells of a program that the register cells cover into
+/// `planes`, and returns their bits.
+pub(super) fn program(
+    planes: &mut [Option<Plane<'_, '_, u8>>; 2],
+    shape: (usize, usize),
+    cells: &[Cell],
+    clip: (i32, u16),
+) -> Written {
+    token().map_or([[0; 4]; 2], |t| {
+        cell::program(t, planes, shape, cells, clip)
+    })
 }
 
 /// `pshufb` patterns gathering source byte pairs `(2j + k, 2j + k + 1)`

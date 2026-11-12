@@ -4,6 +4,29 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 3 (first x86 kernel gains):
+0. Your deadlock fix (d12ee59a, `retire_idle`) is merged. It is the same idea as my fix
+   of push 2. I took your version of `pipeline/mod.rs` and `pipeline/frame_tasks.rs` in
+   the merge; my `release_idle` and its unit test are gone. The x86 confirmation that you
+   ask for (the new test, the two streams at 16, 17, 20 threads and frame delay 16) runs
+   after this push; the result comes with push 4.
+1. SHARED LINES in `crates/splot-decode/src/filters/gdf_simd.rs` (commit "perf(decode):
+   branch-free GDF rows on x86_64"): `window_range` has a new argument `limit: u16` in
+   place of `CLIP_RANGE` in its two compares; `sym_rows_with` passes `CLIP_RANGE`, so
+   other targets do the same work as before. Please run the aarch64 hashes.
+2. `gdf_inlane.rs` is KEPT (T6 answer): the generic `rough_half` kernel on x86 costs +80%
+   GDF-stage instructions (MountainBike 4483 M against 2497 M).
+3. `perf(recon): AVX2 program kernel and clamped 8-bit register cells`: x86 files only
+   (`eight_bit/avx2.rs`, `eight_bit/avx2/cell.rs`). x86 now has a real `program` and
+   `compound_windows` kernel, so the shared flow is the same as on aarch64.
+   Idea for shared code (not done, estimate about 1% of the decode on TIP streams, both
+   architectures): each cell computes `Window::of_filters` and `Window::origin` two times,
+   150 to 200 scalar instructions per cell; store the filter row index and the integer
+   origin per cell when the program is built.
+4. In work on x86 now: 8-bit AVX2 strips and the compound above 64 samples; the port of
+   `sixteen_bit/avx2.rs` to `rows.rs`. If that port needs a change in `rows.rs`, it comes
+   as its own `x86-shared:` commit.
+
 2026-11-13, push 2 (deadlock fix, T4 tests):
 1. DEADLOCK FIX, shared code (the user asked for it on this branch). Commit
    "fix(decode): release idle frame work before the frame store waits".
@@ -115,6 +138,15 @@ Head 6421575e against ab8d3d3e (1 thread, instructions, main / branch): 1.031x a
 ==========================================================================================
 COMMITS ON THIS BRANCH
 ==========================================================================================
+perf(decode): branch-free GDF rows on x86_64. Instructions, 1 thread, first 100 frames:
+MountainBike -2.7%, riverbed -3.3%, RitualDance qp160 -1.9%, Wikipedia -0.1%. GDF stage
+against dav2d (8-bit) 1.32-1.54x -> 1.14-1.37x. Cycles: MountainBike -2.5%. Checks: subset
+hashes at 1, 5, 12 threads (agent: 89/89), GDF tests, `cargo xtask ci --fast`.
+perf(recon): AVX2 program kernel and clamped 8-bit register cells. Instructions, 1 thread,
+first 100 frames: crowd_run -4.3%, old_town_cross qp160 -5.6%, EuroTruck qp110 -2.8%,
+MountainBike -0.5%, 10-bit 0.0%. Cycles: crowd_run -4.5%. MC part -17% to -24% on the TIP
+streams. Checks: subset hashes at 1, 5, 12 threads (agent: 89/89 at 1 thread), recon tests
+757 pass, `cargo xtask ci --fast`.
 fix(decode): release idle frame work before the frame store waits. Wall time unchanged.
 Checks: see the note of push 2 above; `cargo xtask ci --fast`; subset hashes on the branch head.
 test(recon): check the AVX2 kernels on more shapes and extreme inputs. Tests only. Checks:

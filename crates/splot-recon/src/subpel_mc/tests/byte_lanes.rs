@@ -1089,3 +1089,130 @@ fn sixteen_bit_compound_cells_match_the_oracle() {
     }
     assert!(taken > 60, "{taken}");
 }
+
+/// Register compound cells of every filter, size and phase pair, in place
+/// and with windows clamped on each side, from random and extreme-contrast
+/// references, through the placement entry and a program, against the
+/// § 7.13.3.18 oracle and its COMPOUND_AVERAGE.
+#[test]
+fn register_compound_cells_match_the_oracle() {
+    let (ref_w, ref_h) = (48usize, 40usize);
+    let mut seed = 99u32;
+    let mut next = |range: u32| {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        (seed >> 8) % range
+    };
+    let random = (0..ref_w * ref_h)
+        .map(|_| next(256) as u16)
+        .collect::<Vec<_>>();
+    let checker = (0..ref_w * ref_h)
+        .map(|i| {
+            if (i % ref_w + i / ref_w) % 2 == 0 {
+                255
+            } else {
+                0
+            }
+        })
+        .collect::<Vec<u16>>();
+    let stripes = (0..ref_w * ref_h)
+        .map(|i| if (i % ref_w / 2) % 2 == 0 { 255 } else { 0 })
+        .collect::<Vec<u16>>();
+    for texture in [random, checker, stripes] {
+        let bytes = texture.iter().map(|&s| s as u8).collect::<Vec<_>>();
+        let view = ReferencePlaneView::new(&bytes, ref_w, ref_h).unwrap();
+        for interp in [
+            InterpolationFilter::EightTap,
+            InterpolationFilter::EightTapSmooth,
+            InterpolationFilter::EightTapSharp,
+            InterpolationFilter::Bilinear,
+        ] {
+            for size in [4usize, 8] {
+                for forward in [8i16, 3, 13] {
+                    let stride = 16 * size;
+                    let mut program = CompoundCells::default();
+                    let mut want = vec![0u8; 16 * size * stride];
+                    let mut got = vec![0u8; 16 * size * stride];
+                    for phase in 0..256i32 {
+                        let mut placement = |phase: i32| -> CellPlacement {
+                            let [dx, dy] = [next(15) as i32 - 7, next(15) as i32 - 7];
+                            let (x, y) = (20 + dx, 16 + dy);
+                            (
+                                [
+                                    (x << 10) + ((phase % 16) << 6),
+                                    (y << 10) + ((phase / 16) << 6),
+                                ],
+                                [16, 12, 16 + size as i32 + 2, 12 + size as i32 + 3],
+                            )
+                        };
+                        let placements = [placement(phase), placement((phase * 7 + 3) % 256)];
+                        let params = placements.map(|([start_x, start_y], [fx, fy, lx, ly])| {
+                            SubpelPredictParams {
+                                start_x,
+                                start_y,
+                                first_x: fx,
+                                first_y: fy,
+                                last_x: lx,
+                                last_y: ly,
+                                ..full_pel_params(
+                                    interp,
+                                    size,
+                                    size,
+                                    0,
+                                    0,
+                                    ref_w as i32,
+                                    ref_h as i32,
+                                )
+                            }
+                        });
+                        let [pred0, pred1] = params.map(|params| {
+                            reference_subpel_compound(&texture, ref_w, ref_h, &params)
+                        });
+                        let [row, col] =
+                            [(phase as usize / 16) * size, (phase as usize % 16) * size];
+                        let at = row * stride + col;
+                        for (index, (&a, &b)) in pred0.iter().zip(&pred1).enumerate() {
+                            want[at + index / size * stride + index % size] =
+                                blend_compound_average_weighted_sample(
+                                    a,
+                                    b,
+                                    BitDepth::Eight,
+                                    forward,
+                                ) as u8;
+                        }
+                        let mut placed = vec![0u8; size * size];
+                        assert!(subpel_compound_cell(
+                            [&view, &view],
+                            interp,
+                            size,
+                            placements,
+                            (forward, BitDepth::Eight),
+                            &mut placed,
+                            size
+                        ));
+                        let label = format!("{interp:?} {size} {forward} phase {phase}");
+                        for (index, &sample) in placed.iter().enumerate() {
+                            assert_eq!(
+                                sample,
+                                want[at + index / size * stride + index % size],
+                                "placed {label}"
+                            );
+                        }
+                        assert!(program.push([row, col], placements));
+                        if program.len() == 256 {
+                            let written = subpel_compound_cells(
+                                [Some((&[view, view], &mut got[..], stride)), None],
+                                interp,
+                                size,
+                                &mut program,
+                                (forward, BitDepth::Eight),
+                            );
+                            assert_eq!(written[0], [u64::MAX; 4], "{label}");
+                            program.clear();
+                        }
+                    }
+                    assert_eq!(got, want, "program {interp:?} {size} {forward}");
+                }
+            }
+        }
+    }
+}
