@@ -16,7 +16,7 @@ use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::{self, PartitionDecisionError, PartitionType};
 use super::partition_allowed::{
     PartitionAllowedError, PartitionAllowedInput, PartitionDecisionMemo, PartitionFeatureFlags,
-    PartitionTreeType, decision_memo_key,
+    PartitionTreeType, derive_memo_facts,
 };
 use super::partition_size::{
     BlockSize, PartitionSizeError, h_partition_midsize, partition_subsize,
@@ -196,13 +196,14 @@ impl ChromaRefGeometry {
     }
 }
 
+/// Bits 0..4 are the partition memo flags, see [`PartitionDecisionMemo::facts_at`].
 const CALL_CHROMA_OFFSET: u8 = 1;
 const CALL_HAS_CHROMA: u8 = 1 << 1;
-const CALL_CFL_ALLOWED_IN_SDP: u8 = 1 << 2;
-const CALL_EXTENDED_SDP_ALLOWED: u8 = 1 << 3;
-const CALL_INTRA_REGION: u8 = 1 << 4;
-const CALL_EXTENDED_SDP_CHROMA_BLOCK: u8 = 1 << 5;
-const CALL_HAS_PARENT: u8 = 1 << 6;
+const CALL_INTRA_REGION: u8 = 1 << 2;
+const CALL_HAS_PARENT: u8 = 1 << 3;
+const CALL_CFL_ALLOWED_IN_SDP: u8 = 1 << 4;
+const CALL_EXTENDED_SDP_ALLOWED: u8 = 1 << 5;
+const CALL_EXTENDED_SDP_CHROMA_BLOCK: u8 = 1 << 6;
 const CALL_PARENT_64X64: u8 = 1 << 7;
 const BLOCK_64X64: usize = 12;
 

@@ -260,17 +260,20 @@ pub(crate) fn partition_decision_facts(
     ))
 }
 
-const MEMO_SLOTS: usize = 29 * 3 * 8;
+/// `bSize` (5 bits), tree type (2 bits) and the four flag bits.
+const MEMO_SLOTS: usize = 1 << 11;
 const EDGE_MEMO_SLOTS: usize = 256;
 
-/// [`partition_decision_facts`] keyed by size, tree type, the three
-/// chroma/region flags and the distances to the frame edge clamped to the
-/// block extent. The facts read the position only through `r + x < MiRows`
-/// and `c + x < MiCols` tests with `x` below the block extent, so the key
-/// determines them while the other frame-level inputs stay fixed, which holds
-/// for one tile walk. Blocks wholly inside the frame take a flat slot; blocks
-/// crossing an edge share a direct-mapped cache whose entries repeat along
-/// the edge. A slot holds the packed facts; 0 marks an empty slot.
+/// [`partition_decision_facts`] keyed by size, tree type, the `HasChroma`,
+/// `chromaOffset`, has-parent and intra-region flags, and the distances to
+/// the frame edge clamped to the block extent. The facts read the position
+/// only through `r + x < MiRows` and `c + x < MiCols` tests with `x` below the
+/// block extent, and the flags give the mixed region under the fixed
+/// `frame_is_intra`, so the key determines them while the frame-level inputs
+/// stay fixed, which holds for one tile walk. Blocks wholly inside the frame
+/// take a flat slot; blocks crossing an edge share a direct-mapped cache whose
+/// entries repeat along the edge. A slot holds the packed facts; 0 marks an
+/// empty slot.
 pub(crate) struct PartitionDecisionMemo {
     slots: [u16; MEMO_SLOTS],
     edge_keys: [u32; EDGE_MEMO_SLOTS],
@@ -293,46 +296,72 @@ impl PartitionDecisionMemo {
         &mut self,
         input: PartitionAllowedInput,
     ) -> Result<PartitionDecisionFacts, PartitionAllowedError> {
-        self.facts_keyed(memo_key(input), || Ok(input))
+        let (Some(rows_left), Some(cols_left), None) = (
+            input.mi_rows.checked_sub(input.r),
+            input.mi_cols.checked_sub(input.c),
+            input.known_chroma_luma_partition,
+        ) else {
+            return derive_memo_facts(None, || Ok(input));
+        };
+        let flags = usize::from(input.chroma_offset)
+            | usize::from(input.has_chroma) << 1
+            | usize::from(input.mixed_region) << 3;
+        self.facts_at(
+            input.b_size,
+            input.tree_type,
+            flags,
+            [rows_left, cols_left],
+            || Ok(input),
+        )
     }
 
-    /// The facts under `key`, deriving them from `input` on a miss, so a hit
-    /// never builds the input.
+    /// The facts of a `b_size` block of `tree_type` whose `flags` bits 0..4
+    /// are `chromaOffset`, `HasChroma`, intra region and has parent,
+    /// `[rows, cols]` 4x4 units from the bottom / right frame edge, deriving
+    /// them from `input` on a miss, so a hit never builds the input.
     #[inline]
-    pub(crate) fn facts_keyed<E: From<PartitionAllowedError>>(
+    pub(crate) fn facts_at<E: From<PartitionAllowedError>>(
         &mut self,
-        key: Option<MemoKey>,
+        b_size: BlockSize,
+        tree_type: PartitionTreeType,
+        flags: usize,
+        [rows, cols]: [usize; 2],
         input: impl FnOnce() -> Result<PartitionAllowedInput, E>,
     ) -> Result<PartitionDecisionFacts, E> {
-        match self.slot_mut(key) {
-            Some(slot) if *slot != 0 => Ok(PartitionDecisionFacts(*slot)),
-            slot => derive_memo_facts(slot, input),
+        let slot = b_size.index() << 6 | (tree_type as usize) << 4 | flags & 15;
+        let [high, wide] = b_size.num_4x4();
+        let entry = if rows >= high && cols >= wide {
+            self.slots.get_mut(slot & (MEMO_SLOTS - 1))
+        } else if rows == 0 || cols == 0 {
+            None
+        } else {
+            self.edge_slot((slot | rows.min(high) << 11 | cols.min(wide) << 18) as u32)
+        };
+        match entry {
+            Some(entry) if *entry != 0 => Ok(PartitionDecisionFacts(*entry)),
+            entry => derive_memo_facts(entry, input),
         }
     }
 
-    #[inline]
-    fn slot_mut(&mut self, key: Option<MemoKey>) -> Option<&mut u16> {
-        match key? {
-            MemoKey::Interior(slot) => self.slots.get_mut(slot),
-            MemoKey::Edge(key) => {
-                let index = (key.wrapping_mul(0x9E37_79B9) >> 24) as usize % EDGE_MEMO_SLOTS;
-                let (stored, slot) = (
-                    self.edge_keys.get_mut(index)?,
-                    self.edge_facts.get_mut(index)?,
-                );
-                if *stored != key {
-                    *stored = key;
-                    *slot = 0;
-                }
-                Some(slot)
-            }
+    /// The edge cache entry of nonzero `key`, emptied when it held another key.
+    fn edge_slot(&mut self, key: u32) -> Option<&mut u16> {
+        let index = (key.wrapping_mul(0x9E37_79B9) >> 24) as usize % EDGE_MEMO_SLOTS;
+        let (stored, slot) = (
+            self.edge_keys.get_mut(index)?,
+            self.edge_facts.get_mut(index)?,
+        );
+        if *stored != key {
+            *stored = key;
+            *slot = 0;
         }
+        Some(slot)
     }
 }
 
+/// [`partition_decision_facts`] of `input`, stored in `slot` when given.
 #[cold]
 #[inline(never)]
-fn derive_memo_facts<E: From<PartitionAllowedError>>(
+pub(crate) fn derive_memo_facts<E: From<PartitionAllowedError>>(
     slot: Option<&mut u16>,
     input: impl FnOnce() -> Result<PartitionAllowedInput, E>,
 ) -> Result<PartitionDecisionFacts, E> {
@@ -341,53 +370,6 @@ fn derive_memo_facts<E: From<PartitionAllowedError>>(
         *slot = facts.0;
     }
     Ok(facts)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MemoKey {
-    Interior(usize),
-    /// Nonzero: the clamped edge distances are at least 1.
-    Edge(u32),
-}
-
-#[cfg(test)]
-fn memo_key(input: PartitionAllowedInput) -> Option<MemoKey> {
-    if input.known_chroma_luma_partition.is_some() {
-        return None;
-    }
-    decision_memo_key(
-        input.b_size,
-        input.tree_type,
-        [input.has_chroma, input.chroma_offset, input.mixed_region],
-        input.mi_rows.checked_sub(input.r)?,
-        input.mi_cols.checked_sub(input.c)?,
-    )
-}
-
-/// The memo key of a block `rows_left` / `cols_left` 4x4 units from the
-/// bottom / right frame edge with `[HasChroma, chromaOffset, mixed region]`
-/// `flags`; `None` outside the frame.
-#[inline]
-pub(crate) fn decision_memo_key(
-    b_size: BlockSize,
-    tree_type: PartitionTreeType,
-    flags: [bool; 3],
-    rows_left: usize,
-    cols_left: usize,
-) -> Option<MemoKey> {
-    let high = b_size.num_4x4_high().ok()?;
-    let wide = b_size.num_4x4_wide().ok()?;
-    let rows = rows_left.min(high);
-    let cols = cols_left.min(wide);
-    if rows == 0 || cols == 0 {
-        return None;
-    }
-    let flags = usize::from(flags[0]) << 2 | usize::from(flags[1]) << 1 | usize::from(flags[2]);
-    let slot = (b_size.index() * 3 + tree_type as usize) * 8 + flags;
-    if rows == high && cols == wide {
-        return Some(MemoKey::Interior(slot));
-    }
-    Some(MemoKey::Edge((slot | rows << 10 | cols << 17) as u32))
 }
 
 pub(crate) fn get_plane_residual_size(
@@ -864,13 +846,7 @@ mod memo_tests {
     fn memo_matches_direct_facts_for_every_slot_and_frame_key() {
         for frame in frame_keys() {
             let mut memo = PartitionDecisionMemo::default();
-            let mut seen = [false; MEMO_SLOTS];
-            for far in slots(frame) {
-                let Some(MemoKey::Interior(slot)) = memo_key(far) else {
-                    unreachable!("{far:?} is not an interior slot");
-                };
-                assert!(!seen[slot], "slot {slot} is shared");
-                seen[slot] = true;
+            for far in slots(frame).into_iter().chain(slots(frame)) {
                 let geometry = BlockGeometry::new(far.b_size).unwrap();
                 let tight = PartitionAllowedInput {
                     r: far.mi_rows - geometry.high_4x4,
@@ -890,7 +866,6 @@ mod memo_tests {
                     assert_eq!(memo.facts(input).ok(), direct, "{input:?}");
                 }
             }
-            assert!(seen.iter().all(|seen| *seen));
         }
     }
 

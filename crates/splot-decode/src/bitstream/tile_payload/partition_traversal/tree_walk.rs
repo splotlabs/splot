@@ -13,7 +13,7 @@ use super::{
     PartitionContextInput, PartitionDecisionMemo, PartitionTreeType, PartitionType,
     ROOT_HAS_CHROMA, SquareSplitContextInput, SymbolDecoder, TileIntraFactsState, TileMiSizeState,
     TileMiSizeStateError, TilePartitionBounds, TilePartitionCall, TilePartitionFrameFacts,
-    TilePartitionTraversalError, call_in_frame, checked_mul, child_calls_into, decision_memo_key,
+    TilePartitionTraversalError, call_in_frame, checked_mul, child_calls_into, derive_memo_facts,
     ensure_supported_traversal_frame, h_partition_midsize, partition_subsize,
     symbol_decoder_for_work_unit,
 };
@@ -434,25 +434,18 @@ impl TreeWalker<'_> {
         cdfs: &mut super::cdf::TileCdfSubset,
     ) -> Result<(PartitionType, bool), TilePartitionTraversalError> {
         let node = *call;
-        let forced_chroma_partition = self.sdp_state.forced_chroma_partition(frame, node);
-        let key = if forced_chroma_partition.is_none() {
-            decision_memo_key(
+        let facts = match self.sdp_state.forced_chroma_partition(frame, node) {
+            None => self.partition_memo.facts_at(
                 node.b_size,
                 node.tree_type,
-                [
-                    node.has_chroma(),
-                    node.chroma_offset(),
-                    mixed_region(frame, node),
-                ],
-                frame.mi_rows - node.r(),
-                frame.mi_cols - node.c(),
-            )
-        } else {
-            None
+                usize::from(node.flags),
+                [frame.mi_rows - node.r(), frame.mi_cols - node.c()],
+                || partition_allowed_input(node, frame, None),
+            )?,
+            forced => {
+                derive_memo_facts(None, move || partition_allowed_input(node, frame, forced))?
+            }
         };
-        let facts = self.partition_memo.facts_keyed(key, || {
-            partition_allowed_input(node, frame, forced_chroma_partition)
-        })?;
         let partition = if let Some(partition) = facts.unread_partition() {
             partition
         } else {

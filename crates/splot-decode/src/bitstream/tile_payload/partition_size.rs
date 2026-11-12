@@ -42,8 +42,20 @@ const fn padded_u8_table(values: &[i32; BLOCK_SIZES]) -> [u8; 32] {
     table
 }
 
-const NUM_4X4_WIDE: [u8; 32] = padded_u8_table(&NUM_4X4_BLOCKS_WIDE);
-const NUM_4X4_HIGH: [u8; 32] = padded_u8_table(&NUM_4X4_BLOCKS_HIGH);
+/// `[Num_4x4_Blocks_High, Num_4x4_Blocks_Wide]`, padded like [`padded_u8_table`].
+const NUM_4X4: [[u8; 2]; 32] = {
+    let (high, wide) = (
+        padded_u8_table(&NUM_4X4_BLOCKS_HIGH),
+        padded_u8_table(&NUM_4X4_BLOCKS_WIDE),
+    );
+    let mut table = [[0; 2]; 32];
+    let mut index = 0;
+    while index < 32 {
+        table[index] = [high[index], wide[index]];
+        index += 1;
+    }
+    table
+};
 const MI_WIDTH_LOG2_U8: [u8; 32] = padded_u8_table(&MI_WIDTH_LOG2);
 const MI_HEIGHT_LOG2_U8: [u8; 32] = padded_u8_table(&MI_HEIGHT_LOG2);
 
@@ -75,7 +87,7 @@ impl BlockSize {
     )]
     #[inline]
     pub(crate) const fn num_4x4_wide(self) -> Result<usize, PartitionSizeError> {
-        Ok(self.entry(&NUM_4X4_WIDE))
+        Ok(self.num_4x4()[1])
     }
 
     #[allow(
@@ -84,7 +96,14 @@ impl BlockSize {
     )]
     #[inline]
     pub(crate) const fn num_4x4_high(self) -> Result<usize, PartitionSizeError> {
-        Ok(self.entry(&NUM_4X4_HIGH))
+        Ok(self.num_4x4()[0])
+    }
+
+    /// `[Num_4x4_Blocks_High, Num_4x4_Blocks_Wide]`.
+    #[inline]
+    pub(crate) const fn num_4x4(self) -> [usize; 2] {
+        let [high, wide] = NUM_4X4[self.0 as usize & 31];
+        [high as usize, wide as usize]
     }
 
     #[inline]
