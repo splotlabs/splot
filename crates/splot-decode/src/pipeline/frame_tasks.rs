@@ -574,7 +574,6 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 self.fail(error);
                 break;
             }
-            self.notify();
             let next = match claim.stage {
                 PRECOMPUTE => self.stages[COMMIT]
                     .claim(|batch| batch == claim.row)
@@ -588,7 +587,10 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 _ => None,
             };
             match next {
-                Some(next) => claim = next,
+                Some(next) => {
+                    self.notify();
+                    claim = next;
+                }
                 None => break,
             }
         }
@@ -1000,7 +1002,6 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
         if let Err(error) = outcome {
             self.fail(error);
         }
-        self.wake.notify();
     }
 
     fn done(&self) -> bool {
@@ -1234,7 +1235,6 @@ impl<T: SplitSample> FrameWork for FinishFrame<T> {
         if let Err(error) = outcome {
             self.fail(error);
         }
-        self.wake.notify();
     }
 
     fn done(&self) -> bool {
