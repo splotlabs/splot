@@ -33,6 +33,14 @@ mod copy;
 mod eight_bit;
 mod fullpel_u8;
 mod portable;
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    allow(
+        dead_code,
+        reason = "walked by the NEON kernels; AVX2 has its own rows"
+    )
+)]
+mod rows;
 mod search_window;
 mod sixteen_bit;
 mod tip_overlap;

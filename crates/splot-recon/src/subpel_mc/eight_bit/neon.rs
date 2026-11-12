@@ -19,11 +19,10 @@
 
 use super::super::block::{Block, Geometry, Sink, Taps, Window, is_cell};
 use super::super::cell::{Cell, Plane, Written};
+use super::super::rows::{Average, Out, Prep, Put, rows, rows_mut, span};
 use super::super::{CellPlacement, ReferencePlaneView};
 use super::pairs;
 use core::arch::aarch64::*;
-use core::num::NonZeroU32;
-use core::slice::{ChunksExact, ChunksExactMut};
 use fearless_simd::{Bytes, Neon, Simd, SimdBase, SimdFrom, i8x16, i16x8, i32x4, u8x16, u64x2};
 
 /// Where a register cell reads window row `r`: `base + r * stride`, or
@@ -83,78 +82,10 @@ pub(in crate::subpel_mc) fn reads(
     Some((reads, true))
 }
 
-/// The stride and the count of the first `n - 1` rows of [`rows`] in narrow
-/// types, `None` for a zero `stride` or one of 2^32 or more, or `n` zero or
-/// above 2^16: their product, the length of those rows, divides by the
-/// stride exactly, so no row iterator divides.
-#[inline(always)]
-fn span(stride: usize, n: usize) -> Option<(NonZeroU32, u16)> {
-    let stride = NonZeroU32::new(u32::try_from(stride).ok()?)?;
-    Some((stride, u16::try_from(n.wrapping_sub(1)).ok()?))
-}
-
-/// Rows `0..n` of a 2-D array in `data` from `at`, of the [`span`] of their
-/// stride and `n`, `len` wide: the first `n - 1` as whole strides, then the
-/// last, `len` long. `None` when they leave `data`.
-#[inline(always)]
-fn rows<T>(
-    data: &[T],
-    at: usize,
-    (stride, n): (NonZeroU32, u16),
-    len: usize,
-) -> Option<(ChunksExact<'_, T>, &[T])> {
-    let (stride, span) = (
-        stride.get() as usize,
-        usize::from(n) * stride.get() as usize,
-    );
-    let (body, last) = data.get(at..)?.get(..span + len)?.split_at_checked(span)?;
-    Some((body.chunks_exact(stride), last))
-}
-
-/// [`rows`] of mutable `data`, `stride` apart.
-#[inline(always)]
-fn rows_mut<T>(
-    data: &mut [T],
-    at: usize,
-    stride: usize,
-    len: usize,
-    n: usize,
-) -> Option<(ChunksExactMut<'_, T>, &mut [T])> {
-    let (stride, n) = span(stride, n)?;
-    let (stride, span) = (
-        stride.get() as usize,
-        usize::from(n) * stride.get() as usize,
-    );
-    let (body, last) = data
-        .get_mut(at..)?
-        .get_mut(..span + len)?
-        .split_at_mut_checked(span)?;
-    (stride >= len).then(|| (body.chunks_exact_mut(stride), last))
-}
-
-/// What a kernel stores: `N` outputs of a row at a time, `N` 8 or 16, or
-/// four of each of two rows, as `Clip1` samples ([`Self::bytes`]) or
-/// compound predictors ([`Self::preds`]).
-pub(in crate::subpel_mc) trait Out {
-    /// Whether the outputs are single-reference predictions.
-    const PUT: bool;
-    /// Whether the outputs average a first predictor ([`Self::first`]).
-    const AVERAGE: bool = false;
-    /// One output row of a strip.
-    type Row<'r>
-    where
-        Self: 'r;
-    /// Output rows of a strip.
-    type Rows<'r>: Iterator<Item = Self::Row<'r>>
-    where
-        Self: 'r;
-    /// The COMPOUND_AVERAGE weight of [`Self::first`].
-    fn forward(&self) -> i32 {
-        8
-    }
-    /// Rows `0..n` of the strip `len` wide from column `col`, as [`rows`].
-    fn rows(&mut self, col: usize, len: usize, n: usize)
-    -> Option<(Self::Rows<'_>, Self::Row<'_>)>;
+/// What a kernel stores from byte lanes: `N` outputs of a row at a time,
+/// `N` 8 or 16, or four of each of two rows, as `Clip1` samples
+/// ([`Self::bytes`]) or compound predictors ([`Self::preds`]).
+pub(in crate::subpel_mc) trait ByteOut: Out {
     /// The `N` first predictors of `row`.
     fn first<const N: usize>(t: Neon, _: &Self::Row<'_>) -> [int16x8_t; 2] {
         [i16x8::splat(t, 0).into(); 2]
@@ -197,31 +128,7 @@ fn store_pair<T: Copy, const N: usize>(a: &mut [T], b: &mut [T], lanes: [T; N]) 
     }
 }
 
-/// The `Clip1` single-reference prediction into `u8` storage.
-pub(in crate::subpel_mc) struct Put<'a> {
-    pub(in crate::subpel_mc) output: &'a mut [u8],
-    pub(in crate::subpel_mc) stride: usize,
-}
-
-impl Out for Put<'_> {
-    const PUT: bool = true;
-    type Row<'r>
-        = &'r mut [u8]
-    where
-        Self: 'r;
-    type Rows<'r>
-        = ChunksExactMut<'r, u8>
-    where
-        Self: 'r;
-    #[inline(always)]
-    fn rows(
-        &mut self,
-        col: usize,
-        len: usize,
-        n: usize,
-    ) -> Option<(Self::Rows<'_>, Self::Row<'_>)> {
-        rows_mut(self.output, col, self.stride, len, n)
-    }
+impl ByteOut for Put<'_, u8> {
     #[inline(always)]
     fn bytes<const N: usize>(t: Neon, row: &mut [u8], values: uint8x16_t) {
         store_row::<N>(t, row, values);
@@ -232,31 +139,7 @@ impl Out for Put<'_> {
     }
 }
 
-/// The `Clip1` single-reference prediction into `u16` storage.
-pub(in crate::subpel_mc) struct PutWide<'a> {
-    pub(in crate::subpel_mc) output: &'a mut [u16],
-    pub(in crate::subpel_mc) stride: usize,
-}
-
-impl Out for PutWide<'_> {
-    const PUT: bool = true;
-    type Row<'r>
-        = &'r mut [u16]
-    where
-        Self: 'r;
-    type Rows<'r>
-        = ChunksExactMut<'r, u16>
-    where
-        Self: 'r;
-    #[inline(always)]
-    fn rows(
-        &mut self,
-        col: usize,
-        len: usize,
-        n: usize,
-    ) -> Option<(Self::Rows<'_>, Self::Row<'_>)> {
-        rows_mut(self.output, col, self.stride, len, n)
-    }
+impl ByteOut for Put<'_, u16> {
     #[inline(always)]
     fn bytes<const N: usize>(t: Neon, row: &mut [u16], values: uint8x16_t) {
         let (low, high) = t.widen_u8x16(u8x16::simd_from(t, values));
@@ -376,31 +259,7 @@ fn load4(t: Neon, values: &[i32], at: usize) -> i32x4<Neon> {
         .map_or(i32x4::splat(t, 0), |lanes| i32x4::load_array_ref(t, lanes))
 }
 
-/// The compound predictor into `P` storage.
-pub(in crate::subpel_mc) struct Prep<'a, P> {
-    pub(in crate::subpel_mc) output: &'a mut [P],
-    pub(in crate::subpel_mc) stride: usize,
-}
-
-impl<P: Pred> Out for Prep<'_, P> {
-    const PUT: bool = false;
-    type Row<'r>
-        = &'r mut [P]
-    where
-        Self: 'r;
-    type Rows<'r>
-        = ChunksExactMut<'r, P>
-    where
-        Self: 'r;
-    #[inline(always)]
-    fn rows(
-        &mut self,
-        col: usize,
-        len: usize,
-        n: usize,
-    ) -> Option<(Self::Rows<'_>, Self::Row<'_>)> {
-        rows_mut(self.output, col, self.stride, len, n)
-    }
+impl<P: Pred> ByteOut for Prep<'_, P> {
     #[inline(always)]
     fn preds<const N: usize>(t: Neon, row: &mut [P], values: [int16x8_t; 2]) {
         P::store::<N>(t, row, values);
@@ -411,42 +270,7 @@ impl<P: Pred> Out for Prep<'_, P> {
     }
 }
 
-/// The § 7.13.3.15 COMPOUND_AVERAGE of the contiguous `w`-wide first
-/// predictor `pred0` and the block's compound predictor, into `u8`.
-pub(in crate::subpel_mc) struct Average<'a, P> {
-    pub(in crate::subpel_mc) pred0: &'a [P],
-    pub(in crate::subpel_mc) w: usize,
-    pub(in crate::subpel_mc) forward: i32,
-    pub(in crate::subpel_mc) output: &'a mut [u8],
-    pub(in crate::subpel_mc) stride: usize,
-}
-
-impl<P: Pred> Out for Average<'_, P> {
-    const PUT: bool = false;
-    const AVERAGE: bool = true;
-    type Row<'r>
-        = (&'r [P], &'r mut [u8])
-    where
-        Self: 'r;
-    type Rows<'r>
-        = core::iter::Zip<ChunksExact<'r, P>, ChunksExactMut<'r, u8>>
-    where
-        Self: 'r;
-    #[inline(always)]
-    fn forward(&self) -> i32 {
-        self.forward
-    }
-    #[inline(always)]
-    fn rows(
-        &mut self,
-        col: usize,
-        len: usize,
-        n: usize,
-    ) -> Option<(Self::Rows<'_>, Self::Row<'_>)> {
-        let (first, first_last) = rows(self.pred0, col, span(self.w, n)?, len)?;
-        let (output, last) = rows_mut(self.output, col, self.stride, len, n)?;
-        Some((first.zip(output), (first_last, last)))
-    }
+impl<P: Pred> ByteOut for Average<'_, P, u8> {
     #[inline(always)]
     fn first<const N: usize>(t: Neon, (pred0, _): &(&[P], &mut [u8])) -> [int16x8_t; 2] {
         P::load::<N>(t, pred0)
@@ -685,7 +509,7 @@ pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) 
                 t,
                 Strip(
                     block,
-                    &mut PutWide {
+                    &mut Put {
                         output,
                         stride: *stride,
                     },
@@ -845,7 +669,7 @@ pub(in crate::subpel_mc) fn compound_strips<const P: usize>(
 fearless_simd::kernel!(
     /// [`mla::strips`] entered through the NEON token.
     #[inline]
-    fn mla_strips(t: Neon, block: &Block<'_, u8>, out: &mut impl Out) {
+    fn mla_strips(t: Neon, block: &Block<'_, u8>, out: &mut impl ByteOut) {
         mla::strips(t, block, out);
     }
 );

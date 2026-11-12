@@ -9,7 +9,7 @@
     reason = "enters the dot-product kernels on a CPU detected to have them"
 )]
 
-use super::{Compound, Out, Programs, Strip, Strips, Windows};
+use super::{ByteOut, Compound, Programs, Strip, Strips, Windows};
 use core::arch::aarch64::{int8x16_t, int32x4_t, uint8x16_t};
 use fearless_simd::Neon;
 
@@ -86,7 +86,7 @@ pub(super) fn usdot_lane<const L: usize>(
     acc
 }
 
-impl<O: Out> Job for Strip<'_, '_, O> {
+impl<O: ByteOut> Job for Strip<'_, '_, O> {
     type Output = ();
 
     #[inline]
@@ -112,7 +112,7 @@ impl<O: Out> Job for Strip<'_, '_, O> {
     }
 }
 
-impl<O: Out> Job for Strips<'_, '_, O> {
+impl<O: ByteOut> Job for Strips<'_, '_, O> {
     type Output = ();
 
     #[inline]
