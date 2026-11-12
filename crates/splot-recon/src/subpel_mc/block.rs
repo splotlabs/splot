@@ -439,12 +439,12 @@ retained!(u16, WINDOW_U16, u16x8, 8);
 pub(super) struct Window {
     pub(super) horizontal: Option<&'static Taps>,
     pub(super) vertical: Option<&'static Taps>,
-    column: i32,
-    row: i32,
+    pub(super) column: i32,
+    pub(super) row: i32,
     columns: usize,
     rows: usize,
-    w: usize,
-    h: usize,
+    pub(super) w: usize,
+    pub(super) h: usize,
 }
 
 /// The `[stride, width, readable rows, storage length]` of a plane.
@@ -890,6 +890,20 @@ fn compound_emulated<T: Sample, O: ReconSample>(
     output: &mut [O],
     stride: usize,
 ) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    if let ([Some(first), Some(second)], Some(output)) = (
+        references.map(ReferencePlaneView::as_u16),
+        O::u16_slice_mut(&mut *output),
+    ) && super::sixteen_bit::compound_windows(
+        [&first, &second],
+        windows,
+        bounds,
+        clip,
+        output,
+        stride,
+    ) {
+        return true;
+    }
     with_block(&windows[0], references[0], bounds[0], 0, |first| {
         with_block(&windows[1], references[1], bounds[1], 1, |second| {
             compound_blocks([first, second], clip, output, stride)

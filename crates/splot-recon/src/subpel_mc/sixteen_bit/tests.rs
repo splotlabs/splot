@@ -130,6 +130,9 @@ fn neon_predict_matches_portable_for_every_shape_phase_and_sink() {
         (8, 4),
         (8, 8),
         (8, 32),
+        (12, 3),
+        (12, 6),
+        (20, 4),
         (16, 4),
         (16, 16),
         (24, 4),
@@ -208,9 +211,6 @@ fn neon_compound_matches_portable() {
                         let mut stage = vec![0x5a5a_u16 as i16; len];
                         let mut output = vec![0xa5a5_u16; stride * h];
                         let blocks = [&first, &second];
-                        let filtered = blocks
-                            .iter()
-                            .any(|block| block.horizontal.is_some() || block.vertical.is_some());
                         let taken = neon
                             && super::compound(
                                 blocks,
@@ -220,7 +220,9 @@ fn neon_compound_matches_portable() {
                                 &mut output,
                                 stride,
                             );
-                        assert_eq!(taken, neon && filtered && w * h <= 64);
+                        let cell =
+                            super::neon::is_cell(&first, w) && super::neon::is_cell(&second, w);
+                        assert_eq!(taken, neon && cell);
                         if !taken {
                             portable::compound_u16(
                                 blocks,

@@ -49,9 +49,10 @@ pub(super) fn predict<T: ReconSample>(
     false
 }
 
-/// Predicts both blocks of a compound cell of at most four groups and
-/// stores their COMPOUND_AVERAGE, clipped to `max`, into `output`, or returns
-/// `false` without writing when a block is outside the word-lane subset.
+/// Predicts both blocks of a compound cell, a register cell on AArch64 or
+/// at most four groups on x86, and stores their COMPOUND_AVERAGE, clipped to
+/// `max`, into `output`, or returns `false` without writing when a block is
+/// outside that subset.
 pub(super) fn compound(
     blocks: [&Block<'_, u16>; 2],
     forward: i32,
@@ -70,18 +71,67 @@ pub(super) fn compound(
         return true;
     }
     #[cfg(target_arch = "aarch64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_neon()
-        && blocks.iter().all(|block| fits(block))
-        && (blocks[0].w == 4 || blocks[0].w.div_ceil(8) * blocks[0].h <= 8)
-        && blocks
-            .iter()
-            .any(|block| block.horizontal.is_some() || block.vertical.is_some())
-    {
-        neon::compound(token, blocks, forward, max, output, stride);
-        return true;
+    if let Some(token) = fearless_simd::Level::baseline().as_neon() {
+        let w = blocks[0].w;
+        if blocks.iter().all(|block| neon::is_cell(block, w)) {
+            neon::compound_cell(token, blocks, (forward, max), output, stride);
+            return true;
+        }
     }
     let _ = (blocks, forward, max, stage, output, stride);
     false
+}
+
+/// Stores the COMPOUND_AVERAGE, clipped to `clip.1`, of a 4x4 or 8x8
+/// compound cell of `windows` within `bounds` that the NEON kernels read
+/// in place or by clamped rows and columns, or returns `false` without
+/// writing for any other cell.
+#[cfg(target_arch = "aarch64")]
+pub(super) fn compound_windows(
+    references: [&super::ReferencePlaneView<'_, u16>; 2],
+    windows: [super::block::Window; 2],
+    bounds: [[i32; 4]; 2],
+    clip: (i32, u16),
+    output: &mut [u16],
+    stride: usize,
+) -> bool {
+    let w = windows[0].w;
+    let square = |window: &super::block::Window| window.w == w && window.h == w;
+    let references = references.map(|view| {
+        let geometry = [
+            view.stride,
+            view.width,
+            view.readable_rows,
+            view.samples.len(),
+        ];
+        (view.samples, geometry)
+    });
+    (w == 4 || w == 8)
+        && windows.iter().all(square)
+        && fearless_simd::Level::baseline()
+            .as_neon()
+            .is_some_and(|token| {
+                let windows = [&windows[0], &windows[1]];
+                neon::compound_windows(token, references, windows, bounds, clip, output, stride)
+            })
+}
+
+/// Runs the cells of a [`super::CompoundCells`] program of `size`-square
+/// cells whose windows are read in place into both `planes` and returns
+/// their bits; none without the NEON kernels.
+#[cfg(target_arch = "aarch64")]
+pub(super) fn program(
+    planes: &mut [Option<neon::ProgramPlane<'_, '_>>; 2],
+    geometry: [super::block::Geometry; 2],
+    shape: (usize, usize),
+    cells: &[super::cell::Cell],
+    clip: (i32, u16),
+) -> super::cell::Written {
+    fearless_simd::Level::baseline()
+        .as_neon()
+        .map_or([[0; 4]; 2], |token| {
+            neon::program(token, planes, geometry, shape, cells, clip)
+        })
 }
 
 /// Whether the word-lane kernels cover the shape of `block`.

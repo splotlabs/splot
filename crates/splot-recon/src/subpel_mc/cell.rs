@@ -67,7 +67,34 @@ impl CellSample for u8 {
     }
 }
 
-impl CellSample for u16 {}
+impl CellSample for u16 {
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn program(
+        planes: &mut [Option<Plane<'_, '_, u16>>; 2],
+        filter: usize,
+        size: usize,
+        cells: &[Cell],
+        clip: (i32, u16),
+    ) -> Written {
+        let Some((views, ..)) = &planes[0] else {
+            return [[0; PROGRAM_CELLS / 64]; 2];
+        };
+        let geometry = views.each_ref().map(|view| {
+            [
+                view.stride,
+                view.width,
+                view.readable_rows,
+                view.samples.len(),
+            ]
+        });
+        let mut planes = planes.each_mut().map(|plane| {
+            let (views, output, stride) = plane.as_mut()?;
+            Some(([views[0].samples, views[1].samples], &mut **output, *stride))
+        });
+        super::sixteen_bit::program(&mut planes, geometry, (filter, size), cells, clip)
+    }
+}
 
 /// The COMPOUND_AVERAGE, clipped to `clip.1`, of a `size`-square cell, 4
 /// or 8, of either sample depth whose references share `interp`, from each

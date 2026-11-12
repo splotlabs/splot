@@ -420,6 +420,40 @@ fn round<S: Simd>(
     ((low + bias) >> shift, (high + bias) >> shift)
 }
 
+/// The `Clip1` full-sample put of a 16-bit block wider than 8 and not a
+/// multiple of 8 wide: 8-column chunks, the last overlapping the one before.
+#[inline(never)]
+fn copy_wide<S: Simd>(
+    simd: S,
+    block: &Block<'_, u16>,
+    output: &mut [u16],
+    stride: usize,
+    max: u16x8<S>,
+) {
+    let clip = |slot: &mut [u16; 8], lanes: &[u16; 8]| {
+        u16x8::load_array_ref(simd, lanes)
+            .min(max)
+            .store_array(slot);
+    };
+    let w = block.w;
+    for row in 0..block.h {
+        let (row_start, out_row) = (block.start(row), row * stride);
+        let (Some(src), Some(dst)) = (
+            block.source.get(row_start..row_start + w),
+            output.get_mut(out_row..out_row + w),
+        ) else {
+            continue;
+        };
+        if let (Some(slot), Some(lanes)) = (dst.last_chunk_mut(), src.last_chunk()) {
+            clip(slot, lanes);
+        }
+        let rows = dst.as_chunks_mut::<8>().0.iter_mut();
+        for (slot, lanes) in rows.zip(src.as_chunks::<8>().0) {
+            clip(slot, lanes);
+        }
+    }
+}
+
 #[inline(never)]
 fn copy<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>) {
     let (w, h) = (block.w, block.h);
@@ -461,6 +495,12 @@ fn copy<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>) {
                         *slot = *lanes;
                     }
                 }
+                return;
+            }
+            if w > 8
+                && let Some(source) = T::words(block.source)
+            {
+                copy_wide(simd, &block.with_source(source), output, stride, max_v);
                 return;
             }
             for row in 0..h {
