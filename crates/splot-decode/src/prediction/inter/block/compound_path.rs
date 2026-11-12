@@ -336,6 +336,7 @@ pub(super) fn decode_compound_inter_block(
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
     filter_records: &mut tile::TileFilterRecords,
+    slots: &mut Vec<tile::LeafSlot>,
     intrabc_state: &mut TileIntrabcPreludeState,
     facts: &FrameRefFacts,
     num_total_refs: usize,
@@ -597,6 +598,7 @@ pub(super) fn decode_compound_inter_block(
         mv_grid,
         frame_mv_config.precision(),
         filter_records,
+        slots,
         intrabc_state,
         facts,
         ParsedCompoundBlock {
@@ -830,6 +832,7 @@ pub(super) fn finish_compound_inter_block(
     mv_grid: &mut NeighbourMvGrid,
     frame_precision: u8,
     filter_records: &mut tile::TileFilterRecords,
+    slots: &mut Vec<tile::LeafSlot>,
     intrabc_state: &mut TileIntrabcPreludeState,
     facts: &FrameRefFacts,
     parsed: ParsedCompoundBlock,
@@ -898,11 +901,12 @@ pub(super) fn finish_compound_inter_block(
         block_qindex,
         current_residual_lossless(work_unit),
     );
-    let placement = inter_leaf_placement(
+    let geometry = inter_leaf_geometry(
         frontier,
         work_unit,
+        (n4w, n4h),
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
-    );
+    )?;
     let optflow_distances = compound_optflow_distances(facts, block_ctx.ref_frame0, &motion)?;
     intrabc_state.record_block(
         frontier.r,
@@ -932,7 +936,14 @@ pub(super) fn finish_compound_inter_block(
     mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
     Ok((
         GeneralIntraLeafMode::no_luma_mode(),
-        pending_inter_leaf(syntax, placement, block_qindex, frame_precision),
+        pending_inter_leaf(
+            slots,
+            syntax,
+            geometry,
+            block_qindex,
+            frame_precision,
+            tile_offset,
+        ),
     ))
 }
 
@@ -1179,6 +1190,7 @@ pub(super) fn decode_skip_mode_inter_block(
     neighbour_ctx: &BlockNeighbourContext,
     tip_ref_pair: Option<(i8, i8)>,
     filter_records: &mut tile::TileFilterRecords,
+    slots: &mut Vec<tile::LeafSlot>,
     intrabc_state: &mut TileIntrabcPreludeState,
     facts: &FrameRefFacts,
     num_total_refs: usize,
@@ -1219,6 +1231,7 @@ pub(super) fn decode_skip_mode_inter_block(
         mv_grid,
         precision,
         filter_records,
+        slots,
         intrabc_state,
         facts,
         ParsedCompoundBlock {

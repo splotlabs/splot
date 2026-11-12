@@ -15,7 +15,7 @@
 //! motion publication lands in the fused walk's order even though symbol
 //! decode has already run ahead to the end of the unit.
 
-use super::super::compound::{CompoundBlockSyntax, CompoundYMode};
+use super::super::compound::CompoundYMode;
 use super::super::find_mv_stack::{
     ALL_CANDIDATES, CompoundMvCandidate, CompoundMvStack, INTRABC_REF_FRAME, MvStack,
     NeighbourFlagSyntax, NeighbourMotionValues, OrderHintMvContext, RefMvBank, WarpParamBank,
@@ -25,7 +25,7 @@ use super::compound_path::{
     add_mv_clamped, compound_local_warp_models, project_joint_mvd, scale_joint_projected_mvd,
     select_near_near_candidates,
 };
-use super::prediction::InterLeafPlacement;
+use super::prediction::PlacedInterGeometry;
 use super::tile::{LeafSlot, ReconRowEntry};
 use super::warp::{
     ExtendWarpContext, apply_warp_delta, extend_warp_estimation, set_warp_translation,
@@ -33,34 +33,40 @@ use super::warp::{
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-/// The § 7.12 work owned by one reconstruction entry.
+/// What one leaf's parse hands its reconstruction entry.
 pub(super) enum LeafResolveRecord {
-    /// Nothing: chroma-part leaves publish no neighbour record.
-    Reseed(ReconCommand),
-    /// Zero motion plus the § 7.12.5 bank hit budget: intra and intra block
-    /// copy leaves.
+    /// A chroma-part leaf, which publishes no neighbour record.
+    Reseed(crate::pipeline::general_intra::GeneralIntraReconCommand),
+    /// Zero motion plus the § 7.12.5 bank hit budget.
     NonInter {
-        command: ReconCommand,
+        command: crate::pipeline::general_intra::GeneralIntraReconCommand,
         n4w: u8,
         n4h: u8,
     },
-    Inter(PendingInterBlock),
-    /// Boxed: only screen-content intra frames carry these, and inline they
-    /// would set the size of every entry.
-    Intrabc(Box<PendingIntrabcBlock>),
+    /// An inter or IntraBC leaf, whose record the parse wrote into this row slot.
+    Slot(u32),
 }
 
-impl LeafResolveRecord {
+impl LeafSlot {
     /// The neighbour flags the parser published for this leaf.
     pub(super) fn flag_syntax(&self, frame_precision: u8) -> NeighbourFlagSyntax {
         match self {
-            Self::Inter(block) => block.syntax.flag_syntax(),
+            Self::Command(ReconCommand::Inter(command)) => command.flag_syntax(),
             Self::Intrabc(block) => {
                 non_inter_flag_syntax(Some(block.residual.is_none()), frame_precision)
             }
-            Self::Reseed(_) | Self::NonInter { .. } => non_inter_flag_syntax(None, frame_precision),
+            Self::Command(ReconCommand::Intrabc(_)) | Self::Spent => {
+                non_inter_flag_syntax(None, frame_precision)
+            }
         }
     }
+}
+
+/// Stores `slot` as the row's next slot. Rows hold far fewer than `u32::MAX` leaves.
+fn push_slot(slots: &mut Vec<LeafSlot>, slot: LeafSlot) -> LeafResolveRecord {
+    let index = slots.len() as u32;
+    slots.push(slot);
+    LeafResolveRecord::Slot(index)
 }
 
 /// The bank and motion-plane work of a leaf whose command is already final,
@@ -75,15 +81,8 @@ pub(super) enum LeafReset {
         n4w: usize,
         n4h: usize,
     },
-}
-
-/// One inter leaf's parse output, held until the resolve pass reaches it.
-pub(super) struct PendingInterBlock {
-    syntax: InterBlockSyntax,
-    placement: InterLeafPlacement,
-    segment_id: u8,
-    qindex: u32,
-    frame_precision: u8,
+    /// [`LeafResolveRecord::Slot`]: the slot's motion is still to resolve.
+    Slot,
 }
 
 pub(super) struct PendingIntrabcBlock {
@@ -105,25 +104,50 @@ pub(super) struct PendingIntrabcBlock {
     pub(super) avail_left: bool,
 }
 
-pub(super) fn pending_intrabc_leaf(pending: PendingIntrabcBlock) -> LeafResolveRecord {
-    LeafResolveRecord::Intrabc(Box::new(pending))
+pub(super) fn pending_intrabc_leaf(
+    slots: &mut Vec<LeafSlot>,
+    pending: PendingIntrabcBlock,
+) -> LeafResolveRecord {
+    push_slot(slots, LeafSlot::Intrabc(Box::new(pending)))
 }
 
-/// Packages one parsed inter leaf for the resolve pass that completes its
-/// reconstruction command.
+/// Stores one parsed inter leaf as its reconstruction command, whose motion
+/// the resolve pass fills in.
 pub(super) fn pending_inter_leaf(
-    syntax: InterBlockSyntax,
-    placement: InterLeafPlacement,
+    slots: &mut Vec<LeafSlot>,
+    mut syntax: InterBlockSyntax,
+    geometry: PlacedInterGeometry,
     qindex: u32,
     frame_precision: u8,
+    tile_offset: ByteOffset,
 ) -> LeafResolveRecord {
-    LeafResolveRecord::Inter(PendingInterBlock {
-        syntax,
-        placement,
-        segment_id: current_frame_qm_segment_id() as u8,
-        qindex,
-        frame_precision,
-    })
+    let block = InterBlock {
+        ref_frame0: syntax.block_ctx.ref_frame0,
+        ref_frame1: match &syntax.motion {
+            InterMotionSyntax::Compound(compound) => Some(compound.ref_frame1),
+            InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) => None,
+        },
+        mv: Mv::ZERO,
+        mv1: Mv::ZERO,
+        interp: syntax.interp,
+        warp_params: [None, None],
+        bawp: syntax.bawp,
+        interintra: syntax.interintra,
+        compound_blend: syntax.blend,
+        optflow_distances: syntax.optflow_distances,
+        residual: syntax.residual.take(),
+    };
+    push_slot(
+        slots,
+        LeafSlot::Command(ReconCommand::Inter(deferred_recon::InterReconCommand::new(
+            geometry.place(block),
+            syntax,
+            frame_precision,
+            current_frame_qm_segment_id() as u8,
+            qindex,
+            tile_offset,
+        ))),
+    )
 }
 
 /// Replays one parse unit's queued § 7.12 work in leaf order.
@@ -138,9 +162,8 @@ pub(super) fn resolve_parsed_leaves(
 ) -> Result<()> {
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, state.core.frame_is_intra == Some(true));
     for entry in entries {
-        let reset = entry.take_reset(slots);
-        let pending = entry.has_pending_resolve(slots);
-        if reset == LeafReset::None && !pending {
+        let reset = entry.take_reset();
+        if reset == LeafReset::None {
             continue;
         }
         let [mi_row, mi_col] = entry.publication.block_origin();
@@ -164,26 +187,22 @@ pub(super) fn resolve_parsed_leaves(
                 bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
             }
         }
-        if let Some(LeafResolveRecord::Inter(block)) = entry.pending_resolve_mut(slots) {
-            let command = resolve_pending_inter(block, state)?;
-            entry.store_command(slots, ReconCommand::Inter(command));
+        if reset != LeafReset::Slot {
             continue;
         }
-        let Some(resolve) = entry.take_resolve(slots) else {
-            continue;
-        };
-        match resolve {
-            LeafResolveRecord::Reseed(_)
-            | LeafResolveRecord::NonInter { .. }
-            | LeafResolveRecord::Inter(_) => {
-                return Err(invalid_inter_tile_scheduling_state());
+        match entry.slot_mut(slots) {
+            Some(LeafSlot::Command(ReconCommand::Inter(command))) => command.resolve(state)?,
+            Some(slot @ LeafSlot::Intrabc(_)) => {
+                let LeafSlot::Intrabc(block) = core::mem::replace(slot, LeafSlot::Spent) else {
+                    return Err(invalid_inter_tile_scheduling_state());
+                };
+                *slot = LeafSlot::Command(ReconCommand::Intrabc(resolve_pending_intrabc(
+                    *block,
+                    state,
+                    intrabc_sb_h4,
+                )?));
             }
-            LeafResolveRecord::Intrabc(block) => {
-                entry.store_command(
-                    slots,
-                    ReconCommand::Intrabc(resolve_pending_intrabc(*block, state, intrabc_sb_h4)?),
-                );
-            }
+            Some(LeafSlot::Command(ReconCommand::Intrabc(_)) | LeafSlot::Spent) | None => {}
         }
     }
     Ok(())
@@ -313,74 +332,6 @@ fn resolve_pending_intrabc(
         );
     }
     Ok(command)
-}
-
-/// Resolves a pending block's motion and assembles its reconstruction. A
-/// warp block of a `force_integer_mv` frame keeps its stored warp model but
-/// predicts by translation (`useWarp = 0`, § 7.13.3.14).
-fn resolve_pending_inter(
-    pending: &mut PendingInterBlock,
-    state: &mut MvResolutionState<'_>,
-) -> Result<deferred_recon::InterReconCommand> {
-    let PendingInterBlock {
-        syntax,
-        placement,
-        segment_id,
-        qindex,
-        frame_precision,
-    } = pending;
-    let geometry = placement.geometry((syntax.block_ctx.bw4, syntax.block_ctx.bh4))?;
-    let (segment_id, qindex) = (*segment_id, *qindex);
-    state.frame_precision = *frame_precision;
-    let mut resolved = resolve_inter_block(syntax, state)?;
-    predict_by_translation_under_integer_mv(syntax, state.core, &mut resolved);
-    let compound = match &syntax.motion {
-        InterMotionSyntax::Compound(compound) => Some(*compound),
-        InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) => None,
-    };
-    let tip_ref = matches!(
-        &syntax.motion,
-        InterMotionSyntax::Single(SingleMotionSyntax { tip_ref: true, .. })
-    );
-    let (block, kind) = match compound {
-        None => (
-            single_inter_block(syntax, &resolved),
-            if tip_ref {
-                deferred_recon::PendingKind::Tip
-            } else {
-                deferred_recon::PendingKind::Single
-            },
-        ),
-        Some(compound) => {
-            let (mi_row, mi_col) = (syntax.block_ctx.mi_row, syntax.block_ctx.mi_col);
-            let ref_frame0 = syntax.block_ctx.ref_frame0;
-            (
-                compound_inter_block(syntax, &compound, &resolved),
-                deferred_recon::PendingKind::Compound {
-                    syntax: CompoundBlockSyntax {
-                        y_mode: compound.y_mode,
-                        use_optflow: compound.use_optflow,
-                        ref_frame0,
-                        ref_frame1: compound.ref_frame1,
-                        mv0: resolved.mv[0],
-                        mv1: resolved.mv[1],
-                    },
-                    mi_row: mi_row as u32,
-                    mi_col: mi_col as u32,
-                    use_refinemv: compound.use_refinemv,
-                    refinemv_switchable: compound.refinemv_switchable,
-                },
-            )
-        }
-    };
-    let placed = geometry.place(block);
-    Ok(deferred_recon::InterReconCommand::new(
-        placed,
-        kind,
-        segment_id,
-        qindex,
-        state.tile_offset,
-    ))
 }
 
 /// Drops the warp model a warp block of a `force_integer_mv` frame predicts

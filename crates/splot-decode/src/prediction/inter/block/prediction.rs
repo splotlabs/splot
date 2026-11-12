@@ -63,34 +63,18 @@ fn is_thin_4xn_nx4_block(size: BlockSize) -> bool {
     width.min(height) == 4 && width.max(height) >= 16
 }
 
-/// What [`placed_inter_geometry_at`] reads of a parsed leaf, kept for the
-/// resolve pass to place it.
-#[derive(Clone, Copy)]
-pub(super) struct InterLeafPlacement {
-    frontier: DecodeBlockFrontier,
-    tile_start: (usize, usize),
-    chroma_planes: bool,
-}
-
-impl InterLeafPlacement {
-    pub(super) fn geometry(&self, size4: (usize, usize)) -> Result<PlacedInterGeometry> {
-        placed_inter_geometry_at(&self.frontier, self.tile_start, size4, self.chroma_planes)
-    }
-}
-
-pub(super) fn inter_leaf_placement(
+/// The placed geometry of a leaf of `work_unit`'s tile.
+pub(super) fn inter_leaf_geometry(
     frontier: &DecodeBlockFrontier,
     work_unit: &DecodeTileWorkUnit,
+    size4: (usize, usize),
     chroma_planes: bool,
-) -> InterLeafPlacement {
-    InterLeafPlacement {
-        frontier: *frontier,
-        tile_start: (
-            work_unit.mi_row_range().start as usize,
-            work_unit.mi_col_range().start as usize,
-        ),
-        chroma_planes,
-    }
+) -> Result<PlacedInterGeometry> {
+    let tile_start = (
+        work_unit.mi_row_range().start as usize,
+        work_unit.mi_col_range().start as usize,
+    );
+    placed_inter_geometry_at(frontier, tile_start, size4, chroma_planes)
 }
 
 /// A leaf's placed geometry in a tile that starts at 4x4 position `(row, col)`.

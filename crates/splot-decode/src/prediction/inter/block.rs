@@ -244,7 +244,6 @@ impl<T: ReconSample> InterDecodeScratch<T> {
 }
 
 enum ReconCommand {
-    GeneralIntra(crate::pipeline::general_intra::GeneralIntraReconCommand),
     Intrabc(intrabc::IntrabcReconCommand),
     Inter(deferred_recon::InterReconCommand),
 }
@@ -252,7 +251,6 @@ enum ReconCommand {
 impl ReconCommand {
     const fn as_view(&self) -> ReconCommandRef<'_> {
         match self {
-            Self::GeneralIntra(_) => ReconCommandRef::GeneralIntra,
             Self::Intrabc(_) => ReconCommandRef::Intrabc,
             Self::Inter(command) => ReconCommandRef::Inter(command),
         }
@@ -260,7 +258,6 @@ impl ReconCommand {
 
     const fn as_view_mut(&mut self) -> ReconCommandMut<'_> {
         match self {
-            Self::GeneralIntra(command) => ReconCommandMut::GeneralIntra(command),
             Self::Intrabc(command) => ReconCommandMut::Intrabc(command),
             Self::Inter(command) => ReconCommandMut::Inter(command),
         }
@@ -1187,6 +1184,7 @@ pub(super) struct BlockDecodeContext<'a, T: ReconSample> {
     pub(super) segment_id_state: &'a mut TileSegmentIdState,
     pub(super) mv_grid: &'a mut NeighbourMvGrid,
     filter_records: &'a mut tile::TileFilterRecords,
+    slots: &'a mut Vec<tile::LeafSlot>,
     pub(super) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
 }
 
@@ -1217,6 +1215,7 @@ fn decode_block<T: ReconSample>(
         ref mut segment_id_state,
         ref mut mv_grid,
         ref mut filter_records,
+        ref mut slots,
         ref mut arena,
     } = *context;
     let (avail_up, avail_left) = tile_neighbour_availability(
@@ -1453,23 +1452,26 @@ fn decode_block<T: ReconSample>(
             let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
             return Ok((
                 GeneralIntraLeafMode::no_luma_mode().mark_intrabc(),
-                pending_intrabc_leaf(PendingIntrabcBlock {
-                    frontier: *frontier,
-                    n4w,
-                    n4h,
-                    mi_rows: params.mi_rows,
-                    mi_cols: params.mi_cols,
-                    info,
-                    residual,
-                    segment_id,
-                    qindex: block_qindex,
-                    luma_use_tcq: params.luma_use_tcq,
-                    residual_use_ddt: params.residual_use_ddt,
-                    bit_depth: params.bit_depth,
-                    subsampling: (u32::from(sub_x), u32::from(sub_y)),
-                    avail_up,
-                    avail_left,
-                }),
+                pending_intrabc_leaf(
+                    slots,
+                    PendingIntrabcBlock {
+                        frontier: *frontier,
+                        n4w,
+                        n4h,
+                        mi_rows: params.mi_rows,
+                        mi_cols: params.mi_cols,
+                        info,
+                        residual,
+                        segment_id,
+                        qindex: block_qindex,
+                        luma_use_tcq: params.luma_use_tcq,
+                        residual_use_ddt: params.residual_use_ddt,
+                        bit_depth: params.bit_depth,
+                        subsampling: (u32::from(sub_x), u32::from(sub_y)),
+                        avail_up,
+                        avail_left,
+                    },
+                ),
             ));
         }
         let block_qindex = segment_block_qindex(
@@ -1512,7 +1514,6 @@ fn decode_block<T: ReconSample>(
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
         }
-        let command = ReconCommand::GeneralIntra(command);
         return Ok((
             leaf,
             if luma_tree {
@@ -1609,6 +1610,7 @@ fn decode_block<T: ReconSample>(
             &neighbour_ctx,
             params.tip_ref_pair,
             filter_records,
+            slots,
             intrabc_state,
             &params.ref_facts,
             params.num_total_refs,
@@ -1672,6 +1674,7 @@ fn decode_block<T: ReconSample>(
             &mut block_ctx,
             &neighbour_ctx,
             filter_records,
+            slots,
             intrabc_state,
             &params.ref_facts,
             params.num_total_refs,
@@ -1855,10 +1858,12 @@ fn decode_block<T: ReconSample>(
         return Ok((
             GeneralIntraLeafMode::no_luma_mode(),
             pending_inter_leaf(
+                slots,
                 syntax,
-                inter_leaf_placement(frontier, work_unit, chroma_planes),
+                inter_leaf_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
                 block_qindex,
                 frame_mv_precision(core)?,
+                tile_offset,
             ),
         ));
     }
@@ -2093,10 +2098,12 @@ fn decode_block<T: ReconSample>(
     Ok((
         GeneralIntraLeafMode::no_luma_mode(),
         pending_inter_leaf(
+            slots,
             syntax,
-            inter_leaf_placement(frontier, work_unit, chroma_planes),
+            inter_leaf_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
             block_qindex,
             frame_mv_precision(core)?,
+            tile_offset,
         ),
     ))
 }
@@ -2173,7 +2180,7 @@ pub(crate) use tip::{TipOutputStages, TipSpares};
 mod warp;
 
 use self::interintra::predict_interintra_planes;
-use self::prediction::inter_leaf_placement;
+use self::prediction::inter_leaf_geometry;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
     LeafReset, LeafResolveRecord, MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax,
