@@ -323,10 +323,26 @@ On the branch since 2026-11-12 evening:
 - Test changes: the storage-reuse test now uses a 256x128 stream (planes below 16384 samples
   are not pooled); the word-lane kernel tests use the 10-bit maximum only on x86_64, because
   the AVX2 stage holds i16 (the decoder stores 8-bit and 10-bit samples only).
+- Entropy round 5 (1 commit): CDF rows now pack the rate index and the use count in one
+  16-bit state (`index | count << 7`, `CDF_COUNT_SHIFT`); one flat rate table; the update is
+  one add. SHARED, one layout on every architecture. On x86 check that the row word of
+  4-symbol rows stays one 8-byte load, and re-measure parse cycles.
+- Pipeline round 2 (2 commits): TIP output bands predicted into the frame's own rows as
+  full-width strips (TIP workspace mutex deleted); per-worker spare surface lists. SHARED.
+- MC rounds 13 and 14 (4 commits): strip setup without divisions, compound windows in
+  registers, cell average chosen once per cell, fewer checks in the put validation. The strip
+  and cell changes are in the NEON module: port the idea to `eight_bit/avx2.rs` (validate
+  once per block, row spans with `chunks_exact`, no per-row bounds check or division) and
+  check whether `eight_bit/avx2/cell.rs` computes both compound average forms per group.
+- Mode info round 8 (3 commits): partition memo indexed by the call fields, decision fields
+  in registers, context extent checked once per superblock. SHARED.
+Stop rules agreed with the maintainer on aarch64: no more rounds on the MC per-call fixed
+cost, the mode-info parse or the entropy inner loop. The MC per-call fixed cost stays above
+dav2d (put 8x8 H 371 vs 212 instructions with harness); the cause is that the Rust ABI
+passes aggregates above 16 bytes through memory. Measure the same classes on x86 before you
+spend rounds there.
 In progress on aarch64 (do not duplicate; these areas are owned by the aarch64 orchestrator):
-MC fixed cost per call (round 12), mode info walk and neighbour context (round 6), entropy
-instructions per coefficient (round 4). Queued there: one writer per slot in the pipeline,
-predict straight into the frame, tile-parallel parse.
-Known flaky test on Linux: `a_dropped_picture_gives_its_storage_back_to_the_decoder`
-(`crates/splot-decode/tests/decoder_api.rs`) failed one time in the coverage job; it
-compares memory addresses.
+the 10-bit MC kernels rewritten on the 8-bit row structure (`sixteen_bit/neon.rs`, shared
+scaffolding; `sixteen_bit/avx2.rs` will need the same structure afterwards), the row-list
+lock in the pipeline, the tile-parallel parse. Queued: predict straight into the frame
+(an experiment, kept only at about 1% CPU gain).
