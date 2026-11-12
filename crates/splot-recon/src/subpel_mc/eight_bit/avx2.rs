@@ -826,8 +826,9 @@ fn wide8(t: Avx2, row: &[i32]) -> __m256i {
 fn copy_pair<const C: usize, T: Copy>(a: &mut [T], b: &mut [T], lanes: &[T]) {
     let offset = if C == 8 { 8 } else { 4 };
     for (row, at) in [(a, 0), (b, offset)] {
-        if let (Some(slot), Some(lanes)) = (row.get_mut(..C), lanes.get(at..at + C)) {
-            slot.copy_from_slice(lanes);
+        let lanes = lanes.get(at..).and_then(<[T]>::first_chunk::<C>);
+        if let (Some(slot), Some(lanes)) = (row.first_chunk_mut::<C>(), lanes) {
+            *slot = *lanes;
         }
     }
 }
