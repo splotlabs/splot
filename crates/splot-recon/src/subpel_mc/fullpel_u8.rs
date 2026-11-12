@@ -142,11 +142,7 @@ pub fn subpel_compound_block<T: ReconSample>(
         i32::from(cwp_weight),
         surface.info().bit_depth().max_sample(),
     );
-    let windows = |[first, second]: [UnscaledPut; 2]| {
-        let ((a, a_bounds), (b, b_bounds)) = (first.window(interp)?, second.window(interp)?);
-        (first.rect == second.rect).then_some(([a, b], [a_bounds, b_bounds]))
-    };
-    let luma_put = windows(luma).is_some_and(|(windows, bounds)| {
+    let luma_put = windows(interp, luma).is_some_and(|(windows, bounds)| {
         surface
             .rect_mut(crate::PlaneId::Y, luma[0].rect)
             .is_some_and(|(output, stride)| {
@@ -154,7 +150,7 @@ pub fn subpel_compound_block<T: ReconSample>(
             })
     });
     let chroma_put = chroma.is_some_and(|([u, v], puts)| {
-        let Some((windows, bounds)) = windows(puts) else {
+        let Some((windows, bounds)) = windows(interp, puts) else {
             return false;
         };
         surface
@@ -162,6 +158,18 @@ pub fn subpel_compound_block<T: ReconSample>(
             .is_some_and(|outputs| compound_pair([u, v], windows, bounds, clip, outputs))
     });
     [luma_put, chroma_put]
+}
+
+/// The windows and clip bounds of both references of a compound part, which
+/// share its rectangle, as [`UnscaledPut::window`].
+#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[inline(always)]
+fn windows(
+    interp: InterpolationFilter,
+    [first, second]: [UnscaledPut; 2],
+) -> Option<([block::Window; 2], [[i32; 4]; 2])> {
+    let ((a, a_bounds), (b, b_bounds)) = (first.window(interp)?, second.window(interp)?);
+    (first.rect == second.rect).then_some(([a, b], [a_bounds, b_bounds]))
 }
 
 /// [`compound_windows`] of the U and V views, which share `windows`, into
