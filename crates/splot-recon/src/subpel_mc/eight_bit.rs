@@ -25,7 +25,7 @@
 //! [`neon`] kernels take the same blocks. Other widths, 10-bit sinks and
 //! other targets decline to the portable kernels.
 
-use super::block::{Block, Sink};
+use super::block::{self, Block, Sink};
 use crate::format::ReconSample;
 
 #[cfg(target_arch = "aarch64")]
@@ -54,79 +54,46 @@ pub(super) fn predict<T: ReconSample>(
     #[cfg(target_arch = "aarch64")]
     if let Some(token) = fearless_simd::Level::baseline().as_neon()
         && let Some(source) = T::u8_slice(block.source)
-        && neon::fits(block)
-        && match sink {
-            Sink::PutWide { max, .. } => *max == u16::from(u8::MAX),
-            Sink::AverageWide { .. } => false,
-            _ => true,
-        }
     {
-        neon::predict(token, &block.with_source(source), sink);
-        return true;
+        return neon::predict(token, &block.with_source(source), sink);
     }
     let _ = (block, sink, stage);
     false
 }
 
-/// Whether [`put`] takes `block` without a stage.
-#[inline]
-pub(super) fn stageless(block: &Block<'_, u8>) -> bool {
-    #[cfg(target_arch = "aarch64")]
-    if fearless_simd::Level::baseline().as_neon().is_some() {
-        return neon::fits(block);
-    }
-    let _ = block;
-    false
-}
-
 /// Stores the `Clip1` single-reference prediction of `block` into `output`
-/// rows `stride` apart, or returns `false` without writing when the block is
-/// outside the byte-lane subset.
-pub(super) fn put(
-    block: &Block<'_, u8>,
-    stage: &mut [i16],
-    output: &mut [u8],
-    stride: usize,
-) -> bool {
+/// rows `stride` apart.
+pub(super) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
     if block.horizontal.is_none() && block.vertical.is_none() && copy(block, output, stride) {
-        return true;
-    }
-    #[cfg(target_arch = "x86_64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_avx2()
-        && fits(block)
-    {
-        avx2::put(token, block, stage, output, stride);
-        return true;
+        return;
     }
     #[cfg(target_arch = "aarch64")]
     if let Some(token) = fearless_simd::Level::baseline().as_neon()
-        && neon::fits(block)
+        && neon::put(token, block, output, stride)
     {
-        neon::predict(token, block, &mut Sink::Put { output, stride });
-        return true;
+        return;
     }
-    let _ = (block, stage, output, stride);
-    false
+    #[cfg(target_arch = "x86_64")]
+    if super::cell::put_x86(block, output, stride) {
+        return;
+    }
+    block::kernels(block, &mut Sink::Put { output, stride }, None);
 }
 
-/// Stores a zero-phase block (no filter pass) whose rows lie inside their
-/// clip bounds and whose columns are read in place: its prediction is its
-/// samples. `false` without writing for any other block or one whose rows
-/// leave the storage of `block` or `output`.
+/// Stores a zero-phase block (no filter pass): its prediction is its
+/// samples. `false` without writing when its rows leave the storage of
+/// `block` or `output`.
 #[inline(never)]
 fn copy(block: &Block<'_, u8>, output: &mut [u8], stride: usize) -> bool {
     let (w, h) = (block.w, block.h);
-    let rows = block.rows[0]..=block.rows[1];
-    if block.remap.is_some()
-        || !rows.contains(&block.top)
-        || !rows.contains(&(block.top + h as isize - 1))
-    {
-        return false;
-    }
-    let fits = |len: usize, start: usize, stride: usize| (h - 1) * stride + w + start <= len;
-    let first = block.start(0);
-    let Some(source) = block.source.get(first..).filter(|source| {
-        stride >= w && fits(source.len(), 0, block.stride) && fits(output.len(), 0, stride)
+    let fits = |len: usize, stride: usize| {
+        (h - 1)
+            .checked_mul(stride)
+            .and_then(|end| end.checked_add(w))
+            .is_some_and(|end| end <= len)
+    };
+    let Some(source) = block.source.get(block.origin..).filter(|source| {
+        stride >= w && fits(source.len(), block.stride) && fits(output.len(), stride)
     }) else {
         return false;
     };
@@ -166,38 +133,50 @@ fn copy(block: &Block<'_, u8>, output: &mut [u8], stride: usize) -> bool {
     true
 }
 
-/// Predicts both blocks of a compound cell of at most four groups and
-/// stores their COMPOUND_AVERAGE into `output`, or returns `false` without
-/// writing when a block is outside the byte-lane subset.
+/// Predicts both blocks of a compound pair of one shape and stores their
+/// COMPOUND_AVERAGE into `output`.
 pub(super) fn compound(
     blocks: [&Block<'_, u8>; 2],
     forward: i32,
-    stage: &mut [i16],
     output: &mut [u8],
     stride: usize,
-) -> bool {
+) {
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_neon()
+        && blocks.iter().all(|block| neon::fits(block))
+    {
+        neon::compound(token, blocks, forward, output, stride);
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if super::cell::compound_x86(blocks, forward, output, stride) {
+        return;
+    }
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
         && blocks
             .iter()
             .all(|block| fits(block) && block.w * block.h <= 64)
     {
-        avx2::compound(token, blocks, forward, stage, output, stride);
-        return true;
+        let mut stage = [0; 24 * 16 + 64];
+        avx2::compound(token, blocks, forward, &mut stage, output, stride);
+        return;
     }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_neon()
-        && blocks.iter().all(|block| {
-            neon::fits(block)
-                && (block.w * block.h <= 64
-                    || block.horizontal.is_none() && block.vertical.is_none())
-        })
-    {
-        neon::compound(token, blocks, forward, output, stride);
-        return true;
-    }
-    let _ = (blocks, forward, stage, output, stride);
-    false
+    let (w, h) = (blocks[0].w, blocks[0].h);
+    super::with_compound_pred0_narrow(w * h, |pred0| {
+        let sink = &mut Sink::PrepNarrow {
+            output: pred0,
+            stride: w,
+        };
+        block::kernels(blocks[0], sink, None);
+        let sink = &mut Sink::AverageNarrow {
+            pred0,
+            forward,
+            output,
+            stride,
+        };
+        block::kernels(blocks[1], sink, None);
+    });
 }
 
 /// Whether the byte-lane kernels cover the shape of `block`.
@@ -399,19 +378,6 @@ pub(super) mod avx2 {
         }
     );
 
-    fearless_simd::kernel!(
-        #[inline]
-        pub(super) fn put(
-            t: Avx2,
-            block: &Block<'_, u8>,
-            stage: &mut [i16],
-            output: &mut [u8],
-            stride: usize,
-        ) {
-            put_rows(t, block, stage, output, stride);
-        }
-    );
-
     /// The `Clip1` single-reference prediction of `block` into `output`.
     #[inline]
     #[target_feature(enable = "avx2")]
@@ -553,25 +519,8 @@ pub(super) mod avx2 {
         t: Avx2,
         source: &[u8],
         starts: [u32; 4],
-        remap: Option<__m128i>,
     ) -> Option<__m256i> {
         let start = starts[0];
-        if let Some(remap) = remap {
-            let line = |q: usize| -> Option<__m128i> {
-                Some(_mm_shuffle_epi8(
-                    load16(t, row_bytes(source, starts[q])?),
-                    remap,
-                ))
-            };
-            return Some(if W == 4 {
-                _mm256_set_m128i(
-                    _mm_unpacklo_epi64(line(2)?, line(3)?),
-                    _mm_unpacklo_epi64(line(0)?, line(1)?),
-                )
-            } else {
-                _mm256_set_m128i(line(1)?, line(0)?)
-            });
-        }
         Some(match W {
             4 => _mm256_set_epi64x(
                 load8(*row_bytes(source, starts[3])?),
@@ -718,14 +667,11 @@ pub(super) mod avx2 {
         out: &mut impl FnMut(usize, usize, usize, __m256i),
     ) {
         let filter = Horizontal::new::<W, P>(t, taps);
-        let remap = block
-            .remap_lanes()
-            .map(|remap| u8x16::load_array(t, remap).into());
         let (bias, round) = (_mm256_set1_epi16(34), _mm256_set1_epi16(1 << 13));
         for strip in 0..block.w / W {
             for row in (0..block.h).step_by(16 / W) {
                 let starts = starts::<W>(block, row, strip, usize::MAX);
-                let Some(bytes) = tap_bytes::<W>(t, block.source, starts, remap) else {
+                let Some(bytes) = tap_bytes::<W>(t, block.source, starts) else {
                     return;
                 };
                 let sums = filter.sums::<P>(bytes);
@@ -805,9 +751,6 @@ pub(super) mod avx2 {
         stage: &mut [i16],
     ) {
         let filter = Horizontal::new::<W, P>(t, taps);
-        let remap = block
-            .remap_lanes()
-            .map(|remap| u8x16::load_array(t, remap).into());
         let round = _mm256_set1_epi16(1 << 13);
         for (group, slot) in stage
             .chunks_exact_mut(16)
@@ -815,7 +758,7 @@ pub(super) mod avx2 {
             .enumerate()
         {
             let starts = starts::<W>(block, group * (16 / W), strip, rows - 1);
-            let Some(bytes) = tap_bytes::<W>(t, block.source, starts, remap) else {
+            let Some(bytes) = tap_bytes::<W>(t, block.source, starts) else {
                 return;
             };
             let values = _mm256_mulhrs_epi16(filter.sums::<P>(bytes), round);

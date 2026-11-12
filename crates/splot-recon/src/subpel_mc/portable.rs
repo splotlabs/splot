@@ -82,48 +82,6 @@ pub(super) fn predict<T: Lanes>(block: &Block<'_, T>, sink: &mut Sink<'_>, stage
     baseline_simd!(simd => run(simd, block, sink, stage));
 }
 
-/// Predicts both blocks of an 8-bit compound cell (`w * h <= 64` or full-pel)
-/// and stores their COMPOUND_AVERAGE into `output`.
-pub(super) fn compound_u8(
-    blocks: [&Block<'_, u8>; 2],
-    forward: i32,
-    stage: &mut [i16],
-    output: &mut [u8],
-    stride: usize,
-) {
-    if blocks
-        .iter()
-        .all(|b| b.horizontal.is_none() && b.vertical.is_none())
-    {
-        baseline_simd!(simd => copy_compound_u8(simd, blocks, forward, output, stride));
-        return;
-    }
-    let w = blocks[0].w;
-    let mut pred0 = [0i32; 64];
-    baseline_simd!(simd => {
-        run(
-            simd,
-            blocks[0],
-            &mut Sink::Prep {
-                output: &mut pred0,
-                stride: w,
-            },
-            stage,
-        );
-        run(
-            simd,
-            blocks[1],
-            &mut Sink::Average {
-                pred0: &pred0,
-                forward,
-                output,
-                stride,
-            },
-            stage,
-        );
-    });
-}
-
 /// Predicts both blocks of a 16-bit compound cell (`w * h <= 64` or full-pel)
 /// and stores their COMPOUND_AVERAGE clipped to `max` into `output`.
 pub(super) fn compound_u16(
@@ -166,41 +124,6 @@ pub(super) fn compound_u16(
             stage,
         );
     });
-}
-
-#[inline(never)]
-fn copy_compound_u8<S: Simd>(
-    simd: S,
-    blocks: [&Block<'_, u8>; 2],
-    forward: i32,
-    output: &mut [u8],
-    stride: usize,
-) {
-    let (w, h) = (blocks[0].w, blocks[0].h);
-    let (fwd, back, bias) = (
-        i16x8::splat(simd, forward as i16),
-        i16x8::splat(simd, (16 - forward) as i16),
-        i16x8::splat(simd, 8),
-    );
-    let one = u16x8::splat(simd, 1);
-    for row in 0..h {
-        let (s0, s1, out_row) = (blocks[0].start(row), blocks[1].start(row), row * stride);
-        for col in (0..w).step_by(8) {
-            let a = u8::lanes(simd, blocks[0].source, s0 + col);
-            let c = u8::lanes(simd, blocks[1].source, s1 + col);
-            let avg: u16x8<S> = if forward == 8 {
-                (a.bitcast::<u16x8<S>>() + c.bitcast::<u16x8<S>>() + one) >> 1
-            } else {
-                ((a * fwd + c * back + bias) >> 4).max(0).min(255).bitcast()
-            };
-            store(
-                output,
-                out_row + col,
-                (w - col).min(8),
-                avg.to_array().map(|v| v as u8),
-            );
-        }
-    }
 }
 
 #[inline(never)]
@@ -334,40 +257,6 @@ fn copy_compound_u16<S: Simd>(
     }
 }
 
-type Remap<S> = [u8x16<S>; 2];
-
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
-#[inline(always)]
-fn remap_indices<S: Simd>(simd: S, remap: Option<[u8; 16]>) -> Option<Remap<S>> {
-    let remap = u8x16::load_array_ref(simd, &remap?);
-    let even = remap + remap;
-    let odd = even + u8x16::splat(simd, 1);
-    Some([even.zip_low(odd), even.zip_high(odd)])
-}
-
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
-#[inline(always)]
-fn window16<S: Simd, T: Lanes>(
-    simd: S,
-    source: &[T],
-    start: usize,
-    remap: Option<&Remap<S>>,
-) -> (i16x8<S>, i16x8<S>) {
-    let (a, b) = T::lanes16(simd, source, start);
-    match remap {
-        None => (a, b),
-        Some([idx0, idx1]) => {
-            let (bytes_a, bytes_b) = (a.bitcast::<u8x16<S>>(), b.bitcast::<u8x16<S>>());
-            (
-                simd.concat_swizzle_dyn_u8x16(bytes_a, bytes_b, *idx0)
-                    .bitcast(),
-                simd.concat_swizzle_dyn_u8x16(bytes_a, bytes_b, *idx1)
-                    .bitcast(),
-            )
-        }
-    }
-}
-
 #[inline]
 fn run<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>, stage: &mut [i16]) {
     match (block.horizontal, block.vertical) {
@@ -486,20 +375,6 @@ fn horizontal_sums_ab<S: Simd, const P: usize>(
     })
 }
 
-/// The horizontal sums of an 8-column window starting at `start`.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
-#[inline(always)]
-fn horizontal_sums<S: Simd, T: Lanes, const P: usize>(
-    simd: S,
-    source: &[T],
-    start: usize,
-    weights: &[i16x8<S>; 8],
-    remap: Option<&Remap<S>>,
-) -> (i32x4<S>, i32x4<S>) {
-    let (a, b) = window16(simd, source, start, remap);
-    horizontal_sums_ab::<S, P>(a, b, weights)
-}
-
 /// The horizontal sums of a 4-column window starting at `start`.
 #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
@@ -508,13 +383,12 @@ fn horizontal_sums4<S: Simd, T: Lanes, const P: usize>(
     source: &[T],
     start: usize,
     weights: &[i16x8<S>; 8],
-    remap: Option<&Remap<S>>,
 ) -> i32x4<S> {
-    let (a, b) = if P <= 2 && remap.is_none() {
+    let (a, b) = if P <= 2 {
         let a = T::lanes(simd, source, start);
         (a, a)
     } else {
-        window16(simd, source, start, remap)
+        T::lanes16(simd, source, start)
     };
     tap_sums4::<S, P>(weights, |t| match t {
         0 => a,
@@ -677,17 +551,10 @@ fn horizontal<S: Simd, T: Lanes, const P: usize>(
     sink: &mut Sink<'_>,
 ) {
     let weights = weights(simd, taps);
-    let remap = remap_indices(simd, block.remap_lanes());
     let put = sink.is_put();
     if block.w <= 4 {
         for row in 0..block.h {
-            let sum = horizontal_sums4::<S, T, P>(
-                simd,
-                block.source,
-                block.start(row),
-                &weights,
-                remap.as_ref(),
-            );
+            let sum = horizontal_sums4::<S, T, P>(simd, block.source, block.start(row), &weights);
             let intermediate = (sum + 4) >> 3;
             let values = if put {
                 (intermediate + 8) >> 4
@@ -700,30 +567,11 @@ fn horizontal<S: Simd, T: Lanes, const P: usize>(
     }
     for row in 0..block.h {
         let row_start = block.start(row);
-        if remap.is_none() {
-            let mut a = T::lanes(simd, block.source, row_start);
-            for col in (0..block.w).step_by(8) {
-                let b = T::lanes(simd, block.source, row_start + col + 8);
-                let sums = horizontal_sums_ab::<S, P>(a, b, &weights);
-                a = b;
-                let intermediate = round(sums, 4, 3);
-                let values = if put {
-                    round(intermediate, 8, 4)
-                } else {
-                    intermediate
-                };
-                emit(simd, sink, block.w, row, col, values);
-            }
-            continue;
-        }
+        let mut a = T::lanes(simd, block.source, row_start);
         for col in (0..block.w).step_by(8) {
-            let sums = horizontal_sums::<S, T, P>(
-                simd,
-                block.source,
-                row_start + col,
-                &weights,
-                remap.as_ref(),
-            );
+            let b = T::lanes(simd, block.source, row_start + col + 8);
+            let sums = horizontal_sums_ab::<S, P>(a, b, &weights);
+            a = b;
             let intermediate = round(sums, 4, 3);
             let values = if put {
                 round(intermediate, 8, 4)
@@ -793,25 +641,13 @@ fn stage_rows<S: Simd, T: Lanes, const P: usize>(
     stage: &mut [i16],
 ) {
     let weights = weights(simd, taps);
-    let remap = remap_indices(simd, block.remap_lanes());
     if block.w <= 4 {
         for r in (0..rows).step_by(2) {
-            let sum0 = (horizontal_sums4::<S, T, P>(
-                simd,
-                block.source,
-                block.start(r),
-                &weights,
-                remap.as_ref(),
-            ) + 4)
-                >> 3;
-            let sum1 = (horizontal_sums4::<S, T, P>(
-                simd,
-                block.source,
-                block.start((r + 1).min(rows - 1)),
-                &weights,
-                remap.as_ref(),
-            ) + 4)
-                >> 3;
+            let sums = |row: usize| {
+                (horizontal_sums4::<S, T, P>(simd, block.source, block.start(row), &weights) + 4)
+                    >> 3
+            };
+            let (sum0, sum1) = (sums(r), sums((r + 1).min(rows - 1)));
             if let Some(slot) = stage
                 .get_mut(r * 4..)
                 .and_then(<[i16]>::first_chunk_mut::<8>)
@@ -823,31 +659,11 @@ fn stage_rows<S: Simd, T: Lanes, const P: usize>(
     }
     for row in 0..rows {
         let row_start = block.start(row);
-        if remap.is_none() {
-            let mut a = T::lanes(simd, block.source, row_start);
-            for col in (0..block.w).step_by(8) {
-                let b = T::lanes(simd, block.source, row_start + col + 8);
-                let (low, high) = round(horizontal_sums_ab::<S, P>(a, b, &weights), 4, 3);
-                a = b;
-                let at = (col / 8 * rows + row) * 8;
-                if let Some(slot) = stage.get_mut(at..).and_then(<[i16]>::first_chunk_mut::<8>) {
-                    low.narrow(high).store_array(slot);
-                }
-            }
-            continue;
-        }
+        let mut a = T::lanes(simd, block.source, row_start);
         for col in (0..block.w).step_by(8) {
-            let (low, high) = round(
-                horizontal_sums::<S, T, P>(
-                    simd,
-                    block.source,
-                    row_start + col,
-                    &weights,
-                    remap.as_ref(),
-                ),
-                4,
-                3,
-            );
+            let b = T::lanes(simd, block.source, row_start + col + 8);
+            let (low, high) = round(horizontal_sums_ab::<S, P>(a, b, &weights), 4, 3);
+            a = b;
             let at = (col / 8 * rows + row) * 8;
             if let Some(slot) = stage.get_mut(at..).and_then(<[i16]>::first_chunk_mut::<8>) {
                 low.narrow(high).store_array(slot);

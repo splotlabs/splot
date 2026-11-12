@@ -8,19 +8,77 @@
     reason = "enters the dot-product kernels on a CPU detected to have them"
 )]
 
-use super::Job;
+use super::{Compound, Out, Programs, Strips};
 use fearless_simd::Neon;
+
+/// One call of the kernels, compiled once with `sdot` horizontal sums and
+/// once with multiply-accumulates.
+pub(super) trait Job {
+    /// Runs the call in the multiply-accumulate kernels.
+    fn mla(self, t: Neon);
+
+    /// Runs the call in the `sdot` kernels.
+    ///
+    /// # Safety
+    ///
+    /// Safety: the CPU has `FEAT_DotProd`.
+    unsafe fn sdot(self, t: Neon);
+}
 
 /// Runs `job` in the `sdot` kernels when the CPU has `FEAT_DotProd`, which
 /// the standard library detects once and caches, else in the
 /// multiply-accumulate kernels.
-#[inline]
-pub(super) fn run(t: Neon, job: Job<'_, '_, '_>) {
+#[allow(clippy::inline_always, reason = "one dispatch per kernel call")]
+#[inline(always)]
+pub(super) fn run(t: Neon, job: impl Job) {
     if std::arch::is_aarch64_feature_detected!("dotprod") && !mla_only() {
-        // SAFETY: NEON (the token `t`) and dotprod (detected above) are every feature of the callee.
-        unsafe { super::sdot::entry(t, job) }
+        // SAFETY: the CPU has `FEAT_DotProd`, detected above.
+        unsafe { job.sdot(t) }
     } else {
-        super::mla_entry(t, job);
+        job.mla(t);
+    }
+}
+
+impl<O: Out> Job for Strips<'_, '_, O> {
+    #[inline]
+    fn mla(self, t: Neon) {
+        super::mla_strips(t, self.0, self.1);
+    }
+
+    /// Safety: as [`Job::sdot`].
+    #[target_feature(enable = "neon,dotprod")]
+    unsafe fn sdot(self, t: Neon) {
+        super::sdot::strips(t, self.0, self.1);
+    }
+}
+
+impl Job for Compound<'_, '_> {
+    #[inline]
+    fn mla(self, t: Neon) {
+        super::mla_compound(t, self);
+    }
+
+    /// Safety: as [`Job::sdot`].
+    #[target_feature(enable = "neon,dotprod")]
+    unsafe fn sdot(self, t: Neon) {
+        super::sdot::compound(t, self.0, self.1, self.2, self.3);
+    }
+}
+
+impl Job for Programs<'_, '_> {
+    #[inline]
+    fn mla(self, t: Neon) {
+        super::mla_program(t, self);
+    }
+
+    /// Safety: as [`Job::sdot`].
+    #[target_feature(enable = "neon,dotprod")]
+    unsafe fn sdot(self, t: Neon) {
+        *self.2 = if self.1 == 4 {
+            super::sdot::run_program::<4>(t, self.0)
+        } else {
+            super::sdot::run_program::<8>(t, self.0)
+        };
     }
 }
 

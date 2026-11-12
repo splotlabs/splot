@@ -116,14 +116,7 @@ const fn width(w: usize) -> usize {
 mod avx2 {
     use super::super::block::{Block, Sink, Taps};
     use core::arch::x86_64::*;
-    use fearless_simd::{
-        Avx2, SimdBase, SimdFrom, i16x16, i32x4, i32x8, u8x16, u8x32, u16x8, u16x16,
-    };
-
-    /// `pshufb` patterns of a column-clamped window: for each half of its 16
-    /// columns, the words taken from the first and from the second 8 samples
-    /// loaded from the window origin.
-    type Remap = [[__m128i; 2]; 2];
+    use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x16, i32x4, i32x8, u8x32, u16x8, u16x16};
 
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
@@ -456,49 +449,14 @@ mod avx2 {
             | i64::from(samples[3]) << 48
     }
 
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn remap(t: Avx2, block: &Block<'_, u16>) -> Option<Remap> {
-        let columns: __m128i = u8x16::load_array(t, block.remap_lanes()?).into();
-        let doubled = _mm_add_epi8(columns, columns);
-        let half = |words: __m128i| -> [__m128i; 2] {
-            [
-                _mm_or_si128(words, _mm_cmpgt_epi8(words, _mm_set1_epi8(15))),
-                _mm_sub_epi8(words, _mm_set1_epi8(16)),
-            ]
-        };
-        let high = _mm_add_epi8(doubled, _mm_set1_epi8(1));
-        Some([
-            half(_mm_unpacklo_epi8(doubled, high)),
-            half(_mm_unpackhi_epi8(doubled, high)),
-        ])
-    }
-
     /// Window columns `0..8` and `8..16` of the row from `start`.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn window_row(
-        t: Avx2,
-        source: &[u16],
-        start: usize,
-        remap: Option<&Remap>,
-    ) -> Option<(__m128i, __m128i)> {
-        let (first, second) = (
+    fn window_row(t: Avx2, source: &[u16], start: usize) -> Option<(__m128i, __m128i)> {
+        Some((
             load8(t, chunk(source, start)?),
             load8(t, chunk(source, start + 8)?),
-        );
-        Some(match remap {
-            None => (first, second),
-            Some(remap) => {
-                let gather = |half: &[__m128i; 2]| {
-                    _mm_or_si128(
-                        _mm_shuffle_epi8(first, half[0]),
-                        _mm_shuffle_epi8(second, half[1]),
-                    )
-                };
-                (gather(&remap[0]), gather(&remap[1]))
-            }
-        })
+        ))
     }
 
     #[inline]
@@ -540,13 +498,9 @@ mod avx2 {
         source: &[u16],
         starts: [usize; 4],
         weights: &[__m256i; 4],
-        remap: Option<&Remap>,
     ) -> Option<(__m256i, __m256i)> {
         if W == 4 {
-            let row = |q: usize| -> Option<__m128i> {
-                let samples = load8(t, chunk(source, starts[q])?);
-                Some(remap.map_or(samples, |remap| _mm_shuffle_epi8(samples, remap[0][0])))
-            };
+            let row = |q: usize| -> Option<__m128i> { Some(load8(t, chunk(source, starts[q])?)) };
             let sums = |rows: __m256i| {
                 let mut sum = _mm256_setzero_si256();
                 for (pattern, &weight) in WORD_PAIRS.iter().zip(weights).take(P) {
@@ -562,8 +516,8 @@ mod avx2 {
         }
         let (low, high) = if W == 8 {
             let (first, second) = (
-                window_row(t, source, starts[0], remap)?,
-                window_row(t, source, starts[1], remap)?,
+                window_row(t, source, starts[0])?,
+                window_row(t, source, starts[1])?,
             );
             (
                 _mm256_set_m128i(second.0, first.0),
@@ -658,12 +612,10 @@ mod avx2 {
         out: &mut impl FnMut(usize, usize, usize, __m256i, __m256i),
     ) {
         let weights = weights::<P>(taps);
-        let remap = remap(t, block);
         for strip in 0..block.w / W {
             for row in (0..block.h).step_by(16 / W) {
                 let starts = starts::<W>(block, row, strip, usize::MAX);
-                let sums =
-                    horizontal_sums::<W, P>(t, block.source, starts, &weights, remap.as_ref());
+                let sums = horizontal_sums::<W, P>(t, block.source, starts, &weights);
                 let Some(sums) = sums else {
                     return;
                 };
@@ -720,14 +672,13 @@ mod avx2 {
         stage: &mut [i16],
     ) {
         let weights = weights::<P>(taps);
-        let remap = remap(t, block);
         for (group, slot) in stage
             .chunks_exact_mut(16)
             .take(rows.div_ceil(16 / W))
             .enumerate()
         {
             let starts = starts::<W>(block, group * (16 / W), strip, rows - 1);
-            let sums = horizontal_sums::<W, P>(t, block.source, starts, &weights, remap.as_ref());
+            let sums = horizontal_sums::<W, P>(t, block.source, starts, &weights);
             let Some(sums) = sums else {
                 return;
             };

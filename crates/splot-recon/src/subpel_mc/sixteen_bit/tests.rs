@@ -32,11 +32,6 @@ fn taps(filter: usize, phase: usize) -> Option<&'static Taps> {
     TAPS[filter][phase].as_ref()
 }
 
-/// Column remaps of a window clamped on the left and on the right.
-fn remaps() -> [Option<[i8; 2]>; 3] {
-    [None, Some([-3, 15]), Some([0, 6])]
-}
-
 /// Every sink of the NEON `predict` against the portable kernels.
 fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     let (w, h) = (block.w, block.h);
@@ -122,8 +117,8 @@ fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     }
 }
 
-/// Every word-lane shape, filter, phase pair, column remap and row clamp of
-/// 10- and 12-bit samples.
+/// Every word-lane shape, filter and phase pair of 10- and 12-bit samples at
+/// several window origins.
 #[test]
 fn neon_predict_matches_portable_for_every_shape_phase_and_sink() {
     let shapes = [
@@ -154,33 +149,20 @@ fn neon_predict_matches_portable_for_every_shape_phase_and_sink() {
                     .enumerate()
                 {
                     let filter = (index + case) % NUM_FILTER_TYPES;
-                    let horizontal = taps(filter, h_phase);
-                    let remaps = if w <= 8 && horizontal.is_some() {
-                        &remaps()[..]
-                    } else {
-                        &remaps()[..1]
-                    };
-                    for &remap in remaps {
-                        for (top, rows) in [(2, [0, ROWS as isize - 1]), (-5, [0, 7]), (3, [4, 9])]
-                        {
-                            let block = Block {
-                                source: plane,
-                                stride: STRIDE,
-                                origin: 5 + case,
-                                top,
-                                rows,
-                                w,
-                                h,
-                                horizontal,
-                                vertical: taps(filter, v_phase),
-                                remap,
-                            };
-                            let label = format!(
-                                "{max} {w}x{h} filter {filter} phases {h_phase},{v_phase} \
-                                 remap {remap:?} top {top}"
-                            );
-                            check_predict(&block, max, &label);
-                        }
+                    for top in [0, 3, 5] {
+                        let block = Block {
+                            source: plane,
+                            stride: STRIDE,
+                            origin: 5 + case + top * STRIDE,
+                            w,
+                            h,
+                            horizontal: taps(filter, h_phase),
+                            vertical: taps(filter, v_phase),
+                        };
+                        let label = format!(
+                            "{max} {w}x{h} filter {filter} phases {h_phase},{v_phase} top {top}"
+                        );
+                        check_predict(&block, max, &label);
                     }
                 }
             }
@@ -205,17 +187,14 @@ fn neon_compound_matches_portable() {
                 .enumerate()
             {
                 let filter = (index + case) % NUM_FILTER_TYPES;
-                let block = |plane: usize, origin: usize, top: isize, fullpel: bool| Block {
+                let block = |plane: usize, origin: usize, top: usize, fullpel: bool| Block {
                     source: &planes[plane][..],
                     stride: STRIDE,
-                    origin,
-                    top,
-                    rows: [0, ROWS as isize - 1],
+                    origin: origin + top * STRIDE,
                     w,
                     h,
                     horizontal: if fullpel { None } else { taps(filter, h_phase) },
                     vertical: if fullpel { None } else { taps(filter, v_phase) },
-                    remap: None,
                 };
                 let fullpel = w * h > 64;
                 let first = block(0, 3, 1, fullpel);

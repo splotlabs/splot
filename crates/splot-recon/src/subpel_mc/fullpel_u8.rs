@@ -167,7 +167,6 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into_u8<T: ReconSam
         [reference0, reference1],
         [params0, params1],
         cwp_weight,
-        &mut [],
         output,
         output_stride,
     ))

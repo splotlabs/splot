@@ -11,7 +11,7 @@
 
 use super::super::block::{Block, Sink, Taps};
 use core::arch::aarch64::*;
-use fearless_simd::{Neon, SimdBase, SimdFrom, i16x8, i32x4, u8x16, u16x8};
+use fearless_simd::{Neon, SimdBase, SimdFrom, i16x8, i32x4, u16x8};
 
 /// The `i32` sums of a group: outputs `0..4` and `4..8`.
 type Sums = (int32x4_t, int32x4_t);
@@ -274,33 +274,6 @@ fn weights(t: Neon, taps: &Taps) -> int16x8_t {
     i16x8::load_array_ref(t, &lanes).into()
 }
 
-/// `tbl` indices of a column-clamped window: the bytes of window columns
-/// `0..8` and `8..16` in the 32 bytes of the 16 samples from its origin.
-#[inline]
-#[target_feature(enable = "neon")]
-fn remap(t: Neon, block: &Block<'_, u16>) -> Option<[uint8x16_t; 2]> {
-    let columns: uint8x16_t = u8x16::load_array(t, block.remap_lanes()?).into();
-    let even = vaddq_u8(columns, columns);
-    let odd = vaddq_u8(even, vdupq_n_u8(1));
-    Some([vzip1q_u8(even, odd), vzip2q_u8(even, odd)])
-}
-
-/// Window columns `0..8` and `8..16` of the 16 samples `(a, b)`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn gather(a: int16x8_t, b: int16x8_t, remap: Option<&[uint8x16_t; 2]>) -> (int16x8_t, int16x8_t) {
-    match remap {
-        None => (a, b),
-        Some([low, high]) => {
-            let table = uint8x16x2_t(vreinterpretq_u8_s16(a), vreinterpretq_u8_s16(b));
-            (
-                vreinterpretq_s16_u8(vqtbl2q_u8(table, *low)),
-                vreinterpretq_s16_u8(vqtbl2q_u8(table, *high)),
-            )
-        }
-    }
-}
-
 /// Window columns `k..k + 8` of the 16 samples `(a, b)`.
 #[inline]
 #[target_feature(enable = "neon")]
@@ -380,15 +353,13 @@ fn horizontal_sums4<const P: usize>(
     source: &[u16],
     start: usize,
     weights: int16x8_t,
-    remap: Option<&[uint8x16_t; 2]>,
 ) -> int32x4_t {
     let a = load(t, source, start);
-    let b = if P <= 2 && remap.is_none() {
+    let b = if P <= 2 {
         a
     } else {
         load(t, source, start + 8)
     };
-    let (a, b) = gather(a, b, remap);
     sums4::<P>(weights, |k| vget_low_s16(slide(a, b, k)))
 }
 
@@ -422,7 +393,6 @@ fn horizontal<const W: usize, const P: usize>(
     out: &mut impl FnMut(usize, usize, usize, Sums),
 ) {
     let weights = weights(t, taps);
-    let remap = remap(t, block);
     let (round0, round1) = (vdupq_n_s32(-3), vdupq_n_s32(-4));
     let finish = |sums: Sums| {
         let sums = round(sums, round0);
@@ -430,9 +400,8 @@ fn horizontal<const W: usize, const P: usize>(
     };
     if W == 4 {
         for row in (0..block.h).step_by(2) {
-            let sums = |row: usize| {
-                horizontal_sums4::<P>(t, block.source, block.start(row), weights, remap.as_ref())
-            };
+            let sums =
+                |row: usize| horizontal_sums4::<P>(t, block.source, block.start(row), weights);
             out(4, row, 0, finish((sums(row), sums(row + 1))));
         }
         return;
@@ -442,7 +411,7 @@ fn horizontal<const W: usize, const P: usize>(
         let mut a = load(t, block.source, start);
         for col in (0..block.w).step_by(8) {
             let b = load(t, block.source, start + col + 8);
-            let window = gather(a, b, remap.as_ref());
+            let window = (a, b);
             a = b;
             out(
                 8,
@@ -524,14 +493,12 @@ fn two_pass<const W: usize, const H: usize, const V: usize>(
     out: &mut impl FnMut(usize, usize, usize, Sums),
 ) {
     let (h_weights, v_weights) = (weights(t, h_taps), weights(t, v_taps));
-    let remap = remap(t, block);
     let shift = vdupq_n_s32(if put { -11 } else { -7 });
     let narrow = |(low, high): Sums| vrshrn_high_n_s32::<3>(vrshrn_n_s32::<3>(low), high);
     if W == 4 {
         let rows = block.h + 2 * V - 1;
-        let row_sums = |row: usize| {
-            horizontal_sums4::<H>(t, block.source, block.start(row), h_weights, remap.as_ref())
-        };
+        let row_sums =
+            |row: usize| horizontal_sums4::<H>(t, block.source, block.start(row), h_weights);
         let line = |row: usize| narrow((row_sums(row), row_sums((row + 1).min(rows - 1))));
         let mut pairs: [int16x8_t; 4] =
             core::array::from_fn(|k| if k < V { line(2 * k) } else { vdupq_n_s16(0) });
@@ -553,8 +520,7 @@ fn two_pass<const W: usize, const H: usize, const V: usize>(
     for col in (0..block.w).step_by(8) {
         let line = |row: usize| {
             let (a, b) = load16(t, block.source, block.start(row) + col);
-            let window = gather(a, b, remap.as_ref());
-            narrow(sums::<H>(h_weights, |k| slide(window.0, window.1, k)))
+            narrow(sums::<H>(h_weights, |k| slide(a, b, k)))
         };
         let mut r: [int16x8_t; 7] = core::array::from_fn(|k| {
             if k + 1 < 2 * V {

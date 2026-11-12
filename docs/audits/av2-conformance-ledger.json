@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "8bcacd64959543e9aa3fbcb08458115a88cc8ba1",
+  "audited_commit": "1e97aa68056908e8c6c6b8c16f48bd764cb45ba2",
   "outcome": "success",
   "files": [
     {
@@ -5721,7 +5721,7 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc.rs",
-      "sha256": "37b18f7d9f29d2cedc2dd7d6238497e2c87e7ffa41c69a34d0269635075931d2",
+      "sha256": "1f60c86ff287de50197c2f0d49debf47d0c12f160c8e8b8d9453207f5808b3d6",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-SUBPEL-MC"
@@ -5730,14 +5730,14 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/block.rs",
-      "sha256": "4af1c1bc56d840952eb3f2e32fbb263e06fc1d29ba73663dbb49c885f6ba5f97",
+      "sha256": "d85c8891eadad1bacb20b07e60c17e795f72403d5159a7f89cdab60277cf62dc",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/cell.rs",
-      "sha256": "911eea6882e65a96ca9dc3707e93bc544ea97cfdb6cbec9ec406d2769f9eb5c3",
+      "sha256": "a7097facf1f19bb850bc4d039e5a22f2e6265a6d7214b09ea46c10817819e4ae",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5751,42 +5751,42 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/eight_bit.rs",
-      "sha256": "2c368c04e07081498d030021ca34657ce358e85309c83fbff9c1e6a586ead207",
+      "sha256": "94d7d2c3c6a599b3ba5ed30d525e4c0223a8fa7428cdd14ee221cbce1bbd378b",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/eight_bit/neon.rs",
-      "sha256": "d053d8233af066b461e4831a89be15c0c10ff74dcb6ec615f574796bf74b4f0a",
+      "sha256": "f4624b2d8da5098d26013f21bfefb136b07e926b4c6908332099cbf6d6ce904e",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/eight_bit/neon/dot.rs",
-      "sha256": "0bf199d483af072548af3c7a0d244b455654182a0bc2055735337ae3dc67f494",
+      "sha256": "fc70ce29d5c2f94e7ab27d6a0437e266674091aaa0833c5df9fdd0e82b72b329",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/eight_bit/neon/kernels.rs",
-      "sha256": "f0e498a0bab61a1e252057e9eec75fa07843d79444d3109111cf20146b13df97",
+      "sha256": "4c3e153bdae94f4bf0b31d94b1a813b88b9fe79dd7e0429a40d6b3c551ffec05",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/fullpel_u8.rs",
-      "sha256": "47c1850988fdd1153c49df0ccc2e6bbe94679f6b96b430a32c33d92733ca0596",
+      "sha256": "0f10b642134ae338e520ed2c84f15a3009040e0e532ef33cc0dbcd2a3b447480",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/portable.rs",
-      "sha256": "c5beb0331751c1423658ccf61fda18400c7140c03db09f73adb715c9b7ef51fa",
+      "sha256": "0e4e972bf657f867324e8908c43f7e7c327e33848ea285c3d7df941ff221572d",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5800,21 +5800,21 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/sixteen_bit.rs",
-      "sha256": "cc3ca96492e02e296c87be2bd08493a204a9a2d5ded218f0ffa2e0f0147711de",
+      "sha256": "a8cb5b84a302e56085e4ad5e419283406f43fa901fc284e131b0eec6e6192043",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/sixteen_bit/neon.rs",
-      "sha256": "512708e327aac4fe556bd875648590cbafb5a4533dfb7ed3a429a9d945b3a678",
+      "sha256": "e369c343cebcd71cae8bcaf5932a95ce9cdd8ad7a8917a619fe3f698dccd35e6",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/sixteen_bit/tests.rs",
-      "sha256": "1e7db213e49510d71b896932eaf1ee437eb0612262d3c2da75bcf727c6623713",
+      "sha256": "a7ae8cd4e5ce347b0d08b8512e8d27ca448841fefd1a0acc58e04bfe0c802368",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5828,7 +5828,7 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/tests/byte_lanes.rs",
-      "sha256": "8af198b3ad79b34ea0654e104f58165760058425374433f57c4d91932ec1d439",
+      "sha256": "ec055c3044a6a5b467e52c7280bdb3a57c4d8dc0495da3d04132e36a905f0731",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"

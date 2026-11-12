@@ -702,7 +702,7 @@ fn check_neon_byte_lanes() {
             .map(|i| if (i + i / stride) % 3 == 0 { 255 } else { 0 })
             .collect(),
     ];
-    let remap = [-2, 9];
+    let token = fearless_simd::Level::baseline().as_neon().unwrap();
     for source in &textures {
         for filter in 0..NUM_FILTER_TYPES {
             let phases = [[0, 0], [8, 8], [1, 15], [13, 4]]
@@ -711,134 +711,144 @@ fn check_neon_byte_lanes() {
             for (case, [x_phase, y_phase]) in phases.enumerate() {
                 let case = case % 6;
                 let taps = |phase: usize| block::TAPS[filter][phase].as_ref();
-                for (w, h) in [(4, 4), (4, 16), (8, 2), (8, 8), (16, 4), (16, 16), (32, 8)] {
-                    for remapped in [false, true] {
-                        if remapped && (w > 8 || x_phase == 0) {
+                for (w, h) in [
+                    (4, 2),
+                    (4, 4),
+                    (4, 16),
+                    (8, 1),
+                    (8, 2),
+                    (8, 8),
+                    (16, 4),
+                    (16, 16),
+                    (24, 3),
+                    (32, 8),
+                ] {
+                    let block = block::Block {
+                        source,
+                        stride,
+                        origin: 3 + case + case * stride,
+                        w,
+                        h,
+                        horizontal: taps(x_phase),
+                        vertical: taps(y_phase),
+                    };
+                    let label = format!("{filter} {w}x{h} phases {x_phase},{y_phase}");
+                    let span = block.vertical.map_or(1, block::Taps::span);
+                    let len = block::stage_len(h + span - 1, w, block.vertical);
+                    let mut stage = vec![0i16; len];
+                    let fits = eight_bit::neon::fits(&block);
+                    let run = |sink: &mut block::Sink<'_>, stage: &mut [i16], neon: bool| {
+                        if !neon || !eight_bit::predict(&block, sink, &mut []) {
+                            assert!(!neon || !fits, "declined {label}");
+                            portable::predict(&block, sink, stage);
+                        }
+                    };
+                    let out_stride = w + 5;
+                    let mut prep = [vec![0i32; out_stride * h], vec![0i32; out_stride * h]];
+                    let mut narrow = [vec![0i16; out_stride * h], vec![0i16; out_stride * h]];
+                    let mut put = [vec![7u8; out_stride * h], vec![7u8; out_stride * h]];
+                    let mut wide = [vec![7u16; out_stride * h], vec![7u16; out_stride * h]];
+                    for (neon, (((prep, narrow), put), wide)) in (0..2).zip(
+                        prep.iter_mut()
+                            .zip(&mut narrow)
+                            .zip(&mut put)
+                            .zip(&mut wide),
+                    ) {
+                        let neon = neon == 1;
+                        let stride = out_stride;
+                        run(
+                            &mut block::Sink::Prep {
+                                output: prep,
+                                stride,
+                            },
+                            &mut stage,
+                            neon,
+                        );
+                        let sink = &mut block::Sink::PrepNarrow {
+                            output: narrow,
+                            stride,
+                        };
+                        run(sink, &mut stage, neon);
+                        run(
+                            &mut block::Sink::Put {
+                                output: put,
+                                stride,
+                            },
+                            &mut stage,
+                            neon,
+                        );
+                        let sink = &mut block::Sink::PutWide {
+                            output: wide,
+                            stride,
+                            max: 255,
+                        };
+                        run(sink, &mut stage, neon);
+                    }
+                    assert_eq!(prep[0], prep[1], "prep {label}");
+                    assert_eq!(narrow[0], narrow[1], "prep16 {label}");
+                    assert_eq!(put[0], put[1], "put {label}");
+                    assert_eq!(wide[0], wide[1], "put wide {label}");
+                    let pred0: Vec<i32> =
+                        (0..w * h).map(|i| (i as i32 * 397) % 8200 - 1100).collect();
+                    let pred0_narrow: Vec<i16> = pred0.iter().map(|&v| v as i16).collect();
+                    let other = block::Block {
+                        horizontal: taps(y_phase),
+                        vertical: taps(x_phase),
+                        origin: block.origin + stride + 1,
+                        ..block
+                    };
+                    for forward in [8, 0, 5, 16] {
+                        let mut average = [vec![9u8; out_stride * h], vec![9u8; out_stride * h]];
+                        if !fits || !eight_bit::neon::fits(&other) {
                             continue;
                         }
-                        let block = block::Block {
-                            source,
-                            stride,
-                            origin: 3 + case,
-                            top: case as isize - 3,
-                            rows: [0, 20 + case as isize],
-                            w,
-                            h,
-                            horizontal: taps(x_phase),
-                            vertical: taps(y_phase),
-                            remap: remapped.then_some(remap),
-                        };
-                        let label =
-                            format!("{filter} {w}x{h} phases {x_phase},{y_phase} {remapped}");
-                        let span = block.vertical.map_or(1, block::Taps::span);
-                        let len = block::stage_len(h + span - 1, w, block.vertical);
-                        let mut stage = vec![0i16; len];
-                        let fits = eight_bit::neon::fits(&block);
-                        let run = |sink: &mut block::Sink<'_>, stage: &mut [i16], neon: bool| {
-                            if !neon || !eight_bit::predict(&block, sink, &mut []) {
-                                assert!(!neon || !fits, "declined {label}");
-                                portable::predict(&block, sink, stage);
-                            }
-                        };
-                        let out_stride = w + 5;
-                        let mut prep = [vec![0i32; out_stride * h], vec![0i32; out_stride * h]];
-                        let mut put = [vec![7u8; out_stride * h], vec![7u8; out_stride * h]];
-                        let mut wide = [vec![7u16; out_stride * h], vec![7u16; out_stride * h]];
-                        for (neon, ((prep, put), wide)) in
-                            (0..2).zip(prep.iter_mut().zip(&mut put).zip(&mut wide))
-                        {
-                            let neon = neon == 1;
-                            let sink = &mut block::Sink::Prep {
-                                output: prep,
+                        for (neon, output) in (0..2).zip(&mut average) {
+                            let sink = &mut block::Sink::Average {
+                                pred0: &pred0,
+                                forward,
+                                output,
                                 stride: out_stride,
                             };
-                            run(sink, &mut stage, neon);
-                            run(
-                                &mut block::Sink::Put {
-                                    output: put,
-                                    stride: out_stride,
-                                },
-                                &mut stage,
-                                neon,
-                            );
-                            let sink = &mut block::Sink::PutWide {
-                                output: wide,
-                                stride: out_stride,
-                                max: 255,
-                            };
-                            run(sink, &mut stage, neon);
+                            run(sink, &mut stage, neon == 1);
                         }
-                        assert_eq!(prep[0], prep[1], "prep {label}");
-                        assert_eq!(put[0], put[1], "put {label}");
-                        assert_eq!(wide[0], wide[1], "put wide {label}");
-                        let pred0: Vec<i32> =
-                            (0..w * h).map(|i| (i as i32 * 397) % 8200 - 1100).collect();
-                        for forward in [8, 0, 5, 16] {
-                            let mut average =
-                                [vec![9u8; out_stride * h], vec![9u8; out_stride * h]];
-                            for (neon, output) in (0..2).zip(&mut average) {
-                                let sink = &mut block::Sink::Average {
-                                    pred0: &pred0,
-                                    forward,
-                                    output,
-                                    stride: out_stride,
-                                };
-                                run(sink, &mut stage, neon == 1);
-                            }
-                            assert_eq!(average[0], average[1], "average {forward} {label}");
-                            if w * h > 64 {
-                                continue;
-                            }
-                            let other = block::Block {
-                                horizontal: taps(y_phase),
-                                vertical: taps(x_phase),
-                                remap: None,
-                                ..block
-                            };
-                            let mut fused = [vec![3u8; out_stride * h], vec![3u8; out_stride * h]];
-                            portable::compound_u8(
-                                [&block, &other],
-                                forward,
-                                &mut vec![0; 4096],
-                                &mut fused[0],
-                                out_stride,
-                            );
-                            let mut declined = vec![3u8; out_stride * h];
-                            let taken = eight_bit::compound(
-                                [&block, &other],
-                                forward,
-                                &mut [],
-                                &mut declined,
-                                out_stride,
-                            );
-                            let both = fits && eight_bit::neon::fits(&other);
-                            assert_eq!(taken, both, "{label}");
-                            if !both {
-                                continue;
-                            }
-                            // The cells run every compound in the NEON kernel.
-                            let token = fearless_simd::Level::baseline().as_neon().unwrap();
-                            eight_bit::neon::compound(
-                                token,
-                                [&block, &other],
-                                forward,
-                                &mut fused[1],
-                                out_stride,
-                            );
-                            assert_eq!(fused[0], fused[1], "compound {forward} {label}");
-                            assert_eq!(fused[0], declined, "dispatch {forward} {label}");
-                        }
+                        assert_eq!(average[0], average[1], "average {forward} {label}");
+                        let mut narrow = vec![9u8; out_stride * h];
+                        let sink = &mut block::Sink::AverageNarrow {
+                            pred0: &pred0_narrow,
+                            forward,
+                            output: &mut narrow,
+                            stride: out_stride,
+                        };
+                        run(sink, &mut stage, true);
+                        assert_eq!(average[0], narrow, "average16 {forward} {label}");
+                        let mut fused = [vec![3u8; out_stride * h], vec![3u8; out_stride * h]];
+                        let mut first = vec![0i16; w * h];
+                        let sink = &mut block::Sink::PrepNarrow {
+                            output: &mut first,
+                            stride: w,
+                        };
+                        portable::predict(&block, sink, &mut stage);
+                        let mut other_stage = vec![0i16; 4096];
+                        let sink = &mut block::Sink::AverageNarrow {
+                            pred0: &first,
+                            forward,
+                            output: &mut fused[0],
+                            stride: out_stride,
+                        };
+                        portable::predict(&other, sink, &mut other_stage);
+                        eight_bit::neon::compound(
+                            token,
+                            [&block, &other],
+                            forward,
+                            &mut fused[1],
+                            out_stride,
+                        );
+                        assert_eq!(fused[0], fused[1], "compound {forward} {label}");
                     }
                 }
             }
         }
     }
-    let view = ReferencePlaneView::new(&textures[0], stride, rows).unwrap();
-    let params = SubpelPredictParams {
-        start_x: (9 << 10) + (5 << 6),
-        ..full_pel_params(InterpolationFilter::EightTap, 8, 8, 0, 0, 72, 44)
-    };
-    assert!(cell::put_cell(&view, &params).is_some());
 }
 
 /// The 16-bit placement entry stores the § 7.13.3.18 oracle's

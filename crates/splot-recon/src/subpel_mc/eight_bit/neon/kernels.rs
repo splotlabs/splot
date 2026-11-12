@@ -5,146 +5,28 @@
 //! `super::mla` and `super::sdot`.
 
 /// Defines every kernel that runs a horizontal pass with `$features`, in a
-/// module that supplies `taps`, `hrow`, `hpair` and `pair_columns`.
+/// module that supplies `taps`, `hline`, `hrow` and `hpair`.
 macro_rules! kernels {
     ($features:literal) => {
-        /// Runs `job`.
-        #[target_feature(enable = $features)]
-        pub(super) fn entry(t: Neon, job: Job<'_, '_, '_>) {
-            match job {
-                Job::Predict(block, sink) => predict(t, block, sink),
-                Job::Compound(blocks, forward, output, stride) => {
-                    compound(t, blocks, forward, output, stride);
-                }
-                Job::Cell(blocks, size, forward, output, stride) => {
-                    compound_cell(t, blocks, size, forward, output, stride);
-                }
-                Job::PutCell(block, output, stride) => put_cell(t, block, output, stride),
-                Job::Program(program, size, written) => {
-                    *written = if size == 4 {
-                        run_program::<4>(t, program)
-                    } else {
-                        run_program::<8>(t, program)
-                    };
-                }
-            }
-        }
-
-        /// Predicts `block`, which [`fits`], into an eight-bit `sink`.
+        /// Predicts `block`, which [`fits`], into `out`: a 4-column block in
+        /// row pairs, else in strips of 16 columns, or 8 for a two-pass
+        /// block.
         #[inline]
         #[target_feature(enable = $features)]
-        fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut Sink<'_>) {
-            let w = block.w;
-            if strip_fits(block) {
-                match sink {
-                    Sink::Put { output, stride } => {
-                        return strips(t, block, &mut Put { output, stride: *stride });
-                    }
-                    Sink::Prep { output, stride } => {
-                        return strips(t, block, &mut Prep { output, stride: *stride });
-                    }
-                    Sink::PrepNarrow { output, stride } => {
-                        return strips(t, block, &mut Prep { output, stride: *stride });
-                    }
-                    Sink::AverageNarrow { pred0, forward, output, stride } => {
-                        let forward = *forward;
-                        let stride = *stride;
-                        return strips(t, block, &mut Average { pred0, w, forward, output, stride });
-                    }
-                    Sink::Average { pred0, forward, output, stride } => {
-                        let forward = *forward;
-                        let stride = *stride;
-                        return strips(t, block, &mut Average { pred0, w, forward, output, stride });
-                    }
-                    _ => {}
-                }
+        pub(super) fn strips<O: Out>(t: Neon, block: &Block<'_, u8>, out: &mut O) {
+            let (h, v) = (pairs(block.horizontal), pairs(block.vertical));
+            let key = 5 * h.div_ceil(2) + v;
+            if block.w == 4 {
+                pair_shapes!(key, pair_block::<O>(t, block, out));
+                return;
             }
-            match sink {
-                Sink::Put { output, stride } => {
-                    let (output, stride) = (&mut **output, *stride);
-                    passes::<true>(t, block, &mut move |four, _, row, col, values| {
-                        store_bytes(output, if four { 4 } else { 8 }, row * stride + col, stride, vqmovun_s16(values));
-                    });
-                }
-                Sink::PutWide { output, stride, .. } => {
-                    let (output, stride) = (&mut **output, *stride);
-                    let (zero, max) = (vdupq_n_s16(0), vdupq_n_s16(255));
-                    passes::<true>(t, block, &mut move |four, _, row, col, values| {
-                        let values = vreinterpretq_u16_s16(vminq_s16(vmaxq_s16(values, zero), max));
-                        store_words(t, output, if four { 4 } else { 8 }, row * stride + col, stride, values);
-                    });
-                }
-                Sink::Prep { output, stride } => {
-                    let (output, stride) = (&mut **output, *stride);
-                    passes::<false>(t, block, &mut move |four, _, row, col, values| {
-                        let at = row * stride + col;
-                        let next = if four { at + stride } else { at + 4 };
-                        store_i32(t, output, at, vmovl_s16(vget_low_s16(values)));
-                        store_i32(t, output, next, vmovl_high_s16(values));
-                    });
-                }
-                Sink::Average {
-                    pred0,
-                    forward,
-                    output,
-                    stride,
-                } => {
-                    let (pred0, forward, output, stride) = (&**pred0, *forward, &mut **output, *stride);
-                    passes::<false>(t, block, &mut move |four, _, row, col, values| {
-                        let at = row * w + col;
-                        let first = vmovn_high_s32(
-                            vmovn_s32(load_i32(t, pred0, at)),
-                            load_i32(t, pred0, at + 4),
-                        );
-                        let values = vqmovun_s16(blend(first, values, forward));
-                        store_bytes(output, if four { 4 } else { 8 }, row * stride + col, stride, values);
-                    });
-                }
-                Sink::PrepNarrow { output, stride } => {
-                    let (output, stride) = (&mut **output, *stride);
-                    passes::<false>(t, block, &mut move |four, _, row, col, values| {
-                        let at = row * stride + col;
-                        let next = if four { at + stride } else { at + 4 };
-                        store_i16(t, output, at, vget_low_s16(values));
-                        store_i16(t, output, next, vget_high_s16(values));
-                    });
-                }
-                Sink::AverageNarrow {
-                    pred0,
-                    forward,
-                    output,
-                    stride,
-                } => {
-                    let (pred0, forward, output, stride) = (&**pred0, *forward, &mut **output, *stride);
-                    passes::<false>(t, block, &mut move |four, _, row, col, values| {
-                        let at = row * w + col;
-                        let first = vcombine_s16(load_i16(pred0, at), load_i16(pred0, at + 4));
-                        let values = vqmovun_s16(blend(first, values, forward));
-                        store_bytes(output, if four { 4 } else { 8 }, row * stride + col, stride, values);
-                    });
-                }
-                Sink::AverageWide { .. } => {}
-            }
+            let sixteen = block.w.is_multiple_of(16) && (h == 0 || v == 0);
+            strip_shapes!(key + 15 * usize::from(sixteen), strip_block::<O>(t, block, out));
         }
 
-        /// Predicts a block of [`strip_fits`] into `out` in strips of 16
-        /// columns, else 8.
-        #[inline]
-        #[target_feature(enable = $features)]
-        fn strips<O: Out>(t: Neon, block: &Block<'_, u8>, out: &mut O) {
-            let h = match block.horizontal.map_or(0, |taps| taps.count) {
-                0 => 0,
-                1 | 2 => 2,
-                _ => 4,
-            };
-            let v = block.vertical.map_or(0, |taps| taps.count);
-            strip_shapes!(block.w.is_multiple_of(16) && (h == 0 || v == 0), h, v, strip_block::<O>(t, block, out));
-        }
-
-        /// The strips of `N` columns of a block of [`strip_fits`] whose passes
-        /// have `H` and `V` tap pairs: each window row of a strip read once,
-        /// its horizontal sums or samples kept in a register ring for the
-        /// vertical pass.
+        /// The strips of `N` columns of `block` whose passes have `H` and `V`
+        /// tap pairs: each window row of a strip read once, its horizontal
+        /// sums or samples kept in a register ring for the vertical pass.
         #[inline(never)]
         #[target_feature(enable = $features)]
         fn strip_block<const H: usize, const V: usize, const N: usize, O: Out>(
@@ -154,7 +36,7 @@ macro_rules! kernels {
         ) {
             let window = block.h + if V > 0 { 2 * V - 1 } else { 0 };
             let reach = if H > 0 && N == 16 { 24 } else { 16 };
-            let (base, stride) = (block.start(0), block.stride);
+            let (base, stride) = (block.origin, block.stride);
             let (h_taps, v_weights) = (taps(t, block.horizontal), weights(t, block.vertical));
             let forward = out.forward();
             let bias = if V == 0 && O::PUT { 34 } else { 2 };
@@ -259,131 +141,144 @@ macro_rules! kernels {
             }
         }
 
-        /// Predicts both blocks of a compound cell of at most 64 samples (or of
-        /// two full-sample blocks of any size), which [`fits`], and stores their
-        /// COMPOUND_AVERAGE into `output`.
+        /// A 4-column `block` whose passes have `H` and `V` tap pairs, two rows
+        /// per vector: the horizontal sums or samples of each window row pair
+        /// in a register ring, whose last pair reads a row past the window
+        /// that no tap weighs.
+        #[inline(never)]
+        #[target_feature(enable = $features)]
+        fn pair_block<const H: usize, const V: usize, O: Out>(
+            t: Neon,
+            block: &Block<'_, u8>,
+            out: &mut O,
+        ) {
+            let (source, stride) = (block.source, block.stride);
+            let start = |row: usize| block.origin + row * stride;
+            let (h_taps, v_weights) = (taps(t, block.horizontal), weights(t, block.vertical));
+            let forward = out.forward();
+            let bias = if V == 0 && O::PUT { 34 } else { 2 };
+            let line = |row: usize| -> int16x8_t {
+                if H == 0 {
+                    let (a, b) = (load_u32(source, start(row)), load_u32(source, start(row + 1)));
+                    return widen(vcreate_u8(u64::from(a) | u64::from(b) << 32));
+                }
+                let (a, b) = (load8(source, start(row)), load8(source, start(row + 1)));
+                let sums = hpair(a, b, h_taps, bias);
+                if V == 0 && O::PUT { sums } else { vshrq_n_s16::<2>(sums) }
+            };
+            let vertical = |pairs: &[int16x8_t; 4], next: int16x8_t| -> int16x8_t {
+                let pair = |k: usize| if k < V { pairs[k] } else { next };
+                let tap = |k: usize| {
+                    if k % 2 == 0 { pair(k / 2) } else { vextq_s16::<4>(pair(k / 2), pair(k / 2 + 1)) }
+                };
+                if H == 0 {
+                    let sums = sums16::<V>(v_weights, tap);
+                    if O::PUT { sums } else { vrshrq_n_s16::<2>(sums) }
+                } else {
+                    let (low, high) = sums32::<V>(v_weights, tap);
+                    if O::PUT {
+                        vrshrn_high_n_s32::<10>(vrshrn_n_s32::<10>(low), high)
+                    } else {
+                        vrshrn_high_n_s32::<6>(vrshrn_n_s32::<6>(low), high)
+                    }
+                }
+            };
+            let emit = |a: O::Row<'_>, b: O::Row<'_>, values: int16x8_t| {
+                if O::PUT {
+                    let bytes = match (H, V) {
+                        (0, 0) => vqmovun_s16(values),
+                        (_, 0) => vqshrun_n_s16::<6>(values),
+                        (0, _) => vqrshrun_n_s16::<6>(values),
+                        _ => vqmovun_s16(values),
+                    };
+                    O::bytes_pair(t, a, b, vcombine_u8(bytes, bytes));
+                    return;
+                }
+                let values = if H == 0 && V == 0 { vshlq_n_s16::<4>(values) } else { values };
+                if O::AVERAGE {
+                    let first = O::first_pair(t, &a, &b);
+                    let bytes = if forward == 8 {
+                        vqrshrun_n_s16::<5>(vaddq_s16(first, values))
+                    } else {
+                        vqmovun_s16(blend(first, values, forward))
+                    };
+                    O::bytes_pair(t, a, b, vcombine_u8(bytes, bytes));
+                } else {
+                    O::preds_pair(t, a, b, values);
+                }
+            };
+            let Some((mut targets, last)) = out.rows(0, 4, block.h) else {
+                return;
+            };
+            let mut last = Some(last);
+            let mut ring = [vdupq_n_s16(0); 4];
+            unroll!(k < V, [0 1 2 3] => {
+                ring[k] = line(2 * k);
+            });
+            for row in (0..block.h).step_by(2) {
+                let (Some(a), Some(b)) = (targets.next(), targets.next().or_else(|| last.take()))
+                else {
+                    return;
+                };
+                if V == 0 {
+                    emit(a, b, line(row));
+                    continue;
+                }
+                let next = line(row + 2 * V);
+                emit(a, b, vertical(&ring, next));
+                ring = core::array::from_fn(|k| if k + 1 < V { ring[k + 1] } else { next });
+            }
+        }
+
+        /// Predicts both blocks of a compound pair of one shape, which
+        /// [`fits`], and stores their COMPOUND_AVERAGE into `output`: two
+        /// full-sample blocks averaged directly, a 4x4 or 8x8 cell in
+        /// registers, else the first predictor staged for the second.
         #[inline]
         #[target_feature(enable = $features)]
-        fn compound(
+        pub(super) fn compound(
             t: Neon,
             blocks: [&Block<'_, u8>; 2],
             forward: i32,
             output: &mut [u8],
             stride: usize,
         ) {
-            if blocks
-                .iter()
-                .all(|block| block.horizontal.is_none() && block.vertical.is_none())
-            {
+            let still = |block: &Block<'_, u8>| block.horizontal.is_none() && block.vertical.is_none();
+            if still(blocks[0]) && still(blocks[1]) {
                 fullpel(t, blocks, forward, output, stride);
                 return;
             }
-            if blocks.iter().all(|block| is_cell(block)) {
-                if blocks[0].w == 4
-                    && let (Some(first), Some(second)) =
-                        (cell::<4>(t, blocks[0]), cell::<4>(t, blocks[1]))
-                {
-                    store_cell(first, second, forward, output, stride);
-                    return;
+            let (w, h) = (blocks[0].w, blocks[0].h);
+            let cell = |block: &Block<'_, u8>| is_cell(w, block.horizontal, block.vertical);
+            if w == h && cell(blocks[0]) && cell(blocks[1]) {
+                if w == 8 {
+                    store_cell(t, cell_of::<8>(t, blocks[0]), cell_of::<8>(t, blocks[1]), forward, output, stride);
+                } else {
+                    store_cell(t, cell_of::<4>(t, blocks[0]), cell_of::<4>(t, blocks[1]), forward, output, stride);
                 }
-                if let (Some(first), Some(second)) = (cell::<8>(t, blocks[0]), cell::<8>(t, blocks[1]))
-                {
-                    store_cell(first, second, forward, output, stride);
-                    return;
-                }
+                return;
             }
-            let mut groups = [vdupq_n_s16(0); 8];
-            let mut first = |_, group: usize, _, _, values| {
-                if let Some(slot) = groups.get_mut(group) {
-                    *slot = values;
-                }
-            };
-            passes::<false>(t, blocks[0], &mut first);
-            let mut second = |four: bool, group: usize, row: usize, col: usize, values| {
-                let first = groups.get(group).copied().unwrap_or(values);
-                let values = vqmovun_s16(blend(first, values, forward));
-                store_bytes(output, if four { 4 } else { 8 }, row * stride + col, stride, values);
-            };
-            passes::<false>(t, blocks[1], &mut second);
-        }
-
-        /// [`compound`] of the blocks of a `size`-square cell of
-        /// `subpel_mc::cell`, whose unremapped windows lie inside their clip rows.
-        #[inline]
-        #[target_feature(enable = $features)]
-        fn compound_cell(
-            t: Neon,
-            blocks: [&Block<'_, u8>; 2],
-            size: usize,
-            forward: i32,
-            output: &mut [u8],
-            stride: usize,
-        ) {
-            if blocks[0].remap.is_none() && blocks[1].remap.is_none() {
-                if size == 4 {
-                    if let (Some(first), Some(second)) =
-                        (cell::<4>(t, blocks[0]), cell::<4>(t, blocks[1]))
-                    {
-                        store_cell(first, second, forward, output, stride);
-                        return;
-                    }
-                } else if let (Some(first), Some(second)) =
-                    (cell::<8>(t, blocks[0]), cell::<8>(t, blocks[1]))
-                {
-                    store_cell(first, second, forward, output, stride);
-                    return;
-                }
-            }
-            compound(t, blocks, forward, output, stride);
-        }
-
-        /// Stores the `Clip1` single-reference prediction of a 4x4 or 8x8
-        /// `block`, which [`fits`].
-        #[inline]
-        #[target_feature(enable = $features)]
-        fn put_cell(
-            t: Neon,
-            block: &Block<'_, u8>,
-            output: &mut [u8],
-            stride: usize,
-        ) {
-            if is_cell(block) {
-                if block.w == 4
-                    && let Some(groups) = put_groups::<4>(t, block)
-                {
-                    store_put(groups, output, stride);
-                    return;
-                }
-                if let Some(groups) = put_groups::<8>(t, block) {
-                    store_put(groups, output, stride);
-                    return;
-                }
-            }
-            passes::<true>(t, block, &mut move |four, _, row, col, values| {
-                store_bytes(
-                    output,
-                    if four { 4 } else { 8 },
-                    row * stride + col,
-                    stride,
-                    vqmovun_s16(values),
-                );
+            super::super::super::with_compound_pred0_narrow(w * h, |pred0| {
+                strips(t, blocks[0], &mut Prep { output: &mut *pred0, stride: w });
+                strips(t, blocks[1], &mut Average { pred0, w, forward, output, stride });
             });
         }
 
         /// The cells of `program` whose windows are read in place: the
-        /// geometry and taps of each cell's references derived once, both
-        /// planes stored from them.
+        /// window of each reference derived once, both planes stored from it.
         #[inline(never)]
         #[target_feature(enable = $features)]
-        fn run_program<const W: usize>(
-            t: Neon,
-            program: Program<'_, '_>,
-        ) -> super::super::super::cell::Written {
+        pub(super) fn run_program<const W: usize>(t: Neon, program: Program<'_, '_>) -> Written {
             let Program { mut planes, geometry, filter, cells, forward } = program;
             let mut written = [[0u64; 4]; 2];
-            let stride = geometry.stride;
+            let stride = geometry[0];
+            let place = |(start, bounds): CellPlacement| {
+                let window = Window::of_filters([filter; 2], W, W, start);
+                let (horizontal, vertical) = (window.horizontal, window.vertical);
+                let base = window.origin(geometry, bounds).filter(|_| is_cell(W, horizontal, vertical))?;
+                Some((base, horizontal, vertical))
+            };
             for (index, &([row, col], placements)) in cells.iter().enumerate() {
-                let place = |placement| super::super::super::cell::placed(geometry, filter, W, placement);
                 let (Some(first), Some(second)) = (place(placements[0]), place(placements[1])) else {
                     continue;
                 };
@@ -396,98 +291,54 @@ macro_rules! kernels {
                     else {
                         continue;
                     };
-                    let groups = |source: &[u8], place: super::super::super::cell::Placed| {
-                        let pairs = |taps: Option<&Taps>| taps.map_or(0, |taps| taps.count);
-                        let (horizontal, vertical) = (place.horizontal, place.vertical);
-                        cells!(
-                            pairs(horizontal),
-                            pairs(vertical),
-                            false(t, source, place.base, stride, horizontal, vertical)
-                        )
-                    };
-                    if let (Some(first), Some(second)) =
-                        (groups(sources[0], first), groups(sources[1], second))
-                    {
-                        store_cell(first, second, forward, output, *out_stride);
-                        written[index / 64 % 4] |= 1 << (index % 64);
-                    }
+                    let [(base0, h0, v0), (base1, h1, v1)] = [first, second];
+                    let groups0 = cells!(pairs(h0), pairs(v0), (t, sources[0], base0, stride, h0, v0));
+                    let groups1 = cells!(pairs(h1), pairs(v1), (t, sources[1], base1, stride, h1, v1));
+                    store_cell(t, groups0, groups1, forward, output, *out_stride);
+                    written[index / 64 % 4] |= 1 << (index % 64);
                 }
             }
             written
         }
 
-        /// The compound predictors of a `W`-square register cell, the rows of an
-        /// 8x8 cell or the row pairs of a 4x4 one.
+        /// The compound predictors of a `W`-square register cell, which
+        /// [`is_cell`] admits: the rows of an 8x8 cell or the row pairs of a
+        /// 4x4 one.
         #[inline]
         #[target_feature(enable = $features)]
-        fn cell<const W: usize>(t: Neon, block: &Block<'_, u8>) -> Option<[int16x8_t; W]> {
-            let pairs = |taps: Option<&Taps>| taps.map_or(0, |taps| taps.count);
-            let (source, base, stride) = (block.source, block.start(0), block.stride);
+        fn cell_of<const W: usize>(t: Neon, block: &Block<'_, u8>) -> [int16x8_t; W] {
             let (horizontal, vertical) = (block.horizontal, block.vertical);
             cells!(
                 pairs(horizontal),
                 pairs(vertical),
-                false(t, source, base, stride, horizontal, vertical)
+                (t, block.source, block.origin, block.stride, horizontal, vertical)
             )
         }
 
-        /// The single-reference predictions of a `W`-square register cell, before
-        /// `Clip1`.
-        #[inline]
-        #[target_feature(enable = $features)]
-        fn put_groups<const W: usize>(t: Neon, block: &Block<'_, u8>) -> Option<[int16x8_t; W]> {
-            let pairs = |taps: Option<&Taps>| taps.map_or(0, |taps| taps.count);
-            let (source, base, stride) = (block.source, block.start(0), block.stride);
-            let (horizontal, vertical) = (block.horizontal, block.vertical);
-            cells!(
-                pairs(horizontal),
-                pairs(vertical),
-                true(t, source, base, stride, horizontal, vertical)
-            )
-        }
-
-        /// The groups of a register cell of `W` columns whose passes have `H` and `V`
-        /// tap pairs: with `PUT` the single-reference predictions before `Clip1`,
-        /// else the compound predictors.
+        /// The compound predictors of a register cell of `W` columns whose
+        /// passes have `H` and `V` tap pairs.
         #[inline(never)]
         #[target_feature(enable = $features)]
-        fn cell_groups<const PUT: bool, const W: usize, const H: usize, const V: usize>(
+        fn cell_groups<const W: usize, const H: usize, const V: usize>(
             t: Neon,
             source: &[u8],
             base: usize,
             stride: usize,
             horizontal: Option<&Taps>,
             vertical: Option<&Taps>,
-        ) -> Option<[int16x8_t; W]> {
+        ) -> [int16x8_t; W] {
             let rows = if V > 0 { W + 2 * V - 1 } else { W };
             let (h_weights, v_weights) = (taps(t, horizontal), weights(t, vertical));
             let zero = vdupq_n_s16(0);
             let mut groups = [zero; W];
-            let horizontal = |sums: int16x8_t| match (V, PUT) {
-                (0, true) => vshrq_n_s16::<6>(vaddq_s16(sums, vdupq_n_s16(34))),
-                _ => vrshrq_n_s16::<2>(sums),
-            };
-            let copy = |x: int16x8_t| if PUT { x } else { vshlq_n_s16::<4>(x) };
-            let vertical16 = |sums: int16x8_t| {
-                if PUT {
-                    vrshrq_n_s16::<6>(sums)
-                } else {
-                    vrshrq_n_s16::<2>(sums)
-                }
-            };
-            let vertical32 = |(low, high): Sums| {
-                if PUT {
-                    vrshrn_high_n_s32::<10>(vrshrn_n_s32::<10>(low), high)
-                } else {
-                    vrshrn_high_n_s32::<6>(vrshrn_n_s32::<6>(low), high)
-                }
-            };
+            let vertical16 = |sums: int16x8_t| vrshrq_n_s16::<2>(sums);
+            let vertical32 = |(low, high): Sums| vrshrn_high_n_s32::<6>(vrshrn_n_s32::<6>(low), high);
             if W == 8 {
                 let mut lines = [zero; 15];
                 unroll!(row < rows, [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14] => {
                     let bytes = load16(t, source, base + row * stride);
                     lines[row] = if H > 0 {
-                        horizontal(hrow::<H>(bytes, h_weights))
+                        vrshrq_n_s16::<2>(hrow::<H>(bytes, h_weights))
                     } else {
                         widen(vget_low_u8(bytes))
                     };
@@ -496,19 +347,19 @@ macro_rules! kernels {
                     let line = |k: usize| lines[row + k];
                     groups[row] = match (H, V) {
                         (_, 0) if H > 0 => lines[row],
-                        (0, 0) => copy(lines[row]),
+                        (0, 0) => vshlq_n_s16::<4>(lines[row]),
                         (0, _) => vertical16(sums16::<V>(v_weights, line)),
                         _ => vertical32(sums32::<V>(v_weights, line)),
                     };
                 });
-                return Some(groups);
+                return groups;
             }
-            let columns = pair_columns(t, None);
             let mut pairs = [zero; 8];
             unroll!(pair < rows.div_ceil(2), [0 1 2 3 4 5 6 7] => {
                 let starts = [base + 2 * pair * stride, base + (2 * pair + 1) * stride];
                 pairs[pair] = if H > 0 {
-                    horizontal(hpair::<H>(source, starts, h_weights, &columns))
+                    let (a, b) = (load8(source, starts[0]), load8(source, starts[1]));
+                    vshrq_n_s16::<2>(hpair(a, b, h_weights, 2))
                 } else {
                     widen(vcreate_u8(
                         u64::from(load_u32(source, starts[0])) | u64::from(load_u32(source, starts[1])) << 32,
@@ -525,159 +376,12 @@ macro_rules! kernels {
                 };
                 groups[group] = match (H, V) {
                     (_, 0) if H > 0 => pairs[group],
-                    (0, 0) => copy(pairs[group]),
+                    (0, 0) => vshlq_n_s16::<4>(pairs[group]),
                     (0, _) => vertical16(sums16::<V>(v_weights, tap)),
                     _ => vertical32(sums32::<V>(v_weights, tap)),
                 };
             });
-            Some(groups)
-        }
-
-        /// Runs the passes of `block`, handing `out` each
-        /// group as `(group, row, col, values)`, strip by strip: with `PUT` the
-        /// single-reference predictions before `Clip1`, else the compound
-        /// predictors.
-        #[inline]
-        #[target_feature(enable = $features)]
-        fn passes<const PUT: bool>(
-            t: Neon,
-            block: &Block<'_, u8>,
-            out: &mut impl FnMut(bool, usize, usize, usize, int16x8_t),
-        ) {
-            let (h, v) = (
-                block.horizontal.map_or(0, |taps| taps.count),
-                block.vertical.map_or(0, |taps| taps.count),
-            );
-            specialize!(block.w == 4, h, v, run::<PUT>(t, block, out));
-        }
-
-        /// Dispatches one pass shape of `block`.
-        #[inline]
-        #[target_feature(enable = $features)]
-        fn run<const PUT: bool, const W: usize, const H: usize, const V: usize>(
-            t: Neon,
-            block: &Block<'_, u8>,
-            out: &mut impl FnMut(bool, usize, usize, usize, int16x8_t),
-        ) {
-            match (H, V) {
-                (0, 0) => copy::<PUT, W>(t, block, out),
-                (_, 0) => horizontal::<PUT, W, H>(t, block, out),
-                (0, _) => vertical::<PUT, W, V>(t, block, out),
-                _ => two_pass::<PUT, W, H, V>(t, block, out),
-            }
-        }
-
-        /// A block with only a horizontal pass of `H` tap pairs.
-        #[inline(never)]
-        #[target_feature(enable = $features)]
-        fn horizontal<const PUT: bool, const W: usize, const H: usize>(
-            t: Neon,
-            block: &Block<'_, u8>,
-            out: &mut impl FnMut(bool, usize, usize, usize, int16x8_t),
-        ) {
-            let rows = block.h;
-            let weights = taps(t, block.horizontal);
-            let finish = |sums: int16x8_t| {
-                if PUT {
-                    vshrq_n_s16::<6>(vaddq_s16(sums, vdupq_n_s16(34)))
-                } else {
-                    vrshrq_n_s16::<2>(sums)
-                }
-            };
-            let start = starts(block, rows);
-            if W == 4 {
-                let columns = pair_columns(t, block.remap);
-                for row in (0..rows).step_by(2) {
-                    let starts = [start(row), start(row + 1)];
-                    out(
-                        W == 4,
-                        row / 2,
-                        row,
-                        0,
-                        finish(hpair::<H>(block.source, starts, weights, &columns)),
-                    );
-                }
-                return;
-            }
-            let remap = columns(t, block);
-            for col in (0..block.w).step_by(8) {
-                for row in 0..rows {
-                    let sums = hrow::<H>(window(t, block.source, start(row) + col, remap), weights);
-                    out(W == 4, col / 8 * rows + row, row, col, finish(sums));
-                }
-            }
-        }
-
-        /// Both passes of `block`, `H` and `V` tap pairs: the `Round2(sum,
-        /// InterRound0)` horizontal rows of each strip in a register ring, two rows
-        /// per vector for a 4-column block, whose last pair reads a row past the
-        /// window that no tap weighs.
-        #[inline(never)]
-        #[target_feature(enable = $features)]
-        fn two_pass<const PUT: bool, const W: usize, const H: usize, const V: usize>(
-            t: Neon,
-            block: &Block<'_, u8>,
-            out: &mut impl FnMut(bool, usize, usize, usize, int16x8_t),
-        ) {
-            let rows = block.h;
-            let (h_weights, v_weights) = (taps(t, block.horizontal), weights(t, block.vertical));
-            let finish = |(low, high): Sums| {
-                if PUT {
-                    vrshrn_high_n_s32::<10>(vrshrn_n_s32::<10>(low), high)
-                } else {
-                    vrshrn_high_n_s32::<6>(vrshrn_n_s32::<6>(low), high)
-                }
-            };
-            let start = starts(block, rows + 2 * V - 1);
-            if W == 4 {
-                let columns = pair_columns(t, block.remap);
-                let line = |row: usize| {
-                    let starts = [start(row), start(row + 1)];
-                    vrshrq_n_s16::<2>(hpair::<H>(block.source, starts, h_weights, &columns))
-                };
-                let mut pairs: [int16x8_t; 4] =
-                    core::array::from_fn(|k| if k < V { line(2 * k) } else { vdupq_n_s16(0) });
-                for row in (0..rows).step_by(2) {
-                    let next = line(row + 2 * V);
-                    let pair = |k: usize| if k < V { pairs[k] } else { next };
-                    let sums = sums32::<V>(v_weights, |k| {
-                        if k % 2 == 0 {
-                            pair(k / 2)
-                        } else {
-                            vextq_s16::<4>(pair(k / 2), pair(k / 2 + 1))
-                        }
-                    });
-                    out(W == 4, row / 2, row, 0, finish(sums));
-                    pairs = core::array::from_fn(|k| pair(k + 1));
-                }
-                return;
-            }
-            let remap = columns(t, block);
-            for col in (0..block.w).step_by(8) {
-                let line = |row: usize| {
-                    let start = start(row) + col;
-                    vrshrq_n_s16::<2>(hrow::<H>(window(t, block.source, start, remap), h_weights))
-                };
-                let mut ring: [int16x8_t; 7] = core::array::from_fn(|k| {
-                    if k + 1 < 2 * V {
-                        line(k)
-                    } else {
-                        vdupq_n_s16(0)
-                    }
-                });
-                for row in 0..rows {
-                    let next = line(row + 2 * V - 1);
-                    let tap = |k: usize| if k + 1 < 2 * V { ring[k] } else { next };
-                    out(
-                        W == 4,
-                        col / 8 * rows + row,
-                        row,
-                        col,
-                        finish(sums32::<V>(v_weights, tap)),
-                    );
-                    ring = core::array::from_fn(|k| tap(k + 1));
-                }
-            }
+            groups
         }
     };
 }

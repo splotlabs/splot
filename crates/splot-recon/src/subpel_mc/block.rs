@@ -8,16 +8,19 @@
 //! every read of that window is inside the clip bounds and the storage, the
 //! kernels read the plane in place; otherwise the window is first copied
 //! with each coordinate clamped, which is the `Clip3` read of the spec, so
-//! one unclipped kernel serves every block. Scaled blocks take the general
-//! per-sample convolution.
+//! one unclipped kernel serves every block, single-reference or compound,
+//! of either sample depth. Scaled blocks take the general per-sample
+//! convolution.
 
 use super::{
-    FILTER_BITS, INTER_ROUND0, INTER_ROUND1_COMPOUND, INTER_ROUND1_NON_COMPOUND, NUM_FILTER_TYPES,
-    NUM_PHASES, NUM_TAPS, ReferencePlaneView, SCALE_SUBPEL_BITS, SUBPEL_FILTERS, SUBPEL_MASK,
-    SubpelPredictParams, plane_bounded, scaled_position, with_subpel_intermediate,
+    FILTER_BITS, INTER_ROUND0, INTER_ROUND1_COMPOUND, INTER_ROUND1_NON_COMPOUND,
+    InterpolationFilter, NUM_FILTER_TYPES, NUM_PHASES, NUM_TAPS, ReferencePlaneView,
+    SCALE_SUBPEL_BITS, SUBPEL_FILTERS, SUBPEL_MASK, SubpelPredictParams, plane_bounded,
+    scaled_position, with_compound_pred0, with_subpel_intermediate,
 };
 use crate::format::ReconSample;
 use crate::math::round2_i32;
+use fearless_simd::{Simd, SimdBase, i8x16, prelude::*, u8x16, u16x8};
 
 /// Where the final pass of a block lands. Every value it stores is the
 /// `Round2(.., InterRound1)` output of the convolution.
@@ -206,6 +209,12 @@ pub(super) struct Taps {
         allow(dead_code, reason = "read by the AVX2 kernels")
     )]
     pub(super) bytes: [i16; NUM_TAPS / 2],
+    /// [`Self::bytes`] as one little-endian word.
+    #[cfg_attr(
+        not(target_arch = "aarch64"),
+        allow(dead_code, reason = "read by the NEON kernels")
+    )]
+    pub(super) dot: u64,
     pub(super) words: [i32; NUM_TAPS / 2],
     pub(super) full: [i32; NUM_TAPS / 2],
 }
@@ -244,11 +253,12 @@ pub(super) static TAPS: [[Option<Taps>; NUM_PHASES]; NUM_FILTER_TYPES] = {
         while phase < NUM_PHASES {
             let row = &SUBPEL_FILTERS[filter][phase];
             let (start, taps) = even_tap_span(row);
-            let (mut bytes, mut words, mut full) = ([0; 4], [0; 4], [0; 4]);
+            let (mut bytes, mut words, mut full, mut dot) = ([0; 4], [0; 4], [0; 4], 0);
             let mut pair = 0;
             while pair < taps / 2 {
                 let (a, b) = (row[start + 2 * pair], row[start + 2 * pair + 1]);
                 bytes[pair] = i16::from_le_bytes([(a / 2) as u8, (b / 2) as u8]);
+                dot |= (bytes[pair] as u16 as u64) << (16 * pair);
                 words[pair] = ((a / 2) & 0xffff) | ((b / 2) << 16);
                 full[pair] = (a & 0xffff) | (b << 16);
                 pair += 1;
@@ -257,6 +267,7 @@ pub(super) static TAPS: [[Option<Taps>; NUM_PHASES]; NUM_FILTER_TYPES] = {
                 start,
                 count: taps / 2,
                 bytes,
+                dot,
                 words,
                 full,
             });
@@ -273,23 +284,34 @@ impl Taps {
     }
 }
 
-/// A block with unclipped columns: column `c` of window row `r` is
-/// `source[start(r) + c]`, readable for `c < reach(w)`. Window row `r` reads
-/// source row `top + r` clamped to `rows`, the § 7.13.3.18 row `Clip3`.
+/// Per filter type and phase, the [`TAPS`] of a pass with the offset of its
+/// first window column from the sample position and its extra columns.
+static PASSES: [[(Option<&Taps>, i32, usize); NUM_PHASES]; NUM_FILTER_TYPES] = {
+    let mut table = [[(None, 0, 0); NUM_PHASES]; NUM_FILTER_TYPES];
+    let mut filter = 0;
+    while filter < NUM_FILTER_TYPES {
+        let mut phase = 0;
+        while phase < NUM_PHASES {
+            if let Some(taps) = &TAPS[filter][phase] {
+                table[filter][phase] = (Some(taps), taps.start as i32 - 3, taps.span() - 1);
+            }
+            phase += 1;
+        }
+        filter += 1;
+    }
+    table
+};
+
+/// A block read in place: window row `r` starts at `source[origin + r *
+/// stride]` and has [`reach`] readable samples.
 pub(super) struct Block<'a, T> {
     pub(super) source: &'a [T],
     pub(super) stride: usize,
     pub(super) origin: usize,
-    pub(super) top: isize,
-    pub(super) rows: [isize; 2],
     pub(super) w: usize,
     pub(super) h: usize,
     pub(super) horizontal: Option<&'static Taps>,
     pub(super) vertical: Option<&'static Taps>,
-    /// For a column-clamped window of at most 16 columns read from `origin`:
-    /// `[offset, limit]`, window column `c` reads source column
-    /// `Clip3(0, limit, c + offset)`, the `Clip3` read.
-    pub(super) remap: Option<[i8; 2]>,
 }
 
 impl<'a, T> Block<'a, T> {
@@ -299,36 +321,18 @@ impl<'a, T> Block<'a, T> {
             source,
             stride: self.stride,
             origin: self.origin,
-            top: self.top,
-            rows: self.rows,
             w: self.w,
             h: self.h,
             horizontal: self.horizontal,
             vertical: self.vertical,
-            remap: self.remap,
         }
-    }
-
-    /// The source column of each of the 16 window columns of a remap.
-    pub(super) fn remap_lanes(&self) -> Option<[u8; 16]> {
-        self.remap.map(|[offset, limit]| {
-            core::array::from_fn(|column| {
-                (column as i32 + i32::from(offset))
-                    .max(0)
-                    .min(i32::from(limit)) as u8
-            })
-        })
     }
 
     /// The source index of column 0 of window row `row`.
     #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn start(&self, row: usize) -> usize {
-        self.origin
-            + (self.top + row as isize)
-                .max(self.rows[0])
-                .min(self.rows[1]) as usize
-                * self.stride
+        self.origin + row * self.stride
     }
 
     /// [`Self::start`] of storage shorter than `2^32` samples.
@@ -336,9 +340,7 @@ impl<'a, T> Block<'a, T> {
     #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn start32(&self, row: usize) -> u32 {
-        self.origin as u32
-            + (self.top + row as isize).clamp(self.rows[0], self.rows[1]) as u32
-                * self.stride as u32
+        self.origin as u32 + row as u32 * self.stride as u32
     }
 }
 
@@ -364,20 +366,28 @@ pub(super) const fn stage_len(rows: usize, w: usize, vertical: Option<&Taps>) ->
 
 /// The samples the vector kernels load: eight-bit and 16-bit storage.
 pub(super) trait Sample: ReconSample + super::portable::Lanes {
-    /// Runs `f` on retained storage of at least `len` samples.
-    fn with_storage<R>(len: usize, f: impl FnOnce(&mut [Self]) -> R) -> R;
+    /// Runs `f` on retained storage `slot`, 0 or 1, of at least `len`
+    /// samples.
+    fn with_storage<R>(slot: usize, len: usize, f: impl FnOnce(&mut [Self]) -> R) -> R;
+    /// The 16 bytes of the samples from `at`, `None` past them.
+    fn bytes<S: Simd>(simd: S, samples: &[Self], at: usize) -> Option<u8x16<S>>;
+    /// Stores 16 bytes into the samples from `at`.
+    fn put_bytes<S: Simd>(samples: &mut [Self], at: usize, bytes: u8x16<S>);
 }
 
 std::thread_local! {
-    static WINDOW_U8: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
-    static WINDOW_U16: std::cell::Cell<Vec<u16>> = const { std::cell::Cell::new(Vec::new()) };
+    static WINDOW_U8: [std::cell::Cell<Vec<u8>>; 2] =
+        const { [std::cell::Cell::new(Vec::new()), std::cell::Cell::new(Vec::new())] };
+    static WINDOW_U16: [std::cell::Cell<Vec<u16>>; 2] =
+        const { [std::cell::Cell::new(Vec::new()), std::cell::Cell::new(Vec::new())] };
 }
 
 macro_rules! retained {
-    ($ty:ty, $slot:ident) => {
+    ($ty:ty, $slot:ident, $lanes:ident, $n:literal) => {
         impl Sample for $ty {
-            fn with_storage<R>(len: usize, f: impl FnOnce(&mut [Self]) -> R) -> R {
-                $slot.with(|slot| {
+            fn with_storage<R>(slot: usize, len: usize, f: impl FnOnce(&mut [Self]) -> R) -> R {
+                $slot.with(|slots| {
+                    let slot = &slots[slot & 1];
                     let mut storage = slot.take();
                     if storage.len() < len {
                         storage.resize(len, 0);
@@ -387,12 +397,308 @@ macro_rules! retained {
                     result
                 })
             }
+
+            #[allow(clippy::inline_always, reason = "border window copy")]
+            #[inline(always)]
+            fn bytes<S: Simd>(simd: S, samples: &[Self], at: usize) -> Option<u8x16<S>> {
+                let lanes = samples.get(at..)?.first_chunk::<$n>()?;
+                Some($lanes::load_array_ref(simd, lanes).bitcast())
+            }
+
+            #[allow(clippy::inline_always, reason = "border window copy")]
+            #[inline(always)]
+            fn put_bytes<S: Simd>(samples: &mut [Self], at: usize, bytes: u8x16<S>) {
+                if let Some(slot) = samples
+                    .get_mut(at..)
+                    .and_then(<[Self]>::first_chunk_mut::<$n>)
+                {
+                    bytes.bitcast::<$lanes<S>>().store_array(slot);
+                }
+            }
         }
     };
 }
 
-retained!(u8, WINDOW_U8);
-retained!(u16, WINDOW_U16);
+retained!(u8, WINDOW_U8, u8x16, 16);
+retained!(u16, WINDOW_U16, u16x8, 8);
+/// The window of an unscaled `w x h` block: the taps of each pass and the
+/// first source column and row it reads, with their counts.
+#[derive(Clone, Copy)]
+pub(super) struct Window {
+    pub(super) horizontal: Option<&'static Taps>,
+    pub(super) vertical: Option<&'static Taps>,
+    column: i32,
+    row: i32,
+    columns: usize,
+    rows: usize,
+    w: usize,
+    h: usize,
+}
+
+/// The `[stride, width, readable rows, storage length]` of a plane.
+pub(super) type Geometry = [usize; 4];
+
+impl Window {
+    /// The window of a block of `interp` from 1/1024-sample `[x, y]`.
+    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[inline(always)]
+    pub(super) fn new(interp: InterpolationFilter, w: usize, h: usize, [x, y]: [i32; 2]) -> Self {
+        let filters = [interp.pass_index(w as u32), interp.pass_index(h as u32)];
+        Self::of_filters(filters.map(usize::from), w, h, [x, y])
+    }
+
+    /// [`Self::new`] of the `Subpel_Filters` rows of each pass.
+    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[inline(always)]
+    pub(super) fn of_filters(filters: [usize; 2], w: usize, h: usize, [x, y]: [i32; 2]) -> Self {
+        let pass = |filter: usize, size: usize, start: i32| {
+            let (taps, offset, extent) =
+                PASSES[filter % NUM_FILTER_TYPES][((start >> 6) & SUBPEL_MASK) as usize];
+            (taps, (start >> SCALE_SUBPEL_BITS) + offset, size + extent)
+        };
+        let (horizontal, column, columns) = pass(filters[0], w, x);
+        let (vertical, row, rows) = pass(filters[1], h, y);
+        Self {
+            horizontal,
+            vertical,
+            column,
+            row,
+            columns,
+            rows,
+            w,
+            h,
+        }
+    }
+
+    /// The source index of the window origin in a plane of `geometry` when
+    /// the window lies inside `[firstX, firstY, lastX, lastY]` clamped to the
+    /// plane and its last row has [`reach`] samples of storage.
+    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[inline(always)]
+    pub(super) fn origin(
+        &self,
+        [stride, width, rows, len]: Geometry,
+        [first_x, first_y, last_x, last_y]: [i32; 4],
+    ) -> Option<usize> {
+        let inside = self.column >= first_x.max(0)
+            && self.column + self.columns as i32 <= last_x.min(width as i32 - 1) + 1
+            && self.row >= first_y.max(0)
+            && self.row + self.rows as i32 <= last_y.min(rows as i32 - 1) + 1;
+        if !inside {
+            return None;
+        }
+        let origin = self.row as usize * stride + self.column as usize;
+        let end = origin + self.rows.checked_sub(1)? * stride + reach(self.w);
+        (end <= len).then_some(origin)
+    }
+
+    /// The block of this window read in place from `source`.
+    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[inline(always)]
+    pub(super) fn block<'a, T>(
+        &self,
+        source: &'a [T],
+        stride: usize,
+        origin: usize,
+    ) -> Block<'a, T> {
+        Block {
+            source,
+            stride,
+            origin,
+            w: self.w,
+            h: self.h,
+            horizontal: self.horizontal,
+            vertical: self.vertical,
+        }
+    }
+
+    /// The block over a copy of the window in `storage`, each sample the
+    /// § 7.13.3.18 `Clip3` read of `view` within `bounds` clamped to the
+    /// plane, or `None` when that clip range is empty.
+    fn emulate<'s, T: Sample>(
+        &self,
+        view: &ReferencePlaneView<'_, T>,
+        bounds: [i32; 4],
+        storage: &'s mut [T],
+    ) -> Option<Block<'s, T>> {
+        let bound = |value: i32, size: usize| value.max(0).min(size as i32 - 1);
+        let (first_x, last_x) = (bound(bounds[0], view.width), bound(bounds[2], view.width));
+        let (first_y, last_y) = (
+            bound(bounds[1], view.readable_rows),
+            bound(bounds[3], view.readable_rows),
+        );
+        if first_x > last_x || first_y > last_y {
+            return None;
+        }
+        let clip = [first_x, first_y, last_x, last_y];
+        let stride = reach(self.w);
+        if view.width * size_of::<T>() >= 16 {
+            baseline_simd!(simd => self.emulate_chunks(simd, view, clip, stride, storage))?;
+        } else {
+            self.emulate_rows(view, clip, stride, storage)?;
+        }
+        Some(self.block(storage, stride, 0))
+    }
+
+    /// The copy of [`Self::emulate`] in chunks of 16 bytes: each chunk of
+    /// window columns gathers every row's clipped samples from one load of
+    /// that row through one byte index vector.
+    #[allow(clippy::inline_always, reason = "border window copy")]
+    #[inline(always)]
+    fn emulate_chunks<S: Simd, T: Sample>(
+        &self,
+        simd: S,
+        view: &ReferencePlaneView<'_, T>,
+        [first_x, first_y, last_x, last_y]: [i32; 4],
+        stride: usize,
+        storage: &mut [T],
+    ) -> Option<()> {
+        let size = size_of::<T>();
+        let per = 16 / size;
+        let lanes = u8x16::load_array(simd, core::array::from_fn(|lane| lane as u8));
+        let within: i8x16<S> = (lanes >> (size as u32 - 1)).bitcast();
+        let parity = lanes & u8x16::splat(simd, size as u8 - 1);
+        let last = size * view.width - 16;
+        let plan = |chunk: usize| {
+            let x = self.column + (chunk * per) as i32;
+            let first = x.clamp(first_x, last_x);
+            let offset = (size * first as usize).min(last);
+            let shift = i8x16::splat(simd, (x - first).clamp(-16, 16) as i8);
+            let high = i8x16::splat(simd, (last_x - first).clamp(0, 16) as i8);
+            let column =
+                simd.min_i8x16(simd.max_i8x16(within + shift, i8x16::splat(simd, 0)), high);
+            let column: u8x16<S> = column.bitcast();
+            let column = if size == 2 { column + column } else { column };
+            let indices =
+                column + u8x16::splat(simd, (size * first as usize - offset) as u8) + parity;
+            (offset / size, chunk * per, indices)
+        };
+        let rows = [first_y, last_y];
+        match self.columns.div_ceil(per) {
+            1 => self.copy_rows(simd, view, rows, stride, storage, [plan(0)]),
+            2 => self.copy_rows(simd, view, rows, stride, storage, [plan(0), plan(1)]),
+            chunks => (0..chunks).try_for_each(|chunk| {
+                self.copy_rows(simd, view, rows, stride, storage, [plan(chunk)])
+            }),
+        }
+    }
+
+    /// The `C` chunks `(source column, window column, byte indices)` of
+    /// [`Self::emulate_chunks`] of every window row: the rows above
+    /// `first_y` and below `last_y` store the gather of that row.
+    #[allow(clippy::inline_always, reason = "border window copy")]
+    #[inline(always)]
+    fn copy_rows<S: Simd, T: Sample, const C: usize>(
+        &self,
+        simd: S,
+        view: &ReferencePlaneView<'_, T>,
+        [first_y, last_y]: [i32; 2],
+        stride: usize,
+        storage: &mut [T],
+        plans: [(usize, usize, u8x16<S>); C],
+    ) -> Option<()> {
+        let gather = |y: i32| -> Option<[u8x16<S>; C]> {
+            let row = y as usize * view.stride;
+            let mut values = [u8x16::splat(simd, 0); C];
+            for (value, &(offset, _, indices)) in values.iter_mut().zip(&plans) {
+                let bytes = T::bytes(simd, view.samples, row + offset)?;
+                *value = simd.swizzle_dyn_u8x16(bytes, indices);
+            }
+            Some(values)
+        };
+        let put = |line: &mut [T], values: [u8x16<S>; C]| {
+            for (&(_, at, _), value) in plans.iter().zip(values) {
+                T::put_bytes(line, at, value);
+            }
+        };
+        let mut lines = storage.chunks_exact_mut(stride).take(self.rows);
+        let above = (first_y - self.row).clamp(0, self.rows as i32);
+        let inside = (last_y + 1 - self.row).clamp(above, self.rows as i32) - above;
+        let edge = gather(first_y)?;
+        for line in lines.by_ref().take(above as usize) {
+            put(line, edge);
+        }
+        for (y, line) in (self.row + above..).zip(lines.by_ref().take(inside as usize)) {
+            put(line, gather(y)?);
+        }
+        let edge = gather(last_y)?;
+        for line in lines {
+            put(line, edge);
+        }
+        Some(())
+    }
+
+    /// The copy of [`Self::emulate`] of a plane narrower than 16 bytes, row
+    /// by row: its clipped edges filled and its in-bounds columns copied.
+    fn emulate_rows<T: ReconSample>(
+        &self,
+        view: &ReferencePlaneView<'_, T>,
+        [first_x, first_y, last_x, last_y]: [i32; 4],
+        stride: usize,
+        storage: &mut [T],
+    ) -> Option<()> {
+        let columns = self.columns as i32;
+        let left = (first_x - self.column).clamp(0, columns);
+        let right = (last_x + 1 - self.column).clamp(left, columns);
+        let inside = if right > left {
+            (self.column + left) as usize..(self.column + right) as usize
+        } else {
+            0..0
+        };
+        let [left, right] = [left as usize, right as usize];
+        for (r, line) in storage.chunks_exact_mut(stride).take(self.rows).enumerate() {
+            let y = (self.row + r as i32).clamp(first_y, last_y) as usize;
+            let source = view.samples.get(y * view.stride..)?.get(..view.width)?;
+            let (line, tail) = line.split_at_mut_checked(right)?;
+            let (head, middle) = line.split_at_mut_checked(left)?;
+            head.fill(*source.get(first_x as usize)?);
+            // splot-copy-ok: the in-bounds columns of an emulated border window
+            middle.copy_from_slice(source.get(inside.clone())?);
+            tail.get_mut(..self.columns - right)?
+                .fill(*source.get(last_x as usize)?);
+        }
+        Some(())
+    }
+}
+/// Runs `f` on the block of `window` read in place from `view`, else on a
+/// copy in retained storage `slot`; `None` without running it when the clip
+/// range of `bounds` is empty.
+#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[inline(always)]
+pub(super) fn with_block<T: Sample, R>(
+    window: &Window,
+    view: &ReferencePlaneView<'_, T>,
+    bounds: [i32; 4],
+    slot: usize,
+    f: impl FnOnce(&Block<'_, T>) -> R,
+) -> Option<R> {
+    let geometry = [
+        view.stride,
+        view.width,
+        view.readable_rows,
+        view.samples.len(),
+    ];
+    if let Some(origin) = window.origin(geometry, bounds) {
+        return Some(f(&window.block(view.samples, view.stride, origin)));
+    }
+    emulated(*window, view, bounds, slot, f)
+}
+
+/// [`with_block`] of a window that is not read in place.
+#[cold]
+#[inline(never)]
+fn emulated<T: Sample, R>(
+    window: Window,
+    view: &ReferencePlaneView<'_, T>,
+    bounds: [i32; 4],
+    slot: usize,
+    f: impl FnOnce(&Block<'_, T>) -> R,
+) -> Option<R> {
+    let len = window.rows * reach(window.w);
+    T::with_storage(slot, len, |storage| {
+        Some(f(&window.emulate(view, bounds, storage)?))
+    })
+}
 
 /// Predicts a validated block whose sink fits it.
 pub(super) fn predict<T: ReconSample>(
@@ -401,18 +707,31 @@ pub(super) fn predict<T: ReconSample>(
     mut sink: Sink<'_>,
     scratch: Option<&mut [i16]>,
 ) {
-    let params = &plane_bounded(reference, params);
     if !sink.fits(params.w, params.h) {
         return;
     }
     let unscaled =
         params.step_x == 1 << SCALE_SUBPEL_BITS && params.step_y == 1 << SCALE_SUBPEL_BITS;
+    let window = Window::new(
+        params.interp,
+        params.w,
+        params.h,
+        [params.start_x, params.start_y],
+    );
+    let bounds = params.bounds();
     if unscaled && let Some(view) = reference.as_u8() {
-        return unscaled_block(&view, params, sink, scratch);
+        with_block(&window, &view, bounds, 0, |block| {
+            kernels(block, &mut sink, scratch);
+        });
+        return;
     }
     if unscaled && let Some(view) = reference.as_u16() {
-        return unscaled_block(&view, params, sink, scratch);
+        with_block(&window, &view, bounds, 0, |block| {
+            kernels(block, &mut sink, scratch);
+        });
+        return;
     }
+    let params = &plane_bounded(reference, params);
     with_subpel_intermediate(
         super::validate_subpel_params(params).unwrap_or(0) * params.w,
         |stage| {
@@ -421,10 +740,50 @@ pub(super) fn predict<T: ReconSample>(
     );
 }
 
+/// Runs `f` on a stage of `len` values: `scratch` when it holds them, else
+/// the stack or retained storage.
+pub(super) fn with_stage<R>(
+    len: usize,
+    scratch: Option<&mut [i16]>,
+    f: impl FnOnce(&mut [i16]) -> R,
+) -> R {
+    match scratch.and_then(|scratch| scratch.get_mut(..len)) {
+        Some(stage) => f(stage),
+        None if len == 0 => f(&mut []),
+        None if len <= PUT_STAGE => f(&mut [0; PUT_STAGE][..len]),
+        None => with_subpel_intermediate(len, f),
+    }
+}
+
+/// The stage of an eight-tap put of up to 16x16 samples.
+const PUT_STAGE: usize = 23 * 16 + 64;
+
+/// Runs the first vector kernel that covers `block`: on AArch64 the
+/// stageless NEON kernels, else the AVX2 or portable kernels on a stage.
+pub(super) fn kernels<T: Sample>(
+    block: &Block<'_, T>,
+    sink: &mut Sink<'_>,
+    scratch: Option<&mut [i16]>,
+) {
+    if cfg!(target_arch = "aarch64")
+        && (super::eight_bit::predict(block, sink, &mut [])
+            || super::sixteen_bit::predict(block, sink, &mut []))
+    {
+        return;
+    }
+    let rows = block.h + block.vertical.map_or(0, |taps| taps.span() - 1);
+    with_stage(stage_len(rows, block.w, block.vertical), scratch, |stage| {
+        if !super::eight_bit::predict(block, sink, stage)
+            && !super::sixteen_bit::predict(block, sink, stage)
+        {
+            super::portable::predict(block, sink, stage);
+        }
+    });
+}
+
 /// Stores the eight-bit single-reference prediction of an unscaled block
-/// whose window is read in place straight into `output`, or returns `false`
-/// without writing outside that subset. Admission implies every check of
-/// `validate_subpel_u8_output`.
+/// straight into `output`, or returns `false` without writing outside that
+/// subset. Admission implies every check of `validate_subpel_u8_output`.
 pub(super) fn put_u8(
     view: &ReferencePlaneView<'_, u8>,
     params: &SubpelPredictParams,
@@ -481,335 +840,180 @@ pub(super) fn same_geometry(
 pub(super) fn put_admitted<const N: usize>(
     views: [&ReferencePlaneView<'_, u8>; N],
     params: &SubpelPredictParams,
-    mut outputs: [(&mut [u8], usize); N],
+    outputs: [(&mut [u8], usize); N],
 ) -> bool {
-    let (w, view) = (params.w, views[0]);
-    if let Some(block) = super::cell::put_cell(view, params) {
-        for (view, (output, stride)) in views.into_iter().zip(&mut outputs) {
-            super::cell::put(&block.with_source(view.samples), w, output, *stride);
-        }
-        return true;
-    }
-    let params = plane_bounded(view, params);
-    let layout = Layout::new(&params);
-    let Some(block) = layout.in_place(view, &params) else {
-        return false;
-    };
-    let mut put = |stage: &mut [i16]| {
-        for (view, (output, stride)) in views.into_iter().zip(&mut outputs) {
-            let block = block.with_source(view.samples);
-            if !super::eight_bit::put(&block, stage, output, *stride) {
-                super::portable::predict(
-                    &block,
-                    &mut Sink::Put {
-                        output,
-                        stride: *stride,
-                    },
-                    stage,
-                );
-            }
-        }
-        true
-    };
-    let neon = cfg!(target_arch = "aarch64") && super::eight_bit::stageless(&block);
-    match stage_len(layout.rows, w, layout.vertical) {
-        _ if neon => put(&mut []),
-        0 => put(&mut []),
-        len if len <= PUT_STAGE => put(&mut [0; PUT_STAGE][..len]),
-        len => with_subpel_intermediate(len, put),
-    }
-}
-
-/// The window of an unscaled block: its taps and the first source column
-/// and row each pass reads, with their counts.
-#[derive(Clone, Copy)]
-struct Layout {
-    horizontal: Option<&'static Taps>,
-    vertical: Option<&'static Taps>,
-    column: i32,
-    columns: usize,
-    row: i32,
-    rows: usize,
-    last_row: usize,
-}
-
-impl Layout {
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
-    #[inline(always)]
-    fn new(params: &SubpelPredictParams) -> Self {
-        let taps = |size: usize, start: i32| {
-            TAPS[params.interp.pass_index(size as u32) as usize]
-                [((start >> 6) & SUBPEL_MASK) as usize]
-                .as_ref()
-        };
-        let (horizontal, vertical) = (
-            taps(params.w, params.start_x),
-            taps(params.h, params.start_y),
-        );
-        let window = |start: i32, size: usize, taps: Option<&Taps>| {
-            let base = start >> SCALE_SUBPEL_BITS;
-            match taps {
-                Some(taps) => (base - 3 + taps.start as i32, size + taps.span() - 1),
-                None => (base, size),
-            }
-        };
-        let (column, columns) = window(params.start_x, params.w, horizontal);
-        let (row, rows) = window(params.start_y, params.h, vertical);
-        Self {
-            horizontal,
-            vertical,
-            column,
-            columns,
-            row,
-            rows,
-            last_row: (row + rows as i32 - 1)
-                .min(params.last_y)
-                .max(params.first_y) as usize,
-        }
-    }
-
-    /// The block read from the plane in place: directly when every column
-    /// is inside the clip bounds, else for a horizontally filtered block of
-    /// at most 8 columns through a column remap. `None` when the window must be
-    /// emulated.
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
-    #[inline(always)]
-    fn in_place<'a, T: ReconSample>(
-        &self,
-        view: &ReferencePlaneView<'a, T>,
-        params: &SubpelPredictParams,
-    ) -> Option<Block<'a, T>> {
-        let block = |origin: usize, remap: Option<[i8; 2]>| Block {
-            source: view.samples,
-            stride: view.stride,
-            origin,
-            top: self.row as isize,
-            rows: [params.first_y as isize, params.last_y as isize],
-            w: params.w,
-            h: params.h,
-            horizontal: self.horizontal,
-            vertical: self.vertical,
-            remap,
-        };
-        let fits = |column: i32, reach: usize| {
-            column >= 0
-                && self.last_row * view.stride + column as usize + reach <= view.samples.len()
-        };
-        if self.column >= params.first_x
-            && self.column + self.columns as i32 - 1 <= params.last_x
-            && fits(self.column, reach(params.w))
-        {
-            return Some(block(self.column as usize, None));
-        }
-        let base = self.column.clamp(params.first_x, params.last_x);
-        (params.w <= 8 && self.horizontal.is_some() && fits(base, 16)).then(|| {
-            block(
-                base as usize,
-                Some([
-                    (self.column - base).clamp(-16, 16) as i8,
-                    (params.last_x - base).min(15) as i8,
-                ]),
-            )
+    let window = Window::new(
+        params.interp,
+        params.w,
+        params.h,
+        [params.start_x, params.start_y],
+    );
+    let bounds = params.bounds();
+    views
+        .into_iter()
+        .zip(outputs)
+        .all(|(view, (output, stride))| {
+            with_block(&window, view, bounds, 0, |block| {
+                super::eight_bit::put(block, output, stride);
+            })
+            .is_some()
         })
-    }
 }
 
-/// Predicts both references of a compound cell of at most 64 samples and
-/// 16 columns and stores their COMPOUND_AVERAGE clipped to `max`, or returns
-/// `false` without writing when a window must be emulated or the cell is
-/// outside the vector subset.
-pub(super) fn small_compound<T: ReconSample, O: ReconSample>(
+/// Stores the COMPOUND_AVERAGE, clipped to `clip.1`, of the blocks of
+/// `windows` read from `references` within their `bounds` into `output`;
+/// `false` without writing when a clip range is empty or the output samples
+/// are neither 8- nor 16-bit.
+#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[inline(always)]
+pub(super) fn compound<T: Sample, O: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
-    params: [&SubpelPredictParams; 2],
-    forward: i32,
-    scratch: &mut [i16],
+    windows: [Window; 2],
+    bounds: [[i32; 4]; 2],
+    clip: (i32, u16),
     output: &mut [O],
     stride: usize,
 ) -> bool {
-    let (w, h) = (params[0].w, params[0].h);
-    if output.len() < (h - 1) * stride + w {
-        return false;
-    }
-    let bounded = [
-        plane_bounded(references[0], params[0]),
-        plane_bounded(references[1], params[1]),
-    ];
-    let layouts = [Layout::new(&bounded[0]), Layout::new(&bounded[1])];
-    let fullpel = layouts
-        .iter()
-        .all(|l| l.horizontal.is_none() && l.vertical.is_none());
-    if !fullpel && (w > 16 || w * h > 64) {
-        return false;
-    }
-    let len = stage_len(layouts[0].rows, w, layouts[0].vertical).max(stage_len(
-        layouts[1].rows,
-        w,
-        layouts[1].vertical,
-    ));
-    if len > CELL_STAGE && scratch.len() < len {
-        return false;
-    }
-    let mut cell;
-    let stage = if let Some(stage) = scratch.get_mut(..len) {
-        stage
-    } else {
-        cell = [0; CELL_STAGE];
-        &mut cell[..len]
+    let place = |window: &Window, view: &ReferencePlaneView<'_, T>, bounds: [i32; 4]| {
+        let geometry = [
+            view.stride,
+            view.width,
+            view.readable_rows,
+            view.samples.len(),
+        ];
+        window.origin(geometry, bounds)
     };
-    if let (Some(first), Some(second), Some(output)) = (
-        references[0].as_u8(),
-        references[1].as_u8(),
-        O::u8_slice_mut(output),
+    if let (Some(first), Some(second)) = (
+        place(&windows[0], references[0], bounds[0]),
+        place(&windows[1], references[1], bounds[1]),
     ) {
-        let (Some(first), Some(second)) = (
-            layouts[0].in_place(&first, &bounded[0]),
-            layouts[1].in_place(&second, &bounded[1]),
-        ) else {
-            return false;
-        };
-        if !super::eight_bit::compound([&first, &second], forward, stage, output, stride) {
-            super::portable::compound_u8([&first, &second], forward, stage, output, stride);
+        let first = windows[0].block(references[0].samples, references[0].stride, first);
+        let second = windows[1].block(references[1].samples, references[1].stride, second);
+        return compound_blocks([&first, &second], clip, output, stride);
+    }
+    compound_emulated(references, windows, bounds, clip, output, stride)
+}
+
+/// [`compound`] of a pair with a window that is not read in place.
+#[cold]
+#[inline(never)]
+fn compound_emulated<T: Sample, O: ReconSample>(
+    references: [&ReferencePlaneView<'_, T>; 2],
+    windows: [Window; 2],
+    bounds: [[i32; 4]; 2],
+    clip: (i32, u16),
+    output: &mut [O],
+    stride: usize,
+) -> bool {
+    with_block(&windows[0], references[0], bounds[0], 0, |first| {
+        with_block(&windows[1], references[1], bounds[1], 1, |second| {
+            compound_blocks([first, second], clip, output, stride)
+        })
+    })
+    .flatten()
+    .unwrap_or(false)
+}
+
+/// [`compound`] of two blocks read in place.
+#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[inline(always)]
+fn compound_blocks<T: Sample, O: ReconSample>(
+    blocks: [&Block<'_, T>; 2],
+    (forward, max): (i32, u16),
+    output: &mut [O],
+    stride: usize,
+) -> bool {
+    let (w, h) = (blocks[0].w, blocks[0].h);
+    let still = blocks
+        .iter()
+        .all(|block| block.horizontal.is_none() && block.vertical.is_none());
+    if still && w == h && (w == 4 || w == 8) && (0..=16).contains(&forward) {
+        let origins = blocks.map(|block| block.origin);
+        if let (Some(first), Some(second), Some(output)) = (
+            T::u8_slice(blocks[0].source),
+            T::u8_slice(blocks[1].source),
+            O::u8_slice_mut(&mut *output),
+        ) {
+            let sources = [(first, blocks[0].stride), (second, blocks[1].stride)];
+            super::cell::fullpel_u8(sources, origins, w, forward, output, stride);
+            return true;
         }
+        if let (Some(first), Some(second), Some(output)) = (
+            T::u16_slice(blocks[0].source),
+            T::u16_slice(blocks[1].source),
+            O::u16_slice_mut(&mut *output),
+        ) {
+            let sources = [(first, blocks[0].stride), (second, blocks[1].stride)];
+            super::cell::fullpel_u16(sources, origins, w, (forward, max), output, stride);
+            return true;
+        }
+    }
+    if let (Some(first), Some(second), Some(output)) = (
+        T::u8_slice(blocks[0].source),
+        T::u8_slice(blocks[1].source),
+        O::u8_slice_mut(&mut *output),
+    ) {
+        let blocks = [blocks[0].with_source(first), blocks[1].with_source(second)];
+        super::eight_bit::compound([&blocks[0], &blocks[1]], forward, output, stride);
         return true;
     }
     if let (Some(first), Some(second), Some(output)) = (
-        references[0].as_u16(),
-        references[1].as_u16(),
-        O::u16_slice_mut(output),
-    ) {
-        let (Some(first), Some(second)) = (
-            layouts[0].in_place(&first, &bounded[0]),
-            layouts[1].in_place(&second, &bounded[1]),
-        ) else {
-            return false;
-        };
-        let max = params[0].bit_depth.max_sample();
-        if !super::sixteen_bit::compound([&first, &second], forward, max, stage, output, stride) {
-            super::portable::compound_u16([&first, &second], forward, max, stage, output, stride);
-        }
-        return true;
-    }
-    false
-}
-
-/// The stage of an eight-tap compound cell of up to 64 samples.
-const CELL_STAGE: usize = if cfg!(target_arch = "x86_64") {
-    24 * 16 + 64
-} else {
-    128
-};
-
-/// The stage of an eight-tap put of up to 16x16 samples.
-const PUT_STAGE: usize = 23 * 16 + 64;
-
-fn unscaled_block<T: Sample>(
-    view: &ReferencePlaneView<'_, T>,
-    params: &SubpelPredictParams,
-    mut sink: Sink<'_>,
-    scratch: Option<&mut [i16]>,
-) {
-    let layout = Layout::new(params);
-    if let Some(block) = layout.in_place(view, params)
-        && let Some(source) = T::u8_slice(block.source)
-        && super::eight_bit::stageless(&block.with_source(source))
-        && super::eight_bit::predict(&block, &mut sink, &mut [])
+        T::u16_slice(blocks[0].source),
+        T::u16_slice(blocks[1].source),
+        O::u16_slice_mut(&mut *output),
+    ) && (still || w * h <= 64)
     {
-        return;
-    }
-    let len = stage_len(layout.rows, params.w, layout.vertical);
-    let sink = &mut sink;
-    match scratch {
-        Some(scratch) if scratch.len() >= len => {
-            staged(view, params, &layout, sink, &mut scratch[..len]);
+        let blocks = [blocks[0].with_source(first), blocks[1].with_source(second)];
+        let blocks = [&blocks[0], &blocks[1]];
+        if cfg!(target_arch = "aarch64")
+            && super::sixteen_bit::compound(blocks, forward, max, &mut [], output, stride)
+        {
+            return true;
         }
-        _ if len == 0 => staged(view, params, &layout, sink, &mut []),
-        _ => with_subpel_intermediate(len, |stage| staged(view, params, &layout, sink, stage)),
-    }
-}
-
-/// Predicts the block of `layout` in place, else from an emulated window.
-fn staged<T: Sample>(
-    view: &ReferencePlaneView<'_, T>,
-    params: &SubpelPredictParams,
-    layout: &Layout,
-    sink: &mut Sink<'_>,
-    stage: &mut [i16],
-) {
-    if let Some(block) = layout.in_place(view, params)
-        && kernels(&block, sink, stage)
-    {
-        return;
-    }
-    let Layout {
-        horizontal,
-        vertical,
-        column,
-        columns,
-        row,
-        rows,
-        ..
-    } = *layout;
-    let (w, h) = (params.w, params.h);
-    let stride = reach(w);
-    let inside = (params.first_x - column).clamp(0, columns as i32) as usize
-        ..(params.last_x - column + 1).clamp(0, columns as i32) as usize;
-    T::with_storage(rows * stride, |storage| {
-        for (r, line) in storage.chunks_exact_mut(stride).enumerate() {
-            let y = (row + r as i32).clamp(params.first_y, params.last_y) as usize;
-            let source = view.row(y);
-            let edge = |x: i32| source[(x as usize).min(source.len() - 1)];
-            let (left, right) = (edge(params.first_x), edge(params.last_x));
-            let (start, end) = (inside.start.min(inside.end), inside.end);
-            let from = y * view.stride + (column + start as i32).max(0) as usize;
-            for at in (start..end).step_by(16) {
-                let span = view
-                    .samples
-                    .get(from + at - start..)
-                    .and_then(<[T]>::first_chunk::<16>);
-                match (
-                    line.get_mut(at..).and_then(<[T]>::first_chunk_mut::<16>),
-                    span,
-                ) {
-                    (Some(slot), Some(span)) => *slot = *span,
-                    _ => {
-                        for (offset, slot) in line[at..end.min(at + 16)].iter_mut().enumerate() {
-                            *slot = source[(column + (at + offset) as i32) as usize];
-                        }
-                    }
-                }
+        let rows = |block: &Block<'_, u16>| block.h + block.vertical.map_or(0, |t| t.span() - 1);
+        let len = stage_len(rows(blocks[0]), w, blocks[0].vertical).max(stage_len(
+            rows(blocks[1]),
+            w,
+            blocks[1].vertical,
+        ));
+        return with_stage(len, None, |stage| {
+            if !super::sixteen_bit::compound(blocks, forward, max, stage, output, stride) {
+                super::portable::compound_u16(blocks, forward, max, stage, output, stride);
             }
-            line[..start].fill(left);
-            line[end..columns].fill(right);
-        }
-        kernels(
-            &Block {
-                source: storage,
-                stride,
-                origin: 0,
-                top: 0,
-                rows: [0, rows as isize - 1],
-                w,
-                h,
-                horizontal,
-                vertical,
-                remap: None,
-            },
-            sink,
-            stage,
-        );
-    });
-}
-
-/// Runs the first vector kernel that covers `block`; `false`, having
-/// written nothing, when none covers a remapped block.
-fn kernels<T: Sample>(block: &Block<'_, T>, sink: &mut Sink<'_>, stage: &mut [i16]) -> bool {
-    if super::eight_bit::predict(block, sink, stage)
-        || super::sixteen_bit::predict(block, sink, stage)
-    {
-        return true;
+            true
+        });
     }
-    super::portable::predict(block, sink, stage);
-    true
+    with_compound_pred0(w * h, |pred0| {
+        kernels(
+            blocks[0],
+            &mut Sink::Prep {
+                output: pred0,
+                stride: w,
+            },
+            None,
+        );
+        let pred0 = &*pred0;
+        let mut sink = if let Some(output) = O::u8_slice_mut(&mut *output) {
+            Sink::Average {
+                pred0,
+                forward,
+                output,
+                stride,
+            }
+        } else if let Some(output) = O::u16_slice_mut(output) {
+            Sink::AverageWide {
+                pred0,
+                forward,
+                output,
+                stride,
+                max,
+            }
+        } else {
+            return false;
+        };
+        kernels(blocks[1], &mut sink, None);
+        true
+    })
 }
 
 /// The § 7.13.3.18 two-pass convolution sample by sample, for scaled

@@ -954,88 +954,52 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
         return Ok(false);
     }
     validate_compound_output(params0, output, output_stride)?;
+    let _ = scratch;
     Ok(compound_average(
         [reference0, reference1],
         [params0, params1],
         cwp_weight,
-        scratch,
         output,
         output_stride,
     ))
 }
 
-/// Predicts the first predictor of an admitted pair into retained storage,
-/// then blends the second into `output`; `false`, having written nothing,
-/// when `O` is neither 8- nor 16-bit storage.
+/// The COMPOUND_AVERAGE of an admitted pair into `output`; `false`, having
+/// written nothing, when the references are neither 8- nor 16-bit storage of
+/// one depth or `O` is neither 8- nor 16-bit storage.
+#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[inline(always)]
 fn compound_average<T: ReconSample, O: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
     params: [&SubpelPredictParams; 2],
     cwp_weight: i16,
-    scratch: &mut [i16],
     output: &mut [O],
     output_stride: usize,
 ) -> bool {
-    let (w, h) = (params[0].w, params[0].h);
-    let forward = i32::from(cwp_weight);
-    if let (Some(first), Some(second)) = (references[0].as_u8(), references[1].as_u8())
-        && let Some(output) = O::u8_slice_mut(output)
-        && cell::compound([&first, &second], params, forward, output, output_stride)
-    {
-        return true;
+    let windows = params.map(|p| block::Window::new(p.interp, p.w, p.h, [p.start_x, p.start_y]));
+    let bounds = params.map(SubpelPredictParams::bounds);
+    let clip = (i32::from(cwp_weight), params[0].bit_depth.max_sample());
+    if let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) {
+        return block::compound(
+            [&first, &second],
+            windows,
+            bounds,
+            clip,
+            output,
+            output_stride,
+        );
     }
-    if block::small_compound(references, params, forward, scratch, output, output_stride) {
-        return true;
+    if let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u16) {
+        return block::compound(
+            [&first, &second],
+            windows,
+            bounds,
+            clip,
+            output,
+            output_stride,
+        );
     }
-    if O::u8_slice(&[]).is_none() && O::u16_slice(&[]).is_none() {
-        return false;
-    }
-    if references[0].as_u8().is_some()
-        && let Some(output) = O::u8_slice_mut(output)
-    {
-        return with_compound_pred0_narrow(w * h, |pred0| {
-            let sink = Sink::PrepNarrow {
-                output: pred0,
-                stride: w,
-            };
-            block::predict(references[0], params[0], sink, Some(&mut *scratch));
-            let sink = Sink::AverageNarrow {
-                pred0,
-                forward,
-                output,
-                stride: output_stride,
-            };
-            block::predict(references[1], params[1], sink, Some(scratch));
-            true
-        });
-    }
-    with_compound_pred0(w * h, |pred0| {
-        let sink = Sink::Prep {
-            output: pred0,
-            stride: w,
-        };
-        block::predict(references[0], params[0], sink, Some(&mut *scratch));
-        let pred0 = &*pred0;
-        let sink = if let Some(output) = O::u8_slice_mut(output) {
-            Sink::Average {
-                pred0,
-                forward,
-                output,
-                stride: output_stride,
-            }
-        } else if let Some(output) = O::u16_slice_mut(output) {
-            Sink::AverageWide {
-                pred0,
-                forward,
-                output,
-                stride: output_stride,
-                max: params[0].bit_depth.max_sample(),
-            }
-        } else {
-            return;
-        };
-        block::predict(references[1], params[1], sink, Some(scratch));
-    });
-    true
+    false
 }
 
 std::thread_local! {
@@ -1046,7 +1010,7 @@ std::thread_local! {
         const { std::cell::Cell::new(Vec::new()) };
 }
 
-fn with_compound_pred0_narrow<R>(len: usize, f: impl FnOnce(&mut [i16]) -> R) -> R {
+pub(super) fn with_compound_pred0_narrow<R>(len: usize, f: impl FnOnce(&mut [i16]) -> R) -> R {
     COMPOUND_PRED0_NARROW.with(|slot| {
         let mut pred0 = slot.take();
         if pred0.len() < len {
@@ -1112,18 +1076,10 @@ pub fn subpel_predict_block_compound_average_fast_pair_into<T: ReconSample, O: R
         [reference0, reference1],
         params,
         cwp_weight,
-        &mut [],
         output,
         output_stride,
     );
-    let second = compound_average(
-        second,
-        params,
-        cwp_weight,
-        &mut [],
-        second_output,
-        second_stride,
-    );
+    let second = compound_average(second, params, cwp_weight, second_output, second_stride);
     Ok(usize::from(first) + usize::from(first && second))
 }
 
@@ -1158,15 +1114,8 @@ pub fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
         references.map(ReferencePlaneView::as_u8),
         O::u8_slice_mut(output),
     ) {
-        return cell::compound_at(
-            [first, second],
-            interp,
-            size,
-            placements,
-            clip,
-            output,
-            stride,
-        );
+        let references = [&first, &second];
+        return cell::compound_at(references, interp, size, placements, clip, output, stride);
     }
     let ([Some(first), Some(second)], Some(output)) = (
         references.map(ReferencePlaneView::as_u16),
@@ -1175,7 +1124,7 @@ pub fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
         return false;
     };
     cell::compound_at(
-        [first, second],
+        [&first, &second],
         interp,
         size,
         placements,
