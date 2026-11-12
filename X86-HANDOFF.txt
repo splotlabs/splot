@@ -383,3 +383,23 @@ lock in the pipeline, the tile-parallel parse. Queued: predict straight into the
   aarch64 machine): an atomic ready mark per batch for the row list; the tile-parallel
   parse (no gain on the only multi-tile sample, RSS +14%; it is under test again with new
   parse-bound multi-tile streams).
+
+## 2026-11-13, aarch64 push: the deadlock of your open problem 1 is fixed
+- Root cause: a wait-for cycle on frame-store entries. The store has 33 + D entries (D =
+  pipelining depth). A finished split-frame slot kept shares of all its reference frames
+  until the slot was reused, D frames later. With many TIP-output frames (they refresh
+  reference slots but use no split slot) the idle slots pinned almost every entry, the
+  driver waited for a free entry, and the slots were reset only at the next admission.
+- Fix: when the store is full the driver first resets every idle split slot
+  (`SplitFrames::retire_idle`, `RowPools::retire_idle`), then waits.
+- New vector `syn-tip-output-window-64x64-q210.ivf` and test
+  `tip_output_run_does_not_exhaust_the_frame_store` (depths 8, 12, 16, with a watchdog).
+- TO DO ON X86: run that test, and FourPeople qp210 and BlueSky qp210 at 16, 17 and 20
+  threads and with `--threads=20 --frame-delay 16`; confirm that they complete with the
+  1-thread hash. Then add the two streams back to your 20-thread tables.
+- Known and separate: SparksTruck 2048x1080 10-bit at 32 threads stops with the error
+  `max_reference_store_bytes` (41 frames exceed the default 256 MiB limit). It is not a
+  hang. A decision of the maintainer is open.
+- Idea for later, shared code, larger on x86: on a stripe with GDF the CDEF luma is copied
+  twice (the loop-restoration pool copy in `final_filters.rs` and the GDF tile fill in
+  `filters/gdf.rs`); one shared source copy would remove most of the filter-copy bytes.
