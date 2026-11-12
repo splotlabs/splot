@@ -195,8 +195,8 @@ impl<T: SplitSample> SplitFrame<T> {
         for stage in &mut self.stages {
             stage.reset(0);
         }
-        self.precompute.set_rows(0);
-        self.filter.set_rows(0);
+        self.precompute.reset();
+        self.filter.reset();
         self.filter_jobs.get_mut().clear();
         self.filter_error.get_mut().take();
         *self.early_ready.get_mut() = false;
@@ -741,7 +741,7 @@ impl<T: SplitSample> TipFrame<T> {
         for stage in &mut self.stages {
             stage.reset(0);
         }
-        self.bands.set_rows(0);
+        self.bands.reset();
         *self.failed.get_mut() = false;
         self.inputs.get_mut().take();
         self.core.take();
@@ -921,16 +921,18 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
         if self.failed.load(Ordering::Acquire) || self.stages[TIP_INIT].is_finished() {
             return None;
         }
-        let (entropy, motion_deps) = (self.entropy.try_lock()?, self.motion_deps.try_lock()?);
         let row = self.stages[TIP_INIT].claim(|_| {
-            entropy
-                .as_ref()
-                .is_none_or(inter::EntropyDependencies::is_settled)
-                && motion_deps.as_ref().is_none_or(|deps| {
+            self.entropy.try_lock().is_some_and(|entropy| {
+                entropy
+                    .as_ref()
+                    .is_none_or(inter::EntropyDependencies::is_settled)
+            }) && self.motion_deps.try_lock().is_some_and(|deps| {
+                deps.as_ref().is_none_or(|deps| {
                     deps.iter()
                         .flatten()
                         .all(inter::MotionFieldHandle::metadata_settled)
                 })
+            })
         })?;
         Some(Claim {
             stage: TIP_INIT,
@@ -1102,7 +1104,7 @@ impl<T: SplitSample> FinishFrame<T> {
         for stage in &mut self.stages {
             stage.reset(0);
         }
-        self.filter.set_rows(0);
+        self.filter.reset();
         *self.started.get_mut() = false;
         *self.failed.get_mut() = false;
         self.job.get_mut().take();
