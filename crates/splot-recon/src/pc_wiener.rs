@@ -1561,7 +1561,7 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
 struct PcWienerPaddedFilterSetup {
     sample_count: usize,
     filters: &'static [[i32; 13]; PC_WIENER_FULL_CLASSES],
-    pairs: &'static [ClassPairs; PC_WIENER_FULL_CLASSES],
+    classes: &'static [LaneClass; PC_WIENER_FULL_CLASSES],
     max_sample: u16,
     /// Whether the cell-lane kernel applies: 4x4 subclass cells over a source
     /// inside the active bit depth.
@@ -1575,12 +1575,11 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
 ) -> Result<PcWienerPaddedFilterSetup> {
     validate_sample_type::<T>(params.bit_depth)?;
     let (sample_count, filters) = validate_pc_wiener_filter(output_len, params)?;
-    let pairs =
-        PC_WIENER_PAIRS
-            .get(params.filter_set_index)
-            .ok_or(ReconError::PcWienerInvalidBounds {
-                field: "PC-Wiener filter set index",
-            })?;
+    let classes = PC_WIENER_CLASSES.get(params.filter_set_index).ok_or(
+        ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener filter set index",
+        },
+    )?;
     source.validate_cover(params.width, params.height)?;
 
     let max_sample = params.bit_depth.max_sample();
@@ -1597,7 +1596,7 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
     Ok(PcWienerPaddedFilterSetup {
         sample_count,
         filters,
-        pairs,
+        classes,
         max_sample,
         lanes,
     })
@@ -1726,26 +1725,57 @@ fn filter_pc_wiener_padded<'a, S, T: ReconSample + LumaSimdSource + 'a, O: LumaS
             let tail = full > 0
                 && !(end - c0).is_multiple_of(16)
                 && end.is_multiple_of(PC_WIENER_BLOCK_SIZE);
-            let mut weights = [[[0; 16]; 2]; 7];
-            for group_col in (0..full)
+            let mut groups = (0..full)
                 .map(|group| c0 + 16 * group)
                 .chain(tail.then(|| end - 16))
-            {
-                let cells = row_subclasses
-                    .get(group_col / PC_WIENER_BLOCK_SIZE..)
+                .peekable();
+            let cells_at = |col: usize| {
+                row_subclasses
+                    .get(col / PC_WIENER_BLOCK_SIZE..)
                     .and_then(<[u8]>::first_chunk::<4>)
-                    .ok_or_else(rows_error)?;
-                let lanes =
-                    chunk_rows::<_, 22, { PC_WIENER_BLOCK_SIZE + 2 * R }>(&window, group_col)
-                        .ok_or_else(rows_error)?;
-                group_weights::<T>(&mut weights, setup.pairs, *cells);
-                filter_pc_wiener_group16::<T, O>(
-                    &mut destination[row * params.output_stride + group_col..],
-                    (params.output_stride, group),
-                    &lanes,
-                    &weights,
+                    .copied()
+            };
+            while let Some(group_col) = groups.next() {
+                let cells = cells_at(group_col).ok_or_else(rows_error)?;
+                let uniform = cells == [cells[0]; 4];
+                let mut run_end = group_col + 16;
+                while groups.peek() == Some(&run_end)
+                    && cells_at(run_end).is_some_and(|next| {
+                        if uniform {
+                            next == cells
+                        } else {
+                            next != [next[0]; 4]
+                        }
+                    })
+                {
+                    groups.next();
+                    run_end += 16;
+                }
+                let classes = if uniform {
+                    lr_madd::Classes::Uniform(
+                        &setup.classes[usize::from(cells[0]) % PC_WIENER_FULL_CLASSES],
+                    )
+                } else {
+                    lr_madd::Classes::Cells {
+                        cells: row_subclasses
+                            .get(group_col / PC_WIENER_BLOCK_SIZE..run_end / PC_WIENER_BLOCK_SIZE)
+                            .ok_or_else(rows_error)?,
+                        table: setup.classes,
+                    }
+                };
+                if !lr_madd::filter_run::<PcTaps, T, O, PC_WIENER_WINDOW_ROWS, 22>(
+                    &window,
+                    group,
+                    (group_col, run_end),
+                    classes,
+                    (
+                        &mut destination[row * params.output_stride..],
+                        params.output_stride,
+                    ),
                     setup.max_sample,
-                );
+                ) {
+                    return Err(rows_error());
+                }
             }
             let col = if tail { end } else { c0 + 16 * full };
             for row in group_rows.clone() {
@@ -2179,4 +2209,5 @@ mod tests;
 
 mod cells16;
 mod tx_skip;
-use cells16::{ClassPairs, PC_WIENER_PAIRS, chunk_rows, filter_pc_wiener_group16, group_weights};
+use crate::lr_madd::{self, LaneClass};
+use cells16::{PC_WIENER_CLASSES, PcTaps};

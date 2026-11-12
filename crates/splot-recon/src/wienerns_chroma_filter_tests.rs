@@ -99,6 +99,18 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
                     max,
                 );
                 assert_eq!(from_bytes, scalar, "u8 chroma width {width}");
+                let mut into_bytes = vec![0u8; width * height];
+                filter_chroma_padded_simd(
+                    &mut into_bytes,
+                    &params,
+                    &bytes,
+                    stride,
+                    &luma_ds,
+                    stride,
+                    max,
+                );
+                let widened: Vec<u16> = into_bytes.iter().map(|&s| u16::from(s)).collect();
+                assert_eq!(widened, scalar, "u8 chroma into u8 width {width}");
             }
         }
     }

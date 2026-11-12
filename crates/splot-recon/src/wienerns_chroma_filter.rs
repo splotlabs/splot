@@ -856,6 +856,14 @@ const WIENER_NS_CONFIG_UV_PAIRS: [(isize, isize, usize); WIENER_NS_CHROMA_COEFF_
 trait ChromaOutputSample: Copy {
     fn from_clamped_u16(value: u16) -> Self;
 
+    /// The output as `u16` samples when it is `u16`.
+    #[cfg(target_arch = "aarch64")]
+    fn u16_samples_mut(output: &mut [Self]) -> Option<&mut [u16]>;
+
+    /// The output as `u8` samples when it is `u8`.
+    #[cfg(target_arch = "aarch64")]
+    fn u8_samples_mut(output: &mut [Self]) -> Option<&mut [u8]>;
+
     fn write_lanes<const LANES: usize>(output: &mut [Self], values: [u16; LANES]) {
         for (output, value) in output.iter_mut().zip(values) {
             *output = Self::from_clamped_u16(value);
@@ -868,6 +876,16 @@ impl ChromaOutputSample for u16 {
         value
     }
 
+    #[cfg(target_arch = "aarch64")]
+    fn u16_samples_mut(output: &mut [Self]) -> Option<&mut [u16]> {
+        Some(output)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn u8_samples_mut(_output: &mut [Self]) -> Option<&mut [u8]> {
+        None
+    }
+
     fn write_lanes<const LANES: usize>(output: &mut [Self], values: [u16; LANES]) {
         output.copy_from_slice(&values); // splot-copy-ok: publish SIMD chroma Wiener NS samples
     }
@@ -876,6 +894,16 @@ impl ChromaOutputSample for u16 {
 impl ChromaOutputSample for u8 {
     fn from_clamped_u16(value: u16) -> Self {
         value as u8
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn u16_samples_mut(_output: &mut [Self]) -> Option<&mut [u16]> {
+        None
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn u8_samples_mut(output: &mut [Self]) -> Option<&mut [u8]> {
+        Some(output)
     }
 }
 
@@ -959,6 +987,15 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
             (luma_ds, luma_stride),
             max_sample,
         );
+        return;
+    }
+    if filter_chroma_block(
+        output,
+        params,
+        (chroma, chroma_stride),
+        (luma_ds, luma_stride),
+        max_sample,
+    ) {
         return;
     }
     for r in 0..params.height {
@@ -1050,6 +1087,37 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
             c += 16;
         }
     }
+}
+
+/// [`filter_chroma_rows`] for a whole block at least 16 samples wide with the
+/// architecture's block kernel, where it has one; returns `false`, the rows
+/// left to the group kernel, otherwise.
+#[inline]
+fn filter_chroma_block<O: ChromaOutputSample, T: ReconSample>(
+    output: &mut [O],
+    params: &WienerNsChromaFilter<'_>,
+    chroma: (&[T], usize),
+    luma: (&[u16], usize),
+    max_sample: u16,
+) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+        let size = (params.width, params.height);
+        let weights = (params.coeffs, params.reads_luma());
+        if let (Some(samples), Some(output)) = (T::u16_slice(chroma.0), O::u16_samples_mut(output))
+        {
+            let chroma = (samples, chroma.1);
+            let output = (output, params.output_stride);
+            return neon::filter_block(t, output, size, chroma, luma, weights, max_sample);
+        }
+        if let (Some(samples), Some(output)) = (T::u8_slice(chroma.0), O::u8_samples_mut(output)) {
+            let chroma = (samples, chroma.1);
+            let output = (output, params.output_stride);
+            return neon::filter_block_bytes(t, output, size, chroma, luma, weights, max_sample);
+        }
+    }
+    let _ = (output, params, chroma, luma, max_sample);
+    false
 }
 
 /// [`filter_chroma_rows`] for a block 8 to 15 samples wide: two rows per
@@ -1731,6 +1799,375 @@ mod lanes8 {
             .clamp(zero, max)
             .bitcast();
         values.into()
+    }
+}
+
+/// The AArch64 kernel of a whole block at least 16 samples wide: rows outer,
+/// 16-column groups inner, the last group of a row overlapping the one
+/// before it. The 18 coefficients stay in three registers; each chroma pair
+/// is `p + q - 2m` and each luma tap `l - lm` times a weight lane (one
+/// `smlal` per four outputs). Validated samples of at most 10 bits keep
+/// both differences in `i16` lanes; `sqrshrun` by 7 is `Round2` and the clip
+/// to `0`, `umin` the clip to the maximum sample.
+#[cfg(target_arch = "aarch64")]
+mod neon {
+    use core::arch::aarch64::*;
+    use fearless_simd::{Neon, SimdBase, SimdFrom, i16x8, u8x16, u16x8};
+
+    use super::{
+        WIENER_NS_CHROMA_COEFF_SLOTS, WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS,
+        WIENER_NS_CONFIG_UV, WIENER_NS_CONFIG_UV_PAIRS,
+    };
+
+    const R: usize = WIENER_NS_CHROMA_TAP_RADIUS;
+    const ROWS: usize = 2 * R + 1;
+    const REACH: usize = 16 + 2 * R;
+
+    /// One plane's samples and stride.
+    type Plane<'a> = (&'a [u16], usize);
+
+    fearless_simd::kernel!(
+        /// Filters the `width` x `height` block into `output`, reading
+        /// `luma` only when `reads_luma`; returns `false` when a window or
+        /// the output is short.
+        #[inline]
+        pub(super) fn filter_block(
+            t: Neon,
+            output: (&mut [u16], usize),
+            size: (usize, usize),
+            chroma: Plane<'_>,
+            luma: Plane<'_>,
+            weights: (&[i16; WIENER_NS_CHROMA_COEFFS], bool),
+            max_sample: u16,
+        ) -> bool {
+            let (coeffs, reads_luma) = weights;
+            if reads_luma {
+                rows::<true>(t, output, size, chroma, luma, coeffs, max_sample)
+            } else {
+                rows::<false>(t, output, size, chroma, luma, coeffs, max_sample)
+            }
+        }
+    );
+
+    /// The `ROWS` rows of `plane` from row `r`, each `width + 2 * R` long.
+    #[inline]
+    #[target_feature(enable = "neon")]
+    fn window<'a, S>(
+        (samples, stride): (&'a [S], usize),
+        r: usize,
+        width: usize,
+    ) -> Option<[&'a [S]; ROWS]> {
+        let mut rows = [&[][..]; ROWS];
+        for (k, row) in rows.iter_mut().enumerate() {
+            let start = (r + k) * stride;
+            *row = samples.get(start..start + width + 2 * R)?;
+        }
+        Some(rows)
+    }
+
+    /// The `REACH` columns from `c` of each of `rows`.
+    #[inline]
+    fn group<'a, S>(rows: &[&'a [S]; ROWS], c: usize) -> Option<[&'a [S; REACH]; ROWS]> {
+        let first = rows[0].get(c..)?.first_chunk::<REACH>()?;
+        let mut group = [first; ROWS];
+        for (slot, row) in group.iter_mut().zip(rows) {
+            *slot = row.get(c..)?.first_chunk::<REACH>()?;
+        }
+        Some(group)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    #[target_feature(enable = "neon")]
+    fn rows<const LUMA: bool>(
+        t: Neon,
+        (output, output_stride): (&mut [u16], usize),
+        (width, height): (usize, usize),
+        chroma: Plane<'_>,
+        luma: Plane<'_>,
+        coeffs: &[i16; WIENER_NS_CHROMA_COEFFS],
+        max_sample: u16,
+    ) -> bool {
+        if width < 16 {
+            return false;
+        }
+        let mut lanes = [0; 24];
+        lanes[..WIENER_NS_CHROMA_COEFFS].copy_from_slice(coeffs); // splot-copy-ok: the coefficients into three weight vectors
+        let weights: [int16x8_t; 3] = core::array::from_fn(|k| {
+            let at = 8 * k;
+            match lanes.get(at..).and_then(<[i16]>::first_chunk::<8>) {
+                Some(lanes) => i16x8::load_array_ref(t, lanes).into(),
+                None => vdupq_n_s16(0),
+            }
+        });
+        let max = vdupq_n_u16(max_sample);
+        let tap = |offset: isize| R.wrapping_add_signed(offset);
+        for r in 0..height {
+            let start = r * output_stride;
+            let (Some(target), Some(chroma_rows)) = (
+                output.get_mut(start..start + width),
+                window(chroma, r, width),
+            ) else {
+                return false;
+            };
+            let luma_rows = if LUMA {
+                match window(luma, r, width) {
+                    Some(rows) => rows,
+                    None => return false,
+                }
+            } else {
+                chroma_rows
+            };
+            let mut c = 0;
+            while c < width {
+                c = c.min(width - 16);
+                let (Some(chroma_group), Some(luma_group)) =
+                    (group(&chroma_rows, c), group(&luma_rows, c))
+                else {
+                    return false;
+                };
+                let load = |group: &[&[u16; REACH]; ROWS], row: usize, col: usize| -> int16x8_t {
+                    match group
+                        .get(row)
+                        .and_then(|row| row.get(col..))
+                        .and_then(<[u16]>::first_chunk::<8>)
+                    {
+                        Some(lanes) => {
+                            vreinterpretq_s16_u16(u16x8::load_array_ref(t, lanes).into())
+                        }
+                        None => vdupq_n_s16(0),
+                    }
+                };
+                let center = [load(&chroma_group, R, R), load(&chroma_group, R, R + 8)];
+                let mut acc = [
+                    vshll_n_s16::<7>(vget_low_s16(center[0])),
+                    vshll_high_n_s16::<7>(center[0]),
+                    vshll_n_s16::<7>(vget_low_s16(center[1])),
+                    vshll_high_n_s16::<7>(center[1]),
+                ];
+                let twice = center.map(|center| vaddq_s16(center, center));
+                macro_rules! mac {
+                    ($terms:expr, $vector:expr, $lane:expr) => {{
+                        const L: i32 = $lane;
+                        let w = weights[$vector];
+                        let [s0, s1] = $terms;
+                        acc[0] = vmlal_laneq_s16::<L>(acc[0], vget_low_s16(s0), w);
+                        acc[1] = vmlal_high_laneq_s16::<L>(acc[1], s0, w);
+                        acc[2] = vmlal_laneq_s16::<L>(acc[2], vget_low_s16(s1), w);
+                        acc[3] = vmlal_high_laneq_s16::<L>(acc[3], s1, w);
+                    }};
+                }
+                macro_rules! chroma_pairs {
+                    ($($j:literal)*) => {$({
+                        let (dy, dx, _) = WIENER_NS_CONFIG_UV_PAIRS[$j];
+                        let (p, q) = ((tap(dy), tap(dx)), (tap(-dy), tap(-dx)));
+                        let terms: [int16x8_t; 2] = core::array::from_fn(|h| {
+                            let sum = vaddq_s16(
+                                load(&chroma_group, p.0, p.1 + 8 * h),
+                                load(&chroma_group, q.0, q.1 + 8 * h),
+                            );
+                            vsubq_s16(sum, twice[h])
+                        });
+                        mac!(terms, 0, WIENER_NS_CONFIG_UV_PAIRS[$j].2 as i32);
+                    })*};
+                }
+                chroma_pairs!(0 1 2 3 4 5);
+                if LUMA {
+                    let luma_center = [load(&luma_group, R, R), load(&luma_group, R, R + 8)];
+                    macro_rules! luma_taps {
+                        ($($i:literal)*) => {$({
+                            const SLOT: usize = $i + WIENER_NS_CHROMA_COEFF_SLOTS;
+                            let (dy, dx, _) = WIENER_NS_CONFIG_UV[$i];
+                            let terms: [int16x8_t; 2] = core::array::from_fn(|h| {
+                                vsubq_s16(
+                                    load(&luma_group, tap(dy), tap(dx) + 8 * h),
+                                    luma_center[h],
+                                )
+                            });
+                            mac!(terms, SLOT / 8, (SLOT % 8) as i32);
+                        })*};
+                    }
+                    luma_taps!(0 1 2 3 4 5 6 7 8 9 10 11);
+                }
+                let narrow =
+                    |a, b| vminq_u16(vqrshrun_high_n_s32::<7>(vqrshrun_n_s32::<7>(a), b), max);
+                let Some(slot) = target.get_mut(c..).and_then(<[u16]>::first_chunk_mut::<16>)
+                else {
+                    return false;
+                };
+                let (low, high) = slot.split_at_mut(8);
+                let (Some(low), Some(high)) =
+                    (low.first_chunk_mut::<8>(), high.first_chunk_mut::<8>())
+                else {
+                    return false;
+                };
+                u16x8::<Neon>::simd_from(t, narrow(acc[0], acc[1])).store_array(low);
+                u16x8::<Neon>::simd_from(t, narrow(acc[2], acc[3])).store_array(high);
+                c += 16;
+            }
+        }
+        true
+    }
+
+    fearless_simd::kernel!(
+        /// [`filter_block`] over `u8` chroma into `u8` output.
+        #[inline]
+        pub(super) fn filter_block_bytes(
+            t: Neon,
+            output: (&mut [u8], usize),
+            size: (usize, usize),
+            chroma: (&[u8], usize),
+            luma: Plane<'_>,
+            weights: (&[i16; WIENER_NS_CHROMA_COEFFS], bool),
+            max_sample: u16,
+        ) -> bool {
+            let (coeffs, reads_luma) = weights;
+            if reads_luma {
+                byte_rows::<true>(t, output, size, chroma, luma, coeffs, max_sample)
+            } else {
+                byte_rows::<false>(t, output, size, chroma, luma, coeffs, max_sample)
+            }
+        }
+    );
+
+    /// [`rows`] over `u8` chroma: each tap one 16-byte load widened to two
+    /// `i16` vectors, each group narrowed to bytes.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    #[target_feature(enable = "neon")]
+    fn byte_rows<const LUMA: bool>(
+        t: Neon,
+        (output, output_stride): (&mut [u8], usize),
+        (width, height): (usize, usize),
+        chroma: (&[u8], usize),
+        luma: Plane<'_>,
+        coeffs: &[i16; WIENER_NS_CHROMA_COEFFS],
+        max_sample: u16,
+    ) -> bool {
+        if width < 16 {
+            return false;
+        }
+        let mut lanes = [0; 24];
+        lanes[..WIENER_NS_CHROMA_COEFFS].copy_from_slice(coeffs); // splot-copy-ok: the coefficients into three weight vectors
+        let weights: [int16x8_t; 3] = core::array::from_fn(|k| {
+            match lanes.get(8 * k..).and_then(<[i16]>::first_chunk::<8>) {
+                Some(lanes) => i16x8::load_array_ref(t, lanes).into(),
+                None => vdupq_n_s16(0),
+            }
+        });
+        let max = vdupq_n_u16(max_sample);
+        let tap = |offset: isize| R.wrapping_add_signed(offset);
+        let bytes = |group: &[&[u8; REACH]; ROWS], row: usize, col: usize| -> [int16x8_t; 2] {
+            match group
+                .get(row)
+                .and_then(|row| row.get(col..))
+                .and_then(<[u8]>::first_chunk::<16>)
+            {
+                Some(lanes) => {
+                    let lanes: uint8x16_t = u8x16::load_array_ref(t, lanes).into();
+                    [
+                        vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(lanes))),
+                        vreinterpretq_s16_u16(vmovl_high_u8(lanes)),
+                    ]
+                }
+                None => [vdupq_n_s16(0); 2],
+            }
+        };
+        let words = |group: &[&[u16; REACH]; ROWS], row: usize, col: usize| -> int16x8_t {
+            match group
+                .get(row)
+                .and_then(|row| row.get(col..))
+                .and_then(<[u16]>::first_chunk::<8>)
+            {
+                Some(lanes) => vreinterpretq_s16_u16(u16x8::load_array_ref(t, lanes).into()),
+                None => vdupq_n_s16(0),
+            }
+        };
+        for r in 0..height {
+            let start = r * output_stride;
+            let (Some(target), Some(chroma_rows)) = (
+                output.get_mut(start..start + width),
+                window(chroma, r, width),
+            ) else {
+                return false;
+            };
+            let luma_rows = if LUMA {
+                match window(luma, r, width) {
+                    Some(rows) => Some(rows),
+                    None => return false,
+                }
+            } else {
+                None
+            };
+            let mut c = 0;
+            while c < width {
+                c = c.min(width - 16);
+                let Some(chroma_group) = group(&chroma_rows, c) else {
+                    return false;
+                };
+                let center = bytes(&chroma_group, R, R);
+                let mut acc = [
+                    vshll_n_s16::<7>(vget_low_s16(center[0])),
+                    vshll_high_n_s16::<7>(center[0]),
+                    vshll_n_s16::<7>(vget_low_s16(center[1])),
+                    vshll_high_n_s16::<7>(center[1]),
+                ];
+                let twice = center.map(|center| vaddq_s16(center, center));
+                macro_rules! mac {
+                    ($terms:expr, $vector:expr, $lane:expr) => {{
+                        const L: i32 = $lane;
+                        let w = weights[$vector];
+                        let [s0, s1] = $terms;
+                        acc[0] = vmlal_laneq_s16::<L>(acc[0], vget_low_s16(s0), w);
+                        acc[1] = vmlal_high_laneq_s16::<L>(acc[1], s0, w);
+                        acc[2] = vmlal_laneq_s16::<L>(acc[2], vget_low_s16(s1), w);
+                        acc[3] = vmlal_high_laneq_s16::<L>(acc[3], s1, w);
+                    }};
+                }
+                macro_rules! chroma_pairs {
+                    ($($j:literal)*) => {$({
+                        let (dy, dx, _) = WIENER_NS_CONFIG_UV_PAIRS[$j];
+                        let p = bytes(&chroma_group, tap(dy), tap(dx));
+                        let q = bytes(&chroma_group, tap(-dy), tap(-dx));
+                        let terms: [int16x8_t; 2] = core::array::from_fn(|h| {
+                            vsubq_s16(vaddq_s16(p[h], q[h]), twice[h])
+                        });
+                        mac!(terms, 0, WIENER_NS_CONFIG_UV_PAIRS[$j].2 as i32);
+                    })*};
+                }
+                chroma_pairs!(0 1 2 3 4 5);
+                if let Some(luma_rows) = &luma_rows {
+                    let Some(luma_group) = group(luma_rows, c) else {
+                        return false;
+                    };
+                    let luma_center = [words(&luma_group, R, R), words(&luma_group, R, R + 8)];
+                    macro_rules! luma_taps {
+                        ($($i:literal)*) => {$({
+                            const SLOT: usize = $i + WIENER_NS_CHROMA_COEFF_SLOTS;
+                            let (dy, dx, _) = WIENER_NS_CONFIG_UV[$i];
+                            let terms: [int16x8_t; 2] = core::array::from_fn(|h| {
+                                vsubq_s16(
+                                    words(&luma_group, tap(dy), tap(dx) + 8 * h),
+                                    luma_center[h],
+                                )
+                            });
+                            mac!(terms, SLOT / 8, (SLOT % 8) as i32);
+                        })*};
+                    }
+                    luma_taps!(0 1 2 3 4 5 6 7 8 9 10 11);
+                }
+                let narrow =
+                    |a, b| vminq_u16(vqrshrun_high_n_s32::<7>(vqrshrun_n_s32::<7>(a), b), max);
+                let Some(slot) = target.get_mut(c..).and_then(<[u8]>::first_chunk_mut::<16>) else {
+                    return false;
+                };
+                let values =
+                    vmovn_high_u16(vmovn_u16(narrow(acc[0], acc[1])), narrow(acc[2], acc[3]));
+                u8x16::<Neon>::simd_from(t, values).store_array(slot);
+                c += 16;
+            }
+        }
+        true
     }
 }
 

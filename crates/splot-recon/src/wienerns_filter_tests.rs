@@ -769,11 +769,9 @@ fn padded_into_reuses_maximum_restoration_stripe_scratch() {
         .unwrap();
 
     assert!(output.iter().all(|&sample| sample == 91));
-    assert!(scratch.filtered.capacity() >= width * height);
     assert!(scratch.clean_rows.capacity() >= height + 2 * WIENER_NS_LUMA_TAP_RADIUS);
     assert!(scratch.prepared_classes.capacity() >= coeffs.len());
     let clean_rows_capacity = scratch.clean_rows.capacity();
-    let filtered_ptr = scratch.filtered.as_ptr();
 
     let width = 2;
     let height = 2;
@@ -787,7 +785,6 @@ fn padded_into_reuses_maximum_restoration_stripe_scratch() {
 
     assert_eq!(output, [37; 4]);
     assert_eq!(scratch.clean_rows.capacity(), clean_rows_capacity);
-    assert_eq!(scratch.filtered.as_ptr(), filtered_ptr);
 }
 
 #[test]
@@ -1307,20 +1304,19 @@ fn eight_bit_pair_weights_take_every_ranged_class() {
     assert!(eight_bit::pair_weights(&past).is_none());
 }
 
-/// The by-lane run kernel matches the § 7.20.3 per-sample sum for random
-/// and extreme § 5.20.2.1 classes and samples, for one class per run, with
-/// every count of trailing zero weights, and for a class per cell, over runs
-/// that cover a row or start and end inside it, on one to four rows, and
-/// writes nothing outside the run.
-#[cfg(target_arch = "aarch64")]
+/// The run kernel matches the § 7.20.3 per-sample sum for random and
+/// extreme § 5.20.2.1 classes and samples, for one class per run, with every
+/// count of trailing zero weights, and for a random class per cell, over runs that
+/// cover a row or start and end inside it, on one to four rows, from `u16`
+/// and `u8` rows into `u16` and `u8` output, and writes nothing outside the
+/// run.
 #[test]
-fn by_lane_runs_match_the_scalar_filter() {
+fn luma_runs_match_the_scalar_filter() {
     const MIN: [i16; WIENER_NS_LUMA_COEFFS] = [
         -24, -24, -14, -14, -16, -16, -8, -8, -8, -8, -8, -8, -8, -8, -8, -8,
     ];
     const K: [u32; WIENER_NS_LUMA_COEFFS] = [6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4];
     const UNTOUCHED: u16 = 0xdead;
-    let t = fearless_simd::Level::baseline().as_neon().unwrap();
     let mut state = 0x9e37_79b9_7f4a_7c15u64;
     let mut next = move |limit: u64| {
         state ^= state << 13;
@@ -1372,26 +1368,71 @@ fn by_lane_runs_match_the_scalar_filter() {
             .collect();
         let window: Vec<&[u16]> = source.iter().map(Vec::as_slice).collect();
         let stride = width + 3;
-        let mut output = vec![UNTOUCHED; rows * stride];
         let span = (lead, lead + 16 * groups);
-        let run = (&classes, uniform);
-        assert!(luma_run(
-            t,
-            &window,
-            rows,
-            span,
-            run,
-            (&mut output, stride),
-            max
-        ));
+        let cells: Vec<u8> = (0..4 * groups).map(|_| next(4) as u8).collect();
+        let run = if uniform {
+            lr_madd::Classes::Uniform(&classes[0])
+        } else {
+            lr_madd::Classes::Cells {
+                cells: &cells,
+                table: &classes,
+            }
+        };
+        let bytes: Vec<Vec<u8>> = source
+            .iter()
+            .map(|row| row.iter().map(|&sample| sample as u8).collect())
+            .collect();
+        let byte_window: Vec<&[u8]> = bytes.iter().map(Vec::as_slice).collect();
+        let output: Vec<u16> = if max == 255 && case % 4 == 3 {
+            let mut output = vec![UNTOUCHED; rows * stride];
+            assert!(lr_madd::filter_run::<
+                LumaTaps,
+                u8,
+                u16,
+                LUMA_WINDOW_ROWS,
+                CELL_REACH,
+            >(
+                &byte_window, rows, span, run, (&mut output, stride), max
+            ));
+            output
+        } else if max == 255 && case % 4 == 1 {
+            let mut output = vec![0x5a_u8; rows * stride];
+            assert!(lr_madd::filter_run::<
+                LumaTaps,
+                u16,
+                u8,
+                LUMA_WINDOW_ROWS,
+                CELL_REACH,
+            >(
+                &window, rows, span, run, (&mut output, stride), max
+            ));
+            output.iter().map(|&value| u16::from(value)).collect()
+        } else {
+            let mut output = vec![UNTOUCHED; rows * stride];
+            assert!(lr_madd::filter_run::<
+                LumaTaps,
+                u16,
+                u16,
+                LUMA_WINDOW_ROWS,
+                CELL_REACH,
+            >(
+                &window, rows, span, run, (&mut output, stride), max
+            ));
+            output
+        };
+        let untouched = if max == 255 && case % 4 == 1 {
+            0x5a
+        } else {
+            UNTOUCHED
+        };
         for y in 0..rows {
             for x in 0..width {
                 let got = output[y * stride + x];
                 if !(span.0..span.1).contains(&x) {
-                    assert_eq!(got, UNTOUCHED, "case {case} ({x}, {y})");
+                    assert_eq!(got, untouched, "case {case} ({x}, {y})");
                     continue;
                 }
-                let coeffs = &classes[(x / 4) % 4].0;
+                let coeffs = &classes[usize::from(cells[(x - lead) / 4])].0;
                 let at = |dy: isize, dx: isize| {
                     let row = &source[(y + r).wrapping_add_signed(dy)];
                     i32::from(row[(x + r).wrapping_add_signed(dx)])
