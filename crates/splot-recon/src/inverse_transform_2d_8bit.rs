@@ -12,8 +12,9 @@
 //! The lane form here is one `i32` multiply-add per input and output, four
 //! outputs per vector: the row pass vectorizes over a row's outputs, the
 //! column pass over the block's columns, and the `DCT` passes split into
-//! even and odd halves. The AVX2 form in [`avx2`] runs on `pmaddwd` pairs
-//! instead.
+//! even and odd halves. At 8 bits the AVX2 form in [`avx2`] runs on
+//! `pmaddwd` pairs instead, and the NEON form in `neon` keeps `i16` lanes
+//! between the passes.
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Level;
@@ -34,6 +35,8 @@ use crate::{BitDepth, ReconSample};
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
+#[cfg(target_arch = "aarch64")]
+mod neon;
 
 /// One § 7.15.4.1 kernel-by-kernel transform.
 #[derive(Clone, Copy)]
@@ -459,6 +462,11 @@ impl InverseTransformAdd {
             }
             return true;
         }
+        #[cfg(target_arch = "aarch64")]
+        if let Some(token) = fearless_simd::Level::baseline().as_neon() {
+            neon::add(token, self, (coeffs, w, dequant), (dst, stride), scratch);
+            return true;
+        }
         self.run_add(
             self.transform8(dequant, bit_depth),
             (coeffs, w),
@@ -574,6 +582,15 @@ impl InverseTransformAdd {
             && let Some(rows) = dequant.first_chunk_mut::<64>()
         {
             let len = secondary_inverse_transform_quant_rows8(quant, quantizers, secondary, rows)?;
+            #[cfg(target_arch = "aarch64")]
+            if let (Some(token), Some(dst), BitDepth::Eight) = (
+                fearless_simd::Level::baseline().as_neon(),
+                T::u8_slice_mut(&mut *dst),
+                bit_depth,
+            ) {
+                neon::add(token, self, (&rows[..len], 8, None), (dst, stride), scratch);
+                return Ok(true);
+            }
             let t = self.transform8(None, bit_depth);
             return Ok(self.run_add(t, (&rows[..len], 8), dst, stride, scratch));
         }

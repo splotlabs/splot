@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "047ca2454773cb16b9199de8935a22cccc5d8bcf",
+  "audited_commit": "8bcacd64959543e9aa3fbcb08458115a88cc8ba1",
   "outcome": "success",
   "files": [
     {
@@ -5226,7 +5226,7 @@
     },
     {
       "path": "crates/splot-parallel/src/rows.rs",
-      "sha256": "0885a8e340cdbf00045df93d015ee95efc91252782b9af7c341b374923d2f74f",
+      "sha256": "ad0819796a49387fb176be53e27010281af68780364c0e1b91821ff810a4a73e",
       "scope_kind": "workspace:splot-parallel",
       "feature_ids": [],
       "outcome": "success"
@@ -5536,7 +5536,7 @@
     },
     {
       "path": "crates/splot-recon/src/inverse_transform_2d_8bit.rs",
-      "sha256": "1bdb9dbe445d09b16831e132fdc187e5241ce031c0f353f19bec166097a50043",
+      "sha256": "0a615a62d4f4a5b75c2307072b2f0a1e50cb00a5eaef8d182a45a4b58ccd69b0",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5544,6 +5544,13 @@
     {
       "path": "crates/splot-recon/src/inverse_transform_2d_8bit/avx2.rs",
       "sha256": "f4577786b8ead3e361b18bb30db8ffdd24daabff7953932b79826e89e3126ec3",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/inverse_transform_2d_8bit/neon.rs",
+      "sha256": "93faecff347c94ed8c5453330727032eed7c2a255b155794ba5aed0ea3cfe9a1",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
