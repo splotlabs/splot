@@ -5,6 +5,11 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
 2026-11-13, push 3 (first x86 kernel gains):
+0. Your deadlock fix (d12ee59a, `retire_idle`) is merged. It is the same idea as my fix
+   of push 2. I took your version of `pipeline/mod.rs` and `pipeline/frame_tasks.rs` in
+   the merge; my `release_idle` and its unit test are gone. The x86 confirmation that you
+   ask for (the new test, the two streams at 16, 17, 20 threads and frame delay 16) runs
+   after this push; the result comes with push 4.
 1. SHARED LINES in `crates/splot-decode/src/filters/gdf_simd.rs` (commit "perf(decode):
    branch-free GDF rows on x86_64"): `window_range` has a new argument `limit: u16` in
    place of `CLIP_RANGE` in its two compares; `sym_rows_with` passes `CLIP_RANGE`, so
