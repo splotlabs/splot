@@ -840,35 +840,37 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         self.materialize_rows(self.recon.unit_count);
         let mut awaiting = None;
         let mut resolve = self.resolve.lock();
-        let mut rows = self.recon.slots.rows.lock();
         loop {
             let next = resolve.next;
-            let Some(state) = rows.get(next) else {
-                if next < self.recon.unit_count && !self.parse_failed() {
-                    awaiting = Some(next.saturating_add(1));
+            let (mut row, surface) = {
+                let mut rows = self.recon.slots.rows.lock();
+                let Some(slot) = rows.get_mut(next) else {
+                    if next < self.recon.unit_count && !self.parse_failed() {
+                        awaiting = Some(next.saturating_add(1));
+                    }
+                    break;
+                };
+                let TileReconRow::Unresolved { row, .. } = &*slot else {
+                    break;
+                };
+                let row_end8 = row
+                    .superblocks
+                    .iter()
+                    .filter_map(|superblock| {
+                        superblock.origin[0].checked_add(self.recon.params.sb_h4)
+                    })
+                    .map(|end4| end4.div_ceil(2))
+                    .max()
+                    .unwrap_or(projected_rows.end);
+                if !final_band && row_end8 > projected_rows.end {
+                    break;
                 }
-                break;
-            };
-            let TileReconRow::Unresolved { row, .. } = state else {
-                break;
-            };
-            let row_end8 = row
-                .superblocks
-                .iter()
-                .filter_map(|superblock| superblock.origin[0].checked_add(self.recon.params.sb_h4))
-                .map(|end4| end4.div_ceil(2))
-                .max()
-                .unwrap_or(projected_rows.end);
-            if !final_band && row_end8 > projected_rows.end {
-                break;
-            }
-            let Some(slot) = rows.get_mut(next) else {
-                break;
-            };
-            let TileReconRow::Unresolved { mut row, surface } =
-                core::mem::replace(slot, TileReconRow::Taken)
-            else {
-                break;
+                let TileReconRow::Unresolved { row, surface } =
+                    core::mem::replace(slot, TileReconRow::Taken)
+                else {
+                    break;
+                };
+                (row, surface)
             };
             let ScheduledResolve { grids, states, .. } = &mut *resolve;
             let (Some(grid), Some(state), Some(tile)) = (
@@ -890,7 +892,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             row.return_terminal_error()?;
             let bounds = row_gate.bounds_for_row(&row);
             TileRecon::accept_resolved(
-                &mut rows,
+                &mut self.recon.slots.rows.lock(),
                 next,
                 ReadyReconRow {
                     row,
