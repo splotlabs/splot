@@ -392,8 +392,10 @@ struct Driver {
 /// takes no shared lock. Push and pop replace the list and raise `epoch`
 /// under `frames`, then drop every snapshot of an older epoch without
 /// waiting: a snapshot held by a scan is flagged stale, and the scanner
-/// drops it right after the scan. A removed frame is thus held by no
-/// snapshot once every scan running at the change has ended.
+/// drops it right after the scan; an idle owner is woken to scan. A removed
+/// frame is thus held by no snapshot once every scan running at the change
+/// has ended, and a scan that drops the last handle on a list wakes the
+/// driver.
 ///
 /// A worker with nothing to run sets its `idle` bit, fences, looks once more,
 /// and parks until a dispatcher clears the bit. A thread that publishes
@@ -532,11 +534,16 @@ impl Core {
         let mut old = core::mem::replace(&mut frames.live, next);
         self.epoch.0.fetch_add(1, Ordering::SeqCst);
         drop(frames);
-        for slot in &self.slots {
+        for (index, slot) in self.slots.iter().enumerate() {
             slot.shot.0.stale.store(true, Ordering::SeqCst);
             fence(Ordering::SeqCst);
             if let Some(mut snapshot) = slot.shot.0.snapshot.try_lock() {
                 let _ = self.drop_stale(&mut snapshot);
+            } else if self.take_idle(index)
+                && let Some(thread) = slot.thread.get()
+            {
+                // The holder may be another change, so an idle owner must scan to drop it.
+                thread.unpark();
             }
         }
         if let Some(list) = Arc::get_mut(&mut old) {
@@ -558,7 +565,8 @@ impl Core {
     fn scan(&self, slot: &Slot) -> Option<Job> {
         let shot = &slot.shot.0;
         let mut snapshot = shot.snapshot.lock();
-        if snapshot.frames.is_none() || snapshot.epoch != self.epoch.0.load(Ordering::Acquire) {
+        let mut released = self.drop_stale(&mut snapshot);
+        if snapshot.frames.is_none() {
             let frames = self.frames.0.lock();
             snapshot.frames = Some(Arc::clone(&frames.live));
             snapshot.epoch = self.epoch.0.load(Ordering::Acquire);
@@ -576,10 +584,11 @@ impl Core {
         fence(Ordering::SeqCst);
         if shot.stale.load(Ordering::SeqCst) {
             shot.stale.store(false, Ordering::SeqCst);
-            if self.drop_stale(&mut shot.snapshot.lock()) {
-                fence(Ordering::SeqCst);
-                self.wake_driver();
-            }
+            released |= self.drop_stale(&mut shot.snapshot.lock());
+        }
+        if released {
+            fence(Ordering::SeqCst);
+            self.wake_driver();
         }
         claimed
     }
@@ -1153,6 +1162,50 @@ mod tests {
             Arc::strong_count(&long),
             1,
             "a parked worker's snapshot kept the finished frame"
+        );
+    }
+
+    #[test]
+    fn a_missed_revocation_wakes_the_idle_owner_and_its_scan_wakes_the_driver() {
+        let scheduler = RowScheduler {
+            core: Arc::new(Core::new(1)),
+            workers: Vec::new(),
+        };
+        let core = &scheduler.core;
+        let frame: Arc<dyn FrameWork> = Arc::new(Finished);
+        core.change(|live| live.push(Arc::clone(&frame)));
+        let slot = &core.slots[0];
+        assert!(core.scan(slot).is_none());
+        core.set_idle(0);
+        let (owner_woken, driver_woken) = std::thread::scope(|scope| {
+            let driver = scope.spawn(|| scheduler.wait(|| Arc::strong_count(&frame) == 1));
+            while !core.driver.0.parked.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+            drop(core.driver.0.lock.lock());
+            {
+                let _held_by_another_change = slot.shot.0.snapshot.lock();
+                core.change(Vec::clear);
+            }
+            assert_eq!(
+                Arc::strong_count(&frame),
+                2,
+                "only the owner's snapshot holds it"
+            );
+            let owner_woken = !core.is_idle(0);
+            assert!(core.scan(slot).is_none());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !driver.is_finished() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let driver_woken = driver.is_finished();
+            core.wake_driver();
+            (owner_woken, driver_woken)
+        });
+        assert!(owner_woken, "the idle owner was left with a stale snapshot");
+        assert!(
+            driver_woken,
+            "the scan dropped the last handle without waking the driver"
         );
     }
 
