@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "d8e322a0cdedc4af87694fea596bc20e96fddc36",
+  "audited_commit": "4a6960748d76bfeb0306180fffba66c9943ff9f1",
   "outcome": "success",
   "files": [
     {
@@ -1158,7 +1158,7 @@
     },
     {
       "path": "crates/splot-core/src/symbol.rs",
-      "sha256": "976842e203cdf4c7ebb57cd6f3a19046a6c3c2f67d470396bf723fc7da78684d",
+      "sha256": "1c08fe4ef5844ce71f6452b0f6636e4c2825157499db115129aec2ad6b5987da",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-8.2-SYMBOL-DECODER"
