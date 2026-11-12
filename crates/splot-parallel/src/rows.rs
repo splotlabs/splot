@@ -102,30 +102,33 @@ impl RowProgress {
     }
 }
 
-/// The ordered row cursor of one stage: at most one row runs at a time, and
-/// concurrent claimers race on the running flag.
+/// The ordered row cursor of one stage: at most one row runs at a time.
+///
+/// The next row and its running bit share one atomic, so the bit is set only
+/// by the claim that wins the row: a scan that sees it set knows a worker
+/// runs that row and scans again after it.
 #[derive(Debug)]
 pub struct Stage {
-    next: AtomicUsize,
-    running: AtomicBool,
+    /// The next row, shifted left by one, plus [`Self::RUNNING`].
+    state: AtomicUsize,
     rows: AtomicUsize,
 }
 
 impl Stage {
+    const RUNNING: usize = 1;
+
     /// A stage of `rows` rows, none run yet.
     #[must_use]
     pub const fn new(rows: usize) -> Self {
         Self {
-            next: AtomicUsize::new(0),
-            running: AtomicBool::new(false),
+            state: AtomicUsize::new(0),
             rows: AtomicUsize::new(rows),
         }
     }
 
     /// Resets the cursor for a new frame of `rows` rows.
     pub fn reset(&mut self, rows: usize) {
-        *self.next.get_mut() = 0;
-        *self.running.get_mut() = false;
+        *self.state.get_mut() = 0;
         *self.rows.get_mut() = rows;
     }
 
@@ -137,44 +140,38 @@ impl Stage {
 
     /// Claims the next row when no row is running and `ready(row)` holds.
     pub fn claim(&self, ready: impl FnOnce(usize) -> bool) -> Option<usize> {
-        if self.running.load(Ordering::Acquire) {
+        let state = self.state.load(Ordering::Acquire);
+        let row = state >> 1;
+        if state & Self::RUNNING != 0 || row >= self.rows() || !ready(row) {
             return None;
         }
-        let row = self.next.load(Ordering::Acquire);
-        if row >= self.rows() || !ready(row) {
-            return None;
-        }
-        if self
-            .running
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return None;
-        }
-        if self.next.load(Ordering::Acquire) != row {
-            self.running.store(false, Ordering::Release);
-            return None;
-        }
-        Some(row)
+        self.state
+            .compare_exchange(
+                state,
+                state | Self::RUNNING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .ok()
+            .map(|_| row)
     }
 
     /// Marks the claimed `row` as run, so the next row can be claimed.
     pub fn finish(&self, row: usize) {
-        self.next.store(row.saturating_add(1), Ordering::Release);
-        self.running.store(false, Ordering::Release);
+        self.state
+            .store(row.saturating_add(1) << 1, Ordering::Release);
     }
 
     /// Releases the claimed `row` unrun, so it can be claimed again once its
     /// inputs are published.
     pub fn retry(&self, row: usize) {
-        self.next.store(row, Ordering::Release);
-        self.running.store(false, Ordering::Release);
+        self.state.store(row << 1, Ordering::Release);
     }
 
     /// The next row to run.
     #[must_use]
     pub fn next(&self) -> usize {
-        self.next.load(Ordering::Acquire)
+        self.state.load(Ordering::Acquire) >> 1
     }
 
     /// The rows this stage runs.
@@ -186,7 +183,8 @@ impl Stage {
     /// Whether every row has run.
     #[must_use]
     pub fn is_finished(&self) -> bool {
-        !self.running.load(Ordering::Acquire) && self.next() >= self.rows()
+        let state = self.state.load(Ordering::Acquire);
+        state & Self::RUNNING == 0 && state >> 1 >= self.rows()
     }
 }
 
@@ -947,6 +945,47 @@ mod tests {
         stage.finish(1);
         assert!(stage.is_finished());
         assert_eq!(stage.claim(|_| true), None);
+    }
+
+    #[test]
+    fn a_claim_that_loses_its_row_never_shows_it_running() {
+        let stage = Stage::new(usize::MAX >> 1);
+        let (window, stop, seen) = (
+            AtomicUsize::new(0),
+            AtomicBool::new(false),
+            AtomicUsize::new(0),
+        );
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stop.load(Ordering::SeqCst) {
+                    let open = window.load(Ordering::SeqCst);
+                    if open != 0
+                        && stage.state.load(Ordering::SeqCst) & Stage::RUNNING != 0
+                        && window.load(Ordering::SeqCst) == open
+                    {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            });
+            let mut wrong = 0;
+            for round in 1..=200_000 {
+                let lost = stage.claim(|row| {
+                    let won = stage.claim(|_| true) == Some(row);
+                    stage.finish(row);
+                    window.store(round, Ordering::SeqCst);
+                    won
+                });
+                window.store(0, Ordering::SeqCst);
+                wrong += usize::from(lost.is_some());
+            }
+            stop.store(true, Ordering::SeqCst);
+            assert_eq!(wrong, 0, "a row was claimed twice");
+        });
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            0,
+            "a scan saw a row running that no claim held"
+        );
     }
 
     #[test]
