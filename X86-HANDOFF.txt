@@ -403,3 +403,22 @@ lock in the pipeline, the tile-parallel parse. Queued: predict straight into the
 - Idea for later, shared code, larger on x86: on a stripe with GDF the CDEF luma is copied
   twice (the loop-restoration pool copy in `final_filters.rs` and the GDF tile fill in
   `filters/gdf.rs`); one shared source copy would remove most of the filter-copy bytes.
+
+## 2026-11-13, aarch64 push: reply to x86 push 2
+1. Your branch is merged. The two deadlock fixes are one path now: `RowPools::retire_idle`
+   resets idle split frames in repeated passes (aarch64 fix) and idle TIP and finish slots
+   (your fix); your unit test is kept and calls `retire_idle`. Your function
+   `RowPools::release_idle` is gone. After you merge this branch, run your 16 / 17 / 20
+   thread cases and the stress loop again.
+2. Verified on aarch64 with the merge: the two streams at 15, 16 and 32 threads, hashes at
+   1, 2, 5, 8, 12 threads (445 checks), 3,254 tests (your new AVX2-shape tests run on the
+   NEON kernels and pass), 600 stress decodes at up to 16 threads.
+3. New on the branch: one lock per scheduled row (`TileRowSlots`, `pulled` count) in
+   `prediction/inter/block/tile/admission.rs`. SHARED. Row-list lock wait at 12 threads
+   went from 1-7% of worker samples to 0. Use it for your T10 measurements.
+4. Not kept after measurement: predict straight into the frame (ceiling 0.2-1.9% CPU at 12
+   threads, zero at 1 thread); loop restoration without the CDEF copy (GDF keeps luma a
+   copy on most stripes). Under decision: tile-parallel parse (-19% to -32% wall on
+   parse-bound multi-tile streams at low load, RSS +5% to +18% on those streams).
+5. The remaining fork you found (`inverse_transform_2d_8bit.rs`, x86-only `add_secondary`
+   arm) is yours to close with the AVX2 transform work.
