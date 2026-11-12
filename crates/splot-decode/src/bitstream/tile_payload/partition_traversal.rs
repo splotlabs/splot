@@ -125,6 +125,13 @@ impl TilePartitionFrameFacts {
         features: PartitionFeatureFlags,
         max_pb_aspect_ratio: usize,
     ) -> Result<Self, TilePartitionTraversalError> {
+        if mi_rows.max(mi_cols) > MAX_MI_DIMENSION {
+            return Err(TilePartitionTraversalError::CoordinateOverflow {
+                coordinate: "MiRows/MiCols",
+                base: mi_rows.max(mi_cols),
+                offset: 0,
+            });
+        }
         Ok(Self {
             mi_rows,
             mi_cols,
@@ -158,18 +165,20 @@ impl TilePartitionFrameFacts {
     }
 }
 
+/// Aligned to 8 bytes so the walk moves it as one register.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C, align(8))]
 pub(crate) struct ChromaRefGeometry {
-    row: u32,
-    col: u32,
+    row: u16,
+    col: u16,
     size: BlockSize,
 }
 
 impl ChromaRefGeometry {
     pub(crate) const fn new(row: usize, col: usize, size: BlockSize) -> Self {
         Self {
-            row: row as u32,
-            col: col as u32,
+            row: row as u16,
+            col: col as u16,
             size,
         }
     }
@@ -193,18 +202,23 @@ const CALL_CFL_ALLOWED_IN_SDP: u8 = 1 << 2;
 const CALL_EXTENDED_SDP_ALLOWED: u8 = 1 << 3;
 const CALL_INTRA_REGION: u8 = 1 << 4;
 const CALL_EXTENDED_SDP_CHROMA_BLOCK: u8 = 1 << 5;
+const CALL_HAS_PARENT: u8 = 1 << 6;
+const CALL_PARENT_64X64: u8 = 1 << 7;
+const BLOCK_64X64: usize = 12;
+
+/// § 5.18.4.4 `MiCols = 2 * ((FrameWidth + 7) >> 3)` with `FrameWidth` at most
+/// `1 << 16`: positions and child offsets then fit `u16`.
+const MAX_MI_DIMENSION: usize = 1 << 14;
 
 /// One § 5.20.3.1 `decode_partition` call with its propagated state, packed
-/// into 24 bytes: the walk copies one per node and per child.
+/// into 8 bytes so the walk passes it in a register. The chroma reference
+/// block travels beside it, see [`TilePartitionCall::chroma_ref`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C, align(8))]
 pub(crate) struct TilePartitionCall {
-    r: u32,
-    c: u32,
-    chroma_row: u32,
-    chroma_col: u32,
+    r: u16,
+    c: u16,
     pub(crate) b_size: BlockSize,
-    chroma_size: BlockSize,
-    pub(crate) parent_size: Option<BlockSize>,
     tree_type: PartitionTreeType,
     flags: u8,
 }
@@ -216,13 +230,9 @@ const fn call_flag(value: bool, flag: u8) -> u8 {
 impl TilePartitionCall {
     pub(crate) const fn root(r: usize, c: usize, b_size: BlockSize, has_chroma: bool) -> Self {
         Self {
-            r: r as u32,
-            c: c as u32,
-            chroma_row: r as u32,
-            chroma_col: c as u32,
+            r: r as u16,
+            c: c as u16,
             b_size,
-            chroma_size: b_size,
-            parent_size: None,
             tree_type: PartitionTreeType::Shared,
             flags: call_flag(has_chroma, CALL_HAS_CHROMA)
                 | CALL_CFL_ALLOWED_IN_SDP
@@ -239,24 +249,22 @@ impl TilePartitionCall {
         chroma_offset: bool,
         has_chroma: bool,
         tree_type: PartitionTreeType,
-        chroma_ref: Option<ChromaRefGeometry>,
         extended_sdp_allowed: bool,
         intra_region: bool,
     ) -> Self {
-        let chroma_ref = match chroma_ref {
-            Some(chroma_ref) => chroma_ref,
-            None => ChromaRefGeometry::new(r, c, b_size),
+        let parent = match parent_size {
+            Some(parent) => {
+                CALL_HAS_PARENT | call_flag(parent.index() == BLOCK_64X64, CALL_PARENT_64X64)
+            }
+            None => 0,
         };
         Self {
-            r: r as u32,
-            c: c as u32,
-            chroma_row: chroma_ref.row,
-            chroma_col: chroma_ref.col,
+            r: r as u16,
+            c: c as u16,
             b_size,
-            chroma_size: chroma_ref.size,
-            parent_size,
             tree_type,
-            flags: call_flag(chroma_offset, CALL_CHROMA_OFFSET)
+            flags: parent
+                | call_flag(chroma_offset, CALL_CHROMA_OFFSET)
                 | call_flag(has_chroma, CALL_HAS_CHROMA)
                 | CALL_CFL_ALLOWED_IN_SDP
                 | call_flag(extended_sdp_allowed, CALL_EXTENDED_SDP_ALLOWED)
@@ -313,19 +321,22 @@ impl TilePartitionCall {
         self.flag(CALL_CFL_ALLOWED_IN_SDP)
     }
 
-    pub(crate) const fn chroma_ref_geometry(self) -> ChromaRefGeometry {
-        if !self.chroma_offset() && self.has_chroma() {
-            return ChromaRefGeometry {
-                row: self.r,
-                col: self.c,
-                size: self.b_size,
-            };
-        }
+    pub(crate) const fn own_chroma_ref(self) -> ChromaRefGeometry {
         ChromaRefGeometry {
-            row: self.chroma_row,
-            col: self.chroma_col,
-            size: self.chroma_size,
+            row: self.r,
+            col: self.c,
+            size: self.b_size,
         }
+    }
+
+    /// The § 5.20.4.1 chroma reference block of this call: its own block
+    /// unless it is chroma-offset or has no chroma, when it is the
+    /// `inherited` block its parent passed down.
+    pub(crate) const fn chroma_ref(self, inherited: ChromaRefGeometry) -> ChromaRefGeometry {
+        if !self.chroma_offset() && self.has_chroma() {
+            return self.own_chroma_ref();
+        }
+        inherited
     }
 
     pub(crate) const fn with_tree_type(self, tree_type: PartitionTreeType) -> Self {
@@ -349,24 +360,16 @@ impl TilePartitionCall {
         b_size: BlockSize,
         chroma_offset: bool,
         has_chroma: bool,
-        chroma_ref: ChromaRefGeometry,
     ) -> Self {
         Self {
-            r: r as u32,
-            c: c as u32,
-            chroma_row: chroma_ref.row,
-            chroma_col: chroma_ref.col,
+            r: r as u16,
+            c: c as u16,
             b_size,
-            chroma_size: chroma_ref.size,
             flags: self.flags & !(CALL_CHROMA_OFFSET | CALL_HAS_CHROMA)
                 | call_flag(chroma_offset, CALL_CHROMA_OFFSET)
                 | call_flag(has_chroma, CALL_HAS_CHROMA),
             ..self
         }
-    }
-
-    const fn as_extended_sdp_chroma_block(self) -> Self {
-        self.with_flag(CALL_EXTENDED_SDP_CHROMA_BLOCK, true)
     }
 }
 

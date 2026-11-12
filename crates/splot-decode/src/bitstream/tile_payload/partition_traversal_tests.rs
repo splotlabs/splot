@@ -281,18 +281,26 @@ fn assert_child_positions_for(
 fn child_positions_for(partition: PartitionType, b_size: usize) -> Vec<(usize, usize)> {
     let call = root_call(b_size);
     let sub_size = valid_subsize(partition, call.b_size).unwrap();
-    child_calls(call, partition, sub_size, &frame(b_size), false)
-        .unwrap()
-        .as_slice()
-        .iter()
-        .map(|child| (child.r(), child.c()))
-        .collect()
+    child_calls(
+        call,
+        call.own_chroma_ref(),
+        partition,
+        sub_size,
+        &frame(b_size),
+        false,
+    )
+    .unwrap()
+    .as_slice()
+    .iter()
+    .map(|child| (child.r(), child.c()))
+    .collect()
 }
 
 #[test]
 fn chroma_ref_geometry_captures_own_block_until_chroma_offset() {
     let call = root_call(BLOCK_64X64);
-    let geometry = call.chroma_ref_geometry();
+    let other = ChromaRefGeometry::new(4, 4, BlockSize::new(BLOCK_32X32).unwrap());
+    let geometry = call.chroma_ref(other);
     assert_eq!(
         (geometry.row, geometry.col, geometry.size.index()),
         (0, 0, BLOCK_64X64)
@@ -305,14 +313,15 @@ fn child_calls_thread_chroma_reference_to_chroma_offset_descendants() {
     let sub_size = valid_subsize(PartitionType::Horz, call.b_size).unwrap();
     let children = child_calls(
         call,
+        call.own_chroma_ref(),
         PartitionType::Horz,
         sub_size,
         &frame(BLOCK_64X64),
         true,
     )
     .unwrap();
-    for child in children.as_slice() {
-        let geometry = child.chroma_ref_geometry();
+    for (child, &inherited) in children.as_slice().iter().zip(children.chroma_refs()) {
+        let geometry = child.chroma_ref(inherited);
         assert_eq!(
             (geometry.row, geometry.col, geometry.size.index()),
             (0, 0, BLOCK_64X64),
@@ -332,13 +341,13 @@ fn shared_mixed_chroma_ref_size_mismatch_forces_inter() {
         true,
         false,
         PartitionTreeType::Shared,
-        Some(chroma_ref),
         true,
         false,
     );
 
     let frontier = decode_block_frontier(
         call,
+        call.chroma_ref(chroma_ref),
         &frame(BLOCK_64X64),
         call.b_size,
         true,
@@ -426,7 +435,15 @@ fn sdp_cfl_allowed_state_propagates_to_chroma_children() {
         .with_cfl_allowed_in_sdp(false);
     let sub_size = valid_subsize(PartitionType::Vert, chroma_root.b_size).unwrap();
 
-    let children = child_calls(chroma_root, PartitionType::Vert, sub_size, &frame, false).unwrap();
+    let children = child_calls(
+        chroma_root,
+        chroma_root.own_chroma_ref(),
+        PartitionType::Vert,
+        sub_size,
+        &frame,
+        false,
+    )
+    .unwrap();
 
     assert!(
         children
@@ -606,6 +623,7 @@ fn split_child_sdp_recognizes_nested_64x64_shared_roots() {
     let sub_size = valid_subsize(PartitionType::Split, root.b_size).unwrap();
     let children = child_calls(
         root,
+        root.own_chroma_ref(),
         PartitionType::Split,
         sub_size,
         &frame(BLOCK_128X128),
@@ -628,7 +646,15 @@ fn extended_sdp_propagates_through_large_parent_to_eligible_child() {
     let mut facts = frame(BLOCK_128X128);
     facts.enable_extended_sdp = true;
     facts.frame_is_intra = false;
-    let children = child_calls(root, PartitionType::Split, sub_size, &facts, false).unwrap();
+    let children = child_calls(
+        root,
+        root.own_chroma_ref(),
+        PartitionType::Split,
+        sub_size,
+        &facts,
+        false,
+    )
+    .unwrap();
     let child = children.as_slice()[0];
 
     assert_eq!(child.b_size.index(), BLOCK_64X64);
@@ -714,7 +740,6 @@ fn inter_extended_sdp_mixed_child_consumes_region_type() {
         false,
         true,
         PartitionTreeType::Shared,
-        None,
         true,
         false,
     );

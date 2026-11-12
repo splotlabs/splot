@@ -592,7 +592,7 @@ impl LrLayout {
             for col4 in self.cols.clone().step_by(sb4) {
                 let root =
                     TilePartitionCall::root(row4, col4, self.frame.sb_size(), ROOT_HAS_CHROMA);
-                units.extend(self.units(PartitionNode(root))?);
+                units.extend(self.units(PartitionNode(root, root.own_chroma_ref()))?);
             }
         }
         Ok(units)

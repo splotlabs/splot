@@ -49,10 +49,10 @@ use super::partition_allowed::{
     PartitionDecisionFacts, PartitionTreeType, partition_decision_facts,
 };
 use super::partition_traversal::{
-    DecodeBlockFrontier, ROOT_HAS_CHROMA, SdpPartitionState, TilePartitionBounds,
-    TilePartitionCall, TilePartitionFrameFacts, call_in_frame, child_calls, decode_block_frontier,
-    decode_block_part, is_intra_sdp_shared_root, partition_allowed_input, partition_context_inputs,
-    updated_chroma_offset, valid_subsize,
+    ChromaRefGeometry, DecodeBlockFrontier, ROOT_HAS_CHROMA, SdpPartitionState,
+    TilePartitionBounds, TilePartitionCall, TilePartitionFrameFacts, call_in_frame, child_calls,
+    decode_block_frontier, decode_block_part, is_intra_sdp_shared_root, partition_allowed_input,
+    partition_context_inputs, updated_chroma_offset, valid_subsize,
 };
 use super::tile_frontier::minimal_partition_frame_facts;
 
@@ -146,9 +146,14 @@ pub type Result<T> = core::result::Result<T, EncoderSyntaxError>;
 
 /// One `decode_partition` call (§ 5.20.3.1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PartitionNode(TilePartitionCall);
+pub struct PartitionNode(TilePartitionCall, ChromaRefGeometry);
 
 impl PartitionNode {
+    /// The § 5.20.4.1 chroma reference block of the node.
+    const fn chroma_ref(self) -> ChromaRefGeometry {
+        self.0.chroma_ref(self.1)
+    }
+
     /// Luma row in 4x4 units.
     #[must_use]
     pub const fn row4(self) -> usize {
@@ -298,7 +303,7 @@ impl LeafBlock {
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] for an invalid block size.
     pub fn dimensions(&self) -> Result<(usize, usize)> {
-        PartitionNode(self.call).dimensions()
+        PartitionNode(self.call, self.frontier.chroma_ref_geometry()).dimensions()
     }
 }
 
@@ -805,12 +810,8 @@ impl IntraTileSyntax {
     /// The root node of the superblock at luma 4x4 position `(row4, col4)`.
     #[must_use]
     pub const fn superblock_root(&self, row4: usize, col4: usize) -> PartitionNode {
-        PartitionNode(TilePartitionCall::root(
-            row4,
-            col4,
-            self.frame.sb_size(),
-            ROOT_HAS_CHROMA,
-        ))
+        let root = TilePartitionCall::root(row4, col4, self.frame.sb_size(), ROOT_HAS_CHROMA);
+        PartitionNode(root, root.own_chroma_ref())
     }
 
     /// Starts coding the superblock of `root`; call once per superblock in raster order.
@@ -839,8 +840,8 @@ impl IntraTileSyntax {
     pub fn sdp_roots(&self, node: PartitionNode) -> Option<(PartitionNode, PartitionNode)> {
         is_intra_sdp_shared_root(&self.frame, node.0).then(|| {
             (
-                PartitionNode(node.0.with_tree_type(PartitionTreeType::LumaPart)),
-                PartitionNode(node.0.with_tree_type(PartitionTreeType::ChromaPart)),
+                PartitionNode(node.0.with_tree_type(PartitionTreeType::LumaPart), node.1),
+                PartitionNode(node.0.with_tree_type(PartitionTreeType::ChromaPart), node.1),
             )
         })
     }
@@ -914,13 +915,20 @@ impl IntraTileSyntax {
         let sub_size = valid_subsize(partition, call.b_size).map_err(rule("partition"))?;
         let chroma_offset = updated_chroma_offset(call, partition, sub_size, &self.frame)
             .map_err(rule("partition"))?;
-        let calls = child_calls(call, partition, sub_size, &self.frame, chroma_offset)
-            .map_err(rule("partition"))?;
+        let calls = child_calls(
+            call,
+            node.chroma_ref(),
+            partition,
+            sub_size,
+            &self.frame,
+            chroma_offset,
+        )
+        .map_err(rule("partition"))?;
         Ok(calls
             .as_slice()
             .iter()
-            .copied()
-            .map(PartitionNode)
+            .zip(calls.chroma_refs())
+            .map(|(&call, &chroma_ref)| PartitionNode(call, chroma_ref))
             .collect())
     }
 
@@ -933,7 +941,14 @@ impl IntraTileSyntax {
         let chroma_offset = updated_chroma_offset(call, Partition::None, call.b_size, &self.frame)
             .map_err(rule("partition"))?;
         let part = decode_block_part(call, &self.intra_facts).map_err(rule("partition"))?;
-        let frontier = decode_block_frontier(call, &self.frame, call.b_size, chroma_offset, part);
+        let frontier = decode_block_frontier(
+            call,
+            node.chroma_ref(),
+            &self.frame,
+            call.b_size,
+            chroma_offset,
+            part,
+        );
         Ok(LeafBlock { call, frontier })
     }
 
