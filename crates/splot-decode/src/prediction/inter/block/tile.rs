@@ -1196,8 +1196,8 @@ pub(in crate::prediction::inter) struct TileParseState {
 pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     parse: TileParseState,
     /// The surface source the tile's units draw their reconstruction
-    /// rectangles from, kept whole so its lock and handle outlive the tile.
-    surface_source: Option<std::sync::Arc<Mutex<admission::SurfaceSource<T>>>>,
+    /// rectangles from, kept whole so its handle outlives the tile.
+    surface_source: Option<std::sync::Arc<admission::SurfaceSource<T>>>,
     ordered: deferred_recon::InterReconScratch<T>,
     workers: InterReconScratchPool<T>,
     /// The ordinary walk's parsed rows waiting for their replay.
@@ -2210,16 +2210,16 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut surface_source = reusable_surface_source
             .filter(|source| std::sync::Arc::strong_count(source) == 1)
             .unwrap_or_else(|| {
-                std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
+                std::sync::Arc::new(admission::SurfaceSource::new(
                     info,
                     Vec::new(),
                     workers.spare_surfaces(),
-                )))
+                ))
             });
         let Some(source) = std::sync::Arc::get_mut(&mut surface_source) else {
             return Err(invalid_inter_tile_scheduling_state());
         };
-        let rects = source.get_mut().reset(info, workers.spare_surfaces());
+        let rects = source.reset(info, workers.spare_surfaces());
         rects.clear();
         let commit = TileCommit::direct(
             ordered,

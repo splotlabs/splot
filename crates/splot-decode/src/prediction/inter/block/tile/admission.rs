@@ -34,7 +34,7 @@ pub(super) struct TileCommit<T: ReconSample> {
     /// The tile `block_decoded` is laid out for, on the scheduled spine.
     block_decoded_tile: Option<usize>,
     decoded_any: bool,
-    surfaces: Arc<Mutex<SurfaceSource<T>>>,
+    surfaces: Arc<SurfaceSource<T>>,
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
 }
 
@@ -44,7 +44,7 @@ impl<T: ReconSample> TileCommit<T> {
         workspace: CurrentFrameWorkspace<T>,
         block_decoded: TileBlockDecodedState,
         decoded_any: bool,
-        surfaces: Arc<Mutex<SurfaceSource<T>>>,
+        surfaces: Arc<SurfaceSource<T>>,
         frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
     ) -> Self {
         Self {
@@ -75,7 +75,7 @@ impl<T: ReconSample> TileCommit<T> {
         }
         if let Some(surface) = ready.surface.take() {
             surface.publish_into(&mut self.workspace)?;
-            self.surfaces.lock().give(surface);
+            self.surfaces.give(surface);
         }
         self.ordered.with_installed(|scratch| {
             pixel_commit::replay_recon_row(
@@ -293,7 +293,7 @@ pub(crate) struct ScheduledTileRecon<T: ReconSample> {
     info: splot_recon::DecodedFrameInfo,
     temporal_plan: TemporalBandPlan,
     parse_progress: Arc<super::ParseProgress>,
-    pending_surfaces: Arc<Mutex<SurfaceSource<T>>>,
+    pending_surfaces: Arc<SurfaceSource<T>>,
     payload: Mutex<Option<crate::bitstream::tile_payload::TilePayloadScratch>>,
 }
 
@@ -305,7 +305,7 @@ pub(crate) struct ScheduledTileWorkspace<T: ReconSample> {
     grids: Vec<NeighbourMvGrid>,
     resolve_states: Vec<TileResolveState>,
     tiles: Vec<GeometryTile>,
-    surfaces: Option<Arc<Mutex<SurfaceSource<T>>>>,
+    surfaces: Option<Arc<SurfaceSource<T>>>,
     motion: Option<MotionFieldUnits>,
     batches: Vec<core::ops::Range<usize>>,
     filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
@@ -410,7 +410,7 @@ impl<T: ReconSample> SurfaceSource<T> {
     /// particular order, so the rectangle must follow the unit rather than a
     /// cursor.
     pub(super) fn take(
-        &mut self,
+        &self,
         unit: usize,
     ) -> Option<splot_recon::Result<splot_recon::OwnedFrameRect<T>>> {
         let rect = *self.rects.get(unit)?;
@@ -449,7 +449,7 @@ impl<T: ReconSample> SurfaceSource<T> {
         }))
     }
 
-    pub(super) fn give(&mut self, surface: splot_recon::OwnedFrameRect<T>) {
+    pub(super) fn give(&self, surface: splot_recon::OwnedFrameRect<T>) {
         self.free.lock().push(surface);
     }
 
@@ -479,7 +479,7 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn precompute(&self, index: usize, surfaces: &Mutex<SurfaceSource<T>>) -> Result<()> {
+    fn precompute(&self, index: usize, surfaces: &SurfaceSource<T>) -> Result<()> {
         let range = self
             .batch_range(index)
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
@@ -523,12 +523,7 @@ impl<T: ReconSample> TileRecon<T> {
                 .into_iter()
                 .map(|mut ready| {
                     if ready.surface.is_none() && !ready.row.superblocks.is_empty() {
-                        ready.surface = surfaces
-                            .lock()
-                            .take(ready.row.ordinal)
-                            .transpose()
-                            .ok()
-                            .flatten();
+                        ready.surface = surfaces.take(ready.row.ordinal).transpose().ok().flatten();
                     }
                     scratch.with_installed(|scratch| {
                         precompute_recon_row(
@@ -1459,15 +1454,14 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         pending_rows: _,
     } = scratch;
     let mut surface_source = reusable.surfaces.take().unwrap_or_else(|| {
-        Arc::new(Mutex::new(SurfaceSource::new(
+        Arc::new(SurfaceSource::new(
             info,
             Vec::new(),
             workers.spare_surfaces(),
-        )))
+        ))
     });
     let rects = Arc::get_mut(&mut surface_source)
         .ok_or_else(invalid_inter_tile_scheduling_state)?
-        .get_mut()
         .reset(info, workers.spare_surfaces());
     super::superblock_luma_rects_into(
         &geometry.mi_rows,
