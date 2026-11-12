@@ -7,8 +7,8 @@
 use fearless_simd::{Simd, i32x8, i32x16, prelude::*};
 
 use super::{
-    DIV_MULT, MAX_FRAME_DISTANCE, Mv, ProjectedTemporalMotionCell, ProjectedTemporalMotionField,
-    REFMVS_LIMIT, TipReferencePair, fill_temporal_sampling_gaps, project_tmvp_mv,
+    DIV_MULT, MAX_FRAME_DISTANCE, ProjectedTemporalMotionCell, ProjectedTemporalMotionField,
+    REFMVS_LIMIT, TipReferencePair, fill_temporal_sampling_gaps,
 };
 
 pub(super) fn prepare_tip_field(
@@ -48,10 +48,10 @@ type TipPlanes = [[i32; TIP_GRID * TIP_GRID]; 3];
 /// Every sampled cell is scaled to the TIP pair; holes are then filled and the
 /// samples averaged. Both read only their own unit, so a unit's samples are
 /// gathered into planes a row of up to `8 * C` at a time, settled there and
-/// written back once. A row scales lane-parallel while no component exceeds
-/// `REFMVS_LIMIT`, so every product stays inside `i32`; a wider row scales
-/// through [`scale_tip_mv`]. An empty average is the default cell, because
-/// its vector sums to zero.
+/// written back once. A row scales lane-parallel: a component times its
+/// `DIV_MULT` fits `i32`, and split at bit 14 its product by the clamped
+/// numerator keeps the exact `Round2Signed` in `i32` too. An empty average
+/// is the default cell, because its vector sums to zero.
 #[inline(never)]
 fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
     simd: S,
@@ -105,7 +105,7 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
                 let start = (block_y + y * STEP) * width8 + block_x;
                 let cells = field.cells[start..start + unit_cols].iter().step_by(STEP);
                 let mut lanes = [[0; MAX_TIP_UNIT8]; 4];
-                for (lane, cell) in cells.clone().enumerate() {
+                for (lane, cell) in cells.enumerate() {
                     let denominator = cell.ref_offset().clamp(0, MAX_FRAME_DISTANCE) as usize;
                     lanes[0][lane] = i32::from(cell.valid);
                     lanes[1][lane] = i32::from(cell.mv[0]);
@@ -113,32 +113,22 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
                     lanes[3][lane] = DIV_MULT[denominator];
                 }
                 let [valid, mv_row, mv_col, divisor] = lanes.each_ref().map(|lanes| load(lanes, 0));
-                let (mut count, mut wide) = (splat(0), false);
-                for chunk in 0..C {
-                    count += valid[chunk];
-                    wide |= mv_row[chunk]
-                        .abs()
-                        .max(mv_col[chunk].abs())
-                        .simd_gt(limit)
-                        .any_true();
+                let mut count = splat(0);
+                for chunk in valid {
+                    count += chunk;
                 }
                 valid_count += count.reduce_sum();
                 let scale = |mv: TipRow<S, C>| -> TipRow<S, C> {
                     core::array::from_fn(|chunk| {
-                        let product = mv[chunk] * divisor[chunk] * splat(numerator);
-                        round2_signed(product, 14).max(-limit).min(limit) & -valid[chunk]
+                        let scaled = mv[chunk] * divisor[chunk];
+                        let negative = (scaled * splat(numerator.signum())) >> 31;
+                        let low = (scaled & splat(0x3fff)) * splat(numerator);
+                        let product = (scaled >> 14) * splat(numerator)
+                            + ((low + splat(1 << 13) + negative) >> 14);
+                        product.max(-limit).min(limit) & -valid[chunk]
                     })
                 };
-                let mut scaled = [valid, scale(mv_row), scale(mv_col)];
-                if wide {
-                    let mut wide = [[0; MAX_TIP_UNIT8]; 2];
-                    for (lane, &cell) in cells.enumerate() {
-                        let mv = scale_tip_mv(cell, references);
-                        wide[0][lane] = mv.row;
-                        wide[1][lane] = mv.col;
-                    }
-                    [scaled[1], scaled[2]] = wide.each_ref().map(|lanes| load(lanes, 0));
-                }
+                let scaled = [valid, scale(mv_row), scale(mv_col)];
                 let at = (y + 1) * TIP_GRID + 1;
                 for (plane, value) in planes.iter_mut().zip(scaled) {
                     store(plane, at, value);
@@ -212,18 +202,6 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
 #[inline(always)]
 fn round2_signed<S: Simd>(value: i32x8<S>, shift: u32) -> i32x8<S> {
     (value + (1 << (shift - 1)) + (value >> 31)) >> shift
-}
-
-/// A sampled cell's vector scaled to the TIP pair, zero when invalid.
-fn scale_tip_mv(cell: ProjectedTemporalMotionCell, references: TipReferencePair) -> Mv {
-    if !cell.valid {
-        return Mv::ZERO;
-    }
-    let mv = project_tmvp_mv(cell.mv(), references.ref_offset, cell.ref_offset());
-    Mv {
-        row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-        col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-    }
 }
 
 /// Copies each sample into its invalid neighbours inside the unit, in raster
@@ -348,6 +326,63 @@ mod tests {
             fill_tip_holes_scalar(&mut want, rows, cols);
             crate::baseline_simd!(simd => fill_tip_holes(simd, &mut planes, rows, cols));
             assert!(planes == want, "case {case}: {rows}x{cols}");
+        }
+    }
+    /// Lane scaling of every `i16` vector against the scalar § 7.9.2
+    /// projection, clamped to `REFMVS_LIMIT`.
+    #[test]
+    fn tip_scaling_matches_the_scalar_projection_for_every_vector() {
+        let mut state = 0x2545_f491u32;
+        let next = |state: &mut u32| {
+            *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *state >> 8
+        };
+        let extremes = [i16::MIN, i16::MAX, -2048, 2048, 2047, -2047, 0, 1, -1];
+        let component = |state: &mut u32| match next(state) % 3 {
+            0 => extremes[next(state) as usize % extremes.len()],
+            1 => (next(state) % 65_536) as u16 as i16,
+            _ => (next(state) % 4097) as i16 - 2048,
+        };
+        for case in 0..400 {
+            let ref_offset = next(&mut state) as i32 % 81 - 40;
+            let references = TipReferencePair {
+                past_ref: 0,
+                future_ref: 1,
+                past_offset: 0,
+                future_offset: 0,
+                ref_offset,
+            };
+            let cells: Vec<_> = (0..64)
+                .map(|_| ProjectedTemporalMotionCell {
+                    valid: next(&mut state) % 4 != 0,
+                    ref_offset: (next(&mut state) % 40) as i16 - 4,
+                    mv: [component(&mut state), component(&mut state)],
+                })
+                .collect();
+            let mut field = ProjectedTemporalMotionField {
+                width8: 8,
+                height8: 8,
+                cells: cells.clone(),
+            };
+            let prepared = crate::baseline_simd!(simd => prepare_tip_units::<_, 1, 1>(
+                simd, &mut field, references, 8, false,
+            ));
+            assert!(prepared.is_ok(), "case {case}: {prepared:?}");
+            for (index, (got, cell)) in field.cells.iter().zip(&cells).enumerate() {
+                let want = if cell.valid {
+                    let mv = super::super::project_tmvp_mv(
+                        cell.mv(),
+                        ref_offset,
+                        i32::from(cell.ref_offset),
+                    );
+                    let clamp = |value: i32| value.clamp(-REFMVS_LIMIT, REFMVS_LIMIT) as i16;
+                    [clamp(mv.row), clamp(mv.col)]
+                } else {
+                    [0, 0]
+                };
+                assert_eq!(got.mv, want, "case {case} cell {index} {cell:?}");
+                assert_eq!(got.valid, cell.valid, "case {case} cell {index}");
+            }
         }
     }
 }

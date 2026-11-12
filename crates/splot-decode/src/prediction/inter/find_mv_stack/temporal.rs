@@ -2324,6 +2324,7 @@ fn tmvp_projection_factor(numerator: i32, ref_offset: i32, side: usize) -> Optio
         .map(|scale| numerator * scale)
 }
 
+#[cfg(test)]
 fn project_tmvp_mv_with_factor(mv: Mv, numerator: i32, denominator: i32, factor: i32) -> Mv {
     if mv.row.unsigned_abs() > REFMVS_LIMIT as u32 || mv.col.unsigned_abs() > REFMVS_LIMIT as u32 {
         return project_mv(mv, numerator, denominator);
@@ -2340,6 +2341,7 @@ fn project_tmvp_mv_with_factor(mv: Mv, numerator: i32, denominator: i32, factor:
     }
 }
 
+#[cfg(test)]
 fn project_tmvp_mv(mv: Mv, numerator: i32, denominator: i32) -> Mv {
     let factor = clamped_tmvp_factor(numerator, denominator);
     let denominator = denominator.clamp(0, MAX_FRAME_DISTANCE);
@@ -2347,7 +2349,8 @@ fn project_tmvp_mv(mv: Mv, numerator: i32, denominator: i32) -> Mv {
     project_tmvp_mv_with_factor(mv, numerator, denominator, factor)
 }
 
-/// The factor [`project_tmvp_mv`] projects with, after its clamps.
+/// The TMVP projection factor: the clamped numerator times the `DIV_MULT`
+/// of the clamped denominator.
 fn clamped_tmvp_factor(numerator: i32, denominator: i32) -> i32 {
     numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE)
         * DIV_MULT[denominator.clamp(0, MAX_FRAME_DISTANCE) as usize]
