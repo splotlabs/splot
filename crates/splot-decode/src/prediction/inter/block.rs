@@ -1312,7 +1312,9 @@ fn decode_block<T: ReconSample>(
             params.skip_mode_present,
             frontier,
             comp_ref_allowed,
-            neighbour_ctx.as_ref().map_or(0, |ctx| ctx.skip_mode_ctx),
+            neighbour_ctx
+                .as_ref()
+                .map_or(0, BlockNeighbourContext::skip_mode_ctx),
         )
     };
 
@@ -1327,7 +1329,9 @@ fn decode_block<T: ReconSample>(
             .tile_cdfs_mut()
             .block_rows_mut()
             .is_inter;
-        let ctx = neighbour_ctx.as_ref().map_or(0, |ctx| ctx.is_inter_ctx);
+        let ctx = neighbour_ctx
+            .as_ref()
+            .map_or(0, BlockNeighbourContext::is_inter_ctx);
         read_row(symbols, row_at(rows, ctx)) as u8
     };
     if is_inter == 0 {
@@ -1341,7 +1345,7 @@ fn decode_block<T: ReconSample>(
                     intrabc_state,
                     neighbour_ctx
                         .as_ref()
-                        .map(|ctx| (ctx.intrabc_ctx(), ctx.skip_ctx)),
+                        .map(|ctx| (ctx.intrabc_ctx(), ctx.skip_ctx())),
                     core,
                     IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
                     tile_offset,
@@ -1558,7 +1562,7 @@ fn decode_block<T: ReconSample>(
         1
     } else {
         let rows = &mut work_unit.cdf_mut().tile_cdfs_mut().block_rows_mut().skip;
-        let ctx = inter_skip_txfm_ctx(neighbour_ctx.skip_ctx, skip_mode == 1);
+        let ctx = inter_skip_txfm_ctx(neighbour_ctx.skip_ctx(), skip_mode == 1);
         read_row(symbols, row_at(rows, ctx)) as u8
     };
     if !frontier.is_chroma_part() && !seg_pre_skip {

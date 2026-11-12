@@ -491,7 +491,7 @@ fn neighbour_grid_reads_the_intrabc_prelude_neighbours() {
                 ctx.intrabc_ctx(),
                 state.intrabc_ctx(r, c, n4w, n4h).unwrap()
             );
-            assert_eq!(ctx.skip_ctx, state.skip_ctx(r, c, n4w, n4h).unwrap());
+            assert_eq!(ctx.skip_ctx(), state.skip_ctx(r, c, n4w, n4h).unwrap());
             let geometry =
                 IntrabcBlockGeometry::new(IntrabcBlockContext::new(r, c, 0, false), n4w, n4h);
             assert_eq!(

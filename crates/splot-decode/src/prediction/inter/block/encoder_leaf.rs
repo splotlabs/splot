@@ -464,9 +464,9 @@ impl EncoderInterTile {
         let block = self.block(frontier, (SINGLE_REF_FRAME0, None))?;
         let neighbour = block_neighbour_ctx(&self.grid, &block);
         Ok(EncoderInterContexts {
-            is_inter: neighbour.is_inter_ctx,
-            skip_mode: neighbour.skip_mode_ctx,
-            skip: inter_skip_txfm_ctx(neighbour.skip_ctx, skip_mode),
+            is_inter: neighbour.is_inter_ctx(),
+            skip_mode: neighbour.skip_mode_ctx(),
+            skip: inter_skip_txfm_ctx(neighbour.skip_ctx(), skip_mode),
         })
     }
 

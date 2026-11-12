@@ -283,8 +283,8 @@ fn recorded_skip_mode_contributes_to_the_next_block_context() {
         [None, None],
     );
     let ctx = block_neighbour_ctx(&grid, &block_at(0, N4_32));
-    assert_eq!(ctx.skip_mode_ctx, 2);
-    assert_eq!(ctx.skip_ctx, 2);
+    assert_eq!(ctx.skip_mode_ctx(), 2);
+    assert_eq!(ctx.skip_ctx(), 2);
 }
 
 #[test]
@@ -1077,9 +1077,9 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
     assert_eq!(ctx.warp_mv_count, 0, "top-left WarpMvCount");
 
     let nctx = block_neighbour_ctx(&grid, &block0);
-    assert_eq!(nctx.is_inter_ctx, 0, "no-neighbour is_inter ctx");
-    assert_eq!(nctx.skip_mode_ctx, 0, "no-neighbour skip_mode ctx");
-    assert_eq!(nctx.skip_ctx, 0, "no-neighbour skip ctx");
+    assert_eq!(nctx.is_inter_ctx(), 0, "no-neighbour is_inter ctx");
+    assert_eq!(nctx.skip_mode_ctx(), 0, "no-neighbour skip_mode ctx");
+    assert_eq!(nctx.skip_ctx(), 0, "no-neighbour skip ctx");
 
     let stack = find_mv_stack(
         &grid,
@@ -1265,12 +1265,14 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
 
     let nctx = block_neighbour_ctx(&grid, &block1);
     assert_eq!(
-        nctx.is_inter_ctx, 0,
+        nctx.is_inter_ctx(),
+        0,
         "all-inter neighbours -> is_inter ctx 0"
     );
-    assert_eq!(nctx.skip_ctx, 2, "two skip=1 neighbours -> skip ctx 2");
+    assert_eq!(nctx.skip_ctx(), 2, "two skip=1 neighbours -> skip ctx 2");
     assert_eq!(
-        nctx.skip_mode_ctx, 0,
+        nctx.skip_mode_ctx(),
+        0,
         "regular skip neighbours do not affect skip_mode ctx"
     );
 
@@ -1341,7 +1343,7 @@ fn block3_predicts_block0_mv_via_above_and_left() {
     assert_eq!(ctx.new_mv_context, 2, "above+left NEARMV NewMvContext");
 
     let nctx = block_neighbour_ctx(&grid, &block3);
-    assert_eq!(nctx.skip_ctx, 2, "two skip=1 neighbours -> skip ctx 2");
+    assert_eq!(nctx.skip_ctx(), 2, "two skip=1 neighbours -> skip ctx 2");
 
     let stack = find_mv_stack(
         &grid,
@@ -1385,7 +1387,8 @@ fn intra_neighbour_does_not_contribute() {
 
     let nctx = block_neighbour_ctx(&grid, &block1);
     assert_eq!(
-        nctx.is_inter_ctx, 3,
+        nctx.is_inter_ctx(),
+        3,
         "two intra neighbours -> is_inter ctx 3"
     );
 
@@ -1599,7 +1602,8 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
 
     let nctx = block_neighbour_ctx(&grid, &sb2);
     assert_eq!(
-        nctx.skip_ctx, 2,
+        nctx.skip_ctx(),
+        2,
         "skip context counts both above-SB NPosBuf neighbours"
     );
 

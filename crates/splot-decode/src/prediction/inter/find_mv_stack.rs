@@ -371,9 +371,6 @@ pub(crate) fn mode_ctx_from_neighbours(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockNeighbourContext {
-    pub(crate) is_inter_ctx: usize,
-    pub(crate) skip_mode_ctx: usize,
-    pub(crate) skip_ctx: usize,
     cells: [NeighbourFlags; 2],
     cell_count: usize,
     npos_cells: [NeighbourFlags; 2],
@@ -384,6 +381,26 @@ pub(crate) struct BlockNeighbourContext {
 
 impl BlockNeighbourContext {
     const MAX_NEIGHBOUR_REFS: usize = 7;
+
+    pub(crate) fn is_inter_ctx(&self) -> usize {
+        let intra = |n: usize| self.cell_count > n && !self.cells[n].is_inter();
+        match (self.cell_count, intra(0), intra(1)) {
+            (2, true, true) => 3,
+            (2, first, second) => usize::from(first || second),
+            (_, first, _) => 2 * usize::from(first),
+        }
+    }
+
+    pub(crate) fn skip_mode_ctx(&self) -> usize {
+        self.cells
+            .map(|cell| usize::from(cell.skip_mode()))
+            .iter()
+            .sum()
+    }
+
+    pub(crate) fn skip_ctx(&self) -> usize {
+        self.cells.map(|cell| usize::from(cell.skip())).iter().sum()
+    }
 
     /// The single-reference contexts of references `0..num_total_refs`.
     pub(crate) fn single_ref_ctxs(
@@ -600,23 +617,7 @@ pub(crate) fn block_neighbour_ctx(
     } else {
         present
     });
-
-    let n_intra_0 = num_buf >= 1 && !buf[0].is_inter();
-    let n_intra_1 = num_buf >= 2 && !buf[1].is_inter();
-    let is_inter_ctx = if num_buf == 2 {
-        if n_intra_0 && n_intra_1 {
-            3
-        } else {
-            usize::from(n_intra_0 || n_intra_1)
-        }
-    } else {
-        2 * usize::from(n_intra_0)
-    };
-
     BlockNeighbourContext {
-        is_inter_ctx,
-        skip_mode_ctx: buf.iter().map(|cell| usize::from(cell.skip_mode())).sum(),
-        skip_ctx: buf.iter().map(|cell| usize::from(cell.skip())).sum(),
         cells: buf,
         cell_count: num_buf,
         npos_cells,

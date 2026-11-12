@@ -622,14 +622,8 @@ impl NeighbourMvGrid {
         bw4: usize,
         bh4: usize,
     ) -> [NeighbourFlags; 4] {
-        let (up, left) = (r.wrapping_sub(1), c.wrapping_sub(1));
         if self.above.is_empty() {
-            return self.flags_at_each([
-                (r + bh4 - 1, left),
-                (up, c + bw4 - 1),
-                (r, left),
-                (up, c),
-            ]);
+            return self.immediate_plane_flags(r, c, bw4, bh4);
         }
         let (row, col) = (
             r.wrapping_sub(self.origin_row),
@@ -641,6 +635,20 @@ impl NeighbourMvGrid {
             edge(&self.left, col != 0, row),
             edge(&self.above, row != 0, col),
         ]
+    }
+
+    /// [`Self::immediate_flags`] of a grid without edge lines (the encoder's).
+    #[cold]
+    #[inline(never)]
+    fn immediate_plane_flags(
+        &self,
+        r: usize,
+        c: usize,
+        bw4: usize,
+        bh4: usize,
+    ) -> [NeighbourFlags; 4] {
+        let (up, left) = (r.wrapping_sub(1), c.wrapping_sub(1));
+        self.flags_at_each([(r + bh4 - 1, left), (up, c + bw4 - 1), (r, left), (up, c)])
     }
 
     /// The flags on row `up` above a block at column `c` on its superblock
