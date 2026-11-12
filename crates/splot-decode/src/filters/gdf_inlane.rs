@@ -10,8 +10,8 @@ use fearless_simd::{Avx2, Simd, i16x16, i32x8, kernel, prelude::*, u16x16};
 use splot_core::tables::loop_restoration::{GDF_ALPHA, GDF_WEIGHT};
 
 use super::{
-    GDF_BIAS, GDF_COORDS, GdfBlock, GdfSymParams, LANE_BITS, LINEAR_RANGE, RowPairs, RowSink,
-    TAP_GROUPS, TAP_REACH, WindowRows, window_range,
+    GDF_BIAS, GDF_COORDS, GdfBlock, GdfSymParams, LINEAR_RANGE, ROUGH, RowPairs, RowSink,
+    TAP_REACH, WindowRows, window_range,
 };
 
 /// The class-0 clip bounds and weights of one GDF table for [`InLane`].
@@ -19,11 +19,9 @@ pub(super) struct SlotParams {
     /// Each tap's clip bounds `[-alpha, alpha]` plus [`ABOVE_OFFSET`], then
     /// plus [`BELOW_OFFSET`], as whole vectors that the clamps read from memory.
     bounds: [[[u16; 16]; 4]; GDF_COORDS.len()],
-    /// Each tap's clip bound, then each `TAP_GROUPS` entry's widest
-    /// `tap_range` at which its combs skip the clips (its smallest clip
-    /// bound, at most [`LINEAR_RANGE`]), then `u16::MAX`: a window marks the
-    /// bounds below its `tap_range`.
-    bounds_below: [u16; 32],
+    /// The widest `tap_range` at which every comb skips the clips: the
+    /// smallest clip bound, at most [`LINEAR_RANGE`].
+    linear_bound: u16,
     /// The weights of each `SYM_PAIRS` entry in alternating lanes.
     pair_weights: [[i16; 16]; SYM_PAIRS.len()],
     /// The bias less [`COMB_BIAS`] times the weights of each sum, which the
@@ -46,13 +44,9 @@ impl SlotParams {
                     [BELOW_OFFSET + alpha; 16],
                 ]
             }),
-            bounds_below: core::array::from_fn(|lane| match lane.checked_sub(GDF_COORDS.len()) {
-                None => alpha[lane][0],
-                Some(group) => TAP_GROUPS.get(group).map_or(u16::MAX, |taps| {
-                    taps.iter()
-                        .fold(LINEAR_RANGE, |bound, &k| bound.min(alpha[k][0]))
-                }),
-            }),
+            linear_bound: alpha[..GDF_COORDS.len()]
+                .iter()
+                .fold(LINEAR_RANGE, |bound, alpha| bound.min(alpha[0])),
             pair_weights: SYM_PAIRS.map(|(a, b, sum)| {
                 core::array::from_fn(|lane| table[sum][if lane & 1 == 0 { a } else { b }][0])
             }),
@@ -384,9 +378,9 @@ fn tap_diffs<S: Simd, W: WindowRows, const TAP: usize, const ROW: usize>(
 }
 
 /// The negated comb, less [`COMB_BIAS`], of the offset negated reads
-/// `above` and `below`, each clipped to its offset tap bounds when `clip` is
-/// set (else each is within them): the saturating add clips the comb's upper
-/// end at 512 and the max its lower end at -511.
+/// `above` and `below`, each clipped to its offset tap bounds: the
+/// saturating add clips the comb's upper end at 512 and the max its lower
+/// end at -511.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn clipped_sum<S: Simd>(
@@ -394,17 +388,12 @@ fn clipped_sum<S: Simd>(
     above: u16x16<S>,
     below: u16x16<S>,
     bounds: &[[u16; 16]; 4],
-    clip: bool,
 ) -> i16x16<S> {
     let bound = |index: usize| u16x16::from_slice(simd, &bounds[index]);
-    let (above, below) = if clip {
-        (
-            above.max(bound(0)).min(bound(1)),
-            below.max(bound(2)).min(bound(3)),
-        )
-    } else {
-        (above, below)
-    };
+    let (above, below) = (
+        above.max(bound(0)).min(bound(1)),
+        below.max(bound(2)).min(bound(3)),
+    );
     above
         .saturating_add(below)
         .max(u16x16::splat(simd, COMB_OFFSET - 511))
@@ -463,27 +452,14 @@ fn paired_combs<S: Simd, W: WindowRows, const K: usize, const T: usize, const RO
     centers: Centers<S>,
     select: u16x16<S>,
     params: &GdfSymParams,
-    clips: u32,
 ) -> [i16x16<S>; 2] {
     let (above, below) = tap_diffs::<S, W, K, ROW>(simd, window, centers);
     let (t_above, t_below) = tap_diffs::<S, W, T, ROW>(simd, window, centers);
     let (above, t_above) = swap(above, t_above, select);
     let (below, t_below) = swap(below, t_below, select);
     [
-        clipped_sum(
-            simd,
-            above,
-            below,
-            &params.slot.bounds[K],
-            clips >> K & 1 != 0,
-        ),
-        clipped_sum(
-            simd,
-            t_above,
-            t_below,
-            &params.slot.bounds[T],
-            clips >> T & 1 != 0,
-        ),
+        clipped_sum(simd, above, below, &params.slot.bounds[K]),
+        clipped_sum(simd, t_above, t_below, &params.slot.bounds[T]),
     ]
 }
 
@@ -506,7 +482,6 @@ fn cycle_combs<
     centers: Centers<S>,
     (transposed, mirrored): Masks<S>,
     params: &GdfSymParams,
-    clips: u32,
 ) -> [i16x16<S>; 4] {
     let (a_above, a_below) = tap_diffs::<S, W, A, ROW>(simd, window, centers);
     let (b_above, b_below) = tap_diffs::<S, W, B, ROW>(simd, window, centers);
@@ -521,34 +496,10 @@ fn cycle_combs<
     let above = select4(a_above, b_above, c_above, d_above);
     let below = select4(a_below, b_below, c_below, d_below);
     [
-        clipped_sum(
-            simd,
-            above[0],
-            below[0],
-            &params.slot.bounds[A],
-            clips >> A & 1 != 0,
-        ),
-        clipped_sum(
-            simd,
-            above[1],
-            below[1],
-            &params.slot.bounds[B],
-            clips >> B & 1 != 0,
-        ),
-        clipped_sum(
-            simd,
-            above[2],
-            below[2],
-            &params.slot.bounds[C],
-            clips >> C & 1 != 0,
-        ),
-        clipped_sum(
-            simd,
-            above[3],
-            below[3],
-            &params.slot.bounds[D],
-            clips >> D & 1 != 0,
-        ),
+        clipped_sum(simd, above[0], below[0], &params.slot.bounds[A]),
+        clipped_sum(simd, above[1], below[1], &params.slot.bounds[B]),
+        clipped_sum(simd, above[2], below[2], &params.slot.bounds[C]),
+        clipped_sum(simd, above[3], below[3], &params.slot.bounds[D]),
     ]
 }
 
@@ -578,17 +529,15 @@ fn error_index<S: Simd, L: Lanes<S>>(
 /// into the sums from `init` as soon as they exist. Taps are grouped so that
 /// each group's combs share their candidate samples and selects: a tap and
 /// its transpose read mirrored offsets, and taps `4`, `6`, `7`, `11` form a
-/// cycle.
-///
-/// Bit `g` of `linear` marks the `TAP_GROUPS` entries whose combs skip the
-/// clips: the swaps then act on the combs instead of each diff. Bit `k` of
-/// `clips` marks the taps whose diffs exceed their bounds somewhere.
+/// cycle. With `LINEAR` every comb skips the clips: the swaps then act on
+/// the combs instead of each diff. Out of line, so that the rows share no
+/// loads that would spill.
 #[inline(never)]
-fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
+fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize, const LINEAR: bool>(
     simd: S,
     lanes: L,
     window: &W,
-    (masks, linear, clips): (Masks<S>, u8, u32),
+    masks: Masks<S>,
     init: &Sums<S>,
     params: &GdfSymParams,
 ) -> [u16; 16] {
@@ -597,8 +546,8 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
     let center2 = centers.0 + centers.1;
     let (transposed, mirrored) = masks;
     macro_rules! pair {
-        ($group:literal, $k:literal, $t:literal, $select:expr) => {
-            if linear >> $group & 1 != 0 {
+        ($k:literal, $t:literal, $select:expr) => {
+            if LINEAR {
                 let (k, t) = swap(
                     linear_comb::<S, W, $k, ROW>(simd, window, center2),
                     linear_comb::<S, W, $t, ROW>(simd, window, center2),
@@ -606,7 +555,7 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
                 );
                 [k.bitcast(), t.bitcast()]
             } else {
-                paired_combs::<S, W, $k, $t, ROW>(simd, window, centers, $select, params, clips)
+                paired_combs::<S, W, $k, $t, ROW>(simd, window, centers, $select, params)
             }
         };
     }
@@ -614,16 +563,16 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
     let mut add = |slot: usize, a: i16x16<S>, b: i16x16<S>| {
         lanes.accumulate(simd, &mut sums, (slot, lanes.pairs(simd, a, b)), params);
     };
-    let [tap0, tap12] = pair!(0, 0, 12, transposed);
-    let [tap1, tap13] = pair!(1, 1, 13, transposed);
+    let [tap0, tap12] = pair!(0, 12, transposed);
+    let [tap1, tap13] = pair!(1, 13, transposed);
     add(0, tap0, tap1);
     add(1, tap12, tap13);
-    let [tap2, tap14] = pair!(2, 2, 14, transposed);
-    let [tap3, tap15] = pair!(3, 3, 15, transposed);
+    let [tap2, tap14] = pair!(2, 14, transposed);
+    let [tap3, tap15] = pair!(3, 15, transposed);
     add(2, tap2, tap3);
     add(3, tap14, tap15);
     add(4, tap3, tap15);
-    let [tap4, tap6, tap7, tap11] = if linear >> 4 & 1 != 0 {
+    let [tap4, tap6, tap7, tap11] = if LINEAR {
         let comb = |tap: u16x16<S>| tap.bitcast::<i16x16<S>>();
         let (a, b) = swap(
             linear_comb::<S, W, 4, ROW>(simd, window, center2),
@@ -638,15 +587,15 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
         let ((first, third), (second, fourth)) = (swap(a, c, transposed), swap(b, d, transposed));
         [comb(first), comb(second), comb(third), comb(fourth)]
     } else {
-        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params, clips)
+        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params)
     };
     add(5, tap4, tap6);
     add(6, tap7, tap11);
-    let [tap8, tap10] = pair!(5, 8, 10, mirrored);
+    let [tap8, tap10] = pair!(8, 10, mirrored);
     add(7, tap8, tap10);
-    let [tap9, tap17] = pair!(6, 9, 17, transposed);
+    let [tap9, tap17] = pair!(9, 17, transposed);
     add(8, tap9, tap17);
-    let [tap5, tap16] = pair!(7, 5, 16, transposed);
+    let [tap5, tap16] = pair!(5, 16, transposed);
     add(9, tap5, tap16);
     error_index(simd, lanes, sums, params)
 }
@@ -666,7 +615,7 @@ fn slot_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
     block: &GdfBlock,
     params: &GdfSymParams,
 ) {
-    let range = window_range(simd, window);
+    let range = window_range(simd, window, params.slot.linear_bound);
     let flat = range == 0;
     if flat && params.keeps_flat && (classes >> 2).simd_eq(i32x8::splat(simd, 0)).all_true() {
         sink.keep(simd);
@@ -693,20 +642,16 @@ fn slot_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
     let class = (class | (class << 16)).bitcast::<u16x16<S>>();
     let zero = u16x16::splat(simd, 0);
     let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
-    let below = {
-        let (range, bits) = (
-            u16x16::splat(simd, range),
-            u16x16::from_slice(simd, &LANE_BITS),
-        );
-        let mask = |bounds: &[u16]| {
-            let below = u16x16::from_slice(simd, bounds).simd_lt(range);
-            u32::from(simd.reduce_sum_u16x16(below.select(bits, u16x16::splat(simd, 0))))
-        };
-        mask(&params.slot.bounds_below[..16]) | mask(&params.slot.bounds_below[16..]) << 16
+    let rows = if range != ROUGH {
+        [row_index::<S, L, W, 0, true>, row_index::<S, L, W, 1, true>]
+    } else {
+        [
+            row_index::<S, L, W, 0, false>,
+            row_index::<S, L, W, 1, false>,
+        ]
     };
-    let (linear, clips) = (!(below >> GDF_COORDS.len()) as u8, below);
-    let pos = row_index::<S, L, W, 0>(simd, lanes, window, (masks, linear, clips), &init, params);
-    sink.row(simd, 0, &pos, block);
-    let pos = row_index::<S, L, W, 1>(simd, lanes, window, (masks, linear, clips), &init, params);
-    sink.row(simd, 1, &pos, block);
+    for (row, row_index) in rows.into_iter().enumerate() {
+        let pos = row_index(simd, lanes, window, masks, &init, params);
+        sink.row(simd, row, &pos, block);
+    }
 }

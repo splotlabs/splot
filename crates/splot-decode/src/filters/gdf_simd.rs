@@ -123,11 +123,11 @@ const TAP_COLUMN_REACH: [usize; TAP_REACH + 1] = {
 };
 
 /// The largest minus the smallest sample that the row pair's taps read, the
-/// window's `tap_range`, or [`ROUGH`] once it exceeds [`CLIP_RANGE`]. The
+/// window's `tap_range`, or [`ROUGH`] once it exceeds `limit`. The
 /// center rows go first: in textured windows they alone usually exceed it.
 /// The rows are unrolled so that each row's tap reach is a constant.
 #[inline]
-fn window_range<S: Simd, W: WindowRows>(simd: S, window: &W) -> u16 {
+fn window_range<S: Simd, W: WindowRows>(simd: S, window: &W, limit: u16) -> u16 {
     let (mut low, mut high) = (u16x16::splat(simd, u16::MAX), u16x16::splat(simd, 0));
     let range = |low: u16x16<S>, high: u16x16<S>| {
         simd.reduce_max_u16x16(high) - simd.reduce_min_u16x16(low)
@@ -150,12 +150,12 @@ fn window_range<S: Simd, W: WindowRows>(simd: S, window: &W) -> u16 {
         };
     }
     rows_range!(6 7);
-    if range(low, high) > CLIP_RANGE {
+    if range(low, high) > limit {
         return ROUGH;
     }
     rows_range!(0 1 2 3 4 5 8 9 10 11 12 13);
     match range(low, high) {
-        range if range > CLIP_RANGE => ROUGH,
+        range if range > limit => ROUGH,
         range => range,
     }
 }
@@ -642,7 +642,7 @@ fn sym_rows_with<S: Simd, W: WindowRows, R: RowSink>(
     block: &GdfBlock,
     params: &GdfSymParams,
 ) {
-    let range = window_range(simd, window);
+    let range = window_range(simd, window, CLIP_RANGE);
     if range == 0 && params.keeps_flat && (classes >> 2).simd_eq(i32x8::splat(simd, 0)).all_true() {
         let mut sink = sink;
         sink.keep(simd);
