@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "1e97aa68056908e8c6c6b8c16f48bd764cb45ba2",
+  "audited_commit": "f8c7181d5de325716ed370efbfff0c501b84a8ed",
   "outcome": "success",
   "files": [
     {
@@ -2696,7 +2696,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/ccso.rs",
-      "sha256": "eafe355635a0151959649837e34b531762f9de2d80694f42088f69914ae1ee9d",
+      "sha256": "a23aa473d55daa2e8e33de3345f981bdc67b999d203a45ef8a9a2b6e1fa98e1a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2907,7 +2907,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters.rs",
-      "sha256": "b068b92e052fff0c0cec007e47efab85b653bb1f52452c1bcc5b4666348d9be3",
+      "sha256": "c4bb27336f8c69684a7c91eef1a29b87bae4308d5c69d0a5b42fd027cf62480c",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-LR-SOURCE-READ-FRONTIER",
@@ -5536,7 +5536,7 @@
     },
     {
       "path": "crates/splot-recon/src/inverse_transform_2d_8bit.rs",
-      "sha256": "0a615a62d4f4a5b75c2307072b2f0a1e50cb00a5eaef8d182a45a4b58ccd69b0",
+      "sha256": "8d40be565608b8acb7216aef8c9252f11e1ee20f14550b0fc8b944bed48f3c30",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5550,7 +5550,28 @@
     },
     {
       "path": "crates/splot-recon/src/inverse_transform_2d_8bit/neon.rs",
-      "sha256": "93faecff347c94ed8c5453330727032eed7c2a255b155794ba5aed0ea3cfe9a1",
+      "sha256": "9ece514cd0f10c8b5dffc52e086922011854c9da0cc4e2b35f639c0393bf9708",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/inverse_transform_2d_8bit/neon/blocks.rs",
+      "sha256": "141ebc7524f8c5e1a53cc81d5341057828accef3bbc50bc61bc563c6f00d4ace",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/inverse_transform_2d_8bit/neon/columns.rs",
+      "sha256": "e8429636721c4ebaaf5609cc624b46fe40fbc4f8a8b771dfc45e623d3162ef27",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/inverse_transform_2d_8bit/neon/rows.rs",
+      "sha256": "c4c44a744d9c586dadde0cd17edc1b7fa59f3af573532a58990fe1098af1f29b",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -5909,7 +5930,7 @@
     },
     {
       "path": "crates/splot-recon/src/wienerns_filter.rs",
-      "sha256": "6adb7bdade3459b355803014dfcb7667caf1121831a8ac435aa6715d3e2ed574",
+      "sha256": "5c16d9d318589067db6f2046288209ce4a656817f0357a8731c1d1f8c55549a8",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "INFRA-DECODE-FIRST-FRAME-LATENCY",

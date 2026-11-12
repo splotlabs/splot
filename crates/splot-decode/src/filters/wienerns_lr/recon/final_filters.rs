@@ -1652,30 +1652,31 @@ impl StripeChain<'_> {
         };
         let (sub_x, sub_y) = self.plane_subsampling(plane_id);
         for row in 0..block.height {
-            for col in 0..block.width {
-                let x = block
-                    .x
-                    .checked_add(col)
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                let y = block
-                    .y
-                    .checked_add(row)
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                if !lossless_grid.plane_sample_lossless(plane_id, x, y, sub_x, sub_y) {
-                    continue;
+            let y = block
+                .y
+                .checked_add(row)
+                .ok_or_else(super::lr_pipeline_state_error)?;
+            let source = curr_plane
+                .row(y)
+                .ok_or_else(super::lr_pipeline_state_error)?;
+            let start = row
+                .checked_mul(output_stride)
+                .ok_or_else(super::lr_pipeline_state_error)?;
+            let filtered = output
+                .get_mut(start..start + block.width)
+                .ok_or_else(super::lr_pipeline_state_error)?;
+            let mut col = 0;
+            while col < block.width {
+                let x = block.x + col;
+                let next = (((((x << sub_x) / MI_SIZE + 1) * MI_SIZE) >> sub_x) - block.x)
+                    .clamp(col + 1, block.width);
+                if lossless_grid.plane_sample_lossless(plane_id, x, y, sub_x, sub_y) {
+                    let kept = source
+                        .get(x..x + next - col)
+                        .ok_or_else(super::lr_pipeline_state_error)?;
+                    filtered[col..next].copy_from_slice(kept); // splot-copy-ok: lossless samples skip loop restoration
                 }
-                let output_index = row
-                    .checked_mul(output_stride)
-                    .and_then(|start| start.checked_add(col))
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                let sample = *curr_plane
-                    .row(y)
-                    .and_then(|row| row.get(x))
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                let Some(slot) = output.get_mut(output_index) else {
-                    return Err(super::lr_pipeline_state_error());
-                };
-                *slot = sample;
+                col = next;
             }
         }
         Ok(())

@@ -1098,16 +1098,17 @@ fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput>(
                 &window, weights, max_sample,
             )
         };
-        match filtered
+        if let Some(slot) = filtered
             .get_mut(at..)
             .and_then(<[O]>::first_chunk_mut::<16>)
         {
-            Some(slot) => O::store16(values, slot),
-            None => {
-                for (slot, value) in filtered[at..].iter_mut().zip(values) {
-                    *slot = O::from_u16(value);
-                }
-            }
+            O::store16(values, slot);
+        } else {
+            let mut lanes = [O::from_u16(0); 16];
+            O::store16(values, &mut lanes);
+            let tail = &mut filtered[at..];
+            let len = tail.len().min(16);
+            tail[..len].copy_from_slice(&lanes[..len]); // splot-copy-ok: the columns of a block narrower than one lane group
         }
         col = at + 16;
     }

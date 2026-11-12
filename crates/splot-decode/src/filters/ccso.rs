@@ -675,6 +675,12 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
         .div_ceil(1 << SUB_X)
         .max(x_start)
         .min(x_end);
+    let left_edge = first > x_start && x_end >= x_start + CCSO_LANES;
+    let first = if left_edge {
+        x_start + CCSO_LANES
+    } else {
+        first
+    };
     let first_luma = first << SUB_X;
     let last_tap = max_luma_x as isize - max_dx - ((CCSO_LANES - 1) << SUB_X) as isize;
     let step = CCSO_LANES << SUB_X;
@@ -940,7 +946,161 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
         output[done..].copy_from_slice(&lanes[done..]);
         x = tail_end;
     }
-    (first, x)
+    let edge =
+        |at: usize, staged: &mut [[L; 2 * CCSO_LANES]; 3], output: &[D]| -> Option<u16x16<S>> {
+            let luma = (at << SUB_X) as isize;
+            let [center, tap0, tap1] = staged;
+            let center = edge_taps::<S, L, SUB_X>(simd, center_row, luma, tile_clamp, center)?;
+            let tap0 = edge_taps::<S, L, SUB_X>(simd, row0, luma + dx0, tile_clamp, tap0)?;
+            let tap1 = edge_taps::<S, L, SUB_X>(simd, row1, luma + dx1, tile_clamp, tap1)?;
+            filter([center, tap0, tap1], output.get(at..at + CCSO_LANES)?)
+        };
+    let mut span = (first, x);
+    if x < x_end
+        && x_end >= x_start + CCSO_LANES
+        && x >= first
+        && let at = x_end - CCSO_LANES
+        && let Some(samples) = edge(at, &mut [[L::default(); 2 * CCSO_LANES]; 3], destination)
+        && let Some(output) = destination
+            .get_mut(at..)
+            .and_then(<[D]>::first_chunk_mut::<CCSO_LANES>)
+    {
+        let new = u16x16::from_slice(simd, &CCSO_LANE_INDEX)
+            .simd_ge(u16x16::splat(simd, (x - at) as u16));
+        let samples = new.select(samples, load_lanes(simd, output).unwrap_or(samples));
+        store_lanes(samples, output);
+        span.1 = x_end;
+    }
+    if left_edge
+        && let Some(samples) = edge(
+            x_start,
+            &mut [[L::default(); 2 * CCSO_LANES]; 3],
+            destination,
+        )
+        && let Some(output) = destination
+            .get_mut(x_start..)
+            .and_then(<[D]>::first_chunk_mut::<CCSO_LANES>)
+    {
+        store_lanes(samples, output);
+        span.0 = x_start;
+    }
+    span
+}
+
+/// The lane numbers of a CCSO chunk.
+const CCSO_LANE_INDEX: [u16; CCSO_LANES] = {
+    let mut lanes = [0; CCSO_LANES];
+    let mut lane = 0;
+    while lane < CCSO_LANES {
+        lanes[lane] = lane as u16;
+        lane += 1;
+    }
+    lanes
+};
+
+/// The `CCSO_LANES << SUB_X` luma samples a CCSO chunk reads from `start`,
+/// whose used samples (every `1 << SUB_X`th) each take the sample clamped
+/// to the § 7.19.1 range `(min, max)`. A chunk inside the range reads the
+/// row itself; one that crosses one edge by up to three used samples takes
+/// one load inside the range and a lane slide that repeats the edge
+/// sample, stored in `staged` with its used samples in place. `None` for any
+/// other chunk.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn edge_taps<'a, S: Simd, L: ReconSample, const SUB_X: usize>(
+    simd: S,
+    row: &'a [L],
+    start: isize,
+    (min, max): (usize, usize),
+    staged: &'a mut [L; 2 * CCSO_LANES],
+) -> Option<&'a [L]> {
+    let step = CCSO_LANES << SUB_X;
+    let last = start + ((CCSO_LANES - 1) << SUB_X) as isize;
+    let (min_i, max_i) = (min as isize, max as isize);
+    if start >= min_i && last <= max_i {
+        let start = usize::try_from(start).ok()?;
+        return row.get(start..start + step);
+    }
+    let (left, load, offset) = if start < min_i && last <= max_i {
+        (true, min, start - min_i)
+    } else if start >= min_i && last > max_i {
+        let load = (max + 1).checked_sub(step).filter(|&load| load >= min)?;
+        (false, load, start - load as isize)
+    } else {
+        return None;
+    };
+    let parity = (offset & 1) as usize * SUB_X;
+    let lanes = if left {
+        (parity as isize - offset) >> SUB_X
+    } else {
+        offset >> SUB_X
+    };
+    let lanes = usize::try_from(lanes).ok().filter(|&lanes| lanes <= 3)?;
+    let source = row.get(load..load + step)?;
+    macro_rules! slid {
+        ($ty:ident, $slide:ident, $unzip_low:ident, $unzip_high:ident, $zip_low:ident, $zip_high:ident, $source:expr, $staged:expr, $edge:expr) => {{
+            let loaded = $ty::from_slice(simd, &$source[..CCSO_LANES]);
+            let half = if SUB_X == 0 {
+                loaded
+            } else {
+                let high = $ty::from_slice(simd, &$source[CCSO_LANES..2 * CCSO_LANES]);
+                if parity == 0 {
+                    simd.$unzip_low(loaded, high)
+                } else {
+                    simd.$unzip_high(loaded, high)
+                }
+            };
+            let edge = $ty::splat(simd, $edge);
+            let needed = match (left, lanes) {
+                (true, 1) => simd.$slide::<{ CCSO_LANES - 1 }>(edge, half),
+                (true, 2) => simd.$slide::<{ CCSO_LANES - 2 }>(edge, half),
+                (true, 3) => simd.$slide::<{ CCSO_LANES - 3 }>(edge, half),
+                (true, _) => half,
+                (false, 0) => half,
+                (false, 1) => simd.$slide::<1>(half, edge),
+                (false, 2) => simd.$slide::<2>(half, edge),
+                (false, _) => simd.$slide::<3>(half, edge),
+            };
+            if SUB_X == 0 {
+                needed.store_slice(&mut $staged[..CCSO_LANES]);
+            } else {
+                simd.$zip_low(needed, needed)
+                    .store_slice(&mut $staged[..CCSO_LANES]);
+                simd.$zip_high(needed, needed)
+                    .store_slice(&mut $staged[CCSO_LANES..]);
+            }
+        }};
+    }
+    let (low, high) = (*row.get(min)?, *row.get(max)?);
+    let edge = if left { low } else { high };
+    if let (Some(source), Some(staged)) = (L::u8_slice(source), L::u8_slice_mut(&mut staged[..])) {
+        let edge = u8::try_from(edge.to_u16()).ok()?;
+        slid!(
+            u8x16,
+            slide_u8x16,
+            unzip_low_u8x16,
+            unzip_high_u8x16,
+            zip_low_u8x16,
+            zip_high_u8x16,
+            source,
+            staged,
+            edge
+        );
+    } else {
+        let (source, staged) = (L::u16_slice(source)?, L::u16_slice_mut(&mut staged[..])?);
+        slid!(
+            u16x16,
+            slide_u16x16,
+            unzip_low_u16x16,
+            unzip_high_u16x16,
+            zip_low_u16x16,
+            zip_high_u16x16,
+            source,
+            staged,
+            edge.to_u16()
+        );
+    }
+    staged.get(..step)
 }
 
 fn ccso_offset_lut(
