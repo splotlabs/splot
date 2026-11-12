@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "91b0cbf5e97fa094230f3da0c0012b9d44ebf91b",
+  "audited_commit": "2a71e3b700ebcaab6db53256c4f4719bb54d6493",
   "outcome": "success",
   "files": [
     {
@@ -2799,8 +2799,15 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-decode/src/filters/gdf_inlane.rs",
+      "sha256": "b842cb92c94b11285078716b892cd5f3b0f6faedd85c155a7e5561c957ab3adf",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-decode/src/filters/gdf_simd.rs",
-      "sha256": "8782c21ce3bdbad1467cd29a7afa6ce8f5380fcb04fc1982cbaad4f89984ce8d",
+      "sha256": "6946caa22b9158fb2eedd813abc1c889f2ac47f4343d23ae54622535aec9a345",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
