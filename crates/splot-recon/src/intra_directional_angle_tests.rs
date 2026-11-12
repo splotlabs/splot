@@ -1155,7 +1155,11 @@ fn one_sided_idif_u16_lines_match_the_per_sample_reference() {
                 for mrl_index in 0..3usize {
                     let edge_len = required_one_sided_idif_edge_len(size, mrl_index).unwrap();
                     let edge: Vec<u16> = (0..edge_len)
-                        .map(|index| ((index * 37 + 11) % 1024) as u16)
+                        .map(|index| match (index % 16, index.div_ceil(2) % 2) {
+                            (0..8, 0) => 0,
+                            (0..8, _) => 1023,
+                            _ => ((index * 37 + 11) % 1024) as u16,
+                        })
                         .collect();
                     let edges = match angle.required_edge() {
                         IntraDirectionalAngleEdge::Above => {
@@ -1221,12 +1225,20 @@ fn one_sided_idif_u16_lines_match_the_per_sample_reference() {
                                 branch, row, column, derivative, mrl_index,
                             )
                             .unwrap();
-                            let expected = if reference.base <= max_base {
-                                idif_tap(&edge, reference.base, reference.shift, BitDepth::Ten)
-                                    .unwrap()
-                            } else {
-                                logical_idif_edge_sample(&edge, max_base).unwrap()
+                            let tap = |edge: &[u16], depth| {
+                                if reference.base <= max_base {
+                                    idif_tap(edge, reference.base, reference.shift, depth).unwrap()
+                                } else {
+                                    logical_idif_edge_sample(edge, max_base).unwrap()
+                                }
                             };
+                            let expected = tap(&edge, BitDepth::Ten);
+                            assert_eq!(
+                                u16::from(narrow_output[row * stride + column]),
+                                tap(&wide, BitDepth::Eight),
+                                "8-bit p_angle {p_angle} width {} mrl {mrl_index} ({row}, {column})",
+                                size.width()
+                            );
                             assert_eq!(
                                 output[row * stride + column],
                                 expected,

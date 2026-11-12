@@ -9,9 +9,9 @@ use super::super::{NUM_FILTER_TYPES, portable};
 const STRIDE: usize = 160;
 const ROWS: usize = 48;
 
-/// Planes of `max`-bounded samples: a mixed texture and an extreme-contrast
-/// one that reaches the largest tap sums.
-fn planes(max: u16) -> [Vec<u16>; 2] {
+/// Planes of `max`-bounded samples: a mixed texture, an extreme-contrast
+/// one that reaches the largest tap sums, and an all-maximum one.
+fn planes(max: u16) -> [Vec<u16>; 3] {
     [
         (0..STRIDE * ROWS)
             .map(|i| ((i * 73 + i / STRIDE * 29) % (usize::from(max) + 1)) as u16)
@@ -25,6 +25,7 @@ fn planes(max: u16) -> [Vec<u16>; 2] {
                 }
             })
             .collect(),
+        vec![max; STRIDE * ROWS],
     ]
 }
 

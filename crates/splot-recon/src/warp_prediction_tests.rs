@@ -1261,3 +1261,60 @@ fn clipped_windows_and_partial_rows_match_the_spec_trace_at_plane_edges() {
     }
     assert!(checked >= 100, "only {checked} valid models");
 }
+
+/// The 16-bit sheared section kernel against the § 7.13.3.19 trace for
+/// random valid models with every shear term free, on 10-bit noise,
+/// all-maximum and checkerboard samples, at interior and border blocks.
+#[test]
+fn ten_bit_sheared_sections_match_the_spec_trace() {
+    let (ref_w, ref_h) = (64usize, 64usize);
+    let unit = 1 << WARPEDMODEL_PREC_BITS;
+    let mut state = 0x1b87_3593u32;
+    let mut next = |span: i32| {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (state >> 8) as i32 % (2 * span + 1) - span
+    };
+    let textures = [
+        noise_samples(ref_w * ref_h, 1023, 7),
+        vec![1023u16; ref_w * ref_h],
+        (0..ref_w * ref_h)
+            .map(|index| {
+                if (index + index / ref_w) % 2 == 0 {
+                    1023
+                } else {
+                    0
+                }
+            })
+            .collect::<Vec<u16>>(),
+    ];
+    let mut checked = 0;
+    for seed in 0..48usize {
+        let samples = &textures[seed % textures.len()];
+        let view = ReferencePlaneView::new(samples, ref_w, ref_h).unwrap();
+        let warp_params = [
+            translation(next(3), next(0xffff).abs(), 0),
+            translation(next(3), next(0xffff).abs(), 0),
+            unit + next(7000),
+            next(7000),
+            next(7000),
+            unit + next(7000),
+        ];
+        if !warp_shear_is_valid(warp_params) {
+            continue;
+        }
+        checked += 1;
+        let (block_x, block_y) = (8 * (seed % 7) as i32, 8 * (seed % 6) as i32);
+        let mut params = default_params(block_x, block_y, ref_w as i32, ref_h as i32);
+        params.warp_params = warp_params;
+        params.bit_depth = BitDepth::Ten;
+        for round1 in [INTER_ROUND1_NON_COMPOUND, INTER_ROUND1_COMPOUND] {
+            let want = reference_warp_rounded(samples, ref_w, ref_h, &params, round1);
+            let got = warp_predict_block(&view, &params, round1 == INTER_ROUND1_COMPOUND).unwrap();
+            assert!(
+                got.iter().map(|&v| i64::from(v)).eq(want),
+                "{warp_params:?} at ({block_x}, {block_y}) round {round1}"
+            );
+        }
+    }
+    assert!(checked >= 24, "only {checked} valid models");
+}

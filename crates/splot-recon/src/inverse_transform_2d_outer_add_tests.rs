@@ -172,12 +172,19 @@ fn check_fused<T: ReconSample + PartialEq + core::fmt::Debug>(
 
 /// The secondary-transform add, which for a block at least 16 wide stages
 /// only the 8 columns the secondary transform writes, must match the
-/// dequantized-prefix add for every kernel, type, transpose and input count.
+/// dequantized-prefix add for every kernel, type, transpose and input count,
+/// into `u8` at 8 bits and `u16` at 10 bits, where x86 leaves the AVX2 path.
 #[test]
 fn secondary_add_matches_dequantized_prefix() {
+    check_secondary_add::<u8>(BitDepth::Eight);
+    check_secondary_add::<u16>(BitDepth::Ten);
+}
+
+fn check_secondary_add<T: ReconSample + PartialEq + core::fmt::Debug>(bit_depth: BitDepth) {
     use crate::coefficient_scan::TransformClass;
     use crate::{SecondaryInverseTransform, dequantize_with_secondary};
     let mut rng = Lcg(11);
+    let max = u32::from(bit_depth.max_sample());
     for (log2_w, log2_h, tx_type) in [(4, 2, 0), (4, 3, 0), (4, 4, 0), (4, 5, 0), (5, 3, 0)]
         .into_iter()
         .chain([
@@ -201,7 +208,7 @@ fn secondary_add_matches_dequantized_prefix() {
                 sec_tx_type: 1 + rng.next(3) as usize,
                 primary_scan_class: TransformClass::TwoD,
                 transpose: trial % 2 == 1,
-                bit_depth: BitDepth::Eight,
+                bit_depth,
             };
             let len = 1 + rng.next((w * h) as u32) as usize;
             let spread = if trial % 3 == 0 { 2000 } else { 40 };
@@ -214,18 +221,20 @@ fn secondary_add_matches_dequantized_prefix() {
                 tx_width: w,
                 tx_height: h,
                 dq_denom: 1 << rng.next(2),
-                bit_depth: BitDepth::Eight,
+                bit_depth,
                 qm: None,
             };
             let table = InverseTransformAdd::new(tx_type, log2_w, log2_h, false).unwrap();
             let stride = w + 5;
-            let pred: Vec<u8> = (0..stride * h).map(|_| rng.next(256) as u8).collect();
+            let pred: Vec<T> = (0..stride * h)
+                .map(|_| T::try_from_u16(rng.next(max + 1) as u16).unwrap())
+                .collect();
             let mut dequant = vec![0; w * h];
             let mut scratch = [i32::MAX; 32 * 32];
             let coded =
                 dequantize_with_secondary(&dq, &quant, Some(&secondary), &mut dequant).unwrap();
             let mut expected = pred.clone();
-            let flat = (None, BitDepth::Eight);
+            let flat = (None, bit_depth);
             assert!(table.add(&dequant[..coded], flat, &mut expected, stride, &mut scratch));
             let mut dst = pred.clone();
             let added = table
@@ -238,7 +247,10 @@ fn secondary_add_matches_dequantized_prefix() {
                 )
                 .unwrap();
             assert!(added);
-            assert_eq!(dst, expected, "{w}x{h} type {tx_type} trial {trial}");
+            assert_eq!(
+                dst, expected,
+                "{bit_depth:?} {w}x{h} type {tx_type} trial {trial}"
+            );
         }
     }
 }
