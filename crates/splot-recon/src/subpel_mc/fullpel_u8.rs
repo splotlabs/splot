@@ -157,14 +157,55 @@ pub fn subpel_compound_block<T: ReconSample>(
         let Some((windows, bounds)) = windows(puts) else {
             return false;
         };
-        surface.chroma_rects_mut(puts[0].rect).is_some_and(
-            |[(u_out, u_stride), (v_out, v_stride)]| {
-                compound_windows(u, windows, bounds, clip, u_out, u_stride)
-                    && compound_windows(v, windows, bounds, clip, v_out, v_stride)
-            },
-        )
+        surface
+            .chroma_rects_mut(puts[0].rect)
+            .is_some_and(|outputs| compound_pair([u, v], windows, bounds, clip, outputs))
     });
     [luma_put, chroma_put]
+}
+
+/// [`compound_windows`] of the U and V views, which share `windows`, into
+/// their outputs: filtered eight-bit pairs read in place in one pair call.
+#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[inline(always)]
+fn compound_pair<T: ReconSample>(
+    [u, v]: [Views<'_, '_, T>; 2],
+    windows: [block::Window; 2],
+    bounds: [[i32; 4]; 2],
+    clip: (i32, u16),
+    [(u_out, u_stride), (v_out, v_stride)]: [(&mut [T], usize); 2],
+) -> bool {
+    let filtered = windows
+        .iter()
+        .any(|window| window.horizontal.is_some() || window.vertical.is_some());
+    if let (true, [Some(u0), Some(u1), Some(v0), Some(v1)], Some(u8_u), Some(u8_v)) = (
+        filtered,
+        [u[0], u[1], v[0], v[1]].map(ReferencePlaneView::as_u8),
+        T::u8_slice_mut(&mut *u_out),
+        T::u8_slice_mut(&mut *v_out),
+    ) {
+        fn place<'a>(
+            window: &block::Window,
+            view: &ReferencePlaneView<'a, u8>,
+            bounds: [i32; 4],
+        ) -> Option<block::Block<'a, u8>> {
+            let origin = window.origin(view.geometry(), bounds)?;
+            Some(window.block(view.samples, view.stride, origin))
+        }
+        let [first, second] = &windows;
+        if let (Some(a), Some(b), Some(c), Some(d)) = (
+            place(first, &u0, bounds[0]),
+            place(second, &u1, bounds[1]),
+            place(first, &v0, bounds[0]),
+            place(second, &v1, bounds[1]),
+        ) {
+            let outputs = [(u8_u, u_stride), (u8_v, v_stride)];
+            super::eight_bit::compound_pair([[&a, &b], [&c, &d]], clip.0, outputs);
+            return true;
+        }
+    }
+    compound_windows(u, windows, bounds, clip, u_out, u_stride)
+        && compound_windows(v, windows, bounds, clip, v_out, v_stride)
 }
 
 /// [`put_window`] of two views of one geometry, U and V, into their

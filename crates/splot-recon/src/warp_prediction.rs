@@ -28,7 +28,6 @@ use crate::math::round2;
 use crate::math::{round2_i32, round2_signed, round2_signed_i32};
 use crate::subpel_mc::ReferencePlaneView;
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod eight_bit;
 mod ext_unit;
 
@@ -236,7 +235,6 @@ impl PreparedWarpPrediction {
         )? {
             return Ok(());
         }
-        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         let view = reference.as_u8();
         for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
             let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
@@ -245,9 +243,6 @@ impl PreparedWarpPrediction {
                 block_y: (y + local_y) as i32,
                 ..self.params
             };
-            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-            let written = 0u64;
-            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             let written = match (&view, output.get_mut(local_y * stride..)) {
                 (Some(view), Some(target)) if section_h == WARPED_BLOCK_SIZE => {
                     T::u8_slice_mut(target).map_or(0, |target| {
@@ -801,7 +796,6 @@ fn warp_predict_section<S: Simd, T: ReconSample>(
     let projected = project_section_center(params)?;
     let mut intermediate = [[0i16; WARPED_BLOCK_SIZE]; WARP_INTERMEDIATE_ROWS];
     let origin = interior_warp_source_origin(reference, params, &projected);
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if let Some(source_origin) = origin
         && !(shear.alpha == 0 && shear.beta == 0 && two_tap_phase(projected.sx4).is_some())
         && let Some(reference) = reference.as_u8()
@@ -1301,7 +1295,20 @@ fn build_interior_intermediate<S: Simd, T: ReconSample>(
 fn horizontal_row<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32) -> i16x8<S> {
     let sum = if alpha == 0 {
         tap_sum(sliding_windows(lo, hi), &uniform_weights(simd, sx))
-    } else if cfg!(not(target_arch = "x86_64")) {
+    } else {
+        sheared_sum(simd, [lo, hi], sx, alpha)
+    };
+    round_intermediate(sum)
+}
+
+/// The column sums of a sheared row, column `col` weighed by the filter of
+/// phase `sx + alpha * (col - 4)`: on x86 pair products of two columns per
+/// 256-bit multiply-add, elsewhere widened products per column.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn sheared_sum<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32) -> i32x8<S> {
+    #[cfg(not(target_arch = "x86_64"))]
+    {
         let windows = sliding_windows(lo, hi);
         let column = |col: usize| {
             let taps = warp_taps(simd, sx + alpha * (col as i32 - 4)).widen();
@@ -1312,7 +1319,9 @@ fn horizontal_row<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32
         let quads: [i32x4<S>; 4] =
             core::array::from_fn(|pair| pairwise(column(2 * pair), column(2 * pair + 1)));
         pairwise(quads[0], quads[1]).combine(pairwise(quads[2], quads[3]))
-    } else {
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
         let taps = |col: usize| warp_taps(simd, sx + alpha * (col as i32 - 4));
         let near = lo.combine(lo.slide::<4>(hi));
         let far = hi.combine(hi.slide::<4>(hi));
@@ -1328,8 +1337,7 @@ fn horizontal_row<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32
                 quad(3, near.slide_within_blocks::<3>(far)),
             ],
         )
-    };
-    round_intermediate(sum)
+    }
 }
 
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
@@ -1348,6 +1356,7 @@ fn round_intermediate<S: Simd>(sum: i32x8<S>) -> i16x8<S> {
 /// Column `col` of a sheared row is the dot product of its own filter with
 /// its own window, so the products reduce with two more levels of pairwise
 /// adds instead of transposing the filters first.
+#[cfg(target_arch = "x86_64")]
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn column_dot_products<S: Simd>(simd: S, quads: [i32x8<S>; WARPED_BLOCK_SIZE / 2]) -> i32x8<S> {

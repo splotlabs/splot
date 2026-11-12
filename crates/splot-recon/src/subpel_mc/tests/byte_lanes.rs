@@ -146,7 +146,6 @@ fn byte_lane_sinks_match_the_oracle_for_every_shape_and_phase() {
 
 /// The byte search window and its SADs against the general bilinear
 /// prediction and a scalar SAD, for every window shape and phase pair.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn byte_search_window_and_sads_match_the_general_path() {
     let (ref_w, ref_h) = (72usize, 64usize);
@@ -229,11 +228,19 @@ fn byte_search_window_and_sads_match_the_general_path() {
                         }
                     }
                 }
+                let pair = [&windows[0][..], &windows[1][..]];
                 assert_eq!(
-                    refinemv_search_u8([&windows[0], &windows[1]], stride, sad_h, allow_center),
+                    refinemv_search_u8(pair, stride, sad_h, allow_center),
                     Some(best),
                     "{sad_w}x{sad_h} seed {seed} centre {allow_center}"
                 );
+                let generic = baseline_simd!(simd => search_window::generic::search(
+                    simd,
+                    pair,
+                    [stride, sad_h],
+                    allow_center,
+                ));
+                assert_eq!(generic, best, "generic {sad_w}x{sad_h} seed {seed}");
             }
         }
     }
@@ -246,7 +253,6 @@ fn byte_search_window_and_sads_match_the_general_path() {
 /// The byte bilinear kernel against the general prediction for every phase
 /// pair and several shapes and strides, and its refusal of a block whose
 /// taps would clamp.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn byte_bilinear_blocks_match_the_general_path() {
     let (ref_w, ref_h) = (72usize, 60usize);
@@ -521,7 +527,6 @@ fn block_entries_match<T: ReconSample>(bit_depth: BitDepth) {
 /// stores, for windows inside, across and outside their clip bounds and
 /// storage, from references of differing readable rows, with more cells
 /// than one setup batch.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn compound_cell_programs_match_the_placement_entry() {
     let (ref_w, ref_h) = (40usize, 32usize);
@@ -603,7 +608,6 @@ fn compound_cell_programs_match_the_placement_entry() {
 /// The placement entry of a compound cell stores what the validated
 /// compound entry stores for the same parameters, inside and across its
 /// clip bounds, and declines shapes outside the register cells.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn placed_compound_cells_match_the_compound_entry() {
     let (ref_w, ref_h) = (40usize, 32usize);
@@ -684,7 +688,6 @@ fn placed_compound_cells_match_the_compound_entry() {
 /// A full-sample cell, and a wider full-sample block, store the
 /// materialized COMPOUND_AVERAGE of their two windows for every weight, at
 /// interior and storage-edge positions, and write nothing beside their rows.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn full_sample_cells_match_the_materialized_average() {
     let (ref_w, ref_h) = (24usize, 20usize);
@@ -782,28 +785,32 @@ fn full_sample_cells_match_the_materialized_average() {
     }
 }
 
-/// The AArch64 byte-lane kernels against the portable kernels on the same
-/// blocks: every filter, both passes at phases of each tap-pair count, 4- to
+/// The byte-lane kernels against the portable kernels on the same blocks:
+/// every filter, both passes at phases of each tap-pair count, 4- to
 /// 32-wide blocks with clamped rows, column-remapped windows, every
-/// eight-bit sink and the fused compound, over noise and extreme contrast,
-/// in the multiply-accumulate kernels and, on a CPU with `FEAT_DotProd`, in
-/// the `sdot` kernels, and with `FEAT_I8MM` too in the `usdot` kernels.
-#[cfg(target_arch = "aarch64")]
+/// eight-bit sink and the fused compound, over noise and extreme contrast;
+/// on AArch64 in the multiply-accumulate kernels and, on a CPU with
+/// `FEAT_DotProd`, in the `sdot` kernels, and with `FEAT_I8MM` too in the
+/// `usdot` kernels.
 #[test]
-fn neon_byte_lanes_match_the_portable_kernels() {
-    let dot = std::arch::is_aarch64_feature_detected!("dotprod");
-    let i8mm = dot && std::arch::is_aarch64_feature_detected!("i8mm");
-    for families in [0, 1, 2] {
-        if families == 0 || (families == 1 && dot) || i8mm {
-            eight_bit::neon::dot::FAMILIES.with(|cap| cap.set(families));
-            check_neon_byte_lanes();
+fn byte_lanes_match_the_portable_kernels() {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let dot = std::arch::is_aarch64_feature_detected!("dotprod");
+        let i8mm = dot && std::arch::is_aarch64_feature_detected!("i8mm");
+        for families in [0, 1, 2] {
+            if families == 0 || (families == 1 && dot) || i8mm {
+                eight_bit::neon::dot::FAMILIES.with(|cap| cap.set(families));
+                check_byte_lanes();
+            }
         }
+        eight_bit::neon::dot::FAMILIES.with(|cap| cap.set(2));
     }
-    eight_bit::neon::dot::FAMILIES.with(|cap| cap.set(2));
+    #[cfg(not(target_arch = "aarch64"))]
+    check_byte_lanes();
 }
 
-#[cfg(target_arch = "aarch64")]
-fn check_neon_byte_lanes() {
+fn check_byte_lanes() {
     let (stride, rows) = (72usize, 44usize);
     let textures: [Vec<u8>; 2] = [
         (0..stride * rows)
@@ -813,7 +820,6 @@ fn check_neon_byte_lanes() {
             .map(|i| if (i + i / stride) % 3 == 0 { 255 } else { 0 })
             .collect(),
     ];
-    let token = fearless_simd::Level::baseline().as_neon().unwrap();
     for source in &textures {
         for filter in 0..NUM_FILTER_TYPES {
             let phases = [[0, 0], [8, 8], [1, 15], [13, 4]]
@@ -847,9 +853,9 @@ fn check_neon_byte_lanes() {
                     let span = block.vertical.map_or(1, block::Taps::span);
                     let len = block::stage_len(h + span - 1, w, block.vertical);
                     let mut stage = vec![0i16; len];
-                    let fits = eight_bit::neon::fits(&block);
+                    let fits = eight_bit::fits(&block);
                     let run = |sink: &mut block::Sink<'_>, stage: &mut [i16], neon: bool| {
-                        if !neon || !eight_bit::predict(&block, sink, &mut []) {
+                        if !neon || !eight_bit::predict(&block, sink) {
                             assert!(!neon || !fits, "declined {label}");
                             portable::predict(&block, sink, stage);
                         }
@@ -910,7 +916,7 @@ fn check_neon_byte_lanes() {
                     };
                     for forward in [8, 0, 5, 16] {
                         let mut average = [vec![9u8; out_stride * h], vec![9u8; out_stride * h]];
-                        if !fits || !eight_bit::neon::fits(&other) {
+                        if !fits || !eight_bit::fits(&other) {
                             continue;
                         }
                         for (neon, output) in (0..2).zip(&mut average) {
@@ -947,13 +953,7 @@ fn check_neon_byte_lanes() {
                             stride: out_stride,
                         };
                         portable::predict(&other, sink, &mut other_stage);
-                        assert!(eight_bit::neon::compound(
-                            token,
-                            [&block, &other],
-                            forward,
-                            &mut fused[1],
-                            out_stride,
-                        ));
+                        eight_bit::compound([&block, &other], forward, &mut fused[1], out_stride);
                         assert_eq!(fused[0], fused[1], "compound {forward} {label}");
                     }
                 }
@@ -967,7 +967,6 @@ fn check_neon_byte_lanes() {
 /// extreme-contrast samples at sub-pel and full-sample windows inside,
 /// across and outside their clip bounds, and a cell program stores the
 /// same cells.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn sixteen_bit_compound_cells_match_the_oracle() {
     let (ref_w, ref_h) = (40usize, 32usize);

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The NEON word-lane kernels against the portable kernels.
+//! The word-lane kernels against the portable kernels.
 
-use super::super::block::{Block, Sink, TAPS, Taps, stage_len};
+use super::super::block::{Block, Sink, TAPS, Taps, is_cell, stage_len};
 use super::super::{NUM_FILTER_TYPES, portable};
 
 const STRIDE: usize = 160;
@@ -32,8 +32,8 @@ fn taps(filter: usize, phase: usize) -> Option<&'static Taps> {
     TAPS[filter][phase].as_ref()
 }
 
-/// Every sink of the NEON `predict` against the portable kernels; full-pel
-/// blocks stay on the portable copy, which is faster.
+/// Every sink of the word-lane `predict` against the portable kernels;
+/// full-pel blocks stay on the portable copy, which is faster.
 fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     let (w, h) = (block.w, block.h);
     let rows = h + block.vertical.map_or(0, |taps| taps.span() - 1);
@@ -42,7 +42,7 @@ fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     let run = |neon: bool, sink: &mut Sink<'_>| {
         let mut stage = vec![0x5a5a_u16 as i16; len];
         let filtered = block.horizontal.is_some() || block.vertical.is_some();
-        if !neon || !super::predict(block, sink, &mut stage) {
+        if !neon || !super::predict(block, sink) {
             assert!(!neon || !filtered, "declined {label}");
             portable::predict(block, sink, &mut stage);
         }
@@ -211,17 +211,11 @@ fn neon_compound_matches_portable() {
                         let mut stage = vec![0x5a5a_u16 as i16; len];
                         let mut output = vec![0xa5a5_u16; stride * h];
                         let blocks = [&first, &second];
-                        let taken = neon
-                            && super::compound(
-                                blocks,
-                                forward,
-                                max,
-                                &mut stage,
-                                &mut output,
-                                stride,
-                            );
-                        let cell =
-                            super::neon::is_cell(&first, w) && super::neon::is_cell(&second, w);
+                        let taken =
+                            neon && super::compound(blocks, (forward, max), &mut output, stride);
+                        let cell = [&first, &second]
+                            .iter()
+                            .all(|block| is_cell(w, h, block.horizontal, block.vertical));
                         assert_eq!(taken, neon && cell);
                         if !taken {
                             portable::compound_u16(

@@ -445,7 +445,6 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
     }
 
     /// The samples from row `row` on, rows `stride` apart, and the stride.
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     pub(crate) fn rows_from(&self, row: usize) -> Option<(&'a [T], usize)> {
         Some((self.samples.get(row * self.stride..)?, self.stride))
     }

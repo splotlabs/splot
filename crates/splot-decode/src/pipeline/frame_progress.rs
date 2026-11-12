@@ -631,15 +631,6 @@ impl<T: ReconSample> FrameProgress<T> {
         published.min(self.luma_height)
     }
 
-    /// Borrows the published prefix without a slot, for tests that publish
-    /// stripes into a bare progress. The borrow is bounded by the progress
-    /// only, so it must not outlive a freeze into a slot that is then dropped;
-    /// decoding reads through [`PublishedFrame::of_slot`].
-    #[cfg(test)]
-    pub(crate) fn read(&self) -> Option<PublishedFrame<'_, T>> {
-        PublishedFrame::of_progress(self)
-    }
-
     /// Takes the filtered workspace's planes from a frame that is published
     /// whole instead of filtered, so its reconstruction writes into them.
     pub(crate) fn take_unfiltered_planes(&self) -> Option<splot_recon::FramePlaneSamples<T>> {

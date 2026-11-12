@@ -67,7 +67,7 @@ fn direct_stripes_write_the_canonical_allocation_and_publish_out_of_order() {
     assert!(top.submit());
     assert_eq!(progress.published_luma_rows(), 8);
 
-    let published = progress.read().expect("published frame");
+    let published = PublishedFrame::of_slot(&slot).expect("published frame");
     let plane = published
         .plane(splot_recon::PlaneId::Y)
         .expect("published luma");
@@ -107,9 +107,7 @@ fn detached_direct_target_keeps_its_stripe_leased() {
 #[cfg(test)]
 #[test]
 fn detached_target_drop_hands_writes_back_before_submit() {
-    let progress = Arc::new(
-        FrameProgress::<u16>::new(info(8, 4, PixelFormat::Monochrome)).expect("frame progress"),
-    );
+    let (slot, _writer, progress) = pending::<u16>(8, 4, PixelFormat::Monochrome);
     progress.begin(&[(0, 4)]).expect("stripe geometry");
 
     let mut lease = progress.direct_stripe(0).expect("stripe lend");
@@ -120,7 +118,7 @@ fn detached_target_drop_hands_writes_back_before_submit() {
         .expect("target worker");
     assert!(lease.submit());
 
-    let published = progress.read().expect("published frame");
+    let published = PublishedFrame::of_slot(&slot).expect("published frame");
     assert!(
         published
             .plane(splot_recon::PlaneId::Y)
@@ -272,7 +270,7 @@ fn the_geometry_installs_once() {
 
 #[test]
 fn chroma_rows_truncate_to_the_fully_published_luma_pairs() {
-    let progress = new_progress(64, 192, PixelFormat::Yuv420);
+    let (slot, _writer, progress) = pending::<u8>(64, 192, PixelFormat::Yuv420);
     progress
         .begin(&[(0, 65), (65, 192)])
         .expect("stripe geometry");
@@ -280,47 +278,49 @@ fn chroma_rows_truncate_to_the_fully_published_luma_pairs() {
     progress.publish(0);
     assert_eq!(progress.published_luma_rows(), 65);
     assert_eq!(
-        progress.read().expect("a published prefix").chroma_rows(),
+        PublishedFrame::of_slot(&slot)
+            .expect("a published prefix")
+            .chroma_rows(),
         32,
         "luma row 64 alone does not complete chroma row 32"
     );
 
-    let full = new_progress(64, 128, PixelFormat::Yuv420);
+    let (slot, _full_writer, full) = pending::<u8>(64, 128, PixelFormat::Yuv420);
     full.begin(&[(0, 64), (64, 128)]).expect("stripe geometry");
     full.publish(0);
-    assert_eq!(full.read().expect("a published prefix").chroma_rows(), 32);
+    let published = PublishedFrame::of_slot(&slot).expect("a published prefix");
+    assert_eq!(published.chroma_rows(), 32);
 
-    let unsubsampled = new_progress(64, 128, PixelFormat::Yuv444);
+    let (slot, _writer, unsubsampled) = pending::<u8>(64, 128, PixelFormat::Yuv444);
     unsubsampled
         .begin(&[(0, 64), (64, 128)])
         .expect("stripe geometry");
     unsubsampled.publish(0);
-    assert_eq!(
-        unsubsampled
-            .read()
-            .expect("a published prefix")
-            .chroma_rows(),
-        64
-    );
+    let published = PublishedFrame::of_slot(&slot).expect("a published prefix");
+    assert_eq!(published.chroma_rows(), 64);
 }
 
 #[test]
 fn a_complete_odd_height_frame_publishes_its_terminal_chroma_row() {
-    let progress = new_progress(64, 129, PixelFormat::Yuv420);
+    let (slot, _writer, progress) = pending::<u8>(64, 129, PixelFormat::Yuv420);
     progress
         .begin(&[(0, 64), (64, 129)])
         .expect("stripe geometry");
 
     progress.publish(0);
     assert_eq!(
-        progress.read().expect("an interior prefix").chroma_rows(),
+        PublishedFrame::of_slot(&slot)
+            .expect("an interior prefix")
+            .chroma_rows(),
         32,
         "an interior prefix still requires complete luma pairs"
     );
 
     progress.publish(1);
     assert_eq!(
-        progress.read().expect("the complete frame").chroma_rows(),
+        PublishedFrame::of_slot(&slot)
+            .expect("the complete frame")
+            .chroma_rows(),
         65,
         "the final unpaired luma row completes the terminal chroma row"
     );
@@ -365,7 +365,7 @@ fn reads_are_refused_before_the_first_stripe_and_after_the_freeze() {
 
 #[test]
 fn a_failed_phase_publishes_no_readable_row() {
-    let progress = new_progress(64, 128, PixelFormat::Yuv420);
+    let (slot, _writer, progress) = pending::<u8>(64, 128, PixelFormat::Yuv420);
     progress
         .begin(&[(0, 64), (64, 128)])
         .expect("stripe geometry");
@@ -381,14 +381,14 @@ fn a_failed_phase_publishes_no_readable_row() {
         "a failed phase names no readable row, not the whole frame"
     );
     assert!(
-        progress.read().is_none(),
+        PublishedFrame::of_slot(&slot).is_none(),
         "the never-frozen workspace of a failed phase must not be readable"
     );
 }
 
 #[test]
 fn a_finished_phase_publishes_the_whole_frame() {
-    let progress = new_progress(64, 128, PixelFormat::Monochrome);
+    let (slot, _writer, progress) = pending::<u8>(64, 128, PixelFormat::Monochrome);
     progress
         .begin(&[(0, 64), (64, 128)])
         .expect("stripe geometry");
@@ -402,7 +402,7 @@ fn a_finished_phase_publishes_the_whole_frame() {
         "a phase that filtered every row admits every row threshold"
     );
     assert!(
-        progress.read().is_none(),
+        PublishedFrame::of_slot(&slot).is_none(),
         "a finished phase's rows are read from its settled slot"
     );
 }

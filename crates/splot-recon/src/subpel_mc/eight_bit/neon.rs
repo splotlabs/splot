@@ -4,25 +4,83 @@
 //! The eight-bit unscaled § 7.13.3.18 interpolation of [`super`] in NEON
 //! lanes.
 //!
-//! The arithmetic is that of the AVX2 byte-lane kernels: with halved taps
-//! one pass over eight-bit samples sums exactly in `i16`, and the vertical
-//! pass of a two-pass block weighs its rounded horizontal rows into `i32`.
-//! A strip kernel runs 8 or 16 columns of a row per vector and a 4-column
-//! kernel two rows; the rows of a vertical pass stay in a register ring, so
-//! no pass stages through memory. A compound cell keeps both predictors of
-//! a 4x4 or 8x8 cell in registers for the average.
+//! With halved taps one pass over eight-bit samples sums exactly in `i16`,
+//! and the vertical pass of a two-pass block weighs its rounded horizontal
+//! rows into `i32`. A strip kernel runs 8 or 16 columns of a row per vector
+//! and a 4-column kernel two rows; the rows of a vertical pass stay in a
+//! register ring, so no pass stages through memory. A compound cell keeps
+//! both predictors of a 4x4 or 8x8 cell in registers for the average. Each
+//! entry takes the blocks [`super`] sends it.
 
 #![allow(
     clippy::inline_always,
     reason = "measured strip-kernel row and store helpers"
 )]
 
-use super::super::CellPlacement;
-use super::super::block::{Block, Geometry, Reads, Sink, Taps, Window, reads};
-use super::super::cell::Written;
+use super::super::block::{Block, Geometry, Sink, Taps, Window, is_cell};
+use super::super::cell::{Cell, Plane, Written};
+use super::super::{CellPlacement, ReferencePlaneView};
+use super::pairs;
 use core::arch::aarch64::*;
 use core::slice::{ChunksExact, ChunksExactMut};
 use fearless_simd::{Bytes, Neon, Simd, SimdBase, SimdFrom, i8x16, i16x8, i32x4, u8x16, u64x2};
+
+/// Where a register cell reads window row `r`: `base + r * stride`, or
+/// when clamped row `top + r` clamped to `first..=last` from column `base`,
+/// window column `c` from column `clamp(start + c, low, high)` of the load.
+#[derive(Clone, Copy, Default)]
+pub(in crate::subpel_mc) struct Reads {
+    pub(in crate::subpel_mc) base: usize,
+    pub(in crate::subpel_mc) stride: usize,
+    pub(in crate::subpel_mc) top: i32,
+    pub(in crate::subpel_mc) first: i32,
+    pub(in crate::subpel_mc) last: i32,
+    pub(in crate::subpel_mc) columns: [i16; 3],
+}
+
+/// The [`Reads`] of `window` in a plane of `geometry` within `bounds`, and
+/// whether they are clamped: in place when every read is inside the clip
+/// bounds, else the § 7.13.3.18 `Clip3` reads; `None` when the clip range
+/// is empty or a clamped row cannot load 16 samples.
+#[inline(always)]
+pub(in crate::subpel_mc) fn reads(
+    window: &Window,
+    geometry: Geometry,
+    bounds: [i32; 4],
+) -> Option<(Reads, bool)> {
+    let [stride, width, rows, len] = geometry;
+    if let Some(base) = window.origin(geometry, bounds) {
+        let reads = Reads {
+            base,
+            stride,
+            ..Reads::default()
+        };
+        return Some((reads, false));
+    }
+    let bound = |value: i32, size: usize| value.max(0).min(size as i32 - 1);
+    let (first_x, last_x) = (bound(bounds[0], width), bound(bounds[2], width));
+    let (first, last) = (bound(bounds[1], rows), bound(bounds[3], rows));
+    if first_x > last_x || first > last || last_x > i32::from(i16::MAX) - 32 {
+        return None;
+    }
+    let column = window.column.max(first_x).min(last_x);
+    let end = (last as usize)
+        .checked_mul(stride)?
+        .checked_add(column as usize + 16)?;
+    if end > len {
+        return None;
+    }
+    let start = window.column.max(first_x - 16).min(last_x + 16) - column;
+    let reads = Reads {
+        base: column as usize,
+        stride,
+        top: window.row,
+        first,
+        last,
+        columns: [start, first_x - column, last_x - column].map(|value| value as i16),
+    };
+    Some((reads, true))
+}
 
 /// Rows `0..n` of a 2-D array in `data` from `at`, `stride` apart and `len`
 /// wide: the first `n - 1` as whole strides, then the last, `len` long.
@@ -452,14 +510,6 @@ macro_rules! cells {
     };
 }
 
-/// Whether the passes of a `w`-square cell of `horizontal` and `vertical`
-/// taps have a register cell: any of an 8x8 cell, at most two tap pairs
-/// each of a 4x4 one.
-#[inline(always)]
-fn is_cell(w: usize, horizontal: Option<&Taps>, vertical: Option<&Taps>) -> bool {
-    w == 8 || (w == 4 && pairs(horizontal) <= 2 && pairs(vertical) <= 2)
-}
-
 /// A reference of a register cell: its [`Reads`], whether they are
 /// clamped, and the taps of both passes.
 type Placed = (Reads, bool, Option<&'static Taps>, Option<&'static Taps>);
@@ -488,25 +538,11 @@ fn place_reads<const W: usize>(
     bounds: [i32; 4],
 ) -> Option<Placed> {
     let (horizontal, vertical) = (window.horizontal, window.vertical);
-    if window.w != W || window.h != W || !is_cell(W, horizontal, vertical) {
+    if window.w != W || !is_cell(window.w, window.h, horizontal, vertical) {
         return None;
     }
     let (reads, clamped) = reads(window, geometry, bounds)?;
     Some((reads, clamped, horizontal, vertical))
-}
-
-/// Whether the kernels cover `block`: strips of 8 columns, the last
-/// overlapping the one before it, or 4 columns in pairs of rows with at most
-/// two horizontal tap pairs.
-#[inline(always)]
-pub(in crate::subpel_mc) fn fits<T>(block: &Block<'_, T>) -> bool {
-    block.w >= 8 || (block.w == 4 && block.h.is_multiple_of(2) && pairs(block.horizontal) <= 2)
-}
-
-/// The tap pairs of a pass, zero for a skipped pass.
-#[inline(always)]
-fn pairs(taps: Option<&Taps>) -> usize {
-    taps.map_or(0, |taps| taps.count)
 }
 
 /// Both references' samples, the output and its stride of one plane of a
@@ -530,8 +566,14 @@ pub(in crate::subpel_mc) struct Strips<'a, 'b, O, const P: usize = 1>(
     [&'a mut O; P],
 );
 
-/// The kernels of a compound pair into `u8` storage.
-pub(in crate::subpel_mc) struct Compound<'a, 'b>([&'a Block<'b, u8>; 2], i32, &'a mut [u8], usize);
+/// The kernels of `P` compound pairs of one window shape, each into its
+/// `u8` storage: with `CELL` 4x4 or 8x8 register cells, else the first
+/// predictor staged for the second.
+pub(in crate::subpel_mc) struct Compound<'a, 'b, const CELL: bool, const P: usize>(
+    [[&'a Block<'b, u8>; 2]; P],
+    i32,
+    [(&'a mut [u8], usize); P],
+);
 
 /// The kernels of a compound cell of two windows within their bounds, read
 /// from each reference's samples of its geometry, into `u8` storage.
@@ -544,52 +586,68 @@ pub(in crate::subpel_mc) struct Windows<'a, 'b>(
     usize,
 );
 
+/// The NEON token, which the AArch64 baseline always has.
+#[inline(always)]
+pub(in crate::subpel_mc) fn token() -> Option<Neon> {
+    fearless_simd::Level::baseline().as_neon()
+}
+
 /// Stores the COMPOUND_AVERAGE of the 4x4 or 8x8 cell of `windows` within
-/// `bounds`, read in place or by clamped rows and columns, or returns
-/// `false` without writing for any other cell.
+/// `bounds` read from `views`, in place or by clamped rows and columns, or
+/// returns `false` without writing when a clamped row cannot load 16
+/// samples or the output cannot hold the cell.
 #[inline]
 pub(in crate::subpel_mc) fn compound_windows(
-    t: Neon,
-    references: [(&[u8], Geometry); 2],
-    windows: [&Window; 2],
+    views: [&ReferencePlaneView<'_, u8>; 2],
+    windows: &[Window; 2],
     bounds: [[i32; 4]; 2],
     forward: i32,
     output: &mut [u8],
     stride: usize,
 ) -> bool {
-    dot::run(
-        t,
-        Windows(references, windows, bounds, forward, output, stride),
-    )
+    let references = views.map(|view| (view.samples, view.geometry()));
+    let windows = [&windows[0], &windows[1]];
+    let job = Windows(references, windows, bounds, forward, output, stride);
+    token().is_some_and(|t| dot::run(t, job))
 }
 
 /// The kernels of a [`Program`] of `size`-square cells.
-pub(in crate::subpel_mc) struct Programs<'a, 'b>(
-    Program<'a, 'b>,
-    usize,
-    &'a mut super::super::cell::Written,
-);
+pub(in crate::subpel_mc) struct Programs<'a, 'b>(Program<'a, 'b>, usize, &'a mut Written);
 
-/// Runs the cells of `program` that it covers, `size` 4 or 8, and returns
-/// their bits.
+/// Runs the cells of a program of `size`-square cells, 4 or 8, whose
+/// windows are read in place or by clamped rows and columns into both
+/// `planes`, and returns their bits.
 #[inline]
 pub(in crate::subpel_mc) fn program(
-    t: Neon,
-    program: Program<'_, '_>,
-    size: usize,
-) -> super::super::cell::Written {
+    planes: &mut [Option<Plane<'_, '_, u8>>; 2],
+    (filter, size): (usize, usize),
+    cells: &[Cell],
+    (forward, _): (i32, u16),
+) -> Written {
     let mut written = [[0; 4]; 2];
+    let (Some(t), Some((views, ..))) = (token(), &planes[0]) else {
+        return written;
+    };
+    let geometry = views.each_ref().map(ReferencePlaneView::geometry);
+    let planes = planes.each_mut().map(|plane| {
+        let (views, output, stride) = plane.as_mut()?;
+        Some(([views[0].samples, views[1].samples], &mut **output, *stride))
+    });
+    let program = Program {
+        planes,
+        geometry,
+        filter,
+        cells,
+        forward,
+    };
     dot::run(t, Programs(program, size, &mut written));
     written
 }
 
-/// Predicts `block` into an eight-bit `sink`, or returns `false` without
-/// writing when the kernels do not cover them.
+/// Predicts `block` into an eight-bit `sink`, as [`super::predict`] admits.
 #[inline]
-pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut Sink<'_>) -> bool {
-    if !fits(block) {
-        return false;
-    }
+pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) {
+    let Some(t) = token() else { return };
     let w = block.w;
     match sink {
         Sink::Put { output, stride } => {
@@ -604,11 +662,7 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
                 ),
             );
         }
-        Sink::PutWide {
-            output,
-            stride,
-            max,
-        } if *max == u16::from(u8::MAX) => {
+        Sink::PutWide { output, stride, .. } => {
             dot::run(
                 t,
                 Strips(
@@ -686,51 +740,88 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
                 ),
             );
         }
-        Sink::PutWide { .. } | Sink::AverageWide { .. } => return false,
+        Sink::AverageWide { .. } => {}
     }
-    true
 }
 
-/// Stores the `Clip1` single-reference prediction of `block`, or returns
-/// `false` without writing when the kernels do not cover it.
+/// Stores the `Clip1` single-reference prediction of `block`.
 #[inline]
-pub(in crate::subpel_mc) fn put(
-    t: Neon,
-    block: &Block<'_, u8>,
-    output: &mut [u8],
-    stride: usize,
-) -> bool {
-    fits(block) && {
-        dot::run(t, Strips([block], [&mut Put { output, stride }]));
-        true
+pub(in crate::subpel_mc) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
+    run(Strips([block], [&mut Put { output, stride }]));
+}
+
+/// Runs `job` in the kernel family [`dot::run`] picks.
+#[inline(always)]
+fn run<J: dot::Job<Output = ()>>(job: J) {
+    if let Some(t) = token() {
+        dot::run(t, job);
     }
 }
 
-/// [`put`] of two blocks of one window into `outputs`, both or neither.
+/// [`put`] of two blocks of one window into `outputs`.
 #[inline]
 pub(in crate::subpel_mc) fn put_pair(
-    t: Neon,
     blocks: [&Block<'_, u8>; 2],
-    [first, second]: [&mut Put<'_>; 2],
-) -> bool {
-    fits(blocks[0]) && {
-        dot::run(t, Strips(blocks, [first, second]));
-        true
-    }
+    [(first, first_stride), (second, second_stride)]: [(&mut [u8], usize); 2],
+) {
+    let first = &mut Put {
+        output: first,
+        stride: first_stride,
+    };
+    let second = &mut Put {
+        output: second,
+        stride: second_stride,
+    };
+    run(Strips(blocks, [first, second]));
 }
 
-/// Predicts both blocks of a compound pair of one shape and stores their
-/// COMPOUND_AVERAGE into `output`, or returns `false` without writing when
-/// the kernels do not cover the pair.
+/// The COMPOUND_AVERAGE of each of `P` 4x4 or 8x8 register cell pairs into
+/// its output.
 #[inline]
-pub(in crate::subpel_mc) fn compound(
-    t: Neon,
+pub(in crate::subpel_mc) fn compound_cell<const P: usize>(
+    pairs: [[&Block<'_, u8>; 2]; P],
+    forward: i32,
+    outputs: [(&mut [u8], usize); P],
+) {
+    run(Compound::<true, P>(pairs, forward, outputs));
+}
+
+/// The COMPOUND_AVERAGE of two full-sample blocks into `output`.
+#[inline]
+pub(in crate::subpel_mc) fn compound_fullpel(
     blocks: [&Block<'_, u8>; 2],
     forward: i32,
     output: &mut [u8],
     stride: usize,
-) -> bool {
-    dot::run(t, Compound(blocks, forward, output, stride))
+) {
+    if let Some(t) = token() {
+        fullpel_pair(t, blocks, forward, output, stride);
+    }
+}
+
+fearless_simd::kernel!(
+    /// [`fullpel`] entered through the NEON token.
+    #[inline]
+    fn fullpel_pair(
+        t: Neon,
+        blocks: [&Block<'_, u8>; 2],
+        forward: i32,
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        fullpel(t, blocks, forward, output, stride);
+    }
+);
+
+/// The COMPOUND_AVERAGE of each of `P` compound pairs into its output, the
+/// first predictor staged for the second.
+#[inline]
+pub(in crate::subpel_mc) fn compound_strips<const P: usize>(
+    pairs: [[&Block<'_, u8>; 2]; P],
+    forward: i32,
+    outputs: [(&mut [u8], usize); P],
+) {
+    run(Compound::<false, P>(pairs, forward, outputs));
 }
 
 fearless_simd::kernel!(
@@ -742,10 +833,22 @@ fearless_simd::kernel!(
 );
 
 fearless_simd::kernel!(
-    /// [`mla::compound`] entered through the NEON token.
+    /// [`mla::compound_cell`] or [`mla::compound_strips`] entered through
+    /// the NEON token.
     #[inline]
-    fn mla_compound(t: Neon, job: Compound<'_, '_>) -> bool {
-        mla::compound(t, job.0, job.1, job.2, job.3)
+    fn mla_compound(
+        t: Neon,
+        cell: bool,
+        blocks: [&Block<'_, u8>; 2],
+        forward: i32,
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        if cell {
+            mla::compound_cell(t, blocks, forward, output, stride);
+        } else {
+            mla::compound_strips(t, blocks, forward, output, stride);
+        }
     }
 );
 

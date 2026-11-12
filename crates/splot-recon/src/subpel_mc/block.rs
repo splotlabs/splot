@@ -198,23 +198,22 @@ impl Sink<'_> {
     }
 }
 
-/// One pass's active taps from tap `start`, as `count` pairs: halved byte
-/// pairs for `pmaddubsw`, halved and full `i16` pairs for `pmaddwd`.
+/// One pass's active taps from tap `start`, as `count` pairs: the halved
+/// taps as `i8` bytes of one little-endian word, halved and full `i16`
+/// pairs.
 #[derive(Clone, Copy)]
 pub(super) struct Taps {
     pub(super) start: usize,
     pub(super) count: usize,
     #[cfg_attr(
-        not(target_arch = "x86_64"),
-        allow(dead_code, reason = "read by the AVX2 kernels")
-    )]
-    pub(super) bytes: [i16; NUM_TAPS / 2],
-    /// [`Self::bytes`] as one little-endian word.
-    #[cfg_attr(
         not(target_arch = "aarch64"),
         allow(dead_code, reason = "read by the NEON kernels")
     )]
     pub(super) dot: u64,
+    #[cfg_attr(
+        not(target_arch = "aarch64"),
+        allow(dead_code, reason = "read by the NEON kernels")
+    )]
     pub(super) words: [i32; NUM_TAPS / 2],
     pub(super) full: [i32; NUM_TAPS / 2],
 }
@@ -253,12 +252,12 @@ pub(super) static TAPS: [[Option<Taps>; NUM_PHASES]; NUM_FILTER_TYPES] = {
         while phase < NUM_PHASES {
             let row = &SUBPEL_FILTERS[filter][phase];
             let (start, taps) = even_tap_span(row);
-            let (mut bytes, mut words, mut full, mut dot) = ([0; 4], [0; 4], [0; 4], 0);
+            let (mut words, mut full, mut dot) = ([0; 4], [0; 4], 0);
             let mut pair = 0;
             while pair < taps / 2 {
                 let (a, b) = (row[start + 2 * pair], row[start + 2 * pair + 1]);
-                bytes[pair] = i16::from_le_bytes([(a / 2) as u8, (b / 2) as u8]);
-                dot |= (bytes[pair] as u16 as u64) << (16 * pair);
+                let bytes = u16::from_le_bytes([(a / 2) as u8, (b / 2) as u8]);
+                dot |= (bytes as u64) << (16 * pair);
                 words[pair] = ((a / 2) & 0xffff) | ((b / 2) << 16);
                 full[pair] = (a & 0xffff) | (b << 16);
                 pair += 1;
@@ -266,7 +265,6 @@ pub(super) static TAPS: [[Option<Taps>; NUM_PHASES]; NUM_FILTER_TYPES] = {
             table[filter][phase] = Some(Taps {
                 start,
                 count: taps / 2,
-                bytes,
                 dot,
                 words,
                 full,
@@ -334,14 +332,6 @@ impl<'a, T> Block<'a, T> {
     pub(super) fn start(&self, row: usize) -> usize {
         self.origin + row * self.stride
     }
-
-    /// [`Self::start`] of storage shorter than `2^32` samples.
-    #[cfg(target_arch = "x86_64")]
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
-    #[inline(always)]
-    pub(super) fn start32(&self, row: usize) -> u32 {
-        self.origin as u32 + row as u32 * self.stride as u32
-    }
 }
 
 /// Window columns every kernel may read past the window origin of a row.
@@ -349,15 +339,10 @@ pub(super) const fn reach(w: usize) -> usize {
     w.next_multiple_of(16) + 16
 }
 
-/// The intermediate storage the kernels stage `rows` window rows of a
-/// `w`-wide block in, none without a vertical pass.
+/// The intermediate storage the portable kernels stage `rows` window rows
+/// of a `w`-wide block in, none without a vertical pass.
 pub(super) const fn stage_len(rows: usize, w: usize, vertical: Option<&Taps>) -> usize {
     match vertical {
-        Some(_) if cfg!(target_arch = "x86_64") => {
-            let groups = rows.next_multiple_of(4) * 16;
-            let strips = rows * w.div_ceil(8) * 8 + 64;
-            if groups > strips { groups } else { strips }
-        }
         Some(_) if w <= 4 => rows.div_ceil(2) * 8,
         Some(_) => rows * w.next_multiple_of(8),
         None => 0,
@@ -651,66 +636,6 @@ impl Window {
         Some(())
     }
 }
-/// Where a register cell reads window row `r`: `base + r * stride`, or
-/// when clamped row `top + r` clamped to `first..=last` from column `base`,
-/// window column `c` from column `clamp(start + c, low, high)` of the load.
-#[cfg(target_arch = "aarch64")]
-#[derive(Clone, Copy, Default)]
-pub(super) struct Reads {
-    pub(super) base: usize,
-    pub(super) stride: usize,
-    pub(super) top: i32,
-    pub(super) first: i32,
-    pub(super) last: i32,
-    pub(super) columns: [i16; 3],
-}
-
-/// The [`Reads`] of `window` in a plane of `geometry` within `bounds`, and
-/// whether they are clamped: in place when every read is inside the clip
-/// bounds, else the § 7.13.3.18 `Clip3` reads; `None` when the clip range
-/// is empty or a clamped row cannot load 16 samples.
-#[cfg(target_arch = "aarch64")]
-#[allow(clippy::inline_always, reason = "measured register-cell placement")]
-#[inline(always)]
-pub(super) fn reads(
-    window: &Window,
-    geometry: Geometry,
-    bounds: [i32; 4],
-) -> Option<(Reads, bool)> {
-    let [stride, width, rows, len] = geometry;
-    if let Some(base) = window.origin(geometry, bounds) {
-        let reads = Reads {
-            base,
-            stride,
-            ..Reads::default()
-        };
-        return Some((reads, false));
-    }
-    let bound = |value: i32, size: usize| value.max(0).min(size as i32 - 1);
-    let (first_x, last_x) = (bound(bounds[0], width), bound(bounds[2], width));
-    let (first, last) = (bound(bounds[1], rows), bound(bounds[3], rows));
-    if first_x > last_x || first > last || last_x > i32::from(i16::MAX) - 32 {
-        return None;
-    }
-    let column = window.column.max(first_x).min(last_x);
-    let end = (last as usize)
-        .checked_mul(stride)?
-        .checked_add(column as usize + 16)?;
-    if end > len {
-        return None;
-    }
-    let start = window.column.max(first_x - 16).min(last_x + 16) - column;
-    let reads = Reads {
-        base: column as usize,
-        stride,
-        top: window.row,
-        first,
-        last,
-        columns: [start, first_x - column, last_x - column].map(|value| value as i16),
-    };
-    Some((reads, true))
-}
-
 /// Runs `f` on the block of `window` read in place from `view`, else on a
 /// copy in retained storage `slot`; `None` without running it when the clip
 /// range of `bounds` is empty.
@@ -803,25 +728,34 @@ pub(super) fn with_stage<R>(
 /// The stage of an eight-tap put of up to 16x16 samples.
 const PUT_STAGE: usize = 23 * 16 + 64;
 
-/// Runs the first vector kernel that covers `block`: on AArch64 the
-/// stageless NEON kernels, else the AVX2 or portable kernels on a stage.
+/// Runs the kernels of `block`: the eight-bit or 16-bit kernels of its
+/// shape and sink, else the portable kernels on a stage.
 pub(super) fn kernels<T: Sample>(
     block: &Block<'_, T>,
     sink: &mut Sink<'_>,
     scratch: Option<&mut [i16]>,
 ) {
-    if super::eight_bit::predict(block, sink, &mut [])
-        || super::sixteen_bit::predict(block, sink, &mut [])
-    {
+    if super::eight_bit::predict(block, sink) || super::sixteen_bit::predict(block, sink) {
         return;
     }
     with_stage(stage_needed(block), scratch, |stage| {
-        if !super::eight_bit::predict(block, sink, stage)
-            && !super::sixteen_bit::predict(block, sink, stage)
-        {
-            super::portable::predict(block, sink, stage);
-        }
+        super::portable::predict(block, sink, stage);
     });
+}
+
+/// Whether a `w x h` block whose passes have `horizontal` and `vertical`
+/// taps is a register cell: 8x8, or 4x4 with at most two tap pairs in each
+/// pass.
+#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[inline(always)]
+pub(super) fn is_cell(
+    w: usize,
+    h: usize,
+    horizontal: Option<&Taps>,
+    vertical: Option<&Taps>,
+) -> bool {
+    let small = |taps: Option<&Taps>| taps.is_none_or(|taps| taps.count <= 2);
+    w == h && (w == 8 || (w == 4 && small(horizontal) && small(vertical)))
 }
 
 /// Stores the COMPOUND_AVERAGE, clipped to `clip.1`, of the blocks of
@@ -863,10 +797,9 @@ fn compound_emulated<T: Sample, O: ReconSample>(
     output: &mut [O],
     stride: usize,
 ) -> bool {
-    let cell = (windows[0].w == 4 || windows[0].w == 8)
-        && windows
-            .iter()
-            .all(|window| window.w == windows[0].w && window.h == windows[0].w);
+    let cell = windows.iter().all(|window| {
+        window.w == windows[0].w && is_cell(window.w, window.h, window.horizontal, window.vertical)
+    });
     if cell && clamped_cell(references, &windows, bounds, clip, &mut *output, stride) {
         return true;
     }
@@ -874,7 +807,7 @@ fn compound_emulated<T: Sample, O: ReconSample>(
 }
 
 /// [`compound_emulated`] of each window copied with its reads clamped.
-fn copied<T: Sample, O: ReconSample>(
+pub(super) fn copied<T: Sample, O: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
     windows: &[Window; 2],
     bounds: [[i32; 4]; 2],
@@ -891,10 +824,9 @@ fn copied<T: Sample, O: ReconSample>(
     .unwrap_or(false)
 }
 
-/// The register-cell kernel of a 4x4 or 8x8 compound pair read by clamped
-/// rows and columns, `false` without writing for a pair it does not cover:
-/// the NEON cells on AArch64, else the generic kernel, which reads [`copied`]
-/// windows.
+/// The register-cell kernel of a 4x4 or 8x8 compound pair of [`is_cell`]
+/// windows read by clamped rows and columns, `false` without writing for a
+/// pair it does not cover.
 fn clamped_cell<T: Sample, O: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
     windows: &[Window; 2],
@@ -903,36 +835,21 @@ fn clamped_cell<T: Sample, O: ReconSample>(
     output: &mut [O],
     stride: usize,
 ) -> bool {
-    #[cfg(target_arch = "aarch64")]
-    {
-        if let ([Some(first), Some(second)], Some(output)) = (
-            references.map(ReferencePlaneView::as_u8),
-            O::u8_slice_mut(&mut *output),
-        ) && let Some(token) = fearless_simd::Level::baseline().as_neon()
-        {
-            let sources = [&first, &second].map(|view| (view.samples, view.geometry()));
-            let windows = [&windows[0], &windows[1]];
-            return super::eight_bit::neon::compound_windows(
-                token, sources, windows, bounds, clip.0, output, stride,
-            );
-        }
-        if let ([Some(first), Some(second)], Some(output)) = (
-            references.map(ReferencePlaneView::as_u16),
-            O::u16_slice_mut(&mut *output),
-        ) {
-            return super::sixteen_bit::compound_windows(
-                [&first, &second],
-                *windows,
-                bounds,
-                clip,
-                output,
-                stride,
-            );
-        }
-        false
+    if let ([Some(first), Some(second)], Some(output)) = (
+        references.map(ReferencePlaneView::as_u8),
+        O::u8_slice_mut(&mut *output),
+    ) {
+        let views = [&first, &second];
+        return super::eight_bit::compound_windows(views, windows, bounds, clip.0, output, stride);
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    copied(references, windows, bounds, clip, output, stride)
+    if let ([Some(first), Some(second)], Some(output)) = (
+        references.map(ReferencePlaneView::as_u16),
+        O::u16_slice_mut(&mut *output),
+    ) {
+        let views = [&first, &second];
+        return super::sixteen_bit::compound_windows(views, windows, bounds, clip, output, stride);
+    }
+    false
 }
 
 /// [`compound`] of two blocks read in place.
@@ -990,10 +907,22 @@ fn compound_blocks<T: Sample, O: ReconSample>(
             super::portable::compound_u16(blocks, forward, max, &mut [], output, stride);
             return true;
         }
-        if super::sixteen_bit::compound(blocks, forward, max, &mut [], output, stride) {
+        if super::sixteen_bit::compound(blocks, (forward, max), output, stride) {
             return true;
         }
     }
+    two_pass(blocks, (forward, max), output, stride)
+}
+
+/// [`compound_blocks`] through the first predictor staged for the second:
+/// `false` without writing for output samples neither 8- nor 16-bit.
+pub(super) fn two_pass<T: Sample, O: ReconSample>(
+    blocks: [&Block<'_, T>; 2],
+    (forward, max): (i32, u16),
+    output: &mut [O],
+    stride: usize,
+) -> bool {
+    let (w, h) = (blocks[0].w, blocks[0].h);
     with_compound_pred0(w * h, |pred0| {
         kernels(
             blocks[0],

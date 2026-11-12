@@ -89,18 +89,15 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         }
     }
 
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "the motion-compensation tests still call it as fallible"
-    )]
-    pub(crate) fn publishing(published: &PublishedFrame<'a, T>) -> Result<Self> {
-        Ok(Self {
+    /// Reads the published prefix of a still-filtering reference frame.
+    pub(crate) fn publishing(published: &PublishedFrame<'a, T>) -> Self {
+        Self {
             source: SampleSource::Publishing(published.storage()),
             published: Some(PublishedRows {
                 luma: published.luma_rows(),
                 chroma: published.chroma_rows(),
             }),
-        })
+        }
     }
 
     /// Returns the reference frame's decoded geometry.
@@ -372,11 +369,15 @@ impl<T: ReconSample> HeldFrameSamples<'_, T> {
     ///
     /// # Errors
     ///
-    /// As [`ReferenceSamples::publishing`].
+    /// None at present; the block walk propagates the result.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the block walk, outside this change, propagates it as fallible"
+    )]
     pub(crate) fn samples(&self) -> Result<ReferenceSamples<'_, T>> {
         Ok(match self {
             Self::Settled(frame) => ReferenceSamples::settled(frame),
-            Self::Filtering(published) => ReferenceSamples::publishing(published)?,
+            Self::Filtering(published) => ReferenceSamples::publishing(published),
         })
     }
 }

@@ -15,15 +15,76 @@
     reason = "measured register-cell placement helpers"
 )]
 
-use super::super::CellPlacement;
-use super::super::block::{Block, Geometry, Reads, Sink, Taps, Window, reads};
-use super::super::cell::{Cell, Written};
+use super::super::block::{Block, Geometry, Sink, Taps, Window};
+use super::super::cell::{Cell, Plane, Written};
+use super::super::eight_bit::neon::{Reads, reads, token};
+use super::super::{CellPlacement, ReferencePlaneView};
 use core::arch::aarch64::*;
 use fearless_simd::{Neon, SimdBase, SimdFrom, i16x8, i32x4, u16x8};
 
 /// Both references' samples, the output and its stride of one plane of a
 /// cell program.
-pub(super) type ProgramPlane<'a, 'b> = ([&'b [u16]; 2], &'a mut [u16], usize);
+type ProgramPlane<'a, 'b> = ([&'b [u16]; 2], &'a mut [u16], usize);
+
+/// Predicts `block` into `sink`, as [`super::predict`] admits.
+#[inline]
+pub(super) fn predict(block: &Block<'_, u16>, sink: &mut Sink<'_>) {
+    if let Some(t) = token() {
+        predict_lanes(t, block, sink);
+    }
+}
+
+/// Stores the COMPOUND_AVERAGE, clipped to `clip.1`, of a 4x4 or 8x8
+/// register cell pair.
+#[inline]
+pub(super) fn compound_cell(
+    blocks: [&Block<'_, u16>; 2],
+    clip: (i32, u16),
+    output: &mut [u16],
+    stride: usize,
+) {
+    if let Some(t) = token() {
+        cell_pair(t, blocks, clip, output, stride);
+    }
+}
+
+/// Stores the COMPOUND_AVERAGE, clipped to `clip.1`, of the 4x4 or 8x8
+/// cell of `windows` within `bounds` read from `views`, or returns `false`
+/// without writing when a clamped row cannot load its samples.
+#[inline]
+pub(super) fn compound_windows(
+    views: [&ReferencePlaneView<'_, u16>; 2],
+    windows: &[Window; 2],
+    bounds: [[i32; 4]; 2],
+    clip: (i32, u16),
+    output: &mut [u16],
+    stride: usize,
+) -> bool {
+    let references = views.map(|view| (view.samples, view.geometry()));
+    let windows = [&windows[0], &windows[1]];
+    token().is_some_and(|t| windows_cell(t, references, windows, bounds, clip, output, stride))
+}
+
+/// Runs the cells of a program of `size`-square cells whose windows are
+/// read in place or by clamped rows and columns into both `planes`, and
+/// returns their bits.
+#[inline]
+pub(super) fn program(
+    planes: &mut [Option<Plane<'_, '_, u16>>; 2],
+    shape: (usize, usize),
+    cells: &[Cell],
+    clip: (i32, u16),
+) -> Written {
+    let (Some(t), Some((views, ..))) = (token(), &planes[0]) else {
+        return [[0; 4]; 2];
+    };
+    let geometry = views.each_ref().map(ReferencePlaneView::geometry);
+    let mut planes = planes.each_mut().map(|plane| {
+        let (views, output, stride) = plane.as_mut()?;
+        Some(([views[0].samples, views[1].samples], &mut **output, *stride))
+    });
+    run_cells(t, &mut planes, geometry, shape, cells, clip)
+}
 
 /// The `i32` sums of a group: outputs `0..4` and `4..8`.
 type Sums = (int32x4_t, int32x4_t);
@@ -70,12 +131,7 @@ macro_rules! specialize_pairs {
 
 fearless_simd::kernel!(
     #[inline]
-    pub(super) fn predict(
-        t: Neon,
-        block: &Block<'_, u16>,
-        sink: &mut Sink<'_>,
-        _stage: &mut [i16],
-    ) {
+    fn predict_lanes(t: Neon, block: &Block<'_, u16>, sink: &mut Sink<'_>) {
         let w = block.w;
         match sink {
             Sink::Put { output, stride } => {
@@ -138,7 +194,7 @@ fearless_simd::kernel!(
     /// Stores the COMPOUND_AVERAGE of two `size`-square register cells, 4
     /// or 8, clipped to `max`.
     #[inline]
-    pub(super) fn compound_cell(
+    fn cell_pair(
         t: Neon,
         blocks: [&Block<'_, u16>; 2],
         clip: (i32, u16),
@@ -171,7 +227,7 @@ fearless_simd::kernel!(
     /// into both `planes` of reference geometry `geometry`, and returns
     /// their bits.
     #[inline]
-    pub(super) fn program(
+    fn run_cells(
         t: Neon,
         planes: &mut [Option<ProgramPlane<'_, '_>>; 2],
         geometry: [Geometry; 2],
@@ -194,7 +250,7 @@ fearless_simd::kernel!(
     /// reference of its geometry, or returns `false` without writing when
     /// the kernels do not cover it.
     #[inline]
-    pub(super) fn compound_windows(
+    fn windows_cell(
         t: Neon,
         references: [(&[u16], Geometry); 2],
         windows: [&Window; 2],
@@ -324,16 +380,6 @@ fn place_window<const W: usize>(
     }
     let (reads, clamped) = reads(window, geometry, bounds)?;
     Some((reads, clamped, window.horizontal, window.vertical))
-}
-
-/// Whether `block` is a `w`-square register cell: 8x8, or 4x4 with at
-/// most two tap pairs in each pass.
-#[inline(always)]
-pub(super) fn is_cell(block: &Block<'_, u16>, w: usize) -> bool {
-    let small = |taps: Option<&Taps>| pairs(taps) <= 2;
-    block.w == w
-        && block.h == w
-        && (w == 8 || (w == 4 && small(block.horizontal) && small(block.vertical)))
 }
 
 /// The tap-pair count of a pass, zero for a skipped pass.

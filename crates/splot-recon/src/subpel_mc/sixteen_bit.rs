@@ -1,918 +1,137 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Unscaled § 7.13.3.18 interpolation of 16-bit storage in AVX2 word lanes.
+//! Unscaled § 7.13.3.18 interpolation of 16-bit storage in word lanes: the
+//! shapes each kernel takes, in one order for every target.
 //!
-//! The vector layout is the byte-lane one: 16 outputs per vector, one strip
-//! row of a block 16 columns wide, two rows of an 8-column strip or four rows
-//! of a 4-column strip. Each tap pair interleaves two windows, or two rows,
-//! into one `pmaddwd`, so every sum is exact in `i32`; a horizontal value
-//! fits `i16` for 8- and 10-bit samples. On aarch64 the NEON kernels of
-//! [`neon`] take blocks 4 or a multiple of 8 columns wide. Other widths and
-//! targets decline to the portable kernels.
+//! Each tap weighs a sample into `i32`, so every sum is exact; a horizontal
+//! value fits `i16` for 8- and 10-bit samples. The kernels are the [`neon`]
+//! ones on AArch64 and the portable ones elsewhere; full-sample blocks and
+//! blocks no kernel takes decline to the portable kernels.
 
-use super::block::{Block, Sink};
+use super::ReferencePlaneView;
+use super::block::{Block, Sink, Window, is_cell};
+use super::cell::{Cell, Plane, Written};
 use crate::format::ReconSample;
 
+#[cfg(not(target_arch = "aarch64"))]
+use generic as kernel;
 #[cfg(target_arch = "aarch64")]
 mod neon;
-#[cfg(all(test, target_arch = "aarch64"))]
+#[cfg(target_arch = "aarch64")]
+use neon as kernel;
+#[cfg(test)]
 mod tests;
 
-/// Predicts a 16-bit block and returns `true`, or returns `false` without
-/// writing when the block is outside the word-lane subset.
-pub(super) fn predict<T: ReconSample>(
-    block: &Block<'_, T>,
-    sink: &mut Sink<'_>,
-    stage: &mut [i16],
-) -> bool {
-    #[cfg(target_arch = "x86_64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_avx2()
-        && let Some(source) = T::u16_slice(block.source)
-        && fits(block)
-        && stage.len() >= super::block::stage_needed(block)
-        && !sink.is_narrow()
-    {
-        avx2::predict(token, &block.with_source(source), sink, stage);
-        return true;
-    }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_neon()
-        && let Some(source) = T::u16_slice(block.source)
-        && fits(block)
-        && (block.horizontal.is_some() || block.vertical.is_some())
-        && !sink.is_narrow()
-    {
-        neon::predict(token, &block.with_source(source), sink, stage);
-        return true;
-    }
-    let _ = (block, sink, stage);
-    false
+/// Whether the word-lane kernels cover `block`: 4 columns in pairs of rows,
+/// or strips of 8 columns, the last overlapping the one before it.
+fn fits<T>(block: &Block<'_, T>) -> bool {
+    (block.w == 4 && block.h.is_multiple_of(2)) || block.w >= 8
 }
 
-/// Predicts both blocks of a compound cell, a register cell on AArch64 or
-/// at most four groups on x86, and stores their COMPOUND_AVERAGE, clipped to
-/// `max`, into `output`, or returns `false` without writing when a block is
-/// outside that subset.
+/// Predicts a filtered 16-bit block and returns `true`, or returns `false`
+/// without writing for a full-sample block, a block the kernels do not
+/// cover or an eight-bit compound sink.
+pub(super) fn predict<T: ReconSample>(block: &Block<'_, T>, sink: &mut Sink<'_>) -> bool {
+    let filtered = block.horizontal.is_some() || block.vertical.is_some();
+    match T::u16_slice(block.source) {
+        Some(source) if filtered && fits(block) && !sink.is_narrow() => {
+            kernel::predict(&block.with_source(source), sink);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Predicts both blocks of a 4x4 or 8x8 [`is_cell`] compound pair in
+/// registers and stores their COMPOUND_AVERAGE, clipped to `clip.1`, into
+/// `output`, or returns `false` without writing for any other pair.
 pub(super) fn compound(
     blocks: [&Block<'_, u16>; 2],
-    forward: i32,
-    max: u16,
-    stage: &mut [i16],
+    clip: (i32, u16),
     output: &mut [u16],
     stride: usize,
 ) -> bool {
-    #[cfg(target_arch = "x86_64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_avx2()
-        && blocks
-            .iter()
-            .all(|block| fits(block) && block.w * block.h <= 64)
-        && blocks
-            .iter()
-            .all(|block| stage.len() >= super::block::stage_needed(block))
-    {
-        avx2::compound(token, blocks, forward, max, stage, output, stride);
-        return true;
+    let (w, h) = (blocks[0].w, blocks[0].h);
+    let cell = |block: &Block<'_, u16>| {
+        block.w == w && block.h == h && is_cell(w, h, block.horizontal, block.vertical)
+    };
+    cell(blocks[0]) && cell(blocks[1]) && {
+        kernel::compound_cell(blocks, clip, output, stride);
+        true
     }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_neon() {
-        let w = blocks[0].w;
-        if blocks.iter().all(|block| neon::is_cell(block, w)) {
-            neon::compound_cell(token, blocks, (forward, max), output, stride);
-            return true;
-        }
-    }
-    let _ = (blocks, forward, max, stage, output, stride);
-    false
 }
 
-/// Stores the COMPOUND_AVERAGE, clipped to `clip.1`, of a 4x4 or 8x8
-/// compound cell of `windows` within `bounds` that the NEON kernels read
-/// in place or by clamped rows and columns, or returns `false` without
-/// writing for any other cell.
-#[cfg(target_arch = "aarch64")]
+/// Stores the COMPOUND_AVERAGE, clipped to `clip.1`, of the 4x4 or 8x8
+/// [`is_cell`] cell of `windows` within `bounds` read from `views`, in place
+/// or by clamped rows and columns, or returns `false` without writing when
+/// the cell kernel does not cover it.
 pub(super) fn compound_windows(
-    references: [&super::ReferencePlaneView<'_, u16>; 2],
-    windows: [super::block::Window; 2],
+    views: [&ReferencePlaneView<'_, u16>; 2],
+    windows: &[Window; 2],
     bounds: [[i32; 4]; 2],
     clip: (i32, u16),
     output: &mut [u16],
     stride: usize,
 ) -> bool {
-    let w = windows[0].w;
-    let square = |window: &super::block::Window| window.w == w && window.h == w;
-    let references = references.map(|view| (view.samples, view.geometry()));
-    (w == 4 || w == 8)
-        && windows.iter().all(square)
-        && fearless_simd::Level::baseline()
-            .as_neon()
-            .is_some_and(|token| {
-                let windows = [&windows[0], &windows[1]];
-                neon::compound_windows(token, references, windows, bounds, clip, output, stride)
-            })
+    kernel::compound_windows(views, windows, bounds, clip, output, stride)
 }
 
-/// Runs the cells of a [`super::CompoundCells`] program of `size`-square
-/// cells whose windows are read in place into both `planes` and returns
-/// their bits; none without the NEON kernels.
-#[cfg(target_arch = "aarch64")]
+/// Runs the cells of a program of `size`-square cells that the program
+/// kernel covers into `planes`, and returns their bits.
 pub(super) fn program(
-    planes: &mut [Option<neon::ProgramPlane<'_, '_>>; 2],
-    geometry: [super::block::Geometry; 2],
+    planes: &mut [Option<Plane<'_, '_, u16>>; 2],
     shape: (usize, usize),
-    cells: &[super::cell::Cell],
+    cells: &[Cell],
     clip: (i32, u16),
-) -> super::cell::Written {
-    fearless_simd::Level::baseline()
-        .as_neon()
-        .map_or([[0; 4]; 2], |token| {
-            neon::program(token, planes, geometry, shape, cells, clip)
-        })
+) -> Written {
+    kernel::program(planes, shape, cells, clip)
 }
 
-/// Whether the word-lane kernels cover the shape of `block`.
-#[cfg(target_arch = "x86_64")]
-fn fits<T>(block: &Block<'_, T>) -> bool {
-    block.w.is_multiple_of(4)
-        && block.h.is_multiple_of(16 / width(block.w))
-        && !(width(block.w) == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
-}
+/// The kernels of this module on targets without [`neon`]: the portable
+/// kernels on a stage.
+#[cfg(not(target_arch = "aarch64"))]
+mod generic {
+    use super::super::ReferencePlaneView;
+    use super::super::block::{self, Block, Sink, Window};
+    use super::super::cell::{self, Cell, Plane, Written};
 
-/// Whether the NEON kernels cover the shape of `block`: 4 columns in pairs
-/// of rows, or strips of 8 columns, the last overlapping the one before it.
-#[cfg(target_arch = "aarch64")]
-fn fits<T>(block: &Block<'_, T>) -> bool {
-    (block.w == 4 && block.h.is_multiple_of(2)) || block.w >= 8
-}
-
-/// The strip width of a block: 16 columns, else strips of 8 columns in
-/// pairs of rows, else strips of 4 in quads of rows.
-#[cfg(target_arch = "x86_64")]
-const fn width(w: usize) -> usize {
-    if w.is_multiple_of(16) {
-        16
-    } else if w.is_multiple_of(8) {
-        8
-    } else {
-        4
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-mod avx2 {
-    use super::super::block::{Block, Sink, Taps};
-    use core::arch::x86_64::*;
-    use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x16, i32x4, i32x8, u8x32, u16x8, u16x16};
-
-    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
-    #[inline(always)]
-    fn chunk<const N: usize, T>(samples: &[T], at: usize) -> Option<&[T; N]> {
-        samples.get(at..)?.first_chunk::<N>()
+    pub(super) fn predict(block: &Block<'_, u16>, sink: &mut Sink<'_>) {
+        let len = block::stage_needed(block);
+        block::with_stage(len, None, |stage| {
+            super::super::portable::predict(block, sink, stage);
+        });
     }
 
-    /// Calls `$f::<W, P>` for the run-time strip width and pair count.
-    macro_rules! specialize {
-        ($width:expr, $pairs:expr, $f:ident($($arg:expr),*)) => {
-            match ($width, $pairs) {
-                (4, 1) => $f::<4, 1>($($arg),*),
-                (4, 2) => $f::<4, 2>($($arg),*),
-                (4, 3) => $f::<4, 3>($($arg),*),
-                (4, _) => $f::<4, 4>($($arg),*),
-                (8, 1) => $f::<8, 1>($($arg),*),
-                (8, 2) => $f::<8, 2>($($arg),*),
-                (8, 3) => $f::<8, 3>($($arg),*),
-                (8, _) => $f::<8, 4>($($arg),*),
-                (_, 1) => $f::<16, 1>($($arg),*),
-                (_, 2) => $f::<16, 2>($($arg),*),
-                (_, 3) => $f::<16, 3>($($arg),*),
-                (_, _) => $f::<16, 4>($($arg),*),
-            }
-        };
-    }
-
-    /// `pshufb` patterns of 4-column rows: pair `p` of output `j` reads
-    /// words `j + 2p` and `j + 2p + 1` of its lane.
-    const WORD_PAIRS: [[u8; 32]; 2] = {
-        let mut out = [[0; 32]; 2];
-        let mut pair = 0;
-        while pair < 2 {
-            let mut byte = 0;
-            while byte < 32 {
-                let lane = byte % 16;
-                let word = lane / 4 + 2 * pair + (lane / 2) % 2;
-                out[pair][byte] = (2 * word + lane % 2) as u8;
-                byte += 1;
-            }
-            pair += 1;
-        }
-        out
-    };
-
-    /// `InterRound1`-free rounding of a class's final pass: `(bias, shift)`.
-    type Rounding = (i32, i32);
-
-    /// Calls `$f::<W>` for the strip width of a group.
-    macro_rules! by_width {
-        ($width:expr, $f:ident($($arg:expr),*)) => {
-            match $width {
-                4 => $f::<4>($($arg),*),
-                8 => $f::<8>($($arg),*),
-                _ => $f::<16>($($arg),*),
-            }
-        };
-    }
-
-    fearless_simd::kernel!(
-        #[inline]
-        pub(super) fn predict(
-            t: Avx2,
-            block: &Block<'_, u16>,
-            sink: &mut Sink<'_>,
-            stage: &mut [i16],
-        ) {
-            let w = block.w;
-            match sink {
-                Sink::PrepNarrow { .. } | Sink::AverageNarrow { .. } => {}
-                Sink::Put { output, stride } => {
-                    let stride = *stride;
-                    passes(
-                        t,
-                        block,
-                        true,
-                        stage,
-                        &mut |width, row, strip, first, second| {
-                            let at = row * stride + strip * width;
-                            let values = clip(first, second, 255);
-                            by_width!(width, store_bytes(t, output, at, stride, values));
-                        },
-                    );
-                }
-                Sink::PutWide {
-                    output,
-                    stride,
-                    max,
-                } => {
-                    let (stride, max) = (*stride, i32::from(*max));
-                    passes(
-                        t,
-                        block,
-                        true,
-                        stage,
-                        &mut |width, row, strip, first, second| {
-                            let at = row * stride + strip * width;
-                            let values = clip(first, second, max);
-                            by_width!(width, store_words(t, output, at, stride, values));
-                        },
-                    );
-                }
-                Sink::Prep { output, stride } => {
-                    let stride = *stride;
-                    passes(
-                        t,
-                        block,
-                        false,
-                        stage,
-                        &mut |width, row, strip, first, second| {
-                            let at = row * stride + strip * width;
-                            by_width!(width, store_prep(t, output, at, stride, first, second));
-                        },
-                    );
-                }
-                Sink::Average {
-                    pred0,
-                    forward,
-                    output,
-                    stride,
-                } => {
-                    let (pred0, forward, stride) = (&**pred0, *forward, *stride);
-                    passes(
-                        t,
-                        block,
-                        false,
-                        stage,
-                        &mut |width, row, strip, first, second| {
-                            let (pred_first, pred_second) =
-                                by_width!(width, first_group(t, pred0, row * w + strip * width, w));
-                            let values = clip(
-                                average(pred_first, first, forward),
-                                average(pred_second, second, forward),
-                                255,
-                            );
-                            let at = row * stride + strip * width;
-                            by_width!(width, store_bytes(t, output, at, stride, values));
-                        },
-                    );
-                }
-                Sink::AverageWide {
-                    pred0,
-                    forward,
-                    output,
-                    stride,
-                    max,
-                } => {
-                    let (pred0, forward, stride, max) =
-                        (&**pred0, *forward, *stride, i32::from(*max));
-                    passes(
-                        t,
-                        block,
-                        false,
-                        stage,
-                        &mut |width, row, strip, first, second| {
-                            let (pred_first, pred_second) =
-                                by_width!(width, first_group(t, pred0, row * w + strip * width, w));
-                            let values = clip(
-                                average(pred_first, first, forward),
-                                average(pred_second, second, forward),
-                                max,
-                            );
-                            let at = row * stride + strip * width;
-                            by_width!(width, store_words(t, output, at, stride, values));
-                        },
-                    );
-                }
-            }
-        }
-    );
-
-    fearless_simd::kernel!(
-        #[inline]
-        pub(super) fn compound(
-            t: Avx2,
-            blocks: [&Block<'_, u16>; 2],
-            forward: i32,
-            max: u16,
-            stage: &mut [i16],
-            output: &mut [u16],
-            stride: usize,
-        ) {
-            let zero = _mm256_setzero_si256();
-            let h = blocks[0].h;
-            let mut pred0 = [(zero, zero); 4];
-            passes(
-                t,
-                blocks[0],
-                false,
-                stage,
-                &mut |width, row, strip, first, second| {
-                    if let Some(slot) = pred0.get_mut((strip * h + row) * width / 16) {
-                        *slot = (first, second);
-                    }
-                },
-            );
-            passes(
-                t,
-                blocks[1],
-                false,
-                stage,
-                &mut |width, row, strip, first, second| {
-                    let Some(&(pred_first, pred_second)) =
-                        pred0.get((strip * h + row) * width / 16)
-                    else {
-                        return;
-                    };
-                    let values = clip(
-                        average(pred_first, first, forward),
-                        average(pred_second, second, forward),
-                        i32::from(max),
-                    );
-                    let at = row * stride + strip * width;
-                    by_width!(width, store_words(t, output, at, stride, values));
-                },
-            );
-        }
-    );
-
-    /// Runs the passes of `block`, handing `out` the 16 final-pass values of
-    /// each group as `(W, row, strip, first, second)`, outputs `0..8` in
-    /// `first`: compound predictors, or with `put` single-reference
-    /// predictions before `Clip1`.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn passes(
-        t: Avx2,
-        block: &Block<'_, u16>,
-        put: bool,
-        stage: &mut [i16],
-        out: &mut impl FnMut(usize, usize, usize, __m256i, __m256i),
-    ) {
-        let width = super::width(block.w);
-        match (block.horizontal, block.vertical) {
-            (None, None) => match width {
-                4 => copy::<4>(t, block, put, out),
-                8 => copy::<8>(t, block, put, out),
-                _ => copy::<16>(t, block, put, out),
-            },
-            (Some(taps), None) => {
-                specialize!(width, taps.count, horizontal(t, block, taps, put, out));
-            }
-            (None, Some(taps)) => {
-                let rounding = if put { (64, 7) } else { (4, 3) };
-                let rows = block.h + taps.span() - 1;
-                for strip in 0..block.w / width {
-                    match width {
-                        4 => stage_samples::<4>(t, block, strip, rows, stage),
-                        8 => stage_samples::<8>(t, block, strip, rows, stage),
-                        _ => stage_samples::<16>(t, block, strip, rows, stage),
-                    }
-                    specialize!(
-                        width,
-                        taps.count,
-                        filter_stage(t, block, taps, strip, rounding, stage, out)
-                    );
-                }
-            }
-            (Some(h_taps), Some(v_taps)) => {
-                let rows = block.h + v_taps.span() - 1;
-                let rounding = if put { (1 << 10, 11) } else { (1 << 6, 7) };
-                for strip in 0..block.w / width {
-                    specialize!(
-                        width,
-                        h_taps.count,
-                        stage_rows(t, block, h_taps, rows, strip, stage)
-                    );
-                    specialize!(
-                        width,
-                        v_taps.count,
-                        filter_stage(t, block, v_taps, strip, rounding, stage, out)
-                    );
-                }
-            }
-        }
-    }
-
-    /// The COMPOUND_AVERAGE of eight compound predictors of each reference,
-    /// before `Clip1`.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn average(pred: __m256i, value: __m256i, forward: i32) -> __m256i {
-        if forward == 8 {
-            return _mm256_srai_epi32::<5>(_mm256_add_epi32(
-                _mm256_add_epi32(pred, value),
-                _mm256_set1_epi32(16),
-            ));
-        }
-        let weighted = _mm256_add_epi32(
-            _mm256_mullo_epi32(pred, _mm256_set1_epi32(forward)),
-            _mm256_mullo_epi32(value, _mm256_set1_epi32(16 - forward)),
-        );
-        _mm256_srai_epi32::<8>(_mm256_add_epi32(weighted, _mm256_set1_epi32(128)))
-    }
-
-    /// `Clip1` to `max` of outputs `0..8` in `first` and `8..16` in `second`,
-    /// as 16 words in output order.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn clip(first: __m256i, second: __m256i, max: i32) -> __m256i {
-        let (zero, max) = (_mm256_setzero_si256(), _mm256_set1_epi32(max));
-        let first = _mm256_min_epi32(_mm256_max_epi32(first, zero), max);
-        let second = _mm256_min_epi32(_mm256_max_epi32(second, zero), max);
-        _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_packus_epi32(first, second))
-    }
-
-    /// Each lane's outputs `0..4` (`low`) and `4..8` (`high`) in output
-    /// order: outputs `0..8` and `8..16`.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn lanes(low: __m256i, high: __m256i) -> (__m256i, __m256i) {
-        (
-            _mm256_permute2x128_si256::<0x20>(low, high),
-            _mm256_permute2x128_si256::<0x31>(low, high),
-        )
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn load8(t: Avx2, samples: &[u16; 8]) -> __m128i {
-        u16x8::load_array_ref(t, samples).into()
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn load4(samples: [u16; 4]) -> i64 {
-        i64::from(samples[0])
-            | i64::from(samples[1]) << 16
-            | i64::from(samples[2]) << 32
-            | i64::from(samples[3]) << 48
-    }
-
-    /// Window columns `0..8` and `8..16` of the row from `start`.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn window_row(t: Avx2, source: &[u16], start: usize) -> Option<(__m128i, __m128i)> {
-        Some((
-            load8(t, chunk(source, start)?),
-            load8(t, chunk(source, start + 8)?),
-        ))
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn weights<const P: usize>(taps: &Taps) -> [__m256i; 4] {
-        core::array::from_fn(|pair| _mm256_set1_epi32(taps.full[pair.min(P - 1)]))
-    }
-
-    /// The 16 samples of the group whose rows start at `start`, in output
-    /// order.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn group_samples<const W: usize>(
-        t: Avx2,
-        source: &[u16],
-        starts: [usize; 4],
-    ) -> Option<__m256i> {
-        Some(match W {
-            4 => _mm256_set_epi64x(
-                load4(*chunk(source, starts[3])?),
-                load4(*chunk(source, starts[2])?),
-                load4(*chunk(source, starts[1])?),
-                load4(*chunk(source, starts[0])?),
-            ),
-            8 => _mm256_set_m128i(
-                load8(t, chunk(source, starts[1])?),
-                load8(t, chunk(source, starts[0])?),
-            ),
-            _ => u16x16::load_array_ref(t, chunk(source, starts[0])?).into(),
-        })
-    }
-
-    /// The horizontal pair sums of the group whose rows start at `starts`:
-    /// each lane's outputs `0..4` (`low`) and `4..8` (`high`).
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn horizontal_sums<const W: usize, const P: usize>(
-        t: Avx2,
-        source: &[u16],
-        starts: [usize; 4],
-        weights: &[__m256i; 4],
-    ) -> Option<(__m256i, __m256i)> {
-        if W == 4 {
-            let row = |q: usize| -> Option<__m128i> { Some(load8(t, chunk(source, starts[q])?)) };
-            let sums = |rows: __m256i| {
-                let mut sum = _mm256_setzero_si256();
-                for (pattern, &weight) in WORD_PAIRS.iter().zip(weights).take(P) {
-                    let pairs = _mm256_shuffle_epi8(rows, u8x32::load_array_ref(t, pattern).into());
-                    sum = _mm256_add_epi32(sum, _mm256_madd_epi16(pairs, weight));
-                }
-                sum
-            };
-            return Some((
-                sums(_mm256_set_m128i(row(2)?, row(0)?)),
-                sums(_mm256_set_m128i(row(3)?, row(1)?)),
-            ));
-        }
-        let (low, high) = if W == 8 {
-            let (first, second) = (
-                window_row(t, source, starts[0])?,
-                window_row(t, source, starts[1])?,
-            );
-            (
-                _mm256_set_m128i(second.0, first.0),
-                _mm256_set_m128i(second.1, first.1),
-            )
-        } else {
-            (
-                u16x16::load_array_ref(t, chunk(source, starts[0])?).into(),
-                u16x16::load_array_ref(t, chunk(source, starts[0] + 8)?).into(),
-            )
-        };
-        let windows = [
-            low,
-            _mm256_alignr_epi8::<2>(high, low),
-            _mm256_alignr_epi8::<4>(high, low),
-            _mm256_alignr_epi8::<6>(high, low),
-            _mm256_alignr_epi8::<8>(high, low),
-            _mm256_alignr_epi8::<10>(high, low),
-            _mm256_alignr_epi8::<12>(high, low),
-            _mm256_alignr_epi8::<14>(high, low),
-        ];
-        let (mut even, mut odd) = (_mm256_setzero_si256(), _mm256_setzero_si256());
-        for (pair, &weight) in weights.iter().enumerate().take(P) {
-            even = _mm256_add_epi32(even, _mm256_madd_epi16(windows[2 * pair], weight));
-            odd = _mm256_add_epi32(odd, _mm256_madd_epi16(windows[2 * pair + 1], weight));
-        }
-        Some((
-            _mm256_unpacklo_epi32(even, odd),
-            _mm256_unpackhi_epi32(even, odd),
-        ))
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn round((low, high): (__m256i, __m256i), (bias, shift): Rounding) -> (__m256i, __m256i) {
-        let (bias, shift) = (_mm256_set1_epi32(bias), _mm_cvtsi32_si128(shift));
-        (
-            _mm256_sra_epi32(_mm256_add_epi32(low, bias), shift),
-            _mm256_sra_epi32(_mm256_add_epi32(high, bias), shift),
-        )
-    }
-
-    /// The group row starts of a group at window row `row` of strip `strip`,
-    /// clamped to window row `last`.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn starts<const W: usize>(
-        block: &Block<'_, u16>,
-        row: usize,
-        strip: usize,
-        last: usize,
-    ) -> [usize; 4] {
-        let start = |q: usize| block.start((row + q).min(last)) + strip * W;
-        [start(0), start(1), start(2), start(3)]
-    }
-
-    #[inline(never)]
-    #[target_feature(enable = "avx2")]
-    fn copy<const W: usize>(
-        t: Avx2,
-        block: &Block<'_, u16>,
-        put: bool,
-        out: &mut impl FnMut(usize, usize, usize, __m256i, __m256i),
-    ) {
-        let shift = _mm_cvtsi32_si128(if put { 0 } else { 4 });
-        for strip in 0..block.w / W {
-            for row in (0..block.h).step_by(16 / W) {
-                let starts = starts::<W>(block, row, strip, usize::MAX);
-                let Some(samples) = group_samples::<W>(t, block.source, starts) else {
-                    return;
-                };
-                let first = _mm256_sll_epi32(
-                    _mm256_cvtepu16_epi32(_mm256_castsi256_si128(samples)),
-                    shift,
-                );
-                let second = _mm256_sll_epi32(
-                    _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(samples)),
-                    shift,
-                );
-                out(W, row, strip, first, second);
-            }
-        }
-    }
-
-    #[inline(never)]
-    #[target_feature(enable = "avx2")]
-    fn horizontal<const W: usize, const P: usize>(
-        t: Avx2,
-        block: &Block<'_, u16>,
-        taps: &Taps,
-        put: bool,
-        out: &mut impl FnMut(usize, usize, usize, __m256i, __m256i),
-    ) {
-        let weights = weights::<P>(taps);
-        for strip in 0..block.w / W {
-            for row in (0..block.h).step_by(16 / W) {
-                let starts = starts::<W>(block, row, strip, usize::MAX);
-                let sums = horizontal_sums::<W, P>(t, block.source, starts, &weights);
-                let Some(sums) = sums else {
-                    return;
-                };
-                let intermediate = round(sums, (4, 3));
-                let (low, high) = if put {
-                    round(intermediate, (8, 4))
-                } else {
-                    intermediate
-                };
-                let (first, second) = lanes(low, high);
-                out(W, row, strip, first, second);
-            }
-        }
-    }
-
-    /// `rows` window rows of `W` samples of strip `strip` into `stage`, as the
-    /// vertical-only pass's lines.
-    #[inline(never)]
-    #[target_feature(enable = "avx2")]
-    fn stage_samples<const W: usize>(
-        t: Avx2,
-        block: &Block<'_, u16>,
-        strip: usize,
-        rows: usize,
-        stage: &mut [i16],
-    ) {
-        let last = rows - 1;
-        for (group, slot) in stage
-            .chunks_exact_mut(16)
-            .take(rows.div_ceil(16 / W))
-            .enumerate()
-        {
-            let row = group * (16 / W);
-            let starts = starts::<W>(block, row, strip, last);
-            let samples = group_samples::<W>(t, block.source, starts);
-            let (Some(samples), Some(slot)) = (samples, slot.first_chunk_mut::<16>()) else {
-                return;
-            };
-            i16x16::<Avx2>::simd_from(t, samples).store_array(slot);
-        }
-    }
-
-    /// The horizontal pass of strip `strip`: `rows` intermediate rows,
-    /// `Round2(sum, InterRound0)`, into `stage`; a ragged last group repeats
-    /// the last row.
-    #[inline(never)]
-    #[target_feature(enable = "avx2")]
-    fn stage_rows<const W: usize, const P: usize>(
-        t: Avx2,
-        block: &Block<'_, u16>,
-        taps: &Taps,
-        rows: usize,
-        strip: usize,
-        stage: &mut [i16],
-    ) {
-        let weights = weights::<P>(taps);
-        for (group, slot) in stage
-            .chunks_exact_mut(16)
-            .take(rows.div_ceil(16 / W))
-            .enumerate()
-        {
-            let starts = starts::<W>(block, group * (16 / W), strip, rows - 1);
-            let sums = horizontal_sums::<W, P>(t, block.source, starts, &weights);
-            let Some(sums) = sums else {
-                return;
-            };
-            let (low, high) = round(sums, (4, 3));
-            if let Some(slot) = slot.first_chunk_mut::<16>() {
-                i16x16::<Avx2>::simd_from(t, _mm256_packs_epi32(low, high)).store_array(slot);
-            }
-        }
-    }
-
-    /// The vertical pass of strip `strip` over the staged lines.
-    #[inline(never)]
-    #[target_feature(enable = "avx2")]
-    fn filter_stage<const W: usize, const P: usize>(
-        t: Avx2,
-        block: &Block<'_, u16>,
-        taps: &Taps,
-        strip: usize,
-        rounding: Rounding,
-        stage: &[i16],
-        out: &mut impl FnMut(usize, usize, usize, __m256i, __m256i),
-    ) {
-        let weights = weights::<P>(taps);
-        let span = (2 * P - 1) * W + 16;
-        for row in (0..block.h).step_by(16 / W) {
-            let Some(window) = stage.get(row * W..row * W + span) else {
-                return;
-            };
-            let line = |row: usize| -> __m256i {
-                let lanes = window
-                    .get(row * W..row * W + 16)
-                    .and_then(<[i16]>::first_chunk::<16>);
-                lanes.map_or(_mm256_setzero_si256(), |lanes| {
-                    i16x16::load_array_ref(t, lanes).into()
-                })
-            };
-            let (mut low, mut high) = (_mm256_setzero_si256(), _mm256_setzero_si256());
-            for (pair, &weight) in weights.iter().enumerate().take(P) {
-                let (a, b) = (line(2 * pair), line(2 * pair + 1));
-                low = _mm256_add_epi32(low, _mm256_madd_epi16(_mm256_unpacklo_epi16(a, b), weight));
-                high =
-                    _mm256_add_epi32(high, _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), weight));
-            }
-            let (low, high) = round((low, high), rounding);
-            let (first, second) = lanes(low, high);
-            out(W, row, strip, first, second);
-        }
-    }
-
-    /// The 16 compound predictors of a group, outputs `0..8` in `first`,
-    /// into `output` from `at`.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn store_prep<const W: usize>(
-        t: Avx2,
-        output: &mut [i32],
-        at: usize,
-        stride: usize,
-        first: __m256i,
-        second: __m256i,
-    ) {
-        let mut put8 = |at: usize, lanes: __m256i| {
-            if let Some(slot) = output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<8>) {
-                i32x8::<Avx2>::simd_from(t, lanes).store_array(slot);
-            }
-        };
-        match W {
-            4 => {
-                let mut put4 = |at: usize, lanes: __m128i| {
-                    if let Some(slot) = output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<4>)
-                    {
-                        i32x4::<Avx2>::simd_from(t, lanes).store_array(slot);
-                    }
-                };
-                put4(at, _mm256_castsi256_si128(first));
-                put4(at + stride, _mm256_extracti128_si256::<1>(first));
-                put4(at + 2 * stride, _mm256_castsi256_si128(second));
-                put4(at + 3 * stride, _mm256_extracti128_si256::<1>(second));
-            }
-            8 => {
-                put8(at, first);
-                put8(at + stride, second);
-            }
-            _ => {
-                put8(at, first);
-                put8(at + 8, second);
-            }
-        }
-    }
-
-    /// The first predictors of the group at `at` of the contiguous `w`-wide
-    /// `pred0`, outputs `0..8` first.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn first_group<const W: usize>(
-        t: Avx2,
-        pred0: &[i32],
-        at: usize,
-        w: usize,
-    ) -> (__m256i, __m256i) {
-        let zero4 = [0i32; 4];
-        let zero8 = [0i32; 8];
-        let load8 = |at: usize| -> __m256i {
-            i32x8::load_array_ref(t, chunk::<8, i32>(pred0, at).unwrap_or(&zero8)).into()
-        };
-        let load4 = |at: usize| -> __m128i {
-            i32x4::load_array_ref(t, chunk::<4, i32>(pred0, at).unwrap_or(&zero4)).into()
-        };
-        match W {
-            4 => (
-                _mm256_set_m128i(load4(at + w), load4(at)),
-                _mm256_set_m128i(load4(at + 3 * w), load4(at + 2 * w)),
-            ),
-            8 => (load8(at), load8(at + w)),
-            _ => (load8(at), load8(at + 8)),
-        }
-    }
-
-    /// The 16 clipped words `values` of a group into `output` from `at`.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn store_words<const W: usize>(
-        t: Avx2,
+    pub(super) fn compound_cell(
+        blocks: [&Block<'_, u16>; 2],
+        (forward, max): (i32, u16),
         output: &mut [u16],
-        at: usize,
         stride: usize,
-        values: __m256i,
     ) {
-        let lanes = u16x16::<Avx2>::simd_from(t, values).to_array();
-        let mut put = |at: usize, lanes: &[u16]| {
-            if let Some(slot) = output.get_mut(at..at + lanes.len()) {
-                for (slot, &lane) in slot.iter_mut().zip(lanes) {
-                    *slot = lane;
-                }
-            }
-        };
-        match W {
-            4 => {
-                for (row, lanes) in lanes.chunks_exact(4).enumerate() {
-                    put(at + row * stride, lanes);
-                }
-            }
-            8 => {
-                put(at, &lanes[..8]);
-                put(at + stride, &lanes[8..]);
-            }
-            _ => {
-                if let Some(slot) = output
-                    .get_mut(at..)
-                    .and_then(<[u16]>::first_chunk_mut::<16>)
-                {
-                    *slot = lanes;
-                }
-            }
-        }
+        let len = blocks.map(block::stage_needed);
+        block::with_stage(len[0].max(len[1]), None, |stage| {
+            super::super::portable::compound_u16(blocks, forward, max, stage, output, stride);
+        });
     }
 
-    /// The 16 clipped words `values` of a group as bytes into `output`.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn store_bytes<const W: usize>(
-        t: Avx2,
-        output: &mut [u8],
-        at: usize,
+    pub(super) fn compound_windows(
+        views: [&ReferencePlaneView<'_, u16>; 2],
+        windows: &[Window; 2],
+        bounds: [[i32; 4]; 2],
+        clip: (i32, u16),
+        output: &mut [u16],
         stride: usize,
-        values: __m256i,
-    ) {
-        let lanes = u16x16::<Avx2>::simd_from(t, values)
-            .to_array()
-            .map(|lane| lane as u8);
-        let mut put = |at: usize, lanes: &[u8]| {
-            if let Some(slot) = output.get_mut(at..at + lanes.len()) {
-                for (slot, &lane) in slot.iter_mut().zip(lanes) {
-                    *slot = lane;
-                }
-            }
-        };
-        match W {
-            4 => {
-                for (row, lanes) in lanes.chunks_exact(4).enumerate() {
-                    put(at + row * stride, lanes);
-                }
-            }
-            8 => {
-                put(at, &lanes[..8]);
-                put(at + stride, &lanes[8..]);
-            }
-            _ => put(at, &lanes),
-        }
+    ) -> bool {
+        block::copied(views, windows, bounds, clip, output, stride)
+    }
+
+    pub(super) fn program(
+        planes: &mut [Option<Plane<'_, '_, u16>>; 2],
+        shape: (usize, usize),
+        cells: &[Cell],
+        clip: (i32, u16),
+    ) -> Written {
+        cell::cell_by_cell(planes, shape, cells, clip, [[0; 4]; 2])
     }
 }

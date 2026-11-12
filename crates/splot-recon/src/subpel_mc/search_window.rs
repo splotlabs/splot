@@ -43,39 +43,20 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     if last_load > view.samples.len() || u32::try_from(last_load).is_err() {
         return false;
     }
+    let at = [origin, view.stride];
+    let phases = phases(params);
     #[cfg(target_arch = "x86_64")]
     if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        let phases = [
-            ((params.start_x >> 6) & SUBPEL_MASK) as i16,
-            ((params.start_y >> 6) & SUBPEL_MASK) as i16,
-        ];
-        avx2::window(
-            t,
-            view.samples,
-            [origin as u32, view.stride as u32],
-            [w, h],
-            phases,
-            output,
-        );
+        avx2::window(t, view.samples, at, [w, h], phases, output);
         return true;
     }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
-        let phases = [
-            ((params.start_x >> 6) & SUBPEL_MASK) as u8,
-            ((params.start_y >> 6) & SUBPEL_MASK) as u8,
-        ];
-        neon::window(
-            t,
-            view.samples,
-            [origin, view.stride],
-            [w, h],
-            phases,
-            output,
-        );
-        return true;
-    }
-    false
+    baseline_simd!(simd => generic::window(simd, view.samples, at, [w, h], phases, output));
+    true
+}
+
+/// The horizontal and vertical filter phases of `params`.
+fn phases(params: &SubpelPredictParams) -> [u8; 2] {
+    [params.start_x, params.start_y].map(|start| ((start >> 6) & SUBPEL_MASK) as u8)
 }
 
 /// Predicts a bilinear block of eight-bit storage, `w` a multiple of 8 and
@@ -117,33 +98,15 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
     if last_load > view.samples.len() || u32::try_from(last_load).is_err() {
         return false;
     }
+    let geometry = ([origin, view.stride], [w, h]);
+    let phases = phases(params);
     #[cfg(target_arch = "x86_64")]
     if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        let phases = [
-            ((params.start_x >> 6) & SUBPEL_MASK) as i16,
-            ((params.start_y >> 6) & SUBPEL_MASK) as i16,
-        ];
-        avx2::block(
-            t,
-            view.samples,
-            ([origin as u32, view.stride as u32], [w, h]),
-            phases,
-            output,
-            stride,
-        );
+        avx2::block(t, view.samples, geometry, phases, output, stride);
         return true;
     }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
-        let phases = [
-            ((params.start_x >> 6) & SUBPEL_MASK) as u8,
-            ((params.start_y >> 6) & SUBPEL_MASK) as u8,
-        ];
-        let geometry = ([origin, view.stride], [w, h]);
-        neon::block(t, view.samples, geometry, phases, output, stride);
-        return true;
-    }
-    false
+    baseline_simd!(simd => generic::block(simd, view.samples, geometry, phases, output, stride));
+    true
 }
 
 /// The § 7.13.3.6 search positions `(dy, dx)` in `Refinemv_Neighbors` order.
@@ -183,32 +146,16 @@ pub fn refinemv_search_u8(
     {
         return None;
     }
+    let geometry = [stride, sad_h];
     #[cfg(target_arch = "x86_64")]
     if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        return Some(avx2::search(t, windows, [stride, sad_h], allow_center));
+        return Some(avx2::search(t, windows, geometry, allow_center));
     }
     #[cfg(target_arch = "aarch64")]
     if let Some(t) = fearless_simd::Level::baseline().as_neon() {
-        return Some(neon::search(t, windows, [stride, sad_h], allow_center));
+        return Some(neon::search(t, windows, geometry, allow_center));
     }
-    let sad = |dy: i32, dx: i32| {
-        let at = |sign: i32, row: usize, col: usize| {
-            ((2 + sign * dy) as usize + row) * stride + (2 + sign * dx) as usize + col
-        };
-        (0..sad_h)
-            .step_by(2)
-            .flat_map(|row| (0..stride - 4).map(move |col| (row, col)))
-            .map(|(row, col)| {
-                u32::from(windows[0][at(1, row, col)].abs_diff(windows[1][at(-1, row, col)]))
-            })
-            .sum::<u32>()
-    };
-    Some(best_offset(
-        || sad(0, 0),
-        || REFINEMV_NEIGHBORS.map(|(dy, dx)| sad(dy, dx)),
-        (2 * (stride - 4) * sad_h) as u32,
-        allow_center,
-    ))
+    Some(baseline_simd!(simd => generic::search(simd, windows, geometry, allow_center)))
 }
 
 /// The § 7.13.3.6 search over the biased `center` SAD, kept when below
@@ -241,9 +188,20 @@ fn best_offset(
 
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
-    use crate::subpel_mc::eight_bit::avx2::row_bytes;
     use core::arch::x86_64::*;
     use fearless_simd::{Avx2, SimdBase, SimdFrom, u8x16, u8x32, u16x16};
+
+    /// The `N` bytes of `source` from `at`: a `u32` start ends one compare
+    /// from the storage end.
+    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+    #[inline(always)]
+    fn row_bytes<const N: usize>(source: &[u8], at: u32) -> Option<&[u8; N]> {
+        let at = at as usize;
+        if at + N > source.len() {
+            return None;
+        }
+        source.get(at..)?.first_chunk::<N>()
+    }
 
     /// The `(left, right)` source index pairs of output columns `first..first
     /// + 16` of an `m`-sample row read from index `base`, both clamped to the
@@ -312,11 +270,12 @@ mod avx2 {
         pub(super) fn window(
             t: Avx2,
             source: &[u8],
-            at: [u32; 2],
+            at: [usize; 2],
             size: [usize; 2],
-            phases: [i16; 2],
+            phases: [u8; 2],
             output: &mut [u8],
         ) {
+            let (at, phases) = (at.map(|at| at as u32), phases.map(i16::from));
             match size {
                 [16, 16] => window_for::<16, 16, 256>(t, source, at, phases, output),
                 [16, _] => window_for::<16, 24, 384>(t, source, at, phases, output),
@@ -426,11 +385,15 @@ mod avx2 {
         pub(super) fn block(
             t: Avx2,
             source: &[u8],
-            geometry: ([u32; 2], [usize; 2]),
-            phases: [i16; 2],
+            geometry: ([usize; 2], [usize; 2]),
+            phases: [u8; 2],
             output: &mut [u16],
             stride: usize,
         ) {
+            let (geometry, phases) = (
+                (geometry.0.map(|at| at as u32), geometry.1),
+                phases.map(i16::from),
+            );
             if geometry.1 == [8; 2] && stride == 8 {
                 block_rows::<8>(t, source, geometry, phases, output, 8);
             } else {
@@ -609,10 +572,9 @@ mod avx2 {
 }
 
 /// The bilinear windows and blocks in generic `u16` lanes, and the SADs in
-/// NEON byte lanes.
-#[cfg(target_arch = "aarch64")]
-mod neon {
-    use fearless_simd::{Neon, Simd, prelude::*, u8x16, u16x8, u64x2};
+/// generic byte lanes.
+pub(super) mod generic {
+    use fearless_simd::{Simd, prelude::*, u8x16, u16x8, u64x2};
 
     /// The source index, from `base`, of the left or right tap of output
     /// columns `first..first + 16` of an `m`-sample row, clamped to the row.
@@ -642,7 +604,7 @@ mod neon {
 
     #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
     #[inline(always)]
-    fn load<S: Simd>(simd: S, bytes: &[u8], at: usize) -> u8x16<S> {
+    pub(super) fn load<S: Simd>(simd: S, bytes: &[u8], at: usize) -> u8x16<S> {
         bytes
             .get(at..)
             .and_then(<[u8]>::first_chunk::<16>)
@@ -773,6 +735,57 @@ mod neon {
             }
         }
     }
+
+    /// The search of [`super::refinemv_search_u8`] of `[stride, sad_h]`:
+    /// each row's masked absolute differences widened and summed in `u16`
+    /// lanes.
+    #[inline(never)]
+    pub(in crate::subpel_mc) fn search<S: Simd>(
+        simd: S,
+        [first, second]: [&[u8]; 2],
+        [stride, sad_h]: [usize; 2],
+        allow_center: bool,
+    ) -> (i32, i32) {
+        let keep = |lanes: core::ops::Range<usize>| {
+            u8x16::load_array(
+                simd,
+                core::array::from_fn(|lane| if lanes.contains(&lane) { u8::MAX } else { 0 }),
+            )
+        };
+        let (low, all, high) = (keep(0..12), keep(0..16), keep(12..16));
+        let sad = |dy: i32, dx: i32| -> u32 {
+            let start = |dy: i32, dx: i32| ((2 + dy) * stride as i32 + 2 + dx) as usize;
+            let (a, b) = (start(dy, dx), start(-dy, -dx));
+            let mut sum = u16x8::splat(simd, 0);
+            let mut add = |at: usize, mask: u8x16<S>| {
+                let (x, y) = (load(simd, first, a + at), load(simd, second, b + at));
+                let (low, high) = simd.widen_u8x16((x.max(y) - x.min(y)) & mask);
+                sum = sum + low + high;
+            };
+            for row in (0..sad_h).step_by(2) {
+                if stride == 16 {
+                    add(row * stride, low);
+                } else {
+                    add(row * stride, all);
+                    add(row * stride + 4, high);
+                }
+            }
+            sum.to_array().into_iter().map(u32::from).sum()
+        };
+        super::best_offset(
+            || sad(0, 0),
+            || super::REFINEMV_NEIGHBORS.map(|(dy, dx)| sad(dy, dx)),
+            (2 * (stride - 4) * sad_h) as u32,
+            allow_center,
+        )
+    }
+}
+
+/// The SADs in NEON byte lanes.
+#[cfg(target_arch = "aarch64")]
+mod neon {
+    use super::generic::load;
+    use fearless_simd::{Neon, SimdBase, u8x16};
 
     fearless_simd::kernel!(
         #[inline]

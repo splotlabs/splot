@@ -230,43 +230,40 @@ macro_rules! kernels {
             }
         }
 
-        /// Predicts both blocks of a compound pair of one shape and stores
-        /// their COMPOUND_AVERAGE into `output`: a 4x4 or 8x8 cell in
-        /// registers, two full-sample blocks averaged directly, else the
-        /// first predictor staged for the second; `false` without writing
-        /// for a pair the kernels do not cover.
+        /// Stores the COMPOUND_AVERAGE of a 4x4 or 8x8 [`is_cell`] pair
+        /// predicted in registers into `output`.
         #[inline]
         #[target_feature(enable = $features)]
-        pub(super) fn compound(
+        pub(super) fn compound_cell(
             t: Neon,
             blocks: [&Block<'_, u8>; 2],
             forward: i32,
             output: &mut [u8],
             stride: usize,
-        ) -> bool {
+        ) {
+            if blocks[0].w == 8 {
+                store_cell(t, cell_of::<8>(t, blocks[0]), cell_of::<8>(t, blocks[1]), forward, output, stride);
+            } else {
+                store_cell(t, cell_of::<4>(t, blocks[0]), cell_of::<4>(t, blocks[1]), forward, output, stride);
+            }
+        }
+
+        /// Stores the COMPOUND_AVERAGE of a compound pair of one shape into
+        /// `output`, the first predictor staged for the second.
+        #[inline]
+        #[target_feature(enable = $features)]
+        pub(super) fn compound_strips(
+            t: Neon,
+            blocks: [&Block<'_, u8>; 2],
+            forward: i32,
+            output: &mut [u8],
+            stride: usize,
+        ) {
             let (w, h) = (blocks[0].w, blocks[0].h);
-            let cell = |block: &Block<'_, u8>| is_cell(w, block.horizontal, block.vertical);
-            if w == h && cell(blocks[0]) && cell(blocks[1]) {
-                if w == 8 {
-                    store_cell(t, cell_of::<8>(t, blocks[0]), cell_of::<8>(t, blocks[1]), forward, output, stride);
-                } else {
-                    store_cell(t, cell_of::<4>(t, blocks[0]), cell_of::<4>(t, blocks[1]), forward, output, stride);
-                }
-                return true;
-            }
-            if !fits(blocks[0]) || !fits(blocks[1]) {
-                return false;
-            }
-            let still = |block: &Block<'_, u8>| block.horizontal.is_none() && block.vertical.is_none();
-            if still(blocks[0]) && still(blocks[1]) {
-                fullpel(t, blocks, forward, output, stride);
-                return true;
-            }
             super::super::super::with_compound_pred0_narrow(w * h, |pred0| {
                 strips(t, blocks[0], &mut Prep { output: &mut *pred0, stride: w });
                 strips(t, blocks[1], &mut Average { pred0, w, forward, output, stride });
             });
-            true
         }
 
         /// The cells of `program` whose windows are read in place or by
@@ -280,7 +277,7 @@ macro_rules! kernels {
             let place = |(start, bounds): CellPlacement, geometry: Geometry| {
                 let window = Window::of_filters([filter; 2], W, W, start);
                 let (horizontal, vertical) = (window.horizontal, window.vertical);
-                let base = window.origin(geometry, bounds).filter(|_| is_cell(W, horizontal, vertical))?;
+                let base = window.origin(geometry, bounds).filter(|_| is_cell(W, W, horizontal, vertical))?;
                 Some((base, horizontal, vertical))
             };
             for (index, &([row, col], placements)) in cells.iter().enumerate() {

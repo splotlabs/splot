@@ -3,12 +3,11 @@
 
 #![allow(clippy::expect_used)]
 
-use std::sync::Arc;
-
 use super::super::optflow::LumaReference;
 use super::super::tests::{frame_for, workspace_for};
 use super::*;
-use crate::pipeline::frame_progress::FrameProgress;
+use crate::pipeline::frame_progress::PublishedFrame;
+use crate::pipeline::inflight::{FrameSlotWriter, RefFrameSlot};
 use splot_recon::{BitDepth, DecodedFrame, PixelFormat};
 
 const WIDTH: usize = 64;
@@ -269,11 +268,13 @@ fn tip_fullpel_cells_match_the_full_path() {
     fast_cells_match_the_full_path::<u16>(BitDepth::Ten);
 }
 
-/// The texture of [`reference`] with only its first `rows` rows published,
-/// as a frame-parallel reference still filtering below them.
-fn partly_published(rows: usize) -> Arc<FrameProgress<u8>> {
+/// The slot of the texture of [`reference`] with only its first `rows` rows
+/// published, as a frame-parallel reference still filtering below them, and
+/// its writer.
+fn partly_published(rows: usize) -> (RefFrameSlot<u8>, FrameSlotWriter<u8>) {
     let texture = reference::<u8>(BitDepth::Eight, &[]);
-    let progress = Arc::new(FrameProgress::new(texture.info()).expect("progress"));
+    let (slot, writer) = RefFrameSlot::pending(texture.info()).expect("pending slot");
+    let progress = writer.progress_handle();
     progress
         .begin(&[(0, rows), (rows, HEIGHT)])
         .expect("stripes");
@@ -286,16 +287,16 @@ fn partly_published(rows: usize) -> Arc<FrameProgress<u8>> {
         samples.copy_from_slice(&source[..samples.len()]);
     }
     assert!(lease.submit());
-    progress
+    (slot, writer)
 }
 
 /// Units inside a 24-row published prefix match the full path; a unit
 /// whose rows pass it falls back, through views built for an earlier unit.
 #[test]
 fn tip_fullpel_cells_read_only_the_published_prefix() {
-    let progress = partly_published(24);
-    let published = progress.read().expect("published frame");
-    let references = [ReferenceSamples::publishing(&published).expect("reference"); 2];
+    let (slot, _writer) = partly_published(24);
+    let published = PublishedFrame::of_slot(&slot).expect("published frame");
+    let references = [ReferenceSamples::publishing(&published); 2];
     let case = |mv, search, fast| Case {
         x: 16,
         mv,
@@ -324,9 +325,9 @@ fn tip_fullpel_cells_read_only_the_published_prefix() {
 /// later unit past them fails as a unit with its own view does.
 #[test]
 fn luma_reference_refetches_views_past_the_published_prefix() {
-    let progress = partly_published(24);
-    let published = progress.read().expect("published frame");
-    let reference = ReferenceSamples::publishing(&published).expect("reference");
+    let (slot, _writer) = partly_published(24);
+    let published = PublishedFrame::of_slot(&slot).expect("published frame");
+    let reference = ReferenceSamples::publishing(&published);
     let workspace = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, WIDTH, HEIGHT);
     let info = workspace.info();
     let offset = ByteOffset::new(0);

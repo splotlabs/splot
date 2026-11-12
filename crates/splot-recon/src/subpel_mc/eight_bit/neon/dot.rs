@@ -118,29 +118,46 @@ impl<O: Out, const P: usize> Job for Strips<'_, '_, O, P> {
     }
 }
 
-impl Job for Compound<'_, '_> {
-    type Output = bool;
+impl<const CELL: bool, const P: usize> Job for Compound<'_, '_, CELL, P> {
+    type Output = ();
 
     #[inline]
     fn usdot_wins(&self) -> bool {
-        self.0[0].w >= 16 && self.0[0].horizontal.is_some()
+        self.0[0][0].w >= 16 && self.0[0][0].horizontal.is_some()
     }
 
     #[inline]
-    fn mla(self, t: Neon) -> bool {
-        super::mla_compound(t, self)
+    fn mla(self, t: Neon) {
+        let Compound(pairs, forward, outputs) = self;
+        for (blocks, (output, stride)) in pairs.into_iter().zip(outputs) {
+            super::mla_compound(t, CELL, blocks, forward, output, stride);
+        }
     }
 
     /// Safety: as [`Job::sdot`].
     #[target_feature(enable = "neon,dotprod")]
-    unsafe fn sdot(self, t: Neon) -> bool {
-        super::sdot::compound(t, self.0, self.1, self.2, self.3)
+    unsafe fn sdot(self, t: Neon) {
+        let Compound(pairs, forward, outputs) = self;
+        for (blocks, (output, stride)) in pairs.into_iter().zip(outputs) {
+            if CELL {
+                super::sdot::compound_cell(t, blocks, forward, output, stride);
+            } else {
+                super::sdot::compound_strips(t, blocks, forward, output, stride);
+            }
+        }
     }
 
     /// Safety: as [`Job::usdot`].
     #[target_feature(enable = "neon,dotprod,i8mm")]
-    unsafe fn usdot(self, t: Neon) -> bool {
-        super::usdot::compound(t, self.0, self.1, self.2, self.3)
+    unsafe fn usdot(self, t: Neon) {
+        let Compound(pairs, forward, outputs) = self;
+        for (blocks, (output, stride)) in pairs.into_iter().zip(outputs) {
+            if CELL {
+                super::usdot::compound_cell(t, blocks, forward, output, stride);
+            } else {
+                super::usdot::compound_strips(t, blocks, forward, output, stride);
+            }
+        }
     }
 }
 
