@@ -161,8 +161,7 @@ impl<T> DirectPlaneTarget<T> {
     #[inline]
     /// The target uniquely owns this non-overlapping stripe region.
     pub(crate) fn samples_mut(&mut self) -> &mut [T] {
-        // SAFETY: the layout lends each checked non-overlapping stripe once,
-        // and the whole workspace only while it leases no stripe.
+        // SAFETY: disjoint checked stripes are lent once each; the whole workspace only with none leased.
         unsafe { slice::from_raw_parts_mut(self.region.samples.as_ptr(), self.region.len) }
     }
 }
