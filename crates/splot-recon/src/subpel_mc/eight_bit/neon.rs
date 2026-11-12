@@ -1135,7 +1135,11 @@ fn store_cell<const W: usize>(
     output: &mut [u8],
     stride: usize,
 ) {
-    let groups = first.into_iter().zip(second).enumerate().take(W * W / 8);
+    let averages: [uint8x8_t; W] = if forward == 8 {
+        core::array::from_fn(|group| vqrshrun_n_s16::<5>(vaddq_s16(first[group], second[group])))
+    } else {
+        core::array::from_fn(|group| vqmovun_s16(blend(first[group], second[group], forward)))
+    };
     let at = |group: usize| {
         if W == 4 {
             2 * group * stride
@@ -1143,12 +1147,7 @@ fn store_cell<const W: usize>(
             group * stride
         }
     };
-    for (group, (first, second)) in groups {
-        let values = if forward == 8 {
-            vqrshrun_n_s16::<5>(vaddq_s16(first, second))
-        } else {
-            vqmovun_s16(blend(first, second, forward))
-        };
+    for (group, values) in averages.into_iter().enumerate().take(W * W / 8) {
         let Some(row) = output.get_mut(at(group)..) else {
             return;
         };
