@@ -6,6 +6,7 @@
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`,
 //! `INFRA-DECODE-FRAME-PIPELINING`.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use splot_core::headers::frame::RefIdxBuf;
@@ -27,6 +28,8 @@ pub(super) type FinishedDirectTile<T> = (
 pub(super) struct TileCommit<T: ReconSample> {
     next: usize,
     handed_rows: usize,
+    /// Luma rows this spine has handed to the frontier to seal.
+    sealed_rows: usize,
     ordered: deferred_recon::InterReconScratch<T>,
     workspace: CurrentFrameWorkspace<T>,
     block_decoded: TileBlockDecodedState,
@@ -50,6 +53,7 @@ impl<T: ReconSample> TileCommit<T> {
         Self {
             next: 0,
             handed_rows: 0,
+            sealed_rows: 0,
             ordered,
             workspace,
             block_decoded,
@@ -127,16 +131,24 @@ struct CommittedBatch<T: ReconSample> {
 /// copies each filter stripe's input window out of them.
 struct ScheduledFrontier<T: ReconSample> {
     sealed: Option<crate::pipeline::frame_progress::FrontierRows<T>>,
+    /// Luma rows sealed into `sealed`, the rows the deblock may read.
     sealed_rows: usize,
     /// The window rows the next stripe shares with the last one.
     carry: crate::filters::source::DeblockedWindow<T>,
-    /// The spine's band once reconstruction is complete, for the next frame.
-    recon_band: Option<CurrentFrameWorkspace<T>>,
     deblock: Option<crate::filters::deblock::FrameDeblock>,
     filter: Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>,
     next_filter_stripe: usize,
     /// The job list a published link handed back, for the next link to fill.
     spare_filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
+}
+
+/// Bands the commit spine fills and the frontier seals, so neither waits for
+/// the other: the spine hands a filled band over by value with the luma rows
+/// to seal from it, and the frontier hands it back once it has sealed them.
+#[derive(Default)]
+pub(crate) struct BandHandOff<T: ReconSample> {
+    filled: VecDeque<(CurrentFrameWorkspace<T>, core::ops::Range<usize>)>,
+    spare: Vec<CurrentFrameWorkspace<T>>,
 }
 
 /// The resolve pass's tile-local § 7.12 state, one grid and bank set per tile.
@@ -289,6 +301,7 @@ pub(crate) struct ScheduledTileRecon<T: ReconSample> {
     recon: TileRecon<T>,
     filter_count: usize,
     frontier: Mutex<ScheduledFrontier<T>>,
+    bands: Mutex<BandHandOff<T>>,
     resolve: Mutex<ScheduledResolve>,
     info: splot_recon::DecodedFrameInfo,
     temporal_plan: TemporalBandPlan,
@@ -312,6 +325,7 @@ pub(crate) struct ScheduledTileWorkspace<T: ReconSample> {
     reference: Option<Arc<InterReferenceState<T>>>,
     initial_cdfs: Option<Arc<FrameCdfSubset>>,
     carry: crate::filters::source::DeblockedWindow<T>,
+    bands: BandHandOff<T>,
     /// The last frame's reconstruction band.
     pub(crate) recon_band: Option<CurrentFrameWorkspace<T>>,
 }
@@ -730,6 +744,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let mut filters = core::mem::take(&mut self.frontier.get_mut().spare_filters);
         filters.clear();
         let carry = core::mem::take(&mut self.frontier.get_mut().carry);
+        let mut bands = self.bands.into_inner();
+        let BandHandOff { filled, spare } = &mut bands;
+        spare.extend(filled.drain(..).map(|(band, _)| band));
+        let recon_band = spare.pop();
         ScheduledTileWorkspace {
             payload: self.payload.into_inner().unwrap_or_default(),
             prepass_block_decoded: self.recon.prepass_block_decoded,
@@ -743,7 +761,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             reference: Some(self.recon.reference),
             initial_cdfs: self.recon.initial_cdfs,
             carry,
-            recon_band: self.frontier.get_mut().recon_band.take(),
+            bands,
+            recon_band,
         }
     }
 
@@ -1011,26 +1030,54 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         }
     }
 
-    /// Seals the spine's completed rows, then moves its band to the next row.
+    /// Hands the spine's completed rows to the frontier, then moves its band
+    /// to the next row. A band is handed over whole and the spine goes on in
+    /// a spare one; a workspace that stores every row is sealed in place.
     fn seal_committed_rows(&self, commit: &mut TileCommit<T>, rows: usize) -> Result<()> {
-        let mut frontier = self.frontier.lock();
-        let ScheduledFrontier {
-            sealed,
-            sealed_rows,
-            ..
-        } = &mut *frontier;
-        let Some(sealed) = sealed.as_mut() else {
-            return Ok(());
-        };
         let end = rows
             .saturating_mul(self.recon.params.sb_h4.saturating_mul(4).max(1))
             .min(self.info.storage_luma_size().height());
-        if end > *sealed_rows {
-            sealed.copy_rows_from(&commit.workspace, *sealed_rows..end)?;
-            *sealed_rows = end;
+        let start = commit.sealed_rows;
+        if end <= start {
+            commit.workspace.move_band(end)?;
+            return Ok(());
         }
-        commit.workspace.move_band(end)?;
+        let mut spare = self.bands.lock().spare.pop();
+        if let Some(filled) = commit.workspace.split_band(end, &mut spare)? {
+            self.bands.lock().filled.push_back((filled, start..end));
+        } else {
+            let mut frontier = self.frontier.lock();
+            let ScheduledFrontier {
+                sealed,
+                sealed_rows,
+                ..
+            } = &mut *frontier;
+            if let Some(sealed) = sealed.as_mut() {
+                sealed.copy_rows_from(&commit.workspace, start..end)?;
+                *sealed_rows = end;
+            }
+        }
+        if let Some(spare) = spare {
+            self.bands.lock().spare.push(spare);
+        }
+        commit.sealed_rows = end;
         Ok(())
+    }
+
+    /// Seals the rows of every band the spine has handed over.
+    fn seal_handed_bands(
+        &self,
+        sealed: &mut crate::pipeline::frame_progress::FrontierRows<T>,
+        sealed_rows: &mut usize,
+    ) -> Result<()> {
+        loop {
+            let Some((band, rows)) = self.bands.lock().filled.pop_front() else {
+                return Ok(());
+            };
+            sealed.copy_rows_from(&band, rows.clone())?;
+            *sealed_rows = rows.end;
+            self.bands.lock().spare.push(band);
+        }
     }
 
     /// Number of ordered links in this frame's § 7.17 frontier chain.
@@ -1061,6 +1108,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         } = &mut *frontier;
         let state = crate::filters::wienerns_lr::recon::lr_pipeline_state_error;
         let rows = sealed.as_mut().ok_or_else(state)?;
+        self.seal_handed_bands(rows, sealed_rows)?;
         let mut filters = core::mem::take(spare_filters);
         match deblock.as_mut() {
             Some(deblock) => {
@@ -1215,7 +1263,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             });
         }
         let workspace = self.recon.finish_commit(committed.state);
-        self.frontier.lock().recon_band = Some(workspace);
+        self.bands.lock().spare.push(workspace);
         Ok(ScheduledCommitProgress {
             frontier_rows: committed.frontier_rows,
             recon_complete: true,
@@ -1501,6 +1549,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             commit: Mutex::new(Some(TileCommit {
                 next: 0,
                 handed_rows: 0,
+                sealed_rows: 0,
                 ordered,
                 workspace,
                 block_decoded,
@@ -1525,11 +1574,11 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             initial_cdfs: reusable.initial_cdfs.take(),
         },
         filter_count,
+        bands: Mutex::new(core::mem::take(&mut reusable.bands)),
         frontier: Mutex::new(ScheduledFrontier {
             sealed: Some(sealed),
             sealed_rows: 0,
             carry,
-            recon_band: reusable.recon_band.take(),
             deblock: None,
             filter: None,
             next_filter_stripe: 0,
