@@ -374,8 +374,6 @@ pub(crate) struct BlockNeighbourContext {
     pub(crate) is_inter_ctx: usize,
     pub(crate) skip_mode_ctx: usize,
     pub(crate) skip_ctx: usize,
-    /// Per-reference use counts, a nibble per reference.
-    ref_counts: u32,
     cells: [NeighbourFlags; 2],
     cell_count: usize,
     npos_cells: [NeighbourFlags; 2],
@@ -395,11 +393,22 @@ impl BlockNeighbourContext {
         if num_total_refs > Self::MAX_NEIGHBOUR_REFS {
             return None;
         }
+        let mut ref_counts = 0u32;
+        for cell in self.cells.iter().take(self.cell_count) {
+            if !cell.is_inter() {
+                continue;
+            }
+            for ref_frame in [cell.ref_frame0(), cell.ref_frame1().unwrap_or(-1)] {
+                if (ref_frame as u8 as usize) < Self::MAX_NEIGHBOUR_REFS {
+                    ref_counts += 1 << (4 * ref_frame as u8);
+                }
+            }
+        }
         let mut contexts = [0; Self::MAX_NEIGHBOUR_REFS];
         let mut next =
-            (self.ref_counts & ((1 << (4 * num_total_refs)) - 1)).wrapping_mul(0x1111_1111) >> 28;
+            (ref_counts & ((1 << (4 * num_total_refs)) - 1)).wrapping_mul(0x1111_1111) >> 28;
         for (ref_idx, ctx) in contexts.iter_mut().take(num_total_refs).enumerate() {
-            let this = (self.ref_counts >> (4 * ref_idx)) & 0xf;
+            let this = (ref_counts >> (4 * ref_idx)) & 0xf;
             next -= this;
             *ctx = usize::from(this >= next) + usize::from(this > next);
         }
@@ -604,20 +613,10 @@ pub(crate) fn block_neighbour_ctx(
         2 * usize::from(n_intra_0)
     };
 
-    let mut ref_counts = 0u32;
-    for cell in buf.iter().filter(|cell| cell.is_inter()) {
-        for ref_frame in [cell.ref_frame0(), cell.ref_frame1().unwrap_or(-1)] {
-            if (ref_frame as u8 as usize) < BlockNeighbourContext::MAX_NEIGHBOUR_REFS {
-                ref_counts += 1 << (4 * ref_frame as u8);
-            }
-        }
-    }
-
     BlockNeighbourContext {
         is_inter_ctx,
         skip_mode_ctx: buf.iter().map(|cell| usize::from(cell.skip_mode())).sum(),
         skip_ctx: buf.iter().map(|cell| usize::from(cell.skip())).sum(),
-        ref_counts,
         cells: buf,
         cell_count: num_buf,
         npos_cells,
