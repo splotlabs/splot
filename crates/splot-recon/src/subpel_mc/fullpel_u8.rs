@@ -283,7 +283,10 @@ fn put_window<T: ReconSample>(
             stride,
             max,
         };
-        block::kernels(&window.block(samples, view.stride, origin), sink, None);
+        let block = window.block(samples, view.stride, origin);
+        if !super::sixteen_bit::predict(&block, sink) {
+            block::kernels(&block, sink, None);
+        }
         return true;
     }
     in_place.is_none() && put_emulated(*window, bounds, view, max, output, stride)
@@ -315,7 +318,9 @@ fn put_emulated<T: ReconSample>(
             stride,
             max,
         };
-        block::kernels(block, sink, None);
+        if !super::sixteen_bit::predict(block, sink) {
+            block::kernels(block, sink, None);
+        }
     })
     .is_some()
 }
