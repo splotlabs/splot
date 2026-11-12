@@ -353,6 +353,7 @@ fn read_inter_residual_luma_chunk(
     }
     let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
     let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
+    let segment_lossless = current_segment_lossless(work_unit);
     let mut y4 = luma_chunk_y4;
     while y4 < chunk_end_y4 {
         let mut x4 = luma_chunk_x4;
@@ -372,6 +373,7 @@ fn read_inter_residual_luma_chunk(
                 false,
                 false,
                 residual_tool_policy,
+                segment_lossless,
                 tile_offset,
             )?;
             luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type())?;
@@ -402,6 +404,7 @@ fn read_inter_residual_luma_records_for_chunk(
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let mut decoded_any = false;
+    let segment_lossless = current_segment_lossless(work_unit);
     for record in luma_tx_records.iter().copied().filter(|record| {
         record.row >= luma_chunk_y4
             && record.col >= luma_chunk_x4
@@ -424,6 +427,7 @@ fn read_inter_residual_luma_records_for_chunk(
             false,
             false,
             residual_tool_policy,
+            segment_lossless,
             tile_offset,
         )?;
         luma_tx_types.update(
@@ -480,6 +484,7 @@ fn read_inter_residual_chroma_group(
     let chroma_ref = frontier.chroma_ref_geometry();
     let lossless_uses_current_block =
         lossless && is_inter && (frontier.r != chroma_ref.row() || frontier.c != chroma_ref.col());
+    let segment_lossless = current_segment_lossless(work_unit);
     chroma_reads.clear();
     for (x4, y4) in group.units() {
         let start_x = (base_x4 + x4) * MI_SIZE;
@@ -512,6 +517,7 @@ fn read_inter_residual_chroma_group(
             false,
             cctx_allowed,
             residual_tool_policy,
+            segment_lossless,
             tile_offset,
         )?;
         let block_index = push_inter_residual_block(
@@ -550,6 +556,7 @@ fn read_inter_residual_chroma_group(
             u_nonzero,
             cctx_allowed,
             residual_tool_policy,
+            segment_lossless,
             tile_offset,
         )?;
         let v_index = push_inter_residual_block(
@@ -796,9 +803,9 @@ fn read_inter_residual_plane(
     chroma_eob_ctx: bool,
     cctx_allowed: bool,
     residual_tool_policy: TransformToolResidualPolicy,
+    segment_lossless: Option<bool>,
     tile_offset: ByteOffset,
 ) -> Result<LumaCoeffBlock> {
-    let segment_lossless = current_segment_lossless(work_unit);
     decode_general_intra_plane_coeffs(
         work_unit,
         symbols,
@@ -881,36 +888,36 @@ pub(crate) fn reset_inter_skip_coeff_contexts(
     n4h: usize,
     subsampling: (u32, u32),
 ) -> Result<()> {
-    let plane_count = 1 + usize::from(frontier.has_chroma) * (COEFF_CONTEXT_PLANES.len() - 1);
-    let chroma_ref = frontier.chroma_ref_geometry();
-    let chroma_n4w = chroma_ref
-        .size()
-        .num_4x4_wide()
+    coeff_ctx
+        .reset_block_context_plane(CoeffContextReset {
+            plane: 0,
+            c: frontier.c,
+            r: frontier.r,
+            w4: n4w,
+            h4: n4h,
+            sub_x: 0,
+            sub_y: 0,
+        })
         .map_err(|_| residual_geometry_error())?;
-    let chroma_n4h = chroma_ref
-        .size()
-        .num_4x4_high()
-        .map_err(|_| residual_geometry_error())?;
-    let (sub_x, sub_y) = subsampling;
-    for &plane in COEFF_CONTEXT_PLANES.iter().take(plane_count) {
-        let (r, c, w4, h4) = if plane == 0 {
-            (frontier.r, frontier.c, n4w, n4h)
-        } else {
-            (chroma_ref.row(), chroma_ref.col(), chroma_n4w, chroma_n4h)
-        };
-        coeff_ctx
-            .reset_block_context_plane(CoeffContextReset {
-                plane,
-                c,
-                r,
-                w4,
-                h4,
-                sub_x: if plane == 0 { 0 } else { sub_x },
-                sub_y: if plane == 0 { 0 } else { sub_y },
-            })
-            .map_err(|_| residual_geometry_error())?;
+    if !frontier.has_chroma {
+        return Ok(());
     }
-    Ok(())
+    let chroma_ref = frontier.chroma_ref_geometry();
+    let size = chroma_ref.size();
+    let (Ok(w4), Ok(h4)) = (size.num_4x4_wide(), size.num_4x4_high()) else {
+        return Err(residual_geometry_error());
+    };
+    coeff_ctx
+        .reset_chroma_block_context(CoeffContextReset {
+            plane: 1,
+            c: chroma_ref.col(),
+            r: chroma_ref.row(),
+            w4,
+            h4,
+            sub_x: subsampling.0,
+            sub_y: subsampling.1,
+        })
+        .map_err(|_| residual_geometry_error())
 }
 
 fn residual_read_error(

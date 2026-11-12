@@ -354,46 +354,13 @@ pub(crate) fn decode_ordinary_transform_block(
     input: CoeffTransformBlockInput<'_>,
     quant: &mut [i32],
 ) -> Result<usize, CoeffOrdinaryPassError> {
-    let config = input.config;
     preflight(&input, quant.len())?;
-    let scan = grid_scan(
-        config.tx_class,
-        config.tx_width,
-        config.tx_height,
-        input.start.eob_read().eob(),
-    )?;
-    let lines = input.lines;
-    let plane = config.plane;
-    let (above_dc, left_dc, levels, nonzero) = state.dc_lines_and_levels(plane)?;
-    let block = Block {
-        scan,
-        config,
-        dc: CoeffSignSourceDeriveConfig {
-            plane,
-            plane_type: usize::from(plane > 0),
-            tx_class: config.tx_class,
-            is_hidden: false,
-            sum_abs1: 0,
-            above_dc,
-            left_dc,
-            x4: lines.x4,
-            y4: lines.y4,
-            w4: lines.w4,
-            h4: lines.h4,
-        },
-        lossless: input.lossless,
-    };
-    let summary = if symbols.cdf_update_mode() == CdfUpdateMode::Enabled {
-        dispatch::<true>(cdfs, symbols, (levels, nonzero), quant, &block)
+    let run = if symbols.cdf_update_mode() == CdfUpdateMode::Enabled {
+        dispatch::<true>(input.config)
     } else {
-        dispatch::<false>(cdfs, symbols, (levels, nonzero), quant, &block)
-    }?;
-    state.commit_block(
-        lines,
-        summary.state.cul_level(),
-        summary.state.dc_category(),
-    );
-    Ok(summary.quant_end)
+        dispatch::<false>(input.config)
+    };
+    run(state, cdfs, symbols, &input, quant)
 }
 
 fn preflight(
@@ -444,51 +411,73 @@ struct BlockSummary {
 
 #[allow(clippy::inline_always, reason = "measured: one body per tool set")]
 #[inline(always)]
-fn dispatch<const UPD: bool>(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    levels: (&mut CoeffLevelWords, &mut CoeffNonzeroList),
-    quant: &mut [i32],
-    block: &Block<'_>,
-) -> Result<BlockSummary, CoeffOrdinaryPassError> {
+fn dispatch<const UPD: bool>(config: CoeffBaseDerivedLevelPassConfig) -> RunFn {
     use CoeffTransformClass::{Horizontal, TwoD, Vertical};
-    let config = block.config;
-    let args = (cdfs, symbols, levels, quant, block);
     match (
         config.tx_class,
         config.plane == 0,
         config.use_tcq,
         config.parity_hiding,
     ) {
-        (TwoD, true, true, _) => run::<0, true, true, false, UPD>(args),
-        (TwoD, true, false, true) => run::<0, true, false, true, UPD>(args),
-        (TwoD, true, false, false) => run::<0, true, false, false, UPD>(args),
-        (Horizontal, true, _, true) => run::<1, true, false, true, UPD>(args),
-        (Horizontal, true, _, false) => run::<1, true, false, false, UPD>(args),
-        (Vertical, true, _, true) => run::<2, true, false, true, UPD>(args),
-        (Vertical, true, _, false) => run::<2, true, false, false, UPD>(args),
-        (TwoD, false, ..) => run::<0, false, false, false, UPD>(args),
-        (Horizontal, false, ..) => run::<1, false, false, false, UPD>(args),
-        (Vertical, false, ..) => run::<2, false, false, false, UPD>(args),
+        (TwoD, true, true, _) => run::<0, true, true, false, UPD>,
+        (TwoD, true, false, true) => run::<0, true, false, true, UPD>,
+        (TwoD, true, false, false) => run::<0, true, false, false, UPD>,
+        (Horizontal, true, _, true) => run::<1, true, false, true, UPD>,
+        (Horizontal, true, _, false) => run::<1, true, false, false, UPD>,
+        (Vertical, true, _, true) => run::<2, true, false, true, UPD>,
+        (Vertical, true, _, false) => run::<2, true, false, false, UPD>,
+        (TwoD, false, ..) => run::<0, false, false, false, UPD>,
+        (Horizontal, false, ..) => run::<1, false, false, false, UPD>,
+        (Vertical, false, ..) => run::<2, false, false, false, UPD>,
     }
 }
 
-type RunArgs<'r, 'a, 'b> = (
-    &'r mut TileCdfSubset,
-    &'r mut SymbolDecoder<'a>,
-    (&'r mut CoeffLevelWords, &'r mut CoeffNonzeroList),
-    &'r mut [i32],
-    &'r Block<'b>,
-);
+type RunFn = fn(
+    &mut TileCoeffContextState,
+    &mut TileCdfSubset,
+    &mut SymbolDecoder<'_>,
+    &CoeffTransformBlockInput<'_>,
+    &mut [i32],
+) -> Result<usize, CoeffOrdinaryPassError>;
 
 /// One specialised block body per class, plane type and tool set, kept out
 /// of line so its loops own the registers.
 #[inline(never)]
 fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, const UPD: bool>(
-    (cdfs, symbols, (levels, nonzero), quant, block): RunArgs<'_, '_, '_>,
-) -> Result<BlockSummary, CoeffOrdinaryPassError> {
-    let config = block.config;
-    let scan = block.scan;
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: &CoeffTransformBlockInput<'_>,
+    quant: &mut [i32],
+) -> Result<usize, CoeffOrdinaryPassError> {
+    let config = input.config;
+    let tx_class = [
+        CoeffTransformClass::TwoD,
+        CoeffTransformClass::Horizontal,
+        CoeffTransformClass::Vertical,
+    ][CLASS];
+    let eob = input.start.eob_read().eob();
+    let scan = grid_scan(tx_class, config.tx_width, config.tx_height, eob)?;
+    let lines = input.lines;
+    let (above_dc, left_dc, levels, nonzero) = state.dc_lines_and_levels(config.plane)?;
+    let block = Block {
+        scan,
+        config,
+        dc: CoeffSignSourceDeriveConfig {
+            plane: config.plane,
+            plane_type: usize::from(!LUMA),
+            tx_class,
+            is_hidden: false,
+            sum_abs1: 0,
+            above_dc,
+            left_dc,
+            x4: lines.x4,
+            y4: lines.y4,
+            w4: lines.w4,
+            h4: lines.h4,
+        },
+        lossless: input.lossless,
+    };
     let Some(&eob_entry) = scan.last() else {
         return Err(CoeffLoopContextError::InvalidScanWalkEob { eob: 0 }.into());
     };
@@ -522,12 +511,18 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
         sum_abs1: if PH { ph & 1 } else { 0 },
     };
     let result =
-        sign_pass::<CLASS, LUMA, TCQ>(cdfs, &mut owned, levels, quant, block, facts, nonzero);
+        sign_pass::<CLASS, LUMA, TCQ>(cdfs, &mut owned, levels, quant, &block, facts, nonzero);
     symbols.restore(owned);
     if result.is_err() {
         levels.fill(0);
     }
-    result
+    let summary = result?;
+    state.commit_block(
+        lines,
+        summary.state.cul_level(),
+        summary.state.dc_category(),
+    );
+    Ok(summary.quant_end)
 }
 
 /// Reads the `coeff_base_eob` symbol of context `ctx` (§ 8.3.2).

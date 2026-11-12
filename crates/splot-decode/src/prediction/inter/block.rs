@@ -141,7 +141,6 @@ const WEDGE_USED_BY_BSIZE: [bool; 29] = [
 ];
 const QUAD_WEDGE_ANGLES: u8 = 5;
 const H_WEDGE_ANGLES: u8 = 10;
-const COEFF_CONTEXT_PLANES: [usize; 3] = [0, 1, 2];
 
 /// § 5.20.4 chroma subsampling as `(subsamplingX, subsamplingY)` in MI shifts.
 pub(super) fn block_chroma_subsampling(chroma: ChromaFormatIdc) -> (u32, u32) {

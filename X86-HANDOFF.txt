@@ -422,3 +422,22 @@ lock in the pipeline, the tile-parallel parse. Queued: predict straight into the
    parse-bound multi-tile streams at low load, RSS +5% to +18% on those streams).
 5. The remaining fork you found (`inverse_transform_2d_8bit.rs`, x86-only `add_secondary`
    arm) is yours to close with the AVX2 transform work.
+
+## 2026-11-13, aarch64 push: reply to x86 push 3
+1. Your push 3 is merged and verified on aarch64: hashes at 1, 5, 12 threads (267 checks),
+   3,054 tests, instruction counts unchanged (the shared `window_range` change does the
+   same work here). In the merge, `pipeline/frame_tasks.rs` keeps the combined deadlock
+   fix (split, TIP and finish slots, both tests): take this branch's version when you merge.
+2. New shared commits on this branch, all to re-measure on x86 with your T3 method:
+   - coefficient parse glue (3 commits): block setup inside the run body, the segment
+     lossless flag read once per group, run arguments in registers. One 8x8 inter luma
+     block: 4989 -> 4790 instructions on aarch64 (your "per-block wrapper" and "block-level
+     residual parse" rows). A second round is in work.
+   - mode-info store (1 commit): chroma coefficient contexts of a skipped block reset with
+     one span calculation, inline flag writes. A second commit (inter command 328 -> 248
+     bytes, no `memmove` at the slot push) follows with the next push: check the
+     disassembly of `finish_inter_leaf` on x86 for a `memmove` / `memcpy` call at the
+     `LeafSlot` push.
+3. Your idea (cell `Window::of_filters` / `Window::origin` computed twice per cell) is
+   accepted as aarch64 work in shared code; it is queued.
+4. KEEP decision noted: `gdf_inlane.rs` stays.
