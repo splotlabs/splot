@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "0a466bab2e705e7fdf1f0319c11a398abd684b28",
+  "audited_commit": "eeab8e09badff52667bd0b4a8f17bb0d7068332d",
   "outcome": "success",
   "files": [
     {
@@ -3534,7 +3534,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block.rs",
-      "sha256": "5f713ef00ffbcc0c5b7fc9f3f3cd1c4a28be780a33aafcc594688cd1f97b1699",
+      "sha256": "e279e915827f2f91b6715d5988da8c6f770bd0f2be3ade0bb2ef1f3b7125e05c",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-RESIDUAL-DCT",
@@ -3551,7 +3551,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/compound_path.rs",
-      "sha256": "a87cfba7fa6e821da7d98e6015079348354553b911490a27810c83de6146ec66",
+      "sha256": "4efc40a376f2b4e6763ad7e7f1209d0ef5fd92ab9216d80fdf3f88cf04a6d054",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-LOCALWARP"
@@ -3567,7 +3567,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/deferred_recon.rs",
-      "sha256": "cca3cd89841d7f7162d2d0c45bbc374eb891e48ed797d88637313386b2b5878c",
+      "sha256": "50b22eb0950e2b1c5a930522c0420c918f8d855d75b9ff4dd5027368cc76a329",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-PARALLEL-STAGES"
@@ -3663,7 +3663,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/prediction.rs",
-      "sha256": "b50e81072abf993d2a303c052570d97a4ea910314e5168734d5f02a045747022",
+      "sha256": "2865a8632e6d5e8394c6365d1f4f8476c0c8cee82b2d8d9c9001086a03cbd9fc",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3686,7 +3686,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/resolve.rs",
-      "sha256": "a83253e1f6618a871b03735435756365f4df5575905d30c92259c4da4999add3",
+      "sha256": "c5eb74f961a15391b8c421e520e1be8704be29096968d9f5048f6d6c1769550f",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTRABC-REF-MV-BANK-SB-LIFETIME"
@@ -3732,7 +3732,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/tile.rs",
-      "sha256": "e4caea788ca6fa9cb548e4f95295df6b0d3c68eaa9b38b3f9ca6013405f4464b",
+      "sha256": "57e8e592e3d86c3acca3670afcfd661774c3ca6f7c8d7a1c0d5dd10001ca692d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-PARALLEL-STAGES"
@@ -3825,7 +3825,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/find_mv_stack.rs",
-      "sha256": "9ab8d84bf744ce48719955f4e2c6b7429f284505e4bd39b9710c3edb604ae963",
+      "sha256": "abd2c61b3f48c7aa3b37665a089f3cff9e7c265209d5cd4bf165293025b8c5d3",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
