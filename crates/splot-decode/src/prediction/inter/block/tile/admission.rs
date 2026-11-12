@@ -206,19 +206,30 @@ enum TileReconRow<T: ReconSample> {
     Taken,
 }
 
+/// One lock per unit, so a precompute take, a resolve and a pull of other
+/// units never wait on each other. The tile owns the slots until it retires
+/// by value, which hands them to the slot's reusable workspace.
+type TileRowSlots<T> = Vec<Mutex<TileReconRow<T>>>;
+
+fn reset_row_slots<T: ReconSample>(rows: &mut TileRowSlots<T>, units: usize) -> Result<()> {
+    rows.truncate(units);
+    for row in &mut *rows {
+        *row.get_mut() = TileReconRow::Taken;
+    }
+    rows.try_reserve(units - rows.len())
+        .map_err(|_| inter_allocation!("inter admission rows"))?;
+    rows.resize_with(units, || Mutex::new(TileReconRow::Taken));
+    Ok(())
+}
+
 #[derive(Default)]
 pub(in crate::prediction::inter) struct ScheduledRowSlots<T: ReconSample> {
-    rows: Mutex<Vec<TileReconRow<T>>>,
     prepared: Mutex<Vec<Option<Vec<ReadyReconRow<T>>>>>,
     spares: Mutex<Vec<Vec<ReadyReconRow<T>>>>,
 }
 
 impl<T: ReconSample> ScheduledRowSlots<T> {
-    fn reset(&mut self, units: usize, batches: &[core::ops::Range<usize>]) -> Result<()> {
-        let rows = self.rows.get_mut();
-        rows.clear();
-        rows.try_reserve(units)
-            .map_err(|_| inter_allocation!("inter admission rows"))?;
+    fn reset(&mut self, batches: &[core::ops::Range<usize>]) -> Result<()> {
         let prepared = self.prepared.get_mut();
         prepared
             .try_reserve(batches.len().saturating_sub(prepared.len()))
@@ -240,7 +251,6 @@ impl<T: ReconSample> ScheduledRowSlots<T> {
 
     fn retire(&self) -> Self {
         Self {
-            rows: Mutex::new(core::mem::take(&mut *self.rows.lock())),
             prepared: Mutex::new(core::mem::take(&mut *self.prepared.lock())),
             spares: Mutex::new(core::mem::take(&mut *self.spares.lock())),
         }
@@ -266,6 +276,10 @@ struct TileRecon<T: ReconSample> {
     /// The decode's reusable storage, for the tile scratch each commit opens.
     buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
     slots: ScheduledRowSlots<T>,
+    rows: TileRowSlots<T>,
+    /// Units pulled into `rows`, a prefix the pull mutex extends in order.
+    pulled: core::sync::atomic::AtomicUsize,
+    pull: Mutex<()>,
     unit_count: usize,
     units_per_row: usize,
     batches: Vec<core::ops::Range<usize>>,
@@ -314,6 +328,7 @@ pub(crate) struct ScheduledTileWorkspace<T: ReconSample> {
     surfaces: Option<Arc<SurfaceSource<T>>>,
     motion: Option<MotionFieldUnits>,
     batches: Vec<core::ops::Range<usize>>,
+    rows: TileRowSlots<T>,
     filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
     reference: Option<Arc<InterReferenceState<T>>>,
     initial_cdfs: Option<Arc<FrameCdfSubset>>,
@@ -513,15 +528,21 @@ impl<T: ReconSample> TileRecon<T> {
         self.batches.get(index).cloned()
     }
 
-    fn accept_resolved(
-        rows: &mut [TileReconRow<T>],
-        index: usize,
-        ready: ReadyReconRow<T>,
-    ) -> Result<()> {
-        let slot = rows
-            .get_mut(index)
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        if !matches!(slot, TileReconRow::Taken) {
+    /// The slots of `range`, if every one of them has been pulled.
+    fn pulled_rows(&self, range: core::ops::Range<usize>) -> Option<&[Mutex<TileReconRow<T>>]> {
+        if range.end > self.pulled.load(core::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        self.rows.get(range)
+    }
+
+    fn accept_resolved(&self, index: usize, ready: ReadyReconRow<T>) -> Result<()> {
+        let mut slot = self
+            .rows
+            .get(index)
+            .ok_or_else(invalid_inter_tile_scheduling_state)?
+            .lock();
+        if !matches!(*slot, TileReconRow::Taken) {
             return Err(invalid_inter_tile_scheduling_state());
         }
         *slot = TileReconRow::Ready(ready);
@@ -541,31 +562,22 @@ impl<T: ReconSample> TileRecon<T> {
                 return Err(invalid_inter_tile_scheduling_state());
             }
         }
-        let ready = {
-            let mut rows = self.slots.rows.lock();
-            let Some(rows) = rows.get_mut(range) else {
-                return Err(invalid_inter_tile_scheduling_state());
-            };
-            if rows
-                .iter()
-                .any(|row| !matches!(row, TileReconRow::Ready(_)))
-            {
-                return Err(invalid_inter_tile_scheduling_state());
+        let rows = self
+            .pulled_rows(range)
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+        let mut ready = core::mem::take(
+            self.slots
+                .spares
+                .lock()
+                .get_mut(index)
+                .ok_or_else(invalid_inter_tile_scheduling_state)?,
+        );
+        for row in rows {
+            match core::mem::replace(&mut *row.lock(), TileReconRow::Taken) {
+                TileReconRow::Ready(row) => ready.push(row),
+                _ => return Err(invalid_inter_tile_scheduling_state()),
             }
-            let mut ready = core::mem::take(
-                self.slots
-                    .spares
-                    .lock()
-                    .get_mut(index)
-                    .ok_or_else(invalid_inter_tile_scheduling_state)?,
-            );
-            for row in rows {
-                if let TileReconRow::Ready(row) = core::mem::replace(row, TileReconRow::Taken) {
-                    ready.push(row);
-                }
-            }
-            ready
-        };
+        }
         let batch = self.workers.with_scratch(worker, |scratch| {
             let _quantizer_scopes = self.quantizer.install_frame();
             ready
@@ -802,6 +814,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             surfaces: Some(self.pending_surfaces),
             motion: Some(self.recon.motion),
             batches: self.recon.batches,
+            rows: self.recon.rows,
             filters,
             reference: Some(self.recon.reference),
             initial_cdfs: self.recon.initial_cdfs,
@@ -838,8 +851,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     /// Whether batch `index` is parsed, resolved, and admitted by its
-    /// references' published rows. A busy row list reads as not ready: its
-    /// holder is a resolve or precompute run, which notifies when it ends.
+    /// references' published rows. A busy row reads as not ready: its holder
+    /// is a resolve or precompute run, which notifies when it ends.
     pub(crate) fn batch_ready(&self, index: usize) -> bool {
         let Some(range) = self.recon.batch_range(index) else {
             return false;
@@ -848,18 +861,16 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             return false;
         }
         let mut bounds = row_gate::RowReferenceBounds::default();
-        {
-            let Some(rows) = self.recon.slots.rows.try_lock() else {
+        let Some(rows) = self.recon.pulled_rows(range) else {
+            return false;
+        };
+        for row in rows {
+            let Some(row) = row.try_lock() else {
                 return false;
             };
-            let Some(rows) = rows.get(range) else {
-                return false;
-            };
-            for row in rows {
-                match row {
-                    TileReconRow::Ready(ready) => bounds.merge(ready.bounds),
-                    TileReconRow::Unresolved { .. } | TileReconRow::Taken => return false,
-                }
+            match &*row {
+                TileReconRow::Ready(ready) => bounds.merge(ready.bounds),
+                TileReconRow::Unresolved { .. } | TileReconRow::Taken => return false,
             }
         }
         RowReferenceGate::new(
@@ -908,11 +919,13 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         loop {
             let next = resolve.next;
             let (mut row, surface) = {
-                let mut rows = self.recon.slots.rows.lock();
-                let Some(slot) = rows.get_mut(next) else {
+                let Some(slot) = self.recon.pulled_rows(next..next.saturating_add(1)) else {
                     if next < self.recon.unit_count && !self.parse_failed() {
                         awaiting = Some(next.saturating_add(1));
                     }
+                    break;
+                };
+                let Some(mut slot) = slot.first().map(Mutex::lock) else {
                     break;
                 };
                 let TileReconRow::Unresolved { row, .. } = &*slot else {
@@ -931,7 +944,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     break;
                 }
                 let TileReconRow::Unresolved { row, surface } =
-                    core::mem::replace(slot, TileReconRow::Taken)
+                    core::mem::replace(&mut *slot, TileReconRow::Taken)
                 else {
                     break;
                 };
@@ -956,8 +969,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             )?;
             row.return_terminal_error()?;
             let bounds = row_gate.bounds_for_row(&row);
-            TileRecon::accept_resolved(
-                &mut self.recon.slots.rows.lock(),
+            self.recon.accept_resolved(
                 next,
                 ReadyReconRow {
                     row,
@@ -1057,13 +1069,18 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// the parse watermark for `units` finds exactly that prefix available,
     /// and a unit the pass has not reached simply stops the pull.
     fn materialize_rows(&self, units: usize) {
+        use core::sync::atomic::Ordering;
         let units = units.min(self.recon.unit_count);
-        let mut rows = self.recon.slots.rows.lock();
-        if rows.len() >= units {
+        if self.recon.pulled.load(Ordering::Acquire) >= units {
             return;
         }
-        while rows.len() < units {
-            let Some(mut row) = self.parse_progress.take_row(rows.len()) else {
+        let _pull = self.recon.pull.lock();
+        let mut pulled = self.recon.pulled.load(Ordering::Acquire);
+        while pulled < units {
+            let Some(slot) = self.recon.rows.get(pulled) else {
+                break;
+            };
+            let Some(mut row) = self.parse_progress.take_row(pulled) else {
                 break;
             };
             if let Err(error) = self
@@ -1072,7 +1089,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             {
                 row.record_terminal_error(error);
             }
-            rows.push(TileReconRow::Unresolved { row, surface: None });
+            *slot.lock() = TileReconRow::Unresolved { row, surface: None };
+            pulled += 1;
+            self.recon.pulled.store(pulled, Ordering::Release);
         }
     }
 
@@ -1539,7 +1558,9 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         recon_batch_units(units_per_row, workers.workers()),
         &mut batches,
     );
-    scratch.scheduled_rows.reset(unit_count, &batches)?;
+    scratch.scheduled_rows.reset(&batches)?;
+    let mut rows = core::mem::take(&mut reusable.rows);
+    reset_row_slots(&mut rows, unit_count)?;
     let TileDecodeScratch {
         parse: _,
         surface_source: _,
@@ -1588,6 +1609,9 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         recon: TileRecon {
             buffers,
             slots: scheduled_rows,
+            rows,
+            pulled: core::sync::atomic::AtomicUsize::new(0),
+            pull: Mutex::new(()),
             unit_count,
             units_per_row,
             batches,
@@ -1714,21 +1738,19 @@ mod tests {
     fn scheduled_row_slots_survive_retirement_and_smaller_tiles() -> crate::Result<()> {
         let mut slots = super::ScheduledRowSlots::<u8>::default();
         let batches = super::superblock_row_batches(65, 8, 4);
-        slots.reset(65, &batches)?;
-        let rows = slots.rows.get_mut().as_ptr();
+        slots.reset(&batches)?;
+        let mut rows = super::TileRowSlots::<u8>::new();
+        super::reset_row_slots(&mut rows, 65)?;
+        let rows_at = rows.as_ptr();
         let prepared = slots.prepared.get_mut().as_ptr();
         let spares: Vec<_> = slots.spares.get_mut().iter().map(Vec::as_ptr).collect();
         for units in [65, 3, 65] {
             let active = super::superblock_row_batches(units, 8, 4);
-            slots.reset(units, &active)?;
-            slots
-                .rows
-                .get_mut()
-                .resize_with(units, || super::TileReconRow::Taken);
-            let retired = slots.retire();
-            assert!(slots.rows.get_mut().is_empty());
-            slots = retired;
-            assert_eq!(slots.rows.get_mut().as_ptr(), rows);
+            slots.reset(&active)?;
+            super::reset_row_slots(&mut rows, units)?;
+            assert_eq!(rows.len(), units);
+            assert_eq!(rows.as_ptr(), rows_at);
+            slots = slots.retire();
             assert_eq!(slots.prepared.get_mut().as_ptr(), prepared);
             assert!(
                 slots
