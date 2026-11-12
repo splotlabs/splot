@@ -101,22 +101,24 @@ pub(super) fn compound_cell<const P: usize>(
     }
 }
 
-/// The COMPOUND_AVERAGE of a pair of at most 64 samples each through a
-/// stack first predictor, else of the first predictor staged for the
-/// second.
+/// The COMPOUND_AVERAGE of a pair in one call of the strip kernels, the
+/// `i16` first predictor of at most 64 samples on the stack, else in
+/// retained storage.
 pub(super) fn compound_fullpel(
     blocks: [&Block<'_, u8>; 2],
     forward: i32,
     output: &mut [u8],
     stride: usize,
 ) {
+    let len = blocks[0].w * blocks[0].h;
     match token() {
-        Some(t)
-            if blocks
-                .iter()
-                .all(|block| fits(block) && block.w * block.h <= 64) =>
-        {
+        Some(t) if fits(blocks[0]) && fits(blocks[1]) && len <= 64 => {
             compound_on(t, blocks, forward, &mut [0; 64], output, stride);
+        }
+        Some(t) if fits(blocks[0]) && fits(blocks[1]) => {
+            super::super::with_compound_pred0_narrow(len, |pred0| {
+                compound_on(t, blocks, forward, pred0, output, stride);
+            });
         }
         _ => super::staged(blocks, forward, output, stride),
     }
@@ -670,7 +672,7 @@ fn pair_block<const H: usize, const V: usize, const C: usize, O: LaneOut>(
 ) {
     let filter = Horizontal::new::<C, H>(t, block.horizontal.unwrap_or(&SKIPPED));
     let (bytes, words) = weights::<V>(block.vertical);
-    let (put, forward) = (O::PUT, out.forward());
+    let forward = out.forward();
     let word = |row: &[u8]| Some(i64::from_le_bytes(*row.first_chunk::<8>()?));
     let line = |a: &[u8], b: &[u8]| -> Option<__m256i> {
         let rows = if C == 8 {
@@ -693,7 +695,7 @@ fn pair_block<const H: usize, const V: usize, const C: usize, O: LaneOut>(
             return Some(rows);
         }
         let sums = filter.sums::<H>(rows);
-        Some(horizontal_value::<V>(put, sums))
+        Some(horizontal_value::<V>(O::PUT, sums))
     };
     let vertical = |ring: &[__m256i; 4], next: __m256i| -> __m256i {
         let pair = |k: usize| if k < V { ring[k] } else { next };
@@ -707,10 +709,10 @@ fn pair_block<const H: usize, const V: usize, const C: usize, O: LaneOut>(
             }
         };
         match (H, V) {
-            (_, 0) if H > 0 || put => next,
+            (_, 0) if H > 0 || O::PUT => next,
             (0, 0) => _mm256_slli_epi16::<4>(next),
-            (0, _) if C == 8 => byte_value::<V>(put, &bytes, tap),
-            _ => word_value::<H, V>(put, &words, tap),
+            (0, _) if C == 8 => byte_value::<V>(O::PUT, &bytes, tap),
+            _ => word_value::<H, V>(O::PUT, &words, tap),
         }
     };
     let emit = |a: O::Row<'_>, b: O::Row<'_>, values: __m256i| {
