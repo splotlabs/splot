@@ -559,8 +559,9 @@ pub(super) fn decode_compound_inter_block(
         skip_mode: false,
         use_optflow: compound.use_optflow,
         local_warp,
-        ref_mv_idx,
-        independent_idx: compound_reads_second_drl(compound).then_some([ref_mv_idx0, ref_mv_idx1]),
+        ref_mv_idx: ref_mv_idx as u8,
+        independent_idx: compound_reads_second_drl(compound)
+            .then_some([ref_mv_idx0 as u8, ref_mv_idx1 as u8]),
         mvd,
         joint,
         jmvd_scale_mode,
@@ -901,13 +902,13 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
         && warp_params == [None, None]
         && !matches!(placed.block.compound_blend, mc::CompoundBlend::Wedge { .. });
     let (step_w, step_h) = if uniform {
-        (placed.luma_w.max(8), placed.luma_h.max(8))
+        (placed.luma_w().max(8), placed.luma_h().max(8))
     } else {
         (8, 8)
     };
     let first = records.len();
-    for y in (0..placed.luma_h).step_by(step_h) {
-        for x in (0..placed.luma_w).step_by(step_w) {
+    for y in (0..placed.luma_h()).step_by(step_h) {
+        for x in (0..placed.luma_w()).step_by(step_w) {
             let mvs = if let Some(grid) = motion_grid {
                 grid.temporal_mvs_at_luma_offset(x, y)?
             } else {
@@ -929,8 +930,8 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
             };
             let allowed = wedge_temporal_allowed_lists(
                 placed.block.compound_blend,
-                placed.luma_w,
-                placed.luma_h,
+                placed.luma_w(),
+                placed.luma_h(),
                 x,
                 y,
             )?;
@@ -944,8 +945,8 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
                 ref_frame_idx,
                 mi_row + y / 4,
                 mi_col + x / 4,
-                (placed.luma_w - x).min(step_w).div_ceil(4),
-                (placed.luma_h - y).min(step_h).div_ceil(4),
+                (placed.luma_w() - x).min(step_w).div_ceil(4),
+                (placed.luma_h() - y).min(step_h).div_ceil(4),
                 mi_rows,
                 mi_cols,
                 current_order_hint,
@@ -1059,7 +1060,7 @@ pub(super) fn decode_skip_mode_inter_block(
                 skip_mode: true,
                 use_optflow: false,
                 local_warp: false,
-                ref_mv_idx,
+                ref_mv_idx: ref_mv_idx as u8,
                 independent_idx: None,
                 mvd: [Mv::ZERO; 2],
                 joint: None,
@@ -1397,7 +1398,7 @@ fn compound_joint_mv_projection_from_order_hints(
         second_dist = -second_dist;
     }
     CompoundJointMvProjection {
-        base_list,
+        base_list: base_list as u8,
         first_dist,
         second_dist,
     }

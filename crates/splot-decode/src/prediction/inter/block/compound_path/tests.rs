@@ -1306,14 +1306,8 @@ fn compound_temporal_motion_merges_records_only_for_uniform_blocks() {
     };
     let records = |width, height, blend, warp_params| {
         let placed = PlacedInterBlock {
-            luma_x: 16,
-            luma_y: 24,
-            luma_w: width,
-            luma_h: height,
-            chroma_luma_x: 16,
-            chroma_luma_y: 24,
-            chroma_luma_w: width,
-            chroma_luma_h: height,
+            luma: [16, 24, width, height].map(|v| v as u32),
+            chroma_luma: [16, 24, width, height].map(|v| v as u32),
             predict_chroma: false,
             sub8x8_chroma: false,
             interintra_chroma: false,

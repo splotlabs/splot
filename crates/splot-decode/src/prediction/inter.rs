@@ -1122,14 +1122,8 @@ pub(crate) type InterDecodeOutput<T> = (
 
 #[derive(Clone, Debug)]
 pub(crate) struct PlacedInterBlock {
-    pub(crate) luma_x: usize,
-    pub(crate) luma_y: usize,
-    pub(crate) luma_w: usize,
-    pub(crate) luma_h: usize,
-    pub(crate) chroma_luma_x: usize,
-    pub(crate) chroma_luma_y: usize,
-    pub(crate) chroma_luma_w: usize,
-    pub(crate) chroma_luma_h: usize,
+    pub(crate) luma: [u32; 4],
+    pub(crate) chroma_luma: [u32; 4],
     pub(crate) predict_chroma: bool,
     pub(crate) sub8x8_chroma: bool,
     pub(crate) interintra_chroma: bool,
@@ -1138,8 +1132,40 @@ pub(crate) struct PlacedInterBlock {
 }
 
 impl PlacedInterBlock {
+    pub(crate) const fn luma_x(&self) -> usize {
+        self.luma[0] as usize
+    }
+
+    pub(crate) const fn luma_y(&self) -> usize {
+        self.luma[1] as usize
+    }
+
+    pub(crate) const fn luma_w(&self) -> usize {
+        self.luma[2] as usize
+    }
+
+    pub(crate) const fn luma_h(&self) -> usize {
+        self.luma[3] as usize
+    }
+
+    pub(crate) const fn chroma_luma_x(&self) -> usize {
+        self.chroma_luma[0] as usize
+    }
+
+    pub(crate) const fn chroma_luma_y(&self) -> usize {
+        self.chroma_luma[1] as usize
+    }
+
+    pub(crate) const fn chroma_luma_w(&self) -> usize {
+        self.chroma_luma[2] as usize
+    }
+
+    pub(crate) const fn chroma_luma_h(&self) -> usize {
+        self.chroma_luma[3] as usize
+    }
+
     pub(in crate::prediction::inter) const fn motion_compensation_rect(&self) -> mc::McBlockRect {
-        mc::McBlockRect::from_luma_rect(self.luma_x, self.luma_y, self.luma_w, self.luma_h)
+        mc::McBlockRect::from_luma_rect(self.luma_x(), self.luma_y(), self.luma_w(), self.luma_h())
     }
 }
 #[derive(Clone, Debug)]

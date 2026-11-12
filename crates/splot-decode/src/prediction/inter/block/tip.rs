@@ -579,19 +579,19 @@ impl TipFramePlan {
         let unit_size = if self.output {
             output_prediction_unit_size(self.enable_tip_refinemv, self.plan.interpolation_filter)
         } else {
-            prediction_unit_size(placed.luma_w, placed.luma_h, self.enable_tip_refinemv)
+            prediction_unit_size(placed.luma_w(), placed.luma_h(), self.enable_tip_refinemv)
         };
         let use_optflow = unit_size == 8 && self.optflow_allowed;
-        let block_w = placed.luma_w.min(
+        let block_w = placed.luma_w().min(
             self.frame_size
                 .width()
-                .saturating_sub(placed.luma_x)
+                .saturating_sub(placed.luma_x())
                 .next_multiple_of(unit_size),
         );
-        let block_h = placed.luma_h.min(
+        let block_h = placed.luma_h().min(
             self.frame_size
                 .height()
-                .saturating_sub(placed.luma_y)
+                .saturating_sub(placed.luma_y())
                 .next_multiple_of(unit_size),
         );
         if block_w == 0 || block_h == 0 {
@@ -607,16 +607,18 @@ impl TipFramePlan {
         if !use_optflow {
             (plan.optflow_distances, plan.optflow_sad_threshold) = (None, None);
         }
-        let batch_chroma_x = placed.luma_x.max(placed.chroma_luma_x);
-        let batch_chroma_y = placed.luma_y.max(placed.chroma_luma_y);
-        let batch_chroma_end_x = placed
-            .luma_x
-            .saturating_add(block_w)
-            .min(placed.chroma_luma_x.saturating_add(placed.chroma_luma_w));
-        let batch_chroma_end_y = placed
-            .luma_y
-            .saturating_add(block_h)
-            .min(placed.chroma_luma_y.saturating_add(placed.chroma_luma_h));
+        let batch_chroma_x = placed.luma_x().max(placed.chroma_luma_x());
+        let batch_chroma_y = placed.luma_y().max(placed.chroma_luma_y());
+        let batch_chroma_end_x = placed.luma_x().saturating_add(block_w).min(
+            placed
+                .chroma_luma_x()
+                .saturating_add(placed.chroma_luma_w()),
+        );
+        let batch_chroma_end_y = placed.luma_y().saturating_add(block_h).min(
+            placed
+                .chroma_luma_y()
+                .saturating_add(placed.chroma_luma_h()),
+        );
         Ok(TipBlockPlan {
             references: self.references,
             plan,
@@ -627,8 +629,8 @@ impl TipFramePlan {
             block_w,
             block_h,
             batch_rect: mc::McBlockRect {
-                luma_x: placed.luma_x,
-                luma_y: placed.luma_y,
+                luma_x: placed.luma_x(),
+                luma_y: placed.luma_y(),
                 luma_w: block_w,
                 luma_h: block_h,
                 chroma_luma_x: batch_chroma_x,
@@ -665,23 +667,23 @@ fn build_units(
         .map_err(|_| inter_allocation!("TIP prediction units"))?;
     for local_y in (0..plan.block_h).step_by(plan.unit_size) {
         for local_x in (0..plan.block_w).step_by(plan.unit_size) {
-            let luma_x = placed.luma_x + local_x;
-            let luma_y = placed.luma_y + local_y;
+            let luma_x = placed.luma_x() + local_x;
+            let luma_y = placed.luma_y() + local_y;
             let luma_w =
                 prediction_unit_extent(plan.output, plan.block_w - local_x, plan.unit_size);
             let luma_h =
                 prediction_unit_extent(plan.output, plan.block_h - local_y, plan.unit_size);
-            let chroma_x = luma_x.max(placed.chroma_luma_x);
-            let chroma_y = luma_y.max(placed.chroma_luma_y);
+            let chroma_x = luma_x.max(placed.chroma_luma_x());
+            let chroma_y = luma_y.max(placed.chroma_luma_y());
             let chroma_end_x = if plan.output {
                 luma_x + luma_w
             } else {
-                (luma_x + luma_w).min(placed.chroma_luma_x + placed.chroma_luma_w)
+                (luma_x + luma_w).min(placed.chroma_luma_x() + placed.chroma_luma_w())
             };
             let chroma_end_y = if plan.output {
                 luma_y + luma_h
             } else {
-                (luma_y + luma_h).min(placed.chroma_luma_y + placed.chroma_luma_h)
+                (luma_y + luma_h).min(placed.chroma_luma_y() + placed.chroma_luma_h())
             };
             let predict_chroma =
                 placed.predict_chroma && chroma_end_x > chroma_x && chroma_end_y > chroma_y;
@@ -1029,10 +1031,8 @@ pub(super) fn predict<T: ReconSample>(
 /// `placed` moved onto `rect`, luma and chroma alike.
 fn rect_placed(placed: &PlacedInterBlock, rect: splot_recon::PlaneRect) -> PlacedInterBlock {
     let mut band = placed.clone();
-    (band.luma_x, band.luma_y) = (rect.x(), rect.y());
-    (band.luma_w, band.luma_h) = (rect.width(), rect.height());
-    (band.chroma_luma_x, band.chroma_luma_y) = (rect.x(), rect.y());
-    (band.chroma_luma_w, band.chroma_luma_h) = (rect.width(), rect.height());
+    band.luma = [rect.x(), rect.y(), rect.width(), rect.height()].map(|v| v as u32);
+    band.chroma_luma = band.luma;
     band
 }
 
@@ -1232,14 +1232,8 @@ impl<T: ReconSample> TipOutputStages<T> {
         .min(height);
         let band_w = TIP_OUTPUT_BAND_LUMA_COLS.min(width);
         let placed = PlacedInterBlock {
-            luma_x: 0,
-            luma_y: 0,
-            luma_w: band_w,
-            luma_h: band_h,
-            chroma_luma_x: 0,
-            chroma_luma_y: 0,
-            chroma_luma_w: band_w,
-            chroma_luma_h: band_h,
+            luma: [0, 0, band_w, band_h].map(|v| v as u32),
+            chroma_luma: [0, 0, band_w, band_h].map(|v| v as u32),
             predict_chroma: sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
             sub8x8_chroma: false,
             interintra_chroma: false,
@@ -1493,10 +1487,10 @@ impl<T: ReconSample> TipOutputStages<T> {
         let width = self.info.storage_luma_size().width();
         let bit_depth = self.info.bit_depth();
         let mut placed = self.placed.clone();
-        placed.luma_y = rect.y();
-        placed.luma_h = rect.height();
-        placed.chroma_luma_y = rect.y();
-        placed.chroma_luma_h = rect.height();
+        placed.luma[1] = rect.y() as u32;
+        placed.luma[3] = rect.height() as u32;
+        placed.chroma_luma[1] = rect.y() as u32;
+        placed.chroma_luma[3] = rect.height() as u32;
         let mut residual_scratch = InterResidualReconScratch::default();
         let frame = TipFramePlan::new(
             self.info,
@@ -1508,10 +1502,10 @@ impl<T: ReconSample> TipOutputStages<T> {
         )?;
         for band_x in (rect.x()..rect.x() + rect.width()).step_by(self.band_w) {
             let cols = self.band_w.min(width - band_x);
-            placed.luma_x = band_x;
-            placed.luma_w = cols;
-            placed.chroma_luma_x = band_x;
-            placed.chroma_luma_w = cols;
+            placed.luma[0] = band_x as u32;
+            placed.luma[2] = cols as u32;
+            placed.chroma_luma[0] = band_x as u32;
+            placed.chroma_luma[2] = cols as u32;
             let grid = motion(
                 &mut band.scratch,
                 &mut band.records,

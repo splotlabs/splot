@@ -18,18 +18,9 @@ pub(super) struct PlacedInterGeometry {
 impl PlacedInterGeometry {
     /// `block` placed at this geometry.
     pub(super) fn place(self, block: InterBlock) -> PlacedInterBlock {
-        let [luma_x, luma_y, luma_w, luma_h] = self.luma.map(|v| v as usize);
-        let [chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h] =
-            self.chroma_luma.map(|v| v as usize);
         PlacedInterBlock {
-            luma_x,
-            luma_y,
-            luma_w,
-            luma_h,
-            chroma_luma_x,
-            chroma_luma_y,
-            chroma_luma_w,
-            chroma_luma_h,
+            luma: self.luma,
+            chroma_luma: self.chroma_luma,
             predict_chroma: self.predict_chroma,
             sub8x8_chroma: self.sub8x8_chroma,
             interintra_chroma: self.interintra_chroma,
@@ -202,8 +193,8 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
                         prediction.x,
                         prediction.y,
                         prediction.size,
-                        placed.luma_w,
-                        placed.luma_h,
+                        placed.luma_w(),
+                        placed.luma_h(),
                         usize::from(wedge_index),
                         prediction.sub_x,
                         prediction.sub_y,

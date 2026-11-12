@@ -1350,18 +1350,18 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 Some(ReconCommandRef::Inter(command))
                     if !command.reads_current_frame()
                         && (!skipped_any
-                            || (command.placed().luma_w >= 8
-                                && command.placed().luma_h >= 8
+                            || (command.placed().luma_w() >= 8
+                                && command.placed().luma_h() >= 8
                                 && [
-                                    command.placed().chroma_luma_x,
-                                    command.placed().chroma_luma_y,
-                                    command.placed().chroma_luma_w,
-                                    command.placed().chroma_luma_h,
+                                    command.placed().chroma_luma_x(),
+                                    command.placed().chroma_luma_y(),
+                                    command.placed().chroma_luma_w(),
+                                    command.placed().chroma_luma_h(),
                                 ] == [
-                                    command.placed().luma_x,
-                                    command.placed().luma_y,
-                                    command.placed().luma_w,
-                                    command.placed().luma_h,
+                                    command.placed().luma_x(),
+                                    command.placed().luma_y(),
+                                    command.placed().luma_w(),
+                                    command.placed().luma_h(),
                                 ]))
                         && command.prepass_write_is_contained(
                             superblock.origin,

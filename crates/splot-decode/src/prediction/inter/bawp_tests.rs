@@ -319,14 +319,8 @@ fn plane(
 
 fn placed_luma_block(x: usize, y: usize, width: usize, height: usize) -> PlacedInterBlock {
     PlacedInterBlock {
-        luma_x: x,
-        luma_y: y,
-        luma_w: width,
-        luma_h: height,
-        chroma_luma_x: x,
-        chroma_luma_y: y,
-        chroma_luma_w: width,
-        chroma_luma_h: height,
+        luma: [x, y, width, height].map(|v| v as u32),
+        chroma_luma: [x, y, width, height].map(|v| v as u32),
         predict_chroma: false,
         sub8x8_chroma: false,
         interintra_chroma: false,

@@ -196,7 +196,7 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         }
         let compound = block.ref_frame1.is_some();
         let bawp = if block.bawp.enabled {
-            bawp_reference_luma_rows(placed.luma_y, placed.luma_h, block.mv.row)
+            bawp_reference_luma_rows(placed.luma_y(), placed.luma_h(), block.mv.row)
         } else {
             0
         };
@@ -255,8 +255,8 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         };
         let base = placed.block.mv;
         let Some(batch_mvs) = self.temporal.tip_candidate(
-            placed.luma_y / TIP_FIELD_CELL,
-            placed.luma_x / TIP_FIELD_CELL,
+            placed.luma_y() / TIP_FIELD_CELL,
+            placed.luma_x() / TIP_FIELD_CELL,
             base,
         ) else {
             bounds.settle = true;
@@ -279,11 +279,11 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
                 batch_reach,
             );
         }
-        for band in (0..placed.luma_h).step_by(TIP_FIELD_CELL) {
-            let luma_y = placed.luma_y.saturating_add(band);
+        for band in (0..placed.luma_h()).step_by(TIP_FIELD_CELL) {
+            let luma_y = placed.luma_y().saturating_add(band);
             let mut furthest = [Mv::ZERO; 2];
-            for column in (0..placed.luma_w).step_by(TIP_FIELD_CELL) {
-                let luma_x = placed.luma_x.saturating_add(column);
+            for column in (0..placed.luma_w()).step_by(TIP_FIELD_CELL) {
+                let luma_x = placed.luma_x().saturating_add(column);
                 let Some(mvs) = self.temporal.tip_candidate(
                     luma_y / TIP_FIELD_CELL,
                     luma_x / TIP_FIELD_CELL,
@@ -297,7 +297,7 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
                 }
             }
             let rect =
-                McBlockRect::from_luma_rect(placed.luma_x, luma_y, placed.luma_w, TIP_MAX_UNIT);
+                McBlockRect::from_luma_rect(placed.luma_x(), luma_y, placed.luma_w(), TIP_MAX_UNIT);
             let reach = ListReach {
                 compound: true,
                 ..ListReach::default()
