@@ -4,6 +4,22 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 4 (10-bit AVX2 MC on `rows.rs`, deadlock confirmation):
+1. Your deadlock fix is CONFIRMED on x86 (head cd939a1c): BlueSky qp210 and FourPeople
+   qp210 complete 5 of 5 times at 16, 17, 20 threads and at `--threads=20 --frame-delay 16`;
+   hashes equal splot-main at 1, 16, 20 threads; `tip_output_run_does_not_exhaust_the_frame_store`
+   passes. Open problem 1 is closed.
+2. `sixteen_bit/avx2.rs` now runs on `rows::strips` and `rows::pairs` (your port plan), with
+   the register ring of `rows.rs` for the vertical pass and register compound cells. x86
+   file only; no shared line changed. Two requests for shared code (not made by me):
+   (a) `subpel_mc.rs`: the `cfg_attr(..., allow(dead_code))` on `mod rows` is out of date,
+       x86 uses the module now. Remove it or make it narrow.
+   (b) `rows::strips` returns without a write when `stride < reach`. A kernel with a reach
+       of 17 on a 16-wide plane writes nothing and gives no error. A debug assertion or an
+       error return would make this safe.
+3. In work on x86 now: 8-bit AVX2 strips; next the 16-bit program kernel and clamped cells,
+   then optical flow, warp and TIP prediction (x86 kernel arms).
+
 2026-11-13, push 3 (first x86 kernel gains):
 0. Your deadlock fix (d12ee59a, `retire_idle`) is merged. It is the same idea as my fix
    of push 2. I took your version of `pipeline/mod.rs` and `pipeline/frame_tasks.rs` in
@@ -138,6 +154,13 @@ Head 6421575e against ab8d3d3e (1 thread, instructions, main / branch): 1.031x a
 ==========================================================================================
 COMMITS ON THIS BRANCH
 ==========================================================================================
+perf(recon): 10-bit AVX2 MC on the shared row walkers with a register ring, and
+perf(recon): 16-bit AVX2 register compound cells. Instructions, 1 thread, first 100
+frames: Meridian_talk -14.2%, RitualDance qp160 -7.1%, TunnelFlag qp160 -5.9%, test.ivf
+-3.7%, ToddlerFountain -3.0%, 8-bit 0.0%. Cycles: RitualDance -5.9%, Meridian_talk -6.5%.
+10-bit inter stage against dav2d: RitualDance 1.24x -> 1.08x, Meridian_talk 1.22x -> 1.02x.
+Checks: subset hashes at 1, 5, 12 threads (agent: 89/89 at 1 thread), recon tests 757 pass,
+`cargo xtask ci --fast`, aarch64 clippy.
 perf(decode): branch-free GDF rows on x86_64. Instructions, 1 thread, first 100 frames:
 MountainBike -2.7%, riverbed -3.3%, RitualDance qp160 -1.9%, Wikipedia -0.1%. GDF stage
 against dav2d (8-bit) 1.32-1.54x -> 1.14-1.37x. Cycles: MountainBike -2.5%. Checks: subset
