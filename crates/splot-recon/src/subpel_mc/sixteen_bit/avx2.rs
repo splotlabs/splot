@@ -34,40 +34,17 @@ pub(super) fn predict(block: &Block<'_, u16>, sink: &mut Sink<'_>) {
     }
 }
 
-/// The COMPOUND_AVERAGE, clipped to `clip.1`, of a 4x4 or 8x8 cell pair:
-/// the first block's compound predictors on the stack, then the second
-/// block averaged with them.
+/// The COMPOUND_AVERAGE, clipped to `clip.1`, of a 4x4 or 8x8 cell pair
+/// in registers.
 pub(super) fn compound_cell(
     blocks: [&Block<'_, u16>; 2],
     clip: (i32, u16),
     output: &mut [u16],
     stride: usize,
 ) {
-    let (w, h) = (blocks[0].w, blocks[0].h);
-    let mut pred0 = [0; 64];
-    match (token(), pred0.get_mut(..w * h)) {
-        (Some(t), Some(pred0)) => {
-            predict_lanes(
-                t,
-                blocks[0],
-                &mut Sink::Prep {
-                    output: pred0,
-                    stride: w,
-                },
-            );
-            predict_lanes(
-                t,
-                blocks[1],
-                &mut Sink::AverageWide {
-                    pred0,
-                    forward: clip.0,
-                    output,
-                    stride,
-                    max: clip.1,
-                },
-            );
-        }
-        _ => generic::compound_cell(blocks, clip, output, stride),
+    match token() {
+        Some(t) => cell_pair(t, blocks, clip, output, stride),
+        None => generic::compound_cell(blocks, clip, output, stride),
     }
 }
 
@@ -647,4 +624,155 @@ fn two_pass<const W: usize, const H: usize, const V: usize, O: WordOut>(
     };
     let reach = if H > 1 { 16 } else { 9 };
     rows::strips::<u16, _, _, O, V>(block, out, (8, reach), zero, line, vertical, emit);
+}
+
+fearless_simd::kernel!(
+    #[inline]
+    fn cell_pair(
+        t: Avx2,
+        blocks: [&Block<'_, u16>; 2],
+        clip: (i32, u16),
+        output: &mut [u16],
+        stride: usize,
+    ) {
+        let (forward, max) = (clip.0, _mm_set1_epi16(clip.1 as i16));
+        let (Some(first), Some(second)) = (cell_of(t, blocks[0]), cell_of(t, blocks[1])) else {
+            return;
+        };
+        let w = blocks[0].w;
+        let Some((mut rows, last)) = rows::rows_mut(output, 0, stride, w, w) else {
+            return;
+        };
+        let mut last = Some(last);
+        let groups = if w == 4 { 2 } else { 8 };
+        let average = |a, b| {
+            let x = average(a, b, forward);
+            _mm_min_epu16(
+                _mm_packus_epi32(_mm256_castsi256_si128(x), _mm256_extracti128_si256::<1>(x)),
+                max,
+            )
+        };
+        for (&a, &b) in first.iter().zip(&second).take(groups) {
+            let values = average(a, b);
+            let Some(row) = rows.next().or_else(|| last.take()) else {
+                return;
+            };
+            let next = if w == 4 {
+                let Some(next) = rows.next().or_else(|| last.take()) else {
+                    return;
+                };
+                Some(next)
+            } else {
+                None
+            };
+            u16::store(t, row, next, values);
+        }
+    }
+);
+
+/// Calls `cell::<$w, H, V>` for the listed tap-pair counts of both passes.
+macro_rules! by_pairs {
+    ($h:expr, $v:expr, $w:literal, $args:tt, [$($hh:literal $vv:literal),*]) => {
+        match ($h, $v) {
+            $(($hh, $vv) => cell::<$w, $hh, $vv> $args,)*
+            _ => None,
+        }
+    };
+}
+
+/// The compound predictors of a 4x4 or 8x8 register cell `block`: one
+/// group per row of an 8x8 cell, per row pair of a 4x4 one (the first two).
+#[inline]
+#[target_feature(enable = "avx2")]
+fn cell_of(t: Avx2, block: &Block<'_, u16>) -> Option<[__m256i; 8]> {
+    let pairs = |taps: Option<&Taps>| taps.map_or(0, |taps| taps.count);
+    let (h, v) = (pairs(block.horizontal), pairs(block.vertical));
+    if block.w == 4 {
+        by_pairs!(h, v, 4, (t, block), [0 0, 0 1, 0 2, 1 0, 1 1, 1 2, 2 0, 2 1, 2 2])
+    } else {
+        by_pairs!(h, v, 8, (t, block),
+            [0 0, 0 1, 0 2, 0 3, 0 4, 1 0, 1 1, 1 2, 1 3, 1 4, 2 0, 2 1, 2 2, 2 3, 2 4,
+             3 0, 3 1, 3 2, 3 3, 3 4, 4 0, 4 1, 4 2, 4 3, 4 4])
+    }
+}
+
+/// [`cell_of`] of a `W`-square cell whose passes have `H` and `V` tap
+/// pairs, none for a skipped pass: the window rows read once, each
+/// vertical tap pair one blend of two of them.
+#[inline(never)]
+#[target_feature(enable = "avx2")]
+fn cell<const W: usize, const H: usize, const V: usize>(
+    t: Avx2,
+    block: &Block<'_, u16>,
+) -> Option<[__m256i; 8]> {
+    let zero = _mm256_setzero_si256();
+    let h_weights = block.horizontal.map_or([zero; 4], |taps| weights(taps));
+    let v_weights = block.vertical.map_or([zero; 4], |taps| weights(taps));
+    let rows = if V > 0 { W + 2 * V - 1 } else { W };
+    let reach = match (W, H) {
+        (8, 2..) => 16,
+        (8, 1) => 9,
+        (4, 3..) => 12,
+        _ => 8,
+    };
+    let stride = block.stride;
+    let window = block
+        .source
+        .get(block.origin..)?
+        .get(..(rows - 1) * stride + reach)?;
+    let row = |r: usize| window.get(r.min(rows - 1) * stride..);
+    let finish = |x: __m256i| match (H, V) {
+        (0, 0) => _mm256_slli_epi32::<4>(x),
+        (_, 0) | (0, _) => round::<3>(x),
+        _ => round::<7>(x),
+    };
+    let mut groups = [zero; 8];
+    let mut lines = [zero; 16];
+    if W == 8 {
+        unroll!(r < rows, [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14] => {
+            let line = if H > 0 {
+                row_sums::<H>(t, row(r)?, &h_weights)?
+            } else {
+                widen8(t, row(r)?)?
+            };
+            if V == 0 {
+                let line = if H > 0 { interleave(line) } else { line };
+                groups[r] = finish(line);
+            } else {
+                let line = if H > 0 { round::<3>(line) } else { line };
+                lines[r + 1] = line;
+                lines[r] = pair(lines[r], line);
+                if r + 1 >= 2 * V {
+                    let y = r + 1 - 2 * V;
+                    let sum = madds::<V>(&v_weights, |p| lines[y + 2 * p + 1]);
+                    groups[y] = finish(if H > 0 { interleave(sum) } else { sum });
+                }
+            }
+        });
+        return Some(groups);
+    }
+    unroll!(m < if V == 0 { 2 } else { V + 2 }, [0 1 2 3] => {
+        let (a, b) = (row(2 * m)?, row(2 * m + 1)?);
+        let line = if H > 0 {
+            pair_sums::<H>(t, (a, b), &h_weights)?
+        } else {
+            widen4(t, a, b)?
+        };
+        if V == 0 {
+            if m < 2 {
+                groups[m] = finish(line);
+            }
+        } else {
+            let line = if H > 0 { round::<3>(line) } else { line };
+            if m > 0 {
+                lines[m - 1] = pair(lines[m - 1], _mm256_permute2x128_si256::<0x21>(lines[m - 1], line));
+            }
+            lines[m] = line;
+            if m >= V && m - V < 2 {
+                let g = m - V;
+                groups[g] = finish(madds::<V>(&v_weights, |p| lines[g + p]));
+            }
+        }
+    });
+    Some(groups)
 }
