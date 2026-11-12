@@ -881,36 +881,36 @@ pub(crate) fn reset_inter_skip_coeff_contexts(
     n4h: usize,
     subsampling: (u32, u32),
 ) -> Result<()> {
-    let plane_count = 1 + usize::from(frontier.has_chroma) * (COEFF_CONTEXT_PLANES.len() - 1);
-    let chroma_ref = frontier.chroma_ref_geometry();
-    let chroma_n4w = chroma_ref
-        .size()
-        .num_4x4_wide()
+    coeff_ctx
+        .reset_block_context_plane(CoeffContextReset {
+            plane: 0,
+            c: frontier.c,
+            r: frontier.r,
+            w4: n4w,
+            h4: n4h,
+            sub_x: 0,
+            sub_y: 0,
+        })
         .map_err(|_| residual_geometry_error())?;
-    let chroma_n4h = chroma_ref
-        .size()
-        .num_4x4_high()
-        .map_err(|_| residual_geometry_error())?;
-    let (sub_x, sub_y) = subsampling;
-    for &plane in COEFF_CONTEXT_PLANES.iter().take(plane_count) {
-        let (r, c, w4, h4) = if plane == 0 {
-            (frontier.r, frontier.c, n4w, n4h)
-        } else {
-            (chroma_ref.row(), chroma_ref.col(), chroma_n4w, chroma_n4h)
-        };
-        coeff_ctx
-            .reset_block_context_plane(CoeffContextReset {
-                plane,
-                c,
-                r,
-                w4,
-                h4,
-                sub_x: if plane == 0 { 0 } else { sub_x },
-                sub_y: if plane == 0 { 0 } else { sub_y },
-            })
-            .map_err(|_| residual_geometry_error())?;
+    if !frontier.has_chroma {
+        return Ok(());
     }
-    Ok(())
+    let chroma_ref = frontier.chroma_ref_geometry();
+    let size = chroma_ref.size();
+    let (Ok(w4), Ok(h4)) = (size.num_4x4_wide(), size.num_4x4_high()) else {
+        return Err(residual_geometry_error());
+    };
+    coeff_ctx
+        .reset_chroma_block_context(CoeffContextReset {
+            plane: 1,
+            c: chroma_ref.col(),
+            r: chroma_ref.row(),
+            w4,
+            h4,
+            sub_x: subsampling.0,
+            sub_y: subsampling.1,
+        })
+        .map_err(|_| residual_geometry_error())
 }
 
 fn residual_read_error(

@@ -46,6 +46,7 @@ impl NeighbourFlags {
         if enabled { mask } else { 0 }
     }
 
+    #[inline]
     fn from_syntax(syntax: NeighbourFlagSyntax) -> Self {
         Self(u64::from_le_bytes([
             Self::flag(syntax.is_inter, Self::IS_INTER)
@@ -673,6 +674,7 @@ impl NeighbourMvGrid {
     /// soon as the leaf's syntax is parsed, before any § 7.12 resolution.
     /// Returns the leaf's record index for [`Self::record_leaf_motion`], or
     /// [`NO_LEAF`] when this grid keeps no record of it.
+    #[inline]
     pub(crate) fn record_flags(
         &mut self,
         r: usize,
