@@ -59,13 +59,6 @@ pub(crate) trait CdfStorage: Copy {
     }
     fn from_i32(value: i32) -> Self;
 
-    /// The row as `u16` storage, which the lane reads search and
-    /// adapt directly.
-    #[cfg(target_arch = "x86_64")]
-    fn u16_row(_cdf: &mut [Self]) -> Option<&mut [u16]> {
-        None
-    }
-
     /// Adapts the `n - 1` probability entries of a row (§ 8.2.6).
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
@@ -96,11 +89,6 @@ impl CdfStorage for u16 {
     fn from_i32(value: i32) -> Self {
         debug_assert!((0..=i32::from(u16::MAX)).contains(&value));
         value as u16
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn u16_row(cdf: &mut [u16]) -> Option<&mut [u16]> {
-        Some(cdf)
     }
 
     /// Adapts whole rows in vector lanes; `n` is a constant at every inlined
@@ -488,6 +476,18 @@ fn trusted_rate<const N: usize>(cdf: &[u16]) -> u32 {
 /// One in each 16-bit lane of a row word.
 const LANES: u64 = 0x0001_0001_0001_0001;
 
+/// `0xffff >> rate` in each lane: the bits of a lane shifted right by
+/// `rate` that came from the lane itself.
+const KEEP_LANES: [u64; 16] = {
+    let mut keep = [0; 16];
+    let mut rate = 0;
+    while rate < 16 {
+        keep[rate] = (0xffff >> rate) * LANES;
+        rate += 1;
+    }
+    keep
+};
+
 /// The entries of an `N`-ary row that its word holds, entry `i` in lane `i`:
 /// the whole row up to four entries.
 const fn word_entries<const N: usize>() -> usize {
@@ -501,17 +501,6 @@ const fn probability_lanes<const N: usize>() -> u64 {
     } else {
         (1 << (16 * (N - 1))) - 1
     }
-}
-
-/// `Prob_Inc` of an `N`-ary row in the probability lanes.
-const fn inc_word<const N: usize>() -> u64 {
-    let mut word = 0;
-    let mut i = 0;
-    while i < N - 1 && i < 4 {
-        word |= (PROB_INC_U32[N - 2][i] as u64) << (16 * i);
-        i += 1;
-    }
-    word
 }
 
 /// The [`word_entries`] of a row in one word.
@@ -1070,29 +1059,6 @@ impl<'a> SymbolDecoder<'a> {
         };
         let count = cdf[N].to_i32();
         self.ensure_buffered(15);
-        #[cfg(target_arch = "x86_64")]
-        if N > 2
-            && let Some(token) = lane_token()
-            && let Some(row) = T::u16_row(cdf)
-        {
-            let symbol_value = (self.dif >> SV_SHIFT) as u32;
-            let (symbol, cur, prev, value, below) =
-                row_search_lanes::<N>(token, row, symbol_value, self.range());
-            if prev.saturating_sub(cur) == 0 {
-                return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
-            }
-            self.consume(cur << 16, prev << 16);
-            if self.config.cdf_update == CdfUpdateMode::Enabled {
-                let n_term = if N <= 3 { 1 } else { 2 };
-                let rate =
-                    u32::from(rates[count.clamp(0, MAX_CDF_COUNT * 2 - 1) as usize]) + n_term;
-                adapt_lanes::<N>(token, row, value, below, rate);
-                if count < MAX_CDF_COUNT {
-                    row[N] = (count + 1) as u16;
-                }
-            }
-            return Ok(Symbol::new(symbol as u8));
-        }
         let (symbol, cur, prev) = early_exit_search::<T, N>(cdf, self.dif, self.range_hi);
 
         if prev.saturating_sub(cur) == 0 {
@@ -1127,6 +1093,45 @@ impl<'a> SymbolDecoder<'a> {
     #[inline(always)]
     pub fn read_trusted<const L: usize, const UPDATE: bool>(&mut self, cdf: &mut [u16; L]) -> u32 {
         self.read_trusted_len(cdf, UPDATE).unwrap_or(0)
+    }
+
+    /// [`Self::read_trusted`] of a row of three to five symbols, from its
+    /// first entries as `carried`, the word the previous read of the same
+    /// row returned, or from memory when `None`. Returns the symbol and the
+    /// row's word after the read: a loop that reads one row repeatedly takes
+    /// it from a register instead of waiting for its own store.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    pub fn read_trusted_carried<const L: usize, const UPDATE: bool>(
+        &mut self,
+        cdf: &mut [u16; L],
+        carried: Option<u64>,
+    ) -> (u32, u64) {
+        match L {
+            4 => self.read_carried::<3>(cdf, carried, UPDATE),
+            5 => self.read_carried::<4>(cdf, carried, UPDATE),
+            6 => self.read_carried::<5>(cdf, carried, UPDATE),
+            _ => (self.read_trusted_len(cdf, UPDATE).unwrap_or(0), 0),
+        }
+    }
+
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn read_carried<const N: usize>(
+        &mut self,
+        cdf: &mut [u16],
+        carried: Option<u64>,
+        update: bool,
+    ) -> (u32, u64) {
+        if cdf.len() <= N {
+            return (0, 0);
+        }
+        debug_assert!(carried.is_none_or(|word| word == row_word::<N>(cdf)));
+        self.ensure_buffered(15);
+        match carried {
+            Some(word) => self.read_trusted_word::<N>(cdf, word, update),
+            None => self.read_trusted_word::<N>(cdf, row_word::<N>(cdf), update),
+        }
     }
 
     /// [`Self::read_trusted`] of a slice row in the configured update mode.
@@ -1233,8 +1238,10 @@ impl<'a> SymbolDecoder<'a> {
             return 0;
         }
         self.ensure_buffered(15);
-        if (3..=5).contains(&N) {
-            return self.read_trusted_word::<N>(cdf, update);
+        if (3..=6).contains(&N) {
+            return self
+                .read_trusted_word::<N>(cdf, row_word::<N>(cdf), update)
+                .0;
         }
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         if N > 2
@@ -1254,8 +1261,9 @@ impl<'a> SymbolDecoder<'a> {
         symbol as u32
     }
 
-    /// [`Self::read_trusted_arity`] for rows of at most four probabilities,
-    /// all in general registers: the boundaries are independent products of
+    /// [`Self::read_trusted_arity`] for rows of three to six symbols, all in
+    /// general registers (the fifth probability of a six-symbol row on its
+    /// own): the boundaries are independent products of
     /// the range, so the symbol and its interval are selects instead of a
     /// vector round trip, and the § 8.2.6 step adapts the row as one word.
     /// Each lane holds `p` and `gap = CDF_PROB_SCALE - p`, neither borrowing
@@ -1266,14 +1274,24 @@ impl<'a> SymbolDecoder<'a> {
     /// without a probability add zero.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
-    fn read_trusted_word<const N: usize>(&mut self, cdf: &mut [u16], update: bool) -> u32 {
-        let word = row_word::<N>(cdf);
+    fn read_trusted_word<const N: usize>(
+        &mut self,
+        cdf: &mut [u16],
+        word: u64,
+        update: bool,
+    ) -> (u32, u64) {
         let gap = (u64::from(CDF_PROB_SCALE) * LANES).wrapping_sub(word);
-        let pp = ((gap >> (EC_PROB_SHIFT - 4)) & (0x1ff0 * LANES)) | const { inc_word::<N>() };
         let r12 = (self.range_hi >> 24) << 12;
-        let mut boundaries = [0u32; 5];
-        for (i, boundary) in boundaries.iter_mut().enumerate().take(N - 1) {
-            *boundary = r12.wrapping_mul((pp >> (16 * i)) as u32 & 0xffff) & 0xfff8_0000;
+        let mut boundaries = [0u32; 6];
+        for (i, boundary) in boundaries.iter_mut().enumerate().take((N - 1).min(4)) {
+            let pp = ((gap >> (16 * i + 3)) as u32 & 0x1ff0) | PROB_INC_U32[N - 2][i];
+            *boundary = r12.wrapping_mul(pp) & 0xfff8_0000;
+        }
+        let fifth = if N == 6 { u32::from(cdf[4]) } else { 0 };
+        let fifth_gap = CDF_PROB_SCALE.wrapping_sub(fifth);
+        if N == 6 {
+            let pp = ((fifth_gap >> (EC_PROB_SHIFT - 4)) & 0x1ff0) | PROB_INC_U32[N - 2][4];
+            boundaries[4] = r12.wrapping_mul(pp) & 0xfff8_0000;
         }
         let value = (self.dif >> 32) as u32;
         let (mut cur, mut prev, mut symbol) = (boundaries[0], self.range_hi, 0);
@@ -1283,7 +1301,9 @@ impl<'a> SymbolDecoder<'a> {
             cur = if above { boundaries[i + 1] } else { cur };
             prev = if above { boundaries[i] } else { prev };
             symbol += u32::from(above);
-            below |= (0xffff << (16 * i)) & 0u64.wrapping_sub(u64::from(above));
+            if i < 4 {
+                below |= (0xffff << (16 * i)) & 0u64.wrapping_sub(u64::from(above));
+            }
         }
         self.consume(cur, prev);
         if update {
@@ -1297,20 +1317,31 @@ impl<'a> SymbolDecoder<'a> {
                     [usize::from(count) & (2 * MAX_CDF_COUNT as usize - 1)],
             ) + if N <= 3 { 1 } else { 2 };
             let x = gap ^ ((word ^ gap) & below);
-            let y = (x >> rate) & ((0xffff >> rate) * LANES) & probability_lanes::<N>();
+            let y = (x >> rate) & KEEP_LANES[rate as usize & 15] & probability_lanes::<N>();
             let adapted = word.wrapping_add(y).wrapping_sub((y & below) << 1);
             let grown = u16::from(count < MAX_CDF_COUNT as u16);
             if N < 4 {
-                store_row_word::<N>(cdf, adapted + (u64::from(grown) << (16 * N)));
-            } else {
+                let adapted = adapted + (u64::from(grown) << (16 * N));
                 store_row_word::<N>(cdf, adapted);
-                cdf[N] = count + grown;
+                return (symbol, adapted);
             }
+            store_row_word::<N>(cdf, adapted);
+            if N == 6 {
+                let shrinks = symbol > 4;
+                let step = (if shrinks { fifth } else { fifth_gap }) >> rate;
+                cdf[4] = if shrinks {
+                    fifth - step
+                } else {
+                    fifth.wrapping_add(step)
+                } as u16;
+            }
+            cdf[N] = count + grown;
+            return (symbol, adapted);
         }
-        symbol
+        (symbol, word)
     }
 
-    /// [`Self::read_trusted_arity`] for `N > 5` in vector lanes, see
+    /// [`Self::read_trusted_arity`] for `N > 6` in vector lanes, see
     /// [`row_search_lanes`]. Branch-free on purpose: coefficient symbols
     /// mispredict too often for [`early_exit_search`] on some streams.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
