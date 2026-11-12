@@ -1021,6 +1021,7 @@ fn decode_frames_in_order(
             ring.harvest_all(pools);
             emission_queue.flush(frames, &mut emit)?;
             let mut reclaim = || {
+                pools.retire_idle();
                 reclaim_unowned_frames(
                     frames,
                     &reference,

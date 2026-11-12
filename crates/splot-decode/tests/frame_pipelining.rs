@@ -36,6 +36,8 @@ const TEN_BIT_INTER: &[u8] = include_bytes!(
 );
 const ORDER_HINT_WRAP: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-orderhint-wrap-64x64.ivf");
+const TIP_OUTPUT_WINDOW: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-tip-output-window-64x64-q210.ivf");
 
 const FIXTURES: &[(&str, &[u8])] = &[
     ("syn-3frame-multiref-64x64", MULTIREF),
@@ -312,6 +314,20 @@ fn orderhint_output_matches_depth_one_at_every_capacity() {
             DecodeOptions::default(),
         )
         .unwrap();
+        assert_eq!(actual, expected, "output diverged at frame delay {depth}");
+    }
+}
+
+/// Between two split inter frames run several TIP output frames, so the
+/// reference handles finished split slots keep span more frames than the
+/// frame store holds; the full store must not wait for those slots' reuse.
+#[test]
+fn tip_output_run_does_not_exhaust_the_frame_store() {
+    let expected = collect_raw(&depth_one(), TIP_OUTPUT_WINDOW, DecodeOptions::default()).unwrap();
+
+    for depth in [8usize, 12, 16] {
+        let actual =
+            collect_raw_with_timeout(depth, FrameDelay::Auto, TIP_OUTPUT_WINDOW.to_vec()).unwrap();
         assert_eq!(actual, expected, "output diverged at frame delay {depth}");
     }
 }

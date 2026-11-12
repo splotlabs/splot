@@ -661,6 +661,26 @@ impl<T: SplitSample> SplitFrames<T> {
             rows.wait(|| Arc::strong_count(slot) == 1);
         }
     }
+
+    /// Resets every finished slot now instead of at its next reuse, so the
+    /// reference handles it keeps stop pinning the driver's frame entries.
+    /// A slot can hold storage another finished slot borrowed, so the passes
+    /// repeat until one resets no more slots.
+    fn retire_idle(&mut self) {
+        let mut idle = 0;
+        loop {
+            let now = self
+                .slots
+                .iter_mut()
+                .map(|slot| Arc::get_mut(slot).is_some_and(SplitFrame::reset))
+                .filter(|reset| *reset)
+                .count();
+            if now == idle {
+                return;
+            }
+            idle = now;
+        }
+    }
 }
 
 /// What the driver settles for one `TIP_FRAME_AS_OUTPUT` frame.
@@ -1345,6 +1365,12 @@ impl RowPools {
             PipelineFrameSlot::Eight(_) => self.eight.scratch.recycle_frame_filter_records(records),
             PipelineFrameSlot::Ten(_) => self.ten.scratch.recycle_frame_filter_records(records),
         }
+    }
+
+    /// Releases what the finished split frames of both sample types still hold.
+    pub(crate) fn retire_idle(&mut self) {
+        self.eight.split.retire_idle();
+        self.ten.split.retire_idle();
     }
 
     /// Hands one TIP output frame to the scheduler, or decodes it inline.

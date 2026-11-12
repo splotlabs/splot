@@ -1918,3 +1918,8 @@ expect = "clean"
 path = "vectors/valid/syn-3frame-warpmv-integer-mv-inter-264x136-q230.ivf"
 description = "AVM-encoded 3-frame 264x136 8-bit 4:2:0 still stream (avmenc --sb-size=256 --min-partition-size=128 --cpu-used=6 --qp=230). The inter frame codes force_integer_mv and WARPMV blocks with an identity warp model; § 7.13.3.14 sets useWarp = 0, so they predict by translation. splot before the fix applied the warp filter and differed by 1 at high-gradient samples. Fixed splot and avmdec produce raw I420 SHA-256 65b30d23bba2dc2283e779e5b020d8d9d2a4ea4d720ebbc5e3ca7a509bc0f4f2; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-output-window-64x64-q210.ivf"
+description = "AVM-encoded 100-frame 64x64 8-bit 4:2:0 stream of a project-generated panning sine pattern (avmenc --end-usage=q --qp=210 --cpu-used=9): one key frame, 13 tile-group inter frames and 87 regular TIP output frames. The few split inter frames between the TIP frames make each finished split slot hold reference handles of frames far behind the driver, which filled the frame store and deadlocked frame-delay depths 8 to 16 before the fix. Fixed splot and avmdec produce raw I420 SHA-256 9ad5ebce5808086618959b9e62ba8b884cd519dc129cd8e8e4b3d82d1f61da39; validates clean."
+expect = "clean"
