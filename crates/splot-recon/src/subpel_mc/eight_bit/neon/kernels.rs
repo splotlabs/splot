@@ -269,22 +269,27 @@ macro_rules! kernels {
             true
         }
 
-        /// The cells of `program` whose windows are read in place: the
-        /// window of each reference derived once, both planes stored from it.
+        /// The cells of `program` whose windows are read in place or by
+        /// clamped rows and columns: the window of each reference derived
+        /// once, both planes stored from it.
         #[inline(never)]
         #[target_feature(enable = $features)]
         pub(super) fn run_program<const W: usize>(t: Neon, program: Program<'_, '_>) -> Written {
             let Program { mut planes, geometry, filter, cells, forward } = program;
             let mut written = [[0u64; 4]; 2];
-            let stride = geometry[0];
-            let place = |(start, bounds): CellPlacement| {
+            let place = |(start, bounds): CellPlacement, geometry: Geometry| {
                 let window = Window::of_filters([filter; 2], W, W, start);
                 let (horizontal, vertical) = (window.horizontal, window.vertical);
                 let base = window.origin(geometry, bounds).filter(|_| is_cell(W, horizontal, vertical))?;
                 Some((base, horizontal, vertical))
             };
             for (index, &([row, col], placements)) in cells.iter().enumerate() {
-                let (Some(first), Some(second)) = (place(placements[0]), place(placements[1])) else {
+                let (Some(first), Some(second)) = (place(placements[0], geometry[0]), place(placements[1], geometry[1])) else {
+                    if clamped_cell::<W>(t, &mut planes, (geometry, filter, forward), ([row, col], placements)) {
+                        for written in &mut written {
+                            written[index / 64 % 4] |= 1 << (index % 64);
+                        }
+                    }
                     continue;
                 };
                 for (plane, written) in planes.iter_mut().zip(&mut written) {
@@ -297,13 +302,81 @@ macro_rules! kernels {
                         continue;
                     };
                     let [(base0, h0, v0), (base1, h1, v1)] = [first, second];
-                    let groups0 = cells!(pairs(h0), pairs(v0), (t, sources[0], base0, stride, h0, v0));
-                    let groups1 = cells!(pairs(h1), pairs(v1), (t, sources[1], base1, stride, h1, v1));
+                    let groups0 = cells!(pairs(h0), pairs(v0), false, (t, sources[0], (base0, geometry[0][0]), &IN_PLACE, h0, v0));
+                    let groups1 = cells!(pairs(h1), pairs(v1), false, (t, sources[1], (base1, geometry[1][0]), &IN_PLACE, h1, v1));
                     store_cell(t, groups0, groups1, forward, output, *out_stride);
                     written[index / 64 % 4] |= 1 << (index % 64);
                 }
             }
             written
+        }
+
+        /// A cell of [`run_program`] with a window that is not read in place,
+        /// read by clamped rows and columns into every plane; `false` without
+        /// writing for a cell [`is_cell`] does not admit, an empty clip range
+        /// or an output that cannot hold it.
+        #[cold]
+        #[inline(never)]
+        #[target_feature(enable = $features)]
+        fn clamped_cell<const W: usize>(
+            t: Neon,
+            planes: &mut [Option<ProgramPlane<'_, '_>>; 2],
+            (geometry, filter, forward): ([Geometry; 2], usize, i32),
+            ([row, col], placements): super::super::super::cell::Cell,
+        ) -> bool {
+            let (Some(first), Some(second)) =
+                (place::<W>(filter, placements[0], geometry[0]), place::<W>(filter, placements[1], geometry[1]))
+            else {
+                return false;
+            };
+            let fits = planes.iter().flatten().all(|(_, output, stride)| {
+                (row as usize * stride + col as usize).checked_add((W - 1) * stride + W)
+                    .is_some_and(|end| end <= output.len())
+            });
+            if !fits {
+                return false;
+            }
+            for (sources, output, out_stride) in planes.iter_mut().flatten() {
+                let at = row as usize * *out_stride + col as usize;
+                let Some(output) = output.get_mut(at..) else { continue };
+                let groups = (placed_groups::<W>(t, sources[0], first), placed_groups::<W>(t, sources[1], second));
+                store_cell(t, groups.0, groups.1, forward, output, *out_stride);
+            }
+            true
+        }
+
+        /// The compound predictors of a `W`-square register cell of
+        /// `source` read by its [`Placed`] reads.
+        #[inline]
+        #[target_feature(enable = $features)]
+        fn placed_groups<const W: usize>(t: Neon, source: &[u8], (reads, clamped, h, v): Placed) -> [int16x8_t; W] {
+            let place = (reads.base, reads.stride);
+            if clamped {
+                cells!(pairs(h), pairs(v), true, (t, source, place, &reads, h, v))
+            } else {
+                cells!(pairs(h), pairs(v), false, (t, source, place, &IN_PLACE, h, v))
+            }
+        }
+
+        /// Stores the COMPOUND_AVERAGE of the `W`-square cell of `windows`
+        /// within `bounds`, each read in place or by clamped rows and columns
+        /// of its reference, into `output`; `false` without writing for a
+        /// cell [`is_cell`] does not admit, an empty clip range or an output
+        /// that cannot hold it.
+        #[inline(never)]
+        #[target_feature(enable = $features)]
+        pub(super) fn windows_cell<const W: usize>(t: Neon, job: Windows<'_, '_>) -> bool {
+            let Windows(references, windows, bounds, forward, output, stride) = job;
+            let placed = |index: usize| place_reads::<W>(windows[index], references[index].1, bounds[index]);
+            let (Some(first), Some(second)) = (placed(0), placed(1)) else {
+                return false;
+            };
+            if (W - 1) * stride + W > output.len() || stride < W {
+                return false;
+            }
+            let groups = (placed_groups::<W>(t, references[0].0, first), placed_groups::<W>(t, references[1].0, second));
+            store_cell(t, groups.0, groups.1, forward, output, stride);
+            true
         }
 
         /// The compound predictors of a `W`-square register cell, which
@@ -313,25 +386,43 @@ macro_rules! kernels {
         #[target_feature(enable = $features)]
         fn cell_of<const W: usize>(t: Neon, block: &Block<'_, u8>) -> [int16x8_t; W] {
             let (horizontal, vertical) = (block.horizontal, block.vertical);
-            cells!(
-                pairs(horizontal),
-                pairs(vertical),
-                (t, block.source, block.origin, block.stride, horizontal, vertical)
-            )
+            let place = (block.origin, block.stride);
+            cells!(pairs(horizontal), pairs(vertical), false, (t, block.source, place, &IN_PLACE, horizontal, vertical))
         }
 
         /// The compound predictors of a register cell of `W` columns whose
         /// passes have `H` and `V` tap pairs.
         #[inline(never)]
         #[target_feature(enable = $features)]
-        fn cell_groups<const W: usize, const H: usize, const V: usize>(
+        fn cell_groups<const W: usize, const H: usize, const V: usize, const C: bool>(
             t: Neon,
             source: &[u8],
-            base: usize,
-            stride: usize,
+            (base, stride): (usize, usize),
+            clamped: &Reads,
             horizontal: Option<&Taps>,
             vertical: Option<&Taps>,
         ) -> [int16x8_t; W] {
+            let Reads { top, first, last, columns: [start, _, high], .. } = *clamped;
+            let gather = {
+                let lanes = vaddq_s8(vdupq_n_s8(start as i8), i8x16::load_array(t, BYTE_LANES).into());
+                let high = vdupq_n_s8(high.min(15) as i8);
+                vreinterpretq_u8_s8(vminq_s8(vmaxq_s8(lanes, vdupq_n_s8(0)), high))
+            };
+            let at = |row: usize| {
+                if C {
+                    base + top.saturating_add(row as i32).max(first).min(last) as usize * stride
+                } else {
+                    base + row * stride
+                }
+            };
+            let load16 = |at: usize| {
+                let bytes = load16(t, source, at);
+                if C { vqtbl1q_u8(bytes, gather) } else { bytes }
+            };
+            let load8 = |at: usize| if C { vget_low_u8(load16(at)) } else { load8(source, at) };
+            let load_u32 = |at: usize| {
+                if C { vget_lane_u32::<0>(vreinterpret_u32_u8(load8(at))) } else { load_u32(source, at) }
+            };
             let rows = if V > 0 { W + 2 * V - 1 } else { W };
             let (h_weights, v_weights) = (taps(t, horizontal), weights(t, vertical));
             let zero = vdupq_n_s16(0);
@@ -341,7 +432,7 @@ macro_rules! kernels {
             if W == 8 {
                 let mut lines = [zero; 15];
                 unroll!(row < rows, [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14] => {
-                    let bytes = load16(t, source, base + row * stride);
+                    let bytes = load16(at(row));
                     lines[row] = if H > 0 {
                         vrshrq_n_s16::<2>(hrow::<H>(bytes, h_weights))
                     } else {
@@ -361,13 +452,13 @@ macro_rules! kernels {
             }
             let mut pairs = [zero; 8];
             unroll!(pair < rows.div_ceil(2), [0 1 2 3 4 5 6 7] => {
-                let starts = [base + 2 * pair * stride, base + (2 * pair + 1) * stride];
+                let starts = [at(2 * pair), at(2 * pair + 1)];
                 pairs[pair] = if H > 0 {
-                    let (a, b) = (load8(source, starts[0]), load8(source, starts[1]));
+                    let (a, b) = (load8(starts[0]), load8(starts[1]));
                     vshrq_n_s16::<2>(hpair(a, b, h_weights, 2))
                 } else {
                     widen(vcreate_u8(
-                        u64::from(load_u32(source, starts[0])) | u64::from(load_u32(source, starts[1])) << 32,
+                        u64::from(load_u32(starts[0])) | u64::from(load_u32(starts[1])) << 32,
                     ))
                 };
             });

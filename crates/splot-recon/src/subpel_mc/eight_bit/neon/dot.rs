@@ -8,7 +8,7 @@
     reason = "enters the dot-product kernels on a CPU detected to have them"
 )]
 
-use super::{Compound, Out, Programs, Strips};
+use super::{Compound, Out, Programs, Strips, Windows};
 use fearless_simd::Neon;
 
 /// One call of the kernels, compiled once with `sdot` horizontal sums and
@@ -69,6 +69,25 @@ impl Job for Compound<'_, '_> {
     #[target_feature(enable = "neon,dotprod")]
     unsafe fn sdot(self, t: Neon) -> bool {
         super::sdot::compound(t, self.0, self.1, self.2, self.3)
+    }
+}
+
+impl Job for Windows<'_, '_> {
+    type Output = bool;
+
+    #[inline]
+    fn mla(self, t: Neon) -> bool {
+        super::mla_windows(t, self)
+    }
+
+    /// Safety: as [`Job::sdot`].
+    #[target_feature(enable = "neon,dotprod")]
+    unsafe fn sdot(self, t: Neon) -> bool {
+        if self.1[0].w == 4 {
+            super::sdot::windows_cell::<4>(t, self)
+        } else {
+            super::sdot::windows_cell::<8>(t, self)
+        }
     }
 }
 

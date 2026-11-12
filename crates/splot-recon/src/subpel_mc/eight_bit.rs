@@ -42,6 +42,7 @@ pub(super) fn predict<T: ReconSample>(
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
         && let Some(source) = T::u8_slice(block.source)
         && fits(block)
+        && stage.len() >= block::stage_needed(block)
         && match sink {
             Sink::PutWide { max, .. } => *max == u16::from(u8::MAX),
             Sink::AverageWide { .. } => false,

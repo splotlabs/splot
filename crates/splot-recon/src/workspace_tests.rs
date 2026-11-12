@@ -1688,7 +1688,7 @@ fn u8_rect_target_matches_the_contiguous_writer() {
         let mut surface = CurrentFrameSurface::Frame(&mut workspace);
         let target = rect(x, y, w, h);
         let direct = surface
-            .u8_rect_mut(PlaneId::Y, target)
+            .rect_mut(PlaneId::Y, target)
             .map(|(samples, stride)| span(samples, stride));
         let written = surface
             .with_contiguous_u8_rect_mut(PlaneId::Y, target, |samples, stride| {

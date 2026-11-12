@@ -18,10 +18,33 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     output: &mut [u8],
     output_stride: usize,
 ) -> Result<()> {
+    let (w, h) = (params.w, params.h);
     if let Some(view) = reference.as_u8()
-        && block::put_u8(&view, params, output, output_stride)
+        && params.bit_depth == BitDepth::Eight
+        && params.step_x == 1 << SCALE_SUBPEL_BITS
+        && params.step_y == 1 << SCALE_SUBPEL_BITS
+        && (1..=MAX_BLOCK_DIM).contains(&w)
+        && (1..=MAX_BLOCK_DIM).contains(&h)
+        && params.first_x <= params.last_x
+        && params.first_y <= params.last_y
+        && params
+            .start_x
+            .checked_add((w as i32 - 1) << SCALE_SUBPEL_BITS)
+            .is_some()
+        && output_stride >= w
+        && (h - 1)
+            .checked_mul(output_stride)
+            .and_then(|end| end.checked_add(w))
+            .is_some_and(|end| end <= output.len())
     {
-        return Ok(());
+        let window = block::Window::new(params.interp, w, h, [params.start_x, params.start_y]);
+        if block::with_block(&window, &view, params.bounds(), 0, |block| {
+            super::eight_bit::put(block, output, output_stride);
+        })
+        .is_some()
+        {
+            return Ok(());
+        }
     }
     validate_subpel_u8_output(params, output, output_stride)?;
     let sink = Sink::Put {
@@ -32,9 +55,9 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     Ok(())
 }
 
-/// One plane of an unscaled eight-bit single-reference block: its output
-/// rectangle and the § 7.13.3.18 1/1024-sample start `[startX, startY]` of
-/// its window, whose reads clip to reference columns `0..=last[0]` and rows
+/// One plane of an unscaled block from one reference: its output rectangle
+/// and the § 7.13.3.18 1/1024-sample start `[startX, startY]` of its window,
+/// whose reads clip to reference columns `0..=last[0]` and rows
 /// `0..=last[1]`.
 #[derive(Clone, Copy, Debug)]
 pub struct UnscaledPut {
@@ -47,71 +70,140 @@ pub struct UnscaledPut {
 }
 
 impl UnscaledPut {
-    /// The parameters of this plane, or `None` for a side above 256
-    /// samples, a negative last sample or a start whose last column
-    /// overflows.
+    /// The window of this plane and its clip bounds, or `None` for a side
+    /// above 256 samples, a negative last sample or a start whose last
+    /// column overflows.
     #[inline]
-    fn params(&self, interp: InterpolationFilter) -> Option<SubpelPredictParams> {
+    fn window(&self, interp: InterpolationFilter) -> Option<(block::Window, [i32; 4])> {
         let (w, h) = (self.rect.width(), self.rect.height());
-        let [start_x, start_y] = self.start;
         let [last_x, last_y] = self.last;
         (w <= MAX_BLOCK_DIM
             && h <= MAX_BLOCK_DIM
             && last_x >= 0
             && last_y >= 0
-            && start_x
+            && self.start[0]
                 .checked_add((w as i32 - 1) << SCALE_SUBPEL_BITS)
                 .is_some())
-        .then_some(SubpelPredictParams {
-            interp,
-            w,
-            h,
-            start_x,
-            start_y,
-            step_x: 1 << SCALE_SUBPEL_BITS,
-            step_y: 1 << SCALE_SUBPEL_BITS,
-            first_x: 0,
-            first_y: 0,
-            last_x,
-            last_y,
-            bit_depth: BitDepth::Eight,
+        .then(|| {
+            let window = block::Window::new(interp, w, h, self.start);
+            (window, [0, 0, last_x, last_y])
         })
     }
 }
 
-/// Stores the eight-bit single-reference prediction of a block's luma plane
-/// straight into `surface`, and with `chroma` that of both chroma planes,
-/// which share one geometry, as [`subpel_predict_block_strided_into_u8`]
-/// stores each.
+/// Stores the single-reference prediction, clipped to the frame bit depth,
+/// of a block's luma plane straight into `surface`, and with `chroma` that
+/// of both chroma planes, which share one window, as
+/// [`subpel_predict_block_strided_into`] stores each.
 /// Returns, for luma and for chroma, whether it was stored; a part that was
-/// not is left unwritten for the caller.
+/// not is left unwritten or partly written for the caller to predict again.
 #[inline]
-pub fn subpel_put_u8_block<T: ReconSample>(
+pub fn subpel_put_block<T: ReconSample>(
     surface: &mut crate::CurrentFrameSurface<'_, '_, T>,
     interp: InterpolationFilter,
     (view, luma): (&ReferencePlaneView<'_, T>, UnscaledPut),
     chroma: Option<([&ReferencePlaneView<'_, T>; 2], UnscaledPut)>,
 ) -> [bool; 2] {
-    let luma_put = luma
-        .params(interp)
-        .zip(view.as_u8())
-        .is_some_and(|(params, view)| {
-            surface
-                .u8_rect_mut(crate::PlaneId::Y, luma.rect)
-                .is_some_and(|output| block::put_admitted([&view], &params, [output]))
-        });
-    let chroma_put = chroma.is_some_and(|(views, put)| {
-        let (Some(params), [Some(u), Some(v)]) =
-            (put.params(interp), views.map(ReferencePlaneView::as_u8))
-        else {
+    let max = surface.info().bit_depth().max_sample();
+    let luma_put = luma.window(interp).is_some_and(|(window, bounds)| {
+        surface
+            .rect_mut(crate::PlaneId::Y, luma.rect)
+            .is_some_and(|(output, stride)| put_window(&window, bounds, view, max, output, stride))
+    });
+    let chroma_put = chroma.is_some_and(|([u, v], put)| {
+        let Some((window, bounds)) = put.window(interp) else {
             return false;
         };
-        block::same_geometry(&u, &v)
-            && surface
-                .u8_chroma_rects_mut(put.rect)
-                .is_some_and(|outputs| block::put_admitted([&u, &v], &params, outputs))
+        surface
+            .chroma_rects_mut(put.rect)
+            .is_some_and(|[(u_out, u_stride), (v_out, v_stride)]| {
+                put_window(&window, bounds, u, max, u_out, u_stride)
+                    && put_window(&window, bounds, v, max, v_out, v_stride)
+            })
     });
     [luma_put, chroma_put]
+}
+
+/// Both references' views of one plane.
+type Views<'a, 'b, T> = [&'a ReferencePlaneView<'b, T>; 2];
+
+/// The COMPOUND_AVERAGE of an unscaled block from two references, as
+/// [`subpel_predict_block_compound_average_fast_validated_strided_into`]
+/// stores each plane: luma, and with `chroma` both chroma planes, the U
+/// views first, which share their windows. Both references of a part must
+/// share its rectangle. Returns whether each part was stored, as
+/// [`subpel_put_block`] does.
+#[inline]
+pub fn subpel_compound_block<T: ReconSample>(
+    surface: &mut crate::CurrentFrameSurface<'_, '_, T>,
+    interp: InterpolationFilter,
+    cwp_weight: i16,
+    (views, luma): (Views<'_, '_, T>, [UnscaledPut; 2]),
+    chroma: Option<([Views<'_, '_, T>; 2], [UnscaledPut; 2])>,
+) -> [bool; 2] {
+    let clip = (
+        i32::from(cwp_weight),
+        surface.info().bit_depth().max_sample(),
+    );
+    let windows = |[first, second]: [UnscaledPut; 2]| {
+        let ((a, a_bounds), (b, b_bounds)) = (first.window(interp)?, second.window(interp)?);
+        (first.rect == second.rect).then_some(([a, b], [a_bounds, b_bounds]))
+    };
+    let luma_put = windows(luma).is_some_and(|(windows, bounds)| {
+        surface
+            .rect_mut(crate::PlaneId::Y, luma[0].rect)
+            .is_some_and(|(output, stride)| {
+                compound_windows(views, windows, bounds, clip, output, stride)
+            })
+    });
+    let chroma_put = chroma.is_some_and(|([u, v], puts)| {
+        let Some((windows, bounds)) = windows(puts) else {
+            return false;
+        };
+        surface.chroma_rects_mut(puts[0].rect).is_some_and(
+            |[(u_out, u_stride), (v_out, v_stride)]| {
+                compound_windows(u, windows, bounds, clip, u_out, u_stride)
+                    && compound_windows(v, windows, bounds, clip, v_out, v_stride)
+            },
+        )
+    });
+    [luma_put, chroma_put]
+}
+
+/// The `Clip1` single-reference prediction of `window` read from `view`
+/// within `bounds` into `output`; `false` without writing for an empty clip
+/// range or storage that is neither 8- nor 16-bit.
+#[allow(clippy::inline_always, reason = "measured put hot path")]
+#[inline(always)]
+fn put_window<T: ReconSample>(
+    window: &block::Window,
+    bounds: [i32; 4],
+    view: &ReferencePlaneView<'_, T>,
+    max: u16,
+    output: &mut [T],
+    stride: usize,
+) -> bool {
+    if let (Some(view), Some(output)) = (view.as_u8(), T::u8_slice_mut(&mut *output)) {
+        return block::with_block(window, &view, bounds, 0, |block| {
+            super::eight_bit::put(block, output, stride);
+        })
+        .is_some();
+    }
+    let (Some(view), Some(output)) = (view.as_u16(), T::u16_slice_mut(output)) else {
+        return false;
+    };
+    block::with_block(window, &view, bounds, 0, |block| {
+        block::kernels(
+            block,
+            &mut Sink::PutWide {
+                output,
+                stride,
+                max,
+            },
+            None,
+        );
+    })
+    .is_some()
 }
 
 fn validate_subpel_u8_output(
@@ -137,39 +229,6 @@ fn validate_subpel_u8_output(
         });
     }
     Ok(intermediate_height)
-}
-
-/// Directly blends two zero-phase unscaled predictors into eight-bit output,
-/// returning `Ok(false)` outside the direct source-window subset.
-///
-/// # Errors
-/// Returns validation and output-layout errors.
-pub fn subpel_predict_block_compound_average_fullpel_strided_into_u8<T: ReconSample>(
-    reference0: &ReferencePlaneView<'_, T>,
-    params0: &SubpelPredictParams,
-    reference1: &ReferencePlaneView<'_, T>,
-    params1: &SubpelPredictParams,
-    cwp_weight: i16,
-    output: &mut [u8],
-    output_stride: usize,
-) -> Result<bool> {
-    crate::intra_dc_math::validate_sample_type::<u8>(params0.bit_depth)?;
-    if !subpel_params_are_valid_fullpel(params0) || !subpel_params_are_valid_fullpel(params1) {
-        validate_subpel_params(params0)?;
-        validate_subpel_params(params1)?;
-        return Ok(false);
-    }
-    if params0.w != params1.w || params0.h != params1.h || params0.bit_depth != params1.bit_depth {
-        return Ok(false);
-    }
-    validate_compound_output(params0, output, output_stride)?;
-    Ok(compound_average(
-        [reference0, reference1],
-        [params0, params1],
-        cwp_weight,
-        output,
-        output_stride,
-    ))
 }
 
 #[cfg(test)]

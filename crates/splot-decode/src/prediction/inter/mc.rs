@@ -13,7 +13,7 @@ use splot_recon::{
     subpel_predict_block_compound_average_strided_into,
     subpel_predict_block_compound_average_strided_into_u8,
     subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
-    subpel_predict_block_strided_into, subpel_predict_block_strided_into_u8, subpel_put_u8_block,
+    subpel_predict_block_strided_into, subpel_predict_block_strided_into_u8, subpel_put_block,
     wedge_mask_plane_sample,
 };
 
@@ -493,7 +493,7 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
         frame_size.width() as i32,
         frame_size.height() as i32,
     );
-    if scaled || T::u8_slice(&[]).is_none() {
+    if scaled {
         return motion_compensate_planes(sink, has_chroma, |sink, plane, sub_x, sub_y| {
             predict_plane(
                 sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
@@ -501,39 +501,20 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
         });
     }
     let storage = reference_info.storage_luma_size();
-    let plane_put = |plane: PlaneId, sub_x: u32, sub_y: u32| {
-        let (x, y, w, h) = rect.plane_rect(plane, sub_x, sub_y);
-        let start =
-            |pos: usize, mv: i32, sub: u32| ((((pos as i32) << 4) + ((2 * mv) >> sub)) << 6) + 32;
-        Some(UnscaledPut {
-            rect: PlaneRect::new(x, y, w, h).ok()?,
-            start: [start(x, mv.col, sub_x), start(y, mv.row, sub_y)],
-            last: [
-                (ceil_shift(storage.width(), sub_x) - 1) as i32,
-                (ceil_shift(storage.height(), sub_y) - 1) as i32,
-            ],
-        })
-    };
     let [_, (_, sub_x, sub_y), _] = mc_planes(info.pixel_format());
     let chroma = has_chroma
         .then(|| {
             let views = reference.settled_plane_view(PlaneId::U)?;
             Some((
                 (views, reference.settled_plane_view(PlaneId::V)?),
-                plane_put(PlaneId::U, sub_x, sub_y)?,
+                unscaled_put(rect, PlaneId::U, (sub_x, sub_y), mv, storage)?,
             ))
         })
         .flatten();
-    let [luma_put, chroma_put] = match plane_put(PlaneId::Y, 0, 0) {
+    let [luma_put, chroma_put] = match unscaled_put(rect, PlaneId::Y, (0, 0), mv, storage) {
         Some(luma) => {
-            let view = if let Some(view) = reference.settled_plane_view(PlaneId::Y) {
-                view
-            } else {
-                let (h, last_y) = (luma.rect.height(), luma.last[1]);
-                let last_row = subpel_last_row(luma.start[1], 1 << 10, h, last_y);
-                reference.plane_view(PlaneId::Y, last_row, offset)?
-            };
-            subpel_put_u8_block(
+            let view = luma_view(reference, luma, offset)?;
+            subpel_put_block(
                 sink,
                 interp,
                 (&view, luma),
@@ -553,6 +534,45 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
         }
     }
     Ok(())
+}
+
+/// The unscaled § 7.13.3.17 window of `plane` of `rect` moved by `mv`, read
+/// from a reference of luma storage `storage`, or `None` for an empty
+/// rectangle.
+#[inline]
+pub(super) fn unscaled_put(
+    rect: McBlockRect,
+    plane: PlaneId,
+    (sub_x, sub_y): (u32, u32),
+    mv: Mv,
+    storage: splot_recon::PlaneSize,
+) -> Option<UnscaledPut> {
+    let (x, y, w, h) = rect.plane_rect(plane, sub_x, sub_y);
+    let start =
+        |pos: usize, mv: i32, sub: u32| ((((pos as i32) << 4) + ((2 * mv) >> sub)) << 6) + 32;
+    Some(UnscaledPut {
+        rect: PlaneRect::new(x, y, w, h).ok()?,
+        start: [start(x, mv.col, sub_x), start(y, mv.row, sub_y)],
+        last: [
+            (ceil_shift(storage.width(), sub_x) - 1) as i32,
+            (ceil_shift(storage.height(), sub_y) - 1) as i32,
+        ],
+    })
+}
+
+/// The luma view of `reference` that an unscaled `put` reads.
+#[inline]
+pub(super) fn luma_view<T: ReconSample>(
+    reference: ReferenceSamples<'_, T>,
+    put: UnscaledPut,
+    offset: ByteOffset,
+) -> Result<ReferencePlaneView<'_, T>> {
+    if let Some(view) = reference.settled_plane_view(PlaneId::Y) {
+        return Ok(view);
+    }
+    let (h, last_y) = (put.rect.height(), put.last[1]);
+    let last_row = subpel_last_row(put.start[1], 1 << 10, h, last_y);
+    reference.plane_view(PlaneId::Y, last_row, offset)
 }
 
 fn motion_compensate_planes<T: ReconSample>(

@@ -364,6 +364,12 @@ pub(super) const fn stage_len(rows: usize, w: usize, vertical: Option<&Taps>) ->
     }
 }
 
+/// [`stage_len`] of the window rows of `block`.
+pub(super) fn stage_needed<T>(block: &Block<'_, T>) -> usize {
+    let rows = block.h + block.vertical.map_or(0, |taps| taps.span() - 1);
+    stage_len(rows, block.w, block.vertical)
+}
+
 /// The samples the vector kernels load: eight-bit and 16-bit storage.
 pub(super) trait Sample: ReconSample + super::portable::Lanes {
     /// Runs `f` on retained storage `slot`, 0 or 1, of at least `len`
@@ -645,6 +651,66 @@ impl Window {
         Some(())
     }
 }
+/// Where a register cell reads window row `r`: `base + r * stride`, or
+/// when clamped row `top + r` clamped to `first..=last` from column `base`,
+/// window column `c` from column `clamp(start + c, low, high)` of the load.
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy, Default)]
+pub(super) struct Reads {
+    pub(super) base: usize,
+    pub(super) stride: usize,
+    pub(super) top: i32,
+    pub(super) first: i32,
+    pub(super) last: i32,
+    pub(super) columns: [i16; 3],
+}
+
+/// The [`Reads`] of `window` in a plane of `geometry` within `bounds`, and
+/// whether they are clamped: in place when every read is inside the clip
+/// bounds, else the § 7.13.3.18 `Clip3` reads; `None` when the clip range
+/// is empty or a clamped row cannot load 16 samples.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::inline_always, reason = "measured register-cell placement")]
+#[inline(always)]
+pub(super) fn reads(
+    window: &Window,
+    geometry: Geometry,
+    bounds: [i32; 4],
+) -> Option<(Reads, bool)> {
+    let [stride, width, rows, len] = geometry;
+    if let Some(base) = window.origin(geometry, bounds) {
+        let reads = Reads {
+            base,
+            stride,
+            ..Reads::default()
+        };
+        return Some((reads, false));
+    }
+    let bound = |value: i32, size: usize| value.max(0).min(size as i32 - 1);
+    let (first_x, last_x) = (bound(bounds[0], width), bound(bounds[2], width));
+    let (first, last) = (bound(bounds[1], rows), bound(bounds[3], rows));
+    if first_x > last_x || first > last || last_x > i32::from(i16::MAX) - 32 {
+        return None;
+    }
+    let column = window.column.max(first_x).min(last_x);
+    let end = (last as usize)
+        .checked_mul(stride)?
+        .checked_add(column as usize + 16)?;
+    if end > len {
+        return None;
+    }
+    let start = window.column.max(first_x - 16).min(last_x + 16) - column;
+    let reads = Reads {
+        base: column as usize,
+        stride,
+        top: window.row,
+        first,
+        last,
+        columns: [start, first_x - column, last_x - column].map(|value| value as i16),
+    };
+    Some((reads, true))
+}
+
 /// Runs `f` on the block of `window` read in place from `view`, else on a
 /// copy in retained storage `slot`; `None` without running it when the clip
 /// range of `bounds` is empty.
@@ -750,99 +816,18 @@ pub(super) fn kernels<T: Sample>(
     sink: &mut Sink<'_>,
     scratch: Option<&mut [i16]>,
 ) {
-    if cfg!(target_arch = "aarch64")
-        && (super::eight_bit::predict(block, sink, &mut [])
-            || super::sixteen_bit::predict(block, sink, &mut []))
+    if super::eight_bit::predict(block, sink, &mut [])
+        || super::sixteen_bit::predict(block, sink, &mut [])
     {
         return;
     }
-    let rows = block.h + block.vertical.map_or(0, |taps| taps.span() - 1);
-    with_stage(stage_len(rows, block.w, block.vertical), scratch, |stage| {
+    with_stage(stage_needed(block), scratch, |stage| {
         if !super::eight_bit::predict(block, sink, stage)
             && !super::sixteen_bit::predict(block, sink, stage)
         {
             super::portable::predict(block, sink, stage);
         }
     });
-}
-
-/// Stores the eight-bit single-reference prediction of an unscaled block
-/// straight into `output`, or returns `false` without writing outside that
-/// subset. Admission implies every check of `validate_subpel_u8_output`.
-pub(super) fn put_u8(
-    view: &ReferencePlaneView<'_, u8>,
-    params: &SubpelPredictParams,
-    output: &mut [u8],
-    stride: usize,
-) -> bool {
-    put_u8_planes([view], params, [(output, stride)])
-}
-
-/// [`put_u8`] of `N` planes of one geometry that share `params`, each into
-/// its own output: `false` without writing any of them when one declines.
-pub(super) fn put_u8_planes<const N: usize>(
-    views: [&ReferencePlaneView<'_, u8>; N],
-    params: &SubpelPredictParams,
-    outputs: [(&mut [u8], usize); N],
-) -> bool {
-    let (w, h) = (params.w, params.h);
-    let fits = |(output, stride): &(&mut [u8], usize)| {
-        *stride >= w
-            && (h - 1)
-                .checked_mul(*stride)
-                .and_then(|end| end.checked_add(w))
-                .is_some_and(|end| end <= output.len())
-    };
-    let view = views[0];
-    let admitted = params.bit_depth == crate::format::BitDepth::Eight
-        && params.step_x == 1 << SCALE_SUBPEL_BITS
-        && params.step_y == 1 << SCALE_SUBPEL_BITS
-        && (1..=super::MAX_BLOCK_DIM).contains(&w)
-        && (1..=super::MAX_BLOCK_DIM).contains(&h)
-        && params.first_x <= params.last_x
-        && params.first_y <= params.last_y
-        && params
-            .start_x
-            .checked_add((w as i32 - 1) << SCALE_SUBPEL_BITS)
-            .is_some()
-        && outputs.iter().all(fits)
-        && views.iter().all(|other| same_geometry(view, other));
-    admitted && put_admitted(views, params, outputs)
-}
-
-/// Whether two planes share stride, width, readable rows and storage.
-#[inline]
-pub(super) fn same_geometry(
-    a: &ReferencePlaneView<'_, u8>,
-    b: &ReferencePlaneView<'_, u8>,
-) -> bool {
-    (a.stride, a.width, a.readable_rows, a.samples.len())
-        == (b.stride, b.width, b.readable_rows, b.samples.len())
-}
-
-/// [`put_u8_planes`] of a block it admits.
-#[inline]
-pub(super) fn put_admitted<const N: usize>(
-    views: [&ReferencePlaneView<'_, u8>; N],
-    params: &SubpelPredictParams,
-    outputs: [(&mut [u8], usize); N],
-) -> bool {
-    let window = Window::new(
-        params.interp,
-        params.w,
-        params.h,
-        [params.start_x, params.start_y],
-    );
-    let bounds = params.bounds();
-    views
-        .into_iter()
-        .zip(outputs)
-        .all(|(view, (output, stride))| {
-            with_block(&window, view, bounds, 0, |block| {
-                super::eight_bit::put(block, output, stride);
-            })
-            .is_some()
-        })
 }
 
 /// Stores the COMPOUND_AVERAGE, clipped to `clip.1`, of the blocks of
@@ -890,20 +875,25 @@ fn compound_emulated<T: Sample, O: ReconSample>(
     output: &mut [O],
     stride: usize,
 ) -> bool {
-    #[cfg(target_arch = "aarch64")]
-    if let ([Some(first), Some(second)], Some(output)) = (
-        references.map(ReferencePlaneView::as_u16),
-        O::u16_slice_mut(&mut *output),
-    ) && super::sixteen_bit::compound_windows(
-        [&first, &second],
-        windows,
-        bounds,
-        clip,
-        output,
-        stride,
-    ) {
+    let cell = (windows[0].w == 4 || windows[0].w == 8)
+        && windows
+            .iter()
+            .all(|window| window.w == windows[0].w && window.h == windows[0].w);
+    if cell && clamped_cell(references, &windows, bounds, clip, &mut *output, stride) {
         return true;
     }
+    copied(references, &windows, bounds, clip, output, stride)
+}
+
+/// [`compound_emulated`] of each window copied with its reads clamped.
+fn copied<T: Sample, O: ReconSample>(
+    references: [&ReferencePlaneView<'_, T>; 2],
+    windows: &[Window; 2],
+    bounds: [[i32; 4]; 2],
+    clip: (i32, u16),
+    output: &mut [O],
+    stride: usize,
+) -> bool {
     with_block(&windows[0], references[0], bounds[0], 0, |first| {
         with_block(&windows[1], references[1], bounds[1], 1, |second| {
             compound_blocks([first, second], clip, output, stride)
@@ -911,6 +901,58 @@ fn compound_emulated<T: Sample, O: ReconSample>(
     })
     .flatten()
     .unwrap_or(false)
+}
+
+/// The register-cell kernel of a 4x4 or 8x8 compound pair read by clamped
+/// rows and columns, `false` without writing for a pair it does not cover:
+/// the NEON cells on AArch64, else the generic kernel, which reads [`copied`]
+/// windows.
+fn clamped_cell<T: Sample, O: ReconSample>(
+    references: [&ReferencePlaneView<'_, T>; 2],
+    windows: &[Window; 2],
+    bounds: [[i32; 4]; 2],
+    clip: (i32, u16),
+    output: &mut [O],
+    stride: usize,
+) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if let ([Some(first), Some(second)], Some(output)) = (
+            references.map(ReferencePlaneView::as_u8),
+            O::u8_slice_mut(&mut *output),
+        ) && let Some(token) = fearless_simd::Level::baseline().as_neon()
+        {
+            let sources = [&first, &second].map(|view| {
+                let geometry = [
+                    view.stride,
+                    view.width,
+                    view.readable_rows,
+                    view.samples.len(),
+                ];
+                (view.samples, geometry)
+            });
+            let windows = [&windows[0], &windows[1]];
+            return super::eight_bit::neon::compound_windows(
+                token, sources, windows, bounds, clip.0, output, stride,
+            );
+        }
+        if let ([Some(first), Some(second)], Some(output)) = (
+            references.map(ReferencePlaneView::as_u16),
+            O::u16_slice_mut(&mut *output),
+        ) {
+            return super::sixteen_bit::compound_windows(
+                [&first, &second],
+                *windows,
+                bounds,
+                clip,
+                output,
+                stride,
+            );
+        }
+        false
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    copied(references, windows, bounds, clip, output, stride)
 }
 
 /// [`compound`] of two blocks read in place.
@@ -968,24 +1010,8 @@ fn compound_blocks<T: Sample, O: ReconSample>(
             super::portable::compound_u16(blocks, forward, max, &mut [], output, stride);
             return true;
         }
-        if cfg!(target_arch = "aarch64") {
-            if super::sixteen_bit::compound(blocks, forward, max, &mut [], output, stride) {
-                return true;
-            }
-        } else {
-            let rows =
-                |block: &Block<'_, u16>| block.h + block.vertical.map_or(0, |t| t.span() - 1);
-            let len = stage_len(rows(blocks[0]), w, blocks[0].vertical).max(stage_len(
-                rows(blocks[1]),
-                w,
-                blocks[1].vertical,
-            ));
-            return with_stage(len, None, |stage| {
-                if !super::sixteen_bit::compound(blocks, forward, max, stage, output, stride) {
-                    super::portable::compound_u16(blocks, forward, max, stage, output, stride);
-                }
-                true
-            });
+        if super::sixteen_bit::compound(blocks, forward, max, &mut [], output, stride) {
+            return true;
         }
     }
     with_compound_pred0(w * h, |pred0| {

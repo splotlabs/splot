@@ -18,11 +18,11 @@
 )]
 
 use super::super::CellPlacement;
-use super::super::block::{Block, Sink, Taps, Window};
+use super::super::block::{Block, Geometry, Reads, Sink, Taps, Window, reads};
 use super::super::cell::Written;
 use core::arch::aarch64::*;
 use core::slice::{ChunksExact, ChunksExactMut};
-use fearless_simd::{Bytes, Neon, Simd, SimdBase, SimdFrom, i16x8, i32x4, u8x16, u64x2};
+use fearless_simd::{Bytes, Neon, Simd, SimdBase, SimdFrom, i8x16, i16x8, i32x4, u8x16, u64x2};
 
 /// Rows `0..n` of a 2-D array in `data` from `at`, `stride` apart and `len`
 /// wide: the first `n - 1` as whole strides, then the last, `len` long.
@@ -429,22 +429,24 @@ macro_rules! pair_shapes {
 }
 
 /// [`cell_groups`] of the `W`-square cell whose passes have `$h` and `$v`
-/// tap pairs, which [`is_cell`] admits; zero for any other shape.
+/// tap pairs, which [`is_cell`] admits, read in place or with `$c` clamped;
+/// zero for any other shape.
 macro_rules! cells {
-    ($h:expr, $v:expr, $args:tt) => {
+    ($h:expr, $v:expr, $c:expr, $args:tt) => {
         if W == 4 {
-            cells!(@ 3 * $h + $v, $args, [0 0 0, 1 0 1, 2 0 2, 3 1 0, 4 1 1, 5 1 2, 6 2 0, 7 2 1, 8 2 2])
+            cells!(@ 3 * $h + $v, $c, $args, [0 0 0, 1 0 1, 2 0 2, 3 1 0, 4 1 1, 5 1 2, 6 2 0, 7 2 1, 8 2 2])
         } else {
-            cells!(@ 5 * $h + $v, $args, [
+            cells!(@ 5 * $h + $v, $c, $args, [
                 0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 5 1 0, 6 1 1, 7 1 2, 8 1 3, 9 1 4, 10 2 0,
                 11 2 1, 12 2 2, 13 2 3, 14 2 4, 15 3 0, 16 3 1, 17 3 2, 18 3 3, 19 3 4, 20 4 0,
                 21 4 1, 22 4 2, 23 4 3, 24 4 4
             ])
         }
     };
-    (@ $key:expr, $args:tt, [$($k:literal $hh:literal $vv:literal),*]) => {
-        match $key {
-            $($k => cell_groups::<W, $hh, $vv> $args,)*
+    (@ $key:expr, $c:expr, $args:tt, [$($k:literal $hh:literal $vv:literal),*]) => {
+        match ($key, $c) {
+            $(($k, false) => cell_groups::<W, $hh, $vv, false> $args,)*
+            $(($k, true) => cell_groups::<W, $hh, $vv, true> $args,)*
             _ => [vdupq_n_s16(0); W],
         }
     };
@@ -456,6 +458,41 @@ macro_rules! cells {
 #[inline(always)]
 fn is_cell(w: usize, horizontal: Option<&Taps>, vertical: Option<&Taps>) -> bool {
     w == 8 || (w == 4 && pairs(horizontal) <= 2 && pairs(vertical) <= 2)
+}
+
+/// A reference of a register cell: its [`Reads`], whether they are
+/// clamped, and the taps of both passes.
+type Placed = (Reads, bool, Option<&'static Taps>, Option<&'static Taps>);
+
+/// The [`Placed`] reads of the `W`-square register cell of `filter` at
+/// `placement` in a plane of `geometry`; `None` for a cell [`is_cell`] does
+/// not admit or an empty clip range.
+#[inline(always)]
+fn place<const W: usize>(
+    filter: usize,
+    (start, bounds): CellPlacement,
+    geometry: Geometry,
+) -> Option<Placed> {
+    place_reads::<W>(
+        &Window::of_filters([filter; 2], W, W, start),
+        geometry,
+        bounds,
+    )
+}
+
+/// [`place`] of the window of a `W`-square cell.
+#[inline(always)]
+fn place_reads<const W: usize>(
+    window: &Window,
+    geometry: Geometry,
+    bounds: [i32; 4],
+) -> Option<Placed> {
+    let (horizontal, vertical) = (window.horizontal, window.vertical);
+    if window.w != W || window.h != W || !is_cell(W, horizontal, vertical) {
+        return None;
+    }
+    let (reads, clamped) = reads(window, geometry, bounds)?;
+    Some((reads, clamped, horizontal, vertical))
 }
 
 /// Whether the kernels cover `block`: strips of 8 columns, the last
@@ -481,7 +518,7 @@ pub(in crate::subpel_mc) type ProgramPlane<'a, 'b> = ([&'b [u8]; 2], &'a mut [u8
 /// V share the geometry) and marked in the result.
 pub(in crate::subpel_mc) struct Program<'a, 'b> {
     pub(in crate::subpel_mc) planes: [Option<ProgramPlane<'a, 'b>>; 2],
-    pub(in crate::subpel_mc) geometry: super::super::block::Geometry,
+    pub(in crate::subpel_mc) geometry: [Geometry; 2],
     pub(in crate::subpel_mc) filter: usize,
     pub(in crate::subpel_mc) cells: &'a [super::super::cell::Cell],
     pub(in crate::subpel_mc) forward: i32,
@@ -492,6 +529,36 @@ pub(in crate::subpel_mc) struct Strips<'a, 'b, O>(&'a Block<'b, u8>, &'a mut O);
 
 /// The kernels of a compound pair into `u8` storage.
 pub(in crate::subpel_mc) struct Compound<'a, 'b>([&'a Block<'b, u8>; 2], i32, &'a mut [u8], usize);
+
+/// The kernels of a compound cell of two windows within their bounds, read
+/// from each reference's samples of its geometry, into `u8` storage.
+pub(in crate::subpel_mc) struct Windows<'a, 'b>(
+    [(&'b [u8], Geometry); 2],
+    [&'a Window; 2],
+    [[i32; 4]; 2],
+    i32,
+    &'a mut [u8],
+    usize,
+);
+
+/// Stores the COMPOUND_AVERAGE of the 4x4 or 8x8 cell of `windows` within
+/// `bounds`, read in place or by clamped rows and columns, or returns
+/// `false` without writing for any other cell.
+#[inline]
+pub(in crate::subpel_mc) fn compound_windows(
+    t: Neon,
+    references: [(&[u8], Geometry); 2],
+    windows: [&Window; 2],
+    bounds: [[i32; 4]; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    dot::run(
+        t,
+        Windows(references, windows, bounds, forward, output, stride),
+    )
+}
 
 /// The kernels of a [`Program`] of `size`-square cells.
 pub(in crate::subpel_mc) struct Programs<'a, 'b>(
@@ -667,6 +734,18 @@ fearless_simd::kernel!(
 );
 
 fearless_simd::kernel!(
+    /// [`mla::windows_cell`] entered through the NEON token.
+    #[inline]
+    fn mla_windows(t: Neon, job: Windows<'_, '_>) -> bool {
+        if job.1[0].w == 4 {
+            mla::windows_cell::<4>(t, job)
+        } else {
+            mla::windows_cell::<8>(t, job)
+        }
+    }
+);
+
+fearless_simd::kernel!(
     /// [`mla::run_program`] entered through the NEON token.
     #[inline]
     fn mla_program(t: Neon, job: Programs<'_, '_>) {
@@ -706,6 +785,20 @@ mod sdot {
 fn dot_taps(_: Neon, taps: Option<&Taps>) -> int8x16_t {
     vcombine_s8(vcreate_s8(taps.map_or(0, |taps| taps.dot)), vdup_n_s8(0))
 }
+
+/// The clamping [`Reads`] of a cell read in place, which only a clamped
+/// cell kernel reads.
+static IN_PLACE: Reads = Reads {
+    base: 0,
+    stride: 0,
+    top: 0,
+    first: 0,
+    last: 0,
+    columns: [0; 3],
+};
+
+/// Byte lane indices `0..16`.
+const BYTE_LANES: [i8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 /// Byte indices of the four 4-byte windows of outputs `0..4` from byte
 /// `4 * k`, as two little-endian words, for `k` 0, 1 and 2.

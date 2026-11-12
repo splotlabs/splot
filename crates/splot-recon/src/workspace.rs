@@ -595,25 +595,8 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         self.contiguous_rect(plane, rect).ok()?
     }
 
-    /// [`Self::rect_mut`] of eight-bit samples.
-    #[inline]
-    pub fn u8_rect_mut(&mut self, plane: PlaneId, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
-        let (samples, stride) = self.rect_mut(plane, rect)?;
-        Some((T::u8_slice_mut(samples)?, stride))
-    }
-
-    /// The [`Self::u8_rect_mut`] targets of `rect` in both chroma planes, or
+    /// The [`Self::rect_mut`] targets of `rect` in both chroma planes, or
     /// `None` wherever either is `None`.
-    #[inline]
-    pub fn u8_chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [u8], usize); 2]> {
-        let [(u, u_stride), (v, v_stride)] = self.chroma_rects_mut(rect)?;
-        Some([
-            (T::u8_slice_mut(u)?, u_stride),
-            (T::u8_slice_mut(v)?, v_stride),
-        ])
-    }
-
-    /// [`Self::u8_chroma_rects_mut`] of samples of any depth.
     #[inline]
     pub fn chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [T], usize); 2]> {
         if let Self::Frame(workspace) = self {

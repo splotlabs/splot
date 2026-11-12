@@ -1678,7 +1678,7 @@ fn fullpel_compound_average_u8_matches_materialized_predictors() {
         let stride = params0.w + 3;
         let mut actual = vec![u8::MAX; stride * params0.h];
         assert!(
-            subpel_predict_block_compound_average_fullpel_strided_into_u8(
+            subpel_predict_block_compound_average_fast_validated_strided_into(
                 &view0,
                 &params0,
                 &view1,
@@ -1704,25 +1704,6 @@ fn fullpel_compound_average_u8_matches_materialized_predictors() {
             );
         }
     }
-
-    let fractional = SubpelPredictParams {
-        start_x: params0.start_x + (1 << 6),
-        ..params0
-    };
-    let mut untouched = [u8::MAX; 35];
-    assert!(
-        !subpel_predict_block_compound_average_fullpel_strided_into_u8(
-            &view0,
-            &fractional,
-            &view1,
-            &params1,
-            8,
-            &mut untouched,
-            7,
-        )
-        .unwrap()
-    );
-    assert_eq!(untouched, [u8::MAX; 35]);
 }
 
 #[test]

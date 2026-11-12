@@ -43,8 +43,7 @@ pub use copy::{
     blend_compound_average_weighted_sample,
 };
 pub use fullpel_u8::{
-    UnscaledPut, subpel_predict_block_compound_average_fullpel_strided_into_u8,
-    subpel_predict_block_strided_into_u8, subpel_put_u8_block,
+    UnscaledPut, subpel_compound_block, subpel_predict_block_strided_into_u8, subpel_put_block,
 };
 pub use search_window::{
     REFINEMV_NEIGHBORS, refinemv_search_u8, subpel_predict_bilinear_search_window_u8,
@@ -991,6 +990,20 @@ fn compound_average<T: ReconSample, O: ReconSample>(
     let windows = params.map(|p| block::Window::new(p.interp, p.w, p.h, [p.start_x, p.start_y]));
     let bounds = params.map(SubpelPredictParams::bounds);
     let clip = (i32::from(cwp_weight), params[0].bit_depth.max_sample());
+    compound_windows(references, windows, bounds, clip, output, output_stride)
+}
+
+/// [`compound_average`] of two windows of one shape within `bounds`.
+#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[inline(always)]
+fn compound_windows<T: ReconSample, O: ReconSample>(
+    references: [&ReferencePlaneView<'_, T>; 2],
+    windows: [block::Window; 2],
+    bounds: [[i32; 4]; 2],
+    clip: (i32, u16),
+    output: &mut [O],
+    output_stride: usize,
+) -> bool {
     if let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) {
         return block::compound(
             [&first, &second],
@@ -1195,22 +1208,6 @@ fn plane_bounded<T: ReconSample>(
         last_y: params.last_y.max(0).min(last_row),
         ..*params
     }
-}
-
-#[inline]
-fn subpel_params_are_valid_fullpel(params: &SubpelPredictParams) -> bool {
-    params.w > 0
-        && params.h > 0
-        && params.w <= MAX_BLOCK_DIM
-        && params.h <= MAX_BLOCK_DIM
-        && params.step_x == 1 << SCALE_SUBPEL_BITS
-        && params.step_y == 1 << SCALE_SUBPEL_BITS
-        && (params.start_x >> 6) & SUBPEL_MASK == 0
-        && (params.start_y >> 6) & SUBPEL_MASK == 0
-        && params
-            .start_x
-            .checked_add((params.w as i32 - 1) << SCALE_SUBPEL_BITS)
-            .is_some()
 }
 
 std::thread_local! {

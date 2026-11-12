@@ -30,6 +30,7 @@ pub(super) fn predict<T: ReconSample>(
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
         && let Some(source) = T::u16_slice(block.source)
         && fits(block)
+        && stage.len() >= super::block::stage_needed(block)
         && !sink.is_narrow()
     {
         avx2::predict(token, &block.with_source(source), sink, stage);
@@ -66,6 +67,9 @@ pub(super) fn compound(
         && blocks
             .iter()
             .all(|block| fits(block) && block.w * block.h <= 64)
+        && blocks
+            .iter()
+            .all(|block| stage.len() >= super::block::stage_needed(block))
     {
         avx2::compound(token, blocks, forward, max, stage, output, stride);
         return true;

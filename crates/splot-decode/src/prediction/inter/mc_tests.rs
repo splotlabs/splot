@@ -1474,7 +1474,7 @@ fn mixed_implicit_mask_grid_matches_the_whole_plane_blend() {
 }
 
 #[test]
-fn u8_translational_compound_direct_preflights_all_planes_before_writing() {
+fn u8_translational_compound_direct_fallback_matches_the_general_path() {
     let (width, height) = (17, 15);
     let reference0 = patterned_frame_with_format(PixelFormat::Yuv420, width, height, 11);
     let reference1 = patterned_frame_with_format(PixelFormat::Yuv420, width, height, 71);
@@ -1491,23 +1491,35 @@ fn u8_translational_compound_direct_preflights_all_planes_before_writing() {
     .expect("compound block");
     block.rect.chroma_luma_x = 16;
 
-    let mut workspace = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, width, height);
+    let mut direct = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, width, height);
     assert!(
         !compound_average::predict_translational_direct(
-            &mut WorkspaceSink::Frame(&mut workspace),
+            &mut WorkspaceSink::Frame(&mut direct),
             block,
             ByteOffset::new(0),
         )
         .expect("geometry fallback")
     );
+    predict_compound_into(
+        &mut WorkspaceSink::Frame(&mut direct),
+        block,
+        None,
+        ByteOffset::new(0),
+    )
+    .expect("general path after the fallback");
+    let mut general = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, width, height);
+    predict_compound_into(
+        &mut WorkspaceSink::Frame(&mut general),
+        block,
+        None,
+        ByteOffset::new(0),
+    )
+    .expect("general path");
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        assert!(
-            workspace
-                .samples(plane)
-                .expect("workspace plane")
-                .iter()
-                .all(|&sample| sample == 0),
-            "{plane:?} mutated before geometry fallback"
+        assert_eq!(
+            direct.samples(plane).expect("direct plane"),
+            general.samples(plane).expect("general plane"),
+            "{plane:?} differs after the geometry fallback"
         );
     }
 }

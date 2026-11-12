@@ -676,17 +676,18 @@ fn gradient_planes<S: Simd>(
         let (source_units, source_remainder) = source.as_chunks::<GRADIENT_UNIT>();
         let (output_units, output_remainder) = output.as_chunks_mut::<GRADIENT_UNIT>();
         for (source, output) in source_units.iter().zip(output_units) {
-            horizontal_gradient_16(simd, source).store_array(output);
+            horizontal_gradient_16(simd, source, GRADIENT_UNIT - 1).store_array(output);
         }
         if let (Ok(source), Ok(output)) = (
             <&[i16; 8]>::try_from(source_remainder),
             <&mut [i16; 8]>::try_from(&mut *output_remainder),
         ) {
             horizontal_gradient_8(simd, source).store_array(output);
-        } else {
-            for (col, output) in output_remainder.iter_mut().enumerate() {
-                *output = horizontal_gradient_scalar(source_remainder, col);
-            }
+        } else if let Some(&last) = source_remainder.last() {
+            let mut padded = [last; GRADIENT_UNIT];
+            padded[..source_remainder.len()].copy_from_slice(source_remainder); // splot-copy-ok: edge-padded lanes of a partial gradient unit
+            let lanes = horizontal_gradient_16(simd, &padded, source_remainder.len() - 1);
+            output_remainder.copy_from_slice(&lanes.to_array()[..output_remainder.len()]); // splot-copy-ok: store the real lanes of a partial gradient unit
         }
     }
     for row in 0..height {
@@ -715,14 +716,20 @@ fn gradient_planes<S: Simd>(
                 &mut output[wide..],
                 |taps: [i16x8<S>; 4]| gradient_lanes_8(taps, double),
             );
-        for col in narrow..width {
-            let [next, prev, next2, prev2] = rows.map(|row| i32::from(row[col]));
-            let mut value = 42 * (next - prev) - 5 * (next2 - prev2);
-            if double {
-                value *= 2;
-            }
-            output[col] = round2_signed_i32(value, 7) as i16;
+        if narrow == width {
+            continue;
         }
+        let tail = width.saturating_sub(8).min(narrow);
+        let taps = rows.map(|row| {
+            let mut lanes = [0; 8];
+            let row = &row[tail..];
+            lanes[..row.len().min(8)].copy_from_slice(&row[..row.len().min(8)]); // splot-copy-ok: zero-padded lanes of a row narrower than eight
+            i16x8::from_slice(simd, &lanes)
+        });
+        let lanes = gradient_lanes_8(taps, double).to_array();
+        let output = &mut output[tail..];
+        let len = output.len().min(8);
+        output[..len].copy_from_slice(&lanes[..len]); // splot-copy-ok: store the real lanes of a narrow gradient row
     }
 }
 
@@ -731,7 +738,7 @@ fn gradient_planes<S: Simd>(
 /// applied lane-wise.
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
-fn horizontal_gradient_16<S: Simd>(simd: S, samples: &[i16; 16]) -> i16x16<S> {
+fn horizontal_gradient_16<S: Simd>(simd: S, samples: &[i16; 16], end: usize) -> i16x16<S> {
     let [first, last] = edge_lanes(simd, samples);
     let (low, high) = i16x16::load_array_ref(simd, samples).widen();
     let low_taps = [
@@ -746,9 +753,13 @@ fn horizontal_gradient_16<S: Simd>(simd: S, samples: &[i16; 16]) -> i16x16<S> {
         high.slide::<2>(last),
         low.slide::<6>(high),
     ];
-    let edge = |lanes| i32x8::load_array(simd, lanes);
-    gradient_lanes(low_taps, edge([1, 0, 0, 0, 0, 0, 0, 0]))
-        .narrow(gradient_lanes(high_taps, edge([0, 0, 0, 0, 0, 0, 0, 1])))
+    let edge = |from: usize| {
+        i32x8::load_array(
+            simd,
+            core::array::from_fn(|lane| i32::from(from + lane == 0 || from + lane == end)),
+        )
+    };
+    gradient_lanes(low_taps, edge(0)).narrow(gradient_lanes(high_taps, edge(8)))
 }
 
 /// [`horizontal_gradient_16`] of an eight-sample gradient unit.
@@ -768,6 +779,7 @@ fn edge_lanes<S: Simd, const N: usize>(simd: S, samples: &[i16; N]) -> [i32x8<S>
         .map(|sample| i32x8::splat(simd, sample.copied().map_or(0, i32::from)))
 }
 
+#[cfg(test)]
 fn horizontal_gradient_scalar(source: &[i16], col: usize) -> i16 {
     let col_end = source.len() - 1;
     let col_prev = col.saturating_sub(1);
@@ -1465,10 +1477,44 @@ mod tests {
             .collect();
         let (got8, got16) = baseline_simd!(simd => (
             horizontal_gradient_8(simd, &source8).to_array(),
-            horizontal_gradient_16(simd, &source16).to_array(),
+            horizontal_gradient_16(simd, &source16, 15).to_array(),
         ));
         assert_eq!(got8[..], want8[..]);
         assert_eq!(got16[..], want16[..]);
+    }
+
+    /// Gradient planes of every width up to 40, whose rows end in partial
+    /// gradient units, against the clamped scalar taps of each unit.
+    #[test]
+    fn gradient_plane_tails_match_the_clamped_scalar_taps() {
+        for width in 1..=40 {
+            for height in [1, 3, 8, 17] {
+                let values = (0..width * height)
+                    .map(|index| ((index * 7919 + 13) % 4001) as i16 - 2000)
+                    .collect::<Vec<i16>>();
+                let (mut x, mut y) = (vec![0; width * height], vec![0; width * height]);
+                gradients(&values, width, height, &mut x, &mut y);
+                for row in 0..height {
+                    let line = &values[row * width..][..width];
+                    for col in 0..width {
+                        let unit = col / 16 * 16;
+                        let want = horizontal_gradient_scalar(
+                            &line[unit..(unit + 16).min(width)],
+                            col - unit,
+                        );
+                        assert_eq!(x[row * width + col], want, "x {width}x{height} {row},{col}");
+                        let column: Vec<i16> =
+                            (0..height).map(|r| values[r * width + col]).collect();
+                        let unit = row / 16 * 16;
+                        let want = horizontal_gradient_scalar(
+                            &column[unit..(unit + 16).min(height)],
+                            row - unit,
+                        );
+                        assert_eq!(y[row * width + col], want, "y {width}x{height} {row},{col}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -17,16 +17,24 @@ use fearless_simd::{Simd, prelude::*, u8x16, u16x8, u32x4, u64x2};
 
 /// The cell kernels of a sample depth.
 pub(super) trait CellSample: block::Sample {
-    /// Runs the cells of a program that the vector kernels read in place
-    /// into `planes`, and returns their bits; none by default.
+    /// Runs the cells of a program that the vector kernels cover into
+    /// `planes`, and returns their bits: each cell through
+    /// [`block::compound`] where no program kernel exists.
     fn program(
-        _: &mut [Option<Plane<'_, '_, Self>>; 2],
-        _: usize,
-        _: usize,
-        _: &[Cell],
-        _: (i32, u16),
+        planes: &mut [Option<Plane<'_, '_, Self>>; 2],
+        filter: usize,
+        size: usize,
+        cells: &[Cell],
+        clip: (i32, u16),
     ) -> Written {
-        [[0; PROGRAM_CELLS / 64]; 2]
+        cell_by_cell(
+            planes,
+            filter,
+            size,
+            cells,
+            clip,
+            [[0; PROGRAM_CELLS / 64]; 2],
+        )
     }
 }
 
@@ -45,13 +53,14 @@ impl CellSample for u8 {
         else {
             return [[0; PROGRAM_CELLS / 64]; 2];
         };
-        let view = &views[0];
-        let geometry = [
-            view.stride,
-            view.width,
-            view.readable_rows,
-            view.samples.len(),
-        ];
+        let geometry = views.each_ref().map(|view| {
+            [
+                view.stride,
+                view.width,
+                view.readable_rows,
+                view.samples.len(),
+            ]
+        });
         let planes = planes.each_mut().map(|plane| {
             let (views, output, stride) = plane.as_mut()?;
             Some(([views[0].samples, views[1].samples], &mut **output, *stride))
@@ -433,8 +442,22 @@ fn program<P: CellSample>(
 ) -> Written {
     let filter = usize::from(interp.pass_index(size as u32));
     let len = cells.len.min(PROGRAM_CELLS);
-    let mut written = P::program(&mut planes, filter, size, &cells.cells[..len], clip);
-    for (index, &([row, col], placements)) in cells.cells[..len].iter().enumerate() {
+    let cells = &cells.cells[..len];
+    let written = P::program(&mut planes, filter, size, cells, clip);
+    cell_by_cell(&mut planes, filter, size, cells, clip, written)
+}
+
+/// The cells of a program whose bits `written` does not set, each through
+/// [`block::compound`] into every plane, and the bits of all stored cells.
+fn cell_by_cell<P: CellSample>(
+    planes: &mut [Option<Plane<'_, '_, P>>; 2],
+    filter: usize,
+    size: usize,
+    cells: &[Cell],
+    clip: (i32, u16),
+    mut written: Written,
+) -> Written {
+    for (index, &([row, col], placements)) in cells.iter().enumerate() {
         if written[0][index / 64 % 4] & 1 << (index % 64) != 0 {
             continue;
         }

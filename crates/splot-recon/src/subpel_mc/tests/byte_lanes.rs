@@ -364,57 +364,163 @@ fn clamped_cells_match_the_oracle() {
     }
 }
 
-/// The paired chroma put writes what two single puts write, for cell,
-/// staged and copied shapes, and declines planes of differing geometry.
+/// The block entries store into a frame what the plane entries store, for
+/// both sample depths, every pass shape, and windows inside and across the
+/// reference borders.
 #[test]
-fn paired_put_matches_two_single_puts() {
-    let (ref_w, ref_h) = (40usize, 32usize);
-    let planes = [3usize, 11].map(|seed| {
-        (0..ref_w * ref_h)
-            .map(|i| ((i * 73 + i / ref_w * 29 + seed * 17) % 256) as u8)
-            .collect::<Vec<_>>()
+fn block_entries_match_the_plane_entries() {
+    block_entries_match::<u8>(BitDepth::Eight);
+    block_entries_match::<u16>(BitDepth::Ten);
+}
+
+fn block_entries_match<T: ReconSample>(bit_depth: BitDepth) {
+    let (frame_w, frame_h) = (40usize, 32usize);
+    let max = u32::from(bit_depth.max_sample());
+    let plane = |seed: usize, w: usize, h: usize| -> Vec<T> {
+        (0..w * h)
+            .map(|i| {
+                T::try_from_u16(((i * 73 + i / w * 29 + seed * 17) as u32 % (max + 1)) as u16)
+                    .unwrap()
+            })
+            .collect()
+    };
+    let sizes = [(frame_w, frame_h), (20, 16), (20, 16)];
+    let refs: [[Vec<T>; 3]; 2] =
+        [0, 1].map(|r| core::array::from_fn(|p| plane(3 * r + p, sizes[p].0, sizes[p].1)));
+    let views = refs.each_ref().map(|planes| {
+        core::array::from_fn::<_, 3, _>(|p| {
+            ReferencePlaneView::new(&planes[p], sizes[p].0, sizes[p].1).unwrap()
+        })
     });
-    let views = planes
-        .each_ref()
-        .map(|plane| ReferencePlaneView::new(plane, ref_w, ref_h).unwrap());
-    for (w, h, phase) in [(4, 4, 37), (8, 8, 0), (8, 8, 133), (16, 8, 90), (2, 4, 5)] {
-        let interp = InterpolationFilter::EightTap;
-        let params = SubpelPredictParams {
-            start_x: (9 << 10) + ((phase % 16) << 6),
-            start_y: (7 << 10) + ((phase / 16) << 6),
-            ..full_pel_params(interp, w, h, 0, 0, ref_w as i32, ref_h as i32)
-        };
-        let mut want = [vec![0u8; w * h], vec![0u8; w * h]];
-        let single = views
-            .iter()
-            .zip(&mut want)
-            .all(|(view, out)| block::put_u8(view, &params, out, w));
-        let mut got = [vec![1u8; w * h], vec![1u8; w * h]];
-        let [first, second] = &mut got;
-        let paired =
-            block::put_u8_planes([&views[0], &views[1]], &params, [(first, w), (second, w)]);
-        assert_eq!(paired, single, "{w}x{h} phase {phase}");
-        if paired {
-            assert_eq!(got, want, "{w}x{h} phase {phase}");
-        } else {
-            assert!(got.iter().flatten().all(|&s| s == 1));
+    let info = crate::DecodedFrameInfo::new(
+        crate::OutputIndex::new(0),
+        bit_depth,
+        crate::PixelFormat::Yuv420,
+        crate::PlaneSize::new(frame_w, frame_h).unwrap(),
+        crate::PlaneRect::new(0, 0, frame_w, frame_h).unwrap(),
+    )
+    .unwrap();
+    let interp = InterpolationFilter::EightTapSharp;
+    for (x, y, w, h) in [
+        (8, 8, 8, 8),
+        (16, 8, 16, 8),
+        (0, 0, 8, 16),
+        (32, 24, 8, 8),
+        (4, 12, 4, 4),
+    ] {
+        for (phase, offset) in [(0, 0), (37, 0), (133, -5), (90, 7), (255, -12)] {
+            let start = |p: usize, x: usize, y: usize, extra: i32| {
+                let (sub, ph) = (u32::from(p != 0), phase + extra);
+                [
+                    (((x >> sub) as i32 + offset) << 10) + ((ph % 16) << 6),
+                    (((y >> sub) as i32 - offset) << 10) + ((ph / 16 % 16) << 6),
+                ]
+            };
+            let put = |p: usize, r: usize| {
+                let sub = u32::from(p != 0);
+                UnscaledPut {
+                    rect: crate::PlaneRect::new(x >> sub, y >> sub, w >> sub, h >> sub).unwrap(),
+                    start: start(p, x, y, 5 * r as i32),
+                    last: [sizes[p].0 as i32 - 1, sizes[p].1 as i32 - 1],
+                }
+            };
+            let params = |p: usize, r: usize| {
+                let put = put(p, r);
+                SubpelPredictParams {
+                    start_x: put.start[0],
+                    start_y: put.start[1],
+                    bit_depth,
+                    ..full_pel_params(
+                        interp,
+                        put.rect.width(),
+                        put.rect.height(),
+                        0,
+                        0,
+                        put.last[0] + 1,
+                        put.last[1] + 1,
+                    )
+                }
+            };
+            for compound in [false, true] {
+                let mut workspace =
+                    crate::CurrentFrameWorkspace::<T>::new(info, T::default()).unwrap();
+                let mut surface = crate::CurrentFrameSurface::Frame(&mut workspace);
+                let written = if compound {
+                    subpel_compound_block(
+                        &mut surface,
+                        interp,
+                        6,
+                        ([&views[0][0], &views[1][0]], [put(0, 0), put(0, 1)]),
+                        Some((
+                            [[&views[0][1], &views[1][1]], [&views[0][2], &views[1][2]]],
+                            [put(1, 0), put(1, 1)],
+                        )),
+                    )
+                } else {
+                    subpel_put_block(
+                        &mut surface,
+                        interp,
+                        (&views[0][0], put(0, 0)),
+                        Some(([&views[0][1], &views[0][2]], put(1, 0))),
+                    )
+                };
+                assert_eq!(written, [true; 2], "{x},{y} {w}x{h} phase {phase}");
+                for (p, plane_id) in [crate::PlaneId::Y, crate::PlaneId::U, crate::PlaneId::V]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let rect = put(p, 0).rect;
+                    let mut want = vec![T::default(); rect.width() * rect.height()];
+                    if compound {
+                        assert!(
+                            subpel_predict_block_compound_average_fast_validated_strided_into(
+                                &views[0][p],
+                                &params(p, 0),
+                                &views[1][p],
+                                &params(p, 1),
+                                6,
+                                &mut want,
+                                rect.width(),
+                            )
+                            .unwrap()
+                        );
+                    } else {
+                        let mut wide = vec![0u16; want.len()];
+                        subpel_predict_block_strided_into(
+                            &views[0][p],
+                            &params(p, 0),
+                            &mut wide,
+                            rect.width(),
+                        )
+                        .unwrap();
+                        want = wide
+                            .into_iter()
+                            .map(|s| T::try_from_u16(s).unwrap())
+                            .collect();
+                    }
+                    let plane = workspace.plane(plane_id).unwrap();
+                    for row in 0..rect.height() {
+                        for col in 0..rect.width() {
+                            assert_eq!(
+                                plane
+                                    .reconstructed_sample(rect.x() + col, rect.y() + row)
+                                    .unwrap()
+                                    .to_u16(),
+                                want[row * rect.width() + col].to_u16(),
+                                "{plane_id:?} {x},{y} {w}x{h} phase {phase} compound {compound}"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
-    let narrow = ReferencePlaneView::new(&planes[1][..ref_w * 16], ref_w, 16).unwrap();
-    let params = full_pel_params(InterpolationFilter::EightTap, 8, 8, 0, 0, ref_w as i32, 16);
-    let mut got = [vec![1u8; 64], vec![1u8; 64]];
-    let [first, second] = &mut got;
-    assert!(!block::put_u8_planes(
-        [&views[0], &narrow],
-        &params,
-        [(first, 8), (second, 8)]
-    ));
-    assert!(got.iter().flatten().all(|&s| s == 1));
 }
 
 /// A program run stores and reports exactly the cells the placement entry
 /// stores, for windows inside, across and outside their clip bounds and
-/// storage, with more cells than one setup batch.
+/// storage, from references of differing readable rows, with more cells
+/// than one setup batch.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 fn compound_cell_programs_match_the_placement_entry() {
@@ -423,6 +529,8 @@ fn compound_cell_programs_match_the_placement_entry() {
         .map(|i| ((i * 73 + i / ref_w * 29) % 256) as u8)
         .collect::<Vec<_>>();
     let view = ReferencePlaneView::new(&bytes, ref_w, ref_h).unwrap();
+    let short =
+        ReferencePlaneView::from_published_strided(&bytes, ref_w, ref_w, ref_h, 20).unwrap();
     let mut seed = 7u32;
     let mut next = |range: i32| {
         seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
@@ -460,7 +568,7 @@ fn compound_cell_programs_match_the_placement_entry() {
             for (index, ([row, col], placements)) in placed.iter().enumerate() {
                 let output = &mut want[row * stride + col..];
                 if subpel_compound_cell(
-                    [&view, &view],
+                    [&view, &short],
                     interp,
                     size,
                     *placements,
@@ -473,7 +581,7 @@ fn compound_cell_programs_match_the_placement_entry() {
             }
             let mut got = vec![0u8; 4 * size * stride];
             let written = subpel_compound_cells(
-                [Some((&[view, view], &mut got[..], stride)), None],
+                [Some((&[view, short], &mut got[..], stride)), None],
                 interp,
                 size,
                 &mut program,
