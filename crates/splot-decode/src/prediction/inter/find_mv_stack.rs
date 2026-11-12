@@ -994,12 +994,12 @@ impl RefMvBank {
         n4h: usize,
         sb_size4: usize,
     ) {
-        let unit_size4 = (sb_size4 >> 3).max(1);
-        let unit_count = ((n4w / unit_size4).max(1) * (n4h / unit_size4).max(1)) as i32;
-        if mi_row.is_multiple_of(sb_size4) && mi_col.is_multiple_of(sb_size4) {
+        let unit_shift = (sb_size4 >> 3).max(1).trailing_zeros();
+        let unit_count = ((n4w >> unit_shift).max(1) * (n4h >> unit_shift).max(1)) as i32;
+        if (mi_row | mi_col) & sb_size4.wrapping_sub(1) == 0 {
             self.remain_hits = unit_count.max(4);
             self.unit_hits = 0;
-        } else if mi_row.is_multiple_of(unit_size4) && mi_col.is_multiple_of(unit_size4) {
+        } else if (mi_row | mi_col) & ((1 << unit_shift) - 1) == 0 {
             self.remain_hits += unit_count;
             self.unit_hits = 0;
         }
