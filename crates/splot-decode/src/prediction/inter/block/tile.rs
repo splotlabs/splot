@@ -654,8 +654,10 @@ impl TileResolveState {
                 max_drl_bits_minus_1: context.params.max_drl_bits_minus_1,
                 frame_precision: 0,
                 tile_offset,
+                sb_h4: context.params.sb_h4,
+                mi_rows: context.params.mi_rows,
+                mi_cols: context.params.mi_cols,
             },
-            context.params.sb_h4,
         )?;
         if grid.window_violated() {
             return Err(invalid_inter_tile_scheduling_state());

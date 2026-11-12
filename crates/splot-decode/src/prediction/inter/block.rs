@@ -51,9 +51,8 @@ use crate::bitstream::tile_payload::{
     TileCoeffContextState, TileCoeffStateError, TilePartitionFrontierError,
     TilePartitionTraversalError, TilePartitionTraversalUnsupported, TileSegmentIdState,
     TileSegmentIdStateError, TransformToolResidualPolicy, chroma_subsampling,
-    current_frame_qm_segment_id, current_segment_lossless, decode_general_intra_plane_coeffs,
-    get_plane_residual_size, is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
-    read_row, row_at,
+    current_segment_lossless, decode_general_intra_plane_coeffs, get_plane_residual_size,
+    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size, read_row, row_at,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -1152,13 +1151,6 @@ pub(super) fn frame_uses_temporal_mvs(core: &FrameHeaderCore) -> bool {
         == Some(true)
 }
 
-fn current_residual_lossless(work_unit: &DecodeTileWorkUnit) -> bool {
-    work_unit
-        .coeff_frame_facts()
-        .lossless_for_segment(current_frame_qm_segment_id())
-        .unwrap_or(false)
-}
-
 /// Whether the frame orders temporal candidates first: DRL reordering is not
 /// `Always`, temporal MVs are on and every reference lies on one side.
 fn frame_temporal_first<T: ReconSample>(
@@ -1265,7 +1257,6 @@ fn decode_block<T: ReconSample>(
         .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
     let mi_row = frontier.r;
     let mi_col = frontier.c;
-    let chroma_planes = sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome;
     let mut block_ctx = MvBlockContext {
         mi_row,
         mi_col,
@@ -1590,7 +1581,6 @@ fn decode_block<T: ReconSample>(
         segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
     }
     let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
-    let lossless = current_residual_lossless(work_unit);
 
     gdf_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     cdef_state.read_for_block(
@@ -1629,8 +1619,7 @@ fn decode_block<T: ReconSample>(
             filter_records,
             slots,
             intrabc_state,
-            skip,
-            block_qindex,
+            (skip, segment_id, block_qindex),
             tile_offset,
         );
     }
@@ -1676,10 +1665,9 @@ fn decode_block<T: ReconSample>(
             filter_records,
             slots,
             intrabc_state,
-            skip,
+            (skip, segment_id, block_qindex),
             n4w,
             n4h,
-            block_qindex,
             tile_offset,
         );
     }
@@ -1772,89 +1760,48 @@ fn decode_block<T: ReconSample>(
         } else {
             None
         };
-        let residual = if skip == 0 {
-            Some(read_inter_residual(
-                work_unit,
-                symbols,
-                coeff_ctx,
-                residual_scratch,
-                residual_blocks,
-                residual_arena,
-                sequence,
-                core,
-                frontier,
-                n4w,
-                n4h,
-                params.mi_rows,
-                params.mi_cols,
-                lossless,
-                InterResidualLumaTxSizeMode::Inter,
-                params.residual_tool_policy,
-                tile_offset,
-            )?)
-        } else {
-            reset_inter_skip_coeff_contexts(
-                coeff_ctx,
-                frontier,
-                n4w,
-                n4h,
-                block_chroma_subsampling(sequence.general.chroma_format_idc),
-            )?;
-            None
-        };
-        filter_records.defer_inter_leaf(
+        return finish_inter_leaf(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            residual_scratch,
+            residual_blocks,
+            residual_arena,
+            sequence,
+            core,
             frontier,
-            (n4w, n4h),
-            residual.as_ref(),
+            mv_grid,
+            params,
+            filter_records,
+            slots,
+            intrabc_state,
+            InterBlockSyntax {
+                motion: InterMotionSyntax::Warp(WarpMotionSyntax {
+                    source: warp.source,
+                    ref_mv_idx: warp.ref_mv_idx,
+                    ref_warp_idx: warp.ref_warp_idx,
+                    mvd: warp.mvd,
+                    extend_delta: mode_ctx.extend_delta,
+                    derive_wrl,
+                    use_temporal_first,
+                }),
+                interp: ReconInterpolationFilter::EightTap,
+                precision: warp.precision,
+                skip: skip == 1,
+                use_amvd: false,
+                tip_size_16x16: false,
+                blend: mc::CompoundBlend::default(),
+            },
+            InterBlock {
+                interintra: warp_interintra_mode,
+                ..parsed_inter_block(ref_frame0, None, ReconInterpolationFilter::EightTap)
+            },
             None,
-            block_qindex,
-            lossless,
+            mv_config.precision(),
+            (n4w, n4h),
+            (skip, segment_id, block_qindex),
+            tile_offset,
         );
-        intrabc_state.record_block(
-            frontier.r,
-            frontier.c,
-            n4w,
-            n4h,
-            IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
-                use_intrabc: false,
-                skip_flag: skip == 1,
-            })
-            .mark_inter(),
-        )?;
-        let syntax = InterBlockSyntax {
-            block_ctx,
-            motion: InterMotionSyntax::Warp(WarpMotionSyntax {
-                source: warp.source,
-                ref_mv_idx: warp.ref_mv_idx,
-                ref_warp_idx: warp.ref_warp_idx,
-                mvd: warp.mvd,
-                extend_delta: mode_ctx.extend_delta,
-                derive_wrl,
-                use_temporal_first,
-            }),
-            interp: ReconInterpolationFilter::EightTap,
-            precision: warp.precision,
-            skip: skip == 1,
-            use_amvd: false,
-            tip_size_16x16: false,
-            blend: mc::CompoundBlend::default(),
-            bawp: BawpSyntax::default(),
-            interintra: warp_interintra_mode,
-            optflow_distances: None,
-            residual,
-        };
-        mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
-        return Ok((
-            GeneralIntraLeafMode::no_luma_mode(),
-            pending_inter_leaf(
-                slots,
-                syntax,
-                inter_leaf_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
-                block_qindex,
-                mv_config.precision(),
-                tile_offset,
-            ),
-        ));
     }
 
     let single_mode = if segment_forces_globalmv {
@@ -1991,6 +1938,128 @@ fn decode_block<T: ReconSample>(
             interp_ctx,
         )?
     };
+    let tip_uses_16x16_units = tip_ref
+        && tip::reference_uses_16x16_units(
+            n4w,
+            n4h,
+            sequence
+                .inter
+                .as_ref()
+                .is_some_and(|tools| tools.enable_tip_refinemv),
+        );
+    finish_inter_leaf(
+        work_unit,
+        symbols,
+        coeff_ctx,
+        residual_scratch,
+        residual_blocks,
+        residual_arena,
+        sequence,
+        core,
+        frontier,
+        mv_grid,
+        params,
+        filter_records,
+        slots,
+        intrabc_state,
+        InterBlockSyntax {
+            motion: InterMotionSyntax::Single(SingleMotionSyntax {
+                mode: single_mode,
+                tip_ref,
+                ref_mv_idx,
+                mvd,
+                use_temporal_first,
+                global_warp: (!tip_ref && single_mode == SINGLE_MODE_GLOBALMV)
+                    .then(|| global_motion_warp(core, ref_frame0, force_integer_mv, n4w, n4h))
+                    .flatten(),
+            }),
+            interp,
+            precision,
+            skip: skip == 1,
+            use_amvd,
+            tip_size_16x16: tip_ref && tip_uses_16x16_units,
+            blend: mc::CompoundBlend::default(),
+        },
+        InterBlock {
+            bawp,
+            interintra,
+            ..parsed_inter_block(ref_frame0, None, interp)
+        },
+        tip_ref.then_some(crate::filters::deblock::DeblockSubPuSize::square(
+            if tip_uses_16x16_units { 16 } else { 8 },
+        )),
+        frame_mv_config.precision(),
+        (n4w, n4h),
+        (skip, segment_id, block_qindex),
+        tile_offset,
+    )
+}
+
+/// An inter leaf's block as the parse leaves it, before § 7.12 resolution
+/// writes its motion.
+const fn parsed_inter_block(
+    ref_frame0: i8,
+    ref_frame1: Option<i8>,
+    interp: ReconInterpolationFilter,
+) -> InterBlock {
+    InterBlock {
+        ref_frame0,
+        ref_frame1,
+        mv: Mv::ZERO,
+        mv1: Mv::ZERO,
+        interp,
+        warp_params: [None, None],
+        bawp: BawpSyntax {
+            enabled: false,
+            explicit: false,
+            explicit_scale_positive: false,
+            list_index: 0,
+            ref_dist_gt4: false,
+            chroma: false,
+            avail_up: false,
+            avail_left: false,
+        },
+        interintra: None,
+        compound_blend: mc::CompoundBlend::average_with_implicit_mask(false),
+        optflow_distances: None,
+        residual: None,
+    }
+}
+
+const PENDING_INTER_BLOCK: InterBlock =
+    parsed_inter_block(0, None, ReconInterpolationFilter::EightTap);
+
+/// The part every inter leaf shares once its mode info is read: the residual,
+/// the filter, IntraBC and neighbour-flag records, then the leaf's command,
+/// written once into its row slot.
+#[allow(clippy::too_many_arguments)]
+fn finish_inter_leaf(
+    work_unit: &mut DecodeTileWorkUnit,
+    symbols: &mut SymbolDecoder<'_>,
+    coeff_ctx: &mut TileCoeffContextState,
+    residual_scratch: &mut InterResidualParseScratch,
+    residual_blocks: &mut Vec<InterResidualBlock>,
+    residual_arena: &mut Vec<i32>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    frontier: &DecodeBlockFrontier,
+    mv_grid: &mut NeighbourMvGrid,
+    params: &tile::TileWalkParams,
+    filter_records: &mut tile::TileFilterRecords,
+    slots: &mut Vec<tile::LeafSlot>,
+    intrabc_state: &mut TileIntrabcPreludeState,
+    syntax: InterBlockSyntax,
+    mut block: InterBlock,
+    sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
+    frame_precision: u8,
+    (n4w, n4h): (usize, usize),
+    (skip, segment_id, block_qindex): (u8, u8, u32),
+    tile_offset: ByteOffset,
+) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
+    let lossless = work_unit
+        .coeff_frame_facts()
+        .lossless_for_segment(usize::from(segment_id))
+        .unwrap_or(false);
     let residual = if skip == 0 {
         Some(read_inter_residual(
             work_unit,
@@ -2021,22 +2090,11 @@ fn decode_block<T: ReconSample>(
         )?;
         None
     };
-    let tip_uses_16x16_units = tip_ref
-        && tip::reference_uses_16x16_units(
-            n4w,
-            n4h,
-            sequence
-                .inter
-                .as_ref()
-                .is_some_and(|tools| tools.enable_tip_refinemv),
-        );
     filter_records.defer_inter_leaf(
         frontier,
         (n4w, n4h),
         residual.as_ref(),
-        tip_ref.then_some(crate::filters::deblock::DeblockSubPuSize::square(
-            if tip_uses_16x16_units { 16 } else { 8 },
-        )),
+        sub_pu_size,
         block_qindex,
         lossless,
     );
@@ -2051,40 +2109,38 @@ fn decode_block<T: ReconSample>(
         })
         .mark_inter(),
     )?;
-    let syntax = InterBlockSyntax {
-        block_ctx,
-        motion: InterMotionSyntax::Single(SingleMotionSyntax {
-            mode: single_mode,
-            tip_ref,
-            ref_mv_idx,
-            mvd,
-            use_temporal_first,
-            global_warp: (!tip_ref && single_mode == SINGLE_MODE_GLOBALMV)
-                .then(|| global_motion_warp(core, ref_frame0, force_integer_mv, n4w, n4h))
-                .flatten(),
-        }),
-        interp,
-        precision,
-        skip: skip == 1,
-        use_amvd,
-        tip_size_16x16: tip_ref && tip_uses_16x16_units,
-        blend: mc::CompoundBlend::default(),
-        bawp,
-        interintra,
-        optflow_distances: None,
-        residual,
+    let geometry = inter_leaf_geometry(
+        frontier,
+        work_unit,
+        (n4w, n4h),
+        sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
+    )?;
+    mv_grid.record_flags(
+        frontier.r,
+        frontier.c,
+        n4w,
+        n4h,
+        syntax.flag_syntax(block.ref_frame0),
+    );
+    let index = slots.len() as u32;
+    slots.push(tile::LeafSlot::Command(ReconCommand::Inter(
+        deferred_recon::InterReconCommand::PENDING,
+    )));
+    let Some(tile::LeafSlot::Command(ReconCommand::Inter(command))) = slots.last_mut() else {
+        return Err(tile::invalid_inter_tile_scheduling_state());
     };
-    mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
+    block.residual = residual;
+    command.fill(
+        geometry.place(block),
+        syntax,
+        frame_precision,
+        segment_id,
+        block_qindex,
+        tile_offset,
+    );
     Ok((
         GeneralIntraLeafMode::no_luma_mode(),
-        pending_inter_leaf(
-            slots,
-            syntax,
-            inter_leaf_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
-            block_qindex,
-            frame_mv_config.precision(),
-            tile_offset,
-        ),
+        LeafResolveRecord::Slot(index),
     ))
 }
 
@@ -2164,7 +2220,7 @@ use self::prediction::inter_leaf_geometry;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
     LeafReset, LeafResolveRecord, MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax,
-    WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax, pending_inter_leaf, pending_intrabc_leaf,
+    WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax, pending_intrabc_leaf,
     resolve_parsed_leaves,
 };
 use self::syntax::{

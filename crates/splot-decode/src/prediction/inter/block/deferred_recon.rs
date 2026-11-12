@@ -11,7 +11,7 @@ use splot_core::span::ByteOffset;
 use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, ReconSample};
 
 use super::super::compound::CompoundBlockSyntax;
-use super::super::find_mv_stack::NeighbourFlagSyntax;
+use super::super::find_mv_stack::{MvBlockContext, NeighbourFlagSyntax};
 use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
 use super::super::mc::{self, WorkspaceSink};
 use super::super::{
@@ -92,28 +92,71 @@ pub(super) const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
 }
 
 impl InterReconCommand {
-    /// `segment_id` is the § 7.14 quantizer-matrix segment, below
-    /// `MAX_SEGMENTS`, in force while the leaf was parsed, captured there
-    /// because the resolve pass runs after the leaf's segment scope has been
-    /// dropped.
-    pub(super) const fn new(
+    /// The command a row slot holds until the parse [fills](Self::fill) it.
+    pub(super) const PENDING: Self = Self {
+        placed: PlacedInterBlock {
+            luma_x: 0,
+            luma_y: 0,
+            luma_w: 0,
+            luma_h: 0,
+            chroma_luma_x: 0,
+            chroma_luma_y: 0,
+            chroma_luma_w: 0,
+            chroma_luma_h: 0,
+            predict_chroma: false,
+            sub8x8_chroma: false,
+            interintra_chroma: false,
+            interintra_edges: [crate::pipeline::reconstruct::IntraEdgeAvailability::new(
+                false, false,
+            ); 2],
+            block: super::PENDING_INTER_BLOCK,
+        },
+        syntax: InterBlockSyntax {
+            motion: InterMotionSyntax::Single(SingleMotionSyntax {
+                mode: 0,
+                tip_ref: false,
+                ref_mv_idx: 0,
+                mvd: super::Mv::ZERO,
+                use_temporal_first: false,
+                global_warp: None,
+            }),
+            interp: super::ReconInterpolationFilter::EightTap,
+            precision: super::super::find_mv_stack::BlockPrecisionRecord {
+                use_most_probable_precision: false,
+                mv_precision: 0,
+            },
+            skip: false,
+            use_amvd: false,
+            tip_size_16x16: false,
+            blend: mc::CompoundBlend::average_with_implicit_mask(false),
+        },
+        frame_precision: 0,
+        segment_id: 0,
+        qindex: 0,
+        motion_derived: false,
+        derived_motion: None,
+        tile_offset: ByteOffset::new(0),
+    };
+
+    /// Writes one parsed leaf into this slot command. `segment_id` is the
+    /// § 7.14 quantizer-matrix segment, below `MAX_SEGMENTS`, in force while
+    /// the leaf was parsed, captured there because the resolve pass runs after
+    /// the leaf's segment scope has been dropped.
+    pub(super) fn fill(
+        &mut self,
         placed: PlacedInterBlock,
         syntax: InterBlockSyntax,
         frame_precision: u8,
         segment_id: u8,
         qindex: u32,
         tile_offset: ByteOffset,
-    ) -> Self {
-        Self {
-            placed,
-            syntax,
-            frame_precision,
-            segment_id,
-            qindex,
-            motion_derived: false,
-            derived_motion: None,
-            tile_offset,
-        }
+    ) {
+        self.placed = placed;
+        self.syntax = syntax;
+        self.frame_precision = frame_precision;
+        self.segment_id = segment_id;
+        self.qindex = qindex;
+        self.tile_offset = tile_offset;
     }
 
     pub(super) const fn has_derived_motion(&self) -> bool {
@@ -137,7 +180,7 @@ impl InterReconCommand {
 
     /// The neighbour flags the parser published for this leaf.
     pub(super) fn flag_syntax(&self) -> NeighbourFlagSyntax {
-        self.syntax.flag_syntax()
+        self.syntax.flag_syntax(self.placed.block.ref_frame0)
     }
 
     /// Resolves the leaf's § 7.12 motion into its block. A warp block of a
@@ -145,12 +188,21 @@ impl InterReconCommand {
     /// translation (`useWarp = 0`, § 7.13.3.14).
     pub(super) fn resolve(&mut self, state: &mut MvResolutionState<'_>) -> Result<()> {
         state.frame_precision = self.frame_precision;
-        let mut resolved = resolve_inter_block(&self.syntax, state)?;
+        let placed = &self.placed;
+        let block = MvBlockContext {
+            mi_row: placed.luma_y / 4,
+            mi_col: placed.luma_x / 4,
+            bw4: placed.luma_w / 4,
+            bh4: placed.luma_h / 4,
+            sb_h4: state.sb_h4,
+            ref_frame0: placed.block.ref_frame0,
+            ref_frame1: placed.block.ref_frame1,
+            mi_rows: state.mi_rows,
+            mi_cols: state.mi_cols,
+        };
+        let mut resolved = resolve_inter_block(&block, &self.syntax, state)?;
         predict_by_translation_under_integer_mv(&self.syntax, state.core, &mut resolved);
-        let block = &mut self.placed.block;
-        [block.mv, block.mv1] = resolved.mv;
-        block.warp_params = resolved.warp_params;
-        block.compound_blend = resolved.blend;
+        resolved.apply(&mut self.placed.block);
         Ok(())
     }
 
@@ -302,8 +354,8 @@ impl InterReconCommand {
                     syntax,
                     self.placed.block.warp_params,
                     grid.as_ref(),
-                    self.syntax.block_ctx.mi_row,
-                    self.syntax.block_ctx.mi_col,
+                    self.placed.luma_y / 4,
+                    self.placed.luma_x / 4,
                     shared.mi_rows,
                     shared.mi_cols,
                     shared.current_order_hint,
@@ -701,6 +753,12 @@ mod tests {
     }
 
     #[test]
+    fn slot_command_sizes_stay_bounded() {
+        assert!(core::mem::size_of::<InterReconCommand>() <= 320);
+        assert!(core::mem::size_of::<super::InterBlockSyntax>() <= 104);
+    }
+
+    #[test]
     fn worker_reconstruction_scratch_is_cache_aligned() {
         assert_eq!(core::mem::align_of::<InterReconScratch<u8>>(), 64);
     }
@@ -726,7 +784,8 @@ mod tests {
     }
 
     fn command(x: usize, y: usize, width: usize, height: usize) -> InterReconCommand {
-        InterReconCommand::new(
+        let mut command = InterReconCommand::PENDING;
+        command.fill(
             PlacedInterBlock {
                 luma_x: x,
                 luma_y: y,
@@ -757,17 +816,6 @@ mod tests {
                 },
             },
             super::InterBlockSyntax {
-                block_ctx: crate::prediction::inter::find_mv_stack::MvBlockContext {
-                    mi_row: y / 4,
-                    mi_col: x / 4,
-                    bw4: width / 4,
-                    bh4: height / 4,
-                    sb_h4: 16,
-                    ref_frame0: 0,
-                    ref_frame1: None,
-                    mi_rows: 1024,
-                    mi_cols: 1024,
-                },
                 motion: super::InterMotionSyntax::Single(super::SingleMotionSyntax {
                     mode: crate::prediction::inter::SINGLE_MODE_NEARMV,
                     tip_ref: false,
@@ -782,16 +830,13 @@ mod tests {
                 use_amvd: false,
                 tip_size_16x16: false,
                 blend: mc::CompoundBlend::default(),
-                bawp: BawpSyntax::default(),
-                interintra: None,
-                optflow_distances: None,
-                residual: None,
             },
             0,
             0,
             0,
             ByteOffset::new(0),
-        )
+        );
+        command
     }
 
     fn residual(

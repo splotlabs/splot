@@ -330,10 +330,9 @@ pub(super) fn decode_compound_inter_block(
     filter_records: &mut tile::TileFilterRecords,
     slots: &mut Vec<tile::LeafSlot>,
     intrabc_state: &mut TileIntrabcPreludeState,
-    skip: u8,
+    leaf: (u8, u8, u32),
     n4w: usize,
     n4h: usize,
-    block_qindex: u32,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
     let tile::TileWalkParams {
@@ -554,7 +553,27 @@ pub(super) fn decode_compound_inter_block(
     )?;
     let temporal_allowed = compound.ref_frame0 != compound.ref_frame1;
     let temporal_first = |ref_frame| temporal_first_frame && facts.temporal_near(ref_frame);
-    finish_compound_inter_block(
+    let motion = CompoundMotionSyntax {
+        y_mode: compound.y_mode,
+        ref_frame1: compound.ref_frame1,
+        skip_mode: false,
+        use_optflow: compound.use_optflow,
+        local_warp,
+        ref_mv_idx,
+        independent_idx: compound_reads_second_drl(compound).then_some([ref_mv_idx0, ref_mv_idx1]),
+        mvd,
+        joint,
+        jmvd_scale_mode,
+        temporal_allowed,
+        temporal_first: [
+            temporal_first(compound.ref_frame0),
+            temporal_first(compound.ref_frame1),
+        ],
+        use_refinemv,
+        refinemv_switchable,
+    };
+    let optflow_distances = compound_optflow_distances(facts, compound.ref_frame0, &motion)?;
+    super::finish_inter_leaf(
         work_unit,
         symbols,
         coeff_ctx,
@@ -566,39 +585,32 @@ pub(super) fn decode_compound_inter_block(
         frontier,
         mv_grid,
         params,
-        frame_mv_config.precision(),
         filter_records,
         slots,
         intrabc_state,
-        ParsedCompoundBlock {
-            block_ctx: *block_ctx,
-            motion: CompoundMotionSyntax {
-                y_mode: compound.y_mode,
-                ref_frame1: compound.ref_frame1,
-                skip_mode: false,
-                use_optflow: compound.use_optflow,
-                local_warp,
-                ref_mv_idx,
-                independent_idx: compound_reads_second_drl(compound)
-                    .then_some([ref_mv_idx0, ref_mv_idx1]),
-                mvd,
-                joint,
-                jmvd_scale_mode,
-                temporal_allowed,
-                temporal_first: [
-                    temporal_first(compound.ref_frame0),
-                    temporal_first(compound.ref_frame1),
-                ],
-                use_refinemv,
-                refinemv_switchable,
-            },
-            blend: compound_blend,
+        InterBlockSyntax {
+            motion: InterMotionSyntax::Compound(motion),
             interp,
-            use_amvd,
             precision,
+            skip: leaf.0 == 1,
+            use_amvd,
+            tip_size_16x16: false,
+            blend: compound_blend,
         },
-        skip,
-        block_qindex,
+        InterBlock {
+            compound_blend,
+            optflow_distances,
+            ..super::parsed_inter_block(compound.ref_frame0, Some(compound.ref_frame1), interp)
+        },
+        compound_deblock_sub_pu_size(
+            motion.use_optflow,
+            motion.use_refinemv,
+            n4w * MI_SIZE,
+            n4h * MI_SIZE,
+        ),
+        frame_mv_config.precision(),
+        (n4w, n4h),
+        leaf,
         tile_offset,
     )
 }
@@ -757,145 +769,6 @@ fn read_compound_motion_mode_syntax(
 ) -> bool {
     let rows = &mut cdfs.block_rows_mut().use_local_warp;
     signal_local_warp && read_row(symbols, row_at(rows, neighbour_ctx.use_local_warp_ctx())) != 0
-}
-
-/// Parsed § 5.20.7.6 compound syntax handed to the § 7.12 resolution step.
-#[derive(Clone, Copy)]
-pub(super) struct ParsedCompoundBlock {
-    pub(super) block_ctx: MvBlockContext,
-    pub(super) motion: CompoundMotionSyntax,
-    pub(super) blend: mc::CompoundBlend,
-    pub(super) interp: ReconInterpolationFilter,
-    pub(super) use_amvd: bool,
-    pub(super) precision: BlockPrecisionRecord,
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn finish_compound_inter_block(
-    work_unit: &mut DecodeTileWorkUnit,
-    symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    residual_scratch: &mut InterResidualParseScratch,
-    residual_blocks: &mut Vec<InterResidualBlock>,
-    residual_arena: &mut Vec<i32>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    frontier: &DecodeBlockFrontier,
-    mv_grid: &mut NeighbourMvGrid,
-    params: &tile::TileWalkParams,
-    frame_precision: u8,
-    filter_records: &mut tile::TileFilterRecords,
-    slots: &mut Vec<tile::LeafSlot>,
-    intrabc_state: &mut TileIntrabcPreludeState,
-    parsed: ParsedCompoundBlock,
-    skip: u8,
-    block_qindex: u32,
-    tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
-    let (facts, mi_rows, mi_cols) = (&params.ref_facts, params.mi_rows, params.mi_cols);
-    let lossless = current_residual_lossless(work_unit);
-    let ParsedCompoundBlock {
-        block_ctx,
-        motion,
-        blend,
-        interp,
-        use_amvd,
-        precision,
-    } = parsed;
-    let (mi_row, mi_col, n4w, n4h) = (
-        block_ctx.mi_row,
-        block_ctx.mi_col,
-        block_ctx.bw4,
-        block_ctx.bh4,
-    );
-    let residual = if skip == 0 {
-        Some(read_inter_residual(
-            work_unit,
-            symbols,
-            coeff_ctx,
-            residual_scratch,
-            residual_blocks,
-            residual_arena,
-            sequence,
-            core,
-            frontier,
-            n4w,
-            n4h,
-            mi_rows,
-            mi_cols,
-            lossless,
-            InterResidualLumaTxSizeMode::Inter,
-            params.residual_tool_policy,
-            tile_offset,
-        )?)
-    } else {
-        reset_inter_skip_coeff_contexts(
-            coeff_ctx,
-            frontier,
-            n4w,
-            n4h,
-            super::block_chroma_subsampling(sequence.general.chroma_format_idc),
-        )?;
-        None
-    };
-    let sub_pu_size = compound_deblock_sub_pu_size(
-        motion.use_optflow,
-        motion.use_refinemv,
-        n4w * MI_SIZE,
-        n4h * MI_SIZE,
-    );
-    filter_records.defer_inter_leaf(
-        frontier,
-        (n4w, n4h),
-        residual.as_ref(),
-        sub_pu_size,
-        block_qindex,
-        lossless,
-    );
-    let geometry = inter_leaf_geometry(
-        frontier,
-        work_unit,
-        (n4w, n4h),
-        sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
-    )?;
-    let optflow_distances = compound_optflow_distances(facts, block_ctx.ref_frame0, &motion)?;
-    intrabc_state.record_block(
-        frontier.r,
-        frontier.c,
-        n4w,
-        n4h,
-        IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
-            use_intrabc: false,
-            skip_flag: skip == 1,
-        })
-        .mark_inter(),
-    )?;
-    let syntax = InterBlockSyntax {
-        block_ctx,
-        motion: InterMotionSyntax::Compound(motion),
-        interp,
-        precision,
-        skip: skip == 1,
-        use_amvd,
-        tip_size_16x16: false,
-        blend,
-        bawp: BawpSyntax::default(),
-        interintra: None,
-        optflow_distances,
-        residual,
-    };
-    mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
-    Ok((
-        GeneralIntraLeafMode::no_luma_mode(),
-        pending_inter_leaf(
-            slots,
-            syntax,
-            geometry,
-            block_qindex,
-            frame_precision,
-            tile_offset,
-        ),
-    ))
 }
 
 /// Input to the § 5.20.7.7 compound motion-vector difference reads.
@@ -1143,8 +1016,7 @@ pub(super) fn decode_skip_mode_inter_block(
     filter_records: &mut tile::TileFilterRecords,
     slots: &mut Vec<tile::LeafSlot>,
     intrabc_state: &mut TileIntrabcPreludeState,
-    skip: u8,
-    block_qindex: u32,
+    leaf: (u8, u8, u32),
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
     let (ref_frame0, ref_frame1) = skip_mode_reference_pair(
@@ -1163,7 +1035,10 @@ pub(super) fn decode_skip_mode_inter_block(
         tile_offset,
     )?;
     let precision = params.mv_config(core)?.precision();
-    finish_compound_inter_block(
+    let blend = mc::CompoundBlend::average_with_implicit_mask(
+        CompoundBlendToolConfig::from_sequence(sequence).implicit_mask,
+    );
+    super::finish_inter_leaf(
         work_unit,
         symbols,
         coeff_ctx,
@@ -1175,13 +1050,11 @@ pub(super) fn decode_skip_mode_inter_block(
         frontier,
         mv_grid,
         params,
-        precision,
         filter_records,
         slots,
         intrabc_state,
-        ParsedCompoundBlock {
-            block_ctx: *block_ctx,
-            motion: CompoundMotionSyntax {
+        InterBlockSyntax {
+            motion: InterMotionSyntax::Compound(CompoundMotionSyntax {
                 y_mode: CompoundYMode::NearNear,
                 ref_frame1,
                 skip_mode: true,
@@ -1196,16 +1069,26 @@ pub(super) fn decode_skip_mode_inter_block(
                 temporal_first: [false; 2],
                 use_refinemv: false,
                 refinemv_switchable: false,
-            },
-            blend: mc::CompoundBlend::average_with_implicit_mask(
-                CompoundBlendToolConfig::from_sequence(sequence).implicit_mask,
-            ),
+            }),
             interp: ReconInterpolationFilter::EightTapSharp,
-            use_amvd: false,
             precision: BlockPrecisionRecord::most_probable(precision),
+            skip: leaf.0 == 1,
+            use_amvd: false,
+            tip_size_16x16: false,
+            blend,
         },
-        skip,
-        block_qindex,
+        InterBlock {
+            compound_blend: blend,
+            ..super::parsed_inter_block(
+                ref_frame0,
+                Some(ref_frame1),
+                ReconInterpolationFilter::EightTapSharp,
+            )
+        },
+        None,
+        precision,
+        (block_ctx.bw4, block_ctx.bh4),
+        leaf,
         tile_offset,
     )
 }
