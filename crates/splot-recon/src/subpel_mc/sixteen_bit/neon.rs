@@ -17,10 +17,11 @@
 
 use super::super::block::{Block, Geometry, Sink, Taps, Window};
 use super::super::cell::{Cell, Plane, Written};
-use super::super::eight_bit::neon::{Reads, reads, token};
+use super::super::eight_bit::neon::{Reads, Sums, reads, slide, sums32, token};
+use super::super::rows::{self, Average, Out, Prep, Put, rows_mut, store_pair};
 use super::super::{CellPlacement, ReferencePlaneView};
 use core::arch::aarch64::*;
-use fearless_simd::{Neon, SimdBase, SimdFrom, i16x8, i32x4, u16x8};
+use fearless_simd::{Bytes, Neon, Simd, SimdBase, SimdFrom, i16x8, i32x4, u16x8, u64x2};
 
 /// Both references' samples, the output and its stride of one plane of a
 /// cell program.
@@ -86,29 +87,18 @@ pub(super) fn program(
     run_cells(t, &mut planes, geometry, shape, cells, clip)
 }
 
-/// The `i32` sums of a group: outputs `0..4` and `4..8`.
-type Sums = (int32x4_t, int32x4_t);
-
-/// The first columns of the 8-column strips of a block at least 8 wide:
-/// the last strip of a width that is not a multiple of 8 overlaps the one
-/// before it and stores the same values again.
-#[inline]
-fn strips(w: usize) -> impl Iterator<Item = usize> {
-    (0..w).step_by(8).map(move |col| col.min(w - 8))
-}
-
 /// Calls `$f::<W, P>` for the run-time group width and pair count.
 macro_rules! specialize {
     ($width:expr, $pairs:expr, $f:ident($($arg:expr),*)) => {
         match ($width, $pairs) {
-            (4, 1) => $f::<4, 1>($($arg),*),
-            (4, 2) => $f::<4, 2>($($arg),*),
-            (4, 3) => $f::<4, 3>($($arg),*),
-            (4, _) => $f::<4, 4>($($arg),*),
-            (_, 1) => $f::<8, 1>($($arg),*),
-            (_, 2) => $f::<8, 2>($($arg),*),
-            (_, 3) => $f::<8, 3>($($arg),*),
-            (_, _) => $f::<8, 4>($($arg),*),
+            (4, 1) => $f::<4, 1, _>($($arg),*),
+            (4, 2) => $f::<4, 2, _>($($arg),*),
+            (4, 3) => $f::<4, 3, _>($($arg),*),
+            (4, _) => $f::<4, 4, _>($($arg),*),
+            (_, 1) => $f::<8, 1, _>($($arg),*),
+            (_, 2) => $f::<8, 2, _>($($arg),*),
+            (_, 3) => $f::<8, 3, _>($($arg),*),
+            (_, _) => $f::<8, 4, _>($($arg),*),
         }
     };
 }
@@ -122,8 +112,8 @@ macro_rules! specialize_pairs {
     };
     (@ $width:expr, $h:expr, $v:expr, $f:ident $args:tt, [$($hh:literal $vv:literal),*]) => {
         match ($width == 4, $h.min(4), $v.min(4)) {
-            $((true, $hh, $vv) => $f::<4, $hh, $vv> $args,)*
-            $((false, $hh, $vv) => $f::<8, $hh, $vv> $args,)*
+            $((true, $hh, $vv) => $f::<4, $hh, $vv, _> $args,)*
+            $((false, $hh, $vv) => $f::<8, $hh, $vv, _> $args,)*
             _ => {}
         }
     };
@@ -135,28 +125,41 @@ fearless_simd::kernel!(
         let w = block.w;
         match sink {
             Sink::Put { output, stride } => {
-                let (output, stride, max) = (&mut **output, *stride, vdupq_n_u16(255));
-                put(t, block, move |width, row, col, values| {
-                    let values = vminq_u16(values, max);
-                    store_bytes(output, width, row * stride + col, stride, values);
-                });
+                shapes(
+                    t,
+                    block,
+                    &mut Put {
+                        output,
+                        stride: *stride,
+                    },
+                    255,
+                );
             }
             Sink::PutWide {
                 output,
                 stride,
                 max,
             } => {
-                let (output, stride, max) = (&mut **output, *stride, vdupq_n_u16(*max));
-                put(t, block, move |width, row, col, values| {
-                    let values = vminq_u16(values, max);
-                    store_words(t, output, width, row * stride + col, stride, values);
-                });
+                shapes(
+                    t,
+                    block,
+                    &mut Put {
+                        output,
+                        stride: *stride,
+                    },
+                    *max,
+                );
             }
             Sink::Prep { output, stride } => {
-                let (output, stride) = (&mut **output, *stride);
-                split(t, block, false, move |width, row, col, sums| {
-                    store_prep(t, output, width, row * stride + col, stride, sums);
-                });
+                shapes(
+                    t,
+                    block,
+                    &mut Prep {
+                        output,
+                        stride: *stride,
+                    },
+                    0,
+                );
             }
             Sink::Average {
                 pred0,
@@ -164,12 +167,19 @@ fearless_simd::kernel!(
                 output,
                 stride,
             } => {
-                let (pred0, forward, output, stride) = (&**pred0, *forward, &mut **output, *stride);
-                let max = vdupq_n_u16(255);
-                passes(t, block, false, move |width, row, col, sums| {
-                    let values = vminq_u16(average(t, pred0, row * w + col, sums, forward), max);
-                    store_bytes(output, width, row * stride + col, stride, values);
-                });
+                let (forward, stride) = (*forward, *stride);
+                shapes(
+                    t,
+                    block,
+                    &mut Average {
+                        pred0,
+                        w,
+                        forward,
+                        output,
+                        stride,
+                    },
+                    255,
+                );
             }
             Sink::AverageWide {
                 pred0,
@@ -178,12 +188,19 @@ fearless_simd::kernel!(
                 stride,
                 max,
             } => {
-                let (pred0, forward, output, stride) = (&**pred0, *forward, &mut **output, *stride);
-                let max = vdupq_n_u16(*max);
-                passes(t, block, false, move |width, row, col, sums| {
-                    let values = vminq_u16(average(t, pred0, row * w + col, sums, forward), max);
-                    store_words(t, output, width, row * stride + col, stride, values);
-                });
+                let (forward, stride) = (*forward, *stride);
+                shapes(
+                    t,
+                    block,
+                    &mut Average {
+                        pred0,
+                        w,
+                        forward,
+                        output,
+                        stride,
+                    },
+                    *max,
+                );
             }
             Sink::PrepNarrow { .. } | Sink::AverageNarrow { .. } => {}
         }
@@ -494,7 +511,7 @@ fn cell<const W: usize, const H: usize, const V: usize, const C: bool>(
                     a = vreinterpretq_s16_u8(vqtbl2q_u8(table, gather[0]));
                     b = vreinterpretq_s16_u8(vqtbl2q_u8(table, gather[1]));
                 }
-                let (low, high) = sums::<H>(h_weights, |k| slide(a, b, k));
+                let (low, high) = sums32::<H>(h_weights, |k| slide(a, b, k));
                 if V > 0 {
                     lines[row] = vrshrn_high_n_s32::<3>(vrshrn_n_s32::<3>(low), high);
                 } else {
@@ -510,12 +527,12 @@ fn cell<const W: usize, const H: usize, const V: usize, const C: bool>(
             match (H, V) {
                 (0, 0) => groups[row] = (vshll_n_s16::<4>(vget_low_s16(x)), vshll_high_n_s16::<4>(x)),
                 (0, _) => {
-                    let (low, high) = sums::<V>(v_weights, line);
+                    let (low, high) = sums32::<V>(v_weights, line);
                     groups[row] = (vrshrq_n_s32::<3>(low), vrshrq_n_s32::<3>(high));
                 }
                 (_, 0) => {}
                 _ => {
-                    let (low, high) = sums::<V>(v_weights, line);
+                    let (low, high) = sums32::<V>(v_weights, line);
                     groups[row] = (vrshrq_n_s32::<7>(low), vrshrq_n_s32::<7>(high));
                 }
             }
@@ -585,122 +602,31 @@ fn blend_cell<const W: usize, const G: usize>(
     output: &mut [u16],
     stride: usize,
 ) {
-    let rows = 8 / W;
+    let Some((mut rows, last)) = rows_mut(output, 0, stride, W, W) else {
+        return;
+    };
+    let mut last = Some(last);
+    let mut put = |values| {
+        let a = rows.next().or_else(|| last.take());
+        let b = if W == 4 {
+            rows.next().or_else(|| last.take())
+        } else {
+            None
+        };
+        if let Some(a) = a
+            && (W == 8 || b.is_some())
+        {
+            u16::store(t, a, b, vminq_u16(values, max));
+        }
+    };
     if forward == 8 {
         unroll!(group < G, [0 1 2 3 4 5 6 7] => {
-            let values = vminq_u16(blend(first[group], second[group], 8), max);
-            store_words(t, output, W, rows * group * stride, stride, values);
+            put(blend(first[group], second[group], 8));
         });
     } else {
         unroll!(group < G, [0 1 2 3 4 5 6 7] => {
-            let values = vminq_u16(blend(first[group], second[group], forward), max);
-            store_words(t, output, W, rows * group * stride, stride, values);
+            put(blend(first[group], second[group], forward));
         });
-    }
-}
-
-/// Runs the passes of a single-reference `block`, handing `out` each group
-/// as `(W, row, col, values)` saturated to `u16` before `Clip1`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn put(t: Neon, block: &Block<'_, u16>, mut out: impl FnMut(usize, usize, usize, uint16x8_t)) {
-    if block.horizontal.is_some() || block.vertical.is_some() {
-        split(t, block, true, move |width, row, col, (low, high)| {
-            out(width, row, col, vqmovun_high_s32(vqmovun_s32(low), high));
-        });
-    } else if block.w == 4 {
-        copy::<4>(t, block, move |w, row, col, x| {
-            out(w, row, col, vreinterpretq_u16_s16(x));
-        });
-    } else {
-        copy::<8>(t, block, move |w, row, col, x| {
-            out(w, row, col, vreinterpretq_u16_s16(x));
-        });
-    }
-}
-
-/// [`passes`] of a block whose width is 4 more than a multiple of 8, in
-/// pairs of rows, as 8-column strips and a 4-column tail, else [`passes`];
-/// `out` stores each group at its own rows.
-#[inline]
-#[target_feature(enable = "neon")]
-fn split(
-    t: Neon,
-    block: &Block<'_, u16>,
-    put: bool,
-    mut out: impl FnMut(usize, usize, usize, Sums),
-) {
-    let body = block.w & !7;
-    if block.w % 8 != 4 || body == 0 || !block.h.is_multiple_of(2) {
-        passes(t, block, put, out);
-        return;
-    }
-    let part = |origin: usize, w: usize| Block {
-        source: block.source,
-        stride: block.stride,
-        origin,
-        w,
-        h: block.h,
-        horizontal: block.horizontal,
-        vertical: block.vertical,
-    };
-    passes(t, &part(block.origin, body), put, &mut out);
-    passes(
-        t,
-        &part(block.origin + body, 4),
-        put,
-        move |width, row, col, sums| {
-            out(width, row, col + body, sums);
-        },
-    );
-}
-
-/// Runs the passes of `block`, handing `out` each group as
-/// `(W, row, col, sums)`: compound predictors, or with `put` single-reference
-/// predictions before `Clip1`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn passes(
-    t: Neon,
-    block: &Block<'_, u16>,
-    put: bool,
-    mut out: impl FnMut(usize, usize, usize, Sums),
-) {
-    let width = if block.w == 4 { 4 } else { 8 };
-    match (block.horizontal, block.vertical) {
-        (None, None) => {
-            let widen = move |w, row, col, x: int16x8_t| {
-                let sums = if put {
-                    let x = vreinterpretq_u16_s16(x);
-                    (
-                        vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(x))),
-                        vreinterpretq_s32_u32(vmovl_high_u16(x)),
-                    )
-                } else {
-                    (vshll_n_s16::<4>(vget_low_s16(x)), vshll_high_n_s16::<4>(x))
-                };
-                out(w, row, col, sums);
-            };
-            if width == 4 {
-                copy::<4>(t, block, widen);
-            } else {
-                copy::<8>(t, block, widen);
-            }
-        }
-        (Some(taps), None) => {
-            specialize!(width, taps.count, horizontal(t, block, taps, put, out));
-        }
-        (None, Some(taps)) => {
-            specialize!(width, taps.count, vertical(t, block, taps, put, out));
-        }
-        (Some(h_taps), Some(v_taps)) => {
-            specialize_pairs!(
-                width,
-                h_taps.count,
-                v_taps.count,
-                two_pass(t, block, (h_taps, v_taps), put, out)
-            );
-        }
     }
 }
 
@@ -708,48 +634,21 @@ fn passes(
 #[inline]
 #[target_feature(enable = "neon")]
 fn load(t: Neon, samples: &[u16], at: usize) -> int16x8_t {
-    match samples.get(at..).and_then(<[u16]>::first_chunk::<8>) {
-        Some(lanes) => vreinterpretq_s16_u16(u16x8::load_array_ref(t, lanes).into()),
-        None => vdupq_n_s16(0),
-    }
+    samples
+        .get(at..)
+        .and_then(|row| row8(t, row))
+        .unwrap_or(vdupq_n_s16(0))
 }
 
 /// Sixteen samples from `at` as two vectors, zero past the slice.
 #[inline]
 #[target_feature(enable = "neon")]
 fn load16(t: Neon, samples: &[u16], at: usize) -> (int16x8_t, int16x8_t) {
-    match samples.get(at..).and_then(<[u16]>::first_chunk::<16>) {
-        Some(lanes) => {
-            let [a, b] = lanes.as_chunks::<8>().0 else {
-                return (vdupq_n_s16(0), vdupq_n_s16(0));
-            };
-            let load = |lanes| vreinterpretq_s16_u16(u16x8::load_array_ref(t, lanes).into());
-            (load(a), load(b))
-        }
-        None => (vdupq_n_s16(0), vdupq_n_s16(0)),
-    }
-}
-
-/// Four `i32` values from `at`, zero past the slice.
-#[inline]
-#[target_feature(enable = "neon")]
-fn load_i32(t: Neon, values: &[i32], at: usize) -> int32x4_t {
-    match values.get(at..).and_then(<[i32]>::first_chunk::<4>) {
-        Some(lanes) => i32x4::load_array_ref(t, lanes).into(),
-        None => vdupq_n_s32(0),
-    }
-}
-
-/// The eight samples of the group at window row `row`, column `col`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn group<const W: usize>(t: Neon, block: &Block<'_, u16>, row: usize, col: usize) -> int16x8_t {
-    let first = load(t, block.source, block.start(row) + col);
-    if W == 8 {
-        return first;
-    }
-    let second = load(t, block.source, block.start(row + 1) + col);
-    vcombine_s16(vget_low_s16(first), vget_low_s16(second))
+    let zero = vdupq_n_s16(0);
+    samples
+        .get(at..)
+        .and_then(|row| row16(t, row))
+        .unwrap_or((zero, zero))
 }
 
 /// The eight taps of `taps`, zero past its pairs: [`Taps::full`] as lanes.
@@ -759,57 +658,7 @@ fn weights(t: Neon, taps: &Taps) -> int16x8_t {
     vreinterpretq_s16_s32(i32x4::load_array_ref(t, &taps.full).into())
 }
 
-/// Window columns `k..k + 8` of the 16 samples `(a, b)`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn slide(a: int16x8_t, b: int16x8_t, k: usize) -> int16x8_t {
-    match k {
-        0 => a,
-        1 => vextq_s16::<1>(a, b),
-        2 => vextq_s16::<2>(a, b),
-        3 => vextq_s16::<3>(a, b),
-        4 => vextq_s16::<4>(a, b),
-        5 => vextq_s16::<5>(a, b),
-        6 => vextq_s16::<6>(a, b),
-        _ => vextq_s16::<7>(a, b),
-    }
-}
-
-#[inline]
-#[target_feature(enable = "neon")]
-fn mac<const L: i32>((low, high): Sums, x: int16x8_t, weights: int16x8_t) -> Sums {
-    (
-        vmlal_laneq_s16::<L>(low, vget_low_s16(x), weights),
-        vmlal_high_laneq_s16::<L>(high, x, weights),
-    )
-}
-
-/// `Σ` over `2 * P` taps of `row(k) * weights[k]`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn sums<const P: usize>(weights: int16x8_t, mut row: impl FnMut(usize) -> int16x8_t) -> Sums {
-    let x = row(0);
-    let mut sums = (
-        vmull_laneq_s16::<0>(vget_low_s16(x), weights),
-        vmull_high_laneq_s16::<0>(x, weights),
-    );
-    sums = mac::<1>(sums, row(1), weights);
-    if P >= 2 {
-        sums = mac::<2>(sums, row(2), weights);
-        sums = mac::<3>(sums, row(3), weights);
-    }
-    if P >= 3 {
-        sums = mac::<4>(sums, row(4), weights);
-        sums = mac::<5>(sums, row(5), weights);
-    }
-    if P >= 4 {
-        sums = mac::<6>(sums, row(6), weights);
-        sums = mac::<7>(sums, row(7), weights);
-    }
-    sums
-}
-
-/// [`sums`] of four lanes.
+/// [`sums32`] of four lanes.
 #[inline]
 #[target_feature(enable = "neon")]
 fn sums4<const P: usize>(weights: int16x8_t, mut row: impl FnMut(usize) -> int16x4_t) -> int32x4_t {
@@ -830,261 +679,10 @@ fn sums4<const P: usize>(weights: int16x8_t, mut row: impl FnMut(usize) -> int16
     sum
 }
 
-/// The horizontal sums of four outputs of the window row from `start`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn horizontal_sums4<const P: usize>(
-    t: Neon,
-    source: &[u16],
-    start: usize,
-    weights: int16x8_t,
-) -> int32x4_t {
-    let a = load(t, source, start);
-    let b = if P <= 2 {
-        a
-    } else {
-        load(t, source, start + 8)
-    };
-    sums4::<P>(weights, |k| vget_low_s16(slide(a, b, k)))
-}
-
 #[inline]
 #[target_feature(enable = "neon")]
 fn round((low, high): Sums, shift: int32x4_t) -> Sums {
     (vrshlq_s32(low, shift), vrshlq_s32(high, shift))
-}
-
-#[inline(never)]
-#[target_feature(enable = "neon")]
-fn copy<const W: usize>(
-    t: Neon,
-    block: &Block<'_, u16>,
-    mut out: impl FnMut(usize, usize, usize, int16x8_t),
-) {
-    for row in (0..block.h).step_by(8 / W) {
-        if W == 4 {
-            out(W, row, 0, group::<W>(t, block, row, 0));
-            continue;
-        }
-        for col in strips(block.w) {
-            out(W, row, col, group::<W>(t, block, row, col));
-        }
-    }
-}
-
-#[inline(never)]
-#[target_feature(enable = "neon")]
-fn horizontal<const W: usize, const P: usize>(
-    t: Neon,
-    block: &Block<'_, u16>,
-    taps: &Taps,
-    put: bool,
-    mut out: impl FnMut(usize, usize, usize, Sums),
-) {
-    let weights = weights(t, taps);
-    let eighths = eighths(weights);
-    let (round0, round1) = (vdupq_n_s32(-3), vdupq_n_s32(-4));
-    let finish = |sums: Sums| {
-        let sums = round(sums, round0);
-        if put { round(sums, round1) } else { sums }
-    };
-    if W == 4 {
-        for row in (0..block.h).step_by(2) {
-            if P == 1 {
-                let (a, b) = (
-                    load(t, block.source, block.start(row)),
-                    load(t, block.source, block.start(row + 1)),
-                );
-                let first = vcombine_s16(vget_low_s16(a), vget_low_s16(b));
-                let second = vcombine_s16(
-                    vget_low_s16(vextq_s16::<1>(a, a)),
-                    vget_low_s16(vextq_s16::<1>(b, b)),
-                );
-                out(4, row, 0, one_pass(bilinear(first, second, eighths), put));
-                continue;
-            }
-            let sums =
-                |row: usize| horizontal_sums4::<P>(t, block.source, block.start(row), weights);
-            out(4, row, 0, finish((sums(row), sums(row + 1))));
-        }
-        return;
-    }
-    for row in 0..block.h {
-        let start = block.start(row);
-        let mut a = load(t, block.source, start);
-        for col in strips(block.w) {
-            if !col.is_multiple_of(8) {
-                a = load(t, block.source, start + col);
-            }
-            let b = load(t, block.source, start + col + 8);
-            let window = (a, b);
-            a = b;
-            let sums = if P == 1 {
-                one_pass(
-                    bilinear(window.0, slide(window.0, window.1, 1), eighths),
-                    put,
-                )
-            } else {
-                finish(sums::<P>(weights, |k| slide(window.0, window.1, k)))
-            };
-            out(8, row, col, sums);
-        }
-    }
-}
-
-#[inline(never)]
-#[target_feature(enable = "neon")]
-fn vertical<const W: usize, const P: usize>(
-    t: Neon,
-    block: &Block<'_, u16>,
-    taps: &Taps,
-    put: bool,
-    mut out: impl FnMut(usize, usize, usize, Sums),
-) {
-    let weights = weights(t, taps);
-    let shift = vdupq_n_s32(if put { -7 } else { -3 });
-    let line = |row: usize, col: usize| load(t, block.source, block.start(row) + col);
-    if P == 1 {
-        let eighths = eighths(weights);
-        if W == 4 {
-            let mut above = vget_low_s16(line(0, 0));
-            for row in (0..block.h).step_by(2) {
-                let [middle, below] = [1, 2].map(|k| vget_low_s16(line(row + k, 0)));
-                let (first, second) = (vcombine_s16(above, middle), vcombine_s16(middle, below));
-                out(4, row, 0, one_pass(bilinear(first, second, eighths), put));
-                above = below;
-            }
-            return;
-        }
-        for col in strips(block.w) {
-            let mut above = line(0, col);
-            for row in 0..block.h {
-                let below = line(row + 1, col);
-                out(8, row, col, one_pass(bilinear(above, below, eighths), put));
-                above = below;
-            }
-        }
-        return;
-    }
-    if W == 4 {
-        let mut r: [int16x4_t; 7] = core::array::from_fn(|k| {
-            if k + 1 < 2 * P {
-                vget_low_s16(line(k, 0))
-            } else {
-                vdup_n_s16(0)
-            }
-        });
-        for row in (0..block.h).step_by(2) {
-            let next = [
-                vget_low_s16(line(row + 2 * P - 1, 0)),
-                vget_low_s16(line(row + 2 * P, 0)),
-            ];
-            let tap = |k: usize| {
-                if k + 1 < 2 * P {
-                    r[k]
-                } else {
-                    next[k + 1 - 2 * P]
-                }
-            };
-            let low = sums4::<P>(weights, tap);
-            let high = sums4::<P>(weights, |k| tap(k + 1));
-            out(4, row, 0, round((low, high), shift));
-            r = core::array::from_fn(|k| if k + 1 < 2 * P { tap(k + 2) } else { r[k] });
-        }
-        return;
-    }
-    for col in strips(block.w) {
-        ring::<P>(
-            block.h,
-            weights,
-            |row| line(row, col),
-            |row, sums| out(8, row, col, round(sums, shift)),
-        );
-    }
-}
-
-/// The vertical tap sums of `h` output rows of one 8-column strip whose
-/// window row `row` is `line(row)`, handed to `out` by output row: the last
-/// `2 * P - 1` rows stay in a register ring unrolled by its period.
-#[inline]
-#[target_feature(enable = "neon")]
-fn ring<const P: usize>(
-    h: usize,
-    weights: int16x8_t,
-    mut line: impl FnMut(usize) -> int16x8_t,
-    mut out: impl FnMut(usize, Sums),
-) {
-    let period = 2 * P;
-    let mut ring = [vdupq_n_s16(0); 8];
-    unroll!(k < period - 1, [0 1 2 3 4 5 6] => {
-        ring[k] = line(k);
-    });
-    let mut row = 0;
-    loop {
-        unroll!(phase < period, [0 1 2 3 4 5 6 7] => {
-            if row == h {
-                return;
-            }
-            let next = line(row + period - 1);
-            let tap = |k: usize| if k + 1 < period { ring[(phase + k) % period] } else { next };
-            out(row, sums::<P>(weights, tap));
-            ring[(phase + period - 1) % period] = next;
-            row += 1;
-        });
-    }
-}
-
-/// Both passes of `block`, `H` and `V` tap pairs: the `Round2(sum,
-/// InterRound0)` horizontal rows of each strip in a register ring, two rows
-/// per vector for a 4-column block, whose ragged last pair repeats the last
-/// row.
-#[inline(never)]
-#[target_feature(enable = "neon")]
-fn two_pass<const W: usize, const H: usize, const V: usize>(
-    t: Neon,
-    block: &Block<'_, u16>,
-    (h_taps, v_taps): (&Taps, &Taps),
-    put: bool,
-    mut out: impl FnMut(usize, usize, usize, Sums),
-) {
-    let (h_weights, v_weights) = (weights(t, h_taps), weights(t, v_taps));
-    let shift = vdupq_n_s32(if put { -11 } else { -7 });
-    let narrow = |(low, high): Sums| vrshrn_high_n_s32::<3>(vrshrn_n_s32::<3>(low), high);
-    if H == 1 && V == 1 {
-        bilinear_two_pass::<W>(t, block, (eighths(h_weights), eighths(v_weights)), put, out);
-        return;
-    }
-    if W == 4 {
-        let rows = block.h + 2 * V - 1;
-        let row_sums =
-            |row: usize| horizontal_sums4::<H>(t, block.source, block.start(row), h_weights);
-        let line = |row: usize| narrow((row_sums(row), row_sums((row + 1).min(rows - 1))));
-        let mut pairs: [int16x8_t; 4] =
-            core::array::from_fn(|k| if k < V { line(2 * k) } else { vdupq_n_s16(0) });
-        for row in (0..block.h).step_by(2) {
-            let next = line(row + 2 * V);
-            let pair = |k: usize| if k < V { pairs[k] } else { next };
-            let sums = sums::<V>(v_weights, |k| {
-                if k % 2 == 0 {
-                    pair(k / 2)
-                } else {
-                    vextq_s16::<4>(pair(k / 2), pair(k / 2 + 1))
-                }
-            });
-            out(4, row, 0, round(sums, shift));
-            pairs = core::array::from_fn(|k| pair(k + 1));
-        }
-        return;
-    }
-    for col in strips(block.w) {
-        let line = |row: usize| {
-            let (a, b) = load16(t, block.source, block.start(row) + col);
-            narrow(sums::<H>(h_weights, |k| slide(a, b, k)))
-        };
-        ring::<V>(block.h, v_weights, line, |row, sums| {
-            out(8, row, col, round(sums, shift));
-        });
-    }
 }
 
 /// The eighths of the two taps of a BILINEAR pass, whose taps are
@@ -1104,79 +702,6 @@ fn bilinear(a: int16x8_t, b: int16x8_t, eighths: uint16x8_t) -> uint16x8_t {
     vmlaq_laneq_u16::<1>(first, vreinterpretq_u16_s16(b), eighths)
 }
 
-/// The final values of a BILINEAR block with one filtered pass from its
-/// [`bilinear`] sums `s`: `Round2(s, 4)` for a put, else the compound
-/// predictor `s`, the two-pass values of either pass order.
-#[inline]
-#[target_feature(enable = "neon")]
-fn one_pass(s: uint16x8_t, put: bool) -> Sums {
-    let s = if put { vrshrq_n_u16::<4>(s) } else { s };
-    (
-        vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(s))),
-        vreinterpretq_s32_u32(vmovl_high_u16(s)),
-    )
-}
-
-/// [`two_pass`] of a BILINEAR block: each horizontal row is its exact
-/// `Round2(sum, InterRound0)` [`bilinear`] sum, read as the `i16` stage of
-/// the general pass, and the vertical sum of the eighths `Round2`s by 8 for
-/// a put and by 4 for a compound predictor.
-#[inline(never)]
-#[target_feature(enable = "neon")]
-fn bilinear_two_pass<const W: usize>(
-    t: Neon,
-    block: &Block<'_, u16>,
-    (h_eighths, v_eighths): (uint16x8_t, uint16x8_t),
-    put: bool,
-    mut out: impl FnMut(usize, usize, usize, Sums),
-) {
-    let v = vreinterpretq_s16_u16(v_eighths);
-    let finish = |a: int16x8_t, b: int16x8_t| {
-        let low =
-            vmlal_laneq_s16::<1>(vmull_laneq_s16::<0>(vget_low_s16(a), v), vget_low_s16(b), v);
-        let high = vmlal_high_laneq_s16::<1>(vmull_high_laneq_s16::<0>(a, v), b, v);
-        if put {
-            (vrshrq_n_s32::<8>(low), vrshrq_n_s32::<8>(high))
-        } else {
-            (vrshrq_n_s32::<4>(low), vrshrq_n_s32::<4>(high))
-        }
-    };
-    let row_sums = |row: usize, col: usize| {
-        let (a, b) = load16(t, block.source, block.start(row) + col);
-        vreinterpretq_s16_u16(bilinear(a, slide(a, b, 1), h_eighths))
-    };
-    if W == 4 {
-        let mut above = vget_low_s16(row_sums(0, 0));
-        for row in (0..block.h).step_by(2) {
-            let [middle, below] = [1, 2].map(|k| vget_low_s16(row_sums(row + k, 0)));
-            let sums = finish(vcombine_s16(above, middle), vcombine_s16(middle, below));
-            out(4, row, 0, sums);
-            above = below;
-        }
-        return;
-    }
-    for col in strips(block.w) {
-        let mut above = row_sums(0, col);
-        for row in 0..block.h {
-            let below = row_sums(row + 1, col);
-            out(8, row, col, finish(above, below));
-            above = below;
-        }
-    }
-}
-
-/// The COMPOUND_AVERAGE of the eight first predictors at `at` of `pred0`
-/// and `sums`, saturated to `u16` before `Clip1`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn average(t: Neon, pred0: &[i32], at: usize, sums: Sums, forward: i32) -> uint16x8_t {
-    blend(
-        (load_i32(t, pred0, at), load_i32(t, pred0, at + 4)),
-        sums,
-        forward,
-    )
-}
-
 /// The COMPOUND_AVERAGE of the first predictors `first` and `sums`,
 /// saturated to `u16` before `Clip1`.
 #[inline]
@@ -1190,66 +715,439 @@ fn blend((first, second): Sums, (low, high): Sums, forward: i32) -> uint16x8_t {
     vqrshrun_high_n_s32::<8>(vqrshrun_n_s32::<8>(blend(first, low)), blend(second, high))
 }
 
-/// The compound predictors of a group into `output` from `at`.
+/// Runs the kernel of the shape of `block` into `out`, its samples at
+/// most `max`.
 #[inline]
 #[target_feature(enable = "neon")]
-fn store_prep(
+fn shapes(t: Neon, block: &Block<'_, u16>, out: &mut impl WordOut, max: u16) {
+    let width = if block.w == 4 { 4 } else { 8 };
+    match (block.horizontal, block.vertical) {
+        (Some(taps), None) => specialize!(width, taps.count, horizontal(t, block, taps, out, max)),
+        (None, Some(taps)) => specialize!(width, taps.count, vertical(t, block, taps, out, max)),
+        (Some(h_taps), Some(v_taps)) => specialize_pairs!(
+            width,
+            h_taps.count,
+            v_taps.count,
+            two_pass(t, block, (h_taps, v_taps), out, max)
+        ),
+        (None, None) => {}
+    }
+}
+
+/// What a kernel stores from word lanes: eight outputs of row `a`, or four
+/// of each of rows `a` and `b`, as `Clip1` samples ([`Self::words`]) or
+/// compound predictors ([`Self::sums`]).
+trait WordOut: Out {
+    /// The first predictors of the outputs.
+    fn first(t: Neon, _: &Self::Row<'_>, _: Option<&Self::Row<'_>>) -> Sums {
+        (i32x4::splat(t, 0).into(), i32x4::splat(t, 0).into())
+    }
+    /// Stores samples.
+    fn words(_: Neon, _: Self::Row<'_>, _: Option<Self::Row<'_>>, _: uint16x8_t) {}
+    /// Stores compound predictors.
+    fn sums(_: Neon, _: Self::Row<'_>, _: Option<Self::Row<'_>>, _: Sums) {}
+}
+
+/// Sample storage of word lanes whose values fit it.
+trait Word: Copy {
+    /// Stores eight samples into row `a`, or lanes `0..4` into `a` and
+    /// `4..8` into `b`.
+    fn store(t: Neon, a: &mut [Self], b: Option<&mut [Self]>, values: uint16x8_t);
+}
+
+impl Word for u8 {
+    #[inline(always)]
+    fn store(t: Neon, a: &mut [u8], b: Option<&mut [u8]>, values: uint16x8_t) {
+        let values = u16x8::simd_from(t, values);
+        let bytes = t.narrow_u16x8(values, values).bitcast::<u64x2<Neon>>()[0].to_le_bytes();
+        match (b, a.first_chunk_mut::<8>()) {
+            (Some(b), _) => store_pair(a, b, bytes),
+            (None, Some(slot)) => *slot = bytes,
+            (None, None) => {}
+        }
+    }
+}
+
+impl Word for u16 {
+    #[inline(always)]
+    fn store(t: Neon, a: &mut [u16], b: Option<&mut [u16]>, values: uint16x8_t) {
+        let values = u16x8::<Neon>::simd_from(t, values);
+        match (b, a.first_chunk_mut::<8>()) {
+            (Some(b), _) => store_pair(a, b, values.to_array()),
+            (None, Some(slot)) => values.store_array(slot),
+            (None, None) => {}
+        }
+    }
+}
+
+impl<T: Word> WordOut for Put<'_, T> {
+    #[inline(always)]
+    fn words(t: Neon, a: &mut [T], b: Option<&mut [T]>, values: uint16x8_t) {
+        T::store(t, a, b, values);
+    }
+}
+
+impl WordOut for Prep<'_, i32> {
+    #[inline(always)]
+    fn sums(t: Neon, a: &mut [i32], b: Option<&mut [i32]>, (low, high): Sums) {
+        let store = |slot: Option<&mut [i32; 4]>, lanes| {
+            if let Some(slot) = slot {
+                i32x4::<Neon>::simd_from(t, lanes).store_array(slot);
+            }
+        };
+        let (a, b) = match b {
+            Some(b) => (a.first_chunk_mut::<4>(), b.first_chunk_mut::<4>()),
+            None => match a.split_first_chunk_mut::<4>() {
+                Some((a, rest)) => (Some(a), rest.first_chunk_mut::<4>()),
+                None => (None, None),
+            },
+        };
+        store(a, low);
+        store(b, high);
+    }
+}
+
+impl<T: Word> WordOut for Average<'_, i32, T> {
+    #[inline(always)]
+    fn first(t: Neon, (a, _): &(&[i32], &mut [T]), b: Option<&(&[i32], &mut [T])>) -> Sums {
+        let lanes = |lanes: Option<&[i32; 4]>| {
+            lanes
+                .map_or(i32x4::splat(t, 0), |lanes| i32x4::load_array_ref(t, lanes))
+                .into()
+        };
+        let high = match b {
+            Some((b, _)) => b.first_chunk(),
+            None => a.get(4..).and_then(<[i32]>::first_chunk),
+        };
+        (lanes(a.first_chunk()), lanes(high))
+    }
+    #[inline(always)]
+    fn words(
+        t: Neon,
+        (_, a): (&[i32], &mut [T]),
+        b: Option<(&[i32], &mut [T])>,
+        values: uint16x8_t,
+    ) {
+        T::store(t, a, b.map(|(_, b)| b), values);
+    }
+}
+
+/// Stores a group of `O` into row `a`, or rows `a` and `b`: the put
+/// `values` clipped to `max`, else the compound predictors `sums`, averaged
+/// with the first ones when `O` averages.
+#[inline]
+#[target_feature(enable = "neon")]
+fn store<O: WordOut>(
     t: Neon,
-    output: &mut [i32],
-    width: usize,
-    at: usize,
-    stride: usize,
-    (low, high): Sums,
+    (forward, max): (i32, uint16x8_t),
+    (a, b): (O::Row<'_>, Option<O::Row<'_>>),
+    values: uint16x8_t,
+    sums: Sums,
 ) {
-    let mut put = |at: usize, values: int32x4_t| {
-        if let Some(slot) = output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<4>) {
-            i32x4::<Neon>::simd_from(t, values).store_array(slot);
+    if O::PUT {
+        O::words(t, a, b, vminq_u16(values, max));
+    } else if O::AVERAGE {
+        let first = O::first(t, &a, b.as_ref());
+        O::words(t, a, b, vminq_u16(blend(first, sums, forward), max));
+    } else {
+        O::sums(t, a, b, sums);
+    }
+}
+
+/// The forward weight of `out` and the splat largest sample `max`.
+#[inline]
+#[target_feature(enable = "neon")]
+fn clip(out: &impl Out, max: u16) -> (i32, uint16x8_t) {
+    (out.forward(), vdupq_n_u16(max))
+}
+
+/// `Round2(sums, S)` saturated to `u16`.
+#[inline]
+#[target_feature(enable = "neon")]
+fn narrow<const S: i32>((low, high): Sums) -> uint16x8_t {
+    vqrshrun_high_n_s32::<S>(vqrshrun_n_s32::<S>(low), high)
+}
+
+/// The eight `u16` values `s` in `i32` lanes.
+#[inline]
+#[target_feature(enable = "neon")]
+fn widen(s: uint16x8_t) -> Sums {
+    (
+        vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(s))),
+        vreinterpretq_s32_u32(vmovl_high_u16(s)),
+    )
+}
+
+/// The first eight samples of `row`.
+#[inline]
+#[target_feature(enable = "neon")]
+fn row8(t: Neon, row: &[u16]) -> Option<int16x8_t> {
+    Some(vreinterpretq_s16_u16(
+        u16x8::load_array_ref(t, row.first_chunk::<8>()?).into(),
+    ))
+}
+
+/// The first sixteen samples of `row` as two vectors.
+#[inline]
+#[target_feature(enable = "neon")]
+fn row16(t: Neon, row: &[u16]) -> Option<(int16x8_t, int16x8_t)> {
+    let [a, b] = row.first_chunk::<16>()?.as_chunks::<8>().0 else {
+        return None;
+    };
+    let load = |lanes| vreinterpretq_s16_u16(u16x8::load_array_ref(t, lanes).into());
+    Some((load(a), load(b)))
+}
+
+/// The vertical sums of `P` tap pairs of `tap`, for a BILINEAR pass the
+/// widened [`bilinear`] sum.
+#[inline]
+#[target_feature(enable = "neon")]
+fn vsum<const P: usize>(
+    weights: int16x8_t,
+    eighths: uint16x8_t,
+    tap: impl Fn(usize) -> int16x8_t,
+) -> Sums {
+    if P == 1 {
+        widen(bilinear(tap(0), tap(1), eighths))
+    } else {
+        sums32::<P>(weights, tap)
+    }
+}
+
+/// Tap `k` of a vertical pass of `V` tap pairs over a strip's register
+/// `ring` at `phase` and the `next` window row.
+#[inline]
+#[target_feature(enable = "neon")]
+fn ring_tap<const V: usize>(
+    phase: usize,
+    ring: &[int16x8_t; 8],
+    next: int16x8_t,
+    k: usize,
+) -> int16x8_t {
+    if k + 1 < 2 * V {
+        ring[(phase + k) % (2 * V)]
+    } else {
+        next
+    }
+}
+
+/// Tap `k` of a vertical pass of `V` tap pairs over the `ring` of row
+/// pairs of a 4-column block and the `next` pair.
+#[inline]
+#[target_feature(enable = "neon")]
+fn pair_tap<const V: usize>(ring: &[int16x8_t; 4], next: int16x8_t, k: usize) -> int16x8_t {
+    let pair = |k: usize| if k < V { ring[k] } else { next };
+    if k.is_multiple_of(2) {
+        pair(k / 2)
+    } else {
+        vextq_s16::<4>(pair(k / 2), pair(k / 2 + 1))
+    }
+}
+
+/// The horizontal pass of `block`, `P` tap pairs, in 8-column strips or
+/// 4-column row pairs: `Round2(sum, InterRound0)`, for a BILINEAR pass its
+/// exact [`bilinear`] sum, and for a put `Round2` of that by 4.
+#[inline(never)]
+#[target_feature(enable = "neon")]
+fn horizontal<const W: usize, const P: usize, O: WordOut>(
+    t: Neon,
+    block: &Block<'_, u16>,
+    taps: &Taps,
+    out: &mut O,
+    max: u16,
+) {
+    let (weights, clip) = (weights(t, taps), clip(out, max));
+    let (eighths, round0) = (eighths(weights), vdupq_n_s32(-3));
+    let none = (vdupq_n_s32(0), vdupq_n_s32(0));
+    if W == 4 {
+        let row_sums = |row: &[u16]| -> Option<int32x4_t> {
+            let (a, b) = if P > 2 {
+                row16(t, row)?
+            } else {
+                row8(t, row).map(|a| (a, a))?
+            };
+            Some(vrshlq_s32(
+                sums4::<P>(weights, |k| vget_low_s16(slide(a, b, k))),
+                round0,
+            ))
+        };
+        let line = |a: &[u16], b: &[u16]| -> Option<Sums> {
+            if P == 1 {
+                let (a, b) = (row8(t, a)?, row8(t, b)?);
+                let first = vcombine_s16(vget_low_s16(a), vget_low_s16(b));
+                let second = vcombine_s16(
+                    vget_low_s16(vextq_s16::<1>(a, a)),
+                    vget_low_s16(vextq_s16::<1>(b, b)),
+                );
+                return Some(widen(bilinear(first, second, eighths)));
+            }
+            Some((row_sums(a)?, row_sums(b)?))
+        };
+        let reach = if P > 2 { 16 } else { 8 };
+        let emit = |a: O::Row<'_>, b: O::Row<'_>, x: Sums| {
+            store::<O>(t, clip, (a, Some(b)), narrow::<4>(x), x);
+        };
+        rows::pairs::<u16, _, _, O, 0>(block, out, reach, none, line, |_, next| next, emit);
+        return;
+    }
+    let line = |row: &[u16]| -> Option<Sums> {
+        let (a, b) = row16(t, row)?;
+        Some(if P == 1 {
+            widen(bilinear(a, slide(a, b, 1), eighths))
+        } else {
+            round(sums32::<P>(weights, |k| slide(a, b, k)), round0)
+        })
+    };
+    let emit = |r: O::Row<'_>, x: Sums| store::<O>(t, clip, (r, None), narrow::<4>(x), x);
+    rows::strips::<u16, _, _, O, 0>(block, out, (8, 16), none, line, |_, _, next| next, emit);
+}
+
+/// The vertical pass of `block`, `P` tap pairs, in 8-column strips or
+/// 4-column row pairs, the window rows of a strip in a register ring: the
+/// compound predictor `Round2(sum, 3)`, a put `Round2(sum, 7)`, and for a
+/// BILINEAR pass the [`bilinear`] sum and its `Round2` by 4.
+#[inline(never)]
+#[target_feature(enable = "neon")]
+fn vertical<const W: usize, const P: usize, O: WordOut>(
+    t: Neon,
+    block: &Block<'_, u16>,
+    taps: &Taps,
+    out: &mut O,
+    max: u16,
+) {
+    let (weights, clip) = (weights(t, taps), clip(out, max));
+    let (eighths, shift) = (eighths(weights), vdupq_n_s32(-3));
+    let finish = |y: Sums| {
+        if P == 1 {
+            (narrow::<4>(y), y)
+        } else {
+            (narrow::<7>(y), round(y, shift))
         }
     };
-    put(at, low);
-    put(if width == 4 { at + stride } else { at + 4 }, high);
+    if W == 4 {
+        let line = |a: &[u16], b: &[u16]| {
+            Some(vcombine_s16(
+                vget_low_s16(row8(t, a)?),
+                vget_low_s16(row8(t, b)?),
+            ))
+        };
+        let vertical = |ring: &[int16x8_t; 4], next| {
+            vsum::<P>(weights, eighths, |k| pair_tap::<P>(ring, next, k))
+        };
+        let emit = |a: O::Row<'_>, b: O::Row<'_>, y: Sums| {
+            let (values, sums) = finish(y);
+            store::<O>(t, clip, (a, Some(b)), values, sums);
+        };
+        rows::pairs::<u16, _, _, O, P>(block, out, 8, vdupq_n_s16(0), line, vertical, emit);
+        return;
+    }
+    let vertical = |phase, ring: &[int16x8_t; 8], next| {
+        vsum::<P>(weights, eighths, |k| ring_tap::<P>(phase, ring, next, k))
+    };
+    let emit = |r: O::Row<'_>, y: Sums| {
+        let (values, sums) = finish(y);
+        store::<O>(t, clip, (r, None), values, sums);
+    };
+    let line = |row: &[u16]| row8(t, row);
+    rows::strips::<u16, _, _, O, P>(block, out, (8, 8), vdupq_n_s16(0), line, vertical, emit);
 }
 
-/// The eight words `values` of a group into `output` from `at`.
-#[inline]
+/// Both passes of `block`, `H` and `V` tap pairs, in 8-column strips or
+/// 4-column row pairs: the `Round2(sum, InterRound0)` horizontal rows in a
+/// register ring, the vertical sum `Round2`d by 7 for a compound predictor
+/// and by 11 for a put.
+#[inline(never)]
 #[target_feature(enable = "neon")]
-fn store_words(
+fn two_pass<const W: usize, const H: usize, const V: usize, O: WordOut>(
     t: Neon,
-    output: &mut [u16],
-    width: usize,
-    at: usize,
-    stride: usize,
-    values: uint16x8_t,
+    block: &Block<'_, u16>,
+    (h_taps, v_taps): (&Taps, &Taps),
+    out: &mut O,
+    max: u16,
 ) {
-    let values = u16x8::<Neon>::simd_from(t, values);
-    if width == 8 {
-        if let Some(slot) = output.get_mut(at..).and_then(<[u16]>::first_chunk_mut::<8>) {
-            values.store_array(slot);
-        }
+    let (h_weights, v_weights) = (weights(t, h_taps), weights(t, v_taps));
+    if H == 1 && V == 1 {
+        bilinear_two_pass::<W, O>(t, block, (eighths(h_weights), eighths(v_weights)), out, max);
         return;
     }
-    let lanes = values.to_array();
-    for (at, lanes) in [at, at + stride].into_iter().zip(lanes.as_chunks::<4>().0) {
-        if let Some(slot) = output.get_mut(at..).and_then(<[u16]>::first_chunk_mut::<4>) {
-            *slot = *lanes;
-        }
+    let (clip, shift) = (clip(out, max), vdupq_n_s32(-7));
+    let narrow3 = |(low, high): Sums| vrshrn_high_n_s32::<3>(vrshrn_n_s32::<3>(low), high);
+    if W == 4 {
+        let row_sums = |row: &[u16]| -> Option<int32x4_t> {
+            let (a, b) = if H > 2 {
+                row16(t, row)?
+            } else {
+                row8(t, row).map(|a| (a, a))?
+            };
+            Some(sums4::<H>(h_weights, |k| vget_low_s16(slide(a, b, k))))
+        };
+        let line = |a: &[u16], b: &[u16]| Some(narrow3((row_sums(a)?, row_sums(b)?)));
+        let vertical =
+            |ring: &[int16x8_t; 4], next| sums32::<V>(v_weights, |k| pair_tap::<V>(ring, next, k));
+        let emit = |a: O::Row<'_>, b: O::Row<'_>, y: Sums| {
+            store::<O>(t, clip, (a, Some(b)), narrow::<11>(y), round(y, shift));
+        };
+        let reach = if H > 2 { 16 } else { 8 };
+        rows::pairs::<u16, _, _, O, V>(block, out, reach, vdupq_n_s16(0), line, vertical, emit);
+        return;
     }
+    let line = |row: &[u16]| {
+        let (a, b) = row16(t, row)?;
+        Some(narrow3(sums32::<H>(h_weights, |k| slide(a, b, k))))
+    };
+    let vertical = |phase, ring: &[int16x8_t; 8], next| {
+        sums32::<V>(v_weights, |k| ring_tap::<V>(phase, ring, next, k))
+    };
+    let emit =
+        |r: O::Row<'_>, y: Sums| store::<O>(t, clip, (r, None), narrow::<11>(y), round(y, shift));
+    rows::strips::<u16, _, _, O, V>(block, out, (8, 16), vdupq_n_s16(0), line, vertical, emit);
 }
 
-/// The eight words `values`, at most 255, of a group as bytes into `output`.
-#[inline]
+/// [`two_pass`] of a BILINEAR block: each horizontal row is its exact
+/// `Round2(sum, InterRound0)` [`bilinear`] sum, read as the `i16` stage of
+/// the general pass, and the vertical sum of the eighths `Round2`s by 8 for
+/// a put and by 4 for a compound predictor.
+#[inline(never)]
 #[target_feature(enable = "neon")]
-fn store_bytes(output: &mut [u8], width: usize, at: usize, stride: usize, values: uint16x8_t) {
-    let bytes = vget_lane_u64::<0>(vreinterpret_u64_u8(vmovn_u16(values))).to_le_bytes();
-    if width == 8 {
-        if let Some(slot) = output.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<8>) {
-            *slot = bytes;
-        }
+fn bilinear_two_pass<const W: usize, O: WordOut>(
+    t: Neon,
+    block: &Block<'_, u16>,
+    (h_eighths, v_eighths): (uint16x8_t, uint16x8_t),
+    out: &mut O,
+    max: u16,
+) {
+    let (v, clip, shift) = (
+        vreinterpretq_s16_u16(v_eighths),
+        clip(out, max),
+        vdupq_n_s32(-4),
+    );
+    let sum = |a: int16x8_t, b: int16x8_t| -> Sums {
+        (
+            vmlal_laneq_s16::<1>(vmull_laneq_s16::<0>(vget_low_s16(a), v), vget_low_s16(b), v),
+            vmlal_high_laneq_s16::<1>(vmull_high_laneq_s16::<0>(a, v), b, v),
+        )
+    };
+    let bilinear_row =
+        |a: int16x8_t, b: int16x8_t| vreinterpretq_s16_u16(bilinear(a, slide(a, b, 1), h_eighths));
+    if W == 4 {
+        let half = |row: &[u16]| {
+            let a = row8(t, row)?;
+            Some(vget_low_s16(bilinear_row(a, a)))
+        };
+        let line = |a: &[u16], b: &[u16]| Some(vcombine_s16(half(a)?, half(b)?));
+        let vertical = |ring: &[int16x8_t; 4], next| sum(ring[0], vextq_s16::<4>(ring[0], next));
+        let emit = |a: O::Row<'_>, b: O::Row<'_>, y: Sums| {
+            store::<O>(t, clip, (a, Some(b)), narrow::<8>(y), round(y, shift));
+        };
+        rows::pairs::<u16, _, _, O, 1>(block, out, 8, vdupq_n_s16(0), line, vertical, emit);
         return;
     }
-    for (at, lanes) in [at, at + stride].into_iter().zip(bytes.as_chunks::<4>().0) {
-        if let Some(slot) = output.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<4>) {
-            *slot = *lanes;
-        }
-    }
+    let line = |row: &[u16]| {
+        let (a, b) = row16(t, row)?;
+        Some(bilinear_row(a, b))
+    };
+    let vertical = |phase: usize, ring: &[int16x8_t; 8], next| sum(ring[phase % 2], next);
+    let emit =
+        |r: O::Row<'_>, y: Sums| store::<O>(t, clip, (r, None), narrow::<8>(y), round(y, shift));
+    rows::strips::<u16, _, _, O, 1>(block, out, (8, 16), vdupq_n_s16(0), line, vertical, emit);
 }

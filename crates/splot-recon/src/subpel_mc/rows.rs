@@ -60,6 +60,16 @@ pub(super) fn rows_mut<T>(
     (stride >= len).then(|| (body.chunks_exact_mut(stride), last))
 }
 
+/// Lanes `0..4` of `values` into row `a`, lanes `4..8` into row `b`.
+#[inline(always)]
+pub(super) fn store_pair<T: Copy, const N: usize>(a: &mut [T], b: &mut [T], lanes: [T; N]) {
+    for (row, lanes) in [a, b].into_iter().zip(lanes.as_chunks::<4>().0) {
+        if let Some(slot) = row.first_chunk_mut::<4>() {
+            *slot = *lanes;
+        }
+    }
+}
+
 /// Where a kernel stores: the output rows of a strip, as `Clip1` samples
 /// or as compound predictors.
 pub(super) trait Out {

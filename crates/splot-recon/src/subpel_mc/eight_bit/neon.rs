@@ -19,7 +19,7 @@
 
 use super::super::block::{Block, Geometry, Sink, Taps, Window, is_cell};
 use super::super::cell::{Cell, Plane, Written};
-use super::super::rows::{Average, Out, Prep, Put, rows, rows_mut, span};
+use super::super::rows::{Average, Out, Prep, Put, rows, rows_mut, span, store_pair};
 use super::super::{CellPlacement, ReferencePlaneView};
 use super::pairs;
 use core::arch::aarch64::*;
@@ -115,16 +115,6 @@ fn store_row<const N: usize>(t: Neon, row: &mut [u8], values: uint8x16_t) {
         }
     } else if let Some(slot) = row.first_chunk_mut::<8>() {
         *slot = values.bitcast::<u64x2<Neon>>()[0].to_le_bytes();
-    }
-}
-
-/// Lanes `0..4` of `values` into row `a`, lanes `4..8` into row `b`.
-#[inline(always)]
-fn store_pair<T: Copy, const N: usize>(a: &mut [T], b: &mut [T], lanes: [T; N]) {
-    for (row, lanes) in [a, b].into_iter().zip(lanes.as_chunks::<4>().0) {
-        if let Some(slot) = row.first_chunk_mut::<4>() {
-            *slot = *lanes;
-        }
     }
 }
 
@@ -1169,7 +1159,7 @@ fn sums16<const P: usize>(
 }
 
 /// The `i32` sums of a group: outputs `0..4` and `4..8`.
-type Sums = (int32x4_t, int32x4_t);
+pub(in crate::subpel_mc) type Sums = (int32x4_t, int32x4_t);
 
 #[inline]
 #[target_feature(enable = "neon")]
@@ -1183,7 +1173,10 @@ fn mac<const L: i32>((low, high): Sums, x: int16x8_t, weights: int16x8_t) -> Sum
 /// `Σ` over `2 * P` taps of `tap(k) * weights[k]` in `i32` lanes.
 #[inline]
 #[target_feature(enable = "neon")]
-fn sums32<const P: usize>(weights: int16x8_t, mut tap: impl FnMut(usize) -> int16x8_t) -> Sums {
+pub(in crate::subpel_mc) fn sums32<const P: usize>(
+    weights: int16x8_t,
+    mut tap: impl FnMut(usize) -> int16x8_t,
+) -> Sums {
     let x = tap(0);
     let mut sums = (
         vmull_laneq_s16::<0>(vget_low_s16(x), weights),
@@ -1216,7 +1209,14 @@ fn row_sums_of<const P: usize>(bytes: uint8x16_t, weights: int16x8_t) -> int16x8
         vreinterpretq_s16_u8(vzip1q_u8(bytes, zero)),
         vreinterpretq_s16_u8(vzip2q_u8(bytes, zero)),
     );
-    sums16::<P>(weights, |k| match k {
+    sums16::<P>(weights, |k| slide(a, b, k))
+}
+
+/// Window columns `k..k + 8` of the 16 samples `(a, b)`.
+#[inline]
+#[target_feature(enable = "neon")]
+pub(in crate::subpel_mc) fn slide(a: int16x8_t, b: int16x8_t, k: usize) -> int16x8_t {
+    match k {
         0 => a,
         1 => vextq_s16::<1>(a, b),
         2 => vextq_s16::<2>(a, b),
@@ -1225,7 +1225,7 @@ fn row_sums_of<const P: usize>(bytes: uint8x16_t, weights: int16x8_t) -> int16x8
         5 => vextq_s16::<5>(a, b),
         6 => vextq_s16::<6>(a, b),
         _ => vextq_s16::<7>(a, b),
-    })
+    }
 }
 
 /// The COMPOUND_AVERAGE of two groups of compound predictors, before
