@@ -227,7 +227,8 @@ impl PartitionDecisionError {
     }
 }
 
-#[inline]
+#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[inline(always)]
 pub(crate) fn read_partition_decision<S: PartitionSymbols + ?Sized>(
     input: ReadPartitionDecisionInput,
     cdfs: &mut TileCdfSubset,

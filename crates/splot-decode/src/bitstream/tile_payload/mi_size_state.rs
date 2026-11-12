@@ -303,7 +303,8 @@ impl TileMiSizeState {
 
     /// Writes a luma leaf's MiSizes and, for an intra or intra block copy
     /// leaf, its `facts` with `palette`.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: once per decoded leaf")]
+    #[inline(always)]
     pub(crate) fn update_luma_block(
         &mut self,
         r: usize,
@@ -373,13 +374,13 @@ impl TileMiSizeState {
         }
         let (left, luma_left) = (&self.left[plane & 1], &self.left[LUMA_PLANE]);
         let row = r % SB_ROW_SPAN;
+        let above = |at: usize| self.above.get(at).copied();
         let base = self.above_base(plane) + local_c;
-        let above = self.above.get(base..=base + half_w)?;
         Some(PartitionNeighbours {
             left: [left[row], left[(row + half_h) % SB_ROW_SPAN]],
-            above: [*above.first()?, *above.last()?],
+            above: [above(base)?, above(base + half_w)?],
             luma_left: luma_left[row],
-            luma_above: *self.above.get(self.above_base(LUMA_PLANE) + local_c)?,
+            luma_above: above(local_c)?,
         })
     }
 

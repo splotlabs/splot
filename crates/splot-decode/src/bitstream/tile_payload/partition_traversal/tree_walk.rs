@@ -417,12 +417,15 @@ impl TreeWalker<'_> {
         let facts = self.partition_memo.facts_keyed(key, || {
             partition_allowed_input(node, frame, forced_chroma_partition)
         })?;
-        let (partition_context, square_context) =
-            partition_context_inputs(node, self.tile_bounds, mi_size_state)?;
-        let decision_input =
-            facts.read_partition_decision_input(true, partition_context, square_context);
-        let partition =
-            super::partition::read_partition_decision(decision_input, cdfs, &mut self.symbols)?;
+        let partition = if let Some(partition) = facts.unread_partition() {
+            partition
+        } else {
+            let (partition_context, square_context) =
+                partition_context_inputs(node, self.tile_bounds, mi_size_state)?;
+            let decision_input =
+                facts.read_partition_decision_input(true, partition_context, square_context);
+            super::partition::read_partition_decision(decision_input, cdfs, &mut self.symbols)?
+        };
         let cfl_allowed_in_sdp = self.sdp_state.record_partition(frame, node, partition);
         call.flags = call.flags & !CALL_CFL_ALLOWED_IN_SDP
             | super::call_flag(cfl_allowed_in_sdp, CALL_CFL_ALLOWED_IN_SDP);
@@ -904,7 +907,8 @@ pub(crate) fn extended_sdp_allowed_for_child(
 
 /// Reads the § 5.20.3.1 `region_type` of `call` when it codes one and
 /// applies it; returns whether the call starts an extended-SDP luma tree.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[inline(always)]
 pub(super) fn read_extended_sdp_region_type(
     frame: &TilePartitionFrameFacts,
     call: &mut TilePartitionCall,
@@ -944,7 +948,8 @@ fn read_region_type(
     }
 }
 
-#[inline]
+#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[inline(always)]
 pub(super) fn should_read_extended_sdp_region_type(
     frame: &TilePartitionFrameFacts,
     call: TilePartitionCall,
