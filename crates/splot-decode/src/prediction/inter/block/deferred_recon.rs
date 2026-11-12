@@ -94,72 +94,30 @@ pub(super) const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
 }
 
 impl InterReconCommand {
-    /// The command a row slot holds until the parse [fills](Self::fill) it.
-    pub(super) const PENDING: Self = Self {
-        placed: PlacedInterBlock {
-            luma_x: 0,
-            luma_y: 0,
-            luma_w: 0,
-            luma_h: 0,
-            chroma_luma_x: 0,
-            chroma_luma_y: 0,
-            chroma_luma_w: 0,
-            chroma_luma_h: 0,
-            predict_chroma: false,
-            sub8x8_chroma: false,
-            interintra_chroma: false,
-            interintra_edges: [crate::pipeline::reconstruct::IntraEdgeAvailability::new(
-                false, false,
-            ); 2],
-            block: super::PENDING_INTER_BLOCK,
-        },
-        syntax: InterBlockSyntax {
-            motion: InterMotionSyntax::Single(SingleMotionSyntax {
-                mode: 0,
-                tip_ref: false,
-                ref_mv_idx: 0,
-                mvd: super::Mv::ZERO,
-                use_temporal_first: false,
-                global_warp: None,
-            }),
-            interp: super::ReconInterpolationFilter::EightTap,
-            precision: super::super::find_mv_stack::BlockPrecisionRecord {
-                use_most_probable_precision: false,
-                mv_precision: 0,
-            },
-            skip: false,
-            use_amvd: false,
-            tip_size_16x16: false,
-            blend: mc::CompoundBlend::average_with_implicit_mask(false),
-        },
-        frame_precision: 0,
-        segment_id: 0,
-        qindex: 0,
-        motion_derived: false,
-        derived_motion: None,
-        tile_offset: ByteOffset::new(0),
-        leaf: super::super::find_mv_stack::NO_LEAF,
-    };
-
-    /// Writes one parsed leaf into this slot command. `segment_id` is the
-    /// § 7.14 quantizer-matrix segment, below `MAX_SEGMENTS`, in force while
-    /// the leaf was parsed, captured there because the resolve pass runs after
-    /// the leaf's segment scope has been dropped.
-    pub(super) fn fill(
-        &mut self,
+    /// One parsed leaf's command. `segment_id` is the § 7.14 quantizer-matrix
+    /// segment, below `MAX_SEGMENTS`, in force while the leaf was parsed,
+    /// captured there because the resolve pass runs after the leaf's segment
+    /// scope has been dropped.
+    pub(super) const fn new(
         placed: PlacedInterBlock,
         syntax: InterBlockSyntax,
         frame_precision: u8,
         segment_id: u8,
         qindex: u32,
         tile_offset: ByteOffset,
-    ) {
-        self.placed = placed;
-        self.syntax = syntax;
-        self.frame_precision = frame_precision;
-        self.segment_id = segment_id;
-        self.qindex = qindex;
-        self.tile_offset = tile_offset;
+        leaf: u32,
+    ) -> Self {
+        Self {
+            placed,
+            syntax,
+            frame_precision,
+            segment_id,
+            qindex,
+            motion_derived: false,
+            derived_motion: None,
+            tile_offset,
+            leaf,
+        }
     }
 
     pub(super) const fn has_derived_motion(&self) -> bool {
@@ -787,8 +745,7 @@ mod tests {
     }
 
     fn command(x: usize, y: usize, width: usize, height: usize) -> InterReconCommand {
-        let mut command = InterReconCommand::PENDING;
-        command.fill(
+        InterReconCommand::new(
             PlacedInterBlock {
                 luma_x: x,
                 luma_y: y,
@@ -838,8 +795,8 @@ mod tests {
             0,
             0,
             ByteOffset::new(0),
-        );
-        command
+            0,
+        )
     }
 
     fn residual(

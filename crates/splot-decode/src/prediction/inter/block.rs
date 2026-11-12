@@ -2026,9 +2026,6 @@ const fn parsed_inter_block(
     }
 }
 
-const PENDING_INTER_BLOCK: InterBlock =
-    parsed_inter_block(0, None, ReconInterpolationFilter::EightTap);
-
 /// The part every inter leaf shares once its mode info is read: the residual,
 /// the filter, IntraBC and neighbour-flag records, then the leaf's command,
 /// written once into its row slot.
@@ -2123,22 +2120,18 @@ fn finish_inter_leaf(
         syntax.flag_syntax(block.ref_frame0),
     );
     let index = slots.len() as u32;
-    slots.push(tile::LeafSlot::Command(ReconCommand::Inter(
-        deferred_recon::InterReconCommand::PENDING,
-    )));
-    let Some(tile::LeafSlot::Command(ReconCommand::Inter(command))) = slots.last_mut() else {
-        return Err(tile::invalid_inter_tile_scheduling_state());
-    };
     block.residual = residual;
-    command.fill(
-        geometry.place(block),
-        syntax,
-        frame_precision,
-        segment_id,
-        block_qindex,
-        tile_offset,
-    );
-    command.leaf = leaf;
+    slots.push(tile::LeafSlot::Command(ReconCommand::Inter(
+        deferred_recon::InterReconCommand::new(
+            geometry.place(block),
+            syntax,
+            frame_precision,
+            segment_id,
+            block_qindex,
+            tile_offset,
+            leaf,
+        ),
+    )));
     Ok((
         GeneralIntraLeafMode::no_luma_mode(),
         LeafResolveRecord::Slot(index),
