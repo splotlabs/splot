@@ -803,14 +803,8 @@ fn compound_simple_motion_consumes_local_warp_gate() {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
-    let local_warp = read_compound_motion_mode_syntax(
-        &mut tile,
-        &mut symbols,
-        true,
-        &neighbour_ctx,
-        TILE_OFFSET,
-    )
-    .unwrap();
+    let local_warp =
+        read_compound_motion_mode_syntax(&mut tile, &mut symbols, true, &neighbour_ctx);
 
     assert!(!local_warp);
     symbols.exit_symbol().unwrap();
@@ -824,14 +818,8 @@ fn compound_local_warp_symbol_reports_localwarp_when_set() {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
-    let local_warp = read_compound_motion_mode_syntax(
-        &mut tile,
-        &mut symbols,
-        true,
-        &neighbour_ctx,
-        TILE_OFFSET,
-    )
-    .unwrap();
+    let local_warp =
+        read_compound_motion_mode_syntax(&mut tile, &mut symbols, true, &neighbour_ctx);
 
     assert!(local_warp);
     symbols.exit_symbol().unwrap();
@@ -1275,9 +1263,7 @@ fn switchable_refinemv_reads_both_values_at_the_optflow_context() {
             &mut symbols,
             CompoundYMode::NearNew,
             true,
-            TILE_OFFSET,
-        )
-        .unwrap();
+        );
 
         assert_eq!(use_refinemv, enabled);
         symbols.exit_symbol().unwrap();
@@ -1290,14 +1276,8 @@ fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
-    let use_refinemv = read_compound_use_refinemv_syntax(
-        &mut tile,
-        &mut symbols,
-        CompoundYMode::NewNew,
-        true,
-        TILE_OFFSET,
-    )
-    .unwrap();
+    let use_refinemv =
+        read_compound_use_refinemv_syntax(&mut tile, &mut symbols, CompoundYMode::NewNew, true);
 
     assert!(use_refinemv);
     symbols.exit_symbol().unwrap();
@@ -1306,14 +1286,8 @@ fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
-    let use_refinemv = read_compound_use_refinemv_syntax(
-        &mut tile,
-        &mut symbols,
-        CompoundYMode::JointNew,
-        false,
-        TILE_OFFSET,
-    )
-    .unwrap();
+    let use_refinemv =
+        read_compound_use_refinemv_syntax(&mut tile, &mut symbols, CompoundYMode::JointNew, false);
 
     assert!(!use_refinemv);
     symbols.exit_symbol().unwrap();

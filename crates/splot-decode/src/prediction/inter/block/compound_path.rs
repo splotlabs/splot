@@ -386,8 +386,7 @@ pub(super) fn decode_compound_inter_block(
         tile_offset,
     )?;
     if compound_switchable_opfl_reachable(opfl_refine_type, facts, compound, n4w, n4h)? {
-        compound.use_optflow =
-            read_compound_use_optflow_syntax(cdfs, symbols, compound.y_mode, tile_offset)?;
+        compound.use_optflow = read_compound_use_optflow_syntax(cdfs, symbols, compound.y_mode);
     }
     let use_amvd = read_compound_use_amvd_syntax(
         cdfs,
@@ -412,13 +411,8 @@ pub(super) fn decode_compound_inter_block(
         [mode_ctx.warp_sample_found, mode_ctx.warp_sample_found1],
         frame_modes[splot_core::headers::frame::LOCALWARP],
     );
-    let local_warp = read_compound_motion_mode_syntax(
-        cdfs,
-        symbols,
-        signal_local_warp,
-        neighbour_ctx,
-        tile_offset,
-    )?;
+    let local_warp =
+        read_compound_motion_mode_syntax(cdfs, symbols, signal_local_warp, neighbour_ctx);
     let jmvd_scale_mode = read_compound_jmvd_scale_mode_syntax(
         cdfs,
         symbols,
@@ -496,13 +490,7 @@ pub(super) fn decode_compound_inter_block(
             n4h,
         )? {
         if refinemv_switchable {
-            read_compound_use_refinemv_syntax(
-                cdfs,
-                symbols,
-                compound.y_mode,
-                compound.use_optflow,
-                tile_offset,
-            )?
+            read_compound_use_refinemv_syntax(cdfs, symbols, compound.y_mode, compound.use_optflow)
         } else {
             true
         }
@@ -551,7 +539,6 @@ pub(super) fn decode_compound_inter_block(
             ref_frame1: compound.ref_frame1,
             blend: compound_blend,
         },
-        tile_offset,
     )?;
     let compound_blend = compound_warp_blend(compound_blend, local_warp, compound.y_mode);
     if compound_all_opfl_reachable(opfl_refine_type, facts, compound, n4w, n4h, compound_blend)? {
@@ -767,21 +754,9 @@ fn read_compound_motion_mode_syntax(
     symbols: &mut SymbolDecoder<'_>,
     signal_local_warp: bool,
     neighbour_ctx: &BlockNeighbourContext,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    if !signal_local_warp {
-        return Ok(false);
-    }
-    let use_local_warp = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::UseLocalWarp {
-                ctx: neighbour_ctx.use_local_warp_ctx(),
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?
-        .get();
-    Ok(use_local_warp != 0)
+) -> bool {
+    let rows = &mut cdfs.block_rows_mut().use_local_warp;
+    signal_local_warp && read_row(symbols, row_at(rows, neighbour_ctx.use_local_warp_ctx())) != 0
 }
 
 /// Parsed § 5.20.7.6 compound syntax handed to the § 7.12 resolution step.
@@ -1321,17 +1296,9 @@ fn read_compound_use_optflow_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     y_mode: CompoundYMode,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    let use_optflow = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::UseOptflow {
-                ctx: use_optflow_ctx(y_mode),
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    Ok(use_optflow.get() != 0)
+) -> bool {
+    let rows = &mut cdfs.block_rows_mut().use_optflow;
+    read_row(symbols, row_at(rows, use_optflow_ctx(y_mode))) != 0
 }
 
 /// The § 8.3.2 `use_refinemv` context `1 + (YMode - NEAR_NEARMV) + 6 *
@@ -1366,17 +1333,9 @@ fn read_compound_use_refinemv_syntax(
     symbols: &mut SymbolDecoder<'_>,
     y_mode: CompoundYMode,
     use_optflow: bool,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    let use_refinemv = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::UseRefinemv {
-                ctx: use_refinemv_ctx(y_mode, use_optflow),
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    Ok(use_refinemv.get() != 0)
+) -> bool {
+    let rows = &mut cdfs.block_rows_mut().use_refinemv;
+    read_row(symbols, row_at(rows, use_refinemv_ctx(y_mode, use_optflow))) != 0
 }
 
 const fn compound_reads_second_drl(compound: super::super::compound::CompoundBlockSyntax) -> bool {
@@ -1729,26 +1688,14 @@ fn read_compound_blend_syntax(
     if !compound_reads_group_idx(tools, input) {
         return Ok(average_blend);
     }
-    let comp_group_idx = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::CompGroupIdx {
-                ctx: input.comp_group_idx_ctx,
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?
-        .get();
-    if comp_group_idx == 0 {
+    let rows = &mut cdfs.block_rows_mut().comp_group_idx;
+    if read_row(symbols, row_at(rows, input.comp_group_idx_ctx)) == 0 {
         return Ok(average_blend);
     }
     let compound_type = if wedge_bits(input.block_size_index) == 0 {
         MaskedCompoundType::DiffWeighted
     } else {
-        match cdfs
-            .read_block_symbol_trace(TileCdfSelector::CompoundType, symbols)
-            .map_err(|error| symbol_read_error(error, tile_offset))?
-            .get()
-        {
+        match read_row(symbols, &mut cdfs.block_rows_mut().compound_type) {
             0 => MaskedCompoundType::Wedge,
             _ => MaskedCompoundType::DiffWeighted,
         }
@@ -1806,7 +1753,6 @@ fn read_compound_cwp_syntax(
     symbols: &mut SymbolDecoder<'_>,
     context: CompoundCwpContext<'_>,
     input: CompoundCwpInput,
-    tile_offset: ByteOffset,
 ) -> Result<mc::CompoundBlend> {
     let cwp_enabled = context
         .sequence
@@ -1818,10 +1764,7 @@ fn read_compound_cwp_syntax(
     }
     let mut coding_idx = 0usize;
     for idx in 0..CWP_WEIGHTING_FACTOR[0].len() - 1 {
-        let symbol = cdfs
-            .read_block_symbol_trace(TileCdfSelector::CwpIdx { idx }, symbols)
-            .map_err(|error| symbol_read_error(error, tile_offset))?
-            .get();
+        let symbol = read_row(symbols, row_at(&mut cdfs.block_rows_mut().cwp_idx, idx));
         coding_idx = idx + usize::from(symbol != 0);
         if symbol == 0 {
             break;
