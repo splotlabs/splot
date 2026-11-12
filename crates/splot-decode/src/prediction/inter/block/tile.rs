@@ -899,8 +899,9 @@ pub(super) struct ReconRow {
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     /// The unit's deblock and tx-skip records, published by its resolve.
     pub(super) filter_records: TileFilterRecords,
-    /// Whether the prepass already folded this unit's records into the frame's
-    /// motion field, which it does for a unit it reconstructed in full.
+    /// Whether the prepass derived this unit's motion records into `temporal`,
+    /// which it does for a unit it reconstructed in full; the in-order commit
+    /// folds them, so it is the band's one writer.
     pub(super) motion_folded: bool,
     failure: ReconRowFailure,
 }
@@ -1246,7 +1247,6 @@ fn precompute_recon_row<T: ReconSample>(
     mut ready: ReadyReconRow<T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
-    motion: &MotionFieldUnits,
     quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
@@ -1270,7 +1270,6 @@ fn precompute_recon_row<T: ReconSample>(
         &mut surface,
         scratch,
         block_decoded,
-        motion,
         quantizer,
         temporal_context,
         reference,
@@ -1302,7 +1301,6 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     surface: &mut super::super::mc::WorkspaceSink<'_, '_, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
-    motion: &MotionFieldUnits,
     quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
@@ -1435,13 +1433,6 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         }
     }
     row.motion_folded = matches!(row.failure, ReconRowFailure::None);
-    if row.motion_folded && !row.superblocks.is_empty() {
-        if let Err(error) = motion.fold_unit(row.ordinal, &row.temporal) {
-            row.record_terminal_error(error);
-        } else {
-            motion.unit_landed_for(row.ordinal);
-        }
-    }
     row
 }
 

@@ -530,7 +530,6 @@ impl<T: ReconSample> TileRecon<T> {
                             ready,
                             scratch,
                             &self.prepass_block_decoded,
-                            &self.motion,
                             &self.quantizer,
                             &self.temporal,
                             &self.reference,
