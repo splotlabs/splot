@@ -254,14 +254,46 @@ fn put_window<T: ReconSample>(
     output: &mut [T],
     stride: usize,
 ) -> bool {
+    // No view and no outlined callee here, so the window stays in registers.
+    let in_place = window.origin(view.geometry(), bounds);
+    if let (Some(origin), Some(samples), Some(output)) = (
+        in_place,
+        T::u8_slice(view.samples),
+        T::u8_slice_mut(&mut *output),
+    ) {
+        let block = window.block(samples, view.stride, origin);
+        super::eight_bit::put(&block, output, stride);
+        return true;
+    }
+    if let (Some(origin), Some(samples), Some(output)) = (
+        in_place,
+        T::u16_slice(view.samples),
+        T::u16_slice_mut(&mut *output),
+    ) {
+        let sink = &mut Sink::PutWide {
+            output,
+            stride,
+            max,
+        };
+        block::kernels(&window.block(samples, view.stride, origin), sink, None);
+        return true;
+    }
+    in_place.is_none() && put_emulated(*window, bounds, view, max, output, stride)
+}
+
+/// [`put_window`] of a window that is not read in place.
+#[cold]
+#[inline(never)]
+fn put_emulated<T: ReconSample>(
+    window: block::Window,
+    bounds: [i32; 4],
+    view: &ReferencePlaneView<'_, T>,
+    max: u16,
+    output: &mut [T],
+    stride: usize,
+) -> bool {
     if let (Some(view), Some(output)) = (view.as_u8(), T::u8_slice_mut(&mut *output)) {
-        // In place, the kernel inlines here; through `with_block` it is an outlined closure.
-        if let Some(origin) = window.origin(view.geometry(), bounds) {
-            let block = window.block(view.samples, view.stride, origin);
-            super::eight_bit::put(&block, output, stride);
-            return true;
-        }
-        return block::with_block(window, &view, bounds, 0, |block| {
+        return block::with_block(&window, &view, bounds, 0, |block| {
             super::eight_bit::put(block, output, stride);
         })
         .is_some();
@@ -269,19 +301,15 @@ fn put_window<T: ReconSample>(
     let (Some(view), Some(output)) = (view.as_u16(), T::u16_slice_mut(output)) else {
         return false;
     };
-    let mut put = |block: &block::Block<'_, u16>| {
+    block::with_block(&window, &view, bounds, 0, |block| {
         let sink = &mut Sink::PutWide {
-            output: &mut *output,
+            output,
             stride,
             max,
         };
         block::kernels(block, sink, None);
-    };
-    if let Some(origin) = window.origin(view.geometry(), bounds) {
-        put(&window.block(view.samples, view.stride, origin));
-        return true;
-    }
-    block::with_block(window, &view, bounds, 0, put).is_some()
+    })
+    .is_some()
 }
 
 fn validate_subpel_u8_output(
