@@ -353,6 +353,7 @@ fn read_inter_residual_luma_chunk(
     }
     let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
     let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
+    let segment_lossless = current_segment_lossless(work_unit);
     let mut y4 = luma_chunk_y4;
     while y4 < chunk_end_y4 {
         let mut x4 = luma_chunk_x4;
@@ -372,6 +373,7 @@ fn read_inter_residual_luma_chunk(
                 false,
                 false,
                 residual_tool_policy,
+                segment_lossless,
                 tile_offset,
             )?;
             luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type())?;
@@ -402,6 +404,7 @@ fn read_inter_residual_luma_records_for_chunk(
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let mut decoded_any = false;
+    let segment_lossless = current_segment_lossless(work_unit);
     for record in luma_tx_records.iter().copied().filter(|record| {
         record.row >= luma_chunk_y4
             && record.col >= luma_chunk_x4
@@ -424,6 +427,7 @@ fn read_inter_residual_luma_records_for_chunk(
             false,
             false,
             residual_tool_policy,
+            segment_lossless,
             tile_offset,
         )?;
         luma_tx_types.update(
@@ -480,6 +484,7 @@ fn read_inter_residual_chroma_group(
     let chroma_ref = frontier.chroma_ref_geometry();
     let lossless_uses_current_block =
         lossless && is_inter && (frontier.r != chroma_ref.row() || frontier.c != chroma_ref.col());
+    let segment_lossless = current_segment_lossless(work_unit);
     chroma_reads.clear();
     for (x4, y4) in group.units() {
         let start_x = (base_x4 + x4) * MI_SIZE;
@@ -512,6 +517,7 @@ fn read_inter_residual_chroma_group(
             false,
             cctx_allowed,
             residual_tool_policy,
+            segment_lossless,
             tile_offset,
         )?;
         let block_index = push_inter_residual_block(
@@ -550,6 +556,7 @@ fn read_inter_residual_chroma_group(
             u_nonzero,
             cctx_allowed,
             residual_tool_policy,
+            segment_lossless,
             tile_offset,
         )?;
         let v_index = push_inter_residual_block(
@@ -796,9 +803,9 @@ fn read_inter_residual_plane(
     chroma_eob_ctx: bool,
     cctx_allowed: bool,
     residual_tool_policy: TransformToolResidualPolicy,
+    segment_lossless: Option<bool>,
     tile_offset: ByteOffset,
 ) -> Result<LumaCoeffBlock> {
-    let segment_lossless = current_segment_lossless(work_unit);
     decode_general_intra_plane_coeffs(
         work_unit,
         symbols,
