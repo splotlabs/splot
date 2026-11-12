@@ -26,7 +26,7 @@ use super::block::{
 use super::test_support::fixture_sequence_and_key_core;
 use super::{
     CompoundOrderHint, MotionFieldHandle, TemporalMotionField, ccso_reference_slot,
-    compound_is_joint_context, compound_is_joint_context_from_order_hints,
+    compound_is_joint_context_from_order_hints,
 };
 use crate::bitstream::tile_payload::{
     LumaCoeffBlock, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
@@ -2391,28 +2391,6 @@ fn compound_is_joint_context_uses_strict_same_side_signs() {
         ),
         1,
         "full-domain past references retain their same-side context"
-    );
-}
-
-#[test]
-fn compound_is_joint_context_uses_selected_ranked_pair() {
-    let ref_frame_idx = [2, 0, 1];
-    let ref_order_hint = [9, 10, 11];
-
-    assert_eq!(
-        compound_is_joint_context(&ref_frame_idx, &ref_order_hint, (0, 1), 10,).unwrap(),
-        0,
-        "selected future/past references have equal distance"
-    );
-    assert_eq!(
-        compound_is_joint_context(&ref_frame_idx, &ref_order_hint, (1, 2), 10,).unwrap(),
-        1,
-        "selected past/current references have unequal distance"
-    );
-    assert_eq!(
-        compound_is_joint_context(&[0, 1], &[u32::MAX, 0], (0, 1), 127).unwrap(),
-        1,
-        "raw restricted order hints retain the restricted-reference term"
     );
 }
 

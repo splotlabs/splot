@@ -129,6 +129,7 @@ pub(crate) struct TileWalkParams {
     /// alone so the entropy pass never reads the projected temporal field.
     pub(super) tip_ref_pair: Option<(i8, i8)>,
     pub(super) intra_tools: crate::pipeline::general_intra::GeneralIntraFrameTools,
+    pub(super) ref_facts: super::compound_path::FrameRefFacts,
 }
 
 impl TileWalkParams {

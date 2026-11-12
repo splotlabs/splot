@@ -13,10 +13,9 @@ use super::super::super::compound::{
 };
 use super::super::compound_path::{
     compound_all_opfl_reachable, compound_joint_mv_projection, compound_needs_interp_filter,
-    compound_ref_contexts, compound_ref_distance_signs, compound_refinemv_active_after_blend,
-    compound_refinemv_is_switchable, compound_refinemv_reachable,
-    compound_switchable_opfl_reachable, compound_use_amvd_selector, compound_warp_blend,
-    skip_mode_reference_pair, use_optflow_ctx, use_refinemv_ctx,
+    compound_ref_contexts, compound_refinemv_active_after_blend, compound_refinemv_is_switchable,
+    compound_refinemv_reachable, compound_switchable_opfl_reachable, compound_use_amvd_selector,
+    compound_warp_blend, skip_mode_reference_pair, use_optflow_ctx, use_refinemv_ctx,
 };
 use super::super::resolve::CompoundMotionSyntax;
 use super::super::syntax::{
@@ -332,24 +331,14 @@ impl EncoderInterTile {
             mv0: Mv::ZERO,
             mv1: Mv::ZERO,
         };
-        let refs = (&self.core, &self.reference, self.ref_frame_idx.as_slice());
-        let reads_optflow =
-            compound_switchable_opfl_reachable(opfl, refs.0, refs.1, refs.2, block, n4w, n4h)?;
+        let facts = &self.ref_facts;
+        let reads_optflow = compound_switchable_opfl_reachable(opfl, facts, block, n4w, n4h)?;
         if compound.use_optflow && !reads_optflow {
             return Err(invalid());
         }
         block.use_optflow = compound.use_optflow;
         let refinemv_switchable = compound_refinemv_is_switchable(block, opfl);
-        let reached = compound_refinemv_reachable(
-            enable_refinemv,
-            opfl,
-            refs.0,
-            refs.1,
-            refs.2,
-            block,
-            n4w,
-            n4h,
-        )?;
+        let reached = compound_refinemv_reachable(enable_refinemv, opfl, facts, block, n4w, n4h)?;
         let reads_refinemv = reached && refinemv_switchable;
         if compound.use_refinemv && !reads_refinemv {
             return Err(invalid());
@@ -361,8 +350,7 @@ impl EncoderInterTile {
             (refinemv_signalled, refinemv_switchable),
         )?;
         let blend = self.compound_type_blend(compound, type_reads)?;
-        let all =
-            compound_all_opfl_reachable(opfl, refs.0, refs.1, refs.2, block, n4w, n4h, blend)?;
+        let all = compound_all_opfl_reachable(opfl, &self.ref_facts, block, n4w, n4h, blend)?;
         Ok(CompoundRefinement {
             reads_optflow,
             refinemv_selector: reads_refinemv.then(|| TileCdfSelector::UseRefinemv {
@@ -522,8 +510,8 @@ impl EncoderInterTile {
     pub(crate) fn skip_mode_pair(&self, frontier: &DecodeBlockFrontier) -> Result<(i8, i8)> {
         let block = self.block(frontier, (SINGLE_REF_FRAME0, None))?;
         skip_mode_reference_pair(
-            &self.core,
-            (&self.reference, &self.ref_frame_idx, self.num_total_refs()),
+            &self.ref_facts,
+            self.num_total_refs(),
             &block_neighbour_ctx(&self.grid, &block),
             self.tip_ref_pair(),
             ByteOffset::new(0),
@@ -642,11 +630,7 @@ impl EncoderInterTile {
             return Ok(());
         }
         if self.reads_compound_syntax(frontier)?.0 {
-            let ctx = neighbour.comp_mode_ctx(
-                &self.ref_frame_idx,
-                &self.reference.ref_order_hint,
-                super::super::super::CompoundOrderHint::current(self.current_order_hint),
-            );
+            let ctx = neighbour.comp_mode_ctx(self.ref_facts.backward());
             let compound = matches!(motion, EncoderMotion::Compound(_));
             out.push((TileCdfSelector::CompMode { ctx }, u8::from(compound)));
         }
@@ -729,12 +713,7 @@ impl EncoderInterTile {
         let refs = self.num_total_refs();
         let input = self.compound_input(
             compound_ref_contexts(neighbour, refs)?,
-            compound_ref_distance_signs(
-                &self.ref_frame_idx,
-                &self.reference,
-                self.current_order_hint,
-                refs,
-            )?,
+            self.ref_facts.distance_signs()?,
         );
         let target = compound.ref_frames;
         let pair = compound_reference_pair(input, |selector| {
@@ -742,12 +721,7 @@ impl EncoderInterTile {
             out.push((selector, value));
             Ok(value)
         })?;
-        let is_joint = super::super::super::compound_is_joint_context(
-            &self.ref_frame_idx,
-            &self.reference.ref_order_hint,
-            pair,
-            self.current_order_hint,
-        )?;
+        let is_joint = self.ref_facts.is_joint_context(pair)?;
         let y_mode = compound_y_mode(pair, (new_mv, is_joint), |selector| {
             let value = compound_mode_symbol(selector, compound.y_mode);
             out.push((selector, value));
@@ -879,7 +853,7 @@ impl EncoderInterTile {
         &self,
         (ref0, ref1): (i8, i8),
     ) -> Result<super::super::resolve::CompoundJointMvProjection> {
-        compound_joint_mv_projection(&self.core, &self.reference, &self.ref_frame_idx, ref0, ref1)
+        compound_joint_mv_projection(&self.ref_facts, ref0, ref1)
     }
 
     fn compound_input(

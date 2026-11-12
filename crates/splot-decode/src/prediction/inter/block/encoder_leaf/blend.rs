@@ -143,12 +143,9 @@ impl EncoderInterTile {
             );
             Some(compound_group_idx_context(
                 &neighbour,
-                &self.reference,
-                &self.ref_frame_idx,
-                &self.core,
+                &self.ref_facts,
                 ref0,
                 ref1,
-                self.num_total_refs(),
             )?)
         } else {
             None
@@ -169,9 +166,7 @@ impl EncoderInterTile {
             blend: mc::CompoundBlend::default(),
         };
         let cwp_same_side = compound_cwp_signal_allowed(cwp_enabled, cwp)
-            .then(|| {
-                compound_cwp_same_side(&self.core, &self.reference, &self.ref_frame_idx, ref0, ref1)
-            })
+            .then(|| compound_cwp_same_side(&self.ref_facts, ref0, ref1))
             .transpose()?;
         Ok(CompoundTypeReads {
             group_idx_ctx,
@@ -356,13 +351,7 @@ impl EncoderInterTile {
                     .inter_tail
                     .as_ref()
                     .is_some_and(|tail| tail.allow_bawp),
-            reference_scaled: !single.tip
-                && super::super::block_reference_is_scaled(
-                    &self.core,
-                    &self.reference,
-                    &self.ref_frame_idx,
-                    single.ref_frame,
-                )?,
+            reference_scaled: !single.tip && self.ref_facts.scaled(single.ref_frame)?,
             frame_is_switch: self.core.frame_type == Some(FrameType::Switch),
             single_mode: single.mode,
             use_amvd: single.use_amvd,
@@ -472,13 +461,9 @@ impl EncoderInterTile {
             avail_up: input.avail_up,
             avail_left: input.avail_left,
         };
-        Ok(super::super::bawp_with_ref_distance(
-            syntax,
-            single.ref_frame,
-            &self.ref_frame_idx,
-            &self.reference,
-            self.current_order_hint,
-        ))
+        Ok(self
+            .ref_facts
+            .bawp_with_ref_distance(syntax, single.ref_frame))
     }
 }
 

@@ -164,6 +164,7 @@ pub(crate) struct EncoderInterTile {
     temporal: Option<Arc<TemporalMvContext>>,
     reference: InterReferenceState<u16>,
     ref_frame_idx: Vec<u32>,
+    ref_facts: super::compound_path::FrameRefFacts,
     order_hints: Vec<Option<u32>>,
     current_order_hint: u32,
     temporal_first: bool,
@@ -290,7 +291,14 @@ impl EncoderInterTile {
             current_order_hint,
             ref_frame_idx.len(),
         );
+        let ref_facts = super::compound_path::FrameRefFacts::new(
+            core,
+            &reference,
+            &ref_frame_idx,
+            ref_frame_idx.len(),
+        );
         let mut tile = Self {
+            ref_facts,
             grid,
             warp_bank: WarpParamBank::new(),
             ref_mv_bank: seq_inter.enable_refmvbank.then(RefMvBank::new),
@@ -959,9 +967,7 @@ impl EncoderInterTile {
                 let syntax;
                 (syntax, blend) = self.compound_syntax(frontier, compound)?;
                 let distances = super::compound_path::compound_optflow_distances(
-                    &self.core,
-                    &self.reference,
-                    &self.ref_frame_idx,
+                    &self.ref_facts,
                     block.ref_frame0,
                     &syntax,
                 )?;
@@ -1208,13 +1214,7 @@ impl EncoderInterTile {
 
     /// The single-reference temporal-first priority of list reference `ref_frame`.
     fn temporal_first(&self, ref_frame: i8) -> bool {
-        self.temporal_first
-            && block_ref_within_temporal_distance(
-                &self.reference,
-                &self.ref_frame_idx,
-                self.current_order_hint,
-                ref_frame,
-            )
+        self.temporal_first && self.ref_facts.temporal_near(ref_frame)
     }
 
     /// The block of `syntax`, resolved to `resolved`, placed at `frontier`.

@@ -58,6 +58,7 @@ impl EncoderInterTile {
             .reset_for_tile((mi_rows, mi_cols), rows, cols, sequence, true, true)
             .map_err(|_| "intra block copy state")?;
         Ok(Self {
+            ref_facts: super::super::compound_path::FrameRefFacts::new(core, &reference, &[], 0),
             grid,
             warp_bank: WarpParamBank::new(),
             ref_mv_bank: seq_inter.enable_refmvbank.then(RefMvBank::new),

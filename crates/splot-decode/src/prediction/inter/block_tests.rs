@@ -209,7 +209,8 @@ fn block_reference_dimension_metadata_bounds_are_typed() -> TestResult {
     let (_, core, _) = super::super::tests::parse_inter_core_for_validation(fixture)?;
     let mut reference = InterReferenceState::<u8>::empty()?;
 
-    let Err(error) = super::block_reference_is_scaled(&core, &reference, &[0], 0) else {
+    let Err(error) = super::compound_path::FrameRefFacts::new(&core, &reference, &[0], 1).scaled(0)
+    else {
         return Err("missing reference-width metadata must fail closed".into());
     };
 
@@ -224,7 +225,8 @@ fn block_reference_dimension_metadata_bounds_are_typed() -> TestResult {
     ));
 
     reference.ref_frame_width.push(64);
-    let Err(error) = super::block_reference_is_scaled(&core, &reference, &[0], 0) else {
+    let Err(error) = super::compound_path::FrameRefFacts::new(&core, &reference, &[0], 1).scaled(0)
+    else {
         return Err("missing reference-height metadata must fail closed".into());
     };
     assert!(matches!(

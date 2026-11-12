@@ -466,6 +466,12 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         ),
         tip_ref_pair: expected_tip_pair.map(|pair| (pair.past_ref, pair.future_ref)),
         intra_tools: crate::pipeline::general_intra::GeneralIntraFrameTools::new(sequence, core),
+        ref_facts: compound_path::FrameRefFacts::new(
+            core,
+            reference,
+            ref_frame_idx,
+            num_total_refs,
+        ),
     };
     Ok(InterBlockSetup {
         params,
@@ -1604,8 +1610,7 @@ fn decode_block<T: ReconSample>(
             params.tip_ref_pair,
             filter_records,
             intrabc_state,
-            ref_frame_idx,
-            reference,
+            &params.ref_facts,
             params.num_total_refs,
             skip,
             params.mi_rows,
@@ -1645,9 +1650,7 @@ fn decode_block<T: ReconSample>(
             cdfs,
             symbols,
             &neighbour_ctx,
-            ref_frame_idx,
-            &reference.ref_order_hint,
-            params.current_order_hint,
+            &params.ref_facts,
             tile_offset,
         )?
     } else {
@@ -1670,8 +1673,7 @@ fn decode_block<T: ReconSample>(
             &neighbour_ctx,
             filter_records,
             intrabc_state,
-            ref_frame_idx,
-            reference,
+            &params.ref_facts,
             params.num_total_refs,
             params.num_same_ref_compound,
             skip,
@@ -1727,13 +1729,8 @@ fn decode_block<T: ReconSample>(
     };
     if let Some(warp_mode) = warp_mode {
         let derive_wrl = n4w >= 2 && n4h >= 2;
-        let use_temporal_first = params.temporal_first_frame
-            && block_ref_within_temporal_distance(
-                reference,
-                ref_frame_idx,
-                params.current_order_hint,
-                ref_frame0,
-            );
+        let use_temporal_first =
+            params.temporal_first_frame && params.ref_facts.temporal_near(ref_frame0);
         let mv_config = inter_mv_read_config(core)?;
         let motion_mode = if warp_mode == WarpInterMode::WarpNewmv {
             read_warp_newmv_motion_mode_syntax(
@@ -1900,7 +1897,7 @@ fn decode_block<T: ReconSample>(
     let reference_scaled = if tip_ref {
         false
     } else {
-        block_reference_is_scaled(core, reference, ref_frame_idx, ref_frame0)?
+        params.ref_facts.scaled(ref_frame0)?
     };
     let bawp = if tip_ref {
         BawpSyntax::default()
@@ -1923,13 +1920,7 @@ fn decode_block<T: ReconSample>(
             tile_offset,
         )?
     };
-    let bawp = bawp_with_ref_distance(
-        bawp,
-        ref_frame0,
-        ref_frame_idx,
-        reference,
-        params.current_order_hint,
-    );
+    let bawp = params.ref_facts.bawp_with_ref_distance(bawp, ref_frame0);
     let interintra = if tip_ref || segment_forces_globalmv {
         None
     } else if !bawp.enabled {
@@ -1937,14 +1928,8 @@ fn decode_block<T: ReconSample>(
     } else {
         None
     };
-    let use_temporal_first = !tip_ref
-        && params.temporal_first_frame
-        && block_ref_within_temporal_distance(
-            reference,
-            ref_frame_idx,
-            params.current_order_hint,
-            ref_frame0,
-        );
+    let use_temporal_first =
+        !tip_ref && params.temporal_first_frame && params.ref_facts.temporal_near(ref_frame0);
 
     let ref_mv_idx = if single_mode == SINGLE_MODE_NEARMV || single_mode == SINGLE_MODE_NEWMV {
         if tip_ref {
@@ -2169,8 +2154,7 @@ pub(crate) use tile::{ScheduledTileRecon, ScheduledTileWorkspace};
 mod bawp_syntax;
 mod interintra;
 pub(super) use bawp_syntax::{
-    BawpParseInput, bawp_signal_allowed, bawp_with_ref_distance, block_reference_is_scaled,
-    explicit_bawp_context, read_bawp_syntax,
+    BawpParseInput, bawp_signal_allowed, explicit_bawp_context, read_bawp_syntax,
 };
 mod intrabc;
 pub(crate) use intrabc::global_intrabc_enabled;
@@ -2202,7 +2186,6 @@ use self::syntax::{
     read_skip_mode_syntax, read_tip_drl_idx, read_use_amvd_syntax, resolve_interp_filter,
 };
 pub(crate) use self::syntax::{frame_mv_precision, interp_filter_no_neighbour_ctx};
-use self::temporal::block_ref_within_temporal_distance;
 #[cfg(test)]
 pub(super) use self::tip::tip_allowed_for_block_indices;
 use self::warp::{

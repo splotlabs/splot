@@ -888,66 +888,6 @@ impl CompoundOrderHint {
     }
 }
 
-#[inline]
-fn compound_is_joint_context(
-    ref_frame_idx: &[u32],
-    ref_order_hint: &[u32],
-    pair: (i8, i8),
-    current_order_hint: u32,
-) -> Result<usize> {
-    let order_hint_of = |ref_frame: i8| -> Result<CompoundOrderHint> {
-        let slot = block_reference_slot(ref_frame_idx, ref_frame)?;
-        let slot_index = usize::try_from(slot).unwrap_or(usize::MAX);
-        let slot_count = ref_order_hint.len();
-        ref_order_hint
-            .get(slot_index)
-            .copied()
-            .map(CompoundOrderHint::reference)
-            .ok_or_else(|| {
-                DecodeReferenceStateError::SlotOutOfRange {
-                    slot: slot_index,
-                    slot_count,
-                }
-                .into()
-            })
-    };
-    let first_order_hint = order_hint_of(pair.0)?;
-    let second_order_hint = order_hint_of(pair.1)?;
-    Ok(compound_is_joint_context_from_order_hints(
-        first_order_hint,
-        second_order_hint,
-        CompoundOrderHint::current(current_order_hint),
-    ))
-}
-
-#[cfg(test)]
-#[test]
-fn compound_is_joint_context_keeps_reference_list_bounds_fail_closed() {
-    assert!(matches!(
-        compound_is_joint_context(&[0, 1], &[9, 11], (2, 0), 10),
-        Err(DecodeError::ReferenceState {
-            source: DecodeReferenceStateError::ReferenceListIndexOutOfRange {
-                index: 2,
-                list_len: 2,
-            }
-        })
-    ));
-}
-
-#[cfg(test)]
-#[test]
-fn compound_is_joint_context_keeps_reference_slot_bounds_fail_closed() {
-    assert!(matches!(
-        compound_is_joint_context(&[2], &[9, 11], (0, 0), 10),
-        Err(DecodeError::ReferenceState {
-            source: DecodeReferenceStateError::SlotOutOfRange {
-                slot: 2,
-                slot_count: 2,
-            }
-        })
-    ));
-}
-
 fn compound_is_joint_context_from_order_hints(
     first_order_hint: CompoundOrderHint,
     second_order_hint: CompoundOrderHint,

@@ -6,7 +6,7 @@ pub(crate) use splot_recon::IDENTITY_WARP_PARAMS as DEFAULT_WARP_PARAMS;
 use splot_recon::math::round2_signed;
 
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
-use super::{CompoundOrderHint, Mv, mc::CWP_EQUAL};
+use super::{Mv, mc::CWP_EQUAL};
 use crate::tile::superblock_of;
 
 pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
@@ -436,12 +436,10 @@ impl BlockNeighbourContext {
             .count()
     }
 
-    pub(crate) fn comp_mode_ctx(
-        &self,
-        ref_frame_idx: &[u32],
-        ref_order_hint: &[u32],
-        current_order_hint: CompoundOrderHint,
-    ) -> usize {
+    /// The § 8.3.2 comp-mode context; `backward[r]` says whether logical
+    /// reference `r` lies after the current frame.
+    pub(crate) fn comp_mode_ctx(&self, backward: &[bool]) -> usize {
+        let is_backward = |cell| is_backward_ref_frame(cell, backward);
         match self.cell_count {
             0 => 1,
             1 => {
@@ -449,51 +447,16 @@ impl BlockNeighbourContext {
                 if neighbour.ref_frame1().is_some() {
                     3
                 } else {
-                    usize::from(is_backward_ref_frame(
-                        neighbour,
-                        ref_frame_idx,
-                        ref_order_hint,
-                        current_order_hint,
-                    ))
+                    usize::from(is_backward(neighbour))
                 }
             }
             _ => {
                 let first = self.cells[0];
                 let second = self.cells[1];
                 match (first.ref_frame1().is_some(), second.ref_frame1().is_some()) {
-                    (false, false) => usize::from(
-                        is_backward_ref_frame(
-                            first,
-                            ref_frame_idx,
-                            ref_order_hint,
-                            current_order_hint,
-                        ) ^ is_backward_ref_frame(
-                            second,
-                            ref_frame_idx,
-                            ref_order_hint,
-                            current_order_hint,
-                        ),
-                    ),
-                    (false, true) => {
-                        2 + usize::from(
-                            is_backward_ref_frame(
-                                first,
-                                ref_frame_idx,
-                                ref_order_hint,
-                                current_order_hint,
-                            ) || !first.is_inter(),
-                        )
-                    }
-                    (true, false) => {
-                        2 + usize::from(
-                            is_backward_ref_frame(
-                                second,
-                                ref_frame_idx,
-                                ref_order_hint,
-                                current_order_hint,
-                            ) || !second.is_inter(),
-                        )
-                    }
+                    (false, false) => usize::from(is_backward(first) ^ is_backward(second)),
+                    (false, true) => 2 + usize::from(is_backward(first) || !first.is_inter()),
+                    (true, false) => 2 + usize::from(is_backward(second) || !second.is_inter()),
                     (true, true) => 4,
                 }
             }
@@ -663,25 +626,15 @@ pub(crate) fn block_neighbour_ctx(
     }
 }
 
-fn is_backward_ref_frame(
-    cell: NeighbourFlags,
-    ref_frame_idx: &[u32],
-    ref_order_hint: &[u32],
-    current_order_hint: CompoundOrderHint,
-) -> bool {
+fn is_backward_ref_frame(cell: NeighbourFlags, backward: &[bool]) -> bool {
     if !cell.is_inter() || cell.ref_frame0() < 0 {
         return false;
     }
-    if cell.ref_frame0() == TIP_REF_FRAME {
-        return true;
-    }
-    let Some(&slot) = ref_frame_idx.get(cell.ref_frame0() as usize) else {
-        return false;
-    };
-    let Some(&order_hint) = ref_order_hint.get(slot as usize) else {
-        return false;
-    };
-    CompoundOrderHint::reference(order_hint).frame_distance_from(current_order_hint) < 0
+    cell.ref_frame0() == TIP_REF_FRAME
+        || backward
+            .get(cell.ref_frame0() as usize)
+            .copied()
+            .unwrap_or(false)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
