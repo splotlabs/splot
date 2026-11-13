@@ -261,6 +261,168 @@ fn published_band_resets_keep_cell_capacity_after_readers_retire() {
 }
 
 #[test]
+fn recycled_band_resets_every_cell_to_no_reference() {
+    let layout = MotionFieldLayout::new(16, 16, 16).unwrap();
+    let metadata = TemporalMotionField::new_with_metadata(16, 16, true, (64, 64), &[Some(2)])
+        .unwrap()
+        .metadata();
+    let inter = TemporalMotionBlock::new(
+        0,
+        0,
+        16,
+        16,
+        16,
+        16,
+        4,
+        [Some(2), None],
+        [Mv { row: 8, col: -12 }, Mv::ZERO],
+        [None; 2],
+    );
+    let mut band = TemporalMotionBand::vacant(layout, &metadata);
+    band.reset(layout, &metadata, 0).unwrap();
+    band.record_blocks(&[inter]).unwrap();
+    assert!(
+        band.cells
+            .cells()
+            .iter()
+            .all(|&cell| cell != TemporalMotionCell::STORED_EMPTY)
+    );
+    band = band.into_shared();
+    drop(band.clone());
+    band.reset(layout, &metadata, 0).unwrap();
+    assert_eq!(band.cells.cells().len(), 64);
+    assert!(
+        band.cells
+            .cells()
+            .iter()
+            .all(|&cell| cell == TemporalMotionCell::STORED_EMPTY)
+    );
+}
+
+fn tile_leaves(
+    next: &mut impl FnMut(u32) -> usize,
+    leaves: &mut Vec<[usize; 4]>,
+    leaf: [usize; 4],
+) {
+    const SPLITS: [&[usize]; 4] = [&[1, 1], &[1, 1, 1, 1], &[1, 2, 4, 1], &[1, 4, 2, 1]];
+    let [row, col, h, w] = leaf;
+    let choice = next(11);
+    let horizontal = choice & 1 == 0;
+    let side = if horizontal { h } else { w };
+    let pattern = SPLITS[choice.saturating_sub(3) / 2 % 4];
+    let total: usize = pattern.iter().sum();
+    if choice < 3 || side < total {
+        leaves.push(leaf);
+        return;
+    }
+    let unit = side / total;
+    let mut offset = 0;
+    for &part in pattern {
+        let size = part * unit;
+        let child = if horizontal {
+            [row + offset, col, size, w]
+        } else {
+            [row, col + offset, h, size]
+        };
+        tile_leaves(next, leaves, child);
+        offset += size;
+    }
+}
+
+#[test]
+fn skipped_clear_records_of_whole_cell_intra_leaves_leave_the_field_unchanged() {
+    let (mi_rows, mi_cols) = (32, 32);
+    let hints = [Some(2), Some(6)];
+    let new_field = || {
+        TemporalMotionField::new_with_metadata(mi_rows, mi_cols, true, (128, 128), &hints).unwrap()
+    };
+    let layout = MotionFieldLayout::new(mi_rows, mi_cols, 16).unwrap();
+    let metadata = new_field().metadata();
+    let fold_field = |records: &[TemporalMotionBlock]| {
+        let mut field = new_field();
+        field.record_blocks(records);
+        field.contiguous_cells().to_vec()
+    };
+    let fold_bands = |records: &[TemporalMotionBlock]| {
+        (0..layout.band_count())
+            .map(|index| {
+                let mut band = TemporalMotionBand::vacant(layout, &metadata);
+                band.reset(layout, &metadata, index).unwrap();
+                band.record_blocks(records).unwrap();
+                band.cells.cells().to_vec()
+            })
+            .collect::<Vec<_>>()
+    };
+    for seed in 1..=8u64 {
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut next = |bound: u32| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % u64::from(bound)) as usize
+        };
+        let mut leaves = Vec::new();
+        for sb_row in (0..mi_rows).step_by(16) {
+            for sb_col in (0..mi_cols).step_by(16) {
+                tile_leaves(&mut next, &mut leaves, [sb_row, sb_col, 16, 16]);
+            }
+        }
+        let mut records: Vec<_> = leaves
+            .into_iter()
+            .map(|[row, col, h, w]| {
+                let is_inter = next(2) == 0;
+                let block = if is_inter {
+                    let mv = |next: &mut dyn FnMut(u32) -> usize| Mv {
+                        row: 1 + next(255) as i32,
+                        col: -1 - next(255) as i32,
+                    };
+                    let second = next(2) == 0;
+                    TemporalMotionBlock::new(
+                        row,
+                        col,
+                        w,
+                        h,
+                        mi_rows,
+                        mi_cols,
+                        4,
+                        [hints[0], hints[1].filter(|_| second)],
+                        [mv(&mut next), mv(&mut next)],
+                        [None; 2],
+                    )
+                } else {
+                    TemporalMotionBlock::new(
+                        row,
+                        col,
+                        w,
+                        h,
+                        mi_rows,
+                        mi_cols,
+                        4,
+                        [None; 2],
+                        [Mv::ZERO; 2],
+                        [None; 2],
+                    )
+                };
+                (block, is_inter || (row | col | w | h) & 1 != 0)
+            })
+            .collect();
+        if seed % 2 == 0 {
+            for i in (1..records.len()).rev() {
+                records.swap(i, next(i as u32 + 1));
+            }
+        }
+        let every: Vec<_> = records.iter().map(|&(block, _)| block).collect();
+        let kept: Vec<_> = records
+            .iter()
+            .filter_map(|&(block, keep)| keep.then_some(block))
+            .collect();
+        assert!(kept.len() < every.len(), "seed {seed} skips no record");
+        assert_eq!(fold_field(&every), fold_field(&kept), "seed {seed}");
+        assert_eq!(fold_bands(&every), fold_bands(&kept), "seed {seed}");
+    }
+}
+
+#[test]
 fn spatial_derivation_uses_reference_trajectories() {
     let mut candidate = TrajectoryMotionField::new(2, 2).unwrap();
     candidate.set(
