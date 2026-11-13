@@ -352,7 +352,11 @@ fn eob_extra_bits_width(eob_pt: usize) -> Result<usize, CoeffLoopContextError> {
     Ok(width.saturating_sub(1))
 }
 
-#[inline]
+#[allow(
+    clippy::inline_always,
+    reason = "measured: once or twice per nonzero block"
+)]
+#[inline(always)]
 fn read_eob_literal(
     symbols: &mut SymbolDecoder<'_>,
     width: u32,
