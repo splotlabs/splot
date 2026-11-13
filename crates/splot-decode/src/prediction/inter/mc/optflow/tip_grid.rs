@@ -150,7 +150,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             sub: (sub, sub),
             cwp_weight: self.cwp_weight,
         };
-        let views = [Some(prediction.views), second];
+        let views = [Some(&prediction.views), second.as_ref()];
         if self.motion.fullpel_runs
             && let Some([params0, params1]) = uniform_fullpel_params(
                 &prediction,
@@ -166,9 +166,9 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                 ),
             )
         {
-            let whole = |views: &Option<[ReferencePlaneView<'_, T>; 2]>,
+            let whole = |views: Option<&[ReferencePlaneView<'_, T>; 2]>,
                          (output, stride): &mut (&mut [O], usize)| {
-                views.as_ref().map_or(Ok(true), |views| {
+                views.map_or(Ok(true), |views| {
                     splot_recon::subpel_predict_block_compound_average_fast_validated_strided_into(
                         &views[0],
                         &params0,
@@ -181,7 +181,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                 })
             };
             let [first, second] = &mut outputs;
-            if whole(&views[0], first)? && whole(&views[1], second)? {
+            if whole(views[0], first)? && whole(views[1], second)? {
                 return Ok(true);
             }
         }
@@ -198,8 +198,8 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                    intermediate: &mut Intermediate|
          -> Result<()> {
             let [first, second] = outputs;
-            let planes = [(&views[0], first), (&views[1], second)]
-                .map(|(views, (output, stride))| Some((views.as_ref()?, &mut **output, *stride)));
+            let planes = [(views[0], first), (views[1], second)]
+                .map(|(views, (output, stride))| Some((views?, &mut **output, *stride)));
             run_cell_program(
                 program,
                 planes,
