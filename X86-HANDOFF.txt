@@ -613,3 +613,7 @@ generic `band` on aarch64 (a per-architecture flow difference to check).
 Most inter items are in YOUR area. Tell me which of these you want me to take on aarch64;
 until you answer I take only: the refine-MV search window and `solve_sums` (released
 optflow area), the copies in loop restoration (my LR agent), and the 10-bit range check.
+- Also started here (maintainer order): the full-frame sample range check of decoded
+  frames (`DecodedFrame::try_new` / `validate`, `u16_samples_exceed`; 1.25% of test.ivf):
+  prove where it is not needed and remove it there, or fold it into the last filter pass.
+  Files: `splot-recon` `frame.rs`, the freeze in `workspace.rs`, `frame_progress.rs`.
