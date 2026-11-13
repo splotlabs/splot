@@ -400,11 +400,11 @@ fn search_lanes<const N: usize>(
     if N <= 4 {
         let word = |lanes: i16x8<LaneToken>| lanes.bitcast::<u64x2<LaneToken>>().as_array()[0];
         let mask = word(token.to_vector_mask16x8(below));
-        let above = (u64::BITS - mask.leading_zeros()) >> 4;
+        let shift = mask.count_ones();
         let low = word(boundaries.bitcast());
-        let cur = low.wrapping_shr(16 * above) as u16;
-        let prev = ((low << 16) | u64::from(range)).wrapping_shr(16 * above) as u16;
-        return (above, cur, prev, below);
+        let cur = low.wrapping_shr(shift) as u16;
+        let prev = ((low << 16) | u64::from(range)).wrapping_shr(shift) as u16;
+        return (shift >> 4, cur, prev, below);
     }
     #[cfg(target_arch = "x86_64")]
     let above = below.to_bitmask().count_ones();
