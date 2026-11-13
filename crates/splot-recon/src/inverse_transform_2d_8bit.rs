@@ -596,30 +596,22 @@ impl InverseTransformAdd {
         scratch: &mut [i32; 32 * 32],
     ) -> crate::Result<bool> {
         let bit_depth = secondary.bit_depth;
-        #[cfg(target_arch = "x86_64")]
         if self.w_log2 >= 4
-            && self.row != InverseTransform2dDim::Identity
-            && self.fits(dst.len(), stride)
-            && bit_depth == BitDepth::Eight
-            && let Some(dst) = T::u8_slice_mut(dst)
-            && let Some(token) = Level::baseline().as_avx2()
-            && let Some(rows) = dequant.first_chunk_mut::<64>()
-        {
-            let len = secondary_inverse_transform_quant_rows8(quant, quantizers, secondary, rows)?;
-            let sink = avx2::Sink::Add { dst, stride };
-            avx2::transform(token, &self, None, &rows[..len], true, sink, scratch);
-            return Ok(true);
-        }
-        #[cfg(target_arch = "x86_64")]
-        let wide_rows = self.w_log2 >= 4
-            && (bit_depth != BitDepth::Eight || Level::baseline().as_avx2().is_none());
-        #[cfg(not(target_arch = "x86_64"))]
-        let wide_rows = self.w_log2 >= 4;
-        if wide_rows
             && self.fits(dst.len(), stride)
             && let Some(rows) = dequant.first_chunk_mut::<64>()
         {
             let len = secondary_inverse_transform_quant_rows8(quant, quantizers, secondary, rows)?;
+            #[cfg(target_arch = "x86_64")]
+            if let (Some(token), Some(dst), BitDepth::Eight) = (
+                Level::baseline().as_avx2(),
+                T::u8_slice_mut(&mut *dst),
+                bit_depth,
+            ) && self.row != InverseTransform2dDim::Identity
+            {
+                let sink = avx2::Sink::Add { dst, stride };
+                avx2::transform(token, &self, None, &rows[..len], true, sink, scratch);
+                return Ok(true);
+            }
             #[cfg(target_arch = "aarch64")]
             if let (Some(token), Some(dst), BitDepth::Eight) = (
                 fearless_simd::Level::baseline().as_neon(),
