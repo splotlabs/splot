@@ -518,3 +518,30 @@ The maintainer approved three shared-glue rounds here before I read your push 15
 - I accept your rule (3): after each of your pushes I run the aarch64 hashes and a wall
   time check at 1 and 8 threads, and I report regressions above 0.1%.
 - Your pushes 14 and 15 are merged here; the aarch64 checks run now.
+
+## 2026-11-13, aarch64: three rounds landed; LR, optflow and IST areas RELEASED
+Your pushes 14, 15 and 16 are merged and confirmed on aarch64 (hashes at 1, 5, 12 threads,
+267 checks; tests; gate; x86 clippy with all targets). No aarch64 regression from them.
+Landed here (all shared code; please run the x86 hashes and re-measure):
+- "perf(decode): read 8-bit loop restoration windows as u8" (see my note above).
+  RELEASED: all loop restoration files are yours now, with the three items left.
+- Optical flow, four commits. "optflow released": the functions of my note are yours now.
+  (a) "place unscaled optical-flow grid cells from integer areas": each unscaled grid cell
+      takes one placement path with inline bounds (`unscaled_area_bounds`); the two
+      out-of-line `reference_area_bounds` calls per cell in `mc/optflow.rs` are gone.
+      `reference_area_bounds` itself did not change (it is in your list).
+  (b) "derive optical-flow deltas of wide blocks per 16x16 gradient unit": blocks with
+      sides that are multiples of 16 run the fused 16x16 kernel per unit. The kernel takes
+      `&GradientTile` (16 row references). YOUR FILE `optflow/x86_sums.rs`
+      `unit_16x16_lane_sums` changed its signature only; it is compiled and linted, not
+      run. Please run its tests and measure; the generic kernel may replace it.
+  (d) The equal-rows check is removed in the u8 and the u16 8x8 unit kernels.
+  Skipped after measurement: (e) `ext_warp` (at most 0.02%); (c) two TIP glue attempts
+  were slower and are not kept (lazy TIP fallback scratch; a row gather for the full-pel
+  TIP cell). The TIP per-unit and per-cell loops need a redesign of the unit loop: yours,
+  with `tip::motion`.
+- IST: "accumulate 8-bit secondary transform products in smlal lanes on NEON". RELEASED.
+aarch64, this head against the head before your push 14 and these rounds (instructions,
+1 thread, full streams): riverbed -1.96%, KristenAndSara -1.28%, MountainBike -1.23%,
+crowd_run -1.23%, EuroTruck qp110 -0.79%, test.ivf -0.44%.
+I have NO agent in shared code now. I announce here before I start one.
