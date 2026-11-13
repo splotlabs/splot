@@ -1005,6 +1005,32 @@ impl<T: SplitSample> TipFrame<T> {
         Ok(())
     }
 
+    /// Claims the first band [`band_admitted`] admits.
+    fn claim_band(&self) -> Option<Claim> {
+        let (Some(core), Some(bounds)) = (self.core.get(), self.band_bounds.get()) else {
+            return None;
+        };
+        let ref_frame_idx = core
+            .inter
+            .as_ref()
+            .map_or(&[][..], |inter| inter.ref_frame_idx.as_slice());
+        let row = self
+            .bands
+            .claim(|band| band_admitted(&self.reference, bounds, band, core, ref_frame_idx))?;
+        Some(Claim {
+            stage: TIP_BAND,
+            row,
+        })
+    }
+
+    fn claim_finish(&self) -> Option<Claim> {
+        let row = self.stages[TIP_FINISH].claim(|_| self.bands.is_finished())?;
+        Some(Claim {
+            stage: TIP_FINISH,
+            row,
+        })
+    }
+
     fn fail(&self, error: DecodeError) {
         if self.failed.swap(true, Ordering::AcqRel) {
             return;
@@ -1050,16 +1076,9 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
         if let Some(init) = self.claim_critical() {
             return Some(init);
         }
-        if self.failed.load(Ordering::Acquire) {
+        if self.failed.load(Ordering::Acquire) || self.band_bounds.get().is_none() {
             return None;
         }
-        let (Some(core), Some(bounds)) = (self.core.get(), self.band_bounds.get()) else {
-            return None;
-        };
-        let ref_frame_idx = core
-            .inter
-            .as_ref()
-            .map_or(&[][..], |inter| inter.ref_frame_idx.as_slice());
         if let Some(row) = self.stages[TIP_PROJECT].claim(|band| {
             let (Some(work), Some(reference)) = (self.work.try_read(), self.reference.try_read())
             else {
@@ -1074,37 +1093,39 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
                 row,
             });
         }
-        if let Some(row) = self
-            .bands
-            .claim(|band| band_admitted(&self.reference, bounds, band, core, ref_frame_idx))
-        {
-            return Some(Claim {
-                stage: TIP_BAND,
-                row,
-            });
-        }
-        if let Some(row) = self.stages[TIP_FINISH].claim(|_| self.bands.is_finished()) {
-            return Some(Claim {
-                stage: TIP_FINISH,
-                row,
-            });
-        }
-        None
+        self.claim_band().or_else(|| self.claim_finish())
     }
 
-    fn run(&self, claim: Claim, _worker: usize) {
-        let outcome = match claim.stage {
-            TIP_INIT => self.init(),
-            TIP_PROJECT => self.project(claim.row),
-            TIP_BAND => self.band(claim.row),
-            _ => self.finish_frame(),
-        };
-        match claim.stage {
-            TIP_BAND => self.bands.finish(claim.row),
-            stage => self.stages[stage].finish(claim.row),
-        }
-        if let Err(error) = outcome {
-            self.fail(error);
+    /// Runs the claimed row, then a band the projection admitted or the
+    /// finish the last band released, without a scan or a wake.
+    fn run(&self, mut claim: Claim, _worker: usize) {
+        loop {
+            let outcome = match claim.stage {
+                TIP_INIT => self.init(),
+                TIP_PROJECT => self.project(claim.row),
+                TIP_BAND => self.band(claim.row),
+                _ => self.finish_frame(),
+            };
+            match claim.stage {
+                TIP_BAND => self.bands.finish(claim.row),
+                stage => self.stages[stage].finish(claim.row),
+            }
+            if let Err(error) = outcome {
+                self.fail(error);
+                break;
+            }
+            let next = match claim.stage {
+                TIP_PROJECT => self.claim_band(),
+                TIP_BAND => self.claim_finish(),
+                _ => None,
+            };
+            match next {
+                Some(next) => {
+                    self.wake.notify();
+                    claim = next;
+                }
+                None => break,
+            }
         }
     }
 
