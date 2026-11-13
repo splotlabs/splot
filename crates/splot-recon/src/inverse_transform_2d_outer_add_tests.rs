@@ -141,10 +141,14 @@ fn check_fused<T: ReconSample + PartialEq + core::fmt::Debug>(
     label: &str,
 ) {
     let mut scratch = [i32::MAX; 32 * 32];
+    let exact = pred.len() - stride + block.len() / (pred.len() / stride);
     for (coeffs, flat) in inputs {
         let mut dst = pred.to_vec(); // splot-copy-ok: test destination copy
         assert!(table.add(coeffs, (flat, bit_depth), &mut dst, stride, &mut scratch));
         assert_eq!(dst[..], *expected, "{label} add");
+        let mut dst = pred[..exact].to_vec(); // splot-copy-ok: test destination copy
+        assert!(table.add(coeffs, (flat, bit_depth), &mut dst, stride, &mut scratch));
+        assert_eq!(dst[..], expected[..exact], "{label} add, block at the end");
         let mut dst = vec![T::default(); pred.len()];
         let fused = (flat, bit_depth);
         assert!(table.add_onto(block, coeffs, fused, &mut dst, stride, &mut scratch));

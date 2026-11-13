@@ -1126,17 +1126,16 @@ fn dct16(v: &[__m256i], mask: u32, rnd: __m256i) -> [__m256i; 16] {
 const TILE: u8 = 0;
 /// Column `Clip3` outputs stored as `i32`.
 const RESIDUAL: u8 = 1;
-/// Column outputs added straight to the 8-bit block (`W <= 8`).
+/// Column outputs kept in `rows` for an add in row order (`W <= 8`).
 const DIRECT: u8 = 2;
 
 /// Where the column pass puts the shifted output rows of chunk `c`, by
 /// `OUT`: as `i16` rows of the `W`-wide `tile` (two samples per word), clamped
-/// into `residual`, or added to the 8-bit block at the start of `dst`.
+/// into `residual`, or as `i32` rows in `rows`.
 struct Put<'a, const W: usize, const OUT: u8> {
     tile: &'a mut [i32],
     residual: &'a mut [i32],
-    dst: &'a mut [u8],
-    stride: usize,
+    rows: [__m256i; 16],
     round: Round,
     c: usize,
 }
@@ -1152,10 +1151,16 @@ impl<const W: usize, const OUT: u8> Put<'_, W, OUT> {
             put_residual::<W>(t, (a, b, self.c), va, vb, self.residual);
             return;
         }
-        let packed = _mm256_packs_epi32(va, vb);
         if OUT == DIRECT {
-            add_rows::<W>(self.dst, (a * self.stride, b * self.stride), packed);
-        } else if W >= 8 {
+            for (r, v) in [(a, va), (b, vb)] {
+                if let Some(row) = self.rows.get_mut(r) {
+                    *row = v;
+                }
+            }
+            return;
+        }
+        let packed = _mm256_packs_epi32(va, vb);
+        if W >= 8 {
             let packed = _mm256_permute4x64_epi64::<0xD8>(packed);
             store4(
                 t,
@@ -1282,8 +1287,7 @@ fn col_pass<const W: usize, const M: usize, const HM: usize, const KIND: u8, con
     let mut put = Put::<W, OUT> {
         tile,
         residual,
-        dst: &mut [],
-        stride: 0,
+        rows: [_mm256_setzero_si256(); 16],
         round,
         c: 0,
     };
@@ -1409,54 +1413,67 @@ fn add_tile<const W: usize>(t: Avx2, tile: &[i32; 512], h: usize, dst: &mut [u8]
     }
 }
 
-/// Adds the `packs` of rows `a` and `b` of 8 (4 when `W == 4`) columns to
-/// the samples at `at_a` and `at_b` of `dst` with the § 7.14.3 `Clip1`.
+/// Adds the `packs` of two rows of 8 (4 when `W == 4`) columns to the
+/// samples at the start of `a` and `b` with the § 7.14.3 `Clip1`.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn add_rows<const W: usize>(dst: &mut [u8], (at_a, at_b): (usize, usize), packed: __m256i) {
+fn add_rows<const W: usize>(a: &mut [u8], b: &mut [u8], packed: __m256i) {
     if W >= 8 {
-        let read = |dst: &[u8], at: usize| {
-            dst.get(at..)
-                .and_then(<[u8]>::first_chunk::<8>)
-                .map(|row| i64::from_le_bytes(*row))
-        };
-        let (Some(a), Some(b)) = (read(dst, at_a), read(dst, at_b)) else {
+        let (Some(a), Some(b)) = (a.first_chunk_mut::<8>(), b.first_chunk_mut::<8>()) else {
             return;
         };
-        let pred = _mm_unpacklo_epi32(_mm_cvtsi64_si128(a), _mm_cvtsi64_si128(b));
+        let pred = _mm_unpacklo_epi32(
+            _mm_cvtsi64_si128(i64::from_le_bytes(*a)),
+            _mm_cvtsi64_si128(i64::from_le_bytes(*b)),
+        );
         let sum = _mm256_adds_epi16(_mm256_cvtepu8_epi16(pred), packed);
         let sum = _mm256_packus_epi16(sum, sum);
         let rows = _mm_unpacklo_epi32(
             _mm256_castsi256_si128(sum),
             _mm256_extracti128_si256::<1>(sum),
         );
-        for (at, row) in [
-            (at_a, _mm_cvtsi128_si64(rows)),
-            (at_b, _mm_extract_epi64::<1>(rows)),
-        ] {
-            if let Some(out) = dst.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<8>) {
-                *out = row.to_le_bytes();
-            }
-        }
+        *a = _mm_cvtsi128_si64(rows).to_le_bytes();
+        *b = _mm_extract_epi64::<1>(rows).to_le_bytes();
     } else {
-        let read = |dst: &[u8], at: usize| {
-            dst.get(at..)
-                .and_then(<[u8]>::first_chunk::<4>)
-                .map(|row| u32::from_le_bytes(*row))
-        };
-        let (Some(a), Some(b)) = (read(dst, at_a), read(dst, at_b)) else {
+        let (Some(a), Some(b)) = (a.first_chunk_mut::<4>(), b.first_chunk_mut::<4>()) else {
             return;
         };
         let pred = _mm_cvtepu8_epi16(_mm_cvtsi64_si128(
-            (u64::from(a) | u64::from(b) << 32) as i64,
+            (u64::from(u32::from_le_bytes(*a)) | u64::from(u32::from_le_bytes(*b)) << 32) as i64,
         ));
         let sum = _mm_adds_epi16(pred, _mm256_castsi256_si128(packed));
         let sum = _mm_cvtsi128_si64(_mm_packus_epi16(sum, sum)) as u64;
-        for (at, row) in [(at_a, sum as u32), (at_b, (sum >> 32) as u32)] {
-            if let Some(out) = dst.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<4>) {
-                *out = row.to_le_bytes();
-            }
+        *a = (sum as u32).to_le_bytes();
+        *b = ((sum >> 32) as u32).to_le_bytes();
+    }
+}
+
+/// Adds the `packs` of row pairs `pair(m)` (rows `2m` and `2m + 1`, 8
+/// columns per chunk) to the `W`-wide, `h`-tall block at the start of `dst`,
+/// walking its rows in order.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn add_pairs<const W: usize>(
+    dst: &mut [u8],
+    (stride, h): (usize, usize),
+    mut pair: impl FnMut(usize) -> __m256i,
+) {
+    let mut rest = dst;
+    for m in 0..h / 2 {
+        let Some((a, b)) = rest.split_at_mut_checked(stride) else {
+            return;
+        };
+        let packed = pair(m);
+        for c in 0..(W / 8).max(1) {
+            let (Some(a), Some(b)) = (a.get_mut(8 * c..), b.get_mut(8 * c..)) else {
+                return;
+            };
+            add_rows::<W>(a, b, packed);
         }
+        let Some(next) = b.get_mut(stride..) else {
+            return;
+        };
+        rest = next;
     }
 }
 
@@ -1495,14 +1512,13 @@ fn flat<const W: usize, const ADD: bool>(
     residual: &mut [i32],
 ) {
     let v = _mm256_set1_epi32(value);
+    if ADD {
+        add_pairs::<W>(dst, (stride, h), |_| _mm256_packs_epi32(v, v));
+        return;
+    }
     for c in 0..(W / 8).max(1) {
         for m in (0..h).step_by(2) {
-            if ADD {
-                let at = m * stride + 8 * c;
-                add_rows::<W>(dst, (at, at + stride), _mm256_packs_epi32(v, v));
-            } else {
-                put_residual::<W>(t, (m, m + 1, c), v, v, residual);
-            }
+            put_residual::<W>(t, (m, m + 1, c), v, v, residual);
         }
     }
 }
@@ -1723,10 +1739,10 @@ impl<'a, const W: usize> Rows<'a, W> {
 }
 
 /// A `W x H` block, 4 or 8 wide and 4 to 16 tall (`WH = W / 2`,
-/// `HH = H / 2`), with the
-/// `CK` column transform, in registers: the row pass of each coded row pair
-/// gives the column pass's input pair at once, and the column outputs are
-/// added straight to `dst`.
+/// `HH = H / 2`), with the `RK` row and `CK` column transforms, in
+/// registers: the row pass of each coded row pair gives the column pass's
+/// input pair at once, and the column output rows are added to `dst` in
+/// order.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
 #[allow(
@@ -1738,6 +1754,7 @@ fn small<
     const WH: usize,
     const H: usize,
     const HH: usize,
+    const RK: u8,
     const CK: u8,
     const DQ: bool,
     const RS: bool,
@@ -1767,7 +1784,7 @@ fn small<
         if W == 4 {
             let x = _mm256_permute2x128_si256::<0x20>(rows.row(t, a), rows.row(t, b));
             let x = input.finish(x, a == 0);
-            _mm256_broadcastsi128_si256(if row.0 == IDENTITY {
+            _mm256_broadcastsi128_si256(if RK == IDENTITY {
                 let v = _mm256_mullo_epi32(clamp16(x), _mm256_set1_epi32(row.2));
                 unpack4(round.apply(v))
             } else {
@@ -1776,28 +1793,44 @@ fn small<
         } else {
             let xa = input.finish(rows.row(t, a), a == 0);
             let xb = input.finish(rows.row(t, b), b == 0);
-            let x = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(xa, xb));
-            match row.0 {
-                IDENTITY => {
-                    let scale = _mm256_set1_epi32(row.2);
-                    let va = round.apply(_mm256_mullo_epi32(clamp16(xa), scale));
-                    let vb = round.apply(_mm256_mullo_epi32(clamp16(xb), scale));
-                    pair_columns(t, va, vb, &INTERLEAVE)
-                }
-                SPLIT => row8_pairs::<SPLIT>(t, x, row.1.as_flattened(), round),
-                _ => row8_pairs::<DENSE>(t, x, row.1.as_flattened(), round),
+            if RK == IDENTITY {
+                let scale = _mm256_set1_epi32(row.2);
+                let va = round.apply(_mm256_mullo_epi32(clamp16(xa), scale));
+                let vb = round.apply(_mm256_mullo_epi32(clamp16(xb), scale));
+                pair_columns(t, va, vb, &INTERLEAVE)
+            } else {
+                let x = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(xa, xb));
+                row8_pairs::<RK>(t, x, row.1.as_flattened(), round)
             }
         }
     });
     let mut put = Put::<W, DIRECT> {
         tile: &mut [],
         residual: &mut [],
-        dst,
-        stride,
+        rows: [_mm256_setzero_si256(); 16],
         round: Round::new(col_shift),
         c: 0,
     };
     col_rows::<W, H, HH, CK, DIRECT>(t, (col.1, col.2), &v, mask, &mut put);
+    let rows = &put.rows;
+    add_pairs::<W>(dst, (stride, H), |m| {
+        _mm256_packs_epi32(rows[(2 * m) % 16], rows[(2 * m + 1) % 16])
+    });
+}
+
+/// [`small`] with the row kind `$rk` for the column kind `$ck` and `$dq`.
+macro_rules! small_cols {
+    ($rk:ident, $rs:literal, [$($g:literal),*], $ck:expr, $dq:expr, $a:expr) => {{
+        let (t, input, specs, shifts, out) = $a;
+        match ($ck, $dq) {
+            (IDENTITY, true) => small::<$($g,)* $rk, IDENTITY, true, $rs>(t, input, specs, shifts, out),
+            (IDENTITY, false) => small::<$($g,)* $rk, IDENTITY, false, $rs>(t, input, specs, shifts, out),
+            (SPLIT, true) => small::<$($g,)* $rk, SPLIT, true, $rs>(t, input, specs, shifts, out),
+            (SPLIT, false) => small::<$($g,)* $rk, SPLIT, false, $rs>(t, input, specs, shifts, out),
+            (_, true) => small::<$($g,)* $rk, DENSE, true, $rs>(t, input, specs, shifts, out),
+            (_, false) => small::<$($g,)* $rk, DENSE, false, $rs>(t, input, specs, shifts, out),
+        }
+    }};
 }
 
 /// Adds a `shape` 4 or 8 wide and 4 to 16 tall over `coeffs` to `dst`
@@ -1815,29 +1848,25 @@ fn add_small(
     let (row, col) = shape.passes;
     let input = (coeffs, dq);
     macro_rules! run {
-        ($rs:literal, $f:ident [$($g:literal),*], $row:expr, $col:expr) => {{
+        ($rs:literal, $g:tt, $row:expr, $col:expr, [$($rk:ident),*]) => {{
             let (Some(row), Some(col)) = (&$row[row as usize], &$col[col as usize]) else {
                 return false;
             };
-            let specs = (row, col);
-            match (col.0, quantized) {
-                (IDENTITY, true) => $f::<$($g,)* IDENTITY, true, $rs>(t, input, specs, shifts, out),
-                (IDENTITY, false) => $f::<$($g,)* IDENTITY, false, $rs>(t, input, specs, shifts, out),
-                (SPLIT, true) => $f::<$($g,)* SPLIT, true, $rs>(t, input, specs, shifts, out),
-                (SPLIT, false) => $f::<$($g,)* SPLIT, false, $rs>(t, input, specs, shifts, out),
-                (_, true) => $f::<$($g,)* DENSE, true, $rs>(t, input, specs, shifts, out),
-                (_, false) => $f::<$($g,)* DENSE, false, $rs>(t, input, specs, shifts, out),
+            let a = (t, input, (row, col), shifts, out);
+            match row.0 {
+                $($rk => small_cols!($rk, $rs, $g, col.0, quantized, a),)*
+                _ => small_cols!(DENSE, $rs, $g, col.0, quantized, a),
             }
             true
         }};
     }
     match (shape.w_log2, shape.h_log2, shape.rescale) {
-        (2, 2, false) => run!(false, small[4, 2, 4, 2], ROW_SPEC4, COL_SPEC4),
-        (2, 3, true) => run!(true, small[4, 2, 8, 4], ROW_SPEC4, COL_SPEC8),
-        (3, 2, true) => run!(true, small[8, 4, 4, 2], ROW_SPEC8, COL_SPEC4),
-        (3, 3, false) => run!(false, small[8, 4, 8, 4], ROW_SPEC8, COL_SPEC8),
-        (2, 4, false) => run!(false, small[4, 2, 16, 8], ROW_SPEC4, COL_SPEC16),
-        (3, 4, true) => run!(true, small[8, 4, 16, 8], ROW_SPEC8, COL_SPEC16),
+        (2, 2, false) => run!(false, [4, 2, 4, 2], ROW_SPEC4, COL_SPEC4, [IDENTITY]),
+        (2, 3, true) => run!(true, [4, 2, 8, 4], ROW_SPEC4, COL_SPEC8, [IDENTITY]),
+        (3, 2, true) => run!(true, [8, 4, 4, 2], ROW_SPEC8, COL_SPEC4, [IDENTITY, SPLIT]),
+        (3, 3, false) => run!(false, [8, 4, 8, 4], ROW_SPEC8, COL_SPEC8, [IDENTITY, SPLIT]),
+        (2, 4, false) => run!(false, [4, 2, 16, 8], ROW_SPEC4, COL_SPEC16, [IDENTITY]),
+        (3, 4, true) => run!(true, [8, 4, 16, 8], ROW_SPEC8, COL_SPEC16, [IDENTITY, SPLIT]),
         _ => false,
     }
 }
