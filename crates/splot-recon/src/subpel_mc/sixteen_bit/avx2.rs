@@ -20,7 +20,7 @@ use super::super::{CellPlacement, ReferencePlaneView};
 use super::generic;
 use core::arch::x86_64::*;
 use core::cell::Cell;
-use fearless_simd::{Avx2, Simd, SimdBase, SimdFrom, i32x4, i32x8, u8x16, u8x32, u16x8};
+use fearless_simd::{Avx2, Simd, SimdBase, SimdFrom, i32x4, i32x8, u8x16, u8x32, u16x8, u16x16};
 
 fn token() -> Option<Avx2> {
     fearless_simd::Level::baseline().as_avx2()
@@ -145,8 +145,24 @@ fearless_simd::kernel!(
 /// most `max`.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn shapes(t: Avx2, block: &Block<'_, u16>, out: &mut impl WordOut, max: u16) {
+fn shapes<O: WordOut>(t: Avx2, block: &Block<'_, u16>, out: &mut O, max: u16) {
     let four = block.w == 4;
+    let (h, v) = (block.horizontal.map(eighths), block.vertical.map(eighths));
+    if O::PUT
+        && block.w >= 16
+        && block.stride > 16
+        && h.is_none_or(|h| h.is_some())
+        && v.is_none_or(|v| v.is_some())
+    {
+        let (h, v) = (h.flatten(), v.flatten());
+        match (h, v) {
+            (Some(h), Some(v)) => bilinear::<_, true, 1>(t, block, (h, v), out, max),
+            (Some(h), None) => bilinear::<_, true, 0>(t, block, (h, (0, 0)), out, max),
+            (None, Some(v)) => bilinear::<_, false, 1>(t, block, ((0, 0), v), out, max),
+            (None, None) => copy(t, block, out, max),
+        }
+        return;
+    }
     match (block.horizontal, block.vertical) {
         (Some(taps), None) => specialize!(four, taps.count, horizontal(t, block, taps, out, max)),
         (None, Some(taps)) => specialize!(four, taps.count, vertical(t, block, taps, out, max)),
@@ -174,6 +190,8 @@ trait WordOut: Out {
     fn words(_: Avx2, _: Self::Row<'_>, _: Option<Self::Row<'_>>, _: __m128i) {}
     /// Stores eight compound predictors.
     fn sums(_: Avx2, _: Self::Row<'_>, _: Option<Self::Row<'_>>, _: __m256i) {}
+    /// Stores sixteen samples: words, or bytes in the low lane.
+    fn words16(_: Avx2, _: Self::Row<'_>, _: __m256i) {}
 }
 
 /// Sample storage of word lanes whose values fit it.
@@ -183,6 +201,8 @@ trait Word: Copy {
     /// Stores eight samples into row `a`, or lanes `0..4` into `a` and
     /// `4..8` into `b`.
     fn store(t: Avx2, a: &mut [Self], b: Option<&mut [Self]>, values: __m128i);
+    /// Stores sixteen samples into `row`: words, or bytes in the low lane.
+    fn store16(t: Avx2, row: &mut [Self], values: __m256i);
 }
 
 impl Word for u8 {
@@ -199,6 +219,14 @@ impl Word for u8 {
             (None, None) => {}
         }
     }
+    #[inline(always)]
+    fn store16(t: Avx2, row: &mut [u8], values: __m256i) {
+        let bytes = u8x32::<Avx2>::simd_from(t, values).to_array();
+        if let (Some(slot), Some(bytes)) = (row.first_chunk_mut::<16>(), bytes.first_chunk::<16>())
+        {
+            *slot = *bytes;
+        }
+    }
 }
 
 impl Word for u16 {
@@ -212,6 +240,12 @@ impl Word for u16 {
             (None, None) => {}
         }
     }
+    #[inline(always)]
+    fn store16(t: Avx2, row: &mut [u16], values: __m256i) {
+        if let Some(slot) = row.first_chunk_mut::<16>() {
+            u16x16::<Avx2>::simd_from(t, values).store_array(slot);
+        }
+    }
 }
 
 impl<T: Word> WordOut for Put<'_, T> {
@@ -219,6 +253,10 @@ impl<T: Word> WordOut for Put<'_, T> {
     #[inline(always)]
     fn words(t: Avx2, a: &mut [T], b: Option<&mut [T]>, values: __m128i) {
         T::store(t, a, b, values);
+    }
+    #[inline(always)]
+    fn words16(t: Avx2, row: &mut [T], values: __m256i) {
+        T::store16(t, row, values);
     }
 }
 
@@ -508,6 +546,86 @@ fn pairs_pair<const V: usize>(ring: &[__m256i; 4], next: __m256i, p: usize) -> _
 #[target_feature(enable = "avx2")]
 fn interleave(x: __m256i) -> __m256i {
     _mm256_permutevar8x32_epi32(x, _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7))
+}
+
+/// The eighths of the two taps of a BILINEAR pass, multiples of 8 that sum
+/// to 128, neither zero; `None` for another pass.
+fn eighths(taps: &Taps) -> Option<(i16, i16)> {
+    let (first, second) = (taps.full[0] as i16, (taps.full[0] >> 16) as i16);
+    let bilinear = taps.count == 1 && first > 0 && second > 0 && first + second == 128;
+    (bilinear && first % 8 == 0 && second % 8 == 0).then_some((first / 8, second / 8))
+}
+
+/// The put of a BILINEAR `block` of at least 16 columns in 16-column strips
+/// of `u16` lanes, with a horizontal pass when `H` and a vertical pass of
+/// `V` tap pairs, whose tap eighths are `across` and `down`. Each pass sum over 8
+/// is exact in `u16` for 10-bit samples; the vertical pass of both is
+/// `c = x1 + Round2(v0 * (x0 - x1), 4)` by `pmulhrsw`, and the put
+/// `Round2(c - b, 4)` with `b` bit 3 of `v0 * (x0 - x1)`, which corrects
+/// the double rounding.
+#[inline(never)]
+#[target_feature(enable = "avx2")]
+fn bilinear<O: WordOut, const H: bool, const V: usize>(
+    t: Avx2,
+    block: &Block<'_, u16>,
+    (across, down): ((i16, i16), (i16, i16)),
+    out: &mut O,
+    max: u16,
+) {
+    let max = _mm256_set1_epi16(max as i16);
+    let (h0, h1) = (_mm256_set1_epi16(across.0), _mm256_set1_epi16(across.1));
+    let (v0, v1) = (_mm256_set1_epi16(down.0), _mm256_set1_epi16(down.1));
+    let scaled = _mm256_set1_epi16(down.0 << 11);
+    let load = |row: &[u16], k: usize| -> Option<__m256i> {
+        Some(u16x16::load_array_ref(t, row.get(k..)?.first_chunk::<16>()?).into())
+    };
+    let line = |row: &[u16]| {
+        let first = load(row, 0)?;
+        if !H {
+            return Some(first);
+        }
+        let second = load(row, 1)?;
+        Some(_mm256_add_epi16(
+            _mm256_mullo_epi16(first, h0),
+            _mm256_mullo_epi16(second, h1),
+        ))
+    };
+    let vertical = |phase: usize, ring: &[__m256i; 8], next: __m256i| {
+        if V == 0 {
+            return next;
+        }
+        let previous = ring[phase % 2];
+        if !H {
+            return _mm256_add_epi16(
+                _mm256_mullo_epi16(previous, v0),
+                _mm256_mullo_epi16(next, v1),
+            );
+        }
+        let delta = _mm256_sub_epi16(previous, next);
+        let near = _mm256_add_epi16(next, _mm256_mulhrs_epi16(delta, scaled));
+        let low = _mm256_and_si256(
+            _mm256_srli_epi16::<3>(_mm256_mullo_epi16(delta, v0)),
+            _mm256_set1_epi16(1),
+        );
+        _mm256_sub_epi16(near, low)
+    };
+    let emit = |row: O::Row<'_>, y: __m256i| {
+        let put = _mm256_srli_epi16::<4>(_mm256_add_epi16(y, _mm256_set1_epi16(8)));
+        let put = _mm256_min_epu16(put, max);
+        let put = if O::BYTES {
+            let (low, high) = (
+                _mm256_castsi256_si128(put),
+                _mm256_extracti128_si256::<1>(put),
+            );
+            _mm256_castsi128_si256(_mm_packus_epi16(low, high))
+        } else {
+            put
+        };
+        O::words16(t, row, put);
+    };
+    let zero = _mm256_setzero_si256();
+    let reach = if H { 17 } else { 16 };
+    rows::strips::<u16, _, _, O, V>(block, out, (16, reach), zero, line, vertical, emit);
 }
 
 /// The full-sample `block` of a compound cell: the samples, by 16 for a

@@ -10,8 +10,9 @@ const STRIDE: usize = 160;
 const ROWS: usize = 48;
 
 /// Planes of `max`-bounded samples: a mixed texture, an extreme-contrast
-/// one that reaches the largest tap sums, and an all-maximum one.
-fn planes(max: u16) -> [Vec<u16>; 3] {
+/// one that reaches the largest tap sums, an all-maximum and an all-zero
+/// one.
+fn planes(max: u16) -> [Vec<u16>; 4] {
     [
         (0..STRIDE * ROWS)
             .map(|i| ((i * 73 + i / STRIDE * 29) % (usize::from(max) + 1)) as u16)
@@ -26,6 +27,7 @@ fn planes(max: u16) -> [Vec<u16>; 3] {
             })
             .collect(),
         vec![max; STRIDE * ROWS],
+        vec![0; STRIDE * ROWS],
     ]
 }
 
@@ -245,6 +247,37 @@ fn neon_compound_matches_portable() {
                         run(false),
                         "{max} {w}x{h} filter {filter} phases {h_phase},{v_phase} forward {forward}"
                     );
+                }
+            }
+        }
+    }
+}
+
+/// 16-column puts of every filter and phase pair at strides of 16 and 17,
+/// below and at the reach of a 16-column BILINEAR strip.
+#[test]
+fn neon_wide_puts_match_portable_at_narrow_strides() {
+    for &max in maxes() {
+        for plane in &planes(max) {
+            for stride in [16, 17] {
+                for filter in 0..NUM_FILTER_TYPES {
+                    for h_phase in 0..16 {
+                        for v_phase in [0, 1, 8, 15] {
+                            let block = Block {
+                                source: plane,
+                                stride,
+                                origin: 2 * stride,
+                                w: 16,
+                                h: 4,
+                                horizontal: taps(filter, h_phase),
+                                vertical: taps(filter, v_phase),
+                            };
+                            let label = format!(
+                                "{max} stride {stride} filter {filter} phases {h_phase},{v_phase}"
+                            );
+                            check_predict(&block, max, &label);
+                        }
+                    }
                 }
             }
         }
