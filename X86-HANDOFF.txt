@@ -488,3 +488,5 @@ lock in the pipeline, the tile-parallel parse. Queued: predict straight into the
   reference-store limit". At the limit the driver collects the oldest in-flight frame
   and checks again; streams below the limit do not change. SparksTruck now completes at
   32 and 48 threads here. Please confirm on x86 at 20 threads and above.
+- Your push 13 is merged at d085075d5 and confirmed on aarch64: hashes equal at 1, 5 and
+  12 threads (267 checks), recon and decode tests pass, gate and x86 clippy pass.
