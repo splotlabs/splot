@@ -80,7 +80,7 @@ impl CdefLumaSegment {
     /// [`CdefLumaSegment::gather`] of 8-bit samples into the byte scratch
     /// alone: [`CdefLumaSegment::block`] then holds nothing, and
     /// [`cdef_filter_segment`] filters the segment's luma only through the
-    /// 32-lane kernel, which [`CdefStrengths::luma_bytes_suffice`] checks.
+    /// 32-lane kernel, which [`CdefUnitFilters::luma_bytes_suffice`] checks.
     #[inline]
     pub fn gather_bytes(
         &mut self,
@@ -376,18 +376,16 @@ fn segment_bounds<S: SimdToken, R: LaneBounds<S>>(
     min: [u16x8<S>; 5],
     max: [u16x8<S>; 5],
 ) -> [[u16; 2]; CDEF_SEGMENT_BLOCKS] {
-    core::array::from_fn(|block| {
-        let next = if block + 1 < CDEF_SEGMENT_BLOCKS {
-            (min[block + 1], max[block + 1])
-        } else {
-            let (min, max) = (min[4], max[4]);
-            (
-                simd.slide_u16x8::<4>(min, min),
-                simd.slide_u16x8::<4>(max, max),
-            )
-        };
-        window_bounds(simd, reduce, (min[block], max[block]), next)
-    })
+    let tail = (
+        simd.slide_u16x8::<4>(min[4], min[4]),
+        simd.slide_u16x8::<4>(max[4], max[4]),
+    );
+    [
+        window_bounds(simd, reduce, (min[0], max[0]), (min[1], max[1])),
+        window_bounds(simd, reduce, (min[1], max[1]), (min[2], max[2])),
+        window_bounds(simd, reduce, (min[2], max[2]), (min[3], max[3])),
+        window_bounds(simd, reduce, (min[3], max[3]), tail),
+    ]
 }
 
 /// [`gather_luma`] into the byte scratch alone.
@@ -595,7 +593,8 @@ fn pair_ranges<S: SimdToken, R: LaneBounds<S>>(
 #[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
 fn pair_eighths<S: SimdToken>(simd: S, row: &[u16; PAIR_SPAN]) -> [u16x8<S>; 3] {
-    [0, 8, PAIR_SPAN - 8].map(|start| u16x8::from_slice(simd, &row[start..start + 8]))
+    let eighth = |start: usize| u16x8::from_slice(simd, &row[start..start + 8]);
+    [eighth(0), eighth(8), eighth(PAIR_SPAN - 8)]
 }
 
 /// [`cdef_filter_block_chroma_pair`] for block `block` of `segment`. The
@@ -1305,6 +1304,7 @@ pub type CdefSegmentOutput<'a, T> = (
 /// [`cdef_filter_block_chroma_pair_segment`]; a block whose window is flat
 /// filters to itself, and is written only for the planes `fill_flat` marks
 /// (luma, U, V). Returns `false` when the rows cannot hold the segment.
+#[inline(never)]
 pub fn cdef_filter_segment<T: crate::ReconSample>(
     segment: &CdefLumaSegment,
     unit: &CdefUnitFilters,
@@ -1471,23 +1471,28 @@ fn publish_pair<S: SimdToken, T: crate::ReconSample>(
         simd.combine_u16x8(row(0), row(1)),
         simd.combine_u16x8(row(2), row(3)),
     );
-    let lanes = [
-        simd.unzip_low_u16x16(low, high),
-        simd.unzip_high_u16x16(low, high),
-    ];
-    for (lanes, (out, stride)) in lanes.into_iter().zip(planes) {
-        if let Some(out) = T::u8_slice_mut(out) {
-            let (low, high) = simd.split_u16x16(lanes);
-            store_quad(
-                simd.saturating_narrow_u16x8(low, high).to_array(),
-                out,
-                stride,
-            )?;
-        } else {
-            store_quad(lanes.to_array(), T::u16_slice_mut(out)?, stride)?;
-        }
+    let [u, v] = planes;
+    store_lanes(simd, simd.unzip_low_u16x16(low, high), u)?;
+    store_lanes(simd, simd.unzip_high_u16x16(low, high), v)
+}
+
+/// [`store_quad`] of 16 `u16` lanes into `T` rows.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn store_lanes<S: SimdToken, T: crate::ReconSample>(
+    simd: S,
+    lanes: u16x16<S>,
+    (out, stride): (&mut [T], usize),
+) -> Option<()> {
+    if let Some(out) = T::u8_slice_mut(out) {
+        let (low, high) = simd.split_u16x16(lanes);
+        return store_quad(
+            simd.saturating_narrow_u16x8(low, high).to_array(),
+            out,
+            stride,
+        );
     }
-    Some(())
+    store_quad(lanes.to_array(), T::u16_slice_mut(out)?, stride)
 }
 
 /// Stores the 4x4 block `lanes` into the rows of `out`, `stride` apart.
