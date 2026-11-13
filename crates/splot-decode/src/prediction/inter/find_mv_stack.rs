@@ -1357,10 +1357,7 @@ pub(crate) fn find_mv_stack_upto(
     let mut derived = DerivedMvState::new(temporal, order_hints, global_mv);
     let mut warp = derive_wrl.then(WarpParamStack::new);
     if let Some(warp) = warp.as_mut() {
-        generate_points_from_corners(grid, block, 0, warp);
-        if warp.num_found == 0 && block.bw4 <= 16 {
-            generate_points_from_corners(grid, block, 1, warp);
-        }
+        generate_points_from_corners(grid, block, warp);
     }
     if use_temporal_first {
         scan_temporal_mv_stack(grid, block, temporal, &mut entries, &mut prune_count);
@@ -1968,24 +1965,34 @@ fn add_temporal_mv_sample(
 fn generate_points_from_corners(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
-    iter: i32,
     warp: &mut WarpParamStack,
 ) {
     let bw4 = block.bw4 as i32;
     let bh4 = block.bh4 as i32;
-    let mut pts = [[0i32; 2]; 3];
-    let mut mvs = [[0i32; 2]; 3];
-    let mut found = 0usize;
-    for (delta_row, delta_col, adjust_col) in
-        [(-1, -1, iter), (-1, bw4 - 1, iter), (bh4 - 1, -1, 0)]
-    {
-        warp_corner(
-            grid, block, delta_row, delta_col, adjust_col, &mut pts, &mut mvs, &mut found,
-        );
-    }
-    if found != 3 {
+    let Some(bottom_left) = warp_corner(grid, block, bh4 - 1, -1, 0) else {
         return;
+    };
+    for iter in 0..2 {
+        if iter == 1 && (warp.num_found != 0 || block.bw4 > 16) {
+            return;
+        }
+        let Some(top_left) = warp_corner(grid, block, -1, -1, iter) else {
+            continue;
+        };
+        let Some(top_right) = warp_corner(grid, block, -1, bw4 - 1, iter) else {
+            continue;
+        };
+        let [pts, mvs] = [0, 1].map(|i| [top_left[i], top_right[i], bottom_left[i]]);
+        model_from_corners(block, pts, mvs, warp);
     }
+}
+
+fn model_from_corners(
+    block: &MvBlockContext,
+    pts: [[i32; 2]; 3],
+    mvs: [[i32; 2]; 3],
+    warp: &mut WarpParamStack,
+) {
     let mut ref_pts = [[0i64; 2]; 3];
     let mut all_mvs_same = true;
     for n in 0..3 {
@@ -2025,17 +2032,13 @@ fn generate_points_from_corners(
     warp.insert(wmmat);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn warp_corner(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     delta_row: i32,
     delta_col: i32,
     adjust_col: i32,
-    pts: &mut [[i32; 2]; 3],
-    mvs: &mut [[i32; 2]; 3],
-    found: &mut usize,
-) {
+) -> Option<[[i32; 2]; 2]> {
     let mv_row = block.mi_row as i32 + delta_row;
     let mv_col = block.mi_col as i32 + delta_col;
     let is_sb_border = block.is_sb_border();
@@ -2047,40 +2050,28 @@ fn warp_corner(
         block.mi_col as i32 + delta_col
     };
     if is_sb_border && delta_col == 0 && block.bw4 <= 2 {
-        return;
+        return None;
     }
-    let Some(leaf) = grid.probe(mv_row, mv_col2) else {
-        return;
-    };
+    let leaf = grid.probe(mv_row, mv_col2)?;
     let flags = leaf.flags();
-    if !flags.is_inter() || *found >= 3 {
-        return;
+    if !flags.is_inter() {
+        return None;
     }
-    for ref_list in 0..2usize {
-        let ref_matches = if ref_list == 0 {
-            flags.ref_frame0() == block.ref_frame0
+    let corner_mv = if flags.ref_frame0() == block.ref_frame0 {
+        if flags.is_warp() {
+            warp_motion_vector_at(leaf.stored_warp()?, block, mv_row + 1, mv_col + 1)
         } else {
-            flags.ref_frame1() == Some(block.ref_frame0)
-        };
-        if !ref_matches {
-            continue;
+            leaf.sub_mv(0)
         }
-        let corner_mv = if flags.is_warp() {
-            if ref_list > 0 {
-                return;
-            }
-            let Some(params) = leaf.stored_warp() else {
-                return;
-            };
-            warp_motion_vector_at(params, block, mv_row + 1, mv_col + 1)
-        } else {
-            leaf.sub_mv(ref_list)
-        };
-        pts[*found] = [(mv_row + 1) * 4, (mv_col + 1) * 4];
-        mvs[*found] = [corner_mv.row, corner_mv.col];
-        *found += 1;
-        return;
-    }
+    } else if flags.ref_frame1() == Some(block.ref_frame0) && !flags.is_warp() {
+        leaf.sub_mv(1)
+    } else {
+        return None;
+    };
+    Some([
+        [(mv_row + 1) * 4, (mv_col + 1) * 4],
+        [corner_mv.row, corner_mv.col],
+    ])
 }
 
 pub(crate) fn warp_sub_mv_at(
