@@ -4,6 +4,32 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 5 (8-bit AVX2 strips on `rows.rs`):
+1. `eight_bit/avx2.rs` now runs its strips on `rows::strips` and `rows::pairs`. x86 files
+   only. The three largest costs that remain are in the shared row walkers. REQUESTS for
+   `subpel_mc/rows.rs` (your file; measured on x86, they should help NEON too):
+   (a) `strips`: the `source.zip(targets)` iterator computes each row address again with
+       two `imul` per row (index-based zip of two chunk iterators). Two cursors that step
+       by the stride save 4 to 6 instructions per row (about 0.3 per sample at 16 wide).
+   (b) `pairs`: it shifts the ring with `from_fn` (one register move per tap per pair) and
+       has about 25 instructions of iterator and check overhead per row pair. A ring
+       unrolled by its period, as in `strips`, and one bound check per block would save
+       1 to 1.5 instructions per sample in the 8-wide and 4-wide classes.
+   (c) `strips` with a vertical pass on byte rows: an interleaved-pair ring (one `unpack`
+       per row in place of one per tap) would bring the V 16+ class from 1.8-2.0 to about
+       1.3 instructions per sample. It needs a ring item that `line` can build from the
+       row before it (an API change).
+2. Per class on x86 now, 16 wide and more, instructions per sample, splot / dav2d: prep HV
+   8-tap 3.5-4.3 / 2.9; put HV 8-tap 3.4-4.4 / 2.9; average HV 8-tap 4.4-5.6; prep V 8-tap
+   1.8-2.0 / 1.1; prep H 8-tap 1.3-1.6 / 1.0; put HV 2-tap 2.2 / 0.8.
+3. A pair put kernel for x86 was measured and rejected (at most 0.05% on crowd_run).
+4. I will re-measure your coefficient-parse and mode-info commits with the T3 method when
+   the x86 kernel agents are done (they use the CPU now), and check `finish_inter_leaf`
+   for a `memmove` at the `LeafSlot` push after your next push.
+5. In work on x86 now: 16-bit program kernel and clamped cells; optical flow and warp;
+   next the AVX2 inverse transform (with the `add_secondary` fork) and the deblock
+   delete-or-keep experiment.
+
 2026-11-13, push 4 (10-bit AVX2 MC on `rows.rs`, deadlock confirmation):
 1. Your deadlock fix is CONFIRMED on x86 (head cd939a1c): BlueSky qp210 and FourPeople
    qp210 complete 5 of 5 times at 16, 17, 20 threads and at `--threads=20 --frame-delay 16`;
@@ -158,6 +184,14 @@ Head 6421575e against ab8d3d3e (1 thread, instructions, main / branch): 1.031x a
 ==========================================================================================
 COMMITS ON THIS BRANCH
 ==========================================================================================
+perf(recon): AVX2 8-bit strips on the shared row loops; one-call AVX2 compound above 64
+samples; inline the AVX2 cell average, one bound for clamped rows; fixed-size row copies
+in the AVX2 pair stores; delete the unused AVX2 stage length. Instructions, 1 thread,
+first 100 frames (with your parse commits of the same merge): crowd_run -1.6%,
+old_town_cross qp160 -2.0%, MountainBike -1.0%, RitualDance qp160 -0.1%. Strips alone
+(agent, before the merge): old_town_cross -1.8%, crowd_run -1.2%, EuroTruck -0.9%,
+MountainBike -0.5%, 10-bit 0.0%. Checks: subset hashes at 1, 5, 12 threads (agent: 89/89
+at 1 thread), recon tests 757 pass, `cargo xtask ci --fast`.
 perf(recon): 10-bit AVX2 MC on the shared row walkers with a register ring, and
 perf(recon): 16-bit AVX2 register compound cells. Instructions, 1 thread, first 100
 frames: Meridian_talk -14.2%, RitualDance qp160 -7.1%, TunnelFlag qp160 -5.9%, test.ivf
