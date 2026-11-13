@@ -165,7 +165,7 @@ fn grid_classification_matches_scalar_cells_across_shapes_and_clamps() {
     };
     let tx_skip =
         |lookup: PcWienerTxSkipLookup| Ok(i32::from((lookup.row * 3 + lookup.col * 5) % 3 == 1));
-    for cell_cols in 1..=10usize {
+    for cell_cols in (1..=10usize).chain([15, 16, 17, 31, 33, 65]) {
         for cell_rows in 1..=4usize {
             for (x, block_start_x) in [(8, 0), (64, 64), (66, 64)] {
                 for block_end_offset in [2usize, 7, 27, 63, 200] {

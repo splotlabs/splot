@@ -13,7 +13,7 @@
 //!
 //! Feature tracking: `RECON-PC-WIENER-CLASSIFICATION`.
 
-use fearless_simd::{Simd, SimdBase, i16x16, i32x4, i32x8, i64x2, prelude::*, u16x8, u16x16};
+use fearless_simd::{Simd, SimdBase, i16x16, i32x4, i32x8, i64x2, prelude::*, u16x16};
 use splot_tables::tables::loop_restoration::{
     PC_WIENER_FILTERS, PC_WIENER_LUT_TO_CLASS, PC_WIENER_SUB_CLASSIFY, PC_WIENER_SUB_CLASSIFY2,
 };
@@ -782,9 +782,9 @@ where
     )?;
     let skip_stride = tx_skip::sums_stride(cell_cols);
 
-    let pooled_width = geo.feature_width / 2;
-    let plane_width = 16 * cell_cols.div_ceil(8) + 2;
-    let row_count = 9 * plane_width;
+    let plan = PooledPlan::new(geo.feature_width / 2, pooled_feature_columns(geo)?);
+    let plane_width = 16 * (cell_cols.div_ceil(8) + 1);
+    let row_count = 12 * plane_width;
     feature_rows
         .try_reserve_exact(row_count.saturating_sub(feature_rows.len()))
         .map_err(|_| ReconError::WorkspaceAllocationFailed {
@@ -796,9 +796,7 @@ where
         expected: row_count,
         actual: 0,
     };
-    let columns = pooled_feature_columns(geo)?;
-    let build_row = |feature_rows: &mut [u16], pooled_row: usize| -> Result<()> {
-        let slot = pooled_row % 3 * 3 * plane_width;
+    let build_row = |feature_rows: &mut [u16], slot: usize, pooled_row: usize| -> Result<()> {
         let rows = [
             source_row(2 * pooled_row)?,
             source_row(2 * pooled_row + 1)?,
@@ -806,35 +804,28 @@ where
             source_row(2 * pooled_row + 3)?,
         ];
         let planes = feature_rows
-            .get_mut(slot..slot + 3 * plane_width)
+            .get_mut(3 * slot * plane_width..(3 * slot + 3) * plane_width)
             .ok_or_else(rows_missing)?;
         let (vertical, rest) = planes.split_at_mut(plane_width);
         let (anti_diag, diag) = rest.split_at_mut(plane_width);
-        pooled_feature_row(rows, [vertical, anti_diag, diag], pooled_width, columns);
-        Ok(())
+        pooled_feature_row(rows, [vertical, anti_diag, diag], &plan).ok_or_else(rows_missing)
     };
     let mut slots = [0, 1, 2];
-    build_row(feature_rows, 0)?;
+    build_row(feature_rows, 0, 0)?;
     for (cell_row, (cells, row_sums)) in output
         .chunks_mut(cell_cols)
         .zip(skip_sums.chunks(skip_stride))
         .enumerate()
     {
-        build_row(feature_rows, 2 * cell_row + 1)?;
-        build_row(feature_rows, 2 * cell_row + 2)?;
-        let mut planes: [[&[u16]; 3]; 3] = [[&[]; 3]; 3];
-        for (feature, rows) in planes.iter_mut().enumerate() {
-            for (slot, row) in slots.iter().zip(rows) {
-                let start = (3 * slot + feature) * plane_width;
-                *row = feature_rows
-                    .get(start..start + plane_width)
-                    .ok_or_else(rows_missing)?;
-            }
-        }
+        build_row(feature_rows, slots[1], 2 * cell_row + 1)?;
+        build_row(feature_rows, slots[2], 2 * cell_row + 2)?;
+        let (ring, window) = feature_rows.split_at_mut(9 * plane_width);
+        crate::lr_madd::lr_simd!(simd => window_rows(simd, ring, slots, window))
+            .ok_or_else(rows_missing)?;
         slots = [slots[2], slots[0], slots[1]];
         crate::lr_madd::lr_simd!(simd => classify_cells(
             simd,
-            planes,
+            window,
             row_sums,
             (offsets_cache, lut),
             params.bit_depth,
@@ -845,14 +836,43 @@ where
     Ok(())
 }
 
-/// Finishes up to eight cells of a grid row from the pooled feature planes
-/// `planes[feature][row]` of its window rows: cell `c` sums pooled columns
-/// `2c..2c + 3` of all three rows, as one pair sum and one even lane.
+/// Sums the three pooled ring rows `slots`, each holding every feature, into
+/// `window`: the 6x6 window rows of one cell row.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn window_rows<S: Simd>(
+    simd: S,
+    ring: &[u16],
+    slots: [usize; 3],
+    window: &mut [u16],
+) -> Option<()> {
+    let len = window.len();
+    let row = |slot: usize| ring.get(slot * len..)?.get(..len);
+    let (Some(a), Some(b), Some(c)) = (row(slots[0]), row(slots[1]), row(slots[2])) else {
+        return None;
+    };
+    for (((out, a), b), c) in window
+        .as_chunks_mut::<16>()
+        .0
+        .iter_mut()
+        .zip(a.as_chunks::<16>().0)
+        .zip(b.as_chunks::<16>().0)
+        .zip(c.as_chunks::<16>().0)
+    {
+        let sum = u16x16::from_slice(simd, a) + u16x16::from_slice(simd, b);
+        (sum + u16x16::from_slice(simd, c)).store_array(out);
+    }
+    Some(())
+}
+
+/// Finishes the cells of a grid row from its window rows `window`, one per
+/// feature: cell `c` sums window columns `2c..2c + 3`, as one pair sum and
+/// one even lane.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn classify_cells<S: Simd, O: ClassifiedCell>(
     simd: S,
-    planes: [[&[u16]; 3]; 3],
+    window: &[u16],
     skips: &[u8],
     tables: (&QvalOffsetsCache, &[u8; PC_WIENER_LUT_INPUTS]),
     bit_depth: BitDepth,
@@ -868,28 +888,33 @@ fn classify_cells<S: Simd, O: ClassifiedCell>(
         let evens = EVENS.map(|even| even * scale);
         (i16x16::splat(simd, scale), i16x16::from_slice(simd, &evens))
     });
-    for (group, (cells, skips)) in cells.chunks_mut(8).zip(skips.chunks(8)).enumerate() {
-        let base = 16 * group;
+    let width = window.len() / 3;
+    let groups = |feature: usize| {
+        window
+            .get(feature * width..(feature + 1) * width)
+            .map(|row| row.as_chunks::<16>().0.windows(2))
+    };
+    let (Some(vertical), Some(anti_diag), Some(diag)) = (groups(0), groups(1), groups(2)) else {
+        return None;
+    };
+    for ((cells, skips), ((vertical, anti_diag), diag)) in cells
+        .chunks_mut(8)
+        .zip(skips.as_chunks::<8>().0)
+        .zip(vertical.zip(anti_diag).zip(diag))
+    {
         let mut sums = [i32x8::splat(simd, 0); 3];
-        for feature in 0..3 {
-            let [mut pairs, mut next] = [u16x16::splat(simd, 0); 2];
-            for row in planes[feature] {
-                let window = row.get(base..)?.first_chunk::<18>()?;
-                pairs += u16x16::from_slice(simd, &window[..16]);
-                next += u16x16::from_slice(simd, &window[2..]);
-            }
-            let (pair_weight, even_weight) = weights[feature];
-            sums[feature] = simd.pairwise_dot_product_i16x16(pairs.bitcast(), pair_weight)
+        for ((sum, lanes), (pair_weight, even_weight)) in sums
+            .iter_mut()
+            .zip([vertical, anti_diag, diag])
+            .zip(weights)
+        {
+            let lanes = lanes.as_flattened().first_chunk::<18>()?;
+            let pairs = u16x16::from_slice(simd, &lanes[..16]);
+            let next = u16x16::from_slice(simd, &lanes[2..]);
+            *sum = simd.pairwise_dot_product_i16x16(pairs.bitcast(), pair_weight)
                 + simd.pairwise_dot_product_i16x16(next.bitcast(), even_weight);
         }
-        O::finish_lanes(
-            simd,
-            sums,
-            *skips.first_chunk::<8>()?,
-            tables,
-            bit_depth,
-            cells,
-        );
+        O::finish_lanes(simd, sums, *skips, tables, bit_depth, cells);
     }
     Some(())
 }
@@ -936,176 +961,180 @@ fn pooled_feature_columns(geo: &ClassifyGridGeometry) -> Result<[usize; 2]> {
     Ok([linear_cols, clamped_center])
 }
 
+/// The chunks of every pooled row of one grid, from its pooled width and
+/// [`pooled_feature_columns`].
+///
+/// Entries `0..linear` pair two unclipped feature columns; every later entry
+/// pairs two copies of the clipped feature, whose center is `center`.
+/// Stepping 32-column chunks cover the entries below `16 * (linear / 16)`,
+/// then up to two `tail` chunks of 16 or 8 entries overlap them up to
+/// `linear`; a chunk past the `reach` linear samples reads them zero-padded.
+struct PooledPlan {
+    reach: usize,
+    tails: [Option<(usize, bool)>; 2],
+    linear: usize,
+    width: usize,
+    center: usize,
+}
+
+impl PooledPlan {
+    fn new(width: usize, [linear_cols, center]: [usize; 2]) -> Self {
+        let linear = linear_cols.clamp(1, 2 * width) / 2;
+        let mut covered = linear / 16 * 16;
+        let mut tails = [None; 2];
+        for tail in &mut tails {
+            if covered >= linear {
+                break;
+            }
+            let wide = linear >= 16 && linear - covered > 8;
+            let start = covered.min(linear.saturating_sub(if wide { 16 } else { 8 }));
+            *tail = Some((start, wide));
+            covered = start + if wide { 16 } else { 8 };
+        }
+        Self {
+            reach: 2 * linear + 2,
+            tails,
+            linear,
+            width,
+            center,
+        }
+    }
+}
+
 /// Builds one row of the 2x2-pooled feature planes from its four source
 /// `rows`: entry `j` of plane `i` sums the § 7.20.4 `get_features` value `i`
-/// of the row's two feature rows and feature columns `2j..2j + 2`.
+/// of the row's two feature rows and feature columns `2j..2j + 2`. Entries
+/// from `plan.width` on hold no feature.
 ///
 /// Every 6x6 `get_box_features` window starts on an even feature row and
 /// column, so it is exactly 3x3 pooled entries. A pooled feature is at most
 /// `4 * 2 * 1023` under § 6 Table 6.3's 10-bit cap, so three pooled rows still
-/// fit `i16` lanes. The § 7.20.4 column clip keeps its center column inside the
-/// source cache, so a row's linear span reaches exactly `linear_cols + 2`
-/// cached samples. A row whose columns are all unclipped ends with a SIMD
-/// chunk that overlaps the previous one instead of a scalar tail.
+/// fit `i16` lanes.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn pooled_feature_row<'a, T: LumaSimdSource>(
     rows: [&'a [T]; 4],
-    planes: [&mut [u16]; 3],
-    pooled_width: usize,
-    [linear_cols, clamped_center]: [usize; 2],
-) {
-    let [Some(vertical), Some(anti_diag), Some(diag)] =
-        planes.map(|plane| plane.get_mut(..pooled_width))
-    else {
-        return;
+    mut planes: [&mut [u16]; 3],
+    plan: &PooledPlan,
+) -> Option<()> {
+    let linear = rows.map(|row| row.get(..plan.reach));
+    let [Some(r0), Some(r1), Some(r2), Some(r3)] = linear else {
+        return None;
     };
-    let mut planes = [vertical, anti_diag, diag];
-    let linear_cols = linear_cols.min(2 * pooled_width);
-    let full = linear_cols / 16;
-    let overlap = linear_cols == 2 * pooled_width && pooled_width >= 8 && 8 * full < pooled_width;
-    let (starts, reach) = match (overlap, full) {
-        (true, _) => (full + 1, 2 * pooled_width + 2),
-        (false, 0) => (0, 0),
-        (false, _) => (full, 16 * full + 2),
-    };
-    let [Some(r0), Some(r1), Some(r2), Some(r3)] = rows.map(|row| row.get(..reach)) else {
-        return;
-    };
-    let pairs = full / 2;
-    let windows = |row: &'a [T]| {
-        row.get(..32 * pairs + 2)
-            .unwrap_or_default()
-            .windows(34)
-            .step_by(32)
-    };
+    let blocks = |row: &'a [T]| row.windows(34).step_by(32);
     let [vertical, anti_diag, diag] = &mut planes;
-    let sources = windows(r0)
-        .zip(windows(r1))
-        .zip(windows(r2))
-        .zip(windows(r3));
-    let targets = pooled_lanes(vertical, 16 * pairs)
-        .zip(pooled_lanes(anti_diag, 16 * pairs))
-        .zip(pooled_lanes(diag, 16 * pairs));
+    let sources = blocks(r0).zip(blocks(r1)).zip(blocks(r2)).zip(blocks(r3));
+    let targets = (vertical.as_chunks_mut::<16>().0.iter_mut())
+        .zip(anti_diag.as_chunks_mut::<16>().0)
+        .zip(diag.as_chunks_mut::<16>().0);
     for ((((r0, r1), r2), r3), ((vertical, anti_diag), diag)) in sources.zip(targets) {
-        if let (
-            Some(r0),
-            Some(r1),
-            Some(r2),
-            Some(r3),
-            Some(vertical),
-            Some(anti_diag),
-            Some(diag),
-        ) = (
+        if let (Some(r0), Some(r1), Some(r2), Some(r3)) = (
             r0.first_chunk::<34>(),
             r1.first_chunk::<34>(),
             r2.first_chunk::<34>(),
             r3.first_chunk::<34>(),
-            vertical.first_chunk_mut::<16>(),
-            anti_diag.first_chunk_mut::<16>(),
-            diag.first_chunk_mut::<16>(),
         ) {
-            crate::lr_madd::lr_simd!(simd => pooled_features_lanes(simd, [r0, r1, r2, r3], [vertical, anti_diag, diag]));
+            crate::lr_madd::lr_simd!(simd => pooled_lanes(simd, [r0, r1, r2, r3], [vertical, anti_diag, diag]));
         }
     }
-    for index in 2 * pairs..starts {
-        let start = (8 * index).min(pooled_width.saturating_sub(8));
-        if !pooled_chunk([r0, r1, r2, r3], &mut planes, start) {
-            return;
+    for &(start, wide) in plan.tails.iter().flatten() {
+        let linear = [r0, r1, r2, r3];
+        if wide {
+            pooled_chunk::<T, 34>(linear, &mut planes, start)?;
+        } else {
+            pooled_chunk::<T, 18>(linear, &mut planes, start)?;
         }
     }
-    let j = if overlap { pooled_width } else { 8 * full };
-    for j in j..pooled_width {
-        let mut sums = [0i32; 3];
-        for (up, cur, down) in [(rows[0], rows[1], rows[2]), (rows[1], rows[2], rows[3])] {
-            for col in [2 * j, 2 * j + 1] {
-                let center = if col < linear_cols {
-                    col + 1
-                } else {
-                    clamped_center
-                };
-                let values = second_derivative_features(up, cur, down, center);
-                for (sum, value) in sums.iter_mut().zip(values) {
-                    *sum += value;
-                }
-            }
-        }
-        for (plane, sum) in planes.iter_mut().zip(sums) {
-            if let Some(entry) = plane.get_mut(j) {
-                *entry = sum as u16;
-            }
+    if plan.linear < plan.width {
+        let column = |row: &[T]| {
+            row.get(plan.center.checked_sub(1)?..plan.center + 2)
+                .map(zero_padded::<T, 18>)
+        };
+        let [Some(c0), Some(c1), Some(c2), Some(c3)] = rows.map(column) else {
+            return None;
+        };
+        let values = crate::lr_madd::lr_simd!(simd => clipped_features(simd, [&c0, &c1, &c2, &c3]));
+        for (plane, value) in planes.into_iter().zip(values) {
+            plane.get_mut(plan.linear..plan.width)?.fill(value);
         }
     }
+    Some(())
 }
 
-/// The 16-entry chunks of the first `len` entries of a pooled plane.
-fn pooled_lanes(plane: &mut [u16], len: usize) -> core::slice::ChunksExactMut<'_, u16> {
-    plane
-        .get_mut(..len)
-        .unwrap_or_default()
-        .chunks_exact_mut(16)
-}
-
-/// Pools 16 feature columns from `start` into 8 entries of each plane, from
-/// the four source rows of the pooled row; returns `false` when a row or
-/// plane is short.
+/// Pools the `REACH - 2` feature columns from entry `start` into 16 entries
+/// of each plane (the upper half undefined for an 8-entry chunk), reading the rows
+/// zero-padded past their ends; `None` when a plane is short.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn pooled_chunk<'a, T: LumaSimdSource>(
+fn pooled_chunk<'a, T: LumaSimdSource, const REACH: usize>(
     rows: [&'a [T]; 4],
     planes: &mut [&mut [u16]; 3],
     start: usize,
-) -> bool {
-    let chunk = |row: &'a [T]| row.get(2 * start..).and_then(<[T]>::first_chunk::<18>);
+) -> Option<()> {
     let [vertical, anti_diag, diag] = planes;
-    if let (Some(r0), Some(r1), Some(r2), Some(r3), Some(vertical), Some(anti_diag), Some(diag)) = (
-        chunk(rows[0]),
-        chunk(rows[1]),
-        chunk(rows[2]),
-        chunk(rows[3]),
-        vertical
-            .get_mut(start..)
-            .and_then(<[u16]>::first_chunk_mut::<8>),
-        anti_diag
-            .get_mut(start..)
-            .and_then(<[u16]>::first_chunk_mut::<8>),
-        diag.get_mut(start..)
-            .and_then(<[u16]>::first_chunk_mut::<8>),
+    let (Some(vertical), Some(anti_diag), Some(diag)) = (
+        vertical.get_mut(start..)?.first_chunk_mut::<16>(),
+        anti_diag.get_mut(start..)?.first_chunk_mut::<16>(),
+        diag.get_mut(start..)?.first_chunk_mut::<16>(),
+    ) else {
+        return None;
+    };
+    let tail = |row: &'a [T]| -> &'a [T] { row.get(2 * start..).unwrap_or_default() };
+    let [r0, r1, r2, r3] = rows;
+    if let (Some(r0), Some(r1), Some(r2), Some(r3)) = (
+        tail(r0).first_chunk::<REACH>(),
+        tail(r1).first_chunk::<REACH>(),
+        tail(r2).first_chunk::<REACH>(),
+        tail(r3).first_chunk::<REACH>(),
     ) {
-        crate::lr_madd::lr_simd!(simd => pooled_features_lanes(simd, [r0, r1, r2, r3], [vertical, anti_diag, diag]));
-        return true;
+        crate::lr_madd::lr_simd!(simd => pooled_lanes(simd, [r0, r1, r2, r3], [vertical, anti_diag, diag]));
+        return Some(());
     }
-    false
+    let padded = |row: &'a [T]| zero_padded::<T, REACH>(tail(row));
+    let (r0, r1, r2, r3) = (padded(r0), padded(r1), padded(r2), padded(r3));
+    crate::lr_madd::lr_simd!(simd => pooled_lanes(simd, [&r0, &r1, &r2, &r3], [vertical, anti_diag, diag]));
+    Some(())
 }
 
-/// Pools `2 * N` feature columns of two feature rows into `N` (8 or 16)
-/// entries of each plane; `rows` are the four source rows of the pooled row,
-/// each sliced to the chunk's `2 * N + 2`-sample reach.
+/// The first `N` of `samples`, zero past their end.
+fn zero_padded<T: Copy + Default, const N: usize>(samples: &[T]) -> [T; N] {
+    core::array::from_fn(|lane| samples.get(lane).copied().unwrap_or_default())
+}
+
+/// Pools `REACH - 2` feature columns of two feature rows into 16 entries of
+/// each plane; `rows` are the four source rows of the pooled row.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn pooled_features_lanes<S: Simd, T: LumaSimdSource, const REACH: usize, const N: usize>(
+fn pooled_lanes<S: Simd, T: LumaSimdSource, const REACH: usize>(
     simd: S,
     rows: [&[T; REACH]; 4],
-    planes: [&mut [u16; N]; 3],
+    planes: [&mut [u16; 16]; 3],
 ) {
-    let low = pooled_sums(simd, &rows, 0);
-    if N == 16 {
-        let high = pooled_sums(simd, &rows, 16);
-        for ((plane, low), high) in planes.into_iter().zip(low).zip(high) {
-            if let Some(plane) = plane.as_mut_slice().first_chunk_mut::<16>() {
-                let lanes: u16x16<S> = simd.saturating_narrow_i32x8(low, high).bitcast();
-                lanes.store_array(plane);
-            }
-        }
-        return;
-    }
-    let (vertical, anti_diag) = simd.saturating_narrow_i32x8(low[0], low[1]).split();
-    let (diag, _) = simd.saturating_narrow_i32x8(low[2], low[2]).split();
-    for (plane, lanes) in planes.into_iter().zip([vertical, anti_diag, diag]) {
-        if let Some(plane) = plane.as_mut_slice().first_chunk_mut::<8>() {
-            lanes.bitcast::<u16x8<S>>().store_array(plane);
-        }
-    }
+    let ones = i16x16::splat(simd, 1);
+    let low = pooled_sums(simd, &rows, 0, ones);
+    let high = if REACH > 18 {
+        pooled_sums(simd, &rows, 16, ones)
+    } else {
+        low
+    };
+    let [vertical, anti_diag, diag] = planes;
+    let narrow = |feature: usize| -> u16x16<S> {
+        simd.saturating_narrow_i32x8(low[feature], high[feature])
+            .bitcast()
+    };
+    narrow(0).store_array(vertical);
+    narrow(1).store_array(anti_diag);
+    narrow(2).store_array(diag);
+}
+
+/// Twice the two-row sum of each feature at the first center of `rows`: the
+/// pooled entry of two clipped feature columns.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn clipped_features<S: Simd, T: LumaSimdSource>(simd: S, rows: [&[T; 18]; 4]) -> [u16; 3] {
+    const FIRST: [i16; 16] = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    pooled_sums(simd, &rows, 0, i16x16::from_slice(simd, &FIRST))
+        .map(|sums| <[i32; 8]>::from(sums)[0] as u16)
 }
 
 #[allow(clippy::inline_always)]
@@ -1114,15 +1143,15 @@ fn pooled_sums<S: Simd, T: LumaSimdSource, const REACH: usize>(
     simd: S,
     rows: &[&[T; REACH]; 4],
     at: usize,
+    weights: i16x16<S>,
 ) -> [i32x8<S>; 3] {
     let cut = |row: usize| rows[row].get(at..).unwrap_or_default();
     let top = second_derivative_lanes(simd, cut(0), cut(1), cut(2));
     let bottom = second_derivative_lanes(simd, cut(1), cut(2), cut(3));
-    let ones = i16x16::splat(simd, 1);
     [
-        simd.pairwise_dot_product_i16x16((top[0] + bottom[0]).bitcast(), ones),
-        simd.pairwise_dot_product_i16x16((top[1] + bottom[1]).bitcast(), ones),
-        simd.pairwise_dot_product_i16x16((top[2] + bottom[2]).bitcast(), ones),
+        simd.pairwise_dot_product_i16x16((top[0] + bottom[0]).bitcast(), weights),
+        simd.pairwise_dot_product_i16x16((top[1] + bottom[1]).bitcast(), weights),
+        simd.pairwise_dot_product_i16x16((top[2] + bottom[2]).bitcast(), weights),
     ]
 }
 
@@ -1150,23 +1179,6 @@ fn second_derivative_lanes<S: Simd, T: LumaSimdSource>(
         (load(up, 1) - twice_center + load(down, 1)).abs().bitcast(),
         (load(up, 2) - twice_center + load(down, 0)).abs().bitcast(),
         (load(up, 0) - twice_center + load(down, 2)).abs().bitcast(),
-    ]
-}
-
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn second_derivative_features<T: LumaSimdSource>(
-    up: &[T],
-    cur: &[T],
-    down: &[T],
-    center: usize,
-) -> [i32; 3] {
-    let at = |row: &[T], col: usize| i32::from(T::scalar(row, col));
-    let m2 = 2 * at(cur, center);
-    [
-        (at(up, center) - m2 + at(down, center)).abs(),
-        (at(up, center + 1) - m2 + at(down, center - 1)).abs(),
-        (at(up, center - 1) - m2 + at(down, center + 1)).abs(),
     ]
 }
 
