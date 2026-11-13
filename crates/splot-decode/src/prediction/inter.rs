@@ -665,6 +665,7 @@ pub(in crate::prediction::inter) struct HeldInterBlockReferences<'a, T: ReconSam
 ///
 /// Returns a typed reference-state diagnostic when a named slot has no readable
 /// frame samples.
+#[inline]
 pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSample>(
     ref_frame_idx: &[u32],
     reference: &'a InterReferenceState<T>,
@@ -705,11 +706,11 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
         rect: mc::McBlockRect,
         use_refinemv: bool,
         refinemv_switchable: bool,
-        motion: Option<mc::CompoundMotionGrid>,
+        motion: Option<&mc::CompoundMotionGrid>,
         offset: ByteOffset,
-    ) -> Result<Option<mc::CompoundMotionGrid>> {
+    ) -> Result<()> {
         if !self.compound && placed.block.warp_params[0].is_none() {
-            mc::motion_compensate_single_block_into(
+            return mc::motion_compensate_single_block_into(
                 sink,
                 self.reference0.samples()?,
                 rect,
@@ -717,14 +718,13 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
                 placed.block.interp,
                 placed.predict_chroma,
                 offset,
-            )?;
-            return Ok(motion);
+            );
         }
         let block = self
             .block_params(placed, rect)?
             .with_refinemv(use_refinemv)
             .with_switchable_refinemv(refinemv_switchable);
-        mc::predict_inter_block_from_grid(sink, block, motion, offset)
+        mc::predict_inter_block_from_grid(sink, &block, motion, offset)
     }
 
     /// Builds the § 7.13.3 prediction parameters for the held block.

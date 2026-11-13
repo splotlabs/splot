@@ -612,7 +612,7 @@ impl EncoderInterTile {
             &placed,
             &[],
             &[],
-            grid,
+            grid.as_ref(),
             refine.0,
             refine.1,
             &self.ref_frame_idx,
