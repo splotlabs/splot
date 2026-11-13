@@ -499,9 +499,6 @@ pub fn optflow_unit_8x8_u16(
     sad_threshold: Option<u32>,
 ) -> Result<Option<[[i32; 2]; 2]>> {
     let threshold = sad_threshold.unwrap_or(0);
-    if rows[0] == rows[1] {
-        return Ok((threshold == 0).then_some([[0; 2]; 2]));
-    }
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
     let max = bit_depth.max_sample();
     baseline_simd!(simd => {
@@ -1329,14 +1326,15 @@ mod tests {
     /// SAD is below the threshold.
     #[test]
     fn word_8x8_units_match_the_strided_derivation() {
-        let fills: [fn(usize) -> u16; 4] = [
+        let fills: [fn(usize) -> u16; 5] = [
             |i| ((i * 73 + i / 13 * 29 + (i * i) % 7) % 1024) as u16,
             |i| if (i + i / 13) % 3 == 0 { 1023 } else { 0 },
             |i| ((i * 7919) % 1024) as u16,
             |i| (i % 2) as u16 + 500,
+            |_| 700,
         ];
         for distances in [[1, -1], [3, 2], [-4, 1], [0, 2]] {
-            for (first, second) in [(0, 1), (1, 2), (2, 0), (3, 3), (0, 0)] {
+            for (first, second) in [(0, 1), (1, 2), (2, 0), (3, 3), (0, 0), (4, 4)] {
                 let a: Vec<u16> = (0..64).map(fills[first]).collect();
                 let b: Vec<u16> = (0..64).map(|i| fills[second](i + 5)).collect();
                 let sad: u32 = a
