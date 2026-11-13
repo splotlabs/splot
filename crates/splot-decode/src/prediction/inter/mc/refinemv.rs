@@ -11,6 +11,23 @@ use fearless_simd::{
 const REFINEMV_UNIT_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_AREA: usize = TIP_PREDICTION_SIZE * TIP_PREDICTION_SIZE;
+
+/// The 16x16 TIP refine-MV search areas of both references, kept by the
+/// caller so that no unit zeroes them: each unit writes what it reads.
+#[derive(Debug)]
+pub(crate) struct TipSearchScratch {
+    predictions: [[u16; TIP_PREDICTION_AREA]; 2],
+    windows: [[u8; TIP_PREDICTION_AREA]; 2],
+}
+
+impl Default for TipSearchScratch {
+    fn default() -> Self {
+        Self {
+            predictions: [[0; TIP_PREDICTION_AREA]; 2],
+            windows: [[0; TIP_PREDICTION_AREA]; 2],
+        }
+    }
+}
 pub(super) const SEARCH_PADDING: i32 = 4 * 8;
 use splot_recon::REFINEMV_NEIGHBORS as SEARCH_NEIGHBORS;
 
@@ -740,11 +757,15 @@ fn byte_sad_lanes<S: Simd>(simd: S, left: [u64; 2], right: [u64; 2]) -> u32 {
 pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
     block: &CompoundMcBlock<'_, T>,
     (rect, candidates): (McBlockRect, [Mv; 2]),
-    predictions: &mut [[u16; TIP_PREDICTION_AREA]; 2],
+    search: &mut TipSearchScratch,
     luma: &mut [super::optflow::LumaReference<'a, T>; 2],
     carries: &mut [splot_recon::BilinearOverlapCarry<'a, T>; 2],
 ) -> Result<Option<MotionCell>> {
     const PREDICTION_SIZE: usize = TIP_PREDICTION_SIZE;
+    let TipSearchScratch {
+        predictions,
+        windows,
+    } = search;
 
     let Some(distances) = block.optflow_distances else {
         return Ok(None);
@@ -759,33 +780,26 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
     let mut prediction_rect = rect;
     prediction_rect.luma_w = PREDICTION_SIZE;
     prediction_rect.luma_h = PREDICTION_SIZE;
-    if T::u8_slice(&[]).is_some() {
-        let mut windows = [[0u8; TIP_PREDICTION_AREA]; 2];
-        if super::optflow::search_windows_u8(luma, prediction_rect, candidates, &mut windows)?
-            && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
-                [&windows[0], &windows[1]],
-                PREDICTION_SIZE,
-                12,
-                true,
-            )
-        {
-            let base_mvs = refined_mvs(candidates, dx, dy);
-            let starts = [unit_start(dx, dy), unit_start(-dx, -dy)];
-            let rows = [0, 1].map(|reference| {
-                core::array::from_fn(|row| {
-                    windows[reference]
-                        .get(starts[reference] + row * PREDICTION_SIZE..)
-                        .and_then(<[u8]>::first_chunk::<8>)
-                        .map_or(0, |bytes| u64::from_le_bytes(*bytes))
-                })
-            });
-            let delta =
-                splot_recon::optflow_unit_8x8_u8(rows, distances, block.optflow_sad_threshold)?;
-            return Ok(Some(delta.map_or_else(
-                || MotionCell::from_refinemv(base_mvs),
-                |delta| MotionCell::from_optflow(base_mvs, delta),
-            )));
-        }
+    if T::u8_slice(&[]).is_some()
+        && super::optflow::search_windows_u8(luma, prediction_rect, candidates, windows)?
+        && let Some((dx, dy)) =
+            splot_recon::refinemv_search_u8([&windows[0], &windows[1]], PREDICTION_SIZE, 12, true)
+    {
+        let base_mvs = refined_mvs(candidates, dx, dy);
+        let starts = [unit_start(dx, dy), unit_start(-dx, -dy)];
+        let rows = [0, 1].map(|reference| {
+            core::array::from_fn(|row| {
+                windows[reference]
+                    .get(starts[reference] + row * PREDICTION_SIZE..)
+                    .and_then(<[u8]>::first_chunk::<8>)
+                    .map_or(0, |bytes| u64::from_le_bytes(*bytes))
+            })
+        });
+        let delta = splot_recon::optflow_unit_8x8_u8(rows, distances, block.optflow_sad_threshold)?;
+        return Ok(Some(delta.map_or_else(
+            || MotionCell::from_refinemv(base_mvs),
+            |delta| MotionCell::from_optflow(base_mvs, delta),
+        )));
     }
     let (dx, dy) = tip_search(luma, prediction_rect, candidates, predictions, carries)?;
     let [pred0, pred1] = predictions;

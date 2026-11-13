@@ -34,6 +34,7 @@ mod refinemv;
 use blend::{blend_compound_average, diff_weighted_mask_into, store_clamped_samples};
 pub(crate) use optflow::CompoundMotionGrid;
 use optflow::{CompoundAverageOutput, MotionCell};
+pub(crate) use refinemv::TipSearchScratch;
 pub(crate) use splot_recon::CurrentFrameSurface as WorkspaceSink;
 
 pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32); 3] {
@@ -611,6 +612,7 @@ pub(super) fn tip_batch_motion_grid<T: ReconSample>(
     unit_at: impl Fn(usize) -> (McBlockRect, [Mv; 2]) + Sync,
     offset: ByteOffset,
     refinemv_candidates: Vec<[Mv; 2]>,
+    search: &mut TipSearchScratch,
 ) -> Result<CompoundMotionGrid> {
     optflow::tip_motion_grid(
         sink,
@@ -621,6 +623,7 @@ pub(super) fn tip_batch_motion_grid<T: ReconSample>(
         unit_at,
         offset,
         refinemv_candidates,
+        search,
     )
 }
 

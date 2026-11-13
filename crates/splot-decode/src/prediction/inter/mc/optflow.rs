@@ -787,6 +787,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
     unit_at: impl Fn(usize) -> (McBlockRect, [Mv; 2]) + Sync,
     offset: ByteOffset,
     mut refinemv_candidates: Vec<[Mv; 2]>,
+    search: &mut super::TipSearchScratch,
 ) -> Result<CompoundMotionGrid> {
     refinemv_candidates.clear();
     refinemv_candidates
@@ -820,7 +821,6 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             0,
             &mut cells,
         )?;
-    let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
     let mut luma = LumaReference::pair(sink.info(), block, offset);
     let mut carries: [BilinearOverlapCarry<'_, T>; 2] = Default::default();
     for index in 0..unit_count {
@@ -831,7 +831,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         let refined = super::refinemv::tip_refinemv_optflow_motion_cell(
             block,
             (rect, mvs),
-            &mut initial_predictions,
+            search,
             &mut luma,
             &mut carries,
         )?;

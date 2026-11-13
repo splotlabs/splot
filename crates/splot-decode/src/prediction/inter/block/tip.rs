@@ -159,6 +159,7 @@ pub(super) struct TipReconstructScratch {
     /// Each unit's [`whole_sample_mvs`] from the motion half, so a fresh
     /// prediction skips the refine-MV search it already ran.
     whole_mvs: Vec<Option<[Mv; 2]>>,
+    search: mc::TipSearchScratch,
 }
 
 /// The TIP output walk's reusable state: one entry per full-width row band.
@@ -727,10 +728,10 @@ pub(super) fn motion<T: ReconSample>(
     let grid = plan
         .use_optflow
         .then(|| {
-            let candidates = &mut scratch.grid_candidates;
             tip_motion_grid(
                 &scratch.units,
-                candidates,
+                &mut scratch.grid_candidates,
+                &mut scratch.search,
                 plan,
                 sink,
                 reference,
@@ -780,6 +781,7 @@ pub(super) fn motion<T: ReconSample>(
 fn tip_motion_grid<T: ReconSample>(
     units: &[TipUnit],
     candidates: &mut Vec<[Mv; 2]>,
+    search: &mut mc::TipSearchScratch,
     plan: &TipBlockPlan,
     sink: &mc::WorkspaceSink<'_, '_, T>,
     reference: &InterReferenceState<T>,
@@ -808,6 +810,7 @@ fn tip_motion_grid<T: ReconSample>(
         },
         tile_offset,
         core::mem::take(candidates),
+        search,
     )
     .map(Some)
 }
@@ -1780,6 +1783,7 @@ mod tests {
         let grid = super::tip_motion_grid(
             &scratch.units,
             &mut scratch.grid_candidates,
+            &mut scratch.search,
             &plan,
             &sink,
             &reference,

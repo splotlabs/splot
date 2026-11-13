@@ -89,7 +89,7 @@ fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, 
         tip_refinemv_optflow_motion_cell(
             &block,
             (block.rect, [block.mv0, block.mv1]),
-            &mut [[0; 256]; 2],
+            &mut TipSearchScratch::default(),
             &mut luma,
             &mut Default::default(),
         )
