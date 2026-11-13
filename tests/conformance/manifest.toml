@@ -1255,6 +1255,13 @@ path = "vectors/valid/syn-inter-96x64.ivf"
 description = "Non-square key + inter frames at 96x64. All four frame headers signal using_qmatrix == 0; validates clean."
 expect = "clean"
 
+# vectors/decode-unsupported/: valid streams that splot decode rejects with a
+# typed decode/unsupported-feature error (so they are not decoder-oracle fixtures).
+[[vector]]
+path = "vectors/decode-unsupported/syn-bru-inter-128x64-q220.ivf"
+description = "Key + four inter frames at 128x64 from project-owned static-background input (a 20x20 square moves in the top-left superblock), avmenc --enable-bru=1 --lag-in-frames=0 --cpu-used=5 --end-usage=q --qp=220. Frames 3 and 4 code use_bru == 1 with one of two superblocks skipped; avmdec decodes all five frames. splot decode rejects the BRU frames with decode/unsupported-feature backward_reference_update (§ 5.20.2.1); validates clean."
+expect = "clean"
+
 [[vector]]
 path = "vectors/valid/syn-intra-64x64-10bit.ivf"
 description = "10-bit intra key frame at 64x64 (bit_depth_idc path); validates clean."

@@ -143,6 +143,11 @@ impl<'a> FrameCandidateTileFacts<'a> {
                 reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
             });
         }
+        if core.inter.as_ref().and_then(|inter| inter.use_bru) == Some(true) {
+            return Err(FrameCandidateTileBoundaryError::Unsupported {
+                reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
+            });
+        }
         let tile_info = core
             .tile_info
             .as_ref()
@@ -423,6 +428,9 @@ pub(crate) enum FrameCandidateTileUnsupportedReason {
     CandidateNotFrame,
     IncompleteFrameHeader,
     NonIntraFrame,
+    /// A `use_bru == 1` frame: its tile group and superblocks carry § 5.19 / § 5.20.2.1
+    /// BRU syntax the decoder does not read.
+    BackwardReferenceUpdate,
 }
 
 impl fmt::Display for FrameCandidateTileUnsupportedReason {
@@ -431,6 +439,7 @@ impl fmt::Display for FrameCandidateTileUnsupportedReason {
             Self::CandidateNotFrame => "candidate_not_frame",
             Self::IncompleteFrameHeader => "incomplete_frame_header",
             Self::NonIntraFrame => "non_intra_frame",
+            Self::BackwardReferenceUpdate => "backward_reference_update",
         })
     }
 }

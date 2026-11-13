@@ -19,8 +19,12 @@ use super::{
 };
 
 const INTER_SDP_MAX_BLOCK_SIZE: usize = 64;
-const INTRA_REGION: u8 = 0;
+pub(super) const INTRA_REGION: u8 = 0;
 pub(super) const MIXED_REGION: u8 = 1;
+/// § 5.20.2.1 `bru_mode = use_bru ? BRU_INACTIVE : BRU_ACTIVE` without
+/// `BruTileActive`: the tile facts admit only `use_bru == 0` frames, so every
+/// superblock the walk reaches is `BRU_ACTIVE`.
+const NON_BRU_FRAME_SUPERBLOCK_BRU_ACTIVE: bool = true;
 
 /// The neighbour state a leaf's mode syntax reads.
 #[derive(Clone, Copy)]
@@ -107,6 +111,8 @@ struct TreeWalker<'payload> {
     partition_memo: PartitionDecisionMemo,
     /// The chroma reference block the next call inherits.
     chroma_ref: ChromaRefGeometry,
+    /// Whether the current superblock's § 5.20.2.1 `bru_mode` is `BRU_ACTIVE`.
+    bru_active: bool,
 }
 
 /// The leaf callbacks and parser states one superblock walk lends its leaves.
@@ -196,6 +202,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                 sdp_state: SdpPartitionState::default(),
                 partition_memo: PartitionDecisionMemo::default(),
                 chroma_ref: ChromaRefGeometry::new(0, 0, frame.sb_size),
+                bru_active: NON_BRU_FRAME_SUPERBLOCK_BRU_ACTIVE,
             },
             sb_size4,
             next_sb_row,
@@ -348,6 +355,7 @@ where
                 frame,
                 &mut call,
                 partition,
+                walker.bru_active,
                 hooks.work_unit.cdf_mut().tile_cdfs_mut(),
                 &mut walker.symbols,
             )?;
@@ -461,8 +469,11 @@ impl TreeWalker<'_> {
         } else {
             let (partition_context, square_context) =
                 partition_context_inputs(node, self.tile_bounds, mi_size_state)?;
-            let decision_input =
-                facts.read_partition_decision_input(true, partition_context, square_context);
+            let decision_input = facts.read_partition_decision_input(
+                self.bru_active,
+                partition_context,
+                square_context,
+            );
             super::partition::read_partition_decision(decision_input, cdfs, &mut self.symbols)?
         };
         let cfl_allowed_in_sdp = self.sdp_state.record_partition(frame, node, partition);
@@ -498,8 +509,11 @@ pub(super) fn read_frontier_partition_decision(
         forced_chroma_partition,
     )?)?;
     let (partition_context, square_context) = partition_context_inputs(call, tile_bounds, context)?;
-    let decision_input =
-        facts.read_partition_decision_input(true, partition_context, square_context);
+    let decision_input = facts.read_partition_decision_input(
+        NON_BRU_FRAME_SUPERBLOCK_BRU_ACTIVE,
+        partition_context,
+        square_context,
+    );
     Ok(super::partition::read_partition_decision(
         decision_input,
         cdfs,
@@ -957,10 +971,11 @@ pub(super) fn read_extended_sdp_region_type(
     frame: &TilePartitionFrameFacts,
     call: &mut TilePartitionCall,
     partition: PartitionType,
+    bru_active: bool,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<bool, TilePartitionTraversalError> {
-    if !should_read_extended_sdp_region_type(frame, *call, partition)? {
+    if !should_read_extended_sdp_region_type(frame, *call, partition, bru_active)? {
         return Ok(false);
     }
     read_region_type(call, cdfs, symbols)
@@ -998,8 +1013,10 @@ pub(super) fn should_read_extended_sdp_region_type(
     frame: &TilePartitionFrameFacts,
     call: TilePartitionCall,
     partition: PartitionType,
+    bru_active: bool,
 ) -> Result<bool, TilePartitionTraversalError> {
     if partition == PartitionType::None
+        || !bru_active
         || frame.frame_is_intra
         || !frame.enable_extended_sdp
         || call.tree_type != PartitionTreeType::Shared

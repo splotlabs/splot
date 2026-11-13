@@ -341,6 +341,13 @@ fixtureable = true
 spec_sections = ["5.20.3.1", "5.20.5.3"]
 
 [[capability]]
+id = "partition.extended_sdp"
+name = "Inter-frame extended SDP region_type (MIXED and INTRA regions)"
+category = "partition"
+fixtureable = true
+spec_sections = ["5.20.3.1", "5.20.2.1"]
+
+[[capability]]
 id = "partition.recursive"
 name = "Recursive multi-level partition tree"
 category = "partition"
@@ -640,6 +647,14 @@ category = "inter"
 fixtureable = true
 spec_sections = ["7.13.3.14"]
 notes = "A WARPMV block of a frame with force_integer_mv keeps its warp model but predicts with useWarp = 0."
+
+[[capability]]
+id = "inter.bru"
+name = "Backward reference update (use_bru == 1) frames"
+category = "inter"
+fixtureable = true
+spec_sections = ["5.18.2", "5.19", "5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.5.2"]
+notes = "Not decoded: splot decode rejects use_bru == 1 frames with decode/unsupported-feature backward_reference_update. tests/conformance/vectors/decode-unsupported/syn-bru-inter-128x64-q220.ivf (avmenc --enable-bru=1) is the AVM-decodable input for this capability."
 
 [[capability]]
 id = "transform.cctx"

@@ -10,6 +10,7 @@ use crate::DecodeLimitName;
 use crate::bitstream::stream_plan::DecodeSourceIssue;
 use crate::bitstream::tile_payload::{
     FrameCandidateTileBoundaryError, FrameCandidateTileMalformed,
+    FrameCandidateTileUnsupportedReason,
 };
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::support::pipeline_limits::decoded_frame_storage_budget;
@@ -31,6 +32,14 @@ pub(super) fn decode_tile_boundary_error(error: FrameCandidateTileBoundaryError)
             "missing_tile_fact",
             None,
             "decode runtime requires complete parser-derived tile facts",
+        ),
+        FrameCandidateTileBoundaryError::Unsupported {
+            reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
+        } => unsupported_with_spec(
+            "backward_reference_update",
+            None,
+            "decode runtime does not decode use_bru == 1 frames",
+            "5.20.2.1",
         ),
         FrameCandidateTileBoundaryError::Unsupported { .. }
         | FrameCandidateTileBoundaryError::Boundary(_) => unsupported(

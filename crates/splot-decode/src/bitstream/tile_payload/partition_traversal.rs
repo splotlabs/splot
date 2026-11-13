@@ -47,7 +47,7 @@ pub(crate) use tree_walk::{
 };
 #[cfg(test)]
 use tree_walk::{
-    MIXED_REGION, partition_cdf_plane, read_extended_sdp_region_type,
+    INTRA_REGION, MIXED_REGION, partition_cdf_plane, read_extended_sdp_region_type,
     read_frontier_partition_decision, should_read_extended_sdp_region_type,
 };
 

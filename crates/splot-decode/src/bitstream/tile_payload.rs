@@ -88,7 +88,8 @@ pub(crate) use input::plan_derived_tile_payload_boundary;
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
-    TileGroupPositionFacts, plan_derived_tile_payload_boundary_with_scratch,
+    FrameCandidateTileUnsupportedReason, TileGroupPositionFacts,
+    plan_derived_tile_payload_boundary_with_scratch,
 };
 pub(crate) use intra_joint_modes::{
     FrameSegmentIdMap, LumaPalette, TileSegmentIdState, TileSegmentIdStateError, neg_deinterleave,
