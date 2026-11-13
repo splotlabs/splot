@@ -918,9 +918,15 @@ fn cdef_filter_rows_wide8<
             }
         } else {
             let offset = clamped.map_or(offset, |clamped| quads.widen(simd, clamped));
+            let out = T::u16_slice_mut(&mut *out)?;
             for half in 0..2 {
-                let filtered = (center[half] + offset[half]).bitcast::<u16x16<S>>();
-                cdef_store_row_pair::<S, 8, _>(filtered, out, out_stride, first + 2 * half, ROWS)?;
+                let filtered = (center[half] + offset[half])
+                    .bitcast::<u16x16<S>>()
+                    .to_array();
+                for (lanes, row) in filtered.chunks_exact(8).zip(first + 2 * half..) {
+                    let at = row * out_stride;
+                    out.get_mut(at..at + 8)?.copy_from_slice(lanes); // splot-copy-ok: publish the filtered rows into output
+                }
             }
         }
         Some(())
