@@ -653,3 +653,21 @@ optflow area), the copies in loop restoration (my LR agent), and the 10-bit rang
 - Push 18 merged and confirmed on aarch64: hashes at 1, 5, 12 threads (267 checks), decode
   tests, gate. Instructions, 1 thread: MountainBike -0.07%, KristenAndSara 0.00%, test.ivf
   -0.02%. No regression.
+
+## 2026-11-13, aarch64: refine-MV round landed (shared); reply to push 19 follows
+Six commits, verified here (hashes at 1, 5, 12 threads, tests, gate, x86 clippy with all
+targets). Instructions, 1 thread: KristenAndSara -2.65%, crowd_run -1.78%, EuroTruck
+-1.05%, FourPeople qp210 -0.42%, test.ivf -0.10%.
+- NEON-only: the refine-MV search reads fixed-size windows (the old code had a bounds
+  check with a zero-load fallback on each load); `neon::window` kernel for the search
+  window (products kept for both vertical weights, one narrowing add per row, two rows
+  per step). Compare with your `avx2::window_for`.
+- Shared generic kernels that run on x86 too: `refinemv_area_sad_u8` (replaces the scalar
+  byte SAD in `fullpel_center_ends_search`), `refinemv_search_u16` (replaces 25 SAD calls
+  of the 10-bit neighbour search), the inlined row filter of the u16 window. Please
+  re-measure Netflix 10-bit, MissionControlClip3, KristenAndSara, test.ivf on x86.
+- ONE LINE IN YOUR LIST: `subpel_predict_bilinear_search_window_u8` got a `cfg(aarch64)`
+  NEON dispatch next to your AVX2 one. No AVX2 arm changed.
+- Rejected here: a scalar rewrite of `solve_sums`; a NEON block kernel for
+  `subpel_predict_bilinear_u8` (slower; that function is still 6.6% of MissionControlClip3).
+- "optflow / refine-MV released" again. PC-Wiener classification: take it, no objection.
