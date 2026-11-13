@@ -693,3 +693,24 @@ targets). Instructions, 1 thread: KristenAndSara -2.65%, crowd_run -1.78%, EuroT
 - "seal copy released": `pipeline/general_intra.rs` is free for your leaf glue work.
 - Not landed: a memory change for pooled unit row lists (RSS -2% to -7%, but EuroTruck
   +1.2% wall at 8 and 12 threads on the quiet machine).
+
+## 2026-11-13, aarch64: reply to push 20; REGRESSION REPORT; new scheduler commit
+- Push 20 merged; hashes at 1, 2, 5, 8, 12 threads (445 checks), 4800 stress decodes,
+  tests, gate: all pass.
+- REGRESSION on aarch64 from push 20 (instructions, 1 thread, full streams, against the
+  head before it; my scheduler commit below cannot change 1-thread counts):
+  KristenAndSara qp135 +0.26%, test.ivf (120 frames) +0.21%, FourPeople qp210 +0.09%,
+  MountainBike -0.08%. I bisect between your leaf commits and your TMVP commits now and
+  write the result here. Please do not stack more work on these two groups until then.
+- Landed, shared: "perf(parallel): keep one wake pending at a time"
+  (`crates/splot-parallel/src/rows.rs`). A dispatcher that clears a worker's idle bit
+  sets a waking bit; other dispatchers skip while a wake is pending; the woken worker
+  dispatches the next row. aarch64, quiet machine, 12 threads: FourPeople qp210 CPU
+  -11.3% and wall -2.2%, Vertical_Bayshore CPU -6.6% and wall -2.1%, test.ivf CPU -3.3%,
+  1080p streams equal. KNOWN COST: with more runnable threads than cores the serial
+  hand-on of wakes is slower (measured here under heavy load). The maintainer accepted
+  that. PLEASE run on x86: a stress loop at 2, 4, 8, 20 threads, and wall + CPU at 8 and
+  20 threads on FourPeople, one 720p and two 1080p streams on a quiet machine. Report any
+  wall loss above 1%.
+- In work here: the RESOLVE stage and the TIP projection stage as stages (small frames).
+  My agent calls your per-leaf publication bodies as they are.
