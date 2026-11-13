@@ -853,6 +853,7 @@ fn cdef_filter_rows_wide8<
 ) -> Option<()> {
     let (center_bytes, pri_bytes, sec_bytes) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN8, AREA8, PRI, SEC>(bytes, filter.dir, starts)?;
+    let out = out.get_mut(..out_stride.checked_mul(ROWS - 1)?.checked_add(8)?)?;
     let heavy_first = (filter.pri_str >> filter.coeff_shift) & 1 == 0;
     let pri_double = i8x32::splat(simd, if heavy_first { -1 } else { 0 });
     let pri_weight: i16 = if heavy_first { 2 } else { 3 };
@@ -912,7 +913,8 @@ fn cdef_filter_rows_wide8<
             let bias = u8x32::splat(simd, 0x80);
             let bytes = ((center_signed + offset).bitcast::<u8x32<S>>() ^ bias).to_array();
             for (lanes, &row) in bytes.chunks_exact(8).zip(&Q::ROWS) {
-                cdef_output_row::<8, u8>(out, out_stride, first + row)?.copy_from_slice(lanes); // splot-copy-ok: publish the filtered byte rows into output
+                let at = (first + row) * out_stride;
+                out.get_mut(at..at + 8)?.copy_from_slice(lanes); // splot-copy-ok: publish the filtered byte rows into output
             }
         } else {
             let offset = clamped.map_or(offset, |clamped| quads.widen(simd, clamped));
