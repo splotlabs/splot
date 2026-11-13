@@ -330,6 +330,7 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
     let mut scratch = simd::ClassScratch::default();
     for (width, height, bit_depth) in [
         (38, 4, BitDepth::Eight),
+        (48, 4, BitDepth::Eight),
         (64, 6, BitDepth::Ten),
         (6, 2, BitDepth::Ten),
     ] {
@@ -403,9 +404,15 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
         assert!(simd::filter_run(&source, ORIGIN, &block, &mut actual, &mut scratch).is_some());
         assert_eq!(actual, expected, "width {width}, height {height}");
         if bit_depth == BitDepth::Eight {
+            let mut tiled_bytes = bytes.clone();
             assert!(simd::filter_run(&source, ORIGIN, &block, &mut bytes, &mut scratch).is_some());
-            let bytes: Vec<u16> = bytes.into_iter().map(u16::from).collect();
-            assert_eq!(bytes, expected, "u8 rows, width {width}, height {height}");
+            assert!(
+                simd::filter_run(&tiled, ORIGIN, &block, &mut tiled_bytes, &mut scratch).is_some()
+            );
+            for (bytes, label) in [(bytes, "u8 rows"), (tiled_bytes, "tiled u8 rows")] {
+                let bytes: Vec<u16> = bytes.into_iter().map(u16::from).collect();
+                assert_eq!(bytes, expected, "{label}, width {width}, height {height}");
+            }
         }
     }
 }

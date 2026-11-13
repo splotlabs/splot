@@ -259,6 +259,7 @@ trait Lanes<S: Simd>: Copy {
     /// of every sample, in sample order, from the sums times
     /// [`Lanes::sum_scale`].
     fn digits(self, simd: S, sums: [i32x8<S>; 2], scale: i16) -> i16x16<S>;
+    fn range(self, simd: S, low: u16x16<S>, high: u16x16<S>) -> u16;
 }
 
 /// Pairs by AVX2 in-lane unpacks: the first half holds samples `0..4` and
@@ -300,6 +301,29 @@ kernel!(
 kernel!(
     #[allow(clippy::inline_always)]
     #[inline(always)]
+    fn lane_range(_t: Avx2, low: u16x16<Avx2>, high: u16x16<Avx2>) -> u16 {
+        use core::arch::x86_64::{
+            _mm_cvtsi128_si32, _mm_max_epu16, _mm_min_epu16, _mm_minpos_epu16, _mm_set1_epi8,
+            _mm_xor_si128, _mm256_castsi256_si128, _mm256_extracti128_si256,
+        };
+        let (low, high) = (low.into(), high.into());
+        let low = _mm_min_epu16(
+            _mm256_castsi256_si128(low),
+            _mm256_extracti128_si256::<1>(low),
+        );
+        let high = _mm_max_epu16(
+            _mm256_castsi256_si128(high),
+            _mm256_extracti128_si256::<1>(high),
+        );
+        let inverted_max = _mm_minpos_epu16(_mm_xor_si128(high, _mm_set1_epi8(-1)));
+        let min = _mm_cvtsi128_si32(_mm_minpos_epu16(low)) as u16;
+        !(_mm_cvtsi128_si32(inverted_max) as u16) - min
+    }
+);
+
+kernel!(
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
     fn unpack_blocks(t: Avx2, blocks: i32x8<Avx2>) -> [i32x8<Avx2>; 2] {
         use core::arch::x86_64::{_mm256_unpackhi_epi32, _mm256_unpacklo_epi32};
         let blocks = blocks.into();
@@ -327,6 +351,12 @@ impl Lanes<Avx2> for InLane {
     #[inline(always)]
     fn digits(self, simd: Avx2, [low, high]: [i32x8<Avx2>; 2], scale: i16) -> i16x16<Avx2> {
         packed_digits(simd, low, high, scale)
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn range(self, simd: Avx2, low: u16x16<Avx2>, high: u16x16<Avx2>) -> u16 {
+        lane_range(simd, low, high)
     }
 }
 
@@ -537,14 +567,14 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize, const LINEAR
     simd: S,
     lanes: L,
     window: &W,
-    masks: Masks<S>,
+    masks: &Masks<S>,
     init: &Sums<S>,
     params: &GdfSymParams,
 ) -> [u16; 16] {
     let center = samples(simd, window.row(TAP_REACH + ROW), TAP_REACH);
     let centers = (center + ABOVE_OFFSET, center + BELOW_OFFSET);
     let center2 = centers.0 + centers.1;
-    let (transposed, mirrored) = masks;
+    let (transposed, mirrored) = *masks;
     macro_rules! pair {
         ($k:literal, $t:literal, $select:expr) => {
             if LINEAR {
@@ -587,7 +617,7 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize, const LINEAR
         let ((first, third), (second, fourth)) = (swap(a, c, transposed), swap(b, d, transposed));
         [comb(first), comb(second), comb(third), comb(fourth)]
     } else {
-        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params)
+        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, *masks, params)
     };
     add(5, tap4, tap6);
     add(6, tap7, tap11);
@@ -615,7 +645,9 @@ fn slot_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
     block: &GdfBlock,
     params: &GdfSymParams,
 ) {
-    let range = window_range(simd, window, params.slot.linear_bound);
+    let range = window_range(simd, window, params.slot.linear_bound, |low, high| {
+        lanes.range(simd, low, high)
+    });
     let flat = range == 0;
     if flat && params.keeps_flat && (classes >> 2).simd_eq(i32x8::splat(simd, 0)).all_true() {
         sink.keep(simd);
@@ -642,16 +674,48 @@ fn slot_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
     let class = (class | (class << 16)).bitcast::<u16x16<S>>();
     let zero = u16x16::splat(simd, 0);
     let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
-    let rows = if range != ROUGH {
-        [row_index::<S, L, W, 0, true>, row_index::<S, L, W, 1, true>]
+    macro_rules! rows {
+        ($linear:literal) => {{
+            let pos = row_index::<S, L, W, 0, $linear>(simd, lanes, window, &masks, &init, params);
+            sink.row(simd, 0, &pos, block);
+            let pos = row_index::<S, L, W, 1, $linear>(simd, lanes, window, &masks, &init, params);
+            sink.row(simd, 1, &pos, block);
+        }};
+    }
+    if range != ROUGH {
+        rows!(true);
     } else {
-        [
-            row_index::<S, L, W, 0, false>,
-            row_index::<S, L, W, 1, false>,
-        ]
+        rows!(false);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn lane_range_matches_lane_extremes() {
+    let Some(simd) = fearless_simd::Level::baseline().as_avx2() else {
+        return;
     };
-    for (row, row_index) in rows.into_iter().enumerate() {
-        let pos = row_index(simd, lanes, window, masks, &init, params);
-        sink.row(simd, row, &pos, block);
+    let mut seed = 0x9e37_79b9_u32;
+    for case in 0..256 {
+        let mut sample = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            match (seed >> 8) % 8 {
+                0 if case % 2 == 0 => 0,
+                1 if case % 3 == 0 => u16::MAX,
+                _ => (seed >> 16) as u16,
+            }
+        };
+        let pairs: [(u16, u16); 16] = core::array::from_fn(|_| {
+            let (a, b) = (sample(), sample());
+            (a.min(b), a.max(b))
+        });
+        let (low, high) = (pairs.map(|pair| pair.0), pairs.map(|pair| pair.1));
+        let expected =
+            high.iter().max().copied().unwrap_or(0) - low.iter().min().copied().unwrap_or(0);
+        let lanes = (
+            u16x16::from_slice(simd, &low),
+            u16x16::from_slice(simd, &high),
+        );
+        assert_eq!(lane_range(simd, lanes.0, lanes.1), expected, "case {case}");
     }
 }

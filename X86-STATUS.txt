@@ -4,6 +4,54 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 14 (round 4: inter cells and search, GDF, CDEF; the inter cost split):
+1. SHARED CODE CHANGED, please run the aarch64 hashes: `filters/gdf_simd.rs` (8-bit
+   residual add with `i8` saturation in 32 lanes, gradient chunk bounds checked once per
+   row, `lane_range`), `gdf_wide_tests.rs`, and `cdef_filter/segment.rs`
+   (`cdef_filter_rows_wide8`: the output span is checked once per block, about 12 lines).
+   aarch64 clippy `-D warnings` passes here.
+2. Results, instructions, 1 thread, first 100 frames, against push 13: crowd_run -1.5%,
+   riverbed -1.3%, EuroTruck qp110 -1.0%, MountainBike -1.0%, RitualDance qp160 -0.45%.
+   GDF stage 1.14-1.23x -> 1.09-1.18x dav2d. All 88 streams at head e64a8a4b (before this
+   push): 1.584x dav2d geomean, the branch loses on 30 streams, worst 0.76x.
+3. THE INTER COST SPLIT YOU ASKED FOR (callgrind, M instructions, splot / dav2d / gap;
+   crowd_run 40 frames | EuroTruck qp110 30 | MountainBike 30; head d085075d):
+   stage total             5844/4186/+1658 | 4201/2790/+1412 | 1352/715/+637
+   decode glue against dav2d C (mc, mc_opfl, rmv_uvpred, tip_pred)
+                           2387/1302/+1086 | 1837/902/+935   | 493/133/+360
+   MC filters + average    1838/1193/+645  | 1216/737/+479   | 212/137/+75
+   border (Window::emulate against emu_edge)
+                           79/1121/-1043   | 39/681/-642     | 7/61/-54
+   refine-MV search        625/130/+495    | 302/55/+247     | 48/10/+39
+   optflow kernels         554/339/+215    | 363/220/+143    | 52/22/+30
+   warp                    129/101/+28     | 298/194/+103    | 535/352/+183
+   MV-stack TIP functions that the classifier counts as inter: 232 | 148 | 5.
+   Owner against owner on crowd_run: the x86 kernels are 2632 against 2715 for all dav2d
+   asm with emu_edge (-83); shared code is 3211 against 1470 for dav2d C (+1741).
+   x86 cells per call (crowd_run): `predict<8,4,4,4>` 287 per reference (371 clamped),
+   `predict<4,1,2,2>` 80 (128 clamped), `run_program` about 250 per cell on top of reads
+   and predict, `reads<4>` 113 and `reads<8>` 110 (91% in place; now inlined),
+   `groups` 37 per call.
+   Shared glue, M and instructions per call on crowd_run: `tip::motion` 253 / 1993,
+   `optflow::predict_motion_grid_compound_average_into` 212 / 1851, `GridPass::plane`
+   192 / 806, `predict_compound_plane_output` 146 / 773, `compound_subpel_plane` 120 / 282,
+   `run_cell_program` 108 / 309, `compound_plane_views` 97 / 161,
+   `predict_inter_block_from_grid` 85 / 692 (EuroTruck 218 / 1102),
+   `motion_compensate_single_block_into` 85 / 730,
+   `subpel_predict_bilinear_search_window_u8` 78 / 92, `predict_compound_into` 76 / 379,
+   `initial_luma_prediction` 69 / 273, `reconstruct_ordered` 67 / 187,
+   `compound_motion_grid` 57 / 720, `reference_area_bounds` 54 / 54, `tip::build_units`
+   53 / 421, `blend_implicit_mask_region` 37 / 1290, `plane_view` 28 / 49,
+   `hold_reference_slot` 26 / 27. Shared `optflow.rs`: `solve_sums` 253 per call (dav2d
+   239), gradients 3496 per call (dav2d `opfl_refine_mv` 402).
+4. CDEF split (MountainBike, 30 frames, M): the kernels are cheaper than dav2d (560
+   against 894), the direction search is equal; the gap is glue, about 1000 against
+   `cdef_slice` 327: `cdef_segment` self 557 (chroma-pair gather 133, setup 40),
+   `cdef_window_mode` 59, `cdef_i8_diffs_fit` 44, `gather_luma_bytes` 65, the per-block
+   edge path 140 (a segment fails as a whole when one block is at an edge), the stripe
+   loop 59. Three changes here were measured slower and are not made.
+5. Thread scaling: see push 12, item 4.
+
 2026-11-13, push 13 (loop restoration round 3; shared lines changed):
 1. SHARED CODE CHANGED, please run the aarch64 hashes: `pc_wiener.rs` (the pooled feature
    row now takes 16 entries per step: `pooled_feature_row`, `pooled_chunk`, `pooled_lanes`,
@@ -340,6 +388,16 @@ Head 6421575e against ab8d3d3e (1 thread, instructions, main / branch): 1.031x a
 ==========================================================================================
 COMMITS ON THIS BRANCH
 ==========================================================================================
+perf(recon): x86 refine-MV search reads each 16-wide row once; perf(recon): inline the
+in-place reads of x86 register cells; perf(decode): add 8-bit GDF residuals with byte
+saturation; perf(decode): reduce the GDF window range with phminposuw on x86_64;
+perf(decode): check GDF gradient chunk bounds once per row; perf(decode): call the GDF row
+kernels directly on x86_64; perf(recon): check the CDEF 32-lane kernel output span once
+per block; perf(recon): store CDEF 32-lane u16 rows in the checked output span.
+Instructions, 1 thread, first 100 frames: crowd_run -1.5%, riverbed -1.3%, EuroTruck
+-1.0%, MountainBike -1.0%, RitualDance qp160 -0.45%. Checks: `cargo xtask ci --fast`
+(with inter and GDF), subset hashes at 1, 5, 12 threads (agents: 89/89 at 1 thread, recon
+and decode tests, aarch64 clippy).
 perf(recon): make in-lane pmaddwd cell weights with lane shuffles; perf(recon): pool
 PC-Wiener feature rows 16 entries at a time; perf(recon): filter 8-bit PC-Wiener in byte
 lanes on x86. Instructions, 1 thread, first 100 frames: crowd_run -0.35%, riverbed -0.3%,

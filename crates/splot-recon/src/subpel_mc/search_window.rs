@@ -236,16 +236,25 @@ mod avx2 {
         out
     }
 
-    const MASK_12: [u8; 32] = {
-        let mut out = row_mask(12);
-        let mut lane = 16;
-        while lane < 28 {
-            out[lane] = u8::MAX;
-            lane += 1;
+    const MASK_20: [u8; 32] = row_mask(20);
+
+    /// `pshufb` patterns moving bytes `s..s + 12` of each lane to its first
+    /// 12 bytes and zeroing the other four, for `s` in `0..5`.
+    const SHIFTS: [[u8; 32]; 5] = {
+        let mut out = [[0x80; 32]; 5];
+        let mut s = 0;
+        while s < 5 {
+            let mut lane = 0;
+            while lane < 32 {
+                if lane % 16 < 12 {
+                    out[s][lane] = (s + lane % 16) as u8;
+                }
+                lane += 1;
+            }
+            s += 1;
         }
         out
     };
-    const MASK_20: [u8; 32] = row_mask(20);
 
     #[inline]
     #[target_feature(enable = "avx2")]
@@ -464,20 +473,32 @@ mod avx2 {
             allow_center: bool,
         ) -> (i32, i32) {
             match geometry {
-                [16, 12] => search_for::<16, 12, 176, 256>(t, windows, allow_center),
-                [16, _] => search_for::<16, 20, 304, 384>(t, windows, allow_center),
-                [_, 12] => search_for::<24, 12, 272, 384>(t, windows, allow_center),
-                _ => search_for::<24, 20, 464, 576>(t, windows, allow_center),
+                [16, 12] => search16::<12, 256>(t, windows, allow_center),
+                [16, _] => search16::<20, 384>(t, windows, allow_center),
+                [_, 12] => search24::<12, 272, 384>(t, windows, allow_center),
+                _ => search24::<20, 464, 576>(t, windows, allow_center),
             }
         }
     );
 
-    /// [`search`] of `STRIDE`-wide windows of `AREA` bytes and `SAD_H`-row
-    /// areas, each read as one `SPAN`-byte run: one masked 12-byte row per
-    /// `xmm` at stride 16, one masked 20-byte row per `ymm` at stride 24.
+    /// The total of the four `u64` lanes of `sum`.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn search_for<const STRIDE: usize, const SAD_H: usize, const SPAN: usize, const AREA: usize>(
+    fn fold(sum: __m256i) -> __m128i {
+        let half = _mm_add_epi64(
+            _mm256_castsi256_si128(sum),
+            _mm256_extracti128_si256::<1>(sum),
+        );
+        _mm_add_epi64(half, _mm_unpackhi_epi64(half, half))
+    }
+
+    /// [`search`] of 16-wide windows of `AREA` bytes and `SAD_H`-row areas:
+    /// two rows per `ymm`, read once per vertical offset and moved to each
+    /// horizontal one by a `pshufb`; the five SADs of a vertical offset
+    /// packed as `u16` lanes, the first least one found by `phminposuw`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn search16<const SAD_H: usize, const AREA: usize>(
         t: Avx2,
         [first, second]: [&[u8]; 2],
         allow_center: bool,
@@ -487,11 +508,81 @@ mod avx2 {
         else {
             return (0, 0);
         };
-        let mask: __m256i = if STRIDE == 16 {
-            u8x32::load_array(t, MASK_12).into()
-        } else {
-            u8x32::load_array(t, MASK_20).into()
+        let shifts: [__m256i; 5] = SHIFTS.map(|s| u8x32::load_array(t, s).into());
+        let rows = |window: &[u8; AREA], dy: i32| -> [__m256i; 5] {
+            core::array::from_fn(|pair| {
+                if 4 * pair >= SAD_H {
+                    return _mm256_setzero_si256();
+                }
+                let row = (2 + dy) as usize + 4 * pair;
+                _mm256_set_m128i(
+                    load16(t, window, (row + 2) * 16),
+                    load16(t, window, row * 16),
+                )
+            })
         };
+        let sad = |a: &[__m256i; 5], b: &[__m256i; 5], dx: i32| {
+            let (left, right) = (shifts[(2 + dx) as usize], shifts[(2 - dx) as usize]);
+            let mut sum = _mm256_setzero_si256();
+            for (&a, &b) in a.iter().zip(b).take(SAD_H / 4) {
+                let pair =
+                    _mm256_sad_epu8(_mm256_shuffle_epi8(a, left), _mm256_shuffle_epi8(b, right));
+                sum = _mm256_add_epi64(sum, pair);
+            }
+            sum
+        };
+        let centre = [rows(first, 0), rows(second, 0)];
+        let mut best_sad = u32::MAX;
+        if allow_center {
+            let sad = _mm_cvtsi128_si32(fold(sad(&centre[0], &centre[1], 0))) as u32;
+            best_sad = sad - (sad >> 3);
+            if best_sad < (24 * SAD_H) as u32 {
+                return (0, 0);
+            }
+        }
+        let pad = _mm_set_epi64x(-1 << 16, 0);
+        let mut best = None;
+        for dy in -2..=2 {
+            let [a, b] = if dy == 0 {
+                centre
+            } else {
+                [rows(first, dy), rows(second, -dy)]
+            };
+            let s: [__m256i; 5] = core::array::from_fn(|dx| sad(&a, &b, dx as i32 - 2));
+            let low = _mm256_add_epi64(
+                _mm256_add_epi64(s[0], _mm256_slli_epi64::<16>(s[1])),
+                _mm256_add_epi64(_mm256_slli_epi64::<32>(s[2]), _mm256_slli_epi64::<48>(s[3])),
+            );
+            let mut fields = _mm_or_si128(_mm_unpacklo_epi64(fold(low), fold(s[4])), pad);
+            if dy == 0 {
+                fields = _mm_or_si128(fields, _mm_set_epi64x(0, 0xffff << 32));
+            }
+            let min = _mm_cvtsi128_si32(_mm_minpos_epu16(fields));
+            let (sad, index) = (min as u32 & 0xffff, min >> 16 & 7);
+            if sad < best_sad {
+                best_sad = sad;
+                best = Some((index - 2, dy));
+            }
+        }
+        best.unwrap_or((0, 0))
+    }
+
+    /// [`search`] of 24-wide windows and `SAD_H`-row areas, each read as one
+    /// `SPAN`-byte run, one masked 20-byte row per `ymm`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn search24<const SAD_H: usize, const SPAN: usize, const AREA: usize>(
+        t: Avx2,
+        [first, second]: [&[u8]; 2],
+        allow_center: bool,
+    ) -> (i32, i32) {
+        const STRIDE: usize = 24;
+        let (Some(first), Some(second)) =
+            (first.first_chunk::<AREA>(), second.first_chunk::<AREA>())
+        else {
+            return (0, 0);
+        };
+        let mask: __m256i = u8x32::load_array(t, MASK_20).into();
         macro_rules! sad {
             ($dy:expr, $dx:expr) => {{
                 let start = |dy: i32, dx: i32| ((2 + dy) * STRIDE as i32 + 2 + dx) as usize;
@@ -503,16 +594,6 @@ mod avx2 {
                         .get(start(-$dy, -$dx)..)
                         .and_then(<[u8]>::first_chunk::<SPAN>),
                 ) {
-                    (Some(left), Some(right)) if STRIDE == 16 => {
-                        let mask = _mm256_castsi256_si128(mask);
-                        let mut sum = _mm_setzero_si128();
-                        for row in (0..SAD_H).step_by(2) {
-                            let a = _mm_and_si128(load16(t, left, row * STRIDE), mask);
-                            let b = _mm_and_si128(load16(t, right, row * STRIDE), mask);
-                            sum = _mm_add_epi64(sum, _mm_sad_epu8(a, b));
-                        }
-                        (_mm_cvtsi128_si64(sum) + _mm_extract_epi64::<1>(sum)) as u32
-                    }
                     (Some(left), Some(right)) => {
                         let mut sum = _mm256_setzero_si256();
                         for row in (0..SAD_H).step_by(2) {
@@ -520,11 +601,7 @@ mod avx2 {
                             let b = _mm256_and_si256(load32(t, right, row * STRIDE), mask);
                             sum = _mm256_add_epi64(sum, _mm256_sad_epu8(a, b));
                         }
-                        let folded = _mm_add_epi64(
-                            _mm256_castsi256_si128(sum),
-                            _mm256_extracti128_si256::<1>(sum),
-                        );
-                        (_mm_cvtsi128_si64(folded) + _mm_extract_epi64::<1>(folded)) as u32
+                        _mm_cvtsi128_si64(fold(sum)) as u32
                     }
                     _ => u32::MAX,
                 }
