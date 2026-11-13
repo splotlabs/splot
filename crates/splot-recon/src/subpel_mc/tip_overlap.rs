@@ -8,10 +8,18 @@ use fearless_simd::{Simd, SimdBase, SimdIntWiden, SimdNarrow, SimdWiden, u8x16, 
 /// [`subpel_predict_12x12_bilinear_overlap_into`] predicted, with the reference
 /// and geometry it read them at. Only that function writes it; the held
 /// reference borrow keeps those samples unchanged while the carry lives.
-#[derive(Default)]
 pub struct BilinearOverlapCarry<'a, T: ReconSample> {
     source: Option<(&'a [T], usize, [i32; 4])>,
     columns: [[u16; 8]; 12],
+}
+
+impl<T: ReconSample> Default for BilinearOverlapCarry<'_, T> {
+    fn default() -> Self {
+        Self {
+            source: None,
+            columns: [[0; 8]; 12],
+        }
+    }
 }
 
 /// Predicts an unscaled 12x12 bilinear block whose every tap lies inside both

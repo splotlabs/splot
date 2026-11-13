@@ -834,7 +834,7 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
     .expect("compound block");
     let grid = compound_block_motion_grid(
         &super::WorkspaceSink::Frame(&mut workspace),
-        compound,
+        &compound,
         Some(8),
         ByteOffset::new(0),
     )
@@ -872,7 +872,7 @@ fn tip_optflow_skips_low_sad_predictors() {
     .expect("compound block");
     let grid = compound_block_motion_grid(
         &super::WorkspaceSink::Frame(&mut workspace),
-        compound,
+        &compound,
         Some(8),
         ByteOffset::new(0),
     )
@@ -1352,7 +1352,7 @@ fn uniform_motion_direct_average_matches_materialized_path() {
         .expect("compound block");
         predict_compound_plane_output(
             WorkspaceSink::Frame(&mut workspace).info(),
-            block,
+            &block,
             PlaneId::Y,
             0,
             0,
@@ -1413,7 +1413,7 @@ fn mixed_implicit_mask_grid_matches_the_whole_plane_blend() {
     .expect("compound block");
     predict_compound_plane_output(
         sink.info(),
-        block,
+        &block,
         PlaneId::Y,
         0,
         0,
@@ -1428,7 +1428,7 @@ fn mixed_implicit_mask_grid_matches_the_whole_plane_blend() {
 
     let prediction = compound_plane_prediction_for_block(
         sink.info(),
-        block,
+        &block,
         PlaneId::Y,
         0,
         0,
@@ -1495,14 +1495,14 @@ fn u8_translational_compound_direct_fallback_matches_the_general_path() {
     assert!(
         !compound_average::predict_translational_direct(
             &mut WorkspaceSink::Frame(&mut direct),
-            block,
+            &block,
             ByteOffset::new(0),
         )
         .expect("geometry fallback")
     );
     predict_compound_into(
         &mut WorkspaceSink::Frame(&mut direct),
-        block,
+        &block,
         None,
         ByteOffset::new(0),
     )
@@ -1510,7 +1510,7 @@ fn u8_translational_compound_direct_fallback_matches_the_general_path() {
     let mut general = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, width, height);
     predict_compound_into(
         &mut WorkspaceSink::Frame(&mut general),
-        block,
+        &block,
         None,
         ByteOffset::new(0),
     )
@@ -1773,13 +1773,13 @@ fn tip_unit_motion_cell_matches_the_motion_grid_cell() {
         .expect("compound block");
         let mut luma = optflow::LumaReference::pair(sink.info(), &block, offset);
         let cell =
-            optflow::tip_unit_motion_cell(&sink, block, 8, offset, &mut luma).expect("unit cell");
+            optflow::tip_unit_motion_cell(&sink, &block, 8, offset, &mut luma).expect("unit cell");
         let fast = CompoundMotionGrid::from_single_refinemv([mv0, mv1], cell);
         let refinemv = use_refinemv
-            .then(|| refinemv::compound_default_refinemv_motion_grid(&sink, block, offset))
+            .then(|| refinemv::compound_default_refinemv_motion_grid(&sink, &block, offset))
             .transpose()
             .expect("refine-MV grid");
-        let grid = optflow::compound_motion_grid(&sink, block, Some(8), refinemv, offset)
+        let grid = optflow::compound_motion_grid(&sink, &block, Some(8), refinemv, offset)
             .expect("motion grid");
         let stored = grid
             .as_ref()

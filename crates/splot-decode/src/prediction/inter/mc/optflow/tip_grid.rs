@@ -18,7 +18,7 @@ type Intermediate = [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
 /// them.
 pub(in crate::prediction::inter::mc) fn predict_tip_grid<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     motion: &CompoundMotionGrid,
     offset: ByteOffset,
 ) -> Result<bool> {
@@ -75,7 +75,7 @@ pub(in crate::prediction::inter::mc) fn predict_tip_grid<T: ReconSample>(
 /// The block-wide inputs of a [`predict_tip_grid`] plane pass.
 struct GridPass<'a, 'b, T: ReconSample> {
     info: DecodedFrameInfo,
-    block: CompoundMcBlock<'b, T>,
+    block: &'a CompoundMcBlock<'b, T>,
     motion: &'a CompoundMotionGrid,
     check_uniform: bool,
     cwp_weight: i16,

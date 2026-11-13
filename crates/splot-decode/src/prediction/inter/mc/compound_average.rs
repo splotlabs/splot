@@ -22,7 +22,7 @@ use crate::Result;
 /// planes written; the general path rewrites them.
 pub(super) fn predict_translational_direct<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
 ) -> Result<bool> {
     let CompoundBlend::Average {
@@ -70,7 +70,7 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
 /// weights of a plane are not uniform.
 fn predict_unscaled<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     (implicit_mask, cwp_weight): (bool, i16),
     offset: ByteOffset,
 ) -> Result<Option<[bool; 2]>> {
@@ -140,7 +140,7 @@ fn predict_unscaled<T: ReconSample>(
 /// contiguous target; `false` without writing them otherwise.
 fn predict_planes<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     (implicit_mask, cwp_weight): (bool, i16),
     done: [bool; 2],
     offset: ByteOffset,

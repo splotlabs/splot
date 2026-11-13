@@ -525,7 +525,7 @@ pub(super) fn tip_optflow_motion_cell_strided(
 
 pub(super) fn compound_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     unit_size: Option<usize>,
     refinemv: Option<CompoundMotionGrid>,
     offset: ByteOffset,
@@ -567,7 +567,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
         .map_or(block.rect.luma_w.max(block.rect.luma_h), |grid| {
             grid.unit_size()
         });
-    let [mut luma0, mut luma1] = LumaReference::pair(sink.info(), &block, offset);
+    let [mut luma0, mut luma1] = LumaReference::pair(sink.info(), block, offset);
     for region_y in (0..block.rect.luma_h).step_by(base_unit) {
         for region_x in (0..block.rect.luma_w).step_by(base_unit) {
             let region_w = (block.rect.luma_w - region_x).min(base_unit);
@@ -704,7 +704,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
 /// a motion grid.
 pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    unit: CompoundMcBlock<'a, T>,
+    unit: &CompoundMcBlock<'a, T>,
     unit_size: usize,
     offset: ByteOffset,
     luma: &mut [LumaReference<'a, T>; 2],
@@ -780,7 +780,7 @@ fn fullpel_run_pairs(cells: &[MotionCell], columns: usize) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tip_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     unit_size: usize,
     columns: usize,
     unit_count: usize,
@@ -813,7 +813,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
     let fast = fullpel
         && super::refinemv::tip_fullpel_cells(
             sink,
-            &block,
+            block,
             &unit_at,
             &refinemv_candidates,
             (unit_size, offset),
@@ -821,21 +821,16 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             &mut cells,
         )?;
     let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
-    let mut luma = LumaReference::pair(sink.info(), &block, offset);
+    let mut luma = LumaReference::pair(sink.info(), block, offset);
     let mut carries: [BilinearOverlapCarry<'_, T>; 2] = Default::default();
     for index in 0..unit_count {
-        let (rect, mvs) = unit_at(index);
         if fast && cells.get(index).is_some_and(MotionCell::is_initialized) {
             continue;
         }
-        let mut unit = block;
-        unit.rect = rect;
-        unit.mv0 = mvs[0];
-        unit.mv1 = mvs[1];
-        unit.has_chroma = false;
-        unit.sub8x8_chroma = false;
+        let (rect, mvs) = unit_at(index);
         let refined = super::refinemv::tip_refinemv_optflow_motion_cell(
-            unit,
+            block,
+            (rect, mvs),
             &mut initial_predictions,
             &mut luma,
             &mut carries,
@@ -847,7 +842,13 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             *destination = cell;
             continue;
         }
-        let cell = tip_unit_motion_cell(sink, unit, unit_size, offset, &mut luma)?;
+        let mut unit = *block;
+        unit.rect = rect;
+        unit.mv0 = mvs[0];
+        unit.mv1 = mvs[1];
+        unit.has_chroma = false;
+        unit.sub8x8_chroma = false;
+        let cell = tip_unit_motion_cell(sink, &unit, unit_size, offset, &mut luma)?;
         let destination = cells.get_mut(index).ok_or(ReconError::ArithmeticOverflow {
             context: "TIP compound motion-grid write",
         })?;
@@ -1225,7 +1226,7 @@ pub(super) fn predict_uniform_motion_compound_average_into<
     O: CompoundAverageOutput + Send,
 >(
     info: DecodedFrameInfo,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
@@ -1329,7 +1330,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
     O: CompoundAverageOutput + Send,
 >(
     info: DecodedFrameInfo,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
@@ -1932,7 +1933,7 @@ fn round2_signed_sub(mv: i32, sub: u32) -> i32 {
 /// declined, so that a grid prediction always fills `chroma_v` when given one.
 fn predict_chroma_v_separately<T: ReconSample, O: CompoundAverageOutput + Send>(
     info: DecodedFrameInfo,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     (sub_x, sub_y): (u32, u32),
     motion: &CompoundMotionGrid,
     (implicit_mask, cwp_weight): (bool, i16),
@@ -2050,7 +2051,7 @@ type SecondPlane<'a, 'b, T, O> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [O
 
 pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
     info: DecodedFrameInfo,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
@@ -2266,45 +2267,47 @@ mod tests {
     fn translational_rows_match_the_per_sample_blend<T: ReconSample>(
         bit_depth: splot_recon::BitDepth,
     ) {
-        let (w, h, frame_w, frame_h) = (24usize, 7usize, 20usize, 5usize);
-        let pred0: Vec<i32> = (0..w * h).map(|i| (i as i32 * 7 % 900) * 48).collect();
-        let pred1: Vec<i32> = (0..w * h)
-            .map(|i| (i as i32 * 11 % 800) * 48 - 900)
-            .collect();
-        let scalings = [(-8, -24), (16, 40)].map(|(mv_row, mv_col)| {
-            let (frame_w, frame_h) = (frame_w as i32, frame_h as i32);
-            derive_plane_scaling(
-                0, 0, mv_row, mv_col, 0, 0, frame_w, frame_h, frame_w, frame_h,
+        for w in [3usize, 6, 24] {
+            let (h, frame_w, frame_h) = (7usize, 20usize, 5usize);
+            let pred0: Vec<i32> = (0..w * h).map(|i| (i as i32 * 7 % 900) * 48).collect();
+            let pred1: Vec<i32> = (0..w * h)
+                .map(|i| (i as i32 * 11 % 800) * 48 - 900)
+                .collect();
+            let scalings = [(-8, -24), (16, 40)].map(|(mv_row, mv_col)| {
+                let (frame_w, frame_h) = (frame_w as i32, frame_h as i32);
+                derive_plane_scaling(
+                    0, 0, mv_row, mv_col, 0, 0, frame_w, frame_h, frame_w, frame_h,
+                )
+            });
+            let blend = ImplicitMaskBlend::new(bit_depth, frame_w, frame_h);
+            let mut output = vec![T::default(); w * h];
+            blend_nonuniform_implicit_mask(
+                &pred0,
+                &pred1,
+                bit_depth,
+                w,
+                h,
+                None,
+                0,
+                0,
+                scalings,
+                frame_w,
+                frame_h,
+                0,
+                0,
+                &mut output,
+                w,
             )
-        });
-        let blend = ImplicitMaskBlend::new(bit_depth, frame_w, frame_h);
-        let mut output = vec![T::default(); w * h];
-        blend_nonuniform_implicit_mask(
-            &pred0,
-            &pred1,
-            bit_depth,
-            w,
-            h,
-            None,
-            0,
-            0,
-            scalings,
-            frame_w,
-            frame_h,
-            0,
-            0,
-            &mut output,
-            w,
-        )
-        .unwrap();
-        for (index, sample) in output.iter().enumerate() {
-            let (row, col) = ((index / w) as i32, (index % w) as i32);
-            let starts = scalings.map(|s| ((s.start_x >> 10) + col, (s.start_y >> 10) + row));
-            let want: T = blend.sample(pred0[index], pred1[index], starts).unwrap();
-            assert_eq!(sample.to_u16(), want.to_u16(), "{bit_depth:?} {index}");
+            .unwrap();
+            for (index, sample) in output.iter().enumerate() {
+                let (row, col) = ((index / w) as i32, (index % w) as i32);
+                let starts = scalings.map(|s| ((s.start_x >> 10) + col, (s.start_y >> 10) + row));
+                let want: T = blend.sample(pred0[index], pred1[index], starts).unwrap();
+                assert_eq!(sample.to_u16(), want.to_u16(), "{bit_depth:?} {index}");
+            }
+            let samples: Vec<u16> = output.iter().map(|sample| sample.to_u16()).collect();
+            assert!(w < 24 || samples.contains(&0) && samples.contains(&bit_depth.max_sample()));
         }
-        let samples: Vec<u16> = output.iter().map(|sample| sample.to_u16()).collect();
-        assert!(samples.contains(&0) && samples.contains(&bit_depth.max_sample()));
     }
 
     #[test]

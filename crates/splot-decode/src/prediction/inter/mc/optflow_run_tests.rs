@@ -96,7 +96,7 @@ fn predict<T: ReconSample + CompoundAverageOutput + Send>(
         assert!(
             predict_motion_grid_compound_average_into(
                 info,
-                block,
+                &block,
                 plane,
                 sub_x,
                 sub_y,
@@ -124,7 +124,7 @@ fn predict<T: ReconSample + CompoundAverageOutput + Send>(
         samples.extend(to_u16(&output));
     }
     let prediction =
-        super::super::compound_subpel_plane(info, block, PlaneId::Y, 0, 0, offset).expect("plane");
+        super::super::compound_subpel_plane(info, &block, PlaneId::Y, 0, 0, offset).expect("plane");
     let mut output = vec![T::default(); rect.luma_w * 8];
     let masks = (0..rect.luma_h / 8)
         .map(|cell_row| {
@@ -253,7 +253,7 @@ fn parallel_grid_fills_the_shared_v_output() {
     let predict = |plane: PlaneId, output: &mut [u16], chroma_v: Option<&mut [u16]>| {
         predict_motion_grid_compound_average_into(
             info,
-            block,
+            &block,
             plane,
             1,
             1,
@@ -364,7 +364,7 @@ fn uniform_grids_match_per_cell<T: ReconSample + CompoundAverageOutput + Send>(
             .expect("compound block");
             let prediction = super::super::compound_subpel_plane(
                 info,
-                block,
+                &block,
                 PlaneId::Y,
                 0,
                 0,
@@ -532,7 +532,7 @@ fn tip_grid_and_cells<T: ReconSample>(
         let unit_at = |i: usize| (unit_rect(i), mvs[i]);
         tip_motion_grid(
             &sink,
-            block,
+            &block,
             8,
             columns,
             mvs.len(),
@@ -550,14 +550,15 @@ fn tip_grid_and_cells<T: ReconSample>(
             unit.has_chroma = false;
             let mut luma = LumaReference::pair(sink.info(), &unit, offset);
             super::super::refinemv::tip_refinemv_optflow_motion_cell(
-                unit,
+                &unit,
+                (unit.rect, [unit.mv0, unit.mv1]),
                 &mut [[0; 256]; 2],
                 &mut luma,
                 &mut Default::default(),
             )
             .expect("refined cell")
             .map_or_else(
-                || tip_unit_motion_cell(&sink, unit, 8, offset, &mut luma),
+                || tip_unit_motion_cell(&sink, &unit, 8, offset, &mut luma),
                 Ok,
             )
             .expect("unit cell")
