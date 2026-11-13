@@ -231,7 +231,7 @@ impl<T: ReconSample> DecodedFrame<T> {
     /// Returns a [`ReconError`] if plane presence, storage or visible sizes, sample
     /// type, or sample ranges do not match the requested decoded frame format.
     pub fn try_new(info: DecodedFrameInfo, planes: FramePlanes<T>) -> Result<Self> {
-        Self::validate(info, &planes)?;
+        Self::validate(info, &planes, true)?;
         Ok(Self { info, planes })
     }
 
@@ -240,13 +240,20 @@ impl<T: ReconSample> DecodedFrame<T> {
         Self { info, planes }
     }
 
-    /// The checks of [`Self::try_new`], run before it takes `planes`.
-    pub(crate) fn validate(info: DecodedFrameInfo, planes: &FramePlanes<T>) -> Result<()> {
+    /// The checks of [`Self::try_new`], run before it takes `planes`; the
+    /// sample-range scan only when `samples`.
+    pub(crate) fn validate(
+        info: DecodedFrameInfo,
+        planes: &FramePlanes<T>,
+        samples: bool,
+    ) -> Result<()> {
         validate_sample_type::<T>(info.bit_depth)?;
 
         let luma_visible_size = info.visible_luma_rect.size();
         validate_plane_size(PlaneId::Y, luma_visible_size, planes.y.visible_size())?;
-        validate_plane_samples(PlaneId::Y, &planes.y, info.bit_depth.max_sample())?;
+        if samples {
+            validate_plane_samples(PlaneId::Y, &planes.y, info.bit_depth.max_sample())?;
+        }
 
         match info.pixel_format.chroma_size(luma_visible_size)? {
             None => {
@@ -267,8 +274,10 @@ impl<T: ReconSample> DecodedFrame<T> {
 
                 validate_plane_size(PlaneId::U, chroma_visible_size, u_plane.visible_size())?;
                 validate_plane_size(PlaneId::V, chroma_visible_size, v_plane.visible_size())?;
-                validate_plane_samples(PlaneId::U, u_plane, info.bit_depth.max_sample())?;
-                validate_plane_samples(PlaneId::V, v_plane, info.bit_depth.max_sample())?;
+                if samples {
+                    validate_plane_samples(PlaneId::U, u_plane, info.bit_depth.max_sample())?;
+                    validate_plane_samples(PlaneId::V, v_plane, info.bit_depth.max_sample())?;
+                }
             }
         }
 

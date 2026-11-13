@@ -2313,6 +2313,50 @@ mod tests {
         }
     }
 
+    /// A single tap family has no window clamp: its weights sum to 12 of 16,
+    /// and an unavailable tap constrains to 0, so extreme 10-bit pads with any
+    /// header strength and damping stay at most 1023.
+    #[test]
+    fn single_family_filter_of_extreme_samples_stays_in_range() {
+        let mut state = 0x2545_f491u32;
+        for boundary in [false, true] {
+            let mut pad = [0u16; CDEF_PADDED_AREA];
+            for (index, sample) in pad.iter_mut().enumerate() {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let (row, col) = (index / CDEF_PADDED_SIDE, index % CDEF_PADDED_SIDE);
+                *sample = if boundary && (row < 2 || col < 2) {
+                    CDEF_UNAVAILABLE
+                } else if state >> 31 == 0 {
+                    0
+                } else {
+                    1023
+                };
+            }
+            for dir in 0..8 {
+                for damping in 5..=8 {
+                    for (pri_str, sec_str) in [(60, 0), (4, 0), (0, 16), (0, 4), (60, 16)] {
+                        let filter = CdefBlockFilter {
+                            pri_str,
+                            sec_str,
+                            damping,
+                            dir,
+                            coeff_shift: 2,
+                        };
+                        let mut out = [u16::MAX; 64];
+                        assert!(if boundary {
+                            cdef_filter_block_boundary_to_valid_stride(
+                                &pad, 8, 8, &filter, &mut out, 8,
+                            )
+                        } else {
+                            cdef_filter_block_interior_to(&pad, 8, 8, &filter, &mut out, 8)
+                        });
+                        assert!(out.iter().all(|&sample| sample <= 1023), "{filter:?}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn uv_dir_table_is_the_spec_remap() {
         assert_eq!(

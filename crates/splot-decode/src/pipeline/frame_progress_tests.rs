@@ -439,15 +439,16 @@ fn a_failed_freeze_keeps_the_rows_a_reader_holds() {
         .take(PlaneId::Y)
         .expect("luma target")
         .samples_mut()
-        .fill(300);
+        .fill(30);
     drop(target);
     assert!(lease.submit());
     let published = PublishedFrame::of_slot(&slot).expect("the published frame");
     let rows = published.plane(PlaneId::Y).expect("held luma").samples;
+    let taken = progress.workspace.lock().take();
 
     assert!(
         progress.freeze_workspace(writer).is_err(),
-        "an 8-bit frame cannot hold 300"
+        "a taken workspace cannot freeze"
     );
     assert!(slot.ready().is_err());
     assert!(PublishedFrame::of_slot(&slot).is_none());
@@ -458,10 +459,10 @@ fn a_failed_freeze_keeps_the_rows_a_reader_holds() {
         "a failed phase lends no further row"
     );
     assert!(
-        rows.iter().all(|&sample| sample == 300),
+        rows.iter().all(|&sample| sample == 30),
         "rows lent before the failure stay allocated"
     );
-    assert!(progress.workspace.lock().is_some(), "the workspace is kept");
+    drop(taken);
 }
 
 /// Two writers lease and publish stripes while two readers spin on the

@@ -1496,6 +1496,19 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// As [`Self::freeze`].
     pub fn freeze_in_place(&mut self) -> Result<DecodedFrame<T>> {
+        self.freeze_planes(true)
+    }
+
+    /// [`Self::freeze_in_place`] without the sample-range scan, for a decoder
+    /// workspace: every AV2 writer ends in `Clip1` or copies in-range samples.
+    ///
+    /// # Errors
+    /// As [`Self::freeze`], except [`ReconError::SampleOutOfRange`].
+    pub fn freeze_in_place_clamped(&mut self) -> Result<DecodedFrame<T>> {
+        self.freeze_planes(false)
+    }
+
+    fn freeze_planes(&mut self, scan: bool) -> Result<DecodedFrame<T>> {
         for plane in [Some(&self.y), self.u.as_ref(), self.v.as_ref()]
             .into_iter()
             .flatten()
@@ -1507,7 +1520,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             self.u.as_mut().map(CurrentFramePlane::take_frozen),
             self.v.as_mut().map(CurrentFramePlane::take_frozen),
         );
-        if let Err(error) = DecodedFrame::validate(self.info, &planes) {
+        if let Err(error) = DecodedFrame::validate(self.info, &planes, scan) {
             let (y, u, v) = planes.into_parts();
             self.y.samples = y.into_samples();
             for (plane, frozen) in [(self.u.as_mut(), u), (self.v.as_mut(), v)] {
@@ -1517,6 +1530,11 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             }
             return Err(error);
         }
+        #[cfg(any(debug_assertions, fuzzing))]
+        assert!(
+            scan || DecodedFrame::validate(self.info, &planes, true).is_ok(),
+            "a decoder writer stored a sample above the bit depth"
+        );
         Ok(DecodedFrame::from_validated(self.info, planes))
     }
 
