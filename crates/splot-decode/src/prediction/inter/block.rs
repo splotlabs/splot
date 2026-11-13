@@ -1546,7 +1546,9 @@ fn decode_block<T: ReconSample>(
                 n4h,
                 non_inter_flag_syntax(None, frame_mv_precision(core)?),
             );
-            intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
+            if params.allow_intrabc {
+                intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
+            }
         }
         return Ok(store(
             leaf,
@@ -2108,17 +2110,19 @@ fn finish_inter_leaf(
         block_qindex,
         lossless,
     );
-    intrabc_state.record_block(
-        frontier.r,
-        frontier.c,
-        n4w,
-        n4h,
-        IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
-            use_intrabc: false,
-            skip_flag: skip == 1,
-        })
-        .mark_inter(),
-    )?;
+    if params.allow_intrabc {
+        intrabc_state.record_block(
+            frontier.r,
+            frontier.c,
+            n4w,
+            n4h,
+            IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
+                use_intrabc: false,
+                skip_flag: skip == 1,
+            })
+            .mark_inter(),
+        )?;
+    }
     let geometry = inter_leaf_geometry(
         frontier,
         work_unit,
