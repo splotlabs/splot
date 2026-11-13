@@ -302,7 +302,7 @@ pub(super) fn filter_groups<O: ByteLaneOutput>(
         if ids.iter().any(|&id| classes.fits >> id & 1 == 0) {
             break;
         }
-        let weights = if ids == [ids[0]; 8] {
+        let weights = if ids.iter().fold(0, |diff, &id| diff | (id ^ ids[0])) == 0 {
             uniform_weights(t, &classes.units[ids[0]])
         } else {
             mixed_weights(t, ids.map(|id| &classes.units[id]))

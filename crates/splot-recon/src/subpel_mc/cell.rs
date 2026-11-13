@@ -358,12 +358,19 @@ fn by_geometry<P: CellSample>(
     planes: [Option<Plane<'_, '_, P>>; 2],
     mut run: impl FnMut([Option<Plane<'_, '_, P>>; 2]) -> Written,
 ) -> Written {
-    let geometry = |plane: &Option<Plane<'_, '_, P>>| {
-        plane
-            .as_ref()
-            .map(|(views, ..)| views.each_ref().map(ReferencePlaneView::geometry))
+    let shared = match &planes {
+        [Some((first, ..)), Some((second, ..))] => {
+            first
+                .iter()
+                .zip(second)
+                .flat_map(|(a, b)| a.geometry().into_iter().zip(b.geometry()))
+                .fold(0, |diff, (a, b)| diff | (a ^ b))
+                == 0
+        }
+        [None, Some(_)] => false,
+        [_, None] => true,
     };
-    if planes[1].is_none() || geometry(&planes[0]) == geometry(&planes[1]) {
+    if shared {
         return run(planes);
     }
     let [first, second] = planes;

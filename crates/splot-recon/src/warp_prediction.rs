@@ -302,7 +302,11 @@ impl PreparedWarpPrediction {
         stride: usize,
         max_sample: i16,
     ) -> Result<bool> {
-        if self.params.warp_params[2..] != IDENTITY_WARP_PARAMS[2..]
+        if self.params.warp_params[2..]
+            .iter()
+            .zip(&IDENTITY_WARP_PARAMS[2..])
+            .fold(0, |diff, (&a, &b)| diff | (a ^ b))
+            != 0
             || !width.is_multiple_of(WARPED_BLOCK_SIZE)
         {
             return Ok(false);
