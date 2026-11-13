@@ -3,7 +3,7 @@
 
 //! AV2 § 7.13.6 MHCCP parameter derivation helpers.
 
-use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i32x8, u16x8};
+use fearless_simd::{Bytes as _, Simd, SimdBase, i32x8, u16x8};
 
 use crate::math::{round2_i32, round2_signed_i32};
 use crate::{BitDepth, ReconSample};
@@ -544,10 +544,7 @@ impl MhccpPredictor {
         let half = 1i32 << (MHCCP_BITS - 1);
         let square_half = 1i32 << (self.bits - 1);
         let zero = i32x8::splat(simd, 0);
-        let round = |x: i32x8<S>| {
-            let r = (x.abs() + half) >> MHCCP_BITS;
-            x.simd_lt(zero).select(zero - r, r)
-        };
+        let round = |x: i32x8<S>| (x + half + (x >> 31)) >> MHCCP_BITS;
         let lanes = linear.len().min(center.len());
         let mut at = 0;
         while at < out.len() && at + 8 <= lanes {

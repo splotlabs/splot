@@ -22,7 +22,7 @@ use crate::bitstream::tile_payload::{
 };
 
 const MI_SIZE: usize = 4;
-const MAX_DIP_EDGE_SAMPLES: usize = 160;
+const MAX_DIP_EDGE_SAMPLES: usize = 80;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>(
