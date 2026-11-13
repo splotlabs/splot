@@ -567,14 +567,14 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize, const LINEAR
     simd: S,
     lanes: L,
     window: &W,
-    masks: Masks<S>,
+    masks: &Masks<S>,
     init: &Sums<S>,
     params: &GdfSymParams,
 ) -> [u16; 16] {
     let center = samples(simd, window.row(TAP_REACH + ROW), TAP_REACH);
     let centers = (center + ABOVE_OFFSET, center + BELOW_OFFSET);
     let center2 = centers.0 + centers.1;
-    let (transposed, mirrored) = masks;
+    let (transposed, mirrored) = *masks;
     macro_rules! pair {
         ($k:literal, $t:literal, $select:expr) => {
             if LINEAR {
@@ -617,7 +617,7 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize, const LINEAR
         let ((first, third), (second, fourth)) = (swap(a, c, transposed), swap(b, d, transposed));
         [comb(first), comb(second), comb(third), comb(fourth)]
     } else {
-        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params)
+        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, *masks, params)
     };
     add(5, tap4, tap6);
     add(6, tap7, tap11);
@@ -674,17 +674,18 @@ fn slot_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
     let class = (class | (class << 16)).bitcast::<u16x16<S>>();
     let zero = u16x16::splat(simd, 0);
     let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
-    let rows = if range != ROUGH {
-        [row_index::<S, L, W, 0, true>, row_index::<S, L, W, 1, true>]
+    macro_rules! rows {
+        ($linear:literal) => {{
+            let pos = row_index::<S, L, W, 0, $linear>(simd, lanes, window, &masks, &init, params);
+            sink.row(simd, 0, &pos, block);
+            let pos = row_index::<S, L, W, 1, $linear>(simd, lanes, window, &masks, &init, params);
+            sink.row(simd, 1, &pos, block);
+        }};
+    }
+    if range != ROUGH {
+        rows!(true);
     } else {
-        [
-            row_index::<S, L, W, 0, false>,
-            row_index::<S, L, W, 1, false>,
-        ]
-    };
-    for (row, row_index) in rows.into_iter().enumerate() {
-        let pos = row_index(simd, lanes, window, masks, &init, params);
-        sink.row(simd, row, &pos, block);
+        rows!(false);
     }
 }
 
