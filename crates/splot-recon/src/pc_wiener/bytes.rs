@@ -117,8 +117,8 @@ fn unit_weights(coeffs: &[i32; 13]) -> Option<[u32; 16]> {
 /// Narrows the padded rows `rows(i)` of `padded_rows` rows of `padded_width`
 /// samples; `None` when no vector fits, a row is missing, too wide or above
 /// 255.
-pub(super) fn stage<'r>(
-    rows: impl Fn(usize) -> Option<&'r [u16]>,
+pub(super) fn stage<'r, T: crate::ReconSample>(
+    rows: impl Fn(usize) -> Option<&'r [T]>,
     padded_width: usize,
     padded_rows: usize,
 ) -> Option<Vec<Row>> {

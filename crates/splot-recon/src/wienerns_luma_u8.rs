@@ -170,9 +170,9 @@ pub(super) struct EightBitLuma {
 impl EightBitLuma {
     /// Narrows the padded rows `rows(i)` of a `width` x `height` block;
     /// returns whether every row is present and every sample at most 255.
-    pub(super) fn stage<'r>(
+    pub(super) fn stage<'r, T: crate::ReconSample>(
         &mut self,
-        rows: impl Fn(usize) -> Option<&'r [u16]>,
+        rows: impl Fn(usize) -> Option<&'r [T]>,
         width: usize,
         height: usize,
     ) -> bool {
@@ -325,8 +325,14 @@ fn kernel_available() -> bool {
 }
 
 /// Copies `row` into `staged` as bytes; returns `false` for a sample above 255.
-pub(crate) fn narrow_row(staged: &mut [u8], row: &[u16]) -> bool {
-    crate::lr_madd::lr_simd!(simd => narrow_row_lanes(simd, staged, row))
+pub(crate) fn narrow_row<T: crate::ReconSample>(staged: &mut [u8], row: &[T]) -> bool {
+    if let Some(row) = T::u8_slice(row) {
+        let len = staged.len().min(row.len());
+        staged[..len].copy_from_slice(&row[..len]); // splot-copy-ok: fixed-stride byte-lane kernel rows
+        return true;
+    }
+    T::u16_slice(row)
+        .is_some_and(|row| crate::lr_madd::lr_simd!(simd => narrow_row_lanes(simd, staged, row)))
 }
 
 #[inline]

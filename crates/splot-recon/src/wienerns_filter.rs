@@ -441,13 +441,8 @@ fn prepare_luma_padded<T: ReconSample>(
         scratch.prepared_classes.push((coeffs, center));
     }
     let staged = params.bit_depth == BitDepth::Eight
-        && T::u16_slice(&[]).is_some()
         && scratch.eight_bit.stage(
-            |index| {
-                padded_row(source.rows, index, padded_width)
-                    .ok()
-                    .and_then(T::u16_slice)
-            },
+            |index| padded_row(source.rows, index, padded_width).ok(),
             params.width,
             params.height,
         );

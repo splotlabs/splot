@@ -178,7 +178,6 @@ pub struct PcWienerClassification {
 /// Reusable working storage for padded PC-Wiener grid classification.
 #[derive(Debug)]
 pub struct PcWienerClassifyScratch {
-    source_cache: Vec<u16>,
     feature_rows: Vec<u16>,
     skip_sums: Vec<u8>,
     qval_cache_key: Option<(u32, BitDepth)>,
@@ -192,7 +191,6 @@ pub struct PcWienerClassifyScratch {
 impl Default for PcWienerClassifyScratch {
     fn default() -> Self {
         Self {
-            source_cache: Vec::new(),
             feature_rows: Vec::new(),
             skip_sums: Vec::new(),
             qval_cache_key: None,
@@ -440,7 +438,6 @@ where
         cell_rows,
         source,
         tx_skip_cells(tx_skip),
-        &mut scratch.source_cache,
         &mut scratch.feature_rows,
         &mut scratch.skip_sums,
         &mut scratch.qval_cache_key,
@@ -499,7 +496,6 @@ where
         cell_rows,
         source,
         |run, _| tx_skip(run).map(Some),
-        &mut scratch.source_cache,
         &mut scratch.feature_rows,
         &mut scratch.skip_sums,
         &mut scratch.qval_cache_key,
@@ -517,7 +513,6 @@ fn classify_grid_padded_mapped_into<'a, 'g, T, FT, O>(
     cell_rows: usize,
     source: &PcWienerClassifyPaddedSource<'_, T>,
     tx_skip: FT,
-    source_scratch: &mut Vec<u16>,
     feature_rows: &mut Vec<u16>,
     skip_sums: &mut Vec<u8>,
     qval_cache_key: &mut Option<(u32, BitDepth)>,
@@ -531,7 +526,6 @@ where
     FT: FnMut(PcWienerTxSkipRun, &mut Vec<u8>) -> Result<Option<&'g [u8]>>,
     O: ClassifiedCell,
 {
-    source_scratch.clear();
     output.clear();
     validate_sample_type::<T>(params.bit_depth)?;
     validate_params(params)?;
@@ -540,44 +534,42 @@ where
     }
     let geo = classify_grid_geometry(params, cell_cols, cell_rows)?;
     let region = padded_source_region(source, &geo)?;
-    let direct = T::u16_slice(&[]).is_some();
-    if direct {
-        validate_padded_u16_source(region, &geo, params.bit_depth)?;
-    } else {
-        build_padded_source_cache_into(region, &geo, params.bit_depth, source_scratch)?;
-    }
+    validate_padded_u16_source(region, &geo, params.bit_depth)?;
     let key = (params.base_q_idx, params.bit_depth);
     if *qval_cache_key != Some(key) {
         prepare_qval_offsets_cache(params.base_q_idx, params.bit_depth, qval_offsets)?;
         *qval_cache_key = Some(key);
     }
-    let cache: &[u16] = source_scratch;
-    let result = classify_grid_from_cache(
-        params,
-        cell_cols,
-        cell_rows,
-        &geo,
-        |row| {
-            if direct {
-                region
-                    .row(row, geo.source_width)
-                    .and_then(T::u16_slice)
-                    .ok_or(ReconError::BufferLengthMismatch {
-                        expected: geo.source_width,
-                        actual: 0,
-                    })
-            } else {
-                cache_row(cache, row, geo.source_width)
-            }
-        },
-        feature_rows,
-        skip_sums,
-        qval_offsets,
-        lut,
-        output,
-        tx_skip,
-        split_blocks,
-    );
+    macro_rules! classify_rows {
+        ($cast:expr) => {
+            classify_grid_from_cache(
+                params,
+                cell_cols,
+                cell_rows,
+                &geo,
+                |row| {
+                    region.row(row, geo.source_width).and_then($cast).ok_or(
+                        ReconError::BufferLengthMismatch {
+                            expected: geo.source_width,
+                            actual: 0,
+                        },
+                    )
+                },
+                feature_rows,
+                skip_sums,
+                qval_offsets,
+                lut,
+                output,
+                tx_skip,
+                split_blocks,
+            )
+        };
+    }
+    let result = if T::u8_slice(&[]).is_some() {
+        classify_rows!(T::u8_slice)
+    } else {
+        classify_rows!(T::u16_slice)
+    };
     if let Err(error) = result {
         output.clear();
         return Err(error);
@@ -681,45 +673,6 @@ fn cache_row(cache: &[u16], row: usize, width: usize) -> Result<&[u16]> {
         })
 }
 
-fn build_padded_source_cache_into<T: ReconSample>(
-    region: PaddedRows<'_, T>,
-    geo: &ClassifyGridGeometry,
-    bit_depth: BitDepth,
-    source_cache: &mut Vec<u16>,
-) -> Result<()> {
-    let max_sample = bit_depth.max_sample();
-    source_cache
-        .try_reserve_exact(geo.source_count)
-        .map_err(|_| ReconError::WorkspaceAllocationFailed {
-            plane: PlaneId::Y,
-            context: "PC-Wiener source-grid",
-        })?;
-    for row in 0..geo.source_height {
-        let row_samples =
-            region
-                .row(row, geo.source_width)
-                .ok_or(ReconError::BufferLengthMismatch {
-                    expected: geo.source_width,
-                    actual: 0,
-                })?;
-        let cached_start = source_cache.len();
-        source_cache.resize(cached_start + row_samples.len(), 0);
-        crate::reconstruct::widen_to_u16(row_samples, &mut source_cache[cached_start..]);
-        let cached = &source_cache[cached_start..];
-        if crate::workspace::u16_samples_exceed(cached, max_sample)
-            && let Some(col) = cached.iter().position(|&value| value > max_sample)
-        {
-            return Err(ReconError::PcWienerSourceSampleOutOfRange {
-                x: geo.source_start_x + col as isize,
-                y: geo.source_start_y + row as isize,
-                value: source_cache[cached_start + col],
-                max: max_sample,
-            });
-        }
-    }
-    Ok(())
-}
-
 /// The padded rows of `source` starting at the classification region,
 /// checked to cover all of it.
 fn padded_source_region<'a, T: ReconSample>(
@@ -774,7 +727,7 @@ fn validate_padded_u16_source<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn classify_grid_from_cache<'s, 'g, FR, FT, O>(
+fn classify_grid_from_cache<'s, 'g, T, FR, FT, O>(
     params: &PcWienerClassifyParams,
     cell_cols: usize,
     cell_rows: usize,
@@ -789,7 +742,8 @@ fn classify_grid_from_cache<'s, 'g, FR, FT, O>(
     split_blocks: bool,
 ) -> Result<()>
 where
-    FR: Fn(usize) -> Result<&'s [u16]>,
+    T: LumaSimdSource + 's,
+    FR: Fn(usize) -> Result<&'s [T]>,
     FT: FnMut(PcWienerTxSkipRun, &mut Vec<u8>) -> Result<Option<&'g [u8]>>,
     O: ClassifiedCell,
 {
@@ -995,8 +949,8 @@ fn pooled_feature_columns(geo: &ClassifyGridGeometry) -> Result<[usize; 2]> {
 /// chunk that overlaps the previous one instead of a scalar tail.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn pooled_feature_row<'a>(
-    rows: [&'a [u16]; 4],
+fn pooled_feature_row<'a, T: LumaSimdSource>(
+    rows: [&'a [T]; 4],
     planes: [&mut [u16]; 3],
     pooled_width: usize,
     [linear_cols, clamped_center]: [usize; 2],
@@ -1019,7 +973,7 @@ fn pooled_feature_row<'a>(
         return;
     };
     let pairs = full / 2;
-    let windows = |row: &'a [u16]| {
+    let windows = |row: &'a [T]| {
         row.get(..32 * pairs + 2)
             .unwrap_or_default()
             .windows(34)
@@ -1097,8 +1051,12 @@ fn pooled_lanes(plane: &mut [u16], len: usize) -> core::slice::ChunksExactMut<'_
 /// plane is short.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn pooled_chunk<'a>(rows: [&'a [u16]; 4], planes: &mut [&mut [u16]; 3], start: usize) -> bool {
-    let chunk = |row: &'a [u16]| row.get(2 * start..).and_then(<[u16]>::first_chunk::<18>);
+fn pooled_chunk<'a, T: LumaSimdSource>(
+    rows: [&'a [T]; 4],
+    planes: &mut [&mut [u16]; 3],
+    start: usize,
+) -> bool {
+    let chunk = |row: &'a [T]| row.get(2 * start..).and_then(<[T]>::first_chunk::<18>);
     let [vertical, anti_diag, diag] = planes;
     if let (Some(r0), Some(r1), Some(r2), Some(r3), Some(vertical), Some(anti_diag), Some(diag)) = (
         chunk(rows[0]),
@@ -1125,23 +1083,14 @@ fn pooled_chunk<'a>(rows: [&'a [u16]; 4], planes: &mut [&mut [u16]; 3], start: u
 /// each sliced to the chunk's `2 * N + 2`-sample reach.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn pooled_features_lanes<S: Simd, const REACH: usize, const N: usize>(
+fn pooled_features_lanes<S: Simd, T: LumaSimdSource, const REACH: usize, const N: usize>(
     simd: S,
-    rows: [&[u16; REACH]; 4],
+    rows: [&[T; REACH]; 4],
     planes: [&mut [u16; N]; 3],
 ) {
-    let ones = i16x16::splat(simd, 1);
-    let pooled = |at: usize| {
-        let cut = |row: usize| rows[row].get(at..).unwrap_or_default();
-        let top = second_derivative_lanes(simd, cut(0), cut(1), cut(2));
-        let bottom = second_derivative_lanes(simd, cut(1), cut(2), cut(3));
-        core::array::from_fn::<_, 3, _>(|feature| {
-            simd.pairwise_dot_product_i16x16((top[feature] + bottom[feature]).bitcast(), ones)
-        })
-    };
-    let low = pooled(0);
+    let low = pooled_sums(simd, &rows, 0);
     if N == 16 {
-        let high = pooled(16);
+        let high = pooled_sums(simd, &rows, 16);
         for ((plane, low), high) in planes.into_iter().zip(low).zip(high) {
             if let Some(plane) = plane.as_mut_slice().first_chunk_mut::<16>() {
                 let lanes: u16x16<S> = simd.saturating_narrow_i32x8(low, high).bitcast();
@@ -1159,22 +1108,40 @@ fn pooled_features_lanes<S: Simd, const REACH: usize, const N: usize>(
     }
 }
 
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn pooled_sums<S: Simd, T: LumaSimdSource, const REACH: usize>(
+    simd: S,
+    rows: &[&[T; REACH]; 4],
+    at: usize,
+) -> [i32x8<S>; 3] {
+    let cut = |row: usize| rows[row].get(at..).unwrap_or_default();
+    let top = second_derivative_lanes(simd, cut(0), cut(1), cut(2));
+    let bottom = second_derivative_lanes(simd, cut(1), cut(2), cut(3));
+    let ones = i16x16::splat(simd, 1);
+    [
+        simd.pairwise_dot_product_i16x16((top[0] + bottom[0]).bitcast(), ones),
+        simd.pairwise_dot_product_i16x16((top[1] + bottom[1]).bitcast(), ones),
+        simd.pairwise_dot_product_i16x16((top[2] + bottom[2]).bitcast(), ones),
+    ]
+}
+
 /// § 7.20.4 `get_features` absolute second derivatives (vertical, anti-diagonal,
 /// diagonal) for sixteen consecutive centers `up[1..17]`.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn second_derivative_lanes<S: Simd>(
+fn second_derivative_lanes<S: Simd, T: LumaSimdSource>(
     simd: S,
-    up: &[u16],
-    cur: &[u16],
-    down: &[u16],
+    up: &[T],
+    cur: &[T],
+    down: &[T],
 ) -> [u16x16<S>; 3] {
-    let load = |row: &[u16], start: usize| -> i16x16<S> {
+    let load = |row: &[T], start: usize| -> i16x16<S> {
         row.get(start..)
-            .and_then(<[u16]>::first_chunk::<16>)
+            .and_then(<[T]>::first_chunk::<16>)
             .map_or_else(
                 || i16x16::splat(simd, 0),
-                |lanes| u16x16::load_array_ref(simd, lanes).bitcast(),
+                |lanes| T::widen16(simd, lanes).bitcast(),
             )
     };
     let center = load(cur, 1);
@@ -1188,12 +1155,18 @@ fn second_derivative_lanes<S: Simd>(
 
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn second_derivative_features(up: &[u16], cur: &[u16], down: &[u16], center: usize) -> [i32; 3] {
-    let m2 = 2 * i32::from(cur[center]);
+fn second_derivative_features<T: LumaSimdSource>(
+    up: &[T],
+    cur: &[T],
+    down: &[T],
+    center: usize,
+) -> [i32; 3] {
+    let at = |row: &[T], col: usize| i32::from(T::scalar(row, col));
+    let m2 = 2 * at(cur, center);
     [
-        (i32::from(up[center]) - m2 + i32::from(down[center])).abs(),
-        (i32::from(up[center + 1]) - m2 + i32::from(down[center - 1])).abs(),
-        (i32::from(up[center - 1]) - m2 + i32::from(down[center + 1])).abs(),
+        (at(up, center) - m2 + at(down, center)).abs(),
+        (at(up, center + 1) - m2 + at(down, center - 1)).abs(),
+        (at(up, center - 1) - m2 + at(down, center + 1)).abs(),
     ]
 }
 
@@ -1785,11 +1758,7 @@ fn filter_pc_wiener_padded<
         .zip(bytes::BYTE_CLASSES.get(params.filter_set_index))
         .and_then(|(t, classes)| {
             let row = |index| source.row(index, padded_width).and_then(&cast);
-            let staged = bytes::stage(
-                |index| T::u16_slice(row(index)?),
-                padded_width,
-                params.height + 2 * R,
-            )?;
+            let staged = bytes::stage(row, padded_width, params.height + 2 * R)?;
             Some((t, classes, staged))
         });
     #[cfg(target_arch = "x86_64")]

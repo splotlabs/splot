@@ -371,36 +371,6 @@ fn add_residual_u8_lanes<S: Simd>(
     }
 }
 
-/// Copies `src` into the as long `dst` as `u16`: `u16` samples as they are,
-/// `u8` samples widened 16 lanes at a time, a short last group zero-padded.
-pub fn widen_to_u16<T: ReconSample>(src: &[T], dst: &mut [u16]) {
-    if let Some(src) = T::u16_slice(src) {
-        let len = src.len().min(dst.len());
-        dst[..len].copy_from_slice(&src[..len]); // splot-copy-ok: u16 rows need no widening
-        return;
-    }
-    let Some(src) = T::u8_slice(src) else {
-        return;
-    };
-    baseline_simd!(simd => {
-        let widen = |lanes: [u8; 16]| -> [u16; 16] {
-            let (low, high) = simd.widen_u8x16(u8x16::load_array(simd, lanes));
-            simd.combine_u16x8(low, high).into()
-        };
-        let (groups, tail) = src.as_chunks::<16>();
-        let (out, out_tail) = dst.as_chunks_mut::<16>();
-        for (out, &group) in out.iter_mut().zip(groups) {
-            *out = widen(group);
-        }
-        let len = tail.len().min(out_tail.len());
-        if len > 0 && groups.len() <= out.len() {
-            let mut lanes = [0u8; 16];
-            lanes[..len].copy_from_slice(&tail[..len]); // splot-copy-ok: zero-padded lane group
-            out_tail[..len].copy_from_slice(&widen(lanes)[..len]); // splot-copy-ok: the group's own lanes
-        }
-    });
-}
-
 /// `Clip1(sample + residual)` over the 8-bit `width x height` block from
 /// `base` of `samples`, rows `stride` apart, as saturating byte adds of the
 /// constant `residual`: 16 lanes at a time, a row's short last group
