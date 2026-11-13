@@ -21,9 +21,6 @@ use crate::bitstream::tile_payload::{
     reconstruct_inter_coeff_block_residual_rect_into,
 };
 
-/// The widest intra prediction block side.
-const MAX_INTRA_SIDE: usize = 64;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntraEdgeAvailability {
     pub(crate) above: bool,
@@ -79,24 +76,17 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
-    let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     if bit_depth == workspace.info().bit_depth() {
-        let mut left = [T::default(); MAX_INTRA_SIDE];
         let in_frame = workspace.with_intra_block_frame(plane_id, x, y, block_size, |frame| {
-            let have_left = availability.left && frame.left_column(&mut left[..height]) == height;
-            let (row, output, stride) = frame.above_row_and_target();
-            let above = row.get(..width).filter(|_| availability.above);
-            let dc_edges = IntraDcEdges::new(have_left.then_some(&left[..height]), above);
-            if ibp_dc {
-                predict_intra_ibp_dc_rect_into(bit_depth, block_size, dc_edges, output, stride)?;
-            } else {
-                let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
-                fill_block(output, stride, block_size, dc);
-            }
-            Ok::<_, GeneralIntraResidualError>(())
+            frame.predict_dc(
+                block_size,
+                bit_depth,
+                [availability.left, availability.above],
+                ibp_dc,
+            )
         })?;
         if in_frame.is_some() {
             if block.eob != 0 {
@@ -340,26 +330,6 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
     );
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
     result
-}
-
-/// Fills the `size` block of `output`, rows `stride` apart, with `value`,
-/// one fixed-width store per row.
-fn fill_block<T: Copy>(output: &mut [T], stride: usize, size: IntraRectBlockSize, value: T) {
-    fn rows<T: Copy, const N: usize>(output: &mut [T], stride: usize, height: usize, value: T) {
-        for row in output.chunks_mut(stride).take(height) {
-            if let Some(row) = row.first_chunk_mut::<N>() {
-                *row = [value; N];
-            }
-        }
-    }
-    let height = size.height();
-    match size.width() {
-        4 => rows::<T, 4>(output, stride, height, value),
-        8 => rows::<T, 8>(output, stride, height, value),
-        16 => rows::<T, 16>(output, stride, height, value),
-        32 => rows::<T, 32>(output, stride, height, value),
-        _ => rows::<T, 64>(output, stride, height, value),
-    }
 }
 
 /// Predicts an in-frame block straight into its frame rows, then adds any

@@ -612,6 +612,33 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
             self.stride,
         )
     }
+
+    /// Writes the § 7.13.2.10 DC prediction of the block in place, blended by
+    /// § 7.13.2.12 IBP when `ibp`, from the stored left column and above row
+    /// that `[left, above]` make available.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for a sample type that cannot hold `bit_depth`.
+    #[inline]
+    pub fn predict_dc(
+        &mut self,
+        size: IntraRectBlockSize,
+        bit_depth: BitDepth,
+        [left, above]: [bool; 2],
+        ibp: bool,
+    ) -> Result<()> {
+        let rows = self.samples.len().saturating_sub(self.row_start) / self.stride.max(1);
+        let block = crate::intra_ibp_dc::DcFrameBlock {
+            size,
+            bit_depth,
+            origin: self.origin,
+            stride: self.stride,
+            left: left && self.left_len >= size.height() && rows >= size.height(),
+            above: above && self.above_len >= size.width(),
+            ibp,
+        };
+        crate::intra_ibp_dc::predict_dc_in_frame(self.samples, block)
+    }
 }
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
@@ -1018,5 +1045,72 @@ mod tests {
             .with_intra_block_frame(PlaneId::Y, 14, 4, block(2, 2), |_| Ok::<_, ReconError>(()))
             .unwrap();
         assert_eq!(overhang, None);
+    }
+
+    fn dc_in_frame_matches_the_edge_kernels<T: ReconSample + PartialEq + core::fmt::Debug>(
+        bit_depth: BitDepth,
+    ) {
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let span = u64::from(bit_depth.max_sample()) + 1;
+        let mut ws = workspace(bit_depth, 136, 136, T::default());
+        for py in 0..136 {
+            for px in 0..136 {
+                let value = T::try_from_u16((rng.next() % span) as u16).unwrap();
+                ws.set_reconstructed_sample(PlaneId::Y, px, py, value)
+                    .unwrap();
+            }
+        }
+        for log2_width in 2..=6u8 {
+            for log2_height in 2..=6u8 {
+                let size = block(log2_width, log2_height);
+                for (x, y) in [(0, 0), (0, 68), (68, 0), (68, 68)] {
+                    for edges in [[false, false], [true, false], [false, true], [true, true]] {
+                        for ibp in [false, true] {
+                            let stored =
+                                ws.intra_dc_edges_for_rect(PlaneId::Y, x, y, size).unwrap();
+                            let dc_edges = crate::IntraDcEdges::new(
+                                stored.left_samples().filter(|_| edges[0]),
+                                stored.above_samples().filter(|_| edges[1]),
+                            );
+                            let mut pred = vec![T::default(); size.sample_count()];
+                            if ibp {
+                                crate::predict_intra_ibp_dc_rect_into(
+                                    bit_depth,
+                                    size,
+                                    dc_edges,
+                                    &mut pred,
+                                    size.width(),
+                                )
+                                .unwrap();
+                            } else {
+                                pred.fill(
+                                    crate::predict_intra_dc_rect_value(bit_depth, size, dc_edges)
+                                        .unwrap(),
+                                );
+                            }
+                            ws.with_intra_block_frame(PlaneId::Y, x, y, size, |frame| {
+                                frame.predict_dc(size, bit_depth, edges, ibp)
+                            })
+                            .unwrap()
+                            .unwrap();
+                            for (i, &value) in pred.iter().enumerate() {
+                                let (px, py) = (x + i % size.width(), y + i / size.width());
+                                assert_eq!(
+                                    ws.reconstructed_sample(PlaneId::Y, px, py).unwrap(),
+                                    value,
+                                    "{size:?} at ({x}, {y}) {edges:?} ibp {ibp}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dc_in_frame_matches_the_edge_kernels_at_both_depths() {
+        dc_in_frame_matches_the_edge_kernels::<u8>(BitDepth::Eight);
+        dc_in_frame_matches_the_edge_kernels::<u16>(BitDepth::Ten);
     }
 }

@@ -112,7 +112,11 @@ pub fn sum_samples<T: SummedSample>(samples: &[T], every_second: bool) -> u32 {
 }
 
 #[inline]
-fn sum_lanes<S: Simd, T: SummedSample>(simd: S, samples: &[T], every_second: bool) -> u32 {
+pub(crate) fn sum_lanes<S: Simd, T: SummedSample>(
+    simd: S,
+    samples: &[T],
+    every_second: bool,
+) -> u32 {
     let (chunks, rest) = samples.as_chunks::<16>();
     let mask = u16x16::from_slice(
         simd,
@@ -124,21 +128,24 @@ fn sum_lanes<S: Simd, T: SummedSample>(simd: S, samples: &[T], every_second: boo
             }
         }),
     );
-    let mut padded = [T::default(); 16];
-    let mut at = 0;
-    for width in [8, 4, 2, 1] {
-        if rest.len() - at >= width {
-            padded[at..at + width].copy_from_slice(&rest[at..at + width]); // splot-copy-ok: zero-pad the last sample group
-            at += width;
+    let add = |sum: fearless_simd::u32x8<S>, group: &[T; 16]| {
+        let (low, high) = simd.widen_u16x16(T::lanes(simd, group) & mask);
+        sum + low + high
+    };
+    let mut sum = chunks
+        .iter()
+        .fold(fearless_simd::u32x8::splat(simd, 0), add);
+    if !rest.is_empty() {
+        let mut padded = [T::default(); 16];
+        let mut at = 0;
+        for width in [8, 4, 2, 1] {
+            if rest.len() - at >= width {
+                padded[at..at + width].copy_from_slice(&rest[at..at + width]); // splot-copy-ok: zero-pad the last sample group
+                at += width;
+            }
         }
+        sum = add(sum, &padded);
     }
-    let sum = chunks.iter().chain(core::iter::once(&padded)).fold(
-        fearless_simd::u32x8::splat(simd, 0),
-        |sum, group| {
-            let (low, high) = simd.widen_u16x16(T::lanes(simd, group) & mask);
-            sum + low + high
-        },
-    );
     simd.reduce_sum_u32x8(sum)
 }
 

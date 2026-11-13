@@ -7,8 +7,8 @@
 
 use crate::intra::{IntraDcEdge, IntraDcEdges, IntraRectBlockSize};
 use crate::intra_dc_math::{
-    IntraLaneSample, load_lanes, predict_intra_dc_rect_value_from_sums, store_lanes,
-    validate_dc_edge, validate_output_shape, validate_sample_type,
+    IntraLaneSample, dc_midpoint, load_lanes, predict_intra_dc_rect_value_from_sums, round2_u32,
+    store_lanes, validate_dc_edge, validate_output_shape, validate_sample_type,
 };
 use crate::{BitDepth, ReconError, ReconSample, Result};
 use fearless_simd::{Simd, SimdBase, u16x16};
@@ -97,6 +97,126 @@ pub fn predict_intra_ibp_dc_rect_into<T: ReconSample>(
     })
 }
 
+/// One block predicted in place by [`predict_dc_in_frame`]: its first sample
+/// at `origin` of the plane samples, rows `stride` apart, with the edges that
+/// `left` and `above` make available stored beside it.
+#[derive(Clone, Copy)]
+pub(crate) struct DcFrameBlock {
+    pub(crate) size: IntraRectBlockSize,
+    pub(crate) bit_depth: BitDepth,
+    pub(crate) origin: usize,
+    pub(crate) stride: usize,
+    pub(crate) left: bool,
+    pub(crate) above: bool,
+    pub(crate) ibp: bool,
+}
+
+/// Writes the § 7.13.2.10 DC prediction of `block`, with the § 7.13.2.12
+/// IBP blend when `block.ibp`, straight from and into the plane `samples`,
+/// which hold samples of the active bit depth.
+pub(crate) fn predict_dc_in_frame<T: ReconSample>(
+    samples: &mut [T],
+    block: DcFrameBlock,
+) -> Result<()> {
+    validate_sample_type::<T>(block.bit_depth)?;
+    let written = if let Some(samples) = T::u8_slice_mut(samples) {
+        baseline_simd!(simd => dc_frame_block(simd, block, samples))
+    } else if let Some(samples) = T::u16_slice_mut(samples) {
+        baseline_simd!(simd => dc_frame_block(simd, block, samples))
+    } else {
+        None
+    };
+    written.ok_or(ReconError::ArithmeticOverflow {
+        context: "DC prediction frame block",
+    })
+}
+
+#[inline]
+fn dc_frame_block<S: Simd, P: IntraLaneSample>(
+    simd: S,
+    block: DcFrameBlock,
+    samples: &mut [P],
+) -> Option<()> {
+    match block.size.width() {
+        4 => dc_frame_rows::<S, P, 4, 1>(simd, block, samples),
+        8 => dc_frame_rows::<S, P, 8, 1>(simd, block, samples),
+        16 => dc_frame_rows::<S, P, 16, 1>(simd, block, samples),
+        32 => dc_frame_rows::<S, P, 32, 2>(simd, block, samples),
+        _ => dc_frame_rows::<S, P, 64, 4>(simd, block, samples),
+    }
+}
+
+#[inline]
+fn dc_frame_rows<S: Simd, P: IntraLaneSample, const W: usize, const C: usize>(
+    simd: S,
+    DcFrameBlock {
+        size,
+        bit_depth,
+        origin,
+        stride,
+        left,
+        above,
+        ibp,
+    }: DcFrameBlock,
+    samples: &mut [P],
+) -> Option<()> {
+    let height = size.height();
+    let mut column = [P::default(); 64];
+    let left = if left {
+        let rows = samples.get(origin.checked_sub(1)?..)?;
+        for (slot, row) in column
+            .get_mut(..height)?
+            .iter_mut()
+            .zip(rows.chunks(stride))
+        {
+            *slot = *row.first()?;
+        }
+        Some(column.get(..height)?)
+    } else {
+        None
+    };
+    let (before, target) = samples.split_at_mut_checked(origin)?;
+    let above = if above {
+        Some(
+            before
+                .get(origin.checked_sub(stride)?..)?
+                .first_chunk::<W>()?,
+        )
+    } else {
+        None
+    };
+    let max = bit_depth.max_sample();
+    let sum = |edge: &[P]| crate::sample_range::sum_lanes(simd, edge, false);
+    let dc = match (left, above) {
+        (Some(left), Some(above)) => {
+            let (shift, scale) =
+                crate::intra_dc_math::resolve_divisor_32((W + height) as u32).ok()?;
+            round2_u32(
+                (sum(left) + sum(above)).wrapping_mul(u32::from(scale)),
+                shift,
+            )
+        }
+        (Some(left), None) => round2_u32(sum(left), size.log2_height()),
+        (None, Some(above)) => round2_u32(sum(above), size.log2_width()),
+        (None, None) => u32::from(dc_midpoint(bit_depth)),
+    }
+    .min(u32::from(max)) as u16;
+    if ibp {
+        let block = IbpDcBlock {
+            wide: max > MAX_NARROW_BLEND_SAMPLE,
+            size,
+            dc,
+            stride,
+        };
+        return ibp_dc_rows::<S, P, W, C>(simd, block, (left, above.map(|a| &a[..])), target);
+    }
+    let fill = [P::from_lane(dc); W];
+    for row in target.chunks_mut(stride).take(height) {
+        *row.first_chunk_mut::<W>()? = fill;
+    }
+    Some(())
+}
+
 /// Largest sample whose § 7.13.2.12 blend sum `128 * sample + 64` fits `u16`.
 const MAX_NARROW_BLEND_SAMPLE: u16 = 511;
 
@@ -130,7 +250,11 @@ fn ibp_dc_block<S: Simd, P: IntraLaneSample>(
 /// DC value, above-zone rows blend with the above edge at the row's weight
 /// from the zone's first column, and left-zone rows blend their first `W / 4`
 /// columns with the row's left sample at the column weights.
-#[inline]
+#[allow(
+    clippy::inline_always,
+    reason = "measured: an outlined call costs more than the rows of a small block"
+)]
+#[inline(always)]
 fn ibp_dc_rows<S: Simd, P: IntraLaneSample, const W: usize, const C: usize>(
     simd: S,
     IbpDcBlock {
