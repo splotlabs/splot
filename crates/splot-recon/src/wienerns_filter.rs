@@ -999,8 +999,17 @@ impl LumaSimdSource for u8 {
     #[inline]
     fn widen16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
         use fearless_simd::prelude::*;
-        let (low, high) = u8x16::load_array_ref(simd, samples).widen();
-        simd.combine_u16x8(low, high)
+        let lanes = u8x16::load_array_ref(simd, samples);
+        #[cfg(target_arch = "x86_64")]
+        {
+            let zero = u8x16::splat(simd, 0);
+            simd.widen_u8x32(simd.combine_u8x16(lanes, zero)).0
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let (low, high) = lanes.widen();
+            simd.combine_u16x8(low, high)
+        }
     }
 
     #[cfg(target_arch = "x86_64")]
