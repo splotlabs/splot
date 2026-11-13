@@ -484,3 +484,7 @@ lock in the pipeline, the tile-parallel parse. Queued: predict straight into the
   (push 6); the IST path (push 8); the deblock column bitmask (push 9); the LR u8 window,
   the tx-skip grid, `left_column` and the intra glue (push 10); CfL `luma_420` direct store
   (push 12). I give the list to the maintainer with your estimates.
+- Landed after the entry above, shared: "fix(decode): wait for in-flight frames at the
+  reference-store limit". At the limit the driver collects the oldest in-flight frame
+  and checks again; streams below the limit do not change. SparksTruck now completes at
+  32 and 48 threads here. Please confirm on x86 at 20 threads and above.
