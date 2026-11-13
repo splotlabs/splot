@@ -25,6 +25,9 @@ pub(crate) struct DecodeBuffers {
     /// Spent superblock units' row buffers, lent to the next unit parsed.
     units: Mutex<Vec<ReconRowBuffers>>,
     pub(crate) parse_states: Mutex<Vec<TileParseState>>,
+    /// Spent filter stripe windows of every frame: a frame's frontier fills
+    /// only the few stripes its filters have not run yet.
+    pub(crate) filter_windows: Mutex<Vec<splot_recon::RetiredFramePlanes>>,
     /// One walk's temporal state for the whole decode: the inter and TIP output
     /// walks take turns, so a copy per walk or lane is memory nobody reads.
     walk_temporal: Mutex<Option<WalkTemporal>>,
