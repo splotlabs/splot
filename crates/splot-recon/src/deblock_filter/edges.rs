@@ -332,14 +332,10 @@ fn band<E: Chunk>(
     max_sample: i16,
 ) {
     for (column, _) in live.iter().enumerate().filter(|(_, live)| **live) {
-        let column_edges = |k: usize| {
-            edges
-                .get(column + k * edge_stride)
-                .copied()
-                .unwrap_or_default()
-        };
+        let column_edges = edges.get(column..).unwrap_or_default();
         let first = first + LINES * column;
-        run::<E, true>(samples, stride, first, segments, column_edges, max_sample);
+        let runs = (column_edges, segments, edge_stride);
+        run::<E, true>(samples, stride, first, runs, max_sample);
     }
 }
 
@@ -373,16 +369,16 @@ pub fn deblock_horizontal_edges<T: ReconSample>(
         return Err(too_short(first, samples.len()));
     }
     let max_sample = bit_depth.max_sample() as i16;
-    let row_edges = |k: usize| edges.get(k).copied().unwrap_or_default();
+    let runs = (edges, edges.len(), 1);
     if let Some(samples) = T::u8_slice_mut(samples) {
         #[cfg(target_arch = "x86_64")]
         if let Some(token) = Level::baseline().as_avx2() {
             avx2_u8::horizontal_run(token, samples, stride, first, edges);
             return Ok(());
         }
-        run::<u8, false>(samples, stride, first, edges.len(), row_edges, max_sample);
+        run::<u8, false>(samples, stride, first, runs, max_sample);
     } else if let Some(samples) = T::u16_slice_mut(samples) {
-        run::<u16, false>(samples, stride, first, edges.len(), row_edges, max_sample);
+        run::<u16, false>(samples, stride, first, runs, max_sample);
     } else {
         return Err(too_short(first, samples.len()));
     }
@@ -473,24 +469,31 @@ impl EdgeSample for u16 {
     }
 }
 
-/// Runs the `count` validated segments `edge(0..count)` in chunks of
-/// [`SEGMENTS`]. A last partial chunk filters a copy of its window, so no
-/// load or store leaves the run.
+/// Runs the `count` validated segments `edges[k * edge_stride]`, `k <
+/// count`, in chunks of [`SEGMENTS`]. A last partial chunk filters a copy of
+/// its window, so no load or store leaves the run.
 fn run<E: Chunk, const VERTICAL: bool>(
     samples: &mut [E],
     stride: usize,
     first: usize,
-    count: usize,
-    edge: impl Fn(usize) -> DeblockEdge,
+    (edges, count, edge_stride): (&[DeblockEdge], usize, usize),
     max_sample: i16,
 ) {
+    let edge = |k: usize| edges.get(k * edge_stride).copied().unwrap_or_default();
     let step = if VERTICAL { LANES * stride } else { LANES };
     let chunks = count / SEGMENTS;
     let mut at = first;
     for index in 0..chunks {
         let k = index * SEGMENTS;
-        let chunk = [edge(k), edge(k + 1), edge(k + 2), edge(k + 3)];
-        if chunk.iter().any(|edge| !edge.is_none()) {
+        let chunk = if !VERTICAL
+            && edge_stride == 1
+            && let Some(&chunk) = edges.get(k..).and_then(<[DeblockEdge]>::first_chunk)
+        {
+            chunk
+        } else {
+            [edge(k), edge(k + 1), edge(k + 2), edge(k + 3)]
+        };
+        if chunk.iter().fold(0, |any, edge| any | edge.0) != 0 {
             E::chunk::<VERTICAL>(samples, stride, at, &chunk, max_sample);
         }
         at += step;

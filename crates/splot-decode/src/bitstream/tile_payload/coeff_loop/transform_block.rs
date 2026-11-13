@@ -794,6 +794,22 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         }
     }
 
+    #[allow(clippy::inline_always, reason = "measured: one loop per tool set")]
+    #[cfg_attr(target_arch = "x86_64", inline(never))]
+    #[cfg_attr(not(target_arch = "x86_64"), inline(always))]
+    fn lf_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
+        &mut self,
+        mut rows: CoeffLevelRows<'_>,
+        lf: &[u32],
+    ) {
+        for (offset, &entry) in lf.iter().enumerate().rev() {
+            let grid = entry_grid(entry);
+            let level = self.read_lf_base::<CLASS, LUMA, false>(&mut rows, entry);
+            let level = self.add_range::<CLASS, LUMA, true>(&mut rows, grid, false, level);
+            self.finish::<TCQ, PH>(1 + offset, grid, level);
+        }
+    }
+
     /// The base and range symbols of every scan index below the EOB, in
     /// reverse scan order: the high-frequency indices, the low-frequency
     /// indices above 0 (a scan prefix, see [`lf_scan_end`]), and DC, so each
@@ -825,12 +841,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
             lf_end,
         );
         let lf = scan.get(1..lf_end.min(eob_index)).unwrap_or_default();
-        for (offset, &entry) in lf.iter().enumerate().rev() {
-            let grid = entry_grid(entry);
-            let level = self.read_lf_base::<CLASS, LUMA, false>(rows, entry);
-            let level = self.add_range::<CLASS, LUMA, true>(rows, grid, false, level);
-            self.finish::<TCQ, PH>(1 + offset, grid, level);
-        }
+        self.lf_pass::<CLASS, LUMA, TCQ, PH>(rows.reborrow(), lf);
         let dc_grid = entry_grid(scan[0]);
         let level = if PH && (self.ph >> 1) >= PHTHRESH {
             let mag = self.base_mag::<CLASS, LUMA, false, false>(dc_grid);

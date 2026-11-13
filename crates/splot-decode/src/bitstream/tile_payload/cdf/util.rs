@@ -124,6 +124,23 @@ pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_rows<const N: usize>(
     }
 }
 
+/// Whether every row holds non-decreasing probabilities up to
+/// `CDF_PROB_SCALE` and a use count up to 32: the § 8.2.6 invariants the
+/// trusted symbol reads rely on.
+#[cfg(any(debug_assertions, fuzzing, test))]
+pub(in crate::bitstream::tile_payload::cdf) fn cdf_rows_valid<const N: usize>(
+    rows: &[[u16; N]],
+) -> bool {
+    rows.iter().all(|row| {
+        let probabilities = &row[..N - 2];
+        probabilities.is_sorted()
+            && probabilities
+                .last()
+                .is_none_or(|&last| u32::from(last) <= CDF_PROB_SCALE)
+            && row[N - 2] >> CDF_COUNT_SHIFT <= 32
+    })
+}
+
 pub(crate) const fn floor_log2(value: u32) -> u32 {
     u32::BITS - 1 - value.leading_zeros()
 }

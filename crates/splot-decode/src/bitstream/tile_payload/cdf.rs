@@ -97,6 +97,8 @@ pub(crate) use self::block_rows::{
     PB_MV_PRECISION_CDF_ROW_LEN,
 };
 pub(crate) use self::coeff_rows::{CoeffBaseRow, CoeffCdfRows, CoeffCdfSelector, CoeffLevelRows};
+#[cfg(any(debug_assertions, fuzzing, test))]
+pub(in crate::bitstream::tile_payload::cdf) use self::util::cdf_rows_valid;
 pub(in crate::bitstream::tile_payload::cdf) use self::util::{
     avg_cdf_row, avg_cdf_rows, blend_cdf_row, blend_cdf_rows, scale_cdf_count, scale_cdf_rows,
 };
@@ -281,6 +283,11 @@ impl FrameCdfSubset {
 
     pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
         self.rows.blend_from_saved(&saved.rows);
+        #[cfg(any(debug_assertions, fuzzing))]
+        assert!(
+            self.rows.rows_valid(),
+            "a blended CDF row left the § 8.2.6 invariants"
+        );
     }
 
     #[must_use]
@@ -1351,6 +1358,23 @@ impl TileCdfRows {
 
         tile_cdf_saved_rows!(blend_row, blend_rows);
         self.block.blend_from_saved(&saved.block);
+    }
+
+    #[cfg(any(debug_assertions, fuzzing, test))]
+    pub(crate) fn rows_valid(&self) -> bool {
+        let mut valid = true;
+        macro_rules! row_valid {
+            ($field:ident) => {
+                valid &= cdf_rows_valid(core::slice::from_ref(&self.$field));
+            };
+        }
+        macro_rules! rows_valid {
+            ($field:ident $(. $flatten:ident())*) => {
+                valid &= cdf_rows_valid(flat_cdf_rows!(self.$field $(, $flatten)*));
+            };
+        }
+        tile_cdf_saved_rows!(row_valid, rows_valid);
+        valid && self.block.rows_valid()
     }
 }
 

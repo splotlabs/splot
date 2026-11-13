@@ -400,11 +400,11 @@ fn search_lanes<const N: usize>(
     if N <= 4 {
         let word = |lanes: i16x8<LaneToken>| lanes.bitcast::<u64x2<LaneToken>>().as_array()[0];
         let mask = word(token.to_vector_mask16x8(below));
-        let above = (u64::BITS - mask.leading_zeros()) >> 4;
+        let shift = mask.count_ones();
         let low = word(boundaries.bitcast());
-        let cur = low.wrapping_shr(16 * above) as u16;
-        let prev = ((low << 16) | u64::from(range)).wrapping_shr(16 * above) as u16;
-        return (above, cur, prev, below);
+        let cur = low.wrapping_shr(shift) as u16;
+        let prev = ((low << 16) | u64::from(range)).wrapping_shr(shift) as u16;
+        return (shift >> 4, cur, prev, below);
     }
     #[cfg(target_arch = "x86_64")]
     let above = below.to_bitmask().count_ones();
@@ -1246,6 +1246,8 @@ impl<'a> SymbolDecoder<'a> {
         }
     }
 
+    /// The word, lane and early-exit searches agree only on rows that are
+    /// non-decreasing and at most 32768, which the decoder's `rows_valid` asserts.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_trusted_arity<const N: usize>(&mut self, cdf: &mut [u16], update: bool) -> u32 {
@@ -1253,7 +1255,7 @@ impl<'a> SymbolDecoder<'a> {
             return 0;
         }
         self.ensure_buffered(15);
-        if (3..=6).contains(&N) {
+        if (3..=6).contains(&N) && !cfg!(target_arch = "x86_64") {
             return self
                 .read_trusted_word::<N>(cdf, row_word::<N>(cdf), update)
                 .0;
@@ -1355,7 +1357,7 @@ impl<'a> SymbolDecoder<'a> {
         (symbol, word)
     }
 
-    /// [`Self::read_trusted_arity`] for `N > 6` in vector lanes, see
+    /// [`Self::read_trusted_arity`] for `N > 6`, or `N > 2` on x86-64, in vector lanes, see
     /// [`row_search_lanes`]. Branch-free on purpose: coefficient symbols
     /// mispredict too often for [`early_exit_search`] on some streams.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]

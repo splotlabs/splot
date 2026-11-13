@@ -119,6 +119,22 @@ impl PlaneFacts {
         extent: (usize, usize),
         sub: (usize, usize),
     ) {
+        match sub {
+            (0, 0) => self.paint_subsampled(records, extent, (0, 0)),
+            (1, 1) => self.paint_subsampled(records, extent, (1, 1)),
+            (1, 0) => self.paint_subsampled(records, extent, (1, 0)),
+            sub => self.paint_subsampled(records, extent, sub),
+        }
+    }
+
+    #[allow(clippy::inline_always, reason = "folds the subsampling shifts")]
+    #[inline(always)]
+    fn paint_subsampled(
+        &mut self,
+        records: &[DeblockBlock],
+        extent: (usize, usize),
+        sub: (usize, usize),
+    ) {
         let stride = self.stride;
         for block in records {
             let [rows, cols] = block_cells(block, extent, sub);
@@ -174,20 +190,23 @@ impl PlaneFacts {
             return;
         };
         let mut at = rect.at;
-        for row in 0..rect.rows {
+        for _ in 0..rect.rows {
             if at > last {
-                return;
+                break;
             }
             keys[at..at + N].copy_from_slice(&[key; N]);
-            let infos = &mut infos[at..at + N];
-            infos.copy_from_slice(&row_info);
+            infos[at..at + N].copy_from_slice(&row_info);
             qindexes[at..at + N].copy_from_slice(&[qindex; N]);
-            if Some(row) == edge_row {
-                for cell in infos.iter_mut() {
-                    *cell |= EDGE_H;
-                }
-            }
             at += self.stride;
+        }
+        if let Some(row) = edge_row.filter(|&row| row < rect.rows)
+            && let Some(cells) = infos.get_mut(rect.at + row * self.stride..)
+            && let Some(cells) = cells.first_chunk_mut::<N>()
+            && rect.at + row * self.stride <= last
+        {
+            for cell in cells {
+                *cell |= EDGE_H;
+            }
         }
     }
 

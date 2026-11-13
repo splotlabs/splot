@@ -819,6 +819,65 @@ pub(super) fn sym_rows_narrow<O: GdfSample>(
     Some(())
 }
 
+/// A source row sample type that [`copy_shifted`] widens to `u16` lanes.
+pub(super) trait SourceLanes: Copy + Default {
+    fn lanes<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S>;
+}
+
+impl SourceLanes for u8 {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn lanes<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
+        let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, samples));
+        simd.combine_u16x8(low, high)
+    }
+}
+
+impl SourceLanes for u16 {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn lanes<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
+        u16x16::from_slice(simd, samples)
+    }
+}
+
+/// Writes `src << shift` into `dst`, as long as `src`, and returns the
+/// largest sample of `src`.
+pub(super) fn copy_shifted<T: SourceLanes>(src: &[T], dst: &mut [u16], shift: u32) -> u16 {
+    baseline_simd!(simd => copy_shifted_with(simd, src, dst, shift))
+}
+
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn copy_shifted_with<S: Simd, T: SourceLanes>(
+    simd: S,
+    src: &[T],
+    dst: &mut [u16],
+    shift: u32,
+) -> u16 {
+    let len = src.len().min(dst.len());
+    let mut max = u16x16::splat(simd, 0);
+    let mut chunk = |samples: &[T; 16], out: &mut [u16; 16]| {
+        let samples = T::lanes(simd, samples);
+        max = max.max(samples);
+        (samples << shift).store_array(out);
+    };
+    let (src, dst) = (&src[..len], &mut dst[..len]);
+    if let (Some(last), Some(last_out)) = (src.last_chunk(), dst.last_chunk_mut()) {
+        chunk(last, last_out);
+        let (dst, _) = dst.as_chunks_mut::<16>();
+        for (samples, out) in src.as_chunks::<16>().0.iter().zip(dst) {
+            chunk(samples, out);
+        }
+    } else {
+        let (mut padded, mut out) = ([T::default(); 16], [0; 16]);
+        padded[..len].copy_from_slice(&src[..len]);
+        chunk(&padded, &mut out);
+        dst[..len].copy_from_slice(&out[..len]);
+    }
+    simd.reduce_max_u16x16(max)
+}
+
 /// Gradient sums of 16 columns, one row per direction.
 type GradChunk = [[u16; 16]; 4];
 
@@ -1206,4 +1265,51 @@ fn band_classes_with<S: Simd>(
         }
     }
     Some(())
+}
+
+#[cfg(test)]
+#[test]
+fn copy_shifted_matches_scalar_shift_and_max() {
+    fn check<T: SourceLanes + Into<u16>>(src: &[T], shift: u32) {
+        let mut dst = vec![u16::MAX; src.len() + 3];
+        let max = copy_shifted(src, &mut dst[..src.len()], shift);
+        let expected: Vec<u16> = src.iter().map(|&sample| sample.into() << shift).collect();
+        assert_eq!(
+            &dst[..src.len()],
+            expected,
+            "len {} shift {shift}",
+            src.len()
+        );
+        assert_eq!(&dst[src.len()..], [u16::MAX; 3]);
+        assert_eq!(
+            max,
+            src.iter().map(|&sample| sample.into()).max().unwrap_or(0)
+        );
+    }
+    let mut seed = 0x1234_5678_u32;
+    let mut next = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        seed >> 8
+    };
+    for len in 0..70 {
+        for case in 0..4 {
+            let bytes: Vec<u8> = (0..len)
+                .map(|_| match (next() % 4, case) {
+                    (0, _) => 0,
+                    (1, 1) => u8::MAX,
+                    _ => next() as u8,
+                })
+                .collect();
+            check(&bytes, 2);
+            let words: Vec<u16> = (0..len)
+                .map(|_| match (next() % 4, case) {
+                    (0, _) => 0,
+                    (1, 1) => 1023,
+                    (1, 2) => u16::MAX,
+                    _ => (next() % 1024) as u16,
+                })
+                .collect();
+            check(&words, 0);
+        }
+    }
 }

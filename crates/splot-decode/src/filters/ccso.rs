@@ -810,7 +810,7 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
         )
     };
     let mut x = first;
-    if L::u8_slice(centers).is_some() && count >= 2 {
+    if count >= 2 {
         let tables = tables.map(|table| simd.combine_u8x16(table, table));
         let quant_step = u8x32::splat(simd, config.quant_step.clamp(0, 255) as u8);
         let edge = |source: u8x32<S>, centers: u8x32<S>, weight: usize| {
@@ -836,16 +836,13 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
             let high = u8x32::from_slice(simd, row.get(2 * CCSO_LANES..4 * CCSO_LANES)?);
             Some(simd.unzip_low_u8x32(low, high))
         };
-        let wide_lanes = centers
-            .chunks_exact(2 * step)
-            .zip(taps0.chunks_exact(2 * step))
-            .zip(taps1.chunks_exact(2 * step))
-            .zip(outputs.chunks_exact_mut(2 * CCSO_LANES));
-        for (((centers, taps0), taps1), output) in wide_lanes {
-            let (Some(centers), Some(row0), Some(row1)) = (luma(centers), luma(taps0), luma(taps1))
-            else {
-                break;
-            };
+        let wide_index = |centers: &[L], taps0: &[L], taps1: &[L]| -> Option<u8x32<S>> {
+            if L::u8_slice(centers).is_none() {
+                let half =
+                    |at: usize| index_u16([centers.get(at..)?, taps0.get(at..)?, taps1.get(at..)?]);
+                return Some(simd.combine_u8x16(half(0)?, half(step)?));
+            }
+            let (centers, row0, row1) = (luma(centers)?, luma(taps0)?, luma(taps1)?);
             let mut index = match config.band_shift {
                 shift @ 0..8 => centers >> u32::from(shift),
                 _ => u8x32::splat(simd, 0),
@@ -854,6 +851,17 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
                 index =
                     index + edge(row0, centers, class_weight0) + edge(row1, centers, class_weight1);
             }
+            Some(index)
+        };
+        let wide_lanes = centers
+            .chunks_exact(2 * step)
+            .zip(taps0.chunks_exact(2 * step))
+            .zip(taps1.chunks_exact(2 * step))
+            .zip(outputs.chunks_exact_mut(2 * CCSO_LANES));
+        for (((centers, taps0), taps1), output) in wide_lanes {
+            let Some(index) = wide_index(centers, taps0, taps1) else {
+                break;
+            };
             let (low, signed) = (index & 15, index.bitcast::<i8x32<S>>());
             let block = |offset: u8x32<S>, block: usize| {
                 let entries = simd.swizzle_dyn_within_blocks_u8x32(tables[block], low);

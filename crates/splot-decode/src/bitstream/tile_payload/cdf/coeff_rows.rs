@@ -17,6 +17,8 @@ use splot_core::tables::cdf::{
 };
 
 use super::block_read::row_at;
+#[cfg(any(debug_assertions, fuzzing, test))]
+use super::cdf_rows_valid;
 use super::coeff_context::CoeffBaseSelection;
 use super::util::checked_context;
 use super::{
@@ -496,6 +498,18 @@ impl CoeffCdfRows {
             };
         }
         coeff_cdf_lifecycle_families!(blend_rows);
+    }
+
+    #[cfg(any(debug_assertions, fuzzing, test))]
+    pub(crate) fn rows_valid(&self) -> bool {
+        let mut valid = true;
+        macro_rules! rows_valid {
+            ($field:ident $(. $flatten:ident())*) => {
+                valid &= cdf_rows_valid(flat_cdf_rows!(self.$field $(, $flatten)*));
+            };
+        }
+        coeff_cdf_lifecycle_families!(rows_valid);
+        valid
     }
 
     pub(crate) fn scale_counts_for_frame_end_update(&mut self) {

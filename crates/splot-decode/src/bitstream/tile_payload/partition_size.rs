@@ -13,7 +13,6 @@ use splot_core::tables::conversion::{
 use super::partition::PartitionType;
 
 const BLOCK_SIZES: usize = 29;
-const BLOCK_INVALID: i32 = 29;
 const MAX_LOG2_4X4: usize = 6;
 
 /// Block size indexed by log2 of its 4x4 width and height; every AV2 block
@@ -58,6 +57,16 @@ const NUM_4X4: [[u8; 2]; 32] = {
 };
 const MI_WIDTH_LOG2_U8: [u8; 32] = padded_u8_table(&MI_WIDTH_LOG2);
 const MI_HEIGHT_LOG2_U8: [u8; 32] = padded_u8_table(&MI_HEIGHT_LOG2);
+const PARTITION_SUBSIZE_U8: [[u8; 32]; PARTITION_SUBSIZE.len()] = {
+    let mut table = [[0; 32]; PARTITION_SUBSIZE.len()];
+    let mut partition = 0;
+    while partition < PARTITION_SUBSIZE.len() {
+        table[partition] = padded_u8_table(&PARTITION_SUBSIZE[partition]);
+        partition += 1;
+    }
+    table
+};
+const H_PARTITION_MIDSIZE_U8: [u8; 32] = padded_u8_table(&H_PARTITION_MIDSIZE);
 
 /// A valid `bSize`: every constructor checks the index is below
 /// `BLOCK_SIZES`, so the table reads below cannot fail.
@@ -154,74 +163,37 @@ pub(crate) enum PartitionSizeError {
         b_size: usize,
         max_exclusive: usize,
     },
-    #[error("{table}[{partition:?}][{b_size}] value {value} is not a valid block-size entry")]
-    TableValueOutOfRange {
-        table: &'static str,
-        partition: Option<usize>,
-        b_size: usize,
-        value: i32,
-    },
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "callers share the table-error plumbing"
+)]
 pub(crate) fn partition_subsize(
     partition: PartitionType,
     b_size: BlockSize,
 ) -> Result<Option<BlockSize>, PartitionSizeError> {
-    let partition_index = partition.index();
-    let value = partition_table_i32(
-        "Partition_Subsize",
-        &PARTITION_SUBSIZE,
-        partition_index,
-        b_size,
-    )?;
-    table_value("Partition_Subsize", Some(partition_index), b_size, value)
+    Ok(table_value(
+        b_size.entry(&PARTITION_SUBSIZE_U8[partition.index()]),
+    ))
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "callers share the table-error plumbing"
+)]
 pub(crate) fn h_partition_midsize(
     b_size: BlockSize,
 ) -> Result<Option<BlockSize>, PartitionSizeError> {
-    let value = table_i32("H_Partition_Midsize", &H_PARTITION_MIDSIZE, b_size)?;
-    table_value("H_Partition_Midsize", None, b_size, value)
+    Ok(table_value(b_size.entry(&H_PARTITION_MIDSIZE_U8)))
 }
 
-fn table_value(
-    table: &'static str,
-    partition: Option<usize>,
-    b_size: BlockSize,
-    value: i32,
-) -> Result<Option<BlockSize>, PartitionSizeError> {
-    if value == BLOCK_INVALID {
-        return Ok(None);
+const fn table_value(value: usize) -> Option<BlockSize> {
+    if value < BLOCK_SIZES {
+        Some(BlockSize(value as u8))
+    } else {
+        None
     }
-    let index = usize::try_from(value)
-        .map_err(|_| table_value_out_of_range(table, partition, b_size, value))?;
-    let block_size = BlockSize::new(index)
-        .map_err(|_| table_value_out_of_range(table, partition, b_size, value))?;
-    Ok(Some(block_size))
-}
-
-fn partition_table_i32(
-    table: &'static str,
-    values: &[[i32; BLOCK_SIZES]],
-    partition: usize,
-    b_size: BlockSize,
-) -> Result<i32, PartitionSizeError> {
-    values
-        .get(partition)
-        .and_then(|row| row.get(b_size.index()))
-        .copied()
-        .ok_or(block_size_out_of_range(table, b_size.index()))
-}
-
-fn table_i32(
-    table: &'static str,
-    values: &[i32],
-    b_size: BlockSize,
-) -> Result<i32, PartitionSizeError> {
-    values
-        .get(b_size.index())
-        .copied()
-        .ok_or(block_size_out_of_range(table, b_size.index()))
 }
 
 fn block_size_out_of_range(table: &'static str, b_size: usize) -> PartitionSizeError {
@@ -229,20 +201,6 @@ fn block_size_out_of_range(table: &'static str, b_size: usize) -> PartitionSizeE
         table,
         b_size,
         max_exclusive: BLOCK_SIZES,
-    }
-}
-
-fn table_value_out_of_range(
-    table: &'static str,
-    partition: Option<usize>,
-    b_size: BlockSize,
-    value: i32,
-) -> PartitionSizeError {
-    PartitionSizeError::TableValueOutOfRange {
-        table,
-        partition,
-        b_size: b_size.index(),
-        value,
     }
 }
 

@@ -17,13 +17,13 @@ const PLANE_COUNT: usize = 2;
 const LUMA_PLANE: usize = 0;
 const CHROMA_PLANE: usize = 1;
 const CLEAR_PARTITION_CONTEXT: u8 = 0;
-const PARTITION_CONTEXT_ABOVE: [u8; 29] = [
+const PARTITION_CONTEXT_ABOVE: [u8; 32] = [
     63, 63, 62, 62, 62, 60, 60, 60, 56, 56, 56, 48, 48, 48, 32, 32, 32, 0, 0, 63, 60, 62, 56, 60,
-    48, 63, 56, 62, 48,
+    48, 63, 56, 62, 48, 0, 0, 0,
 ];
-const PARTITION_CONTEXT_LEFT: [u8; 29] = [
+const PARTITION_CONTEXT_LEFT: [u8; 32] = [
     63, 62, 63, 62, 60, 62, 60, 56, 60, 56, 48, 56, 48, 32, 48, 32, 0, 32, 0, 60, 63, 56, 62, 48,
-    60, 56, 63, 48, 62,
+    60, 56, 63, 48, 62, 0, 0, 0,
 ];
 
 /// Bit 6 of a luma entry: its leaf recorded [`IntraFacts`] (an intra or intra
@@ -431,15 +431,14 @@ impl TileMiSizeState {
         mi_size: BlockSize,
         flags: u8,
     ) -> Result<(Range<usize>, Range<usize>), TileMiSizeStateError> {
-        let index = mi_size.index();
-        let (Some(local_r), Some(local_c), Some(&left), Some(&above)) = (
+        let (Some(local_r), Some(local_c)) = (
             r.checked_sub(self.origin_row),
             c.checked_sub(self.origin_col),
-            PARTITION_CONTEXT_LEFT.get(index),
-            PARTITION_CONTEXT_ABOVE.get(index),
         ) else {
             return Err(TileMiSizeStateError::BlockOutOfBounds { plane, r, c });
         };
+        let left = mi_size.entry(&PARTITION_CONTEXT_LEFT) as u8;
+        let above = mi_size.entry(&PARTITION_CONTEXT_ABOVE) as u8;
         let rows_end = local_r.saturating_add(mi_size.num_4x4_high()?);
         let cols_end = local_c.saturating_add(mi_size.num_4x4_wide()?);
         if rows_end > self.rows || cols_end > self.above_len {

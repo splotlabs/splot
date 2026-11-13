@@ -335,7 +335,7 @@ where
             )?;
         }
         let mut call = call;
-        let (partition, using_extended_sdp) = walker.read_partition_step(
+        let partition = walker.read_partition_step(
             frame,
             &mut call,
             hooks.mi_size_state,
@@ -344,6 +344,13 @@ where
         let sub_size = valid_subsize(partition, call.b_size)?;
         let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
         if partition != PartitionType::None {
+            let using_extended_sdp = read_extended_sdp_region_type(
+                frame,
+                &mut call,
+                partition,
+                hooks.work_unit.cdf_mut().tile_cdfs_mut(),
+                &mut walker.symbols,
+            )?;
             return visit_partition_children(
                 &mut |child, inherited| {
                     walker.chroma_ref = inherited;
@@ -423,7 +430,7 @@ fn visit_partition_children<S: ChildCallSink>(
 
 impl TreeWalker<'_> {
     /// Reads the § 5.20.3.2 partition of `call`, then the `CflAllowedInSdp`
-    /// and extended-SDP region state it sets.
+    /// state it sets.
     #[allow(
         clippy::inline_always,
         reason = "measured: keeps the call in registers"
@@ -435,7 +442,7 @@ impl TreeWalker<'_> {
         call: &mut TilePartitionCall,
         mi_size_state: &TileMiSizeState,
         cdfs: &mut super::cdf::TileCdfSubset,
-    ) -> Result<(PartitionType, bool), TilePartitionTraversalError> {
+    ) -> Result<PartitionType, TilePartitionTraversalError> {
         let node = *call;
         let facts = match self.sdp_state.forced_chroma_partition(frame, node) {
             None => self.partition_memo.facts_at(
@@ -461,9 +468,7 @@ impl TreeWalker<'_> {
         let cfl_allowed_in_sdp = self.sdp_state.record_partition(frame, node, partition);
         call.flags = call.flags & !CALL_CFL_ALLOWED_IN_SDP
             | super::call_flag(cfl_allowed_in_sdp, CALL_CFL_ALLOWED_IN_SDP);
-        let using_extended_sdp =
-            read_extended_sdp_region_type(frame, call, partition, cdfs, &mut self.symbols)?;
-        Ok((partition, using_extended_sdp))
+        Ok(partition)
     }
 }
 
@@ -1157,14 +1162,14 @@ pub(crate) fn updated_chroma_offset(
     if call.chroma_offset() || !call.has_chroma() {
         return Ok(call.chroma_offset());
     }
-    if is_chroma_offset_for_subsize(sub_size, frame)? {
+    if is_chroma_offset_for_subsize(sub_size, frame) {
         return Ok(true);
     }
     if partition == PartitionType::Horz3 {
         let middle_chroma = call.b_size.index() == BLOCK_8X32 && frame.subsampling_x;
         if !middle_chroma
             && let Some(midsize) = h_partition_midsize(call.b_size)?
-            && is_chroma_offset_for_subsize(midsize, frame)?
+            && is_chroma_offset_for_subsize(midsize, frame)
         {
             return Ok(true);
         }
@@ -1173,12 +1178,9 @@ pub(crate) fn updated_chroma_offset(
 }
 
 #[inline]
-fn is_chroma_offset_for_subsize(
-    sub_size: BlockSize,
-    frame: &TilePartitionFrameFacts,
-) -> Result<bool, TilePartitionTraversalError> {
-    Ok((frame.subsampling_y && sub_size.mi_height_log2()? == 0)
-        || (frame.subsampling_x && sub_size.mi_width_log2()? == 0))
+fn is_chroma_offset_for_subsize(sub_size: BlockSize, frame: &TilePartitionFrameFacts) -> bool {
+    let [high, wide] = sub_size.num_4x4();
+    (frame.subsampling_y && high == 1) || (frame.subsampling_x && wide == 1)
 }
 
 pub(crate) fn valid_subsize(
