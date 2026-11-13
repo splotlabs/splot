@@ -85,7 +85,6 @@ impl EncoderInterTile {
             chroma: sequence.general.chroma_format_idc,
             qindex,
             bit_depth,
-            residual_scratch: super::super::super::InterResidualReconScratch::default(),
             interintra_scratch: super::super::interintra::InterIntraScratch::default(),
             tip_ref_pair: None,
             tip_records: Vec::new(),
@@ -248,7 +247,7 @@ impl EncoderInterTile {
             false,
             self.bit_depth,
         )
-        .reconstruct(&mut self.residual_scratch, &[], &[], workspace)
+        .reconstruct(&[], &[], workspace)
     }
 
     /// Publishes a coded IntraBC leaf with block vector `mv` and `skip_txfm =

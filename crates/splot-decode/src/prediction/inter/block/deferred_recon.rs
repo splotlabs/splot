@@ -14,10 +14,7 @@ use super::super::compound::CompoundBlockSyntax;
 use super::super::find_mv_stack::{MvBlockContext, NeighbourFlagSyntax};
 use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
 use super::super::mc::{self, WorkspaceSink};
-use super::super::{
-    InterReferenceState, InterResidual, InterResidualBlock, InterResidualReconScratch,
-    PlacedInterBlock,
-};
+use super::super::{InterReferenceState, InterResidual, InterResidualBlock, PlacedInterBlock};
 use super::compound_path::append_compound_temporal_motion;
 use super::resolve::{
     InterBlockSyntax, InterMotionSyntax, MvResolutionState, SingleMotionSyntax,
@@ -50,7 +47,6 @@ pub(super) struct InterReconScratch<T: ReconSample> {
     tip: TipReconstructScratch,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     interintra: super::interintra::InterIntraScratch<T>,
-    residual: InterResidualReconScratch<T>,
     mc: super::super::mc::McScratch,
 }
 
@@ -334,13 +330,11 @@ impl InterReconCommand {
         shared: &ReconShared<'_, T>,
         tip_scratch: &mut TipReconstructScratch,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
-        residual_scratch: &mut InterResidualReconScratch<T>,
     ) -> Result<Option<mc::CompoundMotionGrid>> {
         let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
         if self.is_tip() {
             return tip::predict(
                 tip_scratch,
-                residual_scratch,
                 sink,
                 motion,
                 fresh_motion,
@@ -361,7 +355,6 @@ impl InterReconCommand {
         match sink {
             WorkspaceSink::Frame(workspace) => super::prediction::reconstruct_placed_inter_block(
                 interintra_scratch,
-                residual_scratch,
                 workspace,
                 &self.placed,
                 residual_blocks,
@@ -382,7 +375,6 @@ impl InterReconCommand {
             sink @ (WorkspaceSink::Rect(_) | WorkspaceSink::OwnedRect(_)) => {
                 super::prediction::reconstruct_pure_inter_block(
                     sink,
-                    residual_scratch,
                     &self.placed,
                     residual_blocks,
                     residual_coeffs,
@@ -412,7 +404,6 @@ impl InterReconCommand {
         shared: &ReconShared<'_, T>,
         tip_scratch: &mut TipReconstructScratch,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
-        residual_scratch: &mut InterResidualReconScratch<T>,
     ) -> Result<()> {
         let motion = if self.motion_derived {
             self.derived_motion.take().map(|grid| *grid)
@@ -429,7 +420,6 @@ impl InterReconCommand {
             shared,
             tip_scratch,
             interintra_scratch,
-            residual_scratch,
         )
         .map(|grid| tip::retire_motion_grid(tip_scratch, grid))
     }
@@ -459,10 +449,8 @@ impl<T: ReconSample> InterReconScratch<T> {
         residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
     ) -> Result<()> {
-        let Self { residual, mc, .. } = self;
-        mc.with_installed(|| {
-            command.reconstruct(residual, residual_blocks, residual_coeffs, workspace)
-        })
+        self.mc
+            .with_installed(|| command.reconstruct(residual_blocks, residual_coeffs, workspace))
     }
 
     pub(super) fn derive_motion_logged(
@@ -496,7 +484,6 @@ impl<T: ReconSample> InterReconScratch<T> {
         let Self {
             tip,
             interintra,
-            residual,
             mc,
             ..
         } = self;
@@ -510,7 +497,6 @@ impl<T: ReconSample> InterReconScratch<T> {
                 shared,
                 tip,
                 interintra,
-                residual,
             )
         })
     }
@@ -529,7 +515,6 @@ impl<T: ReconSample> InterReconScratch<T> {
         let Self {
             tip,
             interintra,
-            residual,
             mc,
             ..
         } = self;
@@ -543,7 +528,6 @@ impl<T: ReconSample> InterReconScratch<T> {
                 shared,
                 tip,
                 interintra,
-                residual,
             )
         })
     }

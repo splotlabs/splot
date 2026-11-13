@@ -5,8 +5,8 @@
 
 use splot_recon::math::round2_signed_i32;
 use splot_recon::{
-    BitDepth, PlaneId, ReconSample, inverse_transform_2d_outer_with_scratch,
-    reconstruct_add_residual,
+    BitDepth, CurrentFrameSurface, IntraRectBlockSize, PlaneId, ReconSample,
+    inverse_transform_2d_outer_with_scratch, reconstruct_add_residual,
 };
 
 use super::reconstruct::{dequantize_coeff_block, reconstruct_block_setup};
@@ -140,6 +140,75 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
         Ok::<(), GeneralIntraResidualError>(())
     })?;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_cctx_pair_residual_in_place<T: ReconSample>(
+    surface: &mut CurrentFrameSurface<'_, '_, T>,
+    [u_block, v_block]: [CoeffBlock<'_>; 2],
+    (x, y, size): (usize, usize, IntraRectBlockSize),
+    qindex: u32,
+    cctx_type: usize,
+    use_ddt: bool,
+    bit_depth: BitDepth,
+) -> Result<(), GeneralIntraResidualError> {
+    let (log2_width, log2_height) = (size.log2_width().into(), size.log2_height().into());
+    let setup = |plane, block: CoeffBlock<'_>| {
+        reconstruct_block_setup(
+            size.sample_count(),
+            qindex,
+            plane,
+            log2_width,
+            log2_height,
+            u_block.plane_tx_type(),
+            block.use_tcq,
+            use_ddt,
+            block.lossless,
+            None,
+            bit_depth,
+        )
+    };
+    let (u_setup, v_setup) = (setup(PlaneId::U, u_block)?, setup(PlaneId::V, v_block)?);
+    if u_setup.adjusted != v_setup.adjusted || u_setup.samples != v_setup.samples {
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CCTX paired transform geometry",
+        });
+    }
+    with_residual_scratch(|scratch| {
+        let u_dequant = &mut scratch.dequant[..u_setup.adjusted];
+        let v_dequant = &mut scratch.dequant_pair[..v_setup.adjusted];
+        let u_coded = dequantize_coeff_block(u_block, &u_setup.params, u_dequant)?;
+        let v_coded = dequantize_coeff_block(v_block, &v_setup.params, v_dequant)?;
+        apply_cross_chroma_transform(cctx_type, bit_depth, u_dequant, v_dequant)?;
+        let coded = u_coded.max(v_coded);
+        let pairs = [
+            (PlaneId::U, &u_setup, &*u_dequant),
+            (PlaneId::V, &v_setup, &*v_dequant),
+        ];
+        for (plane, setup, dequant) in pairs {
+            if let Some(fused) = setup.fused()
+                && let Some((dst, stride)) = surface.residual_rect_mut(plane, x, y, size)?
+                && fused.add(
+                    &dequant[..coded],
+                    (None, bit_depth),
+                    dst,
+                    stride,
+                    &mut scratch.transform,
+                )
+            {
+                continue;
+            }
+            let residual = &mut scratch.residual[..setup.samples];
+            inverse_transform_2d_outer_with_scratch(
+                &setup.transform()?,
+                dequant,
+                residual,
+                &mut scratch.transform,
+            )?;
+            surface.add_residual_rect_block(plane, x, y, size, residual)?;
+        }
+        Ok(())
+    })
 }
 
 pub(super) fn apply_cross_chroma_transform(

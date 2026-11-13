@@ -334,7 +334,6 @@ impl EncoderInterTile {
         let placed = geometry.place(parsed);
         prediction::reconstruct_pure_inter_block(
             &mut mc::WorkspaceSink::Frame(workspace),
-            &mut self.residual_scratch,
             &placed,
             &[],
             &[],
