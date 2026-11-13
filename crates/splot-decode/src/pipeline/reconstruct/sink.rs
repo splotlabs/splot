@@ -5,7 +5,8 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraDcEdges, IntraPredictionScratchBuffer,
-    IntraRectBlockSize, PlaneId, ReconSample, apply_intra_ibp_dc_rect, predict_intra_dc_rect_value,
+    IntraRectBlockSize, PlaneId, ReconSample, predict_intra_dc_rect_value,
+    predict_intra_ibp_dc_rect_into,
 };
 #[cfg(test)]
 use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
@@ -83,28 +84,17 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     if bit_depth == workspace.info().bit_depth() {
-        let mut gathered = [[T::default(); MAX_INTRA_SIDE]; 2];
-        let [left, above] = &mut gathered;
-        let mut have = (false, false);
+        let mut left = [T::default(); MAX_INTRA_SIDE];
         let in_frame = workspace.with_intra_block_frame(plane_id, x, y, block_size, |frame| {
-            have.0 = availability.left && frame.left_column(&mut left[..height]) == height;
-            if let Some(row) = frame
-                .above_row()
-                .get(..width)
-                .filter(|_| availability.above)
-            {
-                above[..width].copy_from_slice(row); // splot-copy-ok: DC above edge from its frame row
-                have.1 = true;
-            }
-            let dc_edges = IntraDcEdges::new(
-                have.0.then_some(&left[..height]),
-                have.1.then_some(&above[..width]),
-            );
-            let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
-            let (output, stride) = frame.target();
-            fill_block(output, stride, block_size, dc);
+            let have_left = availability.left && frame.left_column(&mut left[..height]) == height;
+            let (row, output, stride) = frame.above_row_and_target();
+            let above = row.get(..width).filter(|_| availability.above);
+            let dc_edges = IntraDcEdges::new(have_left.then_some(&left[..height]), above);
             if ibp_dc {
-                apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, output, stride)?;
+                predict_intra_ibp_dc_rect_into(bit_depth, block_size, dc_edges, output, stride)?;
+            } else {
+                let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
+                fill_block(output, stride, block_size, dc);
             }
             Ok::<_, GeneralIntraResidualError>(())
         })?;
@@ -133,14 +123,15 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
         availability.left.then(|| edges.left_samples()).flatten(),
         availability.above.then(|| edges.above_samples()).flatten(),
     );
-    let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
     let predict_dc = |output: &mut [T], stride: usize| {
-        for row in output.chunks_mut(stride) {
-            let filled = width.min(row.len());
-            row[..filled].fill(dc);
-        }
         if ibp_dc {
-            apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, output, stride)?;
+            predict_intra_ibp_dc_rect_into(bit_depth, block_size, dc_edges, output, stride)?;
+        } else {
+            let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
+            for row in output.chunks_mut(stride) {
+                let filled = width.min(row.len());
+                row[..filled].fill(dc);
+            }
         }
         Ok(())
     };

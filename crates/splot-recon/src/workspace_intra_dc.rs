@@ -4,12 +4,11 @@
 //! Current-frame workspace DC intra prediction helpers.
 
 use super::{CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameWorkspace, block_rect};
-use crate::intra::predict_intra_dc_rect_into;
 use crate::intra_dc_math::{DcEdgeSum, predict_intra_dc_rect_value_from_sums};
 use crate::intra_dc_subsampled::{
     predict_intra_dc_subsampled_rect_value_from_sums, subsampled_step,
 };
-use crate::intra_ibp_dc::apply_intra_ibp_dc_rect;
+use crate::intra_ibp_dc::predict_intra_ibp_dc_rect_into;
 use crate::{IntraDcEdge, IntraRectBlockSize, PlaneId, PlaneRect, ReconSample, Result};
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
@@ -153,14 +152,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         let edges = self.dc_edges_for_rect(rect)?;
         let output_start = self.sample_index(rect.x(), rect.y())?;
         let stride_samples = self.stride_samples();
-        predict_intra_dc_rect_into(
-            bit_depth,
-            size,
-            edges.as_dc_edges(),
-            &mut self.samples[output_start..],
-            stride_samples,
-        )?;
-        apply_intra_ibp_dc_rect(
+        predict_intra_ibp_dc_rect_into(
             bit_depth,
             size,
             edges.as_dc_edges(),

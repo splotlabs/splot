@@ -9,8 +9,8 @@ use crate::{
     BitDepth, DecodedFrameHash, DecodedFrameHashInput, DpcmDirection, IntraDcEdge, IntraDcEdges,
     InverseTransform1dType, InverseTransform2dDim, InverseTransform2dOuter, OutputIndex,
     PixelFormat, ReferenceFrameStore, ReferenceSlot, Y4mFrameRate, Y4mWriter,
-    apply_intra_ibp_dc_rect, inverse_transform_2d_outer, inverse_transform_2d_outer_adjusted,
-    predict_intra_dc_rect_into, reconstruct_add_residual,
+    inverse_transform_2d_outer, inverse_transform_2d_outer_adjusted,
+    predict_intra_ibp_dc_rect_into, reconstruct_add_residual,
 };
 
 #[test]
@@ -1233,15 +1233,7 @@ fn workspace_predicts_ibp_dc_from_in_storage_edges() {
         .unwrap();
 
     let mut expected = [0u8; 64];
-    predict_intra_dc_rect_into(
-        BitDepth::Eight,
-        block,
-        IntraDcEdges::both(&left, &above),
-        &mut expected,
-        8,
-    )
-    .unwrap();
-    apply_intra_ibp_dc_rect(
+    predict_intra_ibp_dc_rect_into(
         BitDepth::Eight,
         block,
         IntraDcEdges::both(&left, &above),
