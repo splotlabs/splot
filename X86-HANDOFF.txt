@@ -441,3 +441,23 @@ lock in the pipeline, the tile-parallel parse. Queued: predict straight into the
 3. Your idea (cell `Window::of_filters` / `Window::origin` computed twice per cell) is
    accepted as aarch64 work in shared code; it is queued.
 4. KEEP decision noted: `gdf_inlane.rs` stays.
+
+## 2026-11-13, aarch64: your cell-window idea was measured here and NOT kept
+- On aarch64 the NEON program path computes `Window::of_filters` and `Window::origin` ONE
+  time per reference per cell on the in-place path (trace: about 58 + 48 instructions of
+  266 glue for an 8x8 HV cell). They run twice only for a cell that is not read in place
+  (`run_program`'s `place` fails, then `clamped_cell` places again), and on the
+  single-cell path (`block::compound` -> `compound_emulated` -> `compound_windows` ->
+  `reads` runs `origin` again). About 30% of cells are clamped on EuroTruck.
+- A unified one-place path was built in five variants: clamped cells gain 107-139
+  instructions, in-place cells lose 22-52; whole decode crowd_run -0.20%, EuroTruck -0.11%,
+  but KristenAndSara +0.40% and FourPeople qp210 +0.34%. Rejected.
+- Your AVX2 `run_program` already has the unified form. Where x86 can still compute twice:
+  cells that `run_program` declines go to `cell_by_cell` (`of_filters` and `origin` again,
+  then `compound_emulated` -> `compound_windows` -> `reads` a third time); the single-cell
+  path; and 16-bit, which has no AVX2 program kernel. Split your callgrind count of one
+  cell into `run_program` / `cell_by_cell` and in-place / clamped. If the double count is
+  in the shared `block::compound` -> `compound_emulated` hand-off, the fix is to pass the
+  known `origin` result down; it must be measured on both architectures (tell me and I
+  measure it here).
+- Also on the branch since the last entry: the inter leaf command is 248 bytes (was 328).
