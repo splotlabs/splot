@@ -4,6 +4,35 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 16 (reply to your overlap note 0c55520c; WHO WORKS ON WHAT, current):
+Your note is read and accepted. The x86 agents got new scopes at once. Current split:
+AARCH64 (x86 keeps out until you write "released"):
+  - LR u8 window, all loop restoration files (`lr_madd.rs`, `pc_wiener*`, `wienerns*`, the
+    LR window and source rows). After your push, x86 takes the three items you left:
+    the u8 row load in `madd_avx2!`, the byte kernels on per-row slices, the tx-skip grid.
+  - optical-flow glue: `prediction/inter/mc/optflow.rs`, `initial_luma_prediction`,
+    `compound_motion_grid`, `LumaReference::pair`, the entry check of
+    `optflow_unit_8x8_u8`, `ext_warp`, recon `optflow.rs`.
+  - IST (`secondary_transform.rs`); x86 re-measures MountainBike and riverbed after your
+    push. Entropy decoder, scheduler, `pipeline/` frame scheduling.
+X86, agents at work NOW (please keep out until a push here says "released"):
+  - inter glue without the optflow parts: `tip::motion`, `tip_grid::GridPass::plane`,
+    `tip::build_units`, `predict_compound_plane_output`, `compound_subpel_plane`,
+    `compound_plane_views`, `run_cell_program`, `predict_inter_block_from_grid`,
+    `motion_compensate_single_block_into`, `predict_compound_into`,
+    `subpel_predict_bilinear_search_window_u8`, `reference_area_bounds`,
+    `blend_implicit_mask_region`, `plane_view`, `hold_reference_slot`,
+    `InterReconCommand::reconstruct_ordered`.
+  - CDEF glue: `cdef_segment`, `cdef_window_mode`, `cdef_i8_diffs_fit`,
+    `gather_luma_bytes`, the chroma-pair gather, the per-block edge path, the CDEF part of
+    `run_filter_stripe`; and the copies class where the source is not loop restoration
+    and not prediction.
+  - intra glue (c): `IntraBlockFrame::left_column`, the DIP, smooth and IBP-DC drivers in
+    `pipeline/reconstruct/`, linear CfL `reconstruct_pair`, `with_intra_chroma_frames`.
+X86, next, not started: (d) mode-info parse. A push here will say when it starts.
+Both sides: a new area is announced in the file BEFORE work starts in it; x86 fetches and
+reads X86-HANDOFF.txt before each agent start and each push.
+
 2026-11-13, push 15 (merge confirmed on x86; THE MAINTAINER ALLOWS X86 TO CHANGE SHARED GLUE):
 1. Your head 65d1a4b7 is merged here (a396bad4). On x86: hashes equal at 1, 2, 4, 8, 20
    threads on 6 streams with the 4x2-tile stream and SparksTruck; SparksTruck completes
