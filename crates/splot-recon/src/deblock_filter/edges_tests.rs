@@ -303,6 +303,81 @@ fn edge_runs_match_the_per_edge_spec_primitives_10bit() {
     assert!(WIDTHS.iter().all(|&width| widths[width] > 20), "{widths:?}");
 }
 
+/// Chunks whose lines are all still, partly still (one segment steps), or
+/// not still filter as the per-edge primitives do, at 8 and 10 bits and
+/// across vertical and horizontal edges.
+#[test]
+fn still_and_partly_still_chunks_match_the_per_edge_spec_primitives() {
+    for (bit_depth, scale) in [(BitDepth::Eight, 1), (BitDepth::Ten, 4)] {
+        let max_sample = i32::from(bit_depth.max_sample());
+        for stepped in [0, 1, 16] {
+            for vertical in [true, false] {
+                let mut noise = Noise(0x57111 + stepped as u64);
+                let count = 16;
+                let edges: Vec<_> = (0..count)
+                    .map(|_| random_edge(&mut noise, max_sample, 8))
+                    .collect();
+                let (stride, rows) = if vertical {
+                    (40, count * LINES + 2)
+                } else {
+                    (count * LINES + 20, 18)
+                };
+                let first = if vertical {
+                    stride + 16
+                } else {
+                    REACH * stride + 8
+                };
+                let original: Vec<u16> = (0..stride * rows)
+                    .map(|i| {
+                        let (x, y) = (i % stride, i / stride);
+                        let (across, along) = if vertical {
+                            (x as i32 - 16, y)
+                        } else {
+                            (y as i32 - REACH as i32, x)
+                        };
+                        let segment = along / LINES;
+                        let step = if segment < stepped && across >= 0 {
+                            9
+                        } else {
+                            0
+                        };
+                        ((100 + step + (along % 2) as i32) * scale) as u16
+                    })
+                    .collect();
+                let mut expected = original.clone();
+                for (k, &edge) in edges.iter().enumerate() {
+                    let (q0, across, along) = if vertical {
+                        (first + k * LINES * stride, 1, stride)
+                    } else {
+                        (first + k * LINES, stride, 1)
+                    };
+                    reference(&mut expected, q0, across, along, edge, bit_depth);
+                }
+                let mut wide = original.clone();
+                let filter = if vertical {
+                    deblock_vertical_edges::<u16>
+                } else {
+                    deblock_horizontal_edges::<u16>
+                };
+                filter(&mut wide, stride, first, &edges, bit_depth).unwrap();
+                let label = format!("{bit_depth:?} stepped={stepped} vertical={vertical}");
+                assert_eq!(wide, expected, "u16 {label}");
+                if bit_depth == BitDepth::Eight {
+                    let filter = if vertical {
+                        deblock_vertical_edges::<u8>
+                    } else {
+                        deblock_horizontal_edges::<u8>
+                    };
+                    let mut narrow: Vec<u8> = original.iter().map(|&v| v as u8).collect();
+                    filter(&mut narrow, stride, first, &edges, bit_depth).unwrap();
+                    let narrow: Vec<u16> = narrow.into_iter().map(u16::from).collect();
+                    assert_eq!(narrow, expected, "u8 {label}");
+                }
+            }
+        }
+    }
+}
+
 /// No § 7.17.7.1 width moves a line whose `|p1 - q1 + 3 * (q0 - p0)|` is at
 /// most 2, which lets the portable chunk skip such chunks.
 #[test]
