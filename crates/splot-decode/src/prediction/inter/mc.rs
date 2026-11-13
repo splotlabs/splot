@@ -413,7 +413,7 @@ pub(crate) fn inter_block_motion_grid<T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<Option<CompoundMotionGrid>> {
     match block.into_compound() {
-        Some(compound) => compound_block_motion_grid(sink, compound, optflow_unit_size, offset),
+        Some(compound) => compound_block_motion_grid(sink, &compound, optflow_unit_size, offset),
         None => Ok(None),
     }
 }
@@ -455,11 +455,11 @@ pub(crate) fn predict_inter_block_from_grid<T: ReconSample>(
         InterPrediction::CompoundAverage { .. } => match block.into_compound() {
             Some(compound)
                 if motion.is_none()
-                    && compound_average::predict_translational_direct(sink, compound, offset)? =>
+                    && compound_average::predict_translational_direct(sink, &compound, offset)? =>
             {
                 Ok(None)
             }
-            Some(compound) => predict_compound_into(sink, compound, motion, offset),
+            Some(compound) => predict_compound_into(sink, &compound, motion, offset),
             None => Ok(motion),
         },
     }
@@ -591,7 +591,7 @@ fn motion_compensate_planes<T: ReconSample>(
 
 pub(super) fn compound_block_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
 ) -> Result<Option<CompoundMotionGrid>> {
@@ -605,7 +605,7 @@ pub(super) fn compound_block_motion_grid<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tip_batch_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     columns: usize,
     unit_count: usize,
     unit_at: impl Fn(usize) -> (McBlockRect, [Mv; 2]) + Sync,
@@ -638,14 +638,14 @@ pub(super) fn predict_tip_batch_from_grid<T: ReconSample>(
     block.optflow_distances = None;
     block.use_refinemv = false;
     block.search_refinemv = false;
-    predict_compound_into(sink, block, Some(motion), offset)
+    predict_compound_into(sink, &block, Some(motion), offset)
 }
 
 /// Predicts a compound block straight into `sink`. Only a plane that the
 /// frame edge clips goes through a temporary first.
 pub(super) fn predict_compound_into<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     motion: Option<CompoundMotionGrid>,
     offset: ByteOffset,
 ) -> Result<Option<CompoundMotionGrid>> {
@@ -1056,7 +1056,7 @@ fn predict_warp_plane<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn predict_compound_plane_output<T: ReconSample>(
     info: DecodedFrameInfo,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
@@ -1070,16 +1070,6 @@ fn predict_compound_plane_output<T: ReconSample>(
     let storage_luma_size = info.storage_luma_size();
     let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
     let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
-    let block = CompoundMcBlock {
-        optflow_distances: None,
-        has_chroma: true,
-        sub8x8_chroma: false,
-        use_refinemv: false,
-        search_refinemv: false,
-        refinemv_switchable: false,
-        optflow_sad_threshold: None,
-        ..block
-    };
     let (rect, blend) = (block.rect, block.blend);
     let has_warp = block.warp_params.iter().any(Option::is_some);
     if !has_warp
@@ -1217,7 +1207,7 @@ fn predict_compound_plane_output<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn predict_motion_compound_average_into<T: ReconSample, O: CompoundAverageOutput + Send>(
     info: DecodedFrameInfo,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
@@ -1551,7 +1541,7 @@ impl Drop for CompoundPlanePrediction {
 
 fn compound_plane_prediction_for_block<T: ReconSample>(
     info: DecodedFrameInfo,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
@@ -1587,14 +1577,14 @@ struct TranslationalCompoundPlane<'a, T: ReconSample> {
 
 #[allow(clippy::inline_always, reason = "per-plane result copy")]
 #[inline(always)]
-fn compound_subpel_plane<T: ReconSample>(
+fn compound_subpel_plane<'a, T: ReconSample>(
     info: DecodedFrameInfo,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'a, T>,
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
     offset: ByteOffset,
-) -> Result<CompoundSubpelPlane<'_, T>> {
+) -> Result<CompoundSubpelPlane<'a, T>> {
     let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
     let frame_size = info.coded_luma_size();
     let (x, y) = (plane_x as i32, plane_y as i32);
@@ -1614,7 +1604,7 @@ fn compound_subpel_plane<T: ReconSample>(
 
 /// The two reference views of a `block_h`-row compound plane prediction.
 fn compound_plane_views<'a, T: ReconSample>(
-    block: CompoundMcBlock<'a, T>,
+    block: &CompoundMcBlock<'a, T>,
     plane: PlaneId,
     scalings: [PlaneScaling; 2],
     block_h: usize,
@@ -1639,14 +1629,14 @@ fn compound_plane_views<'a, T: ReconSample>(
     ])
 }
 
-fn translational_compound_plane<T: ReconSample>(
+fn translational_compound_plane<'a, T: ReconSample>(
     info: DecodedFrameInfo,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'a, T>,
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
     offset: ByteOffset,
-) -> Result<TranslationalCompoundPlane<'_, T>> {
+) -> Result<TranslationalCompoundPlane<'a, T>> {
     let plane = compound_subpel_plane(info, block, plane, sub_x, sub_y, offset)?;
     let params = plane.scalings.map(|scaling| SubpelPredictParams {
         interp: block.interp,
@@ -1717,7 +1707,7 @@ fn compound_plane_prediction_from_translation<T: ReconSample>(
 /// feed the two § 7.13.3.16 `Preds[refList]` intermediates to the compound blend.
 fn compound_warp_plane_prediction<T: ReconSample>(
     info: DecodedFrameInfo,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,

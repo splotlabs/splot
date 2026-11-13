@@ -257,7 +257,7 @@ fn vertical_blend<S: Simd>(simd: S, top: u16x8<S>, bottom: u16x8<S>, v: u16, max
 
 pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
 ) -> Result<CompoundMotionGrid> {
     let columns = block.rect.luma_w.div_ceil(REFINEMV_UNIT_SIZE);
@@ -306,7 +306,7 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
 #[inline(never)]
 fn search_refinemv<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     rect: McBlockRect,
     offset: ByteOffset,
 ) -> Result<[Mv; 2]> {
@@ -329,7 +329,7 @@ fn search_refinemv<T: ReconSample>(
     let mut prediction_rect = rect;
     prediction_rect.luma_w = prediction_width;
     prediction_rect.luma_h = prediction_height;
-    let mut luma = super::optflow::LumaReference::pair(sink.info(), &block, offset);
+    let mut luma = super::optflow::LumaReference::pair(sink.info(), block, offset);
     // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
     let allow_center = !block.refinemv_switchable;
     if T::u8_slice(&[]).is_some() {
@@ -738,7 +738,8 @@ fn byte_sad_lanes<S: Simd>(simd: S, left: [u64; 2], right: [u64; 2]) -> u32 {
 /// only the 12x12 centre of the 16x16 bilinear search area, so the centre is
 /// predicted first and the whole area only when the search goes on.
 pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
+    (rect, candidates): (McBlockRect, [Mv; 2]),
     predictions: &mut [[u16; TIP_PREDICTION_AREA]; 2],
     luma: &mut [super::optflow::LumaReference<'a, T>; 2],
     carries: &mut [splot_recon::BilinearOverlapCarry<'a, T>; 2],
@@ -748,15 +749,14 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
     let Some(distances) = block.optflow_distances else {
         return Ok(None);
     };
-    let candidates = [block.mv0, block.mv1];
     if !block.search_refinemv
-        || block.rect.luma_w != 8
-        || block.rect.luma_h != 8
+        || rect.luma_w != 8
+        || rect.luma_h != 8
         || !search_range_allowed(candidates)
     {
         return Ok(None);
     }
-    let mut prediction_rect = block.rect;
+    let mut prediction_rect = rect;
     prediction_rect.luma_w = PREDICTION_SIZE;
     prediction_rect.luma_h = PREDICTION_SIZE;
     if T::u8_slice(&[]).is_some() {

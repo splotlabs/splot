@@ -87,7 +87,8 @@ fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, 
     let mut luma = LumaReference::pair(sink.info(), &block, offset);
     let full = if block.search_refinemv && search_range_allowed(mvs) {
         tip_refinemv_optflow_motion_cell(
-            block,
+            &block,
+            (block.rect, [block.mv0, block.mv1]),
             &mut [[0; 256]; 2],
             &mut luma,
             &mut Default::default(),
@@ -95,7 +96,7 @@ fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, 
         .expect("refined cell")
         .expect("searched unit")
     } else {
-        super::super::optflow::tip_unit_motion_cell(&sink, block, 8, offset, &mut luma)
+        super::super::optflow::tip_unit_motion_cell(&sink, &block, 8, offset, &mut luma)
             .expect("unit cell")
     };
     assert_eq!(

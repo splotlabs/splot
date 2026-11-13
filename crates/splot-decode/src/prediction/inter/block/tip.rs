@@ -748,7 +748,7 @@ pub(super) fn motion<T: ReconSample>(
             (None, Some(prediction)) => match prediction.block_params(unit).into_compound() {
                 Some(compound) => {
                     let refined =
-                        mc::compound_block_motion_grid(sink, compound, None, tile_offset)?;
+                        mc::compound_block_motion_grid(sink, &compound, None, tile_offset)?;
                     let whole = whole_sample_mvs(unit, refined.as_ref());
                     let stored =
                         refined.map_or(Ok(unit.mvs), |refined| refined.stored_mvs_at_index(0))?;
@@ -786,11 +786,11 @@ fn tip_motion_grid<T: ReconSample>(
         .into_compound()
         .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
     if scratch.units.len() == 1 && !plan.plan.search_refinemv {
-        return mc::compound_block_motion_grid(sink, compound, Some(8), tile_offset);
+        return mc::compound_block_motion_grid(sink, &compound, Some(8), tile_offset);
     }
     mc::tip_batch_motion_grid(
         sink,
-        compound,
+        &compound,
         plan.block_w.div_ceil(plan.unit_size),
         scratch.units.len(),
         |index| {
@@ -831,7 +831,7 @@ fn publish_unit_outputs<T: ReconSample>(
             let compound = params
                 .into_compound()
                 .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-            grid = mc::predict_compound_into(sink, compound, grid.take(), tile_offset)?;
+            grid = mc::predict_compound_into(sink, &compound, grid.take(), tile_offset)?;
             continue;
         }
         let (motion, mvs) = if let Some(&Some(mvs)) = known {
