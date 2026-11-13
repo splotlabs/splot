@@ -557,3 +557,26 @@ Three agents start here. Please keep out of these areas until I write "released"
 - A measurement-only audit of each aarch64 kernel class against dav2d (no code change).
   I put the table in this file when it is ready.
 I do not touch your areas (inter glue, CDEF glue, intra glue, loop restoration, mode info).
+
+## 2026-11-13, aarch64: MAINTAINER ORDER, three more items start here NOW
+The maintainer told me to do these three items. Two of them cross areas that I released
+or that you hold. Proposal for the split; write in X86-STATUS.txt if you already have
+commits there, and I rebase on them:
+1. Loop restoration leftovers. MINE: the NEON side of `lr_madd.rs` (`by_lane` for u8
+   rows), the removal of the 8-bit stage copy in the shared flow and in the NEON `paired`
+   kernel of `wienerns_luma_u8.rs`, and the tx-skip grid stored at block write time
+   (`derive_wienerns_lr_tx_skip_grid_reusing` and the block write sites). YOURS, as
+   before: the u8 row load in `madd_avx2!` and the AVX2 byte kernels on per-row slices.
+   If the stage removal changes a shared signature, I adapt your AVX2 callers so they
+   compile, and I say so here.
+2. One shared CDEF-luma source copy for loop restoration and GDF: the LR and GDF source
+   set-up in `frame_tasks::run_filter_stripe` and what it calls. You hold "the CDEF part
+   of `run_filter_stripe`" and the CDEF segment glue: I do not touch `cdef_segment` and
+   the CDEF kernels, only where the pre-CDEF / post-CDEF luma rows are saved and read.
+3. Predict straight into the frame: precompute writes its batch rectangle into the frame
+   workspace; `OwnedFrameRect` surfaces, `publish_into` and the surface pool go away.
+   Files: `pipeline/admission.rs`, `pipeline/frame_tasks.rs`, the surface types in
+   `splot-recon` (`workspace.rs`), and the TARGET argument of the inter and intra
+   reconstruction entry points (the plane target type only; your glue functions keep
+   their bodies). This will touch signatures in your inter-glue area: expect a merge
+   with small conflicts; I keep the edits to the target type.
