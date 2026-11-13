@@ -939,10 +939,6 @@ impl LumaSimdOutput for u8 {
 }
 
 pub(crate) trait LumaSimdSource: Copy + Default {
-    /// The samples are `u16`, which the x86 tap-pair kernel reads.
-    #[cfg(target_arch = "x86_64")]
-    const WIDE: bool;
-
     /// Zero-extends 16 samples.
     fn widen16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S>;
 
@@ -952,6 +948,12 @@ pub(crate) trait LumaSimdSource: Copy + Default {
         rows: &[&'a [Self; REACH]; ROWS],
     ) -> Option<[&'a [u16; REACH]; ROWS]>;
 
+    /// The rows as `u8` rows when the samples are `u8`.
+    #[cfg(target_arch = "x86_64")]
+    fn u8_rows<'a, const ROWS: usize, const REACH: usize>(
+        rows: &[&'a [Self; REACH]; ROWS],
+    ) -> Option<[&'a [u8; REACH]; ROWS]>;
+
     fn scalar(samples: &[Self], index: usize) -> u16;
 
     /// The samples as `u16` samples when they are `u16`.
@@ -960,8 +962,6 @@ pub(crate) trait LumaSimdSource: Copy + Default {
 }
 
 impl LumaSimdSource for u16 {
-    #[cfg(target_arch = "x86_64")]
-    const WIDE: bool = true;
     #[inline]
     fn widen16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
         u16x16::load_array_ref(simd, samples)
@@ -973,6 +973,14 @@ impl LumaSimdSource for u16 {
         rows: &[&'a [Self; REACH]; ROWS],
     ) -> Option<[&'a [u16; REACH]; ROWS]> {
         Some(*rows)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn u8_rows<'a, const ROWS: usize, const REACH: usize>(
+        _rows: &[&'a [Self; REACH]; ROWS],
+    ) -> Option<[&'a [u8; REACH]; ROWS]> {
+        None
     }
 
     #[inline]
@@ -988,8 +996,6 @@ impl LumaSimdSource for u16 {
 }
 
 impl LumaSimdSource for u8 {
-    #[cfg(target_arch = "x86_64")]
-    const WIDE: bool = false;
     #[inline]
     fn widen16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
         use fearless_simd::prelude::*;
@@ -1003,6 +1009,14 @@ impl LumaSimdSource for u8 {
         _rows: &[&'a [Self; REACH]; ROWS],
     ) -> Option<[&'a [u16; REACH]; ROWS]> {
         None
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn u8_rows<'a, const ROWS: usize, const REACH: usize>(
+        rows: &[&'a [Self; REACH]; ROWS],
+    ) -> Option<[&'a [u8; REACH]; ROWS]> {
+        Some(*rows)
     }
 
     #[inline]
