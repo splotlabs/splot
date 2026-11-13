@@ -7,8 +7,8 @@ use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
     BitDepth, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT, CDEF_PAIR_STRIDE,
     CDEF_SEGMENT_BLOCKS, CDEF_UNAVAILABLE, CDEF_UV_DIR, CdefBlockFilter, CdefLumaSegment,
-    CdefPairSegment, CdefSegmentBlock, CdefStrengths, PlaneId, PlaneRect, ReconSample,
-    cdef_direction_padded, cdef_filter_block_boundary_to_valid_stride,
+    CdefPairSegment, CdefSegmentBlock, CdefStrengths, CdefUnitFilters, PlaneId, PlaneRect,
+    ReconSample, cdef_direction_padded, cdef_filter_block_boundary_to_valid_stride,
     cdef_filter_block_chroma_pair, cdef_filter_block_interior_to_valid_stride, cdef_filter_segment,
     cdef_publish_chroma_pair,
 };
@@ -276,9 +276,8 @@ struct CdefBlockLookup<'a> {
     /// Planes whose stripe does not yet hold the deblocked samples, so a flat
     /// block must still be written.
     fill_flat: [bool; 3],
-    /// Whether the luma filters of each of the first strength sets fit an
-    /// 8-bit bytes-only segment gather.
-    bytes_suffice: [bool; 8],
+    /// The filters of each of the first strength sets.
+    units: [Option<CdefUnitFilters>; 8],
 }
 
 #[derive(Clone, Copy)]
@@ -491,6 +490,22 @@ fn cdef_strengths(
     }
 }
 
+/// The [`CdefUnitFilters`] of the first strength sets of `strengths`.
+fn cdef_units(
+    strengths: &[CdefFrameParams],
+    coeff_shift: u32,
+    subsampling: (usize, usize),
+) -> [Option<CdefUnitFilters>; 8] {
+    core::array::from_fn(|index| {
+        let params = *strengths.get(index)?;
+        Some(CdefUnitFilters::new(&cdef_strengths(
+            params,
+            coeff_shift,
+            subsampling,
+        )))
+    })
+}
+
 fn cdef_initializations<T>(
     lookup: Option<&CdefBlockLookup<'_>>,
     target: Option<&crate::pipeline::frame_progress::DirectStripeTarget<T>>,
@@ -664,11 +679,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
             has_chroma,
             coeff_shift,
             fill_flat: [true; 3],
-            bytes_suffice: core::array::from_fn(|index| {
-                strengths.get(index).is_some_and(|&params| {
-                    cdef_strengths(params, coeff_shift, (sub_x, sub_y)).luma_bytes_suffice()
-                })
-            }),
+            units: cdef_units(strengths, coeff_shift, (sub_x, sub_y)),
         })
     } else {
         None
@@ -1124,12 +1135,10 @@ fn cdef_segment<S: ReconSample>(
         left + CDEF_TAP_REACH,
         top + CDEF_TAP_REACH - y_plane.origin_y(),
     );
-    let strengths = cdef_strengths(params, lookup.coeff_shift, (lookup.sub_x, lookup.sub_y));
-    let luma_bytes = lookup
-        .bytes_suffice
-        .get(strength_index)
-        .copied()
-        .unwrap_or(false);
+    let Some(Some(unit)) = lookup.units.get(strength_index) else {
+        return Ok(false);
+    };
+    let luma_bytes = unit.luma_bytes_suffice();
     if luma_used {
         let (width, stride) = (y_plane.width(), y_plane.stride());
         let gathered = match (S::u16_slice(y_samples), S::u8_slice(y_samples)) {
@@ -1177,7 +1186,7 @@ fn cdef_segment<S: ReconSample>(
     let chroma = chroma_rows.map(|planes| (&scratch.pair, planes));
     if !cdef_filter_segment(
         &scratch.luma,
-        &strengths,
+        unit,
         blocks,
         lookup.fill_flat,
         (luma_rows, chroma),
