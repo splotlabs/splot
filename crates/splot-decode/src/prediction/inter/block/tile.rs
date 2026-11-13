@@ -788,7 +788,8 @@ impl ReconRowEntry {
     }
 
     /// The § 7.22 record a non-inter luma-tree leaf stores: every covered 8x8
-    /// cell is reset to "no reference", clearing earlier inter writes there.
+    /// cell is reset to "no reference", clearing earlier inter writes there;
+    /// a leaf on whole cells has none to clear in a field that starts empty.
     pub(super) fn temporal_clear_record(
         &self,
         slots: &[LeafSlot],
@@ -803,6 +804,9 @@ impl ReconRowEntry {
             return None;
         }
         let (mi_row, mi_col, n4w, n4h) = self.publication.luma_tree_block()?;
+        if (mi_row | mi_col | n4w | n4h) & 1 == 0 {
+            return None;
+        }
         Some(TemporalMotionBlock::new(
             mi_row,
             mi_col,
