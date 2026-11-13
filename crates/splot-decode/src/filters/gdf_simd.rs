@@ -874,10 +874,16 @@ fn gradients<S: Simd>(simd: S, rows: [&[u16; 18]; 3]) -> [i16x16<S>; 4] {
 /// source rows, summed over its two rows, for the columns from column 1 of
 /// each row; a chunk that reads past the rows reads zeros there.
 fn gradient_row<S: Simd>(simd: S, rows: &[&[u16]; 4], out: &mut [GradChunk]) -> Option<()> {
+    let len = rows[0].len();
+    if rows.iter().any(|row| row.len() != len) {
+        return None;
+    }
     for (chunk, out) in out.iter_mut().enumerate() {
         let start = 16 * chunk;
         let chunks = rows.map(|row| row.get(start..).and_then(<[u16]>::first_chunk::<18>));
-        if let [Some(a), Some(b), Some(c), Some(d)] = chunks {
+        if start + 18 <= len
+            && let [Some(a), Some(b), Some(c), Some(d)] = chunks
+        {
             pair_gradients(simd, [a, b, c, d], out);
         } else {
             padded_gradients(simd, rows, start, out)?;
