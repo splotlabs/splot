@@ -1135,6 +1135,7 @@ mod avx2 {
 
     use fearless_simd::{SimdBase, SimdFrom, kernel, u16x16};
 
+    use super::avx2_u8::MAX_STRIDE;
     use super::{CLAMP, Q_FIRST, RAMP, REACH, ROWS};
 
     kernel!(
@@ -1378,15 +1379,23 @@ mod avx2 {
                     let max = _mm256_set1_epi16(max_sample);
                     let mut rows = [_mm256_setzero_si256(); ROWS];
                     let origin = first - REACH * stride;
+                    let Some(samples) =
+                        samples.get_mut(origin..origin + (ROWS - 1) * stride + ROWS)
+                    else {
+                        return;
+                    };
+                    if stride > MAX_STRIDE {
+                        return;
+                    }
                     for j in REACH - $reach..REACH + $reach {
-                        rows[j] = load_u16(token, samples, origin + j * stride);
+                        rows[j] = load_u16(token, samples, j * stride);
                     }
                     if !filter_rows!(token, rows, packed, $reach) {
                         return;
                     }
                     let writes = super::chunk_writes($reach);
                     for j in REACH - writes..REACH + writes {
-                        store_u16(token, samples, origin + j * stride, rows[j], max);
+                        store_u16(token, samples, j * stride, rows[j], max);
                     }
                 }
             );
