@@ -280,6 +280,68 @@ fn byte_search_window_and_sads_match_the_general_path() {
     }
 }
 
+/// The `u16` search against a scalar SAD search for every window shape,
+/// at 8 and 10 bits, with extreme and equal windows.
+#[test]
+fn word_search_matches_a_scalar_search() {
+    for (bit_depth, max) in [(BitDepth::Eight, 255u16), (BitDepth::Ten, 1023)] {
+        for seed in 0..6usize {
+            let noise =
+                |i: usize, salt: usize| ((i * 37 + i / 5 + seed * salt) % 4096) as u16 & max;
+            let windows: [Vec<u16>; 2] = match seed {
+                4 => [vec![max; 576], vec![0; 576]],
+                5 => [vec![7; 576], vec![7; 576]],
+                _ => [
+                    (0..576).map(|i| noise(i, 11)).collect(),
+                    (0..576).map(|i| noise(i * 91 + 13, 7 + seed)).collect(),
+                ],
+            };
+            for (sad_w, sad_h) in [(12, 12), (12, 20), (20, 12), (20, 20)] {
+                let stride = sad_w + 4;
+                let sad = |dy: i32, dx: i32| -> u32 {
+                    let at = |sign: i32, row: usize, col: usize| {
+                        ((2 + sign * dy) as usize + row) * stride + (2 + sign * dx) as usize + col
+                    };
+                    let total: u32 = (0..sad_h)
+                        .step_by(2)
+                        .flat_map(|row| (0..sad_w).map(move |col| (row, col)))
+                        .map(|(row, col)| {
+                            u32::from(
+                                windows[0][at(1, row, col)].abs_diff(windows[1][at(-1, row, col)]),
+                            )
+                        })
+                        .sum();
+                    total >> (bit_depth.bits() - 8)
+                };
+                for allow_center in [false, true] {
+                    let center = sad(0, 0);
+                    let (mut best, mut best_sad) = ((0, 0), u32::MAX);
+                    if allow_center {
+                        best_sad = center - (center >> 3);
+                    }
+                    if !allow_center || best_sad >= (2 * sad_w * sad_h) as u32 {
+                        for &(dy, dx) in &REFINEMV_NEIGHBORS {
+                            if sad(dy, dx) < best_sad {
+                                (best, best_sad) = ((dx, dy), sad(dy, dx));
+                            }
+                        }
+                    }
+                    let pair = [&windows[0][..stride * (sad_h + 4)], &windows[1][..]];
+                    assert_eq!(
+                        refinemv_search_u16(pair, stride, sad_h, allow_center, bit_depth),
+                        Some(best),
+                        "{sad_w}x{sad_h} seed {seed} {bit_depth:?} centre {allow_center}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        refinemv_search_u16([&[0; 576], &[0; 575]], 24, 20, true, BitDepth::Ten),
+        None
+    );
+}
+
 /// The byte bilinear kernel against the general prediction for every phase
 /// pair and several shapes and strides, and its refusal of a block whose
 /// taps would clamp.

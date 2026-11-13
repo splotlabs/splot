@@ -210,7 +210,7 @@ pub use subpel_mc::{
     REFINEMV_NEIGHBORS, ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams, UnscaledPut,
     blend_compound_average_equal, blend_compound_average_weighted,
     blend_compound_average_weighted_sample, refinemv_area_sad_u8, refinemv_search_u8,
-    subpel_compound_block, subpel_compound_cell, subpel_compound_cells,
+    refinemv_search_u16, subpel_compound_block, subpel_compound_cell, subpel_compound_cells,
     subpel_predict_12x12_bilinear_overlap_into, subpel_predict_bilinear_search_window_u8,
     subpel_predict_bilinear_u8, subpel_predict_block,
     subpel_predict_block_compound_average_fast_pair_into,

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The eight-bit § 7.13.3.6 refine-MV search: the bilinear window of each
-//! reference as bytes, and the SADs between two windows.
+//! The § 7.13.3.6 refine-MV search: the eight-bit bilinear window of each
+//! reference as bytes, and the SADs between two byte or `u16` windows.
 
 use super::*;
 
@@ -161,6 +161,33 @@ pub fn refinemv_search_u8(
         return Some(neon::search(t, windows, geometry, allow_center));
     }
     Some(baseline_simd!(simd => generic::search(simd, windows, geometry, allow_center)))
+}
+
+/// [`refinemv_search_u8`] of two `stride`-wide `u16` search windows of
+/// samples within `bit_depth`, each SAD shifted down by `bit_depth - 8`.
+#[must_use]
+pub fn refinemv_search_u16(
+    windows: [&[u16]; 2],
+    stride: usize,
+    sad_h: usize,
+    allow_center: bool,
+    bit_depth: BitDepth,
+) -> Option<(i32, i32)> {
+    if !matches!(stride, 16 | 24)
+        || !matches!(sad_h, 12 | 20)
+        || windows
+            .iter()
+            .any(|window| window.len() < stride * (sad_h + 4))
+    {
+        return None;
+    }
+    let shift = u32::from(bit_depth.bits().saturating_sub(8));
+    Some(baseline_simd!(simd => match [stride, sad_h] {
+        [16, 12] => generic::search_u16::<_, 16, 12, 256>(simd, windows, allow_center, shift),
+        [16, _] => generic::search_u16::<_, 16, 20, 384>(simd, windows, allow_center, shift),
+        [_, 12] => generic::search_u16::<_, 24, 12, 384>(simd, windows, allow_center, shift),
+        _ => generic::search_u16::<_, 24, 20, 576>(simd, windows, allow_center, shift),
+    }))
 }
 
 /// The § 7.13.3.6 SAD of the `w x h` areas (`w` 12 or 20, `h` even) at
@@ -874,6 +901,68 @@ pub(super) mod generic {
             || sad(0, 0),
             || super::REFINEMV_NEIGHBORS.map(|(dy, dx)| sad(dy, dx)),
             (2 * (stride - 4) * sad_h) as u32,
+            allow_center,
+        )
+    }
+
+    /// [`super::refinemv_search_u16`] of `STRIDE`-wide windows of `AREA`
+    /// samples: per row the full vectors from columns 0 and 8 and the last
+    /// four samples of the vector ending at the row end, each column vector
+    /// summed in its own `u16` lanes, which ten 12-bit rows keep below
+    /// `2^16`.
+    #[inline]
+    pub(super) fn search_u16<
+        S: Simd,
+        const STRIDE: usize,
+        const SAD_H: usize,
+        const AREA: usize,
+    >(
+        simd: S,
+        [first, second]: [&[u16]; 2],
+        allow_center: bool,
+        shift: u32,
+    ) -> (i32, i32) {
+        let (Some(first), Some(second)) =
+            (first.first_chunk::<AREA>(), second.first_chunk::<AREA>())
+        else {
+            return (0, 0);
+        };
+        let zero = u16x8::splat(simd, 0);
+        let high = u16x8::load_array(simd, [0, 0, 0, 0, u16::MAX, u16::MAX, u16::MAX, u16::MAX]);
+        let lanes = |window: &[u16; AREA], at: usize| {
+            window
+                .get(at..)
+                .and_then(<[u16]>::first_chunk::<8>)
+                .map_or(zero, |lanes| u16x8::load_array_ref(simd, lanes))
+        };
+        let width = STRIDE - 4;
+        let sad = |dy: i32, dx: i32| -> u32 {
+            let start = |dy: i32, dx: i32| ((2 + dy) * STRIDE as i32 + 2 + dx) as usize;
+            let (a, b) = (start(dy, dx), start(-dy, -dx));
+            let mut sums = [zero; 3];
+            for row in (0..SAD_H).step_by(2) {
+                let diff = |at: usize| {
+                    let at = row * STRIDE + at;
+                    let (x, y) = (lanes(first, a + at), lanes(second, b + at));
+                    x.max(y) - x.min(y)
+                };
+                for (column, sum) in sums.iter_mut().enumerate().take(width / 8) {
+                    *sum += diff(8 * column);
+                }
+                sums[2] += diff(width - 8) & high;
+            }
+            let total = sums
+                .iter()
+                .fold(fearless_simd::u32x4::splat(simd, 0), |total, sum| {
+                    let (low, high) = sum.widen();
+                    total + low + high
+                });
+            total.reduce_sum() >> shift
+        };
+        super::best_offset(
+            || sad(0, 0),
+            || super::REFINEMV_NEIGHBORS.map(|(dy, dx)| sad(dy, dx)),
+            (2 * width * SAD_H) as u32,
             allow_center,
         )
     }
