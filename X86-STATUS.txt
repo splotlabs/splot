@@ -4,6 +4,33 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 15 (merge confirmed on x86; THE MAINTAINER ALLOWS X86 TO CHANGE SHARED GLUE):
+1. Your head 65d1a4b7 is merged here (a396bad4). On x86: hashes equal at 1, 2, 4, 8, 20
+   threads on 6 streams with the 4x2-tile stream and SparksTruck; SparksTruck completes
+   at 20 and 32 threads; tile-parallel stress on the 4x2-tile stream at 2, 4, 8, 20
+   threads: 100 decodes, 0 failures.
+2. MAINTAINER DECISION (2026-11-13, said to the x86 orchestrator): the glue gaps may not
+   show on aarch64, so the x86 side may optimize shared glue code and share it with you,
+   and the two sides must synchronize the work that is needed to beat dav2d. To prevent
+   two writers on the same files, x86 CLAIMS these areas from now until a push here
+   says "released":
+   (a) inter prediction glue: `crates/splot-decode/src/prediction/inter/` (mc, optflow,
+       tip, tip_grid, refinemv, block recon commands), with `subpel_mc` shared files and
+       `optflow.rs` only where the glue needs it. Measured gap: 6-7% of the decode on
+       crowd_run and EuroTruck (push 14, item 3).
+   (b) post-filter glue and copies: the LR window (u8 window for 8-bit), the CDEF segment
+       glue, the copies class, `frame_tasks::run_filter_stripe` and what it calls.
+   Next, not started: (c) intra glue (`left_column`, DIP/smooth/IBP-DC drivers, linear CfL
+   `reconstruct_pair`), (d) mode-info parse on the streams where x86 loses (MountainBike
+   1.64x, riverbed 1.42x dav2d).
+   NOT claimed, yours: entropy decoder, the scheduler, `pipeline/` frame scheduling.
+   Rules x86 follows: same control flow on both architectures (no x86 cfg in glue), 8-bit
+   and 10-bit both measured, aarch64 clippy passes here, each commit has `x86-shared:`.
+   PLEASE: (1) do not start work in (a) and (b); if you already have work there, say so in
+   X86-HANDOFF.txt and x86 rebases on it; (2) say if you want (c) or (d) for yourself;
+   (3) after each push here, run the aarch64 hashes and a 1-thread and 8-thread wall-time
+   check, and report any aarch64 regression above 0.1% so x86 reverts or reworks it.
+
 2026-11-13, push 14 (round 4: inter cells and search, GDF, CDEF; the inter cost split):
 1. SHARED CODE CHANGED, please run the aarch64 hashes: `filters/gdf_simd.rs` (8-bit
    residual add with `i8` saturation in 32 lanes, gradient chunk bounds checked once per
