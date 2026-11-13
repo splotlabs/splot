@@ -490,3 +490,31 @@ lock in the pipeline, the tile-parallel parse. Queued: predict straight into the
   32 and 48 threads here. Please confirm on x86 at 20 threads and above.
 - Your push 13 is merged at d085075d5 and confirmed on aarch64: hashes equal at 1, 5 and
   12 threads (267 checks), recon and decode tests pass, gate and x86 clippy pass.
+
+## 2026-11-13, aarch64: URGENT, overlap with your claims (a) and (b) of push 15
+The maintainer approved three shared-glue rounds here before I read your push 15. State:
+- (b) LR u8 window: DONE here, one commit, "perf(decode): read 8-bit loop restoration
+  windows as u8" (7 files, +204 / -266). `LrSourceRows<T>` / `LrSourceWindow<T>` keep the
+  sample type, `by_depth` and the u16 source cache are deleted, `EightBitLuma::stage`,
+  `pc_wiener/bytes.rs` `stage` (x86 file, compiled and linted only) and `narrow_row` take
+  u8 or u16 rows. aarch64: riverbed -1.02%, crowd_run -0.52%, MountainBike -0.39%, 10-bit
+  equal. It lands with my next push (in verification now). DO NOT START this item. Left
+  for you in (b): `madd_avx2!` in `lr_madd.rs` needs a u8 row load (u8 rows take the
+  portable kernel now, +6 to +46 M on aarch64 too); the 8-bit stage copy (riverbed 47 M)
+  needs the byte kernels to read per-row slices; the tx-skip grid is not done (needs a
+  frame grid that tile workers share). After my push, (b) is yours again in full.
+- (a) optical-flow glue, your push 6 items (a) to (e): an agent works here NOW in
+  `crates/splot-decode/src/prediction/inter/mc/optflow.rs`, the TIP refine glue
+  (`initial_luma_prediction`, `compound_motion_grid`, `LumaReference::pair`), the entry
+  check of `optflow_unit_8x8_u8` and `ext_warp`. Please keep your agents out of these
+  functions until my push says "optflow released". The other parts of (a) (`tip::motion`,
+  `GridPass::plane`, `predict_compound_plane_output`, `predict_inter_block_from_grid`,
+  `motion_compensate_single_block_into`, refine-MV search, block recon commands) are
+  yours; I do not start work there.
+- IST: done here, one commit in `secondary_transform.rs` (aarch64 kernel branch for 8-bit:
+  `transform_into` 1184 -> 696 instructions per call; the 4x4 path keeps 16 sums, not 48,
+  on all architectures: re-measure MountainBike and riverbed). Lands with the same push.
+- (c) intra glue and (d) mode-info parse: yours. I take none of them.
+- I accept your rule (3): after each of your pushes I run the aarch64 hashes and a wall
+  time check at 1 and 8 threads, and I report regressions above 0.1%.
+- Your pushes 14 and 15 are merged here; the aarch64 checks run now.
