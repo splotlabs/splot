@@ -151,7 +151,6 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
         },
     ];
     let residual = super::super::InterResidual { block_range: 0..2 };
-    let mut scratch = super::super::InterResidualReconScratch::default();
     let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
         16,
         16,
@@ -160,7 +159,6 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
     )
     .unwrap();
     let error = super::super::add_inter_residual_to_workspace(
-        &mut scratch,
         &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
@@ -189,11 +187,9 @@ fn invalid_inter_residual_block_ranges_are_reconstruction_state() {
         PixelFormat::Yuv420,
     )
     .unwrap();
-    let mut scratch = super::super::InterResidualReconScratch::default();
 
     for (start, end) in [(1, 2), (1, 0)] {
         let error = super::super::add_inter_residual_to_workspace(
-            &mut scratch,
             &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
             &super::super::InterResidual {
                 block_range: start..end,
@@ -230,7 +226,6 @@ fn invalid_inter_residual_tx_size_is_reconstruction_state() {
         coeffs: all_zero_inter_coeff_block(),
     }];
     let residual = super::super::InterResidual { block_range: 0..1 };
-    let mut scratch = super::super::InterResidualReconScratch::default();
     let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
         4,
         4,
@@ -240,7 +235,6 @@ fn invalid_inter_residual_tx_size_is_reconstruction_state() {
     .unwrap();
 
     let error = super::super::add_inter_residual_to_workspace(
-        &mut scratch,
         &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
@@ -288,7 +282,6 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
         },
     ];
     let residual = super::super::InterResidual { block_range: 0..2 };
-    let mut scratch = super::super::InterResidualReconScratch::default();
     let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
         16,
         16,
@@ -298,7 +291,6 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
     .unwrap();
 
     let error = super::super::add_inter_residual_to_workspace(
-        &mut scratch,
         &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,

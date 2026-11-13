@@ -561,9 +561,7 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
         },
     ];
     let residual = super::InterResidual { block_range: 0..3 };
-    let mut scratch = super::InterResidualReconScratch::default();
     super::add_inter_residual_to_workspace(
-        &mut scratch,
         &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
@@ -629,9 +627,7 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
         coeffs,
     }];
     let residual = super::InterResidual { block_range: 0..1 };
-    let mut scratch = super::InterResidualReconScratch::default();
     super::add_inter_residual_to_workspace(
-        &mut scratch,
         &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,

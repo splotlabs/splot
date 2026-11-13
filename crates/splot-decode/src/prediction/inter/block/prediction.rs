@@ -125,7 +125,6 @@ pub(super) fn placed_inter_geometry_at(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
-    residual_scratch: &mut super::super::InterResidualReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
@@ -206,7 +205,6 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     }
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
-            residual_scratch,
             &mut mc::WorkspaceSink::Frame(workspace),
             residual,
             residual_blocks,
@@ -226,7 +224,6 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
-    residual_scratch: &mut super::super::InterResidualReconScratch<T>,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
@@ -253,7 +250,6 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     )?;
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
-            residual_scratch,
             sink,
             residual,
             residual_blocks,

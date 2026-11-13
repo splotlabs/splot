@@ -189,7 +189,6 @@ pub(crate) struct EncoderInterTile {
     chroma: ChromaFormatIdc,
     qindex: u32,
     bit_depth: BitDepth,
-    residual_scratch: super::super::InterResidualReconScratch<u16>,
     interintra_scratch: super::interintra::InterIntraScratch<u16>,
     /// `TipFrameMode == TIP_FRAME_AS_REF` with the TIP reference pair.
     tip_ref_pair: Option<(i8, i8)>,
@@ -330,7 +329,6 @@ impl EncoderInterTile {
             chroma: sequence.general.chroma_format_idc,
             qindex,
             bit_depth,
-            residual_scratch: super::super::InterResidualReconScratch::default(),
             interintra_scratch: super::interintra::InterIntraScratch::default(),
             tip_ref_pair,
             tip_records: Vec::new(),
@@ -589,7 +587,6 @@ impl EncoderInterTile {
         if placed.block.interintra.is_some() || placed.block.bawp.enabled {
             prediction::reconstruct_placed_inter_block(
                 &mut self.interintra_scratch,
-                &mut self.residual_scratch,
                 workspace,
                 &placed,
                 &[],
@@ -612,7 +609,6 @@ impl EncoderInterTile {
         let grid = self.compound_grid(&placed, refine, workspace)?;
         prediction::reconstruct_pure_inter_block(
             &mut mc::WorkspaceSink::Frame(workspace),
-            &mut self.residual_scratch,
             &placed,
             &[],
             &[],
@@ -639,7 +635,6 @@ impl EncoderInterTile {
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<()> {
         super::super::add_inter_residual_to_workspace(
-            &mut self.residual_scratch,
             &mut mc::WorkspaceSink::Frame(workspace),
             &residual.range(),
             &residual.blocks,
@@ -816,7 +811,6 @@ impl EncoderInterTile {
         if predict {
             super::tip::predict(
                 &mut self.tip_scratch,
-                &mut self.residual_scratch,
                 &mut sink,
                 grid,
                 true,

@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::DecodeHeaderStateError;
-use crate::prediction::inter::InterResidualReconScratch;
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_recon::{CurrentFrameWorkspace, DecodedFrame, ReconError};
 
@@ -950,7 +949,6 @@ pub(super) fn retire_motion_grid(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn predict<T: ReconSample>(
     scratch: &mut TipReconstructScratch,
-    residual_scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     grid: Option<mc::CompoundMotionGrid>,
     fresh: bool,
@@ -999,7 +997,6 @@ pub(super) fn predict<T: ReconSample>(
     scratch.units.clear();
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
-            residual_scratch,
             sink,
             residual,
             residual_blocks,
@@ -1477,7 +1474,6 @@ impl<T: ReconSample> TipOutputStages<T> {
         placed.luma[3] = rect.height() as u32;
         placed.chroma_luma[1] = rect.y() as u32;
         placed.chroma_luma[3] = rect.height() as u32;
-        let mut residual_scratch = InterResidualReconScratch::default();
         let frame = TipFramePlan::new(
             self.info,
             &self.temporal,
@@ -1504,7 +1500,6 @@ impl<T: ReconSample> TipOutputStages<T> {
             )?;
             let grid = predict(
                 &mut band.scratch,
-                &mut residual_scratch,
                 sink,
                 grid,
                 true,

@@ -18,14 +18,13 @@ use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_core::types::ObuType;
 use splot_recon::{
     BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
-    PlaneId as ReconPlaneId, PlaneRect, QuantizerDeltas, ReconSample, ReferenceFrameStore,
-    ReferenceSlot,
+    PlaneId as ReconPlaneId, QuantizerDeltas, ReconSample, ReferenceFrameStore, ReferenceSlot,
 };
 
 use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::tile_payload::{
     FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap, GeneralIntraResidualError,
-    reconstruct_general_intra_chroma_cctx_pair_into,
+    add_cctx_pair_residual_in_place,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateError};
 use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
@@ -880,7 +879,6 @@ fn compound_is_joint_context_from_order_hints(
 }
 #[allow(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSample>(
-    scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     residual: &InterResidual,
     residual_blocks: &[InterResidualBlock],
@@ -904,7 +902,6 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
             let v_block = inter_residual_chroma_pair(blocks, index, block)
                 .ok_or(DecodeHeaderStateError::MissingInterResidualCctxPair)?;
             reconstruct_inter_residual_chroma_cctx_pair(
-                scratch,
                 sink,
                 [block, v_block],
                 residual_coeffs,
@@ -992,7 +989,6 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
-    scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     [u, v]: [&InterResidualBlock; 2],
     residual_coeffs: &[i32],
@@ -1007,49 +1003,23 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
             index: u.tx_size,
         }
     })?;
-    let width = 1usize << log2_width;
-    let height = 1usize << log2_height;
-    let u_rect = PlaneRect::new(u.x, u.y, width, height)?;
-    let v_rect = PlaneRect::new(v.x, v.y, width, height)?;
-    read_inter_residual_prediction(sink, u, u_rect, &mut scratch.u_prediction)?;
-    read_inter_residual_prediction(sink, v, v_rect, &mut scratch.v_prediction)?;
-    reconstruct_general_intra_chroma_cctx_pair_into(
-        crate::bitstream::tile_payload::CoeffBlock::new(&u.coeffs, residual_coeffs)?,
-        &scratch.u_prediction,
-        crate::bitstream::tile_payload::CoeffBlock::new(&v.coeffs, residual_coeffs)?,
-        &scratch.v_prediction,
+    let size = splot_recon::IntraRectBlockSize::new(
+        u8::try_from(log2_width).unwrap_or(u8::MAX),
+        u8::try_from(log2_height).unwrap_or(u8::MAX),
+    )?;
+    let coeffs = crate::bitstream::tile_payload::CoeffBlock::new;
+    add_cctx_pair_residual_in_place(
+        sink,
+        [
+            coeffs(&u.coeffs, residual_coeffs)?,
+            coeffs(&v.coeffs, residual_coeffs)?,
+        ],
+        (u.x, u.y, size),
         qindex,
-        log2_width,
-        log2_height,
         cctx_type,
         use_ddt,
         bit_depth,
-        &mut scratch.u_output,
-        &mut scratch.v_output,
-    )?;
-    write_inter_residual_block(sink, u, u_rect, &scratch.u_output)?;
-    write_inter_residual_block(sink, v, v_rect, &scratch.v_output)?;
-    Ok(())
-}
-
-fn read_inter_residual_prediction<T: ReconSample>(
-    sink: &mc::WorkspaceSink<'_, '_, T>,
-    block: &InterResidualBlock,
-    rect: PlaneRect,
-    prediction: &mut Vec<T>,
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    crate::residual::pipeline::read_cctx_prediction(sink, block.plane, rect, prediction)?;
-    Ok(())
-}
-
-fn write_inter_residual_block<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
-    block: &InterResidualBlock,
-    rect: PlaneRect,
-    samples: &[T],
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    sink.write_rect(block.plane, rect, samples, rect.width())?;
-    Ok(())
+    )
 }
 
 fn inter_residual_log2(
@@ -1189,13 +1159,6 @@ impl InterResidual {
     }
 }
 
-#[derive(Debug, Default)]
-pub(in crate::prediction::inter) struct InterResidualReconScratch<T: ReconSample> {
-    u_prediction: Vec<T>,
-    v_prediction: Vec<T>,
-    u_output: Vec<T>,
-    v_output: Vec<T>,
-}
 #[derive(Clone, Debug)]
 pub(crate) struct InterResidualBlock {
     pub(crate) plane: ReconPlaneId,
