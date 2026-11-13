@@ -8,7 +8,7 @@
 
 use fearless_simd::{i16x8, i16x16, i32x8, mask16x16, prelude::*, u8x32, u16x16, u64x4};
 
-use super::{accumulate_unit_sums, gradient_row, solve_sums, unit_sums, whole_8x8};
+use super::{GradientTile, accumulate_unit_sums, gradient_row, solve_sums, unit_sums, whole_8x8};
 use crate::Result;
 
 /// Byte indices that reverse the eight `i16` lanes of each 128-bit block.
@@ -52,11 +52,9 @@ pub(super) fn unit_8x8<S: Simd>(
 #[inline]
 pub(super) fn unit_16x16_lane_sums<S: Simd>(
     simd: S,
-    weighted: &[i16; 256],
-    difference: &[i16; 256],
+    rows: &GradientTile<'_>,
+    difference: &GradientTile<'_>,
 ) -> [[i32; 5]; 4] {
-    let (rows, _) = weighted.as_chunks::<16>();
-    let (difference, _) = difference.as_chunks::<16>();
     let half = |first: usize| {
         let mut sums = [i32x8::splat(simd, 0); 5];
         for (row, difference) in difference.iter().enumerate().skip(first).take(8) {

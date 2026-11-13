@@ -186,17 +186,26 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         )?;
         return Ok(&scratch.deltas);
     }
-    if let (8, Ok(weighted), Ok(difference)) = (
-        unit_size,
-        <&[i16; 256]>::try_from(&*weighted),
-        <&[i16; 256]>::try_from(&*difference),
-    ) && width == 16
+    if unit_size == 8 && width.is_multiple_of(GRADIENT_UNIT) && height.is_multiple_of(GRADIENT_UNIT)
     {
-        push_unit_deltas(
-            &mut scratch.deltas,
-            unit_16x16_sums(weighted, difference),
-            distances,
-        )?;
+        scratch.deltas.resize(unit_count, [[0; 2]; 2]);
+        let columns = width / 8;
+        for y in (0..height).step_by(GRADIENT_UNIT) {
+            for x in (0..width).step_by(GRADIENT_UNIT) {
+                let tile = |plane| gradient_tile(plane, width, x, y);
+                let units = unit_16x16_sums(&tile(weighted), &tile(difference));
+                for (unit, sums) in units.into_iter().enumerate() {
+                    let index = (y / 8 + unit / 2) * columns + x / 8 + unit % 2;
+                    match solve_sums(sums, distances) {
+                        Ok(delta) => scratch.deltas[index] = delta,
+                        Err(error) => {
+                            scratch.deltas.clear();
+                            return Err(error);
+                        }
+                    }
+                }
+            }
+        }
         return Ok(&scratch.deltas);
     }
     gradients(weighted, width, height, gradient_x, gradient_y);
@@ -1093,9 +1102,18 @@ fn gradient_i16<S: Simd>(
     (magnitude ^ sign) - sign
 }
 
-/// [`solve_unit_sums`] of the four 8x8 units of a 16x16 predictor pair, which
-/// is one gradient unit, in the order of [`derive_optflow_mv_deltas_into`].
-fn unit_16x16_sums(weighted: &[i16; 256], difference: &[i16; 256]) -> [[i32; 5]; 4] {
+/// The 16 rows of one 16x16 gradient unit of a plane.
+type GradientTile<'a> = [&'a [i16; GRADIENT_UNIT]; GRADIENT_UNIT];
+
+/// The rows of the gradient unit at `x`, `y` of a `width`-sample plane.
+fn gradient_tile(plane: &[i16], width: usize, x: usize, y: usize) -> GradientTile<'_> {
+    let (rows, _) = plane.as_chunks::<GRADIENT_UNIT>();
+    core::array::from_fn(|row| &rows[((y + row) * width + x) / GRADIENT_UNIT])
+}
+
+/// [`solve_unit_sums`] of the four 8x8 units of a 16x16 gradient unit, in
+/// raster order.
+fn unit_16x16_sums(weighted: &GradientTile<'_>, difference: &GradientTile<'_>) -> [[i32; 5]; 4] {
     baseline_simd!(simd => unit_16x16_lane_sums(simd, weighted, difference))
 }
 
@@ -1106,16 +1124,14 @@ fn unit_16x16_sums(weighted: &[i16; 256], difference: &[i16; 256]) -> [[i32; 5];
 #[inline]
 fn unit_16x16_lane_sums<S: Simd>(
     simd: S,
-    weighted: &[i16; 256],
-    difference: &[i16; 256],
+    rows: &GradientTile<'_>,
+    diff_rows: &GradientTile<'_>,
 ) -> [[i32; 5]; 4] {
-    let (rows, _) = weighted.as_chunks::<16>();
-    let (diff_rows, _) = difference.as_chunks::<16>();
     let half_sums = |half: core::ops::Range<usize>| {
         let mut sums = [[fearless_simd::i32x4::splat(simd, 0); 2]; 5];
         for row in half {
             let (u, v) = gradient_row(simd, rows, row);
-            let w = i16x16::load_array_ref(simd, &diff_rows[row]);
+            let w = i16x16::load_array_ref(simd, diff_rows[row]);
             for (sums, (left, right)) in
                 sums.iter_mut()
                     .zip([(u, u), (v, v), (u, v), (u, w), (v, w)])
@@ -1149,9 +1165,9 @@ fn unit_16x16_lane_sums<S: Simd>(
 /// [`unit_8x8_sums`].
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
-fn gradient_row<S: Simd>(simd: S, rows: &[[i16; 16]], row: usize) -> (i16x16<S>, i16x16<S>) {
+fn gradient_row<S: Simd>(simd: S, rows: &GradientTile<'_>, row: usize) -> (i16x16<S>, i16x16<S>) {
     let last = rows.len() - 1;
-    let lanes = |row: usize| i16x16::load_array_ref(simd, &rows[row]).split();
+    let lanes = |row: usize| i16x16::load_array_ref(simd, rows[row]).split();
     let (low, high) = lanes(row);
     let [first, end] = [rows[row][0], rows[row][15]].map(|sample| i16x8::splat(simd, sample));
     let edge = |bits: u64| {
@@ -1453,7 +1469,42 @@ mod tests {
             let want = [(0, 0), (8, 0), (0, 8), (8, 8)].map(|(x, y)| {
                 solve_unit_sums::<8>(&gradient_x, &gradient_y, &difference, 16, x, y)
             });
-            assert_eq!(unit_16x16_sums(&weighted, &difference), want);
+            let tile = |plane| gradient_tile(plane, 16, 0, 0);
+            assert_eq!(unit_16x16_sums(&tile(&weighted), &tile(&difference)), want);
+        }
+    }
+
+    #[test]
+    fn gradient_tiles_match_the_stored_gradient_planes() {
+        for (width, height) in [(32, 16), (16, 32), (64, 32)] {
+            let len = width * height;
+            let pred0: Vec<u16> = (0..len).map(|i| ((i * 7919 + 31) % 256) as u16).collect();
+            let pred1: Vec<u16> = (0..len).map(|i| ((i * 104_729 + 7) % 256) as u16).collect();
+            let distances = reduce_distances([2, -1]);
+            let (mut weighted, mut difference) = (vec![0i16; len], vec![0i16; len]);
+            baseline_simd!(simd => weighted_difference_planes(
+                simd, &pred0, &pred1, &mut weighted, &mut difference, distances, 0,
+            ));
+            let (mut gradient_x, mut gradient_y) = (vec![0i16; len], vec![0i16; len]);
+            gradients(&weighted, width, height, &mut gradient_x, &mut gradient_y);
+            let want: Vec<_> = (0..height)
+                .step_by(8)
+                .flat_map(|y| (0..width).step_by(8).map(move |x| (x, y)))
+                .map(|(x, y)| {
+                    let (gx, gy, d) = (&gradient_x, &gradient_y, &difference);
+                    solve_unit(gx, gy, d, width, x, y, 8, distances).unwrap()
+                })
+                .collect();
+            let deltas = derive_optflow_mv_deltas(
+                &pred0,
+                &pred1,
+                width,
+                height,
+                8,
+                BitDepth::Eight,
+                [2, -1],
+            );
+            assert_eq!(deltas.unwrap(), want, "{width}x{height}");
         }
     }
 
