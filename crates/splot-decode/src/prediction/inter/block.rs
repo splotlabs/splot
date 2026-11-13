@@ -1781,8 +1781,8 @@ fn decode_block<T: ReconSample>(
             InterBlockSyntax {
                 motion: InterMotionSyntax::Warp(WarpMotionSyntax {
                     source: warp.source,
-                    ref_mv_idx: warp.ref_mv_idx,
-                    ref_warp_idx: warp.ref_warp_idx,
+                    ref_mv_idx: warp.ref_mv_idx as u8,
+                    ref_warp_idx: warp.ref_warp_idx as u8,
                     mvd: warp.mvd,
                     extend_delta: mode_ctx.extend_delta,
                     derive_wrl,
@@ -1968,12 +1968,9 @@ fn decode_block<T: ReconSample>(
             motion: InterMotionSyntax::Single(SingleMotionSyntax {
                 mode: single_mode,
                 tip_ref,
-                ref_mv_idx,
+                ref_mv_idx: ref_mv_idx as u8,
                 mvd,
                 use_temporal_first,
-                global_warp: (!tip_ref && single_mode == SINGLE_MODE_GLOBALMV)
-                    .then(|| global_motion_warp(core, ref_frame0, force_integer_mv, n4w, n4h))
-                    .flatten(),
             }),
             interp,
             precision,

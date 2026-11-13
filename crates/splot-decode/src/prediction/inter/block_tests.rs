@@ -918,8 +918,8 @@ fn interintra_smooth_chroma_reads_below_left_from_chroma_ref_origin() -> TestRes
     let mut block_decoded = TileBlockDecodedState::new(3, 1, 1, 16, 36, 36)?;
     block_decoded.clear_superblock(16, 16);
     let mut placed = placed_luma_block(72, 72, 8, 8, InterIntraMode::Smooth);
-    placed.chroma_luma_x = 64;
-    placed.chroma_luma_y = 64;
+    placed.chroma_luma[0] = 64;
+    placed.chroma_luma[1] = 64;
     placed.interintra_chroma = true;
 
     let low = interintra_smooth_predictions(&low, &placed, &block_decoded)?;
@@ -1153,14 +1153,8 @@ fn placed_luma_block(
     mode: InterIntraMode,
 ) -> PlacedInterBlock {
     PlacedInterBlock {
-        luma_x: x,
-        luma_y: y,
-        luma_w: width,
-        luma_h: height,
-        chroma_luma_x: x,
-        chroma_luma_y: y,
-        chroma_luma_w: width,
-        chroma_luma_h: height,
+        luma: [x, y, width, height].map(|v| v as u32),
+        chroma_luma: [x, y, width, height].map(|v| v as u32),
         predict_chroma: false,
         sub8x8_chroma: false,
         interintra_chroma: false,
@@ -1184,10 +1178,10 @@ fn placed_luma_block(
 #[test]
 fn offset_chroma_motion_compensation_stays_leaf_scoped() {
     let mut placed = placed_luma_block(16, 4, 8, 4, InterIntraMode::Dc);
-    placed.chroma_luma_x = 16;
-    placed.chroma_luma_y = 0;
-    placed.chroma_luma_w = 8;
-    placed.chroma_luma_h = 8;
+    placed.chroma_luma[0] = 16;
+    placed.chroma_luma[1] = 0;
+    placed.chroma_luma[2] = 8;
+    placed.chroma_luma[3] = 8;
     placed.predict_chroma = true;
 
     assert_eq!(

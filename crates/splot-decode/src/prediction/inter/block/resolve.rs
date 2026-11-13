@@ -330,18 +330,16 @@ pub(super) enum InterMotionSyntax {
 pub(super) struct SingleMotionSyntax {
     pub(super) mode: u8,
     pub(super) tip_ref: bool,
-    pub(super) ref_mv_idx: usize,
+    pub(super) ref_mv_idx: u8,
     pub(super) mvd: Mv,
     pub(super) use_temporal_first: bool,
-    /// § 7.13.3.22 GLOBALMV warp model, absent for every other mode.
-    pub(super) global_warp: Option<[i32; 6]>,
 }
 
 /// § 5.20.7.13 warp-mode syntax.
 pub(super) struct WarpMotionSyntax {
     pub(super) source: WarpModelSource,
-    pub(super) ref_mv_idx: usize,
-    pub(super) ref_warp_idx: usize,
+    pub(super) ref_mv_idx: u8,
+    pub(super) ref_warp_idx: u8,
     pub(super) mvd: Option<Mv>,
     pub(super) extend_delta: (i32, i32),
     pub(super) derive_wrl: bool,
@@ -380,7 +378,7 @@ pub(super) struct WarpDeltaSyntax {
 /// § 7.12.2.4 joint-MVD projection distances and base list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CompoundJointMvProjection {
-    pub(super) base_list: usize,
+    pub(super) base_list: u8,
     pub(super) first_dist: i32,
     pub(super) second_dist: i32,
 }
@@ -393,8 +391,8 @@ pub(super) struct CompoundMotionSyntax {
     pub(super) skip_mode: bool,
     pub(super) use_optflow: bool,
     pub(super) local_warp: bool,
-    pub(super) ref_mv_idx: usize,
-    pub(super) independent_idx: Option<[usize; 2]>,
+    pub(super) ref_mv_idx: u8,
+    pub(super) independent_idx: Option<[u8; 2]>,
     pub(super) mvd: [Mv; 2],
     pub(super) joint: Option<CompoundJointMvProjection>,
     pub(super) jmvd_scale_mode: u8,
@@ -600,7 +598,7 @@ pub(super) fn resolve_single(
             single.tip_ref,
             single.use_temporal_first,
             state,
-            single.ref_mv_idx,
+            usize::from(single.ref_mv_idx),
         );
         single_mode_mv(
             single,
@@ -612,7 +610,20 @@ pub(super) fn resolve_single(
     };
     ResolvedInterBlock {
         mv: [mv, Mv::ZERO],
-        warp_params: [single.global_warp, None],
+        warp_params: [
+            (!single.tip_ref && single.mode == SINGLE_MODE_GLOBALMV)
+                .then(|| {
+                    global_motion_warp(
+                        state.core,
+                        block.ref_frame0,
+                        effective_force_integer_mv(state.core),
+                        block.bw4,
+                        block.bh4,
+                    )
+                })
+                .flatten(),
+            None,
+        ],
         blend: syntax.blend,
     }
 }
@@ -656,7 +667,7 @@ pub(super) fn single_mode_mv(
     block: &MvBlockContext,
     state: &MvResolutionState<'_>,
 ) -> Mv {
-    let pred_mv = stack.candidate(single.ref_mv_idx);
+    let pred_mv = stack.candidate(usize::from(single.ref_mv_idx));
     match single.mode {
         SINGLE_MODE_GLOBALMV => {
             global_motion_mv(state.core, block.ref_frame0, block, precision.mv_precision)
@@ -707,7 +718,7 @@ pub(super) fn warp_motion(
         state.temporal,
         Some(state.order_hints),
         warp.use_temporal_first,
-        warp.ref_mv_idx,
+        usize::from(warp.ref_mv_idx),
     );
     let (mv, params) = match &warp.source {
         WarpModelSource::Candidate => {
@@ -717,12 +728,12 @@ pub(super) fn warp_motion(
                 MV_PRECISION_EIGHTH_PEL
             };
             let base_mv = warp_predicted_mv(
-                stack.warp_candidate(warp.ref_warp_idx),
+                stack.warp_candidate(usize::from(warp.ref_warp_idx)),
                 block,
                 base_precision,
             );
             let mv = warp.mvd.map_or(base_mv, |mvd| add_mv_clamped(base_mv, mvd));
-            let mut params = stack.warp_candidate(warp.ref_warp_idx);
+            let mut params = stack.warp_candidate(usize::from(warp.ref_warp_idx));
             reduce_warp_model(&mut params);
             set_warp_translation(
                 &mut params,
@@ -748,7 +759,10 @@ pub(super) fn warp_motion(
 }
 
 fn warp_newmv(syntax: &InterBlockSyntax, warp: &WarpMotionSyntax, stack: &MvStack) -> Mv {
-    let pred_mv = lowered_pred_mv(syntax.precision, stack.candidate(warp.ref_mv_idx));
+    let pred_mv = lowered_pred_mv(
+        syntax.precision,
+        stack.candidate(usize::from(warp.ref_mv_idx)),
+    );
     add_mv_clamped(pred_mv, warp.mvd.unwrap_or(Mv::ZERO))
 }
 
@@ -780,12 +794,15 @@ fn warp_newmv_model(
                 global_warp_params: global_motion_model(state.core, block.ref_frame0).gm_params,
             },
             stack,
-            warp.ref_mv_idx,
+            usize::from(warp.ref_mv_idx),
             mv,
         ),
-        WarpModelSource::Delta(delta) => {
-            apply_warp_delta(stack.warp_candidate(warp.ref_warp_idx), *delta, mv, block)
-        }
+        WarpModelSource::Delta(delta) => apply_warp_delta(
+            stack.warp_candidate(usize::from(warp.ref_warp_idx)),
+            *delta,
+            mv,
+            block,
+        ),
         WarpModelSource::Candidate => Ok(DEFAULT_WARP_PARAMS),
     }
 }
@@ -845,7 +862,7 @@ pub(super) fn compound_motion(
         .candidate(idx)
     };
     if compound.skip_mode {
-        let candidate = paired(compound.ref_mv_idx);
+        let candidate = paired(usize::from(compound.ref_mv_idx));
         return Ok(ResolvedInterBlock {
             mv: candidate.mvs,
             warp_params: [None, None],
@@ -998,7 +1015,7 @@ pub(super) fn near_near_mvs(
                         lists.push((key, stack));
                         lists.len() - 1
                     });
-                lists[index].1.candidate(indices[list])
+                lists[index].1.candidate(usize::from(indices[list]))
             })
         } else {
             let key = compound.temporal_allowed;
@@ -1019,7 +1036,10 @@ pub(super) fn near_near_mvs(
                     paired.push((key, stack));
                     paired.len() - 1
                 });
-            paired[index].1.candidate(compound.ref_mv_idx).mvs
+            paired[index]
+                .1
+                .candidate(usize::from(compound.ref_mv_idx))
+                .mvs
         };
         out.push(Some(mvs));
     }
@@ -1040,8 +1060,8 @@ fn compound_mvs(
 ) -> [Mv; 2] {
     let candidates = || {
         select_near_near_candidates(
-            compound.independent_idx,
-            compound.ref_mv_idx,
+            compound.independent_idx.map(|idx| idx.map(usize::from)),
+            usize::from(compound.ref_mv_idx),
             |idx| paired(idx).mvs,
             independent,
         )
@@ -1058,9 +1078,13 @@ fn compound_mvs(
             );
             mvs
         }
-        CompoundYMode::JointNew => joint_new_mvs(syntax, compound, paired(compound.ref_mv_idx).mvs),
+        CompoundYMode::JointNew => joint_new_mvs(
+            syntax,
+            compound,
+            paired(usize::from(compound.ref_mv_idx)).mvs,
+        ),
         CompoundYMode::NewNew => {
-            let candidate = paired(compound.ref_mv_idx).mvs;
+            let candidate = paired(usize::from(compound.ref_mv_idx)).mvs;
             [
                 add_mv_clamped(lowered_amvd_pred(syntax, candidate[0]), compound.mvd[0]),
                 add_mv_clamped(lowered_amvd_pred(syntax, candidate[1]), compound.mvd[1]),
@@ -1081,7 +1105,7 @@ fn joint_new_mvs(
     };
     let diff = compound.mvd[0];
     let base_mv = add_mv_clamped(
-        lowered_amvd_pred(syntax, candidates[projection.base_list]),
+        lowered_amvd_pred(syntax, candidates[usize::from(projection.base_list)]),
         diff,
     );
     let projected = scale_joint_projected_mvd(
@@ -1089,7 +1113,7 @@ fn joint_new_mvs(
         compound.jmvd_scale_mode,
         syntax.use_amvd,
     );
-    let other_mv = add_mv_clamped(candidates[1 - projection.base_list], projected);
+    let other_mv = add_mv_clamped(candidates[usize::from(1 - projection.base_list)], projected);
     if projection.base_list == 0 {
         [base_mv, other_mv]
     } else {

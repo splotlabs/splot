@@ -151,13 +151,18 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
             continue;
         }
         let (luma_x, luma_y, luma_w, luma_h) = if plane == ReconPlaneId::Y {
-            (placed.luma_x, placed.luma_y, placed.luma_w, placed.luma_h)
+            (
+                placed.luma_x(),
+                placed.luma_y(),
+                placed.luma_w(),
+                placed.luma_h(),
+            )
         } else {
             (
-                placed.chroma_luma_x,
-                placed.chroma_luma_y,
-                placed.chroma_luma_w,
-                placed.chroma_luma_h,
+                placed.chroma_luma_x(),
+                placed.chroma_luma_y(),
+                placed.chroma_luma_w(),
+                placed.chroma_luma_h(),
             )
         };
         let x = luma_x >> sub_x;

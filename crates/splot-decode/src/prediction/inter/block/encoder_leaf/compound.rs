@@ -827,8 +827,8 @@ impl EncoderInterTile {
             skip_mode: compound.skip_mode,
             use_optflow: refinement.use_optflow,
             local_warp: false,
-            ref_mv_idx: compound.ref_mv_idx,
-            independent_idx: compound.independent_idx,
+            ref_mv_idx: compound.ref_mv_idx as u8,
+            independent_idx: compound.independent_idx.map(|idx| idx.map(|i| i as u8)),
             mvd: compound.mvd,
             joint: (compound.y_mode == CompoundYMode::JointNew)
                 .then(|| self.joint_projection(compound.ref_frames))

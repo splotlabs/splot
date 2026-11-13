@@ -147,10 +147,10 @@ impl InterReconCommand {
     pub(super) fn resolve(&mut self, state: &mut MvResolutionState<'_>) -> Result<()> {
         let placed = &self.placed;
         let block = MvBlockContext {
-            mi_row: placed.luma_y / 4,
-            mi_col: placed.luma_x / 4,
-            bw4: placed.luma_w / 4,
-            bh4: placed.luma_h / 4,
+            mi_row: placed.luma_y() / 4,
+            mi_col: placed.luma_x() / 4,
+            bw4: placed.luma_w() / 4,
+            bh4: placed.luma_h() / 4,
             sb_h4: state.sb_h4,
             ref_frame0: placed.block.ref_frame0,
             ref_frame1: placed.block.ref_frame1,
@@ -179,16 +179,16 @@ impl InterReconCommand {
     ) -> bool {
         prepass_write_is_contained(
             [
-                self.placed.luma_x,
-                self.placed.luma_y,
-                self.placed.luma_w,
-                self.placed.luma_h,
+                self.placed.luma_x(),
+                self.placed.luma_y(),
+                self.placed.luma_w(),
+                self.placed.luma_h(),
             ],
             [
-                self.placed.chroma_luma_x,
-                self.placed.chroma_luma_y,
-                self.placed.chroma_luma_w,
-                self.placed.chroma_luma_h,
+                self.placed.chroma_luma_x(),
+                self.placed.chroma_luma_y(),
+                self.placed.chroma_luma_w(),
+                self.placed.chroma_luma_h(),
             ],
             self.placed.predict_chroma,
             self.reads_current_frame(),
@@ -212,10 +212,10 @@ impl InterReconCommand {
         temporal_motion_block(
             reference,
             ref_frame_idx,
-            self.placed.luma_y / 4,
-            self.placed.luma_x / 4,
-            self.placed.luma_w / 4,
-            self.placed.luma_h / 4,
+            self.placed.luma_y() / 4,
+            self.placed.luma_x() / 4,
+            self.placed.luma_w() / 4,
+            self.placed.luma_h() / 4,
             mi_rows,
             mi_cols,
             current_order_hint,
@@ -311,8 +311,8 @@ impl InterReconCommand {
                     syntax,
                     self.placed.block.warp_params,
                     grid.as_ref(),
-                    self.placed.luma_y / 4,
-                    self.placed.luma_x / 4,
+                    self.placed.luma_y() / 4,
+                    self.placed.luma_x() / 4,
                     shared.mi_rows,
                     shared.mi_cols,
                     shared.current_order_hint,
@@ -743,14 +743,8 @@ mod tests {
     fn command(x: usize, y: usize, width: usize, height: usize) -> InterReconCommand {
         InterReconCommand::new(
             PlacedInterBlock {
-                luma_x: x,
-                luma_y: y,
-                luma_w: width,
-                luma_h: height,
-                chroma_luma_x: x,
-                chroma_luma_y: y,
-                chroma_luma_w: width,
-                chroma_luma_h: height,
+                luma: [x, y, width, height].map(|v| v as u32),
+                chroma_luma: [x, y, width, height].map(|v| v as u32),
                 predict_chroma: false,
                 sub8x8_chroma: false,
                 interintra_chroma: false,
@@ -778,7 +772,6 @@ mod tests {
                     ref_mv_idx: 0,
                     mvd: Mv::ZERO,
                     use_temporal_first: false,
-                    global_warp: None,
                 }),
                 interp: InterpolationFilter::EightTap,
                 precision: crate::prediction::inter::find_mv_stack::BlockPrecisionRecord::default(),
@@ -854,10 +847,10 @@ mod tests {
             let mut full = command(0, 0, 64, 64);
             full.placed.predict_chroma = format != PixelFormat::Monochrome;
             full.placed.sub8x8_chroma = true;
-            full.placed.chroma_luma_x = 4;
-            full.placed.chroma_luma_y = 4;
-            full.placed.chroma_luma_w = 60;
-            full.placed.chroma_luma_h = 60;
+            full.placed.chroma_luma[0] = 4;
+            full.placed.chroma_luma[1] = 4;
+            full.placed.chroma_luma[2] = 60;
+            full.placed.chroma_luma[3] = 60;
             assert!(full.prepass_write_is_contained([0, 0], 16, info(128, 128, format), &[]));
         }
 

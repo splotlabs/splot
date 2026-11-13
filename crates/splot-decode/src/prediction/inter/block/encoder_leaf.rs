@@ -529,21 +529,18 @@ impl EncoderInterTile {
         let precision = BlockPrecisionRecord::most_probable(self.precision);
         let tip = ref_frame == TIP_REF_FRAME;
         let single = |mode, ref_mv_idx| {
-            self.single_syntax(
-                &block,
-                EncoderSingleMotion {
-                    ref_frame,
-                    mode,
-                    ref_mv_idx,
-                    mvd: Mv::ZERO,
-                    interp: ReconInterpolationFilter::EightTap,
-                    precision: None,
-                    use_amvd: false,
-                    tip,
-                    interintra: None,
-                    bawp: None,
-                },
-            )
+            self.single_syntax(EncoderSingleMotion {
+                ref_frame,
+                mode,
+                ref_mv_idx,
+                mvd: Mv::ZERO,
+                interp: ReconInterpolationFilter::EightTap,
+                precision: None,
+                use_amvd: false,
+                tip,
+                interintra: None,
+                bawp: None,
+            })
         };
         let global = single(SINGLE_MODE_GLOBALMV, 0);
         let near: Vec<_> = (0..drls)
@@ -962,10 +959,9 @@ impl EncoderInterTile {
         let block = self.block(frontier, motion.refs())?;
         let mut blend = mc::CompoundBlend::default();
         let (syntax, optflow_distances) = match motion {
-            EncoderMotion::Single(single) => (
-                InterMotionSyntax::Single(self.single_syntax(&block, single)),
-                None,
-            ),
+            EncoderMotion::Single(single) => {
+                (InterMotionSyntax::Single(self.single_syntax(single)), None)
+            }
             EncoderMotion::Warp(warp) => (
                 InterMotionSyntax::Warp(self.warp_syntax(&block, warp)?),
                 None,
@@ -1198,28 +1194,13 @@ impl EncoderInterTile {
         })
     }
 
-    fn single_syntax(
-        &self,
-        block: &MvBlockContext,
-        motion: EncoderSingleMotion,
-    ) -> SingleMotionSyntax {
+    fn single_syntax(&self, motion: EncoderSingleMotion) -> SingleMotionSyntax {
         SingleMotionSyntax {
             mode: motion.mode,
             tip_ref: motion.tip,
-            ref_mv_idx: motion.ref_mv_idx,
+            ref_mv_idx: motion.ref_mv_idx as u8,
             mvd: motion.mvd,
             use_temporal_first: !motion.tip && self.temporal_first(motion.ref_frame),
-            global_warp: (!motion.tip && motion.mode == SINGLE_MODE_GLOBALMV)
-                .then(|| {
-                    global_motion_warp(
-                        &self.core,
-                        motion.ref_frame,
-                        effective_force_integer_mv(&self.core),
-                        block.bw4,
-                        block.bh4,
-                    )
-                })
-                .flatten(),
         }
     }
 

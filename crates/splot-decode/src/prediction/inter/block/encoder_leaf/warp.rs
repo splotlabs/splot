@@ -156,8 +156,8 @@ impl EncoderInterTile {
         };
         Ok(WarpMotionSyntax {
             source,
-            ref_mv_idx: warp.ref_mv_idx,
-            ref_warp_idx: warp.ref_warp_idx,
+            ref_mv_idx: warp.ref_mv_idx as u8,
+            ref_warp_idx: warp.ref_warp_idx as u8,
             mvd: warp.mvd,
             extend_delta: find_mode_ctx(&self.grid, block).extend_delta,
             derive_wrl: block.bw4 >= 2 && block.bh4 >= 2,
