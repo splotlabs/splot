@@ -5,7 +5,8 @@
 use libfuzzer_sys::fuzz_target;
 use splot_core::error::{Error, SymbolDecoderErrorKind};
 use splot_core::symbol::{
-    CDF_COUNT_SHIFT, CdfUpdateMode, SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderConfig,
+    CDF_COUNT_SHIFT, CdfUpdateMode, CdfValidationMode, SymbolDecoder, SymbolDecoderCheckpoint,
+    SymbolDecoderConfig,
 };
 
 const UPDATE_MODE_FLAG: u8 = 0b0000_0001;
@@ -22,6 +23,7 @@ const OP_READ_VALID_SYMBOL: u8 = 2;
 const OP_READ_MALFORMED_SYMBOL: u8 = 3;
 const OP_CHECKPOINT: u8 = 4;
 const OP_FINISH: u8 = 5;
+const OP_READ_TRUSTED_ROW: u8 = 6;
 
 fuzz_target!(|data: &[u8]| {
     let Some((flags, rest)) = data.split_first() else {
@@ -47,13 +49,17 @@ fuzz_target!(|data: &[u8]| {
     let Ok(mut decoder) = SymbolDecoder::with_config(payload, config) else {
         return;
     };
+    let trusted_config = config.with_cdf_validation_mode(CdfValidationMode::Trusted);
+    let Ok(mut trusted) = SymbolDecoder::with_config(payload, trusted_config) else {
+        return;
+    };
 
     let mut cursor = ops.iter().copied();
     let op_count = 1 + usize::from(*op_count_seed % MAX_OPS as u8);
     let mut previous_checkpoint = decoder.checkpoint();
 
     for _ in 0..op_count {
-        let op = cursor.next().unwrap_or(0) % 6;
+        let op = cursor.next().unwrap_or(0) % 7;
         match op {
             OP_READ_BOOL => {
                 let _ = decoder.read_bool();
@@ -106,6 +112,17 @@ fuzz_target!(|data: &[u8]| {
                     assert_symbol_summary(payload.len(), symbol_count, summary);
                 }
                 return;
+            }
+            OP_READ_TRUSTED_ROW => {
+                let len = 3 + usize::from(cursor.next().unwrap_or(0) % 7);
+                let mut cdf: Vec<u16> = (0..len)
+                    .map(|_| {
+                        u16::from_le_bytes([cursor.next().unwrap_or(0), cursor.next().unwrap_or(0)])
+                    })
+                    .collect();
+                if let Some(symbol) = trusted.read_trusted_row(&mut cdf) {
+                    assert!((symbol as usize) < len - 1);
+                }
             }
             _ => {}
         }
