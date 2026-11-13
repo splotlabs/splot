@@ -120,7 +120,7 @@ impl ResidualPlaneArena {
     /// Plans [`super::GeneralIntraResidualPlan::rect`] into the arena.
     pub(crate) fn plan_rect(
         &mut self,
-        block_ctx: BlockCtx,
+        block_ctx: &BlockCtx,
         luma_plan: RectLumaPlan,
         chroma_plan: Option<RectChromaPlan>,
         luma_fsc_mode: bool,
@@ -130,7 +130,7 @@ impl ResidualPlaneArena {
         let start = self.plan_start()?;
         super::plan::plan_rect(
             &mut |plane| self.push_unparsed(plane),
-            block_ctx,
+            *block_ctx,
             luma_plan,
             chroma_plan,
             luma_fsc_mode,
@@ -143,14 +143,14 @@ impl ResidualPlaneArena {
     /// Plans [`super::GeneralIntraResidualPlan::chroma`] into the arena.
     pub(crate) fn plan_chroma(
         &mut self,
-        block_ctx: BlockCtx,
+        block_ctx: &BlockCtx,
         chroma_plan: RectChromaPlan,
         lossless_luma_fsc: bool,
     ) -> Result<PlannedGeneralIntraResidual, ResidualPlanError> {
         let start = self.plan_start()?;
         super::plan::plan_chroma(
             &mut |plane| self.push_unparsed(plane),
-            block_ctx,
+            *block_ctx,
             chroma_plan,
             lossless_luma_fsc,
         )?;

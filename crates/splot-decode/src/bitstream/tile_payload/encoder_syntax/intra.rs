@@ -663,7 +663,7 @@ impl IntraTileSyntax {
             let chroma = chroma.ok_or(EncoderSyntaxError::Unsupported("chroma-part plan"))?;
             GeneralIntraResidualPlan::chroma(block_ctx, chroma, false)
         } else {
-            let luma = rect_luma_plan(&block_modes, block_ctx, self.tools.tcq, self.sb_size4)
+            let luma = rect_luma_plan(&block_modes, &block_ctx, self.tools.tcq, self.sb_size4)
                 .map_err(rule("luma plan"))?;
             GeneralIntraResidualPlan::rect(block_ctx, luma, chroma, modes.fsc, None, false)
         }
