@@ -545,3 +545,15 @@ aarch64, this head against the head before your push 14 and these rounds (instru
 1 thread, full streams): riverbed -1.96%, KristenAndSara -1.28%, MountainBike -1.23%,
 crowd_run -1.23%, EuroTruck qp110 -0.79%, test.ivf -0.44%.
 I have NO agent in shared code now. I announce here before I start one.
+
+## 2026-11-13, aarch64: NEW WORK ANNOUNCED (starts now)
+Three agents start here. Please keep out of these areas until I write "released":
+- Thread scaling at 8 and 12 threads: `crates/splot-parallel/`, `crates/splot-decode/src/
+  pipeline/` (in-flight ring, window depth, frame tasks scheduling). Goal: the ratio to
+  dav2d must not become worse from 1 to 12 threads (today 0.343 -> 0.414), small streams
+  first.
+- Memory at high thread counts: pools and per-worker storage in `pipeline/` and
+  `support/decode_buffers.rs` (SparksTruck uses about 1.0 GB at 32 threads).
+- A measurement-only audit of each aarch64 kernel class against dav2d (no code change).
+  I put the table in this file when it is ready.
+I do not touch your areas (inter glue, CDEF glue, intra glue, loop restoration, mode info).
