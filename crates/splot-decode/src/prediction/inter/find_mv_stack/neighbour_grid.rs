@@ -788,6 +788,20 @@ impl NeighbourMvGrid {
         }
     }
 
+    /// [`Self::record_motion`] of [`ZERO_NEIGHBOUR_MOTION_VALUES`], which a
+    /// leaf's record holds from its publication.
+    pub(crate) fn record_zero_motion(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
+        if let Some(slot) = self
+            .index_at(r, c)
+            .and_then(|index| *self.planes.cells.get(index)?)
+            && let Some(record) = self.planes.leaves.get_mut(slot.get() as usize - 1)
+            && (record.base_r, record.base_c, record.bw4, record.bh4)
+                == (r as u32, c as u32, n4w as u8, n4h as u8)
+        {
+            record.resolved = true;
+        }
+    }
+
     /// [`Self::record_motion`] for the leaf whose [`Self::record_flags`]
     /// returned `leaf`; a record that is not that leaf's stays unresolved.
     pub(crate) fn record_leaf_motion(

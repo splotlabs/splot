@@ -126,9 +126,7 @@ pub(super) fn resolve_parsed_leaves(
             .warp_param_bank
             .reset_for_leaf(state.grid, mi_row, mi_col, sb_h4);
         if let LeafReset::NonInter { n4w, n4h } = reset {
-            state
-                .grid
-                .record_motion(mi_row, mi_col, n4w, n4h, ZERO_NEIGHBOUR_MOTION_VALUES);
+            state.grid.record_zero_motion(mi_row, mi_col, n4w, n4h);
             if let Some(bank) = state.ref_mv_bank.as_mut() {
                 bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
             }
