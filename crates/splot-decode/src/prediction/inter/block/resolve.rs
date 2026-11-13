@@ -10,7 +10,7 @@
 //! motion plane and updates the reference MV and warp parameter banks.
 //!
 //! The parse pass publishes only the flag plane and stores one
-//! [`LeafResolveRecord`] on each reconstruction entry. [`resolve_parsed_leaves`]
+//! [`EntryState`] on each reconstruction entry. [`resolve_parsed_leaves`]
 //! then replays those entries in leaf order, so every bank reseed, bank hit and
 //! motion publication lands in the fused walk's order even though symbol
 //! decode has already run ahead to the end of the unit.
@@ -25,26 +25,12 @@ use super::compound_path::{
     add_mv_clamped, compound_local_warp_models, project_joint_mvd, scale_joint_projected_mvd,
     select_near_near_candidates,
 };
-use super::tile::{LeafSlot, ReconRowEntry};
+use super::tile::{EntryState, LeafSlot, ReconRowEntry};
 use super::warp::{
     ExtendWarpContext, apply_warp_delta, extend_warp_estimation, set_warp_translation,
 };
 #[allow(clippy::wildcard_imports)]
 use super::*;
-
-/// What one leaf's parse hands its reconstruction entry.
-pub(super) enum LeafResolveRecord {
-    /// A chroma-part leaf, which publishes no neighbour record.
-    Reseed(crate::pipeline::general_intra::GeneralIntraReconCommand),
-    /// Zero motion plus the § 7.12.5 bank hit budget.
-    NonInter {
-        command: crate::pipeline::general_intra::GeneralIntraReconCommand,
-        n4w: u8,
-        n4h: u8,
-    },
-    /// An inter or IntraBC leaf, whose record the parse wrote into this row slot.
-    Slot(u32),
-}
 
 impl LeafSlot {
     /// The neighbour flags the parser published for this leaf.
@@ -62,10 +48,10 @@ impl LeafSlot {
 }
 
 /// Stores `slot` as the row's next slot. Rows hold far fewer than `u32::MAX` leaves.
-fn push_slot(slots: &mut Vec<LeafSlot>, slot: LeafSlot) -> LeafResolveRecord {
+fn push_slot(slots: &mut Vec<LeafSlot>, slot: LeafSlot) -> EntryState {
     let index = slots.len() as u32;
     slots.push(slot);
-    LeafResolveRecord::Slot(index)
+    EntryState::Slot(index)
 }
 
 /// The bank and motion-plane work of a leaf whose command is already final,
@@ -73,14 +59,14 @@ fn push_slot(slots: &mut Vec<LeafSlot>, slot: LeafSlot) -> LeafResolveRecord {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum LeafReset {
     None,
-    /// [`LeafResolveRecord::Reseed`].
+    /// A chroma-part leaf, which publishes no neighbour record.
     Reseed,
-    /// [`LeafResolveRecord::NonInter`].
+    /// Zero motion plus the § 7.12.5 bank hit budget.
     NonInter {
         n4w: usize,
         n4h: usize,
     },
-    /// [`LeafResolveRecord::Slot`]: the slot's motion is still to resolve.
+    /// [`EntryState::Slot`]: the slot's motion is still to resolve.
     Slot,
 }
 
@@ -106,7 +92,7 @@ pub(super) struct PendingIntrabcBlock {
 pub(super) fn pending_intrabc_leaf(
     slots: &mut Vec<LeafSlot>,
     pending: PendingIntrabcBlock,
-) -> LeafResolveRecord {
+) -> EntryState {
     push_slot(slots, LeafSlot::Intrabc(Box::new(pending)))
 }
 

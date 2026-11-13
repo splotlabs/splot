@@ -1208,9 +1208,13 @@ pub(super) struct BlockDecodeContext<'a, T: ReconSample> {
     pub(super) mv_grid: &'a mut NeighbourMvGrid,
     filter_records: &'a mut tile::TileFilterRecords,
     slots: &'a mut Vec<tile::LeafSlot>,
+    superblocks: &'a mut Vec<tile::ReconSuperblock>,
+    entries: &'a mut Vec<tile::ReconRowEntry>,
+    sb_mask: usize,
     pub(super) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
 }
 
+/// Decodes one leaf and stores its record as the row's next entry.
 #[allow(clippy::too_many_arguments)]
 fn decode_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit,
@@ -1218,7 +1222,7 @@ fn decode_block<T: ReconSample>(
     frontier: &DecodeBlockFrontier,
     context: &mut BlockDecodeContext<'_, T>,
     neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
-) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
+) -> Result<GeneralIntraLeafMode> {
     let BlockDecodeContext {
         sequence,
         core,
@@ -1239,8 +1243,20 @@ fn decode_block<T: ReconSample>(
         ref mut mv_grid,
         ref mut filter_records,
         ref mut slots,
+        ref mut superblocks,
+        ref mut entries,
+        sb_mask,
         ref mut arena,
     } = *context;
+    let mut store = |leaf, state| {
+        tile::push_leaf_entry(
+            superblocks,
+            entries,
+            DecodedLeafPublication::from_frontier(frontier, sb_mask),
+            state,
+        );
+        leaf
+    };
     let (avail_up, avail_left) = tile_neighbour_availability(
         frontier.r,
         frontier.c,
@@ -1468,7 +1484,7 @@ fn decode_block<T: ReconSample>(
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
-            return Ok((
+            return Ok(store(
                 GeneralIntraLeafMode::no_luma_mode().mark_intrabc(),
                 pending_intrabc_leaf(
                     slots,
@@ -1530,18 +1546,15 @@ fn decode_block<T: ReconSample>(
                 n4h,
                 non_inter_flag_syntax(None, frame_mv_precision(core)?),
             );
-            intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
+            if params.allow_intrabc {
+                intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
+            }
         }
-        return Ok((
+        return Ok(store(
             leaf,
-            if luma_tree {
-                LeafResolveRecord::NonInter {
-                    command,
-                    n4w: n4w as u8,
-                    n4h: n4h as u8,
-                }
-            } else {
-                LeafResolveRecord::Reseed(command)
+            EntryState::Intra {
+                command,
+                size4: luma_tree.then_some([n4w as u8, n4h as u8]),
             },
         ));
     }
@@ -1625,7 +1638,8 @@ fn decode_block<T: ReconSample>(
             intrabc_state,
             (skip, segment_id, block_qindex),
             tile_offset,
-        );
+        )
+        .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state));
     }
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let tip_frame_mode = params.tip_frame_mode;
@@ -1673,7 +1687,8 @@ fn decode_block<T: ReconSample>(
             n4w,
             n4h,
             tile_offset,
-        );
+        )
+        .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state));
     }
 
     let ref_frame0: i8 = if segment_forces_globalmv {
@@ -1804,7 +1819,8 @@ fn decode_block<T: ReconSample>(
             (n4w, n4h),
             (skip, segment_id, block_qindex),
             tile_offset,
-        );
+        )
+        .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state));
     }
 
     let single_mode = if segment_forces_globalmv {
@@ -1992,6 +2008,7 @@ fn decode_block<T: ReconSample>(
         (skip, segment_id, block_qindex),
         tile_offset,
     )
+    .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state))
 }
 
 /// An inter leaf's block as the parse leaves it, before § 7.12 resolution
@@ -2050,7 +2067,7 @@ fn finish_inter_leaf(
     (n4w, n4h): (usize, usize),
     (skip, segment_id, block_qindex): (u8, u8, u32),
     tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
+) -> Result<EntryState> {
     let lossless = work_unit
         .coeff_frame_facts()
         .lossless_for_segment(usize::from(segment_id))
@@ -2093,17 +2110,19 @@ fn finish_inter_leaf(
         block_qindex,
         lossless,
     );
-    intrabc_state.record_block(
-        frontier.r,
-        frontier.c,
-        n4w,
-        n4h,
-        IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
-            use_intrabc: false,
-            skip_flag: skip == 1,
-        })
-        .mark_inter(),
-    )?;
+    if params.allow_intrabc {
+        intrabc_state.record_block(
+            frontier.r,
+            frontier.c,
+            n4w,
+            n4h,
+            IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
+                use_intrabc: false,
+                skip_flag: skip == 1,
+            })
+            .mark_inter(),
+        )?;
+    }
     let geometry = inter_leaf_geometry(
         frontier,
         work_unit,
@@ -2129,10 +2148,7 @@ fn finish_inter_leaf(
             leaf,
         ),
     )));
-    Ok((
-        GeneralIntraLeafMode::no_luma_mode(),
-        LeafResolveRecord::Slot(index),
-    ))
+    Ok(EntryState::Slot(index))
 }
 
 /// The neighbour flags of a non-inter leaf, or of an IntraBC leaf with its
@@ -2210,9 +2226,8 @@ use self::interintra::predict_interintra_planes;
 use self::prediction::inter_leaf_geometry;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
-    LeafReset, LeafResolveRecord, MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax,
-    WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax, pending_intrabc_leaf,
-    resolve_parsed_leaves,
+    LeafReset, MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax, WarpDeltaSyntax,
+    WarpModelSource, WarpMotionSyntax, pending_intrabc_leaf, resolve_parsed_leaves,
 };
 use self::syntax::{
     effective_force_integer_mv, interp_filter_symbol, lowered_pred_mv,
@@ -2220,6 +2235,7 @@ use self::syntax::{
     read_skip_mode_syntax, read_tip_drl_idx, read_use_amvd_syntax, resolve_interp_filter,
 };
 pub(crate) use self::syntax::{frame_mv_precision, interp_filter_no_neighbour_ctx};
+use self::tile::EntryState;
 #[cfg(test)]
 pub(super) use self::tip::tip_allowed_for_block_indices;
 use self::warp::{

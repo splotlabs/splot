@@ -472,14 +472,11 @@ impl<'payload> TileParser<'payload> {
                 residual_coeffs,
                 filter_records,
                 slots,
+                (superblocks, entries),
                 if row_units {
                     WalkSpan::Row
                 } else {
                     WalkSpan::Superblock
-                },
-                |_, publication, resolve| {
-                    push_leaf_entry(superblocks, entries, publication, resolve);
-                    Ok(())
                 },
             )
         };
@@ -494,12 +491,9 @@ impl<'payload> TileParser<'payload> {
         }
     }
 
-    /// Parses one superblock or one superblock row and hands every leaf's
-    /// parse record to `consume` in walk order.
-    ///
-    /// This is the split point between the passes: the consumer decides
-    /// whether a record is stored for the resolve and reconstruction stages
-    /// or acted on at once. Returns whether superblocks remain.
+    /// Parses one superblock or one superblock row and stores every leaf's
+    /// parse record as the next reconstruction entry, in walk order, for the
+    /// resolve and reconstruction stages. Returns whether superblocks remain.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn walk_leaves<T: ReconSample>(
         &mut self,
@@ -509,12 +503,8 @@ impl<'payload> TileParser<'payload> {
         residual_arena: &mut Vec<i32>,
         filter_records: &mut TileFilterRecords,
         slots: &mut Vec<LeafSlot>,
+        (superblocks, entries): (&mut Vec<ReconSuperblock>, &mut Vec<ReconRowEntry>),
         span: WalkSpan,
-        mut consume: impl FnMut(
-            &mut super::BlockDecodeContext<'_, T>,
-            DecodedLeafPublication,
-            LeafResolveRecord,
-        ) -> Result<()>,
     ) -> Result<bool> {
         let tile_offset = tile.tile_byte_span().start;
         let walk = self.walk.active_mut()?;
@@ -539,6 +529,9 @@ impl<'payload> TileParser<'payload> {
             mv_grid: &mut self.mv_grid,
             filter_records,
             slots,
+            superblocks,
+            entries,
+            sb_mask,
             arena: &mut self.residual_planes,
         };
         let mut decode_leaf =
@@ -546,14 +539,8 @@ impl<'payload> TileParser<'payload> {
              symbols: &mut SymbolDecoder<'_>,
              frontier: &DecodeBlockFrontier,
              neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>| {
-                let (leaf, resolve) =
-                    decode_block(work_unit, symbols, frontier, &mut block_context, neighbours)?;
-                consume(
-                    &mut block_context,
-                    DecodedLeafPublication::from_frontier(frontier, sb_mask),
-                    resolve,
-                )?;
-                Ok((leaf, ()))
+                decode_block(work_unit, symbols, frontier, &mut block_context, neighbours)
+                    .map(|leaf| (leaf, ()))
             };
         let mut on_published = |_: DecodedLeafPublication, ()| {};
         loop {
@@ -699,10 +686,11 @@ pub(super) struct ReconRowEntry {
     temporal: [u32; 2],
 }
 
-/// A general-intra leaf, most of a typical row, keeps its small command
-/// inline; every other leaf keeps its record, then its command, in the row's
-/// [`LeafSlot`] list, so the inline entry stays small.
-enum EntryState {
+/// What one leaf's parse hands its reconstruction entry. A general-intra
+/// leaf, most of a typical row, keeps its small command inline; every other
+/// leaf keeps its record, then its command, in the row's [`LeafSlot`] list,
+/// so the inline entry stays small.
+pub(super) enum EntryState {
     /// The leaf's luma size in 4x4 units when it codes the luma tree.
     Intra {
         command: crate::pipeline::general_intra::GeneralIntraReconCommand,
@@ -835,23 +823,12 @@ pub(super) struct ReconSuperblock {
     pub(super) entries: Range<usize>,
 }
 
-fn push_leaf_entry(
+pub(super) fn push_leaf_entry(
     superblocks: &mut Vec<ReconSuperblock>,
     entries: &mut Vec<ReconRowEntry>,
     publication: DecodedLeafPublication,
-    resolve: LeafResolveRecord,
+    state: EntryState,
 ) {
-    let state = match resolve {
-        LeafResolveRecord::NonInter { command, n4w, n4h } => EntryState::Intra {
-            command,
-            size4: Some([n4w, n4h]),
-        },
-        LeafResolveRecord::Reseed(command) => EntryState::Intra {
-            command,
-            size4: None,
-        },
-        LeafResolveRecord::Slot(index) => EntryState::Slot(index),
-    };
     push_recon_entry(
         superblocks,
         entries,
