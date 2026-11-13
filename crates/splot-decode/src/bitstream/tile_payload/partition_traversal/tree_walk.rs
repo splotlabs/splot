@@ -335,7 +335,7 @@ where
             )?;
         }
         let mut call = call;
-        let (partition, using_extended_sdp) = walker.read_partition_step(
+        let partition = walker.read_partition_step(
             frame,
             &mut call,
             hooks.mi_size_state,
@@ -344,6 +344,13 @@ where
         let sub_size = valid_subsize(partition, call.b_size)?;
         let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
         if partition != PartitionType::None {
+            let using_extended_sdp = read_extended_sdp_region_type(
+                frame,
+                &mut call,
+                partition,
+                hooks.work_unit.cdf_mut().tile_cdfs_mut(),
+                &mut walker.symbols,
+            )?;
             return visit_partition_children(
                 &mut |child, inherited| {
                     walker.chroma_ref = inherited;
@@ -423,7 +430,7 @@ fn visit_partition_children<S: ChildCallSink>(
 
 impl TreeWalker<'_> {
     /// Reads the § 5.20.3.2 partition of `call`, then the `CflAllowedInSdp`
-    /// and extended-SDP region state it sets.
+    /// state it sets.
     #[allow(
         clippy::inline_always,
         reason = "measured: keeps the call in registers"
@@ -435,7 +442,7 @@ impl TreeWalker<'_> {
         call: &mut TilePartitionCall,
         mi_size_state: &TileMiSizeState,
         cdfs: &mut super::cdf::TileCdfSubset,
-    ) -> Result<(PartitionType, bool), TilePartitionTraversalError> {
+    ) -> Result<PartitionType, TilePartitionTraversalError> {
         let node = *call;
         let facts = match self.sdp_state.forced_chroma_partition(frame, node) {
             None => self.partition_memo.facts_at(
@@ -461,9 +468,7 @@ impl TreeWalker<'_> {
         let cfl_allowed_in_sdp = self.sdp_state.record_partition(frame, node, partition);
         call.flags = call.flags & !CALL_CFL_ALLOWED_IN_SDP
             | super::call_flag(cfl_allowed_in_sdp, CALL_CFL_ALLOWED_IN_SDP);
-        let using_extended_sdp =
-            read_extended_sdp_region_type(frame, call, partition, cdfs, &mut self.symbols)?;
-        Ok((partition, using_extended_sdp))
+        Ok(partition)
     }
 }
 
