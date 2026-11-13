@@ -25,8 +25,7 @@ use std::sync::LazyLock;
 use fearless_simd::{Avx2, SimdBase, SimdInto, u8x32};
 
 use super::{PC_WIENER_CONFIG, PC_WIENER_FILTERS, PC_WIENER_FULL_CLASSES};
-pub(super) use crate::wienerns_filter::eight_bit::STAGE_STRIDE;
-use crate::wienerns_filter::eight_bit::{ByteLaneOutput, narrow_row};
+use crate::wienerns_filter::eight_bit::ByteLaneOutput;
 
 /// Output columns per vector.
 const LANES: usize = 32;
@@ -34,8 +33,9 @@ const LANES: usize = 32;
 const REACH: usize = LANES + 2 * super::PC_WIENER_FILTER_TAP_RADIUS;
 /// Weight pairs of the kernel.
 const UNITS: usize = 14;
-/// A staged source row: a fixed size puts every tap at a constant offset.
-type Row = [u8; STAGE_STRIDE];
+/// The source bytes of one vector row: a fixed size puts every tap at a
+/// constant offset.
+type Row = [u8; REACH];
 
 /// The two taps `(dy, dx)` of each weight pair in the order the kernel reads
 /// them, `(0, 0)` the center share and `None` a zero weight. Pairs `0..7` are
@@ -112,31 +112,6 @@ fn unit_weights(coeffs: &[i32; 13]) -> Option<[u32; 16]> {
         *slot = u32::from_le_bytes([w0, w1, w0, w1]);
     }
     Some(units)
-}
-
-/// Narrows the padded rows `rows(i)` of `padded_rows` rows of `padded_width`
-/// samples; `None` when no vector fits, a row is missing, too wide or above
-/// 255.
-pub(super) fn stage<'r, T: crate::ReconSample>(
-    rows: impl Fn(usize) -> Option<&'r [T]>,
-    padded_width: usize,
-    padded_rows: usize,
-) -> Option<Vec<Row>> {
-    if !(REACH..=STAGE_STRIDE).contains(&padded_width) {
-        return None;
-    }
-    let mut staged = Vec::new();
-    staged.try_reserve_exact(padded_rows).ok()?;
-    staged.resize(padded_rows, [0; STAGE_STRIDE]);
-    staged
-        .iter_mut()
-        .enumerate()
-        .all(|(index, staged)| {
-            rows(index)
-                .and_then(|row| row.get(..padded_width))
-                .is_some_and(|row| narrow_row(&mut staged[..padded_width], row))
-        })
-        .then_some(staged)
 }
 
 /// The weight vectors of one 32-column group: one per adjacent pair, and per
@@ -216,22 +191,18 @@ fearless_simd::kernel!(
 );
 
 #[inline]
-fn at<const O: usize>(row: &Row, x: usize) -> &[u8; LANES] {
-    row.get(x + O..)
-        .and_then(<[u8]>::first_chunk::<LANES>)
-        .unwrap_or(&[0; LANES])
+fn at<const O: usize>(row: &Row) -> &[u8; LANES] {
+    row[O..].first_chunk::<LANES>().unwrap_or(&[0; LANES])
 }
 
 fearless_simd::kernel!(
-    /// One row of 32 outputs from columns `x..x + REACH` of the seven
-    /// source rows `rows[dy + 3]`, which start three columns left of the
-    /// first output.
+    /// One row of 32 outputs from the seven source rows `rows[dy + 3]`,
+    /// which start three columns left of the first output.
     #[inline]
-    fn filter_row(t: Avx2, rows: &[&Row; 7], x: usize, w: &Weights) -> __m256i {
-        let x = x.min(STAGE_STRIDE - REACH);
+    fn filter_row(t: Avx2, rows: &[&Row; 7], w: &Weights) -> __m256i {
         macro_rules! ld {
             ($row:literal, $col:literal) => {
-                __m256i::from(u8x32::load_array_ref(t, at::<$col>(rows[$row], x)))
+                __m256i::from(u8x32::load_array_ref(t, at::<$col>(rows[$row])))
             };
         }
         let madd = |bytes: __m256i, weights: __m256i| _mm256_maddubs_epi16(bytes, weights);
@@ -303,17 +274,27 @@ fearless_simd::kernel!(
 
 /// Filters the 32-column groups from column `x` to `end` of the `rows`
 /// output rows of a cell row, output row `r` at `r * stride` of `output` and
-/// reading the staged rows `window[r..r + 7]`, while every cell's class in
+/// reading the padded rows `window[r..r + 7]`, while every cell's class in
 /// `cells` fits; returns the column reached.
 pub(super) fn filter_groups<O: ByteLaneOutput>(
     t: Avx2,
-    window: &[&Row; 10],
+    window: &[&[u8]; 10],
     rows: usize,
     (mut x, end): (usize, usize),
     (cells, classes): (&[u8], &ByteClasses),
     (output, stride): (&mut [O], usize),
 ) -> usize {
-    while x + LANES <= end && x + REACH <= STAGE_STRIDE {
+    while x + LANES <= end {
+        let Some(first) = window[0].get(x..).and_then(<[u8]>::first_chunk::<REACH>) else {
+            break;
+        };
+        let mut source = [first; 10];
+        for (slot, row) in source.iter_mut().zip(window).take(rows + 6) {
+            match row.get(x..).and_then(<[u8]>::first_chunk::<REACH>) {
+                Some(row) => *slot = row,
+                None => return x,
+            }
+        }
         let Some(ids) = cells.get(x / 4..).and_then(<[u8]>::first_chunk::<8>) else {
             break;
         };
@@ -328,14 +309,14 @@ pub(super) fn filter_groups<O: ByteLaneOutput>(
         };
         for r in 0..rows {
             let (Some(source), Some(target)) = (
-                window.get(r..).and_then(<[&Row]>::first_chunk::<7>),
+                source.get(r..).and_then(<[&Row]>::first_chunk::<7>),
                 output
                     .get_mut(r * stride + x..)
                     .and_then(<[O]>::first_chunk_mut::<LANES>),
             ) else {
                 return x;
             };
-            let bytes: u8x32<Avx2> = filter_row(t, source, x, &weights).simd_into(t);
+            let bytes: u8x32<Avx2> = filter_row(t, source, &weights).simd_into(t);
             O::store(bytes.into(), target);
         }
         x += LANES;
@@ -378,13 +359,15 @@ mod tests {
             for case in 0..40 {
                 let width = [32, 64, 96, 768][case % 4];
                 let rows = 1 + case % 4;
-                let source: Vec<Row> = (0..rows + 6)
+                let source: Vec<Vec<u8>> = (0..rows + 6)
                     .map(|_| {
                         let style = next(3);
-                        core::array::from_fn(|_| match style {
-                            0 => [0, 255][next(2) as usize],
-                            _ => next(256) as u8,
-                        })
+                        (0..width + 6)
+                            .map(|_| match style {
+                                0 => [0, 255][next(2) as usize],
+                                _ => next(256) as u8,
+                            })
+                            .collect()
                     })
                     .collect();
                 let fitting: Vec<u8> = (0..64u8)
@@ -397,7 +380,7 @@ mod tests {
                         _ => fitting[next(fitting.len() as u64) as usize],
                     })
                     .collect();
-                let mut window = [&source[0]; 10];
+                let mut window = [source[0].as_slice(); 10];
                 for (slot, row) in window.iter_mut().zip(&source) {
                     *slot = row;
                 }

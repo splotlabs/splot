@@ -1754,15 +1754,10 @@ fn filter_pc_wiener_padded<
     #[cfg(target_arch = "x86_64")]
     let bytes = fearless_simd::Level::baseline()
         .as_avx2()
-        .filter(|_| setup.max_sample == 255)
-        .zip(bytes::BYTE_CLASSES.get(params.filter_set_index))
-        .and_then(|(t, classes)| {
-            let row = |index| source.row(index, padded_width).and_then(&cast);
-            let staged = bytes::stage(row, padded_width, params.height + 2 * R)?;
-            Some((t, classes, staged))
-        });
+        .filter(|_| setup.max_sample == 255 && T::u8_slice(&[]).is_some())
+        .zip(bytes::BYTE_CLASSES.get(params.filter_set_index));
     #[cfg(target_arch = "x86_64")]
-    let mut byte_window = [&[0; bytes::STAGE_STRIDE]; PC_WIENER_BLOCK_SIZE + 2 * R];
+    let mut byte_window = [&[][..]; PC_WIENER_BLOCK_SIZE + 2 * R];
     let mut row = 0;
     while row < params.height {
         let group = PC_WIENER_BLOCK_SIZE.min(params.height - row);
@@ -1774,11 +1769,9 @@ fn filter_pc_wiener_padded<
                     .ok_or_else(rows_error)?;
             }
             #[cfg(target_arch = "x86_64")]
-            if let Some((_, _, staged)) = &bytes {
-                for (dy, slot) in byte_window.iter_mut().enumerate() {
-                    *slot = staged
-                        .get(row + dy.min(group + 2 * R - 1))
-                        .ok_or_else(rows_error)?;
+            if bytes.is_some() {
+                for (slot, row) in byte_window.iter_mut().zip(&window) {
+                    *slot = T::u8_slice(row).ok_or_else(rows_error)?;
                 }
             }
             flat.update(&window[..group + 2 * R], row, params.width);
@@ -1802,9 +1795,9 @@ fn filter_pc_wiener_padded<
                 continue;
             }
             #[cfg(target_arch = "x86_64")]
-            if let Some((t, classes, _)) = &bytes {
+            if let Some((t, classes)) = bytes {
                 c0 = bytes::filter_groups(
-                    *t,
+                    t,
                     &byte_window,
                     group,
                     (c0, end),
