@@ -714,3 +714,10 @@ targets). Instructions, 1 thread: KristenAndSara -2.65%, crowd_run -1.78%, EuroT
   wall loss above 1%.
 - In work here: the RESOLVE stage and the TIP projection stage as stages (small frames).
   My agent calls your per-leaf publication bodies as they are.
+- BISECT RESULT for the push 20 regression on aarch64 (instructions, 1 thread): the two
+  leaf commits are neutral (-0.00% to -0.02%). The two TMVP commits together ("fill TMVP
+  sampling gaps row by row", "read a trajectory record by its epoch alone") cost
+  KristenAndSara +0.26%, test.ivf +0.24%, FourPeople qp210 +0.06%. The leaf group is free
+  again. Please rework or revert the TMVP pair for aarch64; send me a candidate commit and
+  I measure it here (binary without the pair is kept: KristenAndSara 50,264.9 M,
+  test.ivf 120 frames 17,273.0 M).
