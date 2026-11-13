@@ -419,8 +419,7 @@ fn strided_sample_out_of_range(
 /// The § 7.13.3.8 refinement of an eight-bit 8x8 optical-flow unit whose two
 /// predictions are `rows`, eight little-endian samples per row: `None` when
 /// their SAD is below `sad_threshold`, else the § 7.13.3.12 delta of
-/// [`derive_optflow_mv_delta_8x8_strided_into`], zero without a solve for
-/// equal predictions.
+/// [`derive_optflow_mv_delta_8x8_strided_into`].
 ///
 /// # Errors
 ///
@@ -432,9 +431,6 @@ pub fn optflow_unit_8x8_u8(
     sad_threshold: Option<u32>,
 ) -> Result<Option<[[i32; 2]; 2]>> {
     let threshold = sad_threshold.unwrap_or(0);
-    if rows[0] == rows[1] {
-        return Ok((threshold == 0).then_some([[0; 2]; 2]));
-    }
     let reduced = if distances.contains(&0) {
         [0; 2]
     } else {
