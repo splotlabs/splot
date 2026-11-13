@@ -1906,79 +1906,56 @@ fn fill_temporal_sampling_gaps(
     if step != 2 {
         return;
     }
-    let tmvp_unit_size8 = tmvp_unit_size8.max(1);
-    for y8 in (0..field.height8).step_by(2) {
-        for x8 in (0..field.width8).step_by(2) {
-            for (dy, dx) in [(0usize, 1usize), (1, 0), (1, 1)] {
-                fill_temporal_sampling_gap(field, y8, x8, dy, dx, tmvp_unit_size8);
-            }
-        }
-    }
-}
-
-#[doc = "AV2 § 7.10.5 fill_tpl and calc_avg motion-vector gap fill."]
-fn fill_temporal_sampling_gap(
-    field: &mut ProjectedTemporalMotionField,
-    y8: usize,
-    x8: usize,
-    dy: usize,
-    dx: usize,
-    tmvp_unit_size8: usize,
-) {
-    let Some(anchor) = field.cell(y8, x8).filter(|cell| cell.valid) else {
-        return;
-    };
-    if y8 + dy >= field.height8 || x8 + dx >= field.width8 {
-        return;
-    }
-    let mut sum = Mv::ZERO;
-    let mut count = 0i32;
-    debug_assert!(tmvp_unit_size8.is_power_of_two());
-    let unit_shift = tmvp_unit_size8.trailing_zeros();
-    let same_unit = |a: usize, b: usize| (a >> unit_shift) == (b >> unit_shift);
-    for candidate_y in 0..=1 {
-        for candidate_x in 0..=1 {
-            if dy < candidate_y || dx < candidate_x {
-                continue;
-            }
-            let source_y = y8 + 2 * candidate_y;
-            let source_x = x8 + 2 * candidate_x;
-            if !same_unit(source_y, y8) || !same_unit(source_x, x8) {
-                continue;
-            }
-            let Some(source) = field.cell(source_y, source_x).filter(|cell| cell.valid) else {
+    debug_assert!(tmvp_unit_size8.max(1).is_power_of_two());
+    let unit_shift = tmvp_unit_size8.max(1).trailing_zeros();
+    let (width8, height8) = (field.width8, field.height8);
+    let next_in_unit =
+        |a: usize, end: usize| a + 2 < end && (a + 2) >> unit_shift == a >> unit_shift;
+    for y8 in (0..height8).step_by(2) {
+        let down = next_in_unit(y8, height8);
+        for x8 in (0..width8).step_by(2) {
+            let Some(anchor) = field.cell(y8, x8).filter(|cell| cell.valid) else {
                 continue;
             };
-            let mv = if candidate_y == 0 && candidate_x == 0 {
-                source.mv()
-            } else {
+            let right = next_in_unit(x8, width8);
+            let projected = |near: bool, y: usize, x: usize| {
+                let source = field.cell(y, x).filter(|cell| near && cell.valid)?;
                 let mv = project_mv(source.mv(), anchor.ref_offset(), source.ref_offset());
-                Mv {
+                Some(Mv {
                     row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                     col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                }
+                })
             };
-            sum.row += mv.row;
-            sum.col += mv.col;
-            count += 1;
+            let right_mv = projected(right, y8, x8 + 2);
+            let down_mv = projected(down, y8 + 2, x8);
+            let corner_mv = projected(right && down, y8 + 2, x8 + 2);
+            let mut fill = |y: usize, x: usize, sources: &[Option<Mv>]| {
+                if y >= height8 || x >= width8 {
+                    return;
+                }
+                let (mut sum, mut count) = (anchor.mv(), 1);
+                for mv in sources.iter().flatten() {
+                    sum.row += mv.row;
+                    sum.col += mv.col;
+                    count += 1;
+                }
+                let average = |value: i32| match count {
+                    1 => value,
+                    2 => round2_signed_i32(value, 1),
+                    3 => round2_signed_i32(value * 85, 8),
+                    _ => round2_signed_i32(value, 2),
+                };
+                let mv = Mv {
+                    row: average(sum.row),
+                    col: average(sum.col),
+                };
+                field.set(y, x, mv, anchor.ref_offset(), true);
+            };
+            fill(y8, x8 + 1, &[right_mv]);
+            fill(y8 + 1, x8, &[down_mv]);
+            fill(y8 + 1, x8 + 1, &[right_mv, down_mv, corner_mv]);
         }
     }
-    let average = |value: i32| match count {
-        1 => value,
-        2 => round2_signed_i32(value, 1),
-        3 => round2_signed_i32(value * 85, 8),
-        _ => round2_signed_i32(value, 2),
-    };
-    field.set(
-        y8 + dy,
-        x8 + dx,
-        Mv {
-            row: average(sum.row),
-            col: average(sum.col),
-        },
-        anchor.ref_offset(),
-        true,
-    );
 }
 
 /// Height of the TMVP unit row bands that [`project_temporal_motion_field`]
