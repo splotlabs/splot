@@ -425,13 +425,13 @@ pub(crate) fn tip_allowed_for_block_indices(
 /// The frame-constant § 7.13.5 settings every TIP block of a frame shares.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TipFramePlan {
-    references: TipReferencePair,
     plan: TipReferencePlan,
     output: bool,
     enable_tip_refinemv: bool,
     optflow_allowed: bool,
     frame_size: splot_recon::PlaneSize,
     current_order_hint: u32,
+    ref_order_hints: [Option<u32>; 2],
 }
 
 /// The § 7.13.5 settings both halves of one TIP block derive from.
@@ -440,7 +440,6 @@ pub(super) struct TipFramePlan {
 /// prediction that follows at once; a later one derives its own.
 #[derive(Debug)]
 struct TipBlockPlan {
-    references: TipReferencePair,
     plan: TipReferencePlan,
     output: bool,
     use_optflow: bool,
@@ -468,28 +467,22 @@ impl TipBlockPlan {
     }
 
     /// One unit's § 7.22 temporal motion record.
-    fn temporal_record<T: ReconSample>(
+    fn temporal_record(
         &self,
-        reference: &InterReferenceState<T>,
-        ref_frame_idx: &[u32],
-        current_order_hint: u32,
+        frame: &TipFramePlan,
         unit: &TipUnit,
         stored_mvs: [Mv; 2],
     ) -> TemporalMotionBlock {
-        super::temporal::temporal_motion_block(
-            reference,
-            ref_frame_idx,
+        TemporalMotionBlock::new(
             unit.rect.luma_y / 4,
             unit.rect.luma_x / 4,
             unit.rect.luma_w.div_ceil(4),
             unit.rect.luma_h.div_ceil(4),
             self.frame_mi_rows,
             self.frame_mi_cols,
-            current_order_hint,
-            self.references.past_ref,
-            self.plan.future.map(|_| self.references.future_ref),
-            stored_mvs[0],
-            stored_mvs[1],
+            frame.current_order_hint,
+            frame.ref_order_hints,
+            stored_mvs,
             [None, None],
         )
     }
@@ -553,8 +546,8 @@ impl TipFramePlan {
         let future = two_references
             .then(|| super::super::block_reference_slot(ref_frame_idx, references.future_ref))
             .transpose()?;
+        let order_hint = |slot: u32| reference.ref_order_hint.get(slot as usize).copied();
         Ok(Self {
-            references,
             plan: TipReferencePlan {
                 past,
                 future,
@@ -572,6 +565,7 @@ impl TipFramePlan {
             current_order_hint: core
                 .display_order_hint()
                 .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?,
+            ref_order_hints: [order_hint(past), future.and_then(order_hint)],
         })
     }
 
@@ -620,7 +614,6 @@ impl TipFramePlan {
                 .saturating_add(placed.chroma_luma_h()),
         );
         Ok(TipBlockPlan {
-            references: self.references,
             plan,
             output: self.output,
             use_optflow,
@@ -728,7 +721,6 @@ pub(super) fn motion<T: ReconSample>(
     placed: &PlacedInterBlock,
     frame: &TipFramePlan,
     temporal: &TemporalMvContext,
-    ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
@@ -768,13 +760,7 @@ pub(super) fn motion<T: ReconSample>(
             (None, None) => (unit.mvs, whole_sample_mvs(unit, None)),
         };
         scratch.whole_mvs.push(whole);
-        let record = plan.temporal_record(
-            reference,
-            ref_frame_idx,
-            frame.current_order_hint,
-            unit,
-            stored_mvs,
-        );
+        let record = plan.temporal_record(frame, unit, stored_mvs);
         TemporalMotionBlock::push_merged(temporal_records, first_record, record);
     }
     scratch.motion_plan = Some(plan);
@@ -1513,7 +1499,6 @@ impl<T: ReconSample> TipOutputStages<T> {
                 &placed,
                 &frame,
                 &self.temporal,
-                ref_frame_idx,
                 reference,
                 self.offset,
             )?;
@@ -1759,13 +1744,6 @@ mod tests {
         reference.store = store;
         let rect = mc::McBlockRect::from_luma_rect(0, 0, 8, 8);
         let plan = super::TipBlockPlan {
-            references: crate::prediction::inter::find_mv_stack::TipReferencePair {
-                past_ref: 0,
-                future_ref: 1,
-                past_offset: 1,
-                future_offset: -1,
-                ref_offset: 2,
-            },
             plan: TipReferencePlan {
                 past: 0,
                 future: Some(1),

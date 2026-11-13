@@ -810,7 +810,6 @@ impl EncoderInterTile {
             placed,
             &frame,
             &temporal,
-            &self.ref_frame_idx,
             &self.reference,
             ByteOffset::new(0),
         )?;
