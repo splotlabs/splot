@@ -1083,8 +1083,9 @@ fn eight_bit_sections_with_full_shear_match_the_spec_trace() {
 }
 
 /// The byte-lane section and row kernels against the § 7.13.3.19 trace for
-/// random valid models (some with zero `alpha` or `gamma`) on noise with
-/// extreme runs, at interior and border blocks, of luma and 4:2:0 chroma.
+/// random valid models (some with zero `alpha`, `gamma`, or `beta` and
+/// `delta`) on noise with extreme runs, at interior and border blocks, of
+/// luma and 4:2:0 chroma.
 #[test]
 fn eight_bit_kernels_match_the_spec_trace_for_random_models() {
     let (ref_w, ref_h) = (72usize, 56usize);
@@ -1110,6 +1111,7 @@ fn eight_bit_kernels_match_the_spec_trace_for_random_models() {
         match seed % 4 {
             1 => warp_params[2] = unit,
             2 => warp_params[4] = 0,
+            3 => [warp_params[3], warp_params[5]] = [0, unit],
             _ => {}
         }
         let mut params = default_params(0, 0, ref_w as i32, ref_h as i32);
