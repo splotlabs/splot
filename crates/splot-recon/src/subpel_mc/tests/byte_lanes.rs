@@ -173,6 +173,16 @@ fn byte_search_window_and_sads_match_the_general_path() {
                     &params,
                     &mut actual
                 ));
+                let mut generic = vec![0u8; w * h];
+                let at = [(y0 + 1) as usize * ref_w + (x0 + 1) as usize, ref_w];
+                let phases = [phase as u8 % 16, phase as u8 / 16];
+                baseline_simd!(simd => search_window::generic::window(
+                    simd, &texture, at, [w, h], phases, &mut generic,
+                ));
+                assert_eq!(
+                    generic, actual,
+                    "generic {w}x{h} at {x0},{y0} phase {phase}"
+                );
                 let actual: Vec<u16> = actual.iter().map(|&s| u16::from(s)).collect();
                 assert_eq!(actual, expected, "{w}x{h} at {x0},{y0} phase {phase}");
             }
@@ -252,6 +262,82 @@ fn byte_search_window_and_sads_match_the_general_path() {
     }
     assert_eq!(
         refinemv_search_u8([&[0; 576], &[0; 575]], 24, 20, true),
+        None
+    );
+    for [w, h] in [[12, 12], [12, 20], [20, 12], [20, 20]] {
+        for corners in [[[0, 0], [3, 7]], [[ref_w - w, ref_h - h], [9, 1]]] {
+            let scalar: u32 = (0..h)
+                .step_by(2)
+                .flat_map(|row| (0..w).map(move |col| (row, col)))
+                .map(|(row, col)| {
+                    let at = |[x, y]: [usize; 2]| (y + row) * ref_w + x + col;
+                    u32::from(texture[at(corners[0])].abs_diff(texture[at(corners[1])]))
+                })
+                .sum();
+            let sad = refinemv_area_sad_u8([&view; 2], corners, [w, h]);
+            assert_eq!(sad, Some(scalar), "{w}x{h} {corners:?}");
+        }
+    }
+}
+
+/// The `u16` search against a scalar SAD search for every window shape,
+/// at 8 and 10 bits, with extreme and equal windows.
+#[test]
+fn word_search_matches_a_scalar_search() {
+    for (bit_depth, max) in [(BitDepth::Eight, 255u16), (BitDepth::Ten, 1023)] {
+        for seed in 0..6usize {
+            let noise =
+                |i: usize, salt: usize| ((i * 37 + i / 5 + seed * salt) % 4096) as u16 & max;
+            let windows: [Vec<u16>; 2] = match seed {
+                4 => [vec![max; 576], vec![0; 576]],
+                5 => [vec![7; 576], vec![7; 576]],
+                _ => [
+                    (0..576).map(|i| noise(i, 11)).collect(),
+                    (0..576).map(|i| noise(i * 91 + 13, 7 + seed)).collect(),
+                ],
+            };
+            for (sad_w, sad_h) in [(12, 12), (12, 20), (20, 12), (20, 20)] {
+                let stride = sad_w + 4;
+                let sad = |dy: i32, dx: i32| -> u32 {
+                    let at = |sign: i32, row: usize, col: usize| {
+                        ((2 + sign * dy) as usize + row) * stride + (2 + sign * dx) as usize + col
+                    };
+                    let total: u32 = (0..sad_h)
+                        .step_by(2)
+                        .flat_map(|row| (0..sad_w).map(move |col| (row, col)))
+                        .map(|(row, col)| {
+                            u32::from(
+                                windows[0][at(1, row, col)].abs_diff(windows[1][at(-1, row, col)]),
+                            )
+                        })
+                        .sum();
+                    total >> (bit_depth.bits() - 8)
+                };
+                for allow_center in [false, true] {
+                    let center = sad(0, 0);
+                    let (mut best, mut best_sad) = ((0, 0), u32::MAX);
+                    if allow_center {
+                        best_sad = center - (center >> 3);
+                    }
+                    if !allow_center || best_sad >= (2 * sad_w * sad_h) as u32 {
+                        for &(dy, dx) in &REFINEMV_NEIGHBORS {
+                            if sad(dy, dx) < best_sad {
+                                (best, best_sad) = ((dx, dy), sad(dy, dx));
+                            }
+                        }
+                    }
+                    let pair = [&windows[0][..stride * (sad_h + 4)], &windows[1][..]];
+                    assert_eq!(
+                        refinemv_search_u16(pair, stride, sad_h, allow_center, bit_depth),
+                        Some(best),
+                        "{sad_w}x{sad_h} seed {seed} {bit_depth:?} centre {allow_center}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        refinemv_search_u16([&[0; 576], &[0; 575]], 24, 20, true, BitDepth::Ten),
         None
     );
 }

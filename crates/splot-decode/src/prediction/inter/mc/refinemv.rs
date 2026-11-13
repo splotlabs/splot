@@ -186,7 +186,7 @@ fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>
     let v = ((params.start_y >> 6) & 15) as u16;
     let max_sample = params.bit_depth.max_sample();
     baseline_simd!(simd => {
-        let horizontal = |span: &[T]| -> [u16x8<_>; G] {
+        let horizontal = |span: &[T; M]| -> [u16x8<_>; G] {
             let mut lanes = [u16x8::splat(simd, 0); G];
             for (group, lanes) in lanes.iter_mut().enumerate() {
                 let (left, right) = if group == 0 {
@@ -211,16 +211,23 @@ fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>
                 }
             }
         };
-        let mut top = horizontal(spans[0]);
-        write(0, top, top);
-        for (row, span) in spans.iter().enumerate().skip(1) {
-            let bottom = horizontal(span);
-            write(row, top, bottom);
-            top = bottom;
+        let mut upper = None;
+        for row in 0..N {
+            let lower = match spans.get(row) {
+                Some(span) => match span.first_chunk::<M>() {
+                    Some(span) => horizontal(span),
+                    None => return false,
+                },
+                None => match upper {
+                    Some(upper) => upper,
+                    None => return false,
+                },
+            };
+            write(row, upper.unwrap_or(lower), lower);
+            upper = Some(lower);
         }
-        write(N - 1, top, top);
-    });
-    true
+        true
+    })
 }
 
 /// Eight samples from `at` widened to `u16`, zero past the span.
@@ -389,15 +396,15 @@ fn search_refinemv<T: ReconSample>(
                 }
             }
             predict(false, pred0, pred1)?;
-            Ok(search_refinemv_offset(
-                pred0,
-                pred1,
-                prediction_width,
-                rect.luma_w,
-                rect.luma_h,
-                bit_depth,
-                allow_center,
-            )?)
+            let (stride, sad_h) = (prediction_width, prediction_height - 4);
+            splot_recon::refinemv_search_u16([pred0, pred1], stride, sad_h, allow_center, bit_depth)
+                .ok_or_else(|| {
+                    ReconError::SubpelBlockDimensionUnsupported {
+                        w: rect.luma_w + 4,
+                        h: rect.luma_h + 4,
+                    }
+                    .into()
+                })
         },
     )?;
     Ok(refined_mvs(candidates, dx, dy))
@@ -928,42 +935,6 @@ fn search_range_allowed(candidates: [Mv; 2]) -> bool {
     })
 }
 
-fn search_refinemv_offset(
-    pred0: &[u16],
-    pred1: &[u16],
-    stride: usize,
-    width: usize,
-    height: usize,
-    bit_depth: splot_recon::BitDepth,
-    allow_center: bool,
-) -> splot_recon::Result<(i32, i32)> {
-    let (sad_width, sad_height) = sad_extent(width, height)?;
-    let (mut best, mut best_sad, first_unchecked_neighbor) = if allow_center {
-        let Some(biased_center) =
-            refinemv_center_sad(pred0, pred1, stride, width, height, bit_depth)?
-        else {
-            return Ok((0, 0));
-        };
-        ((0, 0), biased_center, 0)
-    } else {
-        let (dy, dx) = SEARCH_NEIGHBORS[0];
-        let sad = refinemv_sad(
-            pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth,
-        )?;
-        ((dx, dy), sad, 1)
-    };
-    for &(dy, dx) in &SEARCH_NEIGHBORS[first_unchecked_neighbor..] {
-        let sad = refinemv_sad(
-            pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth,
-        )?;
-        if sad < best_sad {
-            best_sad = sad;
-            best = (dx, dy);
-        }
-    }
-    Ok(best)
-}
-
 /// The `(width + 4) x (height + 4)` area each § 7.13.3.6 SAD compares.
 fn sad_extent(width: usize, height: usize) -> splot_recon::Result<(usize, usize)> {
     let sad_width = width.checked_add(4).ok_or(ReconError::ArithmeticOverflow {
@@ -980,9 +951,9 @@ fn sad_extent(width: usize, height: usize) -> splot_recon::Result<(usize, usize)
 /// The biased § 7.13.3.6 centre SAD, or `None` when it keeps the
 /// candidates. It reads only the predictions' centre area, two samples in
 /// from each edge.
-fn refinemv_center_sad(
-    pred0: &[u16],
-    pred1: &[u16],
+fn refinemv_center_sad<'a>(
+    pred0: &'a [u16],
+    pred1: &'a [u16],
     stride: usize,
     width: usize,
     height: usize,
@@ -995,59 +966,30 @@ fn refinemv_center_sad(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "refine-MV SAD threshold",
         })? as u32;
-    let center = refinemv_sad(pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth)?;
-    let biased_center = center - (center >> 3);
-    Ok((biased_center >= threshold).then_some(biased_center))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn refinemv_sad<'a>(
-    pred0: &'a [u16],
-    pred1: &'a [u16],
-    stride: usize,
-    width: usize,
-    height: usize,
-    dx: i32,
-    dy: i32,
-    bit_depth: splot_recon::BitDepth,
-) -> splot_recon::Result<u32> {
-    let start0_x = usize::try_from(2 + dx).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD left offset",
-    })?;
-    let start0_y = usize::try_from(2 + dy).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD top offset",
-    })?;
-    let start1_x = usize::try_from(2 - dx).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD right offset",
-    })?;
-    let start1_y = usize::try_from(2 - dy).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD bottom offset",
-    })?;
-    let downshift = u32::from(bit_depth.bits().saturating_sub(8));
-    let span = |pred: &'a [u16], start_y: usize, start_x: usize| {
-        let last_row = height.saturating_sub(1) & !1;
-        let start = start_y.checked_mul(stride)?.checked_add(start_x)?;
-        let end = last_row.checked_mul(stride)?.checked_add(width)?;
-        pred.get(start..start.checked_add(end)?)
+    let span = |pred: &'a [u16]| {
+        let start = stride.checked_mul(2)?.checked_add(2)?;
+        let last_row = sad_height.saturating_sub(1) & !1;
+        let len = last_row.checked_mul(stride)?.checked_add(sad_width)?;
+        pred.get(start..start.checked_add(len)?)
     };
-    let left = span(pred0, start0_y, start0_x).ok_or(ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD first lookup",
-    })?;
-    let right = span(pred1, start1_y, start1_x).ok_or(ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD second lookup",
-    })?;
+    let (Some(left), Some(right)) = (span(pred0), span(pred1)) else {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "refine-MV SAD lookup",
+        });
+    };
     let rows = left.chunks(2 * stride).zip(right.chunks(2 * stride));
-    let sad = match width {
+    let center = match sad_width {
         12 => sad_rows::<12>(rows, u16::MAX),
         20 => sad_rows::<20>(rows, u16::MAX),
         _ => {
             return Err(ReconError::SubpelBlockDimensionUnsupported {
-                w: width,
-                h: height,
+                w: sad_width,
+                h: sad_height,
             });
         }
-    };
-    Ok(sad >> downshift)
+    } >> bit_depth.bits().saturating_sub(8);
+    let biased_center = center - (center >> 3);
+    Ok((biased_center >= threshold).then_some(biased_center))
 }
 
 /// Lanes 4..8 of a `u16x8`: the last four of the final eight samples of a
@@ -1121,14 +1063,12 @@ mod tests {
     fn default_search_keeps_a_low_sad_centre() {
         let prediction = vec![80u16; 24 * 24];
         assert_eq!(
-            search_refinemv_offset(
-                &prediction,
-                &prediction,
+            splot_recon::refinemv_search_u16(
+                [&prediction[..], &prediction[..]],
                 24,
-                16,
-                16,
-                splot_recon::BitDepth::Eight,
+                20,
                 true,
+                splot_recon::BitDepth::Eight,
             )
             .expect("centre search"),
             (0, 0)
@@ -1145,14 +1085,12 @@ mod tests {
             .flat_map(|y| (0..24).map(move |x| sample(y - 2, x + 2)))
             .collect();
         assert_eq!(
-            search_refinemv_offset(
-                &pred0,
-                &pred1,
+            splot_recon::refinemv_search_u16(
+                [&pred0[..], &pred1[..]],
                 24,
-                16,
-                16,
-                splot_recon::BitDepth::Eight,
+                20,
                 true,
+                splot_recon::BitDepth::Eight,
             )
             .expect("offset search"),
             (1, -1)
@@ -1163,14 +1101,12 @@ mod tests {
     fn switchable_search_rejects_low_sad_center_and_starts_with_first_neighbor() {
         let prediction = vec![80u16; 24 * 24];
         assert_eq!(
-            search_refinemv_offset(
-                &prediction,
-                &prediction,
+            splot_recon::refinemv_search_u16(
+                [&prediction[..], &prediction[..]],
                 24,
-                16,
-                16,
-                splot_recon::BitDepth::Eight,
+                20,
                 false,
+                splot_recon::BitDepth::Eight,
             )
             .expect("center-disabled search"),
             (-2, -2)
