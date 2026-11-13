@@ -425,6 +425,13 @@ impl<T: SplitSample> SplitFrame<T> {
             && band < self.project.next()
     }
 
+    /// Claims the first resolved batch whose references are published.
+    fn claim_precompute(&self, recon: &ScheduledTileRecon<T>) -> Option<usize> {
+        self.precompute.claim(|batch| {
+            batch < self.resolved_batches.load(Ordering::Acquire) && recon.batch_ready(batch)
+        })
+    }
+
     /// Resolves one temporal band; `false` when the parse has not reached
     /// every unit the band owes, so the row is claimed again later.
     fn resolve(&self, band: usize) -> Result<bool> {
@@ -583,9 +590,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
         if let Some(stripe) = self.filter.claim_ready() {
             return Some(claim(FILTER, stripe));
         }
-        if let Some(row) = self.precompute.claim(|batch| {
-            batch < self.resolved_batches.load(Ordering::Acquire) && recon.batch_ready(batch)
-        }) {
+        if let Some(row) = self.claim_precompute(recon) {
             return Some(claim(PRECOMPUTE, row));
         }
         if let Some(row) = self.stages[OUTPUT].claim(|_| {
@@ -599,7 +604,9 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
     }
 
     /// Runs the claimed row, then the row it released when that one is next
-    /// (a batch's commit, a commit's frontier row), without a scan or a wake.
+    /// (a projected band's resolve, a resolved band's first batch or the next
+    /// band, a batch's commit, a commit's frontier row or the next commit),
+    /// without a scan or a wake.
     fn run(&self, mut claim: Claim, worker: usize) {
         loop {
             let outcome = match claim.stage {
@@ -640,6 +647,22 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                         stage: RESOLVE,
                         row,
                     }),
+                RESOLVE => self
+                    .recon
+                    .get()
+                    .and_then(|recon| self.claim_precompute(recon))
+                    .map(|row| Claim {
+                        stage: PRECOMPUTE,
+                        row,
+                    })
+                    .or_else(|| {
+                        self.stages[RESOLVE]
+                            .claim(|band| self.resolve_ready(band))
+                            .map(|row| Claim {
+                                stage: RESOLVE,
+                                row,
+                            })
+                    }),
                 PRECOMPUTE => self.stages[COMMIT]
                     .claim(|batch| batch == claim.row)
                     .map(|row| Claim { stage: COMMIT, row }),
@@ -648,6 +671,11 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                     .map(|row| Claim {
                         stage: FRONTIER,
                         row,
+                    })
+                    .or_else(|| {
+                        self.stages[COMMIT]
+                            .claim(|batch| self.precompute.is_done(batch))
+                            .map(|row| Claim { stage: COMMIT, row })
                     }),
                 _ => None,
             };
