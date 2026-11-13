@@ -92,15 +92,15 @@ impl Reads {
 /// every read is inside the clip bounds, else the § 7.13.3.18 `Clip3`
 /// reads; `None` for another window, an empty clip range, a clamped row
 /// that cannot load 16 samples or storage of `2^32` samples or more.
-#[inline]
-#[target_feature(enable = "avx2")]
+#[allow(clippy::inline_always, reason = "in-place reads of every cell")]
+#[inline(always)]
 fn reads<const W: usize>(
     t: Avx2,
     window: &Window,
     geometry: Geometry,
     bounds: [i32; 4],
 ) -> Option<(Reads, bool)> {
-    let [stride, width, rows, len] = geometry;
+    let [stride, .., len] = geometry;
     if window.w != W || !is_cell(W, W, window.horizontal, window.vertical) {
         return None;
     }
@@ -109,26 +109,41 @@ fn reads<const W: usize>(
     if let Some(base) = window.origin(geometry, bounds) {
         return Some((Reads::in_place(base as u32, stride32), false));
     }
-    let bound = |value: i32, size: usize| value.max(0).min(size as i32 - 1);
-    let (first_x, last_x) = (bound(bounds[0], width), bound(bounds[2], width));
-    let (first, last) = (bound(bounds[1], rows), bound(bounds[3], rows));
-    if first_x > last_x || first > last {
-        return None;
-    }
-    let column = window.column.max(first_x).min(last_x);
-    if last as usize * stride + column as usize + 16 > len {
-        return None;
-    }
-    let start = window.column.max(first_x - 16).min(last_x + 16) - column;
-    let reads = Reads {
-        base: column as u32,
-        stride: stride32,
-        rows: row_offsets(t, window.row, [first, last], stride32),
-        start: start as i8,
-        high: (last_x - column).min(15) as i8,
-    };
-    Some((reads, true))
+    clamped(t, window, geometry, bounds, stride32)
 }
+
+fearless_simd::kernel!(
+    /// The clamped [`reads`] of a window that crosses its clip bounds.
+    #[inline(never)]
+    fn clamped(
+        t: Avx2,
+        window: &Window,
+        geometry: Geometry,
+        bounds: [i32; 4],
+        stride32: u32,
+    ) -> Option<(Reads, bool)> {
+        let [stride, width, rows, len] = geometry;
+        let bound = |value: i32, size: usize| value.max(0).min(size as i32 - 1);
+        let (first_x, last_x) = (bound(bounds[0], width), bound(bounds[2], width));
+        let (first, last) = (bound(bounds[1], rows), bound(bounds[3], rows));
+        if first_x > last_x || first > last {
+            return None;
+        }
+        let column = window.column.max(first_x).min(last_x);
+        if last as usize * stride + column as usize + 16 > len {
+            return None;
+        }
+        let start = window.column.max(first_x - 16).min(last_x + 16) - column;
+        let reads = Reads {
+            base: column as u32,
+            stride: stride32,
+            rows: row_offsets(t, window.row, [first, last], stride32),
+            start: start as i8,
+            high: (last_x - column).min(15) as i8,
+        };
+        Some((reads, true))
+    }
+);
 
 /// The offsets `clamp(top + r, first, last) * stride` of window rows
 /// `r` in `0..16`; `top` is first clamped so the sums cannot overflow.
