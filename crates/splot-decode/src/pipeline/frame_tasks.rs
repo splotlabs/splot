@@ -114,6 +114,12 @@ pub(crate) struct SplitFrame<T: SplitSample> {
     filter_jobs: Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
     filter_error: Mutex<Option<DecodeError>>,
     early_ready: AtomicBool,
+    /// This frame's number among the decode's split frames.
+    frame: usize,
+    /// How many frames of parsed units may wait for reconstruction before
+    /// this frame's parse waits too.
+    parse_window: usize,
+    ended: AtomicBool,
     parse_done: AtomicBool,
     prepared: AtomicBool,
     attached: AtomicBool,
@@ -145,6 +151,7 @@ impl<T: SplitSample> SplitFrame<T> {
         wake: RowWake,
         options: DecodeOptions,
         workers: Arc<inter::InterReconScratchPool<T>>,
+        parse_window: usize,
     ) -> Self {
         Self {
             wake,
@@ -157,6 +164,9 @@ impl<T: SplitSample> SplitFrame<T> {
             filter_jobs: Mutex::new(Vec::new()),
             filter_error: Mutex::new(None),
             early_ready: AtomicBool::new(false),
+            frame: 0,
+            parse_window,
+            ended: AtomicBool::new(false),
             parse_done: AtomicBool::new(false),
             prepared: AtomicBool::new(false),
             attached: AtomicBool::new(false),
@@ -207,6 +217,7 @@ impl<T: SplitSample> SplitFrame<T> {
         self.filter_jobs.get_mut().clear();
         self.filter_error.get_mut().take();
         *self.early_ready.get_mut() = false;
+        *self.ended.get_mut() = false;
         *self.parse_done.get_mut() = false;
         *self.prepared.get_mut() = false;
         *self.attached.get_mut() = false;
@@ -235,6 +246,7 @@ impl<T: SplitSample> SplitFrame<T> {
         let _ = self
             .motion_deps
             .set(core::mem::take(&mut inputs.motion_deps));
+        self.frame = inputs.parse_progress.open_frame();
         let _ = self.parse_progress.set(Arc::clone(&inputs.parse_progress));
         self.stages[PARSE].reset(1);
         self.stages[PREPARE].reset(1);
@@ -427,6 +439,7 @@ impl<T: SplitSample> SplitFrame<T> {
         let progress = recon.commit(batch, worker)?;
         if progress.recon_complete {
             *self.scratch.lock() = Some(recon.take_scheduled_scratch()?);
+            self.end_frame();
         }
         self.closed_rows
             .fetch_max(progress.frontier_rows.end, Ordering::AcqRel);
@@ -465,6 +478,7 @@ impl<T: SplitSample> SplitFrame<T> {
     }
 
     fn output(&self) -> Result<()> {
+        self.end_frame();
         if let Some(error) = self.filter_error.lock().take() {
             return Err(error);
         }
@@ -482,11 +496,21 @@ impl<T: SplitSample> SplitFrame<T> {
         Ok(())
     }
 
+    /// Lets the next split frame parse as the oldest open one.
+    fn end_frame(&self) {
+        if !self.ended.swap(true, Ordering::AcqRel)
+            && let Some(parse) = self.parse_progress.get()
+        {
+            parse.end_frame(self.frame);
+        }
+    }
+
     /// Settles every product of a failed frame so its dependents fail closed.
     fn fail(&self, error: DecodeError) {
         if self.failed.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.end_frame();
         if let Some(recon) = self.recon.get() {
             recon.fail_temporal();
         }
@@ -501,7 +525,8 @@ impl<T: SplitSample> SplitFrame<T> {
 }
 
 impl<T: SplitSample> FrameWork for SplitFrame<T> {
-    /// The parse and its tiles: the next frame's parse waits for its CDFs.
+    /// The parse and its tiles: the next frame's parse waits for its CDFs
+    /// and for reconstruction to commit the units parsed ahead of it.
     fn claim_critical(&self) -> Option<Claim> {
         if self.failed.load(Ordering::Acquire) {
             return None;
@@ -510,6 +535,10 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
             self.entropy
                 .get()
                 .is_none_or(inter::EntropyDependencies::is_settled)
+                && self
+                    .parse_progress
+                    .get()
+                    .is_none_or(|parse| parse.may_parse(self.frame, self.parse_window))
         }) {
             return Some(Claim { stage: PARSE, row });
         }
@@ -643,6 +672,7 @@ pub(crate) struct SplitFrames<T: SplitSample> {
     slots: Vec<Arc<SplitFrame<T>>>,
     next: usize,
     depth: usize,
+    parse_window: usize,
     workers: Arc<inter::InterReconScratchPool<T>>,
 }
 
@@ -653,6 +683,7 @@ impl<T: SplitSample> SplitFrames<T> {
             slots: Vec::new(),
             next: 0,
             depth: depth.max(1),
+            parse_window: (threads / 2).max(2),
             workers,
         }
     }
@@ -667,6 +698,7 @@ impl<T: SplitSample> SplitFrames<T> {
                 rows.wake(),
                 options,
                 Arc::clone(&self.workers),
+                self.parse_window,
             )));
         }
         let slot = &mut self.slots[index];
@@ -1527,7 +1559,12 @@ mod tests {
         let mut pools = RowPools::new(1, 1, &DecodeBuffers::new());
         let split = &mut pools.eight.split;
         let workers = Arc::clone(&split.workers);
-        let mut frame = SplitFrame::new(RowWake::detached(), DecodeOptions::default(), workers);
+        let mut frame = SplitFrame::new(
+            RowWake::detached(),
+            DecodeOptions::default(),
+            workers,
+            usize::MAX,
+        );
         let workspace = frame.workspace.get_mut();
         let _ = workspace
             .install_identities(Arc::new(core), state)
