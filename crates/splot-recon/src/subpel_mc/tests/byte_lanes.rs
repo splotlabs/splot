@@ -173,6 +173,16 @@ fn byte_search_window_and_sads_match_the_general_path() {
                     &params,
                     &mut actual
                 ));
+                let mut generic = vec![0u8; w * h];
+                let at = [(y0 + 1) as usize * ref_w + (x0 + 1) as usize, ref_w];
+                let phases = [phase as u8 % 16, phase as u8 / 16];
+                baseline_simd!(simd => search_window::generic::window(
+                    simd, &texture, at, [w, h], phases, &mut generic,
+                ));
+                assert_eq!(
+                    generic, actual,
+                    "generic {w}x{h} at {x0},{y0} phase {phase}"
+                );
                 let actual: Vec<u16> = actual.iter().map(|&s| u16::from(s)).collect();
                 assert_eq!(actual, expected, "{w}x{h} at {x0},{y0} phase {phase}");
             }

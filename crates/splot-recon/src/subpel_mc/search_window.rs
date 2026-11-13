@@ -50,6 +50,11 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
         avx2::window(t, view.samples, at, [w, h], phases, output);
         return true;
     }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+        neon::window(t, view.samples, at, [w, h], phases, output);
+        return true;
+    }
     baseline_simd!(simd => generic::window(simd, view.samples, at, [w, h], phases, output));
     true
 }
@@ -704,7 +709,7 @@ pub(super) mod generic {
     /// The `w x h` search window, `w` and `h` each 16 or 24, of the rows of
     /// `source` from `origin`, into `output` at stride `w`.
     #[inline(never)]
-    pub(super) fn window<S: Simd>(
+    pub(in crate::subpel_mc) fn window<S: Simd>(
         simd: S,
         source: &[u8],
         [origin, stride]: [usize; 2],
@@ -858,11 +863,145 @@ pub(super) mod generic {
     }
 }
 
-/// The SADs in NEON byte lanes.
+/// The windows and the SADs in NEON byte lanes.
 #[cfg(target_arch = "aarch64")]
 mod neon {
     use super::generic::load;
-    use fearless_simd::{Neon, SimdBase, u8x16};
+    use core::arch::aarch64::{
+        uint8x16_t, uint16x8_t, vdupq_n_u8, vdupq_n_u16, vget_low_u8, vmlal_high_u8, vmlal_u8,
+        vmull_high_u8, vmull_u8, vmulq_u16, vqtbl1q_u8, vraddhn_high_u16, vraddhn_u16,
+    };
+    use fearless_simd::{Neon, SimdBase, SimdFrom, u8x16};
+
+    /// Left taps `max(c, 1) - 1` of columns `0..16` from the row at column 1,
+    /// right taps `min(c, 14)` of a 16-wide window, and the left then right
+    /// taps of columns `16..24` of a 24-wide one from the row at column 9.
+    const TAPS: [[u8; 16]; 3] = {
+        let mut out = [[0u8; 16]; 3];
+        let mut lane = 0;
+        while lane < 16 {
+            out[0][lane] = if lane == 0 { 0 } else { lane as u8 - 1 };
+            out[1][lane] = if lane > 14 { 14 } else { lane as u8 };
+            out[2][lane] = if lane < 8 {
+                lane as u8 + 7
+            } else if lane < 15 {
+                lane as u8
+            } else {
+                14
+            };
+            lane += 1;
+        }
+        out
+    };
+
+    fearless_simd::kernel!(
+        #[inline]
+        pub(super) fn window(
+            t: Neon,
+            source: &[u8],
+            at: [usize; 2],
+            size: [usize; 2],
+            phases: [u8; 2],
+            output: &mut [u8],
+        ) {
+            match size {
+                [16, 16] => window_for::<16, 16, 256>(t, source, at, phases, output),
+                [16, _] => window_for::<16, 24, 384>(t, source, at, phases, output),
+                [_, 16] => window_for::<24, 16, 384>(t, source, at, phases, output),
+                _ => window_for::<24, 24, 576>(t, source, at, phases, output),
+            };
+        }
+    );
+
+    /// [`window`] of a `W x H` window of `N` bytes: each source row filtered
+    /// once (`umull` and `umlal` by the horizontal weights) and multiplied by
+    /// both vertical weights, so an output row is one `raddhn` of the upper
+    /// row's top product and the lower row's bottom product. A 24-wide row
+    /// stores columns `0..16` and `8..24`.
+    #[inline]
+    #[target_feature(enable = "neon")]
+    fn window_for<const W: usize, const H: usize, const N: usize>(
+        t: Neon,
+        source: &[u8],
+        [origin, stride]: [usize; 2],
+        [h_phase, v_phase]: [u8; 2],
+        output: &mut [u8],
+    ) -> Option<()> {
+        let rows = output.first_chunk_mut::<N>()?.as_chunks_mut::<W>().0;
+        let taps: [uint8x16_t; 3] = TAPS.map(|taps| u8x16::load_array(t, taps).into());
+        let bytes = |row: usize| source.get(origin + row * stride..)?.first_chunk::<W>();
+        let lanes = |bytes: &[u8; W], at: usize| -> Option<uint8x16_t> {
+            Some(u8x16::load_array_ref(t, bytes.get(at..)?.first_chunk::<16>()?).into())
+        };
+        let mut store = |row: usize, at: usize, lanes: uint8x16_t| {
+            if let Some(slot) = rows.get_mut(row)?.get_mut(at..)?.first_chunk_mut::<16>() {
+                u8x16::simd_from(t, lanes).store_array(slot);
+            }
+            Some(())
+        };
+        if [h_phase, v_phase] == [0, 0] {
+            for row in 0..H {
+                let bytes = bytes(row.max(1) - 1)?;
+                store(row, 0, vqtbl1q_u8(lanes(bytes, 0)?, taps[0]))?;
+                if W == 24 {
+                    store(row, 8, lanes(bytes, 7)?)?;
+                }
+            }
+            return Some(());
+        }
+        let (left, right) = (vdupq_n_u8(16 - h_phase), vdupq_n_u8(h_phase));
+        let weights = (
+            vdupq_n_u16(16 - u16::from(v_phase)),
+            vdupq_n_u16(u16::from(v_phase)),
+        );
+        let products = |row: usize| -> Option<[[uint16x8_t; 3]; 2]> {
+            let bytes = bytes(row)?;
+            let low = lanes(bytes, 0)?;
+            let (l, r) = (
+                vqtbl1q_u8(low, taps[0]),
+                if W == 24 {
+                    low
+                } else {
+                    vqtbl1q_u8(low, taps[1])
+                },
+            );
+            let tail = if W == 24 {
+                vqtbl1q_u8(lanes(bytes, 8)?, taps[2])
+            } else {
+                l
+            };
+            let horizontal = [
+                vmlal_u8(
+                    vmull_u8(vget_low_u8(l), vget_low_u8(left)),
+                    vget_low_u8(r),
+                    vget_low_u8(right),
+                ),
+                vmlal_high_u8(vmull_high_u8(l, left), r, right),
+                vmlal_high_u8(vmull_u8(vget_low_u8(tail), vget_low_u8(left)), tail, right),
+            ];
+            Some(
+                [weights.0, weights.1]
+                    .map(|weight| horizontal.map(|lanes| vmulq_u16(lanes, weight))),
+            )
+        };
+        let mut write =
+            |row: usize, [top, _]: [[uint16x8_t; 3]; 2], [_, bottom]: [[uint16x8_t; 3]; 2]| {
+                let narrow = |part: usize| vraddhn_u16(top[part], bottom[part]);
+                store(row, 0, vraddhn_high_u16(narrow(0), top[1], bottom[1]))?;
+                if W == 24 {
+                    store(row, 8, vraddhn_high_u16(narrow(1), top[2], bottom[2]))?;
+                }
+                Some(())
+            };
+        let mut upper = products(0)?;
+        write(0, upper, upper)?;
+        for row in 1..H - 1 {
+            let lower = products(row)?;
+            write(row, upper, lower)?;
+            upper = lower;
+        }
+        write(H - 1, upper, upper)
+    }
 
     fearless_simd::kernel!(
         #[inline]
