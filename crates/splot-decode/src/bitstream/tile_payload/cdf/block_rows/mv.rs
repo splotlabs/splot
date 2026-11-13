@@ -16,6 +16,8 @@ use splot_core::tables::cdf::{
     DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF, DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF,
 };
 
+#[cfg(any(debug_assertions, fuzzing, test))]
+use super::super::cdf_rows_valid;
 use super::super::util::checked_context;
 use super::super::{
     CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_rows, blend_cdf_rows, scale_cdf_rows,
@@ -286,6 +288,18 @@ impl MvCdfRows {
         }
 
         visit_mv_cdf_rows!(blend_rows);
+    }
+
+    #[cfg(any(debug_assertions, fuzzing, test))]
+    pub(crate) fn rows_valid(&self) -> bool {
+        let mut valid = true;
+        macro_rules! rows_valid {
+            ($field:ident $(. $flatten:ident())*) => {
+                valid &= cdf_rows_valid(flat_cdf_rows!(self.$field $(, $flatten)*));
+            };
+        }
+        visit_mv_cdf_rows!(rows_valid);
+        valid
     }
 
     pub(crate) fn scale_counts(&mut self) {

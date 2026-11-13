@@ -47,6 +47,8 @@ mod mv;
 
 use self::mv::MvCdfRows;
 pub use self::mv::MvCdfSelector;
+#[cfg(any(debug_assertions, fuzzing, test))]
+use super::cdf_rows_valid;
 use super::coeff_rows::CoeffCdfRows;
 use super::{
     CDF_ROW_LEN, CoeffCdfQContext, TileCdfArray, TileCdfError, TileCdfSelector, avg_cdf_row,
@@ -1156,6 +1158,32 @@ impl BlockCdfRows {
                 self.coeff.blend_from_saved(&saved.coeff);
             }
         );
+    }
+
+    #[cfg(any(debug_assertions, fuzzing, test))]
+    pub(crate) fn rows_valid(&self) -> bool {
+        let mut valid = true;
+        macro_rules! row_valid {
+            ($field:ident) => {
+                valid &= cdf_rows_valid(core::slice::from_ref(&self.$field));
+            };
+        }
+        macro_rules! rows_valid {
+            ($field:ident $(. $flatten:ident())*) => {
+                valid &= cdf_rows_valid(flat_cdf_rows!(self.$field $(, $flatten)*));
+            };
+        }
+        block_cdf_count_rows!(
+            row_valid,
+            rows_valid,
+            {
+                valid &= self.read_mv.rows_valid();
+            },
+            {
+                valid &= self.coeff.rows_valid();
+            }
+        );
+        valid
     }
 
     pub(crate) fn scale_counts_for_frame_end_update(&mut self) {

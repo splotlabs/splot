@@ -43,6 +43,11 @@ impl FrameCdfSubset {
             self.reset_saved_from_tile(frame, tile_num, tile, policy, &mut saved);
         }
         self.finish_saved(frame, saved);
+        #[cfg(any(debug_assertions, fuzzing))]
+        assert!(
+            self.rows.rows_valid(),
+            "a saved CDF row left the § 8.2.6 invariants"
+        );
     }
 
     fn reset_saved_from_tile(

@@ -39,6 +39,14 @@ use splot_core::tables::cdf::{
 use super::block_rows::*;
 
 #[test]
+fn default_banks_hold_valid_rows() {
+    assert!(DEFAULT_TILE_CDF_ROWS.iter().all(TileCdfRows::rows_valid));
+    let mut rows = DEFAULT_TILE_CDF_ROWS[0];
+    rows.use_gdf[0] = CDF_PROB_SCALE as u16 + 1;
+    assert!(!rows.rows_valid());
+}
+
+#[test]
 fn coeff_cdf_q_context_boundaries_select_expected_contexts() {
     for (base_q_idx, q) in [
         (0, 0),
@@ -142,7 +150,7 @@ fn frame_cdf_subset_blends_saved_rows() {
         21_000,
         24_000,
         27_000,
-        30 + (40 << CDF_COUNT_SHIFT),
+        30 + (12 << CDF_COUNT_SHIFT),
         0,
     ];
     saved.rows.delta_q = [
@@ -153,11 +161,11 @@ fn frame_cdf_subset_blends_saved_rows() {
         22_000,
         26_000,
         28_000,
-        31 + (80 << CDF_COUNT_SHIFT),
+        31 + (28 << CDF_COUNT_SHIFT),
         0,
     ];
-    frame.rows.block.tip_mode[1] = [10_000, 28 + (20 << CDF_COUNT_SHIFT), 0];
-    saved.rows.block.tip_mode[1] = [14_000, 30 + (100 << CDF_COUNT_SHIFT), 0];
+    frame.rows.block.tip_mode[1] = [10_000, 28 + (9 << CDF_COUNT_SHIFT), 0];
+    saved.rows.block.tip_mode[1] = [14_000, 30 + (32 << CDF_COUNT_SHIFT), 0];
 
     let original_delta_q = frame.rows.delta_q;
     let saved_delta_q = saved.rows.delta_q;
@@ -174,7 +182,7 @@ fn frame_cdf_subset_blends_saved_rows() {
     }
     assert_eq!(
         frame.rows.delta_q[DELTA_Q_CDF_ROW_LEN - 2],
-        30 + (expected_blend_count(40, 80) << CDF_COUNT_SHIFT)
+        30 + (expected_blend_count(12, 28) << CDF_COUNT_SHIFT)
     );
     assert_eq!(frame.rows.delta_q[DELTA_Q_CDF_ROW_LEN - 1], 0);
     assert_eq!(
@@ -183,7 +191,7 @@ fn frame_cdf_subset_blends_saved_rows() {
     );
     assert_eq!(
         frame.rows.block.tip_mode[1][1..],
-        [28 + (expected_blend_count(20, 100) << CDF_COUNT_SHIFT), 0]
+        [28 + (expected_blend_count(9, 32) << CDF_COUNT_SHIFT), 0]
     );
 }
 
