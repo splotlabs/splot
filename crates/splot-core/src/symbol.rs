@@ -933,12 +933,7 @@ impl<'a> SymbolDecoder<'a> {
     #[inline]
     pub fn read_literal(&mut self, n: u32) -> Result<u32> {
         if n > MAX_LITERAL_BITS {
-            return Err(
-                self.state_error(SymbolDecoderErrorKind::LiteralWidthTooLarge {
-                    requested: n,
-                    max: MAX_LITERAL_BITS,
-                }),
-            );
+            return Err(self.literal_width_error(n));
         }
 
         self.count_symbols(u64::from(n));
@@ -957,12 +952,7 @@ impl<'a> SymbolDecoder<'a> {
     /// propagates [`Error::UnexpectedEof`] from the bounded bit reader.
     pub fn read_unary(&mut self, max_bits: u32) -> Result<u32> {
         if max_bits > MAX_LITERAL_BITS {
-            return Err(
-                self.state_error(SymbolDecoderErrorKind::LiteralWidthTooLarge {
-                    requested: max_bits,
-                    max: MAX_LITERAL_BITS,
-                }),
-            );
+            return Err(self.literal_width_error(max_bits));
         }
         if max_bits == 0 {
             return Ok(0);
@@ -1525,6 +1515,14 @@ impl<'a> SymbolDecoder<'a> {
     #[inline]
     fn cdf_error(&self, kind: SymbolCdfErrorKind) -> Error {
         cdf_error_at(self.base, self.consumed_bits().get(), kind)
+    }
+
+    #[cold]
+    fn literal_width_error(&self, requested: u32) -> Error {
+        self.state_error(SymbolDecoderErrorKind::LiteralWidthTooLarge {
+            requested,
+            max: MAX_LITERAL_BITS,
+        })
     }
 
     #[inline]

@@ -493,7 +493,6 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
     let mut pass = LevelPass::<UPD> {
         symbols: symbols.snapshot(),
         levels: &mut *levels,
-        rows,
         width_log2: config.tx_width_log2,
         plane: config.plane,
         tcq: 0,
@@ -502,7 +501,7 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
         nonzero: &mut *nonzero,
         nonzero_len: 0,
     };
-    pass.levels_pass::<CLASS, LUMA, TCQ, PH>(scan, eob_entry, eob_level, lf_end);
+    pass.levels_pass::<CLASS, LUMA, TCQ, PH>(&mut rows, scan, eob_entry, eob_level, lf_end);
     let (mut owned, ph, nonzero_len) = (pass.symbols, pass.ph, pass.nonzero_len);
     let nonzero = nonzero.get(..nonzero_len).unwrap_or_default();
     let facts = SignFacts {
@@ -535,10 +534,14 @@ fn read_eob_base<const LUMA: bool, const UPD: bool>(
     lf: bool,
 ) -> u32 {
     match (LUMA, lf) {
-        (true, true) => symbols.read_trusted::<6, UPD>(row_at(rows.base_lf_eob, ctx)),
-        (true, false) => symbols.read_trusted::<4, UPD>(row_at(rows.base_eob, ctx)),
-        (false, true) => symbols.read_trusted::<6, UPD>(row_at(rows.base_lf_eob_uv, ctx)),
-        (false, false) => symbols.read_trusted::<4, UPD>(row_at(rows.base_eob_uv, ctx)),
+        (true, true) => symbols.read_trusted::<6, UPD>(row_at(rows.base_lf_eob(), ctx)),
+        (true, false) => symbols.read_trusted::<4, UPD>(row_at(rows.base_eob(), ctx)),
+        (false, true) => {
+            symbols.read_trusted::<6, UPD>(row_at(&mut rows.cdf.coeff_base_lf_eob_uv, ctx))
+        }
+        (false, false) => {
+            symbols.read_trusted::<4, UPD>(row_at(&mut rows.cdf.coeff_base_eob_uv, ctx))
+        }
     }
 }
 
@@ -556,11 +559,10 @@ const fn ctx_class_of(entry: u32) -> usize {
 
 /// The base and range pass state: an owned decoder whose reads skip every
 /// per-symbol check (the coefficient rows are decoder-owned), the level
-/// grid, and the CDF rows of the block's transform-size context.
+/// grid and the TCQ, parity and nonzero-list state.
 struct LevelPass<'a, 'r, const UPD: bool> {
     symbols: SymbolDecoder<'a>,
     levels: &'r mut CoeffLevelWords,
-    rows: CoeffLevelRows<'r>,
     width_log2: u32,
     plane: usize,
     tcq: usize,
@@ -637,6 +639,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     #[inline(always)]
     fn add_range<const CLASS: usize, const LUMA: bool, const LF: bool>(
         &mut self,
+        rows: &mut CoeffLevelRows<'_>,
         grid: usize,
         is_dc: bool,
         level: u32,
@@ -652,13 +655,13 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         let ctx = self.br_ctx::<CLASS, LUMA>(grid, LF && (!is_dc || CLASS != 0));
         level
             + if !LUMA {
-                let row = row_at(self.rows.br_uv, ctx);
+                let row = row_at(&mut rows.cdf.coeff_br_uv, ctx);
                 self.symbols.read_trusted::<5, UPD>(row)
             } else if LF {
-                let row = row_at(self.rows.br_lf, ctx);
+                let row = row_at(&mut rows.cdf.coeff_br_lf, ctx);
                 self.symbols.read_trusted::<5, UPD>(row)
             } else {
-                let row = row_at(self.rows.br, ctx);
+                let row = row_at(&mut rows.cdf.coeff_br, ctx);
                 self.symbols.read_trusted::<5, UPD>(row)
             }
     }
@@ -683,6 +686,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     #[inline(always)]
     fn read_lf_base<const CLASS: usize, const LUMA: bool, const DC: bool>(
         &mut self,
+        rows: &mut CoeffLevelRows<'_>,
         entry: u32,
     ) -> u32 {
         let (grid, pos) = (entry_grid(entry), (entry >> 16) as usize);
@@ -693,7 +697,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         };
         if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
-            let row = row_at(self.rows.base_lf_uv, ctx);
+            let row = row_at(&mut rows.cdf.coeff_base_lf_uv, ctx);
             return self.symbols.read_trusted::<7, UPD>(row);
         }
         let ctx = if CLASS == 0 {
@@ -716,7 +720,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
             }
         };
         let q0 = self.tcq_q0 & 1;
-        let row = &mut row_at(self.rows.base_lf, ctx)[q0];
+        let row = &mut row_at(rows.base_lf(), ctx)[q0];
         self.symbols.read_trusted::<7, UPD>(row)
     }
 
@@ -726,19 +730,23 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         reason = "measured: per-coefficient symbol read"
     )]
     #[inline(always)]
-    fn read_hf_base<const CLASS: usize, const LUMA: bool>(&mut self, entry: u32) -> u32 {
+    fn read_hf_base<const CLASS: usize, const LUMA: bool>(
+        &mut self,
+        rows: &mut CoeffLevelRows<'_>,
+        entry: u32,
+    ) -> u32 {
         let mag = self.base_mag::<CLASS, LUMA, false, false>(entry_grid(entry));
         if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
-            let row = row_at(self.rows.base_uv, ctx);
+            let row = row_at(&mut rows.cdf.coeff_base_uv, ctx);
             return self.symbols.read_trusted::<5, UPD>(row);
         }
         let q0 = self.tcq_q0 & 1;
         let row = if CLASS == 0 {
             let first = usize::from(CTX_2D[0][ctx_class_of(entry)][mag as usize & 31]);
-            &mut self.rows.base.as_flattened_mut()[(first | q0) & 31]
+            &mut rows.base().as_flattened_mut()[(first | q0) & 31]
         } else {
-            &mut row_at(self.rows.base, half_capped(mag, 4) + 15)[q0]
+            &mut row_at(rows.base(), half_capped(mag, 4) + 15)[q0]
         };
         self.symbols.read_trusted::<5, UPD>(row)
     }
@@ -774,13 +782,14 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     #[inline(never)]
     fn hf_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         &mut self,
+        mut rows: CoeffLevelRows<'_>,
         hf: &[u32],
         lf_end: usize,
     ) {
         for (offset, &entry) in hf.iter().enumerate().rev() {
             let grid = entry_grid(entry);
-            let level = self.read_hf_base::<CLASS, LUMA>(entry);
-            let level = self.add_range::<CLASS, LUMA, false>(grid, false, level);
+            let level = self.read_hf_base::<CLASS, LUMA>(&mut rows, entry);
+            let level = self.add_range::<CLASS, LUMA, false>(&mut rows, grid, false, level);
             self.finish::<TCQ, PH>(lf_end + offset, grid, level);
         }
     }
@@ -793,6 +802,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     #[inline(always)]
     fn levels_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         &mut self,
+        rows: &mut CoeffLevelRows<'_>,
         scan: &[u32],
         eob_entry: u32,
         eob_level: u32,
@@ -801,33 +811,34 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         let eob_index = scan.len() - 1;
         let eob_grid = entry_grid(eob_entry);
         let eob_level = if eob_index < lf_end {
-            self.add_range::<CLASS, LUMA, true>(eob_grid, eob_index == 0, eob_level)
+            self.add_range::<CLASS, LUMA, true>(rows, eob_grid, eob_index == 0, eob_level)
         } else {
-            self.add_range::<CLASS, LUMA, false>(eob_grid, false, eob_level)
+            self.add_range::<CLASS, LUMA, false>(rows, eob_grid, false, eob_level)
         };
         self.finish::<TCQ, PH>(eob_index, eob_grid, eob_level);
         if eob_index == 0 {
             return;
         }
         self.hf_pass::<CLASS, LUMA, TCQ, PH>(
+            rows.reborrow(),
             scan.get(lf_end..eob_index).unwrap_or_default(),
             lf_end,
         );
         let lf = scan.get(1..lf_end.min(eob_index)).unwrap_or_default();
         for (offset, &entry) in lf.iter().enumerate().rev() {
             let grid = entry_grid(entry);
-            let level = self.read_lf_base::<CLASS, LUMA, false>(entry);
-            let level = self.add_range::<CLASS, LUMA, true>(grid, false, level);
+            let level = self.read_lf_base::<CLASS, LUMA, false>(rows, entry);
+            let level = self.add_range::<CLASS, LUMA, true>(rows, grid, false, level);
             self.finish::<TCQ, PH>(1 + offset, grid, level);
         }
         let dc_grid = entry_grid(scan[0]);
         let level = if PH && (self.ph >> 1) >= PHTHRESH {
             let mag = self.base_mag::<CLASS, LUMA, false, false>(dc_grid);
-            let row = row_at(self.rows.base_ph, half_capped(mag, 4));
+            let row = row_at(&mut rows.cdf.coeff_base_ph, half_capped(mag, 4));
             self.symbols.read_trusted::<5, UPD>(row)
         } else {
-            let level = self.read_lf_base::<CLASS, LUMA, true>(scan[0]);
-            self.add_range::<CLASS, LUMA, true>(dc_grid, true, level)
+            let level = self.read_lf_base::<CLASS, LUMA, true>(rows, scan[0]);
+            self.add_range::<CLASS, LUMA, true>(rows, dc_grid, true, level)
         };
         self.finish::<TCQ, PH>(0, dc_grid, level);
     }
