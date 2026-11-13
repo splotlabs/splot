@@ -358,10 +358,11 @@ mod avx2 {
     #[target_feature(enable = "avx2")]
     fn filters(table: &[[u8; 8]; 512], first: u32, step: u32) -> (__m256i, __m256i) {
         let at = |column: u32| tap(table, first.wrapping_add(column.wrapping_mul(step)));
-        (
-            _mm256_set_epi64x(at(5), at(4), at(1), at(0)),
-            _mm256_set_epi64x(at(7), at(6), at(3), at(2)),
-        )
+        let pair = |low: u32| _mm_insert_epi64::<1>(_mm_cvtsi64_si128(at(low)), at(low + 1));
+        let half = |first: u32| {
+            _mm256_inserti128_si256::<1>(_mm256_castsi128_si256(pair(first)), pair(first + 4))
+        };
+        (half(0), half(2))
     }
 
     /// The vertical-pass sums of the eight output rows of a section, each
@@ -385,14 +386,18 @@ mod avx2 {
         let step = |shear: i32| (shear << (23 - WARPEDDIFF_PREC_BITS)) as u32;
         let mut first = key(sx4.wrapping_sub(7 * beta).wrapping_sub(4 * alpha));
         let (column_step, row_step) = (step(alpha), step(beta));
-        let mut source_at = window.column;
-        let horizontal: [__m256i; 15] = core::array::from_fn(|_| {
-            let (taps_a, taps_b) = if alpha == 0 {
+        let row_taps = |first: u32| {
+            if alpha == 0 {
                 let taps = _mm256_set1_epi64x(tap(&EVEN_ODD, first));
                 (taps, taps)
             } else {
                 filters(&EVEN_ODD, first, column_step)
-            };
+            }
+        };
+        let fixed = (beta == 0).then(|| row_taps(first));
+        let mut source_at = window.column;
+        let horizontal: [__m256i; 15] = core::array::from_fn(|_| {
+            let (taps_a, taps_b) = fixed.unwrap_or_else(|| row_taps(first));
             first = first.wrapping_add(row_step);
             let source = window
                 .rows
@@ -417,8 +422,8 @@ mod avx2 {
         let zero = _mm256_setzero_si256();
         let mut first = key(sy4.wrapping_sub(4 * delta).wrapping_sub(4 * gamma));
         let (column_step, row_step) = (step(gamma), step(delta));
-        core::array::from_fn(|row| {
-            let weights: [__m256i; 4] = if gamma == 0 {
+        let row_weights = |first: u32| -> [__m256i; 4] {
+            if gamma == 0 {
                 let taps = tap(&NATURAL, first);
                 let low = _mm256_unpacklo_epi8(zero, _mm256_set1_epi64x(taps));
                 [
@@ -439,7 +444,11 @@ mod avx2 {
                     _mm256_unpacklo_epi8(zero, far),
                     _mm256_unpackhi_epi8(zero, far),
                 ]
-            };
+            }
+        };
+        let fixed = (delta == 0).then(|| row_weights(first));
+        core::array::from_fn(|row| {
+            let weights = fixed.unwrap_or_else(|| row_weights(first));
             first = first.wrapping_add(row_step);
             let mut sum = round;
             for (pair, &weights) in weights.iter().enumerate() {

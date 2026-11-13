@@ -848,8 +848,11 @@ fn check_byte_lanes() {
                     (8, 2),
                     (8, 4),
                     (8, 8),
+                    (8, 16),
+                    (12, 2),
                     (12, 4),
                     (12, 8),
+                    (14, 6),
                     (16, 4),
                     (16, 16),
                     (20, 8),
@@ -1211,6 +1214,128 @@ fn register_compound_cells_match_the_oracle() {
                         }
                     }
                     assert_eq!(got, want, "program {interp:?} {size} {forward}");
+                }
+            }
+        }
+    }
+}
+
+/// 10-bit register compound cells of every filter, size and phase pair, in
+/// place and with windows clamped on each side, from random, all-zero,
+/// all-maximum and alternating-extreme references, through the placement
+/// entry and a program, against the § 7.13.3.18 oracle; a plane narrower
+/// than a clamped row load declines those cells to the window copy.
+#[test]
+fn sixteen_bit_register_cells_match_the_oracle() {
+    let mut seed = 5u32;
+    let mut next = |range: u32| {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        (seed >> 8) % range
+    };
+    let (ref_w, ref_h) = (48usize, 40usize);
+    let random = (0..ref_w * ref_h)
+        .map(|_| next(1024) as u16)
+        .collect::<Vec<_>>();
+    let checker = (0..ref_w * ref_h)
+        .map(|i| 1023 * u16::from((i % ref_w + i / ref_w) % 2 == 0))
+        .collect::<Vec<_>>();
+    let stripes = (0..ref_w * ref_h)
+        .map(|i| 1023 * u16::from((i % ref_w / 2) % 2 == 0))
+        .collect::<Vec<_>>();
+    let textures = [
+        random,
+        checker,
+        stripes,
+        vec![0; ref_w * ref_h],
+        vec![1023; ref_w * ref_h],
+    ];
+    for (texture, (w, h)) in textures
+        .iter()
+        .flat_map(|texture| [(ref_w, ref_h), (12, ref_h)].map(|shape| (texture, shape)))
+    {
+        let view = ReferencePlaneView::new(&texture[..w * h], w, h).unwrap();
+        for interp in [
+            InterpolationFilter::EightTap,
+            InterpolationFilter::EightTapSmooth,
+            InterpolationFilter::EightTapSharp,
+            InterpolationFilter::Bilinear,
+        ] {
+            for size in [4usize, 8] {
+                for forward in [8i16, 3, 16] {
+                    let stride = 16 * size;
+                    let mut program = CompoundCells::default();
+                    let mut want = vec![0u16; 16 * size * stride];
+                    let mut got = vec![0u16; 16 * size * stride];
+                    for phase in 0..256i32 {
+                        let mut placement = |phase: i32| -> CellPlacement {
+                            let [dx, dy] = [next(15) as i32 - 7, next(15) as i32 - 7];
+                            let (x, y) = (w as i32 / 2 - 4 + dx, 16 + dy);
+                            let bounds = if phase % 3 == 0 {
+                                [0, 0, w as i32 - 1, h as i32 - 1]
+                            } else {
+                                [x - 2, 12, x + size as i32 + 2, 12 + size as i32 + 3]
+                            };
+                            let start = [
+                                (x << 10) + ((phase % 16) << 6),
+                                (y << 10) + ((phase / 16) << 6),
+                            ];
+                            (start, bounds)
+                        };
+                        let placements = [placement(phase), placement((phase * 7 + 3) % 256)];
+                        let [pred0, pred1] =
+                            placements.map(|([start_x, start_y], [fx, fy, lx, ly])| {
+                                let params = SubpelPredictParams {
+                                    start_x,
+                                    start_y,
+                                    first_x: fx,
+                                    first_y: fy,
+                                    last_x: lx,
+                                    last_y: ly,
+                                    bit_depth: BitDepth::Ten,
+                                    ..full_pel_params(interp, size, size, 0, 0, w as i32, h as i32)
+                                };
+                                reference_subpel_compound(texture, w, h, &params)
+                            });
+                        let [row, col] =
+                            [(phase as usize / 16) * size, (phase as usize % 16) * size];
+                        let at = row * stride + col;
+                        for (index, (&a, &b)) in pred0.iter().zip(&pred1).enumerate() {
+                            want[at + index / size * stride + index % size] =
+                                super::super::block::blend(a, b, forward.into(), 1023) as u16;
+                        }
+                        let mut placed = vec![0u16; size * size];
+                        let weights = (forward, BitDepth::Ten);
+                        assert!(subpel_compound_cell(
+                            [&view, &view],
+                            interp,
+                            size,
+                            placements,
+                            weights,
+                            &mut placed,
+                            size
+                        ));
+                        let label = format!("{w} {interp:?} {size} {forward} phase {phase}");
+                        for (index, &sample) in placed.iter().enumerate() {
+                            assert_eq!(
+                                sample,
+                                want[at + index / size * stride + index % size],
+                                "placed {label}"
+                            );
+                        }
+                        assert!(program.push([row, col], placements));
+                        if program.len() == 256 {
+                            let written = subpel_compound_cells(
+                                [Some((&[view, view], &mut got[..], stride)), None],
+                                interp,
+                                size,
+                                &mut program,
+                                weights,
+                            );
+                            assert_eq!(written[0], [u64::MAX; 4], "{label}");
+                            program.clear();
+                        }
+                    }
+                    assert_eq!(got, want, "program {w} {interp:?} {size} {forward}");
                 }
             }
         }

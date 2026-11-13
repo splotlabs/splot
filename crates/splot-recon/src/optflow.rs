@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use fearless_simd::{i16x8, i16x16, i32x4, i32x8, mask16x8, prelude::*, u16x8, u64x2};
+use fearless_simd::{i16x8, i16x16, i32x8, mask16x8, prelude::*, u16x8};
 
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2_signed_i32;
 use crate::{BitDepth, ReconError, Result};
+
+#[cfg(target_arch = "x86_64")]
+mod x86_sums;
+#[cfg(target_arch = "x86_64")]
+use x86_sums::{rows_8x8_sums, unit_8x8, unit_16x16_lane_sums};
 
 const GRADIENT_UNIT: usize = 16;
 const MAX_LS_BITS: u32 = 26;
@@ -431,6 +436,7 @@ pub fn optflow_unit_8x8_u8(
 
 /// [`optflow_unit_8x8_u8`] of its eight-byte rows and reduced `distances`:
 /// the SAD from the `i16` differences, then the sums of [`rows_8x8_sums`].
+#[cfg(not(target_arch = "x86_64"))]
 #[inline]
 fn unit_8x8<S: Simd>(
     simd: S,
@@ -446,7 +452,8 @@ fn unit_8x8<S: Simd>(
             .iter()
             .zip(lanes.as_chunks_mut::<2>().0)
         {
-            let (low, high) = simd.widen_u8x16(u64x2::load_array_ref(simd, pair).bitcast());
+            let (low, high) =
+                simd.widen_u8x16(fearless_simd::u64x2::load_array_ref(simd, pair).bitcast());
             *lanes = [low.bitcast(), high.bitcast()];
         }
         lanes
@@ -967,9 +974,9 @@ fn plane_rows_8x8<S: Simd>(simd: S, plane: &[i16; 64]) -> [i16x8<S>; 8] {
 }
 
 /// The lane sums of the top and bottom halves of an 8x8 unit held in lanes,
-/// one row per call so that every row's clamped neighbours are constants.
-/// x86 pairs rows for [`accumulate_unit_sums`]; other targets widen each
-/// row's products into one lane per column (`smlal`).
+/// one row per call so that every row's clamped neighbours are constants,
+/// each row's products widened into one lane per column (`smlal`).
+#[cfg(not(target_arch = "x86_64"))]
 #[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn rows_8x8_sums<S: Simd>(
@@ -988,18 +995,6 @@ fn rows_8x8_sums<S: Simd>(
         row_8x8_gradients::<S, 7>(weighted),
     ];
     let mut halves = [[i32x8::splat(simd, 0); 5]; 2];
-    if cfg!(target_arch = "x86_64") {
-        for pair in 0..4 {
-            let (top, bottom) = (gradients[2 * pair], gradients[2 * pair + 1]);
-            accumulate_unit_sums(
-                &mut halves[pair / 2],
-                top.0.combine(bottom.0),
-                top.1.combine(bottom.1),
-                difference[2 * pair].combine(difference[2 * pair + 1]),
-            );
-        }
-        return halves;
-    }
     let accumulate =
         |sums: &mut [i32x8<S>; 5], rows: &[(i16x8<S>, i16x8<S>)], difference: &[i16x8<S>]| {
             for (&(u, v), &w) in rows.iter().zip(difference) {
@@ -1062,6 +1057,7 @@ fn column_halves<S: Simd>(lanes: i32x8<S>) -> [i32; 2] {
 
 /// The horizontal and vertical gradients of one row of an 8x8 unit; a doubled
 /// edge tap rounds by 6 bits instead of doubling before 7.
+#[cfg(not(target_arch = "x86_64"))]
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn row_8x8_gradients<S: Simd, const ROW: usize>(rows: &[i16x8<S>; 8]) -> (i16x8<S>, i16x8<S>) {
@@ -1106,6 +1102,7 @@ fn unit_16x16_sums(weighted: &[i16; 256], difference: &[i16; 256]) -> [[i32; 5];
 /// [`unit_16x16_sums`] with whole 16-lane rows: each 8x8 unit accumulates
 /// the products of its half-row in its own `i32x4` lanes, with no pairwise
 /// add.
+#[cfg(not(target_arch = "x86_64"))]
 #[inline]
 fn unit_16x16_lane_sums<S: Simd>(
     simd: S,
@@ -1115,7 +1112,7 @@ fn unit_16x16_lane_sums<S: Simd>(
     let (rows, _) = weighted.as_chunks::<16>();
     let (diff_rows, _) = difference.as_chunks::<16>();
     let half_sums = |half: core::ops::Range<usize>| {
-        let mut sums = [[i32x4::splat(simd, 0); 2]; 5];
+        let mut sums = [[fearless_simd::i32x4::splat(simd, 0); 2]; 5];
         for row in half {
             let (u, v) = gradient_row(simd, rows, row);
             let w = i16x16::load_array_ref(simd, &diff_rows[row]);
@@ -1148,7 +1145,7 @@ fn unit_16x16_lane_sums<S: Simd>(
 
 /// The horizontal and vertical § 7.13.3.9 gradients of `row` in one gradient
 /// unit of `rows`, with its clamped and doubled edges, in `i16` halves as
-/// [`row_8x8_gradients`] derives them: `weighted` has the span bound of
+/// the 8x8 unit derives them: `weighted` has the span bound of
 /// [`unit_8x8_sums`].
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]

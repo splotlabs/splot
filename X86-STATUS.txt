@@ -4,6 +4,196 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 12 (CfL and MHCCP; shared lines changed; thread-scaling probe):
+1. SHARED CODE CHANGED, please run the aarch64 hashes: `mhccp.rs` (statistics in masked
+   8-lane groups, `add_sample`/`add_run` deleted, predictor in one loop for widths that are
+   a multiple of 8, elimination in three const-generic steps) and
+   `prediction/chroma/cfl.rs` (the MHCCP luma capture skips the block rows as a range).
+   aarch64 clippy `-D warnings` passes here. The AVX2 `luma_420_rows` change is x86-only.
+2. Results, instructions, 1 thread, first 100 frames: riverbed -0.5%, ToddlerFountain
+   -0.5%, RitualDance qp160 -0.1%, other streams within +-0.03%. Classes on riverbed
+   (M per 30 frames, dav2d in brackets): MHCCP 167 -> 143 (71.5), CfL 154 -> 142 (14.7).
+3. Left, shared: `luma_420` could write u16 `>> 3` straight into `CflRef[0]` (deletes the
+   q3 scratch and a copy, about 15 M on riverbed; needs the AVX2 and NEON stores together);
+   linear CfL `reconstruct_pair` has about 847 instructions of fixed code per call
+   (left gathers, `chroma_models`, closure setup in `with_intra_chroma_frames`).
+4. Thread scaling probe (crowd_run, MountainBike, riverbed at 8 and 20 threads, noisy
+   machine): no spin or wait symbol in the profile; sampled instructions at 8 threads are
+   3.7% above 1 thread. CPU time is 1.3-1.8x dav2d but wall time follows the 1-thread
+   ratio (crowd_run equal to dav2d). No scheduler request from x86 for now.
+
+2026-11-13, push 11 (AVX2 8-bit transform, round 2; no shared line changed):
+1. Kept: small kernels (4- and 8-wide) add the rows in order with one split check per row
+   pair, row kind fixed per call (DCT_DCT 8x8 343 -> 287 instructions per call); two-level
+   even/odd split for 32-point DCT rows (24 `pmaddwd` per row, was 32). Whole decode -0.04%
+   to -0.08% on 8-bit. The x86 transform stage is still 2.0-2.6x dav2d.
+2. Rejected, measured slower: IDTX in i16 lanes (8x8 311 -> 361 per call); the small-kernel
+   index resolved in `InverseTransformAdd::of` (+0.02% to +0.03% whole decode).
+3. Left: the `transform` glue costs about 150 instructions per call (0x100-byte frame,
+   three indirect jumps, tuple arguments spilled).
+
+2026-11-13, push 10 (round 2: loop restoration and intra prediction; shared lines changed):
+1. SHARED CODE CHANGED, please run the aarch64 hashes (each commit body has an
+   `x86-shared:` line; aarch64 clippy `-D warnings` passes here):
+   - `lr_madd.rs` `filter_run_groups`: groups outer, rows inner; rows cut to the run one
+     time, cell weights built one time per group. The NEON `by_lane` path did not change.
+   - `pc_wiener.rs`: `pooled_feature_row`, `pooled_features_lanes` (fixed-size rows and
+     plane entries), `<u8 as ClassifiedCell>::finish_lanes` (class store).
+   - `intra_dip.rs`: the resample writes band by band with a const width; `DipGrid`,
+     `coarse_grid_rows`, `interpolate_lanes`, `GRID_POINT_INDEX` are deleted.
+   - `intra_ibp_dc.rs`: `apply_intra_ibp_dc_rect` is now `predict_intra_ibp_dc_rect_into`
+     (it also writes the DC). One call in your file `prediction/inter/block/interintra.rs`
+     (the DC arm) is renamed. Also `intra_dc_math.rs` (`store32`, `load_lanes`,
+     `store_lanes`), `mhccp.rs` (`MhccpPredictor::row` rounding), `sink.rs`,
+     `first_block.rs` (`MAX_DIP_EDGE_SAMPLES` 160 -> 80), the intra fuzz target.
+2. Results, instructions, 1 thread, first 100 frames, against the last push: riverbed
+   -1.8%, crowd_run -1.0%, MountainBike -0.7%, RitualDance qp160 (10-bit) -1.6%.
+   Stage, 8-bit, splot/dav2d: restoration filters 1.47-1.80x -> 1.34-1.53x; intra stage
+   riverbed -14%, MountainBike -4%.
+3. REQUESTS, shared decode side (measured on x86, M instructions per 30 frames, riverbed):
+   (a) the u8 -> u16 LR window copy and the u16 -> u8 restage (`LrSourceRows::resolve` 39,
+   `LrWindowGeometry::write` 33, `EightBitLuma::stage` 49): a u8 window removes about 1.2%
+   of the decode. (b) `derive_wienerns_lr_tx_skip_grid_reusing` 20-62: store the skip at
+   block write time. (c) `IntraBlockFrame::left_column`: 8 instructions per sample with a
+   bounds check per sample, for all intra modes (`step_by` was slower). (d) intra glue per
+   block: DIP driver 460, smooth 240, IBP-DC driver 307 instructions.
+4. Next on x86: transform small kernels (agent running), then CfL/MHCCP, an 8-bit
+   PC-Wiener on `pmaddubsw`, and the thread-scaling task.
+
+2026-11-13, push 9 (deblock delete-or-keep, x86 state after the first kernel round):
+1. T6 answers for deblock, measured on x86 against `portable_chunk` (edge-filter
+   instructions): u16 vertical: portable -11% -> the AVX2 u16 vertical chunk kernel is
+   DELETED (x86 uses `portable_chunk` there now). u8 vertical: portable +53%; u8
+   horizontal: portable +129%; u16 horizontal: portable +27% -> these AVX2 kernels stay.
+   The `still` early exit was measured in the AVX2 kernels and rejected (+4% to +21%: a
+   chunk of 16 or 32 lines is almost never still). No shared line changed.
+   Note: the AVX2 kernels do nothing when the row stride is above 2^24 (`MAX_STRIDE`), as
+   they do for a window out of range. No AV2 frame has such a stride.
+2. REQUESTS, shared decode side: (a) a bitmask of non-empty columns per chunk row, built in
+   `PassEdges`, would remove the `pack` of empty columns in the vertical band (37% of the
+   visits on MountainBike; about 2-3% of the 8-bit vertical edge filters). (b)
+   `PassEdges::apply::<u8, 0>` costs 19 M on MountainBike (30 frames).
+3. STATE OF X86 after the first round on each x86-owned kernel of the T3 table (1 thread,
+   instructions, 88 streams, head 6f4b9005, dav2d 9b5cef22): against main 1.153x geomean,
+   the branch is better on 88 of 88 (it was 1.031x and worse on 38); against dav2d 1.559x
+   geomean (was 1.394x); 8-bit 1.078x (was 0.980x), 10-bit 4.43x (was 3.77x); the branch
+   loses to dav2d on 32 streams (was 45), worst 0.75x (was 0.71x): riverbed, MountainBike,
+   Shaky_Quad, Artistic_Concert, Shaky_Walk, Sniper, Motorcycle, TreesAndGrass, WITCHER3,
+   crowd_run. These numbers contain your shared-code commits too.
+4. Next on x86: a new stage table against dav2d, then a second round (transform small
+   kernels, GDF remainder, warp, 8-bit cells) and T10 (thread scaling).
+
+2026-11-13, push 8 (secondary-transform flow fork closed, AVX2 transform kept):
+1. SHARED, flow only (commit "refactor(recon): one secondary-transform flow for wide 8-bit
+   blocks"). x86-shared: crates/splot-recon/src/inverse_transform_2d_8bit.rs
+   (`add_secondary`). One flow on all architectures now: width >= 16 and the block fits ->
+   `secondary_inverse_transform_quant_rows8` -> the architecture kernel (AVX2 or NEON at
+   8 bits), else the generic `run_add`. AVX2 declines an identity row inside its cfg
+   block. No instruction change on x86. Please run the aarch64 hashes. This was the last
+   known per-architecture flow fork (T7).
+2. T6 answer: `inverse_transform_2d_8bit/avx2.rs` is KEPT. The generic kernel at 8-bit on
+   x86 doubles the transform stage (MountainBike 476 M -> 973 M) and costs +0.6% to +7.1%
+   of the decode (riverbed +7.1%).
+3. Four AVX2 transform changes were measured and rejected (direct column add at widths 16
+   and 32: riverbed +0.6%; one range check per row; a fused identity kernel with a
+   zero-chunk skip; a dequant skip of all-zero chunks). The stage stays at 1.6x to 2.7x
+   dav2d per call on x86.
+4. REQUEST, shared code: the IST path (`secondary_transform::transform_into` 43 M,
+   `dequantized_inputs` 35 M, `add_secondary_fused` 27.5 M,
+   `resolve_secondary_inverse_transform` 13 M on MountainBike, 30 frames) is about 120 M
+   against 64 M for dav2d `stx8`. A leaner path is worth about -0.4% of the MountainBike
+   decode, and x86 cannot reach 1.3x dav2d in the transform stage without it.
+
+2026-11-13, push 7 (16-bit AVX2 program kernel, clamped cells, bilinear puts):
+1. x86 files only (`sixteen_bit/avx2.rs`, new `sixteen_bit/avx2/cells.rs`, 16-bit tests).
+   x86 now has a `program` and a `compound_windows` kernel for u16, so the 16-bit cell
+   flow is the same as on aarch64. 10-bit inter stage against dav2d on x86: RitualDance
+   1.01x, Meridian_talk 0.94x (1.56x and 1.78x at the start of the x86 work).
+2. Your note on the cell-window idea is read. I will split the x86 cell cost by path
+   (`run_program` / `cell_by_cell`, in place / clamped, 8-bit and 16-bit) in the next
+   measurement round and tell you if the double count is in the shared
+   `block::compound` -> `compound_emulated` hand-off.
+3. New tests in `subpel_mc/tests/byte_lanes.rs` (`sixteen_bit_register_cells_match_the_oracle`)
+   and `sixteen_bit/tests.rs` run on the NEON kernels too: run the recon tests there.
+4. In work on x86 now: the AVX2 inverse transform (with the `add_secondary` fork). Next:
+   the deblock delete-or-keep experiment, TIP prediction, then a new T2 / T3 run.
+
+2026-11-13, push 6 (x86 optical-flow sums and warp taps):
+1. x86 kernel bodies only (`optflow.rs` x86 arms, new `optflow/x86_sums.rs`,
+   `warp_prediction/eight_bit.rs`). No shared line changed.
+2. T6 answers, measured on x86: the generic arms are slower, so the x86 arms stay.
+   Optical-flow 8x8 unit 747 (generic) against 363 instructions per call; 8-bit warp
+   980 M against 576 M (MountainBike); 10-bit warp 490 M against 307 M (RitualDance).
+3. Optical flow is still 2.1x to 3.3x dav2d on x86 and the kernels are not the cause now.
+   The excess is scalar glue in SHARED decoder code. REQUESTS (your files; crowd_run, 40
+   frames, estimates by the x86 agent):
+   (a) `prediction/inter/mc/optflow.rs`: `predict_motion_grid_compound_average_into`
+       (212 M own, 1018 M inclusive, 1851 per call), `run_cell_program` (108 M),
+       `reference_area_bounds` (906 k calls out of line, 49 M). Each cell builds its
+       placements, bounds and the full `SubpelPredictParams` again for each reference.
+       One compact cell list per block (affine grid: origin + column * unit; bounds from
+       the integer MV) and one kernel call: about -250 M, -1.3% of the decode.
+   (b) `derive_optflow_mv_deltas_into` for widths above 16 goes through stored gradient
+       planes (gradients 71 M + weighted planes 30 M + 48 M). The units are 16x16 tiles:
+       each tile can use the fused 16x16 kernel. About -60 M to -80 M.
+   (c) TIP refine glue: `initial_luma_prediction` 69 M, `compound_motion_grid` 57 M,
+       `LumaReference::pair` 37 M, the row-gather closure 34 M, `stored_mvs` 23 M,
+       `take_motion_cells` 19 M (setup and allocation per unit). More than -100 M.
+   (d) One line: the `rows[0] == rows[1]` check at the entry of `optflow_unit_8x8_u8`
+       compiles to a 64-byte `bcmp` call; the kernel gives the same result for equal
+       rows. About -9 M.
+   (e) `ext_warp` (shared generic): one 16-sample load + slide in place of two 8-sample
+       loads per row; with the decoder bounds code a 4x4 unit costs about 721
+       instructions against about 97 in dav2d. About -40 M on MountainBike.
+4. Asked the user (new `unsafe`, not done): a `vpgatherdq` tap fetch in the AVX2 warp
+   `sums` (1391 -> about 900 instructions per section, estimate).
+
+2026-11-13, push 5 (8-bit AVX2 strips on `rows.rs`):
+1. `eight_bit/avx2.rs` now runs its strips on `rows::strips` and `rows::pairs`. x86 files
+   only. The three largest costs that remain are in the shared row walkers. REQUESTS for
+   `subpel_mc/rows.rs` (your file; measured on x86, they should help NEON too):
+   (a) `strips`: the `source.zip(targets)` iterator computes each row address again with
+       two `imul` per row (index-based zip of two chunk iterators). Two cursors that step
+       by the stride save 4 to 6 instructions per row (about 0.3 per sample at 16 wide).
+   (b) `pairs`: it shifts the ring with `from_fn` (one register move per tap per pair) and
+       has about 25 instructions of iterator and check overhead per row pair. A ring
+       unrolled by its period, as in `strips`, and one bound check per block would save
+       1 to 1.5 instructions per sample in the 8-wide and 4-wide classes.
+   (c) `strips` with a vertical pass on byte rows: an interleaved-pair ring (one `unpack`
+       per row in place of one per tap) would bring the V 16+ class from 1.8-2.0 to about
+       1.3 instructions per sample. It needs a ring item that `line` can build from the
+       row before it (an API change).
+2. Per class on x86 now, 16 wide and more, instructions per sample, splot / dav2d: prep HV
+   8-tap 3.5-4.3 / 2.9; put HV 8-tap 3.4-4.4 / 2.9; average HV 8-tap 4.4-5.6; prep V 8-tap
+   1.8-2.0 / 1.1; prep H 8-tap 1.3-1.6 / 1.0; put HV 2-tap 2.2 / 0.8.
+3. A pair put kernel for x86 was measured and rejected (at most 0.05% on crowd_run).
+4. I will re-measure your coefficient-parse and mode-info commits with the T3 method when
+   the x86 kernel agents are done (they use the CPU now), and check `finish_inter_leaf`
+   for a `memmove` at the `LeafSlot` push after your next push.
+5. In work on x86 now: 16-bit program kernel and clamped cells; optical flow and warp;
+   next the AVX2 inverse transform (with the `add_secondary` fork) and the deblock
+   delete-or-keep experiment.
+
+2026-11-13, push 4 (10-bit AVX2 MC on `rows.rs`, deadlock confirmation):
+1. Your deadlock fix is CONFIRMED on x86 (head cd939a1c): BlueSky qp210 and FourPeople
+   qp210 complete 5 of 5 times at 16, 17, 20 threads and at `--threads=20 --frame-delay 16`;
+   hashes equal splot-main at 1, 16, 20 threads; `tip_output_run_does_not_exhaust_the_frame_store`
+   passes. Open problem 1 is closed.
+2. `sixteen_bit/avx2.rs` now runs on `rows::strips` and `rows::pairs` (your port plan), with
+   the register ring of `rows.rs` for the vertical pass and register compound cells. x86
+   file only; no shared line changed. Two requests for shared code (not made by me):
+   (a) `subpel_mc.rs`: the `cfg_attr(..., allow(dead_code))` on `mod rows` is out of date,
+       x86 uses the module now. Remove it or make it narrow.
+   (b) `rows::strips` returns without a write when `stride < reach`. A kernel with a reach
+       of 17 on a 16-wide plane writes nothing and gives no error. A debug assertion or an
+       error return would make this safe.
+   After the merge of your unified fix (`retire_idle`, one lock per row; head 6b82ae49):
+   the two streams complete at 16, 17, 20 threads and frame delay 16; hashes equal at 1,
+   5, 20 threads on 8 streams (one with 4x2 tiles); stress 800 decodes at 2, 3, 4, 20
+   threads: 0 failures, 0 timeouts.
+3. In work on x86 now: 8-bit AVX2 strips; next the 16-bit program kernel and clamped cells,
+   then optical flow, warp and TIP prediction (x86 kernel arms).
+
 2026-11-13, push 3 (first x86 kernel gains):
 0. Your deadlock fix (d12ee59a, `retire_idle`) is merged. It is the same idea as my fix
    of push 2. I took your version of `pipeline/mod.rs` and `pipeline/frame_tasks.rs` in
@@ -138,6 +328,55 @@ Head 6421575e against ab8d3d3e (1 thread, instructions, main / branch): 1.031x a
 ==========================================================================================
 COMMITS ON THIS BRANCH
 ==========================================================================================
+perf(decode): CfL 4:2:0 luma rows store whole 16-lane groups; perf(recon): MHCCP statistics
+and prediction in whole 8-lane groups; perf(decode): MHCCP luma capture skips the block
+rows as a range. Instructions, 1 thread, first 100 frames: riverbed -0.5%, RitualDance
+qp160 -0.1%, crowd_run equal. Checks: subset hashes at 1, 12 threads (agent: 89/89 at 1
+thread, recon and decode tests, aarch64 clippy, `cargo xtask ci --fast`).
+perf(recon): AVX2 small transforms add rows in order, row kind fixed per call; perf(recon):
+two-level even/odd split for AVX2 32-point DCT rows. Instructions, 1 thread, first 100
+frames: EuroTruck qp110 -0.08%, MountainBike -0.07%, 10-bit equal. Checks: subset hashes
+at 1, 12 threads (agent: 89/89 at 1 thread, recon tests, `cargo xtask ci --fast`).
+perf(recon): cut lr_madd runs and x86 chroma rows to length once; perf(recon): one length
+check per PC-Wiener pooled chunk and class group; perf(recon): DIP resample band by band
+with fixed-size row stores; perf(recon): DC and IBP-DC prediction in one pass; perf(recon):
+MHCCP sign-symmetric rounding in three lane operations. Instructions, 1 thread, first 100
+frames: riverbed -1.8%, crowd_run -1.0%, MountainBike -0.7%, RitualDance qp160 -1.6%.
+Checks: subset hashes at 1, 5, 12 threads (agents: 89/89 at 1 thread), recon and decode
+tests, aarch64 clippy, `cargo xtask ci --fast`.
+refactor(recon): delete the AVX2 u16 vertical deblock chunk kernel; perf(recon): AVX2
+deblock rows in place with bounded row offsets. Instructions, 1 thread, first 100 frames:
+RitualDance qp160 -0.4%, riverbed -0.3%, MountainBike -0.2% (with your parse round 2 of
+the same merge). 8-bit edge filters against dav2d 1.46x -> 1.37x. Checks: subset hashes
+at 1, 5, 12 threads (agent: 89/89 at 1 thread), recon tests 760 pass, `cargo xtask ci --fast`.
+refactor(recon): one secondary-transform flow for wide 8-bit blocks. No instruction
+change. Checks: subset hashes at 1, 12 threads, recon tests, `cargo xtask ci --fast`.
+perf(recon): 16-bit AVX2 program kernel and clamped register cells; 16-bit AVX2 cells
+read in-place rows without per-row checks; 16-bit AVX2 BILINEAR puts in 16-column u16
+strips; move the 16-bit AVX2 register cells to a submodule. Instructions, 1 thread, first
+100 frames: Meridian_talk -6.2%, RitualDance qp160 -3.8%, TunnelFlag qp160 -4.2%, 8-bit
+0.0%. Cycles: RitualDance -4.5%, Meridian_talk -5.8%. Checks: subset hashes at 1, 5, 12
+threads (agent: 89/89 at 1 thread), recon tests 759 pass, `cargo xtask ci --fast`.
+perf(recon): x86 optical-flow 8x8 sums on paired rows; x86 warp taps with one row key and
+fixed shear rows. Instructions, 1 thread, first 100 frames: old_town_cross qp160 -1.2%,
+crowd_run -0.7%, Meridian_talk -0.5%, MountainBike -0.3%. Optical-flow stage against dav2d
+2.3-3.5x -> 2.1-3.3x; warp 1.64x -> 1.55x (MountainBike). Checks: subset hashes at 1, 5,
+12 threads (agent: 89/89 at 1 thread), recon tests 757 pass, `cargo xtask ci --fast`.
+perf(recon): AVX2 8-bit strips on the shared row loops; one-call AVX2 compound above 64
+samples; inline the AVX2 cell average, one bound for clamped rows; fixed-size row copies
+in the AVX2 pair stores; delete the unused AVX2 stage length. Instructions, 1 thread,
+first 100 frames (with your parse commits of the same merge): crowd_run -1.6%,
+old_town_cross qp160 -2.0%, MountainBike -1.0%, RitualDance qp160 -0.1%. Strips alone
+(agent, before the merge): old_town_cross -1.8%, crowd_run -1.2%, EuroTruck -0.9%,
+MountainBike -0.5%, 10-bit 0.0%. Checks: subset hashes at 1, 5, 12 threads (agent: 89/89
+at 1 thread), recon tests 757 pass, `cargo xtask ci --fast`.
+perf(recon): 10-bit AVX2 MC on the shared row walkers with a register ring, and
+perf(recon): 16-bit AVX2 register compound cells. Instructions, 1 thread, first 100
+frames: Meridian_talk -14.2%, RitualDance qp160 -7.1%, TunnelFlag qp160 -5.9%, test.ivf
+-3.7%, ToddlerFountain -3.0%, 8-bit 0.0%. Cycles: RitualDance -5.9%, Meridian_talk -6.5%.
+10-bit inter stage against dav2d: RitualDance 1.24x -> 1.08x, Meridian_talk 1.22x -> 1.02x.
+Checks: subset hashes at 1, 5, 12 threads (agent: 89/89 at 1 thread), recon tests 757 pass,
+`cargo xtask ci --fast`, aarch64 clippy.
 perf(decode): branch-free GDF rows on x86_64. Instructions, 1 thread, first 100 frames:
 MountainBike -2.7%, riverbed -3.3%, RitualDance qp160 -1.9%, Wikipedia -0.1%. GDF stage
 against dav2d (8-bit) 1.32-1.54x -> 1.14-1.37x. Cycles: MountainBike -2.5%. Checks: subset

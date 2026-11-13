@@ -941,36 +941,16 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
 ) {
     let reads_luma = params.reads_luma();
     #[cfg(target_arch = "x86_64")]
-    let wide = Level::baseline().as_avx2().zip(T::u16_slice(chroma));
-    #[cfg(target_arch = "x86_64")]
-    let words: [i32; 9] = core::array::from_fn(|pair| {
-        let [low, high] = match pair {
-            0..3 => [
-                params.coeffs[WIENER_NS_CONFIG_UV_PAIRS[2 * pair].2],
-                params.coeffs[WIENER_NS_CONFIG_UV_PAIRS[2 * pair + 1].2],
-            ],
-            _ => [
-                params.coeffs[2 * (pair - 3) + WIENER_NS_CHROMA_COEFF_SLOTS],
-                params.coeffs[2 * (pair - 3) + 1 + WIENER_NS_CHROMA_COEFF_SLOTS],
-            ],
-        };
-        i32::from(low as u16) | (i32::from(high) << 16)
-    });
-    #[cfg(target_arch = "x86_64")]
-    let vectors = wide.map(|(token, _)| avx2::pair_vectors(token, &words));
-    #[cfg(target_arch = "x86_64")]
-    let narrow_done = match (wide, vectors.as_ref()) {
-        (Some((token, chroma)), Some(vectors)) if (8..16).contains(&params.width) => {
-            filter_chroma_narrow(
-                token,
-                output,
-                params,
-                (chroma, chroma_stride),
-                (luma_ds, luma_stride),
-                vectors,
-                max_sample,
-            )
-        }
+    let narrow_done = match Level::baseline().as_avx2().zip(T::u16_slice(chroma)) {
+        Some((token, chroma)) if (8..16).contains(&params.width) => filter_chroma_narrow(
+            token,
+            output,
+            params,
+            (chroma, chroma_stride),
+            (luma_ds, luma_stride),
+            &avx2::pair_vectors(token, params.coeffs),
+            max_sample,
+        ),
         _ => false,
     };
     #[cfg(not(target_arch = "x86_64"))]
@@ -1003,20 +983,6 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
         let mut c = 0;
         while c < params.width {
             c = c.min(params.width - 16);
-            #[cfg(target_arch = "x86_64")]
-            if let (Some((token, chroma)), Some(vectors)) = (wide, vectors.as_ref())
-                && let Some(chroma) = avx2::window(chroma, r * chroma_stride + c, chroma_stride)
-                && let Some(luma) = if reads_luma {
-                    avx2::window(luma_ds, r * luma_stride + c, luma_stride)
-                } else {
-                    Some(chroma)
-                }
-            {
-                let values = avx2::filter16(token, &chroma, &luma, vectors, reads_luma, max_sample);
-                O::write_lanes::<16>(&mut output[c..c + 16], values);
-                c += 16;
-                continue;
-            }
             let chroma_base = r * chroma_stride + c;
             let load_chroma = |dy: isize, dx: isize| -> i16x16<S> {
                 chroma
@@ -1115,6 +1081,17 @@ fn filter_chroma_block<O: ChromaOutputSample, T: ReconSample>(
             let output = (output, params.output_stride);
             return neon::filter_block_bytes(t, output, size, chroma, luma, weights, max_sample);
         }
+    }
+    #[cfg(target_arch = "x86_64")]
+    if let (Some(t), Some(samples)) = (Level::baseline().as_avx2(), T::u16_slice(chroma.0)) {
+        return avx2::filter_block(
+            t,
+            (output, params.output_stride),
+            (params.width, params.height),
+            ((samples, chroma.1), luma),
+            (&avx2::pair_vectors(t, params.coeffs), params.reads_luma()),
+            max_sample,
+        );
     }
     let _ = (output, params, chroma, luma, max_sample);
     false
@@ -2178,23 +2155,86 @@ mod avx2 {
     use fearless_simd::{Avx2, SimdBase, SimdInto, u16x8, u16x16};
 
     use super::{
-        WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CONFIG_UV, WIENER_NS_CONFIG_UV_PAIRS,
-        WIENER_NS_PREC_BITS,
+        WIENER_NS_CHROMA_COEFF_SLOTS, WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS,
+        WIENER_NS_CONFIG_UV, WIENER_NS_CONFIG_UV_PAIRS, WIENER_NS_PREC_BITS,
     };
 
     const R: usize = WIENER_NS_CHROMA_TAP_RADIUS;
     const REACH: usize = 16 + 2 * R;
 
+    /// One plane's samples and stride.
+    type Plane<'a> = (&'a [u16], usize);
+
     /// The padded rows of one 16-sample group: row `R + dy` from column
     /// `R + dx` holds the taps at offset `(dy, dx)`.
     pub(super) type Window<'a> = [&'a [u16; REACH]; 2 * R + 1];
 
-    /// The [`Window`] whose first sample is `samples[base]`, rows `stride`
-    /// apart.
+    /// The `2 * R + 1` rows of `plane` from row `r`, each `width + 2 * R`
+    /// long, so one length check covers a group in all of them.
     #[inline]
-    pub(super) fn window(samples: &[u16], base: usize, stride: usize) -> Option<Window<'_>> {
-        let row = |dy: usize| samples.get(base + dy * stride..)?.first_chunk::<REACH>();
+    fn rows((samples, stride): Plane<'_>, r: usize, width: usize) -> Option<[&[u16]; 5]> {
+        let mut rows = [&[][..]; 2 * R + 1];
+        for (k, row) in rows.iter_mut().enumerate() {
+            let start = (r + k) * stride;
+            *row = samples.get(start..start + width + 2 * R)?;
+        }
+        Some(rows)
+    }
+
+    /// The [`Window`] from column `c` of `rows`.
+    #[inline]
+    fn group<'a>(rows: &[&'a [u16]; 5], c: usize) -> Option<Window<'a>> {
+        let row = |k: usize| rows[k].get(c..)?.first_chunk::<REACH>();
         Some([row(0)?, row(1)?, row(2)?, row(3)?, row(4)?])
+    }
+
+    /// `filter_chroma_rows` over a block at least 16 samples wide, the last
+    /// group of a row overlapping the one before it; returns `false` when a
+    /// window or the output is short.
+    pub(super) fn filter_block<O: super::ChromaOutputSample>(
+        t: Avx2,
+        (output, output_stride): (&mut [O], usize),
+        (width, height): (usize, usize),
+        (chroma, luma): (Plane<'_>, Plane<'_>),
+        (pairs, reads_luma): (&PairVectors, bool),
+        max_sample: u16,
+    ) -> bool {
+        if width < 16 {
+            return false;
+        }
+        for r in 0..height {
+            let start = r * output_stride;
+            let (Some(target), Some(chroma_rows)) =
+                (output.get_mut(start..start + width), rows(chroma, r, width))
+            else {
+                return false;
+            };
+            let luma_rows = if reads_luma {
+                match rows(luma, r, width) {
+                    Some(rows) => rows,
+                    None => return false,
+                }
+            } else {
+                chroma_rows
+            };
+            let mut c = 0;
+            while c < width {
+                c = c.min(width - 16);
+                let (Some(chroma), Some(luma), Some(slot)) = (
+                    group(&chroma_rows, c),
+                    group(&luma_rows, c),
+                    target.get_mut(c..).and_then(<[O]>::first_chunk_mut::<16>),
+                ) else {
+                    return false;
+                };
+                O::write_lanes::<16>(
+                    slot,
+                    filter16(t, &chroma, &luma, pairs, reads_luma, max_sample),
+                );
+                c += 16;
+            }
+        }
+        true
     }
 
     #[inline]
@@ -2211,8 +2251,24 @@ mod avx2 {
 
     fearless_simd::kernel!(
         #[inline]
-        pub(super) fn pair_vectors(t: Avx2, words: &[i32; 9]) -> PairVectors {
+        pub(super) fn pair_vectors(
+            t: Avx2,
+            coeffs: &[i16; WIENER_NS_CHROMA_COEFFS],
+        ) -> PairVectors {
             let _ = t;
+            let words: [i32; 9] = core::array::from_fn(|pair| {
+                let [low, high] = match pair {
+                    0..3 => [
+                        coeffs[WIENER_NS_CONFIG_UV_PAIRS[2 * pair].2],
+                        coeffs[WIENER_NS_CONFIG_UV_PAIRS[2 * pair + 1].2],
+                    ],
+                    _ => [
+                        coeffs[2 * (pair - 3) + WIENER_NS_CHROMA_COEFF_SLOTS],
+                        coeffs[2 * (pair - 3) + 1 + WIENER_NS_CHROMA_COEFF_SLOTS],
+                    ],
+                };
+                i32::from(low as u16) | (i32::from(high) << 16)
+            });
             PairVectors {
                 weights: words.map(|word| _mm256_set1_epi32(word)),
             }

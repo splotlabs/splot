@@ -21,97 +21,33 @@
 use core::arch::x86_64::*;
 
 use fearless_simd::{Avx2, SimdBase as _, SimdInto as _, i32x4, i32x8};
-use splot_tables::tables::transform_1d::{
-    ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
-    DCT_KERNEL32, DDTX_KERNEL8, DDTX_KERNEL16, FDST_KERNEL4, FDST_KERNEL8, FDST_KERNEL16,
-};
+mod tables;
 
 use super::{FlatDequant, InverseTransformAdd};
 use crate::inverse_transform::InverseTransform1dType;
 use crate::inverse_transform_2d::InverseTransform2dDim;
-
-/// Entry `[q][i]` packs `kernel[2q][i]` (low half) and `kernel[2q + 1][i]`
-/// (high half), with the output index reversed for `FDDT`.
-const fn pair_kernel<const N: usize, const H: usize>(
-    kernel: &[[i32; N]; N],
-    reversed: bool,
-) -> [[u32; N]; H] {
-    assert!(2 * H == N);
-    let mut out = [[0u32; N]; H];
-    let mut q = 0;
-    while q < H {
-        let mut i = 0;
-        while i < N {
-            let column = if reversed { N - 1 - i } else { i };
-            let (low, high) = (kernel[2 * q][column], kernel[2 * q + 1][column]);
-            assert!(low == low as i16 as i32 && high == high as i16 as i32);
-            out[q][i] = (low as u16 as u32) | ((high as u16 as u32) << 16);
-            i += 1;
-        }
-        q += 1;
-    }
-    out
-}
-
-static DCT4: [[u32; 4]; 2] = pair_kernel(&DCT_KERNEL4, false);
-static ADST4: [[u32; 4]; 2] = pair_kernel(&ADST_KERNEL4, false);
-static FDST4: [[u32; 4]; 2] = pair_kernel(&FDST_KERNEL4, false);
-static DCT8: [[u32; 8]; 4] = pair_kernel(&DCT_KERNEL8, false);
-static ADST8: [[u32; 8]; 4] = pair_kernel(&ADST_KERNEL8, false);
-static FDST8: [[u32; 8]; 4] = pair_kernel(&FDST_KERNEL8, false);
-static DDTX8: [[u32; 8]; 4] = pair_kernel(&DDTX_KERNEL8, false);
-static FDDT8: [[u32; 8]; 4] = pair_kernel(&DDTX_KERNEL8, true);
-static DCT16: [[u32; 16]; 8] = pair_kernel(&DCT_KERNEL16, false);
-static ADST16: [[u32; 16]; 8] = pair_kernel(&ADST_KERNEL16, false);
-static FDST16: [[u32; 16]; 8] = pair_kernel(&FDST_KERNEL16, false);
-static DDTX16: [[u32; 16]; 8] = pair_kernel(&DDTX_KERNEL16, false);
-static FDDT16: [[u32; 16]; 8] = pair_kernel(&DDTX_KERNEL16, true);
-static DCT32: [[u32; 32]; 16] = pair_kernel(&DCT_KERNEL32, false);
-static DCT8_SPLIT: [[u32; 8]; 4] = split_pair_kernel(&DCT_KERNEL8);
-static DCT16_SPLIT: [[u32; 16]; 8] = split_pair_kernel(&DCT_KERNEL16);
-static DCT32_SPLIT: [[u32; 32]; 16] = split_pair_kernel(&DCT_KERNEL32);
-
-/// [`pair_kernel`] over the row pairs `4m + j, 4m + j + 2` (pair `2m + j`)
-/// of a split `DCT` column pass, for the first `N / 2` outputs.
-const fn split_pair_kernel<const N: usize, const H: usize>(
-    kernel: &[[i32; N]; N],
-) -> [[u32; N]; H] {
-    assert!(2 * H == N);
-    let mut out = [[0u32; N]; H];
-    let mut q = 0;
-    while q < H {
-        let a = 4 * (q / 2) + q % 2;
-        let b = a + 2;
-        let mut i = 0;
-        while i < N / 2 {
-            let (low, high) = (kernel[a][i], kernel[b][i]);
-            assert!(low == low as i16 as i32 && high == high as i16 as i32);
-            assert!(kernel[a][N - 1 - i] == low * (1 - 2 * (a % 2) as i32));
-            assert!(kernel[b][N - 1 - i] == high * (1 - 2 * (b % 2) as i32));
-            out[q][i] = (low as u16 as u32) | ((high as u16 as u32) << 16);
-            i += 1;
-        }
-        q += 1;
-    }
-    out
-}
-
-/// The `pshufb` that swaps the middle two samples of every four.
-const SPLIT_ORDER: [u8; 32] = {
-    let mut order = [0u8; 32];
-    let mut i = 0;
-    while i < 32 {
-        let sample = i % 16 / 2;
-        let swapped = match sample % 4 {
-            1 => sample + 1,
-            2 => sample - 1,
-            _ => sample,
-        };
-        order[i] = (2 * swapped + i % 2) as u8;
-        i += 1;
-    }
-    order
+use tables::{
+    ADJACENT_PAIRS, ADST4, ADST8, ADST16, DCT_PAIRS, DCT4, DCT8, DCT8_SPLIT, DCT16, DCT16_SPLIT,
+    DCT32, DCT32_EVEN, DCT32_ODD, DDTX8, DDTX16, FDDT8, FDDT16, FDST4, FDST8, FDST16, INTERLEAVE,
+    INTERLEAVE_HIGH_REVERSED, INTERLEAVE_REVERSED, ODD4, ODD8, ODD16, ODD32, SPLIT_ORDER,
+    TWO_LEVEL_ORDER, dct_pairs, pack,
 };
+
+/// The four output chunks of a two-level split `DCT32` row from its sums
+/// `EE` (with the rounding offset), `EO` and the odd halves `oa` (outputs
+/// `0..8`) and `ob` (`15..7`): chunks 1 and 3 in reversed order.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn two_level(ee: __m256i, eo: __m256i, (oa, ob): (__m256i, __m256i), round: Round) -> [__m256i; 4] {
+    let (p, m) = (_mm256_add_epi32(ee, eo), _mm256_sub_epi32(ee, eo));
+    [
+        _mm256_add_epi32(p, oa),
+        _mm256_add_epi32(m, ob),
+        _mm256_sub_epi32(m, ob),
+        _mm256_sub_epi32(p, oa),
+    ]
+    .map(|v| _mm256_sra_epi32(v, round.shift))
+}
 
 /// One pass of a fused transform: the § 7.15.2.3 identity or a § 7.15.2.1
 /// kernel at its length, with the paired kernel the scalar selection picks.
@@ -199,118 +135,6 @@ pub(super) enum Sink<'a> {
     /// The `w * h` column `Clip3` outputs.
     Residual(&'a mut [i32]),
 }
-
-const fn pack(low: i32, high: i32) -> u32 {
-    assert!(low == low as i16 as i32 && high == high as i16 as i32);
-    (low as u16 as u32) | ((high as u16 as u32) << 16)
-}
-
-/// `Dct_KernelN` odd-row pairs `4p + 1, 4p + 3` at `[p]` over outputs
-/// `0..N / 2`, checking each odd row's antisymmetry.
-const fn odd_pairs<const N: usize, const H: usize, const P: usize>(
-    kernel: &[[i32; N]; N],
-) -> [[u32; H]; P] {
-    assert!(2 * H == N && 4 * P == N);
-    let mut out = [[0u32; H]; P];
-    let mut p = 0;
-    while p < P {
-        let mut i = 0;
-        while i < H {
-            let (a, b) = (kernel[4 * p + 1], kernel[4 * p + 3]);
-            assert!(a[N - 1 - i] == -a[i] && b[N - 1 - i] == -b[i]);
-            out[p][i] = pack(a[i], b[i]);
-            i += 1;
-        }
-        p += 1;
-    }
-    out
-}
-
-/// `Dct_Kernel2N[2i][j] == Dct_KernelN[i][j]`, and the even rows of
-/// `Dct_KernelN` symmetric.
-const fn halves<const N: usize, const M: usize>(half: &[[i32; N]; N], full: &[[i32; M]; M]) {
-    assert!(2 * N == M);
-    let mut i = 0;
-    while i < N {
-        let mut j = 0;
-        while j < N {
-            assert!(full[2 * i][j] == half[i][j]);
-            if i % 2 == 0 {
-                assert!(half[i][N - 1 - j] == half[i][j]);
-            }
-            j += 1;
-        }
-        i += 1;
-    }
-}
-
-const _: () = {
-    halves(&DCT_KERNEL4, &DCT_KERNEL8);
-    halves(&DCT_KERNEL8, &DCT_KERNEL16);
-    halves(&DCT_KERNEL16, &DCT_KERNEL32);
-    assert!(DCT_KERNEL4[0][0] == 64 && DCT_KERNEL4[0][1] == 64);
-    assert!(DCT_KERNEL4[2][0] == 64 && DCT_KERNEL4[2][1] == -64);
-};
-
-static ODD4: [[u32; 2]; 1] = odd_pairs(&DCT_KERNEL4);
-static ODD8: [[u32; 4]; 2] = odd_pairs(&DCT_KERNEL8);
-static ODD16: [[u32; 8]; 4] = odd_pairs(&DCT_KERNEL16);
-static ODD32: [[u32; 16]; 8] = odd_pairs(&DCT_KERNEL32);
-
-/// The row pairs of an `m`-point `DCT` column in the order its factorization
-/// reads them: those of the half-size `DCT` on the even rows, then the odd
-/// pairs `4p + 1, 4p + 3`.
-const fn dct_pairs(m: usize) -> [(u8, u8); 16] {
-    let mut out = [(0u8, 1u8); 16];
-    let (mut len, mut size) = (1, 2);
-    while size < m {
-        let mut i = 0;
-        while i < len {
-            out[i] = (2 * out[i].0, 2 * out[i].1);
-            i += 1;
-        }
-        size *= 2;
-        let mut p = 0;
-        while p < size / 4 {
-            out[len + p] = ((4 * p + 1) as u8, (4 * p + 3) as u8);
-            p += 1;
-        }
-        len += size / 4;
-    }
-    out
-}
-
-static DCT_PAIRS: [[(u8, u8); 16]; 4] = [dct_pairs(4), dct_pairs(8), dct_pairs(16), dct_pairs(32)];
-
-/// Adjacent row pairs `2q, 2q + 1`.
-static ADJACENT_PAIRS: [(u8, u8); 16] = {
-    let mut out = [(0u8, 0u8); 16];
-    let mut q = 0;
-    while q < 16 {
-        out[q] = (2 * q as u8, 2 * q as u8 + 1);
-        q += 1;
-    }
-    out
-};
-
-/// `pshufb` interleaving the `i16` samples `0..4` and `4..8` of a lane, in
-/// order or (`reversed`) from the last.
-const fn interleave(low_reversed: bool, high_reversed: bool) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    let mut i = 0;
-    while i < 32 {
-        let reversed = if i < 16 { low_reversed } else { high_reversed };
-        let pair = (i % 16) / 4;
-        let sample = if reversed { 3 - pair } else { pair } + 4 * ((i % 4) / 2);
-        out[i] = (2 * sample + i % 2) as u8;
-        i += 1;
-    }
-    out
-}
-
-static INTERLEAVE: [u8; 32] = interleave(false, false);
-static INTERLEAVE_HIGH_REVERSED: [u8; 32] = interleave(false, true);
-static INTERLEAVE_REVERSED: [u8; 32] = interleave(true, true);
 
 #[inline]
 #[target_feature(enable = "avx2")]
@@ -838,7 +662,12 @@ fn row_wide<const N: usize, const H: usize>(
         {
             let mut x = rows.x16(t, r, 16 * j);
             if split {
-                x = _mm256_shuffle_epi8(x, bytes(t, &SPLIT_ORDER));
+                let order = if N == 32 {
+                    &TWO_LEVEL_ORDER
+                } else {
+                    &SPLIT_ORDER
+                };
+                x = _mm256_shuffle_epi8(x, bytes(t, order));
             }
             let zero = _mm256_cmpeq_epi32(x, _mm256_setzero_si256());
             nonzero |= (!_mm256_movemask_ps(_mm256_castsi256_ps(zero)) as u32 & 0xff) << (8 * j);
@@ -851,6 +680,32 @@ fn row_wide<const N: usize, const H: usize>(
     }
     let used = (u32::BITS - nonzero.leading_zeros()).div_ceil(2) as usize;
     let [xa, xb] = &inputs;
+    if split && N == 32 {
+        let splat = |p: u32| _mm256_set1_epi32(p as i32);
+        let madd = |acc, x: u32, k: &[u32; 8]| {
+            _mm256_add_epi32(acc, _mm256_madd_epi16(splat(x), weights(t, k)))
+        };
+        let zero = _mm256_setzero_si256();
+        let mut sums = [[round.rnd, zero, zero, zero]; 2];
+        let groups = xa
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(xb.as_chunks::<4>().0)
+            .zip(DCT32_EVEN.iter().zip(DCT32_ODD.as_chunks::<2>().0))
+            .take(used.div_ceil(2));
+        for ((xa, xb), ([ke, ko], [[a0, b0], [a1, b1]])) in groups {
+            for (sum, &[e, o, p, q]) in sums.iter_mut().zip([xa, xb]) {
+                sum[0] = madd(sum[0], e, ke);
+                sum[1] = madd(sum[1], o, ko);
+                sum[2] = madd(madd(sum[2], p, a0), q, a1);
+                sum[3] = madd(madd(sum[3], p, b0), q, b1);
+            }
+        }
+        let [a, b] = sums.map(|[ee, eo, oa, ob]| two_level(ee, eo, (oa, ob), round));
+        put_row_pairs::<N>(t, (&a, &b), 0b1010, out);
+        return true;
+    }
     let steps = xa
         .as_chunks::<2>()
         .0
@@ -899,23 +754,23 @@ fn row_wide<const N: usize, const H: usize>(
             }
         }
     }
-    put_row_pairs::<N>(t, (&ya, &yb), split, out);
+    put_row_pairs::<N>(t, (&ya, &yb), if split { 0b10 } else { 0 }, out);
     true
 }
 
 /// Stores the `N / 8` output chunks of rows `ya` and `yb` as column pairs,
-/// those of the second half of a `split` row reversed.
+/// chunk `c` in reversed order where bit `c` of `reversed` is set.
 #[inline]
 #[target_feature(enable = "avx2")]
 fn put_row_pairs<const N: usize>(
     t: Avx2,
     (ya, yb): (&[__m256i; 4], &[__m256i; 4]),
-    split: bool,
+    reversed: u32,
     out: &mut [i32],
 ) {
     let chunks = N / 8;
     for c in 0..chunks {
-        let packed = if split && c >= chunks / 2 {
+        let packed = if reversed & (1 << c) != 0 {
             let reversed = pair_columns(t, ya[c], yb[c], &INTERLEAVE_REVERSED);
             _mm256_permute4x64_epi64::<0x4E>(reversed)
         } else {
@@ -968,9 +823,14 @@ fn row_pass8<const N: usize, const H: usize, const KIND: u8>(
     let round = Round::new(shift);
     let chunks = N / 8;
     let k = |p: usize, c: usize| weights(t, kernel[p].get(8 * c..).unwrap_or_default());
+    let order = if N == 32 {
+        &TWO_LEVEL_ORDER
+    } else {
+        &SPLIT_ORDER
+    };
     let row = |x: __m128i| {
         let x = if KIND == SPLIT {
-            _mm_shuffle_epi8(x, _mm256_castsi256_si128(bytes(t, &SPLIT_ORDER)))
+            _mm_shuffle_epi8(x, _mm256_castsi256_si128(bytes(t, order)))
         } else {
             x
         };
@@ -985,7 +845,16 @@ fn row_pass8<const N: usize, const H: usize, const KIND: u8>(
             |acc, i: usize, c: usize| _mm256_add_epi32(acc, _mm256_madd_epi16(p[i], k(i, c)));
         let shift = |v| _mm256_sra_epi32(v, round.shift);
         let mut y = [_mm256_setzero_si256(); 4];
-        if KIND == SPLIT {
+        if KIND == SPLIT && N == 32 {
+            let w = |k: &[u32; 8]| weights(t, k);
+            let m = |acc, i: usize, k| _mm256_add_epi32(acc, _mm256_madd_epi16(p[i], w(k)));
+            let ([ke, ko], [[a0, b0], [a1, b1]]) = (&DCT32_EVEN[0], &DCT32_ODD[..2]) else {
+                return y;
+            };
+            let zero = _mm256_setzero_si256();
+            let odd = (m(m(zero, 2, a0), 3, a1), m(m(zero, 2, b0), 3, b1));
+            y = two_level(m(round.rnd, 0, ke), m(zero, 1, ko), odd, round);
+        } else if KIND == SPLIT {
             for c in 0..chunks / 2 {
                 let even = madd(madd(round.rnd, 0, c), 2, c);
                 let odd = madd(madd(_mm256_setzero_si256(), 1, c), 3, c);
@@ -1019,7 +888,12 @@ fn row_pass8<const N: usize, const H: usize, const KIND: u8>(
         } else {
             [_mm256_setzero_si256(); 4]
         };
-        put_row_pairs::<N>(t, (&ya, &yb), KIND == SPLIT, out);
+        let reversed = match (KIND, N) {
+            (SPLIT, 32) => 0b1010,
+            (SPLIT, _) => 0b10,
+            _ => 0,
+        };
+        put_row_pairs::<N>(t, (&ya, &yb), reversed, out);
         mask |= 1 << q;
     }
     mask
@@ -1040,7 +914,7 @@ fn rows8_pass(t: Avx2, shape: &InverseTransformAdd, rows: Rows8<'_>, scratch: &m
         Pass::Fdst16 => row_pass8::<16, 8, DENSE>(t, rows, p, &FDST16, scratch),
         Pass::Ddtx16 => row_pass8::<16, 8, DENSE>(t, rows, p, &DDTX16, scratch),
         Pass::Fddt16 => row_pass8::<16, 8, DENSE>(t, rows, p, &FDDT16, scratch),
-        Pass::Dct32 => row_pass8::<32, 16, SPLIT>(t, rows, p, &DCT32_SPLIT, scratch),
+        Pass::Dct32 => row_pass8::<32, 16, SPLIT>(t, rows, p, &DCT32, scratch),
         _ => 0,
     }
 }
@@ -1126,17 +1000,16 @@ fn dct16(v: &[__m256i], mask: u32, rnd: __m256i) -> [__m256i; 16] {
 const TILE: u8 = 0;
 /// Column `Clip3` outputs stored as `i32`.
 const RESIDUAL: u8 = 1;
-/// Column outputs added straight to the 8-bit block (`W <= 8`).
+/// Column outputs kept in `rows` for an add in row order (`W <= 8`).
 const DIRECT: u8 = 2;
 
 /// Where the column pass puts the shifted output rows of chunk `c`, by
 /// `OUT`: as `i16` rows of the `W`-wide `tile` (two samples per word), clamped
-/// into `residual`, or added to the 8-bit block at the start of `dst`.
+/// into `residual`, or as `i32` rows in `rows`.
 struct Put<'a, const W: usize, const OUT: u8> {
     tile: &'a mut [i32],
     residual: &'a mut [i32],
-    dst: &'a mut [u8],
-    stride: usize,
+    rows: [__m256i; 16],
     round: Round,
     c: usize,
 }
@@ -1152,10 +1025,16 @@ impl<const W: usize, const OUT: u8> Put<'_, W, OUT> {
             put_residual::<W>(t, (a, b, self.c), va, vb, self.residual);
             return;
         }
-        let packed = _mm256_packs_epi32(va, vb);
         if OUT == DIRECT {
-            add_rows::<W>(self.dst, (a * self.stride, b * self.stride), packed);
-        } else if W >= 8 {
+            for (r, v) in [(a, va), (b, vb)] {
+                if let Some(row) = self.rows.get_mut(r) {
+                    *row = v;
+                }
+            }
+            return;
+        }
+        let packed = _mm256_packs_epi32(va, vb);
+        if W >= 8 {
             let packed = _mm256_permute4x64_epi64::<0xD8>(packed);
             store4(
                 t,
@@ -1282,8 +1161,7 @@ fn col_pass<const W: usize, const M: usize, const HM: usize, const KIND: u8, con
     let mut put = Put::<W, OUT> {
         tile,
         residual,
-        dst: &mut [],
-        stride: 0,
+        rows: [_mm256_setzero_si256(); 16],
         round,
         c: 0,
     };
@@ -1409,54 +1287,67 @@ fn add_tile<const W: usize>(t: Avx2, tile: &[i32; 512], h: usize, dst: &mut [u8]
     }
 }
 
-/// Adds the `packs` of rows `a` and `b` of 8 (4 when `W == 4`) columns to
-/// the samples at `at_a` and `at_b` of `dst` with the § 7.14.3 `Clip1`.
+/// Adds the `packs` of two rows of 8 (4 when `W == 4`) columns to the
+/// samples at the start of `a` and `b` with the § 7.14.3 `Clip1`.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn add_rows<const W: usize>(dst: &mut [u8], (at_a, at_b): (usize, usize), packed: __m256i) {
+fn add_rows<const W: usize>(a: &mut [u8], b: &mut [u8], packed: __m256i) {
     if W >= 8 {
-        let read = |dst: &[u8], at: usize| {
-            dst.get(at..)
-                .and_then(<[u8]>::first_chunk::<8>)
-                .map(|row| i64::from_le_bytes(*row))
-        };
-        let (Some(a), Some(b)) = (read(dst, at_a), read(dst, at_b)) else {
+        let (Some(a), Some(b)) = (a.first_chunk_mut::<8>(), b.first_chunk_mut::<8>()) else {
             return;
         };
-        let pred = _mm_unpacklo_epi32(_mm_cvtsi64_si128(a), _mm_cvtsi64_si128(b));
+        let pred = _mm_unpacklo_epi32(
+            _mm_cvtsi64_si128(i64::from_le_bytes(*a)),
+            _mm_cvtsi64_si128(i64::from_le_bytes(*b)),
+        );
         let sum = _mm256_adds_epi16(_mm256_cvtepu8_epi16(pred), packed);
         let sum = _mm256_packus_epi16(sum, sum);
         let rows = _mm_unpacklo_epi32(
             _mm256_castsi256_si128(sum),
             _mm256_extracti128_si256::<1>(sum),
         );
-        for (at, row) in [
-            (at_a, _mm_cvtsi128_si64(rows)),
-            (at_b, _mm_extract_epi64::<1>(rows)),
-        ] {
-            if let Some(out) = dst.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<8>) {
-                *out = row.to_le_bytes();
-            }
-        }
+        *a = _mm_cvtsi128_si64(rows).to_le_bytes();
+        *b = _mm_extract_epi64::<1>(rows).to_le_bytes();
     } else {
-        let read = |dst: &[u8], at: usize| {
-            dst.get(at..)
-                .and_then(<[u8]>::first_chunk::<4>)
-                .map(|row| u32::from_le_bytes(*row))
-        };
-        let (Some(a), Some(b)) = (read(dst, at_a), read(dst, at_b)) else {
+        let (Some(a), Some(b)) = (a.first_chunk_mut::<4>(), b.first_chunk_mut::<4>()) else {
             return;
         };
         let pred = _mm_cvtepu8_epi16(_mm_cvtsi64_si128(
-            (u64::from(a) | u64::from(b) << 32) as i64,
+            (u64::from(u32::from_le_bytes(*a)) | u64::from(u32::from_le_bytes(*b)) << 32) as i64,
         ));
         let sum = _mm_adds_epi16(pred, _mm256_castsi256_si128(packed));
         let sum = _mm_cvtsi128_si64(_mm_packus_epi16(sum, sum)) as u64;
-        for (at, row) in [(at_a, sum as u32), (at_b, (sum >> 32) as u32)] {
-            if let Some(out) = dst.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<4>) {
-                *out = row.to_le_bytes();
-            }
+        *a = (sum as u32).to_le_bytes();
+        *b = ((sum >> 32) as u32).to_le_bytes();
+    }
+}
+
+/// Adds the `packs` of row pairs `pair(m)` (rows `2m` and `2m + 1`, 8
+/// columns per chunk) to the `W`-wide, `h`-tall block at the start of `dst`,
+/// walking its rows in order.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn add_pairs<const W: usize>(
+    dst: &mut [u8],
+    (stride, h): (usize, usize),
+    mut pair: impl FnMut(usize) -> __m256i,
+) {
+    let mut rest = dst;
+    for m in 0..h / 2 {
+        let Some((a, b)) = rest.split_at_mut_checked(stride) else {
+            return;
+        };
+        let packed = pair(m);
+        for c in 0..(W / 8).max(1) {
+            let (Some(a), Some(b)) = (a.get_mut(8 * c..), b.get_mut(8 * c..)) else {
+                return;
+            };
+            add_rows::<W>(a, b, packed);
         }
+        let Some(next) = b.get_mut(stride..) else {
+            return;
+        };
+        rest = next;
     }
 }
 
@@ -1495,14 +1386,13 @@ fn flat<const W: usize, const ADD: bool>(
     residual: &mut [i32],
 ) {
     let v = _mm256_set1_epi32(value);
+    if ADD {
+        add_pairs::<W>(dst, (stride, h), |_| _mm256_packs_epi32(v, v));
+        return;
+    }
     for c in 0..(W / 8).max(1) {
         for m in (0..h).step_by(2) {
-            if ADD {
-                let at = m * stride + 8 * c;
-                add_rows::<W>(dst, (at, at + stride), _mm256_packs_epi32(v, v));
-            } else {
-                put_residual::<W>(t, (m, m + 1, c), v, v, residual);
-            }
+            put_residual::<W>(t, (m, m + 1, c), v, v, residual);
         }
     }
 }
@@ -1555,7 +1445,7 @@ fn rows(
         Pass::Fdst16 => pass!(16, 8, DENSE, &FDST16, 0),
         Pass::Ddtx16 => pass!(16, 8, DENSE, &DDTX16, 0),
         Pass::Fddt16 => pass!(16, 8, DENSE, &FDDT16, 0),
-        Pass::Dct32 => pass!(32, 16, SPLIT, &DCT32_SPLIT, 0),
+        Pass::Dct32 => pass!(32, 16, SPLIT, &DCT32, 0),
         _ => 0,
     }
 }
@@ -1723,10 +1613,10 @@ impl<'a, const W: usize> Rows<'a, W> {
 }
 
 /// A `W x H` block, 4 or 8 wide and 4 to 16 tall (`WH = W / 2`,
-/// `HH = H / 2`), with the
-/// `CK` column transform, in registers: the row pass of each coded row pair
-/// gives the column pass's input pair at once, and the column outputs are
-/// added straight to `dst`.
+/// `HH = H / 2`), with the `RK` row and `CK` column transforms, in
+/// registers: the row pass of each coded row pair gives the column pass's
+/// input pair at once, and the column output rows are added to `dst` in
+/// order.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
 #[allow(
@@ -1738,6 +1628,7 @@ fn small<
     const WH: usize,
     const H: usize,
     const HH: usize,
+    const RK: u8,
     const CK: u8,
     const DQ: bool,
     const RS: bool,
@@ -1767,7 +1658,7 @@ fn small<
         if W == 4 {
             let x = _mm256_permute2x128_si256::<0x20>(rows.row(t, a), rows.row(t, b));
             let x = input.finish(x, a == 0);
-            _mm256_broadcastsi128_si256(if row.0 == IDENTITY {
+            _mm256_broadcastsi128_si256(if RK == IDENTITY {
                 let v = _mm256_mullo_epi32(clamp16(x), _mm256_set1_epi32(row.2));
                 unpack4(round.apply(v))
             } else {
@@ -1776,28 +1667,44 @@ fn small<
         } else {
             let xa = input.finish(rows.row(t, a), a == 0);
             let xb = input.finish(rows.row(t, b), b == 0);
-            let x = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(xa, xb));
-            match row.0 {
-                IDENTITY => {
-                    let scale = _mm256_set1_epi32(row.2);
-                    let va = round.apply(_mm256_mullo_epi32(clamp16(xa), scale));
-                    let vb = round.apply(_mm256_mullo_epi32(clamp16(xb), scale));
-                    pair_columns(t, va, vb, &INTERLEAVE)
-                }
-                SPLIT => row8_pairs::<SPLIT>(t, x, row.1.as_flattened(), round),
-                _ => row8_pairs::<DENSE>(t, x, row.1.as_flattened(), round),
+            if RK == IDENTITY {
+                let scale = _mm256_set1_epi32(row.2);
+                let va = round.apply(_mm256_mullo_epi32(clamp16(xa), scale));
+                let vb = round.apply(_mm256_mullo_epi32(clamp16(xb), scale));
+                pair_columns(t, va, vb, &INTERLEAVE)
+            } else {
+                let x = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(xa, xb));
+                row8_pairs::<RK>(t, x, row.1.as_flattened(), round)
             }
         }
     });
     let mut put = Put::<W, DIRECT> {
         tile: &mut [],
         residual: &mut [],
-        dst,
-        stride,
+        rows: [_mm256_setzero_si256(); 16],
         round: Round::new(col_shift),
         c: 0,
     };
     col_rows::<W, H, HH, CK, DIRECT>(t, (col.1, col.2), &v, mask, &mut put);
+    let rows = &put.rows;
+    add_pairs::<W>(dst, (stride, H), |m| {
+        _mm256_packs_epi32(rows[(2 * m) % 16], rows[(2 * m + 1) % 16])
+    });
+}
+
+/// [`small`] with the row kind `$rk` for the column kind `$ck` and `$dq`.
+macro_rules! small_cols {
+    ($rk:ident, $rs:literal, [$($g:literal),*], $ck:expr, $dq:expr, $a:expr) => {{
+        let (t, input, specs, shifts, out) = $a;
+        match ($ck, $dq) {
+            (IDENTITY, true) => small::<$($g,)* $rk, IDENTITY, true, $rs>(t, input, specs, shifts, out),
+            (IDENTITY, false) => small::<$($g,)* $rk, IDENTITY, false, $rs>(t, input, specs, shifts, out),
+            (SPLIT, true) => small::<$($g,)* $rk, SPLIT, true, $rs>(t, input, specs, shifts, out),
+            (SPLIT, false) => small::<$($g,)* $rk, SPLIT, false, $rs>(t, input, specs, shifts, out),
+            (_, true) => small::<$($g,)* $rk, DENSE, true, $rs>(t, input, specs, shifts, out),
+            (_, false) => small::<$($g,)* $rk, DENSE, false, $rs>(t, input, specs, shifts, out),
+        }
+    }};
 }
 
 /// Adds a `shape` 4 or 8 wide and 4 to 16 tall over `coeffs` to `dst`
@@ -1815,29 +1722,31 @@ fn add_small(
     let (row, col) = shape.passes;
     let input = (coeffs, dq);
     macro_rules! run {
-        ($rs:literal, $f:ident [$($g:literal),*], $row:expr, $col:expr) => {{
+        ($rs:literal, $g:tt, $row:expr, $col:expr, [$($rk:ident),*]) => {{
             let (Some(row), Some(col)) = (&$row[row as usize], &$col[col as usize]) else {
                 return false;
             };
-            let specs = (row, col);
-            match (col.0, quantized) {
-                (IDENTITY, true) => $f::<$($g,)* IDENTITY, true, $rs>(t, input, specs, shifts, out),
-                (IDENTITY, false) => $f::<$($g,)* IDENTITY, false, $rs>(t, input, specs, shifts, out),
-                (SPLIT, true) => $f::<$($g,)* SPLIT, true, $rs>(t, input, specs, shifts, out),
-                (SPLIT, false) => $f::<$($g,)* SPLIT, false, $rs>(t, input, specs, shifts, out),
-                (_, true) => $f::<$($g,)* DENSE, true, $rs>(t, input, specs, shifts, out),
-                (_, false) => $f::<$($g,)* DENSE, false, $rs>(t, input, specs, shifts, out),
+            let a = (t, input, (row, col), shifts, out);
+            match row.0 {
+                $($rk => small_cols!($rk, $rs, $g, col.0, quantized, a),)*
+                _ => small_cols!(DENSE, $rs, $g, col.0, quantized, a),
             }
             true
         }};
     }
     match (shape.w_log2, shape.h_log2, shape.rescale) {
-        (2, 2, false) => run!(false, small[4, 2, 4, 2], ROW_SPEC4, COL_SPEC4),
-        (2, 3, true) => run!(true, small[4, 2, 8, 4], ROW_SPEC4, COL_SPEC8),
-        (3, 2, true) => run!(true, small[8, 4, 4, 2], ROW_SPEC8, COL_SPEC4),
-        (3, 3, false) => run!(false, small[8, 4, 8, 4], ROW_SPEC8, COL_SPEC8),
-        (2, 4, false) => run!(false, small[4, 2, 16, 8], ROW_SPEC4, COL_SPEC16),
-        (3, 4, true) => run!(true, small[8, 4, 16, 8], ROW_SPEC8, COL_SPEC16),
+        (2, 2, false) => run!(false, [4, 2, 4, 2], ROW_SPEC4, COL_SPEC4, [IDENTITY]),
+        (2, 3, true) => run!(true, [4, 2, 8, 4], ROW_SPEC4, COL_SPEC8, [IDENTITY]),
+        (3, 2, true) => run!(true, [8, 4, 4, 2], ROW_SPEC8, COL_SPEC4, [IDENTITY, SPLIT]),
+        (3, 3, false) => run!(false, [8, 4, 8, 4], ROW_SPEC8, COL_SPEC8, [IDENTITY, SPLIT]),
+        (2, 4, false) => run!(false, [4, 2, 16, 8], ROW_SPEC4, COL_SPEC16, [IDENTITY]),
+        (3, 4, true) => run!(
+            true,
+            [8, 4, 16, 8],
+            ROW_SPEC8,
+            COL_SPEC16,
+            [IDENTITY, SPLIT]
+        ),
         _ => false,
     }
 }

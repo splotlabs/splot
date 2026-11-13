@@ -1128,12 +1128,8 @@ impl MhccpGeometry {
                 *dst = (sample >> 3) as u16;
             }
         }
-        let block_rows = above..above + covered;
         let mut q3 = [0i16; 128];
-        for row in first_luma_row..self.reference_height {
-            if block_rows.contains(&row) {
-                continue;
-            }
+        for row in (first_luma_row..above).chain(above + covered..self.reference_height) {
             let luma_cols = if row < above {
                 reference_width
             } else if row < above + block.height {

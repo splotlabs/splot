@@ -6,7 +6,7 @@
 //! horizontal groups. A cell reads its window in place, or by clamped row
 //! addresses and a `pshufb` column gather, so a border cell needs no copy.
 
-use super::{Horizontal, load16, store_rows};
+use super::{Horizontal, SKIPPED, load16, store_rows};
 use crate::subpel_mc::ReferencePlaneView;
 use crate::subpel_mc::block::{Block, Geometry, Taps, Window, is_cell};
 use crate::subpel_mc::cell::{Cell, Plane, Written};
@@ -26,15 +26,6 @@ const NARROW_ROWS: [u8; 32] = {
         lane += 1;
     }
     out
-};
-
-/// The taps of a skipped pass, which no kernel reads.
-static SKIPPED: Taps = Taps {
-    start: 0,
-    count: 0,
-    dot: 0,
-    words: [0; 4],
-    full: [0; 4],
 };
 
 /// `Some` of `$f::<$w, G, H, V, $put, $c>` for the kernel key `5 * H + V`
@@ -192,37 +183,32 @@ fn output_stride(stride: usize) -> Option<u32> {
         .filter(|&stride| stride <= u32::MAX / 8)
 }
 
-/// Stores the COMPOUND_AVERAGE of the groups of a `W`-square cell, the
-/// average form chosen once per cell.
-#[inline]
-#[target_feature(enable = "avx2")]
-fn store_average<const W: usize, const G: usize>(
-    t: Avx2,
-    [first, second]: [[__m256i; G]; 2],
-    forward: i32,
-    output: &mut [u8],
-    stride: u32,
-) {
-    let pairs = first.into_iter().zip(second);
-    if forward == 8 {
-        let round = _mm256_set1_epi16(1 << 10);
-        for (group, (a, b)) in (0..).zip(pairs) {
-            let blended = _mm256_mulhrs_epi16(_mm256_add_epi16(a, b), round);
-            store_rows::<W, u32>(t, output, 2 * group * stride, stride, blended);
+/// Stores the COMPOUND_AVERAGE of the groups `[first, second]` of a
+/// `$w`-square cell, the average form chosen once per cell, in the caller.
+macro_rules! store_average {
+    ($t:expr, $w:ident, [$first:expr, $second:expr], $forward:expr, $output:expr, $stride:expr) => {{
+        let (t, forward, output, stride) = ($t, $forward, $output, $stride);
+        let pairs = $first.into_iter().zip($second);
+        if forward == 8 {
+            let round = _mm256_set1_epi16(1 << 10);
+            for (group, (a, b)) in (0..).zip(pairs) {
+                let blended = _mm256_mulhrs_epi16(_mm256_add_epi16(a, b), round);
+                store_rows::<$w, u32>(t, output, 2 * group * stride, stride, blended);
+            }
+        } else {
+            let weights = _mm256_set1_epi32((forward & 0xffff) | ((16 - forward) << 16));
+            let bias = _mm256_set1_epi32(1 << 7);
+            for (group, (a, b)) in (0..).zip(pairs) {
+                let low = _mm256_madd_epi16(_mm256_unpacklo_epi16(a, b), weights);
+                let high = _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), weights);
+                let blended = _mm256_packs_epi32(
+                    _mm256_srai_epi32::<8>(_mm256_add_epi32(low, bias)),
+                    _mm256_srai_epi32::<8>(_mm256_add_epi32(high, bias)),
+                );
+                store_rows::<$w, u32>(t, output, 2 * group * stride, stride, blended);
+            }
         }
-        return;
-    }
-    let weights = _mm256_set1_epi32((forward & 0xffff) | ((16 - forward) << 16));
-    let bias = _mm256_set1_epi32(1 << 7);
-    for (group, (a, b)) in (0..).zip(pairs) {
-        let low = _mm256_madd_epi16(_mm256_unpacklo_epi16(a, b), weights);
-        let high = _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), weights);
-        let blended = _mm256_packs_epi32(
-            _mm256_srai_epi32::<8>(_mm256_add_epi32(low, bias)),
-            _mm256_srai_epi32::<8>(_mm256_add_epi32(high, bias)),
-        );
-        store_rows::<W, u32>(t, output, 2 * group * stride, stride, blended);
-    }
+    }};
 }
 
 /// The COMPOUND_AVERAGE of the in-place blocks of a `W`-square cell pair,
@@ -250,7 +236,7 @@ fn compound_blocks<const W: usize, const G: usize>(
         blocks[1].horizontal,
         blocks[1].vertical,
     )?;
-    store_average::<W, G>(t, [first, second], forward, output, stride);
+    store_average!(t, W, [first, second], forward, output, stride);
     Some(())
 }
 
@@ -372,7 +358,7 @@ fn windows_cell<const W: usize, const G: usize>(
 ) -> Option<()> {
     let first = window_groups::<W, G>(t, views[0], &windows[0], bounds[0])?;
     let second = window_groups::<W, G>(t, views[1], &windows[1], bounds[1])?;
-    store_average::<W, G>(t, [first, second], forward, output, stride);
+    store_average!(t, W, [first, second], forward, output, stride);
     Some(())
 }
 
@@ -453,7 +439,7 @@ fn run_program<const W: usize, const G: usize>(
             ) else {
                 continue;
             };
-            store_average::<W, G>(t, [a, b], forward, output, out_stride);
+            store_average!(t, W, [a, b], forward, output, out_stride);
             written[index / 64 % 4] |= 1 << (index % 64);
         }
     }
@@ -472,9 +458,16 @@ fn rows_of<'a, const C: bool>(
 ) -> Option<[&'a [u8; 16]; 16]> {
     let stride = reads.stride as usize;
     if C {
+        let offsets = reads.rows.get(..rows)?;
+        let low = reads.base as usize + *offsets.first()? as usize;
+        let span = (reads.base as usize + *offsets.last()? as usize).checked_sub(low)?;
+        let window = source.get(low..)?.get(..span + 16)?;
         let mut out = [&[0u8; 16]; 16];
-        for (slot, &row) in out.iter_mut().zip(&reads.rows[..rows]) {
-            *slot = bytes::<16>(source, (reads.base + row) as usize)?;
+        for (slot, &row) in out.iter_mut().zip(offsets) {
+            let at = (reads.base as usize + row as usize)
+                .wrapping_sub(low)
+                .min(span);
+            *slot = window.get(at..)?.first_chunk::<16>()?;
         }
         let last = out[rows - 1];
         for slot in &mut out[rows..] {
@@ -492,13 +485,6 @@ fn rows_of<'a, const C: bool>(
         *slot = row.first_chunk::<16>()?;
     }
     Some(out)
-}
-
-/// The `N` bytes of `window` from `at`.
-#[allow(clippy::inline_always, reason = "one compare per row")]
-#[inline(always)]
-fn bytes<const N: usize>(window: &[u8], at: usize) -> Option<&[u8; N]> {
-    window.get(at..at + N)?.try_into().ok()
 }
 
 /// The predictors of one `W`-square cell of `G` groups whose passes have

@@ -587,14 +587,17 @@ impl Chunk for u16 {
         max_sample: i16,
     ) {
         #[cfg(target_arch = "x86_64")]
-        if let Some(token) = Level::baseline().as_avx2() {
+        if !VERTICAL && let Some(token) = Level::baseline().as_avx2() {
             let packed = edges.map(|edge| edge.0 as i64);
-            let reach = chunk_reach(edges);
-            if VERTICAL {
-                avx2::vertical_u16(token, samples, stride, first, packed, reach, max_sample);
-            } else {
-                avx2::horizontal_u16(token, samples, stride, first, packed, reach, max_sample);
-            }
+            avx2::horizontal_u16(
+                token,
+                samples,
+                stride,
+                first,
+                packed,
+                chunk_reach(edges),
+                max_sample,
+            );
             return;
         }
         baseline_simd!(simd => portable_chunk::<_, Self, VERTICAL>(
@@ -1132,6 +1135,7 @@ mod avx2 {
 
     use fearless_simd::{SimdBase, SimdFrom, kernel, u16x16};
 
+    use super::avx2_u8::MAX_STRIDE;
     use super::{CLAMP, Q_FIRST, RAMP, REACH, ROWS};
 
     kernel!(
@@ -1343,60 +1347,6 @@ mod avx2 {
     }
 
     kernel!(
-        /// Transposes the 16x16 block of 16-bit lanes in place.
-        #[inline(always)]
-        fn transpose(token: Avx2, v: &mut [__m256i; 16]) {
-            let mut low = [_mm256_setzero_si256(); 8];
-            let mut high = [_mm256_setzero_si256(); 8];
-            for i in 0..8 {
-                low[i] = _mm256_permute2x128_si256::<0x20>(v[i], v[i + 8]);
-                high[i] = _mm256_permute2x128_si256::<0x31>(v[i], v[i + 8]);
-            }
-            let low = transpose8(token, low);
-            let high = transpose8(token, high);
-            v[..8].copy_from_slice(&low); // splot-copy-ok: transposed vectors stay in registers
-            v[8..].copy_from_slice(&high); // splot-copy-ok: transposed vectors stay in registers
-        }
-    );
-
-    kernel!(
-        /// Transposes the 8x8 16-bit blocks in both 128-bit halves.
-        #[inline(always)]
-        fn transpose8(token: Avx2, x: [__m256i; 8]) -> [__m256i; 8] {
-            let a = [
-                _mm256_unpacklo_epi16(x[0], x[1]),
-                _mm256_unpackhi_epi16(x[0], x[1]),
-                _mm256_unpacklo_epi16(x[2], x[3]),
-                _mm256_unpackhi_epi16(x[2], x[3]),
-                _mm256_unpacklo_epi16(x[4], x[5]),
-                _mm256_unpackhi_epi16(x[4], x[5]),
-                _mm256_unpacklo_epi16(x[6], x[7]),
-                _mm256_unpackhi_epi16(x[6], x[7]),
-            ];
-            let b = [
-                _mm256_unpacklo_epi32(a[0], a[2]),
-                _mm256_unpackhi_epi32(a[0], a[2]),
-                _mm256_unpacklo_epi32(a[1], a[3]),
-                _mm256_unpackhi_epi32(a[1], a[3]),
-                _mm256_unpacklo_epi32(a[4], a[6]),
-                _mm256_unpackhi_epi32(a[4], a[6]),
-                _mm256_unpacklo_epi32(a[5], a[7]),
-                _mm256_unpackhi_epi32(a[5], a[7]),
-            ];
-            [
-                _mm256_unpacklo_epi64(b[0], b[4]),
-                _mm256_unpackhi_epi64(b[0], b[4]),
-                _mm256_unpacklo_epi64(b[1], b[5]),
-                _mm256_unpackhi_epi64(b[1], b[5]),
-                _mm256_unpacklo_epi64(b[2], b[6]),
-                _mm256_unpackhi_epi64(b[2], b[6]),
-                _mm256_unpacklo_epi64(b[3], b[7]),
-                _mm256_unpackhi_epi64(b[3], b[7]),
-            ]
-        }
-    );
-
-    kernel!(
         #[inline(always)]
         fn load_u16(token: Avx2, samples: &[u16], at: usize) -> __m256i {
             u16x16::from_slice(token, &samples[at..at + 16]).into()
@@ -1412,16 +1362,15 @@ mod avx2 {
         }
     );
 
-    /// One chunk kernel: filters the four segments at `first` of a run of
-    /// vertical or horizontal edges over `$sample` storage whose widest edge
-    /// needs `$reach` rows either side.
+    /// One chunk kernel: filters the four horizontal-edge segments at
+    /// `first` whose widest edge needs `$reach` rows either side.
     macro_rules! chunk_kernel {
-        ($name:ident, $sample:ty, $load:ident, $store:ident, $vertical:expr, $reach:expr) => {
+        ($name:ident, $reach:expr) => {
             kernel!(
                 #[inline]
                 fn $name(
                     token: Avx2,
-                    samples: &mut [$sample],
+                    samples: &mut [u16],
                     stride: usize,
                     first: usize,
                     packed: [i64; 4],
@@ -1429,64 +1378,50 @@ mod avx2 {
                 ) {
                     let max = _mm256_set1_epi16(max_sample);
                     let mut rows = [_mm256_setzero_si256(); ROWS];
-                    if $vertical {
-                        let origin = first - REACH;
-                        for (line, row) in rows.iter_mut().enumerate() {
-                            *row = $load(token, samples, origin + line * stride);
-                        }
-                        transpose(token, &mut rows);
-                        if !filter_rows!(token, rows, packed, $reach) {
-                            return;
-                        }
-                        transpose(token, &mut rows);
-                        for (line, row) in rows.iter().enumerate() {
-                            $store(token, samples, origin + line * stride, *row, max);
-                        }
-                    } else {
-                        let origin = first - REACH * stride;
-                        for j in REACH - $reach..REACH + $reach {
-                            rows[j] = $load(token, samples, origin + j * stride);
-                        }
-                        if !filter_rows!(token, rows, packed, $reach) {
-                            return;
-                        }
-                        let writes = super::chunk_writes($reach);
-                        for j in REACH - writes..REACH + writes {
-                            $store(token, samples, origin + j * stride, rows[j], max);
-                        }
+                    let origin = first - REACH * stride;
+                    let Some(samples) =
+                        samples.get_mut(origin..origin + (ROWS - 1) * stride + ROWS)
+                    else {
+                        return;
+                    };
+                    if stride > MAX_STRIDE {
+                        return;
+                    }
+                    for j in REACH - $reach..REACH + $reach {
+                        rows[j] = load_u16(token, samples, j * stride);
+                    }
+                    if !filter_rows!(token, rows, packed, $reach) {
+                        return;
+                    }
+                    let writes = super::chunk_writes($reach);
+                    for j in REACH - writes..REACH + writes {
+                        store_u16(token, samples, j * stride, rows[j], max);
                     }
                 }
             );
         };
     }
 
-    /// The chunk kernels of one storage type and direction, by reach.
-    macro_rules! chunk_dispatch {
-        ($name:ident, $sample:ty, $load:ident, $store:ident, $vertical:expr) => {
-            #[inline]
-            pub(super) fn $name(
-                token: fearless_simd::Avx2,
-                samples: &mut [$sample],
-                stride: usize,
-                first: usize,
-                packed: [i64; 4],
-                reach: usize,
-                max_sample: i16,
-            ) {
-                chunk_kernel!(narrow, $sample, $load, $store, $vertical, 3);
-                chunk_kernel!(middle, $sample, $load, $store, $vertical, 5);
-                chunk_kernel!(wide, $sample, $load, $store, $vertical, REACH);
-                match reach {
-                    3 => narrow(token, samples, stride, first, packed, max_sample),
-                    5 => middle(token, samples, stride, first, packed, max_sample),
-                    _ => wide(token, samples, stride, first, packed, max_sample),
-                }
-            }
-        };
+    /// The horizontal-edge chunk kernels over `u16` storage, by reach.
+    #[inline]
+    pub(super) fn horizontal_u16(
+        token: fearless_simd::Avx2,
+        samples: &mut [u16],
+        stride: usize,
+        first: usize,
+        packed: [i64; 4],
+        reach: usize,
+        max_sample: i16,
+    ) {
+        chunk_kernel!(narrow, 3);
+        chunk_kernel!(middle, 5);
+        chunk_kernel!(wide, REACH);
+        match reach {
+            3 => narrow(token, samples, stride, first, packed, max_sample),
+            5 => middle(token, samples, stride, first, packed, max_sample),
+            _ => wide(token, samples, stride, first, packed, max_sample),
+        }
     }
-
-    chunk_dispatch!(vertical_u16, u16, load_u16, store_u16, true);
-    chunk_dispatch!(horizontal_u16, u16, load_u16, store_u16, false);
 }
 
 #[cfg(target_arch = "x86_64")]
