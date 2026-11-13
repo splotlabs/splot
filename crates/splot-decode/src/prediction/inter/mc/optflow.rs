@@ -2267,45 +2267,47 @@ mod tests {
     fn translational_rows_match_the_per_sample_blend<T: ReconSample>(
         bit_depth: splot_recon::BitDepth,
     ) {
-        let (w, h, frame_w, frame_h) = (24usize, 7usize, 20usize, 5usize);
-        let pred0: Vec<i32> = (0..w * h).map(|i| (i as i32 * 7 % 900) * 48).collect();
-        let pred1: Vec<i32> = (0..w * h)
-            .map(|i| (i as i32 * 11 % 800) * 48 - 900)
-            .collect();
-        let scalings = [(-8, -24), (16, 40)].map(|(mv_row, mv_col)| {
-            let (frame_w, frame_h) = (frame_w as i32, frame_h as i32);
-            derive_plane_scaling(
-                0, 0, mv_row, mv_col, 0, 0, frame_w, frame_h, frame_w, frame_h,
+        for w in [3usize, 6, 24] {
+            let (h, frame_w, frame_h) = (7usize, 20usize, 5usize);
+            let pred0: Vec<i32> = (0..w * h).map(|i| (i as i32 * 7 % 900) * 48).collect();
+            let pred1: Vec<i32> = (0..w * h)
+                .map(|i| (i as i32 * 11 % 800) * 48 - 900)
+                .collect();
+            let scalings = [(-8, -24), (16, 40)].map(|(mv_row, mv_col)| {
+                let (frame_w, frame_h) = (frame_w as i32, frame_h as i32);
+                derive_plane_scaling(
+                    0, 0, mv_row, mv_col, 0, 0, frame_w, frame_h, frame_w, frame_h,
+                )
+            });
+            let blend = ImplicitMaskBlend::new(bit_depth, frame_w, frame_h);
+            let mut output = vec![T::default(); w * h];
+            blend_nonuniform_implicit_mask(
+                &pred0,
+                &pred1,
+                bit_depth,
+                w,
+                h,
+                None,
+                0,
+                0,
+                scalings,
+                frame_w,
+                frame_h,
+                0,
+                0,
+                &mut output,
+                w,
             )
-        });
-        let blend = ImplicitMaskBlend::new(bit_depth, frame_w, frame_h);
-        let mut output = vec![T::default(); w * h];
-        blend_nonuniform_implicit_mask(
-            &pred0,
-            &pred1,
-            bit_depth,
-            w,
-            h,
-            None,
-            0,
-            0,
-            scalings,
-            frame_w,
-            frame_h,
-            0,
-            0,
-            &mut output,
-            w,
-        )
-        .unwrap();
-        for (index, sample) in output.iter().enumerate() {
-            let (row, col) = ((index / w) as i32, (index % w) as i32);
-            let starts = scalings.map(|s| ((s.start_x >> 10) + col, (s.start_y >> 10) + row));
-            let want: T = blend.sample(pred0[index], pred1[index], starts).unwrap();
-            assert_eq!(sample.to_u16(), want.to_u16(), "{bit_depth:?} {index}");
+            .unwrap();
+            for (index, sample) in output.iter().enumerate() {
+                let (row, col) = ((index / w) as i32, (index % w) as i32);
+                let starts = scalings.map(|s| ((s.start_x >> 10) + col, (s.start_y >> 10) + row));
+                let want: T = blend.sample(pred0[index], pred1[index], starts).unwrap();
+                assert_eq!(sample.to_u16(), want.to_u16(), "{bit_depth:?} {index}");
+            }
+            let samples: Vec<u16> = output.iter().map(|sample| sample.to_u16()).collect();
+            assert!(w < 24 || samples.contains(&0) && samples.contains(&bit_depth.max_sample()));
         }
-        let samples: Vec<u16> = output.iter().map(|sample| sample.to_u16()).collect();
-        assert!(samples.contains(&0) && samples.contains(&bit_depth.max_sample()));
     }
 
     #[test]

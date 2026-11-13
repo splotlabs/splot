@@ -7,8 +7,8 @@ use splot_recon::{
     CellPlacement, CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrameInfo,
     InterpolationFilter, OptflowScratch, PixelFormat, PlaneId, PlaneRect, PreparedWarpPrediction,
     ReconError, ReconSample, ReferencePlaneView, SubpelPredictParams, UnscaledPut,
-    WARPED_BLOCK_SIZE, WarpPredictBlockParams, blend_compound_average_weighted_sample,
-    ext_warp_predict_unit, subpel_predict_12x12_bilinear_overlap_into,
+    WARPED_BLOCK_SIZE, WarpPredictBlockParams, ext_warp_predict_unit,
+    subpel_predict_12x12_bilinear_overlap_into,
     subpel_predict_block_compound_average_fast_validated_strided_into,
     subpel_predict_block_compound_average_strided_into,
     subpel_predict_block_compound_average_strided_into_u8,
@@ -1937,12 +1937,7 @@ fn blend_compound_average_weighted_samples<T: ReconSample>(
     cwp_weight: i16,
     output: &mut [T],
 ) -> splot_recon::Result<()> {
-    for (slot, (&left, &right)) in output.iter_mut().zip(pred0.iter().zip(pred1)) {
-        *slot = T::try_from_u16(blend_compound_average_weighted_sample(
-            left, right, bit_depth, cwp_weight,
-        ))?;
-    }
-    Ok(())
+    blend::weighted_row(pred0, pred1, bit_depth, cwp_weight, output)
 }
 
 fn compound_uniform_scalings(
