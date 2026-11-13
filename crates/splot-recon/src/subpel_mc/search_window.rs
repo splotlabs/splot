@@ -873,26 +873,32 @@ mod neon {
             allow_center: bool,
         ) -> (i32, i32) {
             match geometry {
-                [16, 12] => search_for::<16, 12>(t, windows, allow_center),
-                [16, _] => search_for::<16, 20>(t, windows, allow_center),
-                [_, 12] => search_for::<24, 12>(t, windows, allow_center),
-                _ => search_for::<24, 20>(t, windows, allow_center),
+                [16, 12] => search_for::<16, 12, 256>(t, windows, allow_center),
+                [16, _] => search_for::<16, 20, 384>(t, windows, allow_center),
+                [_, 12] => search_for::<24, 12, 384>(t, windows, allow_center),
+                _ => search_for::<24, 20, 576>(t, windows, allow_center),
             }
         }
     );
 
-    /// [`search`] of `STRIDE`-wide windows and `SAD_H`-row areas: `uabd` and
-    /// `uadalp` over each 12-byte row at stride 16, or 20-byte row at stride
-    /// 24 (its last four bytes from a second load), then one `uaddlv`.
+    /// [`search`] of `STRIDE`-wide windows of `AREA` bytes and `SAD_H`-row
+    /// areas: `uabd` and `uadalp` over each 12-byte row at stride 16, or
+    /// 20-byte row at stride 24 (its last four bytes from a second load),
+    /// then one `uaddlv`.
     #[inline]
     #[target_feature(enable = "neon")]
-    fn search_for<const STRIDE: usize, const SAD_H: usize>(
+    fn search_for<const STRIDE: usize, const SAD_H: usize, const AREA: usize>(
         t: Neon,
         [first, second]: [&[u8]; 2],
         allow_center: bool,
     ) -> (i32, i32) {
         use core::arch::aarch64::{
             uint8x16_t, vabdq_u8, vaddlvq_u16, vandq_u8, vdupq_n_u16, vpadalq_u8,
+        };
+        let (Some(first), Some(second)) =
+            (first.first_chunk::<AREA>(), second.first_chunk::<AREA>())
+        else {
+            return (0, 0);
         };
         let keep = |lanes: core::ops::Range<usize>| -> uint8x16_t {
             u8x16::load_array(
