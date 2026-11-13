@@ -334,7 +334,7 @@ pub(super) fn decode_compound_inter_block(
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
+) -> Result<EntryState> {
     let tile::TileWalkParams {
         tip_ref_pair,
         ref ref_facts,
@@ -1018,7 +1018,7 @@ pub(super) fn decode_skip_mode_inter_block(
     intrabc_state: &mut TileIntrabcPreludeState,
     leaf: (u8, u8, u32),
     tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
+) -> Result<EntryState> {
     let (ref_frame0, ref_frame1) = skip_mode_reference_pair(
         &params.ref_facts,
         params.num_total_refs,
