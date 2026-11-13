@@ -254,11 +254,39 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             return;
         };
         let base = placed.block.mv;
-        let Some(batch_mvs) = self.temporal.tip_candidate(
-            placed.luma_y() / TIP_FIELD_CELL,
-            placed.luma_x() / TIP_FIELD_CELL,
-            base,
-        ) else {
+        let mut batch_mvs = None;
+        for band in (0..placed.luma_h()).step_by(TIP_FIELD_CELL) {
+            let luma_y = placed.luma_y().saturating_add(band);
+            let mut furthest = [Mv::ZERO; 2];
+            for column in (0..placed.luma_w()).step_by(TIP_FIELD_CELL) {
+                let luma_x = placed.luma_x().saturating_add(column);
+                let Some(mvs) = self.temporal.tip_candidate(
+                    luma_y / TIP_FIELD_CELL,
+                    luma_x / TIP_FIELD_CELL,
+                    base,
+                ) else {
+                    bounds.settle = true;
+                    return;
+                };
+                batch_mvs.get_or_insert(mvs);
+                for (reach, candidate) in furthest.iter_mut().zip(mvs) {
+                    reach.row = reach.row.max(candidate.row);
+                }
+            }
+            let rect =
+                McBlockRect::from_luma_rect(placed.luma_x(), luma_y, placed.luma_w(), TIP_MAX_UNIT);
+            let reach = ListReach {
+                compound: true,
+                ..ListReach::default()
+            };
+            for (list, mv) in [references.past_ref, references.future_ref]
+                .into_iter()
+                .zip(furthest)
+            {
+                self.note_list(bounds, list, mv, rect, placed.predict_chroma, reach);
+            }
+        }
+        let Some(batch_mvs) = batch_mvs else {
             bounds.settle = true;
             return;
         };
@@ -278,36 +306,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
                 placed.predict_chroma,
                 batch_reach,
             );
-        }
-        for band in (0..placed.luma_h()).step_by(TIP_FIELD_CELL) {
-            let luma_y = placed.luma_y().saturating_add(band);
-            let mut furthest = [Mv::ZERO; 2];
-            for column in (0..placed.luma_w()).step_by(TIP_FIELD_CELL) {
-                let luma_x = placed.luma_x().saturating_add(column);
-                let Some(mvs) = self.temporal.tip_candidate(
-                    luma_y / TIP_FIELD_CELL,
-                    luma_x / TIP_FIELD_CELL,
-                    base,
-                ) else {
-                    bounds.settle = true;
-                    return;
-                };
-                for (reach, candidate) in furthest.iter_mut().zip(mvs) {
-                    reach.row = reach.row.max(candidate.row);
-                }
-            }
-            let rect =
-                McBlockRect::from_luma_rect(placed.luma_x(), luma_y, placed.luma_w(), TIP_MAX_UNIT);
-            let reach = ListReach {
-                compound: true,
-                ..ListReach::default()
-            };
-            for (list, mv) in [references.past_ref, references.future_ref]
-                .into_iter()
-                .zip(furthest)
-            {
-                self.note_list(bounds, list, mv, rect, placed.predict_chroma, reach);
-            }
         }
     }
 
