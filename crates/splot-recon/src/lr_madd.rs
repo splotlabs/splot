@@ -208,9 +208,9 @@ fn in_lane_weights(
 /// Filters the 16-column groups from column `x` to `end` of `rows` output
 /// rows, row `r` stored at `r * stride + x` of `output`, with the cell
 /// `classes`. Window row `k` of output row `r` is `window[r + k]`, from the
-/// group's column on. The [`by_lane`] kernel runs it where `T` is `u16` on
-/// AArch64, the [`filter16`] group kernel otherwise; returns `false` when a
-/// row, a class or the output is short.
+/// group's column on. The [`by_lane`] kernel runs it on AArch64, the
+/// [`filter16`] group kernel otherwise; returns `false` when a row, a class
+/// or the output is short.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn filter_run<
@@ -228,12 +228,9 @@ pub(crate) fn filter_run<
     max_sample: u16,
 ) -> bool {
     #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon()
-        && let Some((wide, len)) = u16_window(window)
-    {
-        let out = O::lanes_mut(output);
-        let wide = &wide[..len];
-        return F::by_lane(t, wide, rows, span, classes, (out, stride), max_sample);
+    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+        let (window, out) = (T::lane_rows(window), O::lanes_mut(output));
+        return F::by_lane(t, window, rows, span, classes, (out, stride), max_sample);
     }
     filter_run_groups::<F, T, O, ROWS, REACH>(
         window,
@@ -243,19 +240,6 @@ pub(crate) fn filter_run<
         (output, stride),
         max_sample,
     )
-}
-
-/// The rows of `window` as `u16` rows when its samples are `u16`.
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn u16_window<'a, T: LumaSimdSource>(window: &[&'a [T]]) -> Option<([&'a [u16]; 16], usize)> {
-    let mut wide = [&[][..]; 16];
-    (window.len() <= wide.len()
-        && wide
-            .iter_mut()
-            .zip(window)
-            .all(|(slot, row)| T::u16_samples(row).map(|row| *slot = row).is_some()))
-    .then_some((wide, window.len()))
 }
 
 /// [`filter_run`] on the [`filter16`] group kernel, groups outer and rows
@@ -369,12 +353,12 @@ pub(crate) trait TapPairs {
         weights: &[MaddWeights],
         max_sample: u16,
     ) -> Option<[u16; 16]>;
-    /// The [`by_lane`] run kernel over `u16` rows.
+    /// The [`by_lane`] run kernel.
     #[cfg(target_arch = "aarch64")]
     #[allow(clippy::too_many_arguments)]
     fn by_lane(
         t: fearless_simd::Neon,
-        window: &[&[u16]],
+        window: by_lane::Rows<'_>,
         rows: usize,
         span: (usize, usize),
         classes: Classes<'_>,
@@ -390,7 +374,7 @@ macro_rules! by_lane_kernel {
     ($taps:ty, $rows:literal, $reach:literal) => {
         fn by_lane(
             t: fearless_simd::Neon,
-            window: &[&[u16]],
+            window: $crate::lr_madd::by_lane::Rows<'_>,
             rows: usize,
             span: (usize, usize),
             classes: $crate::lr_madd::Classes<'_>,
@@ -398,38 +382,38 @@ macro_rules! by_lane_kernel {
             max_sample: u16,
         ) -> bool {
             use $crate::lr_madd::Classes;
-            use $crate::lr_madd::by_lane::{Out, filter_run};
+            use $crate::lr_madd::by_lane::{Out, Rows, filter_run};
 
             fearless_simd::kernel!(
                 #[inline]
                 fn kernel(
                     t: Neon,
-                    window: &[&[u16]],
+                    window: Rows<'_>,
                     rows: usize,
                     span: (usize, usize),
                     classes: Classes<'_>,
                     output: (Out<'_>, usize),
                     max_sample: u16,
                 ) -> bool {
-                    match output {
-                        (Out::Words(samples), stride) => filter_run::<$taps, u16, $rows, $reach>(
-                            t,
-                            window,
-                            rows,
-                            span,
-                            classes,
-                            (samples, stride),
-                            max_sample,
-                        ),
-                        (Out::Bytes(samples), stride) => filter_run::<$taps, u8, $rows, $reach>(
-                            t,
-                            window,
-                            rows,
-                            span,
-                            classes,
-                            (samples, stride),
-                            max_sample,
-                        ),
+                    let (output, stride) = output;
+                    macro_rules! run {
+                        ($window:expr, $output:expr) => {
+                            filter_run::<$taps, _, _, $rows, $reach>(
+                                t,
+                                $window,
+                                rows,
+                                span,
+                                classes,
+                                ($output, stride),
+                                max_sample,
+                            )
+                        };
+                    }
+                    match (window, output) {
+                        (Rows::Words(window), Out::Words(output)) => run!(window, output),
+                        (Rows::Words(window), Out::Bytes(output)) => run!(window, output),
+                        (Rows::Bytes(window), Out::Words(output)) => run!(window, output),
+                        (Rows::Bytes(window), Out::Bytes(output)) => run!(window, output),
                     }
                 }
             );
@@ -673,17 +657,23 @@ pub(crate) use madd_avx2;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod by_lane {
     use core::arch::aarch64::*;
-    use fearless_simd::{Neon, Simd, SimdBase, SimdFrom, i16x8, prelude::*, u16x8};
+    use fearless_simd::{Neon, Simd, SimdBase, SimdFrom, i16x8, u16x8};
 
-    use super::{Classes, LaneClass as Class, TapPairs};
+    use super::{Classes, LaneClass as Class, LumaSimdSource, TapPairs};
 
-    /// Filters a [`super::filter_run`] run over `u16` rows.
+    /// Filters a [`super::filter_run`] run.
     #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
-    pub(crate) fn filter_run<F: TapPairs, O: Store, const ROWS: usize, const REACH: usize>(
+    pub(crate) fn filter_run<
+        F: TapPairs,
+        T: LumaSimdSource,
+        O: Store,
+        const ROWS: usize,
+        const REACH: usize,
+    >(
         t: Neon,
-        window: &[&[u16]],
+        window: &[&[T]],
         rows: usize,
         span: (usize, usize),
         classes: Classes<'_>,
@@ -693,7 +683,7 @@ pub(crate) mod by_lane {
         let class = match classes {
             Classes::Uniform(class) => class,
             Classes::Cells { .. } => {
-                return cells::<F, O, ROWS, REACH>(
+                return cells::<F, T, O, ROWS, REACH>(
                     t, window, rows, span, classes, output, max_sample,
                 );
             }
@@ -705,7 +695,7 @@ pub(crate) mod by_lane {
             .map_or(0, |last| last + 1);
         macro_rules! variant {
             ($used:literal) => {
-                run::<F, O, $used, ROWS, REACH>(t, window, rows, span, class, output, max_sample)
+                run::<F, T, O, $used, ROWS, REACH>(t, window, rows, span, class, output, max_sample)
             };
         }
         match used {
@@ -719,13 +709,13 @@ pub(crate) mod by_lane {
 
     /// Adds pair `$j` of `$F` when it is below `$used` to the cell sums.
     macro_rules! pair_term {
-        ($F:ty, $used:expr, $j:literal, $load:ident, $tap:ident, $low:ident, $high:ident, $acc:ident) => {
+        ($F:ty, $used:expr, $j:literal, $load:ident, $hide:ident, $tap:ident, $low:ident, $high:ident, $acc:ident) => {
             if $j < <$F>::TAPS.len() && $j < $used {
                 const L: i32 = $j % 8;
                 let (dy, dx) = <$F>::TAPS[$j];
                 let (p, q) = (($tap(dy), $tap(dx)), ($tap(-dy), $tap(-dx)));
-                let s0 = vaddq_s16($load(p.0, p.1), $load(q.0, q.1));
-                let s1 = vaddq_s16($load(p.0, p.1 + 8), $load(q.0, q.1 + 8));
+                let (a, b) = ($load(p.0, p.1), $load(q.0, q.1));
+                let [s0, s1] = $hide([vaddq_s16(a[0], b[0]), vaddq_s16(a[1], b[1])]);
                 let w = if $j < 8 { $low } else { $high };
                 $acc[0] = vmlal_laneq_s16::<L>($acc[0], vget_low_s16(s0), w[0]);
                 $acc[1] = vmlal_high_laneq_s16::<L>($acc[1], s0, w[1]);
@@ -736,37 +726,37 @@ pub(crate) mod by_lane {
     }
 
     /// The 16 filtered samples of one row of a group: `$load(row, col)`
-    /// reads 8 window samples, `$low` and `$high` hold pairs `0..8` and
+    /// reads 16 window samples, `$low` and `$high` hold pairs `0..8` and
     /// `8..16` of each cell, lane `k` of `$center` its center weight.
     macro_rules! group16 {
-        ($F:ty, $used:expr, $load:expr, $low:expr, $high:expr, $center:expr, $max:expr) => {{
-            let load = $load;
+        ($F:ty, $used:expr, ($load:expr, $hide:expr), $low:expr, $high:expr, $center:expr, $max:expr) => {{
+            let (load, hide) = ($load, $hide);
             let (low, high, center): (&[int16x8_t; 4], &[int16x8_t; 4], int16x8_t) =
                 ($low, $high, $center);
             let tap = |offset: isize| <$F>::RADIUS.wrapping_add_signed(offset);
-            let (m0, m1) = (load(tap(0), tap(0)), load(tap(0), tap(8)));
+            let [m0, m1] = hide(load(tap(0), tap(0)));
             let mut acc = [
                 vmull_laneq_s16::<0>(vget_low_s16(m0), center),
                 vmull_high_laneq_s16::<1>(m0, center),
                 vmull_laneq_s16::<2>(vget_low_s16(m1), center),
                 vmull_high_laneq_s16::<3>(m1, center),
             ];
-            pair_term!($F, $used, 0, load, tap, low, high, acc);
-            pair_term!($F, $used, 1, load, tap, low, high, acc);
-            pair_term!($F, $used, 2, load, tap, low, high, acc);
-            pair_term!($F, $used, 3, load, tap, low, high, acc);
-            pair_term!($F, $used, 4, load, tap, low, high, acc);
-            pair_term!($F, $used, 5, load, tap, low, high, acc);
-            pair_term!($F, $used, 6, load, tap, low, high, acc);
-            pair_term!($F, $used, 7, load, tap, low, high, acc);
-            pair_term!($F, $used, 8, load, tap, low, high, acc);
-            pair_term!($F, $used, 9, load, tap, low, high, acc);
-            pair_term!($F, $used, 10, load, tap, low, high, acc);
-            pair_term!($F, $used, 11, load, tap, low, high, acc);
-            pair_term!($F, $used, 12, load, tap, low, high, acc);
-            pair_term!($F, $used, 13, load, tap, low, high, acc);
-            pair_term!($F, $used, 14, load, tap, low, high, acc);
-            pair_term!($F, $used, 15, load, tap, low, high, acc);
+            pair_term!($F, $used, 0, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 1, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 2, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 3, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 4, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 5, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 6, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 7, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 8, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 9, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 10, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 11, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 12, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 13, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 14, load, hide, tap, low, high, acc);
+            pair_term!($F, $used, 15, load, hide, tap, low, high, acc);
             let narrow =
                 |a, b| vminq_u16(vqrshrun_high_n_s32::<7>(vqrshrun_n_s32::<7>(a), b), $max);
             [narrow(acc[0], acc[1]), narrow(acc[2], acc[3])]
@@ -791,34 +781,45 @@ pub(crate) mod by_lane {
         )
     }
 
-    /// 8 samples from `col` of `row` of `group`, zero past the window.
+    /// 16 samples from `col` of `row` of `group`, zero past the window.
     #[allow(clippy::inline_always, reason = "one load per tap")]
     #[inline(always)]
-    fn lanes<const ROWS: usize, const REACH: usize>(
+    fn lanes<T: LumaSimdSource, const ROWS: usize, const REACH: usize>(
         t: Neon,
-        group: &[&[u16; REACH]; ROWS],
-        row: usize,
-        col: usize,
-    ) -> int16x8_t {
+        group: &[&[T; REACH]; ROWS],
+        (row, col): (usize, usize),
+    ) -> [int16x8_t; 2] {
         match group
             .get(row)
             .and_then(|row| row.get(col..))
-            .and_then(<[u16]>::first_chunk::<8>)
+            .and_then(<[T]>::first_chunk::<16>)
         {
-            Some(lanes) => u16x8::load_array_ref(t, lanes)
-                .bitcast::<i16x8<Neon>>()
-                .into(),
-            None => i16x8::splat(t, 0).into(),
+            Some(lanes) => T::lanes16(t, lanes),
+            None => [i16x8::splat(t, 0).into(); 2],
         }
+    }
+
+    /// Zero lanes LLVM cannot see as zero: 8-bit tap sums it can prove
+    /// non-negative it widens to `i32` multiplies instead of `smlal`.
+    #[inline]
+    fn opaque_zero(t: Neon) -> i16x8<Neon> {
+        i16x8::splat(t, core::hint::black_box(0))
     }
 
     /// A uniform run: rows outer, groups inner.
     #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
-    fn run<F: TapPairs, O: Store, const USED: usize, const ROWS: usize, const REACH: usize>(
+    fn run<
+        F: TapPairs,
+        T: LumaSimdSource,
+        O: Store,
+        const USED: usize,
+        const ROWS: usize,
+        const REACH: usize,
+    >(
         t: Neon,
-        window: &[&[u16]],
+        window: &[&[T]],
         rows: usize,
         (x, end): (usize, usize),
         class: &Class,
@@ -829,7 +830,7 @@ pub(crate) mod by_lane {
             return false;
         };
         let (low, high, center) = weights(t, [class; 4]);
-        let max = vdupq_n_u16(max_sample);
+        let (max, pad) = (vdupq_n_u16(max_sample), opaque_zero(t));
         let reach = (end - x + REACH).saturating_sub(16);
         for r in 0..rows {
             let (Some(window_rows), Some(target)) = (
@@ -859,8 +860,9 @@ pub(crate) mod by_lane {
                 let Some(target) = target.first_chunk_mut::<16>() else {
                     return false;
                 };
-                let load = |row: usize, col: usize| lanes(t, &group, row, col);
-                let values = group16!(F, USED, load, &low, &high, center, max);
+                let load = |row: usize, col: usize| lanes(t, &group, (row, col));
+                let hide = |lanes| T::hide(t, lanes, pad);
+                let values = group16!(F, USED, (load, hide), &low, &high, center, max);
                 O::store16(t, values.map(|half| u16x8::simd_from(t, half)), target);
             }
         }
@@ -872,16 +874,16 @@ pub(crate) mod by_lane {
     #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
-    fn cells<F: TapPairs, O: Store, const ROWS: usize, const REACH: usize>(
+    fn cells<F: TapPairs, T: LumaSimdSource, O: Store, const ROWS: usize, const REACH: usize>(
         t: Neon,
-        window: &[&[u16]],
+        window: &[&[T]],
         rows: usize,
         (x, end): (usize, usize),
         classes: Classes<'_>,
         (output, stride): (&mut [O], usize),
         max_sample: u16,
     ) -> bool {
-        let max = vdupq_n_u16(max_sample);
+        let (max, pad) = (vdupq_n_u16(max_sample), opaque_zero(t));
         let reach = rows + ROWS - 1;
         let (mut col, mut index) = (x, 0);
         while col + 16 <= end {
@@ -890,7 +892,7 @@ pub(crate) mod by_lane {
                 window
                     .first()
                     .and_then(|row| row.get(col..))
-                    .and_then(<[u16]>::first_chunk::<REACH>),
+                    .and_then(<[T]>::first_chunk::<REACH>),
             ) else {
                 return false;
             };
@@ -900,7 +902,7 @@ pub(crate) mod by_lane {
                 return false;
             }
             for (slot, row) in rows_of_group.iter_mut().zip(window).take(reach) {
-                match row.get(col..).and_then(<[u16]>::first_chunk::<REACH>) {
+                match row.get(col..).and_then(<[T]>::first_chunk::<REACH>) {
                     Some(row) => *slot = row,
                     None => return false,
                 }
@@ -914,8 +916,9 @@ pub(crate) mod by_lane {
                 ) else {
                     return false;
                 };
-                let load = |row: usize, at: usize| lanes(t, group, row, at);
-                let values = group16!(F, 16, load, &low, &high, center, max);
+                let load = |row: usize, at: usize| lanes(t, group, (row, at));
+                let hide = |lanes| T::hide(t, lanes, pad);
+                let values = group16!(F, 16, (load, hide), &low, &high, center, max);
                 O::store16(t, values.map(|half| u16x8::simd_from(t, half)), target);
             }
             col += 16;
@@ -956,6 +959,13 @@ pub(crate) mod by_lane {
     pub(crate) enum Out<'a> {
         Words(&'a mut [u16]),
         Bytes(&'a mut [u8]),
+    }
+
+    /// The source rows of a run: `u16` or `u8` samples.
+    #[derive(Clone, Copy)]
+    pub(crate) enum Rows<'a> {
+        Words(&'a [&'a [u16]]),
+        Bytes(&'a [&'a [u8]]),
     }
 }
 
