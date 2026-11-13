@@ -4,6 +4,16 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 11 (AVX2 8-bit transform, round 2; no shared line changed):
+1. Kept: small kernels (4- and 8-wide) add the rows in order with one split check per row
+   pair, row kind fixed per call (DCT_DCT 8x8 343 -> 287 instructions per call); two-level
+   even/odd split for 32-point DCT rows (24 `pmaddwd` per row, was 32). Whole decode -0.04%
+   to -0.08% on 8-bit. The x86 transform stage is still 2.0-2.6x dav2d.
+2. Rejected, measured slower: IDTX in i16 lanes (8x8 311 -> 361 per call); the small-kernel
+   index resolved in `InverseTransformAdd::of` (+0.02% to +0.03% whole decode).
+3. Left: the `transform` glue costs about 150 instructions per call (0x100-byte frame,
+   three indirect jumps, tuple arguments spilled).
+
 2026-11-13, push 10 (round 2: loop restoration and intra prediction; shared lines changed):
 1. SHARED CODE CHANGED, please run the aarch64 hashes (each commit body has an
    `x86-shared:` line; aarch64 clippy `-D warnings` passes here):
@@ -300,6 +310,10 @@ Head 6421575e against ab8d3d3e (1 thread, instructions, main / branch): 1.031x a
 ==========================================================================================
 COMMITS ON THIS BRANCH
 ==========================================================================================
+perf(recon): AVX2 small transforms add rows in order, row kind fixed per call; perf(recon):
+two-level even/odd split for AVX2 32-point DCT rows. Instructions, 1 thread, first 100
+frames: EuroTruck qp110 -0.08%, MountainBike -0.07%, 10-bit equal. Checks: subset hashes
+at 1, 12 threads (agent: 89/89 at 1 thread, recon tests, `cargo xtask ci --fast`).
 perf(recon): cut lr_madd runs and x86 chroma rows to length once; perf(recon): one length
 check per PC-Wiener pooled chunk and class group; perf(recon): DIP resample band by band
 with fixed-size row stores; perf(recon): DC and IBP-DC prediction in one pass; perf(recon):
