@@ -557,21 +557,15 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
     /// copied: none in the plane's first column.
     #[inline]
     pub fn left_column(&self, out: &mut [T]) -> usize {
-        let len = out.len().min(self.left_len);
-        let len = if self.row_start + len * self.stride <= self.samples.len() {
-            len
-        } else {
-            self.samples.len().saturating_sub(self.row_start) / self.stride.max(1)
-        };
-        let column = match (self.origin.checked_sub(1), len.checked_sub(1)) {
-            (Some(first), Some(last)) => self.samples.get(first..first + last * self.stride + 1),
-            _ => None,
-        };
-        let Some(column) = column else {
+        let stride = self.stride.max(1);
+        let rows = self.samples.get(self.row_start..).unwrap_or_default();
+        let len = out.len().min(self.left_len).min(rows.len() / stride);
+        let column = (self.origin - self.row_start).wrapping_sub(1);
+        if column >= stride {
             return 0;
-        };
-        for (i, slot) in out[..len].iter_mut().enumerate() {
-            *slot = column[i * self.stride];
+        }
+        for (slot, row) in out[..len].iter_mut().zip(rows.chunks_exact(stride)) {
+            *slot = row[column];
         }
         len
     }

@@ -258,7 +258,6 @@ impl InterReconCommand {
                 &self.placed,
                 shared.tip(sink.info())?,
                 shared.temporal_context,
-                shared.ref_frame_idx,
                 shared.reference,
                 self.tile_offset,
             );

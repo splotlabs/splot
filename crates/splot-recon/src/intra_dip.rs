@@ -254,17 +254,19 @@ fn dip_averages<T: ReconSample>(samples: &[T], block_len: usize, log2_len: u8) -
     #[inline]
     fn group_sums<T: ReconSample, const N: usize>(samples: &[T]) -> [i32; 5] {
         let value = |sample: &T| i32::from(sample.to_u16());
-        let mut sums = [0i32; 5];
+        let sum = |group: &[T; N]| group.iter().map(value).sum::<i32>();
         let (groups, rest) = samples.as_chunks::<N>();
-        for (sum, group) in sums.iter_mut().zip(groups) {
-            *sum = group.iter().map(value).sum();
-        }
-        if groups.len() < 5
-            && let Some(last) = samples.last()
-        {
-            sums[4] = rest.iter().map(value).sum::<i32>() + (N - rest.len()) as i32 * value(last);
-        }
-        sums
+        let Some(head) = groups.first_chunk::<4>() else {
+            return [0; 5];
+        };
+        let last = if let Some(group) = groups.get(4) {
+            sum(group)
+        } else {
+            let repeat = samples.last().map_or(0, value);
+            rest.iter().map(value).sum::<i32>() + (N - rest.len()) as i32 * repeat
+        };
+        let [a, b, c, d] = head.each_ref().map(sum);
+        [a, b, c, d, last]
     }
     let sums = match block_len >> 2 {
         1 => group_sums::<T, 1>(samples),
@@ -359,7 +361,7 @@ fn dip_bands<S: Simd, P: IntraLaneSample, const W: usize, const C: usize>(
     let [w0, w1] = DIP_LERP_WEIGHTS
         .get(up_x as usize)?
         .map(|w| u16x16::from_slice(simd, &w));
-    let mut out_rows = output.chunks_mut(stride);
+    let mut row_start = 0;
     let mut before = if step > 1 {
         load_lanes::<S, P, W, C>(simd, above.first_chunk::<W>()?)?
     } else {
@@ -396,11 +398,14 @@ fn dip_bands<S: Simd, P: IntraLaneSample, const W: usize, const C: usize>(
                 for (lerp, delta) in lerp.iter_mut().zip(delta) {
                     *lerp += delta;
                 }
-                let row = out_rows.next()?.first_chunk_mut::<W>()?;
+                let row = output.get_mut(row_start..)?.first_chunk_mut::<W>()?;
+                row_start += stride;
                 store_lanes::<S, P, W, C>(simd, lerp.map(|v| v >> up_y), row)?;
             }
         }
-        store_lanes::<S, P, W, C>(simd, sampled, out_rows.next()?.first_chunk_mut::<W>()?)?;
+        let row = output.get_mut(row_start..)?.first_chunk_mut::<W>()?;
+        row_start += stride;
+        store_lanes::<S, P, W, C>(simd, sampled, row)?;
         before = sampled;
     }
     Some(())

@@ -1585,6 +1585,8 @@ struct TranslationalCompoundPlane<'a, T: ReconSample> {
     params: [SubpelPredictParams; 2],
 }
 
+#[allow(clippy::inline_always, reason = "per-plane result copy")]
+#[inline(always)]
 fn compound_subpel_plane<T: ReconSample>(
     info: DecodedFrameInfo,
     block: CompoundMcBlock<'_, T>,
@@ -1618,15 +1620,18 @@ fn compound_plane_views<'a, T: ReconSample>(
     block_h: usize,
     offset: ByteOffset,
 ) -> Result<[ReferencePlaneView<'a, T>; 2]> {
-    let view = |reference: ReferenceSamples<'a, T>, scaling: PlaneScaling| match reference
-        .settled_plane_view(plane)
-    {
-        Some(view) => Ok(view),
-        None => reference.plane_view(
+    if let (Some(view0), Some(view1)) = (
+        block.reference0.settled_plane_view(plane),
+        block.reference1.settled_plane_view(plane),
+    ) {
+        return Ok([view0, view1]);
+    }
+    let view = |reference: ReferenceSamples<'a, T>, scaling: PlaneScaling| {
+        reference.plane_view(
             plane,
             compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
             offset,
-        ),
+        )
     };
     Ok([
         view(block.reference0, scalings[0])?,

@@ -455,14 +455,19 @@ impl MhccpPredictor {
         if width.is_multiple_of(8) && self.narrow && (mh_dir != 2 || refs.left > 0) {
             for row in 0..height {
                 let (linear, center) = (taps(row), centre(row));
-                let out = &mut out[row * stride..row * stride + width];
-                for (j, out) in out.chunks_exact_mut(8).enumerate() {
-                    let t = self.group(
-                        simd,
-                        lanes8(luma, linear + 8 * j),
-                        lanes8(luma, center + 8 * j),
-                    );
-                    P::store8(simd, out, t);
+                let (Some(linear), Some(center), Some(out)) = (
+                    luma.get(linear..linear + width),
+                    luma.get(center..center + width),
+                    out.get_mut(row * stride..row * stride + width),
+                ) else {
+                    return;
+                };
+                for ((out, linear), center) in out
+                    .chunks_exact_mut(8)
+                    .zip(linear.as_chunks::<8>().0)
+                    .zip(center.as_chunks::<8>().0)
+                {
+                    P::store8(simd, out, self.group(simd, *linear, *center));
                 }
             }
             return;
