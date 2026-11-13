@@ -1048,9 +1048,10 @@ mod neon {
             };
         let mut upper = products(0)?;
         write(0, upper, upper)?;
-        for row in 1..H - 1 {
-            let lower = products(row)?;
-            write(row, upper, lower)?;
+        for row in (1..H - 1).step_by(2) {
+            let [middle, lower] = [products(row)?, products(row + 1)?];
+            write(row, upper, middle)?;
+            write(row + 1, middle, lower)?;
             upper = lower;
         }
         write(H - 1, upper, upper)
