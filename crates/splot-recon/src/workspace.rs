@@ -37,10 +37,10 @@ mod workspace_intra_dc;
 mod workspace_intra_directional_angle;
 #[path = "workspace_rows.rs"]
 mod workspace_rows;
+use crate::plane_buf::PlaneSamples;
 pub use owned_rect::{OwnedFrameRect, OwnedFrameRectRows};
 pub use workspace_edges::CurrentFrameIntraEdges;
 pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
-use workspace_rows::PlaneSamples;
 pub use workspace_rows::{CurrentFrameRectRowsMut, IntraBlockFrame, WorkspaceRectRows};
 
 macro_rules! contiguous_rect_writer {
@@ -1523,10 +1523,10 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         );
         if let Err(error) = DecodedFrame::validate(self.info, &planes, scan) {
             let (y, u, v) = planes.into_parts();
-            self.y.samples = PlaneSamples::Owned(y.into_samples());
+            self.y.samples = PlaneSamples::owned(y.into_samples());
             for (plane, frozen) in [(self.u.as_mut(), u), (self.v.as_mut(), v)] {
                 if let (Some(plane), Some(frozen)) = (plane, frozen) {
-                    plane.samples = PlaneSamples::Owned(frozen.into_samples());
+                    plane.samples = PlaneSamples::owned(frozen.into_samples());
                 }
             }
             return Err(error);
@@ -1665,7 +1665,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             visible_rect,
             origin_y: 0,
             stride: stride_samples,
-            samples: PlaneSamples::Owned(samples),
+            samples: PlaneSamples::owned(samples),
         })
     }
 

@@ -162,7 +162,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                 visible_rect,
                 origin_y,
                 stride,
-                samples: PlaneSamples::Lent(samples),
+                samples: super::PlaneSamples::lent(samples),
                 pool: None,
             })
         };
@@ -192,10 +192,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// The address of the first luma sample of a band [`Self::lend_band`]
     /// made, or `None` for a workspace that owns its samples.
     pub fn lent_luma_addr(&self) -> Option<usize> {
-        match &self.y.samples {
-            PlaneSamples::Lent(rows) => Some(rows.as_ptr().addr()),
-            PlaneSamples::Owned(_) => None,
-        }
+        self.y.samples.lent_addr()
     }
 }
 
@@ -271,49 +268,6 @@ impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
     }
 }
 
-/// A plane's samples: its own buffer, or rows another owner lends it.
-#[derive(Debug)]
-pub(super) enum PlaneSamples<T: Copy + 'static> {
-    Owned(crate::PlaneBuf<T>),
-    Lent(crate::LentRows<T>),
-}
-
-impl<T: Copy> Default for PlaneSamples<T> {
-    fn default() -> Self {
-        Self::Owned(crate::PlaneBuf::default())
-    }
-}
-
-impl<T: Copy> core::ops::Deref for PlaneSamples<T> {
-    type Target = [T];
-    #[inline]
-    fn deref(&self) -> &[T] {
-        match self {
-            Self::Owned(samples) => samples,
-            Self::Lent(samples) => samples,
-        }
-    }
-}
-
-impl<T: Copy> core::ops::DerefMut for PlaneSamples<T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut [T] {
-        match self {
-            Self::Owned(samples) => samples,
-            Self::Lent(samples) => samples,
-        }
-    }
-}
-
-impl<T: Copy> PlaneSamples<T> {
-    pub(super) fn take(&mut self) -> crate::PlaneBuf<T> {
-        match core::mem::take(self) {
-            Self::Owned(samples) => samples,
-            Self::Lent(_) => crate::PlaneBuf::default(),
-        }
-    }
-}
-
 /// Plane rows a band keeps above its superblock row.
 ///
 /// AV2 § 7.11.2 reads at most one row above a superblock: `sbBoundary` forces
@@ -358,7 +312,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             visible_rect,
             origin_y: 0,
             stride,
-            samples: PlaneSamples::Owned(samples),
+            samples: super::PlaneSamples::owned(samples),
             pool: None,
         })
     }

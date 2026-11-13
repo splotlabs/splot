@@ -193,9 +193,13 @@ pub fn plane_buf_from<T: Copy>(samples: &[T]) -> PlaneBuf<T> {
 /// Full-width plane rows that another owner's allocation holds and lends
 /// exclusively while this value lives; see [`Self::lend`].
 pub struct LentRows<T: 'static> {
-    rows: &'static mut [T],
+    samples: NonNull<T>,
+    len: usize,
     _lender: Arc<dyn Send + Sync>,
 }
+
+unsafe impl<T: Send + 'static> Send for LentRows<T> {} // SAFETY: the rows are reached only through `&self` / `&mut self`, as through the `&'static mut [T]` this replaced.
+unsafe impl<T: Sync + 'static> Sync for LentRows<T> {} // SAFETY: a shared value gives only shared access to the rows, as a `&'static mut [T]` does.
 
 impl<T: Copy> LentRows<T> {
     #[must_use]
@@ -205,9 +209,9 @@ impl<T: Copy> LentRows<T> {
     /// The samples must be initialized and inside one allocation that `lender`
     /// keeps alive. Safety: nothing else reads or writes them until the value drops.
     pub unsafe fn lend(samples: NonNull<T>, len: usize, lender: Arc<dyn Send + Sync>) -> Self {
-        let rows = unsafe { core::slice::from_raw_parts_mut(samples.as_ptr(), len) };
         Self {
-            rows,
+            samples,
+            len,
             _lender: lender,
         }
     }
@@ -218,20 +222,85 @@ impl<T: Copy> core::ops::Deref for LentRows<T> {
 
     #[inline]
     fn deref(&self) -> &[T] {
-        self.rows
+        unsafe { core::slice::from_raw_parts(self.samples.as_ptr(), self.len) } // SAFETY: `lend`'s caller keeps the `len` samples live and exclusive to this value, and `&self` shares them.
     }
 }
 
 impl<T: Copy> core::ops::DerefMut for LentRows<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut [T] {
-        self.rows
+        unsafe { core::slice::from_raw_parts_mut(self.samples.as_ptr(), self.len) } // SAFETY: `lend`'s caller keeps the `len` samples live and exclusive to this value, and `&mut self` is unique.
     }
 }
 
 impl<T> core::fmt::Debug for LentRows<T> {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "LentRows({})", self.rows.len())
+        write!(formatter, "LentRows({})", self.len)
+    }
+}
+
+/// A plane's samples: rows another owner lends, or its own buffer, which it
+/// lends to itself, so every access reads one slice.
+pub(crate) struct PlaneSamples<T: 'static> {
+    rows: LentRows<T>,
+    owned: PlaneBuf<T>,
+}
+
+impl<T> core::fmt::Debug for PlaneSamples<T> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "PlaneSamples({})", self.rows.len)
+    }
+}
+
+/// The lender of rows whose buffer their value holds beside them.
+fn held_beside() -> Arc<dyn Send + Sync> {
+    static LENDER: std::sync::OnceLock<Arc<dyn Send + Sync>> = std::sync::OnceLock::new();
+    Arc::clone(LENDER.get_or_init(|| Arc::new(())))
+}
+
+impl<T: Copy + Send + Sync + 'static> PlaneSamples<T> {
+    /// The samples of `buf`, which the value owns until [`Self::take`].
+    pub(crate) fn owned(mut owned: PlaneBuf<T>) -> Self {
+        let (len, samples) = (owned.len(), NonNull::from(&mut owned[..]).cast::<T>());
+        let rows = unsafe { LentRows::lend(samples, len, held_beside()) }; // SAFETY: `samples` are the `len` initialized samples of `owned`'s heap blocks, which stay in place while `owned` moves and outlive `rows` (declared after it; `take` drops `rows` first), and only `rows` reaches them.
+        Self { rows, owned }
+    }
+
+    /// Rows another owner lends.
+    pub(crate) fn lent(rows: LentRows<T>) -> Self {
+        Self {
+            rows,
+            owned: plane_buf(),
+        }
+    }
+
+    /// The address of the first sample of lent rows, `None` for an own buffer.
+    pub(crate) fn lent_addr(&self) -> Option<usize> {
+        (self.owned.capacity() == 0 && !self.rows.is_empty()).then(|| self.rows.as_ptr().addr())
+    }
+
+    /// The own buffer, same allocation, leaving no samples; an empty buffer
+    /// for lent rows.
+    pub(crate) fn take(&mut self) -> PlaneBuf<T> {
+        let Self { rows, owned } = core::mem::replace(self, Self::owned(plane_buf()));
+        drop(rows);
+        owned
+    }
+}
+
+impl<T: Copy> core::ops::Deref for PlaneSamples<T> {
+    type Target = [T];
+
+    #[inline]
+    fn deref(&self) -> &[T] {
+        &self.rows
+    }
+}
+
+impl<T: Copy> core::ops::DerefMut for PlaneSamples<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [T] {
+        &mut self.rows
     }
 }
 
@@ -254,6 +323,55 @@ mod tests {
             assert_eq!(ten.as_ptr() as usize % PLANE_ALIGNMENT, 0);
         }
         assert_eq!(plane_buf_from(&[1u8, 2, 3]).as_slice(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn owned_plane_samples_hand_back_the_same_buffer() {
+        let mut buf: PlaneBuf<u16> = plane_buf();
+        buf.resize(130, 3);
+        let addr = buf.as_ptr().addr();
+        let mut samples = PlaneSamples::owned(buf);
+        samples[0] = 7;
+        samples[129] = 9;
+        assert_eq!(samples.lent_addr(), None);
+        let back = samples.take();
+        assert_eq!(back.as_ptr().addr(), addr);
+        assert_eq!((back[0], back[1], back[129]), (7, 3, 9));
+        assert!(samples.is_empty() && samples.take().is_empty());
+        let mut again = PlaneSamples::owned(back);
+        again[1] = 5;
+        let back = again.take();
+        assert_eq!((back.as_ptr().addr(), &back[..2]), (addr, &[7, 5][..]));
+    }
+
+    #[test]
+    fn plane_samples_drop_in_every_order() {
+        let filled = || {
+            let mut buf: PlaneBuf<u8> = plane_buf();
+            buf.resize(64, 1);
+            PlaneSamples::owned(buf)
+        };
+        let mut samples = filled();
+        samples[63] = 2;
+        drop(samples);
+        for plane_first in [true, false] {
+            let mut samples = filled();
+            samples[63] = 2;
+            let back = samples.take();
+            if plane_first {
+                drop(samples);
+                assert_eq!(back[63], 2);
+                drop(back);
+            } else {
+                assert_eq!(back[63], 2);
+                drop(back);
+                assert!(samples.is_empty());
+                drop(samples);
+            }
+        }
+        drop(PlaneSamples::<u16>::owned(plane_buf()));
+        let mut empty = PlaneSamples::<u16>::owned(plane_buf());
+        assert!(empty.take().is_empty() && empty.lent_addr().is_none());
     }
 
     #[test]
