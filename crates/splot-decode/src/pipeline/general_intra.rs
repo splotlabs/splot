@@ -277,7 +277,8 @@ pub(crate) fn decode_one_general_intra_block(
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
     tools: &GeneralIntraFrameTools,
     neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
-) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
+    store: impl FnOnce(GeneralIntraReconCommand),
+) -> Result<GeneralIntraLeafMode> {
     let edges = neighbours.edges;
     let _qm_segment_scope =
         crate::bitstream::tile_payload::FrameQmSegmentScope::install(usize::from(leaf.segment_id));
@@ -348,7 +349,7 @@ pub(crate) fn decode_one_general_intra_block(
             .arena
             .plan_chroma(&block_ctx, chroma_plan, lossless_luma_fsc)
             .map_err(general_intra_residual_plan_error)?;
-        let command = parse_general_intra_residual_plan(
+        parse_general_intra_residual_plan(
             leaf,
             residual_plan,
             &LeafResidualFacts {
@@ -359,8 +360,9 @@ pub(crate) fn decode_one_general_intra_block(
                 luma_transform_type_context: LumaTransformTypeContext::new(y_mode, angle_delta_y),
                 luma_tx_partition_context: None,
             },
+            store,
         )?;
-        return Ok((GeneralIntraLeafMode::chroma(chroma.uv_bits()), command));
+        return Ok(GeneralIntraLeafMode::chroma(chroma.uv_bits()));
     }
 
     let luma_only = frontier.is_luma_part() || !frontier.has_chroma;
@@ -450,7 +452,7 @@ pub(crate) fn decode_one_general_intra_block(
             lossless,
         )
         .map_err(general_intra_residual_plan_error)?;
-    let command = parse_general_intra_residual_plan(
+    parse_general_intra_residual_plan(
         leaf,
         residual_plan,
         &LeafResidualFacts {
@@ -465,6 +467,7 @@ pub(crate) fn decode_one_general_intra_block(
                 lossless,
             ),
         },
+        store,
     )?;
     let leaf = GeneralIntraLeafMode::luma(
         modes.intra_joint_mode,
@@ -476,7 +479,7 @@ pub(crate) fn decode_one_general_intra_block(
     .with_palette_y(modes.palette_y())
     .with_use_dip(modes.use_dip)
     .with_uv(modes.uv_bits());
-    Ok((leaf, command))
+    Ok(leaf)
 }
 
 /// The block context of `frontier` and, with chroma, its chroma 4x4 extent.
@@ -801,7 +804,8 @@ fn parse_general_intra_residual_plan(
     leaf: &mut GeneralIntraLeafParse<'_, '_>,
     residual_plan: crate::residual::pipeline::PlannedGeneralIntraResidual,
     facts: &LeafResidualFacts<'_>,
-) -> Result<GeneralIntraReconCommand> {
+    store: impl FnOnce(GeneralIntraReconCommand),
+) -> Result<()> {
     let block = facts.block_ctx.block();
     let mut deblock = crate::residual::pipeline::DeblockRecorder {
         blocks: leaf.deblock_blocks,
@@ -828,14 +832,15 @@ fn parse_general_intra_residual_plan(
             leaf.coeffs_arena,
         )
         .map_err(|error| general_intra_residual_error(error, leaf.tile_offset))?;
-    Ok(GeneralIntraReconCommand {
+    store(GeneralIntraReconCommand {
         residual,
         qindex: leaf.qindex,
         intra_edge: facts.intra_edge,
         luma_transform_type_context: facts.luma_transform_type_context,
         segment_id: leaf.segment_id,
         tile_offset: leaf.tile_offset,
-    })
+    });
+    Ok(())
 }
 
 fn general_intra_residual_plan_error(error: ResidualPlanError) -> DecodeError {
