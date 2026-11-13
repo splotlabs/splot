@@ -694,15 +694,18 @@ impl NeighbourMvGrid {
         n4h: usize,
         flags: NeighbourFlags,
     ) -> u32 {
-        let (row, col) = (
-            r.wrapping_sub(self.origin_row),
-            c.wrapping_sub(self.origin_col),
-        );
-        if row < self.mi_rows && col < self.mi_cols && !self.above.is_empty() {
-            self.enter_sb_row(r);
-            for (line, at, len) in [(&mut self.above, col, n4w), (&mut self.left, row, n4h)] {
-                let end = (at + len).min(line.len());
-                if let Some(run) = line.get_mut(at..end) {
+        let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
+            return NO_LEAF;
+        };
+        self.enter_sb_row(rows.start);
+        let (row, col) = (rows.start - self.origin_row, cols.start - self.origin_col);
+        let (row_end, col_end) = (rows.end - self.origin_row, cols.end - self.origin_col);
+        if (rows.start, cols.start) == (r, c) && !self.above.is_empty() {
+            for (line, run) in [
+                (&mut self.above, col..col_end),
+                (&mut self.left, row..row_end),
+            ] {
+                if let Some(run) = line.get_mut(run) {
                     crate::support::fill_mi_run(run, flags);
                 }
             }
@@ -710,10 +713,6 @@ impl NeighbourMvGrid {
                 return NO_LEAF;
             }
         }
-        let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
-            return NO_LEAF;
-        };
-        self.enter_sb_row(rows.start);
         let Some(slot) = u32::try_from(self.planes.leaves.len())
             .ok()
             .and_then(|leaf| NonZeroU32::new(leaf.wrapping_add(1)))
@@ -734,12 +733,18 @@ impl NeighbourMvGrid {
             model_bits: 0,
             resolved: false,
         });
-        let (width, stride, last) = (cols.len(), self.mi_cols, rows.end - 1);
-        if let (Some(first), Some(end)) = (
-            self.index_at(rows.start, cols.start),
-            self.index_at(last, cols.start),
-        ) && end == first + (last - rows.start) * stride
-            && let Some(region) = self.planes.cells.get_mut(first..end + width)
+        let (lo, hi, bias) = self.readable;
+        let (width, stride) = (cols.len(), self.mi_cols);
+        let first = row
+            .wrapping_add(bias)
+            .wrapping_mul(stride)
+            .wrapping_add(col);
+        if row >= lo
+            && row_end <= hi
+            && let Some(region) = self
+                .planes
+                .cells
+                .get_mut(first..first + (rows.len() - 1) * stride + width)
         {
             for run in region.chunks_mut(stride) {
                 if let Some(run) = run.get_mut(..width) {
