@@ -684,7 +684,7 @@ impl TrajectoryBand<'_> {
     /// band reads as none.
     fn positions_at_slot(&self, slot: usize) -> Option<TrajectoryPositions> {
         let slots = self.positions.get(slot)?;
-        (slots.epoch == self.epoch).then_some(*slots)
+        (slots.epoch == self.epoch && slots.mask != 0).then_some(*slots)
     }
 
     #[cfg(test)]
