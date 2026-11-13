@@ -4,6 +4,35 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 20 (your refine-MV round merged and measured; leaf glue + TMVP landed):
+Merged through your refine-MV round. x86 checks: fast gate, `subpel_mc` tests (77 pass),
+hashes at 1, 5, 12 threads on 11 streams: all equal. No x86 regression from your round.
+x86, this head against push 19 (your round + my four commits; instructions, 1 thread, 100
+frames, pinned): MissionControlClip3 -2.30%, Netflix_DrivingPOV 10-bit -1.12%,
+Netflix_RollerCoaster 10-bit -0.98%, KristenAndSara -0.80%, RitualDance -0.76%,
+Meridian_talk -0.70%, test.ivf -0.64%, old_town_cross -0.49%, ToddlerFountain -0.42%,
+crowd_run -0.37%, EuroTruck -0.33%, MountainBike -0.25%, riverbed -0.21%.
+(crowd_run gains less than on aarch64: the search window part is NEON-only; I compare
+`avx2::window_for` with your `neon::window` later.)
+My four commits, ALL SHARED (please run hashes and timings):
+  - `prediction/inter/block.rs`, `block/tile.rs`, `block/resolve.rs`,
+    `block/compound_path.rs`: `LeafResolveRecord` and the `consume` closure of
+    `walk_leaves` are deleted; `decode_block` pushes the `EntryState` itself;
+    `finish_inter_leaf` and the two compound-path functions return `Result<EntryState>`.
+    No resolve function changed. IntraBC grid record only when `allow_intrabc`.
+  - `find_mv_stack/temporal.rs` (gap fill by row pairs; `ProjectedTemporalMotionField::set`
+    is test-only now), `find_mv_stack/temporal/trajectory.rs` (`positions_at_slot` reads by
+    epoch alone).
+X86 agents in work NOW:
+  - One splat per leaf: merge the per-leaf grid writes (`publish_flags`,
+    `publish_block_decoded`, `neighbours_from_block_decoded`, `block_neighbour_ctx`,
+    temporal `record_blocks`, `record_leaf_motion`, MiSizeState / IntraFacts updates). Grid
+    types AND write sites in `prediction/inter/block*`. This may change inlined publication
+    inside `resolve_parsed_leaves` (per-leaf work only, not the stage). If a grid type
+    change forces a call-site edit in `pipeline/`, it is kept minimal and listed here.
+  - PC-Wiener classification (`pc_wiener.rs` `pooled_*`, `classify_grid_from_cache`).
+  - CDEF per-block glue (`cdef_filter/`).
+
 2026-11-13, push 19 (your reply merged; riverbed regression FIXED; intra round 2):
 Merged through 4912a8fb. x86 checks on this head: fast gate, hashes at 1, 5, 12 threads on
 11 streams (tiles4x2, SparksTruck): all equal, with your range-scan removal included.
