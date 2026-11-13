@@ -263,8 +263,8 @@ pub(crate) struct GeneralIntraLeafParse<'a, 'p> {
 }
 
 /// The residual-plan facts of one leaf beside its [`GeneralIntraLeafParse`].
-struct LeafResidualFacts {
-    block_ctx: BlockCtx,
+struct LeafResidualFacts<'a> {
+    block_ctx: &'a BlockCtx,
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     lossless: bool,
     uv_mode: usize,
@@ -346,13 +346,13 @@ pub(crate) fn decode_one_general_intra_block(
             lossless && neighbours.collocated.uses_fsc_at(frontier.r, frontier.c);
         let residual_plan = leaf
             .arena
-            .plan_chroma(block_ctx, chroma_plan, lossless_luma_fsc)
+            .plan_chroma(&block_ctx, chroma_plan, lossless_luma_fsc)
             .map_err(general_intra_residual_plan_error)?;
         let command = parse_general_intra_residual_plan(
             leaf,
             residual_plan,
             &LeafResidualFacts {
-                block_ctx,
+                block_ctx: &block_ctx,
                 intra_edge,
                 lossless,
                 uv_mode: chroma.coeff_uv_mode(),
@@ -437,12 +437,12 @@ pub(crate) fn decode_one_general_intra_block(
         None
     };
 
-    let luma_plan = rect_luma_plan(&modes, block_ctx, leaf.luma_use_tcq, tools.sb_mib)?;
+    let luma_plan = rect_luma_plan(&modes, &block_ctx, leaf.luma_use_tcq, tools.sb_mib)?;
     let chroma_plan = rect_chroma_plan(&modes, tools.cfl_ds_filter_index, tools.sb_mib);
     let residual_plan = leaf
         .arena
         .plan_rect(
-            block_ctx,
+            &block_ctx,
             luma_plan,
             chroma_plan,
             modes.uses_active_fsc(),
@@ -454,7 +454,7 @@ pub(crate) fn decode_one_general_intra_block(
         leaf,
         residual_plan,
         &LeafResidualFacts {
-            block_ctx,
+            block_ctx: &block_ctx,
             intra_edge,
             lossless,
             uv_mode: modes.coeff_uv_mode(),
@@ -549,7 +549,7 @@ fn frame_tx_mode(core: &FrameHeaderCore) -> Option<TxMode> {
 #[inline]
 pub(crate) fn rect_luma_plan(
     modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
+    block_ctx: &BlockCtx,
     use_tcq: bool,
     sb_mib: usize,
 ) -> core::result::Result<RectLumaPlan, crate::DecodeHeaderStateError> {
@@ -584,7 +584,7 @@ fn rect_luma_mrl_plan_for_parts(
     y_mode: IntraYMode,
     angle_delta_y: i8,
     mrl: MrlSelection,
-    block_ctx: BlockCtx,
+    block_ctx: &BlockCtx,
     use_tcq: bool,
     sb_mib: usize,
 ) -> core::result::Result<RectLumaPlan, crate::DecodeHeaderStateError> {
@@ -692,7 +692,7 @@ fn rect_luma_plan_for_mode(
 fn directional_p_angle_for_luma(
     y_mode: IntraYMode,
     angle_delta_y: i8,
-    block_ctx: BlockCtx,
+    block_ctx: &BlockCtx,
 ) -> core::result::Result<Option<u16>, crate::DecodeHeaderStateError> {
     let Some(base) = y_mode.mode_to_angle() else {
         return Ok(None);
@@ -800,7 +800,7 @@ pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i3
 fn parse_general_intra_residual_plan(
     leaf: &mut GeneralIntraLeafParse<'_, '_>,
     residual_plan: crate::residual::pipeline::PlannedGeneralIntraResidual,
-    facts: &LeafResidualFacts,
+    facts: &LeafResidualFacts<'_>,
 ) -> Result<GeneralIntraReconCommand> {
     let block = facts.block_ctx.block();
     let mut deblock = crate::residual::pipeline::DeblockRecorder {
