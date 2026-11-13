@@ -546,15 +546,19 @@ fn filter_run_tiles<T: ReconSample>(
         .checked_mul(simd::TILE_STRIDE)
         .ok_or_else(gdf_state_error)?;
     let total = tiles.checked_mul(area).ok_or_else(gdf_state_error)?;
-    resize_overwrite_scratch(&mut scratch.source, total)?;
+    grow_scratch(&mut scratch.source, total)?;
+    let source = scratch
+        .source
+        .get_mut(..total)
+        .ok_or_else(gdf_state_error)?;
     let cdef_luma = separate_cdef_luma.unwrap_or(&*post_lr_luma);
     let sources = (deblocked_luma, cdef_luma, cdef_overlap);
-    GdfSource::fill_stripe_tiles(&mut scratch.source, sources, bounds, run, area)?;
+    GdfSource::fill_stripe_tiles(source, sources, bounds, run, area)?;
     let grads = 2 * ClassScratch::chunks(simd::TILE_COLS.min(run.width) >> 1);
-    resize_overwrite_scratch(&mut scratch.class_scratch.grads, grads)?;
+    grow_scratch(&mut scratch.class_scratch.grads, grads)?;
     let errors = 2 * ClassScratch::error_row(simd::TILE_COLS.min(run.width));
-    resize_overwrite_scratch(&mut scratch.class_scratch.errors, errors)?;
-    for (index, samples) in scratch.source.chunks_exact(area).enumerate() {
+    grow_scratch(&mut scratch.class_scratch.errors, errors)?;
+    for (index, samples) in source.chunks_exact(area).enumerate() {
         let tile = tile(index);
         let source = GdfSource::tile(samples, &tile)?;
         let origin = source
@@ -914,6 +918,15 @@ fn source_bounds(
     })
 }
 
+/// [`resize_overwrite_scratch`] that never shrinks `buffer`, so that a
+/// later longer use refills nothing.
+fn grow_scratch<T: Clone + Default>(buffer: &mut Vec<T>, len: usize) -> Result<()> {
+    if len > buffer.len() {
+        resize_overwrite_scratch(buffer, len)?;
+    }
+    Ok(())
+}
+
 fn resize_overwrite_scratch<T: Clone + Default>(buffer: &mut Vec<T>, len: usize) -> Result<()> {
     if len > buffer.len() {
         let additional = len - buffer.len();
@@ -954,13 +967,12 @@ impl<T: ReconSample> GdfSourceRow<'_, T> {
         dst: &mut [u16],
         shift: u32,
     ) -> Option<()> {
-        let end = start.checked_add(dst.len())?;
-        let mut max = 0;
-        for (dst, sample) in dst.iter_mut().zip(self.0.get(start..end)?) {
-            let sample = sample.to_u16();
-            max = max.max(sample);
-            *dst = sample << shift;
-        }
+        let src = self.0.get(start..start.checked_add(dst.len())?)?;
+        let max = if let Some(src) = T::u8_slice(src) {
+            simd::copy_shifted(src, dst, shift)
+        } else {
+            simd::copy_shifted(T::u16_slice(src)?, dst, shift)
+        };
         (max <= U::MAX_VALUE).then_some(())
     }
 }
