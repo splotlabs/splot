@@ -890,36 +890,28 @@ impl CflLumaEdges {
             (height, num_left, &self.left, left),
         ];
         let (mut sum_x, mut sum_xx) = (0i32, 0i32);
-        let mut taps = [[(0usize, 0i32); NUM_REF_SAM_CFL]; 2];
-        for (&(len, num, edge, _), taps) in edges.iter().zip(&mut taps) {
-            let step = if num == 0 {
-                0
-            } else {
-                len >> num.trailing_zeros()
+        let mut sums = [(0i32, 0i32); N];
+        for &(len, num, edge, chroma) in &edges {
+            let (Some(chroma), Some(log2)) = (chroma, num.checked_ilog2()) else {
+                continue;
             };
-            for (k, tap) in taps[..num.min(NUM_REF_SAM_CFL)].iter_mut().enumerate() {
+            let step = len >> log2;
+            for k in 0..num.min(NUM_REF_SAM_CFL) {
                 let at = (step >> 1) + k * step;
                 let luma = i32::from(edge[at] >> 3);
-                *tap = (at, luma);
                 sum_x += luma;
                 sum_xx += luma * luma;
+                for ((sum_y, sum_xy), plane) in sums.iter_mut().zip(chroma) {
+                    let sample = i32::from(plane[at].to_u16());
+                    *sum_y += sample;
+                    *sum_xy += luma * sample;
+                }
             }
         }
         let count = (num_above + num_left) as i32;
         let divide = |n: i32| n >> count.trailing_zeros();
         let der = sum_xx - divide(sum_x * sum_x);
-        for (plane, model) in models.iter_mut().enumerate() {
-            let (mut sum_y, mut sum_xy) = (0i32, 0i32);
-            for (&(_, num, _, chroma), taps) in edges.iter().zip(&taps) {
-                let Some(chroma) = chroma else {
-                    continue;
-                };
-                for &(at, luma) in &taps[..num.min(NUM_REF_SAM_CFL)] {
-                    let sample = i32::from(chroma[plane][at].to_u16());
-                    sum_y += sample;
-                    sum_xy += luma * sample;
-                }
-            }
+        for (model, (sum_y, sum_xy)) in models.iter_mut().zip(sums) {
             let nor = sum_xy - divide(sum_x * sum_y);
             if der != 0 && nor != 0 {
                 model.1 = i32::from(resolve_division(nor, der, CFL_DERIVED_ALPHA_SHIFT));

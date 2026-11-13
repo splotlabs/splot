@@ -35,13 +35,12 @@ pub(crate) type MaddPattern = [i16; 8];
 /// Both `pmaddwd` weight vectors of one pair over four cells.
 pub(crate) type MaddWeights = [[i16; 16]; 2];
 
-/// Whether [`MaddWeights`] over `T` rows take the in-lane arrangement of the
-/// x86 kernel.
+/// Whether [`MaddWeights`] take the in-lane arrangement of the x86 kernel.
 #[inline]
-fn in_lane<T: LumaSimdSource>() -> bool {
+fn in_lane() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        T::WIDE && fearless_simd::Level::baseline().as_avx2().is_some()
+        fearless_simd::Level::baseline().as_avx2().is_some()
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -53,7 +52,7 @@ fn in_lane<T: LumaSimdSource>() -> bool {
 /// arrangement.
 #[inline]
 pub(crate) fn arrange_into<T: LumaSimdSource>(weights: &mut MaddWeights, cells: [&MaddPattern; 4]) {
-    let [a, b, c, d] = if in_lane::<T>() {
+    let [a, b, c, d] = if in_lane() {
         [cells[0], cells[2], cells[1], cells[3]]
     } else {
         cells
@@ -131,7 +130,7 @@ pub(crate) fn run_weights<F: TapPairs, T: LumaSimdSource>(
     classes: [&LaneClass; 4],
 ) -> [MaddWeights; 9] {
     #[cfg(target_arch = "x86_64")]
-    if in_lane::<T>()
+    if in_lane()
         && let Some(t) = fearless_simd::Level::baseline().as_avx2()
     {
         return in_lane_weights(t, classes, F::TAPS.len() / 2);
@@ -345,11 +344,11 @@ pub(crate) trait TapPairs {
     const RADIUS: usize;
     /// Pair `j` of the symmetric taps.
     const TAPS: &'static [(isize, isize)];
-    /// The x86 kernel over `u16` rows.
+    /// The x86 kernel.
     #[cfg(target_arch = "x86_64")]
-    fn avx2<const ROWS: usize, const REACH: usize>(
+    fn avx2<T: LumaSimdSource, const ROWS: usize, const REACH: usize>(
         t: fearless_simd::Avx2,
-        window: &[&[u16; REACH]; ROWS],
+        window: &[&[T; REACH]; ROWS],
         weights: &[MaddWeights],
         max_sample: u16,
     ) -> Option<[u16; 16]>;
@@ -438,10 +437,8 @@ pub(crate) fn filter16<F: TapPairs, T: LumaSimdSource, const ROWS: usize, const 
     max_sample: u16,
 ) -> [u16; 16] {
     #[cfg(target_arch = "x86_64")]
-    if let (Some(token), Some(rows)) = (
-        fearless_simd::Level::baseline().as_avx2(),
-        T::u16_rows(window),
-    ) && let Some(values) = F::avx2(token, &rows, weights, max_sample)
+    if let Some(token) = fearless_simd::Level::baseline().as_avx2()
+        && let Some(values) = F::avx2(token, window, weights, max_sample)
     {
         return values;
     }
@@ -549,7 +546,7 @@ fn portable<S: Simd, F: TapPairs, T: LumaSimdSource, const ROWS: usize, const RE
 }
 
 /// Implements [`TapPairs::avx2`] for a tap table with one x86 kernel over
-/// `ROWS` rows of `REACH` columns.
+/// `ROWS` rows of `REACH` columns, for `u16` and for `u8` rows.
 #[cfg(target_arch = "x86_64")]
 macro_rules! madd_avx2 {
     ($taps:ty, $rows:literal, $reach:literal) => {
@@ -558,90 +555,122 @@ macro_rules! madd_avx2 {
             reason = "measured: the row kernel must inline into its group loop"
         )]
         #[inline(always)]
-        fn avx2<const ROWS: usize, const REACH: usize>(
+        fn avx2<
+            T: $crate::wienerns_filter::LumaSimdSource,
+            const ROWS: usize,
+            const REACH: usize,
+        >(
             t: fearless_simd::Avx2,
-            window: &[&[u16; REACH]; ROWS],
+            window: &[&[T; REACH]; ROWS],
             weights: &[$crate::lr_madd::MaddWeights],
             max_sample: u16,
         ) -> Option<[u16; 16]> {
             use core::arch::x86_64::*;
-            use fearless_simd::{Avx2, SimdBase, SimdInto, i16x16, u16x16};
+            use fearless_simd::{Avx2, SimdBase, SimdInto, i16x16, u8x16, u16x16};
             use $crate::lr_madd::MaddWeights;
 
-            fearless_simd::kernel!(
-                #[inline(always)]
-                fn kernel(
-                    t: Avx2,
-                    window: &[&[u16; $reach]; $rows],
-                    weights: &[MaddWeights],
-                    max_sample: u16,
-                ) -> [u16; 16] {
-                    let r = <$taps as $crate::lr_madd::TapPairs>::RADIUS;
-                    let taps = <$taps as $crate::lr_madd::TapPairs>::TAPS;
-                    let load = |row: usize, col: usize| -> __m256i {
-                        match window
-                            .get(row)
-                            .and_then(|row| row.get(col..))
-                            .and_then(<[u16]>::first_chunk::<16>)
-                        {
-                            Some(lanes) => u16x16::load_array_ref(t, lanes).into(),
-                            None => _mm256_setzero_si256(),
-                        }
-                    };
-                    let term = |j: usize| {
-                        let (dy, dx) = taps[j];
-                        _mm256_add_epi16(
-                            load(r.wrapping_add_signed(dy), r.wrapping_add_signed(dx)),
-                            load(r.wrapping_add_signed(-dy), r.wrapping_add_signed(-dx)),
-                        )
-                    };
-                    let half = |weights: &MaddWeights, half: usize| -> __m256i {
-                        i16x16::load_array_ref(t, &weights[half]).into()
-                    };
-                    let mut sums = [_mm256_setzero_si256(); 2];
-                    let mut add = |a: __m256i, b: __m256i, weights: &MaddWeights| {
-                        sums[0] = _mm256_add_epi32(
-                            sums[0],
-                            _mm256_madd_epi16(_mm256_unpacklo_epi16(a, b), half(weights, 0)),
-                        );
-                        sums[1] = _mm256_add_epi32(
-                            sums[1],
-                            _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), half(weights, 1)),
-                        );
-                    };
-                    let pairs = taps.len() / 2;
-                    for (pair, weights) in weights.iter().enumerate().take(pairs) {
-                        add(term(2 * pair), term(2 * pair + 1), weights);
-                    }
-                    if let Some(weights) = weights.get(pairs) {
-                        add(load(r, r), _mm256_set1_epi16(1), weights);
-                    }
-                    let values = _mm256_min_epu16(
-                        _mm256_packus_epi32(
-                            _mm256_srai_epi32::<7>(sums[0]),
-                            _mm256_srai_epi32::<7>(sums[1]),
-                        ),
-                        _mm256_set1_epi16(max_sample as i16),
-                    );
-                    let values: u16x16<Avx2> = values.simd_into(t);
-                    values.into()
-                }
-            );
+            $crate::lr_madd::madd_row_kernel!(words, u16, $taps, $rows, $reach, |t, lanes| {
+                u16x16::load_array_ref(t, lanes).into()
+            });
+            $crate::lr_madd::madd_row_kernel!(bytes, u8, $taps, $rows, $reach, |t, lanes| {
+                _mm256_cvtepu8_epi16(u8x16::load_array_ref(t, lanes).into())
+            });
 
-            if ROWS != $rows {
-                return None;
+            #[inline(always)]
+            fn cut<S, const ROWS: usize, const REACH: usize>(
+                window: [&[S; REACH]; ROWS],
+            ) -> Option<[&[S; $reach]; $rows]> {
+                let first = window.first()?.first_chunk::<$reach>()?;
+                let mut rows = [first; $rows];
+                if ROWS != $rows {
+                    return None;
+                }
+                for (slot, row) in rows.iter_mut().zip(window) {
+                    *slot = row.first_chunk::<$reach>()?;
+                }
+                Some(rows)
             }
-            let mut rows: [&[u16; $reach]; $rows] = [&[0; $reach]; $rows];
-            for (slot, row) in rows.iter_mut().zip(window) {
-                *slot = row.as_slice().first_chunk::<$reach>()?;
+
+            if let Some(window) = T::u8_rows(window) {
+                return Some(bytes(t, &cut(window)?, weights, max_sample));
             }
-            Some(kernel(t, &rows, weights, max_sample))
+            Some(words(t, &cut(T::u16_rows(window)?)?, weights, max_sample))
         }
     };
 }
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) use madd_avx2;
+
+/// The [`madd_avx2`] row kernel `$name` over `$sample` rows, `$words`
+/// zero-extending 16 samples `$lanes` to word lanes.
+#[cfg(target_arch = "x86_64")]
+macro_rules! madd_row_kernel {
+    ($name:ident, $sample:ty, $taps:ty, $rows:literal, $reach:literal, |$t:ident, $lanes:ident| $words:block) => {
+        fearless_simd::kernel!(
+            #[inline(always)]
+            fn $name(
+                $t: Avx2,
+                window: &[&[$sample; $reach]; $rows],
+                weights: &[MaddWeights],
+                max_sample: u16,
+            ) -> [u16; 16] {
+                let r = <$taps as $crate::lr_madd::TapPairs>::RADIUS;
+                let taps = <$taps as $crate::lr_madd::TapPairs>::TAPS;
+                let load = |row: usize, col: usize| -> __m256i {
+                    match window
+                        .get(row)
+                        .and_then(|row| row.get(col..))
+                        .and_then(<[$sample]>::first_chunk::<16>)
+                    {
+                        Some($lanes) => $words,
+                        None => _mm256_setzero_si256(),
+                    }
+                };
+                let term = |j: usize| {
+                    let (dy, dx) = taps[j];
+                    _mm256_add_epi16(
+                        load(r.wrapping_add_signed(dy), r.wrapping_add_signed(dx)),
+                        load(r.wrapping_add_signed(-dy), r.wrapping_add_signed(-dx)),
+                    )
+                };
+                let half = |weights: &MaddWeights, half: usize| -> __m256i {
+                    i16x16::load_array_ref($t, &weights[half]).into()
+                };
+                let mut sums = [_mm256_setzero_si256(); 2];
+                let mut add = |a: __m256i, b: __m256i, weights: &MaddWeights| {
+                    sums[0] = _mm256_add_epi32(
+                        sums[0],
+                        _mm256_madd_epi16(_mm256_unpacklo_epi16(a, b), half(weights, 0)),
+                    );
+                    sums[1] = _mm256_add_epi32(
+                        sums[1],
+                        _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), half(weights, 1)),
+                    );
+                };
+                let pairs = taps.len() / 2;
+                for (pair, weights) in weights.iter().enumerate().take(pairs) {
+                    add(term(2 * pair), term(2 * pair + 1), weights);
+                }
+                if let Some(weights) = weights.get(pairs) {
+                    add(load(r, r), _mm256_set1_epi16(1), weights);
+                }
+                let values = _mm256_min_epu16(
+                    _mm256_packus_epi32(
+                        _mm256_srai_epi32::<7>(sums[0]),
+                        _mm256_srai_epi32::<7>(sums[1]),
+                    ),
+                    _mm256_set1_epi16(max_sample as i16),
+                );
+                let values: u16x16<Avx2> = values.simd_into($t);
+                values.into()
+            }
+        );
+    };
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) use madd_row_kernel;
 
 /// The AArch64 kernels for runs of 16-column groups that share one class,
 /// and for runs of groups whose 4-column cells take classes of their own.

@@ -713,6 +713,13 @@ mod avx2 {
         else {
             return 0;
         };
+        let known = match layout {
+            LumaSubclassLayout::Cells { values, cols } => values
+                .get((first / 4) * cols..)
+                .and_then(|row| row.get(..cols))
+                .is_some_and(|row| usize::from(row.iter().fold(0, |m, &c| m.max(c))) < classes),
+            _ => false,
+        };
         let mut x = 0;
         while x + LANES <= width && x + REACH <= STAGE_STRIDE {
             if let Some(value) = flat.chunk_value(x / LANES) {
@@ -741,10 +748,10 @@ mod avx2 {
                     else {
                         break;
                     };
-                    if cells.iter().any(|&class| usize::from(class) >= classes) {
+                    if !known && cells.iter().any(|&class| usize::from(class) >= classes) {
                         break;
                     }
-                    if cells.iter().all(|&class| class == cells[0]) {
+                    if *cells == [cells[0]; 8] {
                         uniform_weights(t, &luma.classes[usize::from(cells[0])])
                     } else {
                         mixed_weights(t, &luma.tables, cells)

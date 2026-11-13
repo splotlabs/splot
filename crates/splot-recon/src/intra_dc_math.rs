@@ -60,7 +60,7 @@ pub(crate) fn validate_sample_type<T: ReconSample>(bit_depth: BitDepth) -> Resul
 /// Every value is a `Clip1` sample of the active bit depth, and
 /// [`validate_sample_type`] admits a storage type only when it holds that
 /// depth, so each conversion is exact.
-pub(crate) trait IntraLaneSample: ReconSample {
+pub(crate) trait IntraLaneSample: ReconSample + crate::SummedSample {
     /// Converts one in-range sample.
     fn from_lane(value: u16) -> Self;
 
@@ -485,6 +485,7 @@ pub fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
     )
 }
 
+#[inline]
 pub(crate) fn resolve_divisor_32(den: u32) -> Result<(u8, u16)> {
     resolve_divisor_for_width!(
         den,
