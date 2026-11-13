@@ -30,6 +30,7 @@ use parking_lot::{Condvar, Mutex};
 use crate::error::ParallelError;
 
 const WORKER_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+const IDLE: u64 = 0xffff_ffff;
 
 /// One row of one stage, chosen by [`FrameWork::claim`] and run by
 /// [`FrameWork::run`].
@@ -404,7 +405,10 @@ struct Driver {
 /// `ready` (a driver claims none), then clears one bit and unparks that
 /// worker. Both sides write first, fence, then read, so either the
 /// dispatcher sees the bit or the worker's last look sees the publication:
-/// no wake is lost, and a wake is sent only for a row that exists. Every
+/// no wake is lost, and a wake is sent only for a row that exists. The same
+/// atomic step that clears a worker's idle bit sets its waking bit, which
+/// the worker clears once it runs; dispatchers skip while a bit is set, as
+/// the worker looks after it clears its bit and dispatches the next. Every
 /// worker takes `ready` rows before it scans, so a row a busy worker can
 /// start sooner does not wait for the woken one to get a core.
 struct Core {
@@ -414,7 +418,8 @@ struct Core {
     slots: Box<[Slot]>,
     ready: Line<Mutex<VecDeque<Job>>>,
     queued: Line<AtomicUsize>,
-    /// Bit `i % 64` of word `i / 64` is set while worker `i` is idle.
+    /// Bit `i % 32` of word `i / 32` is set while worker `i` is idle, and
+    /// bit `32 + i % 32` from when a waker clears that bit until it runs.
     idle: Box<[Line<AtomicU64>]>,
     driver: Line<Driver>,
 }
@@ -477,7 +482,7 @@ impl RowWake {
         self.0
             .idle
             .iter()
-            .map(|word| word.0.load(Ordering::SeqCst).count_ones() as usize)
+            .map(|word| (word.0.load(Ordering::SeqCst) & IDLE).count_ones() as usize)
             .sum()
     }
 }
@@ -497,7 +502,7 @@ impl Core {
             slots: (0..workers).map(|_| Slot::default()).collect(),
             ready: Line::default(),
             queued: Line::default(),
-            idle: (0..workers.div_ceil(64)).map(|_| Line::default()).collect(),
+            idle: (0..workers.div_ceil(32)).map(|_| Line::default()).collect(),
             driver: Line::default(),
         }
     }
@@ -594,30 +599,60 @@ impl Core {
     }
 
     fn set_idle(&self, worker: usize) {
-        if let Some(word) = self.idle.get(worker / 64) {
-            word.0.fetch_or(1 << (worker % 64), Ordering::SeqCst);
+        if let Some(word) = self.idle.get(worker / 32) {
+            word.0.fetch_or(1 << (worker % 32), Ordering::SeqCst);
         }
     }
 
-    /// Clears `worker`'s idle bit; whether it was set.
+    /// Clears `worker`'s idle bit and sets its waking bit; whether it was
+    /// idle.
     fn take_idle(&self, worker: usize) -> bool {
-        let bit = 1u64 << (worker % 64);
+        let bit = 1u64 << (worker % 32);
+        self.idle.get(worker / 32).is_some_and(|word| {
+            word.0
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |bits| {
+                    (bits & bit != 0).then_some(bits & !bit | bit << 32)
+                })
+                .is_ok()
+        })
+    }
+
+    /// Clears `worker`'s idle bit itself; whether a waker took it first.
+    fn leave_idle(&self, worker: usize) -> bool {
+        let bit = 1u64 << (worker % 32);
         self.idle
-            .get(worker / 64)
-            .is_some_and(|word| word.0.fetch_and(!bit, Ordering::SeqCst) & bit != 0)
+            .get(worker / 32)
+            .is_some_and(|word| word.0.fetch_and(!bit, Ordering::SeqCst) & bit == 0)
+    }
+
+    /// Clears `worker`'s waking bit once it runs.
+    fn awake(&self, worker: usize) {
+        if let Some(word) = self.idle.get(worker / 32) {
+            word.0
+                .fetch_and(!(1u64 << (32 + worker % 32)), Ordering::SeqCst);
+        }
     }
 
     fn is_idle(&self, worker: usize) -> bool {
         self.idle
-            .get(worker / 64)
-            .is_some_and(|word| word.0.load(Ordering::SeqCst) & (1 << (worker % 64)) != 0)
+            .get(worker / 32)
+            .is_some_and(|word| word.0.load(Ordering::SeqCst) & (1 << (worker % 32)) != 0)
     }
 
+    /// The first idle worker, or `None` when none is idle or one woken
+    /// worker has not run yet.
     fn first_idle(&self) -> Option<usize> {
-        self.idle.iter().enumerate().find_map(|(at, word)| {
+        let mut first = None;
+        for (at, word) in self.idle.iter().enumerate() {
             let bits = word.0.load(Ordering::SeqCst);
-            (bits != 0).then(|| at * 64 + bits.trailing_zeros() as usize)
-        })
+            if bits & !IDLE != 0 {
+                return None;
+            }
+            if first.is_none() && bits != 0 {
+                first = Some(at * 32 + bits.trailing_zeros() as usize);
+            }
+        }
+        first
     }
 
     /// Wakes the driver, and an idle worker when there is one: worker `from`
@@ -680,7 +715,10 @@ impl Core {
             self.set_idle(index);
             fence(Ordering::SeqCst);
             if let Some(job) = self.take_ready().or_else(|| self.scan(slot)) {
-                let _ = self.take_idle(index);
+                if self.leave_idle(index) {
+                    self.awake(index);
+                    self.dispatch(Some(index));
+                }
                 return Some(job);
             }
             while self.is_idle(index) {
@@ -689,6 +727,8 @@ impl Core {
                 }
                 std::thread::park();
             }
+            self.awake(index);
+            fence(Ordering::SeqCst);
         }
     }
 
