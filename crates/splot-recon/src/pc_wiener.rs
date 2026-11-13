@@ -23,6 +23,7 @@ use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
 use crate::loop_restoration::PaddedRows;
 use crate::math::{round2_i32, round2_signed_i32};
+use crate::wienerns_filter::eight_bit::ByteLaneOutput;
 use crate::wienerns_filter::{FlatChunks, LumaSimdOutput, LumaSimdSource};
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
@@ -1757,7 +1758,12 @@ pub fn pc_wiener_filter_block_padded_u8_into<T: ReconSample>(
 /// its cell's taps; a 32-column chunk whose whole tap reach in the group holds
 /// one value takes it, as every `Pc_Wiener_Filters` row sums to zero (checked
 /// at compile time below).
-fn filter_pc_wiener_padded<'a, S, T: ReconSample + LumaSimdSource + 'a, O: LumaSimdOutput>(
+fn filter_pc_wiener_padded<
+    'a,
+    S,
+    T: ReconSample + LumaSimdSource + 'a,
+    O: LumaSimdOutput + ByteLaneOutput,
+>(
     destination: &mut [O],
     params: &PcWienerFilter<'_>,
     source: PaddedRows<'a, S>,
@@ -1772,6 +1778,22 @@ fn filter_pc_wiener_padded<'a, S, T: ReconSample + LumaSimdSource + 'a, O: LumaS
     };
     let mut flat = FlatChunks::<R>::new();
     let mut window = [&[][..]; PC_WIENER_BLOCK_SIZE + 2 * R];
+    #[cfg(target_arch = "x86_64")]
+    let bytes = fearless_simd::Level::baseline()
+        .as_avx2()
+        .filter(|_| setup.max_sample == 255)
+        .zip(bytes::BYTE_CLASSES.get(params.filter_set_index))
+        .and_then(|(t, classes)| {
+            let row = |index| source.row(index, padded_width).and_then(&cast);
+            let staged = bytes::stage(
+                |index| T::u16_slice(row(index)?),
+                padded_width,
+                params.height + 2 * R,
+            )?;
+            Some((t, classes, staged))
+        });
+    #[cfg(target_arch = "x86_64")]
+    let mut byte_window = [&[0; bytes::STAGE_STRIDE]; PC_WIENER_BLOCK_SIZE + 2 * R];
     let mut row = 0;
     while row < params.height {
         let group = PC_WIENER_BLOCK_SIZE.min(params.height - row);
@@ -1781,6 +1803,14 @@ fn filter_pc_wiener_padded<'a, S, T: ReconSample + LumaSimdSource + 'a, O: LumaS
                     .row(row + dy.min(group + 2 * R - 1), padded_width)
                     .and_then(&cast)
                     .ok_or_else(rows_error)?;
+            }
+            #[cfg(target_arch = "x86_64")]
+            if let Some((_, _, staged)) = &bytes {
+                for (dy, slot) in byte_window.iter_mut().enumerate() {
+                    *slot = staged
+                        .get(row + dy.min(group + 2 * R - 1))
+                        .ok_or_else(rows_error)?;
+                }
             }
             flat.update(&window[..group + 2 * R], row, params.width);
         }
@@ -1801,6 +1831,20 @@ fn filter_pc_wiener_padded<'a, S, T: ReconSample + LumaSimdSource + 'a, O: LumaS
                 c0 = run_end;
                 (end, run) = flat.split(c0, params.width);
                 continue;
+            }
+            #[cfg(target_arch = "x86_64")]
+            if let Some((t, classes, _)) = &bytes {
+                c0 = bytes::filter_groups(
+                    *t,
+                    &byte_window,
+                    group,
+                    (c0, end),
+                    (row_subclasses, classes),
+                    (
+                        &mut destination[row * params.output_stride..],
+                        params.output_stride,
+                    ),
+                );
             }
             let full = (end - c0) / 16;
             let tail = full > 0
@@ -2288,6 +2332,8 @@ fn checked_area(width: usize, height: usize, context: &'static str) -> Result<us
 #[path = "pc_wiener/tests.rs"]
 mod tests;
 
+#[cfg(target_arch = "x86_64")]
+mod bytes;
 mod cells16;
 mod tx_skip;
 use crate::lr_madd::{self, LaneClass};
