@@ -74,7 +74,7 @@ mod pc_wiener;
 mod plane;
 mod plane_buf;
 mod plane_pool;
-pub use plane_buf::{PLANE_ALIGNMENT, PlaneBuf, plane_buf, plane_buf_from, plane_stride};
+pub use plane_buf::{LentRows, PLANE_ALIGNMENT, PlaneBuf, plane_buf, plane_buf_from, plane_stride};
 pub use plane_pool::PlanePool;
 mod reconstruct;
 mod reconstruct_block;

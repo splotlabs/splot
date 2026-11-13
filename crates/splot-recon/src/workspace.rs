@@ -40,6 +40,7 @@ mod workspace_rows;
 pub use owned_rect::{OwnedFrameRect, OwnedFrameRectRows};
 pub use workspace_edges::CurrentFrameIntraEdges;
 pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
+use workspace_rows::PlaneSamples;
 pub use workspace_rows::{CurrentFrameRectRowsMut, IntraBlockFrame, WorkspaceRectRows};
 
 macro_rules! contiguous_rect_writer {
@@ -1210,9 +1211,9 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     #[must_use]
     pub fn into_plane_samples(mut self) -> FramePlaneSamples<T> {
         FramePlaneSamples::new(
-            mem::take(&mut self.y.samples),
-            self.u.as_mut().map(|plane| mem::take(&mut plane.samples)),
-            self.v.as_mut().map(|plane| mem::take(&mut plane.samples)),
+            self.y.samples.take(),
+            self.u.as_mut().map(|plane| plane.samples.take()),
+            self.v.as_mut().map(|plane| plane.samples.take()),
         )
     }
 
@@ -1522,10 +1523,10 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         );
         if let Err(error) = DecodedFrame::validate(self.info, &planes, scan) {
             let (y, u, v) = planes.into_parts();
-            self.y.samples = y.into_samples();
+            self.y.samples = PlaneSamples::Owned(y.into_samples());
             for (plane, frozen) in [(self.u.as_mut(), u), (self.v.as_mut(), v)] {
                 if let (Some(plane), Some(frozen)) = (plane, frozen) {
-                    plane.samples = frozen.into_samples();
+                    plane.samples = PlaneSamples::Owned(frozen.into_samples());
                 }
             }
             return Err(error);
@@ -1568,7 +1569,7 @@ pub struct CurrentFramePlane<T: ReconSample> {
     origin_y: usize,
     /// Samples from one row to the next; see [`crate::plane_stride`].
     stride: usize,
-    samples: crate::PlaneBuf<T>,
+    samples: PlaneSamples<T>,
     pool: Option<Arc<crate::PlanePool>>,
 }
 
@@ -1595,7 +1596,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 impl<T: ReconSample> Drop for CurrentFramePlane<T> {
     fn drop(&mut self) {
         if let Some(pool) = self.pool.take() {
-            pool.recycle(mem::take(&mut self.samples));
+            pool.recycle(self.samples.take());
         }
     }
 }
@@ -1664,7 +1665,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             visible_rect,
             origin_y: 0,
             stride: stride_samples,
-            samples,
+            samples: PlaneSamples::Owned(samples),
         })
     }
 
@@ -1689,12 +1690,12 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     }
 
     /// Returns the required backing sample count.
-    pub const fn required_samples(&self) -> usize {
+    pub fn required_samples(&self) -> usize {
         self.samples.len()
     }
 
     /// Returns the backing allocation size in bytes for the sample type.
-    pub const fn allocation_bytes(&self) -> usize {
+    pub fn allocation_bytes(&self) -> usize {
         self.samples.len() * mem::size_of::<T>()
     }
 
@@ -1983,7 +1984,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             self.storage_size,
             self.stride_samples(),
             self.visible_rect,
-            mem::take(&mut self.samples),
+            self.samples.take(),
         )
     }
 

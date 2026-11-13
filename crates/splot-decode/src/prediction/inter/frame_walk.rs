@@ -404,7 +404,7 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
         let band_rows = if block::global_intrabc_enabled(core.intrabc) {
             geometry.info().storage_luma_size().height()
         } else {
-            geometry.sb_h4() * 4
+            0
         };
         let prologue = derive_inter_walk_prologue(
             &candidate,

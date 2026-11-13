@@ -652,3 +652,67 @@ fn frontier_rows_lend_only_rows_no_stripe_or_reader_holds() {
     drop(rows);
     assert!(progress.direct_stripe(1).is_some());
 }
+
+#[cfg(test)]
+#[test]
+fn the_commit_band_and_the_frontier_write_disjoint_rows_concurrently() {
+    use splot_recon::PlaneId::{U, Y};
+    let (_slot, writer, progress) = pending::<u8>(16, 64, PixelFormat::Yuv420);
+    progress.begin(&[(0, 64)]).expect("stripe geometry");
+    let mut rows = progress.frontier_rows().expect("frontier rows");
+    let scratch = splot_recon::IntraPredictionScratch::new;
+    let mut band = rows.lend_commit_rows(0, 16, scratch()).expect("first band");
+    assert!(
+        rows.lend_commit_rows(16, 16, scratch()).is_err(),
+        "one live band"
+    );
+    let whole = |y, height| PlaneRect::new(0, y, 16, height).expect("rows");
+    band.fill_rect(Y, whole(0, 16), 1).expect("luma rows");
+    band.fill_rect(U, PlaneRect::new(0, 0, 8, 8).expect("rows"), 1)
+        .expect("chroma rows");
+    assert!(
+        band.fill_rect(Y, whole(16, 1), 1).is_err(),
+        "a row it was not lent"
+    );
+    let kept = rows.return_commit_rows(band).expect("the live band");
+    let mut band = rows.lend_commit_rows(16, 16, kept).expect("next band");
+    assert!(
+        rows.with_plane_rows_mut(Y, 0, 16, |_, _, _, _, _| ())
+            .is_none()
+    );
+    assert!(
+        rows.with_plane_rows_mut(U, 0, 8, |_, _, _, _, _| ())
+            .is_none()
+    );
+    assert!(!rows.publish_final_rows(16), "a lent row is not final");
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            assert_eq!(band.reconstructed_sample(Y, 3, 15).expect("edge row"), 1);
+            band.fill_rect(Y, whole(16, 16), 2).expect("luma rows");
+        });
+        rows.with_plane_rows_mut(Y, 0, 15, |samples, _, _, _, _| samples.fill(7))
+            .expect("frontier luma rows");
+        rows.with_plane_rows_mut(U, 0, 7, |samples, _, _, _, _| samples.fill(7))
+            .expect("frontier chroma rows");
+    });
+    let stranger = splot_recon::CurrentFrameWorkspace::new_band(rows.info(), 0, None);
+    assert!(rows.return_commit_rows(stranger.expect("band")).is_err());
+    rows.return_commit_rows(band).expect("the live band");
+    let mut seen = Vec::new();
+    rows.with_plane_rows_mut(Y, 0, 64, |samples, stride, _, _, _| {
+        seen.extend(samples.chunks(stride).map(|row| row[0]));
+    })
+    .expect("every row is the frontier's again");
+    assert_eq!(&seen[..14], &[7; 14]);
+    assert_eq!(seen[15], 1);
+    assert_eq!(&seen[16..32], &[2; 16]);
+    assert!(rows.publish_final_rows(16));
+    let _band = rows
+        .lend_commit_rows(32, 16, scratch())
+        .expect("a band after the return");
+    drop(rows);
+    assert!(
+        progress.freeze_workspace(writer).is_err(),
+        "a live band keeps the frontier claimed"
+    );
+}

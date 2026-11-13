@@ -436,6 +436,8 @@ impl<T: SplitSample> SplitFrame<T> {
     fn frontier(&self, row: usize) -> Result<()> {
         let recon = self.recon_state()?;
         let mut progress = recon.frontier(row)?;
+        self.closed_rows
+            .fetch_max(progress.handed_rows, Ordering::AcqRel);
         let mut outcome = Ok(());
         {
             let mut jobs = self.filter_jobs.lock();
@@ -613,7 +615,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 PRECOMPUTE => self.stages[COMMIT]
                     .claim(|batch| batch == claim.row)
                     .map(|row| Claim { stage: COMMIT, row }),
-                COMMIT => self.stages[FRONTIER]
+                COMMIT | FRONTIER => self.stages[FRONTIER]
                     .claim(|row| self.frontier_ready(row))
                     .map(|row| Claim {
                         stage: FRONTIER,
