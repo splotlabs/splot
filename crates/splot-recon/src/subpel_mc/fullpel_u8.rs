@@ -192,6 +192,7 @@ fn compound_pair<T: ReconSample>(
         T::u8_slice_mut(&mut *u_out),
         T::u8_slice_mut(&mut *v_out),
     ) {
+        #[inline]
         fn place<'a>(
             window: &block::Window,
             view: &ReferencePlaneView<'a, u8>,

@@ -129,7 +129,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
-    motion: Option<mc::CompoundMotionGrid>,
+    motion: Option<&mc::CompoundMotionGrid>,
     use_refinemv: bool,
     refinemv_switchable: bool,
     block_decoded: &TileBlockDecodedState,
@@ -141,7 +141,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     bit_depth: BitDepth,
     enable_ibp: bool,
     tile_offset: ByteOffset,
-) -> Result<Option<mc::CompoundMotionGrid>> {
+) -> Result<()> {
     let rect = placed.motion_compensation_rect();
     if let Some(prediction) = placed.block.interintra {
         super::predict_interintra_planes(
@@ -155,7 +155,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
         )?;
     }
     let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
-    let motion = held.predict_into(
+    held.predict_into(
         &mut mc::WorkspaceSink::Frame(workspace),
         placed,
         rect,
@@ -216,7 +216,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             bit_depth,
         )?;
     }
-    Ok(motion)
+    Ok(())
 }
 
 /// Reconstructs one deferable inter block (no interintra, no BAWP, no
@@ -227,7 +227,7 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
-    motion: Option<mc::CompoundMotionGrid>,
+    motion: Option<&mc::CompoundMotionGrid>,
     use_refinemv: bool,
     refinemv_switchable: bool,
     ref_frame_idx: &[u32],
@@ -237,9 +237,9 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
-) -> Result<Option<mc::CompoundMotionGrid>> {
+) -> Result<()> {
     let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
-    let motion = held.predict_into(
+    held.predict_into(
         sink,
         placed,
         placed.motion_compensation_rect(),
@@ -261,5 +261,5 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
             bit_depth,
         )?;
     }
-    Ok(motion)
+    Ok(())
 }

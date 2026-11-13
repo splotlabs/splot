@@ -539,6 +539,7 @@ fn tip_grid_and_cells<T: ReconSample>(
             unit_at,
             offset,
             Vec::new(),
+            &mut super::super::TipSearchScratch::default(),
         )
         .expect("grid")
     };
@@ -552,7 +553,7 @@ fn tip_grid_and_cells<T: ReconSample>(
             super::super::refinemv::tip_refinemv_optflow_motion_cell(
                 &unit,
                 (unit.rect, [unit.mv0, unit.mv1]),
-                &mut [[0; 256]; 2],
+                &mut super::super::TipSearchScratch::default(),
                 &mut luma,
                 &mut Default::default(),
             )

@@ -159,6 +159,7 @@ pub(super) struct TipReconstructScratch {
     /// Each unit's [`whole_sample_mvs`] from the motion half, so a fresh
     /// prediction skips the refine-MV search it already ran.
     whole_mvs: Vec<Option<[Mv; 2]>>,
+    search: mc::TipSearchScratch,
 }
 
 /// The TIP output walk's reusable state: one entry per full-width row band.
@@ -727,10 +728,10 @@ pub(super) fn motion<T: ReconSample>(
     let grid = plan
         .use_optflow
         .then(|| {
-            let candidates = &mut scratch.grid_candidates;
             tip_motion_grid(
                 &scratch.units,
-                candidates,
+                &mut scratch.grid_candidates,
+                &mut scratch.search,
                 plan,
                 sink,
                 reference,
@@ -780,6 +781,7 @@ pub(super) fn motion<T: ReconSample>(
 fn tip_motion_grid<T: ReconSample>(
     units: &[TipUnit],
     candidates: &mut Vec<[Mv; 2]>,
+    search: &mut mc::TipSearchScratch,
     plan: &TipBlockPlan,
     sink: &mc::WorkspaceSink<'_, '_, T>,
     reference: &InterReferenceState<T>,
@@ -808,6 +810,7 @@ fn tip_motion_grid<T: ReconSample>(
         },
         tile_offset,
         core::mem::take(candidates),
+        search,
     )
     .map(Some)
 }
@@ -826,7 +829,7 @@ fn publish_unit_outputs<T: ReconSample>(
     scratch: &TipReconstructScratch,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     plan: &TipBlockPlan,
-    mut grid: Option<mc::CompoundMotionGrid>,
+    grid: Option<mc::CompoundMotionGrid>,
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
@@ -840,7 +843,7 @@ fn publish_unit_outputs<T: ReconSample>(
             let compound = params
                 .into_compound()
                 .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-            grid = mc::predict_compound_into(sink, &compound, grid.take(), tile_offset)?;
+            mc::predict_compound_into(sink, &compound, grid.as_ref(), tile_offset)?;
             continue;
         }
         let (motion, mvs) = if let Some(&Some(mvs)) = known {
@@ -854,7 +857,7 @@ fn publish_unit_outputs<T: ReconSample>(
             if let Some(run) = run.take() {
                 predict_run(sink, &prediction, &run, tile_offset)?;
             }
-            mc::predict_inter_block_from_grid(sink, params, motion, tile_offset)?;
+            mc::predict_inter_block_from_grid(sink, &params, motion.as_ref(), tile_offset)?;
             continue;
         };
         let next = TipUnit {
@@ -934,7 +937,7 @@ fn predict_run<T: ReconSample>(
         .block_params(run)
         .with_refinemv(false)
         .with_refinemv_search(false);
-    mc::predict_inter_block_from_grid(sink, params, None, tile_offset).map(drop)
+    mc::predict_inter_block_from_grid(sink, &params, None, tile_offset)
 }
 
 pub(super) fn retire_motion_grid(
@@ -1780,6 +1783,7 @@ mod tests {
         let grid = super::tip_motion_grid(
             &scratch.units,
             &mut scratch.grid_candidates,
+            &mut scratch.search,
             &plan,
             &sink,
             &reference,

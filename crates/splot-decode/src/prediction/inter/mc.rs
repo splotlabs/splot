@@ -34,6 +34,7 @@ mod refinemv;
 use blend::{blend_compound_average, diff_weighted_mask_into, store_clamped_samples};
 pub(crate) use optflow::CompoundMotionGrid;
 use optflow::{CompoundAverageOutput, MotionCell};
+pub(crate) use refinemv::TipSearchScratch;
 pub(crate) use splot_recon::CurrentFrameSurface as WorkspaceSink;
 
 pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32); 3] {
@@ -420,48 +421,43 @@ pub(crate) fn inter_block_motion_grid<T: ReconSample>(
 
 pub(crate) fn predict_inter_block_from_grid<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
-    block: InterBlockParams<'_, T>,
-    motion: Option<CompoundMotionGrid>,
+    block: &InterBlockParams<'_, T>,
+    motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
-) -> Result<Option<CompoundMotionGrid>> {
+) -> Result<()> {
     match block.prediction {
-        InterPrediction::Single { reference, mv } => {
-            motion_compensate_single_block_into(
-                sink,
-                reference,
-                block.rect,
-                mv,
-                block.interp,
-                block.has_chroma,
-                offset,
-            )?;
-            Ok(motion)
-        }
+        InterPrediction::Single { reference, mv } => motion_compensate_single_block_into(
+            sink,
+            reference,
+            block.rect,
+            mv,
+            block.interp,
+            block.has_chroma,
+            offset,
+        ),
         InterPrediction::SingleWarp {
             reference,
             mv,
             warp_params,
-        } => {
-            motion_compensate_single_warp_block_into(
-                sink,
-                reference,
-                block,
-                mv,
-                warp_params,
-                offset,
-            )?;
-            Ok(motion)
-        }
-        InterPrediction::CompoundAverage { .. } => match block.into_compound() {
-            Some(compound)
-                if motion.is_none()
-                    && compound_average::predict_translational_direct(sink, &compound, offset)? =>
+        } => motion_compensate_single_warp_block_into(
+            sink,
+            reference,
+            *block,
+            mv,
+            warp_params,
+            offset,
+        ),
+        InterPrediction::CompoundAverage { .. } => {
+            let Some(compound) = block.into_compound() else {
+                return Ok(());
+            };
+            if motion.is_none()
+                && compound_average::predict_translational_direct(sink, &compound, offset)?
             {
-                Ok(None)
+                return Ok(());
             }
-            Some(compound) => predict_compound_into(sink, &compound, motion, offset),
-            None => Ok(motion),
-        },
+            predict_compound_into(sink, &compound, motion, offset)
+        }
     }
 }
 
@@ -472,7 +468,8 @@ fn motion_compensate_inter_block<T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<Option<CompoundMotionGrid>> {
     let motion = inter_block_motion_grid(sink, block, optflow_unit_size, offset)?;
-    predict_inter_block_from_grid(sink, block, motion, offset)
+    predict_inter_block_from_grid(sink, &block, motion.as_ref(), offset)?;
+    Ok(motion)
 }
 
 pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
@@ -611,6 +608,7 @@ pub(super) fn tip_batch_motion_grid<T: ReconSample>(
     unit_at: impl Fn(usize) -> (McBlockRect, [Mv; 2]) + Sync,
     offset: ByteOffset,
     refinemv_candidates: Vec<[Mv; 2]>,
+    search: &mut TipSearchScratch,
 ) -> Result<CompoundMotionGrid> {
     optflow::tip_motion_grid(
         sink,
@@ -621,6 +619,7 @@ pub(super) fn tip_batch_motion_grid<T: ReconSample>(
         unit_at,
         offset,
         refinemv_candidates,
+        search,
     )
 }
 
@@ -638,7 +637,8 @@ pub(super) fn predict_tip_batch_from_grid<T: ReconSample>(
     block.optflow_distances = None;
     block.use_refinemv = false;
     block.search_refinemv = false;
-    predict_compound_into(sink, &block, Some(motion), offset)
+    predict_compound_into(sink, &block, Some(&motion), offset)?;
+    Ok(Some(motion))
 }
 
 /// Predicts a compound block straight into `sink`. Only a plane that the
@@ -646,19 +646,17 @@ pub(super) fn predict_tip_batch_from_grid<T: ReconSample>(
 pub(super) fn predict_compound_into<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
-    motion: Option<CompoundMotionGrid>,
+    motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
-) -> Result<Option<CompoundMotionGrid>> {
-    if let Some(grid) = motion.as_ref()
+) -> Result<()> {
+    if let Some(grid) = motion
         && optflow::predict_tip_grid(sink, block, grid, offset)?
     {
-        return Ok(motion);
+        return Ok(());
     }
     let info = sink.info();
     let mut luma_diff_weighted_mask = None;
-    let shares_chroma_grid = motion
-        .as_ref()
-        .is_some_and(|motion| motion.uniform_mvs().is_none())
+    let shares_chroma_grid = motion.is_some_and(|motion| motion.uniform_mvs().is_none())
         && matches!(block.blend, CompoundBlend::Average { .. })
         && block.warp_params.iter().all(Option::is_none);
     let mut staged_v: Option<RecycledMcSamples<T>> = None;
@@ -704,7 +702,7 @@ pub(super) fn predict_compound_into<T: ReconSample>(
                 sub_x,
                 sub_y,
                 &mut luma_diff_weighted_mask,
-                motion.as_ref(),
+                motion,
                 offset,
                 u,
                 u_stride,
@@ -727,7 +725,7 @@ pub(super) fn predict_compound_into<T: ReconSample>(
                 sub_x,
                 sub_y,
                 &mut luma_diff_weighted_mask,
-                motion.as_ref(),
+                motion,
                 offset,
                 output,
                 stride,
@@ -749,7 +747,7 @@ pub(super) fn predict_compound_into<T: ReconSample>(
         };
         staged_v = chroma_v.filter(|_| shared);
     }
-    Ok(motion)
+    Ok(())
 }
 
 fn motion_compensate_single_warp_block_into<T: ReconSample>(

@@ -359,7 +359,7 @@ impl InterReconCommand {
                 &self.placed,
                 residual_blocks,
                 residual_coeffs,
-                motion,
+                motion.as_ref(),
                 use_refinemv,
                 refinemv_switchable,
                 block_decoded,
@@ -371,14 +371,14 @@ impl InterReconCommand {
                 shared.bit_depth,
                 super::sequence_enables_ibp(shared.sequence),
                 self.tile_offset,
-            ),
+            )?,
             sink @ (WorkspaceSink::Rect(_) | WorkspaceSink::OwnedRect(_)) => {
                 super::prediction::reconstruct_pure_inter_block(
                     sink,
                     &self.placed,
                     residual_blocks,
                     residual_coeffs,
-                    motion,
+                    motion.as_ref(),
                     use_refinemv,
                     refinemv_switchable,
                     shared.ref_frame_idx,
@@ -388,9 +388,10 @@ impl InterReconCommand {
                     shared.residual_use_ddt,
                     shared.bit_depth,
                     self.tile_offset,
-                )
+                )?;
             }
         }
+        Ok(motion)
     }
 
     #[allow(clippy::too_many_arguments)]
