@@ -1344,12 +1344,19 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                                     command.placed().luma_w(),
                                     command.placed().luma_h(),
                                 ]))
-                        && command.prepass_write_is_contained(
+            );
+            debug_assert!(
+                !safe
+                    || matches!(
+                        entry.command(&row.slots),
+                        Some(ReconCommandRef::Inter(command)) if command.prepass_write_is_contained(
                             superblock.origin,
                             sb_h4,
                             info,
                             &row.residual_blocks,
                         )
+                    ),
+                "a superblock's leaves write only inside it"
             );
             if !safe {
                 match entry.command_mut(&mut row.slots) {

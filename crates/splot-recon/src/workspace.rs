@@ -600,23 +600,20 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     /// `None` wherever either is `None`.
     #[inline]
     pub fn chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [T], usize); 2]> {
-        if let Self::Frame(workspace) = self {
-            let (u, v) = (workspace.u.as_mut()?, workspace.v.as_mut()?);
-            return Some([u.rect_mut(rect)?, v.rect_mut(rect)?]);
-        }
-        let storage = self.plane_storage_size(PlaneId::U).ok()?;
+        let surface = match self {
+            Self::Frame(workspace) => {
+                let (u, v) = (workspace.u.as_mut()?, workspace.v.as_mut()?);
+                return Some([u.rect_mut(rect)?, v.rect_mut(rect)?]);
+            }
+            Self::OwnedRect(surface) => return surface.chroma_rects_mut(rect),
+            Self::Rect(surface) => surface,
+        };
+        let storage = surface.plane(PlaneId::U).ok()?.storage_size();
         if clamp_rect_to_storage(PlaneId::U, storage, rect).ok()? != rect {
             return None;
         }
-        let [u, v] = match self {
-            Self::Frame(_) => return None,
-            Self::Rect(surface) => [surface.u.as_mut()?, surface.v.as_mut()?]
-                .map(|target| (&mut target.samples[..], target.stride, 0, target.rect)),
-            Self::OwnedRect(surface) => surface.chroma_planes_mut()?.map(|target| {
-                let band = target.rect();
-                (target.into_samples_mut(), band.width(), band.x(), band)
-            }),
-        };
+        let [u, v] = [surface.u.as_mut()?, surface.v.as_mut()?]
+            .map(|target| (&mut target.samples[..], target.stride, 0, target.rect));
         let span = |(samples, stride, x0, band): (_, _, usize, PlaneRect)| {
             ensure_surface_rect(PlaneId::U, band, rect).ok()?;
             contiguous_span(samples, stride, rect.x() - x0, rect.y() - band.y(), rect).ok()
