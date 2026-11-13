@@ -1157,50 +1157,78 @@ fn compound_optflow_subpel_params<T: ReconSample>(
 #[inline(always)]
 fn compound_optflow_bounds<T: ReconSample>(
     subblock_area: Option<(usize, usize)>,
+    sub: (u32, u32),
+    refine: (&[[Mv; 2]], usize, usize),
+    prediction: &CompoundSubpelPlane<'_, T>,
+    cell: MotionCell,
+    cell_index: usize,
+    position: [usize; 2],
+) -> [Option<super::refinemv::ReferenceAreaBounds>; 2] {
+    let area = compound_optflow_area(
+        subblock_area,
+        sub,
+        refine,
+        prediction,
+        cell,
+        cell_index,
+        position,
+    );
+    core::array::from_fn(|reference| {
+        area.map(|([x, y], [width, height], mvs)| {
+            super::refinemv::reference_area_bounds(
+                x,
+                y,
+                width,
+                height,
+                mvs[reference],
+                sub.0,
+                sub.1,
+                &prediction.scalings[reference],
+            )
+        })
+    })
+}
+
+/// The plane origin, size and placing MVs of the reference area of
+/// [`compound_optflow_bounds`], `None` when the plane alone clips.
+#[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+#[inline(always)]
+fn compound_optflow_area<T: ReconSample>(
+    subblock_area: Option<(usize, usize)>,
     (sub_x, sub_y): (u32, u32),
     (refine_candidates, refine_step, refine_unit_size): (&[[Mv; 2]], usize, usize),
     prediction: &CompoundSubpelPlane<'_, T>,
     cell: MotionCell,
     cell_index: usize,
     [col, row]: [usize; 2],
-) -> [Option<super::refinemv::ReferenceAreaBounds>; 2] {
+) -> Option<([i32; 2], [usize; 2], [Mv; 2])> {
     if let Some(mvs) = refine_candidates.get(cell_index * refine_step) {
         let refine_unit_w = refine_unit_size >> sub_x;
         let refine_unit_h = refine_unit_size >> sub_y;
         let refine_col = col & !(refine_unit_w - 1);
         let refine_row = row & !(refine_unit_h - 1);
-        let refine_w = refine_unit_w.min(prediction.block_w - refine_col);
-        let refine_h = refine_unit_h.min(prediction.block_h - refine_row);
-        let bounds = |reference: usize| {
-            Some(super::refinemv::reference_area_bounds(
+        return Some((
+            [
                 (prediction.plane_x + refine_col) as i32,
                 (prediction.plane_y + refine_row) as i32,
-                refine_w,
-                refine_h,
-                mvs[reference],
-                sub_x,
-                sub_y,
-                &prediction.scalings[reference],
-            ))
-        };
-        [bounds(0), bounds(1)]
-    } else if let Some((area_width, area_height)) = subblock_area {
-        let bounds = |reference: usize| {
-            Some(super::refinemv::reference_area_bounds(
+            ],
+            [
+                refine_unit_w.min(prediction.block_w - refine_col),
+                refine_unit_h.min(prediction.block_h - refine_row),
+            ],
+            *mvs,
+        ));
+    }
+    subblock_area.map(|(width, height)| {
+        (
+            [
                 (prediction.plane_x + col) as i32,
                 (prediction.plane_y + row) as i32,
-                area_width,
-                area_height,
-                cell.base_mvs[reference],
-                sub_x,
-                sub_y,
-                &prediction.scalings[reference],
-            ))
-        };
-        [bounds(0), bounds(1)]
-    } else {
-        [None; 2]
-    }
+            ],
+            [width, height],
+            cell.base_mvs,
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1306,8 +1334,7 @@ pub(super) fn predict_uniform_motion_compound_average_into<
 /// `chroma_v` while `plane` is U, the V plane goes into that output and row
 /// stride too, from the same per-cell parameters: U and V share
 /// the plane geometry, scalings and motion, and only the reference views differ.
-/// Unscaled cells whose refine-MV unit is the cell itself (TIP) derive their
-/// scalings and bounds from integer positions.
+/// Unscaled cells derive their starts and bounds from integer positions.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn predict_motion_grid_compound_average_into<
     T: ReconSample,
@@ -1447,10 +1474,6 @@ pub(super) fn predict_motion_grid_compound_average_into<
         )
     };
     let unscaled = !prediction.scalings.into_iter().any(PlaneScaling::is_scaled);
-    let per_cell_refine = unscaled
-        && refine.1 == 1
-        && refine.2 >> sub_x == subblock_w
-        && refine.2 >> sub_y == subblock_h;
     let check_uniform = !uniform_everywhere && implicit_mask && cwp_weight == CWP_EQUAL;
     let programmed = |size: usize| size == subblock_w && size == subblock_h;
     macro_rules! cell_inputs {
@@ -1463,25 +1486,8 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "compound motion-grid lookup",
                 })?;
-            if per_cell_refine && let Some(candidates) = refine.0.get(cell_index) {
-                let (placements, uniform) = unscaled_cell_placements(
-                    &prediction,
-                    cell,
-                    *candidates,
-                    [col, row, width, height],
-                    (sub_x, sub_y),
-                    check_uniform,
-                    (frame_w, frame_h),
-                );
-                if uniform && width == height && $lean(placements, width) {
-                    continue;
-                }
-                let params = placements.map(|placement| {
-                    unscaled_cell_params(placement, [width, height], (bit_depth, block.interp))
-                });
-                (params, uniform, [col, row, width, height])
-            } else if unscaled {
-                let bounds = compound_optflow_bounds(
+            if unscaled {
+                let area = compound_optflow_area(
                     subblock_area,
                     (sub_x, sub_y),
                     refine,
@@ -1496,12 +1502,22 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 ];
                 let placements: [CellPlacement; 2] = core::array::from_fn(|reference| {
                     let scaling = &prediction.scalings[reference];
+                    let bounds = area.map_or(
+                        [0, 0, scaling.last_x, scaling.last_y],
+                        |([x, y], size, mvs)| {
+                            let bounds = super::refinemv::unscaled_area_bounds(
+                                [x << 4, y << 4],
+                                size,
+                                mvs[reference],
+                                [sub_x, sub_y],
+                                scaling,
+                            );
+                            [bounds.first_x, bounds.first_y, bounds.last_x, bounds.last_y]
+                        },
+                    );
                     (
                         unscaled_cell_start(origin, cell.mvs[reference], (sub_x, sub_y)),
-                        bounds[reference]
-                            .map_or([0, 0, scaling.last_x, scaling.last_y], |bounds| {
-                                [bounds.first_x, bounds.first_y, bounds.last_x, bounds.last_y]
-                            }),
+                        bounds,
                     )
                 });
                 let uniform = !check_uniform
