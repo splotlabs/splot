@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use fearless_simd::{
-    Simd, SimdIntWiden, i8x16, i16x8, i16x16, i32x8, mask16x8, prelude::*, u8x16, u8x32, u16x8,
-    u16x16,
+    Simd, SimdIntWiden, i8x16, i8x32, i16x8, i16x16, i32x8, mask16x8, prelude::*, u8x16, u8x32,
+    u16x8, u16x16,
 };
 
 use splot_core::tables::loop_restoration::{
@@ -597,6 +597,8 @@ pub(super) trait GdfSample: Copy + Default {
     fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S>;
     /// Stores 16 lanes, each within the sample range, into `samples`.
     fn store<S: Simd>(simd: S, lanes: i16x16<S>, samples: &mut [Self; 16]);
+    /// Adds to each sample of `output` its § 7.20.5 residual in `residuals`.
+    fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], block: &GdfBlock);
 }
 
 impl GdfSample for u16 {
@@ -610,6 +612,15 @@ impl GdfSample for u16 {
     #[inline(always)]
     fn store<S: Simd>(_simd: S, lanes: i16x16<S>, samples: &mut [Self; 16]) {
         lanes.bitcast::<u16x16<S>>().store_slice(samples);
+    }
+
+    fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], block: &GdfBlock) {
+        let (residuals, _) = residuals.as_chunks::<16>();
+        let (output, _) = output.as_chunks_mut::<16>();
+        for (residuals, output) in residuals.iter().zip(output) {
+            let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, residuals));
+            apply_residuals(simd, simd.combine_i16x8(low, high), output, block);
+        }
     }
 }
 
@@ -626,6 +637,23 @@ impl GdfSample for u8 {
     fn store<S: Simd>(simd: S, lanes: i16x16<S>, samples: &mut [Self; 16]) {
         let (low, high) = simd.split_u16x16(lanes.bitcast());
         simd.narrow_u16x8(low, high).store_slice(samples);
+    }
+
+    fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], _block: &GdfBlock) {
+        let (residual_pairs, residuals) = residuals.as_chunks::<32>();
+        let (output_pairs, output) = output.as_chunks_mut::<32>();
+        for (residuals, output) in residual_pairs.iter().zip(output_pairs) {
+            let samples = (u8x32::from_slice(simd, output) ^ 0x80).bitcast::<i8x32<S>>();
+            let sum = samples.saturating_add(i8x32::from_slice(simd, residuals));
+            (sum.bitcast::<u8x32<S>>() ^ 0x80).store_slice(output);
+        }
+        if let (Some(residuals), Some(output)) =
+            (residuals.first_chunk::<16>(), output.first_chunk_mut())
+        {
+            let samples = (u8x16::from_slice(simd, output) ^ 0x80).bitcast::<i8x16<S>>();
+            let sum = samples.saturating_add(i8x16::from_slice(simd, residuals));
+            (sum.bitcast::<u8x16<S>>() ^ 0x80).store_array(output);
+        }
     }
 }
 
@@ -685,7 +713,7 @@ impl<O: GdfSample> RowSink for [&mut [O; 16]; 2] {
     fn keep<S: Simd>(&mut self, _simd: S) {}
 }
 
-/// Stores the pair's residual bytes for [`add_residuals`]: each is a scalar
+/// Stores the pair's residual bytes for [`GdfSample::add_residuals`]: each is a scalar
 /// load and store, independent of the others, where inserting them into one
 /// vector chains every lookup on the one before. The table holds the
 /// residual of each entry of the block's error table from index 0, so that
@@ -710,22 +738,6 @@ impl RowSink for ErrorRows<'_> {
         for errors in &mut self.0 {
             i8x16::splat(simd, 0).store_slice(&mut errors[..]);
         }
-    }
-}
-
-/// Adds to each sample of `output` its § 7.20.5 residual in `residuals`, 16
-/// samples at a time.
-fn add_residuals<S: Simd, O: GdfSample>(
-    simd: S,
-    residuals: &[i8],
-    output: &mut [O],
-    block: &GdfBlock,
-) {
-    let (residuals, _) = residuals.as_chunks::<16>();
-    let (output, _) = output.as_chunks_mut::<16>();
-    for (residuals, output) in residuals.iter().zip(output) {
-        let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, residuals));
-        apply_residuals(simd, simd.combine_i16x8(low, high), output, block);
     }
 }
 
@@ -812,7 +824,7 @@ type GradChunk = [[u16; 16]; 4];
 pub(super) struct ClassScratch {
     pub(super) grads: Vec<GradChunk>,
     /// A row pair's residual bytes, two rows of [`ClassScratch::error_row`]
-    /// each, for [`add_residuals`].
+    /// each, for [`GdfSample::add_residuals`].
     pub(super) errors: Vec<i8>,
     /// [`ErrorRows`]' table, and the block facts it was built for.
     pub(super) table: Vec<i8>,
@@ -1122,8 +1134,8 @@ fn filter_run_with<S: Simd, P: RowPairs<S>, O: GdfSample>(
         }
         if let Some((top_errors, bottom_errors)) = deferred {
             let end = 16 * done;
-            add_residuals(simd, top_errors.get(..end)?, top.get_mut(..end)?, block);
-            add_residuals(
+            O::add_residuals(simd, top_errors.get(..end)?, top.get_mut(..end)?, block);
+            O::add_residuals(
                 simd,
                 bottom_errors.get(..end)?,
                 bottom.get_mut(..end)?,
