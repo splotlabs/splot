@@ -1253,7 +1253,7 @@ impl<'a> SymbolDecoder<'a> {
             return 0;
         }
         self.ensure_buffered(15);
-        if (3..=6).contains(&N) {
+        if (3..=6).contains(&N) && !cfg!(target_arch = "x86_64") {
             return self
                 .read_trusted_word::<N>(cdf, row_word::<N>(cdf), update)
                 .0;
@@ -1355,7 +1355,7 @@ impl<'a> SymbolDecoder<'a> {
         (symbol, word)
     }
 
-    /// [`Self::read_trusted_arity`] for `N > 6` in vector lanes, see
+    /// [`Self::read_trusted_arity`] for `N > 6`, or `N > 2` on x86-64, in vector lanes, see
     /// [`row_search_lanes`]. Branch-free on purpose: coefficient symbols
     /// mispredict too often for [`early_exit_search`] on some streams.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
