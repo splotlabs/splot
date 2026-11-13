@@ -23,7 +23,9 @@ pub(super) const INTRA_REGION: u8 = 0;
 pub(super) const MIXED_REGION: u8 = 1;
 /// § 5.20.2.1 `bru_mode = use_bru ? BRU_INACTIVE : BRU_ACTIVE` without
 /// `BruTileActive`: the tile facts admit only `use_bru == 0` frames, so every
-/// superblock the walk reaches is `BRU_ACTIVE`.
+/// superblock the walk reaches is `BRU_ACTIVE`. The walk takes the superblock's
+/// activity as the const parameter `BRU_ACTIVE` of [`walk_call`], so an active
+/// superblock folds the § 5.20.3.1 / § 5.20.3.2 BRU gates.
 const NON_BRU_FRAME_SUPERBLOCK_BRU_ACTIVE: bool = true;
 
 /// The neighbour state a leaf's mode syntax reads.
@@ -111,8 +113,6 @@ struct TreeWalker<'payload> {
     partition_memo: PartitionDecisionMemo,
     /// The chroma reference block the next call inherits.
     chroma_ref: ChromaRefGeometry,
-    /// Whether the current superblock's § 5.20.2.1 `bru_mode` is `BRU_ACTIVE`.
-    bru_active: bool,
 }
 
 /// The leaf callbacks and parser states one superblock walk lends its leaves.
@@ -202,7 +202,6 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                 sdp_state: SdpPartitionState::default(),
                 partition_memo: PartitionDecisionMemo::default(),
                 chroma_ref: ChromaRefGeometry::new(0, 0, frame.sb_size),
-                bru_active: NON_BRU_FRAME_SUPERBLOCK_BRU_ACTIVE,
             },
             sb_size4,
             next_sb_row,
@@ -245,7 +244,13 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             on_published,
         };
         let root = TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, ROOT_HAS_CHROMA);
-        walk_call(&self.frame, &mut self.walker, &mut hooks, root).map_err(|error| *error)?;
+        walk_call::<_, _, _, _, NON_BRU_FRAME_SUPERBLOCK_BRU_ACTIVE>(
+            &self.frame,
+            &mut self.walker,
+            &mut hooks,
+            root,
+        )
+        .map_err(|error| *error)?;
         self.next_sb_col = self.next_sb_col.saturating_add(self.sb_size4);
         if self.next_sb_col >= tile_bounds.mi_col_end.min(self.frame.mi_cols) {
             self.next_sb_col = tile_bounds.mi_col_start;
@@ -285,7 +290,7 @@ impl<E> From<TilePartitionTraversalError> for WalkError<E> {
 
 /// The § 5.20.3.1 `decode_partition` call `call`: its partition, then its
 /// children in syntax order or its leaf block.
-fn walk_call<'payload, E, C, F, P>(
+fn walk_call<'payload, E, C, F, P, const BRU_ACTIVE: bool>(
     frame: &TilePartitionFrameFacts,
     walker: &mut TreeWalker<'payload>,
     hooks: &mut LeafHooks<'_, F, P>,
@@ -316,14 +321,14 @@ where
     } else {
         if is_intra_sdp_shared_root(frame, call) {
             walker.chroma_ref = chroma_ref;
-            walk_call(
+            walk_call::<_, _, _, _, BRU_ACTIVE>(
                 frame,
                 walker,
                 hooks,
                 call.with_tree_type(PartitionTreeType::LumaPart),
             )?;
             walker.chroma_ref = chroma_ref;
-            return walk_call(
+            return walk_call::<_, _, _, _, BRU_ACTIVE>(
                 frame,
                 walker,
                 hooks,
@@ -342,7 +347,7 @@ where
             )?;
         }
         let mut call = call;
-        let partition = walker.read_partition_step(
+        let partition = walker.read_partition_step::<BRU_ACTIVE>(
             frame,
             &mut call,
             hooks.mi_size_state,
@@ -355,14 +360,14 @@ where
                 frame,
                 &mut call,
                 partition,
-                walker.bru_active,
+                BRU_ACTIVE,
                 hooks.work_unit.cdf_mut().tile_cdfs_mut(),
                 &mut walker.symbols,
             )?;
             return visit_partition_children(
                 &mut |child, inherited| {
                     walker.chroma_ref = inherited;
-                    walk_call(frame, walker, hooks, child)
+                    walk_call::<_, _, _, _, BRU_ACTIVE>(frame, walker, hooks, child)
                 },
                 call,
                 chroma_ref,
@@ -444,7 +449,7 @@ impl TreeWalker<'_> {
         reason = "measured: keeps the call in registers"
     )]
     #[inline(always)]
-    fn read_partition_step(
+    fn read_partition_step<const BRU_ACTIVE: bool>(
         &mut self,
         frame: &TilePartitionFrameFacts,
         call: &mut TilePartitionCall,
@@ -469,11 +474,8 @@ impl TreeWalker<'_> {
         } else {
             let (partition_context, square_context) =
                 partition_context_inputs(node, self.tile_bounds, mi_size_state)?;
-            let decision_input = facts.read_partition_decision_input(
-                self.bru_active,
-                partition_context,
-                square_context,
-            );
+            let decision_input =
+                facts.read_partition_decision_input(BRU_ACTIVE, partition_context, square_context);
             super::partition::read_partition_decision(decision_input, cdfs, &mut self.symbols)?
         };
         let cfl_allowed_in_sdp = self.sdp_state.record_partition(frame, node, partition);
