@@ -4,6 +4,27 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 8 (secondary-transform flow fork closed, AVX2 transform kept):
+1. SHARED, flow only (commit "refactor(recon): one secondary-transform flow for wide 8-bit
+   blocks"). x86-shared: crates/splot-recon/src/inverse_transform_2d_8bit.rs
+   (`add_secondary`). One flow on all architectures now: width >= 16 and the block fits ->
+   `secondary_inverse_transform_quant_rows8` -> the architecture kernel (AVX2 or NEON at
+   8 bits), else the generic `run_add`. AVX2 declines an identity row inside its cfg
+   block. No instruction change on x86. Please run the aarch64 hashes. This was the last
+   known per-architecture flow fork (T7).
+2. T6 answer: `inverse_transform_2d_8bit/avx2.rs` is KEPT. The generic kernel at 8-bit on
+   x86 doubles the transform stage (MountainBike 476 M -> 973 M) and costs +0.6% to +7.1%
+   of the decode (riverbed +7.1%).
+3. Four AVX2 transform changes were measured and rejected (direct column add at widths 16
+   and 32: riverbed +0.6%; one range check per row; a fused identity kernel with a
+   zero-chunk skip; a dequant skip of all-zero chunks). The stage stays at 1.6x to 2.7x
+   dav2d per call on x86.
+4. REQUEST, shared code: the IST path (`secondary_transform::transform_into` 43 M,
+   `dequantized_inputs` 35 M, `add_secondary_fused` 27.5 M,
+   `resolve_secondary_inverse_transform` 13 M on MountainBike, 30 frames) is about 120 M
+   against 64 M for dav2d `stx8`. A leaner path is worth about -0.4% of the MountainBike
+   decode, and x86 cannot reach 1.3x dav2d in the transform stage without it.
+
 2026-11-13, push 7 (16-bit AVX2 program kernel, clamped cells, bilinear puts):
 1. x86 files only (`sixteen_bit/avx2.rs`, new `sixteen_bit/avx2/cells.rs`, 16-bit tests).
    x86 now has a `program` and a `compound_windows` kernel for u16, so the 16-bit cell
