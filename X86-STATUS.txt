@@ -4,6 +4,29 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 9 (deblock delete-or-keep, x86 state after the first kernel round):
+1. T6 answers for deblock, measured on x86 against `portable_chunk` (edge-filter
+   instructions): u16 vertical: portable -11% -> the AVX2 u16 vertical chunk kernel is
+   DELETED (x86 uses `portable_chunk` there now). u8 vertical: portable +53%; u8
+   horizontal: portable +129%; u16 horizontal: portable +27% -> these AVX2 kernels stay.
+   The `still` early exit was measured in the AVX2 kernels and rejected (+4% to +21%: a
+   chunk of 16 or 32 lines is almost never still). No shared line changed.
+   Note: the AVX2 kernels do nothing when the row stride is above 2^24 (`MAX_STRIDE`), as
+   they do for a window out of range. No AV2 frame has such a stride.
+2. REQUESTS, shared decode side: (a) a bitmask of non-empty columns per chunk row, built in
+   `PassEdges`, would remove the `pack` of empty columns in the vertical band (37% of the
+   visits on MountainBike; about 2-3% of the 8-bit vertical edge filters). (b)
+   `PassEdges::apply::<u8, 0>` costs 19 M on MountainBike (30 frames).
+3. STATE OF X86 after the first round on each x86-owned kernel of the T3 table (1 thread,
+   instructions, 88 streams, head 6f4b9005, dav2d 9b5cef22): against main 1.153x geomean,
+   the branch is better on 88 of 88 (it was 1.031x and worse on 38); against dav2d 1.559x
+   geomean (was 1.394x); 8-bit 1.078x (was 0.980x), 10-bit 4.43x (was 3.77x); the branch
+   loses to dav2d on 32 streams (was 45), worst 0.75x (was 0.71x): riverbed, MountainBike,
+   Shaky_Quad, Artistic_Concert, Shaky_Walk, Sniper, Motorcycle, TreesAndGrass, WITCHER3,
+   crowd_run. These numbers contain your shared-code commits too.
+4. Next on x86: a new stage table against dav2d, then a second round (transform small
+   kernels, GDF remainder, warp, 8-bit cells) and T10 (thread scaling).
+
 2026-11-13, push 8 (secondary-transform flow fork closed, AVX2 transform kept):
 1. SHARED, flow only (commit "refactor(recon): one secondary-transform flow for wide 8-bit
    blocks"). x86-shared: crates/splot-recon/src/inverse_transform_2d_8bit.rs
@@ -249,6 +272,13 @@ Head 6421575e against ab8d3d3e (1 thread, instructions, main / branch): 1.031x a
 ==========================================================================================
 COMMITS ON THIS BRANCH
 ==========================================================================================
+refactor(recon): delete the AVX2 u16 vertical deblock chunk kernel; perf(recon): AVX2
+deblock rows in place with bounded row offsets. Instructions, 1 thread, first 100 frames:
+RitualDance qp160 -0.4%, riverbed -0.3%, MountainBike -0.2% (with your parse round 2 of
+the same merge). 8-bit edge filters against dav2d 1.46x -> 1.37x. Checks: subset hashes
+at 1, 5, 12 threads (agent: 89/89 at 1 thread), recon tests 760 pass, `cargo xtask ci --fast`.
+refactor(recon): one secondary-transform flow for wide 8-bit blocks. No instruction
+change. Checks: subset hashes at 1, 12 threads, recon tests, `cargo xtask ci --fast`.
 perf(recon): 16-bit AVX2 program kernel and clamped register cells; 16-bit AVX2 cells
 read in-place rows without per-row checks; 16-bit AVX2 BILINEAR puts in 16-column u16
 strips; move the 16-bit AVX2 register cells to a submodule. Instructions, 1 thread, first
