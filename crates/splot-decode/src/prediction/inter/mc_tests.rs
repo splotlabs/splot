@@ -1563,6 +1563,44 @@ fn direct_compound_blend_preserves_sample_storage_width() {
     assert_eq!(ten_bit, [950]);
 }
 
+fn weighted_rows_match_the_per_sample_blend<T: ReconSample>(bit_depth: BitDepth) {
+    for w in [3usize, 4, 6, 8, 17, 24] {
+        let pred0: Vec<i32> = (0..w as i32)
+            .map(|i| (i * 7919 % 4500) * 16 - 3000)
+            .collect();
+        let pred1: Vec<i32> = (0..w as i32)
+            .map(|i| (i * 104_729 % 5000) * 16 - 9000)
+            .collect();
+        for cwp_weight in [2, 8, 12, 14] {
+            let mut output = vec![T::default(); w];
+            blend_compound_average_weighted_samples(
+                &pred0,
+                &pred1,
+                bit_depth,
+                cwp_weight,
+                &mut output,
+            )
+            .expect("weighted row");
+            for (col, sample) in output.iter().enumerate() {
+                let want = splot_recon::blend_compound_average_weighted_sample(
+                    pred0[col], pred1[col], bit_depth, cwp_weight,
+                );
+                assert_eq!(
+                    sample.to_u16(),
+                    want,
+                    "{bit_depth:?} w={w} cwp={cwp_weight} {col}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn weighted_rows_match_the_per_sample_blend_for_every_width() {
+    weighted_rows_match_the_per_sample_blend::<u8>(BitDepth::Eight);
+    weighted_rows_match_the_per_sample_blend::<u16>(BitDepth::Ten);
+}
+
 #[test]
 fn scaled_compound_references_disable_implicit_mask_blending() {
     let pred0 = [20 * 16, 60 * 16, 100 * 16, 140 * 16];

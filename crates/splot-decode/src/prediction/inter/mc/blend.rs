@@ -550,18 +550,33 @@ impl ImplicitMaskBlend {
         starts: [(i32, i32); 2],
         output: &mut [T],
     ) -> splot_recon::Result<()> {
-        let last = starts.map(|(_, y)| {
+        let bounds = starts.map(|(_, y)| {
             if (0..=self.last.1).contains(&y) {
-                self.last.0
+                self.last.0 as u32 + 1
             } else {
-                -1
+                0
             }
         });
+        let width = output.len() as i32;
+        let row_weight = |reference: usize| {
+            let (first, bound) = (starts[reference].0, bounds[reference] as i32);
+            let end = first + width;
+            if bound == 0 || end <= 0 || first >= bound {
+                Some(0)
+            } else {
+                (first >= 0 && end <= bound).then_some(32)
+            }
+        };
         baseline_simd!(simd => {
+            if let (Some(weight0), Some(weight1)) = (row_weight(0), row_weight(1)) {
+                let mask = i32x4::splat(simd, weight0 - weight1 + 32);
+                return masked_row(simd, (left, right), self.max_sample, output, |_| mask);
+            }
             let columns = i32x4::from_slice(simd, &[0, 1, 2, 3]);
             let weight = |reference: usize, col: usize| {
                 let x = columns + (starts[reference].0 + col as i32);
-                (x.simd_ge(0) & x.simd_le(last[reference]))
+                x.bitcast::<u32x4<_>>()
+                    .simd_lt(bounds[reference])
                     .select(i32x4::splat(simd, 32), i32x4::splat(simd, 0))
             };
             let masks = |col: usize| weight(0, col) - weight(1, col) + 32;
@@ -588,8 +603,9 @@ pub(super) fn weighted_row<T: ReconSample>(
 
 /// `Round2(mask * left + (64 - mask) * right, 6 + InterPostRound)` of each
 /// sample of `output`, clipped to `0..=max_sample` (§ 7.13.3.30), four at a
-/// time with `masks(col)` the masks of columns `col..col + 4`. A ragged end
-/// repeats the last four columns; a row under four samples is padded.
+/// time with `masks(col)` the masks of columns `col..col + 4`, paired into
+/// eight-sample stores. A ragged end repeats the last four columns; a row
+/// under four samples is padded.
 #[inline]
 fn masked_row<S: Simd, T: ReconSample>(
     simd: S,
@@ -606,15 +622,16 @@ fn masked_row<S: Simd, T: ReconSample>(
         });
     };
     let shift = 6 + compound_inter_post_round();
-    let blend = |col: usize, left: &[i32; 4], right: &[i32; 4], output: &mut [T]| {
+    let blend = |col: usize, left: &[i32], right: &[i32]| {
         let (mask, l, r) = (
             masks(col),
-            i32x4::from_slice(simd, left),
-            i32x4::from_slice(simd, right),
+            i32x4::from_slice(simd, &left[col..col + 4]),
+            i32x4::from_slice(simd, &right[col..col + 4]),
         );
         let value = (mask * l + (i32x4::splat(simd, 64) - mask) * r + (1 << (shift - 1))) >> shift;
-        let value = value.clamp(0, max_sample).bitcast::<u32x4<S>>();
-        let values: u16x8<S> = value.narrow(value);
+        value.clamp(0, max_sample).bitcast::<u32x4<S>>()
+    };
+    let store = |values: u16x8<S>, output: &mut [T]| {
         if let Some(output) = T::u8_slice_mut(output) {
             output.copy_from_slice(&values.narrow(values).to_array()[..output.len()]);
         } else if let Some(output) = T::u16_slice_mut(output) {
@@ -627,21 +644,21 @@ fn masked_row<S: Simd, T: ReconSample>(
         Ok(())
     };
     if width < 4 {
-        let pad = |samples: &[i32]| {
-            let mut padded = [0; 4];
-            padded[..width].copy_from_slice(samples);
-            padded
+        let pad = |samples: &[i32]| -> [i32; 4] {
+            core::array::from_fn(|col| samples.get(col).copied().unwrap_or(0))
         };
-        return blend(0, &pad(left), &pad(right), output);
+        let value = blend(0, &pad(left), &pad(right));
+        return store(value.narrow(value), output);
     }
-    for col in (0..width).step_by(4).map(|col| col.min(width - 4)) {
-        let (Some(l), Some(r)) = (
-            left.get(col..).and_then(<[i32]>::first_chunk::<4>),
-            right.get(col..).and_then(<[i32]>::first_chunk::<4>),
-        ) else {
-            continue;
-        };
-        blend(col, l, r, &mut output[col..col + 4])?;
+    let mut start = 0;
+    while start + 8 <= width {
+        let values = blend(start, left, right).narrow(blend(start + 4, left, right));
+        store(values, &mut output[start..start + 8])?;
+        start += 8;
+    }
+    for col in (start..width).step_by(4).map(|col| col.min(width - 4)) {
+        let value = blend(col, left, right);
+        store(value.narrow(value), &mut output[col..col + 4])?;
     }
     Ok(())
 }

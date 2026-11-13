@@ -2267,7 +2267,7 @@ mod tests {
     fn translational_rows_match_the_per_sample_blend<T: ReconSample>(
         bit_depth: splot_recon::BitDepth,
     ) {
-        for w in [3usize, 6, 24] {
+        for w in [3usize, 4, 6, 8, 17, 24] {
             let (h, frame_w, frame_h) = (7usize, 20usize, 5usize);
             let pred0: Vec<i32> = (0..w * h).map(|i| (i as i32 * 7 % 900) * 48).collect();
             let pred1: Vec<i32> = (0..w * h)
