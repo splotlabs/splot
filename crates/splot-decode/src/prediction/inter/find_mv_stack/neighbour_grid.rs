@@ -120,6 +120,10 @@ impl NeighbourFlags {
         }
     }
 
+    pub(super) const fn list_ref_frame(self, list: usize) -> i8 {
+        self.byte(1 + list as u32) as i8
+    }
+
     pub(super) const fn interp_filter(self) -> u8 {
         self.byte(3)
     }
@@ -258,6 +262,10 @@ pub(super) struct ProbedLeaf<'g> {
 impl ProbedLeaf<'_> {
     pub(super) const fn flags(&self) -> NeighbourFlags {
         self.leaf.flags
+    }
+
+    pub(super) const fn base_c(&self) -> u32 {
+        self.leaf.base_c
     }
 
     pub(super) const fn cwp_weight(&self) -> i16 {
