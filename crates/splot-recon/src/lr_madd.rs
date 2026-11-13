@@ -130,6 +130,18 @@ pub(crate) fn pattern(class: &LaneClass, pairs: usize, pair: usize) -> MaddPatte
 pub(crate) fn run_weights<F: TapPairs, T: LumaSimdSource>(
     classes: [&LaneClass; 4],
 ) -> [MaddWeights; 9] {
+    #[cfg(target_arch = "x86_64")]
+    if in_lane::<T>()
+        && let Some(t) = fearless_simd::Level::baseline().as_avx2()
+    {
+        return in_lane_weights(t, classes, F::TAPS.len() / 2);
+    }
+    pattern_weights::<F, T>(classes)
+}
+
+/// [`run_weights`] from each cell's [`pattern`] of every pair.
+#[inline]
+fn pattern_weights<F: TapPairs, T: LumaSimdSource>(classes: [&LaneClass; 4]) -> [MaddWeights; 9] {
     let pairs = F::TAPS.len() / 2;
     let mut weights = [[[0; 16]; 2]; 9];
     for (pair, weights) in weights.iter_mut().enumerate().take(pairs + 1) {
@@ -138,6 +150,59 @@ pub(crate) fn run_weights<F: TapPairs, T: LumaSimdSource>(
         arrange_into::<T>(weights, cells.each_ref());
     }
     weights
+}
+
+/// [`run_weights`] in the in-lane arrangement: each 128-bit half of a pair's
+/// weights broadcasts one 32-bit weight pair of its cell.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn in_lane_weights(
+    t: fearless_simd::Avx2,
+    classes: [&LaneClass; 4],
+    pairs: usize,
+) -> [MaddWeights; 9] {
+    use core::arch::x86_64::*;
+    use fearless_simd::{Avx2, SimdInto};
+
+    fearless_simd::kernel!(
+        #[inline(always)]
+        fn kernel(t: Avx2, classes: [&LaneClass; 4], pairs: usize) -> [MaddWeights; 9] {
+            let load =
+                |class: &LaneClass| -> __m256i { i16x16::load_array_ref(t, &class.0).into() };
+            let center = |class: &LaneClass| i32::from(class.1 as u16) | (1 << 22);
+            let store = |weights: &mut [i16; 16], lanes: __m256i| {
+                let lanes: i16x16<Avx2> = lanes.simd_into(t);
+                lanes.store_array(weights);
+            };
+            let mut weights = [[[0; 16]; 2]; 9];
+            for (half, (low, high)) in [(classes[0], classes[2]), (classes[1], classes[3])]
+                .into_iter()
+                .enumerate()
+            {
+                let (x, y) = (load(low), load(high));
+                let first = _mm256_permute2x128_si256::<0x20>(x, y);
+                let last = _mm256_permute2x128_si256::<0x31>(x, y);
+                macro_rules! pair {
+                    ($($pair:literal $lanes:ident $imm:literal),*) => {$(
+                        if $pair < pairs {
+                            store(&mut weights[$pair][half], _mm256_shuffle_epi32::<$imm>($lanes));
+                        }
+                    )*};
+                }
+                pair!(0 first 0x00, 1 first 0x55, 2 first 0xaa, 3 first 0xff);
+                pair!(4 last 0x00, 5 last 0x55, 6 last 0xaa, 7 last 0xff);
+                if let Some(weights) = weights.get_mut(pairs) {
+                    let (a, b) = (center(low), center(high));
+                    store(
+                        &mut weights[half],
+                        _mm256_setr_epi32(a, a, a, a, b, b, b, b),
+                    );
+                }
+            }
+            weights
+        }
+    );
+    kernel(t, classes, pairs)
 }
 
 /// Filters the 16-column groups from column `x` to `end` of `rows` output
@@ -891,5 +956,58 @@ pub(crate) mod by_lane {
     pub(crate) enum Out<'a> {
         Words(&'a mut [u16]),
         Bytes(&'a mut [u8]),
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod tests {
+    use super::{LaneClass, TapPairs, in_lane_weights, pattern_weights};
+
+    struct Twelve;
+    impl TapPairs for Twelve {
+        super::madd_avx2!(Twelve, 7, 22);
+        const RADIUS: usize = 3;
+        const TAPS: &'static [(isize, isize)] = &[(0, 1); 12];
+    }
+
+    struct Sixteen;
+    impl TapPairs for Sixteen {
+        super::madd_avx2!(Sixteen, 9, 24);
+        const RADIUS: usize = 4;
+        const TAPS: &'static [(isize, isize)] = &[(0, 1); 16];
+    }
+
+    fn check<F: TapPairs>(next: &mut impl FnMut() -> i16) {
+        let Some(t) = fearless_simd::Level::baseline().as_avx2() else {
+            return;
+        };
+        for _ in 0..200 {
+            let classes: [LaneClass; 4] =
+                core::array::from_fn(|_| (core::array::from_fn(|_| next()), next()));
+            let cells = classes.each_ref();
+            assert_eq!(
+                in_lane_weights(t, cells, F::TAPS.len() / 2),
+                pattern_weights::<F, u16>(cells)
+            );
+        }
+    }
+
+    /// The in-lane weights match the per-pair patterns for random and
+    /// extreme classes.
+    #[test]
+    fn in_lane_weights_match_the_patterns() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            match state % 4 {
+                0 => i16::MIN,
+                1 => i16::MAX,
+                _ => (state >> 16) as i16,
+            }
+        };
+        check::<Twelve>(&mut next);
+        check::<Sixteen>(&mut next);
     }
 }

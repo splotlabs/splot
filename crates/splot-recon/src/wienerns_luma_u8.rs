@@ -43,7 +43,7 @@ const MAX_CLASSES: usize = 16;
 /// Bytes per staged row: the widest § 7.20 block, a last restoration unit
 /// of 1.5 times `RESTORATION_TILESIZE_MAX`, plus the tap reach. A fixed row
 /// size puts every tap of a vector group at a constant offset from one base.
-const STAGE_STRIDE: usize = 3 * 512 / 2 + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+pub(crate) const STAGE_STRIDE: usize = 3 * 512 / 2 + 2 * WIENER_NS_LUMA_TAP_RADIUS;
 /// Source rows of one 4x4 cell row group.
 const GROUP_ROWS: usize = 12;
 
@@ -325,7 +325,7 @@ fn kernel_available() -> bool {
 }
 
 /// Copies `row` into `staged` as bytes; returns `false` for a sample above 255.
-fn narrow_row(staged: &mut [u8], row: &[u16]) -> bool {
+pub(crate) fn narrow_row(staged: &mut [u8], row: &[u16]) -> bool {
     crate::lr_madd::lr_simd!(simd => narrow_row_lanes(simd, staged, row))
 }
 

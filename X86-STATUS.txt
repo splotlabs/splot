@@ -4,6 +4,18 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 13 (loop restoration round 3; shared lines changed):
+1. SHARED CODE CHANGED, please run the aarch64 hashes: `pc_wiener.rs` (the pooled feature
+   row now takes 16 entries per step: `pooled_feature_row`, `pooled_chunk`, `pooled_lanes`,
+   `pooled_features_lanes`), `lr_madd.rs` (`run_weights` split into a dispatch and
+   `pattern_weights`), `wienerns_luma_u8.rs` (`STAGE_STRIDE`, `narrow_row` are
+   `pub(crate)`). aarch64 clippy `-D warnings` passes here.
+2. x86-only: `pc_wiener/bytes.rs`, an 8-bit PC-Wiener kernel on `pmaddubsw` for the 250 of
+   256 classes whose tap sums stay exact in i16 (a unit test proves the bound per class).
+   PC-Wiener filter on crowd_run 2.48x -> 1.79x dav2d; classification 280 -> 256 M on
+   riverbed. Whole decode: crowd_run -0.35%, riverbed -0.3%, 10-bit -0.1% to -0.2%.
+3. Left: the class finish (162 instructions per group of 8 cells, 8 scalar LUT lookups).
+
 2026-11-13, push 12 (CfL and MHCCP; shared lines changed; thread-scaling probe):
 1. SHARED CODE CHANGED, please run the aarch64 hashes: `mhccp.rs` (statistics in masked
    8-lane groups, `add_sample`/`add_run` deleted, predictor in one loop for widths that are
@@ -328,6 +340,11 @@ Head 6421575e against ab8d3d3e (1 thread, instructions, main / branch): 1.031x a
 ==========================================================================================
 COMMITS ON THIS BRANCH
 ==========================================================================================
+perf(recon): make in-lane pmaddwd cell weights with lane shuffles; perf(recon): pool
+PC-Wiener feature rows 16 entries at a time; perf(recon): filter 8-bit PC-Wiener in byte
+lanes on x86. Instructions, 1 thread, first 100 frames: crowd_run -0.35%, riverbed -0.3%,
+RitualDance qp160 -0.1%. Checks: `cargo xtask ci --fast` on the combined head, subset
+hashes at 1, 5, 12 threads (agent: 89/89 at 1 thread, recon tests, aarch64 clippy).
 perf(decode): CfL 4:2:0 luma rows store whole 16-lane groups; perf(recon): MHCCP statistics
 and prediction in whole 8-lane groups; perf(decode): MHCCP luma capture skips the block
 rows as a range. Instructions, 1 thread, first 100 frames: riverbed -0.5%, RitualDance
