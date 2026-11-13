@@ -380,17 +380,17 @@ proptest! {
     #[test]
     fn trusted_word_and_lane_paths_match(
         n in 3usize..=6,
-        gaps in proptest::collection::vec(1u16..=4000, MAX_SYMBOLS - 1),
+        gaps in proptest::collection::vec(prop_oneof![Just(0u32), 1u32..=20_000], MAX_SYMBOLS - 1),
         rate_index in 0u16..PARA_ADJUSTMENT_LIST.len() as u16,
         count in 0u16..=MAX_CDF_COUNT as u16,
         update in any::<bool>(),
         data in proptest::collection::vec(any::<u8>(), 2..24),
     ) {
         let mut row = [0u16; MAX_SYMBOLS + 1];
-        let mut acc = 0u16;
+        let mut acc = 0u32;
         for (entry, gap) in row.iter_mut().take(n - 1).zip(&gaps) {
-            acc += gap;
-            *entry = acc;
+            acc = (acc + gap).min(CDF_PROB_SCALE);
+            *entry = acc as u16;
         }
         row[n - 1] = rate_index | count << CDF_COUNT_SHIFT;
         let (mut word_row, mut lane_row) = (row, row);
