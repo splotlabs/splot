@@ -186,7 +186,7 @@ fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>
     let v = ((params.start_y >> 6) & 15) as u16;
     let max_sample = params.bit_depth.max_sample();
     baseline_simd!(simd => {
-        let horizontal = |span: &[T]| -> [u16x8<_>; G] {
+        let horizontal = |span: &[T; M]| -> [u16x8<_>; G] {
             let mut lanes = [u16x8::splat(simd, 0); G];
             for (group, lanes) in lanes.iter_mut().enumerate() {
                 let (left, right) = if group == 0 {
@@ -211,16 +211,23 @@ fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>
                 }
             }
         };
-        let mut top = horizontal(spans[0]);
-        write(0, top, top);
-        for (row, span) in spans.iter().enumerate().skip(1) {
-            let bottom = horizontal(span);
-            write(row, top, bottom);
-            top = bottom;
+        let mut upper = None;
+        for row in 0..N {
+            let lower = match spans.get(row) {
+                Some(span) => match span.first_chunk::<M>() {
+                    Some(span) => horizontal(span),
+                    None => return false,
+                },
+                None => match upper {
+                    Some(upper) => upper,
+                    None => return false,
+                },
+            };
+            write(row, upper.unwrap_or(lower), lower);
+            upper = Some(lower);
         }
-        write(N - 1, top, top);
-    });
-    true
+        true
+    })
 }
 
 /// Eight samples from `at` widened to `u16`, zero past the span.
