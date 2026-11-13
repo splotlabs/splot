@@ -328,6 +328,7 @@ pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) 
         }
         _ => false,
     }) && core.frame_is_intra.is_some()
+        && !super::bru_inactive_frame(core)
 }
 
 /// One inter frame whose entropy pass is done and whose reconstruction is
@@ -451,6 +452,7 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             )?;
             motion.publish_metadata(block_setup.motion_field_metadata());
             let (parse_setup, params, prelude, motion_field) = block_setup.split();
+            records.bru_modes.clone_from(&params.bru_modes);
             block::publish_tile_geometry(work_units, &params, &parse_progress)?;
             let parser = InterFrameParser::new(parse_setup, work_units.len());
             let identities = reusable.install_identities(core, *reference)?;

@@ -282,6 +282,7 @@ pub(crate) fn ccso_stripe<T: ReconSample>(
     config: &CcsoFrameConfig,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
     tile_starts: Option<(&[u32], &[u32])>,
+    bru_modes: Option<&crate::filters::bru::BruModeMap>,
 ) -> Result<(), CcsoError> {
     let luma = frame.deblocked_y;
     let destinations = [
@@ -294,6 +295,10 @@ pub(crate) fn ccso_stripe<T: ReconSample>(
             continue;
         };
         let destination = destination.ok_or(CcsoError::Workspace)?;
+        let saved = match bru_modes {
+            Some(modes) => Some(bru_inactive_runs(destination, prepared, modes, None)?),
+            None => None,
+        };
         ccso_apply(
             destination,
             luma,
@@ -303,8 +308,52 @@ pub(crate) fn ccso_stripe<T: ReconSample>(
             lossless_grid,
             tile_starts,
         )?;
+        if let (Some(modes), Some(saved)) = (bru_modes, saved) {
+            bru_inactive_runs(destination, prepared, modes, Some(&saved))?;
+        }
     }
     Ok(())
+}
+
+/// Saves (`restore == None`) or puts back the samples of `destination` that
+/// lie in superblocks whose `bru_mode` is not `BRU_ACTIVE`, which § 7.19
+/// leaves unfiltered.
+fn bru_inactive_runs<D: ReconSample>(
+    destination: &mut StripePlane<D>,
+    config: &CcsoPlaneConfig,
+    modes: &crate::filters::bru::BruModeMap,
+    restore: Option<&[D]>,
+) -> Result<Vec<D>, CcsoError> {
+    let end_y = destination.end_y().ok_or(CcsoError::Geometry)?;
+    let width = destination.width();
+    let sb_w = (modes.sb_samples() >> config.sub_x).max(1);
+    let mut saved = Vec::new();
+    let mut at = 0;
+    for y in destination.origin_y()..end_y {
+        let row = destination.row_mut(y).ok_or(CcsoError::Workspace)?;
+        for x in (0..width).step_by(sb_w) {
+            if modes.active((y << config.sub_y) / MI_SIZE, (x << config.sub_x) / MI_SIZE) {
+                continue;
+            }
+            let samples = row
+                .get_mut(x..width.min(x + sb_w))
+                .ok_or(CcsoError::Workspace)?;
+            match restore {
+                Some(stored) => {
+                    let stored = stored
+                        .get(at..at + samples.len())
+                        .ok_or(CcsoError::Workspace)?;
+                    samples.copy_from_slice(stored);
+                }
+                None => saved
+                    .try_reserve(samples.len())
+                    .map(|()| saved.extend_from_slice(samples))
+                    .map_err(|_| CcsoError::Workspace)?,
+            }
+            at += samples.len();
+        }
+    }
+    Ok(saved)
 }
 
 #[allow(clippy::too_many_arguments)]

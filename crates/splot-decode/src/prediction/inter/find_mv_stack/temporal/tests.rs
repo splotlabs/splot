@@ -867,6 +867,7 @@ fn step_two_projection_samples_and_stores_on_the_even_grid() {
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         },
         &[0, 1],
         &[true, true],
@@ -1548,6 +1549,7 @@ fn refresh_reuses_projected_and_trajectory_storage() {
         enable_tip: false,
         enable_trajectory: true,
         reduced: false,
+        bru_ref: None,
     };
     let ref_frame_idx = [0];
     let ref_valid = [false];
@@ -1623,6 +1625,7 @@ fn trajectories_do_not_change_the_projected_motion_field() {
                 enable_tip: false,
                 enable_trajectory,
                 reduced: false,
+                bru_ref: None,
             },
             &[0, 1],
             &[true, true],
@@ -1660,6 +1663,7 @@ fn refresh_rejects_a_malformed_selected_projection_source() {
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         },
         &[0, 1],
         &[true, true],
@@ -1694,6 +1698,7 @@ fn frame_temporal_storage_reuses_bands_and_clears_previous_products() {
                     enable_tip: false,
                     enable_trajectory: iteration % 2 == 0,
                     reduced: false,
+                    bru_ref: None,
                 },
                 &[0],
                 &[true],
@@ -1750,6 +1755,7 @@ fn a_band_projects_once_the_same_band_of_every_reference_field_is_published() {
                 enable_tip: false,
                 enable_trajectory: false,
                 reduced: false,
+                bru_ref: None,
             },
             &[0, 1],
             &[true, true],

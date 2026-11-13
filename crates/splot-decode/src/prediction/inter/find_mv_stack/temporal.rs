@@ -1285,6 +1285,9 @@ pub(crate) struct TemporalProjectionConfig {
     pub(crate) enable_tip: bool,
     pub(crate) enable_trajectory: bool,
     pub(crate) reduced: bool,
+    /// `bru_ref` of a `use_bru == 1` frame, whose motion field § 7.9.3 does not
+    /// project.
+    pub(crate) bru_ref: Option<usize>,
 }
 
 impl TemporalMvContext {

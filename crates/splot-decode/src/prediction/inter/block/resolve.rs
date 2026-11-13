@@ -308,6 +308,9 @@ pub(super) enum InterMotionSyntax {
     Single(SingleMotionSyntax),
     Warp(WarpMotionSyntax),
     Compound(CompoundMotionSyntax),
+    /// § 5.20.5.2 `bru_mode_info()`: `NEWMV` with `BlockMvs` set to zero, in a
+    /// superblock whose `bru_mode` is not `BRU_ACTIVE`.
+    Bru,
 }
 
 /// § 5.20.7.11 single-reference and § 5.20.7.16 TIP syntax.
@@ -440,6 +443,7 @@ impl InterBlockSyntax {
             InterMotionSyntax::Warp(warp) => {
                 (None, [false, false], false, warp.source.motion_mode())
             }
+            InterMotionSyntax::Bru => (None, [true, false], false, MotionMode::Simple),
             InterMotionSyntax::Compound(compound) => (
                 Some(compound.ref_frame1),
                 [
@@ -485,6 +489,7 @@ pub(super) fn resolve_inter_block(
         InterMotionSyntax::Single(single) => resolve_single(block, syntax, single, state),
         InterMotionSyntax::Warp(warp) => resolve_warp(block, syntax, warp, state)?,
         InterMotionSyntax::Compound(compound) => resolve_compound(block, syntax, compound, state)?,
+        InterMotionSyntax::Bru => return Ok(resolve_bru(block, syntax, leaf, state)),
     };
     let (stored_warp, global_mv) = match &syntax.motion {
         InterMotionSyntax::Single(single) => (
@@ -495,7 +500,9 @@ pub(super) fn resolve_inter_block(
                 false,
             ],
         ),
-        InterMotionSyntax::Warp(_) => (resolved.warp_params[0], [false, false]),
+        InterMotionSyntax::Warp(_) | InterMotionSyntax::Bru => {
+            (resolved.warp_params[0], [false, false])
+        }
         InterMotionSyntax::Compound(compound) => {
             let stored_warp = if compound.local_warp {
                 resolved.warp_params[0]
@@ -526,7 +533,9 @@ pub(super) fn resolve_inter_block(
                 InterMotionSyntax::Compound(compound) if compound.local_warp => {
                     resolved.warp_params
                 }
-                InterMotionSyntax::Single(_) | InterMotionSyntax::Compound(_) => [None, None],
+                InterMotionSyntax::Single(_)
+                | InterMotionSyntax::Compound(_)
+                | InterMotionSyntax::Bru => [None, None],
             },
         },
     );
@@ -545,6 +554,39 @@ pub(super) fn resolve_inter_block(
         );
     }
     Ok(resolved)
+}
+
+/// § 5.20.5.2 `bru_mode_info()` motion: a zero motion vector, published to
+/// the motion planes without the § 5.20.4.1 bank update of a non-active
+/// superblock.
+#[cold]
+#[inline(never)]
+fn resolve_bru(
+    block: &MvBlockContext,
+    syntax: &InterBlockSyntax,
+    leaf: u32,
+    state: &mut MvResolutionState<'_>,
+) -> ResolvedInterBlock {
+    let resolved = ResolvedInterBlock {
+        mv: [Mv::ZERO, Mv::ZERO],
+        warp_params: [None, None],
+        blend: syntax.blend,
+    };
+    state.grid.record_leaf_motion(
+        leaf,
+        block.mi_row,
+        block.mi_col,
+        block.bw4,
+        block.bh4,
+        NeighbourMotionValues {
+            mv: resolved.mv,
+            cwp_weight: resolved.blend.cwp_weight(),
+            stored_warp: None,
+            global_mv: [false, false],
+            splat_warp: [None, None],
+        },
+    );
+    resolved
 }
 
 impl ResolvedInterBlock {

@@ -167,6 +167,7 @@ pub(crate) fn make_work_unit_at(
             tile_cdf_save_policy(TileCdfPolicyInput::single_tile_default(), 0).unwrap(),
             std::sync::Arc::new(FrameCdfSubset::from_defaults()),
         ),
+        bru_tile_active: None,
     }
 }
 
@@ -1015,6 +1016,82 @@ fn walk_region_type_past_tile_end_fails_the_symbol_exit_check() {
     let (leaves, output) = walk_edge_superblock(true, &[(REGION_64X32, INTRA_REGION)], Some(0));
 
     assert!(leaves[0].symbol_count >= 1);
+    assert!(output.symbols.exit_symbol().is_err());
+}
+
+/// Walks the first 32x32 superblock of an inter frame whose tile carries
+/// `bru_tile_active`, over `symbols` then a `DeltaQ = 2` marker.
+fn walk_bru_superblock(
+    bru_tile_active: bool,
+    symbols: &[(TileCdfSelector, u8)],
+) -> (Vec<CapturedLeaf>, GeneralIntraPartitionTreeOutput<'static>) {
+    let mut sequence = symbols.to_vec();
+    sequence.push((TileCdfSelector::DeltaQ, 2));
+    let mut work_unit = make_work_unit(&encode_symbol_sequence(&sequence), CdfUpdateMode::Disabled);
+    work_unit.bru_tile_active = Some(bru_tile_active);
+    let mut facts = frame(BLOCK_32X32);
+    facts.frame_is_intra = false;
+    facts.enable_extended_sdp = true;
+    run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap()
+}
+
+#[test]
+fn bru_inactive_superblock_reads_mode_then_infers_partition_none() {
+    let (leaves, mut output) = walk_bru_superblock(true, &[(TileCdfSelector::BruMode, 0)]);
+
+    assert_eq!(leaves.len(), 1);
+    assert_eq!(leaves[0].symbol_count, 1);
+    assert_eq!(leaves[0].frontier.b_size.index(), BLOCK_32X32);
+    assert!(!leaves[0].frontier.bru_active());
+    assert_walk_end(&mut output, 1);
+}
+
+#[test]
+fn bru_support_superblock_is_not_active() {
+    let (leaves, mut output) = walk_bru_superblock(true, &[(TileCdfSelector::BruMode, 1)]);
+
+    assert!(!leaves[0].frontier.bru_active());
+    assert_walk_end(&mut output, 1);
+}
+
+#[test]
+fn bru_active_superblock_reads_its_partition() {
+    let symbols = [
+        (TileCdfSelector::BruMode, 2),
+        (
+            TileCdfSelector::DoSplit {
+                plane_start: 0,
+                ctx: 8,
+            },
+            0,
+        ),
+    ];
+    let (leaves, mut output) = walk_bru_superblock(true, &symbols);
+
+    assert_eq!(leaves.len(), 1);
+    assert_eq!(leaves[0].symbol_count, 2);
+    assert!(leaves[0].frontier.bru_active());
+    assert_walk_end(&mut output, 2);
+}
+
+#[test]
+fn inactive_bru_tile_reads_no_mode_symbol() {
+    let (leaves, mut output) = walk_bru_superblock(false, &[]);
+
+    assert_eq!(leaves[0].symbol_count, 0);
+    assert!(!leaves[0].frontier.bru_active());
+    assert_walk_end(&mut output, 0);
+}
+
+#[test]
+fn bru_mode_past_tile_end_fails_the_symbol_exit_check() {
+    let mut work_unit = make_work_unit(&[], CdfUpdateMode::Disabled);
+    work_unit.bru_tile_active = Some(true);
+    let mut facts = frame(BLOCK_32X32);
+    facts.frame_is_intra = false;
+    let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+
+    assert!(output.symbols.symbol_count() >= 1);
     assert!(output.symbols.exit_symbol().is_err());
 }
 

@@ -95,7 +95,7 @@ impl<'payload> InterFrameParser<'payload> {
             .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
         let states = tile::tile_filter_states((cdef, gdf, ccso), tile, parse.spent_filters.take())?;
         Ok(OpenTile {
-            params: self.setup.params,
+            params: self.setup.params.clone(),
             states,
             parse,
         })
@@ -418,7 +418,7 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         parked,
         reusable,
         workers,
-        *params,
+        params.clone(),
         sequence,
         Arc::clone(&core),
         Arc::clone(temporal),

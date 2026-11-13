@@ -20,7 +20,10 @@ use super::bytes_per_sample;
 const SPEC_SECTION: &str = "7.1";
 
 #[allow(clippy::needless_pass_by_value)]
-pub(super) fn decode_tile_boundary_error(error: FrameCandidateTileBoundaryError) -> DecodeError {
+pub(super) fn decode_tile_boundary_error(
+    error: FrameCandidateTileBoundaryError,
+    offset: ByteOffset,
+) -> DecodeError {
     match error {
         FrameCandidateTileBoundaryError::Limit(source) => DecodeError::Limit { source },
         FrameCandidateTileBoundaryError::Malformed(malformed) => unsupported(
@@ -37,9 +40,9 @@ pub(super) fn decode_tile_boundary_error(error: FrameCandidateTileBoundaryError)
             reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
         } => unsupported_with_spec(
             "backward_reference_update",
-            None,
-            "decode runtime does not decode use_bru == 1 frames",
-            "5.20.2.1",
+            Some(offset),
+            "decode runtime does not decode use_bru == 1 frames with loop restoration, GDF or IntraBC",
+            "7.20.1",
         ),
         FrameCandidateTileBoundaryError::Unsupported { .. }
         | FrameCandidateTileBoundaryError::Boundary(_) => unsupported(

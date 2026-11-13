@@ -167,6 +167,8 @@ pub(crate) struct OwnedDeblockRecords {
     pub(crate) grids: DeblockGridStorage,
     pub(crate) blocks: Vec<DeblockBlock>,
     pub(crate) chroma: ChromaDeblockRecords,
+    /// The frame's `BruModes`, whose non-active superblocks § 7.17.2 skips.
+    pub(crate) bru_modes: Option<std::sync::Arc<crate::filters::bru::BruModeMap>>,
 }
 
 impl OwnedDeblockRecords {
@@ -178,6 +180,7 @@ impl OwnedDeblockRecords {
             grids: core::mem::take(&mut records.deblock_grids),
             blocks: core::mem::take(&mut records.deblock_blocks),
             chroma: core::mem::take(&mut records.chroma_deblock_blocks),
+            bru_modes: records.bru_modes.clone(),
         };
         storage.blocks.clear();
         storage.chroma.clear();
@@ -403,6 +406,9 @@ impl FrameDeblock {
             let edges = &mut edges[plane_pass.pass];
             if !reuse {
                 edges.build(&grid, &plane_pass, &geometry)?;
+                if let Some(modes) = &self.records.bru_modes {
+                    edges.clear_bru_inactive(modes, &plane_pass);
+                }
             }
             let mut ctx = PlaneCtx::new(&mut band)?;
             if plane_pass.pass == 0 {
@@ -576,6 +582,7 @@ impl FrameDeblock {
                 grids: core::mem::take(grids),
                 blocks: blocks.to_vec(),
                 chroma: chroma_blocks.to_vec(),
+                bru_modes: None,
             },
             mi_rows,
             mi_cols,

@@ -1170,6 +1170,7 @@ impl<T: ReconSample> TipOutputStages<T> {
                 .inter
                 .as_ref()
                 .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
+            bru_ref: None,
         };
         let hints = super::super::find_mv_stack::reference_order_hints(
             ref_frame_idx,

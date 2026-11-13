@@ -1847,6 +1847,7 @@ mod tests {
                     enable_tip: true,
                     enable_trajectory: false,
                     reduced: true,
+                    bru_ref: None,
                 },
                 &[0, 1],
                 &[true, true],

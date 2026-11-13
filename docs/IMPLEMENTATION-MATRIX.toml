@@ -20388,7 +20388,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs"
 change_id = "tile-partition-traversal-boundary"
 owner = "decoder"
 risk = "medium"
-notes = "The live partition cursor walks superblocks and leaves with one SymbolDecoder, bounded partition steps and tile-derived neighbour availability. It publishes MI/mode state and supports intra SDP with extended-SDP continuation. Tree-specific restoration reads retain source blocks and coded filters for final filtering. Cursor and scheduler share effective superblock geometry, including SB128 for sequence-SB256 intra frames. Unsupported restoration combinations and BRU/bridge paths remain explicit gates."
+notes = "The live partition cursor walks superblocks and leaves with one SymbolDecoder, bounded partition steps and tile-derived neighbour availability. It publishes MI/mode state and supports intra SDP with extended-SDP continuation. Tree-specific restoration reads retain source blocks and coded filters for final filtering. Cursor and scheduler share effective superblock geometry, including SB128 for sequence-SB256 intra frames. BRU superblocks read bru_mode, infer PARTITION_NONE and skip region_type when not BRU_ACTIVE, and decode their leaves through § 5.20.5.2 bru_mode_info; unsupported restoration combinations remain explicit gates."
 
 [feature.status]
 mapped = "done"
@@ -20406,6 +20406,10 @@ perf = "not-applicable"
 tests = [
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::frame_level_lr_symbol_precedes_partition_read",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::bru_inactive_superblock_reads_mode_then_infers_partition_none",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::bru_active_superblock_reads_its_partition",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::inactive_bru_tile_reads_no_mode_symbol",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::walk_reads_intra_region_type_then_luma_tree_then_chroma_block",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::inactive_frame_level_wiener_ns_advances_current_cursor_without_source_output",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::current_cursor_advances_every_covered_inactive_wiener_ns_unit",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_rejects_invalid_unit_size_before_partition_read",

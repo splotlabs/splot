@@ -103,7 +103,7 @@ pub(super) struct TileFilterRecords {
 
 /// The frame-level facts every tile phase reads, all owned so a resolve pass
 /// that runs after the driver moved on can rebuild its tile context.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct TileWalkParams {
     pub(super) limits: crate::DecodeLimits,
     pub(super) mi_rows: usize,
@@ -140,6 +140,8 @@ pub(crate) struct TileWalkParams {
     /// then returns the header error.
     pub(super) mv_config: Option<super::super::read_mv::MvReadConfig>,
     pub(super) ref_facts: super::compound_path::FrameRefFacts,
+    /// The frame's `BruModes`, `None` when `use_bru == 0`.
+    pub(crate) bru_modes: Option<Arc<crate::filters::bru::BruModeMap>>,
 }
 
 impl TileWalkParams {
@@ -164,7 +166,7 @@ impl TileWalkParams {
             core,
             reference,
             ref_frame_idx,
-            params: *self,
+            params: self.clone(),
         }
     }
 }
@@ -541,12 +543,20 @@ impl<'payload> TileParser<'payload> {
              symbols: &mut SymbolDecoder<'_>,
              frontier: &DecodeBlockFrontier,
              neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>| {
-                decode_block(work_unit, symbols, frontier, &mut block_context, neighbours)
-                    .map(|leaf| (leaf, ()))
+                if frontier.bru_active() {
+                    decode_block(work_unit, symbols, frontier, &mut block_context, neighbours)
+                } else {
+                    super::bru::decode_bru_leaf(work_unit, symbols, frontier, &mut block_context)
+                }
+                .map(|leaf| (leaf, ()))
             };
         let mut on_published = |_: DecodedLeafPublication, ()| {};
         loop {
-            match walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published) {
+            let next = walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published);
+            if let (Ok(Some([sb_row, sb_col])), Some(modes)) = (&next, &context.params.bru_modes) {
+                modes.set(*sb_row, *sb_col, walk.bru_mode());
+            }
+            match next {
                 Ok(Some(_)) if span == WalkSpan::Row && !walk.at_row_start() => {}
                 Ok(next) => return Ok(next.is_some()),
                 Err(error) => return Err(map_inter_multiblock_error(error, tile_offset)),

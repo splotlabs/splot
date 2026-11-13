@@ -201,6 +201,27 @@ const fn size_code(size: u32) -> u32 {
 }
 
 impl PassEdges {
+    /// Drops the decided edges whose luma position lies in a superblock that
+    /// is not `BRU_ACTIVE` (§ 7.17.2).
+    pub(super) fn clear_bru_inactive(
+        &mut self,
+        modes: &crate::filters::bru::BruModeMap,
+        plane_pass: &super::PlanePass,
+    ) {
+        let first = self.first_row << plane_pass.plane_sub_y;
+        for row_index in 0..self.rows {
+            let r = first + row_index * plane_pass.row_step;
+            let row = row_index * self.stride;
+            for col in 0..self.cols {
+                if !modes.active(r, col << plane_pass.plane_sub_x)
+                    && let Some(edge) = self.edges.get_mut(row + col)
+                {
+                    *edge = DeblockEdge::NONE;
+                }
+            }
+        }
+    }
+
     /// Decides every edge of `plane_pass` from the records on its two sides.
     pub(super) fn build(
         &mut self,

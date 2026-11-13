@@ -21,12 +21,32 @@ use super::{
 const INTER_SDP_MAX_BLOCK_SIZE: usize = 64;
 pub(super) const INTRA_REGION: u8 = 0;
 pub(super) const MIXED_REGION: u8 = 1;
-/// § 5.20.2.1 `bru_mode = use_bru ? BRU_INACTIVE : BRU_ACTIVE` without
-/// `BruTileActive`: the tile facts admit only `use_bru == 0` frames, so every
-/// superblock the walk reaches is `BRU_ACTIVE`. The walk takes the superblock's
-/// activity as the const parameter `BRU_ACTIVE` of [`walk_call`], so an active
-/// superblock folds the § 5.20.3.1 / § 5.20.3.2 BRU gates.
-const NON_BRU_FRAME_SUPERBLOCK_BRU_ACTIVE: bool = true;
+/// § 6.19.2.1 Table 6.21 `bru_mode` values.
+pub(crate) const BRU_INACTIVE: u8 = 0;
+pub(crate) const BRU_ACTIVE: u8 = 2;
+
+/// The § 5.20.2.1 `bru_mode` of the superblock that starts at the walk's
+/// symbol position: `BRU_ACTIVE` when `use_bru == 0`, `BRU_INACTIVE` in an
+/// inactive tile, else the `bru_mode` symbol (§ 8.3.2 `TileBruModeCdf`).
+fn superblock_bru_mode(
+    work_unit: &mut DecodeTileWorkUnit,
+    symbols: &mut SymbolDecoder<'_>,
+) -> Result<u8, TilePartitionTraversalError> {
+    match work_unit.bru_tile_active() {
+        None => Ok(BRU_ACTIVE),
+        Some(false) => Ok(BRU_INACTIVE),
+        Some(true) => {
+            let mode = work_unit
+                .cdf_mut()
+                .tile_cdfs_mut()
+                .with_row_mut(super::cdf::TileCdfSelector::BruMode, |row| {
+                    symbols.read_symbol_u16(row)
+                })??
+                .get();
+            Ok(mode)
+        }
+    }
+}
 
 /// The neighbour state a leaf's mode syntax reads.
 #[derive(Clone, Copy)]
@@ -57,6 +77,7 @@ pub(crate) fn decode_block_frontier(
         part,
         intra_region: call.intra_region(),
         cfl_allowed_in_sdp: call.cfl_allowed_in_sdp(),
+        bru_active: true,
     }
 }
 
@@ -113,6 +134,8 @@ struct TreeWalker<'payload> {
     partition_memo: PartitionDecisionMemo,
     /// The chroma reference block the next call inherits.
     chroma_ref: ChromaRefGeometry,
+    /// The current superblock's § 5.20.2.1 `bru_mode`.
+    bru_mode: u8,
 }
 
 /// The leaf callbacks and parser states one superblock walk lends its leaves.
@@ -142,6 +165,11 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
     }
 
     /// The superblock mask the walk publishes its leaves under.
+    /// The § 5.20.2.1 `bru_mode` of the last superblock the walk decoded.
+    pub(crate) const fn bru_mode(&self) -> u8 {
+        self.walker.bru_mode
+    }
+
     pub(crate) const fn sb_mask(&self) -> usize {
         self.walker.sb_mask
     }
@@ -202,6 +230,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                 sdp_state: SdpPartitionState::default(),
                 partition_memo: PartitionDecisionMemo::default(),
                 chroma_ref: ChromaRefGeometry::new(0, 0, frame.sb_size),
+                bru_mode: BRU_ACTIVE,
             },
             sb_size4,
             next_sb_row,
@@ -243,13 +272,16 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             on_leaf,
             on_published,
         };
+        if hooks.work_unit.bru_tile_active().is_some() {
+            self.walker.bru_mode = superblock_bru_mode(hooks.work_unit, &mut self.walker.symbols)
+                .map_err(GeneralIntraTreeWalkError::Traversal)?;
+        }
         let root = TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, ROOT_HAS_CHROMA);
-        walk_call::<_, _, _, _, NON_BRU_FRAME_SUPERBLOCK_BRU_ACTIVE>(
-            &self.frame,
-            &mut self.walker,
-            &mut hooks,
-            root,
-        )
+        if self.walker.bru_mode == BRU_ACTIVE {
+            walk_call::<_, _, _, _, true>(&self.frame, &mut self.walker, &mut hooks, root)
+        } else {
+            walk_call::<_, _, _, _, false>(&self.frame, &mut self.walker, &mut hooks, root)
+        }
         .map_err(|error| *error)?;
         self.next_sb_col = self.next_sb_col.saturating_add(self.sb_size4);
         if self.next_sb_col >= tile_bounds.mi_col_end.min(self.frame.mi_cols) {
@@ -289,8 +321,10 @@ impl<E> From<TilePartitionTraversalError> for WalkError<E> {
 }
 
 /// The § 5.20.3.1 `decode_partition` call `call`: its partition, then its
-/// children in syntax order or its leaf block.
-fn walk_call<'payload, E, C, F, P, const BRU_ACTIVE: bool>(
+/// children in syntax order or its leaf block. `ACTIVE` is whether the
+/// superblock's § 5.20.2.1 `bru_mode` is `BRU_ACTIVE`, a constant so that an
+/// active superblock folds the § 5.20.3.1 / § 5.20.3.2 BRU gates.
+fn walk_call<'payload, E, C, F, P, const ACTIVE: bool>(
     frame: &TilePartitionFrameFacts,
     walker: &mut TreeWalker<'payload>,
     hooks: &mut LeafHooks<'_, F, P>,
@@ -321,14 +355,14 @@ where
     } else {
         if is_intra_sdp_shared_root(frame, call) {
             walker.chroma_ref = chroma_ref;
-            walk_call::<_, _, _, _, BRU_ACTIVE>(
+            walk_call::<_, _, _, _, ACTIVE>(
                 frame,
                 walker,
                 hooks,
                 call.with_tree_type(PartitionTreeType::LumaPart),
             )?;
             walker.chroma_ref = chroma_ref;
-            return walk_call::<_, _, _, _, BRU_ACTIVE>(
+            return walk_call::<_, _, _, _, ACTIVE>(
                 frame,
                 walker,
                 hooks,
@@ -347,7 +381,7 @@ where
             )?;
         }
         let mut call = call;
-        let partition = walker.read_partition_step::<BRU_ACTIVE>(
+        let partition = walker.read_partition_step::<ACTIVE>(
             frame,
             &mut call,
             hooks.mi_size_state,
@@ -360,14 +394,14 @@ where
                 frame,
                 &mut call,
                 partition,
-                BRU_ACTIVE,
+                ACTIVE,
                 hooks.work_unit.cdf_mut().tile_cdfs_mut(),
                 &mut walker.symbols,
             )?;
             return visit_partition_children(
                 &mut |child, inherited| {
                     walker.chroma_ref = inherited;
-                    walk_call::<_, _, _, _, BRU_ACTIVE>(frame, walker, hooks, child)
+                    walk_call::<_, _, _, _, ACTIVE>(frame, walker, hooks, child)
                 },
                 call,
                 chroma_ref,
@@ -381,7 +415,8 @@ where
         (call, sub_size, chroma_offset)
     };
     let part = decode_block_part(call, &walker.intra_facts)?;
-    let frontier = decode_block_frontier(call, chroma_ref, frame, sub_size, chroma_offset, part);
+    let frontier = decode_block_frontier(call, chroma_ref, frame, sub_size, chroma_offset, part)
+        .with_bru_active(ACTIVE);
     let decoded_leaf = DecodedLeafPublication::new(call, sub_size, walker.sb_mask);
     let (leaf_mode, command) = (hooks.on_leaf)(
         hooks.work_unit,
@@ -449,7 +484,7 @@ impl TreeWalker<'_> {
         reason = "measured: keeps the call in registers"
     )]
     #[inline(always)]
-    fn read_partition_step<const BRU_ACTIVE: bool>(
+    fn read_partition_step<const ACTIVE: bool>(
         &mut self,
         frame: &TilePartitionFrameFacts,
         call: &mut TilePartitionCall,
@@ -475,7 +510,7 @@ impl TreeWalker<'_> {
             let (partition_context, square_context) =
                 partition_context_inputs(node, self.tile_bounds, mi_size_state)?;
             let decision_input =
-                facts.read_partition_decision_input(BRU_ACTIVE, partition_context, square_context);
+                facts.read_partition_decision_input(ACTIVE, partition_context, square_context);
             super::partition::read_partition_decision(decision_input, cdfs, &mut self.symbols)?
         };
         let cfl_allowed_in_sdp = self.sdp_state.record_partition(frame, node, partition);
@@ -511,11 +546,8 @@ pub(super) fn read_frontier_partition_decision(
         forced_chroma_partition,
     )?)?;
     let (partition_context, square_context) = partition_context_inputs(call, tile_bounds, context)?;
-    let decision_input = facts.read_partition_decision_input(
-        NON_BRU_FRAME_SUPERBLOCK_BRU_ACTIVE,
-        partition_context,
-        square_context,
-    );
+    let decision_input =
+        facts.read_partition_decision_input(true, partition_context, square_context);
     Ok(super::partition::read_partition_decision(
         decision_input,
         cdfs,
