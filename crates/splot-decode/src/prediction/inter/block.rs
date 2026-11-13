@@ -1189,29 +1189,35 @@ fn frame_temporal_first<T: ReconSample>(
 /// superblock row reads or updates, borrowed once for the row so a leaf call
 /// passes one pointer instead of each piece.
 pub(super) struct BlockDecodeContext<'a, T: ReconSample> {
+    pub(super) sink: InterLeafSink<'a>,
+    pub(super) ref_frame_idx: &'a [u32],
+    pub(super) reference: &'a InterReferenceState<T>,
+    pub(super) gdf_state: &'a mut GdfState,
+    pub(super) cdef_state: &'a mut CdefState,
+    pub(super) ccso_state: &'a mut CcsoState,
+    pub(super) delta_q_state: &'a mut DeltaQState,
+    pub(super) segment_id_state: &'a mut TileSegmentIdState,
+    superblocks: &'a mut Vec<tile::ReconSuperblock>,
+    entries: &'a mut Vec<tile::ReconRowEntry>,
+    sb_mask: usize,
+    pub(super) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
+}
+
+/// The part of a [`BlockDecodeContext`] that [`finish_inter_leaf`] and the
+/// compound paths read or update, lent down by one pointer.
+pub(super) struct InterLeafSink<'a> {
     pub(super) sequence: &'a SequenceHeader,
     pub(super) core: &'a FrameHeaderCore,
     pub(super) params: &'a tile::TileWalkParams,
-    pub(super) ref_frame_idx: &'a [u32],
-    pub(super) reference: &'a InterReferenceState<T>,
     pub(super) tile_offset: ByteOffset,
     pub(super) coeff_ctx: &'a mut TileCoeffContextState,
     pub(super) residual_scratch: &'a mut InterResidualParseScratch,
     pub(super) residual_blocks: &'a mut Vec<InterResidualBlock>,
     pub(super) residual_arena: &'a mut Vec<i32>,
-    pub(super) gdf_state: &'a mut GdfState,
-    pub(super) cdef_state: &'a mut CdefState,
-    pub(super) ccso_state: &'a mut CcsoState,
-    pub(super) delta_q_state: &'a mut DeltaQState,
     pub(super) intrabc_state: &'a mut TileIntrabcPreludeState,
-    pub(super) segment_id_state: &'a mut TileSegmentIdState,
     pub(super) mv_grid: &'a mut NeighbourMvGrid,
     filter_records: &'a mut tile::TileFilterRecords,
     slots: &'a mut Vec<tile::LeafSlot>,
-    superblocks: &'a mut Vec<tile::ReconSuperblock>,
-    entries: &'a mut Vec<tile::ReconRowEntry>,
-    sb_mask: usize,
-    pub(super) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
 }
 
 /// Decodes one leaf and stores its record as the row's next entry.
@@ -1224,30 +1230,26 @@ fn decode_block<T: ReconSample>(
     neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
 ) -> Result<GeneralIntraLeafMode> {
     let BlockDecodeContext {
-        sequence,
-        core,
-        params,
+        ref mut sink,
         ref_frame_idx,
         reference,
-        tile_offset,
-        ref mut coeff_ctx,
-        ref mut residual_scratch,
-        ref mut residual_blocks,
-        ref mut residual_arena,
         ref mut gdf_state,
         ref mut cdef_state,
         ref mut ccso_state,
         ref mut delta_q_state,
-        ref mut intrabc_state,
         ref mut segment_id_state,
-        ref mut mv_grid,
-        ref mut filter_records,
-        ref mut slots,
         ref mut superblocks,
         ref mut entries,
         sb_mask,
         ref mut arena,
     } = *context;
+    let InterLeafSink {
+        sequence,
+        core,
+        params,
+        tile_offset,
+        ..
+    } = *sink;
     let mut store = |leaf, state| {
         tile::push_leaf_entry(
             superblocks,
@@ -1291,7 +1293,7 @@ fn decode_block<T: ReconSample>(
         frontier.is_luma_part(),
         frontier.is_chroma_part(),
     );
-    let neighbour_ctx = (!general_intra).then(|| block_neighbour_ctx(mv_grid, &block_ctx));
+    let neighbour_ctx = (!general_intra).then(|| block_neighbour_ctx(sink.mv_grid, &block_ctx));
     let seg_pre_skip = params.seg_pre_skip;
     let previous_segment_ids =
         super::previous_segment_ids(core, reference, params.mi_rows, params.mi_cols)
@@ -1351,6 +1353,17 @@ fn decode_block<T: ReconSample>(
         read_row(symbols, row_at(rows, ctx)) as u8
     };
     if is_inter == 0 {
+        let InterLeafSink {
+            ref mut coeff_ctx,
+            ref mut residual_scratch,
+            ref mut residual_blocks,
+            ref mut residual_arena,
+            ref mut intrabc_state,
+            ref mut mv_grid,
+            ref mut filter_records,
+            ref mut slots,
+            ..
+        } = *sink;
         let mut prelude = IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip::default());
         let mut pending_intrabc = None;
         if !frontier.is_chroma_part() {
@@ -1622,22 +1635,11 @@ fn decode_block<T: ReconSample>(
         return compound_path::decode_skip_mode_inter_block(
             work_unit,
             symbols,
-            coeff_ctx,
-            residual_scratch,
-            residual_blocks,
-            residual_arena,
-            sequence,
-            core,
+            sink,
             frontier,
-            mv_grid,
             &mut block_ctx,
             &neighbour_ctx,
-            params,
-            filter_records,
-            slots,
-            intrabc_state,
             (skip, segment_id, block_qindex),
-            tile_offset,
         )
         .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state));
     }
@@ -1669,24 +1671,13 @@ fn decode_block<T: ReconSample>(
         return compound_path::decode_compound_inter_block(
             work_unit,
             symbols,
-            coeff_ctx,
-            residual_scratch,
-            residual_blocks,
-            residual_arena,
-            sequence,
-            core,
+            sink,
             frontier,
-            mv_grid,
-            params,
             &mut block_ctx,
             &neighbour_ctx,
-            filter_records,
-            slots,
-            intrabc_state,
             (skip, segment_id, block_qindex),
             n4w,
             n4h,
-            tile_offset,
         )
         .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state));
     }
@@ -1711,7 +1702,7 @@ fn decode_block<T: ReconSample>(
         SINGLE_REF_FRAME0
     };
     block_ctx.ref_frame0 = ref_frame0;
-    let mode_ctx = mode_ctx_from_neighbours(mv_grid, &block_ctx, None, &neighbour_ctx);
+    let mode_ctx = mode_ctx_from_neighbours(sink.mv_grid, &block_ctx, None, &neighbour_ctx);
     let force_integer_mv = params.force_integer_mv;
     let warp_mode = if tip_ref || segment_forces_globalmv {
         None
@@ -1782,18 +1773,8 @@ fn decode_block<T: ReconSample>(
         return finish_inter_leaf(
             work_unit,
             symbols,
-            coeff_ctx,
-            residual_scratch,
-            residual_blocks,
-            residual_arena,
-            sequence,
-            core,
+            sink,
             frontier,
-            mv_grid,
-            params,
-            filter_records,
-            slots,
-            intrabc_state,
             InterBlockSyntax {
                 motion: InterMotionSyntax::Warp(WarpMotionSyntax {
                     source: warp.source,
@@ -1818,7 +1799,6 @@ fn decode_block<T: ReconSample>(
             None,
             (n4w, n4h),
             (skip, segment_id, block_qindex),
-            tile_offset,
         )
         .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state));
     }
@@ -1969,18 +1949,8 @@ fn decode_block<T: ReconSample>(
     finish_inter_leaf(
         work_unit,
         symbols,
-        coeff_ctx,
-        residual_scratch,
-        residual_blocks,
-        residual_arena,
-        sequence,
-        core,
+        sink,
         frontier,
-        mv_grid,
-        params,
-        filter_records,
-        slots,
-        intrabc_state,
         InterBlockSyntax {
             motion: InterMotionSyntax::Single(SingleMotionSyntax {
                 mode: single_mode,
@@ -2006,7 +1976,6 @@ fn decode_block<T: ReconSample>(
         )),
         (n4w, n4h),
         (skip, segment_id, block_qindex),
-        tile_offset,
     )
     .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state))
 }
@@ -2049,25 +2018,28 @@ const fn parsed_inter_block(
 fn finish_inter_leaf(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    residual_scratch: &mut InterResidualParseScratch,
-    residual_blocks: &mut Vec<InterResidualBlock>,
-    residual_arena: &mut Vec<i32>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
+    sink: &mut InterLeafSink<'_>,
     frontier: &DecodeBlockFrontier,
-    mv_grid: &mut NeighbourMvGrid,
-    params: &tile::TileWalkParams,
-    filter_records: &mut tile::TileFilterRecords,
-    slots: &mut Vec<tile::LeafSlot>,
-    intrabc_state: &mut TileIntrabcPreludeState,
     syntax: InterBlockSyntax,
     mut block: InterBlock,
     sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
     (n4w, n4h): (usize, usize),
     (skip, segment_id, block_qindex): (u8, u8, u32),
-    tile_offset: ByteOffset,
 ) -> Result<EntryState> {
+    let InterLeafSink {
+        sequence,
+        core,
+        params,
+        tile_offset,
+        ref mut coeff_ctx,
+        ref mut residual_scratch,
+        ref mut residual_blocks,
+        ref mut residual_arena,
+        ref mut intrabc_state,
+        ref mut mv_grid,
+        ref mut filter_records,
+        ref mut slots,
+    } = *sink;
     let lossless = work_unit
         .coeff_frame_facts()
         .lossless_for_segment(usize::from(segment_id))

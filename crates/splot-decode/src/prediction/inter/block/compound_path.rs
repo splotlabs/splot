@@ -316,25 +316,21 @@ pub(super) fn read_reference_mode(
 pub(super) fn decode_compound_inter_block(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    residual_scratch: &mut InterResidualParseScratch,
-    residual_blocks: &mut Vec<InterResidualBlock>,
-    residual_arena: &mut Vec<i32>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
+    sink: &mut super::InterLeafSink<'_>,
     frontier: &DecodeBlockFrontier,
-    mv_grid: &mut NeighbourMvGrid,
-    params: &tile::TileWalkParams,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
-    filter_records: &mut tile::TileFilterRecords,
-    slots: &mut Vec<tile::LeafSlot>,
-    intrabc_state: &mut TileIntrabcPreludeState,
     leaf: (u8, u8, u32),
     n4w: usize,
     n4h: usize,
-    tile_offset: ByteOffset,
 ) -> Result<EntryState> {
+    let super::InterLeafSink {
+        sequence,
+        core,
+        params,
+        tile_offset,
+        ..
+    } = *sink;
     let tile::TileWalkParams {
         tip_ref_pair,
         ref ref_facts,
@@ -375,7 +371,7 @@ pub(super) fn decode_compound_inter_block(
     let compound_is_joint_ctx = facts.is_joint_context(pair)?;
     block_ctx.ref_frame0 = pair.0;
     block_ctx.ref_frame1 = Some(pair.1);
-    let mode_ctx = mode_ctx_from_neighbours(mv_grid, block_ctx, tip_ref_pair, neighbour_ctx);
+    let mode_ctx = mode_ctx_from_neighbours(sink.mv_grid, block_ctx, tip_ref_pair, neighbour_ctx);
     let mut compound = read_compound_mode_syntax(
         cdfs,
         symbols,
@@ -577,18 +573,8 @@ pub(super) fn decode_compound_inter_block(
     super::finish_inter_leaf(
         work_unit,
         symbols,
-        coeff_ctx,
-        residual_scratch,
-        residual_blocks,
-        residual_arena,
-        sequence,
-        core,
+        sink,
         frontier,
-        mv_grid,
-        params,
-        filter_records,
-        slots,
-        intrabc_state,
         InterBlockSyntax {
             motion: InterMotionSyntax::Compound(motion),
             interp,
@@ -611,7 +597,6 @@ pub(super) fn decode_compound_inter_block(
         ),
         (n4w, n4h),
         leaf,
-        tile_offset,
     )
 }
 
@@ -998,27 +983,22 @@ fn wedge_temporal_allowed_lists(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn decode_skip_mode_inter_block(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    residual_scratch: &mut InterResidualParseScratch,
-    residual_blocks: &mut Vec<InterResidualBlock>,
-    residual_arena: &mut Vec<i32>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
+    sink: &mut super::InterLeafSink<'_>,
     frontier: &DecodeBlockFrontier,
-    mv_grid: &mut NeighbourMvGrid,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
-    params: &tile::TileWalkParams,
-    filter_records: &mut tile::TileFilterRecords,
-    slots: &mut Vec<tile::LeafSlot>,
-    intrabc_state: &mut TileIntrabcPreludeState,
     leaf: (u8, u8, u32),
-    tile_offset: ByteOffset,
 ) -> Result<EntryState> {
+    let super::InterLeafSink {
+        sequence,
+        core,
+        params,
+        tile_offset,
+        ..
+    } = *sink;
     let (ref_frame0, ref_frame1) = skip_mode_reference_pair(
         &params.ref_facts,
         params.num_total_refs,
@@ -1041,18 +1021,8 @@ pub(super) fn decode_skip_mode_inter_block(
     super::finish_inter_leaf(
         work_unit,
         symbols,
-        coeff_ctx,
-        residual_scratch,
-        residual_blocks,
-        residual_arena,
-        sequence,
-        core,
+        sink,
         frontier,
-        mv_grid,
-        params,
-        filter_records,
-        slots,
-        intrabc_state,
         InterBlockSyntax {
             motion: InterMotionSyntax::Compound(CompoundMotionSyntax {
                 y_mode: CompoundYMode::NearNear,
@@ -1088,7 +1058,6 @@ pub(super) fn decode_skip_mode_inter_block(
         None,
         (block_ctx.bw4, block_ctx.bh4),
         leaf,
-        tile_offset,
     )
 }
 
