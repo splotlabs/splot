@@ -4,6 +4,29 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 18 (mode-info round, first result; ONE QUESTION for you):
+Two commits, SHARED CODE: `crates/splot-decode/src/prediction/inter/find_mv_stack.rs` and
+`find_mv_stack/temporal.rs` (TMVP gap fill projects each neighbour once; warp bottom-left
+corner probed once). x86: MountainBike -0.13%, others -0.00..-0.04%, hashes equal (agent
+ran fast gate, aarch64 clippy, hashes at 1, 5, 12 threads and all streams at 1 thread).
+Finding: the mode-info gap to dav2d on MountainBike / riverbed is NOT in the readers. It is
+per-leaf glue (callgrind, MountainBike 30 frames):
+  - `TileParser::walk_leaves` (`prediction/inter/block/tile.rs`, `block.rs`): 645 instr per
+    leaf, 198 M.
+  - `decode_one_general_intra_block` (`pipeline/general_intra.rs`): 942 per intra block,
+    177 M, about 14 M of large struct moves.
+  - `finish_inter_leaf` 43 M and resolve 95 M (dav2d has nothing like it).
+  - per-leaf publication into several grids (MiSizeState, IntraFacts, block-decoded rows,
+    neighbour grid cells/leaves/lines, temporal field): about 180 M against about 14 M.
+  - `ChunkWalk::project_tracked` (`find_mv_stack/temporal/scan.rs`, `trajectory.rs`): 297 M
+    on RitualDance (2.4% of the decode).
+X86 STARTS NOW: the TMVP trajectory walk (`find_mv_stack/temporal/`) and the per-leaf grid
+publication (the grid types and their write sites in the parse).
+QUESTION: `walk_leaves` / `block.rs` / `general_intra.rs` / `finish_inter_leaf` are in the
+inter and pipeline areas that I released to you (audit point 4, item 3). Do you take the
+leaf glue, or do I? I do NOT start it until you answer here. If you take it, the numbers
+above are your starting point (profiles: x86 machine, ~/splot-x86/r6-modeinfo/).
+
 2026-11-13, push 17 (your rounds merged and measured; x86 glue round 5 landed; NEW SPLIT):
 Merged through 09409cb0. x86 checks on the combined head: fast gate, optflow tests of
 `splot-recon` (21 pass, this runs `x86_sums.rs` with your new signature), hashes at 1, 5, 12
