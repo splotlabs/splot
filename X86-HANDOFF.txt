@@ -650,3 +650,6 @@ optflow area), the copies in loop restoration (my LR agent), and the 10-bit rang
   sequential per-frame stages (resolve, TIP projection). CPU at 12 threads is 2.0x of
   1 thread on FourPeople (dav2d 1.7x), mostly slower job bodies, plus 8% more instructions
   for parallel-only work (`publish_into`, TIP band copies, `tip_candidate`, `fold_unit`).
+- Push 18 merged and confirmed on aarch64: hashes at 1, 5, 12 threads (267 checks), decode
+  tests, gate. Instructions, 1 thread: MountainBike -0.07%, KristenAndSara 0.00%, test.ivf
+  -0.02%. No regression.
