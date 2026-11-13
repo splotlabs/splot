@@ -126,12 +126,15 @@ const TAP_COLUMN_REACH: [usize; TAP_REACH + 1] = {
 /// window's `tap_range`, or [`ROUGH`] once it exceeds `limit`. The
 /// center rows go first: in textured windows they alone usually exceed it.
 /// The rows are unrolled so that each row's tap reach is a constant.
+/// `range` is the largest lane of its second vector minus the smallest of its first.
 #[inline]
-fn window_range<S: Simd, W: WindowRows>(simd: S, window: &W, limit: u16) -> u16 {
+fn window_range<S: Simd, W: WindowRows>(
+    simd: S,
+    window: &W,
+    limit: u16,
+    range: impl Fn(u16x16<S>, u16x16<S>) -> u16,
+) -> u16 {
     let (mut low, mut high) = (u16x16::splat(simd, u16::MAX), u16x16::splat(simd, 0));
-    let range = |low: u16x16<S>, high: u16x16<S>| {
-        simd.reduce_max_u16x16(high) - simd.reduce_min_u16x16(low)
-    };
     macro_rules! rows_range {
         ($($row:literal)*) => {
             $({
@@ -670,7 +673,9 @@ fn sym_rows_with<S: Simd, W: WindowRows, R: RowSink>(
     block: &GdfBlock,
     params: &GdfSymParams,
 ) {
-    let range = window_range(simd, window, CLIP_RANGE);
+    let range = window_range(simd, window, CLIP_RANGE, |low, high| {
+        simd.reduce_max_u16x16(high) - simd.reduce_min_u16x16(low)
+    });
     if range == 0 && params.keeps_flat && (classes >> 2).simd_eq(i32x8::splat(simd, 0)).all_true() {
         let mut sink = sink;
         sink.keep(simd);
