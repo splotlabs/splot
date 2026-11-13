@@ -875,7 +875,7 @@ fn run_program<const W: usize>(
 /// of both references' [`Placed`] reads of `sources`; `false` without
 /// writing when a read leaves its source or the output does not hold the
 /// cell.
-#[inline]
+#[inline(never)]
 #[target_feature(enable = "avx2")]
 fn store_cell<const W: usize>(
     t: Avx2,
@@ -935,12 +935,14 @@ fn store_cell<const W: usize>(
 }
 
 /// Calls `cell::<$w, H, V, C>` for the listed tap-pair counts of both
-/// passes and both read forms.
+/// passes and both read forms, the in-place cell of `$common` pairs inline.
 macro_rules! by_pairs {
-    ($h:expr, $v:expr, $c:expr, $w:literal, $args:tt, [$($hh:literal $vv:literal),*]) => {
+    ($h:expr, $v:expr, $c:expr, $w:literal, $common:literal, $args:tt, [$($hh:literal $vv:literal),*]) => {
+        #[allow(unreachable_patterns, reason = "the inline key is listed again")]
         match ($h, $v, $c) {
-            $(($hh, $vv, false) => cell::<$w, $hh, $vv, false> $args,)*
-            $(($hh, $vv, true) => cell::<$w, $hh, $vv, true> $args,)*
+            ($common, $common, false) => cell::<$w, $common, $common, false> $args,
+            $(($hh, $vv, false) => cell_out::<$w, $hh, $vv, false> $args,)*
+            $(($hh, $vv, true) => cell_out::<$w, $hh, $vv, true> $args,)*
             _ => None,
         }
     };
@@ -956,12 +958,24 @@ fn cell_of<const W: usize>(t: Avx2, source: &[u16], placed: &Placed) -> Option<[
     let pairs = |taps: Option<&Taps>| taps.map_or(0, |taps| taps.count);
     let (h, v) = (pairs(horizontal), pairs(vertical));
     if W == 4 {
-        by_pairs!(h, v, clamped, 4, (t, source, reads, (horizontal, vertical)), [0 0, 0 1, 0 2, 1 0, 1 1, 1 2, 2 0, 2 1, 2 2])
+        by_pairs!(h, v, clamped, 4, 2, (t, source, reads, (horizontal, vertical)), [0 0, 0 1, 0 2, 1 0, 1 1, 1 2, 2 0, 2 1, 2 2])
     } else {
-        by_pairs!(h, v, clamped, 8, (t, source, reads, (horizontal, vertical)),
+        by_pairs!(h, v, clamped, 8, 4, (t, source, reads, (horizontal, vertical)),
             [0 0, 0 1, 0 2, 0 3, 0 4, 1 0, 1 1, 1 2, 1 3, 1 4, 2 0, 2 1, 2 2, 2 3, 2 4,
              3 0, 3 1, 3 2, 3 3, 3 4, 4 0, 4 1, 4 2, 4 3, 4 4])
     }
+}
+
+/// [`cell`] out of line.
+#[inline(never)]
+#[target_feature(enable = "avx2")]
+fn cell_out<const W: usize, const H: usize, const V: usize, const C: bool>(
+    t: Avx2,
+    source: &[u16],
+    reads: &Reads,
+    taps: (Option<&Taps>, Option<&Taps>),
+) -> Option<[__m256i; 8]> {
+    cell::<W, H, V, C>(t, source, reads, taps)
 }
 
 /// The `pshufb` pattern of a clamped row load and the lanes it takes from
@@ -988,7 +1002,7 @@ fn gather(reads: &Reads) -> (__m256i, __m256i) {
 /// tap pairs, none for a skipped pass, its rows and columns clamped with
 /// `C`: the window rows read once, each vertical tap pair one blend of two
 /// of them.
-#[inline(never)]
+#[inline]
 #[target_feature(enable = "avx2")]
 fn cell<const W: usize, const H: usize, const V: usize, const C: bool>(
     t: Avx2,
@@ -1000,7 +1014,11 @@ fn cell<const W: usize, const H: usize, const V: usize, const C: bool>(
     let h_weights = horizontal.map_or([zero; 4], |taps| weights(taps));
     let v_weights = vertical.map_or([zero; 4], |taps| weights(taps));
     let rows = if V > 0 { W + 2 * V - 1 } else { W };
-    let stride = reads.stride;
+    let stride = if C {
+        reads.stride
+    } else {
+        u32::try_from(reads.stride).ok()? as usize
+    };
     let window = if C {
         source
     } else {
