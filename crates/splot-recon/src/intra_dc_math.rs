@@ -70,6 +70,9 @@ pub(crate) trait IntraLaneSample: ReconSample {
     /// Stores sixteen in-range `u16` lanes.
     fn store16<S: Simd>(simd: S, values: u16x16<S>, output: &mut [Self; 16]);
 
+    /// Stores thirty-two in-range `u16` lanes.
+    fn store32<S: Simd>(simd: S, low: u16x16<S>, high: u16x16<S>, output: &mut [Self; 32]);
+
     /// Loads eight samples as `u16` lanes.
     fn load8<S: Simd>(simd: S, samples: &[Self; 8]) -> u16x8<S>;
 
@@ -91,6 +94,13 @@ impl IntraLaneSample for u16 {
     #[inline]
     fn store16<S: Simd>(_simd: S, values: u16x16<S>, output: &mut [Self; 16]) {
         values.store_slice(output);
+    }
+
+    #[inline]
+    fn store32<S: Simd>(_simd: S, low: u16x16<S>, high: u16x16<S>, output: &mut [Self; 32]) {
+        let (first, second) = output.split_at_mut(16);
+        low.store_slice(first);
+        high.store_slice(second);
     }
 
     #[inline]
@@ -123,6 +133,11 @@ impl IntraLaneSample for u8 {
     }
 
     #[inline]
+    fn store32<S: Simd>(simd: S, low: u16x16<S>, high: u16x16<S>, output: &mut [Self; 32]) {
+        simd.relaxed_narrow_u16x16(low, high).store_slice(output);
+    }
+
+    #[inline]
     fn load8<S: Simd>(simd: S, samples: &[Self; 8]) -> u16x8<S> {
         let bytes = fearless_simd::u64x2::splat(simd, u64::from_le_bytes(*samples));
         simd.widen_u8x16(bytes.bitcast()).0
@@ -133,6 +148,58 @@ impl IntraLaneSample for u8 {
         let bytes: [u8; 16] = simd.relaxed_narrow_u16x8(values, values).into();
         output.copy_from_slice(&bytes[..8]); // splot-copy-ok: publish eight intra lanes
     }
+}
+
+/// Loads a run of `W` samples (4 to 64) into `C = max(1, W / 16)` lane groups.
+#[inline]
+pub(crate) fn load_lanes<S: Simd, P: IntraLaneSample, const W: usize, const C: usize>(
+    simd: S,
+    samples: &[P; W],
+) -> Option<[u16x16<S>; C]> {
+    if W <= 8 {
+        let mut lanes = [P::from_lane(0); 8];
+        *lanes.first_chunk_mut::<4>()? = *samples.first_chunk::<4>()?;
+        if let (Some(lanes), Some(samples)) = (lanes.get_mut(4..W), samples.get(4..W)) {
+            lanes.copy_from_slice(samples); // splot-copy-ok: widen one 8-sample run
+        }
+        let low = P::load8(simd, &lanes);
+        return Some([simd.combine_u16x8(low, low); C]);
+    }
+    let mut lanes = [u16x16::splat(simd, 0); C];
+    for (lanes, chunk) in lanes.iter_mut().zip(samples.as_chunks::<16>().0) {
+        *lanes = P::load16(simd, chunk);
+    }
+    Some(lanes)
+}
+
+/// Stores the first `W` in-range lanes (4 to 64) of `C = max(1, W / 16)` lane
+/// groups.
+#[inline]
+pub(crate) fn store_lanes<S: Simd, P: IntraLaneSample, const W: usize, const C: usize>(
+    simd: S,
+    lanes: [u16x16<S>; C],
+    row: &mut [P; W],
+) -> Option<()> {
+    if W >= 32 {
+        for (out, pair) in row
+            .as_chunks_mut::<32>()
+            .0
+            .iter_mut()
+            .zip(lanes.chunks_exact(2))
+        {
+            P::store32(simd, pair[0], pair[1], out);
+        }
+    } else if W == 16 {
+        P::store16(simd, lanes[0], row.first_chunk_mut()?);
+    } else {
+        let mut samples = [P::from_lane(0); 8];
+        P::store8(simd, simd.split_u16x16(lanes[0]).0, &mut samples);
+        *row.first_chunk_mut::<4>()? = *samples.first_chunk::<4>()?;
+        if let (Some(row), Some(samples)) = (row.get_mut(4..W), samples.get(4..W)) {
+            row.copy_from_slice(samples); // splot-copy-ok: publish one 8-sample run
+        }
+    }
+    Some(())
 }
 
 pub(crate) trait IntraEdgeError: Copy {
