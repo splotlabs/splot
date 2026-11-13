@@ -1157,14 +1157,14 @@ pub(crate) fn updated_chroma_offset(
     if call.chroma_offset() || !call.has_chroma() {
         return Ok(call.chroma_offset());
     }
-    if is_chroma_offset_for_subsize(sub_size, frame)? {
+    if is_chroma_offset_for_subsize(sub_size, frame) {
         return Ok(true);
     }
     if partition == PartitionType::Horz3 {
         let middle_chroma = call.b_size.index() == BLOCK_8X32 && frame.subsampling_x;
         if !middle_chroma
             && let Some(midsize) = h_partition_midsize(call.b_size)?
-            && is_chroma_offset_for_subsize(midsize, frame)?
+            && is_chroma_offset_for_subsize(midsize, frame)
         {
             return Ok(true);
         }
@@ -1173,12 +1173,9 @@ pub(crate) fn updated_chroma_offset(
 }
 
 #[inline]
-fn is_chroma_offset_for_subsize(
-    sub_size: BlockSize,
-    frame: &TilePartitionFrameFacts,
-) -> Result<bool, TilePartitionTraversalError> {
-    Ok((frame.subsampling_y && sub_size.mi_height_log2()? == 0)
-        || (frame.subsampling_x && sub_size.mi_width_log2()? == 0))
+fn is_chroma_offset_for_subsize(sub_size: BlockSize, frame: &TilePartitionFrameFacts) -> bool {
+    let [high, wide] = sub_size.num_4x4();
+    (frame.subsampling_y && high == 1) || (frame.subsampling_x && wide == 1)
 }
 
 pub(crate) fn valid_subsize(
