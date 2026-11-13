@@ -379,14 +379,37 @@ impl PassEdges {
                 grid.row_cells::<PLANE>(r, self.cols)?,
                 grid.row_cells::<PLANE>(prev_r, self.cols)?,
             );
+            self.edges[row_out..row_out + self.cols].fill(DeblockEdge::NONE);
             let mut row_live = false;
             let mut col_index = 0;
             while col_index < self.cols {
                 let c = col_index << sub_x;
                 let ids = (curr_ids[col_index], prev_ids[col_index]);
+                if ids.0 == ids.1 {
+                    let run = 1 + curr_ids[col_index + 1..]
+                        .iter()
+                        .zip(&prev_ids[col_index + 1..])
+                        .take_while(|&(&curr, &prev)| curr == ids.0 && prev == ids.0)
+                        .count();
+                    let record = grid.record::<PLANE>(ids.0, r, c)?;
+                    if record.sub_pu_size.is_some() {
+                        let ctx = plane_pass.edge_context(r, c, row_tile_edge);
+                        let edge = edge_at_blocks::<PLANE, 1>(
+                            (record, record),
+                            ctx,
+                            geometry,
+                            &strengths,
+                        )?;
+                        if !edge.is_none() {
+                            self.edges[row_out + col_index..row_out + col_index + run].fill(edge);
+                            row_live = true;
+                        }
+                    }
+                    col_index += run;
+                    continue;
+                }
                 let curr = grid.record::<PLANE>(ids.0, r, c)?;
                 let prev = grid.record::<PLANE>(ids.1, prev_r, c)?;
-                let plain = curr.sub_pu_size.is_none() && prev.sub_pu_size.is_none();
                 let ctx = plane_pass.edge_context(r, c, row_tile_edge);
                 let run = if repeats::<1>((curr, prev), ctx) {
                     curr_ids[col_index..]
@@ -397,13 +420,11 @@ impl PassEdges {
                 } else {
                     1
                 };
-                let edge = if ids.0 == ids.1 && plain {
-                    DeblockEdge::NONE
-                } else {
-                    edge_at_blocks::<PLANE, 1>((curr, prev), ctx, geometry, &strengths)?
-                };
-                self.edges[row_out + col_index..row_out + col_index + run].fill(edge);
-                row_live |= !edge.is_none();
+                let edge = edge_at_blocks::<PLANE, 1>((curr, prev), ctx, geometry, &strengths)?;
+                if !edge.is_none() {
+                    self.edges[row_out + col_index..row_out + col_index + run].fill(edge);
+                    row_live = true;
+                }
                 col_index += run;
             }
             self.live[row_index] = row_live;
@@ -647,7 +668,10 @@ impl PassEdges {
         } else {
             (0..0, 0)
         };
-        for line in 0..outer {
+        let mut next = 0;
+        while next < outer {
+            let line = next;
+            next += 1;
             if PASS == 0 && line == band.0.start && !band.0.is_empty() {
                 let columns = band.0.clone();
                 let (samples, stride) = ctx.rows.contiguous_mut();
@@ -668,6 +692,10 @@ impl PassEdges {
                     bit_depth,
                 )
                 .map_err(|_| DeblockError::SampleFilter)?;
+                if band.1 >= inner {
+                    next = band.0.end;
+                    continue;
+                }
             }
             if !self.live.get(line).copied().unwrap_or(true) {
                 continue;
