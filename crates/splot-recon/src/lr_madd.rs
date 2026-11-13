@@ -193,8 +193,9 @@ fn u16_window<'a, T: LumaSimdSource>(window: &[&'a [T]]) -> Option<([&'a [u16]; 
     .then_some((wide, window.len()))
 }
 
-/// [`filter_run`] on the [`filter16`] group kernel, rows outer and groups
-/// inner.
+/// [`filter_run`] on the [`filter16`] group kernel, groups outer and rows
+/// inner: the window and output rows are cut to the run once, so a group
+/// checks one length per plane, and cell weights are built once per group.
 #[inline]
 fn filter_run_groups<
     F: TapPairs,
@@ -210,52 +211,80 @@ fn filter_run_groups<
     (output, stride): (&mut [O], usize),
     max_sample: u16,
 ) -> bool {
+    const MAX_ROWS: usize = 16;
     let pairs = F::TAPS.len() / 2;
+    let span = end.saturating_sub(x) & !15;
+    if span == 0 || rows == 0 {
+        return true;
+    }
+    let need = rows + ROWS - 1;
+    let reach = span + REACH - 16;
+    let Some(first) = window.first().and_then(|row| row.get(x..x + reach)) else {
+        return false;
+    };
+    if need > MAX_ROWS || window.len() < need {
+        return false;
+    }
+    let mut source = [first; MAX_ROWS];
+    for (slot, row) in source.iter_mut().zip(window).take(need) {
+        match row.get(x..x + reach) {
+            Some(row) => *slot = row,
+            None => return false,
+        }
+    }
+    let mut targets: [&mut [O]; MAX_ROWS] = Default::default();
+    let mut rest = output;
+    for (r, slot) in targets.iter_mut().enumerate().take(rows) {
+        let skip = if r == 0 {
+            Some(x)
+        } else {
+            stride.checked_sub(span)
+        };
+        let Some(after) = skip
+            .and_then(|skip| rest.get_mut(skip..))
+            .filter(|after| after.len() >= span)
+        else {
+            return false;
+        };
+        (*slot, rest) = after.split_at_mut(span);
+    }
     let uniform = match classes {
         Classes::Uniform(class) => Some(run_weights::<F, T>([class; 4])),
         Classes::Cells { .. } => None,
     };
-    for r in 0..rows {
-        let Some(window_rows) = window.get(r..).and_then(<[_]>::first_chunk::<ROWS>) else {
+    for (index, col) in (0..span).step_by(16).enumerate() {
+        let cell_weights;
+        let weights = match &uniform {
+            Some(weights) => weights,
+            None => match classes.group(index) {
+                Some(cells) => {
+                    cell_weights = run_weights::<F, T>(cells);
+                    &cell_weights
+                }
+                None => return false,
+            },
+        };
+        let Some(head) = first.get(col..).and_then(<[T]>::first_chunk::<REACH>) else {
             return false;
         };
-        let mut col = x;
-        while col + 16 <= end {
-            let cell_weights;
-            let weights = match &uniform {
-                Some(weights) => weights,
-                None => match classes.group((col - x) / 16) {
-                    Some(cells) => {
-                        cell_weights = run_weights::<F, T>(cells);
-                        &cell_weights
-                    }
-                    None => return false,
-                },
-            };
-            let Some(first) = window_rows[0]
-                .get(col..)
-                .and_then(<[T]>::first_chunk::<REACH>)
-            else {
-                return false;
-            };
-            let mut group = [first; ROWS];
-            for (slot, row) in group.iter_mut().zip(window_rows) {
-                match row.get(col..).and_then(<[T]>::first_chunk::<REACH>) {
-                    Some(row) => *slot = row,
-                    None => return false,
-                }
+        let mut group = [head; MAX_ROWS];
+        for (slot, row) in group.iter_mut().zip(&source).take(need) {
+            match row.get(col..).and_then(<[T]>::first_chunk::<REACH>) {
+                Some(row) => *slot = row,
+                None => return false,
             }
-            let Some(target) = output
-                .get_mut(r * stride + col..)
-                .and_then(<[O]>::first_chunk_mut::<16>)
-            else {
+        }
+        for (r, target) in targets.iter_mut().enumerate().take(rows) {
+            let (Some(rows_of), Some(target)) = (
+                group.get(r..).and_then(<[_]>::first_chunk::<ROWS>),
+                target.get_mut(col..).and_then(<[O]>::first_chunk_mut::<16>),
+            ) else {
                 return false;
             };
             O::store16(
-                filter16::<F, T, ROWS, REACH>(&group, &weights[..=pairs], max_sample),
+                filter16::<F, T, ROWS, REACH>(rows_of, &weights[..=pairs], max_sample),
                 target,
             );
-            col += 16;
         }
     }
     true
