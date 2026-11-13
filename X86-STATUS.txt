@@ -4,6 +4,34 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 10 (round 2: loop restoration and intra prediction; shared lines changed):
+1. SHARED CODE CHANGED, please run the aarch64 hashes (each commit body has an
+   `x86-shared:` line; aarch64 clippy `-D warnings` passes here):
+   - `lr_madd.rs` `filter_run_groups`: groups outer, rows inner; rows cut to the run one
+     time, cell weights built one time per group. The NEON `by_lane` path did not change.
+   - `pc_wiener.rs`: `pooled_feature_row`, `pooled_features_lanes` (fixed-size rows and
+     plane entries), `<u8 as ClassifiedCell>::finish_lanes` (class store).
+   - `intra_dip.rs`: the resample writes band by band with a const width; `DipGrid`,
+     `coarse_grid_rows`, `interpolate_lanes`, `GRID_POINT_INDEX` are deleted.
+   - `intra_ibp_dc.rs`: `apply_intra_ibp_dc_rect` is now `predict_intra_ibp_dc_rect_into`
+     (it also writes the DC). One call in your file `prediction/inter/block/interintra.rs`
+     (the DC arm) is renamed. Also `intra_dc_math.rs` (`store32`, `load_lanes`,
+     `store_lanes`), `mhccp.rs` (`MhccpPredictor::row` rounding), `sink.rs`,
+     `first_block.rs` (`MAX_DIP_EDGE_SAMPLES` 160 -> 80), the intra fuzz target.
+2. Results, instructions, 1 thread, first 100 frames, against the last push: riverbed
+   -1.8%, crowd_run -1.0%, MountainBike -0.7%, RitualDance qp160 (10-bit) -1.6%.
+   Stage, 8-bit, splot/dav2d: restoration filters 1.47-1.80x -> 1.34-1.53x; intra stage
+   riverbed -14%, MountainBike -4%.
+3. REQUESTS, shared decode side (measured on x86, M instructions per 30 frames, riverbed):
+   (a) the u8 -> u16 LR window copy and the u16 -> u8 restage (`LrSourceRows::resolve` 39,
+   `LrWindowGeometry::write` 33, `EightBitLuma::stage` 49): a u8 window removes about 1.2%
+   of the decode. (b) `derive_wienerns_lr_tx_skip_grid_reusing` 20-62: store the skip at
+   block write time. (c) `IntraBlockFrame::left_column`: 8 instructions per sample with a
+   bounds check per sample, for all intra modes (`step_by` was slower). (d) intra glue per
+   block: DIP driver 460, smooth 240, IBP-DC driver 307 instructions.
+4. Next on x86: transform small kernels (agent running), then CfL/MHCCP, an 8-bit
+   PC-Wiener on `pmaddubsw`, and the thread-scaling task.
+
 2026-11-13, push 9 (deblock delete-or-keep, x86 state after the first kernel round):
 1. T6 answers for deblock, measured on x86 against `portable_chunk` (edge-filter
    instructions): u16 vertical: portable -11% -> the AVX2 u16 vertical chunk kernel is
@@ -272,6 +300,13 @@ Head 6421575e against ab8d3d3e (1 thread, instructions, main / branch): 1.031x a
 ==========================================================================================
 COMMITS ON THIS BRANCH
 ==========================================================================================
+perf(recon): cut lr_madd runs and x86 chroma rows to length once; perf(recon): one length
+check per PC-Wiener pooled chunk and class group; perf(recon): DIP resample band by band
+with fixed-size row stores; perf(recon): DC and IBP-DC prediction in one pass; perf(recon):
+MHCCP sign-symmetric rounding in three lane operations. Instructions, 1 thread, first 100
+frames: riverbed -1.8%, crowd_run -1.0%, MountainBike -0.7%, RitualDance qp160 -1.6%.
+Checks: subset hashes at 1, 5, 12 threads (agents: 89/89 at 1 thread), recon and decode
+tests, aarch64 clippy, `cargo xtask ci --fast`.
 refactor(recon): delete the AVX2 u16 vertical deblock chunk kernel; perf(recon): AVX2
 deblock rows in place with bounded row offsets. Instructions, 1 thread, first 100 frames:
 RitualDance qp160 -0.4%, riverbed -0.3%, MountainBike -0.2% (with your parse round 2 of
