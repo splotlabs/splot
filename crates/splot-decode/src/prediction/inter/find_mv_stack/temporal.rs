@@ -944,6 +944,7 @@ impl ProjectedTemporalMotionField {
             .copied()
     }
 
+    #[cfg(test)]
     fn set(&mut self, y8: usize, x8: usize, mv: Mv, ref_offset: i32, valid: bool) {
         let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8) else {
             return;
@@ -1911,28 +1912,34 @@ fn fill_temporal_sampling_gaps(
     let (width8, height8) = (field.width8, field.height8);
     let next_in_unit =
         |a: usize, end: usize| a + 2 < end && (a + 2) >> unit_shift == a >> unit_shift;
+    let Some(mut rest) = field.cells.get_mut(..width8 * height8) else {
+        return;
+    };
     for y8 in (0..height8).step_by(2) {
         let down = next_in_unit(y8, height8);
+        let split = (2 * width8).min(rest.len());
+        let (pair, below) = core::mem::take(&mut rest).split_at_mut(split);
+        let (row, next_row) = pair.split_at_mut(width8.min(pair.len()));
         for x8 in (0..width8).step_by(2) {
-            let Some(anchor) = field.cell(y8, x8).filter(|cell| cell.valid) else {
+            let Some(anchor) = row.get(x8).copied().filter(|cell| cell.valid) else {
                 continue;
             };
             let right = next_in_unit(x8, width8);
-            let projected = |near: bool, y: usize, x: usize| {
-                let source = field.cell(y, x).filter(|cell| near && cell.valid)?;
+            let projected = |source: Option<&ProjectedTemporalMotionCell>| {
+                let source = source.filter(|cell| cell.valid)?;
                 let mv = project_mv(source.mv(), anchor.ref_offset(), source.ref_offset());
                 Some(Mv {
                     row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                     col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                 })
             };
-            let right_mv = projected(right, y8, x8 + 2);
-            let down_mv = projected(down, y8 + 2, x8);
-            let corner_mv = projected(right && down, y8 + 2, x8 + 2);
-            let mut fill = |y: usize, x: usize, sources: &[Option<Mv>]| {
-                if y >= height8 || x >= width8 {
+            let right_mv = projected(row.get(x8 + 2).filter(|_| right));
+            let down_mv = projected(below.get(x8).filter(|_| down));
+            let corner_mv = projected(below.get(x8 + 2).filter(|_| right && down));
+            let fill = |cell: Option<&mut ProjectedTemporalMotionCell>, sources: &[Option<Mv>]| {
+                let Some(cell) = cell else {
                     return;
-                }
+                };
                 let (mut sum, mut count) = (anchor.mv(), 1);
                 for mv in sources.iter().flatten() {
                     sum.row += mv.row;
@@ -1949,12 +1956,13 @@ fn fill_temporal_sampling_gaps(
                     row: average(sum.row),
                     col: average(sum.col),
                 };
-                field.set(y, x, mv, anchor.ref_offset(), true);
+                *cell = ProjectedTemporalMotionCell::new(true, mv, anchor.ref_offset());
             };
-            fill(y8, x8 + 1, &[right_mv]);
-            fill(y8 + 1, x8, &[down_mv]);
-            fill(y8 + 1, x8 + 1, &[right_mv, down_mv, corner_mv]);
+            fill(row.get_mut(x8 + 1), &[right_mv]);
+            fill(next_row.get_mut(x8), &[down_mv]);
+            fill(next_row.get_mut(x8 + 1), &[right_mv, down_mv, corner_mv]);
         }
+        rest = below;
     }
 }
 
