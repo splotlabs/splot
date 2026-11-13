@@ -1187,6 +1187,7 @@ const CDEF_GENERAL: u8 = 0;
 /// at most the strength, and `Clip3(-strength, strength, d)` when
 /// `|d| >> dampingAdj` is 0. Both grow with `|d|`, so `range` decides them
 /// for the whole window.
+#[cfg(test)]
 fn cdef_window_mode(filter: &CdefBlockFilter, range: i32) -> u8 {
     let (mut linear, mut clamped) = (true, true);
     for strength in [filter.pri_str, filter.sec_str] {
@@ -1487,8 +1488,8 @@ pub fn cdef_filter_block_chroma_pair(
 mod segment;
 pub use segment::{
     CdefLumaSegment, CdefPairSegment, CdefSegmentBlock, CdefSegmentOutput, CdefStrengths,
-    cdef_filter_block_chroma_pair_segment, cdef_filter_block_segment, cdef_filter_segment,
-    cdef_publish_chroma_pair,
+    CdefUnitFilters, cdef_filter_block_chroma_pair_segment, cdef_filter_block_segment,
+    cdef_filter_segment, cdef_publish_chroma_pair,
 };
 
 /// The `constrain` dampingAdj, which depends only on the per-call strengths

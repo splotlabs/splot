@@ -96,11 +96,12 @@ pub use cdef_filter::{
     CDEF_PAIR_SEGMENT_BLOCK_AREA, CDEF_PAIR_SEGMENT_STRIDE, CDEF_PAIR_STRIDE,
     CDEF_SEGMENT_BLOCK_AREA, CDEF_SEGMENT_BLOCKS, CDEF_SEGMENT_STRIDE, CDEF_UNAVAILABLE,
     CDEF_UV_DIR, CdefBlockFilter, CdefLumaSegment, CdefPairSegment, CdefSampleTaps,
-    CdefSegmentBlock, CdefSegmentOutput, CdefStrengths, CdefTap, cdef_constrain, cdef_direction,
-    cdef_direction_padded, cdef_direction_segment, cdef_filter_block_boundary_to_valid_stride,
-    cdef_filter_block_chroma_pair, cdef_filter_block_chroma_pair_segment,
-    cdef_filter_block_interior_to, cdef_filter_block_interior_to_valid_stride,
-    cdef_filter_block_segment, cdef_filter_sample, cdef_filter_segment, cdef_publish_chroma_pair,
+    CdefSegmentBlock, CdefSegmentOutput, CdefStrengths, CdefTap, CdefUnitFilters, cdef_constrain,
+    cdef_direction, cdef_direction_padded, cdef_direction_segment,
+    cdef_filter_block_boundary_to_valid_stride, cdef_filter_block_chroma_pair,
+    cdef_filter_block_chroma_pair_segment, cdef_filter_block_interior_to,
+    cdef_filter_block_interior_to_valid_stride, cdef_filter_block_segment, cdef_filter_sample,
+    cdef_filter_segment, cdef_publish_chroma_pair,
 };
 pub use coefficient_scan::{
     TransformClass, coefficient_scan_order, coefficient_scan_position, coefficient_scan_slice,
