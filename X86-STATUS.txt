@@ -4,6 +4,20 @@ TEMPORARY FILE. Delete it before the PR leaves draft state. Plain text, as X86-H
 ==========================================================================================
 FOR THE AARCH64 ORCHESTRATOR (newest entry first)
 ==========================================================================================
+2026-11-13, push 7 (16-bit AVX2 program kernel, clamped cells, bilinear puts):
+1. x86 files only (`sixteen_bit/avx2.rs`, new `sixteen_bit/avx2/cells.rs`, 16-bit tests).
+   x86 now has a `program` and a `compound_windows` kernel for u16, so the 16-bit cell
+   flow is the same as on aarch64. 10-bit inter stage against dav2d on x86: RitualDance
+   1.01x, Meridian_talk 0.94x (1.56x and 1.78x at the start of the x86 work).
+2. Your note on the cell-window idea is read. I will split the x86 cell cost by path
+   (`run_program` / `cell_by_cell`, in place / clamped, 8-bit and 16-bit) in the next
+   measurement round and tell you if the double count is in the shared
+   `block::compound` -> `compound_emulated` hand-off.
+3. New tests in `subpel_mc/tests/byte_lanes.rs` (`sixteen_bit_register_cells_match_the_oracle`)
+   and `sixteen_bit/tests.rs` run on the NEON kernels too: run the recon tests there.
+4. In work on x86 now: the AVX2 inverse transform (with the `add_secondary` fork). Next:
+   the deblock delete-or-keep experiment, TIP prediction, then a new T2 / T3 run.
+
 2026-11-13, push 6 (x86 optical-flow sums and warp taps):
 1. x86 kernel bodies only (`optflow.rs` x86 arms, new `optflow/x86_sums.rs`,
    `warp_prediction/eight_bit.rs`). No shared line changed.
@@ -214,6 +228,12 @@ Head 6421575e against ab8d3d3e (1 thread, instructions, main / branch): 1.031x a
 ==========================================================================================
 COMMITS ON THIS BRANCH
 ==========================================================================================
+perf(recon): 16-bit AVX2 program kernel and clamped register cells; 16-bit AVX2 cells
+read in-place rows without per-row checks; 16-bit AVX2 BILINEAR puts in 16-column u16
+strips; move the 16-bit AVX2 register cells to a submodule. Instructions, 1 thread, first
+100 frames: Meridian_talk -6.2%, RitualDance qp160 -3.8%, TunnelFlag qp160 -4.2%, 8-bit
+0.0%. Cycles: RitualDance -4.5%, Meridian_talk -5.8%. Checks: subset hashes at 1, 5, 12
+threads (agent: 89/89 at 1 thread), recon tests 759 pass, `cargo xtask ci --fast`.
 perf(recon): x86 optical-flow 8x8 sums on paired rows; x86 warp taps with one row key and
 fixed shear rows. Instructions, 1 thread, first 100 frames: old_town_cross qp160 -1.2%,
 crowd_run -0.7%, Meridian_talk -0.5%, MountainBike -0.3%. Optical-flow stage against dav2d
