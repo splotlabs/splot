@@ -228,16 +228,6 @@ fn reach_rows<T>(
     samples.get(first..)?.get(..len)
 }
 
-/// The first 16 samples as `u16` lanes.
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
-#[inline(always)]
-fn widen<S: SimdToken, T: crate::ReconSample>(simd: S, samples: &[T]) -> Option<u16x16<S>> {
-    if let Some(samples) = T::u8_slice(samples) {
-        return Some(widen_u8(simd, u8x16::from_slice(simd, samples.get(..16)?)));
-    }
-    Some(u16x16::from_slice(simd, T::u16_slice(samples)?.get(..16)?))
-}
-
 /// How a gather reduces eight `u16` lanes to their least and greatest.
 trait LaneBounds<S: SimdToken>: Copy {
     fn bounds(self, simd: S, min: u16x8<S>, max: u16x8<S>) -> [u16; 2];
@@ -514,6 +504,43 @@ fn gather_pair_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample>(
     const { assert!(CDEF_SEGMENT_BLOCKS == 4 && PAIR_SPAN == 20) };
     let u_rows = reach_rows(u_samples, width, stride, origin, (PAIR_SPAN, PAIR_ROWS))?;
     let v_rows = reach_rows(v_samples, width, stride, origin, (PAIR_SPAN, PAIR_ROWS))?;
+    if let (Some(u_rows), Some(v_rows)) = (T::u8_slice(u_rows), T::u8_slice(v_rows)) {
+        let bias = u8x16::splat(simd, 0x80);
+        let mut min = [[u8x16::splat(simd, u8::MAX); 2]; 2];
+        let mut max = [[u8x16::splat(simd, 0); 2]; 2];
+        for row in 0..PAIR_ROWS {
+            let rows = [u_rows, v_rows].map(|rows| rows.get(row * stride..)?.get(..PAIR_SPAN));
+            let [Some(u_row), Some(v_row)] = rows else {
+                return None;
+            };
+            let at = row * CDEF_PAIR_SEGMENT_STRIDE;
+            let lanes = pad.get_mut(at..at + CDEF_PAIR_SEGMENT_STRIDE)?;
+            let row_bytes = bytes.get_mut(at..at + CDEF_PAIR_SEGMENT_STRIDE)?;
+            for (half, start) in [0, PAIR_SPAN - 16].into_iter().enumerate() {
+                let planes =
+                    [u_row, v_row].map(|row| u8x16::from_slice(simd, &row[start..start + 16]));
+                for plane in 0..2 {
+                    min[plane][half] = min[plane][half].min(planes[plane]);
+                    max[plane][half] = max[plane][half].max(planes[plane]);
+                }
+                let pairs = [
+                    simd.zip_low_u8x16(planes[0], planes[1]),
+                    simd.zip_high_u8x16(planes[0], planes[1]),
+                ];
+                for (index, pair) in pairs.into_iter().enumerate() {
+                    let lane = 2 * start + 16 * index;
+                    (pair ^ bias).store_slice(&mut row_bytes[lane..lane + 16]);
+                    widen_u8(simd, pair).store_slice(&mut lanes[lane..lane + 16]);
+                }
+            }
+        }
+        let chunks = |[head, tail]: [u8x16<S>; 2]| {
+            let (first, second) = simd.split_u16x16(widen_u8(simd, head));
+            [first, second, simd.split_u16x16(widen_u8(simd, tail)).1]
+        };
+        return Some(pair_ranges(simd, reduce, min.map(chunks), max.map(chunks)));
+    }
+    let (u_rows, v_rows) = (T::u16_slice(u_rows)?, T::u16_slice(v_rows)?);
     let mut min = [[u16x8::splat(simd, u16::MAX); 3]; 2];
     let mut max = [[u16x8::splat(simd, 0); 3]; 2];
     for row in 0..PAIR_ROWS {
@@ -522,21 +549,7 @@ fn gather_pair_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample>(
         let lanes = pad
             .get_mut(row * CDEF_PAIR_SEGMENT_STRIDE..)?
             .first_chunk_mut::<CDEF_PAIR_SEGMENT_STRIDE>()?;
-        if let (Some(u_row), Some(v_row)) = (T::u8_slice(u_row), T::u8_slice(v_row)) {
-            let row_bytes = bytes
-                .get_mut(row * CDEF_PAIR_SEGMENT_STRIDE..)?
-                .first_chunk_mut::<CDEF_PAIR_SEGMENT_STRIDE>()?;
-            let bias = u8x16::splat(simd, 0x80);
-            for start in [0, PAIR_SPAN - 16] {
-                let u = u8x16::from_slice(simd, u_row.get(start..start + 16)?) ^ bias;
-                let v = u8x16::from_slice(simd, v_row.get(start..start + 16)?) ^ bias;
-                simd.zip_low_u8x16(u, v)
-                    .store_slice(&mut row_bytes[2 * start..2 * start + 16]);
-                simd.zip_high_u8x16(u, v)
-                    .store_slice(&mut row_bytes[2 * start + 16..2 * start + 32]);
-            }
-        }
-        let planes = [pair_eighths(simd, u_row)?, pair_eighths(simd, v_row)?];
+        let planes = [pair_eighths(simd, u_row), pair_eighths(simd, v_row)];
         for (chunk, start) in [0, 8, PAIR_SPAN - 8].into_iter().enumerate() {
             for plane in 0..2 {
                 min[plane][chunk] = min[plane][chunk].min(planes[plane][chunk]);
@@ -549,6 +562,20 @@ fn gather_pair_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample>(
                 .store_slice(&mut lanes[2 * start + 8..2 * start + 16]);
         }
     }
+    Some(pair_ranges(simd, reduce, min, max))
+}
+
+/// The larger plane window range of each block from the column-wise least
+/// and greatest of the two planes' rows at the chunk starts of
+/// [`pair_eighths`].
+#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[inline(always)]
+fn pair_ranges<S: SimdToken, R: LaneBounds<S>>(
+    simd: S,
+    reduce: R,
+    min: [[u16x8<S>; 3]; 2],
+    max: [[u16x8<S>; 3]; 2],
+) -> [u16; CDEF_SEGMENT_BLOCKS] {
     let range = |plane: usize, block: usize| {
         let pick = |[first, second, third]: [u16x8<S>; 3]| match block {
             0 => first,
@@ -559,25 +586,16 @@ fn gather_pair_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample>(
         let [least, greatest] = reduce.bounds(simd, pick(min[plane]), pick(max[plane]));
         greatest - least
     };
-    Some(core::array::from_fn(|block| {
-        range(0, block).max(range(1, block))
-    }))
+    let block = |block: usize| range(0, block).max(range(1, block));
+    [block(0), block(1), block(2), block(3)]
 }
 
 /// The 8-column chunks of a chroma row from columns 0, 8 and
 /// `PAIR_SPAN - 8` as `u16` lanes.
 #[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
-fn pair_eighths<S: SimdToken, T: crate::ReconSample>(
-    simd: S,
-    row: &[T; PAIR_SPAN],
-) -> Option<[u16x8<S>; 3]> {
-    let (first, second) = simd.split_u16x16(widen(simd, row)?);
-    let third = match T::u16_slice(row) {
-        Some(row) => u16x8::from_slice(simd, row.get(PAIR_SPAN - 8..)?),
-        None => simd.split_u16x16(widen(simd, &row[PAIR_SPAN - 16..])?).1,
-    };
-    Some([first, second, third])
+fn pair_eighths<S: SimdToken>(simd: S, row: &[u16; PAIR_SPAN]) -> [u16x8<S>; 3] {
+    [0, 8, PAIR_SPAN - 8].map(|start| u16x8::from_slice(simd, &row[start..start + 8]))
 }
 
 /// [`cdef_filter_block_chroma_pair`] for block `block` of `segment`. The
