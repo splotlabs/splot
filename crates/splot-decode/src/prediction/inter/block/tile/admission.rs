@@ -883,13 +883,19 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         self.parse_progress.cell().current() == splot_parallel::WatermarkCell::FAILED
     }
 
-    pub(crate) fn resolve(&self, index: usize) -> Result<(core::ops::Range<usize>, Option<usize>)> {
+    /// Projects temporal band `index`. A band reads only the same band of
+    /// each reference field (§ 7.9.8), so it projects ahead of the resolve.
+    pub(crate) fn project(&self, index: usize) -> Result<()> {
         project_temporal_band(
             &self.temporal_plan,
             &self.recon.temporal,
             &self.recon.reference.ref_motion_fields,
             index,
-        )?;
+        )
+    }
+
+    pub(crate) fn resolve(&self, index: usize) -> Result<(core::ops::Range<usize>, Option<usize>)> {
+        self.project(index)?;
         let projected_rows = self.temporal_plan.rows8(index);
         let final_band = index.saturating_add(1) == self.temporal_plan.len();
         let context = self.recon.params.context(

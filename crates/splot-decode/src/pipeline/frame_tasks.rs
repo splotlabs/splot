@@ -5,10 +5,12 @@
 //! inter frame, a [`TipFrame`] per TIP output frame, and a [`FinishFrame`]
 //! for the filter phase of a frame the driver walked itself.
 //!
-//! A [`SplitFrame`] runs on the [`RowScheduler`] as seven stages: parse (the
+//! A [`SplitFrame`] runs on the [`RowScheduler`] as eight stages: parse (the
 //! whole tile, publishing a unit count as it goes), prepare (the temporal
 //! prelude and the per-tile reconstruction state), attach (the filter state
-//! the parse settles last), resolve (one temporal band at a time), recon (one
+//! the parse settles last), project (one § 7.9.8 temporal band at a time, at
+//! most one band ahead of the resolve, each when its reference bands are
+//! published), resolve (one projected temporal band at a time), recon (one
 //! batch of superblocks at a time, in order, straight into the frame
 //! workspace), frontier (one superblock row at a time: in-place deblock behind
 //! the lead, then the filter stripes that row releases), and output (the
@@ -48,6 +50,7 @@ const OUTPUT: usize = 6;
 const PRECOMPUTE: usize = 7;
 const FILTER: usize = 8;
 const TILE: usize = 9;
+const PROJECT: usize = 10;
 
 /// A sample type the decode driver is typed for below its bit-depth boundary.
 pub(crate) trait SplitSample: SpareFramePlanes + Send + 'static {
@@ -110,6 +113,7 @@ pub(crate) struct SplitFrame<T: SplitSample> {
     precompute: ParallelStage,
     filter: ParallelStage,
     tiles: ParallelStage,
+    project: Stage,
     tile_jobs: OnceLock<inter::TileParseJobs<T>>,
     filter_jobs: Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
     filter_error: Mutex<Option<DecodeError>>,
@@ -153,6 +157,7 @@ impl<T: SplitSample> SplitFrame<T> {
             precompute: ParallelStage::new(),
             filter: ParallelStage::new(),
             tiles: ParallelStage::new(),
+            project: Stage::new(0),
             tile_jobs: OnceLock::new(),
             filter_jobs: Mutex::new(Vec::new()),
             filter_error: Mutex::new(None),
@@ -204,6 +209,7 @@ impl<T: SplitSample> SplitFrame<T> {
         self.precompute.reset();
         self.filter.reset();
         self.tiles.reset();
+        self.project.reset(0);
         self.filter_jobs.get_mut().clear();
         self.filter_error.get_mut().take();
         *self.early_ready.get_mut() = false;
@@ -357,6 +363,7 @@ impl<T: SplitSample> SplitFrame<T> {
                 .store(scheduled.len(), Ordering::Release);
         }
         self.stages[RESOLVE].set_rows(scheduled.resolve_len());
+        self.project.set_rows(scheduled.resolve_len());
         self.precompute.set_rows(scheduled.len());
         self.stages[COMMIT].set_rows(scheduled.len());
         self.stages[FRONTIER].set_rows(scheduled.frontier_len());
@@ -404,6 +411,18 @@ impl<T: SplitSample> SplitFrame<T> {
     fn frontier_ready(&self, row: usize) -> bool {
         row < self.closed_rows.load(Ordering::Acquire)
             && (row + 1 < self.stages[FRONTIER].rows() || self.attached.load(Ordering::Acquire))
+    }
+
+    /// Whether resolve band `band` may run: its band is projected and the
+    /// parse reached the unit the last resolve run waited for.
+    fn resolve_ready(&self, band: usize) -> bool {
+        let awaiting = self.awaiting_units.load(Ordering::Acquire);
+        (awaiting == 0
+            || self
+                .parse_progress
+                .get()
+                .is_some_and(|parse| parse.cell().current() >= awaiting))
+            && band < self.project.next()
     }
 
     /// Resolves one temporal band; `false` when the parse has not reached
@@ -546,15 +565,13 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
             return Some(claim(ATTACH, row));
         }
         let recon = self.recon.get()?;
-        if let Some(row) = self.stages[RESOLVE].claim(|band| {
-            let awaiting = self.awaiting_units.load(Ordering::Acquire);
-            (awaiting == 0
-                || self
-                    .parse_progress
-                    .get()
-                    .is_some_and(|parse| parse.cell().current() >= awaiting))
-                && recon.resolve_ready(band)
-        }) {
+        if let Some(row) = self
+            .project
+            .claim(|band| band <= self.stages[RESOLVE].next() + 1 && recon.resolve_ready(band))
+        {
+            return Some(claim(PROJECT, row));
+        }
+        if let Some(row) = self.stages[RESOLVE].claim(|band| self.resolve_ready(band)) {
             return Some(claim(RESOLVE, row));
         }
         if let Some(row) = self.stages[COMMIT].claim(|batch| self.precompute.is_done(batch)) {
@@ -594,6 +611,10 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 FRONTIER => self.frontier(claim.row).map(|()| true),
                 PRECOMPUTE => self.precompute(claim.row, worker).map(|()| true),
                 TILE => self.parse_tile(claim.row).map(|()| true),
+                PROJECT => self
+                    .recon_state()
+                    .and_then(|recon| recon.project(claim.row))
+                    .map(|()| true),
                 FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row)
                     .map(|()| true),
                 _ => self.output().map(|()| true),
@@ -601,6 +622,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
             match claim.stage {
                 PRECOMPUTE => self.precompute.finish(claim.row),
                 TILE => self.tiles.finish(claim.row),
+                PROJECT => self.project.finish(claim.row),
                 FILTER => self.filter.finish(claim.row),
                 stage => match outcome {
                     Ok(false) => self.stages[stage].retry(claim.row),
@@ -612,6 +634,12 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 break;
             }
             let next = match claim.stage {
+                PROJECT => self.stages[RESOLVE]
+                    .claim(|band| self.resolve_ready(band))
+                    .map(|row| Claim {
+                        stage: RESOLVE,
+                        row,
+                    }),
                 PRECOMPUTE => self.stages[COMMIT]
                     .claim(|batch| batch == claim.row)
                     .map(|row| Claim { stage: COMMIT, row }),
