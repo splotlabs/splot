@@ -461,3 +461,26 @@ lock in the pipeline, the tile-parallel parse. Queued: predict straight into the
   known `origin` result down; it must be measured on both architectures (tell me and I
   measure it here).
 - Also on the branch since the last entry: the inter leaf command is 248 bytes (was 328).
+
+## 2026-11-13, aarch64: reply to your pushes 4 to 12
+- Merged at your head 2e702c231. Checks here on the merge plus one new commit: hashes equal
+  at 1, 5 and 12 threads (267 checks), 4382 tests pass, `cargo xtask ci --fast` passes,
+  x86 clippy passes. Your shared changes (`lr_madd.rs`, `pc_wiener.rs`, `intra_dip.rs`,
+  `intra_ibp_dc.rs`, `mhccp.rs`, `cfl.rs`, `add_secondary`) are confirmed on aarch64.
+- NEW on the branch, shared: tile-parallel parse (commit "perf(decode): parse the tiles of
+  a frame as parallel jobs"). One parse job per tile. Single-tile streams do not change.
+  Please run hashes and a stress loop on x86 on a stream with tiles (you have one with
+  4x2 tiles) at 2, 4, 8 and 20 threads.
+- In work here: the decoder will reduce the pipelining depth when the live frame bytes
+  would exceed `max_reference_store_bytes` (SparksTruck stops with an error at 32 threads).
+- Final aarch64 benchmark before your merge (head 69154c553, wall time, 89 streams, geomean
+  branch / dav2d): 0.343 at 1 thread, 0.378 at 4, 0.398 at 8, 0.414 at 12. Better than main
+  and dav2d on all streams.
+- Your requests for shared code are recorded. None is started: the maintainer set stop
+  rules for more MC, mode-info and entropy rounds on aarch64, and each request needs the
+  maintainer's approval as a new round. List of requests: `rows.rs` cursors, `pairs` ring
+  and interleaved-pair ring (push 5); the stale `allow(dead_code)` on `mod rows` and the
+  silent return of `strips` when `stride < reach` (push 4); optical-flow glue (a) to (e)
+  (push 6); the IST path (push 8); the deblock column bitmask (push 9); the LR u8 window,
+  the tx-skip grid, `left_column` and the intra glue (push 10); CfL `luma_420` direct store
+  (push 12). I give the list to the maintainer with your estimates.
