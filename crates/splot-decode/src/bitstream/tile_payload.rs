@@ -367,11 +367,11 @@ impl<'a> DecodeTilePayloadPlan<'a> {
     }
 
     pub(crate) fn retire_into(mut self, scratch: &mut TilePayloadScratch) {
-        scratch.tile_cdfs.clear();
-        for tile in self.work_units.drain(..) {
-            scratch.tile_cdfs.push(tile.cdf.into_storage());
-        }
-        core::mem::swap(&mut scratch.work_units, &mut self.work_units);
+        retire_work_units(&mut self.work_units, scratch);
+    }
+
+    pub(crate) fn take_work_units(&mut self) -> Vec<DecodeTileWorkUnit> {
+        core::mem::take(&mut self.work_units)
     }
 
     pub(crate) fn rebase_payload(
@@ -460,6 +460,18 @@ impl Default for TilePayloadScratch {
             tile_cdfs: Vec::new(),
         }
     }
+}
+
+/// Keeps the work units' CDF storage and list for the next frame.
+pub(crate) fn retire_work_units(
+    work_units: &mut Vec<DecodeTileWorkUnit>,
+    scratch: &mut TilePayloadScratch,
+) {
+    scratch.tile_cdfs.clear();
+    for tile in work_units.drain(..) {
+        scratch.tile_cdfs.push(tile.cdf.into_storage());
+    }
+    core::mem::swap(&mut scratch.work_units, work_units);
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

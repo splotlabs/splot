@@ -1177,10 +1177,10 @@ impl<T: ReconSample> Default for InterReconScratchPool<T> {
 /// The parse state one tile at a time is laid out into.
 ///
 /// dav2d keeps a frame context's arrays for the whole stream and resets them
-/// per frame. These are splot's tile-scoped equivalents: the decoder holds one
-/// set, and each tile is laid out into it rather than building its own.
+/// per frame. These are splot's tile-scoped equivalents: the decode holds one
+/// set per tile it parses at once, and each tile is laid out into one.
 #[derive(Default)]
-pub(in crate::prediction::inter) struct TileParseState {
+pub(crate) struct TileParseState {
     filter_records: TileFilterRecords,
     intrabc_state: TileIntrabcPreludeState,
     residual_scratch: InterResidualParseScratch,
@@ -1194,7 +1194,7 @@ pub(in crate::prediction::inter) struct TileParseState {
     commit_block_decoded: TileBlockDecodedState,
     /// The CDEF, GDF and CCSO tile states the last tile merged, whose grids
     /// the next tile's states are laid out on.
-    spent_filters: Option<(CdefState, GdfState, CcsoState)>,
+    pub(super) spent_filters: Option<(CdefState, GdfState, CcsoState)>,
 }
 
 #[derive(Default)]
@@ -1471,7 +1471,11 @@ impl ParsedTile {
             &mut output.traversal.active_source_blocks,
             &mut output.traversal.unit_filters,
         )?;
-        parse_progress.parser.lock().traversal = core::mem::take(&mut output.traversal);
+        if let Some(mut states) = parse_progress.parse_states()
+            && let Some(state) = states.last_mut()
+        {
+            state.traversal = core::mem::take(&mut output.traversal);
+        }
         let TileParserOutput {
             cdef_state,
             gdf_state,
@@ -1521,9 +1525,18 @@ impl ParsedTile {
             .try_reserve(1)
             .map_err(|_| inter_allocation!("inter tile segment ids"))?;
         segment_ids.push(segment_id_state);
-        let mut state = parse_progress.parser.lock();
-        state.traversal = traversal;
-        state.spent_filters = Some((cdef_state, gdf_state, ccso_state));
+        let Some(mut states) = parse_progress.parse_states() else {
+            return Ok(self.unit_count);
+        };
+        if let Some(spare) = states
+            .iter()
+            .position(|state| state.spent_filters.is_none())
+        {
+            let mut state = states.swap_remove(spare);
+            state.traversal = traversal;
+            state.spent_filters = Some((cdef_state, gdf_state, ccso_state));
+            states.push(state);
+        }
         Ok(self.unit_count)
     }
 }
@@ -1604,7 +1617,6 @@ pub(crate) struct ParseProgress {
     rows: Mutex<ParsedRows>,
     geometry: Mutex<GeometryState>,
     records: Mutex<crate::filters::wienerns_lr::FrameFilterRecords>,
-    parser: Mutex<TileParseState>,
 }
 
 #[derive(Default)]
@@ -1835,9 +1847,17 @@ impl ParseProgress {
         }
     }
 
-    /// The filter states the last merged tile spent.
-    pub(super) fn take_spent_filters(&self) -> Option<(CdefState, GdfState, CcsoState)> {
-        self.parser.lock().spent_filters.take()
+    /// A spent tile's parse state, whose storage the next tile lays out over.
+    pub(super) fn take_parse_state(&self) -> TileParseState {
+        self.parse_states()
+            .and_then(|mut states| states.pop())
+            .unwrap_or_default()
+    }
+
+    fn parse_states(&self) -> Option<parking_lot::MutexGuard<'_, Vec<TileParseState>>> {
+        self.buffers
+            .as_deref()
+            .map(|shared| shared.parse_states.lock())
     }
 
     /// The cell a batch waits on for its own units.
@@ -1913,6 +1933,7 @@ impl<'payload> TileParser<'payload> {
         cdef_state: CdefState,
         gdf_state: GdfState,
         ccso_state: CcsoState,
+        parse: TileParseState,
         parse_progress: &ParseProgress,
         (index, tiles): (usize, usize),
     ) -> Result<Self> {
@@ -1921,13 +1942,7 @@ impl<'payload> TileParser<'payload> {
             .ok_or_else(invalid_inter_tile_scheduling_state)?
             .unit_count;
         let mut parser = Self::new(
-            tile,
-            tile_bytes,
-            context,
-            cdef_state,
-            gdf_state,
-            ccso_state,
-            core::mem::take(&mut *parse_progress.parser.lock()),
+            tile, tile_bytes, context, cdef_state, gdf_state, ccso_state, parse,
         )?;
         parser.mv_grid.keep_edges_only();
         let sb_h4 = context.params.sb_h4;
@@ -1993,7 +2008,9 @@ impl<'payload> TileParser<'payload> {
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
         let unit_count = self.parser_ordinal;
         let (output, state) = self.into_output();
-        *parse_progress.parser.lock() = state;
+        if let Some(mut states) = parse_progress.parse_states() {
+            states.push(state);
+        }
         Ok(ParsedTile { unit_count, output })
     }
 }

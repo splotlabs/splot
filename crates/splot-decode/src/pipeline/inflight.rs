@@ -655,7 +655,7 @@ impl InflightRing {
         self.entries.push_back(entry);
     }
 
-    fn harvest_oldest(&mut self, pools: &mut RowPools) -> bool {
+    pub(crate) fn harvest_oldest(&mut self, pools: &mut RowPools) -> bool {
         let Some(entry) = self.entries.pop_front() else {
             return false;
         };

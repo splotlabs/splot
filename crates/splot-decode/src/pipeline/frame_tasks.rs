@@ -47,6 +47,7 @@ const FRONTIER: usize = 5;
 const OUTPUT: usize = 6;
 const PRECOMPUTE: usize = 7;
 const FILTER: usize = 8;
+const TILE: usize = 9;
 
 /// A sample type the decode driver is typed for below its bit-depth boundary.
 pub(crate) trait SplitSample: SpareFramePlanes + Send + 'static {
@@ -108,6 +109,8 @@ pub(crate) struct SplitFrame<T: SplitSample> {
     stages: [Stage; 7],
     precompute: ParallelStage,
     filter: ParallelStage,
+    tiles: ParallelStage,
+    tile_jobs: OnceLock<inter::TileParseJobs<T>>,
     filter_jobs: Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
     filter_error: Mutex<Option<DecodeError>>,
     early_ready: AtomicBool,
@@ -149,6 +152,8 @@ impl<T: SplitSample> SplitFrame<T> {
             stages: core::array::from_fn(|_| Stage::new(0)),
             precompute: ParallelStage::new(),
             filter: ParallelStage::new(),
+            tiles: ParallelStage::new(),
+            tile_jobs: OnceLock::new(),
             filter_jobs: Mutex::new(Vec::new()),
             filter_error: Mutex::new(None),
             early_ready: AtomicBool::new(false),
@@ -182,6 +187,7 @@ impl<T: SplitSample> SplitFrame<T> {
     /// Returns the slot's storage to its idle state, or `false` while a
     /// reader of the last frame still holds part of it.
     fn reset(&mut self) -> bool {
+        self.tile_jobs.take();
         if let Some(recon) = self.recon.take() {
             *self.workspace.get_mut() = recon.retire();
         }
@@ -197,6 +203,7 @@ impl<T: SplitSample> SplitFrame<T> {
         }
         self.precompute.reset();
         self.filter.reset();
+        self.tiles.reset();
         self.filter_jobs.get_mut().clear();
         self.filter_error.get_mut().take();
         *self.early_ready.get_mut() = false;
@@ -291,8 +298,31 @@ impl<T: SplitSample> SplitFrame<T> {
         *self.early.lock() = Some(early);
         self.early_ready.store(true, Ordering::Release);
         self.notify();
+        if pending.tiles() > 1 {
+            let jobs = pending.into_tile_jobs(&unit)?;
+            let tiles = jobs.len();
+            if self.tile_jobs.set(jobs).is_err() {
+                return Err(inter::invalid_inter_tile_scheduling_state());
+            }
+            self.tiles.set_rows(tiles);
+            return Ok(());
+        }
         while !pending.parse_units(core::num::NonZeroUsize::MAX)? {}
-        let mut deferred = pending.finish()?;
+        self.parse_finished(pending.finish()?)
+    }
+
+    fn parse_tile(&self, tile: usize) -> Result<()> {
+        let jobs = self
+            .tile_jobs
+            .get()
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+        match jobs.parse_tile(tile)? {
+            Some(deferred) => self.parse_finished(deferred),
+            None => Ok(()),
+        }
+    }
+
+    fn parse_finished(&self, mut deferred: inter::DeferredInterWalk<T>) -> Result<()> {
         deferred.publish_products()?;
         *self.deferred.lock() = Some(deferred);
         self.parse_done.store(true, Ordering::Release);
@@ -469,17 +499,20 @@ impl<T: SplitSample> SplitFrame<T> {
 }
 
 impl<T: SplitSample> FrameWork for SplitFrame<T> {
-    /// The whole-tile parse: the next frame's parse waits for its CDFs.
+    /// The parse and its tiles: the next frame's parse waits for its CDFs.
     fn claim_critical(&self) -> Option<Claim> {
         if self.failed.load(Ordering::Acquire) {
             return None;
         }
-        let row = self.stages[PARSE].claim(|_| {
+        if let Some(row) = self.stages[PARSE].claim(|_| {
             self.entropy
                 .get()
                 .is_none_or(inter::EntropyDependencies::is_settled)
-        })?;
-        Some(Claim { stage: PARSE, row })
+        }) {
+            return Some(Claim { stage: PARSE, row });
+        }
+        let row = self.tiles.claim(|_| true)?;
+        Some(Claim { stage: TILE, row })
     }
 
     fn claim(&self) -> Option<Claim> {
@@ -558,12 +591,14 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 COMMIT => self.commit(claim.row, worker).map(|()| true),
                 FRONTIER => self.frontier(claim.row).map(|()| true),
                 PRECOMPUTE => self.precompute(claim.row, worker).map(|()| true),
+                TILE => self.parse_tile(claim.row).map(|()| true),
                 FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row)
                     .map(|()| true),
                 _ => self.output().map(|()| true),
             };
             match claim.stage {
                 PRECOMPUTE => self.precompute.finish(claim.row),
+                TILE => self.tiles.finish(claim.row),
                 FILTER => self.filter.finish(claim.row),
                 stage => match outcome {
                     Ok(false) => self.stages[stage].retry(claim.row),
