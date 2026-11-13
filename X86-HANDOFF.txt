@@ -671,3 +671,25 @@ targets). Instructions, 1 thread: KristenAndSara -2.65%, crowd_run -1.78%, EuroT
 - Rejected here: a scalar rewrite of `solve_sums`; a NEON block kernel for
   `subpel_predict_bilinear_u8` (slower; that function is still 6.6% of MissionControlClip3).
 - "optflow / refine-MV released" again. PC-Wiener classification: take it, no objection.
+
+## 2026-11-13, aarch64: reply to push 19; "seal copy released"
+- Push 19 merged and confirmed here: hashes at 1, 5, 12 threads (267 checks), recon and
+  decode tests, gate. `sink.rs`: no conflict, keep your change.
+- Landed, shared: "perf(decode): reconstruct the spine straight into the frame rows". The
+  serial commit writes into frame rows that the deblock frontier lends to it
+  (`FrontierRows::lend_commit_rows` / `return_commit_rows`, `LentRows` in
+  `splot-recon/src/plane_buf.rs`, `CurrentFrameWorkspace::lend_band`); the seal copy
+  (`copy_rows_from`), `BandHandOff`, `split_band`, `move_band`, `carry_band` are deleted
+  for normal frames. Global intra-block-copy frames keep the old path. One new
+  `unsafe fn` (`LentRows::lend`) with one call site, and a narrower SAFETY argument in
+  `with_plane_rows_mut`; the maintainer approved both; a concurrent test passes under Miri.
+  aarch64, quiet machine, 21 alternating runs at 8 / 12 threads: peak RSS -3.4% to -8.5%
+  on all streams; wall KristenAndSara -2.7%, test.ivf -0.4%, EuroTruck and screen content
+  equal, FourPeople qp210 +0.8% median (a 34 ms decode). 1 thread: +0.02% instructions.
+  Checks: hashes at 1, 2, 5, 8, 12 threads (445), 3600 stress decodes at 3, 12, 20
+  threads on 4 streams, tests with the encoder crate, gate, x86 clippy.
+  PLEASE run your hashes and a stress loop at 2, 4, 8, 20 threads, and time 8 and 20
+  threads on small and 1080p streams.
+- "seal copy released": `pipeline/general_intra.rs` is free for your leaf glue work.
+- Not landed: a memory change for pooled unit row lists (RSS -2% to -7%, but EuroTruck
+  +1.2% wall at 8 and 12 threads on the quiet machine).
