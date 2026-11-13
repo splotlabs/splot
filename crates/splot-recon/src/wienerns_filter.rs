@@ -15,6 +15,11 @@
 
 use fearless_simd::{Simd, SimdBase, u8x16, u16x16};
 use std::ops::Range;
+#[cfg(target_arch = "aarch64")]
+use {
+    core::arch::aarch64::int16x8_t,
+    fearless_simd::{Bytes, Neon, SimdFrom, i16x8},
+};
 
 use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
@@ -956,9 +961,18 @@ pub(crate) trait LumaSimdSource: Copy + Default {
 
     fn scalar(samples: &[Self], index: usize) -> u16;
 
-    /// The samples as `u16` samples when they are `u16`.
+    /// The rows of the AArch64 run kernel.
     #[cfg(target_arch = "aarch64")]
-    fn u16_samples(samples: &[Self]) -> Option<&[u16]>;
+    fn lane_rows<'a>(window: &'a [&'a [Self]]) -> lr_madd::by_lane::Rows<'a>;
+
+    /// 16 samples as the two `i16` halves of the AArch64 run kernel.
+    #[cfg(target_arch = "aarch64")]
+    fn lanes16(t: Neon, samples: &[Self; 16]) -> [int16x8_t; 2];
+
+    /// `lanes` with a known-zero sign hidden from LLVM by OR-ing the opaque
+    /// zero `pad`, where the samples are bytes.
+    #[cfg(target_arch = "aarch64")]
+    fn hide(t: Neon, lanes: [int16x8_t; 2], pad: i16x8<Neon>) -> [int16x8_t; 2];
 }
 
 impl LumaSimdSource for u16 {
@@ -990,8 +1004,21 @@ impl LumaSimdSource for u16 {
 
     #[cfg(target_arch = "aarch64")]
     #[inline]
-    fn u16_samples(samples: &[Self]) -> Option<&[u16]> {
-        Some(samples)
+    fn lane_rows<'a>(window: &'a [&'a [Self]]) -> lr_madd::by_lane::Rows<'a> {
+        lr_madd::by_lane::Rows::Words(window)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn lanes16(t: Neon, samples: &[Self; 16]) -> [int16x8_t; 2] {
+        let (low, high) = t.split_u16x16(u16x16::load_array_ref(t, samples));
+        [low, high].map(|half| half.bitcast::<i16x8<Neon>>().into())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn hide(_t: Neon, lanes: [int16x8_t; 2], _pad: i16x8<Neon>) -> [int16x8_t; 2] {
+        lanes
     }
 }
 
@@ -1035,8 +1062,22 @@ impl LumaSimdSource for u8 {
 
     #[cfg(target_arch = "aarch64")]
     #[inline]
-    fn u16_samples(_samples: &[Self]) -> Option<&[u16]> {
-        None
+    fn lane_rows<'a>(window: &'a [&'a [Self]]) -> lr_madd::by_lane::Rows<'a> {
+        lr_madd::by_lane::Rows::Bytes(window)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn lanes16(t: Neon, samples: &[Self; 16]) -> [int16x8_t; 2] {
+        use fearless_simd::prelude::*;
+        let (low, high) = u8x16::load_array_ref(t, samples).widen();
+        [low, high].map(|half| half.bitcast::<i16x8<Neon>>().into())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn hide(t: Neon, lanes: [int16x8_t; 2], pad: i16x8<Neon>) -> [int16x8_t; 2] {
+        lanes.map(|half| (i16x8::simd_from(t, half) | pad).into())
     }
 }
 

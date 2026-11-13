@@ -690,7 +690,7 @@ impl<T: ReconSample> FrameProgress<T> {
         let frame = workspace
             .as_mut()
             .ok_or_else(taken_workspace)?
-            .freeze_in_place()?;
+            .freeze_in_place_clamped()?;
         *workspace = None;
         drop(workspace);
         writer.complete(frame);
@@ -705,12 +705,12 @@ impl<T: ReconSample> FrameProgress<T> {
     ///
     /// As [`Self::freeze_workspace`].
     pub(crate) fn freeze(&mut self) -> Result<splot_recon::DecodedFrame<T>> {
-        let workspace = self
+        let mut workspace = self
             .workspace
             .get_mut()
             .take()
             .ok_or_else(taken_workspace)?;
-        Ok(workspace.freeze()?)
+        Ok(workspace.freeze_in_place_clamped()?)
     }
 }
 

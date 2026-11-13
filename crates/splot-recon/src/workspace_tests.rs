@@ -1611,6 +1611,20 @@ fn a_rejected_freeze_in_place_keeps_every_buffer_where_it_was() {
     );
 }
 
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "above the bit depth")]
+fn a_clamped_freeze_asserts_the_sample_range_in_checked_builds() {
+    let mut workspace = CurrentFrameWorkspace::<u16>::new(yuv420_info(4, 4), 8).unwrap();
+    workspace
+        .as_frame_mut()
+        .unwrap()
+        .plane_mut(PlaneId::U)
+        .unwrap()
+        .samples_mut()[0] = 300;
+    let _ = workspace.freeze_in_place_clamped();
+}
+
 #[test]
 fn workspace_reconstructed_sample_reads_arbitrary_in_storage_samples() {
     let mut workspace =

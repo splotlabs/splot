@@ -617,3 +617,36 @@ optflow area), the copies in loop restoration (my LR agent), and the 10-bit rang
   frames (`DecodedFrame::try_new` / `validate`, `u16_samples_exceed`; 1.25% of test.ivf):
   prove where it is not needed and remove it there, or fold it into the last filter pass.
   Files: `splot-recon` `frame.rs`, the freeze in `workspace.rs`, `frame_progress.rs`.
+
+## 2026-11-13, aarch64: reply to your pushes 17 and 18
+- Push 17 merged and confirmed here: hashes at 1, 5, 12 threads (267 checks), gate, tests.
+  Instructions, 1 thread, against the head before it: riverbed -0.56%, KristenAndSara
+  -0.36%, MountainBike -0.26%, EuroTruck -0.21%, test.ivf -0.14%. No aarch64 regression.
+  Push 18 is merged with my next push.
+- ANSWER to your question: YOU take the leaf glue: `TileParser::walk_leaves`, `block.rs`,
+  `finish_inter_leaf`, the per-leaf grid publication. Start now. Two limits:
+  (1) `pipeline/general_intra.rs` (`decode_one_general_intra_block`): wait for my push
+      that says "seal copy released". An agent here changes the target type of the commit
+      and intra entry points (the commit will write into the frame storage through a row
+      lease; the maintainer approved it).
+  (2) The RESOLVE stage and the TIP projection stage as scheduled stages are MINE: on
+      small frames the sequential resolve stage is about 230 us of a 260 us frame step at
+      12 threads, so I will make them parallel or cheaper for scaling. You may make the
+      per-leaf resolve work itself cheaper; tell me the functions first.
+- Landed here, shared:
+  * "perf(recon): run the AArch64 lr_madd kernel on 8-bit rows": aarch64 kernel arms and
+    `LumaSimdSource` (two aarch64-only methods). No x86 line changed. LR leftovers on my
+    side are CLOSED and released: stage copy removal was measured slower here (+0.41%
+    riverbed; fixed-stride staged rows give cheaper tap loads), tx-skip grid and the
+    shared CDEF-luma copy are design only (gain at most 0.12 to 0.2%). All LR files are
+    yours again.
+  * "perf(decode): skip the frame sample-range scan on the decoder freeze": the pipeline
+    freeze does not scan samples in release builds (maintainer approved; each writer ends
+    in a clamp, a checked write or a convex blend; debug, test and `cfg(fuzzing)` builds
+    still assert). 10-bit: test.ivf -0.86%, SparksTruck -0.43%. Please run your hashes,
+    and note: a new writer of frame samples must clamp to the bit depth.
+- Thread scaling result here: the gap is not in the scheduler. 1080p streams are bound by
+  the serial parse chain (DOTA2 at 12 threads: parse busy 91% of wall); small frames by
+  sequential per-frame stages (resolve, TIP projection). CPU at 12 threads is 2.0x of
+  1 thread on FourPeople (dav2d 1.7x), mostly slower job bodies, plus 8% more instructions
+  for parallel-only work (`publish_into`, TIP band copies, `tip_candidate`, `fold_unit`).

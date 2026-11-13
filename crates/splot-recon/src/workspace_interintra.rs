@@ -691,6 +691,60 @@ mod tests {
         );
     }
 
+    /// The blend has no `Clip1`: its non-negative weights sum to 64, so
+    /// extreme 10-bit inputs under every mask stay at most 1023.
+    #[test]
+    fn interintra_blend_of_extreme_samples_stays_in_range() {
+        let size_px = PlaneSize::new(32, 32).unwrap();
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Ten,
+            PixelFormat::Monochrome,
+            size_px,
+            PlaneRect::new(0, 0, 32, 32).unwrap(),
+        )
+        .unwrap();
+        let size = IntraRectBlockSize::new(5, 5).unwrap();
+        let intra: Vec<u16> = (0..32 * 32)
+            .map(|i| if i % 3 == 0 { 0 } else { 1023 })
+            .collect();
+        let modes = [
+            InterIntraMode::Dc,
+            InterIntraMode::Vertical,
+            InterIntraMode::Horizontal,
+            InterIntraMode::Smooth,
+        ];
+        for fill in [0, 1023] {
+            for blend in 0..modes.len() + MAX_WEDGE_TYPES {
+                let mut workspace = CurrentFrameWorkspace::new(info, fill).unwrap();
+                if let Some(&mode) = modes.get(blend) {
+                    workspace
+                        .blend_smooth_interintra_rect(PlaneId::Y, 0, 0, size, mode, &intra)
+                        .unwrap();
+                } else {
+                    let wedge = blend - modes.len();
+                    workspace
+                        .blend_wedge_interintra_rect(
+                            PlaneId::Y,
+                            0,
+                            0,
+                            size,
+                            32,
+                            32,
+                            wedge,
+                            0,
+                            0,
+                            &intra,
+                        )
+                        .unwrap();
+                }
+                for (x, y) in (0..32).flat_map(|y| (0..32).map(move |x| (x, y))) {
+                    assert!(workspace.reconstructed_sample(PlaneId::Y, x, y).unwrap() <= 1023);
+                }
+            }
+        }
+    }
+
     #[test]
     fn interintra_blend_clips_frame_edge_overhang() {
         let storage = PlaneSize::new(8, 6).unwrap();
