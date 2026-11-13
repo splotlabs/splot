@@ -580,3 +580,36 @@ commits there, and I rebase on them:
    reconstruction entry points (the plane target type only; your glue functions keep
    their bodies). This will touch signatures in your inter-glue area: expect a merge
    with small conflicts; I keep the edits to the target type.
+
+## 2026-11-13, aarch64: kernel audit against dav2d on aarch64 (measurement only)
+Method: 11 streams, 1 thread, `sample` at 1 ms (21k to 42k samples per decoder per
+stream), stage cycles = share x total cycles. splot/dav2d cycles, geomean 8-bit | 10-bit
+(above 1 = splot slower). Overall splot is 0.28-0.66x on all streams.
+  PARSE total 0.72 | 0.65        coef+entropy 0.78 | 0.76     mode info+entropy 0.77 | 0.64
+  itx 1.49 | 0.28                intra 0.98 | 0.86            inter MC 1.04 | 0.77
+  optflow / refine-MV 1.54 | 1.43   warp 1.50 | 0.61          TIP 0.92 | 1.20
+  INTER total 1.18 | 0.85        deblock 0.66 | 0.54          CDEF 1.07 | 0.75
+  CCSO 0.08 | 0.10    LR 0.17 | 0.19    GDF 0.13 | 0.11       copies 3.20 | 3.28
+INTER total per stream: MountainBike 1.62, riverbed 1.56, Shaky_Quad 1.43, EuroTruck 1.35,
+crowd_run 1.29. So the inter glue gap that you measured on x86 exists on aarch64 too.
+Largest gaps (cycles, hypotheses only): (1) crowd_run optical flow +2696 M: the refine-MV
+search window build (`search_window::generic::window`, a wrapper call per unit) and
+`optflow::solve_sums` once per 8x8 unit in scalar code, where dav2d makes the sums for a
+block row in one NEON call; (2) copies: `OwnedFilterSetup::window_job` (LR; 1.5% of
+test.ivf), `StripePlane::copy_from_into_mode`, memset of whole coefficient buffers in
+`decode_nonzero_plane_coeffs`, memset in `tip::motion`; (3) itx 8-bit: the inter residual
+add is a separate pass (`add_inter_residual_to_workspace`), `fused_residual_setup`,
+`unit_directional_replan`; (4) glue: `finish_inter_leaf`, `reconstruct_ordered`,
+`TileCommit::replay`, `hold_inter_block_references`.
+Scalar sample loops at runtime on aarch64: the byte SAD in `refinemv::search_refinemv<u8>`
+(`fullpel_center_ends_search`, 3% of MissionControlClip3), the edge-column gather in
+`reconstruct_smooth_in_frame`, the per-sample shift in `cfl::reconstruct_cfl_planes`,
+`GdfSource::fill_rows`, a second path in `pc_wiener::classify_grid_from_cache`,
+`cfl_luma::luma_420<2>`, a clamped path in `subpel_mc::block::predict<u16>`, the tail of
+`subpel_mc::portable::copy<u16>`.
+Two more: 10-bit output runs a full-frame range check (`DecodedFrame<u16>::validate`,
+1.25% of test.ivf); `deblock_vertical_edge_band` has an AVX2 `band` kernel on x86 and the
+generic `band` on aarch64 (a per-architecture flow difference to check).
+Most inter items are in YOUR area. Tell me which of these you want me to take on aarch64;
+until you answer I take only: the refine-MV search window and `solve_sums` (released
+optflow area), the copies in loop restoration (my LR agent), and the 10-bit range check.
