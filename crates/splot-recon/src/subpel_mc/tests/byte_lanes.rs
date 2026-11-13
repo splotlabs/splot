@@ -264,6 +264,20 @@ fn byte_search_window_and_sads_match_the_general_path() {
         refinemv_search_u8([&[0; 576], &[0; 575]], 24, 20, true),
         None
     );
+    for [w, h] in [[12, 12], [12, 20], [20, 12], [20, 20]] {
+        for corners in [[[0, 0], [3, 7]], [[ref_w - w, ref_h - h], [9, 1]]] {
+            let scalar: u32 = (0..h)
+                .step_by(2)
+                .flat_map(|row| (0..w).map(move |col| (row, col)))
+                .map(|(row, col)| {
+                    let at = |[x, y]: [usize; 2]| (y + row) * ref_w + x + col;
+                    u32::from(texture[at(corners[0])].abs_diff(texture[at(corners[1])]))
+                })
+                .sum();
+            let sad = refinemv_area_sad_u8([&view; 2], corners, [w, h]);
+            assert_eq!(sad, Some(scalar), "{w}x{h} {corners:?}");
+        }
+    }
 }
 
 /// The byte bilinear kernel against the general prediction for every phase

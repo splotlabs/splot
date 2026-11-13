@@ -1043,22 +1043,10 @@ pub(super) fn fullpel_center_ends_search<T: ReconSample>(
         return Ok(None);
     };
     let (sad_w, sad_h) = (width - 4, height - 4);
-    let mut sad = 0u32;
-    for row in (0..sad_h).step_by(2) {
-        let lines = [(&first, corners[0]), (&second, corners[1])].map(|(view, [x, y])| {
-            view.readable_row(y + row)
-                .and_then(T::u8_slice)
-                .and_then(|line| line.get(x..x + sad_w))
-        });
-        let [Some(a), Some(b)] = lines else {
-            return Ok(None);
-        };
-        sad += a
-            .iter()
-            .zip(b)
-            .map(|(&a, &b)| u32::from(a.abs_diff(b)))
-            .sum::<u32>();
-    }
+    let Some(sad) = splot_recon::refinemv_area_sad_u8([&first, &second], corners, [sad_w, sad_h])
+    else {
+        return Ok(None);
+    };
     Ok(Some(sad - (sad >> 3) < (2 * sad_w * sad_h) as u32))
 }
 

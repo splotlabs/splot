@@ -163,6 +163,37 @@ pub fn refinemv_search_u8(
     Some(baseline_simd!(simd => generic::search(simd, windows, geometry, allow_center)))
 }
 
+/// The § 7.13.3.6 SAD of the `w x h` areas (`w` 12 or 20, `h` even) at
+/// `[x, y]` `corners` of two eight-bit planes, over every other row: the
+/// centre SAD of full-sample search windows, read in place. `None` when an
+/// area row is not published or its 16-byte loads leave the plane storage.
+#[must_use]
+pub fn refinemv_area_sad_u8<T: ReconSample>(
+    views: [&ReferencePlaneView<'_, T>; 2],
+    corners: [[usize; 2]; 2],
+    [w, h]: [usize; 2],
+) -> Option<u32> {
+    if !matches!(w, 12 | 20) || h < 2 || !h.is_multiple_of(2) {
+        return None;
+    }
+    let mut planes = [&[][..]; 2];
+    let mut strides = [0; 2];
+    for (((plane, stride), view), [x, y]) in
+        planes.iter_mut().zip(&mut strides).zip(views).zip(corners)
+    {
+        let view = view.as_u8()?;
+        let start = y * view.stride + x;
+        if x + w > view.width || y + h - 2 >= view.readable_rows {
+            return None;
+        }
+        *plane = view
+            .samples
+            .get(start..start + (h - 2) * view.stride + w.max(16))?;
+        *stride = view.stride;
+    }
+    Some(baseline_simd!(simd => generic::area_sad(simd, planes, [0; 2], strides, [w, h])))
+}
+
 /// The § 7.13.3.6 search over the biased `center` SAD, kept when below
 /// `threshold`, and the SADs of the 24 neighbours in [`REFINEMV_NEIGHBORS`] order.
 #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
@@ -828,31 +859,16 @@ pub(super) mod generic {
         [stride, sad_h]: [usize; 2],
         allow_center: bool,
     ) -> (i32, i32) {
-        let keep = |lanes: core::ops::Range<usize>| {
-            u8x16::load_array(
-                simd,
-                core::array::from_fn(|lane| if lanes.contains(&lane) { u8::MAX } else { 0 }),
-            )
-        };
-        let (low, all, high) = (keep(0..12), keep(0..16), keep(12..16));
         let sad = |dy: i32, dx: i32| -> u32 {
             let start = |dy: i32, dx: i32| ((2 + dy) * stride as i32 + 2 + dx) as usize;
-            let (a, b) = (start(dy, dx), start(-dy, -dx));
-            let mut sum = u16x8::splat(simd, 0);
-            let mut add = |at: usize, mask: u8x16<S>| {
-                let (x, y) = (load(simd, first, a + at), load(simd, second, b + at));
-                let (low, high) = simd.widen_u8x16((x.max(y) - x.min(y)) & mask);
-                sum = sum + low + high;
-            };
-            for row in (0..sad_h).step_by(2) {
-                if stride == 16 {
-                    add(row * stride, low);
-                } else {
-                    add(row * stride, all);
-                    add(row * stride + 4, high);
-                }
-            }
-            sum.to_array().into_iter().map(u32::from).sum()
+            let starts = [start(dy, dx), start(-dy, -dx)];
+            area_sad(
+                simd,
+                [first, second],
+                starts,
+                [stride; 2],
+                [stride - 4, sad_h],
+            )
         };
         super::best_offset(
             || sad(0, 0),
@@ -860,6 +876,43 @@ pub(super) mod generic {
             (2 * (stride - 4) * sad_h) as u32,
             allow_center,
         )
+    }
+
+    /// `Σ |a - b|` over every other row of the `w x h` areas (`w` 12 or 20)
+    /// from `starts` in `planes` at `strides`: each row's masked absolute
+    /// differences widened and summed in `u16` lanes.
+    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+    #[inline(always)]
+    pub(super) fn area_sad<S: Simd>(
+        simd: S,
+        planes: [&[u8]; 2],
+        starts: [usize; 2],
+        strides: [usize; 2],
+        [w, h]: [usize; 2],
+    ) -> u32 {
+        let keep = |lanes: core::ops::Range<usize>| {
+            u8x16::load_array(
+                simd,
+                core::array::from_fn(|lane| if lanes.contains(&lane) { u8::MAX } else { 0 }),
+            )
+        };
+        let (low, all, high) = (keep(0..12), keep(0..16), keep(12..16));
+        let mut sum = u16x8::splat(simd, 0);
+        for row in (0..h).step_by(2) {
+            let mut add = |at: usize, mask: u8x16<S>| {
+                let [x, y] =
+                    [0, 1].map(|k| load(simd, planes[k], starts[k] + row * strides[k] + at));
+                let (low, high) = simd.widen_u8x16((x.max(y) - x.min(y)) & mask);
+                sum = sum + low + high;
+            };
+            if w == 12 {
+                add(0, low);
+            } else {
+                add(0, all);
+                add(4, high);
+            }
+        }
+        sum.to_array().into_iter().map(u32::from).sum()
     }
 }
 
