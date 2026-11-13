@@ -6,7 +6,8 @@ use std::sync::Arc;
 pub(crate) use tile::TileWalkParams;
 pub(crate) use tile::publish_tile_geometry;
 pub(crate) use tile::{
-    InterReconScratchPool, ParseProgress, ReconRowBuffers, invalid_inter_tile_scheduling_state,
+    InterReconScratchPool, ParseProgress, ReconRowBuffers, TileParseState,
+    invalid_inter_tile_scheduling_state,
 };
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
