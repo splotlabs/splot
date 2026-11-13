@@ -37,19 +37,6 @@ fn fits<T>(block: &Block<'_, T>) -> bool {
     block.w >= 16 || (block.h.is_multiple_of(2) && (block.w == 4 || block.w >= 8))
 }
 
-/// The stage the 16-bit strip kernels fill for `block`: the group rows of
-/// its horizontal pass or the packed rows of its vertical pass, none
-/// without a vertical pass.
-pub(in crate::subpel_mc) fn stage_len<T>(block: &Block<'_, T>) -> usize {
-    let Some(taps) = block.vertical else {
-        return 0;
-    };
-    let rows = block.h + taps.span() - 1;
-    let groups = rows.next_multiple_of(4) * 16;
-    let strips = rows * block.w.div_ceil(8) * 8 + 64;
-    groups.max(strips)
-}
-
 /// Predicts `block` into an eight-bit `sink`, as [`super::predict`] admits.
 pub(super) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) {
     match token() {
