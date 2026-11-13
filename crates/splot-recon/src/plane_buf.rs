@@ -9,8 +9,10 @@
     reason = "views the aligned byte blocks as the sample slice they hold"
 )]
 
+use core::ptr::NonNull;
 use std::collections::TryReserveError;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 /// The byte alignment of every plane buffer's first sample and row stride.
 pub const PLANE_ALIGNMENT: usize = 64;
@@ -186,6 +188,51 @@ pub fn plane_buf_from<T: Copy>(samples: &[T]) -> PlaneBuf<T> {
     let mut buffer = plane_buf();
     buffer.append_samples(samples);
     buffer
+}
+
+/// Full-width plane rows that another owner's allocation holds and lends
+/// exclusively while this value lives; see [`Self::lend`].
+pub struct LentRows<T: 'static> {
+    rows: &'static mut [T],
+    _lender: Arc<dyn Send + Sync>,
+}
+
+impl<T: Copy> LentRows<T> {
+    #[must_use]
+    /// Lends the `len` samples from `samples` for as long as the value lives.
+    ///
+    /// # Safety
+    /// The samples must be initialized and inside one allocation that `lender`
+    /// keeps alive. Safety: nothing else reads or writes them until the value drops.
+    pub unsafe fn lend(samples: NonNull<T>, len: usize, lender: Arc<dyn Send + Sync>) -> Self {
+        let rows = unsafe { core::slice::from_raw_parts_mut(samples.as_ptr(), len) };
+        Self {
+            rows,
+            _lender: lender,
+        }
+    }
+}
+
+impl<T: Copy> core::ops::Deref for LentRows<T> {
+    type Target = [T];
+
+    #[inline]
+    fn deref(&self) -> &[T] {
+        self.rows
+    }
+}
+
+impl<T: Copy> core::ops::DerefMut for LentRows<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [T] {
+        self.rows
+    }
+}
+
+impl<T> core::fmt::Debug for LentRows<T> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "LentRows({})", self.rows.len())
+    }
 }
 
 #[cfg(test)]

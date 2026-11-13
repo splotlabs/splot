@@ -6,7 +6,6 @@
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`,
 //! `INFRA-DECODE-FRAME-PIPELINING`.
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 use splot_core::headers::frame::RefIdxBuf;
@@ -30,6 +29,8 @@ pub(super) struct TileCommit<T: ReconSample> {
     handed_rows: usize,
     /// Luma rows this spine has handed to the frontier to seal.
     sealed_rows: usize,
+    /// Frontier links whose superblock rows are complete.
+    closed_rows: usize,
     ordered: deferred_recon::InterReconScratch<T>,
     workspace: CurrentFrameWorkspace<T>,
     block_decoded: TileBlockDecodedState,
@@ -38,6 +39,9 @@ pub(super) struct TileCommit<T: ReconSample> {
     block_decoded_tile: Option<usize>,
     decoded_any: bool,
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
+    /// The band the frame walk made, parked while `workspace` is lent frame
+    /// rows; `None` when `workspace` stores every row and is sealed by copy.
+    spare_band: Option<CurrentFrameWorkspace<T>>,
 }
 
 impl<T: ReconSample> TileCommit<T> {
@@ -52,6 +56,7 @@ impl<T: ReconSample> TileCommit<T> {
             next: 0,
             handed_rows: 0,
             sealed_rows: 0,
+            closed_rows: 0,
             ordered,
             workspace,
             block_decoded,
@@ -59,6 +64,7 @@ impl<T: ReconSample> TileCommit<T> {
             block_decoded_tile: None,
             decoded_any,
             frame_filter_records,
+            spare_band: None,
         }
     }
 
@@ -113,7 +119,6 @@ impl<T: ReconSample> TileCommit<T> {
 
 struct CommittedBatch<T: ReconSample> {
     state: TileCommit<T>,
-    frontier_rows: core::ops::Range<usize>,
     terminal: bool,
 }
 
@@ -133,15 +138,6 @@ struct ScheduledFrontier<T: ReconSample> {
     next_filter_stripe: usize,
     /// The job list a published link handed back, for the next link to fill.
     spare_filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
-}
-
-/// Bands the commit spine fills and the frontier seals, so neither waits for
-/// the other: the spine hands a filled band over by value with the luma rows
-/// to seal from it, and the frontier hands it back once it has sealed them.
-#[derive(Default)]
-pub(crate) struct BandHandOff<T: ReconSample> {
-    filled: VecDeque<(CurrentFrameWorkspace<T>, core::ops::Range<usize>)>,
-    spare: Vec<CurrentFrameWorkspace<T>>,
 }
 
 /// The resolve pass's tile-local § 7.12 state, one grid and bank set per tile.
@@ -261,6 +257,8 @@ impl<T: ReconSample> ScheduledRowSlots<T> {
 pub(crate) struct ScheduledFrameProgress<T: ReconSample> {
     pub(crate) filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
     pub(crate) output: Option<crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>>,
+    /// Frontier links whose rows the link handed over for the idle spine.
+    pub(crate) handed_rows: usize,
 }
 
 /// Canonical rows one ordered commit handed to the frontier chain.
@@ -308,7 +306,8 @@ pub(crate) struct ScheduledTileRecon<T: ReconSample> {
     recon: TileRecon<T>,
     filter_count: usize,
     frontier: Mutex<ScheduledFrontier<T>>,
-    bands: Mutex<BandHandOff<T>>,
+    /// The commit's band once its reconstruction completes.
+    spare_band: Mutex<Option<CurrentFrameWorkspace<T>>>,
     resolve: Mutex<ScheduledResolve>,
     info: splot_recon::DecodedFrameInfo,
     temporal_plan: TemporalBandPlan,
@@ -333,7 +332,6 @@ pub(crate) struct ScheduledTileWorkspace<T: ReconSample> {
     reference: Option<Arc<InterReferenceState<T>>>,
     initial_cdfs: Option<Arc<FrameCdfSubset>>,
     carry: crate::filters::source::DeblockedWindow<T>,
-    bands: BandHandOff<T>,
     /// The last frame's reconstruction band.
     pub(crate) recon_band: Option<CurrentFrameWorkspace<T>>,
 }
@@ -689,14 +687,12 @@ impl<T: ReconSample> TileRecon<T> {
             self.units_per_row,
             self.frontier_rows,
         );
-        let frontier_rows = commit.handed_rows..closed_rows;
-        commit.handed_rows = closed_rows;
         if terminal && !commit.decoded_any {
             return Err(no_decoded_block_error());
         }
+        commit.closed_rows = closed_rows;
         Ok(CommittedBatch {
             state: commit,
-            frontier_rows,
             terminal,
         })
     }
@@ -801,10 +797,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let mut filters = core::mem::take(&mut self.frontier.get_mut().spare_filters);
         filters.clear();
         let carry = core::mem::take(&mut self.frontier.get_mut().carry);
-        let mut bands = self.bands.into_inner();
-        let BandHandOff { filled, spare } = &mut bands;
-        spare.extend(filled.drain(..).map(|(band, _)| band));
-        let recon_band = spare.pop();
+        let recon_band = self.spare_band.into_inner();
         ScheduledTileWorkspace {
             payload: self.payload.into_inner().unwrap_or_default(),
             prepass_block_decoded: self.recon.prepass_block_decoded,
@@ -819,7 +812,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             reference: Some(self.recon.reference),
             initial_cdfs: self.recon.initial_cdfs,
             carry,
-            bands,
             recon_band,
         }
     }
@@ -1095,53 +1087,81 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         }
     }
 
-    /// Hands the spine's completed rows to the frontier, then moves its band
-    /// to the next row. A band is handed over whole and the spine goes on in
-    /// a spare one; a workspace that stores every row is sealed in place.
-    fn seal_committed_rows(&self, commit: &mut TileCommit<T>, rows: usize) -> Result<()> {
-        let end = rows
-            .saturating_mul(self.recon.params.sb_h4.saturating_mul(4).max(1))
-            .min(self.info.storage_luma_size().height());
-        let start = commit.sealed_rows;
-        if end <= start {
-            commit.workspace.move_band(end)?;
+    /// Hands the spine's rows of its complete frontier links to the frontier.
+    /// A lent band holds every frame row from its superblock row down, so a
+    /// busy frontier is left to take the rows itself when its link ends; the
+    /// spine never waits for it before the frame's last commit.
+    fn seal_committed_rows(&self, commit: &mut TileCommit<T>) -> Result<()> {
+        let side = self.recon.params.sb_h4.saturating_mul(4).max(1);
+        let height = self.info.storage_luma_size().height();
+        let end = commit.closed_rows.saturating_mul(side).min(height);
+        if end <= commit.sealed_rows {
+            commit.handed_rows = commit.closed_rows;
             return Ok(());
         }
-        let mut spare = self.bands.lock().spare.pop();
-        if let Some(filled) = commit.workspace.split_band(end, &mut spare)? {
-            self.bands.lock().filled.push_back((filled, start..end));
-        } else {
-            let mut frontier = self.frontier.lock();
+        if commit.spare_band.is_some() && end < height {
+            let Some(mut frontier) = self.frontier.try_lock() else {
+                return Ok(());
+            };
+            return self.hand_over(commit, &mut frontier);
+        }
+        self.hand_over(commit, &mut self.frontier.lock())
+    }
+
+    /// Moves the spine's band past its complete superblock rows and seals
+    /// them; a workspace that stores every row is copied from.
+    fn hand_over(
+        &self,
+        commit: &mut TileCommit<T>,
+        frontier: &mut ScheduledFrontier<T>,
+    ) -> Result<()> {
+        let side = self.recon.params.sb_h4.saturating_mul(4).max(1);
+        let height = self.info.storage_luma_size().height();
+        let end = commit.closed_rows.saturating_mul(side).min(height);
+        if end > commit.sealed_rows {
             let ScheduledFrontier {
                 sealed,
                 sealed_rows,
                 ..
-            } = &mut *frontier;
-            if let Some(sealed) = sealed.as_mut() {
-                sealed.copy_rows_from(&commit.workspace, start..end)?;
-                *sealed_rows = end;
+            } = frontier;
+            let sealed = sealed
+                .as_mut()
+                .ok_or_else(invalid_inter_tile_scheduling_state)?;
+            match commit.spare_band.take() {
+                Some(spare) => {
+                    let lent = core::mem::replace(&mut commit.workspace, spare);
+                    let mut scratch = sealed.return_commit_rows(lent)?;
+                    if end < height {
+                        let next = sealed.lend_commit_rows(end, height, scratch)?;
+                        commit.spare_band = Some(core::mem::replace(&mut commit.workspace, next));
+                    } else {
+                        commit.workspace.swap_intra_prediction_scratch(&mut scratch);
+                    }
+                }
+                None => sealed.copy_rows_from(&commit.workspace, commit.sealed_rows..end)?,
             }
+            *sealed_rows = end;
+            commit.sealed_rows = end;
         }
-        if let Some(spare) = spare {
-            self.bands.lock().spare.push(spare);
-        }
-        commit.sealed_rows = end;
+        commit.handed_rows = commit.closed_rows;
         Ok(())
     }
 
-    /// Seals the rows of every band the spine has handed over.
-    fn seal_handed_bands(
-        &self,
-        sealed: &mut crate::pipeline::frame_progress::FrontierRows<T>,
-        sealed_rows: &mut usize,
-    ) -> Result<()> {
-        loop {
-            let Some((band, rows)) = self.bands.lock().filled.pop_front() else {
-                return Ok(());
-            };
-            sealed.copy_rows_from(&band, rows.clone())?;
-            *sealed_rows = rows.end;
-            self.bands.lock().spare.push(band);
+    /// Hands over the rows a parked spine deferred. A link does it as it
+    /// ends, and the spine does it again once parked, since a link that ended
+    /// before then found no spine to take the rows from.
+    fn help_hand_over(&self, frontier: &mut ScheduledFrontier<T>) -> Result<usize> {
+        let Some(mut holder) = self.recon.commit.try_lock() else {
+            return Ok(0);
+        };
+        match holder.as_mut() {
+            Some(commit)
+                if commit.closed_rows > commit.handed_rows && frontier.sealed.is_some() =>
+            {
+                self.hand_over(commit, frontier)?;
+                Ok(commit.handed_rows)
+            }
+            _ => Ok(0),
         }
     }
 
@@ -1155,12 +1175,22 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     ///
     /// The one caller that runs the final link receives the completed tile.
     pub(crate) fn frontier(&self, row: usize) -> Result<ScheduledFrameProgress<T>> {
+        let mut frontier = self.frontier.lock();
+        let mut progress = self.frontier_link(row, &mut frontier)?;
+        progress.handed_rows = self.help_hand_over(&mut frontier)?;
+        Ok(progress)
+    }
+
+    fn frontier_link(
+        &self,
+        row: usize,
+        frontier: &mut ScheduledFrontier<T>,
+    ) -> Result<ScheduledFrameProgress<T>> {
         let terminal = row.saturating_add(1) >= self.recon.frontier_rows;
         let committed_units = row
             .saturating_add(1)
             .saturating_mul(self.recon.units_per_row)
             .min(self.recon.unit_count);
-        let mut frontier = self.frontier.lock();
         let ScheduledFrontier {
             sealed,
             sealed_rows,
@@ -1173,7 +1203,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         } = &mut *frontier;
         let state = crate::filters::wienerns_lr::recon::lr_pipeline_state_error;
         let rows = sealed.as_mut().ok_or_else(state)?;
-        self.seal_handed_bands(rows, sealed_rows)?;
         let mut filters = core::mem::take(spare_filters);
         match deblock.as_mut() {
             Some(deblock) => {
@@ -1199,7 +1228,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                         })?;
                 }
             }
-            None if !rows.publish_final_rows(*sealed_rows) => return Err(state()),
+            None if !rows.publish_final_rows((*sealed_rows).min(rows.unlent_luma_rows())) => {
+                return Err(state());
+            }
             None => {}
         }
         let Some(filter) = filter.as_ref() else {
@@ -1209,6 +1240,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             return Ok(ScheduledFrameProgress {
                 filters,
                 output: None,
+                handed_rows: 0,
             });
         };
         let stripes = filter
@@ -1237,9 +1269,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             return Ok(ScheduledFrameProgress {
                 filters,
                 output: None,
+                handed_rows: 0,
             });
         }
-        Self::finish_frontier(&mut frontier, filters)
+        Self::finish_frontier(frontier, filters)
     }
 
     /// Takes back a published link's job list, so the next link fills a list
@@ -1295,6 +1328,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         frontier.sealed = None;
         Ok(ScheduledFrameProgress {
             filters,
+            handed_rows: 0,
             output: Some(
                 crate::filters::wienerns_lr::recon::OwnedFilterSetup::owned_finish(filter),
             ),
@@ -1319,20 +1353,29 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let mut committed =
             self.recon
                 .commit_batch(index, &self.parse_progress, &self.pending_surfaces, worker)?;
-        if !committed.frontier_rows.is_empty() {
-            self.seal_committed_rows(&mut committed.state, committed.frontier_rows.end)?;
+        let handed = committed.state.handed_rows;
+        if committed.state.closed_rows > handed {
+            self.seal_committed_rows(&mut committed.state)?;
         }
+        let mut frontier_rows = handed..committed.state.handed_rows;
         if !committed.terminal {
+            let deferred = committed.state.closed_rows > committed.state.handed_rows;
             restore_active_commit(&self.recon.commit, committed.state)?;
+            if deferred {
+                let handed_late = self.help_hand_over(&mut self.frontier.lock())?;
+                frontier_rows.end = frontier_rows.end.max(handed_late);
+            }
             return Ok(ScheduledCommitProgress {
-                frontier_rows: committed.frontier_rows,
+                frontier_rows,
                 recon_complete: false,
             });
         }
-        let workspace = self.recon.finish_commit(committed.state);
-        self.bands.lock().spare.push(workspace);
+        if committed.state.spare_band.is_some() || frontier_rows.end != self.recon.frontier_rows {
+            return Err(invalid_inter_tile_scheduling_state());
+        }
+        *self.spare_band.lock() = Some(self.recon.finish_commit(committed.state));
         Ok(ScheduledCommitProgress {
-            frontier_rows: committed.frontier_rows,
+            frontier_rows,
             recon_complete: true,
         })
     }
@@ -1600,9 +1643,18 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     );
     let mut tiles = core::mem::take(&mut reusable.tiles);
     tiles.clone_from(&geometry.tiles);
-    let sealed = progress
+    let mut sealed = progress
         .frontier_rows()
         .ok_or_else(invalid_inter_tile_scheduling_state)?;
+    let (workspace, spare_band) = if super::super::global_intrabc_enabled(core.intrabc) {
+        (workspace, None)
+    } else {
+        let mut spare = workspace;
+        let mut scratch = splot_recon::IntraPredictionScratch::new();
+        spare.swap_intra_prediction_scratch(&mut scratch);
+        let band = sealed.lend_commit_rows(0, info.storage_luma_size().height(), scratch)?;
+        (band, Some(spare))
+    };
     let mut carry = core::mem::take(&mut reusable.carry);
     carry.clear();
     let tile = ScheduledTileRecon {
@@ -1621,6 +1673,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
                 next: 0,
                 handed_rows: 0,
                 sealed_rows: 0,
+                closed_rows: 0,
                 ordered,
                 workspace,
                 block_decoded,
@@ -1628,6 +1681,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
                 block_decoded_tile: None,
                 decoded_any: false,
                 frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
+                spare_band,
             })),
             scratch: Mutex::new(None),
             parked: Mutex::new(Some(parked)),
@@ -1644,7 +1698,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             initial_cdfs: reusable.initial_cdfs.take(),
         },
         filter_count,
-        bands: Mutex::new(core::mem::take(&mut reusable.bands)),
+        spare_band: Mutex::new(None),
         frontier: Mutex::new(ScheduledFrontier {
             sealed: Some(sealed),
             sealed_rows: 0,

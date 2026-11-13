@@ -738,6 +738,8 @@ impl<T: ReconSample> FrameProgress<T> {
             progress: Arc::clone(self),
             final_luma_rows: 0,
             released_luma_rows: 0,
+            commit_start: [usize::MAX; 3],
+            commit_lease: None,
         })
     }
 
@@ -751,16 +753,23 @@ impl<T: ReconSample> FrameProgress<T> {
 ///
 /// Rows below `released_luma_rows` belong to stripe jobs and readers; rows at
 /// or past `final_luma_rows` are still sealed and deblocked in place; the rows
-/// between are final and are only copied into stripe windows.
+/// between are final and are only copied into stripe windows. The plane rows
+/// from `commit_start` are lent to the commit spine, which reconstructs them.
 pub(crate) struct FrontierRows<T: ReconSample> {
     progress: Arc<FrameProgress<T>>,
     final_luma_rows: usize,
     released_luma_rows: usize,
+    commit_start: [usize; 3],
+    /// The first luma sample address of the live commit band, which keeps
+    /// the frontier claimed when this handle drops, so the frame cannot freeze.
+    commit_lease: Option<usize>,
 }
 
 impl<T: ReconSample> Drop for FrontierRows<T> {
     fn drop(&mut self) {
-        self.progress.frontier.store(RELEASED, Ordering::Release);
+        if self.commit_lease.is_none() {
+            self.progress.frontier.store(RELEASED, Ordering::Release);
+        }
     }
 }
 
@@ -804,12 +813,14 @@ impl<T: ReconSample> FrontierRows<T> {
         end: usize,
         f: impl FnOnce(&mut [T], usize, usize, usize, usize) -> R,
     ) -> Option<R> {
-        if (start << self.shift(plane)) < self.final_luma_rows {
+        if (start << self.shift(plane)) < self.final_luma_rows
+            || end > self.commit_start[plane.index()]
+        {
             return None;
         }
         let (width, height) = self.plane_size(plane)?;
         let stride = self.progress.planes[plane.index()]?.stride;
-        let (samples, len) = self.span(plane, start, end)?; // SAFETY: rows at or past `final_luma_rows` (never below `released_luma_rows`) are this unique frontier's alone: `direct_stripe` refuses a stripe ending past the release and the published prefix is made of such stripes; freeze and plane take refuse while this handle lives, so the storage stays allocated.
+        let (samples, len) = self.span(plane, start, end)?; // SAFETY: rows from `final_luma_rows` (never below `released_luma_rows`) up to `commit_start` are this unique frontier's alone: `direct_stripe` refuses a stripe ending past the release and the published prefix is made of such stripes; the rows from `commit_start` belong to the commit band, which this call refuses and which only this handle's `lend_commit_rows(&mut self)` moves down; freeze and plane take refuse while this handle lives, so the storage stays allocated.
         let samples = unsafe { slice::from_raw_parts_mut(samples, len) };
         Some(f(samples, stride, width, height, start))
     }
@@ -847,7 +858,13 @@ impl<T: ReconSample> FrontierRows<T> {
 
     pub(crate) fn publish_final_rows(&mut self, rows: usize) -> bool {
         let rows = rows.min(self.progress.luma_height);
-        if rows < self.final_luma_rows {
+        if rows < self.final_luma_rows
+            || [PlaneId::Y, PlaneId::U, PlaneId::V]
+                .into_iter()
+                .any(|plane| {
+                    rows.div_ceil(1 << self.shift(plane)) > self.commit_start[plane.index()]
+                })
+        {
             return false;
         }
         self.final_luma_rows = rows;
@@ -892,6 +909,89 @@ impl<T: ReconSample> FrontierRows<T> {
         self.released_luma_rows = luma_end;
         self.progress.frontier.store(luma_end, Ordering::Release);
         true
+    }
+
+    /// Lends the commit spine the full-width rows of the superblock row from
+    /// luma row `top`, `rows` tall, and the plane row above it, as a band
+    /// that keeps `scratch`.
+    ///
+    /// # Errors
+    /// Returns an internal diagnostic while another band lives, or when the
+    /// rows reach a final row.
+    pub(crate) fn lend_commit_rows(
+        &mut self,
+        top: usize,
+        rows: usize,
+        scratch: splot_recon::IntraPredictionScratch<T>,
+    ) -> Result<CurrentFrameWorkspace<T>> {
+        if self.commit_lease.is_some() {
+            return Err(live_direct_lease());
+        }
+        let bottom = top.saturating_add(rows);
+        let mut starts = [usize::MAX; 3];
+        let mut spans = [None, None, None];
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            let Some(storage) = self.progress.planes[plane.index()] else {
+                continue;
+            };
+            let shift = self.shift(plane);
+            let start = (top >> shift).saturating_sub(1);
+            let end = bottom.div_ceil(1 << shift).min(storage.height);
+            if start < self.final_luma_rows.div_ceil(1 << shift) {
+                return Err(live_direct_lease());
+            }
+            let (samples, len) = self.span(plane, start, end).ok_or_else(live_direct_lease)?;
+            starts[plane.index()] = start;
+            spans[plane.index()] = Some((
+                NonNull::new(samples).ok_or_else(live_direct_lease)?,
+                len,
+                start,
+            ));
+        }
+        let lender: Arc<dyn Send + Sync> = self.progress.clone();
+        let planes = spans.map(|span| {
+            span.map(|(samples, len, start)| {
+                // SAFETY: these rows are at or past `final_luma_rows` and below no stripe, so only this frontier could reach them, and `with_plane_rows_mut` refuses them from `commit_start` on; no other band lives; `lender` keeps the frame allocated and a live band keeps the frontier claimed, so the frame cannot freeze or be reset under it.
+                (
+                    unsafe { splot_recon::LentRows::lend(samples, len, Arc::clone(&lender)) },
+                    start,
+                )
+            })
+        });
+        self.commit_start = starts;
+        let band = CurrentFrameWorkspace::lend_band(self.progress.info, planes, scratch)?;
+        self.commit_lease = band.lent_luma_addr();
+        Ok(band)
+    }
+
+    /// The most luma rows [`Self::publish_final_rows`] accepts while the
+    /// commit band holds the rows from `commit_start`.
+    pub(crate) fn unlent_luma_rows(&self) -> usize {
+        [PlaneId::Y, PlaneId::U, PlaneId::V]
+            .into_iter()
+            .map(|plane| self.commit_start[plane.index()].saturating_mul(1 << self.shift(plane)))
+            .min()
+            .unwrap_or(usize::MAX)
+    }
+
+    /// Takes back the commit band, so every row is this frontier's again,
+    /// and hands back its scratch.
+    ///
+    /// # Errors
+    /// Returns an internal diagnostic when `band` is not the live band.
+    pub(crate) fn return_commit_rows(
+        &mut self,
+        mut band: CurrentFrameWorkspace<T>,
+    ) -> Result<splot_recon::IntraPredictionScratch<T>> {
+        if self.commit_lease.is_none() || band.lent_luma_addr() != self.commit_lease {
+            return Err(live_direct_lease());
+        }
+        let mut scratch = splot_recon::IntraPredictionScratch::new();
+        band.swap_intra_prediction_scratch(&mut scratch);
+        drop(band);
+        self.commit_lease = None;
+        self.commit_start = [usize::MAX; 3];
+        Ok(scratch)
     }
 }
 
