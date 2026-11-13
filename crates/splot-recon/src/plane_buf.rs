@@ -206,8 +206,9 @@ impl<T: Copy> LentRows<T> {
     /// Lends the `len` samples from `samples` for as long as the value lives.
     ///
     /// # Safety
-    /// The samples must be initialized and inside one allocation that `lender`
-    /// keeps alive. Safety: nothing else reads or writes them until the value drops.
+    /// The samples must be initialized and inside one allocation that `lender`,
+    /// or the holder of this value, keeps alive until the value drops.
+    /// Safety: nothing else reads or writes them until then.
     pub unsafe fn lend(samples: NonNull<T>, len: usize, lender: Arc<dyn Send + Sync>) -> Self {
         Self {
             samples,
