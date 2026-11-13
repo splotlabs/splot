@@ -1246,6 +1246,8 @@ impl<'a> SymbolDecoder<'a> {
         }
     }
 
+    /// The word, lane and early-exit searches agree only on rows that are
+    /// non-decreasing and at most 32768, which the decoder's `rows_valid` asserts.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_trusted_arity<const N: usize>(&mut self, cdf: &mut [u16], update: bool) -> u32 {
