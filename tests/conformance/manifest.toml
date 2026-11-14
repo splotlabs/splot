@@ -2243,3 +2243,8 @@ expect = "clean"
 path = "vectors/valid/syn-warp-globalglobal-mono-10bit-176x144-q120.ivf"
 description = "AVM-encoded 17-frame 10-bit monochrome stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=0 --bit-depth=10 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=16 --enable-global-motion=1 --enable-warped-motion=0 --monochrome): 9 single-reference GLOBALMV warp, 6 GLOBAL_GLOBALMV warp, 3 COMPOUND_DIFFWTD warp blocks; 1 luma warp prediction reads outside the reference frame, 2 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 42a1a6d5955aaa5234dd50558980dde29c93db2bdbf9d699e10bf17f5a33c139; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-refinemv-optflow-all-420-132x100-q80.ivf"
+description = "AVM-encoded 17-frame 132x100 8-bit 4:2:0 stream of a project-generated moving texture (avmenc --profile=0 --bit-depth=8 --cpu-used=4 --end-usage=q --qp=80 --lag-in-frames=16 --enable-tip=0 --enable-opfl-refine=2 --enable-refinemv=1): inter frames with opfl_refine_type REFINE_ALL and 3 optical-flow compound blocks and 51 with optical flow and refine-MV, most NEAR_NEARMV or NEAR_NEWMV blocks that read two DRL indices before REFINE_ALL sets use_optflow. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 973b3c5ade38e7ff67bae316c7d929dfc8f5f0c755dba4c249da462df4e6fa29; validates clean."
+expect = "clean"

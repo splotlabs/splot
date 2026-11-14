@@ -2173,3 +2173,9 @@ id = "syn-warp-globalglobal-mono-10bit-176x144-q120"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.single_ref", "inter.subpel_mc", "inter.warp", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.10", "seq.chroma.monochrome", "seq.layers.single", "tile.single"]
 ivf_sha256 = "d0d91bcd78b45809c512046d1bb34ff037abb220baf32bb16a35ea5483d3f4a0"
 avm_raw_sha256 = "42a1a6d5955aaa5234dd50558980dde29c93db2bdbf9d699e10bf17f5a33c139"
+
+[[fixture]]
+id = "syn-refinemv-optflow-all-420-132x100-q80"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "b5f44e2cd279fe049f215ebc5bbd7144ac5e0d05d86a938322148c17681307e7"
+avm_raw_sha256 = "973b3c5ade38e7ff67bae316c7d929dfc8f5f0c755dba4c249da462df4e6fa29"

@@ -428,8 +428,9 @@ pub(super) fn decode_compound_inter_block(
     let mut ref_mv_idx = 0;
     let mut ref_mv_idx0 = 0;
     let mut ref_mv_idx1 = 0;
+    let second_drl = compound_reads_second_drl(compound);
     if compound.y_mode.reads_drl_idx() {
-        if compound_reads_second_drl(compound) {
+        if second_drl {
             ref_mv_idx0 = read_drl_idx(cdfs, symbols, new_mv_context, max_drl_bits_minus_1);
             let second_min_idx = if compound.ref_frame0 == compound.ref_frame1
                 && compound.y_mode == CompoundYMode::NearNear
@@ -560,8 +561,7 @@ pub(super) fn decode_compound_inter_block(
         use_optflow: compound.use_optflow,
         local_warp,
         ref_mv_idx: ref_mv_idx as u8,
-        independent_idx: compound_reads_second_drl(compound)
-            .then_some([ref_mv_idx0 as u8, ref_mv_idx1 as u8]),
+        independent_idx: second_drl.then_some([ref_mv_idx0 as u8, ref_mv_idx1 as u8]),
         mvd,
         joint,
         jmvd_scale_mode,
