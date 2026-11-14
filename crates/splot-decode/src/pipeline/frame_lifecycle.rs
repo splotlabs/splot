@@ -12,7 +12,7 @@ use splot_core::headers::film_grain::{FilmGrainModel, MAX_FILM_GRAIN, parse_film
 use splot_core::headers::frame::{
     CoreSeqQuantView, FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput,
     FrameHeaderParseMode, FrameHeaderParseStatus, FrameReferenceStateView, FrameType,
-    GlobalMotionRef, parse_frame_header_core,
+    parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
     ChromaFormatIdc, CroppingWindow, ProfileIdc, SequenceHeader, parse_sequence_header,
@@ -513,26 +513,7 @@ pub(crate) fn frame_ref_update_from_core(
             "the § 7.23 reference update requires OrderHintLsbs",
         )
     })?;
-    let mut saved_order_hints = [0; 7];
-    let mut saved_gm_params = [GlobalMotionRef::identity().gm_params; 7];
-    let num_total_refs = core
-        .inter
-        .as_ref()
-        .and_then(|inter| inter.num_total_refs)
-        .unwrap_or(0);
-    if let Some(inter) = core.inter.as_ref() {
-        for (target, &hint) in saved_order_hints.iter_mut().zip(&inter.order_hints) {
-            *target = hint;
-        }
-    }
-    if let Some(tail) = core.inter_tail.as_ref() {
-        for (target, model) in saved_gm_params
-            .iter_mut()
-            .zip(tail.global_motion.references)
-        {
-            *target = model.gm_params;
-        }
-    }
+    let (num_total_refs, saved_order_hints, saved_gm_params) = core.saved_global_motion_state();
     Ok(reference_buffer::FrameRefUpdate {
         refresh_frame_flags,
         order_hint,

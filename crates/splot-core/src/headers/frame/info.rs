@@ -38,7 +38,9 @@ use crate::headers::sequence::{SequenceHeader, SequenceHeaderId};
 use crate::hls::{MfhId, MultiFrameHeaderRecord};
 use crate::types::ObuType;
 
-use super::global_motion::{SavedGlobalMotionOrderHints, SavedGlobalMotionParams};
+use super::global_motion::{
+    DEFAULT_WARP_PARAMS, REFS_PER_FRAME, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
+};
 use super::{FrameHeaderPrefix, parse_frame_header_prefix};
 
 mod seq_view;
@@ -507,6 +509,29 @@ impl FrameHeaderCore {
     #[must_use]
     pub const fn display_order_hint(&self) -> Option<u32> {
         self.order_hint
+    }
+
+    /// Returns the § 7.23 `RefNumTotalRefs`, `SavedOrderHints` and `SavedGmParams` values
+    /// that this frame stores into each refreshed slot. Unparsed parts take the identity
+    /// values that `global_motion_params()` (§ 5.18.9.1) sets before its early returns.
+    #[must_use]
+    pub fn saved_global_motion_state(
+        &self,
+    ) -> (u32, SavedGlobalMotionOrderHints, SavedGlobalMotionParams) {
+        let mut order_hints = [0; REFS_PER_FRAME];
+        let mut params = [DEFAULT_WARP_PARAMS; REFS_PER_FRAME];
+        let num_total_refs = self.inter.as_ref().map_or(0, |inter| {
+            for (target, &hint) in order_hints.iter_mut().zip(&inter.order_hints) {
+                *target = hint;
+            }
+            inter.num_total_refs.unwrap_or(0)
+        });
+        if let Some(tail) = self.inter_tail.as_ref() {
+            for (target, model) in params.iter_mut().zip(tail.global_motion.references) {
+                *target = model.gm_params;
+            }
+        }
+        (num_total_refs, order_hints, params)
     }
 }
 

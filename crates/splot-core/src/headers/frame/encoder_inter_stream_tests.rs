@@ -821,6 +821,16 @@ fn global_motion_models_round_trip_through_the_parser() {
             .view()
             .with_global_motion_state(&counts, &hints, &saved);
         let header = build_inter_frame_header(&view, &refs, &params).unwrap();
+        let (num_total_refs, saved_hints, saved_params) = header.core.saved_global_motion_state();
+        let inter = header.core.inter.as_ref().unwrap();
+        assert_eq!(Some(num_total_refs), inter.num_total_refs);
+        assert_eq!(
+            saved_hints[..inter.order_hints.len()],
+            inter.order_hints[..]
+        );
+        for (saved, model) in saved_params.iter().zip(models) {
+            assert_eq!(*saved, model.unwrap_or(DEFAULT_WARP_PARAMS));
+        }
         let gm = header.core.inter_tail.unwrap().global_motion;
         assert_eq!(gm.use_global_motion, models.iter().any(Option::is_some));
         for (reference, model) in gm.references.iter().zip(models) {

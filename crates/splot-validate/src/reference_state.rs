@@ -11,7 +11,10 @@
 //! poisons every slot because its refresh mask is unknown. Only proven-invalid
 //! references produce findings; external HLS cannot establish reference buffers.
 
-use splot_core::headers::frame::{FrameReferenceStateView, FrameType};
+use splot_core::headers::frame::{
+    FrameReferenceStateView, FrameType, GlobalMotionRef, REFS_PER_FRAME,
+    SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
+};
 use splot_core::types::ExtendedLayerId;
 
 use std::collections::BTreeMap;
@@ -27,6 +30,7 @@ pub(crate) const NUM_REF_FRAMES: usize = 16;
 /// Only the reference-state subset required for later frame-header parsing and conformance
 /// checks is modeled; reconstruction-only state remains in the decoder runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum SlotState {
     /// The slot's state is not known to the validator: it was never established in this
     /// modeled run, or a frame whose refresh mask could not be parsed may have written
@@ -72,6 +76,9 @@ pub(crate) struct SlotFacts {
     pub(crate) long_term_id: Option<u32>,
     /// Per-plane retained Wiener-NS class counts used by the § 5.18 filter dictionary.
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
+    /// `RefNumTotalRefs[ i ]`, `SavedOrderHints[ i ]` and `SavedGmParams[ i ]` (§ 7.23),
+    /// read by the § 5.18.9.1 `global_motion_params()` base-warp selection.
+    pub(crate) global_motion: (u32, SavedGlobalMotionOrderHints, SavedGlobalMotionParams),
 }
 
 /// One extended layer's reference buffer, matching its CVS reset scope (§ 7.3.6).
@@ -83,6 +90,9 @@ struct LayerReferenceState {
     /// `RefCounter[ i ]` (§ 7.23), identifying slots holding the same frame.
     counters: [u32; NUM_REF_FRAMES],
     next_counter: u32,
+    /// `NumRefFrames` of the last CLK reset: the § 5.18 reference loops read only slots
+    /// below it. [`NUM_REF_FRAMES`] until a CLK reset is seen.
+    num_ref_frames: usize,
 }
 
 impl Default for LayerReferenceState {
@@ -91,6 +101,7 @@ impl Default for LayerReferenceState {
             slots: [SlotState::Unknown; NUM_REF_FRAMES],
             counters: [0; NUM_REF_FRAMES],
             next_counter: 0,
+            num_ref_frames: NUM_REF_FRAMES,
         }
     }
 }
@@ -106,6 +117,7 @@ impl LayerReferenceState {
             *slot = SlotState::ProvenInvalid;
         }
         self.next_counter = 0;
+        self.num_ref_frames = bound;
     }
 
     /// Applies the § 7.23 update for a parsed frame: for each set bit of
@@ -165,6 +177,9 @@ pub(crate) struct ReferenceStateScratch {
     implicit_output_frame: [bool; NUM_REF_FRAMES],
     immediate_output_frame: [bool; NUM_REF_FRAMES],
     lr_frame_filter_class_counts: [[u8; 3]; NUM_REF_FRAMES],
+    num_total_refs: [u32; NUM_REF_FRAMES],
+    saved_gm_order_hints: [SavedGlobalMotionOrderHints; NUM_REF_FRAMES],
+    saved_gm_params: [SavedGlobalMotionParams; NUM_REF_FRAMES],
 }
 
 impl ReferenceStateScratch {
@@ -180,6 +195,11 @@ impl ReferenceStateScratch {
         .with_primary_reference_state(&self.counter, &self.frame_is_inter)
         .with_long_term_id_state(&self.long_term_id)
         .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
+        .with_global_motion_state(
+            &self.num_total_refs,
+            &self.saved_gm_order_hints,
+            &self.saved_gm_params,
+        )
         .with_single_layer_order_hint_state(
             &self.order_hint_lsbs,
             &self.implicit_output_frame,
@@ -234,6 +254,7 @@ impl ReferenceStateTracker {
     /// boundary, with the no-trailing-delimiter end-of-bitstream flush), AFTER the
     /// frame's facts are known and BEFORE any later frame's reference checks consult the
     /// buffer — matching § 7.23's "final step in decoding a frame" ordering.
+    #[allow(clippy::large_types_passed_by_value)]
     pub(crate) fn apply(&mut self, xlayer: ExtendedLayerId, update: FrameRefUpdate) {
         let layer = self.layers.entry(xlayer).or_default();
         match update {
@@ -288,19 +309,24 @@ impl ReferenceStateTracker {
     /// Borrows `xlayer`'s `RefValid[]` / `RefOrderHint[]` / dims as the parallel slices a
     /// [`splot_core::headers::frame::FrameReferenceStateView`] threads into the parser,
     /// writing them into the caller-provided scratch buffers. Returns `None` when the
-    /// layer has no buffer yet (every slot Unknown — there is nothing to thread).
+    /// layer has no buffer yet, or when any slot below `NumRefFrames` is `Unknown`: the
+    /// § 5.18 reference loops read every such slot, so a parse against a partial buffer
+    /// could read later syntax at wrong bit positions. The parser then stops honestly.
     ///
-    /// An `Unknown` slot contributes `RefValid[i] = false` (the parser must not treat an
-    /// unestablished slot as available); a `ProvenInvalid` slot likewise contributes
-    /// `false`; a `Valid` slot contributes `true` plus its stored facts. Width/height/
-    /// order-hint for non-valid slots are filler `0` — the parser reads them only where
-    /// `RefValid[i]` is `true` (the § 5.18 reference paths gate on `RefValid`).
+    /// A `ProvenInvalid` slot (and an `Unknown` slot at or above `NumRefFrames`)
+    /// contributes `RefValid[i] = false`; a `Valid` slot contributes `true` plus its stored
+    /// facts. Width/height/order-hint for non-valid slots are filler `0` — the parser reads
+    /// them only where `RefValid[i]` is `true` (the § 5.18 reference paths gate on
+    /// `RefValid`).
     pub(crate) fn view_into<'a>(
         &self,
         xlayer: ExtendedLayerId,
         scratch: &'a mut ReferenceStateScratch,
     ) -> Option<FrameReferenceStateView<'a>> {
         let layer = self.layers.get(&xlayer)?;
+        if layer.slots[..layer.num_ref_frames].contains(&SlotState::Unknown) {
+            return None;
+        }
         for (i, slot) in layer.slots.iter().enumerate() {
             match slot {
                 SlotState::Valid(facts) => {
@@ -317,6 +343,11 @@ impl ReferenceStateTracker {
                     scratch.implicit_output_frame[i] = facts.implicit_output_frame;
                     scratch.immediate_output_frame[i] = facts.immediate_output_frame;
                     scratch.lr_frame_filter_class_counts[i] = facts.lr_frame_filter_class_counts;
+                    (
+                        scratch.num_total_refs[i],
+                        scratch.saved_gm_order_hints[i],
+                        scratch.saved_gm_params[i],
+                    ) = facts.global_motion;
                 }
                 SlotState::Unknown | SlotState::ProvenInvalid => {
                     scratch.valid[i] = false;
@@ -332,6 +363,11 @@ impl ReferenceStateTracker {
                     scratch.implicit_output_frame[i] = false;
                     scratch.immediate_output_frame[i] = false;
                     scratch.lr_frame_filter_class_counts[i] = [0; 3];
+                    (
+                        scratch.num_total_refs[i],
+                        scratch.saved_gm_order_hints[i],
+                        scratch.saved_gm_params[i],
+                    ) = IDENTITY_GLOBAL_MOTION;
                 }
             }
         }
@@ -378,8 +414,16 @@ pub(crate) fn slot_facts(
         frame_is_inter: frame_type? == FrameType::Inter,
         long_term_id: long_term_id.and_then(|id| u32::try_from(id).ok()),
         lr_frame_filter_class_counts: [0; 3],
+        global_motion: IDENTITY_GLOBAL_MOTION,
     })
 }
+
+/// The § 7.23 global-motion state of a frame with no references and identity warps.
+const IDENTITY_GLOBAL_MOTION: (u32, SavedGlobalMotionOrderHints, SavedGlobalMotionParams) = (
+    0,
+    [0; REFS_PER_FRAME],
+    [GlobalMotionRef::identity().gm_params; REFS_PER_FRAME],
+);
 
 /// Whether a `FrameType` is `KEY_FRAME` or `SWITCH_FRAME` for the § 7.23 `first`
 /// RefValid rule (mirror :14100).
@@ -409,6 +453,7 @@ mod tests {
             frame_is_inter: false,
             long_term_id: None,
             lr_frame_filter_class_counts: [0; 3],
+            global_motion: IDENTITY_GLOBAL_MOTION,
         }
     }
 
@@ -557,35 +602,83 @@ mod tests {
     #[test]
     fn view_into_reflects_slot_validity() {
         let mut tracker = ReferenceStateTracker::default();
+        let saved_params = [[1, 2, 65_536, 3, 4, 65_536]; REFS_PER_FRAME];
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            FrameRefUpdate::ClkReset {
+                num_ref_frames: 8,
                 refresh_frame_flags: 0b1,
-                is_key_or_switch: false,
                 facts: SlotFacts {
                     order_hint: 11,
                     order_hint_lsb: 11,
                     width: 64,
                     height: 48,
                     lr_frame_filter_class_counts: [3, 1, 0],
+                    global_motion: (2, [11, 9, 0, 0, 0, 0, 0], saved_params),
                     ..facts(11)
                 },
             },
         );
         let mut scratch = ReferenceStateScratch::default();
-        assert!(tracker.view_into(XL, &mut scratch).is_some());
+        let view = tracker.view_into(XL, &mut scratch).unwrap();
+        assert_eq!(view.ref_num_total_refs.unwrap()[0], 2);
+        assert_eq!(view.saved_global_motion_order_hints.unwrap()[0][1], 9);
+        assert_eq!(view.saved_global_motion_params.unwrap()[0], saved_params);
+        assert_eq!(view.ref_num_total_refs.unwrap()[1], 0);
         assert!(scratch.valid[0]);
         assert_eq!(scratch.order_hint[0], 11);
         assert_eq!(scratch.width[0], 64);
         assert_eq!(scratch.height[0], 48);
         assert_eq!(scratch.lr_frame_filter_class_counts[0], [3, 1, 0]);
         assert!(!scratch.valid[1]);
+        assert!(!scratch.valid[8]);
         assert_eq!(scratch.lr_frame_filter_class_counts[1], [0; 3]);
-        tracker.apply(XL, FrameRefUpdate::PoisonAll);
-        let view = tracker.view_into(XL, &mut scratch).unwrap();
-        assert_eq!(view.lr_frame_filter_class_counts.unwrap()[0], [0; 3]);
         let absent = tracker.view_into(ExtendedLayerId::from_bits(2), &mut scratch);
         assert!(absent.is_none());
+    }
+
+    #[test]
+    fn view_into_withholds_a_partially_unknown_buffer() {
+        let mut tracker = ReferenceStateTracker::default();
+        let mut scratch = ReferenceStateScratch::default();
+        tracker.apply(
+            XL,
+            FrameRefUpdate::Refresh {
+                refresh_frame_flags: 0b1,
+                is_key_or_switch: false,
+                facts: facts(1),
+            },
+        );
+        assert!(tracker.view_into(XL, &mut scratch).is_none());
+        tracker.apply(
+            XL,
+            FrameRefUpdate::ClkReset {
+                num_ref_frames: 8,
+                refresh_frame_flags: 0b1,
+                facts: facts(2),
+            },
+        );
+        assert!(tracker.view_into(XL, &mut scratch).is_some());
+        tracker.apply(XL, FrameRefUpdate::PoisonAll);
+        assert!(tracker.view_into(XL, &mut scratch).is_none());
+        tracker.apply(
+            XL,
+            FrameRefUpdate::Refresh {
+                refresh_frame_flags: 0b1111_1110,
+                is_key_or_switch: false,
+                facts: facts(3),
+            },
+        );
+        assert!(tracker.view_into(XL, &mut scratch).is_none());
+        tracker.apply(
+            XL,
+            FrameRefUpdate::Refresh {
+                refresh_frame_flags: 0b1,
+                is_key_or_switch: false,
+                facts: facts(4),
+            },
+        );
+        assert!(tracker.view_into(XL, &mut scratch).is_some());
     }
 
     #[test]
