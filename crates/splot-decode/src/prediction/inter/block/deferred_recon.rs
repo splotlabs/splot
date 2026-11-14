@@ -132,6 +132,10 @@ impl InterReconCommand {
         )
     }
 
+    pub(super) const fn tip_unit_size(&self) -> usize {
+        if self.syntax.tip_size_16x16 { 16 } else { 8 }
+    }
+
     /// The neighbour flags the parser published for this leaf.
     pub(super) fn flag_syntax(&self) -> NeighbourFlagSyntax {
         self.syntax.flag_syntax(self.placed.block.ref_frame0)

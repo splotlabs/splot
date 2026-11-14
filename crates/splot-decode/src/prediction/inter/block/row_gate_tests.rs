@@ -285,7 +285,7 @@ fn a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle() {
     block.chroma_luma[2] = 128;
     let mut bounds = RowReferenceBounds::default();
 
-    gate.note_tip(&block, &mut bounds);
+    gate.note_tip(&block, TIP_FIELD_CELL, &mut bounds);
 
     assert_eq!(bounds.needs[1], 582);
 }

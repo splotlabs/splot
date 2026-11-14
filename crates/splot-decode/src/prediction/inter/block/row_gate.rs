@@ -191,7 +191,7 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         let placed = command.placed();
         let block = &placed.block;
         if command.is_tip() {
-            self.note_tip(placed, bounds);
+            self.note_tip(placed, command.tip_unit_size(), bounds);
             return;
         }
         let compound = block.ref_frame1.is_some();
@@ -233,38 +233,41 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
     /// scheduler can check later through [`bounds_satisfied`].
     pub(super) fn tip_bounds(&self, placed: &PlacedInterBlock) -> RowReferenceBounds {
         let mut bounds = RowReferenceBounds::default();
-        self.note_tip(placed, &mut bounds);
+        self.note_tip(placed, TIP_FIELD_CELL, &mut bounds);
         bounds
     }
 
     /// Bounds one § 7.13.5 TIP block against the frame's TIP reference pair.
     ///
-    /// The block's prediction units read the projected motion field at
-    /// [`TIP_FIELD_CELL`] granularity and predict at most [`TIP_MAX_UNIT`] rows
-    /// from each cell they sample, so each band of cells is bounded as a
+    /// The block's prediction units read the projected motion field at their
+    /// `unit` origins and predict at most [`TIP_MAX_UNIT`] rows
+    /// from each cell they sample, so each band of units is bounded as a
     /// [`TIP_MAX_UNIT`]-tall rectangle carrying that band's furthest-reaching
     /// projected vector. The batched optical-flow path also opens the whole
     /// block from its first unit's candidate before applying that grid, so the
     /// same candidate bounds the full block rectangle. Both lists are bounded
     /// even when the frame's weighting leaves the future reference unread,
     /// which only delays admission.
-    fn note_tip(&self, placed: &PlacedInterBlock, bounds: &mut RowReferenceBounds) {
+    fn note_tip(&self, placed: &PlacedInterBlock, unit: usize, bounds: &mut RowReferenceBounds) {
         let Some(references) = self.tip else {
             bounds.settle = true;
             return;
         };
         let base = placed.block.mv;
         let mut batch_mvs = None;
-        for band in (0..placed.luma_h()).step_by(TIP_FIELD_CELL) {
+        for band in (0..placed.luma_h()).step_by(unit) {
             let luma_y = placed.luma_y().saturating_add(band);
             let mut furthest = [Mv::ZERO; 2];
-            for column in (0..placed.luma_w()).step_by(TIP_FIELD_CELL) {
+            let Some(candidate) = self
+                .temporal
+                .tip_candidate_row(luma_y / TIP_FIELD_CELL, base)
+            else {
+                bounds.settle = true;
+                return;
+            };
+            for column in (0..placed.luma_w()).step_by(unit) {
                 let luma_x = placed.luma_x().saturating_add(column);
-                let Some(mvs) = self.temporal.tip_candidate(
-                    luma_y / TIP_FIELD_CELL,
-                    luma_x / TIP_FIELD_CELL,
-                    base,
-                ) else {
+                let Some(mvs) = candidate(luma_x / TIP_FIELD_CELL) else {
                     bounds.settle = true;
                     return;
                 };

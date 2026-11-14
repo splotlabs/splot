@@ -150,7 +150,6 @@ impl<T: ReconSample> TipHeldReferences<'_, T> {
 #[derive(Debug, Default)]
 pub(super) struct TipReconstructScratch {
     units: Vec<TipUnit>,
-    /// The 8x8 units' candidates of a batched block, in raster order.
     unit_mvs: Vec<[Mv; 2]>,
     /// The per-unit refine-MV candidates a batch's motion grid holds.
     ///
@@ -460,12 +459,10 @@ impl TipBlockPlan {
         self.use_optflow
     }
 
-    /// Columns of 8x8 units in a batched block.
     const fn columns(&self) -> usize {
         self.block_w / 8
     }
 
-    /// The luma rectangle of batched unit `index`.
     const fn unit_rect(&self, index: usize) -> mc::McBlockRect {
         let columns = self.columns();
         mc::McBlockRect::from_luma_rect(
