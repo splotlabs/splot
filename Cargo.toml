@@ -93,12 +93,12 @@ wildcard_imports = "allow"
 if_not_else = "allow"
 
 # Keep unwind enabled: output/raw.rs converts output-task panics into typed errors.
-# Thin LTO with four codegen units: release builds about 3 times faster than
-# fat LTO with one unit, for 0% to 5% more 1T decode cycles (measured 2026-11).
+# Thin LTO with one codegen unit per crate: decode speed level with fat LTO,
+# a faster build, and code generation independent of unrelated edits.
 [profile.release]
 overflow-checks = false
 lto = "thin"
-codegen-units = 4
+codegen-units = 1
 
 [profile.dev]
 overflow-checks = true
