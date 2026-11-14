@@ -300,7 +300,9 @@ impl MotionCells {
 
 impl Drop for MotionCells {
     fn drop(&mut self) {
-        if let Self::Heap(cells) = self {
+        if let Self::Heap(cells) = self
+            && cells.capacity() != 0
+        {
             recycle_motion_cells(core::mem::take(cells));
         }
     }
@@ -319,10 +321,17 @@ pub(crate) struct CompoundMotionGrid {
 
 impl CompoundMotionGrid {
     /// Takes the per-cell candidate list back so the caller's context keeps it.
-    pub(crate) fn take_candidates(&mut self) -> Vec<[Mv; 2]> {
+    fn take_candidates(&mut self) -> Vec<[Mv; 2]> {
         match &mut self.refinemv_candidates {
             RefinemvCandidates::PerCell { candidates, .. } => core::mem::take(candidates),
             RefinemvCandidates::None | RefinemvCandidates::Uniform { .. } => Vec::new(),
+        }
+    }
+
+    fn take_cells(&mut self) -> Vec<MotionCell> {
+        match &mut self.cells {
+            MotionCells::Heap(cells) => core::mem::take(cells),
+            MotionCells::Inline(_) => Vec::new(),
         }
     }
 
@@ -767,96 +776,6 @@ fn fullpel_run_pairs(cells: &[MotionCell], columns: usize) -> bool {
     }) || cells
         .first()
         .is_some_and(|first| fullpel(first) && cells.iter().all(|cell| cell == first))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn tip_motion_grid<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
-    block: &CompoundMcBlock<'_, T>,
-    unit_size: usize,
-    columns: usize,
-    unit_count: usize,
-    unit_at: impl Fn(usize) -> (McBlockRect, [Mv; 2]) + Sync,
-    offset: ByteOffset,
-    mut refinemv_candidates: Vec<[Mv; 2]>,
-    search: &mut super::TipSearchScratch,
-) -> Result<CompoundMotionGrid> {
-    refinemv_candidates.clear();
-    refinemv_candidates
-        .try_reserve_exact(unit_count)
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "TIP refine-MV candidate list",
-        })?;
-    if unit_count == 0 || columns == 0 {
-        return Err(ReconError::ZeroDimension {
-            field: "TIP compound motion grid",
-        }
-        .into());
-    }
-    let mut fullpel = false;
-    refinemv_candidates.extend((0..unit_count).map(|index| {
-        let mvs = unit_at(index).1;
-        fullpel |= super::refinemv::fullpel_candidates(mvs);
-        mvs
-    }));
-    let mut cells = take_motion_cells(
-        unit_count,
-        MotionCell::uninitialized([block.mv0, block.mv1]),
-    );
-    let fast = fullpel
-        && super::refinemv::tip_fullpel_cells(
-            sink,
-            block,
-            &unit_at,
-            &refinemv_candidates,
-            (unit_size, offset),
-            0,
-            &mut cells,
-        )?;
-    let mut luma = LumaReference::pair(sink.info(), block, offset);
-    let mut carries: [BilinearOverlapCarry<'_, T>; 2] = Default::default();
-    for index in 0..unit_count {
-        if fast && cells.get(index).is_some_and(MotionCell::is_initialized) {
-            continue;
-        }
-        let (rect, mvs) = unit_at(index);
-        let refined = super::refinemv::tip_refinemv_optflow_motion_cell(
-            block,
-            (rect, mvs),
-            search,
-            &mut luma,
-            &mut carries,
-        )?;
-        if let Some(cell) = refined {
-            let destination = cells.get_mut(index).ok_or(ReconError::ArithmeticOverflow {
-                context: "TIP compound motion-grid write",
-            })?;
-            *destination = cell;
-            continue;
-        }
-        let mut unit = *block;
-        unit.rect = rect;
-        unit.mv0 = mvs[0];
-        unit.mv1 = mvs[1];
-        unit.has_chroma = false;
-        unit.sub8x8_chroma = false;
-        let cell = tip_unit_motion_cell(sink, &unit, unit_size, offset, &mut luma)?;
-        let destination = cells.get_mut(index).ok_or(ReconError::ArithmeticOverflow {
-            context: "TIP compound motion-grid write",
-        })?;
-        *destination = cell;
-    }
-    let fullpel_runs = fullpel && fullpel_run_pairs(&cells, columns);
-    Ok(CompoundMotionGrid {
-        unit_size,
-        columns,
-        cells: MotionCells::from_vec(cells),
-        fullpel_runs,
-        refinemv_candidates: RefinemvCandidates::PerCell {
-            candidates: refinemv_candidates,
-            unit_size,
-        },
-    })
 }
 
 /// One luma reference of a block's refine-MV and optical-flow predictions,
@@ -2125,10 +2044,10 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
 }
 
 mod fullpel_runs;
-mod tip_grid;
+mod tip_units;
 
 use fullpel_runs::{predict_fullpel_runs, uniform_fullpel_params};
-pub(super) use tip_grid::predict_tip_grid;
+pub(crate) use tip_units::{TipUnits, predict_tip_units, refine_tip_units};
 
 #[cfg(test)]
 #[path = "optflow_run_tests.rs"]

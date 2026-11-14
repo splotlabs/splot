@@ -122,7 +122,7 @@ impl InterReconCommand {
         &self.placed
     }
 
-    /// Whether § 7.13.5 TIP synthesis reconstructs this command, which reads
+    /// Whether § 7.13.3.2 TIP synthesis reconstructs this command, which reads
     /// its reference frames through the TIP motion field rather than through
     /// the block's own motion vectors.
     pub(super) const fn is_tip(&self) -> bool {
@@ -247,22 +247,25 @@ impl InterReconCommand {
     /// can derive one.
     fn derive_motion<T: ReconSample>(
         &self,
-        sink: &WorkspaceSink<'_, '_, T>,
+        sink: &mut WorkspaceSink<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
         tip_scratch: &mut TipReconstructScratch,
     ) -> Result<Option<mc::CompoundMotionGrid>> {
         if self.is_tip() {
-            return tip::motion(
+            let frame = shared.tip(sink.info())?;
+            tip::predict_block(
                 tip_scratch,
-                temporal_records,
                 sink,
+                Some(temporal_records),
+                false,
                 &self.placed,
-                shared.tip(sink.info())?,
+                frame,
                 shared.temporal_context,
                 shared.reference,
                 self.tile_offset,
-            );
+            )?;
+            return Ok(None);
         }
         match &self.syntax.motion {
             InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) | InterMotionSyntax::Bru => {
@@ -329,34 +332,13 @@ impl InterReconCommand {
         &self,
         sink: &mut WorkspaceSink<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
-        motion: Option<mc::CompoundMotionGrid>,
-        fresh_motion: bool,
+        motion: Option<&mc::CompoundMotionGrid>,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         shared: &ReconShared<'_, T>,
-        tip_scratch: &mut TipReconstructScratch,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
-    ) -> Result<Option<mc::CompoundMotionGrid>> {
+    ) -> Result<()> {
         let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
-        if self.is_tip() {
-            return tip::predict(
-                tip_scratch,
-                sink,
-                motion,
-                fresh_motion,
-                &self.placed,
-                residual_blocks,
-                residual_coeffs,
-                shared.tip(sink.info())?,
-                shared.temporal_context,
-                shared.reference,
-                self.qindex,
-                shared.luma_use_tcq,
-                shared.residual_use_ddt,
-                shared.bit_depth,
-                self.tile_offset,
-            );
-        }
         let (use_refinemv, refinemv_switchable) = self.refinemv();
         match sink {
             WorkspaceSink::Frame(workspace) => super::prediction::reconstruct_placed_inter_block(
@@ -365,7 +347,7 @@ impl InterReconCommand {
                 &self.placed,
                 residual_blocks,
                 residual_coeffs,
-                motion.as_ref(),
+                motion,
                 use_refinemv,
                 refinemv_switchable,
                 block_decoded,
@@ -384,7 +366,7 @@ impl InterReconCommand {
                     &self.placed,
                     residual_blocks,
                     residual_coeffs,
-                    motion.as_ref(),
+                    motion,
                     use_refinemv,
                     refinemv_switchable,
                     shared.ref_frame_idx,
@@ -397,7 +379,46 @@ impl InterReconCommand {
                 )?;
             }
         }
-        Ok(motion)
+        Ok(())
+    }
+
+    /// Reconstructs a § 7.13.3.2 TIP block, deriving its § 7.22 records
+    /// unless a motion pass already did.
+    fn reconstruct_tip<T: ReconSample>(
+        &self,
+        sink: &mut WorkspaceSink<'_, '_, T>,
+        temporal_records: &mut Vec<TemporalMotionBlock>,
+        residual: (&[InterResidualBlock], &[i32]),
+        shared: &ReconShared<'_, T>,
+        tip_scratch: &mut TipReconstructScratch,
+    ) -> Result<()> {
+        let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
+        let frame = shared.tip(sink.info())?;
+        tip::predict_block(
+            tip_scratch,
+            sink,
+            (!self.motion_derived).then_some(temporal_records),
+            true,
+            &self.placed,
+            frame,
+            shared.temporal_context,
+            shared.reference,
+            self.tile_offset,
+        )?;
+        let Some(block_residual) = self.placed.block.residual.as_ref() else {
+            return Ok(());
+        };
+        super::super::add_inter_residual_to_workspace(
+            sink,
+            block_residual,
+            residual.0,
+            residual.1,
+            self.qindex,
+            shared.luma_use_tcq,
+            shared.residual_use_ddt,
+            false,
+            shared.bit_depth,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -412,6 +433,15 @@ impl InterReconCommand {
         tip_scratch: &mut TipReconstructScratch,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
     ) -> Result<()> {
+        if self.is_tip() {
+            return self.reconstruct_tip(
+                sink,
+                temporal_records,
+                (residual_blocks, residual_coeffs),
+                shared,
+                tip_scratch,
+            );
+        }
         let motion = if self.motion_derived {
             self.derived_motion.take().map(|grid| *grid)
         } else {
@@ -420,15 +450,12 @@ impl InterReconCommand {
         self.reconstruct_from_motion(
             sink,
             block_decoded,
-            motion,
-            !self.motion_derived,
+            motion.as_ref(),
             residual_blocks,
             residual_coeffs,
             shared,
-            tip_scratch,
             interintra_scratch,
         )
-        .map(|grid| tip::retire_motion_grid(tip_scratch, grid))
     }
 }
 
@@ -463,7 +490,7 @@ impl<T: ReconSample> InterReconScratch<T> {
     pub(super) fn derive_motion_logged(
         &mut self,
         command: &mut InterReconCommand,
-        sink: &WorkspaceSink<'_, '_, T>,
+        sink: &mut WorkspaceSink<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
     ) -> Result<()> {

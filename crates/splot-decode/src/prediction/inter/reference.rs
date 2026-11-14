@@ -281,7 +281,7 @@ pub(crate) fn subpel_last_row(start_y: i32, step_y: i32, height: usize, last_y: 
 /// [`COMPOUND_REFINE_REACH`] covers both, scaled into reference rows because a
 /// § 7.13.3.18 scaled reference walks `step_y` per predicted row.
 ///
-/// § 7.13.5 TIP callers predict a whole unit batch through one rect whose
+/// § 7.13.3.2 TIP callers predict a whole unit batch through one rect whose
 /// motion vectors vary per unit, so this bound does not cover them; a row
 /// holding a TIP block waits for its references to settle instead, which
 /// switches the admission check off.
