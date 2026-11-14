@@ -530,7 +530,7 @@ fn tip_grid_and_cells<T: ReconSample>(
     let offset = ByteOffset::new(0);
     let grid = || {
         let mut units = TipUnits::default();
-        refine_tip_units(&sink, &block, mvs, &mut units, columns, offset).expect("units");
+        refine_tip_units(&sink, &block, mvs, &mut units, (columns, 8), offset).expect("units");
         units
     };
     let grid = pool.map_or_else(grid, |pool| pool.install(grid));

@@ -321,7 +321,7 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
 }
 
 #[inline(never)]
-fn search_refinemv<T: ReconSample>(
+pub(super) fn search_refinemv<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     rect: McBlockRect,

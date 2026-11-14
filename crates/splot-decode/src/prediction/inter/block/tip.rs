@@ -791,7 +791,14 @@ pub(super) fn predict_block<T: ReconSample>(
         .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
     let columns = plan.columns();
     let units = &mut scratch.tip_units;
-    mc::refine_tip_units(sink, &block, &scratch.unit_mvs, units, columns, tile_offset)?;
+    mc::refine_tip_units(
+        sink,
+        &block,
+        &scratch.unit_mvs,
+        units,
+        (columns, 8),
+        tile_offset,
+    )?;
     if let Some(records) = records {
         push_batch_records(records, &plan, frame, units)?;
     }
@@ -801,7 +808,7 @@ pub(super) fn predict_block<T: ReconSample>(
             &block,
             &mut scratch.unit_mvs,
             units,
-            columns,
+            (columns, 8),
             tile_offset,
         )?;
     }
@@ -1730,7 +1737,7 @@ mod tests {
         let mut workspace = tip_workspace()?;
         let sink = mc::WorkspaceSink::Frame(&mut workspace);
         let offset = splot_core::span::ByteOffset::new(0);
-        mc::refine_tip_units(&sink, &block, &[zero], &mut units, 1, offset)?;
+        mc::refine_tip_units(&sink, &block, &[zero], &mut units, (1, 8), offset)?;
         assert_eq!(units.stored_mvs(0), Some(zero));
         Ok(())
     }
