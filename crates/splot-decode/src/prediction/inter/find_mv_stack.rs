@@ -96,7 +96,7 @@ mod temporal;
 mod warp_bank;
 use derived::{CompoundScanState, DerivedMvState};
 use extra_search::{compound_extra_search, extra_search};
-use neighbour_grid::{ABSENT_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags};
+use neighbour_grid::{ABSENT_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags, ProbedLeaf};
 pub(crate) use neighbour_grid::{
     BlockPrecisionRecord, GridCheckpoint, GridEdge, NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax,
     NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES, compound_motion_mode,
@@ -640,7 +640,7 @@ fn is_backward_ref_frame(cell: NeighbourFlags, backward: &[bool]) -> bool {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MvStack {
     stack: FixedStack<(Mv, (i32, i32)), MAX_REF_MV_STACK_SIZE>,
-    warp: WarpParamStack,
+    warp: Option<WarpParamStack>,
 }
 
 impl MvStack {
@@ -665,9 +665,7 @@ impl MvStack {
 
     pub(crate) fn warp_candidate(&self, idx: usize) -> [i32; 6] {
         self.warp
-            .slots
-            .get(idx)
-            .copied()
+            .and_then(|warp| warp.slots.get(idx).copied())
             .unwrap_or(DEFAULT_WARP_PARAMS)
     }
 }
@@ -1369,11 +1367,20 @@ pub(crate) fn find_mv_stack_upto(
     }
 
     let probes = mv_stack_spatial_probes(block);
-    for probe in probes[..6].iter().flatten() {
+    let probed = |probe: RelativeProbe| {
+        let (row, col, _) = probe.adjusted_target(block);
+        Some((probe, grid.probe(row, col)?))
+    };
+    for (probe, leaf) in probes[..6]
+        .iter()
+        .flatten()
+        .filter_map(|&probe| probed(probe))
+    {
         scan_mv_stack_probe(
             grid,
             block,
-            *probe,
+            probe,
+            leaf,
             &mut entries,
             &mut prune_count,
             &mut derived,
@@ -1383,11 +1390,12 @@ pub(crate) fn find_mv_stack_upto(
     if !use_temporal_first {
         scan_temporal_mv_stack(grid, block, temporal, &mut entries, &mut prune_count);
     }
-    if let Some(probe) = probes[6] {
+    if let Some((probe, leaf)) = probes[6].and_then(probed) {
         scan_mv_stack_probe(
             grid,
             block,
             probe,
+            leaf,
             &mut entries,
             &mut prune_count,
             &mut derived,
@@ -1446,10 +1454,7 @@ pub(crate) fn find_mv_stack_upto(
             .map(|entry| (clamp_mv(block, entry.mv), entry.offsets)),
     );
 
-    MvStack {
-        stack,
-        warp: warp.unwrap_or_else(WarpParamStack::new),
-    }
+    MvStack { stack, warp }
 }
 
 #[cfg(test)]
@@ -1754,19 +1759,20 @@ fn scan_mv_stack_col(
     {
         let mv_row = block.mi_row as i32 + delta_row;
         let mv_col = block.mi_col as i32 + delta_col;
-        let Some(cell_base_c) = grid.base_c_at(mv_row, mv_col) else {
+        let Some(leaf) = grid.probe(mv_row, mv_col) else {
             continue;
         };
         let Some(left_base_c) = grid.base_c_at(mv_row, block.mi_col as i32 - 1) else {
             continue;
         };
-        if cell_base_c == left_base_c {
+        if leaf.base_c() == left_base_c {
             continue;
         }
         scan_mv_stack_probe(
             grid,
             block,
             RelativeProbe::new(delta_row, delta_col),
+            leaf,
             entries,
             prune_count,
             derived,
@@ -1777,6 +1783,7 @@ fn scan_mv_stack_col(
 
 #[allow(
     clippy::inline_always,
+    clippy::too_many_arguments,
     reason = "measured: keeps the stack state in registers across probes"
 )]
 #[inline(always)]
@@ -1784,15 +1791,13 @@ fn scan_mv_stack_probe(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     probe: RelativeProbe,
+    leaf: ProbedLeaf<'_>,
     entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
     derived: &mut DerivedMvState<'_>,
     warp: Option<&mut WarpParamStack>,
 ) {
-    let (row, col, adjusted_delta_col) = probe.adjusted_target(block);
-    let Some(leaf) = grid.probe(row, col) else {
-        return;
-    };
+    let adjusted_delta_col = probe.delta_col;
     let flags = leaf.flags();
     if let Some(warp) = warp
         && flags.is_inter()
@@ -1817,10 +1822,9 @@ fn scan_mv_stack_probe(
     {
         scan_tip_spatial_probe(grid, block, probe, entries, prune_count, derived, weight);
     }
-    for (list, candidate_ref) in [(0, Some(flags.ref_frame0())), (1, flags.ref_frame1())] {
-        let Some(candidate_ref) = candidate_ref else {
-            continue;
-        };
+    let lists = if flags.ref_frame1().is_some() { 2 } else { 1 };
+    for list in 0..lists {
+        let candidate_ref = flags.list_ref_frame(list);
         if candidate_ref == block.ref_frame0 {
             let candidate_mv = if leaf.is_global_mv(list) {
                 derived.global_mv()
