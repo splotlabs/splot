@@ -175,3 +175,12 @@ fn update_mode_controls_only_selected_block_symbol_rows() {
         );
     }
 }
+
+#[test]
+fn row_at_clamps_an_out_of_range_context_to_the_last_row() {
+    let mut rows = [0_u8, 1, 2];
+    assert_eq!(*row_at(&mut rows, 1), 1);
+    assert_eq!(*row_at(&mut rows, 2), 2);
+    assert_eq!(*row_at(&mut rows, 3), 2);
+    assert_eq!(*row_at(&mut rows, usize::MAX), 2);
+}
