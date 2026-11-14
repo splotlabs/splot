@@ -944,6 +944,11 @@ impl ProjectedTemporalMotionField {
             .copied()
     }
 
+    fn row(&self, y8: usize) -> Option<&[ProjectedTemporalMotionCell]> {
+        let start = temporal_grid_index(self.width8, self.height8, y8, 0)?;
+        self.cells.get(start..start + self.width8)
+    }
+
     #[cfg(test)]
     fn set(&mut self, y8: usize, x8: usize, mv: Mv, ref_offset: i32, valid: bool) {
         let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8) else {
@@ -1029,8 +1034,8 @@ impl BandedTemporalContext {
         y8 >> self.layout.band_rows8().trailing_zeros()
     }
 
-    fn cell(&self, y8: usize, x8: usize) -> Option<ProjectedTemporalMotionCell> {
-        if y8 >= self.layout.height8() || x8 >= self.layout.width8() {
+    fn row(&self, y8: usize) -> Option<&[ProjectedTemporalMotionCell]> {
+        if y8 >= self.layout.height8() {
             return None;
         }
         let band = self
@@ -1039,10 +1044,15 @@ impl BandedTemporalContext {
             .published
             .get()?
             .as_ref()?;
-        let row = y8.checked_sub(band.row_base8)?;
+        let start = y8
+            .checked_sub(band.row_base8)?
+            .checked_mul(self.layout.width8())?;
         band.field
-            .get(row.checked_mul(self.layout.width8())?.checked_add(x8)?)
-            .copied()
+            .get(start..start.checked_add(self.layout.width8())?)
+    }
+
+    fn cell(&self, y8: usize, x8: usize) -> Option<ProjectedTemporalMotionCell> {
+        self.row(y8)?.get(x8).copied()
     }
 
     fn trajectory_cell(&self, reference: usize, y8: usize, x8: usize) -> Option<Mv> {
@@ -1660,20 +1670,35 @@ impl TemporalMvContext {
     }
 
     pub(crate) fn tip_candidate(&self, y8: usize, x8: usize, base_mv: Mv) -> Option<[Mv; 2]> {
+        self.tip_candidate_row(y8, base_mv)?(x8)
+    }
+
+    /// [`Self::tip_candidate`] of row `y8`, resolved once for every column.
+    pub(crate) fn tip_candidate_row(
+        &self,
+        y8: usize,
+        base_mv: Mv,
+    ) -> Option<impl Fn(usize) -> Option<[Mv; 2]> + '_> {
         let (_, scales) = self.tip?;
         let y8 = y8.min(self.field.height8.saturating_sub(1));
-        let x8 = x8.min(self.field.width8.saturating_sub(1));
-        let cell = self.projected_cell(y8, x8)?;
-        let projected = if cell.valid {
-            let mv = cell.mv();
-            [project_scaled(mv, scales[0]), project_scaled(mv, scales[1])]
-        } else {
-            [Mv::ZERO; 2]
-        };
-        Some(projected.map(|mv| Mv {
-            row: (mv.row + base_mv.row).clamp(-MV_LIMIT, MV_LIMIT),
-            col: (mv.col + base_mv.col).clamp(-MV_LIMIT, MV_LIMIT),
-        }))
+        let row = match &self.banded {
+            Some(banded) => banded.row(y8),
+            None => self.field.row(y8),
+        }?;
+        let last = self.field.width8.saturating_sub(1);
+        Some(move |x8: usize| {
+            let cell = row.get(x8.min(last))?;
+            let projected = if cell.valid {
+                let mv = cell.mv();
+                [project_scaled(mv, scales[0]), project_scaled(mv, scales[1])]
+            } else {
+                [Mv::ZERO; 2]
+            };
+            Some(projected.map(|mv| Mv {
+                row: (mv.row + base_mv.row).clamp(-MV_LIMIT, MV_LIMIT),
+                col: (mv.col + base_mv.col).clamp(-MV_LIMIT, MV_LIMIT),
+            }))
+        })
     }
 
     pub(super) fn tip_spatial_mvs(

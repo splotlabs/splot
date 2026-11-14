@@ -150,6 +150,8 @@ impl<T: ReconSample> TipHeldReferences<'_, T> {
 #[derive(Debug, Default)]
 pub(super) struct TipReconstructScratch {
     units: Vec<TipUnit>,
+    /// The 8x8 units' candidates of a batched block, in raster order.
+    unit_mvs: Vec<[Mv; 2]>,
     /// The per-unit refine-MV candidates a batch's motion grid holds.
     ///
     /// One batch grid is live at a time, so the list travels into the grid and
@@ -458,6 +460,31 @@ impl TipBlockPlan {
         self.use_optflow
     }
 
+    /// Columns of 8x8 units in a batched block.
+    const fn columns(&self) -> usize {
+        self.block_w / 8
+    }
+
+    /// The luma rectangle of batched unit `index`.
+    const fn unit_rect(&self, index: usize) -> mc::McBlockRect {
+        let columns = self.columns();
+        mc::McBlockRect::from_luma_rect(
+            self.batch_rect.luma_x + index % columns * 8,
+            self.batch_rect.luma_y + index / columns * 8,
+            8,
+            8,
+        )
+    }
+
+    /// The whole batched block predicted with `mvs`, its first unit's candidates.
+    const fn batch_unit(&self, mvs: [Mv; 2]) -> TipUnit {
+        TipUnit {
+            rect: self.batch_rect,
+            has_chroma: self.batch_has_chroma,
+            mvs,
+        }
+    }
+
     /// Borrows the block's reference pair.
     fn hold<'a, T: ReconSample>(
         &self,
@@ -466,18 +493,18 @@ impl TipBlockPlan {
         self.plan.hold(reference)
     }
 
-    /// One unit's § 7.22 temporal motion record.
+    /// The § 7.22 temporal motion record of the luma rectangle `rect`.
     fn temporal_record(
         &self,
         frame: &TipFramePlan,
-        unit: &TipUnit,
+        rect: &mc::McBlockRect,
         stored_mvs: [Mv; 2],
     ) -> TemporalMotionBlock {
         TemporalMotionBlock::new(
-            unit.rect.luma_y / 4,
-            unit.rect.luma_x / 4,
-            unit.rect.luma_w.div_ceil(4),
-            unit.rect.luma_h.div_ceil(4),
+            rect.luma_y / 4,
+            rect.luma_x / 4,
+            rect.luma_w.div_ceil(4),
+            rect.luma_h.div_ceil(4),
             self.frame_mi_rows,
             self.frame_mi_cols,
             frame.current_order_hint,
@@ -640,27 +667,25 @@ impl TipFramePlan {
     }
 }
 
-/// Fills `scratch.units` with the block's § 7.13.3.1 prediction units, or with
-/// the first one alone when `first_only`.
-///
-/// The batch kernel reads the block's geometry off its first unit and samples
-/// every other one through the motion grid, so its prediction half rebuilds one
-/// unit where the motion half built them all.
+/// Fills `units` with the § 7.13.3.1 prediction units of a block that is not
+/// batched.
 fn build_units(
     units: &mut Vec<TipUnit>,
     plan: &TipBlockPlan,
     placed: &PlacedInterBlock,
     temporal: &TemporalMvContext,
-    first_only: bool,
 ) -> Result<()> {
     units.clear();
     units
-        .try_reserve_exact(if first_only { 1 } else { plan.unit_count })
+        .try_reserve_exact(plan.unit_count)
         .map_err(|_| inter_allocation!("TIP prediction units"))?;
     for local_y in (0..plan.block_h).step_by(plan.unit_size) {
+        let luma_y = placed.luma_y() + local_y;
+        let candidate = temporal
+            .tip_candidate_row(luma_y / 8, placed.block.mv)
+            .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
         for local_x in (0..plan.block_w).step_by(plan.unit_size) {
             let luma_x = placed.luma_x() + local_x;
-            let luma_y = placed.luma_y() + local_y;
             let luma_w =
                 prediction_unit_extent(plan.output, plan.block_w - local_x, plan.unit_size);
             let luma_h =
@@ -679,8 +704,7 @@ fn build_units(
             };
             let predict_chroma =
                 placed.predict_chroma && chroma_end_x > chroma_x && chroma_end_y > chroma_y;
-            let mvs = temporal
-                .tip_candidate(luma_y / 8, luma_x / 8, placed.block.mv)
+            let mvs = candidate(luma_x / 8)
                 .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
             units.push(TipUnit {
                 rect: mc::McBlockRect {
@@ -696,9 +720,34 @@ fn build_units(
                 has_chroma: predict_chroma,
                 mvs,
             });
-            if first_only {
-                return Ok(());
-            }
+        }
+    }
+    Ok(())
+}
+
+/// Fills `unit_mvs` with the candidates of a batched block's 8x8 units, or of
+/// its first unit alone when `first_only`.
+fn batch_candidates(
+    unit_mvs: &mut Vec<[Mv; 2]>,
+    plan: &TipBlockPlan,
+    placed: &PlacedInterBlock,
+    temporal: &TemporalMvContext,
+    first_only: bool,
+) -> Result<()> {
+    unit_mvs.clear();
+    unit_mvs
+        .try_reserve_exact(if first_only { 1 } else { plan.unit_count })
+        .map_err(|_| inter_allocation!("TIP prediction units"))?;
+    let (x8, columns) = (placed.luma_x() / 8, plan.columns());
+    let rows = if first_only { 1 } else { plan.block_h / 8 };
+    for y8 in (placed.luma_y() / 8..).take(rows) {
+        let candidate = temporal
+            .tip_candidate_row(y8, placed.block.mv)
+            .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        for x8 in (x8..).take(if first_only { 1 } else { columns }) {
+            unit_mvs.push(
+                candidate(x8).ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?,
+            );
         }
     }
     Ok(())
@@ -724,25 +773,27 @@ pub(super) fn motion<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
     let plan = &*scratch.motion_plan.insert(frame.block(placed)?);
-    build_units(&mut scratch.units, plan, placed, temporal, false)?;
-    let grid = plan
-        .use_optflow
-        .then(|| {
-            tip_motion_grid(
-                &scratch.units,
-                &mut scratch.grid_candidates,
-                &mut scratch.search,
-                plan,
-                sink,
-                reference,
-                tile_offset,
-            )
-        })
-        .transpose()?;
     temporal_records
         .try_reserve(plan.unit_count)
         .map_err(|_| inter_allocation!("TIP temporal records"))?;
-    let held = (grid.is_none() && plan.plan.use_refinemv)
+    if plan.batched() {
+        batch_candidates(&mut scratch.unit_mvs, plan, placed, temporal, false)?;
+        let grid = tip_motion_grid(
+            &scratch.unit_mvs,
+            &mut scratch.grid_candidates,
+            &mut scratch.search,
+            plan,
+            sink,
+            reference,
+            tile_offset,
+        )?;
+        push_batch_records(temporal_records, plan, frame, &grid)?;
+        return Ok(Some(grid));
+    }
+    build_units(&mut scratch.units, plan, placed, temporal)?;
+    let held = plan
+        .plan
+        .use_refinemv
         .then(|| plan.hold(reference))
         .transpose()?;
     let refining = held
@@ -751,10 +802,9 @@ pub(super) fn motion<T: ReconSample>(
         .transpose()?;
     scratch.whole_mvs.clear();
     let first_record = temporal_records.len();
-    for (index, unit) in scratch.units.iter().enumerate() {
-        let (stored_mvs, whole) = match (grid.as_ref(), refining.as_ref()) {
-            (Some(grid), _) => (grid.stored_mvs_at_index(index)?, None),
-            (None, Some(prediction)) => match prediction.block_params(unit).into_compound() {
+    for unit in &scratch.units {
+        let (stored_mvs, whole) = match refining.as_ref() {
+            Some(prediction) => match prediction.block_params(unit).into_compound() {
                 Some(compound) => {
                     let refined =
                         mc::compound_block_motion_grid(sink, &compound, None, tile_offset)?;
@@ -765,18 +815,49 @@ pub(super) fn motion<T: ReconSample>(
                 }
                 None => (unit.mvs, whole_sample_mvs(unit, None)),
             },
-            (None, None) => (unit.mvs, whole_sample_mvs(unit, None)),
+            None => (unit.mvs, whole_sample_mvs(unit, None)),
         };
         scratch.whole_mvs.push(whole);
-        let record = plan.temporal_record(frame, unit, stored_mvs);
+        let record = plan.temporal_record(frame, &unit.rect, stored_mvs);
         TemporalMotionBlock::push_merged(temporal_records, first_record, record);
     }
-    Ok(grid)
+    Ok(None)
 }
 
-/// Builds the optical-flow motion grid the block's units share.
+/// Pushes one § 7.22 record per run of a batched row's units with equal stored
+/// vectors: the records `push_merged` would grow unit by unit.
+fn push_batch_records(
+    records: &mut Vec<TemporalMotionBlock>,
+    plan: &TipBlockPlan,
+    frame: &TipFramePlan,
+    grid: &mc::CompoundMotionGrid,
+) -> Result<()> {
+    let columns = plan.columns();
+    for row_start in (0..plan.unit_count).step_by(columns.max(1)) {
+        let mut run = (row_start, grid.stored_mvs_at_index(row_start)?);
+        for index in row_start + 1..=row_start + columns {
+            let next = if index < row_start + columns {
+                Some(grid.stored_mvs_at_index(index)?)
+            } else {
+                None
+            };
+            if next == Some(run.1) {
+                continue;
+            }
+            let mut rect = plan.unit_rect(run.0);
+            rect.luma_w = (index - run.0) * 8;
+            records.push(plan.temporal_record(frame, &rect, run.1));
+            if let Some(mvs) = next {
+                run = (index, mvs);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Builds the optical-flow motion grid the block's 8x8 units share.
 fn tip_motion_grid<T: ReconSample>(
-    units: &[TipUnit],
+    unit_mvs: &[[Mv; 2]],
     candidates: &mut Vec<[Mv; 2]>,
     search: &mut mc::TipSearchScratch,
     plan: &TipBlockPlan,
@@ -786,22 +867,19 @@ fn tip_motion_grid<T: ReconSample>(
 ) -> Result<mc::CompoundMotionGrid> {
     let held = plan.hold(reference)?;
     let prediction = held.prediction(&plan.plan)?;
-    let first = units.first().ok_or(ReconError::ZeroDimension {
+    let first = *unit_mvs.first().ok_or(ReconError::ZeroDimension {
         field: "TIP compound batch",
     })?;
     let compound = prediction
-        .block_params(first)
+        .block_params(&plan.batch_unit(first))
         .into_compound()
         .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
     mc::tip_batch_motion_grid(
         sink,
         &compound,
-        plan.block_w.div_ceil(plan.unit_size),
-        units.len(),
-        |index| {
-            let unit = &units[index];
-            (unit.rect, unit.mvs)
-        },
+        plan.columns(),
+        unit_mvs.len(),
+        |index| (plan.unit_rect(index), unit_mvs[index]),
         tile_offset,
         core::mem::take(candidates),
         search,
@@ -964,7 +1042,11 @@ pub(super) fn predict<T: ReconSample>(
 ) -> Result<Option<mc::CompoundMotionGrid>> {
     if !fresh || scratch.motion_plan.is_none() {
         let plan = scratch.motion_plan.insert(frame.block(placed)?);
-        build_units(&mut scratch.units, plan, placed, temporal, plan.batched())?;
+        if plan.batched() {
+            batch_candidates(&mut scratch.unit_mvs, plan, placed, temporal, true)?;
+        } else {
+            build_units(&mut scratch.units, plan, placed, temporal)?;
+        }
         scratch.whole_mvs.clear();
     }
     let plan = scratch
@@ -973,12 +1055,12 @@ pub(super) fn predict<T: ReconSample>(
         .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
     let grid = if plan.batched() {
         let held = plan.hold(reference)?;
-        let first = scratch.units.first().ok_or(ReconError::ZeroDimension {
+        let first = *scratch.unit_mvs.first().ok_or(ReconError::ZeroDimension {
             field: "TIP compound batch",
         })?;
         let compound = held
             .prediction(&plan.plan)?
-            .block_params(first)
+            .block_params(&plan.batch_unit(first))
             .into_compound()
             .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
         mc::predict_tip_batch_from_grid(
@@ -1760,15 +1842,13 @@ mod tests {
             frame_mi_cols: 2,
         };
         let mut scratch = super::TipReconstructScratch::default();
-        scratch.units.push(super::TipUnit {
-            rect,
-            has_chroma: false,
-            mvs: [crate::prediction::inter::Mv::ZERO; 2],
-        });
+        scratch
+            .unit_mvs
+            .push([crate::prediction::inter::Mv::ZERO; 2]);
         let mut workspace = tip_workspace()?;
         let sink = mc::WorkspaceSink::Frame(&mut workspace);
         let grid = super::tip_motion_grid(
-            &scratch.units,
+            &scratch.unit_mvs,
             &mut scratch.grid_candidates,
             &mut scratch.search,
             &plan,
