@@ -270,8 +270,8 @@ pub(crate) fn read_partition_decision<S: PartitionSymbols + ?Sized>(
     }
 
     let (facts, context) = (input.facts, input.partition_context);
-    let rect_type = resolve_rect_type(facts, context, cdfs, symbols)?;
-    let partition = read_rect_partition(facts, context, rect_type, cdfs, symbols)?;
+    let rect_type = resolve_rect_type(facts, &context, cdfs, symbols)?;
+    let partition = read_rect_partition(facts, &context, rect_type, cdfs, symbols)?;
     if !allowed.contains(partition) {
         return Err(PartitionDecisionError::FinalPartitionDisallowed { partition });
     }
@@ -279,9 +279,13 @@ pub(crate) fn read_partition_decision<S: PartitionSymbols + ?Sized>(
     Ok(partition)
 }
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "measured: the walk keeps the context unpacked"
+)]
 fn read_rect_partition<S: PartitionSymbols + ?Sized>(
     facts: PartitionDecisionFacts,
-    context: PartitionContextInput,
+    context: &PartitionContextInput,
     rect_type: RectPartitionType,
     cdfs: &mut TileCdfSubset,
     symbols: &mut S,
@@ -328,9 +332,13 @@ fn read_rect_partition<S: PartitionSymbols + ?Sized>(
     ))
 }
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "measured: the walk keeps the context unpacked"
+)]
 fn resolve_rect_type<S: PartitionSymbols + ?Sized>(
     facts: PartitionDecisionFacts,
-    context: PartitionContextInput,
+    context: &PartitionContextInput,
     cdfs: &mut TileCdfSubset,
     symbols: &mut S,
 ) -> Result<RectPartitionType, PartitionDecisionError> {

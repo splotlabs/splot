@@ -354,20 +354,10 @@ where
         (call, call.b_size, false)
     } else {
         if is_intra_sdp_shared_root(frame, call) {
-            walker.chroma_ref = chroma_ref;
-            walk_call::<_, _, _, _, ACTIVE>(
-                frame,
-                walker,
-                hooks,
-                call.with_tree_type(PartitionTreeType::LumaPart),
-            )?;
-            walker.chroma_ref = chroma_ref;
-            return walk_call::<_, _, _, _, ACTIVE>(
-                frame,
-                walker,
-                hooks,
-                call.with_tree_type(PartitionTreeType::ChromaPart),
-            );
+            let luma = call.with_tree_type(PartitionTreeType::LumaPart);
+            walk_detached::<_, _, _, _, ACTIVE>(frame, walker, hooks, luma, chroma_ref)?;
+            let chroma = call.with_tree_type(PartitionTreeType::ChromaPart);
+            return walk_detached::<_, _, _, _, ACTIVE>(frame, walker, hooks, chroma, chroma_ref);
         }
         if call.b_size == frame.sb_size {
             read_loop_restoration_for_call(
@@ -380,10 +370,9 @@ where
                 walker.limits,
             )?;
         }
-        let mut call = call;
-        let partition = walker.read_partition_step::<ACTIVE>(
+        let (partition, mut call) = walker.read_partition_step::<ACTIVE>(
             frame,
-            &mut call,
+            call,
             hooks.mi_size_state,
             hooks.work_unit.cdf_mut().tile_cdfs_mut(),
         )?;
@@ -398,7 +387,7 @@ where
                 hooks.work_unit.cdf_mut().tile_cdfs_mut(),
                 &mut walker.symbols,
             )?;
-            return visit_partition_children(
+            let extended_chroma = visit_partition_children(
                 &mut |child, inherited| {
                     walker.chroma_ref = inherited;
                     walk_call::<_, _, _, _, ACTIVE>(frame, walker, hooks, child)
@@ -410,7 +399,17 @@ where
                 frame,
                 chroma_offset,
                 using_extended_sdp,
-            );
+            )?;
+            return match extended_chroma {
+                Some(chroma) => walk_detached::<_, _, _, _, ACTIVE>(
+                    frame,
+                    walker,
+                    hooks,
+                    chroma,
+                    chroma.own_chroma_ref(),
+                ),
+                None => Ok(()),
+            };
         }
         (call, sub_size, chroma_offset)
     };
@@ -442,7 +441,28 @@ where
     Ok(())
 }
 
-/// Hands `sink` the children of `call` in syntax order, then the
+#[inline(never)]
+fn walk_detached<'payload, E, C, F, P, const ACTIVE: bool>(
+    frame: &TilePartitionFrameFacts,
+    walker: &mut TreeWalker<'payload>,
+    hooks: &mut LeafHooks<'_, F, P>,
+    call: TilePartitionCall,
+    chroma_ref: ChromaRefGeometry,
+) -> Result<(), WalkError<E>>
+where
+    F: FnMut(
+        &mut DecodeTileWorkUnit,
+        &mut SymbolDecoder<'payload>,
+        &DecodeBlockFrontier,
+        LeafNeighbours<'_>,
+    ) -> Result<(GeneralIntraLeafMode, C), E>,
+    P: FnMut(DecodedLeafPublication, C),
+{
+    walker.chroma_ref = chroma_ref;
+    walk_call::<_, _, _, _, ACTIVE>(frame, walker, hooks, call)
+}
+
+/// Hands `sink` the children of `call` in syntax order and returns the
 /// extended-SDP chroma block decoded after its luma tree.
 #[allow(
     clippy::inline_always,
@@ -459,7 +479,7 @@ fn visit_partition_children<S: ChildCallSink>(
     frame: &TilePartitionFrameFacts,
     chroma_offset: bool,
     using_extended_sdp: bool,
-) -> Result<(), S::Error> {
+) -> Result<Option<TilePartitionCall>, S::Error> {
     child_calls_into(
         sink,
         call,
@@ -469,11 +489,7 @@ fn visit_partition_children<S: ChildCallSink>(
         frame,
         chroma_offset,
     )?;
-    if using_extended_sdp {
-        let chroma_call = extended_sdp_chroma_call(call);
-        sink.push_call(chroma_call, chroma_call.own_chroma_ref())?;
-    }
-    Ok(())
+    Ok(using_extended_sdp.then(|| extended_sdp_chroma_call(call)))
 }
 
 impl TreeWalker<'_> {
@@ -487,11 +503,10 @@ impl TreeWalker<'_> {
     fn read_partition_step<const ACTIVE: bool>(
         &mut self,
         frame: &TilePartitionFrameFacts,
-        call: &mut TilePartitionCall,
+        node: TilePartitionCall,
         mi_size_state: &TileMiSizeState,
         cdfs: &mut super::cdf::TileCdfSubset,
-    ) -> Result<PartitionType, TilePartitionTraversalError> {
-        let node = *call;
+    ) -> Result<(PartitionType, TilePartitionCall), TilePartitionTraversalError> {
         let facts = match self.sdp_state.forced_chroma_partition(frame, node) {
             None => self.partition_memo.facts_at(
                 node.b_size,
@@ -514,9 +529,7 @@ impl TreeWalker<'_> {
             super::partition::read_partition_decision(decision_input, cdfs, &mut self.symbols)?
         };
         let cfl_allowed_in_sdp = self.sdp_state.record_partition(frame, node, partition);
-        call.flags = call.flags & !CALL_CFL_ALLOWED_IN_SDP
-            | super::call_flag(cfl_allowed_in_sdp, CALL_CFL_ALLOWED_IN_SDP);
-        Ok(partition)
+        Ok((partition, node.with_cfl_allowed_in_sdp(cfl_allowed_in_sdp)))
     }
 }
 
@@ -938,7 +951,7 @@ mod row_cursor_tests {
         let chroma_call = extended_sdp_chroma_call(luma_call);
         let mut visited = Vec::new();
 
-        visit_partition_children(
+        let extended_chroma = visit_partition_children(
             &mut |call, _| {
                 visited.push(call);
                 Ok::<_, TilePartitionTraversalError>(())
@@ -952,6 +965,7 @@ mod row_cursor_tests {
             true,
         )
         .unwrap();
+        visited.extend(extended_chroma);
 
         assert!(chroma_call.is_extended_sdp_chroma_block());
         assert_eq!(
@@ -1012,31 +1026,30 @@ pub(super) fn read_extended_sdp_region_type(
     if !should_read_extended_sdp_region_type(frame, *call, partition, bru_active)? {
         return Ok(false);
     }
-    read_region_type(call, cdfs, symbols)
+    let intra = read_region_type(call.b_size, cdfs, symbols)?;
+    *call = if intra {
+        call.with_tree_type(PartitionTreeType::LumaPart)
+            .with_intra_region(true)
+    } else {
+        call.with_intra_region(false)
+    };
+    Ok(intra)
 }
 
 #[inline(never)]
 fn read_region_type(
-    call: &mut TilePartitionCall,
+    b_size: BlockSize,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<bool, TilePartitionTraversalError> {
-    let ctx = intra_region_context(call.b_size)?;
+    let ctx = intra_region_context(b_size)?;
     let selector = super::cdf::TileCdfSelector::RegionType { ctx };
     let region_type = cdfs
         .with_row_mut(selector, |row| symbols.read_symbol_u16(row))??
         .get();
     match region_type {
-        INTRA_REGION => {
-            *call = call
-                .with_tree_type(PartitionTreeType::LumaPart)
-                .with_intra_region(true);
-            Ok(true)
-        }
-        MIXED_REGION => {
-            *call = call.with_intra_region(false);
-            Ok(false)
-        }
+        INTRA_REGION => Ok(true),
+        MIXED_REGION => Ok(false),
         value => Err(TilePartitionTraversalError::InvalidRegionType { value }),
     }
 }
