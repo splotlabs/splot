@@ -885,10 +885,9 @@ impl IntraTileSyntax {
         let (partition_context, square_context) =
             partition_context_inputs(node.0, self.bounds, &self.mi_sizes)
                 .map_err(rule("partition context"))?;
-        let input =
-            options
-                .0
-                .read_partition_decision_input(true, partition_context, square_context);
+        let input = options
+            .0
+            .read_partition_decision_input(partition_context, square_context);
         let mut writer = PartitionWriter {
             target: partition,
             sink: symbols,

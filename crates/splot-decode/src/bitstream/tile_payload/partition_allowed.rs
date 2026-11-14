@@ -219,13 +219,11 @@ impl PartitionDecisionFacts {
 
     pub(crate) const fn read_partition_decision_input(
         self,
-        bru_active: bool,
         partition_context: PartitionContextInput,
         square_split_context: SquareSplitContextInput,
     ) -> ReadPartitionDecisionInput {
         ReadPartitionDecisionInput {
             facts: self,
-            bru_active,
             partition_context,
             square_split_context,
         }

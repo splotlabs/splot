@@ -521,12 +521,14 @@ impl TreeWalker<'_> {
         };
         let partition = if let Some(partition) = facts.unread_partition() {
             partition
+        } else if !ACTIVE {
+            PartitionType::None
         } else {
             let (partition_context, square_context) =
                 partition_context_inputs(node, self.tile_bounds, mi_size_state)?;
             let decision_input =
-                facts.read_partition_decision_input(ACTIVE, partition_context, square_context);
-            super::partition::read_partition_decision(decision_input, cdfs, &mut self.symbols)?
+                facts.read_partition_decision_input(partition_context, square_context);
+            super::partition::read_partition_symbols(decision_input, cdfs, &mut self.symbols)?
         };
         let cfl_allowed_in_sdp = self.sdp_state.record_partition(frame, node, partition);
         Ok((partition, node.with_cfl_allowed_in_sdp(cfl_allowed_in_sdp)))
@@ -559,8 +561,7 @@ pub(super) fn read_frontier_partition_decision(
         forced_chroma_partition,
     )?)?;
     let (partition_context, square_context) = partition_context_inputs(call, tile_bounds, context)?;
-    let decision_input =
-        facts.read_partition_decision_input(true, partition_context, square_context);
+    let decision_input = facts.read_partition_decision_input(partition_context, square_context);
     Ok(super::partition::read_partition_decision(
         decision_input,
         cdfs,

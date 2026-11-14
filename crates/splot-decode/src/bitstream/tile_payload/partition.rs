@@ -154,7 +154,6 @@ impl RectPartitionFamily {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReadPartitionDecisionInput {
     pub(super) facts: PartitionDecisionFacts,
-    pub(super) bru_active: bool,
     pub(super) partition_context: PartitionContextInput,
     pub(super) square_split_context: SquareSplitContextInput,
 }
@@ -243,10 +242,19 @@ pub(crate) fn read_partition_decision<S: PartitionSymbols + ?Sized>(
         return Ok(partition);
     }
 
-    if !input.bru_active {
-        return Ok(PartitionType::None);
-    }
+    read_partition_symbols(input, cdfs, symbols)
+}
 
+/// The symbol reads of [`read_partition_decision`] for a block whose facts
+/// give no unread partition.
+#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[inline(always)]
+pub(crate) fn read_partition_symbols<S: PartitionSymbols + ?Sized>(
+    input: ReadPartitionDecisionInput,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut S,
+) -> Result<PartitionType, PartitionDecisionError> {
+    let allowed = input.facts.allowed();
     if allowed.contains(PartitionType::None) {
         let do_split = symbols.flag(
             "do_split",
@@ -280,9 +288,11 @@ pub(crate) fn read_partition_decision<S: PartitionSymbols + ?Sized>(
 }
 
 #[allow(
+    clippy::inline_always,
     clippy::trivially_copy_pass_by_ref,
     reason = "measured: the walk keeps the context unpacked"
 )]
+#[inline(always)]
 fn read_rect_partition<S: PartitionSymbols + ?Sized>(
     facts: PartitionDecisionFacts,
     context: &PartitionContextInput,
@@ -333,9 +343,11 @@ fn read_rect_partition<S: PartitionSymbols + ?Sized>(
 }
 
 #[allow(
+    clippy::inline_always,
     clippy::trivially_copy_pass_by_ref,
     reason = "measured: the walk keeps the context unpacked"
 )]
+#[inline(always)]
 fn resolve_rect_type<S: PartitionSymbols + ?Sized>(
     facts: PartitionDecisionFacts,
     context: &PartitionContextInput,
