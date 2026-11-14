@@ -134,6 +134,7 @@ fn unread_window_planes_hold_no_rows_and_a_later_read_fails_closed() {
                     2,
                     [true, false, false],
                     [false; 3],
+                    [false; 3],
                 )
                 .expect("luma-only stripe window");
             let planes = window.planes().expect("window planes");
@@ -157,12 +158,15 @@ fn unread_window_planes_hold_no_rows_and_a_later_read_fails_closed() {
                 2,
                 [true, false, false],
                 [false; 3],
+                [false; 3],
             )
             .expect("luma-only stripe window");
         let carry = (!slide).then_some(&mut carry);
         assert!(
             window
-                .copy_window(&mut rows, carry, stripes[1], 2, [true; 3], [false; 3])
+                .copy_window(
+                    &mut rows, carry, stripes[1], 2, [true; 3], [false; 3], [false; 3]
+                )
                 .is_err()
         );
     }
@@ -189,6 +193,7 @@ fn skipped_window_planes_keep_only_the_rows_the_next_stripe_shares() {
                     2,
                     [true; 3],
                     [false, skip, skip],
+                    [false; 3],
                 )
                 .expect("stripe window");
             let planes = window.planes().expect("window planes");
@@ -203,6 +208,77 @@ fn skipped_window_planes_keep_only_the_rows_the_next_stripe_shares() {
             }
         }
     }
+}
+
+#[test]
+fn edge_windows_hold_the_first_and_last_block_rows_and_carry_the_shared_rows() {
+    let pattern = |y: usize, width: usize| {
+        (0..width)
+            .map(|x| ((y * 17 + x * 3) & 255) as u16)
+            .collect::<Vec<_>>()
+    };
+    let (_progress, mut rows) = crate::test_support::frontier_rows(workspace(16, 129));
+    assert!(rows.publish_final_rows(129));
+    let (mut window, mut carry) = (DeblockedWindow::default(), DeblockedWindow::default());
+    for ((start, end), gaps) in [
+        ((0, 56), [(10, 46), (6, 22)]),
+        ((56, 120), [(66, 110), (34, 54)]),
+    ] {
+        window
+            .copy_window(
+                &mut rows,
+                Some(&mut carry),
+                (start, end),
+                2,
+                [true; 3],
+                [false; 3],
+                [true; 3],
+            )
+            .expect("edge window");
+        let planes = window.planes().expect("window planes");
+        let views = [
+            planes.y,
+            planes.u.expect("u plane"),
+            planes.v.expect("v plane"),
+        ];
+        for ((plane, top), (shift, (top_end, bottom_start))) in [PlaneId::Y, PlaneId::U, PlaneId::V]
+            .into_iter()
+            .zip(views)
+            .zip([(0, gaps[0]), (1, gaps[1]), (1, gaps[1])])
+        {
+            let width = 16 >> shift;
+            let lower = window.lower(plane).expect("last block row rows");
+            let (first, last) =
+                window_bounds((start, end), shift, 2, 129usize.div_ceil(1 << shift))
+                    .expect("bounds");
+            let both = top.over(&lower);
+            for y in first..last {
+                let held = y < top_end || y >= bottom_start;
+                assert_eq!(
+                    both.row(y),
+                    held.then(|| pattern(y, width)).as_deref(),
+                    "{plane:?} row {y}"
+                );
+            }
+            assert_eq!(both.covering(first, top_end).end_y(), top_end);
+            assert_eq!(both.covering(bottom_start, last).origin_y(), bottom_start);
+            assert_eq!(both.covering(first, last).origin_y(), first);
+        }
+    }
+    window
+        .copy_window(
+            &mut rows,
+            Some(&mut carry),
+            (120, 129),
+            2,
+            [true; 3],
+            [false; 3],
+            [true; 3],
+        )
+        .expect("short stripe window");
+    assert!(window.lower(PlaneId::Y).is_none());
+    let luma = window.planes().expect("window planes").y;
+    assert!((118..129).all(|y| luma.row(y) == Some(pattern(y, 16).as_slice())));
 }
 
 #[test]
@@ -253,6 +329,7 @@ fn u8_direct_stripe_initializes_strided_u8_rows() {
         storage_origin_y: 0,
         storage_rows: 2,
         samples: &source_samples,
+        lower: None,
     };
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");
@@ -279,12 +356,13 @@ fn failed_direct_copies_leave_the_lease_reusable() {
     let progress = monochrome_u8_progress(width, height);
     let source_samples = vec![73_u8; width * (height / 2)];
     let malformed_source = FramePlane {
-        width,
-        height,
-        stride: width,
+        width: 4,
+        height: 2_049,
+        stride: 4,
         storage_origin_y: 0,
-        storage_rows: height,
+        storage_rows: 2_049,
         samples: &source_samples,
+        lower: None,
     };
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");

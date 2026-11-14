@@ -107,15 +107,17 @@ fn give_stripe_sample_buffer<T: ReconSample>(buffer: Vec<T>) {
 ///
 /// `height` is always the plane's frame height, so callers keep reasoning in
 /// frame coordinates; `origin_y` and `rows` name the window the view actually
-/// carries; accesses outside that logical range fail closed.
+/// carries; accesses outside that logical range fail closed. A row the span
+/// does not carry comes from `lower`, when the view has one.
 #[derive(Clone, Copy)]
 pub(crate) struct FramePlane<'a, T> {
-    width: usize,
-    height: usize,
-    stride: usize,
-    storage_origin_y: usize,
-    storage_rows: usize,
+    width: u32,
+    height: u32,
+    stride: u32,
+    storage_origin_y: u32,
+    storage_rows: u32,
     samples: &'a [T],
+    lower: Option<&'a FramePlane<'a, T>>,
 }
 
 impl<'a, T: ReconSample> FramePlane<'a, T> {
@@ -123,14 +125,14 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
     pub(crate) fn new(workspace: &'a CurrentFrameWorkspace<T>, plane: PlaneId) -> Option<Self> {
         let source = workspace.plane(plane).ok()?;
         let size = source.storage_size();
-        Some(Self {
-            width: size.width(),
-            height: size.height(),
-            stride: source.stride_samples(),
-            storage_origin_y: 0,
-            storage_rows: size.height(),
-            samples: source.samples(),
-        })
+        let (width, height) = (size.width(), size.height());
+        Self::strided(
+            source.samples(),
+            (width, height),
+            source.stride_samples(),
+            0,
+            height,
+        )
     }
 
     /// Views `samples` as the plane rows `origin_y..origin_y + rows` of a plane
@@ -142,39 +144,81 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
         origin_y: usize,
         rows: usize,
     ) -> Option<Self> {
-        if width == 0 || origin_y.checked_add(rows)? > height || samples.len() < width * rows {
+        Self::strided(samples, (width, height), width, origin_y, rows)
+    }
+
+    /// Views `samples` as the plane rows `origin_y..origin_y + rows` of a plane
+    /// `width` wide and `height` tall, rows `stride` samples apart.
+    pub(crate) fn strided(
+        samples: &'a [T],
+        (width, height): (usize, usize),
+        stride: usize,
+        origin_y: usize,
+        rows: usize,
+    ) -> Option<Self> {
+        let span = rows
+            .checked_sub(1)
+            .map_or(Some(0), |last| last.checked_mul(stride)?.checked_add(width))?;
+        if width == 0
+            || stride < width
+            || origin_y.checked_add(rows)? > height
+            || samples.len() < span
+        {
             return None;
         }
         Some(Self {
-            width,
-            height,
-            stride: width,
-            storage_origin_y: origin_y,
-            storage_rows: rows,
+            width: u32::try_from(width).ok()?,
+            height: u32::try_from(height).ok()?,
+            stride: u32::try_from(stride).ok()?,
+            storage_origin_y: u32::try_from(origin_y).ok()?,
+            storage_rows: u32::try_from(rows).ok()?,
             samples,
+            lower: None,
         })
     }
 
+    /// This view, serving the rows it does not carry from `lower`.
+    pub(crate) fn over(self, lower: &'a FramePlane<'a, T>) -> Self {
+        Self {
+            lower: Some(lower),
+            ..self
+        }
+    }
+
+    /// The span of this view or of a lower one that carries every plane row of
+    /// `start..end` inside the plane, or this view when none does.
+    pub(crate) fn covering(self, start: usize, end: usize) -> Self {
+        let end = end.min(self.frame_height());
+        let mut plane = Some(&self);
+        while let Some(span) = plane {
+            if span.origin_y() <= start && end <= span.end_y() {
+                return *span;
+            }
+            plane = span.lower;
+        }
+        self
+    }
+
     pub(crate) const fn width(self) -> usize {
-        self.width
+        self.width as usize
     }
 
     pub(crate) const fn frame_height(self) -> usize {
-        self.height
+        self.height as usize
     }
 
     pub(crate) const fn stride(self) -> usize {
-        self.stride
+        self.stride as usize
     }
 
     /// The first plane row this view carries.
     pub(crate) const fn origin_y(self) -> usize {
-        self.storage_origin_y
+        self.storage_origin_y as usize
     }
 
     /// The exclusive last plane row this view carries.
     pub(crate) const fn end_y(self) -> usize {
-        self.storage_origin_y + self.storage_rows
+        self.storage_origin_y as usize + self.storage_rows as usize
     }
 
     pub(crate) fn contiguous_rows(self, origin_y: usize, end_y: usize) -> Option<&'a [T]> {
@@ -182,15 +226,15 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
             return None;
         }
         let offsets = origin_y
-            .checked_sub(self.storage_origin_y)
-            .and_then(|start| start.checked_mul(self.stride))
+            .checked_sub(self.origin_y())
+            .and_then(|start| start.checked_mul(self.stride()))
             .zip(
                 end_y
-                    .checked_sub(self.storage_origin_y)
-                    .and_then(|end| end.checked_mul(self.stride)),
+                    .checked_sub(self.origin_y())
+                    .and_then(|end| end.checked_mul(self.stride())),
             );
         if let Some((start, end)) = offsets
-            && end_y <= self.storage_origin_y + self.storage_rows
+            && end_y <= self.end_y()
         {
             return self.samples.get(start..end);
         }
@@ -208,28 +252,30 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
         let Some(last) = end_y.checked_sub(origin_y)?.checked_sub(1) else {
             return Some(());
         };
-        let span = last.checked_mul(stride)?.checked_add(self.width)?;
+        let span = last.checked_mul(stride)?.checked_add(self.width())?;
         let destination = destination.get_mut(..span)?;
-        if stride == self.width
+        if stride == self.width()
             && let Some(source) = self.contiguous_rows(origin_y, end_y)
         {
             destination.copy_from_slice(source);
             return Some(());
         }
         for (y, output) in (origin_y..end_y).zip(destination.chunks_mut(stride)) {
-            output.get_mut(..self.width)?.copy_from_slice(self.row(y)?);
+            output
+                .get_mut(..self.width())?
+                .copy_from_slice(self.row(y)?);
         }
         Some(())
     }
 
     pub(crate) fn row(self, y: usize) -> Option<&'a [T]> {
-        if let Some(row) = y.checked_sub(self.storage_origin_y)
-            && row < self.storage_rows
+        if let Some(row) = y.checked_sub(self.origin_y())
+            && row < self.storage_rows as usize
         {
-            let start = row.checked_mul(self.stride)?;
-            return self.samples.get(start..start.checked_add(self.width)?);
+            let start = row.checked_mul(self.stride())?;
+            return self.samples.get(start..start.checked_add(self.width())?);
         }
-        None
+        self.lower?.row(y)
     }
 
     pub(crate) const fn samples(self) -> &'a [T] {
@@ -239,7 +285,7 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
     #[cfg(test)]
     pub(crate) fn get(self, x: isize, y: isize) -> Option<i32> {
         let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
-        if x >= self.width || y >= self.height {
+        if x >= self.width() || y >= self.frame_height() {
             return None;
         }
         self.row(y)
@@ -287,6 +333,8 @@ pub(crate) struct DeblockedWindow<T> {
     planes: [splot_recon::PlaneBuf<T>; 3],
     rows: [Option<(usize, usize)>; 3],
     sizes: [(usize, usize); 3],
+    /// The rows a plane of edge rows leaves out: `(top_end, bottom_start)`.
+    gaps: [Option<(usize, usize)>; 3],
 }
 
 impl<T: ReconSample> DeblockedWindow<T> {
@@ -305,6 +353,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
     /// Forgets the rows a previous frame left in this carry.
     pub(crate) fn clear(&mut self) {
         self.rows = [None; 3];
+        self.gaps = [None; 3];
     }
 
     #[cfg(test)]
@@ -315,7 +364,15 @@ impl<T: ReconSample> DeblockedWindow<T> {
         luma: (usize, usize),
         margin: usize,
     ) -> crate::Result<()> {
-        self.copy_window(frame, Some(carry), luma, margin, [true; 3], [false; 3])
+        self.copy_window(
+            frame,
+            Some(carry),
+            luma,
+            margin,
+            [true; 3],
+            [false; 3],
+            [false; 3],
+        )
     }
 
     /// Copies stripe `luma` and `margin` rows around it: rows the carry holds
@@ -326,7 +383,11 @@ impl<T: ReconSample> DeblockedWindow<T> {
     ///
     /// A plane that `read` clears gets no rows, so each read of it is refused.
     /// Every stripe of a frame must pass the same `read`. A plane that `skip`
-    /// sets gets only the rows the next stripe's window shares.
+    /// sets gets only the rows the next stripe's window shares. A plane that
+    /// `edges` sets, of a stripe with a carry and three CDEF block rows, gets
+    /// only the rows the first and the last block row read: [`Self::lower`]
+    /// views the last ones.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn copy_window(
         &mut self,
         frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
@@ -335,12 +396,14 @@ impl<T: ReconSample> DeblockedWindow<T> {
         margin: usize,
         read: [bool; 3],
         skip: [bool; 3],
+        edges: [bool; 3],
     ) -> crate::Result<()> {
         let state = || crate::DecodeHeaderStateError::InvalidLoopRestorationFilterState;
         let sub_y = usize::from(frame.info().pixel_format().subsampling_y());
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
             let index = plane.index();
             let held = self.rows[index].take();
+            self.gaps[index] = None;
             let Some((width, height)) = frame.plane_size(plane) else {
                 if let Some(carry) = carry.as_deref_mut() {
                     carry.rows[index] = None;
@@ -366,6 +429,14 @@ impl<T: ReconSample> DeblockedWindow<T> {
             }
             let tail = (luma.1 >> shift).saturating_sub(margin).clamp(start, end);
             let start = if skip[index] { tail } else { start };
+            let block = 8 >> shift;
+            let last = (luma.0 + (luma.1 - luma.0 - 1) / 8 * 8) >> shift;
+            let gap = (luma.0 >> shift)
+                .checked_add(block + margin)
+                .zip(last.checked_sub(margin))
+                .filter(|&(top_end, bottom_start)| {
+                    edges[index] && carry.is_some() && top_end <= bottom_start && start < top_end
+                });
             let shared = |(held_start, held_end): (usize, usize)| {
                 (held_start <= start && start < held_end).then(|| {
                     let next = held_end.min(end);
@@ -400,13 +471,22 @@ impl<T: ReconSample> DeblockedWindow<T> {
             samples
                 .try_reserve_exact((end - next) * width)
                 .map_err(alloc)?;
-            if next < end {
+            let (top_end, bottom_start) = gap.unwrap_or((end, end));
+            if next < top_end {
                 frame
-                    .append_rows(plane, next, end, samples)
+                    .append_rows(plane, next, top_end, samples)
+                    .ok_or_else(state)?;
+            }
+            if bottom_start < end {
+                frame
+                    .append_rows(plane, bottom_start, end, samples)
                     .ok_or_else(state)?;
             }
             if let Some(carry) = carry.as_deref_mut() {
-                let kept = samples.get((tail - start) * width..).ok_or_else(state)?;
+                let skipped = bottom_start - top_end;
+                let kept = samples
+                    .get((tail - start - skipped) * width..)
+                    .ok_or_else(state)?;
                 let carried = &mut carry.planes[index];
                 carried.clear();
                 carried.try_reserve_exact(kept.len()).map_err(alloc)?;
@@ -415,6 +495,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
             }
             self.rows[index] = Some((start, end));
             self.sizes[index] = (width, height);
+            self.gaps[index] = gap;
         }
         frame
             .release_rows(luma.1)
@@ -426,6 +507,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
         let plane = |index: usize| {
             let (start, end) = self.rows[index]?;
             let (width, height) = self.sizes[index];
+            let end = self.gaps[index].map_or(end, |(top_end, _)| top_end);
             FramePlane::window(&self.planes[index], width, height, start, end - start)
         };
         Some(DeblockedPlanes {
@@ -433,6 +515,15 @@ impl<T: ReconSample> DeblockedWindow<T> {
             u: plane(PlaneId::U.index()),
             v: plane(PlaneId::V.index()),
         })
+    }
+
+    /// The rows the last CDEF block row of a plane of edge rows reads.
+    pub(crate) fn lower(&self, plane: PlaneId) -> Option<FramePlane<'_, T>> {
+        let index = plane.index();
+        let ((start, end), (top_end, bottom_start)) = self.rows[index].zip(self.gaps[index])?;
+        let (width, height) = self.sizes[index];
+        let samples = self.planes[index].get((top_end - start) * width..)?;
+        FramePlane::window(samples, width, height, bottom_start, end - bottom_start)
     }
 }
 
@@ -688,14 +779,10 @@ impl<T: ReconSample> StripePlane<T> {
     /// These rows as a frame-plane view.
     pub(crate) fn view(&self) -> Result<FramePlane<'_, T>, StripeCopyError> {
         let end_y = self.end_y().ok_or(StripeCopyError::Geometry)?;
-        Ok(FramePlane {
-            width: self.width,
-            height: self.frame_height,
-            stride: self.stride,
-            storage_origin_y: self.origin_y,
-            storage_rows: end_y - self.origin_y,
-            samples: self.samples(),
-        })
+        let size = (self.width, self.frame_height);
+        let rows = end_y - self.origin_y;
+        FramePlane::strided(self.samples(), size, self.stride, self.origin_y, rows)
+            .ok_or(StripeCopyError::Geometry)
     }
 
     pub(crate) const fn width(&self) -> usize {
