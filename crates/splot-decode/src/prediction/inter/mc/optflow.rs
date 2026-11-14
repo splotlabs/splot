@@ -549,7 +549,7 @@ pub(super) fn fullpel_center_ends_search<T: ReconSample>(
         {
             return Ok(None);
         }
-        *corner = [x0 as usize + 2, y0 as usize + 2];
+        *corner = [(x0 + 2) as usize, (y0 + 2) as usize];
         *view = Some(luma.view(bounds.last_y)?);
     }
     let [Some(first), Some(second)] = views else {
