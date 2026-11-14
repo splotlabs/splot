@@ -32,9 +32,9 @@ mod compound_average;
 mod optflow;
 mod refinemv;
 use blend::{blend_compound_average, diff_weighted_mask_into, store_clamped_samples};
-pub(crate) use optflow::CompoundMotionGrid;
 use optflow::{CompoundAverageOutput, MotionCell};
-pub(crate) use refinemv::TipSearchScratch;
+pub(crate) use optflow::{CompoundMotionGrid, TipUnits, predict_tip_units, refine_tip_units};
+use refinemv::TipSearchScratch;
 pub(crate) use splot_recon::CurrentFrameSurface as WorkspaceSink;
 
 pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32); 3] {
@@ -599,48 +599,6 @@ pub(super) fn compound_block_motion_grid<T: ReconSample>(
     optflow::compound_motion_grid(sink, block, optflow_unit_size, refinemv, offset)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn tip_batch_motion_grid<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
-    block: &CompoundMcBlock<'_, T>,
-    columns: usize,
-    unit_count: usize,
-    unit_at: impl Fn(usize) -> (McBlockRect, [Mv; 2]) + Sync,
-    offset: ByteOffset,
-    refinemv_candidates: Vec<[Mv; 2]>,
-    search: &mut TipSearchScratch,
-) -> Result<CompoundMotionGrid> {
-    optflow::tip_motion_grid(
-        sink,
-        block,
-        8,
-        columns,
-        unit_count,
-        unit_at,
-        offset,
-        refinemv_candidates,
-        search,
-    )
-}
-
-pub(super) fn predict_tip_batch_from_grid<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
-    mut block: CompoundMcBlock<'_, T>,
-    batch_rect: McBlockRect,
-    batch_has_chroma: bool,
-    motion: CompoundMotionGrid,
-    offset: ByteOffset,
-) -> Result<Option<CompoundMotionGrid>> {
-    block.rect = batch_rect;
-    block.has_chroma = batch_has_chroma;
-    block.sub8x8_chroma = false;
-    block.optflow_distances = None;
-    block.use_refinemv = false;
-    block.search_refinemv = false;
-    predict_compound_into(sink, &block, Some(&motion), offset)?;
-    Ok(Some(motion))
-}
-
 /// Predicts a compound block straight into `sink`. Only a plane that the
 /// frame edge clips goes through a temporary first.
 pub(super) fn predict_compound_into<T: ReconSample>(
@@ -649,11 +607,6 @@ pub(super) fn predict_compound_into<T: ReconSample>(
     motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
 ) -> Result<()> {
-    if let Some(grid) = motion
-        && optflow::predict_tip_grid(sink, block, grid, offset)?
-    {
-        return Ok(());
-    }
     let info = sink.info();
     let mut luma_diff_weighted_mask = None;
     let shares_chroma_grid = motion.is_some_and(|motion| motion.uniform_mvs().is_none())

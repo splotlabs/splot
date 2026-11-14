@@ -491,13 +491,13 @@ fn noisy_ramps<T: ReconSample>(
     })
 }
 
-/// The TIP grid of 8x8 units over the whole frame, and its per-unit cells.
+/// The TIP units of 8x8 over the whole frame, and their per-unit cells.
 fn tip_grid_and_cells<T: ReconSample>(
     references: &[DecodedFrame<T>; 2],
     mvs: &[[Mv; 2]],
     (threshold, refine, search): (Option<u32>, bool, bool),
     pool: Option<&splot_parallel::WorkerPool>,
-) -> (CompoundMotionGrid, Vec<MotionCell>) {
+) -> (TipUnits, Vec<MotionCell>) {
     let info = references[0].info();
     let (width, height) = (
         info.coded_luma_size().width(),
@@ -529,19 +529,9 @@ fn tip_grid_and_cells<T: ReconSample>(
     let sink = WorkspaceSink::Frame(&mut workspace);
     let offset = ByteOffset::new(0);
     let grid = || {
-        let unit_at = |i: usize| (unit_rect(i), mvs[i]);
-        tip_motion_grid(
-            &sink,
-            &block,
-            8,
-            columns,
-            mvs.len(),
-            unit_at,
-            offset,
-            Vec::new(),
-            &mut super::super::TipSearchScratch::default(),
-        )
-        .expect("grid")
+        let mut units = TipUnits::default();
+        refine_tip_units(&sink, &block, mvs, &mut units, columns, offset).expect("units");
+        units
     };
     let grid = pool.map_or_else(grid, |pool| pool.install(grid));
     let cells = (0..mvs.len())
@@ -579,14 +569,14 @@ fn check_tip_grid<T: ReconSample>(
 ) {
     let bit_depth = references[0].info().bit_depth();
     let (grid, expected) = tip_grid_and_cells(references, mvs, modes, pool);
-    assert_eq!(grid.cells.as_slice(), expected, "{bit_depth:?} {label}");
+    assert_eq!(grid.cells, expected, "{bit_depth:?} {label}");
     let fullpel = mvs
         .iter()
         .any(|&mvs| super::super::refinemv::fullpel_candidates(mvs));
     let columns = references[0].info().coded_luma_size().width() / 8;
     assert_eq!(
         grid.fullpel_runs,
-        fullpel && fullpel_run_pairs(grid.cells.as_slice(), columns),
+        fullpel && fullpel_run_pairs(&grid.cells, columns),
         "{bit_depth:?} {label}"
     );
 }

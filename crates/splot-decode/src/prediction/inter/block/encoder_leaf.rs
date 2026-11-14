@@ -798,36 +798,17 @@ impl EncoderInterTile {
             &self.ref_frame_idx,
             &self.reference,
         )?;
-        let grid = super::tip::motion(
+        super::tip::predict_block(
             &mut self.tip_scratch,
-            records,
-            &sink,
+            &mut sink,
+            Some(records),
+            predict,
             placed,
             &frame,
             &temporal,
             &self.reference,
             ByteOffset::new(0),
-        )?;
-        if predict {
-            super::tip::predict(
-                &mut self.tip_scratch,
-                &mut sink,
-                grid,
-                true,
-                placed,
-                &[],
-                &[],
-                &frame,
-                &temporal,
-                &self.reference,
-                self.qindex,
-                false,
-                false,
-                self.bit_depth,
-                ByteOffset::new(0),
-            )?;
-        }
-        Ok(())
+        )
     }
 
     /// The decoder's § 7.12 motion of `syntax`, not published.
