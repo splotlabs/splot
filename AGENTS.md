@@ -174,10 +174,10 @@ Rules:
   for correctness checks.
 - 8-bit and 10-bit are equal targets. A change that makes one bit depth faster
   must not leave the other on a slower path. Measure both.
-- Measure first. Keep a change only if it is a repeatable win with no
-  regression above 0.1% on another stream. Prefer changes that delete work and
-  delete code; glue around kernels (per-block setup, copies, dispatch in loops)
-  is a defect.
+- Measure first. Keep a change that is a repeatable net win over the stream
+  set; aim for no regression, list each stream that loses, and give a reason
+  for a loss above about 0.5%. Prefer changes that delete work and code; glue
+  around kernels (per-block setup, copies, dispatch in loops) is a defect.
 - Kernel and single-thread changes: compare instructions retired at
   `--threads=1` (`/usr/bin/time -l`). Scheduling changes: compare wall time
   with alternating runs and report the range.
