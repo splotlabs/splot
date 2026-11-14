@@ -808,18 +808,13 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         let r_end = luma_end.div_ceil(MI_SIZE).min(mi_rows);
         let mut pad = [0u16; CDEF_PADDED_AREA];
         let mut segment = CdefSegmentScratch::default();
+        let whole_y = frame.deblocked_y;
+        let whole_u = frame.deblocked_u;
+        let whole_v = frame.deblocked_v;
         let skip_grid_fits = lookup
             .skip_grid
             .is_none_or(|grid| (grid.rows, grid.cols) == (mi_rows, mi_cols));
         while r < r_end {
-            let y = r * MI_SIZE;
-            let reach = |plane: FramePlane<'a, T>, sub: usize| {
-                let top = (y >> sub).saturating_sub(CDEF_TAP_REACH);
-                plane.covering(top, ((y + 8) >> sub) + CDEF_TAP_REACH)
-            };
-            let whole_y = reach(frame.deblocked_y, 0);
-            let whole_u = frame.deblocked_u.map(|plane| reach(plane, sub_y));
-            let whole_v = frame.deblocked_v.map(|plane| reach(plane, sub_y));
             let row_span = tile_span(lookup.tile_row_starts, r, mi_rows);
             let mut c = 0;
             while c < mi_cols {
@@ -848,7 +843,6 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
                             (r, c),
                             row_span,
                             &mut segment,
-                            (whole_y, whole_u, whole_v),
                             &mut frame,
                         )?
                     {
@@ -1076,13 +1070,6 @@ fn fill_rect<T: ReconSample>(
     Ok(())
 }
 
-/// The deblocked luma, U and V rows one CDEF block row reads.
-type DeblockedRows<'a, S> = (
-    FramePlane<'a, S>,
-    Option<FramePlane<'a, S>>,
-    Option<FramePlane<'a, S>>,
-);
-
 /// One row segment's gathered luma taps and interleaved chroma-pair taps.
 #[derive(Default)]
 struct CdefSegmentScratch {
@@ -1101,11 +1088,11 @@ fn cdef_segment<S: ReconSample>(
     (r, c): (usize, usize),
     row_span: (usize, usize),
     scratch: &mut CdefSegmentScratch,
-    (y_plane, u_plane, v_plane): DeblockedRows<'_, S>,
     frame: &mut CdefFrame<'_, S>,
 ) -> Result<bool, CdefError> {
     let luma_used = params.y_pri != 0 || params.y_sec != 0 || params.uv_pri != 0;
     let chroma_used = params.uv_pri != 0 || params.uv_sec != 0;
+    let y_plane = frame.deblocked_y;
     let y_samples = y_plane.samples();
     if S::u16_slice(y_samples).is_none() && S::u8_slice(y_samples).is_none() {
         return Ok(false);
@@ -1118,7 +1105,7 @@ fn cdef_segment<S: ReconSample>(
     let Some((left, top)) = reach_origin(y_plane, origin, (width, 8), start, end) else {
         return Ok(false);
     };
-    let chroma = match (u_plane, v_plane) {
+    let chroma = match (frame.deblocked_u, frame.deblocked_v) {
         (Some(u_plane), Some(v_plane)) if chroma_used => {
             let half = |(x, y): (usize, usize)| (x >> 1, y >> 1);
             let window = reach_origin(

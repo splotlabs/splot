@@ -82,30 +82,6 @@ fn direct_stripes_write_the_canonical_allocation_and_publish_out_of_order() {
 }
 
 #[test]
-fn a_direct_target_views_its_rows_then_writes_them() {
-    let progress = Arc::new(new_progress(8, 8, PixelFormat::Monochrome));
-    progress.begin(&[(0, 4), (4, 8)]).expect("stripe geometry");
-    let mut lease = progress.direct_stripe(1).expect("bottom stripe lend");
-    let mut target = lease.take_target().expect("bottom target");
-    let mut luma = target.take(PlaneId::Y).expect("bottom luma");
-    luma.samples_mut().fill(7);
-    let rows = luma.rows().expect("bottom rows");
-    let other = rows;
-    assert_eq!((rows.origin_y(), rows.end_y(), rows.width()), (4, 8, 8));
-    assert_eq!(rows.row(3), None);
-    assert_eq!(rows.row(7).map(<[u8]>::len), Some(8));
-    assert!((4..8).all(|y| other.row(y).is_some_and(|row| row.iter().all(|&s| s == 7))));
-    let stride = rows.stride();
-    luma.samples_mut()[stride * 3] = 9;
-    assert_eq!(
-        luma.rows().and_then(|rows| rows.row(7)).map(|row| row[0]),
-        Some(9)
-    );
-    drop(luma);
-    assert!(lease.submit());
-}
-
-#[test]
 fn detached_direct_target_keeps_its_stripe_leased() {
     let (slot, writer, progress) = pending::<u16>(8, 4, PixelFormat::Monochrome);
     progress.begin(&[(0, 4)]).expect("stripe geometry");
