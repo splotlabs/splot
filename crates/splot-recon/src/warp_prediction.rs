@@ -609,25 +609,13 @@ fn ext_warp_intermediate<S: Simd, T: ReconSample>(
             *intermediate = rounded(ext_unit::horizontal(simd, first, second, phase_x));
         }
     } else {
-        let taps_x = &EXT_WARPED_FILTERS[phase_x];
-        let mut cols = [0usize; 9];
-        for (offset, col) in cols.iter_mut().enumerate() {
-            let x = (ix4 - 4 + offset as i32).clamp(params.first_x, params.last_x);
-            *col = (x as usize).min(reference.width() - 1);
-        }
+        let bounds = [params.first_x, params.last_x];
+        let columns = clamped_columns(simd, reference.width(), ix4 - 4, bounds);
         for (k, intermediate) in intermediate.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let row = (iy4 + k as i32 - 4).clamp(params.first_y, params.last_y) as usize;
-            let (row, mut window) = (reference.row(row), [0i32; 9]);
-            for (sample, &col) in window.iter_mut().zip(&cols) {
-                *sample = i32::from(row[col].to_u16());
-            }
-            let mut sum = i32x4::splat(simd, 0);
-            for (m, &tap) in taps_x.iter().enumerate() {
-                if let Some(lanes) = window[m..].first_chunk::<4>() {
-                    sum += i32x4::load_array_ref(simd, lanes) * tap;
-                }
-            }
-            *intermediate = rounded(sum);
+            let (first, rest) = clamped_span(simd, reference.row(row), columns);
+            let second = first.slide::<1>(rest);
+            *intermediate = rounded(ext_unit::horizontal(simd, first, second, phase_x));
         }
     }
     intermediate
@@ -1226,13 +1214,56 @@ fn checked_shift_left(value: i32, shift: u8, context: &'static str) -> Result<i3
         .ok_or(ReconError::ArithmeticOverflow { context })
 }
 
-/// Runs the § 7.13.3.19 horizontal pass of a section whose taps clip at the
-/// reference bounds.
+/// The clipped tap columns `clamp(first_col + k, firstX, lastX)` of a row,
+/// also clipped to the plane width, as the start of one 16-sample span load
+/// and the byte swizzle of the span that gathers columns `k` in `0..16`.
 ///
-/// Tap column `first_col + k` reads `clamp(first_col + k, low, high)`, which
-/// always lies in `start..start + SPAN`: one span load per row and one byte
-/// swizzle build the clipped window. The index clamps saturate to `-16..=16`
-/// without changing a lane, as every lane lands in `0..SPAN`.
+/// Every clipped column lies in `start..start + 16`, so the index clamps
+/// saturate to `-16..=16` without changing a lane.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn clamped_columns<S: Simd>(
+    simd: S,
+    width: usize,
+    first_col: i32,
+    [first_x, last_x]: [i32; 2],
+) -> (usize, u8x32<S>) {
+    let view_last = i32::try_from(width.saturating_sub(1)).unwrap_or(i32::MAX);
+    let (low, high) = (first_x.min(view_last), last_x.min(view_last));
+    let span_last = i32::try_from(width.saturating_sub(16)).unwrap_or(i32::MAX);
+    let start = first_col.clamp(low, high).min(span_last);
+    let lanes = i16x16::load_array(simd, core::array::from_fn(|lane| lane as i16))
+        + first_col.saturating_sub(start).clamp(-16, 16) as i16;
+    let lanes = lanes
+        .max((low - start).max(0) as i16)
+        .min((high - start) as i16);
+    (
+        start as usize,
+        (lanes * 0x0202 + 0x0100).bitcast::<u8x32<S>>(),
+    )
+}
+
+/// The 16 clipped samples of `source` at the [`clamped_columns`] of a row.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn clamped_span<S: Simd, T: ReconSample>(
+    simd: S,
+    source: &[T],
+    (start, bytes): (usize, u8x32<S>),
+) -> (i16x8<S>, i16x8<S>) {
+    let mut padded = [T::default(); 16];
+    let [lo, hi] = if source.len() >= 16 {
+        warp_span(simd, source, start)
+    } else {
+        padded[..source.len()].copy_from_slice(source); // splot-copy-ok: zero-pad a plane row narrower than one warp span
+        warp_span(simd, &padded, 0)
+    };
+    lo.combine(hi).swizzle_dyn(bytes).split()
+}
+
+/// Runs the § 7.13.3.19 horizontal pass of a section whose taps clip at the
+/// reference bounds: one span load and one byte swizzle per row build the
+/// clipped window.
 #[inline(never)]
 fn build_intermediate<S: Simd, T: ReconSample>(
     simd: S,
@@ -1242,30 +1273,11 @@ fn build_intermediate<S: Simd, T: ReconSample>(
     projected: &ProjectedCenter,
     intermediate: &mut Intermediate,
 ) {
-    const SPAN: usize = 2 * WARPED_BLOCK_SIZE;
     let first_col = projected.x4_int.saturating_sub(7);
-    let width = reference.width();
-    let view_last = i32::try_from(width.saturating_sub(1)).unwrap_or(i32::MAX);
-    let (low, high) = (first_x.min(view_last), last_x.min(view_last));
-    let span_last = i32::try_from(width.saturating_sub(SPAN)).unwrap_or(i32::MAX);
-    let start = first_col.clamp(low, high).min(span_last);
-    let lanes = i16x16::load_array(simd, core::array::from_fn(|lane| lane as i16))
-        + first_col.saturating_sub(start).clamp(-16, 16) as i16;
-    let lanes = lanes
-        .max((low - start).max(0) as i16)
-        .min((high - start) as i16);
-    let bytes = (lanes * 0x0202 + 0x0100).bitcast::<u8x32<S>>();
-    let start = start as usize;
-    let mut padded = [T::default(); SPAN];
+    let columns = clamped_columns(simd, reference.width(), first_col, [first_x, last_x]);
     for i1 in -7i32..8 {
-        let source = reference.row((projected.y4_int + i1).clamp(first_y, last_y) as usize);
-        let [lo, hi] = if source.len() >= SPAN {
-            warp_span(simd, source, start)
-        } else {
-            padded[..source.len()].copy_from_slice(source); // splot-copy-ok: zero-pad a plane row narrower than one warp span
-            warp_span(simd, &padded, 0)
-        };
-        let span = lo.combine(hi).swizzle_dyn(bytes).split();
+        let row = (projected.y4_int + i1).clamp(first_y, last_y);
+        let span = clamped_span(simd, reference.row(row as usize), columns);
         let sx = projected.sx4 + shear.beta * i1;
         intermediate[(i1 + 7) as usize] =
             horizontal_row(simd, [span.0, span.1], sx, shear.alpha).into();
