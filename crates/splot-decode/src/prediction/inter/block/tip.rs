@@ -455,7 +455,7 @@ struct TipBlockPlan {
 
 impl TipBlockPlan {
     const fn batched(&self) -> bool {
-        self.use_optflow && self.unit_count > 1
+        self.use_optflow
     }
 
     /// Borrows the block's reference pair.
@@ -738,8 +738,7 @@ pub(super) fn motion<T: ReconSample>(
                 tile_offset,
             )
         })
-        .transpose()?
-        .flatten();
+        .transpose()?;
     temporal_records
         .try_reserve(plan.unit_count)
         .map_err(|_| inter_allocation!("TIP temporal records"))?;
@@ -775,9 +774,7 @@ pub(super) fn motion<T: ReconSample>(
     Ok(grid)
 }
 
-/// Builds the optical-flow motion grid the block's units share; `None` for an
-/// unsearched one-unit block whose two predictions are close enough that
-/// § 7.13.3.8 skips the refinement.
+/// Builds the optical-flow motion grid the block's units share.
 fn tip_motion_grid<T: ReconSample>(
     units: &[TipUnit],
     candidates: &mut Vec<[Mv; 2]>,
@@ -786,7 +783,7 @@ fn tip_motion_grid<T: ReconSample>(
     sink: &mc::WorkspaceSink<'_, '_, T>,
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
-) -> Result<Option<mc::CompoundMotionGrid>> {
+) -> Result<mc::CompoundMotionGrid> {
     let held = plan.hold(reference)?;
     let prediction = held.prediction(&plan.plan)?;
     let first = units.first().ok_or(ReconError::ZeroDimension {
@@ -796,9 +793,6 @@ fn tip_motion_grid<T: ReconSample>(
         .block_params(first)
         .into_compound()
         .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-    if units.len() == 1 && !plan.plan.search_refinemv {
-        return mc::compound_block_motion_grid(sink, &compound, Some(8), tile_offset);
-    }
     mc::tip_batch_motion_grid(
         sink,
         &compound,
@@ -812,7 +806,6 @@ fn tip_motion_grid<T: ReconSample>(
         core::mem::take(candidates),
         search,
     )
-    .map(Some)
 }
 
 /// Keeps the largest candidate list a published unit hands back.
@@ -839,13 +832,6 @@ fn publish_unit_outputs<T: ReconSample>(
     for (index, unit) in scratch.units.iter().enumerate() {
         let params = prediction.block_params(unit);
         let known = scratch.whole_mvs.get(index);
-        if plan.use_optflow {
-            let compound = params
-                .into_compound()
-                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-            mc::predict_compound_into(sink, &compound, grid.as_ref(), tile_offset)?;
-            continue;
-        }
         let (motion, mvs) = if let Some(&Some(mvs)) = known {
             (None, Some(mvs))
         } else {
@@ -1735,9 +1721,9 @@ mod tests {
     }
 
     /// A one-unit TIP block whose two flat predictions fall under the
-    /// § 7.13.3.8 SAD gate predicts unrefined: its motion grid is `None`.
+    /// § 7.13.3.8 SAD gate keeps its candidates.
     #[test]
-    fn one_unit_tip_block_under_the_optflow_sad_gate_has_no_grid()
+    fn one_unit_tip_block_under_the_optflow_sad_gate_keeps_its_candidates()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut reference = crate::prediction::inter::InterReferenceState::<u8>::empty()?;
         let mut store = splot_recon::ReferenceFrameStore::with_capacity(2)?;
@@ -1790,7 +1776,10 @@ mod tests {
             &reference,
             splot_core::span::ByteOffset::new(0),
         )?;
-        assert!(grid.is_none());
+        assert_eq!(
+            grid.stored_mvs_at_index(0)?,
+            [crate::prediction::inter::Mv::ZERO; 2]
+        );
         Ok(())
     }
 
