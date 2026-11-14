@@ -63,7 +63,7 @@ pub(super) fn decode_bru_leaf<T: ReconSample>(
         context.delta_q_state.qindex_u32(),
     );
     let interp = ReconInterpolationFilter::EightTapSharp;
-    let state = finish_inter_leaf(
+    let index = finish_inter_leaf(
         work_unit,
         symbols,
         &mut context.sink,
@@ -86,7 +86,7 @@ pub(super) fn decode_bru_leaf<T: ReconSample>(
         context.superblocks,
         context.entries,
         DecodedLeafPublication::from_frontier(frontier, context.sb_mask),
-        state,
+        tile::EntryState::Slot(index),
     );
     Ok(GeneralIntraLeafMode::no_luma_mode())
 }

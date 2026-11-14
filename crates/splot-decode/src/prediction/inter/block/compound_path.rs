@@ -323,7 +323,7 @@ pub(super) fn decode_compound_inter_block(
     leaf: (u8, u8, u32),
     n4w: usize,
     n4h: usize,
-) -> Result<EntryState> {
+) -> Result<u32> {
     let super::InterLeafSink {
         sequence,
         core,
@@ -991,7 +991,7 @@ pub(super) fn decode_skip_mode_inter_block(
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
     leaf: (u8, u8, u32),
-) -> Result<EntryState> {
+) -> Result<u32> {
     let super::InterLeafSink {
         sequence,
         core,

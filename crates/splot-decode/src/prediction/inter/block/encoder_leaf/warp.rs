@@ -328,10 +328,14 @@ impl EncoderInterTile {
             self.inter_syntax(frontier, EncoderMotion::Warp(warp), true)?;
         let mut resolved = self.resolve_motion(&block, &syntax)?;
         predict_by_translation_under_integer_mv(&syntax, &self.core, &mut resolved);
-        let geometry =
-            prediction::placed_inter_geometry_at(frontier, (0, 0), (block.bw4, block.bh4), false)?;
         resolved.apply(&mut parsed);
-        let placed = geometry.place(parsed);
+        let placed = prediction::placed_inter_block_at(
+            frontier,
+            (0, 0),
+            (block.bw4, block.bh4),
+            false,
+            parsed,
+        )?;
         prediction::reconstruct_pure_inter_block(
             &mut mc::WorkspaceSink::Frame(workspace),
             &placed,

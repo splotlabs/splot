@@ -1654,7 +1654,12 @@ fn decode_block<T: ReconSample>(
             &neighbour_ctx,
             (skip, segment_id, block_qindex),
         )
-        .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state));
+        .map(|index| {
+            store(
+                GeneralIntraLeafMode::no_luma_mode(),
+                EntryState::Slot(index),
+            )
+        });
     }
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let tip_frame_mode = params.tip_frame_mode;
@@ -1692,7 +1697,12 @@ fn decode_block<T: ReconSample>(
             n4w,
             n4h,
         )
-        .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state));
+        .map(|index| {
+            store(
+                GeneralIntraLeafMode::no_luma_mode(),
+                EntryState::Slot(index),
+            )
+        });
     }
 
     let ref_frame0: i8 = if segment_forces_globalmv {
@@ -1813,7 +1823,12 @@ fn decode_block<T: ReconSample>(
             (n4w, n4h),
             (skip, segment_id, block_qindex),
         )
-        .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state));
+        .map(|index| {
+            store(
+                GeneralIntraLeafMode::no_luma_mode(),
+                EntryState::Slot(index),
+            )
+        });
     }
 
     let single_mode = if segment_forces_globalmv {
@@ -1990,7 +2005,12 @@ fn decode_block<T: ReconSample>(
         (n4w, n4h),
         (skip, segment_id, block_qindex),
     )
-    .map(|state| store(GeneralIntraLeafMode::no_luma_mode(), state))
+    .map(|index| {
+        store(
+            GeneralIntraLeafMode::no_luma_mode(),
+            EntryState::Slot(index),
+        )
+    })
 }
 
 /// An inter leaf's block as the parse leaves it, before § 7.12 resolution
@@ -2038,7 +2058,7 @@ fn finish_inter_leaf(
     sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
     (n4w, n4h): (usize, usize),
     (skip, segment_id, block_qindex): (u8, u8, u32),
-) -> Result<EntryState> {
+) -> Result<u32> {
     let InterLeafSink {
         sequence,
         core,
@@ -2108,32 +2128,31 @@ fn finish_inter_leaf(
             .mark_inter(),
         )?;
     }
-    let geometry = inter_leaf_geometry(
+    let flags = syntax.flag_syntax(block.ref_frame0);
+    block.residual = residual;
+    let placed = placed_inter_block_at(
         frontier,
-        work_unit,
+        (
+            work_unit.mi_row_range().start as usize,
+            work_unit.mi_col_range().start as usize,
+        ),
         (n4w, n4h),
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
+        block,
     )?;
-    let leaf = mv_grid.record_flags(
-        frontier.r,
-        frontier.c,
-        n4w,
-        n4h,
-        syntax.flag_syntax(block.ref_frame0),
-    );
+    let leaf = mv_grid.record_flags(frontier.r, frontier.c, n4w, n4h, flags);
     let index = slots.len() as u32;
-    block.residual = residual;
-    slots.push(tile::LeafSlot::Command(ReconCommand::Inter(
-        deferred_recon::InterReconCommand::new(
-            geometry.place(block),
+    slots.extend(core::iter::once_with(|| {
+        tile::LeafSlot::Command(ReconCommand::Inter(deferred_recon::InterReconCommand::new(
+            placed,
             syntax,
             segment_id,
             block_qindex,
             tile_offset,
             leaf,
-        ),
-    )));
-    Ok(EntryState::Slot(index))
+        )))
+    }));
+    Ok(index)
 }
 
 /// The neighbour flags of a non-inter leaf, or of an IntraBC leaf with its
@@ -2209,7 +2228,7 @@ pub(crate) use tip::{TipOutputStages, TipSpares, deblock_output as deblock_tip_o
 mod warp;
 
 use self::interintra::predict_interintra_planes;
-use self::prediction::inter_leaf_geometry;
+use self::prediction::placed_inter_block_at;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
     LeafReset, MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax, WarpDeltaSyntax,

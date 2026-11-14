@@ -4,32 +4,6 @@
 use super::*;
 use crate::pipeline::reconstruct::IntraEdgeAvailability;
 
-/// Positions in luma samples, which a `u32` frame size bounds.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct PlacedInterGeometry {
-    pub(super) luma: [u32; 4],
-    pub(super) chroma_luma: [u32; 4],
-    pub(super) predict_chroma: bool,
-    pub(super) sub8x8_chroma: bool,
-    pub(super) interintra_chroma: bool,
-    pub(super) interintra_edges: [IntraEdgeAvailability; 2],
-}
-
-impl PlacedInterGeometry {
-    /// `block` placed at this geometry.
-    pub(super) fn place(self, block: InterBlock) -> PlacedInterBlock {
-        PlacedInterBlock {
-            luma: self.luma,
-            chroma_luma: self.chroma_luma,
-            predict_chroma: self.predict_chroma,
-            sub8x8_chroma: self.sub8x8_chroma,
-            interintra_chroma: self.interintra_chroma,
-            interintra_edges: self.interintra_edges,
-            block,
-        }
-    }
-}
-
 pub(super) const fn leaf_predicts_chroma(chroma_planes: bool, luma_part: bool) -> bool {
     chroma_planes && !luma_part
 }
@@ -54,28 +28,15 @@ fn is_thin_4xn_nx4_block(size: BlockSize) -> bool {
     width.min(height) == 4 && width.max(height) >= 16
 }
 
-/// The placed geometry of a leaf of `work_unit`'s tile.
-pub(super) fn inter_leaf_geometry(
-    frontier: &DecodeBlockFrontier,
-    work_unit: &DecodeTileWorkUnit,
-    size4: (usize, usize),
-    chroma_planes: bool,
-) -> Result<PlacedInterGeometry> {
-    let tile_start = (
-        work_unit.mi_row_range().start as usize,
-        work_unit.mi_col_range().start as usize,
-    );
-    placed_inter_geometry_at(frontier, tile_start, size4, chroma_planes)
-}
-
-/// A leaf's placed geometry in a tile that starts at 4x4 position `(row, col)`.
+/// `block` placed at its leaf in a tile that starts at 4x4 position `(row, col)`.
 #[inline]
-pub(super) fn placed_inter_geometry_at(
+pub(super) fn placed_inter_block_at(
     frontier: &DecodeBlockFrontier,
     (tile_row_start, tile_col_start): (usize, usize),
     (n4w, n4h): (usize, usize),
     chroma_planes: bool,
-) -> Result<PlacedInterGeometry> {
+    block: InterBlock,
+) -> Result<PlacedInterBlock> {
     let luma_x = frontier.c * 4;
     let luma_y = frontier.r * 4;
     let luma_w = n4w * 4;
@@ -111,7 +72,7 @@ pub(super) fn placed_inter_geometry_at(
             frontier.has_chroma && chroma_ref.col() > tile_col_start,
         ),
     ];
-    Ok(PlacedInterGeometry {
+    Ok(PlacedInterBlock {
         luma: [luma_x, luma_y, luma_w, luma_h].map(|v| v as u32),
         chroma_luma: [chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h].map(|v| v as u32),
         predict_chroma,
@@ -119,6 +80,7 @@ pub(super) fn placed_inter_geometry_at(
             && sub8x8_chroma_disables_compound(frontier.b_size, chroma_ref.size()),
         interintra_chroma: frontier.has_chroma && !mixed_offset_chroma,
         interintra_edges,
+        block,
     })
 }
 
