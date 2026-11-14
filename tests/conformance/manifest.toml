@@ -2103,3 +2103,13 @@ expect = "clean"
 path = "vectors/valid/syn-tip-output-444-10bit-132x100-q160.ivf"
 description = "AVM-encoded 17-frame 132x100 10-bit 4:4:4 stream of a project-generated moving texture (avmenc --profile=1 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=160 --lag-in-frames=16 --enable-tip=1): inter frames with 11 TIP_FRAME_AS_OUTPUT frames, 5 without and 6 with 8x8 optical-flow units. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 1ab06ea417f23e676aeddef928953b5bfcce72ff175bf2b819de08809ef60f19; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-partial-lossless-lr-384x256-q180.ivf"
+description = "AVM-encoded 3-frame 384x256 8-bit 4:2:0 stream of a project-generated moving texture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame codes segments 1-7 lossless (qindex 0) in the middle 3x3 superblocks and segment 0 lossy, with deblock, CDEF, CCSO and Wiener non-separable loop restoration on luma in the same frame. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 f8786b04aed6ad7b706310a614fe9db454f4ab459b964d0c482ce741f1182943; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-partial-lossless-lr-444-384x256-q180.ivf"
+description = "AVM-encoded 3-frame 384x256 8-bit 4:4:4 stream of a project-generated moving texture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=1 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame codes segments 1-7 lossless (qindex 0) in the middle 3x3 superblocks and segment 0 lossy, with deblock, CDEF, CCSO and Wiener non-separable loop restoration on all three planes in the same frame. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 ea535eca9d8cd72a61a3cca5c4950a07484a03a94cd9e319e80470bbfa29d119; validates clean."
+expect = "clean"
