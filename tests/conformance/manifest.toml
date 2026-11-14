@@ -2203,3 +2203,43 @@ expect = "clean"
 path = "vectors/valid/syn-resid-lossless-sdp-fsc-chroma-idtx-444-10bit-64x64.ivf"
 description = "AVM-encoded lossless 1-frame 64x64 10-bit 4:4:4 intra stream of a project-generated sharp picture (avmenc --profile=1 --lossless=1 --cpu-used=4) with separate luma and chroma trees (SDP): 9 of 48 chroma-tree blocks sit on a luma block coded with FSC, so their chroma transform type is IDTX through FscModes[ ChromaMiRow ][ ChromaMiCol ] (§ 5.20.7.29; 88 chroma 4x4 units). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 1c6c7e23a4e7209ed595d524643de986810e78f1b05e3b1deedbbc652216deb9; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-globalglobal-420-176x144-q120.ivf"
+description = "AVM-encoded 17-frame 8-bit 4:2:0 stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=0 --bit-depth=8 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=16 --enable-global-motion=1 --enable-warped-motion=0): 8 single-reference GLOBALMV warp, 3 GLOBAL_GLOBALMV warp blocks; 1 luma warp prediction reads outside the reference frame and 1 warp block touches the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 219790257fd435193da453e791013173761ae0e93bac85710df2fea3f8b58827; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-globalglobal-420-10bit-176x144-q120.ivf"
+description = "AVM-encoded 17-frame 10-bit 4:2:0 stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=0 --bit-depth=10 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=16 --enable-global-motion=1 --enable-warped-motion=0): 7 single-reference GLOBALMV warp, 8 GLOBAL_GLOBALMV warp, 3 COMPOUND_DIFFWTD warp blocks. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 c2f00bb491b629cb691d1652f8d9b4923328761f71919a2529a8da00faa7fbb7; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-globalglobal-422-176x144-q120.ivf"
+description = "AVM-encoded 17-frame 8-bit 4:2:2 stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=2 --bit-depth=8 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=16 --enable-global-motion=1 --enable-warped-motion=0): 11 single-reference GLOBALMV warp, 3 GLOBAL_GLOBALMV warp blocks. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 afc561dc1af1c0cfbcec9932d0507b2af5852d7d8a1d024b09bb3718f5ed0d1c; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-globalglobal-422-10bit-176x144-q120.ivf"
+description = "AVM-encoded 17-frame 10-bit 4:2:2 stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=2 --bit-depth=10 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=16 --enable-global-motion=1 --enable-warped-motion=0): 10 single-reference GLOBALMV warp, 8 GLOBAL_GLOBALMV warp blocks; 2 luma warp predictions read outside the reference frame and 1 warp block touches the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 6294e69a43e249f486636e5a01058daee683894a75ba2a7d6ac7324ea365444a; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-globalglobal-444-176x144-q120.ivf"
+description = "AVM-encoded 17-frame 8-bit 4:4:4 stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=1 --bit-depth=8 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=16 --enable-global-motion=1 --enable-warped-motion=0): 11 single-reference GLOBALMV warp, 2 GLOBAL_GLOBALMV warp blocks; 1 luma warp prediction reads outside the reference frame and 1 warp block touches the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 f1e415a53ae2fb4dbafd66557fe4113d6c5d58257f16a80c4276f289e3ebf2ea; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-globalglobal-444-10bit-176x144-q120.ivf"
+description = "AVM-encoded 17-frame 10-bit 4:4:4 stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=1 --bit-depth=10 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=16 --enable-global-motion=1 --enable-warped-motion=0): 13 single-reference GLOBALMV warp, 2 GLOBAL_GLOBALMV warp blocks. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 7ddfff7dc3cfbfb6be2cd11d0d817ffa16f6f1292513a1d2006febb909a73d83; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-globalglobal-mono-176x144-q120.ivf"
+description = "AVM-encoded 17-frame 8-bit monochrome stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=0 --bit-depth=8 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=16 --enable-global-motion=1 --enable-warped-motion=0 --monochrome): 9 single-reference GLOBALMV warp, 1 GLOBAL_GLOBALMV warp blocks. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 c06061585809b34b37c56829688357da5c2a94b4aef8893b1901e5308782a52e; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-globalglobal-mono-10bit-176x144-q120.ivf"
+description = "AVM-encoded 17-frame 10-bit monochrome stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=0 --bit-depth=10 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=16 --enable-global-motion=1 --enable-warped-motion=0 --monochrome): 9 single-reference GLOBALMV warp, 6 GLOBAL_GLOBALMV warp, 3 COMPOUND_DIFFWTD warp blocks; 1 luma warp prediction reads outside the reference frame, 2 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 42a1a6d5955aaa5234dd50558980dde29c93db2bdbf9d699e10bf17f5a33c139; validates clean."
+expect = "clean"

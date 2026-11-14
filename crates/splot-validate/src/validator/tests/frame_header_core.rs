@@ -492,6 +492,28 @@ fn validator_retains_wiener_dictionary_counts_before_ccso() {
     assert!(report.errors().next().is_none(), "report was: {report}");
 }
 
+/// § 5.18.9.1 `global_motion_params()` reads the § 7.23 `RefNumTotalRefs`,
+/// `SavedOrderHints` and `SavedGmParams` of the base reference; the later frames and the
+/// TIP frames parse only with that state.
+#[test]
+fn validator_threads_saved_global_motion_state() {
+    for data in [
+        &include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/conformance/vectors/valid/",
+            "syn-warp-globalglobal-mono-176x144-q120.ivf"
+        ))[..],
+        &include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/conformance/vectors/valid/",
+            "syn-warp-globalglobal-420-10bit-176x144-q120.ivf"
+        ))[..],
+    ] {
+        let report = Validator::new(false).validate_bytes(data);
+        assert!(report.errors().next().is_none(), "report was: {report}");
+    }
+}
+
 #[test]
 fn validator_flags_frame_size_exceeds_max_when_truncated_inside_deblocking() {
     let seq = FrameCoreSeq {
