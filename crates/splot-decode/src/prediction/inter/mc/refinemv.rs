@@ -29,97 +29,6 @@ impl Default for TipSearchScratch {
     }
 }
 pub(super) const SEARCH_PADDING: i32 = 4 * 8;
-
-/// The eight-bit search windows of one refine-MV unit of a block that optical
-/// flow refines next: the unit's index and luma rect, its candidates and
-/// refined MVs.
-struct UnitWindows {
-    index: usize,
-    rect: [usize; 4],
-    candidates: [Mv; 2],
-    mvs: [Mv; 2],
-    windows: [[u8; 24 * 24]; 2],
-}
-
-/// The [`UnitWindows`] of the first `kept` units searched since the last
-/// refine-MV grid began; later slots are search storage that no unit zeroes.
-struct BlockWindows {
-    kept: usize,
-    units: Vec<UnitWindows>,
-}
-
-std::thread_local! {
-    static UNIT_WINDOWS: std::cell::RefCell<BlockWindows> = const {
-        std::cell::RefCell::new(BlockWindows {
-            kept: 0,
-            units: Vec::new(),
-        })
-    };
-}
-
-/// Whether the last refine-MV grid kept the windows of some unit.
-pub(super) fn kept_unit_windows() -> bool {
-    UNIT_WINDOWS.with_borrow(|block| block.kept != 0)
-}
-
-/// Writes the optical-flow inputs of refine-MV unit `index` at `rect` moved by
-/// `mvs` from the search windows its search built around `candidates`, and
-/// returns whether it did: each § 7.13.3.13 prediction lies in the window at
-/// the full-sample offset of its search, with the same filter and area.
-pub(super) fn unit_window_predictions(
-    index: usize,
-    rect: McBlockRect,
-    (candidates, mvs): ([Mv; 2], [Mv; 2]),
-    predictions: [&mut [u16]; 2],
-) -> bool {
-    UNIT_WINDOWS.with_borrow(|block| {
-        let key = [rect.luma_x, rect.luma_y, rect.luma_w, rect.luma_h];
-        let units = block.units.get(..block.kept).unwrap_or_default();
-        units
-            .binary_search_by_key(&index, |unit| unit.index)
-            .ok()
-            .and_then(|at| units.get(at))
-            .filter(|unit| (unit.rect, unit.candidates, unit.mvs) == (key, candidates, mvs))
-            .is_some_and(|unit| {
-                window_predictions(&unit.windows, key, (candidates, mvs), predictions)
-            })
-    })
-}
-
-/// The `w x h` predictions at `mvs` read from the `(w + 8)`-wide search
-/// windows of a unit around `candidates`, `false` without writing for an
-/// offset outside the windows.
-fn window_predictions(
-    windows: &[[u8; 24 * 24]; 2],
-    [.., w, h]: [usize; 4],
-    (candidates, mvs): ([Mv; 2], [Mv; 2]),
-    predictions: [&mut [u16]; 2],
-) -> bool {
-    let offset = |mv: Mv, candidate: Mv| {
-        let [dy, dx] = [mv.row - candidate.row, mv.col - candidate.col];
-        (dy % 8 == 0 && dx % 8 == 0 && (-2..=2).contains(&(dy / 8)) && (-2..=2).contains(&(dx / 8)))
-            .then(|| ((4 + dy / 8) as usize, (4 + dx / 8) as usize))
-    };
-    let (Some(first), Some(second)) =
-        (offset(mvs[0], candidates[0]), offset(mvs[1], candidates[1]))
-    else {
-        return false;
-    };
-    let stride = w + 8;
-    for ((window, (top, left)), prediction) in windows.iter().zip([first, second]).zip(predictions)
-    {
-        for (row, line) in prediction.chunks_exact_mut(w).take(h).enumerate() {
-            let at = (top + row) * stride + left;
-            let Some(source) = window.get(at..at + w) else {
-                return false;
-            };
-            for (out, &sample) in line.iter_mut().zip(source) {
-                *out = u16::from(sample);
-            }
-        }
-    }
-    true
-}
 use splot_recon::REFINEMV_NEIGHBORS as SEARCH_NEIGHBORS;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -376,7 +285,6 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
             context: "refine-MV motion-grid size",
         })?;
     let candidates = [block.mv0, block.mv1];
-    UNIT_WINDOWS.with_borrow_mut(|block| block.kept = 0);
     let motion_cell = |local_x: usize, local_y: usize| -> Result<MotionCell> {
         let width = (block.rect.luma_w - local_x).min(REFINEMV_UNIT_SIZE);
         let height = (block.rect.luma_h - local_y).min(REFINEMV_UNIT_SIZE);
@@ -386,8 +294,7 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
         rect.luma_w = width;
         rect.luma_h = height;
         let mvs = if block.search_refinemv {
-            let index = local_y / REFINEMV_UNIT_SIZE * columns + local_x / REFINEMV_UNIT_SIZE;
-            search_refinemv(sink, block, rect, index, offset)?
+            search_refinemv(sink, block, rect, offset)?
         } else {
             candidates
         };
@@ -418,7 +325,6 @@ fn search_refinemv<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     rect: McBlockRect,
-    index: usize,
     offset: ByteOffset,
 ) -> Result<[Mv; 2]> {
     let candidates = [block.mv0, block.mv1];
@@ -450,44 +356,16 @@ fn search_refinemv<T: ReconSample>(
         {
             return Ok(candidates);
         }
-        let searched = UNIT_WINDOWS.with_borrow_mut(|store| -> Result<Option<[Mv; 2]>> {
-            if store.units.len() <= store.kept {
-                store.units.push(UnitWindows {
-                    index,
-                    rect: [0; 4],
-                    candidates,
-                    mvs: candidates,
-                    windows: [[0; 24 * 24]; 2],
-                });
-            }
-            let Some(unit) = store.units.get_mut(store.kept) else {
-                return Ok(None);
-            };
-            let windows = &mut unit.windows;
-            if !super::optflow::search_windows_u8(&mut luma, prediction_rect, candidates, windows)?
-            {
-                return Ok(None);
-            }
-            let Some((dx, dy)) = splot_recon::refinemv_search_u8(
+        let mut windows = [[0u8; 24 * 24]; 2];
+        if super::optflow::search_windows_u8(&mut luma, prediction_rect, candidates, &mut windows)?
+            && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
                 [&windows[0], &windows[1]],
                 prediction_rect.luma_w,
                 prediction_rect.luma_h - 4,
                 allow_center,
-            ) else {
-                return Ok(None);
-            };
-            let mvs = refined_mvs(candidates, dx, dy);
-            if block.optflow_distances.is_some() {
-                unit.index = index;
-                unit.rect = [rect.luma_x, rect.luma_y, rect.luma_w, rect.luma_h];
-                unit.candidates = candidates;
-                unit.mvs = mvs;
-                store.kept += 1;
-            }
-            Ok(Some(mvs))
-        })?;
-        if let Some(mvs) = searched {
-            return Ok(mvs);
+            )
+        {
+            return Ok(refined_mvs(candidates, dx, dy));
         }
     }
     let mut predict = |center_only: bool, pred0: &mut [u16], pred1: &mut [u16]| {
@@ -1247,114 +1125,6 @@ mod tests {
             .expect("center-disabled search"),
             (-2, -2)
         );
-    }
-
-    /// For random units inside and at the edges of the frame, each of the 25
-    /// search offsets reads from the search windows exactly the optical-flow
-    /// inputs that the separate bilinear prediction makes.
-    #[test]
-    fn search_windows_hold_the_optical_flow_inputs() {
-        use splot_recon::{BitDepth, PixelFormat};
-        let (width, height) = (64, 48);
-        let plane = |seed: usize, len: usize| -> Vec<u8> {
-            (0..len)
-                .map(|i| ((i * seed + i / 7 * 13 + (i * i) % 11) % 256) as u8)
-                .collect()
-        };
-        let frame = |seed| {
-            super::super::tests::frame_for(
-                BitDepth::Eight,
-                PixelFormat::Yuv420,
-                width,
-                height,
-                plane(seed, width * height),
-                plane(seed + 1, width * height / 4),
-                plane(seed + 2, width * height / 4),
-            )
-        };
-        let references = [frame(13), frame(29)];
-        let info = references[0].info();
-        let mut state = 0x9e37_79b9_u32;
-        let mut random = |range: i32| {
-            state ^= state << 13;
-            state ^= state >> 17;
-            state ^= state << 5;
-            (state % (2 * range as u32 + 1)) as i32 - range
-        };
-        let mut built = 0;
-        for round in 0..96 {
-            let (w, h) = [(16, 16), (8, 16), (16, 8), (8, 8)][round % 4];
-            let (x, y) = [(16, 16), (0, 0), (width - w, height - h), (24, 8)][round / 4 % 4];
-            let candidates = [
-                Mv {
-                    row: random(48),
-                    col: random(48),
-                },
-                Mv {
-                    row: random(48),
-                    col: random(48),
-                },
-            ];
-            let unit = McBlockRect::from_luma_rect(x, y, w, h);
-            let block = InterBlockParams::compound_average(
-                ReferenceSamples::settled(&references[0]),
-                ReferenceSamples::settled(&references[1]),
-                unit,
-                candidates[0],
-                candidates[1],
-                InterpolationFilter::EightTap,
-                CompoundBlend::default(),
-            )
-            .into_compound()
-            .expect("compound block");
-            let mut luma =
-                super::super::optflow::LumaReference::pair(info, &block, ByteOffset::new(0));
-            let mut search = unit;
-            search.luma_w += 8;
-            search.luma_h += 8;
-            let mut windows = [[0u8; 24 * 24]; 2];
-            if !super::super::optflow::search_windows_u8(
-                &mut luma,
-                search,
-                candidates,
-                &mut windows,
-            )
-            .expect("windows")
-            {
-                continue;
-            }
-            built += 1;
-            for (dy, dx) in (-2..=2).flat_map(|dy| (-2..=2).map(move |dx| (dy, dx))) {
-                let mvs = refined_mvs(candidates, dx, dy);
-                let mut separate = [vec![0u16; w * h], vec![0u16; w * h]];
-                for ((luma, (mv, candidate)), prediction) in luma
-                    .iter_mut()
-                    .zip(mvs.into_iter().zip(candidates))
-                    .zip(&mut separate)
-                {
-                    super::super::optflow::initial_luma_prediction::<_, 0>(
-                        luma,
-                        unit,
-                        mv,
-                        InterpolationFilter::Bilinear,
-                        Some((candidate, w, h)),
-                        None,
-                        prediction,
-                    )
-                    .expect("prediction");
-                }
-                let mut reused = [vec![0u16; w * h], vec![0u16; w * h]];
-                let [first, second] = &mut reused;
-                assert!(window_predictions(
-                    &windows,
-                    [x, y, w, h],
-                    (candidates, mvs),
-                    [first, second],
-                ));
-                assert_eq!(reused, separate, "{unit:?} {candidates:?} ({dy}, {dx})");
-            }
-        }
-        assert!(built >= 24, "{built}");
     }
 
     #[test]
