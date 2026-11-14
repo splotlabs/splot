@@ -209,14 +209,13 @@ fn predict_grid<T: ReconSample>(
         let (x, y, w, h) = block.rect.plane_rect(plane, sub_x, sub_y);
         let end_x = storage.width().div_ceil(1 << sub_x);
         let end_y = storage.height().div_ceil(1 << sub_y);
-        PlaneRect::new(
-            x,
-            y,
+        let visible = (
             w.min(end_x.saturating_sub(x)),
             h.min(end_y.saturating_sub(y)),
-        )
+        );
+        PlaneRect::new(x, y, visible.0, visible.1).map(|rect| (rect, visible != (w, h)))
     };
-    let luma = rect(PlaneId::Y, (0, 0))?;
+    let (luma, edge) = rect(PlaneId::Y, (0, 0))?;
     let output = sink
         .rect_mut(PlaneId::Y, luma)
         .ok_or(DecodeHeaderStateError::InvalidBlockGeometry)?;
@@ -230,23 +229,24 @@ fn predict_grid<T: ReconSample>(
     };
     let luma_outputs = [output, (&mut [][..], 0)];
     match motion.unit_size {
-        8 => pass.plane::<8, 8, false>(PlaneId::Y, luma_outputs, program),
-        16 => pass.plane::<16, 16, true>(PlaneId::Y, luma_outputs, program),
+        8 => pass.plane::<8, 8, false>(PlaneId::Y, luma_outputs, program, edge),
+        16 => pass.plane::<16, 16, true>(PlaneId::Y, luma_outputs, program, edge),
         _ => Err(DecodeHeaderStateError::InvalidBlockGeometry.into()),
     }?;
     if !block.has_chroma {
         return Ok(());
     }
+    let (chroma, edge) = rect(PlaneId::U, (sub_x, sub_y))?;
     let chroma = sink
-        .chroma_rects_mut(rect(PlaneId::U, (sub_x, sub_y))?)
+        .chroma_rects_mut(chroma)
         .ok_or(DecodeHeaderStateError::InvalidBlockGeometry)?;
     match (info.pixel_format(), motion.unit_size) {
-        (PixelFormat::Yuv444, 8) => pass.plane::<8, 8, false>(PlaneId::U, chroma, program),
-        (PixelFormat::Yuv444, _) => pass.plane::<16, 16, true>(PlaneId::U, chroma, program),
-        (PixelFormat::Yuv422, 8) => pass.plane::<4, 8, false>(PlaneId::U, chroma, program),
-        (PixelFormat::Yuv422, _) => pass.plane::<8, 16, true>(PlaneId::U, chroma, program),
-        (_, 8) => pass.plane::<4, 4, false>(PlaneId::U, chroma, program),
-        _ => pass.plane::<8, 8, true>(PlaneId::U, chroma, program),
+        (PixelFormat::Yuv444, 8) => pass.plane::<8, 8, false>(PlaneId::U, chroma, program, edge),
+        (PixelFormat::Yuv444, _) => pass.plane::<16, 16, true>(PlaneId::U, chroma, program, edge),
+        (PixelFormat::Yuv422, 8) => pass.plane::<4, 8, false>(PlaneId::U, chroma, program, edge),
+        (PixelFormat::Yuv422, _) => pass.plane::<8, 16, true>(PlaneId::U, chroma, program, edge),
+        (_, 8) => pass.plane::<4, 4, false>(PlaneId::U, chroma, program, edge),
+        _ => pass.plane::<8, 8, true>(PlaneId::U, chroma, program, edge),
     }
 }
 
@@ -261,11 +261,25 @@ struct GridPass<'a, 'b, T: ReconSample> {
 }
 
 impl<T: ReconSample> GridPass<'_, '_, T> {
-    /// Predicts one plane of `W` x `H` cells into the
-    /// visible rectangle `outputs[0]`, and for U the V plane into
-    /// `outputs[1]` from the same placements. Only `WIDE` (16x16) units cross
-    /// the storage edge or merge full-pel runs per row.
+    /// Predicts one plane of `W` x `H` cells into the visible rectangle `outputs[0]`, and for U
+    /// the V plane into `outputs[1]` from the same placements. A cell past the storage edge is
+    /// predicted whole and stored clipped; only `WIDE` (16x16) units merge full-pel runs per row.
     fn plane<const W: usize, const H: usize, const WIDE: bool>(
+        &self,
+        plane: PlaneId,
+        outputs: [(&mut [T], usize); 2],
+        program: &mut GridProgram,
+        edge: bool,
+    ) -> Result<()> {
+        if edge {
+            self.typed_plane::<W, H, WIDE, true>(plane, outputs, program)
+        } else {
+            self.typed_plane::<W, H, WIDE, false>(plane, outputs, program)
+        }
+    }
+
+    #[inline(never)]
+    fn typed_plane<const W: usize, const H: usize, const WIDE: bool, const EDGE: bool>(
         &self,
         plane: PlaneId,
         outputs: [(&mut [T], usize); 2],
@@ -274,18 +288,24 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         let [(first, first_stride), (second, second_stride)] = outputs;
         if let (Some(first), Some(second)) = (T::u8_slice_mut(first), T::u8_slice_mut(second)) {
             let outputs = [(first, first_stride), (second, second_stride)];
-            return self.plane_into::<_, W, H, WIDE>(plane, outputs, program);
+            return self.plane_into::<_, W, H, WIDE, EDGE>(plane, outputs, program);
         }
         match (T::u16_slice_mut(first), T::u16_slice_mut(second)) {
             (Some(first), Some(second)) => {
                 let outputs = [(first, first_stride), (second, second_stride)];
-                self.plane_into::<_, W, H, WIDE>(plane, outputs, program)
+                self.plane_into::<_, W, H, WIDE, EDGE>(plane, outputs, program)
             }
             _ => Err(DecodeHeaderStateError::InvalidInterTipPredictionState.into()),
         }
     }
 
-    fn plane_into<O: CompoundAverageOutput, const W: usize, const H: usize, const WIDE: bool>(
+    fn plane_into<
+        O: CompoundAverageOutput,
+        const W: usize,
+        const H: usize,
+        const WIDE: bool,
+        const EDGE: bool,
+    >(
         &self,
         plane: PlaneId,
         mut outputs: [(&mut [O], usize); 2],
@@ -338,8 +358,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                 .block_h
                 .min(frame.1.saturating_sub(prediction.plane_y)),
         ];
-        let clipped = visible != [prediction.block_w, prediction.block_h];
-        if clipped && !WIDE {
+        if EDGE != (visible != [prediction.block_w, prediction.block_h]) {
             return Err(DecodeHeaderStateError::InvalidBlockGeometry.into());
         }
         let grid = GridBlock {
@@ -352,7 +371,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         };
         let views = [Some(&prediction.views), second.as_ref()];
         if self.motion.fullpel_runs
-            && !clipped
+            && !EDGE
             && let Some([params0, params1]) = uniform_fullpel_params(
                 &prediction,
                 cells,
@@ -410,13 +429,16 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             program.clear();
             Ok(())
         };
-        let runs = WIDE && self.motion.fullpel_runs && !clipped;
+        let runs = WIDE && self.motion.fullpel_runs && !EDGE;
         let luma = views[1].is_none();
         let rows = cells
             .chunks_exact(columns)
             .zip(candidates.chunks_exact(columns));
         for (index, (row_cells, row_candidates)) in rows.enumerate() {
             let row = index * H;
+            if EDGE && row >= visible[1] {
+                break;
+            }
             let mut merged = [0, u64::from(WIDE && luma).wrapping_neg()];
             if runs {
                 let [(first, first_stride), (second, second_stride)] = &mut outputs;
@@ -448,6 +470,9 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                     continue;
                 }
                 let col = col * W;
+                if EDGE && col >= visible[0] {
+                    break;
+                }
                 let (placements, uniform) = unscaled_cell_placements(
                     &prediction,
                     cell,
@@ -457,7 +482,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                     self.check_uniform,
                     frame,
                 );
-                let edge = WIDE && (col + W > visible[0] || row + H > visible[1]);
+                let edge = EDGE && (col + W > visible[0] || row + H > visible[1]);
                 if uniform && W == H && W <= 8 && !edge && (!WIDE || skip == [false, luma]) {
                     if !program.push([row, col], placements) {
                         run(program, &mut outputs, pred, intermediate)?;
@@ -483,11 +508,11 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                     }
                     let mut staged = [O::default(); MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
                     predict_grid_cell(views, cell, &grid, pred, intermediate, &mut staged, W)?;
-                    let width = W.min(visible[0] - col);
+                    let width = W.min(visible[0].saturating_sub(col));
                     for (source, target) in staged
                         .chunks_exact(W)
                         .zip(output.chunks_mut(*stride))
-                        .take(H.min(visible[1] - row))
+                        .take(H.min(visible[1].saturating_sub(row)))
                     {
                         target[..width].copy_from_slice(&source[..width]);
                     }

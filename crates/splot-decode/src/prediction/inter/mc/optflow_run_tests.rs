@@ -545,3 +545,97 @@ fn chroma_implicit_mask_reads_one_motion_cell_per_four_by_four_subblock() {
 
     assert_eq!(output, [150; 16]);
 }
+
+/// TIP units past the right or bottom storage edge store what a taller and wider storage stores.
+fn edge_units_match_a_larger_storage<T: ReconSample + CompoundAverageOutput + Send>(
+    bit_depth: BitDepth,
+    format: PixelFormat,
+) {
+    let (w, h) = (64, 48);
+    let max = usize::from(bit_depth.max_sample());
+    let frame = |(width, height): (usize, usize), seed: usize| {
+        let plane = |sub_x: u8, sub_y: u8, salt: usize| -> Vec<T> {
+            let pw = width.div_ceil(1 << sub_x);
+            let (cells, height) = (pw * height.div_ceil(1 << sub_y), seed + salt);
+            (0..cells)
+                .map(|i| {
+                    ((i % pw) * seed + (i / pw) * height * 3 + (i % pw) * (i / pw) % 7) % (max + 1)
+                })
+                .map(|v| T::try_from_u16(v as u16).expect("sample"))
+                .collect()
+        };
+        let (sub_x, sub_y) = (format.subsampling_x(), format.subsampling_y());
+        let (u, v) = (plane(sub_x, sub_y, 2), plane(sub_x, sub_y, 5));
+        frame_for(bit_depth, format, width, height, plane(0, 0, 1), u, v)
+    };
+    let modes = [(8, Some([1, -1])), (8, None), (16, None)];
+    let cases = [
+        ((16, h - 12, 32, 16), [-160, 0]),
+        ((w - 12, 8, 16, 32), [0, -160]),
+        ((16, h - 12, 32, 48), [-160, 0]),
+        ((w - 12, 8, 48, 16), [0, -160]),
+    ];
+    for ((unit, optflow), ((x, y, bw, bh), [row, col])) in modes
+        .into_iter()
+        .flat_map(|mode| cases.map(|case| (mode, case)))
+    {
+        let rect = McBlockRect::from_luma_rect(x, y, bw, bh);
+        let columns = bw / unit;
+        let candidates: Vec<[Mv; 2]> = (0..(columns * (bh / unit)) as i32)
+            .map(|i| [mv(row + 3 * i, col - 5), mv(row - 2 * i, col + 7)])
+            .collect();
+        let planes = [(w, h), (w + 48, h + 48)].map(|size| {
+            let references = [13, 29].map(|seed| frame(size, seed));
+            let block = InterBlockParams::compound_average(
+                ReferenceSamples::settled(&references[0]),
+                ReferenceSamples::settled(&references[1]),
+                rect,
+                candidates[0][0],
+                candidates[0][1],
+                InterpolationFilter::EightTapSharp,
+                CompoundBlend::default(),
+            )
+            .with_optflow_distances(optflow)
+            .with_optflow_sad_threshold(optflow.map(|_| 6))
+            .with_refinemv(true)
+            .into_compound()
+            .expect("compound block");
+            let mut workspace =
+                super::super::tests::workspace_for::<T>(bit_depth, format, size.0, size.1);
+            let mut sink = WorkspaceSink::Frame(&mut workspace);
+            let (mut units, mut mvs) = (TipUnits::default(), candidates.clone());
+            let (grid, offset) = ((columns, unit), ByteOffset::new(0));
+            refine_tip_units(&sink, &block, &mvs, &mut units, grid, offset).expect("units");
+            predict_tip_units(&mut sink, &block, &mut mvs, &mut units, grid, offset)
+                .expect("predict");
+            super::super::mc_planes(format).map(|(plane, sub_x, sub_y)| {
+                let stride = workspace.plane(plane).expect("plane").stride_samples();
+                let samples = workspace.samples(plane).expect("samples");
+                let (pw, ph) = (w.div_ceil(1 << sub_x), h.div_ceil(1 << sub_y));
+                (0..ph)
+                    .flat_map(|r| {
+                        samples[r * stride..r * stride + pw]
+                            .iter()
+                            .map(|s| s.to_u16())
+                    })
+                    .collect::<Vec<_>>()
+            })
+        });
+        assert_eq!(
+            planes[0], planes[1],
+            "{bit_depth:?} {format:?} unit {unit} {optflow:?} {rect:?}"
+        );
+    }
+}
+
+#[test]
+fn tip_units_past_the_storage_edge_store_their_visible_samples() {
+    for format in [
+        PixelFormat::Yuv420,
+        PixelFormat::Yuv422,
+        PixelFormat::Yuv444,
+    ] {
+        edge_units_match_a_larger_storage::<u8>(BitDepth::Eight, format);
+        edge_units_match_a_larger_storage::<u16>(BitDepth::Ten, format);
+    }
+}
