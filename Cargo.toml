@@ -126,5 +126,8 @@ debug = "line-tables-only"
 opt-level = 2
 debug = "line-tables-only"
 
+[profile.dev.package.xtask]
+opt-level = 2
+
 [profile.test]
 overflow-checks = true
