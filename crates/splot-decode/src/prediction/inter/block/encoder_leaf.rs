@@ -1216,17 +1216,18 @@ impl EncoderInterTile {
         mut parsed: InterBlock,
         resolved: &ResolvedInterBlock,
     ) -> Result<PlacedInterBlock> {
-        let mut geometry = prediction::placed_inter_geometry_at(
+        resolved.apply(&mut parsed);
+        let mut placed = prediction::placed_inter_block_at(
             frontier,
             self.tile_start,
             block_size4(frontier)?,
             self.chroma != ChromaFormatIdc::Monochrome,
+            parsed,
         )?;
         if matches!(syntax.motion, InterMotionSyntax::Compound(_)) {
-            geometry.interintra_chroma = false;
+            placed.interintra_chroma = false;
         }
-        resolved.apply(&mut parsed);
-        Ok(geometry.place(parsed))
+        Ok(placed)
     }
 }
 
