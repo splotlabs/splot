@@ -14,7 +14,7 @@ use splot_core::span::ByteOffset;
 use splot_recon::{
     BitDepth, PlaneId, PlaneRect, ReconError, ReconSample, blend_diff_weighted_u8_packed,
     blend_diff_weighted_wide_packed, blend_mask_u8_packed, blend_mask_wide_packed,
-    subpel_predict_block_compound_intermediate_into, wedge_mask_plane_sample,
+    subpel_predict_block_compound_intermediate_into, wedge_mask_into,
 };
 
 #[cfg(test)]
@@ -209,8 +209,8 @@ fn blend_plane<T: ReconSample>(
         CompoundBlend::DiffWeighted { inverse } if layout.plane == PlaneId::Y => Some(inverse),
         CompoundBlend::DiffWeighted { .. } => None,
         CompoundBlend::Wedge { index, sign } => {
-            let luma = (block.rect.luma_w, block.rect.luma_h);
-            wedge_mask_map(grown(mask, len), w, luma, (index, sign), (sub_x, sub_y))?;
+            let (luma, wedge) = ((block.rect.luma_w, block.rect.luma_h), (index.into(), sign));
+            wedge_mask_into(grown(mask, len), (w, h), luma, wedge, (sub_x, sub_y))?;
             None
         }
         CompoundBlend::Average { .. } => {
@@ -306,25 +306,6 @@ fn implicit_mask_map(
             }
         }
     }
-}
-
-/// The § 7.13.3.27 wedge mask of a `w`-wide plane of a `luma` block, as
-/// § 7.13.3.30 subsamples it for the plane.
-fn wedge_mask_map(
-    mask: &mut [u8],
-    w: usize,
-    (luma_w, luma_h): (usize, usize),
-    (index, sign): (u8, bool),
-    (sub_x, sub_y): (u32, u32),
-) -> splot_recon::Result<()> {
-    for (y, row) in mask.chunks_exact_mut(w.max(1)).enumerate() {
-        for (x, weight) in row.iter_mut().enumerate() {
-            let index = usize::from(index);
-            *weight =
-                wedge_mask_plane_sample(luma_w, luma_h, index, sign, sub_x, sub_y, x, y)? as u8;
-        }
-    }
-    Ok(())
 }
 
 fn grown<V: Copy + Default>(buffer: &mut Vec<V>, len: usize) -> &mut [V] {

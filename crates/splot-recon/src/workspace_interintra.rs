@@ -9,6 +9,7 @@ use crate::intra_smooth::publish_rows;
 use crate::math::round2_i32;
 use crate::{IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result};
 use fearless_simd::{Simd, SimdBase, i32x4, i32x8, i32x16};
+use std::sync::OnceLock;
 
 /// AV2 § 7.13.3.29 `Ii_Weights_1d[128]` smooth-interintra blending weights.
 const II_WEIGHTS_1D: [u16; 128] = [
@@ -20,9 +21,10 @@ const II_WEIGHTS_1D: [u16; 128] = [
 ];
 const MASK_MASTER_SIZE: usize = 128;
 const MAX_WEDGE_TYPES: usize = 68;
+const WEDGE_ANGLES: usize = 20;
 const WEDGE_BOUNDARY_SHARP: usize = 0;
 const WEDGE_BOUNDARY_SMOOTH: usize = 1;
-const WEDGE_COS_LUT_ALL: [[i32; 20]; 2] = [
+const WEDGE_COS_LUT_ALL: [[i32; WEDGE_ANGLES]; 2] = [
     [
         32, 32, 32, 16, 16, 0, -16, -16, -32, -32, -32, -32, -32, -16, -16, 0, 16, 16, 32, 32,
     ],
@@ -30,7 +32,7 @@ const WEDGE_COS_LUT_ALL: [[i32; 20]; 2] = [
         16, 16, 16, 8, 8, 0, -8, -8, -16, -16, -16, -16, -16, -8, -8, 0, 8, 8, 16, 16,
     ],
 ];
-const WEDGE_SIN_LUT_ALL: [[i32; 20]; 2] = [
+const WEDGE_SIN_LUT_ALL: [[i32; WEDGE_ANGLES]; 2] = [
     [
         0, -8, -16, -16, -32, -32, -32, -16, -16, -8, 0, 8, 16, 16, 32, 32, 32, 16, 16, 8,
     ],
@@ -155,6 +157,20 @@ fn wedge_boundary_index(luma_width: usize, luma_height: usize) -> usize {
     }
 }
 
+/// The § 7.13.3.27 `MasterMask[boundary][direction][n][m]` (AVM values).
+fn master_weight(boundary: usize, direction: usize, m: usize, n: usize) -> u16 {
+    let centered = |v: usize| 2 * v as i32 + 1 - MASK_MASTER_SIZE as i32;
+    let d = centered(m) * WEDGE_COS_LUT_ALL[boundary][direction]
+        + centered(n) * WEDGE_SIN_LUT_ALL[boundary][direction];
+    let d = d.clamp(-127, 127);
+    let weight = if d >= 0 {
+        POS_DIST_2_BLD_WEIGHT[d as usize]
+    } else {
+        NEG_DIST_2_BLD_WEIGHT[d.unsigned_abs() as usize]
+    };
+    weight << 2
+}
+
 fn wedge_mask_luma_sample(
     luma_width: usize,
     luma_height: usize,
@@ -163,45 +179,121 @@ fn wedge_mask_luma_sample(
     x: usize,
     y: usize,
 ) -> Result<u16> {
-    let (direction, x_offset, y_offset) =
-        WEDGE_CODEBOOK
-            .get(wedge_index)
-            .copied()
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "interintra wedge index",
-            })?;
-    let boundary = wedge_boundary_index(luma_width, luma_height);
-    let master_x = MASK_MASTER_SIZE / 2 - ((x_offset * luma_width) >> 3) + x;
-    let master_y = MASK_MASTER_SIZE / 2 - ((y_offset * luma_height) >> 3) + y;
-    let centered_x =
-        i32::try_from((master_x << 1) + 1).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "interintra wedge mask x coordinate",
-        })? - i32::try_from(MASK_MASTER_SIZE).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "interintra wedge mask master size",
-        })?;
-    let centered_y =
-        i32::try_from((master_y << 1) + 1).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "interintra wedge mask y coordinate",
-        })? - i32::try_from(MASK_MASTER_SIZE).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "interintra wedge mask master size",
-        })?;
-    let d = centered_x * WEDGE_COS_LUT_ALL[boundary][direction]
-        + centered_y * WEDGE_SIN_LUT_ALL[boundary][direction];
-    let clamp_d = d.clamp(-127, 127);
-    let base = if clamp_d >= 0 {
-        POS_DIST_2_BLD_WEIGHT[usize::try_from(clamp_d).map_err(|_| {
-            ReconError::ArithmeticOverflow {
-                context: "interintra wedge positive distance",
-            }
-        })?]
-    } else {
-        NEG_DIST_2_BLD_WEIGHT[usize::try_from(-clamp_d).map_err(|_| {
-            ReconError::ArithmeticOverflow {
-                context: "interintra wedge negative distance",
-            }
-        })?]
-    } << 2;
+    let overflow = |context| ReconError::ArithmeticOverflow { context };
+    let &(direction, x_offset, y_offset) = WEDGE_CODEBOOK
+        .get(wedge_index)
+        .ok_or(overflow("interintra wedge index"))?;
+    let master = |offset: usize, size: usize, at: usize| {
+        (MASK_MASTER_SIZE / 2 + at)
+            .checked_sub((offset * size) >> 3)
+            .ok_or(overflow("interintra wedge mask coordinate"))
+    };
+    let (m, n) = (
+        master(x_offset, luma_width, x)?,
+        master(y_offset, luma_height, y)?,
+    );
+    let base = master_weight(
+        wedge_boundary_index(luma_width, luma_height),
+        direction,
+        m,
+        n,
+    );
     Ok(if sign { 64 - base } else { base })
+}
+
+/// The § 7.13.3.27 `MasterMask` of each boundary and angle, 16 KiB each,
+/// built at first use.
+static MASTER_MASKS: [OnceLock<Box<[u8]>>; 2 * WEDGE_ANGLES] =
+    [const { OnceLock::new() }; 2 * WEDGE_ANGLES];
+
+/// The § 7.13.3.27 `WedgeMasks[MiSize][sign][wedge_index]` of a luma block:
+/// its rows start `MASK_MASTER_SIZE` apart in one master mask. The inverse
+/// mask `64 - MasterMask[angle]` is `MasterMask[angle + 10]`, because both
+/// luts negate there and `Pos_Dist_2_Bld_Weight[k] + Neg_Dist_2_Bld_Weight[k]`
+/// is 16.
+fn wedge_mask_window(
+    luma_width: usize,
+    luma_height: usize,
+    wedge_index: usize,
+    sign: bool,
+) -> Result<&'static [u8]> {
+    let overflow = |context| ReconError::ArithmeticOverflow { context };
+    let &(direction, x_offset, y_offset) = WEDGE_CODEBOOK
+        .get(wedge_index)
+        .ok_or(overflow("interintra wedge index"))?;
+    let boundary = wedge_boundary_index(luma_width, luma_height);
+    let direction = (direction + usize::from(sign) * WEDGE_ANGLES / 2) % WEDGE_ANGLES;
+    let start = |offset: usize, size: usize| {
+        (MASK_MASTER_SIZE / 2)
+            .checked_sub((offset * size) >> 3)
+            .filter(|&start| start + size <= MASK_MASTER_SIZE)
+            .ok_or(overflow("wedge mask block size"))
+    };
+    let start = start(y_offset, luma_height)? * MASK_MASTER_SIZE + start(x_offset, luma_width)?;
+    let master = MASTER_MASKS[boundary * WEDGE_ANGLES + direction].get_or_init(|| {
+        let side = MASK_MASTER_SIZE;
+        let weight = |i| master_weight(boundary, direction, i % side, i / side) as u8;
+        (0..side * side).map(weight).collect()
+    });
+    let len = luma_height.saturating_sub(1) * MASK_MASTER_SIZE + luma_width;
+    Ok(master.get(start..start + len).unwrap_or_default())
+}
+
+/// The rows of the § 7.13.3.27 wedge mask of a `luma_width x luma_height`
+/// block, `luma_width` weights each.
+///
+/// # Errors
+/// Returns [`ReconError`] when the block size or the wedge index does not
+/// select an AV2 wedge mask.
+pub fn wedge_mask_rows(
+    luma_width: usize,
+    luma_height: usize,
+    wedge_index: usize,
+    sign: bool,
+) -> Result<impl Iterator<Item = &'static [u8]>> {
+    let window = wedge_mask_window(luma_width, luma_height, wedge_index, sign)?;
+    let rows = window.chunks(MASK_MASTER_SIZE).take(luma_height);
+    Ok(rows.map(move |row| row.get(..luma_width).unwrap_or_default()))
+}
+
+/// Writes the wedge mask of a `luma` block for a `w x h` plane block, as
+/// § 7.13.3.30 subsamples it by `(sub_x, sub_y)`, into the packed `mask`.
+/// The mask does not depend on the bit depth.
+///
+/// # Errors
+/// Returns [`ReconError`] when the block size or the wedge index does not
+/// select an AV2 wedge mask, when the plane block is larger than the
+/// subsampled luma block or, when subsampled, not a multiple of 4 wide, or
+/// when `mask` is shorter than `w * h`.
+pub fn wedge_mask_into(
+    mask: &mut [u8],
+    (w, h): (usize, usize),
+    (luma_width, luma_height): (usize, usize),
+    (wedge_index, sign): (usize, bool),
+    (sub_x, sub_y): (u32, u32),
+) -> Result<()> {
+    let window = wedge_mask_window(luma_width, luma_height, wedge_index, sign)?;
+    let sub_y = if sub_x == 0 { 0 } else { sub_y };
+    let fits = (w << sub_x) <= luma_width
+        && (h << sub_y) <= luma_height
+        && (sub_x == 0 || w.is_multiple_of(4));
+    let mask =
+        mask.get_mut(..w * h)
+            .filter(|_| fits && w > 0)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "wedge plane mask size",
+            })?;
+    if sub_x == 0 {
+        for (row, source) in mask
+            .chunks_exact_mut(w)
+            .zip(window.chunks(MASK_MASTER_SIZE))
+        {
+            row.copy_from_slice(&source[..w]); // splot-copy-ok: wedge mask row from the master mask
+        }
+        return Ok(());
+    }
+    crate::blend_mask::subsample_mask(window, MASK_MASTER_SIZE, mask, w, sub_y);
+    Ok(())
 }
 
 /// Returns one AV2 wedge-mask weight for a luma or chroma plane sample.
@@ -381,23 +473,20 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         sub_y: u32,
         intra: &[T],
     ) -> Result<()> {
+        let short = || ReconError::ArithmeticOverflow {
+            context: "interintra wedge mask size",
+        };
+        let mut mask = [0; 64 * 64];
+        let (w, h) = (size.width(), size.height());
+        let mask = mask.get_mut(..w * h).ok_or_else(short)?;
+        let luma = (luma_width, luma_height);
+        wedge_mask_into(mask, (w, h), luma, (wedge_index, false), (sub_x, sub_y))?;
         self.blend_interintra_rect_by_mask(
             rect,
             size,
             intra,
             "interintra wedge blend sample storage",
-            |i, j| {
-                wedge_mask_plane_sample(
-                    luma_width,
-                    luma_height,
-                    wedge_index,
-                    false,
-                    sub_x,
-                    sub_y,
-                    j,
-                    i,
-                )
-            },
+            |i, j| mask.get(i * w + j).map(|&m| u16::from(m)).ok_or_else(short),
         )
     }
 
@@ -666,6 +755,59 @@ mod tests {
         assert_eq!(II_WEIGHTS_1D[18], 32);
         assert_eq!(II_WEIGHTS_1D[127], 1);
         assert_eq!(II_WEIGHTS_1D.len(), 128);
+    }
+
+    /// Every block size with `Wedge_Bits[MiSize] > 0` (§ 9.2), every
+    /// `WEDGE_TYPES` index (§ 3), both signs and every subsampling: the
+    /// table masks equal the sample-by-sample mask.
+    #[test]
+    fn wedge_masks_match_the_sample_oracle() {
+        let sizes = [
+            (8, 8),
+            (8, 16),
+            (16, 8),
+            (16, 16),
+            (16, 32),
+            (32, 16),
+            (32, 32),
+            (32, 64),
+            (64, 32),
+            (64, 64),
+            (8, 32),
+            (32, 8),
+            (16, 64),
+            (64, 16),
+            (8, 64),
+            (64, 8),
+        ];
+        let mut mask = vec![0; 64 * 64];
+        for (lw, lh) in sizes {
+            for index in 0..MAX_WEDGE_TYPES {
+                for sign in [false, true] {
+                    let rows: Vec<&[u8]> = wedge_mask_rows(lw, lh, index, sign).unwrap().collect();
+                    assert_eq!(rows.len(), lh);
+                    for (sub_x, sub_y) in [(0, 0), (1, 0), (1, 1)] {
+                        let (w, h) = (lw >> sub_x, lh >> sub_y);
+                        let wedge = (index, sign);
+                        wedge_mask_into(&mut mask, (w, h), (lw, lh), wedge, (sub_x, sub_y))
+                            .unwrap();
+                        for (y, x) in (0..h).flat_map(|y| (0..w).map(move |x| (y, x))) {
+                            let want =
+                                wedge_mask_plane_sample(lw, lh, index, sign, sub_x, sub_y, x, y);
+                            let at = format!("{lw}x{lh} {index} {sign} {sub_x}{sub_y} {x},{y}");
+                            assert_eq!(u16::from(mask[y * w + x]), want.unwrap(), "{at}");
+                            if sub_x == 0 {
+                                assert_eq!(rows[y][x], mask[y * w + x], "{at}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(wedge_mask_rows(8, 8, MAX_WEDGE_TYPES, false).is_err());
+        assert!(wedge_mask_rows(128, 128, 0, false).is_err());
+        assert!(wedge_mask_into(&mut mask[..63], (8, 8), (8, 8), (0, false), (0, 0)).is_err());
+        assert!(wedge_mask_into(&mut mask, (8, 8), (8, 8), (0, false), (1, 1)).is_err());
     }
 
     #[test]

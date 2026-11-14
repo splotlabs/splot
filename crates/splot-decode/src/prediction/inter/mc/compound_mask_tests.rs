@@ -336,7 +336,8 @@ fn wedge_mask_blend_matches_the_scalar_blend() {
                         sub,
                     );
                     let mut mask = vec![0; pw * ph];
-                    wedge_mask_map(&mut mask, pw, (w, h), (index, sign), sub).expect("wedge mask");
+                    let wedge = (usize::from(index), sign);
+                    wedge_mask_into(&mut mask, (pw, ph), (w, h), wedge, sub).expect("wedge mask");
                     assert!(mask.iter().any(|&m| m != mask[0]), "wedge {index} {w}x{h}");
                     let got = kernel_mask(depth, &preds, (pw, ph), &mask);
                     assert_eq!(got, want, "wedge {index} sign {sign} {w}x{h} sub {sub:?}");

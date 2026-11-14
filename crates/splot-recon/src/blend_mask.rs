@@ -788,6 +788,24 @@ fn narrow_weighted<S: Simd>(
     m
 }
 
+/// The § 7.13.3.30 chroma mask of a luma mask whose rows start `stride`
+/// apart, into the packed `w`-wide `mask` (`w % 4 == 0`): the `Round2` of
+/// each 2x1 sum by 1 when `sub_y == 0`, else of each 2x2 sum by 2.
+pub(crate) fn subsample_mask(luma: &[u8], stride: usize, mask: &mut [u8], w: usize, sub_y: u32) {
+    let pairs = |y: usize| rest(luma, y * stride).get(..2 * w).unwrap_or_default();
+    baseline_simd!(simd => {
+        for (y, out) in mask.chunks_exact_mut(w.max(1)).enumerate() {
+            let (upper, lower) = (pairs(y << sub_y), pairs((y << sub_y) + sub_y as usize));
+            let rows = upper.as_chunks().0.iter().zip(lower.as_chunks().0);
+            for ((upper, lower), out) in rows.zip(out.as_chunks_mut().0) {
+                let sums = load_bytes(simd, *upper).pairwise_widening_add()
+                    + load_bytes(simd, *lower).pairwise_widening_add();
+                store_quarter((sums + 2) >> 2, out);
+            }
+        }
+    });
+}
+
 #[inline]
 fn store_quarter<S: Simd>(values: i32x4<S>, output: &mut [u8; LANES / 2]) {
     let bytes = to_bytes(values.narrow(values).bitcast());

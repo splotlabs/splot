@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::symbol::SymbolDecoder;
-use splot_recon::wedge_mask_plane_sample;
+use splot_recon::wedge_mask_rows;
 
 use super::super::CompoundOrderHint;
 use super::super::compound::{
@@ -956,19 +956,24 @@ fn wedge_temporal_allowed_lists(
     let mc::CompoundBlend::Wedge { index, sign } = blend else {
         return Ok([true; 2]);
     };
+    wedge_dominant_lists(luma_width, luma_height, (index, sign), x, y)
+}
+
+/// The lists that keep a temporal record of the 8x8 unit at `(x, y)` of a
+/// wedge block: one list where the mask of 60 or more samples favours it.
+#[cold]
+#[inline(never)]
+fn wedge_dominant_lists(
+    luma_width: usize,
+    luma_height: usize,
+    (index, sign): (u8, bool),
+    x: usize,
+    y: usize,
+) -> Result<[bool; 2]> {
     let mut dominant = [0usize; 2];
-    for row in y..y + 8 {
-        for col in x..x + 8 {
-            let mask = wedge_mask_plane_sample(
-                luma_width,
-                luma_height,
-                usize::from(index),
-                sign,
-                0,
-                0,
-                col,
-                row,
-            )?;
+    let rows = wedge_mask_rows(luma_width, luma_height, usize::from(index), sign)?;
+    for row in rows.skip(y).take(8) {
+        for &mask in row.get(x..x + 8).unwrap_or_default() {
             dominant[0] += usize::from(mask > 60);
             dominant[1] += usize::from(mask < 4);
         }
