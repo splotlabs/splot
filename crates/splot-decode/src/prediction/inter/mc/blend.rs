@@ -20,15 +20,10 @@ pub(super) fn blend_compound_average<T: ReconSample>(
     w: usize,
     h: usize,
     blend: CompoundBlend,
-    motion: Option<&CompoundMotionGrid>,
-    plane_x: usize,
-    plane_y: usize,
     scaling0: PlaneScaling,
     scaling1: PlaneScaling,
     frame_w: usize,
     frame_h: usize,
-    sub_x: u32,
-    sub_y: u32,
     output: &mut [T],
     stride: usize,
 ) -> splot_recon::Result<()> {
@@ -66,15 +61,13 @@ pub(super) fn blend_compound_average<T: ReconSample>(
         });
     };
     let scaling_templates = [scaling0, scaling1];
-    let uniform_scalings =
-        compound_uniform_scalings(motion, plane_x, plane_y, scaling_templates, sub_x, sub_y);
     if compound_average_weights_are_uniform(
         implicit_mask,
         cwp_weight,
         w,
         h,
         scaling_templates,
-        uniform_scalings,
+        Some(scaling_templates),
         (frame_w, frame_h),
     ) {
         return blend_rows(pred0, pred1, w, output, stride, |pred0, pred1, output| {
@@ -85,17 +78,9 @@ pub(super) fn blend_compound_average<T: ReconSample>(
     blend_nonuniform_implicit_mask(
         pred0,
         pred1,
-        bit_depth,
-        w,
-        h,
-        motion,
-        plane_x,
-        plane_y,
+        (bit_depth, w),
         scaling_templates,
-        frame_w,
-        frame_h,
-        sub_x,
-        sub_y,
+        (frame_w, frame_h),
         output,
         stride,
     )
@@ -444,21 +429,14 @@ fn difference_weight_matches_the_rounded_spec_formula_at_the_extremes() {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The § 7.13.3.14 implicit-mask blend of a translational region whose
+/// reference starts `scalings` hold, in rows of `width` samples.
 pub(super) fn blend_nonuniform_implicit_mask<T: ReconSample>(
     pred0: &[i32],
     pred1: &[i32],
-    bit_depth: splot_recon::BitDepth,
-    width: usize,
-    height: usize,
-    motion: Option<&CompoundMotionGrid>,
-    plane_x: usize,
-    plane_y: usize,
+    (bit_depth, width): (splot_recon::BitDepth, usize),
     scaling_templates: [PlaneScaling; 2],
-    frame_w: usize,
-    frame_h: usize,
-    sub_x: u32,
-    sub_y: u32,
+    (frame_w, frame_h): (usize, usize),
     output: &mut [T],
     output_stride: usize,
 ) -> splot_recon::Result<()> {
@@ -466,20 +444,6 @@ pub(super) fn blend_nonuniform_implicit_mask<T: ReconSample>(
         return Ok(());
     }
     let blend = ImplicitMaskBlend::new(bit_depth, frame_w, frame_h);
-    if let Some(motion) = motion {
-        return blend_implicit_mask_region(
-            [pred0, pred1],
-            width,
-            [0, 0, width, height],
-            motion,
-            (plane_x, plane_y),
-            scaling_templates,
-            blend,
-            (sub_x, sub_y),
-            output,
-            output_stride,
-        );
-    }
     let reference_starts =
         scaling_templates.map(|scaling| (scaling.start_x >> 10, scaling.start_y >> 10));
     for (row, ((output, pred0), pred1)) in output

@@ -90,6 +90,7 @@ impl EncoderInterTile {
             tip_records: Vec::new(),
             tip_trial_records: Vec::new(),
             tip_scratch: super::super::tip::TipReconstructScratch::default(),
+            refined: mc::RefinedUnits::default(),
             intrabc: Some(intrabc),
         })
     }

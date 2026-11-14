@@ -272,52 +272,19 @@ fn vertical_blend<S: Simd>(simd: S, top: u16x8<S>, bottom: u16x8<S>, v: u16, max
         .min(u16x8::splat(simd, max))
 }
 
-pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
-    block: &CompoundMcBlock<'_, T>,
-    offset: ByteOffset,
-) -> Result<CompoundMotionGrid> {
-    let columns = block.rect.luma_w.div_ceil(REFINEMV_UNIT_SIZE);
-    let rows = block.rect.luma_h.div_ceil(REFINEMV_UNIT_SIZE);
-    let cell_count = columns
-        .checked_mul(rows)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "refine-MV motion-grid size",
-        })?;
-    let candidates = [block.mv0, block.mv1];
-    let motion_cell = |local_x: usize, local_y: usize| -> Result<MotionCell> {
-        let width = (block.rect.luma_w - local_x).min(REFINEMV_UNIT_SIZE);
-        let height = (block.rect.luma_h - local_y).min(REFINEMV_UNIT_SIZE);
-        let mut rect = block.rect;
-        rect.luma_x += local_x;
-        rect.luma_y += local_y;
-        rect.luma_w = width;
-        rect.luma_h = height;
-        let mvs = if block.search_refinemv {
-            search_refinemv(sink, block, rect, offset)?
-        } else {
-            candidates
-        };
-        Ok(MotionCell::from_refinemv(mvs))
-    };
-    if cell_count == 1 {
-        return Ok(CompoundMotionGrid::from_single_refinemv(
-            candidates,
-            motion_cell(0, 0)?,
-        ));
-    }
-    let mut cells =
-        super::optflow::take_motion_cells(cell_count, MotionCell::from_refinemv(candidates));
-    let mut index = 0usize;
-    for local_y in (0..block.rect.luma_h).step_by(REFINEMV_UNIT_SIZE) {
-        for local_x in (0..block.rect.luma_w).step_by(REFINEMV_UNIT_SIZE) {
-            cells[index] = motion_cell(local_x, local_y)?;
-            index += 1;
-        }
-    }
-    Ok(CompoundMotionGrid::from_refinemv(
-        columns, candidates, cells,
-    ))
+/// The bilinear `(w + 8) x (h + 8)` § 7.13.3.6 search areas of one refine-MV
+/// unit of at most 16x16, for both references, as bytes or as samples.
+pub(super) type SearchBytes = [[u8; SEARCH_AREA]; 2];
+pub(super) type SearchSamples = [[u16; SEARCH_AREA]; 2];
+pub(super) const SEARCH_AREA: usize = (REFINEMV_UNIT_SIZE + 8) * (REFINEMV_UNIT_SIZE + 8);
+
+/// Which search area of [`search_unit`] holds the bilinear predictions of
+/// the unit's `(w + 8) x (h + 8)` area, at least its centre `w x h` samples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SearchArea {
+    None,
+    Bytes,
+    Samples,
 }
 
 #[inline(never)]
@@ -331,43 +298,102 @@ pub(super) fn search_refinemv<T: ReconSample>(
     if !search_range_allowed(candidates) {
         return Ok(candidates);
     }
-    let prediction_width = rect
-        .luma_w
-        .checked_add(8)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "refine-MV prediction width",
-        })?;
-    let prediction_height = rect
-        .luma_h
-        .checked_add(8)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "refine-MV prediction height",
-        })?;
-    let mut prediction_rect = rect;
-    prediction_rect.luma_w = prediction_width;
-    prediction_rect.luma_h = prediction_height;
     let mut luma = super::optflow::LumaReference::pair(sink.info(), block, offset);
+    let prediction_rect = search_rect(rect);
     // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
     let allow_center = !block.refinemv_switchable;
     if T::u8_slice(&[]).is_some() {
-        if allow_center
-            && super::optflow::fullpel_center_ends_search(&mut luma, prediction_rect, candidates)?
-                == Some(true)
-        {
-            return Ok(candidates);
-        }
-        let mut windows = [[0u8; 24 * 24]; 2];
-        if super::optflow::search_windows_u8(&mut luma, prediction_rect, candidates, &mut windows)?
-            && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
-                [&windows[0], &windows[1]],
-                prediction_rect.luma_w,
-                prediction_rect.luma_h - 4,
-                allow_center,
-            )
-        {
-            return Ok(refined_mvs(candidates, dx, dy));
+        let mut windows = [[0u8; SEARCH_AREA]; 2];
+        let search = (prediction_rect, candidates, allow_center);
+        if let Some(mvs) = search_bytes(&mut luma, search, &mut windows)?.0 {
+            return Ok(mvs);
         }
     }
+    let (width, height) = (prediction_rect.luma_w, prediction_rect.luma_h);
+    let (dx, dy) = super::with_initial_luma_predictions(width, height, |pred0, pred1| {
+        search_samples(&mut luma, rect, candidates, allow_center, [pred0, pred1])
+    })?;
+    Ok(refined_mvs(candidates, dx, dy))
+}
+
+/// The § 7.13.3.6 search of the refine-MV unit `rect` (at most 16x16) from
+/// `candidates`: the refined motion vectors and which of `bytes` and
+/// `samples` holds the search area they were chosen from.
+pub(super) fn search_unit<T: ReconSample>(
+    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
+    (rect, candidates, allow_center): (McBlockRect, [Mv; 2], bool),
+    bytes: &mut SearchBytes,
+    samples: &mut SearchSamples,
+) -> Result<([Mv; 2], SearchArea)> {
+    if !search_range_allowed(candidates) {
+        return Ok((candidates, SearchArea::None));
+    }
+    let prediction_rect = search_rect(rect);
+    if T::u8_slice(&[]).is_some()
+        && let (Some(mvs), area) =
+            search_bytes(luma, (prediction_rect, candidates, allow_center), bytes)?
+    {
+        return Ok((mvs, area));
+    }
+    let len = prediction_rect.luma_w * prediction_rect.luma_h;
+    let [first, second] = samples;
+    let (Some(pred0), Some(pred1)) = (first.get_mut(..len), second.get_mut(..len)) else {
+        return Err(ReconError::SubpelBlockDimensionUnsupported {
+            w: rect.luma_w,
+            h: rect.luma_h,
+        }
+        .into());
+    };
+    let (dx, dy) = search_samples(luma, rect, candidates, allow_center, [pred0, pred1])?;
+    Ok((refined_mvs(candidates, dx, dy), SearchArea::Samples))
+}
+
+/// The `(w + 8) x (h + 8)` search area of the refine-MV unit `rect`.
+const fn search_rect(rect: McBlockRect) -> McBlockRect {
+    let mut prediction_rect = rect;
+    prediction_rect.luma_w = rect.luma_w + 8;
+    prediction_rect.luma_h = rect.luma_h + 8;
+    prediction_rect
+}
+
+/// The eight-bit search: the candidates when both are full-pel and the
+/// centre SAD read from the references keeps them, else the search of the
+/// byte windows; `None` when the byte kernels do not cover the unit.
+fn search_bytes<T: ReconSample>(
+    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
+    (prediction_rect, candidates, allow_center): (McBlockRect, [Mv; 2], bool),
+    windows: &mut SearchBytes,
+) -> Result<(Option<[Mv; 2]>, SearchArea)> {
+    if allow_center
+        && super::optflow::fullpel_center_ends_search(luma, prediction_rect, candidates)?
+            == Some(true)
+    {
+        return Ok((Some(candidates), SearchArea::None));
+    }
+    if super::optflow::search_windows_u8(luma, prediction_rect, candidates, windows)?
+        && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
+            [&windows[0], &windows[1]],
+            prediction_rect.luma_w,
+            prediction_rect.luma_h - 4,
+            allow_center,
+        )
+    {
+        return Ok((Some(refined_mvs(candidates, dx, dy)), SearchArea::Bytes));
+    }
+    Ok((None, SearchArea::None))
+}
+
+/// The search offset from sample predictions of the search area: the centre
+/// alone first when it may keep the candidates, else the whole area.
+fn search_samples<T: ReconSample>(
+    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
+    rect: McBlockRect,
+    candidates: [Mv; 2],
+    allow_center: bool,
+    [pred0, pred1]: [&mut [u16]; 2],
+) -> Result<(i32, i32)> {
+    let prediction_rect = search_rect(rect);
+    let bit_depth = luma[0].bit_depth();
     let mut predict = |center_only: bool, pred0: &mut [u16], pred1: &mut [u16]| {
         for ((luma, candidate), prediction) in luma.iter_mut().zip(candidates).zip([pred0, pred1]) {
             let search_mv = Mv {
@@ -400,31 +426,24 @@ pub(super) fn search_refinemv<T: ReconSample>(
         }
         Ok::<_, crate::error::DecodeError>(())
     };
-    let bit_depth = sink.info().bit_depth();
-    let (dx, dy) = super::with_initial_luma_predictions(
-        prediction_width,
-        prediction_height,
-        |pred0, pred1| {
-            if allow_center {
-                predict(true, pred0, pred1)?;
-                let (stride, width, height) = (prediction_width, rect.luma_w, rect.luma_h);
-                if refinemv_center_sad(pred0, pred1, stride, width, height, bit_depth)?.is_none() {
-                    return Ok((0, 0));
-                }
+    let stride = prediction_rect.luma_w;
+    if allow_center {
+        predict(true, pred0, pred1)?;
+        if refinemv_center_sad(pred0, pred1, stride, rect.luma_w, rect.luma_h, bit_depth)?.is_none()
+        {
+            return Ok((0, 0));
+        }
+    }
+    predict(false, pred0, pred1)?;
+    let sad_h = prediction_rect.luma_h - 4;
+    splot_recon::refinemv_search_u16([pred0, pred1], stride, sad_h, allow_center, bit_depth)
+        .ok_or_else(|| {
+            ReconError::SubpelBlockDimensionUnsupported {
+                w: rect.luma_w + 4,
+                h: rect.luma_h + 4,
             }
-            predict(false, pred0, pred1)?;
-            let (stride, sad_h) = (prediction_width, prediction_height - 4);
-            splot_recon::refinemv_search_u16([pred0, pred1], stride, sad_h, allow_center, bit_depth)
-                .ok_or_else(|| {
-                    ReconError::SubpelBlockDimensionUnsupported {
-                        w: rect.luma_w + 4,
-                        h: rect.luma_h + 4,
-                    }
-                    .into()
-                })
-        },
-    )?;
-    Ok(refined_mvs(candidates, dx, dy))
+            .into()
+        })
 }
 
 /// The candidates moved by the full-sample search offset `(dx, dy)`, in

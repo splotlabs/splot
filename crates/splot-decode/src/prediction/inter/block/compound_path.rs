@@ -875,14 +875,14 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
     placed: &PlacedInterBlock,
     compound: super::super::compound::CompoundBlockSyntax,
     warp_params: [Option<[i32; 6]>; 2],
-    motion_grid: Option<&mc::CompoundMotionGrid>,
+    motion: Option<&mc::RefinedUnits>,
     mi_row: usize,
     mi_col: usize,
     mi_rows: usize,
     mi_cols: usize,
     current_order_hint: u32,
 ) -> Result<()> {
-    let uniform = motion_grid.is_none()
+    let uniform = motion.is_none()
         && warp_params == [None, None]
         && !matches!(placed.block.compound_blend, mc::CompoundBlend::Wedge { .. });
     let (step_w, step_h) = if uniform {
@@ -893,8 +893,8 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
     let first = records.len();
     for y in (0..placed.luma_h()).step_by(step_h) {
         for x in (0..placed.luma_w()).step_by(step_w) {
-            let mvs = if let Some(grid) = motion_grid {
-                grid.temporal_mvs_at_luma_offset(x, y)?
+            let mvs = if let Some(motion) = motion {
+                motion.temporal_mvs_at_luma_offset(x, y)?
             } else {
                 let unit_mv = |params: Option<[i32; 6]>, block_mv: Mv| {
                     params.map_or(block_mv, |params| {

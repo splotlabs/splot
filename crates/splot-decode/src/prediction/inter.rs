@@ -693,21 +693,17 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
         self.reference0.samples()
     }
 
-    /// Predicts the held block into `sink` from the compound `motion` grid,
-    /// a single-reference translation straight from its motion vector.
+    /// Predicts the held block, which does not refine its motion, into
+    /// `sink`: a single-reference translation straight from its motion vector.
     ///
     /// # Errors
     ///
-    /// As [`Self::block_params`] and [`mc::predict_inter_block_from_grid`].
-    #[allow(clippy::too_many_arguments)]
+    /// As [`Self::block_params`] and [`mc::predict_inter_block`].
     pub(in crate::prediction::inter) fn predict_into(
         &self,
         sink: &mut mc::WorkspaceSink<'_, '_, T>,
         placed: &PlacedInterBlock,
         rect: mc::McBlockRect,
-        use_refinemv: bool,
-        refinemv_switchable: bool,
-        motion: Option<&mc::CompoundMotionGrid>,
         offset: ByteOffset,
     ) -> Result<()> {
         if !self.compound && placed.block.warp_params[0].is_none() {
@@ -721,11 +717,7 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
                 offset,
             );
         }
-        let block = self
-            .block_params(placed, rect)?
-            .with_refinemv(use_refinemv)
-            .with_switchable_refinemv(refinemv_switchable);
-        mc::predict_inter_block_from_grid(sink, &block, motion, offset)
+        mc::predict_inter_block(sink, &self.block_params(placed, rect)?, offset)
     }
 
     /// Builds the § 7.13.3 prediction parameters for the held block.

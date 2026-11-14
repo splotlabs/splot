@@ -75,11 +75,9 @@ fn narrow(preds: &[Vec<i32>; 2]) -> [Vec<i16>; 2] {
         .map(|pred| pred.iter().map(|&value| value as i16).collect())
 }
 
-/// Where a plane lies for the oracle: its plane position, the reference
-/// scalings, the frame plane size and the luma block size.
+/// Where a plane lies for the oracle: the reference scalings, the frame plane size and the luma block size.
 #[derive(Clone, Copy)]
 struct Placement {
-    position: (usize, usize),
     scalings: [PlaneScaling; 2],
     frame: (usize, usize),
     luma: (usize, usize),
@@ -88,7 +86,6 @@ struct Placement {
 fn placed(size: (usize, usize), luma: (usize, usize)) -> Placement {
     let scaling = derive_plane_scaling(0, 0, 0, 0, 0, 0, 64, 64, 64, 64);
     Placement {
-        position: (0, 0),
         scalings: [scaling; 2],
         frame: size,
         luma,
@@ -108,7 +105,7 @@ fn scalar<T: ReconSample>(
     let mut output = vec![T::default(); (h - 1) * stride + w];
     let [pred0, pred1] = preds;
     let result = if matches!(blend, CompoundBlend::Average { .. }) {
-        let ([s0, s1], (x, y), (fw, fh)) = (at.scalings, at.position, at.frame);
+        let ([s0, s1], (fw, fh)) = (at.scalings, at.frame);
         blend_compound_average::<T>(
             pred0,
             pred1,
@@ -116,15 +113,10 @@ fn scalar<T: ReconSample>(
             w,
             h,
             blend,
-            None,
-            x,
-            y,
             s0,
             s1,
             fw,
             fh,
-            sub.0,
-            sub.1,
             &mut output,
             stride,
         )
@@ -388,7 +380,6 @@ fn implicit_mask_blend_matches_the_scalar_blend() {
                     cwp_weight: CWP_EQUAL,
                 };
                 let at = Placement {
-                    position: (plane_x, plane_y),
                     scalings,
                     frame: (frame_w, frame_h),
                     luma: (w, h),

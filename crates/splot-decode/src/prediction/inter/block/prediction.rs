@@ -91,9 +91,6 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
-    motion: Option<&mc::CompoundMotionGrid>,
-    use_refinemv: bool,
-    refinemv_switchable: bool,
     block_decoded: &TileBlockDecodedState,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
@@ -121,9 +118,6 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
         &mut mc::WorkspaceSink::Frame(workspace),
         placed,
         rect,
-        use_refinemv,
-        refinemv_switchable,
-        motion,
         tile_offset,
     )?;
     if placed.block.bawp.enabled {
@@ -182,16 +176,14 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
 }
 
 /// Reconstructs one deferable inter block (no interintra, no BAWP, no
-/// current-frame reads) into `sink`: motion compensation, then residual add.
+/// current-frame reads, no refined motion) into `sink`: motion compensation,
+/// then residual add.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
-    motion: Option<&mc::CompoundMotionGrid>,
-    use_refinemv: bool,
-    refinemv_switchable: bool,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     qindex: u32,
@@ -201,15 +193,7 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
-    held.predict_into(
-        sink,
-        placed,
-        placed.motion_compensation_rect(),
-        use_refinemv,
-        refinemv_switchable,
-        motion,
-        tile_offset,
-    )?;
+    held.predict_into(sink, placed, placed.motion_compensation_rect(), tile_offset)?;
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
             sink,
@@ -222,6 +206,36 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
             false,
             bit_depth,
         )?;
+    }
+    Ok(())
+}
+
+/// Predicts the compound block `placed` that refines its motion (§ 7.13.3.3
+/// refine-MV, § 7.13.3.8 optical flow) in one pass: the luma motion of every
+/// unit into `units`, then `records` from it (§ 7.22), then with `predict`
+/// every plane from it into `sink`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn predict_refined_inter_block<T: ReconSample>(
+    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    units: &mut mc::RefinedUnits,
+    placed: &PlacedInterBlock,
+    (use_refinemv, refinemv_switchable): (bool, bool),
+    (ref_frame_idx, reference): (&[u32], &InterReferenceState<T>),
+    predict: bool,
+    tile_offset: ByteOffset,
+    records: impl FnOnce(&mc::RefinedUnits) -> Result<()>,
+) -> Result<()> {
+    let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
+    let block = held
+        .block_params(placed, placed.motion_compensation_rect())?
+        .with_refinemv(use_refinemv)
+        .with_switchable_refinemv(refinemv_switchable)
+        .into_compound()
+        .ok_or(crate::DecodeHeaderStateError::InvalidInterBlockModeState)?;
+    mc::refine_block_units(sink, &block, units, tile_offset)?;
+    records(units)?;
+    if predict {
+        mc::predict_refined_block(sink, &block, units, tile_offset)?;
     }
     Ok(())
 }

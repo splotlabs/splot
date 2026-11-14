@@ -198,6 +198,8 @@ pub(crate) struct EncoderInterTile {
     /// The unit records a TIP trial derives and drops, kept for reuse.
     tip_trial_records: Vec<TemporalMotionBlock>,
     tip_scratch: super::tip::TipReconstructScratch,
+    /// The units of the refined compound leaf the facade last predicted.
+    refined: mc::RefinedUnits,
     /// The intra block copy state of an intra frame with `allow_intrabc`;
     /// `None` in an inter frame.
     intrabc: Option<TileIntrabcPreludeState>,
@@ -334,6 +336,7 @@ impl EncoderInterTile {
             tip_records: Vec::new(),
             tip_trial_records: Vec::new(),
             tip_scratch: super::tip::TipReconstructScratch::default(),
+            refined: mc::RefinedUnits::default(),
             intrabc: None,
         };
         tile.compound_pairs = tile.derive_compound_pairs();
@@ -591,9 +594,6 @@ impl EncoderInterTile {
                 &placed,
                 &[],
                 &[],
-                None,
-                false,
-                false,
                 block_decoded,
                 &self.ref_frame_idx,
                 &self.reference,
@@ -606,15 +606,18 @@ impl EncoderInterTile {
             )?;
             return Ok(mvs);
         }
-        let grid = self.compound_grid(&placed, refine, workspace)?;
+        if refine.0 || placed.block.optflow_distances.is_some() {
+            let mut units = core::mem::take(&mut self.refined);
+            let predicted = self.predict_refined(&placed, refine, workspace, &mut units, true);
+            self.refined = units;
+            predicted?;
+            return Ok(mvs);
+        }
         prediction::reconstruct_pure_inter_block(
             &mut mc::WorkspaceSink::Frame(workspace),
             &placed,
             &[],
             &[],
-            grid.as_ref(),
-            refine.0,
-            refine.1,
             &self.ref_frame_idx,
             &self.reference,
             self.qindex,
@@ -697,8 +700,20 @@ impl EncoderInterTile {
                 compound.use_optflow,
             );
             let placed = self.placed(frontier, &syntax, parsed, &resolved)?;
-            if let Some(grid) = self.compound_grid(&placed, refine, workspace)? {
-                self.append_compound_records((&placed, &block), compound, &resolved, Some(&grid))?;
+            if refine.0 || placed.block.optflow_distances.is_some() {
+                let mut units = core::mem::take(&mut self.refined);
+                let derived = self
+                    .predict_refined(&placed, refine, workspace, &mut units, false)
+                    .and_then(|()| {
+                        self.append_compound_records(
+                            (&placed, &block),
+                            compound,
+                            &resolved,
+                            Some(&units),
+                        )
+                    });
+                self.refined = units;
+                derived?;
             }
         } else if let Some(compound) = wedge {
             let placed = self.placed(frontier, &syntax, parsed, &resolved)?;
@@ -715,7 +730,7 @@ impl EncoderInterTile {
         (placed, block): (&PlacedInterBlock, &MvBlockContext),
         compound: CompoundMotionSyntax,
         resolved: &ResolvedInterBlock,
-        grid: Option<&mc::CompoundMotionGrid>,
+        motion: Option<&mc::RefinedUnits>,
     ) -> Result<()> {
         super::compound_path::append_compound_temporal_motion(
             &mut self.tip_records,
@@ -731,7 +746,7 @@ impl EncoderInterTile {
                 mv1: resolved.mv[1],
             },
             resolved.warp_params,
-            grid,
+            motion,
             block.mi_row,
             block.mi_col,
             self.mi_rows,
@@ -748,30 +763,26 @@ impl EncoderInterTile {
             .is_some_and(|inter| inter.enable_tip_refinemv)
     }
 
-    /// The decoder's refinement grid of the compound block `placed` with
-    /// `(use_refinemv, refinemv_switchable, use_optflow)`, `None` where it
-    /// predicts without one.
-    fn compound_grid(
+    /// The decoder's refined motion of the compound block `placed` with
+    /// `(use_refinemv, refinemv_switchable, _)` into `units`; with `predict`,
+    /// also its prediction into `workspace`.
+    fn predict_refined(
         &self,
         placed: &PlacedInterBlock,
-        (use_refinemv, switchable, use_optflow): (bool, bool, bool),
+        (use_refinemv, switchable, _): (bool, bool, bool),
         workspace: &mut CurrentFrameWorkspace<u16>,
-    ) -> Result<Option<mc::CompoundMotionGrid>> {
-        if !use_refinemv && !use_optflow {
-            return Ok(None);
-        }
-        let held = super::super::hold_inter_block_references(
-            &self.ref_frame_idx,
-            &self.reference,
+        units: &mut mc::RefinedUnits,
+        predict: bool,
+    ) -> Result<()> {
+        prediction::predict_refined_inter_block(
+            &mut mc::WorkspaceSink::Frame(workspace),
+            units,
             placed,
-        )?;
-        mc::inter_block_motion_grid(
-            &mc::WorkspaceSink::Frame(workspace),
-            held.block_params(placed, placed.motion_compensation_rect())?
-                .with_refinemv(use_refinemv)
-                .with_switchable_refinemv(switchable),
-            None,
+            (use_refinemv, switchable),
+            (&self.ref_frame_idx, &self.reference),
+            predict,
             ByteOffset::new(0),
+            |_| Ok(()),
         )
     }
 
