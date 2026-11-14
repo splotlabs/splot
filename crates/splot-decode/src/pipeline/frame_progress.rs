@@ -169,8 +169,8 @@ impl<T> DirectPlaneTarget<T> {
 impl<T: ReconSample> DirectPlaneTarget<T> {
     /// The region's rows as they are, viewed while no `samples_mut` borrow lives.
     pub(crate) fn rows(&self) -> Option<crate::filters::source::FramePlane<'_, T>> {
-        // SAFETY: the lease gives this target the region alone; `&self` excludes its `samples_mut`.
-        let span = unsafe { slice::from_raw_parts(self.region.samples.as_ptr(), self.region.len) };
+        let (start, len) = (self.region.samples.as_ptr(), self.region.len);
+        let span = unsafe { slice::from_raw_parts(start, len) }; // SAFETY: leased to this target alone; `&self` excludes `samples_mut`.
         let region = &self.region;
         let size = (region.width, region.frame_height);
         let rows = region.len.checked_div(region.stride)?;
