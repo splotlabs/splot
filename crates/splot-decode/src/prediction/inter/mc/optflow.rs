@@ -568,6 +568,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
             grid.unit_size()
         });
     let [mut luma0, mut luma1] = LumaReference::pair(sink.info(), block, offset);
+    let windows = refinemv.is_some() && super::refinemv::kept_unit_windows();
     for region_y in (0..block.rect.luma_h).step_by(base_unit) {
         for region_x in (0..block.rect.luma_w).step_by(base_unit) {
             let region_w = (block.rect.luma_w - region_x).min(base_unit);
@@ -585,28 +586,42 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
             prediction_rect.luma_y += region_y;
             prediction_rect.luma_w = round_up(region_w)?;
             prediction_rect.luma_h = round_up(region_h)?;
+            let unit = (region_y / base_unit) * block.rect.luma_w.div_ceil(base_unit)
+                + region_x / base_unit;
             let refined = super::with_initial_luma_predictions(
                 prediction_rect.luma_w,
                 prediction_rect.luma_h,
                 |pred0, pred1| {
-                    initial_luma_prediction::<_, 0>(
-                        &mut luma0,
-                        prediction_rect,
-                        base_mvs[0],
-                        InterpolationFilter::Bilinear,
-                        candidates.map(|mvs| (mvs[0], region_w, region_h)),
-                        None,
-                        pred0,
-                    )?;
-                    initial_luma_prediction::<_, 0>(
-                        &mut luma1,
-                        prediction_rect,
-                        base_mvs[1],
-                        InterpolationFilter::Bilinear,
-                        candidates.map(|mvs| (mvs[1], region_w, region_h)),
-                        None,
-                        pred1,
-                    )?;
+                    let reused = windows
+                        && (region_w, region_h) == (prediction_rect.luma_w, prediction_rect.luma_h)
+                        && candidates.is_some_and(|candidates| {
+                            super::refinemv::unit_window_predictions(
+                                unit,
+                                prediction_rect,
+                                (candidates, base_mvs),
+                                [&mut *pred0, &mut *pred1],
+                            )
+                        });
+                    if !reused {
+                        initial_luma_prediction::<_, 0>(
+                            &mut luma0,
+                            prediction_rect,
+                            base_mvs[0],
+                            InterpolationFilter::Bilinear,
+                            candidates.map(|mvs| (mvs[0], region_w, region_h)),
+                            None,
+                            pred0,
+                        )?;
+                        initial_luma_prediction::<_, 0>(
+                            &mut luma1,
+                            prediction_rect,
+                            base_mvs[1],
+                            InterpolationFilter::Bilinear,
+                            candidates.map(|mvs| (mvs[1], region_w, region_h)),
+                            None,
+                            pred1,
+                        )?;
+                    }
                     if block.optflow_sad_threshold.is_some_and(|threshold| {
                         normalized_sad(pred0, pred1, sink.info().bit_depth()) < threshold
                     }) {
