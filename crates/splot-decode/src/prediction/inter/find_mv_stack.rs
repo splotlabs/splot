@@ -309,22 +309,47 @@ pub(crate) fn find_mode_ctx_with_tip(
 
 /// [`find_mode_ctx_with_tip`] reusing the immediate neighbours that
 /// [`block_neighbour_ctx`] read for the same block position.
-#[allow(clippy::inline_always, reason = "measured: per-leaf mode context")]
-#[inline(always)]
 pub(crate) fn mode_ctx_from_neighbours(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     tip_ref_pair: Option<(i8, i8)>,
     neighbours: &BlockNeighbourContext,
 ) -> ModeContext {
-    let mut cells = neighbours.immediate;
+    ModeContext {
+        new_mv_context: new_mv_ctx_from_neighbours(block, tip_ref_pair, neighbours),
+        ..warp_ctx_from_neighbours(grid, block, neighbours)
+    }
+}
+
+/// The § 7.11.2 `NewMvContext` of [`mode_ctx_from_neighbours`].
+#[allow(clippy::inline_always, reason = "measured: per-leaf mode context")]
+#[inline(always)]
+pub(crate) fn new_mv_ctx_from_neighbours(
+    block: &MvBlockContext,
+    tip_ref_pair: Option<(i8, i8)>,
+    neighbours: &BlockNeighbourContext,
+) -> usize {
     let (mut found, mut newmv) = (0u32, false);
-    for (index, &cell) in cells.iter().enumerate() {
+    for (index, &cell) in neighbours.immediate.iter().enumerate() {
         if let Some(is_newmv) = mode_ctx_match_newmv(cell, block, tip_ref_pair) {
             found |= 1 << index;
             newmv |= is_newmv;
         }
     }
+    let nearest_match = usize::from(found & 0b1010 != 0) + usize::from(found & 0b0101 != 0);
+    nearest_match + 2 * usize::from(newmv)
+}
+
+/// The § 7.11.2 warp outputs of [`mode_ctx_from_neighbours`]; its
+/// `new_mv_context` is left 0.
+#[allow(clippy::inline_always, reason = "measured: per-leaf mode context")]
+#[inline(always)]
+pub(crate) fn warp_ctx_from_neighbours(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    neighbours: &BlockNeighbourContext,
+) -> ModeContext {
+    let mut cells = neighbours.immediate;
     let is_sb_border = block.is_sb_border();
     let (bw4, bh4) = (block.bw4 as i32, block.bh4 as i32);
     let odd_col = (block.mi_col & 1) as i32;
@@ -358,9 +383,8 @@ pub(crate) fn mode_ctx_from_neighbours(
             .ref_frame1
             .is_some_and(|ref1| neighbour_matches_ref(cell, ref1));
     }
-    let nearest_match = usize::from(found & 0b1010 != 0) + usize::from(found & 0b0101 != 0);
     ModeContext {
-        new_mv_context: nearest_match + 2 * usize::from(newmv),
+        new_mv_context: 0,
         warp_mv_count,
         warp_sample_found: samples != 0,
         warp_sample_found1,

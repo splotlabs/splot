@@ -370,12 +370,12 @@ pub(super) fn decode_compound_inter_block(
     let compound_is_joint_ctx = facts.is_joint_context(pair)?;
     block_ctx.ref_frame0 = pair.0;
     block_ctx.ref_frame1 = Some(pair.1);
-    let mode_ctx = mode_ctx_from_neighbours(sink.mv_grid, block_ctx, tip_ref_pair, neighbour_ctx);
+    let new_mv_context = new_mv_ctx_from_neighbours(block_ctx, tip_ref_pair, neighbour_ctx);
     let mut compound = read_compound_mode_syntax(
         cdfs,
         symbols,
         pair,
-        mode_ctx.new_mv_context,
+        new_mv_context,
         compound_is_joint_ctx,
         tile_offset,
     )?;
@@ -402,8 +402,11 @@ pub(super) fn decode_compound_inter_block(
         n4h,
         force_integer_mv,
         opfl_refine_type,
-        [mode_ctx.warp_sample_found, mode_ctx.warp_sample_found1],
         frame_modes[splot_core::headers::frame::LOCALWARP],
+        || {
+            let warp = warp_ctx_from_neighbours(sink.mv_grid, block_ctx, neighbour_ctx);
+            [warp.warp_sample_found, warp.warp_sample_found1]
+        },
     );
     let local_warp =
         read_compound_motion_mode_syntax(cdfs, symbols, signal_local_warp, neighbour_ctx);
@@ -419,8 +422,7 @@ pub(super) fn decode_compound_inter_block(
     let mut ref_mv_idx1 = 0;
     if compound.y_mode.reads_drl_idx() {
         if compound_reads_second_drl(compound) {
-            ref_mv_idx0 =
-                read_drl_idx(cdfs, symbols, mode_ctx.new_mv_context, max_drl_bits_minus_1);
+            ref_mv_idx0 = read_drl_idx(cdfs, symbols, new_mv_context, max_drl_bits_minus_1);
             let second_min_idx = if compound.ref_frame0 == compound.ref_frame1
                 && compound.y_mode == CompoundYMode::NearNear
             {
@@ -431,12 +433,12 @@ pub(super) fn decode_compound_inter_block(
             ref_mv_idx1 = read_drl_idx_from(
                 cdfs,
                 symbols,
-                mode_ctx.new_mv_context,
+                new_mv_context,
                 max_drl_bits_minus_1,
                 second_min_idx,
             );
         } else {
-            ref_mv_idx = read_drl_idx(cdfs, symbols, mode_ctx.new_mv_context, max_drl_bits_minus_1);
+            ref_mv_idx = read_drl_idx(cdfs, symbols, new_mv_context, max_drl_bits_minus_1);
         }
     }
     let frame_mv_config = params.mv_config(core)?;
@@ -653,8 +655,8 @@ pub(super) fn compound_local_warp_signal_allowed(
     n4h: usize,
     force_integer_mv: bool,
     opfl_refine_type: u32,
-    warp_sample_found: [bool; 2],
     local_warp_enabled: bool,
+    warp_sample_found: impl FnOnce() -> [bool; 2],
 ) -> bool {
     compound.y_mode == CompoundYMode::NewNew
         && compound.ref_frame0 != compound.ref_frame1
@@ -663,9 +665,8 @@ pub(super) fn compound_local_warp_signal_allowed(
         && !force_integer_mv
         && !compound.use_optflow
         && opfl_refine_type != REFINE_ALL
-        && warp_sample_found[0]
-        && warp_sample_found[1]
         && local_warp_enabled
+        && warp_sample_found() == [true; 2]
 }
 
 /// AV2 § 7.13.3.23: § 7.12.3 warp-sample search plus least-squares estimation

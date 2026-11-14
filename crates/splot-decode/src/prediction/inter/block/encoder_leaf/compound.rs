@@ -803,8 +803,8 @@ impl EncoderInterTile {
                 n4h,
                 effective_force_integer_mv(&self.core),
                 inter.opfl_refine_type.unwrap_or(0),
-                [mode_ctx.warp_sample_found, mode_ctx.warp_sample_found1],
                 local,
+                || [mode_ctx.warp_sample_found, mode_ctx.warp_sample_found1],
             ),
         )
     }

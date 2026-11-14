@@ -31,7 +31,7 @@ use super::find_mv_stack::{
     TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
     TemporalProjectionConfig, TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
     find_compound_mv_stack_upto, find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_upto,
-    mode_ctx_from_neighbours, ref_count_ctx, warp_predicted_mv,
+    new_mv_ctx_from_neighbours, ref_count_ctx, warp_ctx_from_neighbours, warp_predicted_mv,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_QUARTER_PEL, MvReadConfig, apply_inter_mvd_signs,
@@ -1724,22 +1724,20 @@ fn decode_block<T: ReconSample>(
         SINGLE_REF_FRAME0
     };
     block_ctx.ref_frame0 = ref_frame0;
-    let mode_ctx = mode_ctx_from_neighbours(sink.mv_grid, &block_ctx, None, &neighbour_ctx);
-    let force_integer_mv = params.force_integer_mv;
-    let warp_mode = if tip_ref || segment_forces_globalmv {
-        None
-    } else {
-        read_warp_inter_mode_syntax(
-            cdfs,
-            symbols,
-            params.allow_warpmv_mode,
-            force_integer_mv,
-            n4w,
-            n4h,
-            mode_ctx.warp_mv_count,
-        )
-    };
-    if let Some(warp_mode) = warp_mode {
+    let new_mv_context = new_mv_ctx_from_neighbours(&block_ctx, None, &neighbour_ctx);
+    let warp_mode =
+        (!tip_ref && !segment_forces_globalmv && params.allow_warpmv_mode && n4w >= 2 && n4h >= 2)
+            .then(|| warp_ctx_from_neighbours(sink.mv_grid, &block_ctx, &neighbour_ctx))
+            .and_then(|mode_ctx| {
+                read_warp_inter_mode_syntax(
+                    cdfs,
+                    symbols,
+                    params.force_integer_mv,
+                    mode_ctx.warp_mv_count,
+                )
+                .map(|warp_mode| (warp_mode, mode_ctx))
+            });
+    if let Some((warp_mode, mode_ctx)) = warp_mode {
         let derive_wrl = n4w >= 2 && n4h >= 2;
         let use_temporal_first =
             params.temporal_first_frame && params.ref_facts.temporal_near(ref_frame0);
@@ -1766,7 +1764,7 @@ fn decode_block<T: ReconSample>(
                     &neighbour_ctx,
                     mv_config,
                     motion_mode,
-                    mode_ctx.new_mv_context,
+                    new_mv_context,
                     params.max_drl_bits_minus_1,
                     tile_offset,
                 )?
@@ -1779,7 +1777,7 @@ fn decode_block<T: ReconSample>(
                 &neighbour_ctx,
                 mv_config,
                 frontier.b_size.index(),
-                mode_ctx.new_mv_context,
+                new_mv_context,
                 params.max_drl_bits_minus_1,
                 tile_offset,
             )?,
@@ -1841,10 +1839,7 @@ fn decode_block<T: ReconSample>(
     } else {
         read_row(
             symbols,
-            row_at(
-                &mut cdfs.block_rows_mut().single_mode,
-                mode_ctx.new_mv_context,
-            ),
+            row_at(&mut cdfs.block_rows_mut().single_mode, new_mv_context),
         ) as u8
     };
     let use_amvd = read_use_amvd_syntax(
@@ -1895,12 +1890,7 @@ fn decode_block<T: ReconSample>(
         if tip_ref {
             read_tip_drl_idx(cdfs, symbols, params.max_drl_bits_minus_1, tile_offset)?
         } else {
-            read_drl_idx(
-                cdfs,
-                symbols,
-                mode_ctx.new_mv_context,
-                params.max_drl_bits_minus_1,
-            )
+            read_drl_idx(cdfs, symbols, new_mv_context, params.max_drl_bits_minus_1)
         }
     } else {
         0

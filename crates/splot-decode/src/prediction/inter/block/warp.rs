@@ -14,15 +14,9 @@ use super::*;
 pub(crate) fn read_warp_inter_mode_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    allow_warpmv_mode: bool,
     force_integer_mv: bool,
-    n4w: usize,
-    n4h: usize,
     ctx: usize,
 ) -> Option<WarpInterMode> {
-    if !allow_warpmv_mode || n4w < 2 || n4h < 2 {
-        return None;
-    }
     let rows = cdfs.block_rows_mut();
     if read_row(symbols, row_at(&mut rows.is_warp, ctx)) == 0 {
         return None;

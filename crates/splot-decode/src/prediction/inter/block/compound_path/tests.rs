@@ -947,8 +947,8 @@ fn compound_optflow_suppresses_local_warp_gate() {
         2,
         false,
         REFINE_SWITCHABLE,
-        [true; 2],
         true,
+        || [true; 2],
     ));
 }
 
