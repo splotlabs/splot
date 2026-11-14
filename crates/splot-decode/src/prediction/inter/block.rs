@@ -1540,21 +1540,7 @@ fn decode_block<T: ReconSample>(
             usize::from(segment_id),
             delta_q_state.qindex_u32(),
         );
-        let luma_tree = !frontier.is_chroma_part();
-        if luma_tree {
-            mv_grid.record_flags(
-                mi_row,
-                mi_col,
-                n4w,
-                n4h,
-                non_inter_flag_syntax(None, frame_mv_precision(core)?),
-            );
-            if params.allow_intrabc {
-                intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
-            }
-        }
-        let size4 = luma_tree.then_some([n4w as u8, n4h as u8]);
-        return crate::pipeline::general_intra::decode_one_general_intra_block(
+        let (leaf, command) = crate::pipeline::general_intra::decode_one_general_intra_block(
             &mut crate::pipeline::general_intra::GeneralIntraLeafParse {
                 work_unit,
                 symbols,
@@ -1576,15 +1562,27 @@ fn decode_block<T: ReconSample>(
             frontier,
             &params.intra_tools,
             neighbours,
-            |command| {
-                tile::push_leaf_entry(
-                    superblocks,
-                    entries,
-                    DecodedLeafPublication::from_frontier(frontier, sb_mask),
-                    EntryState::Intra { command, size4 },
-                );
+        )?;
+        let luma_tree = !frontier.is_chroma_part();
+        if luma_tree {
+            mv_grid.record_flags(
+                mi_row,
+                mi_col,
+                n4w,
+                n4h,
+                non_inter_flag_syntax(None, frame_mv_precision(core)?),
+            );
+            if params.allow_intrabc {
+                intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
+            }
+        }
+        return Ok(store(
+            leaf,
+            EntryState::Intra {
+                command,
+                size4: luma_tree.then_some([n4w as u8, n4h as u8]),
             },
-        );
+        ));
     }
     let Some(neighbour_ctx) = neighbour_ctx else {
         return Err(crate::DecodeHeaderStateError::InvalidInterPartitionState.into());
