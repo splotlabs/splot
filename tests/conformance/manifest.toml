@@ -2313,3 +2313,153 @@ expect = "clean"
 path = "vectors/valid/syn-refinemv-edge-422-10bit-160x120-q80.ivf"
 description = "AVM-encoded 17-frame 160x120 10-bit 4:2:2 stream of a project-generated moving texture (avmenc --profile=2 --bit-depth=10 --cpu-used=4 --end-usage=q --qp=80 --lag-in-frames=16 --enable-tip=0 --enable-opfl-refine=1 --enable-refinemv=1): inter frames with opfl_refine_type REFINE_SWITCHABLE and 9 refine-MV compound blocks and 4 with optical flow and refine-MV inside the sample storage, 6 and 1 that cross its edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 689586158b927c02d563fa961fe703f137560aa98f84555448aa0c90133ba898; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-wedge-420-160x120-q180.ivf"
+description = "AVM-encoded 17-frame 8-bit 4:2:0 stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=0 --bit-depth=8 --end-usage=q --cpu-used=2 --qp=180 --lag-in-frames=16 --enable-global-motion=1): 2 LOCALWARP, 1 EXTENDWARP, 13 DELTAWARP with warp_delta, 57 WARPMV, 1 compound LOCALWARP, 1 COMPOUND_WEDGE warp, 12 warp inter-intra, 8 wedge warp inter-intra blocks; 23 luma warp predictions read outside the reference frame, 35 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 d87069548ead861a1f0e9c805948e3a4fbb22d753afbe22ebaca96c0e5265ddf; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-wedge-420-10bit-160x120-q180.ivf"
+description = "AVM-encoded 17-frame 10-bit 4:2:0 stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=0 --bit-depth=10 --end-usage=q --cpu-used=2 --qp=180 --lag-in-frames=16 --enable-global-motion=1): 5 LOCALWARP, 6 EXTENDWARP, 13 DELTAWARP with warp_delta, 44 WARPMV, 1 compound LOCALWARP, 1 COMPOUND_WEDGE warp, 5 warp inter-intra, 2 wedge warp inter-intra blocks; 1 luma warp predictions use the § 7.13.3.20 extended block warp, 26 luma warp predictions read outside the reference frame, 35 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 ad07018d491a6fc0685562269d88857ecd714bfa0c7e85126b29bbeb9ff3c7eb; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-global-420-10bit-176x144-q120.ivf"
+description = "AVM-encoded 3-frame 10-bit 4:2:0 stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=0 --bit-depth=10 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=2 --enable-global-motion=1 --enable-warped-motion=0): 4 single-reference GLOBALMV warp blocks; 0 luma warp predictions read outside the reference frame, 0 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 3c36a9fa6cd026a8be71932709dcc783dd540a4d29b7b0268cc1ecaec247eef4; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-interintra-422-160x120-q170.ivf"
+description = "AVM-encoded 17-frame 8-bit 4:2:2 stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=2 --bit-depth=8 --end-usage=q --cpu-used=2 --qp=170 --lag-in-frames=16 --enable-global-motion=1): 11 LOCALWARP, 8 EXTENDWARP, 15 DELTAWARP with warp_delta, 74 WARPMV, 10 warp inter-intra, 7 wedge warp inter-intra blocks; 3 luma warp predictions use the § 7.13.3.20 extended block warp, 32 luma warp predictions read outside the reference frame, 41 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 3ce6829da362cc48abe308f08af0afdd45234029c3976cf666a907c5e72e0b9b; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-wedge-422-160x120-q180.ivf"
+description = "AVM-encoded 17-frame 8-bit 4:2:2 stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=2 --bit-depth=8 --end-usage=q --cpu-used=2 --qp=180 --lag-in-frames=16 --enable-global-motion=1 --enable-diff-wtd-comp=0 --enable-cwp=0 --enable-opfl-refine=0 --enable-refinemv=0 --enable-tip=0 --enable-interintra-comp=0 --enable-bawp=0): 9 LOCALWARP, 8 EXTENDWARP, 11 DELTAWARP with warp_delta, 52 WARPMV, 3 compound LOCALWARP, 1 COMPOUND_WEDGE warp blocks; 6 luma warp predictions use the § 7.13.3.20 extended block warp, 29 luma warp predictions read outside the reference frame, 35 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 84835180a2764334c589b9077662616eb571ed7b2b98765c3de2519be57ac0f1; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-diffwtd-422-160x120-q180.ivf"
+description = "AVM-encoded 17-frame 8-bit 4:2:2 stream of a project-generated 160x120 texture (seed 3) that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=2 --bit-depth=8 --end-usage=q --cpu-used=2 --qp=180 --lag-in-frames=16 --enable-global-motion=0 --enable-interinter-wedge=0 --enable-cwp=0 --enable-opfl-refine=0 --enable-refinemv=0 --enable-tip=0 --enable-interintra-comp=0 --enable-bawp=0): 12 LOCALWARP, 5 EXTENDWARP, 11 DELTAWARP with warp_delta, 85 WARPMV, 2 compound LOCALWARP, 2 COMPOUND_DIFFWTD warp blocks; 2 luma warp predictions use the § 7.13.3.20 extended block warp, 34 luma warp predictions read outside the reference frame, 47 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 87642c9564fbbd873d468c617d29133bc71e157f8911d5e906187a1cd2b9cb4a; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-global-422-176x144-q120.ivf"
+description = "AVM-encoded 4-frame 8-bit 4:2:2 stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=2 --bit-depth=8 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=3 --enable-global-motion=1 --enable-warped-motion=0): 5 single-reference GLOBALMV warp blocks; 0 luma warp predictions read outside the reference frame, 0 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 6d6959b81a8c51f390515cd35056331c9e4fba705d834b5f01fa7ac008d4178e; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-interintra-422-10bit-160x120-q160.ivf"
+description = "AVM-encoded 17-frame 10-bit 4:2:2 stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=2 --bit-depth=10 --end-usage=q --cpu-used=2 --qp=160 --lag-in-frames=16 --enable-global-motion=1): 10 LOCALWARP, 9 EXTENDWARP, 19 DELTAWARP with warp_delta, 72 WARPMV, 1 compound LOCALWARP, 18 warp inter-intra, 10 wedge warp inter-intra blocks; 4 luma warp predictions use the § 7.13.3.20 extended block warp, 33 luma warp predictions read outside the reference frame, 48 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 a67292748392a794af9834de338e56a7d9ef89a46c91d1e3de064e46afb04a08; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-wedge-422-10bit-160x120-q180.ivf"
+description = "AVM-encoded 17-frame 10-bit 4:2:2 stream of a project-generated 160x120 texture (seed 2) that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=2 --bit-depth=10 --end-usage=q --cpu-used=2 --qp=180 --lag-in-frames=16 --enable-diff-wtd-comp=0 --enable-cwp=0 --enable-opfl-refine=0 --enable-refinemv=0 --enable-tip=0 --enable-interintra-comp=0 --enable-bawp=0 --enable-global-motion=0): 7 LOCALWARP, 4 EXTENDWARP, 11 DELTAWARP with warp_delta, 65 WARPMV, 4 compound LOCALWARP, 3 COMPOUND_WEDGE warp blocks; 40 luma warp predictions read outside the reference frame, 47 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 84576efa9eac76d99a72ad0af012d743c2b58d2429f098e2f34604ddb68410cf; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-diffwtd-422-10bit-160x120-q100.ivf"
+description = "AVM-encoded 17-frame 10-bit 4:2:2 stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with three discs that rotate and zoom around their own centres (avmenc --profile=2 --bit-depth=10 --end-usage=q --cpu-used=2 --qp=100 --lag-in-frames=16 --enable-global-motion=1): 6 LOCALWARP, 8 EXTENDWARP, 17 DELTAWARP with warp_delta, 53 WARPMV, 6 compound LOCALWARP, 1 COMPOUND_DIFFWTD warp, 13 warp inter-intra blocks; 30 luma warp predictions read outside the reference frame, 53 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 0697c3369ac0497fd4075970461d1f9404c088a411a21bcf469141463a45e8b8; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-global-422-10bit-176x144-q120.ivf"
+description = "AVM-encoded 3-frame 10-bit 4:2:2 stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=2 --bit-depth=10 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=2 --enable-global-motion=1 --enable-warped-motion=0): 3 single-reference GLOBALMV warp blocks; 0 luma warp predictions read outside the reference frame, 0 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 b0ceee398c39dec91bd875358d5ae2bea161fc27e0276a36fc63b7e5de0c7ee3; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-occlusion-444-160x120-q180.ivf"
+description = "AVM-encoded 17-frame 8-bit 4:4:4 stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=1 --bit-depth=8 --end-usage=q --cpu-used=2 --qp=180 --lag-in-frames=16 --enable-global-motion=1): 8 LOCALWARP, 6 EXTENDWARP, 12 DELTAWARP with warp_delta, 63 WARPMV, 1 compound LOCALWARP, 1 COMPOUND_WEDGE warp, 15 warp inter-intra, 8 wedge warp inter-intra blocks; 1 luma warp predictions use the § 7.13.3.20 extended block warp, 23 luma warp predictions read outside the reference frame, 32 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 2874c41ce08c225ed4841d23902087ea96c093488fd1ac8901dfc32617ab7c0b; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-diffwtd-444-160x120-q180.ivf"
+description = "AVM-encoded 17-frame 8-bit 4:4:4 stream of a project-generated 160x120 texture (seed 3) that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=1 --bit-depth=8 --end-usage=q --cpu-used=2 --qp=180 --lag-in-frames=16 --enable-global-motion=0 --enable-interinter-wedge=0 --enable-cwp=0 --enable-opfl-refine=0 --enable-refinemv=0 --enable-tip=0 --enable-interintra-comp=0 --enable-bawp=0): 11 LOCALWARP, 5 EXTENDWARP, 16 DELTAWARP with warp_delta, 91 WARPMV, 10 compound LOCALWARP, 9 COMPOUND_DIFFWTD warp blocks; 43 luma warp predictions read outside the reference frame, 49 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 2045da0f88d1d4f048ec4e676c355b67a71d56e9f165f9ab25823524f5fd5264; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-global-444-176x144-q120.ivf"
+description = "AVM-encoded 3-frame 8-bit 4:4:4 stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=1 --bit-depth=8 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=2 --enable-global-motion=1 --enable-warped-motion=0): 3 single-reference GLOBALMV warp blocks; 0 luma warp predictions read outside the reference frame, 0 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 3870c537d7905b081271971a50a7b4134530c360cff4423d87025906aaecb9dc; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-wedge-444-10bit-160x120-q180.ivf"
+description = "AVM-encoded 17-frame 10-bit 4:4:4 stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=1 --bit-depth=10 --end-usage=q --cpu-used=2 --qp=180 --lag-in-frames=16 --enable-global-motion=1): 7 LOCALWARP, 4 EXTENDWARP, 10 DELTAWARP with warp_delta, 71 WARPMV, 1 compound LOCALWARP, 1 COMPOUND_WEDGE warp, 13 warp inter-intra, 7 wedge warp inter-intra blocks; 1 luma warp predictions use the § 7.13.3.20 extended block warp, 21 luma warp predictions read outside the reference frame, 38 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 416338f71898174f57903bbe326c18d10ebe67d63e6864ef4cfb5e6925ed0228; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-diffwtd-444-10bit-160x120-q100.ivf"
+description = "AVM-encoded 17-frame 10-bit 4:4:4 stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with three discs that rotate and zoom around their own centres (avmenc --profile=1 --bit-depth=10 --end-usage=q --cpu-used=2 --qp=100 --lag-in-frames=16 --enable-global-motion=1): 3 LOCALWARP, 5 EXTENDWARP, 31 DELTAWARP with warp_delta, 77 WARPMV, 3 compound LOCALWARP, 2 COMPOUND_DIFFWTD warp, 17 warp inter-intra, 1 wedge warp inter-intra blocks; 46 luma warp predictions read outside the reference frame, 66 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 340a12ccde2b2fed7b127b5e6d797ca73bc5ccad1f6b6d32010f15ec3043fa45; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-global-444-10bit-176x144-q120.ivf"
+description = "AVM-encoded 3-frame 10-bit 4:4:4 stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=1 --bit-depth=10 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=2 --enable-global-motion=1 --enable-warped-motion=0): 2 single-reference GLOBALMV warp blocks; 0 luma warp predictions read outside the reference frame, 0 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 95685a86cc97cb373113cabf61a7feee17b5e82a547a536e2b245777e90b8d9e; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-interintra-mono-160x120-q170.ivf"
+description = "AVM-encoded 17-frame 8-bit monochrome stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=0 --bit-depth=8 --end-usage=q --cpu-used=2 --qp=170 --lag-in-frames=16 --enable-global-motion=1 --monochrome): 8 LOCALWARP, 4 EXTENDWARP, 14 DELTAWARP with warp_delta, 62 WARPMV, 14 warp inter-intra, 8 wedge warp inter-intra blocks; 34 luma warp predictions read outside the reference frame, 42 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 e430d87dd2f1217f3e1acdb65befa3995bb3679f949e5b677710d140729ac37a; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-wedge-mono-160x120-q200.ivf"
+description = "AVM-encoded 17-frame 8-bit monochrome stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=0 --bit-depth=8 --end-usage=q --cpu-used=2 --qp=200 --lag-in-frames=16 --enable-global-motion=1 --enable-diff-wtd-comp=0 --enable-cwp=0 --enable-opfl-refine=0 --enable-refinemv=0 --enable-tip=0 --enable-interintra-comp=0 --enable-bawp=0 --monochrome): 3 EXTENDWARP, 7 DELTAWARP with warp_delta, 31 WARPMV, 1 compound LOCALWARP, 1 COMPOUND_WEDGE warp blocks; 19 luma warp predictions read outside the reference frame, 22 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 8cfa96d73cd8222413841e84c7c4f5aedf6f9bb67de3fa5aa504181aa279850e; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-diffwtd-mono-160x120-q160.ivf"
+description = "AVM-encoded 17-frame 8-bit monochrome stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=0 --bit-depth=8 --end-usage=q --cpu-used=2 --qp=160 --lag-in-frames=16 --enable-global-motion=0 --enable-interinter-wedge=0 --enable-cwp=0 --enable-opfl-refine=0 --enable-refinemv=0 --enable-tip=0 --enable-interintra-comp=0 --enable-bawp=0 --monochrome): 8 LOCALWARP, 6 EXTENDWARP, 10 DELTAWARP with warp_delta, 50 WARPMV, 4 compound LOCALWARP, 3 COMPOUND_DIFFWTD warp blocks; 3 luma warp predictions use the § 7.13.3.20 extended block warp, 35 luma warp predictions read outside the reference frame, 42 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 35642c883a9b3866a51aa0861a07c5b58a7233ef1dad2765c092ee71b5d00761; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-global-mono-176x144-q160.ivf"
+description = "AVM-encoded 4-frame 8-bit monochrome stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=0 --bit-depth=8 --end-usage=q --cpu-used=4 --qp=160 --lag-in-frames=3 --enable-global-motion=1 --enable-warped-motion=0 --monochrome): 3 single-reference GLOBALMV warp blocks; 0 luma warp predictions read outside the reference frame, 0 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 47862ca11e0767b0f42243092b1795d4dc463e3dbe1ce1d3b6137a521044e453; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-scaled-mono-200x150-q200.ivf"
+description = "AVM-encoded 17-frame 8-bit monochrome stream of a project-generated 200x150 moving texture (avmenc --profile=0 --bit-depth=8 --end-usage=q --cpu-used=6 --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=8 --resize-mode=2 --monochrome): 4 LOCALWARP, 2 EXTENDWARP, 2 DELTAWARP with warp_delta, 32 WARPMV blocks; 40 luma warp predictions use the § 7.13.3.20 extended block warp from a scaled reference, 20 luma warp predictions read outside the reference frame, 30 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 8c3e207dd15f372fdbcefa051eafeda8fa1669e0b8ff0f2c8a00e06a52bdd7dc; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-interintra-mono-10bit-160x120-q170.ivf"
+description = "AVM-encoded 17-frame 10-bit monochrome stream of a project-generated 160x120 texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=0 --bit-depth=10 --end-usage=q --cpu-used=2 --qp=170 --lag-in-frames=16 --enable-global-motion=1 --monochrome): 4 LOCALWARP, 4 EXTENDWARP, 14 DELTAWARP with warp_delta, 46 WARPMV, 1 compound LOCALWARP, 5 warp inter-intra, 3 wedge warp inter-intra blocks; 27 luma warp predictions read outside the reference frame, 32 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 03d57e924d684435f8ca8be5cc3567a72676a4ac3d4d044cd5a1c841f54331ae; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-diffwtd-mono-10bit-160x120-q180.ivf"
+description = "AVM-encoded 17-frame 10-bit monochrome stream of a project-generated 160x120 texture (seed 2) that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=0 --bit-depth=10 --end-usage=q --cpu-used=2 --qp=180 --lag-in-frames=16 --enable-global-motion=0 --enable-interinter-wedge=0 --enable-cwp=0 --enable-opfl-refine=0 --enable-refinemv=0 --enable-tip=0 --enable-interintra-comp=0 --enable-bawp=0 --monochrome): 4 LOCALWARP, 4 EXTENDWARP, 13 DELTAWARP with warp_delta, 52 WARPMV, 2 compound LOCALWARP, 1 COMPOUND_DIFFWTD warp blocks; 25 luma warp predictions read outside the reference frame, 37 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 ff169a8fd3ed74538d8611235052ea3d08a353c0f54f4e9145f9cb723245593d; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-global-mono-10bit-176x144-q120.ivf"
+description = "AVM-encoded 4-frame 10-bit monochrome stream of a project-generated 176x144 texture of sharp-edged cells that rotates, zooms and shears as a whole (avmenc --profile=0 --bit-depth=10 --end-usage=q --cpu-used=4 --qp=120 --lag-in-frames=3 --enable-global-motion=1 --enable-warped-motion=0 --monochrome): 5 single-reference GLOBALMV warp blocks; 0 luma warp predictions read outside the reference frame, 0 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 7f602cd8a177ec8d145c74db11d97a003d587e2763a13eaefe05b003ec5f253b; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-warp-scaled-mono-10bit-200x150-q200.ivf"
+description = "AVM-encoded 17-frame 10-bit monochrome stream of a project-generated 200x150 moving texture (avmenc --profile=0 --bit-depth=10 --end-usage=q --cpu-used=6 --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=8 --resize-mode=2 --monochrome): 2 LOCALWARP, 2 EXTENDWARP, 39 WARPMV blocks; 43 luma warp predictions use the § 7.13.3.20 extended block warp from a scaled reference, 20 luma warp predictions read outside the reference frame, 28 warp blocks touch the frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 e979850dbb1febccce7bbb02afe41cfeb0ad34d13daf8a16189e240827744577; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-edge-420-152x120-q170.ivf"
+description = "AVM-encoded 9-frame 152x120 8-bit 4:2:0 stream of a project-generated texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=0 --bit-depth=8 --cpu-used=2 --end-usage=q --qp=170 --lag-in-frames=8 --enable-tip=2 --enable-tip-refinemv=0): the 152x120 storage is not a multiple of 16, so TIP_FRAME_AS_REF inter frames have 17 compound TIP blocks with 16x16 prediction units whose units cross the storage edge (27 units at the bottom edge only, 17 at the right edge only, 3 at both) and 6 single-reference TIP blocks with 16x16 units that cross it (9 bottom, 7 right, 1 both). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 e76e79ae0f1b19955c65260e5e49436143615ab3cb81f8500f877a55758e1412; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-edge-420-10bit-152x120-q170.ivf"
+description = "AVM-encoded 9-frame 152x120 10-bit 4:2:0 stream of a project-generated texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=0 --bit-depth=10 --cpu-used=2 --end-usage=q --qp=170 --lag-in-frames=8 --enable-tip=2 --enable-tip-refinemv=0): the 152x120 storage is not a multiple of 16, so TIP_FRAME_AS_REF inter frames have 25 compound TIP blocks with 16x16 prediction units whose units cross the storage edge (31 units at the bottom edge only, 25 at the right edge only, 3 at both). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 c9cfaa6257c096860250c5667fe33bcc80983fd0efc95fd5d2e0ab07178a83ea; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-edge-422-152x120-q170.ivf"
+description = "AVM-encoded 9-frame 152x120 8-bit 4:2:2 stream of a project-generated texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=2 --bit-depth=8 --cpu-used=2 --end-usage=q --qp=170 --lag-in-frames=8 --enable-tip=2 --enable-tip-refinemv=0): the 152x120 storage is not a multiple of 16, so TIP_FRAME_AS_REF inter frames have 20 compound TIP blocks with 16x16 prediction units whose units cross the storage edge (20 units at the bottom edge only, 21 at the right edge only, 3 at both) and 5 single-reference TIP blocks with 16x16 units that cross it (5 bottom, 7 right, 1 both). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 f58e22b38c3182113b11adbdc50130e7503fe7429738440edfcd18e5abf740e0; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-edge-422-10bit-152x120-q170.ivf"
+description = "AVM-encoded 9-frame 152x120 10-bit 4:2:2 stream of a project-generated texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=2 --bit-depth=10 --cpu-used=2 --end-usage=q --qp=170 --lag-in-frames=8 --enable-tip=2 --enable-tip-refinemv=0): the 152x120 storage is not a multiple of 16, so TIP_FRAME_AS_REF inter frames have 22 compound TIP blocks with 16x16 prediction units whose units cross the storage edge (17 units at the bottom edge only, 21 at the right edge only, 3 at both) and 4 single-reference TIP blocks with 16x16 units that cross it (4 bottom, 4 right, 0 both). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 e15a6020f6cbfee7fce3c818753a6c9adaf59ae22ab2766fb548636de5beb8da; validates clean."
+expect = "clean"
