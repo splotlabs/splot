@@ -11,6 +11,7 @@ use crate::bitstream::tile_payload::{
 
 use super::transform_units::tx_size_log2;
 use super::{LumaPalette, RectLumaPlan, ResidualPlanePlan, ResidualReconstructionPlan};
+use crate::tile::block_context::FrameTileCtx;
 
 const PALETTE_MAX_SIZE: usize = 8;
 const PALETTE_COLOR_CONTEXTS: usize = 5;
@@ -70,12 +71,12 @@ impl ResidualPlanePlan {
         let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
         let unit_width = 1usize << log2_width;
         let unit_height = 1usize << log2_height;
-        let Some(local_x) = block.x.checked_sub(self.x) else {
+        let Some(local_x) = block.x.checked_sub(self.x as usize) else {
             return Err(GeneralIntraResidualError::InvalidReconstructionState {
                 context: "palette transform X origin",
             });
         };
-        let Some(local_y) = block.y.checked_sub(self.y) else {
+        let Some(local_y) = block.y.checked_sub(self.y as usize) else {
             return Err(GeneralIntraResidualError::InvalidReconstructionState {
                 context: "palette transform Y origin",
             });
@@ -99,6 +100,7 @@ impl ResidualPlanePlan {
     #[inline]
     pub(super) fn read_palette_color_map(
         &self,
+        frame: FrameTileCtx,
         work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, GeneralIntraResidualError> {
@@ -107,22 +109,23 @@ impl ResidualPlanePlan {
         else {
             return Ok(None);
         };
-        self.read_palette_colors(palette, work_unit, symbols)
+        self.read_palette_colors(frame, palette, work_unit, symbols)
     }
 
     #[inline(never)]
     fn read_palette_colors(
         &self,
+        frame: FrameTileCtx,
         palette: LumaPalette,
         work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, GeneralIntraResidualError> {
         let plane_width = 1usize << self.tx.width_log2();
         let plane_height = 1usize << self.tx.height_log2();
-        let frame_width = self.block_ctx.frame_mi_cols().saturating_mul(4);
-        let frame_height = self.block_ctx.frame_mi_rows().saturating_mul(4);
-        let cols = plane_width.min(frame_width.saturating_sub(self.x));
-        let rows = plane_height.min(frame_height.saturating_sub(self.y));
+        let frame_width = frame.frame_mi_cols().saturating_mul(4);
+        let frame_height = frame.frame_mi_rows().saturating_mul(4);
+        let cols = plane_width.min(frame_width.saturating_sub(self.x as usize));
+        let rows = plane_height.min(frame_height.saturating_sub(self.y as usize));
         let mut color_map = take_palette_map();
         color_map.resize(plane_width.saturating_mul(plane_height), 0);
         let direction = if plane_width < 64 && plane_height < 64 {
