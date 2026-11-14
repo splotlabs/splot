@@ -457,14 +457,12 @@ pub(super) fn decode_compound_inter_block(
     let mvd = read_compound_mvd_syntax(
         cdfs,
         symbols,
-        sequence,
-        core,
         CompoundMvdInput {
             y_mode: compound.y_mode,
             use_amvd,
             ref_mv_idx,
             precision,
-            frame_mv_config,
+            mvd_sign_derive: params.mvd_sign_derive,
             motion_mode: if local_warp {
                 MotionMode::LocalWarp
             } else {
@@ -762,7 +760,7 @@ struct CompoundMvdInput {
     use_amvd: bool,
     ref_mv_idx: usize,
     precision: BlockPrecisionRecord,
-    frame_mv_config: MvReadConfig,
+    mvd_sign_derive: bool,
     motion_mode: MotionMode,
 }
 
@@ -771,8 +769,6 @@ struct CompoundMvdInput {
 fn read_compound_mvd_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
     input: CompoundMvdInput,
     tile_offset: ByteOffset,
 ) -> Result<[Mv; 2]> {
@@ -784,11 +780,9 @@ fn read_compound_mvd_syntax(
     let derive_sign =
         mvd_sign_derivation_block_scope_allowed(input.motion_mode, false, Some(input.ref_mv_idx))
             && inter_mvd_sign_derivation_allowed(
-                sequence,
-                core,
+                input.mvd_sign_derive,
                 SINGLE_MODE_NEWMV,
                 input.use_amvd,
-                input.frame_mv_config,
                 config,
             );
     match input.y_mode {

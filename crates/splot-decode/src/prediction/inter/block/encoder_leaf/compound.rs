@@ -22,7 +22,7 @@ use super::super::syntax::{
     block_mv_precision_with, interp_filter_symbol, single_use_amvd_selector,
 };
 use super::super::warp::{
-    inter_mv_read_config, inter_mvd_sign_derivation_allowed,
+    frame_mvd_sign_derivation_allowed, inter_mv_read_config, inter_mvd_sign_derivation_allowed,
     mvd_sign_derivation_block_scope_allowed,
 };
 use super::blend::{CompoundType, CompoundTypeReads, TypeSymbols};
@@ -139,14 +139,16 @@ impl EncoderInterTile {
     /// How the decoder reads the differences of `motion`.
     pub(crate) fn mvd_coding(&self, motion: EncoderMotion) -> Result<MvdCoding> {
         let precision = self.block_precision(motion).mv_precision;
-        let frame_config = inter_mv_read_config(&self.core)?;
+        let frame_allowed = frame_mvd_sign_derivation_allowed(
+            &self.sequence,
+            &self.core,
+            inter_mv_read_config(&self.core)?,
+        );
         let allowed = |use_amvd| {
             inter_mvd_sign_derivation_allowed(
-                &self.sequence,
-                &self.core,
+                frame_allowed,
                 SINGLE_MODE_NEWMV,
                 use_amvd,
-                frame_config,
                 MvReadConfig::inter(precision),
             )
         };

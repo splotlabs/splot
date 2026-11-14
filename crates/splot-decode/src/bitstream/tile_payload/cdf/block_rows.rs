@@ -358,7 +358,7 @@ pub(crate) struct BlockCdfRows {
     pub(crate) cwp_idx: CwpIdxCdfRows,
     pub(crate) comp_ref0: CompRef0CdfRows,
     pub(crate) comp_ref1: CompRef1CdfRows,
-    read_mv: MvCdfRows,
+    pub(crate) read_mv: MvCdfRows,
     pub(crate) interp_filter: InterpFilterCdfRows,
     pub(crate) use_amvd: UseAmvdCdfRows,
     pub(crate) use_optflow: UseOptflowCdfRows,

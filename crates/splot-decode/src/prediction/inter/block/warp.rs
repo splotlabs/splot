@@ -323,28 +323,31 @@ pub(crate) fn inter_mv_read_config(core: &FrameHeaderCore) -> Result<MvReadConfi
     Ok(MvReadConfig::inter(precision.av2_code()))
 }
 
-pub(crate) fn inter_mvd_sign_derivation_allowed(
+/// The frame-level AV2 § 5.20.7.13 `is_mvd_sign_derive_allowed` guards.
+pub(crate) fn frame_mvd_sign_derivation_allowed(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    single_mode: u8,
-    use_amvd: bool,
     frame_config: MvReadConfig,
-    config: MvReadConfig,
 ) -> bool {
-    if single_mode != SINGLE_MODE_NEWMV || use_amvd {
-        return false;
-    }
-    if !sequence
+    sequence
         .inter
         .as_ref()
         .is_some_and(|inter| inter.enable_mvd_sign_derive)
-    {
-        return false;
-    }
-    if effective_allow_screen_content_tools(core) {
-        return false;
-    }
-    frame_config.precision() <= MV_PRECISION_QUARTER_PEL
+        && !effective_allow_screen_content_tools(core)
+        && frame_config.precision() <= MV_PRECISION_QUARTER_PEL
+}
+
+/// AV2 § 5.20.7.13 `is_mvd_sign_derive_allowed` of a block whose frame
+/// passes [`frame_mvd_sign_derivation_allowed`] as `frame_allowed`.
+pub(crate) const fn inter_mvd_sign_derivation_allowed(
+    frame_allowed: bool,
+    single_mode: u8,
+    use_amvd: bool,
+    config: MvReadConfig,
+) -> bool {
+    frame_allowed
+        && single_mode == SINGLE_MODE_NEWMV
+        && !use_amvd
         && config.precision() < MV_PRECISION_QUARTER_PEL
 }
 

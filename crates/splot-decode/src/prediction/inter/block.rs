@@ -479,6 +479,8 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
             .unwrap_or(TipFrameMode::Disabled),
         force_integer_mv: effective_force_integer_mv(core),
         mv_config: inter_mv_read_config(core).ok(),
+        mvd_sign_derive: inter_mv_read_config(core)
+            .is_ok_and(|config| frame_mvd_sign_derivation_allowed(sequence, core, config)),
         ref_facts: compound_path::FrameRefFacts::new(
             core,
             reference,
@@ -1937,11 +1939,9 @@ fn decode_block<T: ReconSample>(
                     false,
                     None,
                 ) && inter_mvd_sign_derivation_allowed(
-                    sequence,
-                    core,
+                    params.mvd_sign_derive,
                     single_mode,
                     use_amvd,
-                    frame_mv_config,
                     config,
                 ),
                 1,
@@ -2241,10 +2241,10 @@ use self::tile::EntryState;
 #[cfg(test)]
 pub(super) use self::tip::tip_allowed_for_block_indices;
 use self::warp::{
-    inter_mv_read_config, inter_mvd_sign_derivation_allowed, local_warp_estimation,
-    mvd_sign_derivation_block_scope_allowed, read_warp_extend_syntax, read_warp_inter_intra_syntax,
-    read_warp_inter_mode_syntax, read_warp_newmv_delta_syntax, read_warp_newmv_motion_mode_syntax,
-    read_warpmv_delta_syntax, read_wedge_mode_syntax,
+    frame_mvd_sign_derivation_allowed, inter_mv_read_config, inter_mvd_sign_derivation_allowed,
+    local_warp_estimation, mvd_sign_derivation_block_scope_allowed, read_warp_extend_syntax,
+    read_warp_inter_intra_syntax, read_warp_inter_mode_syntax, read_warp_newmv_delta_syntax,
+    read_warp_newmv_motion_mode_syntax, read_warpmv_delta_syntax, read_wedge_mode_syntax,
 };
 
 use self::residual::{

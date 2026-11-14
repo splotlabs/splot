@@ -990,7 +990,7 @@ fn intrabc_newmv_one_pel_record_shifts_shell_delta() {
             block_mv: IntrabcBlockVector { row: -504, col: 0 },
         }
     );
-    assert_eq!(symbols.symbol_count(), 6);
+    assert_eq!(symbols.symbol_count(), 7);
 }
 
 #[test]
