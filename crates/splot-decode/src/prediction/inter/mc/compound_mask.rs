@@ -281,7 +281,9 @@ fn write_plane<T: ReconSample>(
 
 /// The § 7.13.3.14 `get_mask` of each sample times 32, row by row: 64 where
 /// only reference 0 reads inside the `frame` plane, 0 where only reference 1
-/// does, else 32. The references are unscaled.
+/// does, else 32. The references are unscaled, so each reads a run of
+/// columns of a row inside the frame: the first row of each band of rows
+/// that the same references read is four fills, and the band copies it.
 fn implicit_mask_map(
     mask: &mut [u8],
     w: usize,
@@ -289,22 +291,32 @@ fn implicit_mask_map(
     (frame_w, frame_h): (usize, usize),
 ) {
     let starts = scalings.map(|scaling| (scaling.start_x >> 10, scaling.start_y >> 10));
-    for (row, weights) in mask.chunks_exact_mut(w.max(1)).enumerate() {
-        weights.fill(32);
-        for (reference, &(x, y)) in starts.iter().enumerate() {
-            if !(0..frame_h as i32).contains(&(y + row as i32)) {
-                continue;
-            }
+    let (w, rows) = (w.max(1), mask.len() / w.max(1));
+    let inside = |row: usize| starts.map(|(_, y)| (0..frame_h as i32).contains(&(y + row as i32)));
+    let mut row = 0;
+    while row < rows {
+        let band = inside(row);
+        let end = (row + 1..rows)
+            .find(|&next| inside(next) != band)
+            .unwrap_or(rows);
+        let [run0, run1] = [0, 1].map(|reference| {
+            let x = starts[reference].0;
             let first = (-x).clamp(0, w as i32) as usize;
-            let end = (frame_w as i32 - x).clamp(0, w as i32) as usize;
-            for weight in weights.get_mut(first..end).unwrap_or_default() {
-                *weight = if reference == 0 {
-                    *weight + 32
-                } else {
-                    *weight - 32
-                };
-            }
+            first..(frame_w as i32 - x).clamp(0, w as i32) as usize * usize::from(band[reference])
+        });
+        let both = run0.start.max(run1.start)..run0.end.min(run1.end);
+        let weights = &mut mask[row * w..(row + 1) * w];
+        weights.fill(32);
+        for (run, weight) in [(run0, 64), (run1, 0), (both, 32)] {
+            weights.get_mut(run).unwrap_or_default().fill(weight);
         }
+        let mut filled = row + 1;
+        while filled < end {
+            let count = (filled - row).min(end - filled);
+            mask.copy_within(row * w..(row + count) * w, filled * w);
+            filled += count;
+        }
+        row = end;
     }
 }
 

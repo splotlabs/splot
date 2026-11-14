@@ -419,3 +419,68 @@ fn mask_kernels_reject_short_buffers_and_bad_shapes() {
     assert!(blend_diff_weighted_u8(&mut output, 8, refs, 8, (8, 7), false, chroma).is_err());
     assert_eq!(output, vec![0u8; 64]);
 }
+
+/// The sample-by-sample § 7.13.3.14 implicit mask times 32, the oracle of
+/// [`implicit_mask_map`].
+fn implicit_mask_oracle(
+    w: usize,
+    h: usize,
+    starts: [(i32, i32); 2],
+    (frame_w, frame_h): (usize, usize),
+) -> Vec<u8> {
+    let inside =
+        |(x, y): (i32, i32)| (0..frame_w as i32).contains(&x) && (0..frame_h as i32).contains(&y);
+    let weight = |col: i32, row: i32| {
+        let [first, second] = starts.map(|(x, y)| inside((x + col, y + row)));
+        32 + 32 * i32::from(first) - 32 * i32::from(second)
+    };
+    let sample = |i: usize| weight((i % w) as i32, (i / w) as i32) as u8;
+    (0..w * h).map(sample).collect()
+}
+
+#[test]
+fn implicit_mask_rows_match_the_sample_oracle_at_every_edge_and_corner() {
+    let (frame_w, frame_h) = (40usize, 24usize);
+    for (w, h) in [(1, 4), (4, 4), (8, 4), (16, 8), (8, 32), (64, 64)] {
+        let near = |size: usize, frame: usize| {
+            let (size, frame) = (size as i32, frame as i32);
+            [
+                -size - 1,
+                -size,
+                1 - size,
+                -3,
+                -1,
+                0,
+                1,
+                frame - size - 1,
+                frame - size,
+            ]
+            .into_iter()
+            .chain([frame - size + 1, frame - 3, frame - 1, frame, frame + 1])
+        };
+        let starts: Vec<(i32, i32)> = near(w, frame_w)
+            .flat_map(|x| near(h, frame_h).map(move |y| (x, y)))
+            .collect();
+        for (i, &start0) in starts.iter().enumerate() {
+            for &start1 in starts.iter().skip(i % 7).step_by(7) {
+                let scaling = |(x, y): (i32, i32)| PlaneScaling {
+                    start_x: (x << 10) + 300,
+                    start_y: (y << 10) + 700,
+                    step_x: 1 << 10,
+                    step_y: 1 << 10,
+                    scale_x: 0,
+                    scale_y: 0,
+                    first_x: 0,
+                    first_y: 0,
+                    last_x: 0,
+                    last_y: 0,
+                };
+                let mut mask = vec![0; w * h];
+                let scalings = [scaling(start0), scaling(start1)];
+                implicit_mask_map(&mut mask, w, scalings, (frame_w, frame_h));
+                let want = implicit_mask_oracle(w, h, [start0, start1], (frame_w, frame_h));
+                assert_eq!(mask, want, "{w}x{h} starts {start0:?} {start1:?}");
+            }
+        }
+    }
+}
