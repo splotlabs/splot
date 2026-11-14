@@ -12,9 +12,14 @@ use std::cell::Cell;
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    BitDepth, PlaneId, PlaneRect, ReconError, ReconSample, blend_diff_weighted_u8,
-    blend_diff_weighted_wide, blend_mask_u8, blend_mask_wide,
+    BitDepth, PlaneId, PlaneRect, ReconError, ReconSample, blend_diff_weighted_u8_packed,
+    blend_diff_weighted_wide_packed, blend_mask_u8_packed, blend_mask_wide_packed,
     subpel_predict_block_compound_intermediate_into, wedge_mask_plane_sample,
+};
+
+#[cfg(test)]
+use splot_recon::{
+    blend_diff_weighted_u8, blend_diff_weighted_wide, blend_mask_u8, blend_mask_wide,
 };
 
 use super::super::mv_scaling::PlaneScaling;
@@ -197,6 +202,9 @@ fn blend_plane<T: ReconSample>(
 ) -> splot_recon::Result<()> {
     let ((w, h), (sub_x, sub_y)) = (layout.size, layout.sub);
     let len = w * h;
+    if T::u8_slice(&[]).is_some() && bit_depth != BitDepth::Eight {
+        return Err(unsupported::<T>(bit_depth));
+    }
     let luma_diff = match block.blend {
         CompoundBlend::DiffWeighted { inverse } if layout.plane == PlaneId::Y => Some(inverse),
         CompoundBlend::DiffWeighted { .. } => None,
@@ -220,11 +228,13 @@ fn blend_plane<T: ReconSample>(
         return match preds {
             Preds::Narrow(preds) => {
                 let output = T::u8_slice_mut(output).ok_or(unsupported::<T>(bit_depth))?;
-                blend_diff_weighted_u8(output, stride, preds, w, (w, h), inverse, chroma_mask)
+                blend_diff_weighted_u8_packed(output, stride, preds, (w, h), inverse, chroma_mask);
+                Ok(())
             }
             Preds::Wide(preds) => {
                 let shape = (inverse, bit_depth);
-                blend_diff_weighted_wide(output, stride, preds, w, (w, h), shape, chroma_mask)
+                blend_diff_weighted_wide_packed(output, stride, preds, (w, h), shape, chroma_mask);
+                Ok(())
             }
         };
     }
@@ -235,12 +245,13 @@ fn blend_plane<T: ReconSample>(
     match preds {
         Preds::Narrow(preds) => {
             let output = T::u8_slice_mut(output).ok_or(unsupported::<T>(bit_depth))?;
-            blend_mask_u8(output, stride, preds, w, (w, h), mask, w)
+            blend_mask_u8_packed(output, stride, preds, mask, (w, h));
         }
         Preds::Wide(preds) => {
-            blend_mask_wide(output, stride, preds, w, (w, h), (mask, w), bit_depth)
+            blend_mask_wide_packed(output, stride, preds, mask, (w, h), bit_depth);
         }
     }
+    Ok(())
 }
 
 const fn unsupported<T: ReconSample>(bit_depth: BitDepth) -> ReconError {
