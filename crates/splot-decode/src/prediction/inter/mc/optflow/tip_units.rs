@@ -7,6 +7,7 @@
 //! full-pel units is predicted as one block.
 
 use super::*;
+use crate::DecodeHeaderStateError;
 
 type Pred = [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
 type Intermediate = [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
@@ -139,43 +140,32 @@ pub(crate) fn predict_tip_units<T: ReconSample>(
         fullpel_runs: units.fullpel_runs,
     };
     let program = units.program.get_or_insert_default();
-    let result = match predict_grid(sink, block, &motion, program, offset) {
-        Ok(false) => {
-            let mut block = *block;
-            block.sub8x8_chroma = false;
-            block.optflow_distances = None;
-            block.use_refinemv = false;
-            block.search_refinemv = false;
-            super::super::predict_compound_into(sink, &block, Some(&motion), offset)
-        }
-        other => other.map(drop),
-    };
+    let result = predict_grid(sink, block, &motion, program, offset);
     units.cells = motion.take_cells();
     *candidates = motion.take_candidates();
     result
 }
 
-/// Predicts luma and both chroma planes of `block` from its TIP units, or
-/// returns `false` for a scaled reference or a plane the frame edge clips. A
-/// declined block may have had planes written; the general path rewrites them.
+/// Predicts luma and both chroma planes of `block` from its TIP units. A
+/// TIP block averages (§ 7.13.3.2) unscaled references (§ 5.20.7.14) and
+/// lies inside the MiCols x MiRows storage (§ 5.18.3), so any other block
+/// is a state error.
 fn predict_grid<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     motion: &CompoundMotionGrid,
     program: &mut GridProgram,
     offset: ByteOffset,
-) -> Result<bool> {
+) -> Result<()> {
     let CompoundBlend::Average {
         implicit_mask,
         cwp_weight,
     } = block.blend
     else {
-        return Ok(false);
+        return Err(DecodeHeaderStateError::InvalidInterTipPredictionState.into());
     };
+    debug_assert!(block.warp_params.iter().all(Option::is_none));
     let info = sink.info();
-    if block.warp_params.iter().any(Option::is_some) {
-        return Ok(false);
-    }
     let check_uniform = implicit_mask && cwp_weight == CWP_EQUAL;
     let [_, (_, sub_x, sub_y), _] = super::super::mc_planes(info.pixel_format());
     let rect = |plane, (sub_x, sub_y)| {
@@ -183,9 +173,9 @@ fn predict_grid<T: ReconSample>(
         PlaneRect::new(x, y, w, h)
     };
     let luma = rect(PlaneId::Y, (0, 0))?;
-    let Some(output) = sink.rect_mut(PlaneId::Y, luma) else {
-        return Ok(false);
-    };
+    let output = sink
+        .rect_mut(PlaneId::Y, luma)
+        .ok_or(DecodeHeaderStateError::InvalidBlockGeometry)?;
     let pass = GridPass {
         info,
         block,
@@ -194,15 +184,13 @@ fn predict_grid<T: ReconSample>(
         cwp_weight,
         offset,
     };
-    if !pass.plane::<8, 8>(PlaneId::Y, [output, (&mut [], 0)], program)? {
-        return Ok(false);
-    }
+    pass.plane::<8, 8>(PlaneId::Y, [output, (&mut [], 0)], program)?;
     if !block.has_chroma {
-        return Ok(true);
+        return Ok(());
     }
-    let Some(chroma) = sink.chroma_rects_mut(rect(PlaneId::U, (sub_x, sub_y))?) else {
-        return Ok(false);
-    };
+    let chroma = sink
+        .chroma_rects_mut(rect(PlaneId::U, (sub_x, sub_y))?)
+        .ok_or(DecodeHeaderStateError::InvalidBlockGeometry)?;
     match info.pixel_format() {
         PixelFormat::Yuv444 => pass.plane::<8, 8>(PlaneId::U, chroma, program),
         PixelFormat::Yuv422 => pass.plane::<4, 8>(PlaneId::U, chroma, program),
@@ -222,15 +210,13 @@ struct GridPass<'a, 'b, T: ReconSample> {
 
 impl<T: ReconSample> GridPass<'_, '_, T> {
     /// Predicts one plane of `W` x `H` cells into `outputs[0]`, and for U
-    /// the V plane into `outputs[1]` from the same placements; `false`
-    /// without writing for a scaled reference or units that do not tile
-    /// the plane.
+    /// the V plane into `outputs[1]` from the same placements.
     fn plane<const W: usize, const H: usize>(
         &self,
         plane: PlaneId,
         outputs: [(&mut [T], usize); 2],
         program: &mut GridProgram,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let [(first, first_stride), (second, second_stride)] = outputs;
         if let (Some(first), Some(second)) = (T::u8_slice_mut(first), T::u8_slice_mut(second)) {
             let outputs = [(first, first_stride), (second, second_stride)];
@@ -241,7 +227,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                 let outputs = [(first, first_stride), (second, second_stride)];
                 self.plane_into::<_, W, H>(plane, outputs, program)
             }
-            _ => Ok(false),
+            _ => Err(DecodeHeaderStateError::InvalidInterTipPredictionState.into()),
         }
     }
 
@@ -250,7 +236,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         plane: PlaneId,
         mut outputs: [(&mut [O], usize); 2],
         program: &mut GridProgram,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let sub = (u32::from(W == 4), u32::from(H == 4));
         let prediction = super::super::compound_subpel_plane(
             self.info,
@@ -263,13 +249,15 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         let cells = self.motion.cells.as_slice();
         let (candidates, _, _) = self.motion.refinemv_candidate_slice();
         let columns = self.motion.columns;
-        if prediction.scalings.into_iter().any(PlaneScaling::is_scaled)
-            || columns == 0
+        if prediction.scalings.into_iter().any(PlaneScaling::is_scaled) {
+            return Err(DecodeHeaderStateError::InvalidInterTipPredictionState.into());
+        }
+        if columns == 0
             || candidates.len() != cells.len()
             || prediction.block_w != columns * W
             || prediction.block_h * columns != cells.len() * H
         {
-            return Ok(false);
+            return Err(DecodeHeaderStateError::InvalidBlockGeometry.into());
         }
         let second = if plane == PlaneId::U {
             Some(super::super::compound_plane_views(
@@ -327,7 +315,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             };
             let [first, second] = &mut outputs;
             if whole(views[0], first)? && whole(views[1], second)? {
-                return Ok(true);
+                return Ok(());
             }
         }
         let GridProgram {
@@ -398,7 +386,6 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                 }
             }
         }
-        run(program, &mut outputs, pred, intermediate)?;
-        Ok(true)
+        run(program, &mut outputs, pred, intermediate)
     }
 }
