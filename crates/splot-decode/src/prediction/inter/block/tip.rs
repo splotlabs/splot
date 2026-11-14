@@ -91,7 +91,7 @@ impl<'a, T: ReconSample> TipPrediction<'a, T> {
     }
 }
 
-/// The reference pair and § 7.13.5 prediction settings one TIP block reads
+/// The reference pair and § 7.13.3.2 prediction settings one TIP block reads
 /// through, resolved once so the borrows can be retaken per unit batch.
 #[derive(Clone, Copy, Debug)]
 struct TipReferencePlan {
@@ -423,7 +423,7 @@ pub(crate) fn tip_allowed_for_block_indices(
         && n4h >= 2
 }
 
-/// The frame-constant § 7.13.5 settings every TIP block of a frame shares.
+/// The frame-constant § 7.13.3.2 settings every TIP block of a frame shares.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TipFramePlan {
     plan: TipReferencePlan,
@@ -435,7 +435,7 @@ pub(super) struct TipFramePlan {
     ref_order_hints: [Option<u32>; 2],
 }
 
-/// The § 7.13.5 settings both halves of one TIP block derive from.
+/// The § 7.13.3.2 settings both halves of one TIP block derive from.
 ///
 /// The motion half leaves its plan with its units in the scratch for a
 /// prediction that follows at once; a later one derives its own.
@@ -750,7 +750,7 @@ fn batch_candidates(
     Ok(())
 }
 
-/// Derives one § 7.13.5 TIP block's motion: the optical-flow grid its units
+/// Derives one § 7.13.3.2 TIP block's motion: the optical-flow grid its units
 /// share, and every unit's § 7.22 temporal record.
 ///
 /// This reads reference samples but writes none, so it is the half a motion
@@ -1010,7 +1010,7 @@ pub(super) fn retire_motion_grid(
     }
 }
 
-/// Reconstructs one § 7.13.5 TIP block into `sink` from the motion half's grid,
+/// Reconstructs one § 7.13.3.2 TIP block into `sink` from the motion half's grid,
 /// and from its plan and units when that half just ran on `scratch` (`fresh`).
 ///
 /// A block whose units carry the § 7.13.3.1 optical-flow shape is predicted by

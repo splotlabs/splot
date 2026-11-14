@@ -122,7 +122,7 @@ impl InterReconCommand {
         &self.placed
     }
 
-    /// Whether § 7.13.5 TIP synthesis reconstructs this command, which reads
+    /// Whether § 7.13.3.2 TIP synthesis reconstructs this command, which reads
     /// its reference frames through the TIP motion field rather than through
     /// the block's own motion vectors.
     pub(super) const fn is_tip(&self) -> bool {

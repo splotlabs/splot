@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The TIP grid: every plane of a § 7.13.5 TIP block whose 8x8
+//! The TIP grid: every plane of a § 7.13.3.2 TIP block whose 8x8
 //! units each carry their own refine-MV candidates, predicted cell by cell
 //! straight into the frame, with U and V sharing one pass of placements. A
 //! grid of equal full-pel units is predicted as one block.

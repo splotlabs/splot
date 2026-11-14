@@ -15,7 +15,7 @@
 //! [`RowReferenceGate::bounds_for_row`] derives that requirement per reference
 //! list, as the last luma row of the reference the row's reads can touch. It
 //! runs after the row's § 7.12 resolve pass, so warp models, final motion
-//! vectors and the § 7.13.5 TIP motion field are all settled by then:
+//! vectors and the § 7.10 TIP motion field are all settled by then:
 //!
 //! - single-reference translational prediction is exact: the row's blocks read
 //!   through the same § 7.13.3.18 scaling the prediction derives, so the bound
@@ -27,7 +27,7 @@
 //!   model projects the block's plane rectangle onto;
 //! - a § 7.13.3.25 BAWP list adds [`bawp_reference_luma_rows`], the template
 //!   window below the block's full-pel reference position;
-//! - a § 7.13.5 TIP block reads the frame's TIP reference pair through the
+//! - a § 7.13.3.2 TIP block reads the frame's TIP reference pair through the
 //!   projected motion field, so it is bounded band by band over the 8x8 field
 //!   cells its prediction units sample.
 //!
@@ -62,10 +62,10 @@ use crate::pipeline::inflight::RefFrameSlot;
 /// bridge slot.
 const MAX_LISTS: usize = 8;
 
-/// Luma side of the § 7.13.5 motion-field cell one TIP prediction unit samples.
+/// Luma side of the § 7.10 motion-field cell one TIP prediction unit samples.
 const TIP_FIELD_CELL: usize = 8;
 
-/// Largest § 7.13.5 prediction unit, the luma rows one field cell's motion
+/// Largest § 7.13.3.2 prediction unit, the luma rows one field cell's motion
 /// vector can predict.
 const TIP_MAX_UNIT: usize = 16;
 
@@ -229,7 +229,7 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         }
     }
 
-    /// The reference rows one § 7.13.5 TIP block reads, as a bound a
+    /// The reference rows one § 7.13.3.2 TIP block reads, as a bound a
     /// scheduler can check later through [`bounds_satisfied`].
     pub(super) fn tip_bounds(&self, placed: &PlacedInterBlock) -> RowReferenceBounds {
         let mut bounds = RowReferenceBounds::default();
@@ -237,7 +237,7 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         bounds
     }
 
-    /// Bounds one § 7.13.5 TIP block against the frame's TIP reference pair.
+    /// Bounds one § 7.13.3.2 TIP block against the frame's TIP reference pair.
     ///
     /// The block's prediction units read the projected motion field at their
     /// `unit` origins and predict at most [`TIP_MAX_UNIT`] rows
