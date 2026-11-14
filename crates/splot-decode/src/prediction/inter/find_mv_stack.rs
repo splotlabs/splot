@@ -591,6 +591,11 @@ impl BlockNeighbourContext {
     }
 }
 
+#[allow(
+    clippy::inline_always,
+    reason = "measured: per-leaf neighbour contexts"
+)]
+#[inline(always)]
 pub(crate) fn block_neighbour_ctx(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
