@@ -309,6 +309,8 @@ pub(crate) fn find_mode_ctx_with_tip(
 
 /// [`find_mode_ctx_with_tip`] reusing the immediate neighbours that
 /// [`block_neighbour_ctx`] read for the same block position.
+#[allow(clippy::inline_always, reason = "measured: per-leaf mode context")]
+#[inline(always)]
 pub(crate) fn mode_ctx_from_neighbours(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -591,6 +593,11 @@ impl BlockNeighbourContext {
     }
 }
 
+#[allow(
+    clippy::inline_always,
+    reason = "measured: per-leaf neighbour contexts"
+)]
+#[inline(always)]
 pub(crate) fn block_neighbour_ctx(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
