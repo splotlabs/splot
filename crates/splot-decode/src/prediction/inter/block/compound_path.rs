@@ -49,6 +49,8 @@ struct RefFact {
     bawp_hint: i32,
     /// The § 8.3.2 `comp_group_idx` absolute distance to the current frame.
     abs_dist: i32,
+    /// Whether the reference is scaled, `None` without frame or reference size.
+    scaled: Option<bool>,
 }
 
 /// The frame-constant reference facts every block derived per block before:
@@ -126,6 +128,16 @@ impl FrameRefFacts {
             RefFact {
                 hint,
                 abs_dist: hint.map_or(0, |hint| current.relative_dist(hint).abs()),
+                scaled: frame_size
+                    .zip(dims.ok())
+                    .map(|((frame_w, frame_h), (w, h))| {
+                        super::super::mv_scaling::reference_is_scaled(
+                            w as i32,
+                            h as i32,
+                            frame_w as i32,
+                            frame_h as i32,
+                        )
+                    }),
                 dims,
                 temporal_hint: slot.and_then(raw_hint),
                 bawp_hint: raw_hint(slot.unwrap_or(0)).unwrap_or(0),
@@ -211,19 +223,12 @@ impl FrameRefFacts {
 
     /// Whether `ref_frame` is scaled against the current frame.
     pub(super) fn scaled(&self, ref_frame: i8) -> Result<bool> {
-        let (frame_width, frame_height) = self
-            .frame_size
-            .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
-        let (width, height) = self
-            .fact(ref_frame)
-            .dims
-            .map_err(|error| self.error(ref_frame, error))?;
-        Ok(super::super::mv_scaling::reference_is_scaled(
-            width as i32,
-            height as i32,
-            frame_width as i32,
-            frame_height as i32,
-        ))
+        let fact = self.fact(ref_frame);
+        match (fact.scaled, fact.dims) {
+            (Some(scaled), _) => Ok(scaled),
+            (None, Err(error)) if self.frame_size.is_some() => Err(self.error(ref_frame, error)),
+            (None, _) => Err(DecodeHeaderStateError::MissingFrameSize.into()),
+        }
     }
 
     /// Whether `ref_frame` lies within the temporal-first distance.
