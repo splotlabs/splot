@@ -608,7 +608,7 @@ name = "Temporal interpolated prediction (TIP)"
 category = "inter"
 fixtureable = true
 spec_sections = ["7.9.1", "7.9.3", "7.10.6", "7.13.3.2", "7.16", "7.22"]
-notes = "Covered by AVMenc streams with regular and leading TIP output, natural multi-tile monochrome prediction, 4:2:2 and 4:4:4 chroma, and active sample-changing multi-tile deblocking."
+notes = "Covered by AVMenc streams with regular and leading TIP output, natural multi-tile monochrome prediction, 4:2:2 and 4:4:4 chroma, and active sample-changing multi-tile deblocking; TIP blocks in TIP_FRAME_AS_REF inter frames with 8x8 optical-flow units in 4:2:0, 4:2:2 and 4:4:4 at 8 and 10 bits, and with 16x16 units and without optical flow in 4:2:2 and 4:4:4."
 
 [[capability]]
 id = "inter.warp"

@@ -1948,3 +1948,38 @@ expect = "clean"
 path = "vectors/valid/syn-tip-output-window-64x64-q210.ivf"
 description = "AVM-encoded 100-frame 64x64 8-bit 4:2:0 stream of a project-generated panning sine pattern (avmenc --end-usage=q --qp=210 --cpu-used=9): one key frame, 13 tile-group inter frames and 87 regular TIP output frames. The few split inter frames between the TIP frames make each finished split slot hold reference handles of frames far behind the driver, which filled the frame store and deadlocked frame-delay depths 8 to 16 before the fix. Fixed splot and avmdec produce raw I420 SHA-256 9ad5ebce5808086618959b9e62ba8b884cd519dc129cd8e8e4b3d82d1f61da39; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-420-optflow-132x100-q230.ivf"
+description = "AVM-encoded 17-frame 132x100 8-bit 4:2:0 stream of a project-generated moving texture (avmenc --profile=0 --bit-depth=8 --cpu-used=5 --end-usage=q --qp=230 --lag-in-frames=16 --enable-tip=2): inter frames with TIP_FRAME_AS_REF and 96 TIP blocks predicted with 8x8 optical-flow units (2,652 units; 72 blocks reach the right or bottom frame edge). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 759acdab6bfe52e9c78ce3713489d39206c970b8be93ae314950540a2380d4c6; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-422-optflow-132x100-q230.ivf"
+description = "AVM-encoded 17-frame 132x100 8-bit 4:2:2 stream of a project-generated moving texture (avmenc --profile=2 --bit-depth=8 --cpu-used=5 --end-usage=q --qp=230 --lag-in-frames=16 --enable-tip=2): inter frames with TIP_FRAME_AS_REF and 95 TIP blocks predicted with 8x8 optical-flow units (2,588 units; 72 blocks at the frame edge). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 999aa4af19844afa0dde9e6cf0b46a9e7ce2ecedcef6609f793c209c49f51080; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-444-optflow-132x100-q230.ivf"
+description = "AVM-encoded 17-frame 132x100 8-bit 4:4:4 stream of a project-generated moving texture (avmenc --profile=1 --bit-depth=8 --cpu-used=5 --end-usage=q --qp=230 --lag-in-frames=16 --enable-tip=2): inter frames with TIP_FRAME_AS_REF and 79 TIP blocks predicted with 8x8 optical-flow units (2,146 units; 60 blocks at the frame edge). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 532eb4764985af2e4a7dac191ed007a6a1c31cee574d8c7590058f40954534f2; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-422-optflow-10bit-132x100-q160.ivf"
+description = "AVM-encoded 17-frame 132x100 10-bit 4:2:2 stream of a project-generated moving texture (avmenc --profile=2 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=160 --lag-in-frames=16 --enable-tip=2): inter frames with TIP_FRAME_AS_REF and 96 TIP blocks predicted with 8x8 optical-flow units (2,060 units; 75 blocks at the frame edge). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 4cbf5ae0b84cefac6fab5c0e8936f13fa7657b7beac85d5d2bf16cacccc3b9e2; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-444-optflow-10bit-132x100-q230.ivf"
+description = "AVM-encoded 17-frame 132x100 10-bit 4:4:4 stream of a project-generated moving texture (avmenc --profile=1 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=230 --lag-in-frames=16 --enable-tip=2): inter frames with TIP_FRAME_AS_REF and 99 TIP blocks predicted with 8x8 optical-flow units (2,724 units; 74 blocks at the frame edge). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 c37d00d322b0e2d989f186b502c3d24193adebcf95cde9edff0bc410aa0c16ce; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-422-16x16-units-132x100-q160.ivf"
+description = "AVM-encoded 17-frame 132x100 8-bit 4:2:2 stream of a project-generated moving texture (avmenc --profile=2 --bit-depth=8 --cpu-used=6 --end-usage=q --qp=160 --lag-in-frames=16 --enable-tip=2 --enable-tip-refinemv=0): inter frames with TIP_FRAME_AS_REF and 118 TIP blocks without optical flow: 42 with 16x16 prediction units and 76 with 8x8 units. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 786ff1d4f6dce77f7e78de5d85eec907a69eca8a9eacc86d391e7d3c3a09734b; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-444-16x16-units-10bit-132x100-q160.ivf"
+description = "AVM-encoded 17-frame 132x100 10-bit 4:4:4 stream of a project-generated moving texture (avmenc --profile=1 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=160 --lag-in-frames=16 --enable-tip=2 --enable-tip-refinemv=0): inter frames with TIP_FRAME_AS_REF and 106 TIP blocks without optical flow: 37 with 16x16 prediction units and 69 with 8x8 units, 10 of them single-reference. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 b79ac411ddf27a8817646efb15a24da770e1fb18bc681d19788b4e2f1b4d82d9; validates clean."
+expect = "clean"
