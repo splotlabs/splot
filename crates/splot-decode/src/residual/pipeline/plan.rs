@@ -6,7 +6,7 @@
 use splot_recon::{PlaneId, tx_size_index};
 
 use crate::bitstream::tile_payload::SupportedChromaMode;
-use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
+use crate::tile::block_context::{BlockCtx, BlockRect, FrameTileCtx, TxShape};
 
 use super::{
     CHROMA_PLANES, CHUNK_64_N4, GeneralIntraResidualPlan, IDTX, RectChromaPlan, RectLumaPlan,
@@ -24,10 +24,11 @@ pub(super) const MAX_RESIDUAL_PLANES: usize = MAX_RESIDUAL_CHUNKS + MAX_DEFERRED
 impl GeneralIntraResidualPlan {
     pub(super) fn take(
         capacity: usize,
+        frame: FrameTileCtx,
     ) -> core::result::Result<Self, std::collections::TryReserveError> {
         let mut planes = Vec::new();
         planes.try_reserve(capacity)?;
-        Ok(Self { planes })
+        Ok(Self { planes, frame })
     }
 
     pub(crate) fn rect(
@@ -38,7 +39,7 @@ impl GeneralIntraResidualPlan {
         luma_lossless_tx_size: Option<usize>,
         lossless: bool,
     ) -> core::result::Result<Self, ResidualPlanError> {
-        let mut plan = Self::take(MAX_RESIDUAL_PLANES)
+        let mut plan = Self::take(MAX_RESIDUAL_PLANES, block_ctx.frame())
             .map_err(|_| ResidualPlanError::Allocation { plane: PlaneId::Y })?;
         plan_rect(
             &mut |plane| plan.planes.push(plane),
@@ -57,7 +58,7 @@ impl GeneralIntraResidualPlan {
         chroma_plan: RectChromaPlan,
         lossless_luma_fsc: bool,
     ) -> core::result::Result<Self, ResidualPlanError> {
-        let mut plan = Self::take(MAX_RESIDUAL_PLANES)
+        let mut plan = Self::take(MAX_RESIDUAL_PLANES, block_ctx.frame())
             .map_err(|_| ResidualPlanError::Allocation { plane: PlaneId::U })?;
         plan_chroma(
             &mut |plane| plan.planes.push(plane),
@@ -76,9 +77,9 @@ impl GeneralIntraResidualPlan {
         self.planes.iter().map(|plane| {
             (
                 usize::from(plane.coeff_plane),
-                plane.x,
-                plane.y,
-                plane.tx_size,
+                plane.x as usize,
+                plane.y as usize,
+                usize::from(plane.tx_size),
                 plane.tx_fills_residual_block(),
             )
         })
@@ -151,7 +152,8 @@ impl ResidualPlanePlan {
         tx_size_override: Option<usize>,
         defer_reconstruction: bool,
     ) -> core::result::Result<(), ResidualPlanError> {
-        let block = block_ctx.plane_block(plane_id);
+        let (rect, rect_tx) = block_ctx.plane_geometry(plane_id);
+        let block = block_ctx.frame().plane_block(rect, rect_tx, plane_id);
         let tx = block.tx();
         let tx_size = match tx_size_override {
             Some(tx_size) => tx_size,
@@ -160,11 +162,11 @@ impl ResidualPlanePlan {
         };
         sink(Self {
             plane_id,
-            block_ctx,
+            rect,
             coeff_plane: coeff_plane(plane_id) as u8,
-            tx_size,
-            x: block.x(),
-            y: block.y(),
+            tx_size: u8::try_from(tx_size).map_err(|_| ResidualPlanError::InvalidGeometry)?,
+            x: block.x() as u32,
+            y: block.y() as u32,
             tx,
             residual_width4: residual_width4 as u16,
             residual_height4: residual_height4 as u16,
@@ -299,15 +301,7 @@ fn residual_chunk_ctx(
 ) -> core::result::Result<BlockCtx, ResidualPlanError> {
     let block = block_ctx.block();
     let (block, tx) = residual_chunk_geometry(block, chunk_x, chunk_y, chunk_width, chunk_height)?;
-    let mut chunk_ctx = BlockCtx::new(
-        block,
-        tx,
-        block_ctx.frame_mi_cols(),
-        block_ctx.frame_mi_rows(),
-        block_ctx.bit_depth(),
-        block_ctx.chroma(),
-    )
-    .with_tile_bounds_from(block_ctx);
+    let mut chunk_ctx = BlockCtx::from_frame(block, tx, block_ctx.frame());
     if let Some((chroma_ref, chroma_tx)) = block_ctx.chroma_ref() {
         let (chroma_ref, chroma_tx) = if chroma_ref.width4() == block_ctx.block().width4()
             && chroma_ref.height4() == block_ctx.block().height4()

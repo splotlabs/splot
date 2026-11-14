@@ -14,6 +14,7 @@ use crate::bitstream::tile_payload::{
 use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_pair_into;
 
 use super::{ResidualPlanePlan, ResidualReconstructionPlan};
+use crate::tile::block_context::FrameTileCtx;
 
 pub(super) fn can_hold_for_cctx_pair(
     plane: &ResidualPlanePlan,
@@ -22,12 +23,12 @@ pub(super) fn can_hold_for_cctx_pair(
     plane.plane_id == PlaneId::U && !plane.defer_reconstruction && segment_lossless == Some(false)
 }
 
-pub(super) fn cctx_allowed(plane: &ResidualPlanePlan) -> bool {
+pub(super) fn cctx_allowed(plane: &ResidualPlanePlan, frame: FrameTileCtx) -> bool {
     if plane.plane_id == PlaneId::Y {
         return false;
     }
-    let (sub_x, sub_y) = plane.block_ctx.chroma().subsampling(plane.plane_id);
-    let block = plane.block_ctx.plane_block(plane.plane_id);
+    let (sub_x, sub_y) = frame.chroma().subsampling(plane.plane_id);
+    let block = frame.plane_block(plane.rect, plane.tx, plane.plane_id);
     is_cctx_geometry_allowed(
         sub_x != 0 && sub_y != 0,
         block.width4() * 4,
@@ -37,6 +38,7 @@ pub(super) fn cctx_allowed(plane: &ResidualPlanePlan) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
+    frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
@@ -55,6 +57,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             });
         }
         return u_plane.reconstruct(
+            frame,
             scratch,
             workspace,
             u_coeffs,
@@ -67,6 +70,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
     };
     if cctx_type == 0 {
         if reconstruct_cfl_pair(
+            frame,
             scratch,
             workspace,
             block_decoded,
@@ -77,6 +81,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             return Ok(());
         }
         u_plane.reconstruct(
+            frame,
             scratch,
             workspace,
             u_coeffs,
@@ -87,6 +92,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             luma_context,
         )?;
         return v_plane.reconstruct(
+            frame,
             scratch,
             workspace,
             v_coeffs,
@@ -98,6 +104,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
         );
     }
     reconstruct_chroma_cctx_pair(
+        frame,
         scratch,
         workspace,
         block_decoded,
@@ -111,6 +118,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
 }
 
 fn reconstruct_cfl_pair<T: ReconSample>(
+    frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
@@ -147,15 +155,15 @@ fn reconstruct_cfl_pair<T: ReconSample>(
         return Ok(false);
     }
 
-    let u_neighbours = u_plane.plane_neighbours(u_plane.block_ctx, block_decoded);
-    let v_neighbours = v_plane.plane_neighbours(v_plane.block_ctx, block_decoded);
+    let u_neighbours = u_plane.plane_neighbours(frame, block_decoded);
+    let v_neighbours = v_plane.plane_neighbours(frame, block_decoded);
     reconstruct_general_intra_chroma_cfl_pair_into(
         scratch,
         workspace,
         u_coeffs,
         v_coeffs,
-        u_plane.x,
-        u_plane.y,
+        u_plane.x as usize,
+        u_plane.y as usize,
         u_plane.tx.width_log2(),
         u_plane.tx.height_log2(),
         qindex,
@@ -164,13 +172,14 @@ fn reconstruct_cfl_pair<T: ReconSample>(
         u_sb_mib,
         u_neighbours,
         v_neighbours,
-        u_plane.block_ctx.bit_depth(),
+        frame.bit_depth(),
     )?;
     Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_chroma_cctx_pair<T: ReconSample>(
+    frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
@@ -195,6 +204,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     }
     let u_prediction_block = prediction_only_coeff_block(u_coeffs);
     u_plane.reconstruct(
+        frame,
         scratch,
         workspace,
         CoeffBlock::new(&u_prediction_block, &[])?,
@@ -206,6 +216,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     )?;
     let v_prediction_block = prediction_only_coeff_block(v_coeffs);
     v_plane.reconstruct(
+        frame,
         scratch,
         workspace,
         CoeffBlock::new(&v_prediction_block, &[])?,
@@ -223,11 +234,11 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     add_cctx_pair_residual_in_place(
         &mut CurrentFrameSurface::Frame(workspace),
         [u_coeffs, v_coeffs],
-        (u_plane.x, u_plane.y, size),
+        (u_plane.x as usize, u_plane.y as usize, size),
         qindex,
         cctx_type,
         false,
-        u_plane.block_ctx.bit_depth(),
+        frame.bit_depth(),
     )?;
     Ok(())
 }
