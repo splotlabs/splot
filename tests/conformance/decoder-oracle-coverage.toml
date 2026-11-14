@@ -594,6 +594,7 @@ name = "Reference-size scaling in inter prediction"
 category = "inter"
 fixtureable = true
 spec_sections = ["5.20.7.12", "5.20.7.14", "5.20.7.17", "7.13.3.14", "7.13.3.17", "7.13.3.18", "7.13.3.20"]
+notes = "Covered by AVMenc resize-mode streams in 4:2:0, 4:2:2 and 4:4:4 at 8 and 10 bits: single-reference and compound blocks from larger and smaller references, reads outside the reference frame, scaled extended warp, and compound pairs that lose optical flow and refine-MV. AVMenc never codes TIP with a scaled TIP reference, so the TIP gates have no fixture."
 
 [[capability]]
 id = "inter.subpel_mc"

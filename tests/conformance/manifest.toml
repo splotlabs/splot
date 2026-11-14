@@ -2008,3 +2008,63 @@ expect = "clean"
 path = "vectors/valid/syn-masked-mono-128x96-10bit-q120.ivf"
 description = "10-bit monochrome 128x96 17-frame stream of a panning testsrc2 crop (tools/decoder-fixtures/generate.py, avmenc --cpu-used=3 --end-usage=q --qp=120 --lag-in-frames=16). It codes 1 COMPOUND_DIFFWTD and 1 COMPOUND_WEDGE blocks, and 63 COMPOUND_AVERAGE luma planes whose § 7.13.3.14 implicit mask is not uniform, so the § 7.13.3.30 mask-blend kernels run for every mask type in this format and bit depth. The inspection-off avmdec raw output SHA-256 is 49759e633067bc0b7ddc19b589b0a85cbd8595b55d47aea5cc614ab4cb708f58 and splot reproduces it at 1 and 4 threads; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-random-420-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 8-bit 4:2:0 stream of a project-generated moving texture (avmenc --profile=0 --bit-depth=8 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=8 --resize-mode=2): frame sizes 107x80 133x100 107x80 123x92 145x109 123x92 145x109 200x150 133x100; 34 single-reference and 23 compound blocks predict from a reference of another size (222 scaled plane predictions: 117 from a larger and 105 from a smaller reference, 201 read outside the reference frame), 12 warp plane predictions use the scaled extended warp, 13 compound pairs lose optical flow and refine-MV because a reference is scaled. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 426af83aefaa6eacd637deb398c339cee8d4ca4fede89a9e7e263ad27ec38210; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-random-420-10bit-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 10-bit 4:2:0 stream of a project-generated moving texture (avmenc --profile=0 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=8 --resize-mode=2): frame sizes 107x80 133x100 107x80 123x92 145x109 123x92 145x109 200x150 133x100; 34 single-reference and 21 compound blocks predict from a reference of another size (226 scaled plane predictions: 120 from a larger and 106 from a smaller reference, 197 read outside the reference frame), 29 warp plane predictions use the scaled extended warp, 16 compound pairs lose optical flow and refine-MV because a reference is scaled. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 53b3a708500805cad2b582aa12b1880f85277c3e491ff384bfff38ffe3e87962; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-random-422-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 8-bit 4:2:2 stream of a project-generated moving texture (avmenc --profile=2 --bit-depth=8 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=8 --resize-mode=2): frame sizes 107x80 133x100 107x80 123x92 145x109 123x92 145x109 200x150 133x100; 32 single-reference and 19 compound blocks predict from a reference of another size (192 scaled plane predictions: 117 from a larger and 75 from a smaller reference, 174 read outside the reference frame), 21 warp plane predictions use the scaled extended warp, 5 compound pairs lose optical flow and refine-MV because a reference is scaled. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 7dd16c3be16c5408ee0e56492b6f790073850333ce9526760fae19c4cc3027d7; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-random-422-10bit-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 10-bit 4:2:2 stream of a project-generated moving texture (avmenc --profile=2 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=8 --resize-mode=2): frame sizes 107x80 133x100 107x80 123x92 145x109 123x92 145x109 200x150 133x100; 37 single-reference and 15 compound blocks predict from a reference of another size (201 scaled plane predictions: 111 from a larger and 90 from a smaller reference, 180 read outside the reference frame), 30 warp plane predictions use the scaled extended warp, 13 compound pairs lose optical flow and refine-MV because a reference is scaled. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 125c8e98a8c086ba159e509c5d6109d906d73346df0607214fa1e37fa4cd1ebd; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-random-444-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 8-bit 4:4:4 stream of a project-generated moving texture (avmenc --profile=1 --bit-depth=8 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=8 --resize-mode=2): frame sizes 107x80 133x100 107x80 123x92 145x109 123x92 145x109 200x150 133x100; 32 single-reference and 24 compound blocks predict from a reference of another size (216 scaled plane predictions: 117 from a larger and 99 from a smaller reference, 195 read outside the reference frame), 21 warp plane predictions use the scaled extended warp, 14 compound pairs lose optical flow and refine-MV because a reference is scaled. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 902f2290e7468458793a7e852811614cd06d0c3efd7278c86db38b5f07c31139; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-random-444-10bit-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 10-bit 4:4:4 stream of a project-generated moving texture (avmenc --profile=1 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=8 --resize-mode=2): frame sizes 107x80 133x100 107x80 123x92 145x109 123x92 145x109 200x150 133x100; 32 single-reference and 23 compound blocks predict from a reference of another size (204 scaled plane predictions: 111 from a larger and 93 from a smaller reference, 189 read outside the reference frame), 30 warp plane predictions use the scaled extended warp, 11 compound pairs lose optical flow and refine-MV because a reference is scaled. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 e2fd0fbb38fe2d809e7f36cf75fe215fcbf5f1579c732d0451af5ed01bf284d2; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-lowdelay-420-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 8-bit 4:2:0 stream of a project-generated moving texture (avmenc --profile=0 --bit-depth=8 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=0 --resize-mode=4): frame sizes 200x150 160x120 133x100 114x86 100x75 107x80 123x92 178x133 200x150; 11 single-reference and 0 compound blocks predict from a reference of another size (33 scaled plane predictions: 6 from a larger and 27 from a smaller reference, 33 read outside the reference frame), 93 warp plane predictions use the scaled extended warp. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 6b2e8556b41a991cf29f31a2929dddc2df78b1094352954a0c8788e3a6c58990; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-lowdelay-420-10bit-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 10-bit 4:2:0 stream of a project-generated moving texture (avmenc --profile=0 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=0 --resize-mode=4): frame sizes 200x150 160x120 133x100 114x86 100x75 107x80 123x92 178x133 200x150; 23 single-reference and 0 compound blocks predict from a reference of another size (69 scaled plane predictions: 30 from a larger and 39 from a smaller reference, 68 read outside the reference frame), 57 warp plane predictions use the scaled extended warp. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 ce83d8e6a5e68c82ebd5d74a9e26ba570d82d86a7b491c861d1d169269bb6ee4; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-lowdelay-422-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 8-bit 4:2:2 stream of a project-generated moving texture (avmenc --profile=2 --bit-depth=8 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=0 --resize-mode=4): frame sizes 200x150 160x120 133x100 114x86 100x75 107x80 123x92 178x133 200x150; 18 single-reference and 0 compound blocks predict from a reference of another size (54 scaled plane predictions: 12 from a larger and 42 from a smaller reference, 54 read outside the reference frame), 63 warp plane predictions use the scaled extended warp. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 e7af7de2d43540ed640fef9a99d36920db0f1c2ca58a79a2eb5ce93283513476; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-lowdelay-422-10bit-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 10-bit 4:2:2 stream of a project-generated moving texture (avmenc --profile=2 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=0 --resize-mode=4): frame sizes 200x150 160x120 133x100 114x86 100x75 107x80 123x92 178x133 200x150; 22 single-reference and 0 compound blocks predict from a reference of another size (66 scaled plane predictions: 39 from a larger and 27 from a smaller reference, 66 read outside the reference frame), 60 warp plane predictions use the scaled extended warp. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 6364b7ab475527b22da2b25a6c37be2d0852e1712e374963929521736fcec672; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-lowdelay-444-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 8-bit 4:4:4 stream of a project-generated moving texture (avmenc --profile=1 --bit-depth=8 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=0 --resize-mode=4): frame sizes 200x150 160x120 133x100 114x86 100x75 107x80 123x92 178x133 200x150; 42 single-reference and 0 compound blocks predict from a reference of another size (126 scaled plane predictions: 63 from a larger and 63 from a smaller reference, 117 read outside the reference frame). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 0b3ccb63b15335b1d231da48604e16f8cb8bfad086d1f00145fad7f1bac8575d; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-scaled-lowdelay-444-10bit-200x150-q200.ivf"
+description = "AVM-encoded 9-frame 10-bit 4:4:4 stream of a project-generated moving texture (avmenc --profile=1 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=200 --enable-tip=1 --enable-opfl-refine=1 --lag-in-frames=0 --resize-mode=4): frame sizes 200x150 160x120 133x100 114x86 100x75 107x80 123x92 178x133 200x150; 23 single-reference and 0 compound blocks predict from a reference of another size (69 scaled plane predictions: 39 from a larger and 30 from a smaller reference, 66 read outside the reference frame), 69 warp plane predictions use the scaled extended warp. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 b75d6c3d63eb76b01601b256683df57c18e31434748fea3fe58d4e76cacfe91e; validates clean."
+expect = "clean"
