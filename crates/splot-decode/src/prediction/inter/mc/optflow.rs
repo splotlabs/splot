@@ -714,9 +714,9 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
 }
 
 /// The motion cell of one TIP unit that the refine-MV optical-flow search did
-/// not take. An 8x8 unit is a single optical-flow unit, so its two initial
-/// predictions and § 7.13.3.9 delta stay on the stack instead of going through
-/// a motion grid.
+/// not take; an unsearched refine-MV unit keeps its candidates. An 8x8 unit is
+/// a single optical-flow unit, so its two initial predictions and § 7.13.3.9
+/// delta stay on the stack instead of going through a motion grid.
 pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     unit: &CompoundMcBlock<'a, T>,
@@ -725,54 +725,46 @@ pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
     luma: &mut [LumaReference<'a, T>; 2],
 ) -> Result<MotionCell> {
     let mvs = [unit.mv0, unit.mv1];
-    let refinemv = unit
-        .use_refinemv
-        .then(|| super::refinemv::compound_default_refinemv_motion_grid(sink, unit, offset))
-        .transpose()?;
-    let refined_cell = |refinemv: Option<CompoundMotionGrid>| {
-        refinemv
-            .map(|motion| motion.cell_at_luma_offset(0, 0))
-            .transpose()
-            .map(|cell| cell.unwrap_or_else(|| MotionCell::from_refinemv(mvs)))
-    };
-    let (Some(distances), 8, 8, 8) = (
+    let (Some(distances), 8, 8, 8, false) = (
         unit.optflow_distances,
         unit_size,
         unit.rect.luma_w,
         unit.rect.luma_h,
+        unit.search_refinemv,
     ) else {
+        let refinemv = unit
+            .use_refinemv
+            .then(|| super::refinemv::compound_default_refinemv_motion_grid(sink, unit, offset))
+            .transpose()?;
         let motion = compound_motion_grid(sink, unit, Some(unit_size), refinemv, offset)?;
-        return Ok(refined_cell(motion)?);
+        return Ok(motion
+            .map(|motion| motion.cell_at_luma_offset(0, 0))
+            .transpose()?
+            .unwrap_or_else(|| MotionCell::from_refinemv(mvs)));
     };
-    let base_mvs = refinemv
-        .as_ref()
-        .map_or(Ok(mvs), |grid| grid.stored_mvs_at_luma_offset(0, 0))?;
-    let candidates = refinemv
-        .as_ref()
-        .and_then(CompoundMotionGrid::uniform_refinemv_candidates);
-    let bit_depth = sink.info().bit_depth();
     let mut predictions = [[0u16; 64]; 2];
     for (reference, (luma, prediction)) in luma.iter_mut().zip(&mut predictions).enumerate() {
         initial_luma_prediction::<_, 0>(
             luma,
             unit.rect,
-            base_mvs[reference],
+            mvs[reference],
             InterpolationFilter::Bilinear,
-            candidates.map(|mvs| (mvs[reference], 8, 8)),
+            unit.use_refinemv.then_some((mvs[reference], 8, 8)),
             None,
             prediction,
         )?;
     }
     let [pred0, pred1] = &predictions;
+    let bit_depth = sink.info().bit_depth();
     if unit
         .optflow_sad_threshold
         .is_some_and(|threshold| normalized_sad(pred0, pred1, bit_depth) < threshold)
     {
-        return Ok(refined_cell(refinemv)?);
+        return Ok(MotionCell::from_refinemv(mvs));
     }
     let delta =
         derive_optflow_mv_delta_8x8_strided_into(pred0, 0, pred1, 0, 8, bit_depth, distances)?;
-    Ok(MotionCell::from_optflow(base_mvs, delta))
+    Ok(MotionCell::from_optflow(mvs, delta))
 }
 
 /// Whether some row holds two adjacent equal cells, or every cell is equal,
