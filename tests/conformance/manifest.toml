@@ -1983,3 +1983,28 @@ expect = "clean"
 path = "vectors/valid/syn-tip-444-16x16-units-10bit-132x100-q160.ivf"
 description = "AVM-encoded 17-frame 132x100 10-bit 4:4:4 stream of a project-generated moving texture (avmenc --profile=1 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=160 --lag-in-frames=16 --enable-tip=2 --enable-tip-refinemv=0): inter frames with TIP_FRAME_AS_REF and 106 TIP blocks without optical flow: 37 with 16x16 prediction units and 69 with 8x8 units, 10 of them single-reference. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 b79ac411ddf27a8817646efb15a24da770e1fb18bc681d19788b4e2f1b4d82d9; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-masked-422-128x96-q90.ivf"
+description = "8-bit 4:2:2 128x96 17-frame stream of a panning testsrc2 crop (tools/decoder-fixtures/generate.py, avmenc --cpu-used=3 --end-usage=q --qp=90 --lag-in-frames=16). It codes 21 COMPOUND_DIFFWTD and 5 COMPOUND_WEDGE blocks, and 61 COMPOUND_AVERAGE luma planes and 118 chroma planes whose § 7.13.3.14 implicit mask is not uniform, so the § 7.13.3.30 mask-blend kernels run for every mask type in this format and bit depth. The inspection-off avmdec raw output SHA-256 is 194b2e77a25aea48eca22d77d24715c01850e64ea06db893e1a05eab0911fdf0 and splot reproduces it at 1 and 4 threads; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-masked-422-128x96-10bit-q90.ivf"
+description = "10-bit 4:2:2 128x96 17-frame stream of a panning testsrc2 crop (tools/decoder-fixtures/generate.py, avmenc --cpu-used=3 --end-usage=q --qp=90 --lag-in-frames=16). It codes 14 COMPOUND_DIFFWTD and 4 COMPOUND_WEDGE blocks, and 97 COMPOUND_AVERAGE luma planes and 178 chroma planes whose § 7.13.3.14 implicit mask is not uniform, so the § 7.13.3.30 mask-blend kernels run for every mask type in this format and bit depth. The inspection-off avmdec raw output SHA-256 is b62a81a236a474516a6a1238770888e6422078eb35629c77d359717297f08100 and splot reproduces it at 1 and 4 threads; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-masked-444-128x96-10bit-q90.ivf"
+description = "10-bit 4:4:4 128x96 17-frame stream of a panning testsrc2 crop (tools/decoder-fixtures/generate.py, avmenc --cpu-used=3 --end-usage=q --qp=90 --lag-in-frames=16). It codes 21 COMPOUND_DIFFWTD and 5 COMPOUND_WEDGE blocks, and 91 COMPOUND_AVERAGE luma planes and 174 chroma planes whose § 7.13.3.14 implicit mask is not uniform, so the § 7.13.3.30 mask-blend kernels run for every mask type in this format and bit depth. The inspection-off avmdec raw output SHA-256 is 36e0b8e4fc4c20db8a350aa475851405e0f2a7a0b42f3ebef9f7e0b48de49dff and splot reproduces it at 1 and 4 threads; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-masked-mono-128x96-q150.ivf"
+description = "8-bit monochrome 128x96 17-frame stream of a panning testsrc2 crop (tools/decoder-fixtures/generate.py, avmenc --cpu-used=3 --end-usage=q --qp=150 --lag-in-frames=16). It codes 3 COMPOUND_DIFFWTD and 1 COMPOUND_WEDGE blocks, and 28 COMPOUND_AVERAGE luma planes whose § 7.13.3.14 implicit mask is not uniform, so the § 7.13.3.30 mask-blend kernels run for every mask type in this format and bit depth. The inspection-off avmdec raw output SHA-256 is 87daa02c23900c21b7d097ecec147f30a142f0be3cee4ee3721314a66535b9a1 and splot reproduces it at 1 and 4 threads; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-masked-mono-128x96-10bit-q120.ivf"
+description = "10-bit monochrome 128x96 17-frame stream of a panning testsrc2 crop (tools/decoder-fixtures/generate.py, avmenc --cpu-used=3 --end-usage=q --qp=120 --lag-in-frames=16). It codes 1 COMPOUND_DIFFWTD and 1 COMPOUND_WEDGE blocks, and 63 COMPOUND_AVERAGE luma planes whose § 7.13.3.14 implicit mask is not uniform, so the § 7.13.3.30 mask-blend kernels run for every mask type in this format and bit depth. The inspection-off avmdec raw output SHA-256 is 49759e633067bc0b7ddc19b589b0a85cbd8595b55d47aea5cc614ab4cb708f58 and splot reproduces it at 1 and 4 threads; validates clean."
+expect = "clean"
