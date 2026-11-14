@@ -1145,8 +1145,7 @@ fn read_symbol(
     selector: TileCdfSelector,
     reason: &'static str,
 ) -> Result<u8, GeneralIntraBlockModeError> {
-    cdfs.read_block_symbol_trace(selector, symbols)
-        .map(splot_core::symbol::Symbol::get)
+    cdfs.read_block_symbol(selector, symbols)
         .map_err(|source| GeneralIntraBlockModeError::SymbolRead { reason, source })
 }
 

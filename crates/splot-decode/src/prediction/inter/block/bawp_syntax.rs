@@ -49,21 +49,19 @@ pub(crate) fn read_bawp_syntax(
 
     let list_index = explicit_bawp_context(input.single_mode, input.use_amvd);
     let explicit_bawp = cdfs
-        .read_block_symbol_trace(TileCdfSelector::ExplicitBawp { ctx: list_index }, symbols)
+        .read_block_symbol(TileCdfSelector::ExplicitBawp { ctx: list_index }, symbols)
         .map_err(|error| symbol_read_error(error, tile_offset))?;
-    let explicit = explicit_bawp.get() != 0;
+    let explicit = explicit_bawp != 0;
     let explicit_scale_positive = if explicit {
-        cdfs.read_block_symbol_trace(TileCdfSelector::ExplicitBawpScale, symbols)
+        cdfs.read_block_symbol(TileCdfSelector::ExplicitBawpScale, symbols)
             .map_err(|error| symbol_read_error(error, tile_offset))?
-            .get()
             != 0
     } else {
         false
     };
     let chroma = if input.has_chroma {
-        cdfs.read_block_symbol_trace(TileCdfSelector::UseBawpChroma, symbols)
+        cdfs.read_block_symbol(TileCdfSelector::UseBawpChroma, symbols)
             .map_err(|error| symbol_read_error(error, tile_offset))?
-            .get()
             != 0
     } else {
         false

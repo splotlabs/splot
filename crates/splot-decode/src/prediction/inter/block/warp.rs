@@ -42,9 +42,9 @@ pub(crate) fn read_warp_newmv_motion_mode_syntax(
         .unwrap_or([false; splot_core::headers::frame::MOTION_MODES]);
     let mut read_flag = |selector: TileCdfSelector| -> Result<bool> {
         let flag = cdfs
-            .read_block_symbol_trace(selector, symbols)
+            .read_block_symbol(selector, symbols)
             .map_err(|error| symbol_read_error(error, tile_offset))?;
-        Ok(flag.get() != 0)
+        Ok(flag != 0)
     };
     if warp_sample_found
         && frame_modes[splot_core::headers::frame::EXTENDWARP]

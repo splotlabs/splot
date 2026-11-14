@@ -117,9 +117,9 @@ fn read_indexed_drl_idx(
     let max_drl_bits = max_drl_bits_minus_1.saturating_add(1) as usize;
     for idx in 0..max_drl_bits {
         let drl_mode = cdfs
-            .read_block_symbol_trace(selector(idx.min(2)), symbols)
+            .read_block_symbol(selector(idx.min(2)), symbols)
             .map_err(|error| symbol_read_error(error, tile_offset))?;
-        if drl_mode.get() == 0 {
+        if drl_mode == 0 {
             return Ok(idx);
         }
     }
@@ -219,20 +219,8 @@ pub(super) fn read_block_mv_precision_syntax(
         frame_precision,
         (block_has_newmv, is_adaptive_mvd),
         |selector| {
-            let rows = cdfs.block_rows_mut();
-            Ok(match selector {
-                TileCdfSelector::UseMostProbablePrecision { ctx } => {
-                    read_row(symbols, row_at(&mut rows.use_most_probable_precision, ctx)) as u8
-                }
-                TileCdfSelector::PbMvPrecision { ctx, frame_ctx } => {
-                    let bank = row_at(&mut rows.pb_mv_precision, ctx);
-                    read_row(symbols, row_at(bank, frame_ctx)) as u8
-                }
-                selector => cdfs
-                    .read_block_symbol_trace(selector, symbols)
-                    .map_err(|error| symbol_read_error(error, tile_offset))?
-                    .get(),
-            })
+            cdfs.read_block_symbol(selector, symbols)
+                .map_err(|error| symbol_read_error(error, tile_offset))
         },
     )
 }

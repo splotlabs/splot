@@ -1070,8 +1070,8 @@ fn read_tx_symbol(
     let value = work_unit
         .cdf_mut()
         .tile_cdfs_mut()
-        .read_block_symbol_trace(selector, symbols)
-        .map(|symbol| usize::from(symbol.get()))
+        .read_block_symbol(selector, symbols)
+        .map(usize::from)
         .map_err(|error| match error {
             BlockSymbolTraceReadError::Cdf(_) => selectable_state_error(),
             BlockSymbolTraceReadError::Symbol(_) => {
