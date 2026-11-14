@@ -14,7 +14,6 @@ use splot_recon::{
     subpel_predict_block_compound_average_strided_into_u8,
     subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
     subpel_predict_block_strided_into, subpel_predict_block_strided_into_u8, subpel_put_block,
-    wedge_mask_plane_sample,
 };
 
 use super::Mv;
@@ -32,7 +31,7 @@ mod compound_average;
 mod compound_mask;
 mod optflow;
 mod refinemv;
-use blend::{blend_compound_average, diff_weighted_mask_into, store_clamped_samples};
+use blend::{blend_compound_average, store_clamped_samples};
 use optflow::{CompoundAverageOutput, MotionCell};
 pub(crate) use optflow::{CompoundMotionGrid, TipUnits, predict_tip_units, refine_tip_units};
 use refinemv::TipSearchScratch;
@@ -612,7 +611,6 @@ pub(super) fn predict_compound_into<T: ReconSample>(
         return Ok(());
     }
     let info = sink.info();
-    let mut luma_diff_weighted_mask = None;
     let shares_chroma_grid = motion.is_some_and(|motion| motion.uniform_mvs().is_none())
         && matches!(block.blend, CompoundBlend::Average { .. })
         && block.warp_params.iter().all(Option::is_none);
@@ -658,7 +656,6 @@ pub(super) fn predict_compound_into<T: ReconSample>(
                 plane,
                 sub_x,
                 sub_y,
-                &mut luma_diff_weighted_mask,
                 motion,
                 offset,
                 u,
@@ -681,7 +678,6 @@ pub(super) fn predict_compound_into<T: ReconSample>(
                 plane,
                 sub_x,
                 sub_y,
-                &mut luma_diff_weighted_mask,
                 motion,
                 offset,
                 output,
@@ -1015,7 +1011,6 @@ fn predict_compound_plane_output<T: ReconSample>(
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
-    luma_diff_weighted_mask: &mut Option<RecycledMcSamples<u16>>,
     motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
     samples: &mut [T],
@@ -1025,7 +1020,7 @@ fn predict_compound_plane_output<T: ReconSample>(
     let storage_luma_size = info.storage_luma_size();
     let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
     let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
-    let (rect, blend) = (block.rect, block.blend);
+    let blend = block.blend;
     let has_warp = block.warp_params.iter().any(Option::is_some);
     if !has_warp
         && let (
@@ -1118,22 +1113,20 @@ fn predict_compound_plane_output<T: ReconSample>(
         }
     };
     let (pred0, pred1) = prediction.predictions();
-    if plane == PlaneId::Y
-        && let CompoundBlend::DiffWeighted { inverse } = blend
-    {
-        let mut mask = RecycledMcSamples::take();
-        diff_weighted_mask_into(
-            pred0,
-            pred1,
-            info.bit_depth(),
-            prediction.block_w,
-            prediction.block_h,
-            inverse,
-            &mut mask,
-        )?;
-        *luma_diff_weighted_mask = Some(mask);
+    if !matches!(blend, CompoundBlend::Average { .. }) {
+        let [_, (_, chroma_x, chroma_y), _] = mc_planes(info.pixel_format());
+        let layout = compound_mask::PlaneLayout {
+            plane,
+            size: (prediction.block_w, prediction.block_h),
+            sub: (sub_x, sub_y),
+            chroma_sub: (chroma_x, chroma_y),
+            scalings: [prediction.scaling0, prediction.scaling1],
+            frame: (frame_w, frame_h),
+        };
+        let output = (samples, stride);
+        compound_mask::blend_warp_plane(block, &layout, [pred0, pred1], output, info.bit_depth())?;
+        return Ok(false);
     }
-    let mask = luma_diff_weighted_mask.as_deref().map(Vec::as_slice);
     blend_compound_average::<T>(
         pred0,
         pred1,
@@ -1141,8 +1134,6 @@ fn predict_compound_plane_output<T: ReconSample>(
         prediction.block_w,
         prediction.block_h,
         blend,
-        rect.luma_w,
-        rect.luma_h,
         motion,
         prediction.plane_x,
         prediction.plane_y,
@@ -1150,7 +1141,6 @@ fn predict_compound_plane_output<T: ReconSample>(
         prediction.scaling1,
         frame_w,
         frame_h,
-        mask,
         sub_x,
         sub_y,
         samples,

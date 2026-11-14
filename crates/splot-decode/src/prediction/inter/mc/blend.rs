@@ -5,7 +5,10 @@ use super::*;
 use fearless_simd::{
     Bytes as _, Select as _, Simd, SimdBase as _, SimdNarrow as _, i32x4, u16x8, u32x4,
 };
+#[cfg(test)]
+use splot_recon::wedge_mask_plane_sample;
 
+#[cfg(test)]
 /// The widest luma motion-compensated block: a 256x256 superblock side.
 const MAX_MC_LUMA_DIM: usize = 256;
 
@@ -17,8 +20,6 @@ pub(super) fn blend_compound_average<T: ReconSample>(
     w: usize,
     h: usize,
     blend: CompoundBlend,
-    luma_w: usize,
-    luma_h: usize,
     motion: Option<&CompoundMotionGrid>,
     plane_x: usize,
     plane_y: usize,
@@ -26,7 +27,6 @@ pub(super) fn blend_compound_average<T: ReconSample>(
     scaling1: PlaneScaling,
     frame_w: usize,
     frame_h: usize,
-    luma_diff_weighted_mask: Option<&[u16]>,
     sub_x: u32,
     sub_y: u32,
     output: &mut [T],
@@ -61,21 +61,9 @@ pub(super) fn blend_compound_average<T: ReconSample>(
         cwp_weight,
     } = blend
     else {
-        return blend_compound_diff_weighted::<T>(
-            pred0,
-            pred1,
-            bit_depth,
-            w,
-            h,
-            blend,
-            luma_w,
-            luma_h,
-            luma_diff_weighted_mask,
-            sub_x,
-            sub_y,
-            output,
-            stride,
-        );
+        return Err(ReconError::ArithmeticOverflow {
+            context: "masked compound blend outside the mask kernels",
+        });
     };
     let scaling_templates = [scaling0, scaling1];
     let uniform_scalings =
@@ -132,6 +120,7 @@ fn blend_rows<T: ReconSample>(
     Ok(())
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn blend_compound_diff_weighted<T: ReconSample>(
     pred0: &[i32],
@@ -233,6 +222,7 @@ pub(super) fn blend_compound_diff_weighted<T: ReconSample>(
     Ok(())
 }
 
+#[cfg(test)]
 /// The § 7.13.3.30 blend of one row with the mask values `masks`.
 #[allow(
     clippy::inline_always,
@@ -289,6 +279,7 @@ pub(super) fn store_clamped_samples<T: ReconSample>(
     Ok(())
 }
 
+#[cfg(test)]
 /// § 7.13.3.28 difference weight of one sample pair, rounded without overflow.
 #[inline]
 fn difference_weight(left: i32, right: i32, diff_round: u32, inverse: bool) -> u16 {
@@ -297,6 +288,7 @@ fn difference_weight(left: i32, right: i32, diff_round: u32, inverse: bool) -> u
     if inverse { 64 - base } else { base }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn blend_compound_wedge<T: ReconSample>(
     pred0: &[i32],
@@ -338,6 +330,7 @@ fn blend_compound_wedge<T: ReconSample>(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn diff_weighted_mask_into(
     pred0: &[i32],
     pred1: &[i32],
@@ -373,6 +366,7 @@ pub(super) fn diff_weighted_mask_into(
     Ok(())
 }
 
+#[cfg(test)]
 fn diff_weighted_luma_mask_scales(
     luma_mask: &[u16],
     w: usize,

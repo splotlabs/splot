@@ -169,6 +169,21 @@ fn predict_planes<T: ReconSample>(
     Ok(())
 }
 
+/// Blends a non-average plane of a warp compound block, whose `i32`
+/// predictors the warp kernels made, into `output`.
+pub(super) fn blend_warp_plane<T: ReconSample>(
+    block: &CompoundMcBlock<'_, T>,
+    layout: &PlaneLayout,
+    preds: [&[i32]; 2],
+    output: (&mut [T], usize),
+    bit_depth: BitDepth,
+) -> splot_recon::Result<()> {
+    with_scratch(|scratch| {
+        let preds = Preds::Wide(preds);
+        blend_plane(block, layout, preds, &mut scratch.mask, output, bit_depth)
+    })
+}
+
 /// Makes the mask of the plane and blends `preds` with it into `output`. The
 /// luma plane of a difference-weight block makes the chroma mask in `mask`
 /// instead, which its chroma planes then read.
