@@ -141,6 +141,8 @@ pub(crate) struct TileWalkParams {
     pub(super) mv_config: Option<super::super::read_mv::MvReadConfig>,
     /// The frame-level § 5.20.7.13 `is_mvd_sign_derive_allowed` guards.
     pub(super) mvd_sign_derive: bool,
+    /// § 5.20.7.6 `use_per_block_mv_precision` of the frame.
+    pub(super) per_block_mv_precision: bool,
     pub(super) ref_facts: super::compound_path::FrameRefFacts,
     /// The frame's `BruModes`, `None` when `use_bru == 0`.
     pub(crate) bru_modes: Option<Arc<crate::filters::bru::BruModeMap>>,

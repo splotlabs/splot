@@ -445,8 +445,7 @@ pub(super) fn decode_compound_inter_block(
     let precision = read_block_mv_precision_syntax(
         cdfs,
         symbols,
-        sequence,
-        core,
+        params.per_block_mv_precision,
         neighbour_ctx,
         frame_mv_config.precision(),
         compound.y_mode.has_newmv(),

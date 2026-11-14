@@ -290,8 +290,7 @@ fn read_warp_newmv_tail(
     let precision = read_block_mv_precision_syntax(
         cdfs,
         symbols,
-        sequence,
-        core,
+        use_per_block_mv_precision(sequence, core),
         neighbour_ctx,
         mv_config.precision(),
         true,

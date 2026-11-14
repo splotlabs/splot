@@ -190,7 +190,11 @@ pub(crate) fn frame_mv_precision(core: &FrameHeaderCore) -> Result<u8> {
     Ok(inter_mv_read_config(core)?.precision())
 }
 
-fn use_per_block_mv_precision(sequence: &SequenceHeader, core: &FrameHeaderCore) -> bool {
+/// Whether the frame codes a per-block MV precision (§ 5.20.7.6).
+pub(crate) fn use_per_block_mv_precision(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+) -> bool {
     sequence
         .inter
         .as_ref()
@@ -202,8 +206,7 @@ fn use_per_block_mv_precision(sequence: &SequenceHeader, core: &FrameHeaderCore)
 pub(super) fn read_block_mv_precision_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
+    per_block_precision: bool,
     neighbour_ctx: &BlockNeighbourContext,
     frame_precision: u8,
     block_has_newmv: bool,
@@ -211,26 +214,36 @@ pub(super) fn read_block_mv_precision_syntax(
     tile_offset: ByteOffset,
 ) -> Result<BlockPrecisionRecord> {
     block_mv_precision_with(
-        sequence,
-        core,
+        per_block_precision,
         neighbour_ctx,
         frame_precision,
         (block_has_newmv, is_adaptive_mvd),
         |selector| {
-            cdfs.read_block_symbol_trace(selector, symbols)
-                .map(splot_core::symbol::Symbol::get)
-                .map_err(|error| symbol_read_error(error, tile_offset))
+            let rows = cdfs.block_rows_mut();
+            Ok(match selector {
+                TileCdfSelector::UseMostProbablePrecision { ctx } => {
+                    read_row(symbols, row_at(&mut rows.use_most_probable_precision, ctx)) as u8
+                }
+                TileCdfSelector::PbMvPrecision { ctx, frame_ctx } => {
+                    let bank = row_at(&mut rows.pb_mv_precision, ctx);
+                    read_row(symbols, row_at(bank, frame_ctx)) as u8
+                }
+                selector => cdfs
+                    .read_block_symbol_trace(selector, symbols)
+                    .map_err(|error| symbol_read_error(error, tile_offset))?
+                    .get(),
+            })
         },
     )
 }
 
 /// The § 5.20.7.6 block motion vector precision of a block that codes
-/// `NEWMV` and adaptive MVD as `(block_has_newmv, is_adaptive_mvd)`; `read`
-/// gives each `use_most_probable_precision` and `pb_mv_precision` value, and
-/// the encoder facade answers it for a target.
+/// `NEWMV` and adaptive MVD as `(block_has_newmv, is_adaptive_mvd)` in a
+/// frame whose [`use_per_block_mv_precision`] is `per_block_precision`;
+/// `read` gives each `use_most_probable_precision` and `pb_mv_precision`
+/// value, and the encoder facade answers it for a target.
 pub(crate) fn block_mv_precision_with(
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
+    per_block_precision: bool,
     neighbour_ctx: &BlockNeighbourContext,
     frame_precision: u8,
     (block_has_newmv, is_adaptive_mvd): (bool, bool),
@@ -238,7 +251,7 @@ pub(crate) fn block_mv_precision_with(
 ) -> Result<BlockPrecisionRecord> {
     if is_adaptive_mvd
         || !block_has_newmv
-        || !use_per_block_mv_precision(sequence, core)
+        || !per_block_precision
         || frame_precision < MV_PRECISION_HALF_PEL
     {
         return Ok(BlockPrecisionRecord::most_probable(frame_precision));

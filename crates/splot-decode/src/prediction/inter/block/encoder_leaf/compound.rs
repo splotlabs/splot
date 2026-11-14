@@ -20,6 +20,7 @@ use super::super::compound_path::{
 use super::super::resolve::CompoundMotionSyntax;
 use super::super::syntax::{
     block_mv_precision_with, interp_filter_symbol, single_use_amvd_selector,
+    use_per_block_mv_precision,
 };
 use super::super::warp::{
     frame_mvd_sign_derivation_allowed, inter_mv_read_config, inter_mvd_sign_derivation_allowed,
@@ -208,8 +209,7 @@ impl EncoderInterTile {
         let mut out = Vec::new();
         for pb in 0..PB_MV_PRECISION_SYMBOLS {
             let read = block_mv_precision_with(
-                &self.sequence,
-                &self.core,
+                use_per_block_mv_precision(&self.sequence, &self.core),
                 &neighbour,
                 self.precision,
                 (true, false),
@@ -244,8 +244,7 @@ impl EncoderInterTile {
         for pb in 0..PB_MV_PRECISION_SYMBOLS {
             let mut coded = Vec::new();
             let read = block_mv_precision_with(
-                &self.sequence,
-                &self.core,
+                use_per_block_mv_precision(&self.sequence, &self.core),
                 neighbour,
                 self.precision,
                 (has_newmv, use_amvd),

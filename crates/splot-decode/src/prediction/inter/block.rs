@@ -481,6 +481,7 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         mv_config: inter_mv_read_config(core).ok(),
         mvd_sign_derive: inter_mv_read_config(core)
             .is_ok_and(|config| frame_mvd_sign_derivation_allowed(sequence, core, config)),
+        per_block_mv_precision: use_per_block_mv_precision(sequence, core),
         ref_facts: compound_path::FrameRefFacts::new(
             core,
             reference,
@@ -1899,8 +1900,7 @@ fn decode_block<T: ReconSample>(
     let precision = read_block_mv_precision_syntax(
         cdfs,
         symbols,
-        sequence,
-        core,
+        params.per_block_mv_precision,
         &neighbour_ctx,
         frame_mv_config.precision(),
         single_mode == SINGLE_MODE_NEWMV,
@@ -2225,6 +2225,7 @@ use self::syntax::{
     effective_force_integer_mv, interp_filter_symbol, lowered_pred_mv,
     read_block_mv_precision_syntax, read_drl_idx, read_drl_idx_from, read_skip_drl_idx,
     read_skip_mode_syntax, read_tip_drl_idx, read_use_amvd_syntax, resolve_interp_filter,
+    use_per_block_mv_precision,
 };
 pub(crate) use self::syntax::{frame_mv_precision, interp_filter_no_neighbour_ctx};
 use self::tile::EntryState;
