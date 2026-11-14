@@ -586,7 +586,7 @@ fn motion_compensate_planes<T: ReconSample>(
     Ok(())
 }
 
-pub(super) fn compound_block_motion_grid<T: ReconSample>(
+fn compound_block_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     optflow_unit_size: Option<usize>,

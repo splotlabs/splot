@@ -149,11 +149,7 @@ impl<T: ReconSample> TipHeldReferences<'_, T> {
 
 #[derive(Debug, Default)]
 pub(super) struct TipReconstructScratch {
-    units: Vec<TipUnit>,
     unit_mvs: Vec<[Mv; 2]>,
-    /// Each unit's [`whole_sample_mvs`] from the refinement, so the
-    /// prediction skips the refine-MV search it already ran.
-    whole_mvs: Vec<Option<[Mv; 2]>>,
     tip_units: mc::TipUnits,
 }
 
@@ -306,14 +302,6 @@ const fn output_prediction_unit_size(
     }
 }
 
-fn prediction_unit_extent(output: bool, remaining: usize, unit_size: usize) -> usize {
-    if output {
-        unit_size
-    } else {
-        remaining.min(unit_size)
-    }
-}
-
 fn output_interpolation_filter(
     inter: &splot_core::headers::frame::InterControl,
 ) -> Result<ReconInterpolationFilter> {
@@ -433,8 +421,6 @@ pub(super) struct TipFramePlan {
 #[derive(Debug)]
 struct TipBlockPlan {
     plan: TipReferencePlan,
-    output: bool,
-    use_optflow: bool,
     unit_size: usize,
     unit_count: usize,
     block_w: usize,
@@ -446,25 +432,21 @@ struct TipBlockPlan {
 }
 
 impl TipBlockPlan {
-    const fn batched(&self) -> bool {
-        self.use_optflow
-    }
-
     const fn columns(&self) -> usize {
-        self.block_w / 8
+        self.block_w / self.unit_size
     }
 
     const fn unit_rect(&self, index: usize) -> mc::McBlockRect {
-        let columns = self.columns();
+        let (columns, size) = (self.columns(), self.unit_size);
         mc::McBlockRect::from_luma_rect(
-            self.batch_rect.luma_x + index % columns * 8,
-            self.batch_rect.luma_y + index / columns * 8,
-            8,
-            8,
+            self.batch_rect.luma_x + index % columns * size,
+            self.batch_rect.luma_y + index / columns * size,
+            size,
+            size,
         )
     }
 
-    /// The whole batched block predicted with `mvs`, its first unit's candidates.
+    /// The whole block predicted with `mvs`, its first unit's candidates.
     const fn batch_unit(&self, mvs: [Mv; 2]) -> TipUnit {
         TipUnit {
             rect: self.batch_rect,
@@ -591,18 +573,12 @@ impl TipFramePlan {
             prediction_unit_size(placed.luma_w(), placed.luma_h(), self.enable_tip_refinemv)
         };
         let use_optflow = unit_size == 8 && self.optflow_allowed;
-        let block_w = placed.luma_w().min(
-            self.frame_size
-                .width()
-                .saturating_sub(placed.luma_x())
-                .next_multiple_of(unit_size),
-        );
-        let block_h = placed.luma_h().min(
-            self.frame_size
-                .height()
-                .saturating_sub(placed.luma_y())
-                .next_multiple_of(unit_size),
-        );
+        let extent = |size: usize, frame: usize, at: usize| {
+            size.min(frame.saturating_sub(at).next_multiple_of(unit_size))
+                .next_multiple_of(unit_size)
+        };
+        let block_w = extent(placed.luma_w(), self.frame_size.width(), placed.luma_x());
+        let block_h = extent(placed.luma_h(), self.frame_size.height(), placed.luma_y());
         if block_w == 0 || block_h == 0 {
             return Err(DecodeHeaderStateError::InvalidBlockGeometry.into());
         }
@@ -618,20 +594,27 @@ impl TipFramePlan {
         }
         let batch_chroma_x = placed.luma_x().max(placed.chroma_luma_x());
         let batch_chroma_y = placed.luma_y().max(placed.chroma_luma_y());
-        let batch_chroma_end_x = placed.luma_x().saturating_add(block_w).min(
+        let chroma_end = |luma_end: usize, chroma_end: usize| {
+            if self.output {
+                luma_end
+            } else {
+                luma_end.min(chroma_end)
+            }
+        };
+        let batch_chroma_end_x = chroma_end(
+            placed.luma_x().saturating_add(block_w),
             placed
                 .chroma_luma_x()
                 .saturating_add(placed.chroma_luma_w()),
         );
-        let batch_chroma_end_y = placed.luma_y().saturating_add(block_h).min(
+        let batch_chroma_end_y = chroma_end(
+            placed.luma_y().saturating_add(block_h),
             placed
                 .chroma_luma_y()
                 .saturating_add(placed.chroma_luma_h()),
         );
         Ok(TipBlockPlan {
             plan,
-            output: self.output,
-            use_optflow,
             unit_size,
             unit_count,
             block_w,
@@ -655,65 +638,8 @@ impl TipFramePlan {
     }
 }
 
-/// Fills `units` with the § 7.13.3.1 prediction units of a block that is not
-/// batched.
-fn build_units(
-    units: &mut Vec<TipUnit>,
-    plan: &TipBlockPlan,
-    placed: &PlacedInterBlock,
-    temporal: &TemporalMvContext,
-) -> Result<()> {
-    units.clear();
-    units
-        .try_reserve_exact(plan.unit_count)
-        .map_err(|_| inter_allocation!("TIP prediction units"))?;
-    for local_y in (0..plan.block_h).step_by(plan.unit_size) {
-        let luma_y = placed.luma_y() + local_y;
-        let candidate = temporal
-            .tip_candidate_row(luma_y / 8, placed.block.mv)
-            .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-        for local_x in (0..plan.block_w).step_by(plan.unit_size) {
-            let luma_x = placed.luma_x() + local_x;
-            let luma_w =
-                prediction_unit_extent(plan.output, plan.block_w - local_x, plan.unit_size);
-            let luma_h =
-                prediction_unit_extent(plan.output, plan.block_h - local_y, plan.unit_size);
-            let chroma_x = luma_x.max(placed.chroma_luma_x());
-            let chroma_y = luma_y.max(placed.chroma_luma_y());
-            let chroma_end_x = if plan.output {
-                luma_x + luma_w
-            } else {
-                (luma_x + luma_w).min(placed.chroma_luma_x() + placed.chroma_luma_w())
-            };
-            let chroma_end_y = if plan.output {
-                luma_y + luma_h
-            } else {
-                (luma_y + luma_h).min(placed.chroma_luma_y() + placed.chroma_luma_h())
-            };
-            let predict_chroma =
-                placed.predict_chroma && chroma_end_x > chroma_x && chroma_end_y > chroma_y;
-            let mvs = candidate(luma_x / 8)
-                .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-            units.push(TipUnit {
-                rect: mc::McBlockRect {
-                    luma_x,
-                    luma_y,
-                    luma_w,
-                    luma_h,
-                    chroma_luma_x: chroma_x,
-                    chroma_luma_y: chroma_y,
-                    chroma_luma_w: chroma_end_x.saturating_sub(chroma_x),
-                    chroma_luma_h: chroma_end_y.saturating_sub(chroma_y),
-                },
-                has_chroma: predict_chroma,
-                mvs,
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Fills `unit_mvs` with the candidates of a batched block's 8x8 units.
+/// Fills `unit_mvs` with the § 7.13.3.2 `get_tip_cand` candidates of a
+/// block's units, read at each unit's top-left 8x8 cell.
 fn batch_candidates(
     unit_mvs: &mut Vec<[Mv; 2]>,
     plan: &TipBlockPlan,
@@ -724,14 +650,15 @@ fn batch_candidates(
     unit_mvs
         .try_reserve_exact(plan.unit_count)
         .map_err(|_| inter_allocation!("TIP prediction units"))?;
-    let (x8, columns) = (placed.luma_x() / 8, plan.columns());
-    for y8 in (placed.luma_y() / 8..).take(plan.block_h / 8) {
+    let (x8, y8, step) = (placed.luma_x() / 8, placed.luma_y() / 8, plan.unit_size / 8);
+    for row in 0..plan.block_h / plan.unit_size {
         let candidate = temporal
-            .tip_candidate_row(y8, placed.block.mv)
+            .tip_candidate_row(y8 + row * step, placed.block.mv)
             .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-        for x8 in (x8..).take(columns) {
+        for column in 0..plan.columns() {
             unit_mvs.push(
-                candidate(x8).ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?,
+                candidate(x8 + column * step)
+                    .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?,
             );
         }
     }
@@ -742,14 +669,11 @@ fn batch_candidates(
 /// unit's § 7.22 temporal record; with `predict`, it also predicts the block
 /// into `sink`.
 ///
-/// The optical-flow shape stores its refined motion vectors, a refine-MV unit
+/// An optical-flow unit stores its refined motion vectors, a refine-MV unit
 /// its own § 7.13.3.3 refinement (the § 5.20.4 `store_refined_mvs`
-/// `RefineMvs`), and every other shape the § 7.11.3 candidate the unit was
-/// built with. The optical-flow shape spawns no pool work and writes one
-/// rectangle per plane, so every sink takes it. The per-unit fan-out is only
-/// available for the frame sink: a task predicting into an out-of-order
-/// surface holds a reference borrow across its prediction, and spawned work
-/// that waits on that borrow would never run.
+/// `RefineMvs`), and every other unit the § 7.11.3 candidate it was built
+/// with. A compound block goes through the plane pass of [`mc::predict_tip_units`];
+/// a single-reference block (§ 7.13.3.1 weight 16) puts each unit.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn predict_block<T: ReconSample>(
     scratch: &mut TipReconstructScratch,
@@ -768,39 +692,43 @@ pub(super) fn predict_block<T: ReconSample>(
             .try_reserve(plan.unit_count)
             .map_err(|_| inter_allocation!("TIP temporal records"))?;
     }
-    if !plan.batched() {
-        build_units(&mut scratch.units, &plan, placed, temporal)?;
-        scratch.whole_mvs.clear();
-        if let Some(records) = records {
-            unit_motion(scratch, records, sink, &plan, frame, reference, tile_offset)?;
-        }
-        if predict {
-            publish_unit_outputs(scratch, sink, &plan, reference, tile_offset)?;
-        }
-        return Ok(());
-    }
     batch_candidates(&mut scratch.unit_mvs, &plan, placed, temporal)?;
     let held = plan.hold(reference)?;
     let first = *scratch.unit_mvs.first().ok_or(ReconError::ZeroDimension {
         field: "TIP compound batch",
     })?;
-    let block = held
-        .prediction(&plan.plan)?
+    let prediction = held.prediction(&plan.plan)?;
+    let grid = (plan.columns(), plan.unit_size);
+    let Some(block) = prediction
         .block_params(&plan.batch_unit(first))
         .into_compound()
-        .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-    let columns = plan.columns();
+    else {
+        let candidates = &scratch.unit_mvs;
+        if let Some(records) = records {
+            push_batch_records(records, &plan, frame, |index| {
+                candidates.get(index).copied()
+            })?;
+        }
+        if predict {
+            for (index, mvs) in candidates.iter().enumerate() {
+                let rect = plan.unit_rect(index);
+                mc::motion_compensate_single_block_into(
+                    sink,
+                    prediction.reference0,
+                    rect,
+                    mvs[0],
+                    plan.plan.interpolation_filter,
+                    plan.batch_has_chroma,
+                    tile_offset,
+                )?;
+            }
+        }
+        return Ok(());
+    };
     let units = &mut scratch.tip_units;
-    mc::refine_tip_units(
-        sink,
-        &block,
-        &scratch.unit_mvs,
-        units,
-        (columns, 8),
-        tile_offset,
-    )?;
+    mc::refine_tip_units(sink, &block, &scratch.unit_mvs, units, grid, tile_offset)?;
     if let Some(records) = records {
-        push_batch_records(records, &plan, frame, units)?;
+        push_batch_records(records, &plan, frame, |index| units.stored_mvs(index))?;
     }
     if predict {
         mc::predict_tip_units(
@@ -808,51 +736,9 @@ pub(super) fn predict_block<T: ReconSample>(
             &block,
             &mut scratch.unit_mvs,
             units,
-            (columns, 8),
+            grid,
             tile_offset,
         )?;
-    }
-    Ok(())
-}
-
-/// Refines the units of a block that is not batched and pushes their records.
-fn unit_motion<T: ReconSample>(
-    scratch: &mut TipReconstructScratch,
-    temporal_records: &mut Vec<TemporalMotionBlock>,
-    sink: &mc::WorkspaceSink<'_, '_, T>,
-    plan: &TipBlockPlan,
-    frame: &TipFramePlan,
-    reference: &InterReferenceState<T>,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let held = plan
-        .plan
-        .use_refinemv
-        .then(|| plan.hold(reference))
-        .transpose()?;
-    let refining = held
-        .as_ref()
-        .map(|held| held.prediction(&plan.plan))
-        .transpose()?;
-    let first_record = temporal_records.len();
-    for unit in &scratch.units {
-        let (stored_mvs, whole) = match refining.as_ref() {
-            Some(prediction) => match prediction.block_params(unit).into_compound() {
-                Some(compound) => {
-                    let refined =
-                        mc::compound_block_motion_grid(sink, &compound, None, tile_offset)?;
-                    let whole = whole_sample_mvs(unit, refined.as_ref());
-                    let stored =
-                        refined.map_or(Ok(unit.mvs), |refined| refined.stored_mvs_at_index(0))?;
-                    (stored, whole)
-                }
-                None => (unit.mvs, whole_sample_mvs(unit, None)),
-            },
-            None => (unit.mvs, whole_sample_mvs(unit, None)),
-        };
-        scratch.whole_mvs.push(whole);
-        let record = plan.temporal_record(frame, &unit.rect, stored_mvs);
-        TemporalMotionBlock::push_merged(temporal_records, first_record, record);
     }
     Ok(())
 }
@@ -863,14 +749,12 @@ fn push_batch_records(
     records: &mut Vec<TemporalMotionBlock>,
     plan: &TipBlockPlan,
     frame: &TipFramePlan,
-    units: &mc::TipUnits,
+    stored_mvs: impl Fn(usize) -> Option<[Mv; 2]>,
 ) -> Result<()> {
     let stored = |index| {
-        units
-            .stored_mvs(index)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "compound motion-grid lookup",
-            })
+        stored_mvs(index).ok_or(ReconError::ArithmeticOverflow {
+            context: "compound motion-grid lookup",
+        })
     };
     let columns = plan.columns();
     for row_start in (0..plan.unit_count).step_by(columns.max(1)) {
@@ -885,7 +769,7 @@ fn push_batch_records(
                 continue;
             }
             let mut rect = plan.unit_rect(run.0);
-            rect.luma_w = (index - run.0) * 8;
+            rect.luma_w = (index - run.0) * plan.unit_size;
             records.push(plan.temporal_record(frame, &rect, run.1));
             if let Some(mvs) = next {
                 run = (index, mvs);
@@ -893,113 +777,6 @@ fn push_batch_records(
         }
     }
     Ok(())
-}
-
-fn publish_unit_outputs<T: ReconSample>(
-    scratch: &TipReconstructScratch,
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
-    plan: &TipBlockPlan,
-    reference: &InterReferenceState<T>,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let held = plan.hold(reference)?;
-    let prediction = held.prediction(&plan.plan)?;
-    let mut run: Option<TipUnit> = None;
-    for (index, unit) in scratch.units.iter().enumerate() {
-        let params = prediction.block_params(unit);
-        let known = scratch.whole_mvs.get(index);
-        let (motion, mvs) = if let Some(&Some(mvs)) = known {
-            (None, Some(mvs))
-        } else {
-            let motion = mc::inter_block_motion_grid(sink, params, None, tile_offset)?;
-            let mvs = whole_sample_mvs(unit, motion.as_ref());
-            (motion, mvs)
-        };
-        let Some(mvs) = mvs else {
-            if let Some(run) = run.take() {
-                predict_run(sink, &prediction, &run, tile_offset)?;
-            }
-            mc::predict_inter_block_from_grid(sink, &params, motion.as_ref(), tile_offset)?;
-            continue;
-        };
-        let next = TipUnit {
-            rect: unit.rect,
-            has_chroma: unit.has_chroma,
-            mvs,
-        };
-        if !run.as_mut().is_some_and(|run| run.extend(&next))
-            && let Some(run) = run.replace(next)
-        {
-            predict_run(sink, &prediction, &run, tile_offset)?;
-        }
-    }
-    if let Some(run) = run {
-        predict_run(sink, &prediction, &run, tile_offset)?;
-    }
-    Ok(())
-}
-
-/// The vectors a unit predicts with when they land on whole luma and chroma
-/// samples, so its prediction reads no neighbour and adjacent units with the
-/// same vectors predict as one rectangle.
-fn whole_sample_mvs(unit: &TipUnit, motion: Option<&mc::CompoundMotionGrid>) -> Option<[Mv; 2]> {
-    let whole = |value: i32| value % 16 == 0;
-    let mvs = match motion {
-        None => unit.mvs,
-        Some(grid) => {
-            let cells = grid.uniform_mvs()?;
-            if cells.iter().flatten().any(|&value| value % 32 != 0) {
-                return None;
-            }
-            cells.map(|[row, col]| Mv {
-                row: row / 2,
-                col: col / 2,
-            })
-        }
-    };
-    let chroma_matches = !unit.has_chroma
-        || (
-            unit.rect.chroma_luma_x,
-            unit.rect.chroma_luma_y,
-            unit.rect.chroma_luma_w,
-            unit.rect.chroma_luma_h,
-        ) == (
-            unit.rect.luma_x,
-            unit.rect.luma_y,
-            unit.rect.luma_w,
-            unit.rect.luma_h,
-        );
-    (chroma_matches && mvs.iter().all(|mv| whole(mv.row) && whole(mv.col))).then_some(mvs)
-}
-
-impl TipUnit {
-    /// Grows this run by the unit to its right when both predict alike.
-    fn extend(&mut self, next: &TipUnit) -> bool {
-        let fits = self.mvs == next.mvs
-            && self.has_chroma == next.has_chroma
-            && self.rect.luma_y == next.rect.luma_y
-            && self.rect.luma_h == next.rect.luma_h
-            && self.rect.luma_x + self.rect.luma_w == next.rect.luma_x
-            && self.rect.luma_w + next.rect.luma_w <= mc::MAX_MC_BLOCK_DIM;
-        if fits {
-            self.rect.luma_w += next.rect.luma_w;
-            self.rect.chroma_luma_w += next.rect.chroma_luma_w;
-        }
-        fits
-    }
-}
-
-fn predict_run<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
-    prediction: &TipPrediction<'_, T>,
-    run: &TipUnit,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let params = prediction
-        .block_params(run)
-        .with_refinemv(false)
-        .with_refinemv_search(false);
-    mc::predict_inter_block_from_grid(sink, &params, None, tile_offset)
 }
 
 /// `placed` moved onto `rect`, luma and chroma alike.
@@ -1566,10 +1343,10 @@ pub(crate) fn deblock_output<T: ReconSample>(
 mod tests {
     use super::{
         TipHeldReferences, TipReferencePlan, output_interpolation_filter,
-        output_prediction_unit_size, prediction_unit_extent, prediction_unit_size,
-        tip_optflow_offsets_allowed, tip_optflow_weight_and_references_allowed,
-        tip_prediction_controls, tip_references_unscaled, tip_refinemv_offsets_allowed,
-        tip_uses_refinemv, tip_uses_two_references, tmvp_unit_size8,
+        output_prediction_unit_size, prediction_unit_size, tip_optflow_offsets_allowed,
+        tip_optflow_weight_and_references_allowed, tip_prediction_controls,
+        tip_references_unscaled, tip_refinemv_offsets_allowed, tip_uses_refinemv,
+        tip_uses_two_references, tmvp_unit_size8,
     };
     use crate::prediction::inter::mc;
     use crate::prediction::inter::reference::HeldFrameSamples;
@@ -1581,7 +1358,7 @@ mod tests {
     use splot_parallel::ThreadCount;
     use splot_recon::{
         BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter, OutputIndex,
-        PixelFormat, PlaneId, PlaneRect, PlaneSize,
+        PixelFormat, PlaneRect, PlaneSize,
     };
 
     const TIP_FAMILIES_FIXTURE: &[u8] = include_bytes!(
@@ -1778,17 +1555,6 @@ mod tests {
             output_prediction_unit_size(false, InterpolationFilter::EightTapSharp),
             16
         );
-    }
-
-    #[test]
-    fn tip_output_edge_units_keep_nominal_prediction_size() {
-        let output_height = prediction_unit_extent(true, 8, 16);
-        let reference_height = prediction_unit_extent(false, 8, 16);
-        let output = mc::McBlockRect::from_luma_rect(432, 1072, 16, output_height);
-        let reference = mc::McBlockRect::from_luma_rect(432, 1072, 16, reference_height);
-
-        assert_eq!(output.plane_rect(PlaneId::V, 1, 1).3, 8);
-        assert_eq!(reference.plane_rect(PlaneId::V, 1, 1).3, 4);
     }
 
     #[test]
