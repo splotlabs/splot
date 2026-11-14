@@ -706,6 +706,7 @@ fn run_segment(
                 (2, c),
                 (0, 6),
                 &mut scratch,
+                (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
                 &mut frame
             )
             .unwrap()
@@ -814,6 +815,7 @@ fn edge_segment_falls_back_to_the_per_block_path() {
                 (r, c),
                 (0, 6),
                 &mut scratch,
+                (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
                 &mut frame
             )
             .unwrap(),
@@ -828,6 +830,7 @@ fn edge_segment_falls_back_to_the_per_block_path() {
             (2, 16),
             (0, 6),
             &mut scratch,
+            (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
             &mut frame
         )
         .unwrap()
