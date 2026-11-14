@@ -98,6 +98,7 @@ pub(crate) use intra_joint_modes::{
 pub(crate) use partition::PartitionDecisionError;
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;
+pub(crate) use partition_traversal::BRU_ACTIVE;
 pub(crate) use partition_traversal::LrUnitRestorationType;
 pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 #[cfg(test)]
@@ -331,6 +332,13 @@ impl<'a> DecodeTilePayloadPlan<'a> {
         &self.work_units
     }
 
+    /// Records the § 5.19 `bru_tile_active` flags of tiles `tg_start..` in order.
+    pub(crate) fn set_bru_tile_actives(&mut self, actives: &[bool]) {
+        for (unit, active) in self.work_units.iter_mut().zip(actives) {
+            unit.bru_tile_active = Some(*active);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn work_units_mut(&mut self) -> &mut [DecodeTileWorkUnit] {
         &mut self.work_units
@@ -490,9 +498,16 @@ pub(crate) struct DecodeTileWorkUnit {
     coeff_frame_facts: TileCoeffFrameFacts,
     symbol: SymbolInitBoundary,
     cdf: TileCdfWorkUnitBoundary,
+    /// § 5.19 `BruTileActives[ tileRow ][ tileCol ]` of a `use_bru == 1` frame; `None`
+    /// when `use_bru == 0`.
+    bru_tile_active: Option<bool>,
 }
 
 impl DecodeTileWorkUnit {
+    pub(crate) const fn bru_tile_active(&self) -> Option<bool> {
+        self.bru_tile_active
+    }
+
     #[cfg(test)]
     pub(crate) const fn tile_bytes(&self) -> &'static [u8] {
         self.test_tile_bytes
@@ -870,6 +885,7 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
             coeff_frame_facts: input.frame.coeff_frame_facts,
             symbol,
             cdf,
+            bru_tile_active: None,
         });
     }
     Ok(DecodeTilePayloadPlan {

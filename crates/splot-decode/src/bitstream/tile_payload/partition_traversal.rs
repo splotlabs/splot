@@ -37,6 +37,7 @@ pub(crate) use lr_syntax::{pc_wiener_unit_source_blocks, superblock_lr_units};
 pub(crate) use partition_children::{ChildCallSink, child_calls, child_calls_into};
 pub(crate) use state_publication::DecodedLeafPublication;
 pub(crate) use state_publication::publish_intra_leaf_state;
+pub(crate) use tree_walk::BRU_ACTIVE;
 use tree_walk::extended_sdp_allowed_for_child;
 pub(crate) use tree_walk::valid_subsize;
 pub(crate) use tree_walk::{
@@ -425,6 +426,8 @@ pub(crate) struct DecodeBlockFrontier {
     part: DecodeBlockPart,
     intra_region: bool,
     cfl_allowed_in_sdp: bool,
+    /// Whether the block's superblock is § 5.20.2.1 `BRU_ACTIVE`.
+    bru_active: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -438,6 +441,15 @@ pub(crate) enum DecodeBlockPart {
 }
 
 impl DecodeBlockFrontier {
+    pub(crate) const fn with_bru_active(mut self, bru_active: bool) -> Self {
+        self.bru_active = bru_active;
+        self
+    }
+
+    pub(crate) const fn bru_active(&self) -> bool {
+        self.bru_active
+    }
+
     pub(crate) const fn is_luma_part(&self) -> bool {
         matches!(self.part, DecodeBlockPart::LumaPart)
     }
@@ -490,6 +502,7 @@ impl DecodeBlockFrontier {
             part: DecodeBlockPart::Shared,
             intra_region: false,
             cfl_allowed_in_sdp: true,
+            bru_active: true,
         }
     }
 }

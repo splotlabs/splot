@@ -261,6 +261,22 @@ pub fn parse_tile_group_structure(
     layout: TileGroupLayout,
     sz: u64,
 ) -> Result<TileGroupStructure> {
+    parse_tile_group_structure_with_bru(reader, layout, sz, None)
+}
+
+/// [`parse_tile_group_structure`] for a frame with `use_bru == 1` and `bru_inactive == 0`
+/// when `bru_tile_active` is `Some`: it also reads the § 5.19 `bru_tile_active` flags
+/// (mirror :8495-8517) before `byte_alignment()`, one per tile `tg_start..=tg_end`
+/// (inferred `1` for a single-tile frame), into `bru_tile_active` in tile order.
+///
+/// # Errors
+/// As [`parse_tile_group_structure`].
+pub fn parse_tile_group_structure_with_bru(
+    reader: &mut BitReader<'_>,
+    layout: TileGroupLayout,
+    sz: u64,
+    bru_tile_active: Option<&mut Vec<bool>>,
+) -> Result<TileGroupStructure> {
     let num_tiles = layout.num_tiles;
 
     let mut structure = TileGroupStructure {
@@ -292,6 +308,22 @@ pub fn parse_tile_group_structure(
             return Ok(structure);
         };
         structure.tg_end = tg_end;
+    }
+
+    if let Some(actives) = bru_tile_active {
+        actives.clear();
+        for _ in structure.tg_start..=structure.tg_end {
+            let active = if num_tiles > 1 {
+                let Ok(flag) = reader.read_bit() else {
+                    structure.outcome = TileGroupStructureOutcome::Truncated;
+                    return Ok(structure);
+                };
+                flag != 0
+            } else {
+                true
+            };
+            actives.push(active);
+        }
     }
 
     match reader.byte_align_zero() {
@@ -1387,6 +1419,62 @@ mod tests {
         let framing = parse_tile_group_framing(&[0u8; 4], 2, 1, 1, false);
         assert!(framing.tiles.is_empty());
         assert_eq!(framing.defect, None);
+    }
+
+    #[test]
+    fn bru_tile_group_reads_one_tile_active_flag_per_tile_before_alignment() {
+        let mut bits = Bits::default();
+        bits.bit(1);
+        bits.f(1, 2);
+        bits.f(3, 2);
+        bits.bit(1);
+        bits.bit(0);
+        bits.bit(1);
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut actives = vec![false; 9];
+        let structure = parse_tile_group_structure_with_bru(
+            &mut reader,
+            TileGroupLayout::new(2, 2, 1, 1),
+            8,
+            Some(&mut actives),
+        )
+        .unwrap();
+        assert_eq!(structure.outcome, TileGroupStructureOutcome::Complete);
+        assert_eq!((structure.tg_start, structure.tg_end), (1, 3));
+        assert_eq!(actives, [true, false, true]);
+        assert_eq!(structure.header_bytes, Some(1));
+    }
+
+    #[test]
+    fn bru_single_tile_infers_active_without_reading() {
+        let data = [0x00];
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut actives = Vec::new();
+        let structure = parse_tile_group_structure_with_bru(
+            &mut reader,
+            TileGroupLayout::new(1, 1, 0, 0),
+            1,
+            Some(&mut actives),
+        )
+        .unwrap();
+        assert_eq!(actives, [true]);
+        assert_eq!(structure.header_bytes, Some(0));
+    }
+
+    #[test]
+    fn bru_tile_active_flag_at_eof_is_truncation() {
+        let mut actives = Vec::new();
+        let mut reader = BitReader::new(&[0b0110_0000], ByteOffset::new(0));
+        let structure = parse_tile_group_structure_with_bru(
+            &mut reader,
+            TileGroupLayout::new(16, 1, 4, 0),
+            1,
+            Some(&mut actives),
+        )
+        .unwrap();
+        assert_eq!(structure.outcome, TileGroupStructureOutcome::Truncated);
+        assert_eq!(actives, [true, true, false, false, false, false, false]);
     }
 }
 

@@ -228,7 +228,9 @@ impl InterReconCommand {
             InterMotionSyntax::Compound(compound) => {
                 (compound.use_refinemv, compound.refinemv_switchable)
             }
-            InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) => (false, false),
+            InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) | InterMotionSyntax::Bru => {
+                (false, false)
+            }
         }
     }
 
@@ -259,7 +261,7 @@ impl InterReconCommand {
             );
         }
         match &self.syntax.motion {
-            InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) => {
+            InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) | InterMotionSyntax::Bru => {
                 temporal_records.push(self.single_temporal_record(
                     shared.reference,
                     shared.ref_frame_idx,

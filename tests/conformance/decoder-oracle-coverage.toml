@@ -654,7 +654,7 @@ name = "Backward reference update (use_bru == 1) frames"
 category = "inter"
 fixtureable = true
 spec_sections = ["5.18.2", "5.19", "5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.5.2"]
-notes = "Not decoded: splot decode rejects use_bru == 1 frames with decode/unsupported-feature backward_reference_update. tests/conformance/vectors/decode-unsupported/syn-bru-inter-128x64-q220.ivf (avmenc --enable-bru=1) is the AVM-decodable input for this capability."
+notes = "use_bru == 1 frames with partial activity, BRU_SUPPORT superblocks, a bru_inactive frame, per-tile bru_tile_active flags, 10-bit and 4:4:4 decode byte-exact against avmdec. Frames whose loop restoration or GDF runs are rejected with decode/unsupported-feature backward_reference_update."
 
 [[capability]]
 id = "transform.cctx"

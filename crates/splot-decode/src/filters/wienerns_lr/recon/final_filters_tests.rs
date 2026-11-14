@@ -604,6 +604,7 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
             grids: crate::filters::deblock::DeblockGridStorage::default(),
             blocks: restored.clone(),
             chroma: crate::filters::deblock::ChromaDeblockRecords::default(),
+            bru_modes: None,
         })
         .unwrap();
     drop(rows);

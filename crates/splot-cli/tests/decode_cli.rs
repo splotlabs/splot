@@ -835,25 +835,6 @@ fn decode_malformed_source_json_mode_emits_detail_fields() {
 }
 
 #[test]
-fn decode_backward_reference_update_frame_is_typed_unsupported() {
-    let input = conformance_vector("../decode-unsupported/syn-bru-inter-128x64-q220.ivf");
-
-    let out = splot(&[
-        "decode",
-        "--json",
-        "--output-format",
-        "null",
-        input.to_str().unwrap(),
-    ]);
-
-    assert_eq!(out.status.code(), Some(1));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["unsupported_reason"], "backward_reference_update");
-    assert_eq!(json["spec_section"], "5.20.2.1");
-}
-
-#[test]
 fn decode_unsupported_structure_json_mode_uses_planner_metadata() {
     let input = temp_input("av2", UNSUPPORTED_MULTISTREAM);
     let output = temp_output("y4m");

@@ -617,6 +617,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             grids: core::mem::take(&mut self.filter_records.deblock_grids),
             blocks: core::mem::take(&mut self.filter_records.deblock_blocks),
             chroma: core::mem::take(&mut self.filter_records.chroma_deblock_blocks),
+            bru_modes: self.filter_records.bru_modes.clone(),
         }
     }
 
@@ -895,6 +896,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 config,
                 chain.lossless_grid,
                 self.tile_starts(),
+                self.filter_records.bru_modes.as_deref(),
             )
             .map_err(|error| ccso_filter_error(&error))?;
         }

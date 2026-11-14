@@ -843,6 +843,11 @@ impl EncoderInterTile {
                 compound_motion(block, syntax, compound, &state)
             }
             InterMotionSyntax::Warp(warp) => warp_motion(block, syntax, warp, &state),
+            InterMotionSyntax::Bru => Ok(ResolvedInterBlock {
+                mv: [Mv::ZERO, Mv::ZERO],
+                warp_params: [None, None],
+                blend: syntax.blend,
+            }),
         }
     }
 

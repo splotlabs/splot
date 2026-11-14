@@ -1924,7 +1924,7 @@ pub(crate) fn derive_tile_plan_with<'payload>(
         TileFactsKind::Intra => FrameCandidateTileFacts::from_frame_core(core, coeff),
         TileFactsKind::Inter => FrameCandidateTileFacts::from_inter_frame_core(core, coeff),
     }
-    .map_err(decode_tile_boundary_error)?;
+    .map_err(|error| decode_tile_boundary_error(error, envelope.offset))?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
     let candidates = core::iter::once(candidate.clone()).chain(
         crate::bitstream::stream_plan::tile_group_continuations(bytes, candidate),
@@ -1970,11 +1970,11 @@ pub(crate) fn derive_tile_plan_with<'payload>(
             crate::bitstream::tile_payload::plan_derived_tile_payload_boundary_with_scratch(
                 &input, scratch,
             )
-            .map_err(decode_tile_boundary_error)?;
+            .map_err(|error| decode_tile_boundary_error(error, group_envelope.offset))?;
         if let Some(plan) = merged.as_mut() {
             plan.append_continuation(group_plan, &mut scratch.continuation_work_units)
                 .map_err(FrameCandidateTileBoundaryError::from)
-                .map_err(decode_tile_boundary_error)?;
+                .map_err(|error| decode_tile_boundary_error(error, group_envelope.offset))?;
         } else {
             merged = Some(group_plan);
         }

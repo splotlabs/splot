@@ -81,6 +81,7 @@ pub(crate) struct DeltaQState {
     max_q: i32,
     current_sb: Option<(usize, usize)>,
     read_deltas: bool,
+    base_q_index: i32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -185,7 +186,13 @@ impl DeltaQState {
                 .map_err(|_| selectable_state_error())?,
             current_sb: None,
             read_deltas: present,
+            base_q_index: i32::try_from(base_q_idx).map_err(|_| selectable_state_error())?,
         })
+    }
+
+    /// § 5.20.5.2 `bru_mode_info()`: `CurrentQIndex = base_q_idx`.
+    pub(crate) const fn enter_bru_block(&mut self) {
+        self.current_q_index = self.base_q_index;
     }
 
     #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]

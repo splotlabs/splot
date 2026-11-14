@@ -90,7 +90,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     bit_depth: BitDepth,
     products: &mut FrameProductWriters,
 ) -> Result<FrameWalk<T>> {
-    if frame_envelope.header.obu_type == ObuType::BridgeFrame {
+    if frame_envelope.header.obu_type == ObuType::BridgeFrame || bru_inactive_frame(&core) {
         reference
             .pixel_reference_gate(named_pixel_reference_slots(&core))
             .wait()?;
@@ -283,6 +283,7 @@ fn decode_bridge_frame<T: ReconSample>(
     )?;
     let ref_slot = core
         .bridge_frame_ref_idx
+        .or_else(|| bru_ref_slot(&core))
         .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
     let source = hold_reference_slot(reference, ref_slot)?;
     let ref_slot_index = usize::try_from(ref_slot).unwrap_or(usize::MAX);
@@ -1307,6 +1308,22 @@ pub(crate) struct PixelReferenceGate<'a, T: ReconSample> {
 }
 
 /// The reference slots a parsed frame header names for pixel prediction.
+/// Whether `core` is a `bru_inactive == 1` frame, whose § 7.2 wrapup copies
+/// `FrameStore[ ref_frame_idx[ bru_ref ] ]` and records a zero motion field on
+/// `bru_ref` instead of decoding tiles.
+pub(crate) fn bru_inactive_frame(core: &FrameHeaderCore) -> bool {
+    core.inter
+        .as_ref()
+        .is_some_and(|inter| inter.bru_inactive == Some(true))
+}
+
+/// The reference slot `ref_frame_idx[ bru_ref ]` of a `use_bru == 1` frame.
+fn bru_ref_slot(core: &FrameHeaderCore) -> Option<u32> {
+    let inter = core.inter.as_ref()?;
+    let bru_ref = usize::try_from(inter.bru_ref?).ok()?;
+    inter.ref_frame_idx.get(bru_ref).copied()
+}
+
 pub(crate) fn named_pixel_reference_slots(core: &FrameHeaderCore) -> impl Iterator<Item = u32> {
     core.inter
         .as_ref()
@@ -1964,6 +1981,20 @@ fn validate_frame_header_parse_status(
 fn validate_inter_frame_core(core: &FrameHeaderCore, sequence: &SequenceHeader) -> Result<()> {
     if core.obu_type == ObuType::BridgeFrame {
         return validate_bridge_frame_core(core);
+    }
+    if bru_inactive_frame(core) {
+        if core.status != FrameHeaderParseStatus::InterHeaderComplete
+            || core.order_hint.is_none()
+            || core.quantization_params.is_none()
+            || core.bridge_film_grain.is_none()
+            || core
+                .frame_size
+                .is_none_or(|size| size.width == 0 || size.height == 0)
+            || bru_ref_slot(core).is_none()
+        {
+            return Err(DecodeHeaderStateError::IncompleteInterFrame.into());
+        }
+        return Ok(());
     }
     if core.status != FrameHeaderParseStatus::InterHeaderComplete {
         return Err(DecodeHeaderStateError::IncompleteInterFrame.into());

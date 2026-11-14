@@ -529,6 +529,7 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
             grids: crate::filters::deblock::DeblockGridStorage::default(),
             blocks: owned_blocks,
             chroma: blocks.clone(),
+            bru_modes: None,
         },
         mi_rows,
         mi_cols,

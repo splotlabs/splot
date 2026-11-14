@@ -1789,3 +1789,33 @@ id = "syn-tip-output-window-64x64-q210"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.tip", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "e18f4109a092799929784020b2d48717af62155c0023bc8a3e1aba38c93bbe59"
 avm_raw_sha256 = "9ad5ebce5808086618959b9e62ba8b884cd519dc129cd8e8e4b3d82d1f61da39"
+
+[[fixture]]
+id = "syn-bru-inter-128x64-q220"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "8753c5b0d7f98c03e76b0c66068c0b6fd5842cc47c6c7325d5be0cef764a7c19"
+avm_raw_sha256 = "e54ea6627233a37507176e317f66ea8ad94d7445057d1c292566f5c32f085c5c"
+
+[[fixture]]
+id = "syn-bru-inactive-frame-128x64-q220"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "48bb63a41d08b97eb96771f7ac5f166264c4ab2fe8927fed944c0d956f27e1cc"
+avm_raw_sha256 = "a894a9c40453e6c032e84bd0e2e1ca9d91cca050d90249da8150ef772214b4c2"
+
+[[fixture]]
+id = "syn-bru-multitile-256x128-q220"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
+ivf_sha256 = "cb175cf114226aac8011d28159bbca0e2f2ecc24898530416fc39eb36bb3c7d6"
+avm_raw_sha256 = "afea85d157acefb732b8613d5beed9549865e160dd8d433d0e63f433c4eb2626"
+
+[[fixture]]
+id = "syn-bru-10bit-128x64-q220"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "6fb20f045cd17a02f91218958533f5e3d936f544b0cdc7b05c69d10ca4cd5de1"
+avm_raw_sha256 = "63c892fa624bd80076d5df83b0abb2329324bf3d0f1dc30dbe84873e48b8bda3"
+
+[[fixture]]
+id = "syn-bru-444-256x128-q220"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i444", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single"]
+ivf_sha256 = "66a78d2841c9e1e1d1af24f89c350bfc74c87e6e28cf704fda2a36e21e0893ba"
+avm_raw_sha256 = "20a0dc98a3d39918c2c9cf7b1f7ad027295d22c6d7fd761b596f5d38035d2bd8"

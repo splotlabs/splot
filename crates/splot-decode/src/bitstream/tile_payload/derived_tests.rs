@@ -505,8 +505,27 @@ fn derived_boundary_rejects_backward_reference_update_frames() {
         FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
     );
 
-    inter.use_bru = Some(false);
-    core.inter = Some(inter);
+    inter.bru_inactive = Some(false);
+    core.inter = Some(inter.clone());
+    core.gdf_params = core.gdf_params.map(|mut gdf| {
+        gdf.gdf_frame_enable = true;
+        gdf
+    });
+    let error =
+        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).unwrap_err();
+    assert_unsupported_error(
+        &error,
+        FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
+    );
+
+    core.gdf_params = core.gdf_params.map(|mut gdf| {
+        gdf.gdf_frame_enable = false;
+        gdf
+    });
+    core.lr_params = core.lr_params.map(|mut lr| {
+        lr.uses_lr = false;
+        lr
+    });
     let other = FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).err();
     assert!(!matches!(
         other,

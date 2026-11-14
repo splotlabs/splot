@@ -302,7 +302,7 @@ impl InterBlockSetup {
     ) {
         (
             InterParseSetup {
-                params: self.params,
+                params: self.params.clone(),
                 filter_states: Some((self.cdef_state, self.gdf_state, self.ccso_state)),
                 initial_frame_cdfs: self.initial_frame_cdfs,
             },
@@ -485,6 +485,13 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
             ref_frame_idx,
             num_total_refs,
         ),
+        bru_modes: core
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.use_bru == Some(true))
+            .then(|| crate::filters::bru::BruModeMap::new(mi_rows, mi_cols, sb_h4))
+            .flatten()
+            .map(Arc::new),
     };
     Ok(InterBlockSetup {
         params,
@@ -550,6 +557,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         products,
         core::mem::take(&mut records.cdef_grid_values),
     )?;
+    records.bru_modes.clone_from(&setup.params.bru_modes);
     let InterBlockSetup {
         params,
         prelude,
@@ -683,6 +691,11 @@ fn temporal_projection_config(
         enable_tip: tools.is_some_and(|tools| tools.enable_tip),
         enable_trajectory: tools.is_some_and(|tools| tools.enable_mv_traj),
         reduced: tools.is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
+        bru_ref: core
+            .inter
+            .as_ref()
+            .filter(|inter| inter.use_bru == Some(true))
+            .and_then(|inter| usize::try_from(inter.bru_ref?).ok()),
     }
 }
 
@@ -1527,21 +1540,7 @@ fn decode_block<T: ReconSample>(
             usize::from(segment_id),
             delta_q_state.qindex_u32(),
         );
-        let luma_tree = !frontier.is_chroma_part();
-        if luma_tree {
-            mv_grid.record_flags(
-                mi_row,
-                mi_col,
-                n4w,
-                n4h,
-                non_inter_flag_syntax(None, frame_mv_precision(core)?),
-            );
-            if params.allow_intrabc {
-                intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
-            }
-        }
-        let size4 = luma_tree.then_some([n4w as u8, n4h as u8]);
-        return crate::pipeline::general_intra::decode_one_general_intra_block(
+        let (leaf, command) = crate::pipeline::general_intra::decode_one_general_intra_block(
             &mut crate::pipeline::general_intra::GeneralIntraLeafParse {
                 work_unit,
                 symbols,
@@ -1563,15 +1562,27 @@ fn decode_block<T: ReconSample>(
             frontier,
             &params.intra_tools,
             neighbours,
-            |command| {
-                tile::push_leaf_entry(
-                    superblocks,
-                    entries,
-                    DecodedLeafPublication::from_frontier(frontier, sb_mask),
-                    EntryState::Intra { command, size4 },
-                );
+        )?;
+        let luma_tree = !frontier.is_chroma_part();
+        if luma_tree {
+            mv_grid.record_flags(
+                mi_row,
+                mi_col,
+                n4w,
+                n4h,
+                non_inter_flag_syntax(None, frame_mv_precision(core)?),
+            );
+            if params.allow_intrabc {
+                intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
+            }
+        }
+        return Ok(store(
+            leaf,
+            EntryState::Intra {
+                command,
+                size4: luma_tree.then_some([n4w as u8, n4h as u8]),
             },
-        );
+        ));
     }
     let Some(neighbour_ctx) = neighbour_ctx else {
         return Err(crate::DecodeHeaderStateError::InvalidInterPartitionState.into());
@@ -2167,6 +2178,7 @@ fn sequence_enables_ibp(sequence: &SequenceHeader) -> bool {
         .is_some_and(|intra| intra.enable_ibp)
 }
 
+mod bru;
 mod compound_path;
 mod deferred_recon;
 pub(super) mod encoder_leaf;
