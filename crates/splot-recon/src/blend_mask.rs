@@ -5,12 +5,24 @@
 //! difference-weight mask made in the same pass: `i16` predictors into `u8`
 //! samples at eight bits, `i32` predictors into `u8` or `u16` samples at
 //! either bit depth.
+//!
+//! Each blend has a checked entry with strided inputs and a `_packed` entry,
+//! the decoder's, whose predictors and mask are packed (`w` elements per
+//! row) and whose caller validates the shapes. The packed entries do not
+//! panic and write only inside their output buffers for any input; for
+//! inputs outside their contract the written values are unspecified.
 
 use fearless_simd::{Simd, i16x8, i32x4, prelude::*, u8x16, u16x8};
 
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 const LANES: usize = 8;
+
+/// A chroma mask, its stride and `(sub_x, sub_y)`.
+type ChromaMask<'a> = Option<(&'a mut [u8], usize, (u32, u32))>;
+
+/// Eight lanes of each predictor and of the output.
+type Chunk<'a, P, O> = ((&'a [P; LANES], &'a [P; LANES]), &'a mut [O; LANES]);
 
 /// Blends two eight-bit compound predictors with a caller mask (§ 7.13.3.30):
 /// `output[y][x] = Clip1(Round2(m * p0 + (64 - m) * p1, 6 + InterPostRound))`
@@ -61,14 +73,45 @@ pub fn blend_mask_u8(
         (w, h),
         (mask.len(), mask_stride),
     )?;
-    if w == 0 || h == 0 {
-        return Ok(());
-    }
-    baseline_simd!(simd => mask_rows((output, output_stride), preds, pred_stride, (w, h), (mask, mask_stride), |p0, p1, m, out| {
+    let packed = pred_stride == w && mask_stride == w;
+    row_groups(packed, h, 1, |y, rows| {
+        let output = rest_mut(output, y * output_stride);
+        let preds = preds.map(|pred| rest(pred, y * pred_stride));
+        blend_mask_u8_packed(
+            output,
+            output_stride,
+            preds,
+            rest(mask, y * mask_stride),
+            (w, rows),
+        );
+    });
+    Ok(())
+}
+
+/// [`blend_mask_u8`] of packed predictors and mask, without checks: the
+/// decoder's entry.
+///
+/// Contract (the caller validates it; an arch-specific body keeps this
+/// signature and gives the same bytes):
+/// - value ranges, arithmetic and `w` as [`blend_mask_u8`];
+/// - `preds[0]`, `preds[1]` and `mask` are packed: row `y` starts at
+///   `y * w`, and each holds at least `w * h` elements;
+/// - `output_stride >= w`, row `y` of `output` starts at
+///   `y * output_stride`, `output` holds at least
+///   `(h - 1) * output_stride + w` elements, and only the `w` leading
+///   samples of each row are written;
+/// - no alignment; `output` does not alias the inputs (`&mut`).
+pub fn blend_mask_u8_packed(
+    output: &mut [u8],
+    output_stride: usize,
+    preds: [&[i16]; 2],
+    mask: &[u8],
+    (w, h): (usize, usize),
+) {
+    baseline_simd!(simd => mask_block((output, output_stride), preds, mask, (w, h), |p0, p1, m, out| {
         let (p0, p1) = (i16x8::load_array_ref(simd, p0), i16x8::load_array_ref(simd, p1));
         *out = blend(p1, p0 - p1, load_bytes(simd, *m));
     }));
-    Ok(())
 }
 
 /// Derives the § 7.13.3.28 difference-weight mask of two eight-bit compound
@@ -106,23 +149,45 @@ pub fn blend_diff_weighted_u8(
     inverse: bool,
     chroma_mask: Option<(&mut [u8], usize, (u32, u32))>,
 ) -> Result<()> {
-    let chroma = check_diff_args(
+    let mut chroma = check_diff_args(
         (output.len(), output_stride),
         preds.map(<[i16]>::len),
         pred_stride,
         (w, h),
         chroma_mask,
     )?;
-    if w == 0 || h == 0 {
-        return Ok(());
-    }
+    let group = chroma.as_ref().map_or(1, |&(_, _, (_, sub_y))| 1 << sub_y);
+    row_groups(pred_stride == w, h, group, |y, rows| {
+        let output = rest_mut(output, y * output_stride);
+        let preds = preds.map(|pred| rest(pred, y * pred_stride));
+        let chroma = chroma_rows(&mut chroma, y);
+        blend_diff_weighted_u8_packed(output, output_stride, preds, (w, rows), inverse, chroma);
+    });
+    Ok(())
+}
+
+/// [`blend_diff_weighted_u8`] of packed predictors, without checks: the
+/// decoder's entry.
+///
+/// Contract (the caller validates it; an arch-specific body keeps this
+/// signature and gives the same bytes): as [`blend_diff_weighted_u8`] for
+/// the value ranges, `w`, `h`, the subsampling and the chroma mask (whose
+/// rows start at `y * mask_stride`), and as [`blend_mask_u8_packed`] for the
+/// packed `preds` and for `output`.
+pub fn blend_diff_weighted_u8_packed(
+    output: &mut [u8],
+    output_stride: usize,
+    preds: [&[i16]; 2],
+    (w, h): (usize, usize),
+    inverse: bool,
+    chroma_mask: Option<(&mut [u8], usize, (u32, u32))>,
+) {
     baseline_simd!(simd => {
         let flip = i16x8::splat(simd, if inverse { 64 } else { 0 });
-        diff_rows((output, output_stride), preds, pred_stride, (w, h), chroma, |p0, p1, out| {
+        diff_block((output, output_stride), preds, (w, h), chroma_mask, |p0, p1, out| {
             narrow_weighted(simd, (p0, p1), out, flip)
         });
     });
-    Ok(())
 }
 
 /// [`blend_mask_u8`] of `i32` compound predictors at either bit depth, into
@@ -156,22 +221,45 @@ pub fn blend_mask_wide<O: ReconSample>(
         (w, h),
         (mask.len(), mask_stride),
     )?;
-    if w == 0 || h == 0 {
-        return Ok(());
-    }
+    check_wide_output::<O>(bit_depth)?;
+    let packed = pred_stride == w && mask_stride == w;
+    row_groups(packed, h, 1, |y, rows| {
+        let output = rest_mut(output, y * output_stride);
+        let preds = preds.map(|pred| rest(pred, y * pred_stride));
+        let mask = rest(mask, y * mask_stride);
+        blend_mask_wide_packed(output, output_stride, preds, mask, (w, rows), bit_depth);
+    });
+    Ok(())
+}
+
+/// [`blend_mask_wide`] of packed predictors and mask, without checks: the
+/// decoder's entry.
+///
+/// Contract (the caller validates it; an arch-specific body keeps this
+/// signature and gives the same bytes): as [`blend_mask_wide`] for the value
+/// ranges and `O` (`u8` only at eight bits; another `O` writes nothing), and
+/// as [`blend_mask_u8_packed`] for the shapes.
+pub fn blend_mask_wide_packed<O: ReconSample>(
+    output: &mut [O],
+    output_stride: usize,
+    preds: [&[i32]; 2],
+    mask: &[u8],
+    (w, h): (usize, usize),
+    bit_depth: BitDepth,
+) {
     let max = i32::from(bit_depth.max_sample());
     macro_rules! run {
         ($output:expr) => {
-            baseline_simd!(simd => mask_rows(($output, output_stride), preds, pred_stride, (w, h), (mask, mask_stride), |p0, p1, m, out| {
+            baseline_simd!(simd => mask_block(($output, output_stride), preds, mask, (w, h), |p0, p1, m, out| {
                 WideSample::put(wide_blend(simd, (p0, p1), load_bytes(simd, *m), max), out);
             }))
         };
     }
-    match wide_output(output, bit_depth)? {
-        WideOutput::Eight(output) => run!(output),
-        WideOutput::Sixteen(output) => run!(output),
+    if let Some(output) = O::u8_slice_mut(&mut *output) {
+        run!(output);
+    } else if let Some(output) = O::u16_slice_mut(output) {
+        run!(output);
     }
-    Ok(())
 }
 
 /// [`blend_diff_weighted_u8`] of `i32` compound predictors at either bit
@@ -194,16 +282,38 @@ pub fn blend_diff_weighted_wide<O: ReconSample>(
     (inverse, bit_depth): (bool, BitDepth),
     chroma_mask: Option<(&mut [u8], usize, (u32, u32))>,
 ) -> Result<()> {
-    let chroma = check_diff_args(
+    let mut chroma = check_diff_args(
         (output.len(), output_stride),
         preds.map(<[i32]>::len),
         pred_stride,
         (w, h),
         chroma_mask,
     )?;
-    if w == 0 || h == 0 {
-        return Ok(());
-    }
+    check_wide_output::<O>(bit_depth)?;
+    let group = chroma.as_ref().map_or(1, |&(_, _, (_, sub_y))| 1 << sub_y);
+    row_groups(pred_stride == w, h, group, |y, rows| {
+        let output = rest_mut(output, y * output_stride);
+        let preds = preds.map(|pred| rest(pred, y * pred_stride));
+        let (shape, chroma) = ((inverse, bit_depth), chroma_rows(&mut chroma, y));
+        blend_diff_weighted_wide_packed(output, output_stride, preds, (w, rows), shape, chroma);
+    });
+    Ok(())
+}
+
+/// [`blend_diff_weighted_wide`] of packed predictors, without checks: the
+/// decoder's entry.
+///
+/// Contract (the caller validates it; an arch-specific body keeps this
+/// signature and gives the same bytes): as [`blend_diff_weighted_u8_packed`]
+/// for the shapes and as [`blend_mask_wide_packed`] for `preds` and `O`.
+pub fn blend_diff_weighted_wide_packed<O: ReconSample>(
+    output: &mut [O],
+    output_stride: usize,
+    preds: [&[i32]; 2],
+    (w, h): (usize, usize),
+    (inverse, bit_depth): (bool, BitDepth),
+    chroma_mask: Option<(&mut [u8], usize, (u32, u32))>,
+) {
     let max = i32::from(bit_depth.max_sample());
     let diff_round = u32::from(bit_depth.bits() - 8) + 4;
     let weights = (1 << (diff_round - 1), diff_round + 4);
@@ -211,7 +321,7 @@ pub fn blend_diff_weighted_wide<O: ReconSample>(
         ($output:expr) => {
             baseline_simd!(simd => {
                 let flip = i16x8::splat(simd, if inverse { 64 } else { 0 });
-                diff_rows(($output, output_stride), preds, pred_stride, (w, h), chroma, |p0, p1, out| {
+                diff_block(($output, output_stride), preds, (w, h), chroma_mask, |p0, p1, out| {
                     let m = wide_weight(simd, (p0, p1), flip, weights);
                     WideSample::put(wide_blend(simd, (p0, p1), m, max), out);
                     m
@@ -219,11 +329,11 @@ pub fn blend_diff_weighted_wide<O: ReconSample>(
             })
         };
     }
-    match wide_output(output, bit_depth)? {
-        WideOutput::Eight(output) => run!(output),
-        WideOutput::Sixteen(output) => run!(output),
+    if let Some(output) = O::u8_slice_mut(&mut *output) {
+        run!(output);
+    } else if let Some(output) = O::u16_slice_mut(output) {
+        run!(output);
     }
-    Ok(())
 }
 
 fn check_mask_args(
@@ -245,15 +355,14 @@ fn check_mask_args(
     Ok(())
 }
 
-/// Checks the shapes of a difference-weight blend; returns the chroma mask,
-/// its stride and `sub_x + sub_y`.
+/// Checks the shapes of a difference-weight blend; returns the chroma mask.
 fn check_diff_args(
     output: (usize, usize),
     preds: [usize; 2],
     pred_stride: usize,
     (w, h): (usize, usize),
-    chroma_mask: Option<(&mut [u8], usize, (u32, u32))>,
-) -> Result<Option<(&mut [u8], usize, u32)>> {
+    chroma_mask: ChromaMask<'_>,
+) -> Result<ChromaMask<'_>> {
     check_rect(output.0, output.1, w, h)?;
     check_rect(preds[0], pred_stride, w, h)?;
     check_rect(preds[1], pred_stride, w, h)?;
@@ -261,7 +370,7 @@ fn check_diff_args(
     if w % LANES != 0 {
         return shape_error("diff-weighted blend width");
     }
-    let Some((mask, stride, (sub_x, sub_y))) = chroma_mask else {
+    let Some((mask, stride, sub @ (sub_x, sub_y))) = chroma_mask else {
         return Ok(None);
     };
     if sub_x > 1 || sub_y > sub_x {
@@ -271,7 +380,7 @@ fn check_diff_args(
         return shape_error("diff-weighted chroma mask height");
     }
     check_rect(mask.len(), stride, w >> sub_x, h >> sub_y)?;
-    Ok(Some((mask, stride, sub_x + sub_y)))
+    Ok(Some((mask, stride, sub)))
 }
 
 fn check_rect(len: usize, stride: usize, w: usize, h: usize) -> Result<()> {
@@ -299,25 +408,40 @@ fn check_rect(len: usize, stride: usize, w: usize, h: usize) -> Result<()> {
     Ok(())
 }
 
-enum WideOutput<'a> {
-    Eight(&'a mut [u8]),
-    Sixteen(&'a mut [u16]),
+fn check_wide_output<O: ReconSample>(bit_depth: BitDepth) -> Result<()> {
+    let eight = O::u8_slice(&[]).is_some();
+    if (eight && bit_depth != BitDepth::Eight) || (!eight && O::u16_slice(&[]).is_none()) {
+        return Err(ReconError::SampleTypeUnsupportedBitDepth {
+            sample_type: O::TYPE_NAME,
+            bit_depth,
+        });
+    }
+    Ok(())
 }
 
-fn wide_output<O: ReconSample>(output: &mut [O], bit_depth: BitDepth) -> Result<WideOutput<'_>> {
-    let unsupported = ReconError::SampleTypeUnsupportedBitDepth {
-        sample_type: O::TYPE_NAME,
-        bit_depth,
-    };
-    if O::u8_slice(&[]).is_some() {
-        return match (bit_depth, O::u8_slice_mut(output)) {
-            (BitDepth::Eight, Some(output)) => Ok(WideOutput::Eight(output)),
-            _ => Err(unsupported),
-        };
+/// Runs `blend(y, rows)` on the whole block when `packed`, else on each
+/// group of `group` rows from row `y`.
+fn row_groups(packed: bool, h: usize, group: usize, mut blend: impl FnMut(usize, usize)) {
+    if packed {
+        return blend(0, h);
     }
-    O::u16_slice_mut(output)
-        .map(WideOutput::Sixteen)
-        .ok_or(unsupported)
+    for y in (0..h).step_by(group) {
+        blend(y, group.min(h - y));
+    }
+}
+
+fn rest<V>(buffer: &[V], start: usize) -> &[V] {
+    buffer.get(start..).unwrap_or_default()
+}
+
+fn rest_mut<V>(buffer: &mut [V], start: usize) -> &mut [V] {
+    buffer.get_mut(start..).unwrap_or_default()
+}
+
+/// The chroma mask from the row of luma row `y`.
+fn chroma_rows<'a>(chroma: &'a mut ChromaMask<'_>, y: usize) -> ChromaMask<'a> {
+    let (mask, stride, sub) = chroma.as_mut()?;
+    Some((rest_mut(mask, (y >> sub.1) * *stride), *stride, *sub))
 }
 
 /// `Clip1(Round2(64 * p1 + m * (p0 - p1), 10))` of eight lanes, `diff = p0 - p1`.
@@ -372,7 +496,7 @@ trait WideSample: Copy + Default {
 impl WideSample for u8 {
     #[inline]
     fn put<S: Simd>(values: [i32x4<S>; 2], output: &mut [u8; LANES]) {
-        let values: i16x8<S> = values[0].narrow(values[1]);
+        let values: i16x8<S> = values[0].saturating_narrow(values[1]);
         *output = to_bytes(values.bitcast());
     }
 }
@@ -380,7 +504,7 @@ impl WideSample for u8 {
 impl WideSample for u16 {
     #[inline]
     fn put<S: Simd>(values: [i32x4<S>; 2], output: &mut [u16; LANES]) {
-        let values: i16x8<S> = values[0].narrow(values[1]);
+        let values: i16x8<S> = values[0].saturating_narrow(values[1]);
         *output = values.bitcast::<u16x8<S>>().to_array();
     }
 }
@@ -399,155 +523,250 @@ fn to_bytes<S: Simd>(values: u16x8<S>) -> [u8; LANES] {
     core::array::from_fn(|lane| bytes[lane])
 }
 
-/// Runs `chunk` on every eight-lane chunk of the `w x h` block: whole chunks
-/// in place, an overlapping last chunk when `w % 8 != 0`, and `8 / w` rows
-/// gathered into one chunk when `w` is 1, 2 or 4.
+/// Runs `chunk` on every eight-lane chunk of a `w x h` block whose
+/// predictors and mask are packed: whole chunks in place, an overlapping
+/// last chunk when `w % 8 != 0`, and `8 / w` rows in one chunk when `w` is
+/// 1, 2 or 4.
 #[inline]
-fn mask_rows<P: Copy + Default, O: Copy + Default>(
-    (output, output_stride): (&mut [O], usize),
+fn mask_block<P: Copy + Default, O: Copy + Default>(
+    (output, stride): (&mut [O], usize),
     preds: [&[P]; 2],
-    pred_stride: usize,
+    mask: &[u8],
     (w, h): (usize, usize),
-    (mask, mask_stride): (&[u8], usize),
     chunk: impl Fn(&[P; LANES], &[P; LANES], &[u8; LANES], &mut [O; LANES]),
 ) {
-    let rows = preds[0]
-        .chunks(pred_stride)
-        .zip(preds[1].chunks(pred_stride))
-        .zip(
-            mask.chunks(mask_stride)
-                .zip(output.chunks_mut(output_stride)),
-        )
-        .take(h);
+    let len = w.wrapping_mul(h);
+    let (Some(p0), Some(p1), Some(mask)) =
+        (preds[0].get(..len), preds[1].get(..len), mask.get(..len))
+    else {
+        return;
+    };
+    if stride < w {
+        return;
+    }
+    let (output, preds) = ((output, stride), [p0, p1]);
     match w {
-        1 => small_rows::<P, O, 1, 8>(rows, chunk),
-        2 => small_rows::<P, O, 2, 4>(rows, chunk),
-        4 => small_rows::<P, O, 4, 2>(rows, chunk),
-        _ => {
-            for ((row0, row1), (masks, out)) in rows {
-                let (row0, row1, masks, out) = (&row0[..w], &row1[..w], &masks[..w], &mut out[..w]);
-                let chunks = row0.as_chunks().0.iter().zip(row1.as_chunks().0);
-                let outputs = masks.as_chunks().0.iter().zip(out.as_chunks_mut().0);
-                for ((p0, p1), (m, out)) in chunks.zip(outputs) {
-                    chunk(p0, p1, m, out);
-                }
-                if w % LANES != 0
-                    && let (Some(p0), Some(p1), Some(m), Some(out)) = (
-                        row0.last_chunk(),
-                        row1.last_chunk(),
-                        masks.last_chunk(),
-                        out.last_chunk_mut(),
-                    )
-                {
-                    chunk(p0, p1, m, out);
-                }
-            }
-        }
+        1 => small_block::<P, O, 1>(output, preds, mask, chunk),
+        2 => small_block::<P, O, 2>(output, preds, mask, chunk),
+        4 => small_block::<P, O, 4>(output, preds, mask, chunk),
+        8 => rows_block::<P, O, 1>(output, preds, mask, w, chunk),
+        16 => rows_block::<P, O, 2>(output, preds, mask, w, chunk),
+        32 => rows_block::<P, O, 4>(output, preds, mask, w, chunk),
+        9.. => rows_block::<P, O, 0>(output, preds, mask, w, chunk),
+        _ => {}
     }
 }
 
-/// [`mask_rows`] of a `W`-wide block, `R = 8 / W` rows per chunk.
+/// [`mask_block`] of a block at least 8 wide: `8 * N` wide, or `w` wide when
+/// `N == 0`.
 #[inline]
-fn small_rows<
-    'a,
-    P: Copy + Default + 'a,
-    O: Copy + Default + 'a,
-    const W: usize,
-    const R: usize,
->(
-    rows: impl Iterator<Item = ((&'a [P], &'a [P]), (&'a [u8], &'a mut [O]))>,
+fn rows_block<P: Copy, O: Copy, const N: usize>(
+    (output, stride): (&mut [O], usize),
+    [p0, p1]: [&[P]; 2],
+    mask: &[u8],
+    w: usize,
     chunk: impl Fn(&[P; LANES], &[P; LANES], &[u8; LANES], &mut [O; LANES]),
 ) {
-    let mut rows = rows.peekable();
-    while rows.peek().is_some() {
-        let (mut p0, mut p1, mut m) = ([P::default(); LANES], [P::default(); LANES], [0; LANES]);
-        let mut outputs: [Option<&mut [O; W]>; R] = [const { None }; R];
-        for (lane, ((row0, row1), (masks, out))) in (0..LANES).step_by(W).zip(rows.by_ref().take(R))
-        {
-            if let (Some(a), Some(b), Some(c)) = (
-                row0.first_chunk::<W>(),
-                row1.first_chunk::<W>(),
-                masks.first_chunk::<W>(),
-            ) {
-                p0[lane..lane + W].copy_from_slice(a); // splot-copy-ok: gather a short row
-                p1[lane..lane + W].copy_from_slice(b); // splot-copy-ok: gather a short row
-                m[lane..lane + W].copy_from_slice(c); // splot-copy-ok: gather a short row
-            }
-            outputs[lane / W] = out.first_chunk_mut::<W>();
+    let w = if N == 0 { w } else { LANES * N };
+    let mut output = output;
+    let rows = p0.chunks_exact(w).zip(p1.chunks_exact(w));
+    for ((row0, row1), masks) in rows.zip(mask.chunks_exact(w)) {
+        let row_len = stride.min(output.len());
+        let (out, rest) = core::mem::take(&mut output).split_at_mut(row_len);
+        output = rest;
+        let Some(out) = out.get_mut(..w) else {
+            return;
+        };
+        let chunks = row0.as_chunks().0.iter().zip(row1.as_chunks().0);
+        let outputs = masks.as_chunks().0.iter().zip(out.as_chunks_mut().0);
+        for ((p0, p1), (m, out)) in chunks.zip(outputs) {
+            chunk(p0, p1, m, out);
         }
-        let mut values = [O::default(); LANES];
-        chunk(&p0, &p1, &m, &mut values);
-        for (out, values) in outputs.into_iter().zip(values.as_chunks::<W>().0) {
-            if let Some(out) = out {
-                *out = *values;
-            }
+        if w % LANES != 0
+            && let (Some(p0), Some(p1), Some(m), Some(out)) = (
+                row0.last_chunk(),
+                row1.last_chunk(),
+                masks.last_chunk(),
+                out.last_chunk_mut(),
+            )
+        {
+            chunk(p0, p1, m, out);
         }
     }
 }
 
-/// Runs `weighted` on every eight-lane chunk of the `w x h` block (`w % 8 ==
-/// 0`) and stores the weights it returns as the chroma mask of `chroma`: the
-/// mask, its stride and `sub_x + sub_y`.
+/// [`mask_block`] of a `W`-wide block: each chunk is `8 / W` packed rows,
+/// and a last part chunk is padded.
 #[inline]
-fn diff_rows<S: Simd, P: Copy, O: Copy>(
-    (output, output_stride): (&mut [O], usize),
+fn small_block<P: Copy + Default, O: Copy + Default, const W: usize>(
+    (output, stride): (&mut [O], usize),
+    [p0, p1]: [&[P]; 2],
+    mask: &[u8],
+    chunk: impl Fn(&[P; LANES], &[P; LANES], &[u8; LANES], &mut [O; LANES]),
+) {
+    let mut output = output;
+    let ((chunks0, tail0), (chunks1, tail1)) = (p0.as_chunks(), p1.as_chunks());
+    let (masks, tail_mask) = mask.as_chunks();
+    for ((p0, p1), m) in chunks0.iter().zip(chunks1).zip(masks) {
+        let mut values = [O::default(); LANES];
+        chunk(p0, p1, m, &mut values);
+        output = store_rows::<O, W>((output, stride), &values, LANES / W);
+    }
+    if !tail0.is_empty() {
+        small_tail::<P, O, W>((output, stride), [tail0, tail1], tail_mask, &chunk);
+    }
+}
+
+/// Stores `count` rows of `W` values; returns the output after them.
+#[inline]
+fn store_rows<'a, O: Copy, const W: usize>(
+    (mut output, stride): (&'a mut [O], usize),
+    values: &[O; LANES],
+    count: usize,
+) -> &'a mut [O] {
+    for values in values.as_chunks::<W>().0.iter().take(count) {
+        let (out, rest) = output.split_at_mut(stride.min(output.len()));
+        output = rest;
+        if let Some(out) = out.first_chunk_mut::<W>() {
+            *out = *values;
+        }
+    }
+    output
+}
+
+/// The last part chunk of a [`small_block`], padded to eight lanes.
+#[cold]
+#[inline(never)]
+fn small_tail<P: Copy + Default, O: Copy + Default, const W: usize>(
+    (output, stride): (&mut [O], usize),
     preds: [&[P]; 2],
-    pred_stride: usize,
+    mask: &[u8],
+    chunk: &impl Fn(&[P; LANES], &[P; LANES], &[u8; LANES], &mut [O; LANES]),
+) {
+    fn pad<V: Copy + Default>(tail: &[V]) -> [V; LANES] {
+        let mut lanes = [V::default(); LANES];
+        if let Some(lanes) = lanes.get_mut(..tail.len()) {
+            lanes.copy_from_slice(tail); // splot-copy-ok: a short last chunk into one vector
+        }
+        lanes
+    }
+    let mut values = [O::default(); LANES];
+    chunk(&pad(preds[0]), &pad(preds[1]), &pad(mask), &mut values);
+    store_rows::<O, W>((output, stride), &values, preds[0].len() / W);
+}
+
+/// Runs `weighted` on every eight-lane chunk of a packed `w x h` block (`w %
+/// 8 == 0`) and stores the weights it returns as the chroma mask.
+#[inline]
+fn diff_block<S: Simd, P: Copy, O: Copy>(
+    (output, stride): (&mut [O], usize),
+    preds: [&[P]; 2],
     (w, h): (usize, usize),
-    chroma: Option<(&mut [u8], usize, u32)>,
+    chroma: ChromaMask<'_>,
     weighted: impl Fn(&[P; LANES], &[P; LANES], &mut [O; LANES]) -> i16x8<S>,
 ) {
-    let rows = preds[0]
-        .chunks(pred_stride)
-        .zip(preds[1].chunks(pred_stride))
-        .map(|(row0, row1)| chunks(row0, w).iter().zip(chunks(row1, w)))
-        .zip(
-            output
-                .chunks_mut(output_stride)
-                .map(|out| chunks_mut(out, w)),
-        )
-        .take(h);
-    let weights = |(p0, p1): (&[P; LANES], &[P; LANES]), out| weighted(p0, p1, out);
-    match chroma {
-        None => {
-            for (preds, out) in rows {
-                for (preds, out) in preds.zip(out) {
-                    weights(preds, out);
+    let len = w.wrapping_mul(h);
+    let (Some(p0), Some(p1)) = (preds[0].get(..len), preds[1].get(..len)) else {
+        return;
+    };
+    if w < LANES || stride < w || chroma.as_ref().is_some_and(|c| c.1 < (w >> c.2.0)) {
+        return;
+    }
+    let (output, preds) = ((output, stride), [p0, p1]);
+    match w {
+        8 => diff_rows::<S, P, O, 1>(output, preds, w, chroma, weighted),
+        16 => diff_rows::<S, P, O, 2>(output, preds, w, chroma, weighted),
+        32 => diff_rows::<S, P, O, 4>(output, preds, w, chroma, weighted),
+        _ => diff_rows::<S, P, O, 0>(output, preds, w, chroma, weighted),
+    }
+}
+
+/// [`diff_block`] of a block `8 * N` wide, or `w` wide when `N == 0`.
+#[inline]
+fn diff_rows<S: Simd, P: Copy, O: Copy, const N: usize>(
+    (output, stride): (&mut [O], usize),
+    [p0, p1]: [&[P]; 2],
+    w: usize,
+    chroma: ChromaMask<'_>,
+    weighted: impl Fn(&[P; LANES], &[P; LANES], &mut [O; LANES]) -> i16x8<S>,
+) {
+    let w = if N == 0 { w } else { LANES * N };
+    let weights = |((p0, p1), out): Chunk<'_, P, O>| weighted(p0, p1, out);
+    let rows = p0
+        .chunks_exact(w)
+        .zip(p1.chunks_exact(w))
+        .zip(output.chunks_mut(stride));
+    let Some((mask, mask_stride, sub)) = chroma else {
+        for ((row0, row1), out) in rows {
+            let Some(chunks) = row(row0, row1, out) else {
+                return;
+            };
+            chunks.for_each(|chunk| {
+                weights(chunk);
+            });
+        }
+        return;
+    };
+    let masks = mask
+        .chunks_mut(mask_stride)
+        .map(|mask| mask.get_mut(..w >> sub.0));
+    match sub {
+        (0, 0) => {
+            for (((row0, row1), out), mask) in rows.zip(masks) {
+                let (Some(chunks), Some(mask)) = (row(row0, row1, out), mask) else {
+                    return;
+                };
+                for (chunk, mask) in chunks.zip(mask.as_chunks_mut().0) {
+                    *mask = to_bytes(weights(chunk).bitcast());
                 }
             }
         }
-        Some((mask, stride, 0)) => {
-            for ((preds, out), mask) in rows.zip(mask.chunks_mut(stride)) {
-                for ((preds, out), mask) in preds.zip(out).zip(chunks_mut(mask, w)) {
-                    *mask = to_bytes(weights(preds, out).bitcast());
-                }
-            }
-        }
-        Some((mask, stride, 1)) => {
-            for ((preds, out), mask) in rows.zip(mask.chunks_mut(stride)) {
-                let masks = mask[..w / 2].as_chunks_mut::<{ LANES / 2 }>().0;
-                for ((preds, out), mask) in preds.zip(out).zip(masks) {
-                    let sums = weights(preds, out).pairwise_widening_add();
+        (1, 0) => {
+            for (((row0, row1), out), mask) in rows.zip(masks) {
+                let (Some(chunks), Some(mask)) = (row(row0, row1, out), mask) else {
+                    return;
+                };
+                for (chunk, mask) in chunks.zip(mask.as_chunks_mut().0) {
+                    let sums = weights(chunk).pairwise_widening_add();
                     store_quarter((sums + 1) >> 1, mask);
                 }
             }
         }
-        Some((mask, stride, _)) => {
-            let mut rows = rows;
-            for mask in mask.chunks_mut(stride).take(h / 2) {
-                let (Some((upper, top)), Some((lower, bottom))) = (rows.next(), rows.next()) else {
+        (1, 1) => {
+            let pairs = p0.chunks_exact(2 * w).zip(p1.chunks_exact(2 * w));
+            let outputs = output.chunks_mut(2 * stride);
+            for ((rows0, rows1), (out, mask)) in pairs.zip(outputs.zip(masks)) {
+                let ((upper0, lower0), (upper1, lower1)) = (rows0.split_at(w), rows1.split_at(w));
+                let (upper_out, lower_out) = out.split_at_mut(stride.min(out.len()));
+                let (Some(upper), Some(lower), Some(mask)) = (
+                    row(upper0, upper1, upper_out),
+                    row(lower0, lower1, lower_out),
+                    mask,
+                ) else {
                     return;
                 };
-                let masks = mask[..w / 2].as_chunks_mut::<{ LANES / 2 }>().0;
-                let pairs = upper.zip(top).zip(lower.zip(bottom));
-                for ((upper, lower), mask) in pairs.zip(masks) {
-                    let sums = weights(upper.0, upper.1).pairwise_widening_add()
-                        + weights(lower.0, lower.1).pairwise_widening_add();
+                for ((upper, lower), mask) in upper.zip(lower).zip(mask.as_chunks_mut().0) {
+                    let sums = weights(upper).pairwise_widening_add()
+                        + weights(lower).pairwise_widening_add();
                     store_quarter((sums + 2) >> 2, mask);
                 }
             }
         }
+        _ => {}
     }
+}
+
+/// The eight-lane chunks of one row of two packed predictors and the first
+/// `row0.len()` samples of an output row; `None` when the output row is
+/// shorter.
+#[inline]
+fn row<'a, P, O>(
+    row0: &'a [P],
+    row1: &'a [P],
+    out: &'a mut [O],
+) -> Option<impl Iterator<Item = Chunk<'a, P, O>>> {
+    let chunks = row0.as_chunks().0.iter().zip(row1.as_chunks().0);
+    Some(chunks.zip(out.get_mut(..row0.len())?.as_chunks_mut().0))
 }
 
 /// The § 7.13.3.28 weight of eight `i16` lanes, `|flip - m|` (`flip` is 64
@@ -567,16 +786,6 @@ fn narrow_weighted<S: Simd>(
     let m = (flip - (((diff.abs() + 8) >> 8) + 38).min(64)).abs();
     *out = blend(p1, diff, m);
     m
-}
-
-#[inline]
-fn chunks<P>(row: &[P], w: usize) -> &[[P; LANES]] {
-    row[..w].as_chunks().0
-}
-
-#[inline]
-fn chunks_mut<O>(row: &mut [O], w: usize) -> &mut [[O; LANES]] {
-    row[..w].as_chunks_mut().0
 }
 
 #[inline]
@@ -761,5 +970,79 @@ mod tests {
             BitDepth::Ten,
         );
         assert!(ten.is_err());
+    }
+
+    #[test]
+    fn packed_mask_blend_matches_the_spec_formula_and_never_panics() {
+        let shapes = [
+            (1, 8),
+            (2, 4),
+            (4, 3),
+            (4, 4),
+            (4, 16),
+            (8, 8),
+            (12, 3),
+            (16, 4),
+        ];
+        for (w, h) in shapes.into_iter().chain([(32, 8), (64, 2), (128, 2)]) {
+            let stride = w + 5;
+            let preds = [samples(w * h, w), samples(w * h, h + 1)];
+            let mask: Vec<u8> = (0..w * h).map(|i| ((i * 29 + h) % 65) as u8).collect();
+            let mut output = vec![0x5a; h * stride + 3];
+            blend_mask_u8_packed(&mut output, stride, [&preds[0], &preds[1]], &mask, (w, h));
+            for (i, &got) in output.iter().enumerate() {
+                let (y, x) = (i / stride, i % stride);
+                let at = y * w + x;
+                let want = if y < h && x < w {
+                    spec_blend(preds[0][at], preds[1][at], i32::from(mask[at]))
+                } else {
+                    0x5a
+                };
+                assert_eq!(got, want, "{w}x{h} sample {i}");
+            }
+        }
+        let (preds, wide, mut output) = (
+            [&[0i16; 64][..], &[0; 64]],
+            [&[0i32; 64][..], &[0; 64]],
+            [0u8; 64],
+        );
+        for (stride, len, mask, size) in
+            [(0, 64, 64, (8, 8)), (8, 64, 3, (4, 4)), (8, 64, 64, (3, 8))]
+                .into_iter()
+                .chain([(4, 64, 64, (8, 8)), (8, 9, 64, (8, 8)), (8, 64, 64, (8, 9))])
+        {
+            blend_mask_u8_packed(&mut output[..len], stride, preds, &[0; 64][..mask], size);
+            blend_mask_wide_packed(
+                &mut output[..len],
+                stride,
+                wide,
+                &[0; 64][..mask],
+                size,
+                BitDepth::Ten,
+            );
+            for sub in [(0, 0), (1, 0), (1, 1), (0, 1), (2, 2)] {
+                for mask_stride in [0, 2, 4, 8] {
+                    let chroma = Some((&mut [0; 16][..], mask_stride, sub));
+                    blend_diff_weighted_u8_packed(
+                        &mut output[..len],
+                        stride,
+                        preds,
+                        size,
+                        false,
+                        chroma,
+                    );
+                    let chroma = Some((&mut [0; 16][..], mask_stride, sub));
+                    let shape = (true, BitDepth::Eight);
+                    blend_diff_weighted_wide_packed(
+                        &mut output[..len],
+                        stride,
+                        wide,
+                        size,
+                        shape,
+                        chroma,
+                    );
+                }
+            }
+        }
     }
 }
