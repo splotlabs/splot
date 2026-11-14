@@ -547,6 +547,14 @@ impl<'payload> TileParser<'payload> {
              symbols: &mut SymbolDecoder<'_>,
              frontier: &DecodeBlockFrontier,
              neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>| {
+                #[cfg(test)]
+                crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_leaf(
+                    frontier,
+                    &neighbours,
+                    block_context.sink.mv_grid,
+                    context.params.sb_h4,
+                    context.core.frame_is_intra == Some(true),
+                );
                 if frontier.bru_active() {
                     decode_block(work_unit, symbols, frontier, &mut block_context, neighbours)
                 } else {

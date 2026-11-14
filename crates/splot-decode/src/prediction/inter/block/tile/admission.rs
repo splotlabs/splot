@@ -744,6 +744,10 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             let step = parser.next_unit(tile, context, Some(row_buffers.take()), true);
             let step = resolve_parser_step(step, |row| {
                 resolve.resolve_unit(&mut parser.mv_grid, context, temporal, row, tile_offset)?;
+                #[cfg(test)]
+                crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_resolved_unit(
+                    &parser.mv_grid,
+                );
                 let records = &mut parser.filter_records;
                 row.filter_records.publish_into(
                     &mut records.deblock_blocks,
