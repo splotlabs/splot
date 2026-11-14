@@ -56,10 +56,7 @@ fn reference_reads_mi_storage_outside_the_output_crop() {
         .unwrap();
     let frame = workspace.freeze().unwrap();
     let reference = ReferenceSamples::settled(&frame);
-    let (view, cols, rows) = reference
-        .plane_view_with_mi_dims(PlaneId::Y, ALL_ROWS, OFFSET)
-        .unwrap();
-    assert_eq!((cols, rows), (68, 68));
+    let view = reference.plane_view(PlaneId::Y, ALL_ROWS, OFFSET).unwrap();
     assert_eq!((view.width(), view.height()), (272, 272));
     assert_eq!(view.sample(0, 0), 31);
     assert_eq!(view.sample(271, 271), 201);
@@ -195,14 +192,13 @@ fn a_banded_read_inside_the_watermark_returns_the_settled_samples() {
     let held = HeldFrameSamples::Filtering(PublishedFrame::of_slot(&slot).expect("a prefix"));
     let banded = held.samples().expect("banded samples");
 
-    let (settled_view, settled_cols, settled_rows) = ReferenceSamples::settled(&settled)
-        .plane_view_with_mi_dims(PlaneId::Y, 63, OFFSET)
+    let settled_view = ReferenceSamples::settled(&settled)
+        .plane_view(PlaneId::Y, 63, OFFSET)
         .expect("settled view");
-    let (banded_view, banded_cols, banded_rows) = banded
-        .plane_view_with_mi_dims(PlaneId::Y, 63, OFFSET)
+    let banded_view = banded
+        .plane_view(PlaneId::Y, 63, OFFSET)
         .expect("a read inside the watermark is admitted");
 
-    assert_eq!((banded_cols, banded_rows), (settled_cols, settled_rows));
     assert_eq!(
         (banded_view.width(), banded_view.height()),
         (settled_view.width(), settled_view.height()),

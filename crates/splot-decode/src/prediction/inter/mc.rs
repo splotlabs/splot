@@ -875,8 +875,7 @@ fn predict_warp_plane<T: ReconSample>(
         sub_y,
         scaling,
     );
-    let (view, ref_mi_cols, ref_mi_rows) =
-        reference.plane_view_with_mi_dims(plane, last_row, offset)?;
+    let view = reference.plane_view(plane, last_row, offset)?;
     let (ref_width, ref_height) = (view.width(), view.height());
     let params = WarpPredictBlockParams {
         warp_params,
@@ -899,6 +898,7 @@ fn predict_warp_plane<T: ReconSample>(
             PreparedWarpPrediction::with_valid_shear(&params)?
         };
     let Some(prepared) = prepared else {
+        let frame = sink.info().storage_luma_size();
         let unit = |i4: usize, j4: usize| {
             let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
                 rect,
@@ -910,8 +910,7 @@ fn predict_warp_plane<T: ReconSample>(
                 block_h.min(8) as i32,
                 sub_x,
                 sub_y,
-                ref_mi_cols,
-                ref_mi_rows,
+                frame,
                 scaling,
             );
             let params = WarpPredictBlockParams {
@@ -1739,8 +1738,7 @@ fn compound_ref_intermediate<T: ReconSample>(
             )
         },
     );
-    let (view, ref_mi_cols, ref_mi_rows) =
-        reference.plane_view_with_mi_dims(plane, last_row, offset)?;
+    let view = reference.plane_view(plane, last_row, offset)?;
     let Some(warp_params) = warp_params else {
         let params = SubpelPredictParams {
             interp,
@@ -1819,8 +1817,7 @@ fn compound_ref_intermediate<T: ReconSample>(
                     block_h.min(8) as i32,
                     sub_x,
                     sub_y,
-                    ref_mi_cols,
-                    ref_mi_rows,
+                    info.storage_luma_size(),
                     scaling,
                 );
                 let params = WarpPredictBlockParams {
@@ -1955,8 +1952,7 @@ fn ext_warp_unit_bounds(
     bbox_h: i32,
     sub_x: u32,
     sub_y: u32,
-    ref_mi_cols: i32,
-    ref_mi_rows: i32,
+    frame: splot_recon::PlaneSize,
     scaling: PlaneScaling,
 ) -> (i32, i32, i32, i32) {
     const WARPEDMODEL_PREC_BITS: u32 = 16;
@@ -1985,13 +1981,15 @@ fn ext_warp_unit_bounds(
     let mi_col = (luma_x / 4) as i32;
     let bh4 = (luma_h / 4) as i32;
     let bw4 = (luma_w / 4) as i32;
+    let mi_cols = frame.width().div_ceil(4) as i32;
+    let mi_rows = frame.height().div_ceil(4) as i32;
     let mv_row = mv_row.clamp(
         -(mi_row + bh4) * 32 - MV_BORDER,
-        (ref_mi_rows - mi_row) * 32 + MV_BORDER,
+        (mi_rows - mi_row) * 32 + MV_BORDER,
     );
     let mv_col = mv_col.clamp(
         -(mi_col + bw4) * 32 - MV_BORDER,
-        (ref_mi_cols - mi_col) * 32 + MV_BORDER,
+        (mi_cols - mi_col) * 32 + MV_BORDER,
     );
     let scaling = scaling.with_mv(unit_x, unit_y, mv_row, mv_col, sub_x, sub_y);
     let first_x = ((scaling.start_x >> 10) - 3).clamp(0, scaling.last_x);

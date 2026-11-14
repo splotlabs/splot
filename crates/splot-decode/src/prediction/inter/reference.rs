@@ -108,8 +108,7 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         }
     }
 
-    /// Borrows one reference plane over its reconstruction storage, together with the
-    /// § 7.13.3.23 reference mode-info dimensions warp bounds are derived from.
+    /// Borrows one reference plane over its reconstruction storage.
     ///
     /// `last_row` is the last row of this plane the caller's prediction can
     /// reach, or [`ALL_ROWS`] when the caller cannot bound it before the
@@ -120,26 +119,6 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     /// Returns a capability diagnostic when the reference is missing a plane or
     /// its storage does not cover the reconstruction extent, and a fail-closed
     /// diagnostic when a still-filtering reference has not published `last_row`.
-    pub(crate) fn plane_view_with_mi_dims(
-        self,
-        plane: PlaneId,
-        last_row: i32,
-        offset: ByteOffset,
-    ) -> Result<(ReferencePlaneView<'a, T>, i32, i32)> {
-        let view = self.plane_view(plane, last_row, offset)?;
-        let Some((_, _, luma_size, _)) = self.plane_storage(PlaneId::Y) else {
-            return Err(missing_plane(offset));
-        };
-        let ref_mi_cols = luma_size.width().div_ceil(4) as i32;
-        let ref_mi_rows = luma_size.height().div_ceil(4) as i32;
-        Ok((view, ref_mi_cols, ref_mi_rows))
-    }
-
-    /// [`Self::plane_view_with_mi_dims`] without the mode-info dimensions.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::plane_view_with_mi_dims`].
     pub(crate) fn plane_view(
         self,
         plane: PlaneId,
