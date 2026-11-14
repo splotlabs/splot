@@ -2113,3 +2113,93 @@ expect = "clean"
 path = "vectors/valid/syn-partial-lossless-lr-444-384x256-q180.ivf"
 description = "AVM-encoded 3-frame 384x256 8-bit 4:4:4 stream of a project-generated moving texture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=1 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame codes segments 1-7 lossless (qindex 0) in the middle 3x3 superblocks and segment 0 lossy, with deblock, CDEF, CCSO and Wiener non-separable loop restoration on all three planes in the same frame. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 ea535eca9d8cd72a61a3cca5c4950a07484a03a94cd9e319e80470bbfa29d119; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-sb256-offframe-chunk-intra-136x136-q120.ivf"
+description = "AVM-encoded 2-frame 136x136 8-bit 4:2:0 scene-cut stream of a project-generated picture (avmenc --profile=0 --sb-size=256 --min-partition-size=128 --cpu-used=3 --end-usage=q --qp=120 --lag-in-frames=0): the inter frame codes one 256x256 intra block that hangs 120 samples over the right and bottom frame edges, so 7 of its 16 64x64 residual chunks start outside the frame and are not coded (§ 5.20.7.23); 7 luma and 8 chroma transform blocks of it have nonzero coefficients. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 880cb059e839cf28dd8375701b56ee87cc1897415922e2e737c37159bfb71957; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-sb256-offframe-chunk-intra-10bit-136x136-q120.ivf"
+description = "AVM-encoded 2-frame 136x136 10-bit 4:2:0 scene-cut stream of a project-generated picture (avmenc --profile=0 --sb-size=256 --min-partition-size=128 --cpu-used=3 --end-usage=q --qp=120 --lag-in-frames=0): the inter frame codes one 256x256 intra block that hangs 120 samples over the right and bottom frame edges, so 7 of its 16 64x64 residual chunks start outside the frame and are not coded (§ 5.20.7.23); 9 luma and 8 chroma transform blocks of it have nonzero coefficients. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 ee118ddeddf630dd39740df6fa0eb3f282a00a166a0b3edaa7ce73bafc32b9c1; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-sb256-offframe-chunk-intra-422-136x136-q120.ivf"
+description = "AVM-encoded 2-frame 136x136 8-bit 4:2:2 scene-cut stream of a project-generated picture (avmenc --profile=2 --sb-size=256 --min-partition-size=128 --cpu-used=3 --end-usage=q --qp=120 --lag-in-frames=0): the inter frame codes one 256x256 intra block that hangs 120 samples over the right and bottom frame edges, so 7 of its 16 64x64 residual chunks start outside the frame and are not coded (§ 5.20.7.23); 7 luma and 12 chroma transform blocks of it have nonzero coefficients. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 dd145c73ebd8625db8f52ccf481758c7626cbd27dfa300375d93433b06d4d97e; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-sb256-offframe-chunk-intra-422-10bit-136x136-q120.ivf"
+description = "AVM-encoded 2-frame 136x136 10-bit 4:2:2 scene-cut stream of a project-generated picture (avmenc --profile=2 --sb-size=256 --min-partition-size=128 --cpu-used=3 --end-usage=q --qp=120 --lag-in-frames=0): the inter frame codes one 256x256 intra block that hangs 120 samples over the right and bottom frame edges, so 7 of its 16 64x64 residual chunks start outside the frame and are not coded (§ 5.20.7.23); 9 luma and 11 chroma transform blocks of it have nonzero coefficients. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 dadb2e5400de09ad8dba91552375b13f4c5d9d78dd5edb0a3f88a96a016452df; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-sb256-offframe-chunk-intra-444-136x136-q120.ivf"
+description = "AVM-encoded 2-frame 136x136 8-bit 4:4:4 scene-cut stream of a project-generated picture (avmenc --profile=1 --sb-size=256 --min-partition-size=128 --cpu-used=3 --end-usage=q --qp=120 --lag-in-frames=0): the inter frame codes one 256x256 intra block that hangs 120 samples over the right and bottom frame edges, so 7 of its 16 64x64 residual chunks start outside the frame and are not coded (§ 5.20.7.23); 7 luma and 17 chroma transform blocks of it have nonzero coefficients. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 e228a5f0f8f8779eff4ed811eb153d72dd6e4f0a6a4a75adb163c36f760a3222; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-sb256-offframe-chunk-intra-444-10bit-136x136-q120.ivf"
+description = "AVM-encoded 2-frame 136x136 10-bit 4:4:4 scene-cut stream of a project-generated picture (avmenc --profile=1 --sb-size=256 --min-partition-size=128 --cpu-used=3 --end-usage=q --qp=120 --lag-in-frames=0): the inter frame codes one 256x256 intra block that hangs 120 samples over the right and bottom frame edges, so 7 of its 16 64x64 residual chunks start outside the frame and are not coded (§ 5.20.7.23); 9 luma and 18 chroma transform blocks of it have nonzero coefficients. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 23a72793a9cea7290d268c0c81bf558b2345f64741fd1563893582c0527f8db9; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-offframe-unit-66x50.ivf"
+description = "AVM-encoded lossless 1-frame 66x50 8-bit 4:2:0 intra stream of a project-generated sharp picture (avmenc --profile=0 --lossless=1 --cpu-used=4): the frame size is not a multiple of 8, so 14 luma and 30 chroma lossless transform units cross the right or bottom frame edge and 18 luma and 0 chroma units start outside the frame inside the 4x4 mode-info grid (§ 5.18.2 MiCols, § 5.20.7.24). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 76fdeadd584cbebb7924ca31f35bc7e00490af7bd3c14277f36dfcf166e67da0; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-offframe-unit-10bit-66x50.ivf"
+description = "AVM-encoded lossless 1-frame 66x50 10-bit 4:2:0 intra stream of a project-generated sharp picture (avmenc --profile=0 --lossless=1 --cpu-used=4): the frame size is not a multiple of 8, so 14 luma and 30 chroma lossless transform units cross the right or bottom frame edge and 27 luma and 0 chroma units start outside the frame inside the 4x4 mode-info grid (§ 5.18.2 MiCols, § 5.20.7.24). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 4c95d427189024316a48a086b8bebff16f238e60d7945092a542ff8834e10fdf; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-offframe-unit-422-66x50.ivf"
+description = "AVM-encoded lossless 1-frame 66x50 8-bit 4:2:2 intra stream of a project-generated sharp picture (avmenc --profile=2 --lossless=1 --cpu-used=4): the frame size is not a multiple of 8, so 14 luma and 42 chroma lossless transform units cross the right or bottom frame edge and 18 luma and 18 chroma units start outside the frame inside the 4x4 mode-info grid (§ 5.18.2 MiCols, § 5.20.7.24). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 3e0b5d5728dab1cc1b8eef5b66708b37d04b0d2ca9bf548237d640a8a8d45ba1; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-offframe-unit-422-10bit-66x50.ivf"
+description = "AVM-encoded lossless 1-frame 66x50 10-bit 4:2:2 intra stream of a project-generated sharp picture (avmenc --profile=2 --lossless=1 --cpu-used=4): the frame size is not a multiple of 8, so 14 luma and 42 chroma lossless transform units cross the right or bottom frame edge and 27 luma and 18 chroma units start outside the frame inside the 4x4 mode-info grid (§ 5.18.2 MiCols, § 5.20.7.24). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 954bf89f54ee111007d30aebbd15160b285a5afe001a96c01d8890de26c438f4; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-offframe-unit-444-66x50.ivf"
+description = "AVM-encoded lossless 1-frame 66x50 8-bit 4:4:4 intra stream of a project-generated sharp picture (avmenc --profile=1 --lossless=1 --cpu-used=4): the frame size is not a multiple of 8, so 14 luma and 58 chroma lossless transform units cross the right or bottom frame edge and 18 luma and 62 chroma units start outside the frame inside the 4x4 mode-info grid (§ 5.18.2 MiCols, § 5.20.7.24). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 7ab682441dc293e03898daff8a5ff4787b1b92af3617f33151a0f1f7f629b4c0; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-offframe-unit-444-10bit-66x50.ivf"
+description = "AVM-encoded lossless 1-frame 66x50 10-bit 4:4:4 intra stream of a project-generated sharp picture (avmenc --profile=1 --lossless=1 --cpu-used=4): the frame size is not a multiple of 8, so 14 luma and 58 chroma lossless transform units cross the right or bottom frame edge and 27 luma and 62 chroma units start outside the frame inside the 4x4 mode-info grid (§ 5.18.2 MiCols, § 5.20.7.24). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 6d12af3b19f7cf84968c5a5164d2059fa096192ecf3267359f5ce7c1f553d443; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-sdp-fsc-chroma-idtx-64x64.ivf"
+description = "AVM-encoded lossless 1-frame 64x64 8-bit 4:2:0 intra stream of a project-generated sharp picture (avmenc --profile=0 --lossless=1 --cpu-used=4) with separate luma and chroma trees (SDP): 3 of 45 chroma-tree blocks sit on a luma block coded with FSC, so their chroma transform type is IDTX through FscModes[ ChromaMiRow ][ ChromaMiCol ] (§ 5.20.7.29; 14 chroma 4x4 units). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 cb692a536977716e7b1caa9c08b730353f0bbf923bffe9871414d66aa3783531; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-sdp-fsc-chroma-idtx-10bit-64x64.ivf"
+description = "AVM-encoded lossless 1-frame 64x64 10-bit 4:2:0 intra stream of a project-generated sharp picture (avmenc --profile=0 --lossless=1 --cpu-used=4) with separate luma and chroma trees (SDP): 9 of 50 chroma-tree blocks sit on a luma block coded with FSC, so their chroma transform type is IDTX through FscModes[ ChromaMiRow ][ ChromaMiCol ] (§ 5.20.7.29; 28 chroma 4x4 units). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 22a3c6189d5b6147fa7519424b7c3f592b9e6a33891e9ff58eafdd0a9d3984de; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-sdp-fsc-chroma-idtx-422-64x64.ivf"
+description = "AVM-encoded lossless 1-frame 64x64 8-bit 4:2:2 intra stream of a project-generated sharp picture (avmenc --profile=2 --lossless=1 --cpu-used=4) with separate luma and chroma trees (SDP): 3 of 43 chroma-tree blocks sit on a luma block coded with FSC, so their chroma transform type is IDTX through FscModes[ ChromaMiRow ][ ChromaMiCol ] (§ 5.20.7.29; 32 chroma 4x4 units). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 4b417dc1690ed9a8564cf0f449addf0de2796e621d3cdf4da9dad71ded27ab72; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-sdp-fsc-chroma-idtx-422-10bit-64x64.ivf"
+description = "AVM-encoded lossless 1-frame 64x64 10-bit 4:2:2 intra stream of a project-generated sharp picture (avmenc --profile=2 --lossless=1 --cpu-used=4) with separate luma and chroma trees (SDP): 12 of 52 chroma-tree blocks sit on a luma block coded with FSC, so their chroma transform type is IDTX through FscModes[ ChromaMiRow ][ ChromaMiCol ] (§ 5.20.7.29; 60 chroma 4x4 units). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 123bbd5851ec1ca2348fc744580c1ce87fe4368065cc52113204734b28258aa1; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-sdp-fsc-chroma-idtx-444-64x64.ivf"
+description = "AVM-encoded lossless 1-frame 64x64 8-bit 4:4:4 intra stream of a project-generated sharp picture (avmenc --profile=1 --lossless=1 --cpu-used=4) with separate luma and chroma trees (SDP): 3 of 42 chroma-tree blocks sit on a luma block coded with FSC, so their chroma transform type is IDTX through FscModes[ ChromaMiRow ][ ChromaMiCol ] (§ 5.20.7.29; 64 chroma 4x4 units). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 70b0b444240898c4ecccd7758aa446f13f3b84f983d9b396d67b7f43b4ea8a30; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-resid-lossless-sdp-fsc-chroma-idtx-444-10bit-64x64.ivf"
+description = "AVM-encoded lossless 1-frame 64x64 10-bit 4:4:4 intra stream of a project-generated sharp picture (avmenc --profile=1 --lossless=1 --cpu-used=4) with separate luma and chroma trees (SDP): 9 of 48 chroma-tree blocks sit on a luma block coded with FSC, so their chroma transform type is IDTX through FscModes[ ChromaMiRow ][ ChromaMiCol ] (§ 5.20.7.29; 88 chroma 4x4 units). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 1c6c7e23a4e7209ed595d524643de986810e78f1b05e3b1deedbbc652216deb9; validates clean."
+expect = "clean"
