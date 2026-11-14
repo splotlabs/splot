@@ -100,13 +100,6 @@ overflow-checks = false
 lto = "fat"
 codegen-units = 1
 
-# Fast iteration builds (`cargo build --profile quick`): about a quarter of the
-# release build time; output is byte-exact, speed is not the release speed.
-[profile.quick]
-inherits = "release"
-lto = "thin"
-codegen-units = 16
-
 [profile.dev]
 overflow-checks = true
 
