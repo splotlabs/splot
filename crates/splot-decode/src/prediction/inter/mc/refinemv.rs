@@ -788,10 +788,11 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
         let base_mvs = refined_mvs(candidates, dx, dy);
         let starts = [unit_start(dx, dy), unit_start(-dx, -dy)];
         let rows = [0, 1].map(|reference| {
+            let unit = windows[reference]
+                .get(starts[reference]..)
+                .and_then(<[u8]>::first_chunk::<{ 7 * PREDICTION_SIZE + 8 }>);
             core::array::from_fn(|row| {
-                windows[reference]
-                    .get(starts[reference] + row * PREDICTION_SIZE..)
-                    .and_then(<[u8]>::first_chunk::<8>)
+                unit.and_then(|unit| unit.get(row * PREDICTION_SIZE..)?.first_chunk::<8>())
                     .map_or(0, |bytes| u64::from_le_bytes(*bytes))
             })
         });
