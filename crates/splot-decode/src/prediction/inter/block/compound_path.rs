@@ -47,6 +47,8 @@ struct RefFact {
     temporal_hint: Option<i32>,
     /// The raw order hint `ref_dist_gt4` reads, slot 0 for an absent index.
     bawp_hint: i32,
+    /// The § 8.3.2 `comp_group_idx` absolute distance to the current frame.
+    abs_dist: i32,
 }
 
 /// The frame-constant reference facts every block derived per block before:
@@ -123,6 +125,7 @@ impl FrameRefFacts {
             };
             RefFact {
                 hint,
+                abs_dist: hint.map_or(0, |hint| current.relative_dist(hint).abs()),
                 dims,
                 temporal_hint: slot.and_then(raw_hint),
                 bawp_hint: raw_hint(slot.unwrap_or(0)).unwrap_or(0),
@@ -491,30 +494,28 @@ pub(super) fn decode_compound_inter_block(
         false
     };
     let compound_blend_tools = CompoundBlendToolConfig::from_sequence(sequence);
-    let compound_blend_thin = compound_blend_is_thin(n4w, n4h);
-    let comp_group_idx_ctx = if !compound_blend_tools.masked_enabled || compound_blend_thin {
-        0
-    } else {
-        compound_group_idx_context(
+    let mut blend_input = CompoundBlendInput {
+        use_optflow: compound.use_optflow,
+        joint_amvd: compound.y_mode == CompoundYMode::JointNew && use_amvd,
+        switchable_refinemv_on: refinemv_signalled && refinemv_switchable,
+        n4w,
+        n4h,
+        block_size_index: frontier.b_size.index(),
+        comp_group_idx_ctx: 0,
+    };
+    if compound_reads_group_idx(compound_blend_tools, blend_input) {
+        blend_input.comp_group_idx_ctx = compound_group_idx_context(
             neighbour_ctx,
             facts,
             compound.ref_frame0,
             compound.ref_frame1,
-        )?
-    };
+        )?;
+    }
     let compound_blend = read_compound_blend_syntax(
         cdfs,
         symbols,
         compound_blend_tools,
-        CompoundBlendInput {
-            use_optflow: compound.use_optflow,
-            joint_amvd: compound.y_mode == CompoundYMode::JointNew && use_amvd,
-            switchable_refinemv_on: refinemv_signalled && refinemv_switchable,
-            n4w,
-            n4h,
-            block_size_index: frontier.b_size.index(),
-            comp_group_idx_ctx,
-        },
+        blend_input,
         tile_offset,
     )?;
     let use_refinemv = compound_refinemv_active_after_blend(refinemv_signalled, compound_blend);
@@ -1309,9 +1310,7 @@ pub(super) fn compound_group_idx_context(
     ref_frame0: i8,
     ref_frame1: i8,
 ) -> Result<usize> {
-    let (ref0_order_hint, ref1_order_hint) = (facts.hint(ref_frame0)?, facts.hint(ref_frame1)?);
-    let equal_ref_distance = facts.current.relative_dist(ref0_order_hint).abs()
-        == ref1_order_hint.relative_dist(facts.current).abs();
+    let equal_ref_distance = facts.fact(ref_frame0).abs_dist == facts.fact(ref_frame1).abs_dist;
     let furthest_future_ref = facts.furthest_future_ref()?;
     Ok(neighbour_ctx.compound_group_idx_ctx(equal_ref_distance, furthest_future_ref))
 }
