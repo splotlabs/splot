@@ -155,10 +155,9 @@ pub(crate) fn predict_tip_units<T: ReconSample>(
     result
 }
 
-/// Predicts luma and both 4:2:0 chroma planes of `block` from its TIP units,
-/// or returns `false` for a scaled reference, another chroma format, or a
-/// plane the frame edge clips. A declined block may have had planes written;
-/// the general path rewrites them.
+/// Predicts luma and both chroma planes of `block` from its TIP units, or
+/// returns `false` for a scaled reference or a plane the frame edge clips. A
+/// declined block may have had planes written; the general path rewrites them.
 fn predict_grid<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
@@ -174,20 +173,16 @@ fn predict_grid<T: ReconSample>(
         return Ok(false);
     };
     let info = sink.info();
-    let planes = super::super::mc_planes(info.pixel_format());
-    if block.warp_params.iter().any(Option::is_some)
-        || planes[1..]
-            .iter()
-            .any(|&(_, sub_x, sub_y)| (sub_x, sub_y) != (1, 1))
-    {
+    if block.warp_params.iter().any(Option::is_some) {
         return Ok(false);
     }
     let check_uniform = implicit_mask && cwp_weight == CWP_EQUAL;
-    let rect = |plane, sub| {
-        let (x, y, w, h) = block.rect.plane_rect(plane, sub, sub);
+    let [_, (_, sub_x, sub_y), _] = super::super::mc_planes(info.pixel_format());
+    let rect = |plane, (sub_x, sub_y)| {
+        let (x, y, w, h) = block.rect.plane_rect(plane, sub_x, sub_y);
         PlaneRect::new(x, y, w, h)
     };
-    let luma = rect(PlaneId::Y, 0)?;
+    let luma = rect(PlaneId::Y, (0, 0))?;
     let Some(output) = sink.rect_mut(PlaneId::Y, luma) else {
         return Ok(false);
     };
@@ -199,16 +194,20 @@ fn predict_grid<T: ReconSample>(
         cwp_weight,
         offset,
     };
-    if !pass.plane::<8>(PlaneId::Y, [output, (&mut [], 0)], program)? {
+    if !pass.plane::<8, 8>(PlaneId::Y, [output, (&mut [], 0)], program)? {
         return Ok(false);
     }
     if !block.has_chroma {
         return Ok(true);
     }
-    let Some([u, v]) = sink.chroma_rects_mut(rect(PlaneId::U, 1)?) else {
+    let Some(chroma) = sink.chroma_rects_mut(rect(PlaneId::U, (sub_x, sub_y))?) else {
         return Ok(false);
     };
-    pass.plane::<4>(PlaneId::U, [u, v], program)
+    match info.pixel_format() {
+        PixelFormat::Yuv444 => pass.plane::<8, 8>(PlaneId::U, chroma, program),
+        PixelFormat::Yuv422 => pass.plane::<4, 8>(PlaneId::U, chroma, program),
+        _ => pass.plane::<4, 4>(PlaneId::U, chroma, program),
+    }
 }
 
 /// The block-wide inputs of a [`predict_grid`] plane pass.
@@ -222,11 +221,11 @@ struct GridPass<'a, 'b, T: ReconSample> {
 }
 
 impl<T: ReconSample> GridPass<'_, '_, T> {
-    /// Predicts one plane of `SIZE` cells into `outputs[0]`, and for U
+    /// Predicts one plane of `W` x `H` cells into `outputs[0]`, and for U
     /// the V plane into `outputs[1]` from the same placements; `false`
     /// without writing for a scaled reference or units that do not tile
     /// the plane.
-    fn plane<const SIZE: usize>(
+    fn plane<const W: usize, const H: usize>(
         &self,
         plane: PlaneId,
         outputs: [(&mut [T], usize); 2],
@@ -235,30 +234,30 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         let [(first, first_stride), (second, second_stride)] = outputs;
         if let (Some(first), Some(second)) = (T::u8_slice_mut(first), T::u8_slice_mut(second)) {
             let outputs = [(first, first_stride), (second, second_stride)];
-            return self.plane_into::<_, SIZE>(plane, outputs, program);
+            return self.plane_into::<_, W, H>(plane, outputs, program);
         }
         match (T::u16_slice_mut(first), T::u16_slice_mut(second)) {
             (Some(first), Some(second)) => {
                 let outputs = [(first, first_stride), (second, second_stride)];
-                self.plane_into::<_, SIZE>(plane, outputs, program)
+                self.plane_into::<_, W, H>(plane, outputs, program)
             }
             _ => Ok(false),
         }
     }
 
-    fn plane_into<O: CompoundAverageOutput, const SIZE: usize>(
+    fn plane_into<O: CompoundAverageOutput, const W: usize, const H: usize>(
         &self,
         plane: PlaneId,
         mut outputs: [(&mut [O], usize); 2],
         program: &mut GridProgram,
     ) -> Result<bool> {
-        let (sub, size) = (u32::from(SIZE == 4), SIZE);
+        let sub = (u32::from(W == 4), u32::from(H == 4));
         let prediction = super::super::compound_subpel_plane(
             self.info,
             self.block,
             plane,
-            sub,
-            sub,
+            sub.0,
+            sub.1,
             self.offset,
         )?;
         let cells = self.motion.cells.as_slice();
@@ -267,8 +266,8 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         if prediction.scalings.into_iter().any(PlaneScaling::is_scaled)
             || columns == 0
             || candidates.len() != cells.len()
-            || prediction.block_w != columns * size
-            || prediction.block_h * columns != cells.len() * size
+            || prediction.block_w != columns * W
+            || prediction.block_h * columns != cells.len() * H
         {
             return Ok(false);
         }
@@ -285,15 +284,15 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         };
         let storage = self.info.storage_luma_size();
         let frame = (
-            storage.width().div_ceil(1 << sub),
-            storage.height().div_ceil(1 << sub),
+            storage.width().div_ceil(1 << sub.0),
+            storage.height().div_ceil(1 << sub.1),
         );
         let grid = GridBlock {
             prediction: &prediction,
             motion: self.motion,
             bit_depth: self.info.bit_depth(),
             frame,
-            sub: (sub, sub),
+            sub,
             cwp_weight: self.cwp_weight,
         };
         let views = [Some(&prediction.views), second.as_ref()];
@@ -302,7 +301,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                 &prediction,
                 cells,
                 (candidates, 1, 8),
-                (sub, sub),
+                sub,
                 (grid.bit_depth, self.block.interp, None),
                 (
                     !self.check_uniform,
@@ -348,7 +347,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             run_cell_program(
                 program,
                 planes,
-                (&grid, self.block.interp, size),
+                (&grid, self.block.interp, W),
                 pred,
                 intermediate,
             )?;
@@ -359,45 +358,43 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             .chunks_exact(columns)
             .zip(candidates.chunks_exact(columns));
         for (row, (cells, candidates)) in rows.enumerate() {
-            let row = row * size;
+            let row = row * H;
             for (col, (&cell, &candidates)) in cells.iter().zip(candidates).enumerate() {
-                let col = col * size;
+                let col = col * W;
                 let (placements, uniform) = unscaled_cell_placements(
                     &prediction,
                     cell,
                     candidates,
-                    [col, row, size, size],
-                    (sub, sub),
+                    [col, row, W, H],
+                    sub,
                     self.check_uniform,
                     frame,
                 );
-                if !uniform {
-                    let params = placements.map(|placement| {
-                        unscaled_cell_params(
-                            placement,
-                            [size; 2],
-                            (grid.bit_depth, self.block.interp),
-                        )
-                    });
-                    for (views, (output, stride)) in views.iter().zip(outputs.iter_mut()) {
-                        let (Some(views), Some(output)) =
-                            (views, output.get_mut(row * *stride + col..))
-                        else {
-                            continue;
-                        };
-                        predict_grid_cell(
-                            views,
-                            (&params, false, [col, row, size, size]),
-                            &grid,
-                            pred,
-                            intermediate,
-                            output,
-                            *stride,
-                        )?;
+                if uniform && W == H {
+                    if !program.push([row, col], placements) {
+                        run(program, &mut outputs, pred, intermediate)?;
+                        program.push([row, col], placements);
                     }
-                } else if !program.push([row, col], placements) {
-                    run(program, &mut outputs, pred, intermediate)?;
-                    program.push([row, col], placements);
+                    continue;
+                }
+                let params = placements.map(|placement| {
+                    unscaled_cell_params(placement, [W, H], (grid.bit_depth, self.block.interp))
+                });
+                for (views, (output, stride)) in views.iter().zip(outputs.iter_mut()) {
+                    let (Some(views), Some(output)) =
+                        (views, output.get_mut(row * *stride + col..))
+                    else {
+                        continue;
+                    };
+                    predict_grid_cell(
+                        views,
+                        (&params, uniform, [col, row, W, H]),
+                        &grid,
+                        pred,
+                        intermediate,
+                        output,
+                        *stride,
+                    )?;
                 }
             }
         }
