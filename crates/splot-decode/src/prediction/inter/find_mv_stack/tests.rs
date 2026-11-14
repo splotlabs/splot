@@ -1682,8 +1682,8 @@ fn single_ref_ctx_no_neighbour_is_one() {
     let block0 = block_at(0, 0);
     let nctx = block_neighbour_ctx(&grid, &block0);
     assert_eq!(
-        nctx.single_ref_ctxs(2).map(|contexts| contexts[0]),
-        Some(1),
+        ref_count_ctx(nctx.ref_counts(), 2, 0),
+        1,
         "no-neighbour single_ref context is 1 (both count_refs are 0)"
     );
 }
@@ -1694,10 +1694,28 @@ fn single_ref_ctx_counts_a_ref0_neighbour() {
     let block1 = block_at(0, N4_32);
     let nctx = block_neighbour_ctx(&grid, &block1);
     assert_eq!(
-        nctx.single_ref_ctxs(2).map(|contexts| contexts[0]),
-        Some(2),
+        ref_count_ctx(nctx.ref_counts(), 2, 0),
+        2,
         "a ref-0 neighbour makes thisRefCount > nextRefsCount -> ctx 2"
     );
+}
+
+#[test]
+fn ref_count_ctx_compares_this_count_with_later_counts() {
+    for counts in [0u32, 0x1, 0x10, 0x2000, 0x0110_0011, 0x0400_0000, 0x13] {
+        for refs in 1..=7 {
+            for ref_idx in 0..refs {
+                let nibble = |i: usize| (counts >> (4 * i)) & 0xf;
+                let next: u32 = (ref_idx + 1..refs).map(nibble).sum();
+                let expected = match nibble(ref_idx).cmp(&next) {
+                    std::cmp::Ordering::Less => 0,
+                    std::cmp::Ordering::Equal => 1,
+                    std::cmp::Ordering::Greater => 2,
+                };
+                assert_eq!(ref_count_ctx(counts, refs, ref_idx), expected);
+            }
+        }
+    }
 }
 
 #[test]
@@ -1708,32 +1726,14 @@ fn single_ref_ctx_counts_refs_above_two() {
     let nctx = block_neighbour_ctx(&grid, &block);
 
     assert_eq!(
-        nctx.single_ref_ctxs(3).map(|contexts| contexts[0]),
-        Some(0),
+        ref_count_ctx(nctx.ref_counts(), 3, 0),
+        0,
         "ref-2 neighbour makes ref-0 count lower than later refs"
     );
     assert_eq!(
-        nctx.single_ref_ctxs(3).map(|contexts| contexts[1]),
-        Some(0),
+        ref_count_ctx(nctx.ref_counts(), 3, 1),
+        0,
         "ref-2 neighbour makes ref-1 count lower than later refs"
-    );
-}
-
-#[test]
-fn single_ref_ctx_is_total_for_every_admitted_reference_count() {
-    let grid = empty_grid();
-    let nctx = block_neighbour_ctx(&grid, &block_at(0, 0));
-
-    for num_total_refs in 2..=BlockNeighbourContext::MAX_NEIGHBOUR_REFS {
-        assert!(
-            nctx.single_ref_ctxs(num_total_refs).is_some(),
-            "every ref_idx must be valid for {num_total_refs} references"
-        );
-    }
-    assert_eq!(
-        nctx.single_ref_ctxs(BlockNeighbourContext::MAX_NEIGHBOUR_REFS + 1),
-        None,
-        "the guard remains load-bearing outside the admitted reference domain"
     );
 }
 

@@ -13,7 +13,7 @@ use super::super::super::compound::{
 };
 use super::super::compound_path::{
     compound_all_opfl_reachable, compound_joint_mv_projection, compound_needs_interp_filter,
-    compound_ref_contexts, compound_refinemv_active_after_blend, compound_refinemv_is_switchable,
+    compound_refinemv_active_after_blend, compound_refinemv_is_switchable,
     compound_refinemv_reachable, compound_switchable_opfl_reachable, compound_use_amvd_selector,
     compound_warp_blend, skip_mode_reference_pair, use_optflow_ctx, use_refinemv_ctx,
 };
@@ -494,7 +494,7 @@ impl EncoderInterTile {
     /// [`Self::compound_pairs`] from the § 5.20.7.11 walk of every pair.
     pub(super) fn derive_compound_pairs(&self) -> Vec<(i8, i8)> {
         let refs = self.num_total_refs() as i8;
-        let input = self.compound_input([0; 7], [true; 7]);
+        let input = self.compound_input(0, [true; 7]);
         (0..refs)
             .flat_map(|first| (first..refs).map(move |second| (first, second)))
             .filter(|&pair| codes_pair(input, pair))
@@ -637,10 +637,9 @@ impl EncoderInterTile {
         if let (EncoderMotion::Single(_) | EncoderMotion::Warp(_), (ref_frame, _)) =
             (motion, motion.refs())
         {
-            let contexts = neighbour
-                .single_ref_ctxs(refs)
-                .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
-            for (ref_idx, &ctx) in contexts.iter().enumerate().take(refs.saturating_sub(1)) {
+            let counts = neighbour.ref_counts();
+            for ref_idx in 0..refs.saturating_sub(1) {
+                let ctx = ref_count_ctx(counts, refs, ref_idx);
                 let value = ref_idx == ref_frame as usize;
                 out.push((TileCdfSelector::SingleRef { ctx, ref_idx }, u8::from(value)));
                 if value {
@@ -710,11 +709,7 @@ impl EncoderInterTile {
         compound: EncoderCompoundMotion,
     ) -> Result<()> {
         let new_mv = mode_ctx.new_mv_context;
-        let refs = self.num_total_refs();
-        let input = self.compound_input(
-            compound_ref_contexts(neighbour, refs)?,
-            self.ref_facts.distance_signs()?,
-        );
+        let input = self.compound_input(neighbour.ref_counts(), self.ref_facts.distance_signs()?);
         let target = compound.ref_frames;
         let pair = compound_reference_pair(input, |selector| {
             let value = comp_ref_bit(selector, target);
@@ -858,7 +853,7 @@ impl EncoderInterTile {
 
     fn compound_input(
         &self,
-        ref_contexts: [usize; 7],
+        ref_counts: u32,
         ref_distance_nonnegative: [bool; 7],
     ) -> CompoundParseInput {
         let refs = self.num_total_refs();
@@ -867,7 +862,7 @@ impl EncoderInterTile {
             num_same_ref_compound: self
                 .num_same_ref_compound
                 .min(u8::try_from(refs).unwrap_or(u8::MAX)),
-            ref_contexts,
+            ref_counts,
             ref_distance_nonnegative,
         }
     }

@@ -404,14 +404,8 @@ impl BlockNeighbourContext {
         self.cells.map(|cell| usize::from(cell.skip())).iter().sum()
     }
 
-    /// The single-reference contexts of references `0..num_total_refs`.
-    pub(crate) fn single_ref_ctxs(
-        &self,
-        num_total_refs: usize,
-    ) -> Option<[usize; Self::MAX_NEIGHBOUR_REFS]> {
-        if num_total_refs > Self::MAX_NEIGHBOUR_REFS {
-            return None;
-        }
+    /// The § 8.3.2 `count_refs` of references `0..7`, one per nibble.
+    pub(crate) fn ref_counts(&self) -> u32 {
         let mut ref_counts = 0u32;
         for cell in self.cells.iter().take(self.cell_count) {
             if !cell.is_inter() {
@@ -423,15 +417,7 @@ impl BlockNeighbourContext {
                 }
             }
         }
-        let mut contexts = [0; Self::MAX_NEIGHBOUR_REFS];
-        let mut next =
-            (ref_counts & ((1 << (4 * num_total_refs)) - 1)).wrapping_mul(0x1111_1111) >> 28;
-        for (ref_idx, ctx) in contexts.iter_mut().take(num_total_refs).enumerate() {
-            let this = (ref_counts >> (4 * ref_idx)) & 0xf;
-            next -= this;
-            *ctx = usize::from(this >= next) + usize::from(this > next);
-        }
-        Some(contexts)
+        ref_counts
     }
 
     pub(crate) fn skip_mode_ref_pair(
@@ -591,6 +577,22 @@ impl BlockNeighbourContext {
                 .any(|cell| cell.mv_precision() < frame_precision),
         )
     }
+}
+
+/// The § 8.3.2 `single_ref` / `comp_ref` context of `ref_idx` from the
+/// [`BlockNeighbourContext::ref_counts`] `counts`.
+pub(crate) const fn ref_count_ctx(counts: u32, num_total_refs: usize, ref_idx: usize) -> usize {
+    let refs = if num_total_refs < 7 {
+        num_total_refs
+    } else {
+        7
+    };
+    let this = counts.wrapping_shr(4 * ref_idx as u32) & 0xf;
+    let next = (counts & ((1 << (4 * refs)) - 1))
+        .wrapping_shr(4 * ref_idx as u32 + 4)
+        .wrapping_mul(0x1111_1111)
+        >> 28;
+    (this >= next) as usize + (this > next) as usize
 }
 
 #[allow(

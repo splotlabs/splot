@@ -355,7 +355,6 @@ pub(super) fn decode_compound_inter_block(
         .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?
         .enable_refinemv;
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-    let ref_contexts = compound_ref_contexts(neighbour_ctx, num_total_refs)?;
     let ref_distance_nonnegative = facts.distance_signs()?;
     let pair = read_compound_reference_pair(
         cdfs,
@@ -363,7 +362,7 @@ pub(super) fn decode_compound_inter_block(
         CompoundParseInput {
             num_total_refs,
             num_same_ref_compound,
-            ref_contexts,
+            ref_counts: neighbour_ctx.ref_counts(),
             ref_distance_nonnegative,
         },
         tile_offset,
@@ -1308,16 +1307,6 @@ fn compound_refinemv_reference_allowed(
     let d0 = facts.current.relative_dist(ref0);
     let d1 = facts.current.relative_dist(ref1);
     Ok(d0 != 0 && d0 == -d1)
-}
-
-#[inline]
-pub(super) fn compound_ref_contexts(
-    neighbour_ctx: &BlockNeighbourContext,
-    num_total_refs: usize,
-) -> Result<[usize; 7]> {
-    neighbour_ctx
-        .single_ref_ctxs(num_total_refs)
-        .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterReferenceMap.into())
 }
 
 pub(super) fn compound_group_idx_context(

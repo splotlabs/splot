@@ -31,7 +31,7 @@ use super::find_mv_stack::{
     TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
     TemporalProjectionConfig, TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
     find_compound_mv_stack_upto, find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_upto,
-    mode_ctx_from_neighbours, warp_predicted_mv,
+    mode_ctx_from_neighbours, ref_count_ctx, warp_predicted_mv,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_QUARTER_PEL, MvReadConfig, apply_inter_mvd_signs,
@@ -1714,13 +1714,10 @@ fn decode_block<T: ReconSample>(
     } else if tip_ref {
         TIP_REF_FRAME
     } else if params.num_total_refs >= 2 {
-        let contexts = neighbour_ctx
-            .single_ref_ctxs(params.num_total_refs)
-            .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
-        let selected =
-            super::single_ref::read_single_ref(cdfs, symbols, params.num_total_refs, &contexts)
-                .map_err(|_| crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
-        selected as i8
+        let counts = neighbour_ctx.ref_counts();
+        super::single_ref::read_single_ref(cdfs, symbols, params.num_total_refs, |ref_idx| {
+            ref_count_ctx(counts, params.num_total_refs, ref_idx)
+        }) as i8
     } else {
         SINGLE_REF_FRAME0
     };

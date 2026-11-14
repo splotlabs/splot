@@ -36,7 +36,7 @@ fn default_input() -> CompoundParseInput {
     CompoundParseInput {
         num_total_refs: 2,
         num_same_ref_compound: 0,
-        ref_contexts: [1; MAX_REFS_PER_FRAME],
+        ref_counts: 0,
         ref_distance_nonnegative: [true; MAX_REFS_PER_FRAME],
     }
 }

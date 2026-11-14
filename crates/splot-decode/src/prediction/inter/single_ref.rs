@@ -5,43 +5,22 @@ use splot_core::symbol::SymbolDecoder;
 
 use crate::bitstream::tile_payload::{TileCdfSubset, read_row, row_at};
 
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum SingleRefReadError {
-    #[error("read_single_ref requires NumTotalRefs > 0 (§6.19.7.11), got {num_total_refs}")]
-    InsufficientRefs { num_total_refs: usize },
-    #[error("read_single_ref needs {needed} contexts for NumTotalRefs {num_total_refs}, got {got}")]
-    MissingContext {
-        needed: usize,
-        got: usize,
-        num_total_refs: usize,
-    },
-}
-
+#[allow(clippy::inline_always, reason = "measured: per-leaf reference read")]
+#[inline(always)]
 pub(crate) fn read_single_ref(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     num_total_refs: usize,
-    contexts: &[usize],
-) -> Result<usize, SingleRefReadError> {
-    if num_total_refs == 0 {
-        return Err(SingleRefReadError::InsufficientRefs { num_total_refs });
-    }
-    let decisions = num_total_refs - 1;
-    let contexts = contexts
-        .get(..decisions)
-        .ok_or(SingleRefReadError::MissingContext {
-            needed: decisions,
-            got: contexts.len(),
-            num_total_refs,
-        })?;
-
-    for (ref_idx, &ctx) in contexts.iter().enumerate() {
-        let bank = row_at(&mut cdfs.block_rows_mut().single_ref, ctx);
+    ctx: impl Fn(usize) -> usize,
+) -> usize {
+    let decisions = num_total_refs.saturating_sub(1);
+    for ref_idx in 0..decisions {
+        let bank = row_at(&mut cdfs.block_rows_mut().single_ref, ctx(ref_idx));
         if read_row(symbols, row_at(bank, ref_idx)) != 0 {
-            return Ok(ref_idx);
+            return ref_idx;
         }
     }
-    Ok(decisions)
+    decisions
 }
 
 #[cfg(test)]
