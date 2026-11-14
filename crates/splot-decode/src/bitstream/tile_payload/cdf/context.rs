@@ -130,6 +130,8 @@ impl PartitionContextInput {
         }
     }
 
+    #[allow(clippy::inline_always, reason = "measured: once per partition read")]
+    #[inline(always)]
     fn neighbour_context(self, size_adjustments: &[u8; 32]) -> usize {
         let bsw = log2_wide(self.b_size).max(1);
         let bsh = log2_high(self.b_size).max(1);
