@@ -2248,3 +2248,28 @@ expect = "clean"
 path = "vectors/valid/syn-refinemv-optflow-all-420-132x100-q80.ivf"
 description = "AVM-encoded 17-frame 132x100 8-bit 4:2:0 stream of a project-generated moving texture (avmenc --profile=0 --bit-depth=8 --cpu-used=4 --end-usage=q --qp=80 --lag-in-frames=16 --enable-tip=0 --enable-opfl-refine=2 --enable-refinemv=1): inter frames with opfl_refine_type REFINE_ALL and 3 optical-flow compound blocks and 51 with optical flow and refine-MV, most NEAR_NEARMV or NEAR_NEWMV blocks that read two DRL indices before REFINE_ALL sets use_optflow. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 973b3c5ade38e7ff67bae316c7d929dfc8f5f0c755dba4c249da462df4e6fa29; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-optflow-444-132x100-q80.ivf"
+description = "AVM-encoded 17-frame 132x100 8-bit 4:4:4 stream of a project-generated moving texture (avmenc --profile=1 --bit-depth=8 --cpu-used=4 --end-usage=q --qp=80 --lag-in-frames=16 --enable-tip=0 --enable-opfl-refine=2 --enable-refinemv=1): inter frames with opfl_refine_type REFINE_ALL and 11 optical-flow compound blocks and 34 with optical flow and refine-MV. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 a035a924562adfcf9b3128ef9d9b8e3785037a83a670168f9d5b21aa0c9de10f; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-refinemv-optflow-422-132x100-q80.ivf"
+description = "AVM-encoded 17-frame 132x100 8-bit 4:2:2 stream of a project-generated moving texture (avmenc --profile=2 --bit-depth=8 --cpu-used=4 --end-usage=q --qp=80 --lag-in-frames=16 --enable-tip=0 --enable-opfl-refine=2 --enable-refinemv=1): inter frames with opfl_refine_type REFINE_ALL and 15 optical-flow compound blocks and 35 with optical flow and refine-MV. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 1e22c2f9003e18f8385b173d01e50b28188d9af4fa13af4aa0269a01177a1a09; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-refinemv-optflow-422-10bit-132x100-q80.ivf"
+description = "AVM-encoded 17-frame 132x100 10-bit 4:2:2 stream of a project-generated moving texture (avmenc --profile=2 --bit-depth=10 --cpu-used=6 --end-usage=q --qp=80 --lag-in-frames=16 --enable-tip=0 --enable-opfl-refine=2 --enable-refinemv=1): inter frames with opfl_refine_type REFINE_ALL and 4 optical-flow compound blocks and 25 with optical flow and refine-MV. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 60d2eb2f7aef47e1a40a9bb1ba60c4b61154b48b34fb1939d29e3904b38ef38e; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-refinemv-optflow-444-10bit-132x100-q80.ivf"
+description = "AVM-encoded 17-frame 132x100 10-bit 4:4:4 stream of a project-generated moving texture (avmenc --profile=1 --bit-depth=10 --cpu-used=4 --end-usage=q --qp=80 --lag-in-frames=16 --enable-tip=0 --enable-opfl-refine=2 --enable-refinemv=1): inter frames with opfl_refine_type REFINE_ALL and 1 optical-flow compound block and 22 with optical flow and refine-MV. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 59a25f9b0544d210379192c3efbb824546e2fed2bf52e81a270cc2665047ac57; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-refinemv-mono-10bit-132x100-q80.ivf"
+description = "AVM-encoded 17-frame 132x100 10-bit monochrome stream of a project-generated moving texture (avmenc --profile=0 --bit-depth=10 --monochrome --cpu-used=4 --end-usage=q --qp=80 --lag-in-frames=16 --enable-tip=0 --enable-opfl-refine=1 --enable-refinemv=1): inter frames with opfl_refine_type REFINE_SWITCHABLE and 9 refine-MV compound blocks without optical flow and 2 with optical flow. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 183a4fa65ddaf4a07e39afd8e54d4e3457bb27bcf77f3252c84d6faa4636adf3; validates clean."
+expect = "clean"
