@@ -93,12 +93,12 @@ wildcard_imports = "allow"
 if_not_else = "allow"
 
 # Keep unwind enabled: output/raw.rs converts output-task panics into typed errors.
-# Fat LTO with one codegen unit: about 1.5% fewer 1T decode cycles on 8-bit
-# 1080p streams, and code generation independent of unrelated edits.
+# Thin LTO with four codegen units: release builds about 3 times faster than
+# fat LTO with one unit, for 0% to 5% more 1T decode cycles (measured 2026-11).
 [profile.release]
 overflow-checks = false
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 4
 
 [profile.dev]
 overflow-checks = true
@@ -125,6 +125,9 @@ debug = "line-tables-only"
 [profile.dev.package.splot-encode]
 opt-level = 2
 debug = "line-tables-only"
+
+[profile.dev.package.xtask]
+opt-level = 2
 
 [profile.test]
 overflow-checks = true

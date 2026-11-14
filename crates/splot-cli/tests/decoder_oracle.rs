@@ -12,6 +12,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -115,6 +116,31 @@ fn append_raw(picture: &Picture, out: &mut Vec<u8>) {
     }
 }
 
+fn check_fixture(vectors: &Path, fx: &Fixture) {
+    let bytes = std::fs::read(vectors.join(format!("{}.ivf", fx.id)))
+        .unwrap_or_else(|e| panic!("read {}.ivf: {e}", fx.id));
+    assert_eq!(sha256_hex(&bytes), fx.ivf_sha256, "{} ivf hash", fx.id);
+
+    for threads in THREAD_LEGS {
+        let raw = decode_raw(&bytes, threads)
+            .unwrap_or_else(|e| panic!("{} failed to decode at {threads} threads: {e}", fx.id));
+        assert_eq!(
+            sha256_hex(&raw),
+            fx.avm_raw_sha256,
+            "{} != AVM oracle at {threads} threads",
+            fx.id
+        );
+        let streamed = decode_streaming(&bytes, threads)
+            .unwrap_or_else(|e| panic!("{} failed to stream at {threads} threads: {e}", fx.id));
+        assert_eq!(
+            sha256_hex(&streamed),
+            fx.avm_raw_sha256,
+            "{} streamed != AVM oracle at {threads} threads",
+            fx.id
+        );
+    }
+}
+
 #[test]
 fn decoder_oracle_corpus_matches_manifest() {
     let root = repo_root();
@@ -126,32 +152,20 @@ fn decoder_oracle_corpus_matches_manifest() {
     assert!(!manifest.fixture.is_empty(), "manifest has no fixtures");
 
     let mut ids: BTreeSet<&str> = BTreeSet::new();
-
     for fx in &manifest.fixture {
         assert!(ids.insert(&fx.id), "duplicate fixture id {}", fx.id);
-        let bytes = std::fs::read(vectors.join(format!("{}.ivf", fx.id)))
-            .unwrap_or_else(|e| panic!("read {}.ivf: {e}", fx.id));
-        assert_eq!(sha256_hex(&bytes), fx.ivf_sha256, "{} ivf hash", fx.id);
-
-        for threads in THREAD_LEGS {
-            let raw = decode_raw(&bytes, threads)
-                .unwrap_or_else(|e| panic!("{} failed to decode at {threads} threads: {e}", fx.id));
-            assert_eq!(
-                sha256_hex(&raw),
-                fx.avm_raw_sha256,
-                "{} != AVM oracle at {threads} threads",
-                fx.id
-            );
-            let streamed = decode_streaming(&bytes, threads)
-                .unwrap_or_else(|e| panic!("{} failed to stream at {threads} threads: {e}", fx.id));
-            assert_eq!(
-                sha256_hex(&streamed),
-                fx.avm_raw_sha256,
-                "{} streamed != AVM oracle at {threads} threads",
-                fx.id
-            );
-        }
     }
+
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..std::thread::available_parallelism().map_or(1, usize::from) {
+            scope.spawn(|| {
+                while let Some(fx) = manifest.fixture.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    check_fixture(&vectors, fx);
+                }
+            });
+        }
+    });
 
     let orphans: Vec<String> = std::fs::read_dir(&vectors)
         .into_iter()
