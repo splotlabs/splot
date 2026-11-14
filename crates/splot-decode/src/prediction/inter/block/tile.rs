@@ -6,7 +6,6 @@
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use splot_recon::{PlaneId, ReconError};
 
@@ -1618,8 +1617,6 @@ pub(crate) struct ParseProgress {
     rows: Mutex<ParsedRows>,
     geometry: Mutex<GeometryState>,
     records: Mutex<crate::filters::wienerns_lr::FrameFilterRecords>,
-    /// The units this frame has parsed and not handed back.
-    held_units: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -1639,9 +1636,6 @@ impl ParseProgress {
         let rows = self.rows.get_mut();
         rows.slots.clear();
         rows.prefix = 0;
-        if let Some(shared) = &self.buffers {
-            shared.note_parsed_units(core::mem::take(self.held_units.get_mut()), true);
-        }
         let geometry = self.geometry.get_mut();
         let geometry_reusable = match geometry {
             GeometryState::Unpublished => true,
@@ -1745,9 +1739,6 @@ impl ParseProgress {
 
     /// Lays out an empty slot for each of the frame's units up front.
     pub(super) fn reserve(&self, capacity: usize) -> Result<()> {
-        if let Some(shared) = &self.buffers {
-            shared.note_frame_units(capacity);
-        }
         let mut rows = self.rows.lock();
         rows.slots.clear();
         rows.prefix = 0;
@@ -1761,7 +1752,6 @@ impl ParseProgress {
     /// Hands back the row buffers of a unit that is not published: a tile's
     /// trailing empty unit, which only the frame's last tile keeps.
     fn recycle_unpublished(&self, row: ReconRow) {
-        self.hand_back_unit();
         let ReconRow {
             superblocks,
             residual_coeffs,
@@ -1843,8 +1833,6 @@ impl ParseProgress {
         let Some(shared) = &self.buffers else {
             return ReconRowBuffers::default();
         };
-        self.held_units.fetch_add(1, Ordering::AcqRel);
-        shared.note_parsed_units(1, false);
         shared.take_unit_buffers().unwrap_or_else(|| {
             let mut cold = ReconRowBuffers::default();
             cold.fit(shared.unit_lengths());
@@ -1853,7 +1841,6 @@ impl ParseProgress {
     }
 
     pub(super) fn return_row_buffers(&self, mut buffers: ReconRowBuffers) {
-        self.hand_back_unit();
         if let Some(shared) = &self.buffers {
             buffers.fit(shared.note_unit_lengths(buffers.lengths));
             shared.give_unit_buffers(buffers);
@@ -1871,41 +1858,6 @@ impl ParseProgress {
         self.buffers
             .as_deref()
             .map(|shared| shared.parse_states.lock())
-    }
-
-    fn hand_back_unit(&self) {
-        if let Some(shared) = &self.buffers
-            && self
-                .held_units
-                .try_update(Ordering::AcqRel, Ordering::Acquire, |held| {
-                    held.checked_sub(1)
-                })
-                .is_ok()
-        {
-            shared.note_parsed_units(1, true);
-        }
-    }
-
-    /// Numbers this frame among the decode's split frames.
-    pub(crate) fn open_frame(&self) -> usize {
-        self.buffers
-            .as_ref()
-            .map_or(0, |shared| shared.open_frame())
-    }
-
-    /// Notes that split frame `frame` has committed or failed.
-    pub(crate) fn end_frame(&self, frame: usize) {
-        if let Some(shared) = &self.buffers {
-            shared.end_frame(frame);
-        }
-    }
-
-    /// Whether split frame `frame` may start its parse while `window` frames
-    /// of parsed units wait for reconstruction.
-    pub(crate) fn may_parse(&self, frame: usize, window: usize) -> bool {
-        self.buffers
-            .as_ref()
-            .is_none_or(|shared| shared.may_parse(frame, window))
     }
 
     /// The cell a batch waits on for its own units.

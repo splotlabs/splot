@@ -4,7 +4,6 @@
 //! Shared frame-plane storage and filter-record capacity hints for one decode.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
@@ -26,15 +25,6 @@ pub(crate) struct DecodeBuffers {
     /// Spent superblock units' row buffers, lent to the next unit parsed.
     units: Mutex<Vec<ReconRowBuffers>>,
     pub(crate) parse_states: Mutex<Vec<TileParseState>>,
-    /// The first split frame, in decode order, whose reconstruction is open.
-    oldest_open: AtomicUsize,
-    /// Parsed superblock units that reconstruction has not committed.
-    parsed_units: AtomicUsize,
-    /// The superblock units of the last frame laid out.
-    frame_units: AtomicUsize,
-    /// The next split frame's number, and the numbers of frames after the
-    /// oldest open one whose reconstruction has ended.
-    frame_order: Mutex<(usize, Vec<usize>)>,
     /// Spent filter stripe windows of every frame: a frame's frontier fills
     /// only the few stripes its filters have not run yet.
     pub(crate) filter_windows: Mutex<Vec<splot_recon::RetiredFramePlanes>>,
@@ -76,57 +66,6 @@ impl DecodeBuffers {
     /// Takes back a committed unit's row buffers.
     pub(crate) fn give_unit_buffers(&self, buffers: ReconRowBuffers) {
         self.units.lock().push(buffers);
-    }
-
-    /// Numbers the next split frame in decode order.
-    pub(crate) fn open_frame(&self) -> usize {
-        let mut order = self.frame_order.lock();
-        order.0 += 1;
-        order.0 - 1
-    }
-
-    /// Notes that frame `frame` has committed or failed its reconstruction.
-    pub(crate) fn end_frame(&self, frame: usize) {
-        let mut order = self.frame_order.lock();
-        let mut oldest = self.oldest_open.load(Ordering::Relaxed);
-        if frame != oldest {
-            order.1.push(frame);
-            return;
-        }
-        oldest += 1;
-        while let Some(at) = order.1.iter().position(|&ended| ended == oldest) {
-            order.1.swap_remove(at);
-            oldest += 1;
-        }
-        self.oldest_open.store(oldest, Ordering::Release);
-    }
-
-    /// Whether split frame `frame` may start its parse: once the parsed units
-    /// nobody has committed fill `window` frames, a further parse would only
-    /// hold units that reconstruction cannot reach yet. The oldest open frame
-    /// always may, so the frames a waiting parse depends on never wait.
-    pub(crate) fn may_parse(&self, frame: usize, window: usize) -> bool {
-        frame == self.oldest_open.load(Ordering::Acquire)
-            || self.parsed_units.load(Ordering::Acquire)
-                < window.saturating_mul(self.frame_units.load(Ordering::Relaxed))
-    }
-
-    /// Notes the unit count of the frame being laid out.
-    pub(crate) fn note_frame_units(&self, units: usize) {
-        self.frame_units.store(units, Ordering::Relaxed);
-    }
-
-    /// Adds `units` parsed units, or takes off committed ones.
-    pub(crate) fn note_parsed_units(&self, units: usize, committed: bool) {
-        if committed {
-            let _ = self
-                .parsed_units
-                .try_update(Ordering::AcqRel, Ordering::Acquire, |held| {
-                    Some(held.saturating_sub(units))
-                });
-        } else {
-            self.parsed_units.fetch_add(units, Ordering::AcqRel);
-        }
     }
 
     /// The running mean of each large row list's length.
@@ -185,28 +124,5 @@ pub(crate) fn fit_list<E>(list: &mut Vec<E>, typical: usize) {
     let floor = (8 << 10) / core::mem::size_of::<E>().max(1);
     if list.capacity() < typical || list.capacity() > keep.saturating_add(keep / 2).max(floor) {
         *list = Vec::with_capacity(keep);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::DecodeBuffers;
-
-    #[test]
-    fn the_oldest_open_frame_always_parses_and_ended_frames_move_it_on() {
-        let buffers = DecodeBuffers::default();
-        let [first, second, third] = [(); 3].map(|()| buffers.open_frame());
-        buffers.note_frame_units(2);
-        buffers.note_parsed_units(5, false);
-        assert!(buffers.may_parse(first, 2));
-        assert!(!buffers.may_parse(second, 2));
-        buffers.end_frame(second);
-        assert!(!buffers.may_parse(third, 2));
-        buffers.end_frame(first);
-        assert!(buffers.may_parse(third, 2));
-        buffers.note_parsed_units(2, true);
-        assert!(buffers.may_parse(third + 1, 2));
-        buffers.note_parsed_units(9, true);
-        assert!(buffers.may_parse(third + 1, 1));
     }
 }
