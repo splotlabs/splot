@@ -145,7 +145,7 @@ pub(crate) struct OwnedFilterSetup<T: ReconSample> {
     /// Each stripe's filter outcome, borrowed from the records with the rest.
     stripe_outcomes: Vec<Option<crate::Result<()>>>,
     deblock_records: Mutex<Option<crate::filters::deblock::OwnedDeblockRecords>>,
-    /// Spent stripe windows, for the frontier to fill again.
+    /// Spent stripe windows of a frame that has no decode-wide pool.
     windows: Mutex<Vec<splot_recon::RetiredFramePlanes>>,
 }
 
@@ -693,8 +693,15 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         Ok((final_rows.min(self.luma_height) >= needed).then_some((start, end)))
     }
 
+    fn spare_windows(&self) -> &Mutex<Vec<splot_recon::RetiredFramePlanes>> {
+        self.filter_records
+            .buffers
+            .as_deref()
+            .map_or(&self.windows, |buffers| &buffers.filter_windows)
+    }
+
     fn take_window(&self) -> crate::filters::source::DeblockedWindow<T> {
-        self.windows
+        self.spare_windows()
             .lock()
             .pop()
             .map(|mut spent| {
@@ -704,7 +711,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     }
 
     fn give_window(&self, window: crate::filters::source::DeblockedWindow<T>) {
-        let mut windows = self.windows.lock();
+        let mut windows = self.spare_windows().lock();
         if windows.try_reserve(1).is_ok() {
             windows.push(T::retire_planes(window.into_samples()));
         }
