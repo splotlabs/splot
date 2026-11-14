@@ -48,6 +48,8 @@ mod error;
 mod film_grain;
 mod format;
 mod frame;
+#[cfg(target_arch = "x86_64")]
+mod gather;
 mod geometry;
 mod hash_input;
 mod intra;

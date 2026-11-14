@@ -1055,6 +1055,8 @@ fn eight_bit_sections_with_full_shear_match_the_spec_trace() {
         ],
         [0, 0, unit + 64, 4000, -3000, unit - 64],
         [translation(1, 0, 0), 0, unit, 0, 0, unit + 2000],
+        [0, 0, unit + 32000, 8000, -30000, unit + 16000],
+        [0, 0, unit - 32000, -8000, 30000, unit - 16000],
     ];
     for samples in &textures {
         let bytes = samples.iter().map(|&s| s as u8).collect::<Vec<u8>>();
@@ -1116,12 +1118,13 @@ fn eight_bit_kernels_match_the_spec_trace_for_random_models() {
         }
         let mut params = default_params(0, 0, ref_w as i32, ref_h as i32);
         params.warp_params = warp_params;
-        params.subsampling_x = u8::from(seed % 3 == 0);
-        params.subsampling_y = params.subsampling_x;
+        params.subsampling_x = u8::from(seed % 3 != 1);
+        params.subsampling_y = u8::from(seed % 3 == 0);
         let Ok(prepared) = PreparedWarpPrediction::new(&params) else {
             continue;
         };
         checked += 1;
+        ten_bit_kernels_match_the_spec_trace(seed, &params);
         let (x, y) = (8 * (seed as usize % 6), 8 * (seed as usize % 5));
         let (width, height) = (24, 16);
         let stride = width + 5;
@@ -1159,6 +1162,57 @@ fn eight_bit_kernels_match_the_spec_trace_for_random_models() {
         }
     }
     assert!(checked >= 24, "only {checked} valid models");
+}
+
+/// The 16-bit row and section kernels of
+/// [`eight_bit_kernels_match_the_spec_trace_for_random_models`] on 10-bit
+/// noise, and on all-maximum and checkerboard samples.
+fn ten_bit_kernels_match_the_spec_trace(seed: u32, params: &WarpPredictBlockParams) {
+    let (ref_w, ref_h) = (72usize, 56usize);
+    let samples = match seed % 3 {
+        0 => noise_samples(ref_w * ref_h, 1023, seed),
+        1 => vec![1023u16; ref_w * ref_h],
+        _ => (0..ref_w * ref_h)
+            .map(|index| 1023 * ((index + index / ref_w) % 2) as u16)
+            .collect(),
+    };
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let params = WarpPredictBlockParams {
+        bit_depth: BitDepth::Ten,
+        ..*params
+    };
+    let prepared = PreparedWarpPrediction::new(&params).unwrap();
+    let (x, y, width, height, stride) =
+        (8 * (seed as usize % 6), 8 * (seed as usize % 5), 24, 16, 29);
+    let mut clipped = vec![0u16; stride * height];
+    prepared
+        .predict_clipped_into(&view, [x, y, width, height], &mut clipped, stride)
+        .unwrap();
+    for local_y in (0..height).step_by(8) {
+        for local_x in (0..width).step_by(8) {
+            let section = WarpPredictBlockParams {
+                block_x: (x + local_x) as i32,
+                block_y: (y + local_y) as i32,
+                ..params
+            };
+            let want = reference_warp_8x8(&samples, ref_w, ref_h, &section);
+            for (row, want) in want.chunks_exact(8).enumerate() {
+                let start = (local_y + row) * stride + local_x;
+                assert_eq!(
+                    clipped[start..start + 8],
+                    *want,
+                    "{params:?} {local_x} {local_y}"
+                );
+            }
+            let want =
+                reference_warp_rounded(&samples, ref_w, ref_h, &section, INTER_ROUND1_COMPOUND);
+            let mut got = [0i32; 64];
+            prepared
+                .predict_block_into(&view, section.block_x, section.block_y, true, &mut got)
+                .unwrap();
+            assert!(got.iter().map(|&v| i64::from(v)).eq(want), "{params:?}");
+        }
+    }
 }
 
 /// The clipped-window swizzle and the partial row store against the

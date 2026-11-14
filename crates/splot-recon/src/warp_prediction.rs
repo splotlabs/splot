@@ -235,7 +235,6 @@ impl PreparedWarpPrediction {
         )? {
             return Ok(());
         }
-        let view = reference.as_u8();
         for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
             let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
             let row = WarpPredictBlockParams {
@@ -243,12 +242,10 @@ impl PreparedWarpPrediction {
                 block_y: (y + local_y) as i32,
                 ..self.params
             };
-            let written = match (&view, output.get_mut(local_y * stride..)) {
-                (Some(view), Some(target)) if section_h == WARPED_BLOCK_SIZE => {
-                    T::u8_slice_mut(target).map_or(0, |target| {
-                        let sections = width / WARPED_BLOCK_SIZE;
-                        eight_bit::put_row(view, &row, &self.shear, sections, target, stride)
-                    })
+            let written = match output.get_mut(local_y * stride..) {
+                Some(target) if section_h == WARPED_BLOCK_SIZE => {
+                    let sections = width / WARPED_BLOCK_SIZE;
+                    eight_bit::put_row(reference, &row, &self.shear, sections, target, stride)
                 }
                 _ => 0,
             };
@@ -802,8 +799,7 @@ fn warp_predict_section<S: Simd, T: ReconSample>(
     let origin = interior_warp_source_origin(reference, params, &projected);
     if let Some(source_origin) = origin
         && !(shear.alpha == 0 && shear.beta == 0 && two_tap_phase(projected.sx4).is_some())
-        && let Some(reference) = reference.as_u8()
-        && let Some(rows) = eight_bit::section(&reference, shear, &projected, source_origin, round1)
+        && let Some(rows) = eight_bit::section(reference, shear, &projected, source_origin, round1)
     {
         let mut store = store;
         for (row, values) in rows.into_iter().enumerate() {
