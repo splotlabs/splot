@@ -38,6 +38,7 @@ macro_rules! baseline_simd {
     };
 }
 
+mod blend_mask;
 mod cdef_filter;
 mod coefficient_scan;
 mod deblock_filter;
@@ -91,6 +92,9 @@ mod wienerns_filter;
 mod workspace;
 mod y4m;
 
+pub use blend_mask::{
+    blend_diff_weighted_u8, blend_diff_weighted_wide, blend_mask_u8, blend_mask_wide,
+};
 pub use cdef_filter::{
     CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT,
     CDEF_PAIR_SEGMENT_BLOCK_AREA, CDEF_PAIR_SEGMENT_STRIDE, CDEF_PAIR_STRIDE,
