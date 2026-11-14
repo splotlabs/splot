@@ -9,8 +9,8 @@ use crate::{
     BitDepth, DecodedFrameHash, DecodedFrameHashInput, DpcmDirection, IntraDcEdge, IntraDcEdges,
     InverseTransform1dType, InverseTransform2dDim, InverseTransform2dOuter, OutputIndex,
     PixelFormat, ReferenceFrameStore, ReferenceSlot, Y4mFrameRate, Y4mWriter,
-    apply_intra_ibp_dc_rect, inverse_transform_2d_outer, inverse_transform_2d_outer_adjusted,
-    predict_intra_dc_rect_into, reconstruct_add_residual,
+    inverse_transform_2d_outer, inverse_transform_2d_outer_adjusted,
+    predict_intra_ibp_dc_rect_into, reconstruct_add_residual,
 };
 
 #[test]
@@ -1233,15 +1233,7 @@ fn workspace_predicts_ibp_dc_from_in_storage_edges() {
         .unwrap();
 
     let mut expected = [0u8; 64];
-    predict_intra_dc_rect_into(
-        BitDepth::Eight,
-        block,
-        IntraDcEdges::both(&left, &above),
-        &mut expected,
-        8,
-    )
-    .unwrap();
-    apply_intra_ibp_dc_rect(
+    predict_intra_ibp_dc_rect_into(
         BitDepth::Eight,
         block,
         IntraDcEdges::both(&left, &above),
@@ -1579,6 +1571,61 @@ fn workspace_freezes_into_hash_y4m_and_reference_store_inputs() {
 }
 
 #[test]
+fn a_rejected_freeze_in_place_keeps_every_buffer_where_it_was() {
+    let mut workspace = CurrentFrameWorkspace::<u16>::new(yuv420_info(4, 4), 8).unwrap();
+    let pointers = |workspace: &CurrentFrameWorkspace<u16>| {
+        [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| workspace.samples(plane).unwrap().as_ptr())
+    };
+    let before = pointers(&workspace);
+    workspace
+        .as_frame_mut()
+        .unwrap()
+        .plane_mut(PlaneId::V)
+        .unwrap()
+        .samples_mut()[0] = 300;
+
+    assert!(matches!(
+        workspace.freeze_in_place(),
+        Err(ReconError::SampleOutOfRange {
+            plane: PlaneId::V,
+            ..
+        })
+    ));
+    assert_eq!(pointers(&workspace), before);
+    assert_eq!(workspace.samples(PlaneId::V).unwrap()[0], 300);
+
+    workspace
+        .as_frame_mut()
+        .unwrap()
+        .plane_mut(PlaneId::V)
+        .unwrap()
+        .samples_mut()[0] = 8;
+    let frame = workspace.freeze_in_place().unwrap();
+    assert_eq!(
+        [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| frame
+            .plane(plane)
+            .unwrap()
+            .samples()
+            .as_ptr()),
+        before
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "above the bit depth")]
+fn a_clamped_freeze_asserts_the_sample_range_in_checked_builds() {
+    let mut workspace = CurrentFrameWorkspace::<u16>::new(yuv420_info(4, 4), 8).unwrap();
+    workspace
+        .as_frame_mut()
+        .unwrap()
+        .plane_mut(PlaneId::U)
+        .unwrap()
+        .samples_mut()[0] = 300;
+    let _ = workspace.freeze_in_place_clamped();
+}
+
+#[test]
 fn workspace_reconstructed_sample_reads_arbitrary_in_storage_samples() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 3), 1).unwrap();
@@ -1688,7 +1735,7 @@ fn u8_rect_target_matches_the_contiguous_writer() {
         let mut surface = CurrentFrameSurface::Frame(&mut workspace);
         let target = rect(x, y, w, h);
         let direct = surface
-            .u8_rect_mut(PlaneId::Y, target)
+            .rect_mut(PlaneId::Y, target)
             .map(|(samples, stride)| span(samples, stride));
         let written = surface
             .with_contiguous_u8_rect_mut(PlaneId::Y, target, |samples, stride| {

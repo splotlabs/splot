@@ -5,6 +5,7 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 
 use super::Mv;
+use super::find_mv_stack::ref_count_ctx;
 use crate::Result;
 use crate::bitstream::tile_payload::{
     COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, TileCdfSelector,
@@ -28,7 +29,7 @@ const _COMPOUND_MODE_MATCH_CDF_ROW_LEN_CHECK: () = {
 pub(crate) struct CompoundParseInput {
     pub(crate) num_total_refs: usize,
     pub(crate) num_same_ref_compound: u8,
-    pub(crate) ref_contexts: [usize; MAX_REFS_PER_FRAME],
+    pub(crate) ref_counts: u32,
     pub(crate) ref_distance_nonnegative: [bool; MAX_REFS_PER_FRAME],
 }
 
@@ -125,8 +126,7 @@ pub(crate) fn read_compound_reference_pair(
     tile_offset: ByteOffset,
 ) -> Result<(i8, i8)> {
     compound_reference_pair(input, |selector| {
-        cdfs.read_block_symbol_trace(selector, symbols)
-            .map(splot_core::symbol::Symbol::get)
+        cdfs.read_block_symbol(selector, symbols)
             .map_err(|error| compound_symbol_read_error(error, tile_offset))
     })
 }
@@ -156,14 +156,14 @@ pub(crate) fn compound_reference_pair(
             1
         } else if n_bits == 0 {
             read_symbol(TileCdfSelector::CompRef0 {
-                ctx: input.ref_contexts[ref_idx],
+                ctx: ref_count_ctx(input.ref_counts, n_refs, ref_idx),
                 ref_idx,
             })?
         } else {
             let first_ref = ref_frames[0];
             let bit_type = compound_ref_bit_type(input, first_ref, ref_idx);
             read_symbol(TileCdfSelector::CompRef1 {
-                ctx: input.ref_contexts[ref_idx],
+                ctx: ref_count_ctx(input.ref_counts, n_refs, ref_idx),
                 bit_type,
                 ref_idx,
             })?
@@ -212,8 +212,7 @@ pub(crate) fn read_compound_mode_syntax(
     tile_offset: ByteOffset,
 ) -> Result<CompoundBlockSyntax> {
     let y_mode = compound_y_mode(pair, (new_mv_context, is_joint_ctx), |selector| {
-        cdfs.read_block_symbol_trace(selector, symbols)
-            .map(splot_core::symbol::Symbol::get)
+        cdfs.read_block_symbol(selector, symbols)
             .map_err(|error| compound_symbol_read_error(error, tile_offset))
     })?;
     Ok(CompoundBlockSyntax {

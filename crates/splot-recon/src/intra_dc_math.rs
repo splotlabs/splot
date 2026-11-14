@@ -60,18 +60,18 @@ pub(crate) fn validate_sample_type<T: ReconSample>(bit_depth: BitDepth) -> Resul
 /// Every value is a `Clip1` sample of the active bit depth, and
 /// [`validate_sample_type`] admits a storage type only when it holds that
 /// depth, so each conversion is exact.
-pub(crate) trait IntraLaneSample: ReconSample {
+pub(crate) trait IntraLaneSample: ReconSample + crate::SummedSample {
     /// Converts one in-range sample.
     fn from_lane(value: u16) -> Self;
-
-    /// Stores in-range `values` over `output`, which has the same length.
-    fn store(values: &[u16], output: &mut [Self]);
 
     /// Loads sixteen samples as `u16` lanes.
     fn load16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S>;
 
     /// Stores sixteen in-range `u16` lanes.
     fn store16<S: Simd>(simd: S, values: u16x16<S>, output: &mut [Self; 16]);
+
+    /// Stores thirty-two in-range `u16` lanes.
+    fn store32<S: Simd>(simd: S, low: u16x16<S>, high: u16x16<S>, output: &mut [Self; 32]);
 
     /// Loads eight samples as `u16` lanes.
     fn load8<S: Simd>(simd: S, samples: &[Self; 8]) -> u16x8<S>;
@@ -87,11 +87,6 @@ impl IntraLaneSample for u16 {
     }
 
     #[inline]
-    fn store(values: &[u16], output: &mut [Self]) {
-        output.copy_from_slice(values); // splot-copy-ok: publish intra prediction lanes
-    }
-
-    #[inline]
     fn load16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
         u16x16::from_slice(simd, samples)
     }
@@ -99,6 +94,13 @@ impl IntraLaneSample for u16 {
     #[inline]
     fn store16<S: Simd>(_simd: S, values: u16x16<S>, output: &mut [Self; 16]) {
         values.store_slice(output);
+    }
+
+    #[inline]
+    fn store32<S: Simd>(_simd: S, low: u16x16<S>, high: u16x16<S>, output: &mut [Self; 32]) {
+        let (first, second) = output.split_at_mut(16);
+        low.store_slice(first);
+        high.store_slice(second);
     }
 
     #[inline]
@@ -119,13 +121,6 @@ impl IntraLaneSample for u8 {
     }
 
     #[inline]
-    fn store(values: &[u16], output: &mut [Self]) {
-        for (slot, &value) in output.iter_mut().zip(values) {
-            *slot = value as u8;
-        }
-    }
-
-    #[inline]
     fn load16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
         let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, samples));
         simd.combine_u16x8(low, high)
@@ -135,6 +130,11 @@ impl IntraLaneSample for u8 {
     fn store16<S: Simd>(simd: S, values: u16x16<S>, output: &mut [Self; 16]) {
         let (low, high): (u16x8<S>, u16x8<S>) = simd.split_u16x16(values);
         simd.relaxed_narrow_u16x8(low, high).store_slice(output);
+    }
+
+    #[inline]
+    fn store32<S: Simd>(simd: S, low: u16x16<S>, high: u16x16<S>, output: &mut [Self; 32]) {
+        simd.relaxed_narrow_u16x16(low, high).store_slice(output);
     }
 
     #[inline]
@@ -148,6 +148,58 @@ impl IntraLaneSample for u8 {
         let bytes: [u8; 16] = simd.relaxed_narrow_u16x8(values, values).into();
         output.copy_from_slice(&bytes[..8]); // splot-copy-ok: publish eight intra lanes
     }
+}
+
+/// Loads a run of `W` samples (4 to 64) into `C = max(1, W / 16)` lane groups.
+#[inline]
+pub(crate) fn load_lanes<S: Simd, P: IntraLaneSample, const W: usize, const C: usize>(
+    simd: S,
+    samples: &[P; W],
+) -> Option<[u16x16<S>; C]> {
+    if W <= 8 {
+        let mut lanes = [P::from_lane(0); 8];
+        *lanes.first_chunk_mut::<4>()? = *samples.first_chunk::<4>()?;
+        if let (Some(lanes), Some(samples)) = (lanes.get_mut(4..W), samples.get(4..W)) {
+            lanes.copy_from_slice(samples); // splot-copy-ok: widen one 8-sample run
+        }
+        let low = P::load8(simd, &lanes);
+        return Some([simd.combine_u16x8(low, low); C]);
+    }
+    let mut lanes = [u16x16::splat(simd, 0); C];
+    for (lanes, chunk) in lanes.iter_mut().zip(samples.as_chunks::<16>().0) {
+        *lanes = P::load16(simd, chunk);
+    }
+    Some(lanes)
+}
+
+/// Stores the first `W` in-range lanes (4 to 64) of `C = max(1, W / 16)` lane
+/// groups.
+#[inline]
+pub(crate) fn store_lanes<S: Simd, P: IntraLaneSample, const W: usize, const C: usize>(
+    simd: S,
+    lanes: [u16x16<S>; C],
+    row: &mut [P; W],
+) -> Option<()> {
+    if W >= 32 {
+        for (out, pair) in row
+            .as_chunks_mut::<32>()
+            .0
+            .iter_mut()
+            .zip(lanes.chunks_exact(2))
+        {
+            P::store32(simd, pair[0], pair[1], out);
+        }
+    } else if W == 16 {
+        P::store16(simd, lanes[0], row.first_chunk_mut()?);
+    } else {
+        let mut samples = [P::from_lane(0); 8];
+        P::store8(simd, simd.split_u16x16(lanes[0]).0, &mut samples);
+        *row.first_chunk_mut::<4>()? = *samples.first_chunk::<4>()?;
+        if let (Some(row), Some(samples)) = (row.get_mut(4..W), samples.get(4..W)) {
+            row.copy_from_slice(samples); // splot-copy-ok: publish one 8-sample run
+        }
+    }
+    Some(())
 }
 
 pub(crate) trait IntraEdgeError: Copy {
@@ -171,7 +223,7 @@ where
     }
 
     let max = bit_depth.max_sample();
-    if T::MAX_VALUE <= max {
+    if !crate::sample_range::samples_exceed(samples, max) {
         return Ok(());
     }
     for (sample_index, sample) in samples.iter().copied().enumerate() {
@@ -265,11 +317,11 @@ fn dense_dc_edge_sum<T: ReconSample>(samples: &[T], max: u16) -> Option<u32> {
     }
     if let Some(wide) = T::u16_slice(samples) {
         return (!crate::sample_range::u16_samples_exceed(wide, max))
-            .then(|| wide.iter().map(|&value| u32::from(value)).sum());
+            .then(|| crate::sum_samples(wide, false));
     }
     T::u8_slice(samples)
         .filter(|_| max >= u16::from(u8::MAX))
-        .map(|narrow| narrow.iter().map(|&value| u32::from(value)).sum())
+        .map(|narrow| crate::sum_samples(narrow, false))
 }
 
 /// Validates intra prediction output buffer geometry, returning the required
@@ -433,6 +485,7 @@ pub fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
     )
 }
 
+#[inline]
 pub(crate) fn resolve_divisor_32(den: u32) -> Result<(u8, u16)> {
     resolve_divisor_for_width!(
         den,

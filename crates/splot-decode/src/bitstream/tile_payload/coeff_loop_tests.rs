@@ -10,7 +10,7 @@ use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConf
 use splot_core::symbol_encoder::SymbolEncoder;
 
 use super::super::cdf::block_read::BlockSymbolTraceReadError;
-use super::super::cdf::{FrameCdfSubset, TileCdfArray, TileCdfError};
+use super::super::cdf::{FrameCdfSubset, TileCdfError, TileCdfSelector};
 use super::*;
 
 fn symbol_decoder(payload: &[u8], base: ByteOffset, mode: CdfUpdateMode) -> SymbolDecoder<'_> {
@@ -154,38 +154,6 @@ fn live_eob_read_honors_disabled_cdf_updates() {
 
     assert_eq!(read.eob(), 8);
     assert_eq!(symbols.symbol_count(), 3);
-    assert_eq!(tile, before);
-}
-
-#[test]
-fn live_eob_read_rejects_selector_before_consumption() {
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let before = tile.clone();
-    let mut symbols = symbol_decoder(&[0x80], ByteOffset::new(7), CdfUpdateMode::Enabled);
-    let checkpoint = symbols.checkpoint();
-
-    let error = read_nonzero_coeff_eob(
-        &mut tile,
-        &mut symbols,
-        NonZeroCoeffEobSymbolInput {
-            size: EobPtSize::Pt16,
-            eob_ctx: 3,
-        },
-    )
-    .unwrap_err();
-
-    assert!(matches!(
-        error,
-        CoeffLoopContextError::EobSymbolRead(BlockSymbolTraceReadError::Cdf(
-            TileCdfError::SelectorOutOfRange {
-                array: TileCdfArray::EobPt,
-                index_name: "eob_ctx",
-                actual: 3,
-                max_exclusive: 3,
-            }
-        ))
-    ));
-    assert_eq!(symbols.checkpoint(), checkpoint);
     assert_eq!(tile, before);
 }
 

@@ -89,14 +89,15 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         }
     }
 
-    pub(crate) fn publishing(published: &'a PublishedFrame<'_, T>) -> Result<Self> {
-        Ok(Self {
-            source: SampleSource::Publishing(published.storage()?),
+    /// Reads the published prefix of a still-filtering reference frame.
+    pub(crate) fn publishing(published: &PublishedFrame<'a, T>) -> Self {
+        Self {
+            source: SampleSource::Publishing(published.storage()),
             published: Some(PublishedRows {
                 luma: published.luma_rows(),
                 chroma: published.chroma_rows(),
             }),
-        })
+        }
     }
 
     /// Returns the reference frame's decoded geometry.
@@ -107,8 +108,7 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         }
     }
 
-    /// Borrows one reference plane over its reconstruction storage, together with the
-    /// § 7.13.3.23 reference mode-info dimensions warp bounds are derived from.
+    /// Borrows one reference plane over its reconstruction storage.
     ///
     /// `last_row` is the last row of this plane the caller's prediction can
     /// reach, or [`ALL_ROWS`] when the caller cannot bound it before the
@@ -119,26 +119,6 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     /// Returns a capability diagnostic when the reference is missing a plane or
     /// its storage does not cover the reconstruction extent, and a fail-closed
     /// diagnostic when a still-filtering reference has not published `last_row`.
-    pub(crate) fn plane_view_with_mi_dims(
-        self,
-        plane: PlaneId,
-        last_row: i32,
-        offset: ByteOffset,
-    ) -> Result<(ReferencePlaneView<'a, T>, i32, i32)> {
-        let view = self.plane_view(plane, last_row, offset)?;
-        let Some((_, _, luma_size, _)) = self.plane_storage(PlaneId::Y) else {
-            return Err(missing_plane(offset));
-        };
-        let ref_mi_cols = luma_size.width().div_ceil(4) as i32;
-        let ref_mi_rows = luma_size.height().div_ceil(4) as i32;
-        Ok((view, ref_mi_cols, ref_mi_rows))
-    }
-
-    /// [`Self::plane_view_with_mi_dims`] without the mode-info dimensions.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::plane_view_with_mi_dims`].
     pub(crate) fn plane_view(
         self,
         plane: PlaneId,
@@ -280,7 +260,7 @@ pub(crate) fn subpel_last_row(start_y: i32, step_y: i32, height: usize, last_y: 
 /// [`COMPOUND_REFINE_REACH`] covers both, scaled into reference rows because a
 /// § 7.13.3.18 scaled reference walks `step_y` per predicted row.
 ///
-/// § 7.13.5 TIP callers predict a whole unit batch through one rect whose
+/// § 7.13.3.2 TIP callers predict a whole unit batch through one rect whose
 /// motion vectors vary per unit, so this bound does not cover them; a row
 /// holding a TIP block waits for its references to settle instead, which
 /// switches the admission check off.
@@ -353,12 +333,9 @@ pub(crate) fn warp_plane_last_row(
 
 /// A borrow of one reference slot's samples, held for one block's reads.
 ///
-/// A still-filtering frame's published prefix is only readable while its shared
-/// borrow lives, so the holder is kept on the reading thread's stack for the
-/// block and never across a wait. A reader must also hold at most one borrow per
-/// pending frame at a time: the filter phase takes the same lock exclusively
-/// once per stripe, so borrowing one frame twice while that writer is queued
-/// would deadlock.
+/// A still-filtering frame lends the rows below the watermark it published
+/// when the borrow was taken; the borrow takes no lock, so it may live across
+/// that frame's later stripes and its freeze.
 pub(crate) enum HeldFrameSamples<'a, T: ReconSample> {
     /// The slot has settled; every row is final.
     Settled(&'a DecodedFrame<T>),
@@ -371,12 +348,15 @@ impl<T: ReconSample> HeldFrameSamples<'_, T> {
     ///
     /// # Errors
     ///
-    /// Returns an internal diagnostic when a still-filtering frame's workspace
-    /// was taken by its freeze, which the live borrow already rules out.
+    /// None at present; the block walk propagates the result.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the block walk, outside this change, propagates it as fallible"
+    )]
     pub(crate) fn samples(&self) -> Result<ReferenceSamples<'_, T>> {
         Ok(match self {
             Self::Settled(frame) => ReferenceSamples::settled(frame),
-            Self::Filtering(published) => ReferenceSamples::publishing(published)?,
+            Self::Filtering(published) => ReferenceSamples::publishing(published),
         })
     }
 }

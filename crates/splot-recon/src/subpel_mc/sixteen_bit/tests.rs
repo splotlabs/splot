@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The NEON word-lane kernels against the portable kernels.
+//! The word-lane kernels against the portable kernels.
 
-use super::super::block::{Block, Sink, TAPS, Taps, stage_len};
+use super::super::block::{Block, Sink, TAPS, Taps, is_cell, stage_len};
 use super::super::{NUM_FILTER_TYPES, portable};
 
 const STRIDE: usize = 160;
 const ROWS: usize = 48;
 
-/// Planes of `max`-bounded samples: a mixed texture and an extreme-contrast
-/// one that reaches the largest tap sums.
-fn planes(max: u16) -> [Vec<u16>; 2] {
+/// Planes of `max`-bounded samples: a mixed texture, an extreme-contrast
+/// one that reaches the largest tap sums, an all-maximum and an all-zero
+/// one.
+fn planes(max: u16) -> [Vec<u16>; 4] {
     [
         (0..STRIDE * ROWS)
             .map(|i| ((i * 73 + i / STRIDE * 29) % (usize::from(max) + 1)) as u16)
@@ -25,6 +26,8 @@ fn planes(max: u16) -> [Vec<u16>; 2] {
                 }
             })
             .collect(),
+        vec![max; STRIDE * ROWS],
+        vec![0; STRIDE * ROWS],
     ]
 }
 
@@ -32,16 +35,8 @@ fn taps(filter: usize, phase: usize) -> Option<&'static Taps> {
     TAPS[filter][phase].as_ref()
 }
 
-/// Column remaps of a window clamped on the left and on the right.
-fn remaps() -> [Option<[u8; 16]>; 3] {
-    [
-        None,
-        Some(core::array::from_fn(|lane| lane.saturating_sub(3) as u8)),
-        Some(core::array::from_fn(|lane| lane.min(6) as u8)),
-    ]
-}
-
-/// Every sink of the NEON `predict` against the portable kernels.
+/// Every sink of the word-lane `predict` against the portable kernels;
+/// full-pel blocks stay on the portable copy, which is faster.
 fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     let (w, h) = (block.w, block.h);
     let rows = h + block.vertical.map_or(0, |taps| taps.span() - 1);
@@ -49,9 +44,8 @@ fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     let stride = w + 3;
     let run = |neon: bool, sink: &mut Sink<'_>| {
         let mut stage = vec![0x5a5a_u16 as i16; len];
-        // Full-pel blocks stay on the portable copy, which is faster.
         let filtered = block.horizontal.is_some() || block.vertical.is_some();
-        if !neon || !super::predict(block, sink, &mut stage) {
+        if !neon || !super::predict(block, sink) {
             assert!(!neon || !filtered, "declined {label}");
             portable::predict(block, sink, &mut stage);
         }
@@ -126,8 +120,18 @@ fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     }
 }
 
-/// Every word-lane shape, filter, phase pair, column remap and row clamp of
-/// 10- and 12-bit samples.
+/// The sample maxima a kernel is exact for: the AVX2 stage holds `i16`, which
+/// fits 10-bit samples only (the deepest the decoder stores).
+fn maxes() -> &'static [u16] {
+    if cfg!(target_arch = "x86_64") {
+        &[1023]
+    } else {
+        &[1023, 4095]
+    }
+}
+
+/// Every word-lane shape, filter and phase pair of 10- and 12-bit samples at
+/// several window origins.
 #[test]
 fn neon_predict_matches_portable_for_every_shape_phase_and_sink() {
     let shapes = [
@@ -139,6 +143,9 @@ fn neon_predict_matches_portable_for_every_shape_phase_and_sink() {
         (8, 4),
         (8, 8),
         (8, 32),
+        (12, 3),
+        (12, 6),
+        (20, 4),
         (16, 4),
         (16, 16),
         (24, 4),
@@ -147,7 +154,7 @@ fn neon_predict_matches_portable_for_every_shape_phase_and_sink() {
         (128, 2),
     ];
     let phases = [0, 1, 4, 7, 8, 9, 15];
-    for max in [1023, 4095] {
+    for &max in maxes() {
         for plane in &planes(max) {
             for (case, &(w, h)) in shapes.iter().enumerate() {
                 for (index, &(h_phase, v_phase)) in phases
@@ -158,33 +165,20 @@ fn neon_predict_matches_portable_for_every_shape_phase_and_sink() {
                     .enumerate()
                 {
                     let filter = (index + case) % NUM_FILTER_TYPES;
-                    let horizontal = taps(filter, h_phase);
-                    let remaps = if w <= 8 && horizontal.is_some() {
-                        &remaps()[..]
-                    } else {
-                        &remaps()[..1]
-                    };
-                    for &remap in remaps {
-                        for (top, rows) in [(2, [0, ROWS as isize - 1]), (-5, [0, 7]), (3, [4, 9])]
-                        {
-                            let block = Block {
-                                source: plane,
-                                stride: STRIDE,
-                                origin: 5 + case,
-                                top,
-                                rows,
-                                w,
-                                h,
-                                horizontal,
-                                vertical: taps(filter, v_phase),
-                                remap,
-                            };
-                            let label = format!(
-                                "{max} {w}x{h} filter {filter} phases {h_phase},{v_phase} \
-                                 remap {remap:?} top {top}"
-                            );
-                            check_predict(&block, max, &label);
-                        }
+                    for top in [0, 3, 5] {
+                        let block = Block {
+                            source: plane,
+                            stride: STRIDE,
+                            origin: 5 + case + top * STRIDE,
+                            w,
+                            h,
+                            horizontal: taps(filter, h_phase),
+                            vertical: taps(filter, v_phase),
+                        };
+                        let label = format!(
+                            "{max} {w}x{h} filter {filter} phases {h_phase},{v_phase} top {top}"
+                        );
+                        check_predict(&block, max, &label);
                     }
                 }
             }
@@ -198,7 +192,7 @@ fn neon_predict_matches_portable_for_every_shape_phase_and_sink() {
 fn neon_compound_matches_portable() {
     let shapes = [(4, 2), (4, 4), (4, 16), (8, 2), (8, 8), (16, 4), (32, 32)];
     let phases = [0, 1, 7, 8, 15];
-    for max in [1023, 4095] {
+    for &max in maxes() {
         let planes = planes(max);
         for (case, &(w, h)) in shapes.iter().enumerate() {
             for (index, &(h_phase, v_phase)) in phases
@@ -209,17 +203,14 @@ fn neon_compound_matches_portable() {
                 .enumerate()
             {
                 let filter = (index + case) % NUM_FILTER_TYPES;
-                let block = |plane: usize, origin: usize, top: isize, fullpel: bool| Block {
+                let block = |plane: usize, origin: usize, top: usize, fullpel: bool| Block {
                     source: &planes[plane][..],
                     stride: STRIDE,
-                    origin,
-                    top,
-                    rows: [0, ROWS as isize - 1],
+                    origin: origin + top * STRIDE,
                     w,
                     h,
                     horizontal: if fullpel { None } else { taps(filter, h_phase) },
                     vertical: if fullpel { None } else { taps(filter, v_phase) },
-                    remap: None,
                 };
                 let fullpel = w * h > 64;
                 let first = block(0, 3, 1, fullpel);
@@ -233,19 +224,12 @@ fn neon_compound_matches_portable() {
                         let mut stage = vec![0x5a5a_u16 as i16; len];
                         let mut output = vec![0xa5a5_u16; stride * h];
                         let blocks = [&first, &second];
-                        let filtered = blocks
+                        let taken =
+                            neon && super::compound(blocks, (forward, max), &mut output, stride);
+                        let cell = [&first, &second]
                             .iter()
-                            .any(|block| block.horizontal.is_some() || block.vertical.is_some());
-                        let taken = neon
-                            && super::compound(
-                                blocks,
-                                forward,
-                                max,
-                                &mut stage,
-                                &mut output,
-                                stride,
-                            );
-                        assert_eq!(taken, neon && filtered && w * h <= 64);
+                            .all(|block| is_cell(w, h, block.horizontal, block.vertical));
+                        assert_eq!(taken, neon && cell);
                         if !taken {
                             portable::compound_u16(
                                 blocks,
@@ -263,6 +247,37 @@ fn neon_compound_matches_portable() {
                         run(false),
                         "{max} {w}x{h} filter {filter} phases {h_phase},{v_phase} forward {forward}"
                     );
+                }
+            }
+        }
+    }
+}
+
+/// 16-column puts of every filter and phase pair at strides of 16 and 17,
+/// below and at the reach of a 16-column BILINEAR strip.
+#[test]
+fn neon_wide_puts_match_portable_at_narrow_strides() {
+    for &max in maxes() {
+        for plane in &planes(max) {
+            for stride in [16, 17] {
+                for filter in 0..NUM_FILTER_TYPES {
+                    for h_phase in 0..16 {
+                        for v_phase in [0, 1, 8, 15] {
+                            let block = Block {
+                                source: plane,
+                                stride,
+                                origin: 2 * stride,
+                                w: 16,
+                                h: 4,
+                                horizontal: taps(filter, h_phase),
+                                vertical: taps(filter, v_phase),
+                            };
+                            let label = format!(
+                                "{max} stride {stride} filter {filter} phases {h_phase},{v_phase}"
+                            );
+                            check_predict(&block, max, &label);
+                        }
+                    }
                 }
             }
         }

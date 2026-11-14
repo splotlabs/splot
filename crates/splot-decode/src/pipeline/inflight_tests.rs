@@ -534,7 +534,7 @@ fn retired_publications_keep_their_identity_and_exclude_direct_readers() {
         assert_eq!(Arc::as_ptr(&slot.cell), cell);
         assert_eq!(Arc::as_ptr(slot.progress.as_ref().unwrap()), progress);
         assert!(!slot.is_settled());
-        assert!(slot.progress().unwrap().read().is_none());
+        assert!(PublishedFrame::of_slot(&slot).is_none());
         writer.progress.begin(&[(0, 8)]).expect("stripe geometry");
         let lease = writer.progress.direct_stripe(0).unwrap();
         drop(writer);

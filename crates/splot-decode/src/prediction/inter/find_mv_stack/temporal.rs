@@ -755,6 +755,38 @@ impl TemporalMotionBlock {
         (self.mi_row, self.mi_col)
     }
 
+    /// Appends `record`, or grows the last record past `first` by it when that
+    /// record is its left neighbour with the same motion. Records past `first`
+    /// cover disjoint cells, so the merge writes the same field.
+    pub(crate) fn push_merged(records: &mut Vec<Self>, first: usize, record: Self) {
+        let merged = records.len() > first
+            && records
+                .last_mut()
+                .is_some_and(|last| last.extend_right(&record));
+        if !merged {
+            records.push(record);
+        }
+    }
+
+    /// Grows this record by `next`, the record to its right, when both store
+    /// one cell value over the same rows and this record ends on an 8x8 cell
+    /// boundary, so the grown record writes exactly the cells of the two.
+    fn extend_right(&mut self, next: &Self) -> bool {
+        let fits = matches!(self.motion, TemporalBlockMotion::Mvs(_))
+            && self.motion == next.motion
+            && self.ref_order_hints == next.ref_order_hints
+            && self.current_order_hint == next.current_order_hint
+            && (self.mi_row, self.n4h, self.mi_rows, self.mi_cols)
+                == (next.mi_row, next.n4h, next.mi_rows, next.mi_cols)
+            && self.mi_col.is_multiple_of(2)
+            && self.n4w.is_multiple_of(2)
+            && self.mi_col + self.n4w == next.mi_col;
+        if fits {
+            self.n4w += next.n4w;
+        }
+        fits
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         mi_row: usize,
@@ -912,6 +944,12 @@ impl ProjectedTemporalMotionField {
             .copied()
     }
 
+    fn row(&self, y8: usize) -> Option<&[ProjectedTemporalMotionCell]> {
+        let start = temporal_grid_index(self.width8, self.height8, y8, 0)?;
+        self.cells.get(start..start + self.width8)
+    }
+
+    #[cfg(test)]
     fn set(&mut self, y8: usize, x8: usize, mv: Mv, ref_offset: i32, valid: bool) {
         let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8) else {
             return;
@@ -996,8 +1034,8 @@ impl BandedTemporalContext {
         y8 >> self.layout.band_rows8().trailing_zeros()
     }
 
-    fn cell(&self, y8: usize, x8: usize) -> Option<ProjectedTemporalMotionCell> {
-        if y8 >= self.layout.height8() || x8 >= self.layout.width8() {
+    fn row(&self, y8: usize) -> Option<&[ProjectedTemporalMotionCell]> {
+        if y8 >= self.layout.height8() {
             return None;
         }
         let band = self
@@ -1006,10 +1044,15 @@ impl BandedTemporalContext {
             .published
             .get()?
             .as_ref()?;
-        let row = y8.checked_sub(band.row_base8)?;
+        let start = y8
+            .checked_sub(band.row_base8)?
+            .checked_mul(self.layout.width8())?;
         band.field
-            .get(row.checked_mul(self.layout.width8())?.checked_add(x8)?)
-            .copied()
+            .get(start..start.checked_add(self.layout.width8())?)
+    }
+
+    fn cell(&self, y8: usize, x8: usize) -> Option<ProjectedTemporalMotionCell> {
+        self.row(y8)?.get(x8).copied()
     }
 
     fn trajectory_cell(&self, reference: usize, y8: usize, x8: usize) -> Option<Mv> {
@@ -1058,6 +1101,21 @@ impl TemporalBandPlan {
                         })
             })
             .map(move |(_, projection)| (projection.slot, index))
+    }
+
+    /// Whether every reference band projection `index` reads is published
+    /// (or failed); a slot without a field reads nothing.
+    pub(crate) fn sources_settled(
+        &self,
+        index: usize,
+        fields: &[Option<crate::prediction::inter::MotionFieldHandle>],
+    ) -> bool {
+        self.requirements(index).all(|(slot, band)| {
+            fields
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_none_or(|field| field.band_settled(band))
+        })
     }
 
     pub(crate) fn project<'a>(
@@ -1237,6 +1295,9 @@ pub(crate) struct TemporalProjectionConfig {
     pub(crate) enable_tip: bool,
     pub(crate) enable_trajectory: bool,
     pub(crate) reduced: bool,
+    /// `bru_ref` of a `use_bru == 1` frame, whose motion field § 7.9.3 does not
+    /// project.
+    pub(crate) bru_ref: Option<usize>,
 }
 
 impl TemporalMvContext {
@@ -1597,10 +1658,6 @@ impl TemporalMvContext {
         tip_reference_pair_from_hints(self.current_order_hint, &self.ref_order_hints)
     }
 
-    pub(crate) fn reference_order_hints(&self) -> &[Option<u32>] {
-        &self.ref_order_hints
-    }
-
     pub(crate) fn order_hint_mv_context(&self) -> OrderHintMvContext<'_> {
         OrderHintMvContext {
             current_order_hint: self.current_order_hint,
@@ -1613,20 +1670,35 @@ impl TemporalMvContext {
     }
 
     pub(crate) fn tip_candidate(&self, y8: usize, x8: usize, base_mv: Mv) -> Option<[Mv; 2]> {
+        self.tip_candidate_row(y8, base_mv)?(x8)
+    }
+
+    /// [`Self::tip_candidate`] of row `y8`, resolved once for every column.
+    pub(crate) fn tip_candidate_row(
+        &self,
+        y8: usize,
+        base_mv: Mv,
+    ) -> Option<impl Fn(usize) -> Option<[Mv; 2]> + '_> {
         let (_, scales) = self.tip?;
         let y8 = y8.min(self.field.height8.saturating_sub(1));
-        let x8 = x8.min(self.field.width8.saturating_sub(1));
-        let cell = self.projected_cell(y8, x8)?;
-        let projected = if cell.valid {
-            let mv = cell.mv();
-            [project_scaled(mv, scales[0]), project_scaled(mv, scales[1])]
-        } else {
-            [Mv::ZERO; 2]
-        };
-        Some(projected.map(|mv| Mv {
-            row: (mv.row + base_mv.row).clamp(-MV_LIMIT, MV_LIMIT),
-            col: (mv.col + base_mv.col).clamp(-MV_LIMIT, MV_LIMIT),
-        }))
+        let row = match &self.banded {
+            Some(banded) => banded.row(y8),
+            None => self.field.row(y8),
+        }?;
+        let last = self.field.width8.saturating_sub(1);
+        Some(move |x8: usize| {
+            let cell = row.get(x8.min(last))?;
+            let projected = if cell.valid {
+                let mv = cell.mv();
+                [project_scaled(mv, scales[0]), project_scaled(mv, scales[1])]
+            } else {
+                [Mv::ZERO; 2]
+            };
+            Some(projected.map(|mv| Mv {
+                row: (mv.row + base_mv.row).clamp(-MV_LIMIT, MV_LIMIT),
+                col: (mv.col + base_mv.col).clamp(-MV_LIMIT, MV_LIMIT),
+            }))
+        })
     }
 
     pub(super) fn tip_spatial_mvs(
@@ -1863,79 +1935,63 @@ fn fill_temporal_sampling_gaps(
     if step != 2 {
         return;
     }
-    let tmvp_unit_size8 = tmvp_unit_size8.max(1);
-    for y8 in (0..field.height8).step_by(2) {
-        for x8 in (0..field.width8).step_by(2) {
-            for (dy, dx) in [(0usize, 1usize), (1, 0), (1, 1)] {
-                fill_temporal_sampling_gap(field, y8, x8, dy, dx, tmvp_unit_size8);
-            }
-        }
-    }
-}
-
-#[doc = "AV2 § 7.10.5 fill_tpl and calc_avg motion-vector gap fill."]
-fn fill_temporal_sampling_gap(
-    field: &mut ProjectedTemporalMotionField,
-    y8: usize,
-    x8: usize,
-    dy: usize,
-    dx: usize,
-    tmvp_unit_size8: usize,
-) {
-    let Some(anchor) = field.cell(y8, x8).filter(|cell| cell.valid) else {
+    debug_assert!(tmvp_unit_size8.max(1).is_power_of_two());
+    let unit_shift = tmvp_unit_size8.max(1).trailing_zeros();
+    let (width8, height8) = (field.width8, field.height8);
+    let next_in_unit =
+        |a: usize, end: usize| a + 2 < end && (a + 2) >> unit_shift == a >> unit_shift;
+    let Some(mut rest) = field.cells.get_mut(..width8 * height8) else {
         return;
     };
-    if y8 + dy >= field.height8 || x8 + dx >= field.width8 {
-        return;
-    }
-    let mut sum = Mv::ZERO;
-    let mut count = 0i32;
-    debug_assert!(tmvp_unit_size8.is_power_of_two());
-    let unit_shift = tmvp_unit_size8.trailing_zeros();
-    let same_unit = |a: usize, b: usize| (a >> unit_shift) == (b >> unit_shift);
-    for candidate_y in 0..=1 {
-        for candidate_x in 0..=1 {
-            if dy < candidate_y || dx < candidate_x {
-                continue;
-            }
-            let source_y = y8 + 2 * candidate_y;
-            let source_x = x8 + 2 * candidate_x;
-            if !same_unit(source_y, y8) || !same_unit(source_x, x8) {
-                continue;
-            }
-            let Some(source) = field.cell(source_y, source_x).filter(|cell| cell.valid) else {
+    for y8 in (0..height8).step_by(2) {
+        let down = next_in_unit(y8, height8);
+        let split = (2 * width8).min(rest.len());
+        let (pair, below) = core::mem::take(&mut rest).split_at_mut(split);
+        let (row, next_row) = pair.split_at_mut(width8.min(pair.len()));
+        for x8 in (0..width8).step_by(2) {
+            let Some(anchor) = row.get(x8).copied().filter(|cell| cell.valid) else {
                 continue;
             };
-            let mv = if candidate_y == 0 && candidate_x == 0 {
-                source.mv()
-            } else {
+            let right = next_in_unit(x8, width8);
+            let projected = |source: Option<&ProjectedTemporalMotionCell>| {
+                let source = source.filter(|cell| cell.valid)?;
                 let mv = project_mv(source.mv(), anchor.ref_offset(), source.ref_offset());
-                Mv {
+                Some(Mv {
                     row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                     col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                }
+                })
             };
-            sum.row += mv.row;
-            sum.col += mv.col;
-            count += 1;
+            let right_mv = projected(row.get(x8 + 2).filter(|_| right));
+            let down_mv = projected(below.get(x8).filter(|_| down));
+            let corner_mv = projected(below.get(x8 + 2).filter(|_| right && down));
+            let fill = |cell: Option<&mut ProjectedTemporalMotionCell>, sources: &[Option<Mv>]| {
+                let Some(cell) = cell else {
+                    return;
+                };
+                let (mut sum, mut count) = (anchor.mv(), 1);
+                for mv in sources.iter().flatten() {
+                    sum.row += mv.row;
+                    sum.col += mv.col;
+                    count += 1;
+                }
+                let average = |value: i32| match count {
+                    1 => value,
+                    2 => round2_signed_i32(value, 1),
+                    3 => round2_signed_i32(value * 85, 8),
+                    _ => round2_signed_i32(value, 2),
+                };
+                let mv = Mv {
+                    row: average(sum.row),
+                    col: average(sum.col),
+                };
+                *cell = ProjectedTemporalMotionCell::new(true, mv, anchor.ref_offset());
+            };
+            fill(row.get_mut(x8 + 1), &[right_mv]);
+            fill(next_row.get_mut(x8), &[down_mv]);
+            fill(next_row.get_mut(x8 + 1), &[right_mv, down_mv, corner_mv]);
         }
+        rest = below;
     }
-    let average = |value: i32| match count {
-        1 => value,
-        2 => round2_signed_i32(value, 1),
-        3 => round2_signed_i32(value * 85, 8),
-        _ => round2_signed_i32(value, 2),
-    };
-    field.set(
-        y8 + dy,
-        x8 + dx,
-        Mv {
-            row: average(sum.row),
-            col: average(sum.col),
-        },
-        anchor.ref_offset(),
-        true,
-    );
 }
 
 /// Height of the TMVP unit row bands that [`project_temporal_motion_field`]
@@ -2118,12 +2174,10 @@ impl TemporalProjectionSource {
                     .map_or(0, |&scale| {
                         (if ref_offset < 0 { -scale } else { scale }) as i16
                     }),
-                end_divisor: DIV_MULT
+                end_factor: DIV_MULT
                     .get(ref_offset.unsigned_abs() as usize)
-                    .map_or(0, |&scale| scale as i16),
-                end_numerator: ((ref_offset.abs() - numerator)
-                    .clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE))
-                    as i16,
+                    .map_or(0, |&scale| i32::from(scale as i16))
+                    * (ref_offset.abs() - numerator).clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE),
                 end_is_target: target_ref.is_some() && end_ref == target_ref,
                 flags: if factor.is_some() { scan::PROJECTS } else { 0 }
                     | if end_ref.is_some() {
@@ -2283,6 +2337,7 @@ fn tmvp_projection_factor(numerator: i32, ref_offset: i32, side: usize) -> Optio
         .map(|scale| numerator * scale)
 }
 
+#[cfg(test)]
 fn project_tmvp_mv_with_factor(mv: Mv, numerator: i32, denominator: i32, factor: i32) -> Mv {
     if mv.row.unsigned_abs() > REFMVS_LIMIT as u32 || mv.col.unsigned_abs() > REFMVS_LIMIT as u32 {
         return project_mv(mv, numerator, denominator);
@@ -2299,6 +2354,7 @@ fn project_tmvp_mv_with_factor(mv: Mv, numerator: i32, denominator: i32, factor:
     }
 }
 
+#[cfg(test)]
 fn project_tmvp_mv(mv: Mv, numerator: i32, denominator: i32) -> Mv {
     let factor = clamped_tmvp_factor(numerator, denominator);
     let denominator = denominator.clamp(0, MAX_FRAME_DISTANCE);
@@ -2306,7 +2362,8 @@ fn project_tmvp_mv(mv: Mv, numerator: i32, denominator: i32) -> Mv {
     project_tmvp_mv_with_factor(mv, numerator, denominator, factor)
 }
 
-/// The factor [`project_tmvp_mv`] projects with, after its clamps.
+/// The TMVP projection factor: the clamped numerator times the `DIV_MULT`
+/// of the clamped denominator.
 fn clamped_tmvp_factor(numerator: i32, denominator: i32) -> i32 {
     numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE)
         * DIV_MULT[denominator.clamp(0, MAX_FRAME_DISTANCE) as usize]

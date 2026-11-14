@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::{Avx2, Level, kernel};
-use fearless_simd::{Simd, i8x16, i16x16, i32x8, prelude::*, u8x16, u16x16};
+use fearless_simd::{
+    Simd, SimdIntWiden, i8x16, i8x32, i16x8, i16x16, i32x8, mask16x8, prelude::*, u8x16, u8x32,
+    u16x8, u16x16,
+};
 
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
@@ -12,6 +13,10 @@ use splot_recon::BitDepth;
 use splot_recon::math::round2_signed_i32;
 
 use crate::Result;
+
+#[cfg(target_arch = "x86_64")]
+#[path = "gdf_inlane.rs"]
+mod inlane;
 
 use super::{
     GDF_BIAS, GDF_COORDS, GDF_INTRA_REF_DST, GDF_READ_RADIUS, GdfBlock, GdfClass, GdfSource,
@@ -103,32 +108,6 @@ impl WindowRows for TiledWindow<'_> {
     }
 }
 
-/// Bit `index * 18 + k` is set when weight `index` of tap `k` is zero in every
-/// GDF table for every class in the `classes` bit set.
-const fn zero_weight_taps(classes: u8) -> u64 {
-    let mut mask = 0;
-    let mut bit = 0;
-    while bit < 3 * GDF_COORDS.len() {
-        let (index, k) = (bit / GDF_COORDS.len(), bit % GDF_COORDS.len());
-        let mut zero = true;
-        let mut table = 0;
-        while table < GDF_WEIGHT.len() * GDF_WEIGHT[0].len() {
-            let weights = &GDF_WEIGHT[table / GDF_WEIGHT[0].len()][table % GDF_WEIGHT[0].len()];
-            let mut class = 0;
-            while class < 4 {
-                zero &= classes >> class & 1 == 0 || weights[index][k][class] == 0;
-                class += 1;
-            }
-            table += 1;
-        }
-        if zero {
-            mask |= 1 << bit;
-        }
-        bit += 1;
-    }
-    mask
-}
-
 /// The largest column distance of a tap at each row distance.
 const TAP_COLUMN_REACH: [usize; TAP_REACH + 1] = {
     let mut reach = [0; TAP_REACH + 1];
@@ -143,19 +122,20 @@ const TAP_COLUMN_REACH: [usize; TAP_REACH + 1] = {
     reach
 };
 
-/// Whether every sample that the row pair's taps read equals the center
-/// sample, i.e. the window's `tap_range` is zero. The center rows go first:
-/// in textured windows they alone usually prove the window uneven. The rows
-/// are unrolled so that each row's tap reach is a constant.
+/// The largest minus the smallest sample that the row pair's taps read, the
+/// window's `tap_range`, or [`ROUGH`] once it exceeds `limit`. The
+/// center rows go first: in textured windows they alone usually exceed it.
+/// The rows are unrolled so that each row's tap reach is a constant.
+/// `range` is the largest lane of its second vector minus the smallest of its first.
 #[inline]
-fn window_is_flat<S: Simd, W: WindowRows>(simd: S, window: &W) -> bool {
-    let expected = u16x16::splat(simd, window.row(TAP_REACH)[TAP_REACH]);
-    let even = |row: &[u16; 28], col: usize| {
-        u16x16::from_slice(simd, &row[col..col + 16])
-            .simd_eq(expected)
-            .all_true()
-    };
-    macro_rules! rows_even {
+fn window_range<S: Simd, W: WindowRows>(
+    simd: S,
+    window: &W,
+    limit: u16,
+    range: impl Fn(u16x16<S>, u16x16<S>) -> u16,
+) -> u16 {
+    let (mut low, mut high) = (u16x16::splat(simd, u16::MAX), u16x16::splat(simd, 0));
+    macro_rules! rows_range {
         ($($row:literal)*) => {
             $({
                 const ROW: usize = $row;
@@ -163,124 +143,58 @@ fn window_is_flat<S: Simd, W: WindowRows>(simd: S, window: &W) -> bool {
                     let (above, below) = (ROW.abs_diff(TAP_REACH), ROW.abs_diff(TAP_REACH + 1));
                     TAP_COLUMN_REACH[if above < below { above } else { below }]
                 };
-                even(window.row(ROW), TAP_REACH - REACH) && even(window.row(ROW), TAP_REACH + REACH)
-            })&&*
+                let row = window.row(ROW);
+                for col in [TAP_REACH - REACH, TAP_REACH + REACH] {
+                    let samples = u16x16::from_slice(simd, &row[col..col + 16]);
+                    low = low.min(samples);
+                    high = high.max(samples);
+                }
+            })*
         };
     }
-    rows_even!(6 7 0 1 2 3 4 5 8 9 10 11 12 13)
+    rows_range!(6 7);
+    if range(low, high) > limit {
+        return ROUGH;
+    }
+    rows_range!(0 1 2 3 4 5 8 9 10 11 12 13);
+    match range(low, high) {
+        range if range > limit => ROUGH,
+        range => range,
+    }
 }
 
-/// The tap that class `class` reads in place of class-0 tap `k`: class bit 0
-/// transposes the tap and bit 1 mirrors it horizontally. A tap and its
-/// negation are the same tap. `GDF_COORDS.len()` marks a missing tap.
-const fn class_tap(k: usize, class: usize) -> usize {
-    let (mut dy, mut dx) = GDF_COORDS[k];
-    if class & 1 != 0 {
-        (dy, dx) = (dx, dy);
+/// Bit `lane` in each lane.
+const LANE_BITS: [u16; 16] = {
+    let mut bits = [0; 16];
+    let mut lane = 0;
+    while lane < 16 {
+        bits[lane] = 1 << lane;
+        lane += 1;
     }
-    if class & 2 != 0 {
-        dx = -dx;
-    }
-    if dy < 0 || (dy == 0 && dx < 0) {
-        (dy, dx) = (-dy, -dx);
-    }
-    let mut tap = 0;
-    while tap < GDF_COORDS.len() && (GDF_COORDS[tap].0 != dy || GDF_COORDS[tap].1 != dx) {
-        tap += 1;
-    }
-    tap
-}
-
-/// Every table's weights and clip bounds of class `c` are those of class 0
-/// with the taps moved by `class_tap`, so one class-0 table serves all lanes.
-const _: () = {
-    let mut index = 0;
-    while index < 6 * 6 * 4 * GDF_COORDS.len() {
-        let (reference, qp) = (
-            index / (6 * 4 * GDF_COORDS.len()),
-            index / (4 * GDF_COORDS.len()) % 6,
-        );
-        let (class, k) = (index / GDF_COORDS.len() % 4, index % GDF_COORDS.len());
-        let tap = class_tap(k, class);
-        assert!(tap < GDF_COORDS.len());
-        assert!(GDF_ALPHA[reference][qp][tap][class] == GDF_ALPHA[reference][qp][k][0]);
-        let mut sum = 0;
-        while sum < 3 {
-            let weights = &GDF_WEIGHT[reference][qp][sum];
-            assert!(weights[tap][class] == weights[k][0]);
-            sum += 1;
-        }
-        index += 1;
-    }
+    bits
 };
 
-/// Class-0 tap pairs and the sum that each pair's multiply-add feeds.
-const SYM_PAIRS: [(usize, usize, usize); 15] = [
-    (0, 1, 0),
-    (12, 13, 1),
-    (2, 3, 0),
-    (14, 15, 1),
-    (3, 15, 2),
-    (4, 6, 0),
-    (7, 11, 1),
-    (8, 10, 0),
-    (8, 10, 1),
-    (9, 17, 0),
-    (9, 17, 1),
-    (9, 17, 2),
-    (5, 16, 0),
-    (5, 16, 1),
-    (5, 16, 2),
+/// The widest `tap_range` whose combs may skip the § 7.20.5 comb clip:
+/// two tap differences within it sum to at most 510.
+const LINEAR_RANGE: u16 = 255;
+/// The widest `tap_range` at which some tap's differences may skip the
+/// § 7.20.5 clip: the largest clip bound.
+const CLIP_RANGE: u16 = 511;
+/// [`window_range`] of a window wider than [`CLIP_RANGE`].
+const ROUGH: u16 = u16::MAX;
+
+/// The taps of each group that a class's transpose or mirror permutes: a
+/// group clips as one.
+const TAP_GROUPS: [&[usize]; 8] = [
+    &[0, 12],
+    &[1, 13],
+    &[2, 14],
+    &[3, 15],
+    &[4, 6, 7, 11],
+    &[8, 10],
+    &[9, 17],
+    &[5, 16],
 ];
-const CLASS0_ZERO_WEIGHTS: u64 = zero_weight_taps(0b0001);
-
-/// The distinct tap pairs of `SYM_PAIRS`, in the order [`row_pairs`] interleaves them.
-const COMB_PAIRS: [(usize, usize); 10] = [
-    (0, 1),
-    (12, 13),
-    (2, 3),
-    (14, 15),
-    (3, 15),
-    (4, 6),
-    (7, 11),
-    (8, 10),
-    (9, 17),
-    (5, 16),
-];
-
-/// The `COMB_PAIRS` slot of each `SYM_PAIRS` entry.
-const PAIR_SLOT: [usize; SYM_PAIRS.len()] = {
-    let mut slots = [0; SYM_PAIRS.len()];
-    let mut pair = 0;
-    while pair < SYM_PAIRS.len() {
-        let mut slot = 0;
-        while COMB_PAIRS[slot].0 != SYM_PAIRS[pair].0 || COMB_PAIRS[slot].1 != SYM_PAIRS[pair].1 {
-            slot += 1;
-        }
-        slots[pair] = slot;
-        pair += 1;
-    }
-    slots
-};
-
-/// `SYM_PAIRS` adds every class-0 weight that some table makes nonzero once.
-const _: () = {
-    let mut bit = 0;
-    while bit < 3 * GDF_COORDS.len() {
-        let (sum, k) = (bit / GDF_COORDS.len(), bit % GDF_COORDS.len());
-        let mut uses = 0;
-        let mut pair = 0;
-        while pair < SYM_PAIRS.len() {
-            let (a, b, target) = SYM_PAIRS[pair];
-            if target == sum && (a == k || b == k) {
-                uses += 1;
-            }
-            pair += 1;
-        }
-        assert!(uses == 1 || (uses == 0 && CLASS0_ZERO_WEIGHTS >> bit & 1 != 0));
-        bit += 1;
-    }
-};
 
 /// The error tables as `i8`, the inter ones padded to a power of two so
 /// that a masked index needs no bounds check.
@@ -335,24 +249,23 @@ fn error_table(block: &GdfBlock) -> Option<&'static [i8]> {
     }
 }
 
-/// Class-0 clip bounds and weights of one GDF table, with its bias and the
-/// § 7.20.5 `scale`.
-///
-/// The kernels read `center - tap`, the negated tap differences. The clip
-/// bounds are symmetric, so every comb comes out negated, and the weighted
-/// combs are subtracted from the bias.
-#[repr(align(32))]
+/// The by-class clip bounds and weights of one GDF table, with its bias and
+/// the § 7.20.5 `scale`.
 pub(super) struct GdfSymParams {
-    /// Each tap's clip bounds `[-alpha, alpha]` plus [`ABOVE_OFFSET`], then
-    /// plus [`BELOW_OFFSET`], as whole vectors that the clamps read from memory.
-    bounds: [[[u16; 16]; 4]; GDF_COORDS.len()],
-    /// The weights of each `SYM_PAIRS` entry in alternating lanes.
-    pair_weights: [[i16; 16]; SYM_PAIRS.len()],
+    /// Each `TAP_GROUPS` entry's widest `tap_range` at which its combs skip
+    /// the clips (its smallest clip bound, at most [`LINEAR_RANGE`]), then its
+    /// smallest clip bound: a window marks the bounds below its `tap_range`.
+    group_bounds: [u16; 16],
+    /// The clip bounds of taps `2j` and `2j + 1` by class, for [`rough_half`].
+    lane_alpha: [[u16; 8]; GDF_COORDS.len() / 2],
+    /// Each sum's weights of taps `2j` and `2j + 1` by class times
+    /// `2 * scale`, with sums 0 and 1 exchanged for odd classes.
+    lane_weights: [[[i16; 8]; GDF_COORDS.len() / 2]; 3],
     bias: [i32; 3],
-    /// The bias less [`COMB_BIAS`] times the weights of each sum, which the
-    /// biased combs add back.
-    tap_bias: [i32; 3],
     scale: i16,
+    /// The tables of the x86 slot kernel.
+    #[cfg(target_arch = "x86_64")]
+    slot: inlane::SlotParams,
     /// Whether a flat window with gradient bias 0 keeps its samples.
     keeps_flat: bool,
 }
@@ -375,316 +288,266 @@ impl GdfSymParams {
         let flat_error = i16::from(errors(block, &[flat_pos as u16; 16])[0]);
         let rounding = 12 - u32::from(block.bit_depth.bits());
         Self {
-            bounds: core::array::from_fn(|k| {
-                let alpha = alpha[k][0];
-                [
-                    [ABOVE_OFFSET - alpha; 16],
-                    [ABOVE_OFFSET + alpha; 16],
-                    [BELOW_OFFSET - alpha; 16],
-                    [BELOW_OFFSET + alpha; 16],
-                ]
+            group_bounds: core::array::from_fn(|lane| {
+                let taps = TAP_GROUPS[lane % TAP_GROUPS.len()];
+                let bound = if lane < TAP_GROUPS.len() {
+                    LINEAR_RANGE
+                } else {
+                    u16::MAX
+                };
+                taps.iter().fold(bound, |bound, &k| bound.min(alpha[k][0]))
             }),
-            pair_weights: SYM_PAIRS.map(|(a, b, sum)| {
-                core::array::from_fn(|lane| table[sum][if lane & 1 == 0 { a } else { b }][0])
+            lane_alpha: core::array::from_fn(|pair| {
+                core::array::from_fn(|lane| alpha[2 * pair + lane / 4][lane % 4])
+            }),
+            lane_weights: core::array::from_fn(|sum| {
+                core::array::from_fn(|pair| {
+                    core::array::from_fn(|lane| {
+                        let class = lane % 4;
+                        let sum = if sum < 2 { sum ^ (class & 1) } else { sum };
+                        table[sum][2 * pair + lane / 4][class] * 2 * scale
+                    })
+                })
             }),
             bias,
-            tap_bias: core::array::from_fn(|sum| {
-                let weights: i32 = SYM_PAIRS
-                    .iter()
-                    .filter(|pair| pair.2 == sum)
-                    .map(|&(a, b, _)| i32::from(table[sum][a][0]) + i32::from(table[sum][b][0]))
-                    .sum();
-                bias[sum] - COMB_BIAS * weights
-            }),
             scale,
+            #[cfg(target_arch = "x86_64")]
+            slot: inlane::SlotParams::new(block),
             keeps_flat: round2_signed_i32(i32::from(flat_error) * block.pix_scale, rounding) == 0,
         }
     }
 }
 
-/// How a kernel pairs comb lanes for its `i16` multiply-adds. The halves of
-/// [`Lanes::pairs`] and of [`Lanes::spread`] hold the same samples, and
-/// [`Lanes::digits`] reads its sums in that order.
-trait Lanes<S: Simd>: Copy {
-    /// `a` and `b` interleaved, in two halves.
-    fn pairs(self, simd: S, a: i16x16<S>, b: i16x16<S>) -> [i16x16<S>; 2];
-    /// Sums of the 8 two-sample class blocks, per sample in the order of
-    /// [`Lanes::pairs`].
-    fn spread(self, simd: S, blocks: i32x8<S>) -> [i32x8<S>; 2];
-    /// The § 7.20.5 digit `Clip3(-scale, scale - 1, Round2Signed(sum * scale, 15))`
-    /// of every sample, in sample order.
-    fn digits(self, simd: S, sums: [i32x8<S>; 2], scale: i16) -> i16x16<S>;
+/// Bit `sum * 18 + k` is set when weight `sum` of tap `k` is zero in every
+/// GDF table for every class, with sums 0 and 1 exchanged for odd classes
+/// as [`rough_half`] adds them.
+const LANE_ZERO_WEIGHTS: u64 = {
+    let mut mask = 0;
+    let mut bit = 0;
+    while bit < 3 * GDF_COORDS.len() {
+        let (sum, k) = (bit / GDF_COORDS.len(), bit % GDF_COORDS.len());
+        let mut zero = true;
+        let mut table = 0;
+        while table < GDF_WEIGHT.len() * GDF_WEIGHT[0].len() {
+            let weights = &GDF_WEIGHT[table / GDF_WEIGHT[0].len()][table % GDF_WEIGHT[0].len()];
+            let mut class = 0;
+            while class < 4 {
+                let row = if sum < 2 { sum ^ (class & 1) } else { sum };
+                zero &= weights[row][k][class] == 0;
+                class += 1;
+            }
+            table += 1;
+        }
+        if zero {
+            mask |= 1 << bit;
+        }
+        bit += 1;
+    }
+    mask
+};
+
+/// How [`filter_run_with`] filters a row pair of 16 samples into a sink.
+trait RowPairs<S: Simd>: Copy {
+    fn rows<W: WindowRows, R: RowSink>(
+        self,
+        simd: S,
+        window: &W,
+        sink: R,
+        classes: i32x8<S>,
+        block_params: (&GdfBlock, &GdfSymParams),
+    );
 }
 
-/// Pairs by whole-vector interleaves: the first half holds samples `0..8`.
+/// [`sym_rows_with`]: [`rough_half`] for every window.
 #[derive(Clone, Copy)]
-struct Interleaved;
+struct Rough;
 
-impl<S: Simd> Lanes<S> for Interleaved {
+impl<S: Simd> RowPairs<S> for Rough {
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn pairs(self, simd: S, a: i16x16<S>, b: i16x16<S>) -> [i16x16<S>; 2] {
-        let (low, high) = simd.interleave_i16x16(a, b);
-        [low, high]
-    }
-
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn spread(self, simd: S, blocks: i32x8<S>) -> [i32x8<S>; 2] {
-        let (low, high) = simd.interleave_i32x8(blocks, blocks);
-        [low, high]
-    }
-
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn digits(self, simd: S, sums: [i32x8<S>; 2], scale: i16) -> i16x16<S> {
-        let scale = i32::from(scale);
-        let [low, high] = sums.map(|sum| {
-            let scaled = sum * scale;
-            ((scaled + (scaled >> 31) + (1 << 14)) >> 15)
-                .clamp(i32x8::splat(simd, -scale), i32x8::splat(simd, scale - 1))
-        });
-        simd.narrow_i32x8(low, high)
+    fn rows<W: WindowRows, R: RowSink>(
+        self,
+        simd: S,
+        window: &W,
+        sink: R,
+        classes: i32x8<S>,
+        (block, params): (&GdfBlock, &GdfSymParams),
+    ) {
+        sym_rows_with(simd, window, sink, classes, block, params);
     }
 }
 
-/// Pairs by AVX2 in-lane unpacks: the first half holds samples `0..4` and
-/// `8..12`, which an in-lane pack of the two halves puts back in order.
-#[cfg(target_arch = "x86_64")]
-#[derive(Clone, Copy)]
-struct InLane;
+/// The three sums of 8 samples, each lane in sample order.
+type HalfSums<S> = [i32x8<S>; 3];
 
-#[cfg(target_arch = "x86_64")]
-kernel!(
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn unpack_pairs(t: Avx2, a: i16x16<Avx2>, b: i16x16<Avx2>) -> [i16x16<Avx2>; 2] {
-        use core::arch::x86_64::{_mm256_unpackhi_epi16, _mm256_unpacklo_epi16};
-        [
-            _mm256_unpacklo_epi16(a.into(), b.into()).simd_into(t),
-            _mm256_unpackhi_epi16(a.into(), b.into()).simd_into(t),
-        ]
-    }
-);
-
-#[cfg(target_arch = "x86_64")]
-kernel!(
-    /// The sums clamp to `[-32768, 0x7000]`: the pack saturates the lower
-    /// end, and past the positive cap every digit is `scale - 1`. `pmulhrsw`
-    /// then rounds `|v| * scale` by 15 bits; -32768 gives `-scale`.
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn packed_digits(t: Avx2, low: i32x8<Avx2>, high: i32x8<Avx2>, scale: i16) -> i16x16<Avx2> {
-        use core::arch::x86_64::{
-            __m256i, _mm256_min_epi32, _mm256_mulhrs_epi16, _mm256_packs_epi32, _mm256_set1_epi16,
-            _mm256_set1_epi32, _mm256_sign_epi16,
-        };
-        let clamp = |sums: __m256i| _mm256_min_epi32(sums, _mm256_set1_epi32(0x7000));
-        let value = _mm256_packs_epi32(clamp(low.into()), clamp(high.into()));
-        let signed_scale = _mm256_sign_epi16(_mm256_set1_epi16(scale), value);
-        let magnitude = _mm256_mulhrs_epi16(signed_scale, value);
-        _mm256_sign_epi16(magnitude, value).simd_into(t)
-    }
-);
-
-#[cfg(target_arch = "x86_64")]
-kernel!(
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn unpack_blocks(t: Avx2, blocks: i32x8<Avx2>) -> [i32x8<Avx2>; 2] {
-        use core::arch::x86_64::{_mm256_unpackhi_epi32, _mm256_unpacklo_epi32};
-        let blocks = blocks.into();
-        [
-            _mm256_unpacklo_epi32(blocks, blocks).simd_into(t),
-            _mm256_unpackhi_epi32(blocks, blocks).simd_into(t),
-        ]
-    }
-);
-
-#[cfg(target_arch = "x86_64")]
-impl Lanes<Avx2> for InLane {
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn pairs(self, simd: Avx2, a: i16x16<Avx2>, b: i16x16<Avx2>) -> [i16x16<Avx2>; 2] {
-        unpack_pairs(simd, a, b)
-    }
-
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn spread(self, simd: Avx2, blocks: i32x8<Avx2>) -> [i32x8<Avx2>; 2] {
-        unpack_blocks(simd, blocks)
-    }
-
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn digits(self, simd: Avx2, [low, high]: [i32x8<Avx2>; 2], scale: i16) -> i16x16<Avx2> {
-        packed_digits(simd, low, high, scale)
-    }
-}
-
-/// Offsets of the negated tap reads above and below a sample: each read
-/// `center - tap` is taken modulo 2^16 with its offset added, which keeps it
-/// in `u16`. The offsets sum to [`COMB_OFFSET`], so that a saturating `u16`
-/// add of the two clipped reads clips their negated comb to at most 512.
-const ABOVE_OFFSET: u16 = 32512;
-const BELOW_OFFSET: u16 = COMB_OFFSET - ABOVE_OFFSET;
-const COMB_OFFSET: u16 = u16::MAX - 512;
-/// A negated comb plus [`COMB_OFFSET`], read as `i16`, is the comb less this.
-const COMB_BIAS: i32 = 65536 - COMB_OFFSET as i32;
-
-/// The centre samples of a row plus [`ABOVE_OFFSET`] and [`BELOW_OFFSET`].
-type Centers<S> = (u16x16<S>, u16x16<S>);
-
-/// The samples of `row` from column `col`.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn samples<S: Simd>(simd: S, row: &[u16; 28], col: usize) -> u16x16<S> {
-    u16x16::from_slice(simd, &row[col..col + 16])
-}
-
-/// The offset negated differences `center - tap` of tap `TAP` for row
-/// `ROW`: the tap's two mirrored reads.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn tap_diffs<S: Simd, W: WindowRows, const TAP: usize, const ROW: usize>(
+/// Writes into `pos` the § 7.20.5 error indices of both rows of a row pair
+/// for the 8 samples from column `8 * HALF`: it adds to the sums from `init`
+/// every tap's comb times its weight, each lane
+/// with its own class's clip bounds and weights: `index` holds each lane's
+/// byte offsets into a by-class table of two taps. With `CLIP` every tap
+/// clips its differences, with `COMB` its combs.
+#[inline(never)]
+fn rough_half<S: Simd, W: WindowRows, const HALF: usize, const CLIP: bool, const COMB: bool>(
     simd: S,
     window: &W,
-    (above, below): Centers<S>,
-) -> (u16x16<S>, u16x16<S>) {
-    let (dy, dx) = GDF_COORDS[TAP];
-    let row = TAP_REACH + ROW;
-    (
-        above
-            - samples(
-                simd,
-                window.row(row - dy as usize),
-                (TAP_REACH as isize - dx) as usize,
-            ),
-        below
-            - samples(
-                simd,
-                window.row(row + dy as usize),
-                (TAP_REACH as isize + dx) as usize,
-            ),
-    )
-}
-
-/// The negated comb, less [`COMB_BIAS`], of the offset negated reads
-/// `above` and `below`, each within its offset tap bounds: the saturating
-/// add clips the comb's upper end at 512 and the max its lower end at -511.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn clipped_sum<S: Simd>(
-    simd: S,
-    above: u16x16<S>,
-    below: u16x16<S>,
-    bounds: &[[u16; 16]; 4],
-) -> i16x16<S> {
-    let bound = |index: usize| u16x16::from_slice(simd, &bounds[index]);
-    let above = above.max(bound(0)).min(bound(1));
-    let below = below.max(bound(2)).min(bound(3));
-    above
-        .saturating_add(below)
-        .max(u16x16::splat(simd, COMB_OFFSET - 511))
-        .bitcast()
-}
-
-/// `a` and `b` with the lanes where `select` (all ones or zero per lane) is
-/// set exchanged: two xors of one masked difference, four operations where
-/// two blends are six micro-ops.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn swap<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: u16x16<S>) -> (u16x16<S>, u16x16<S>) {
-    let moved = (a ^ b) & select;
-    (a ^ moved, b ^ moved)
-}
-
-/// The class lane masks that transpose and mirror the taps.
-type Masks<S> = (u16x16<S>, u16x16<S>);
-
-/// The clipped sums of taps `K` and `T`, whose candidate samples coincide:
-/// each lane of one reads the tap its class moves `K` to, so the two combs
-/// select between the same two diff pairs. `select` is the class mask that
-/// sends `K`'s lanes to `T` (`transposed`, or `mirrored` when `K`'s transpose
-/// is itself and its mirror is `T`).
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn paired_combs<S: Simd, W: WindowRows, const K: usize, const T: usize, const ROW: usize>(
-    simd: S,
-    window: &W,
-    centers: Centers<S>,
-    select: u16x16<S>,
-    params: &GdfSymParams,
-) -> [i16x16<S>; 2] {
-    let (above, below) = tap_diffs::<S, W, K, ROW>(simd, window, centers);
-    let (t_above, t_below) = tap_diffs::<S, W, T, ROW>(simd, window, centers);
-    let (above, t_above) = swap(above, t_above, select);
-    let (below, t_below) = swap(below, t_below, select);
-    [
-        clipped_sum(simd, above, below, &params.bounds[K]),
-        clipped_sum(simd, t_above, t_below, &params.bounds[T]),
-    ]
-}
-
-/// The clipped sums of the tap cycle `A`, `B`, `C`, `D`, whose four combs
-/// select among the same four diff pairs: mirroring swaps `A`/`B` and
-/// `C`/`D`, transposing swaps the pairs.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn cycle_combs<
-    S: Simd,
-    W: WindowRows,
-    const A: usize,
-    const B: usize,
-    const C: usize,
-    const D: usize,
-    const ROW: usize,
->(
-    simd: S,
-    window: &W,
-    centers: Centers<S>,
-    (transposed, mirrored): Masks<S>,
-    params: &GdfSymParams,
-) -> [i16x16<S>; 4] {
-    let (a_above, a_below) = tap_diffs::<S, W, A, ROW>(simd, window, centers);
-    let (b_above, b_below) = tap_diffs::<S, W, B, ROW>(simd, window, centers);
-    let (c_above, c_below) = tap_diffs::<S, W, C, ROW>(simd, window, centers);
-    let (d_above, d_below) = tap_diffs::<S, W, D, ROW>(simd, window, centers);
-    let select4 = |a: u16x16<S>, b: u16x16<S>, c: u16x16<S>, d: u16x16<S>| {
-        let ((ab0, ab1), (cd0, cd1)) = (swap(a, b, mirrored), swap(c, d, mirrored));
-        let ((first, third), (second, fourth)) =
-            (swap(ab0, cd0, transposed), swap(ab1, cd1, transposed));
-        [first, second, third, fourth]
+    (index, odd): (u8x16<S>, mask16x8<S>),
+    init: &HalfSums<S>,
+    (pos, params): (&mut [[u16; 16]; 2], &GdfSymParams),
+) {
+    let mut sums = [*init, *init];
+    let load = |row: usize, col: usize| -> i16x8<S> {
+        let row = window.row(row);
+        u16x8::from_slice(simd, &row[col + 8 * HALF..col + 8 * HALF + 8]).bitcast()
     };
-    let above = select4(a_above, b_above, c_above, d_above);
-    let below = select4(a_below, b_below, c_below, d_below);
-    [
-        clipped_sum(simd, above[0], below[0], &params.bounds[A]),
-        clipped_sum(simd, above[1], below[1], &params.bounds[B]),
-        clipped_sum(simd, above[2], below[2], &params.bounds[C]),
-        clipped_sum(simd, above[3], below[3], &params.bounds[D]),
-    ]
+    let lookup = |table: &[u16; 8], odd: bool| -> i16x8<S> {
+        let table = u16x8::from_slice(simd, table).bitcast::<u8x16<S>>();
+        let index = if odd { index + 8 } else { index };
+        simd.swizzle_dyn_within_blocks_u8x16(table, index).bitcast()
+    };
+    let lookup_weight = |table: &[i16; 8], odd: bool| -> i16x8<S> {
+        let table = i16x8::from_slice(simd, table).bitcast::<u8x16<S>>();
+        let index = if odd { index + 8 } else { index };
+        simd.swizzle_dyn_within_blocks_u8x16(table, index).bitcast()
+    };
+    let centers = [load(TAP_REACH, TAP_REACH), load(TAP_REACH + 1, TAP_REACH)];
+    let zero = i16x8::splat(simd, 0);
+    macro_rules! taps {
+        ($($k:literal)*) => {$({
+            const K: usize = $k;
+            let (dy, dx) = GDF_COORDS[K];
+            let alpha = lookup(&params.lane_alpha[K / 2], K & 1 != 0);
+            let low = zero - alpha;
+            let weights: [i16x8<S>; 3] = core::array::from_fn(|sum| {
+                if LANE_ZERO_WEIGHTS >> (sum * GDF_COORDS.len() + K) & 1 == 0 {
+                    lookup_weight(&params.lane_weights[sum][K / 2], K & 1 != 0)
+                } else {
+                    zero
+                }
+            });
+            for (row, (center, sums)) in centers.iter().zip(&mut sums).enumerate() {
+                let at = TAP_REACH + row;
+                let above = load(at - dy as usize, (TAP_REACH as isize - dx) as usize) - *center;
+                let below = load(at + dy as usize, (TAP_REACH as isize + dx) as usize) - *center;
+                let (above, below) = if CLIP {
+                    (above.max(low).min(alpha), below.max(low).min(alpha))
+                } else {
+                    (above, below)
+                };
+                let comb = above + below;
+                let comb = if COMB {
+                    comb.max(i16x8::splat(simd, -512)).min(i16x8::splat(simd, 511))
+                } else {
+                    comb
+                };
+                for (sum, (total, weight)) in sums.iter_mut().zip(weights).enumerate() {
+                    if LANE_ZERO_WEIGHTS >> (sum * GDF_COORDS.len() + K) & 1 == 0 {
+                        let (first, second) = comb.widening_mul(weight);
+                        *total += simd.combine_i32x4(first, second);
+                    }
+                }
+            }
+        })*};
+    }
+    taps!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17);
+    for (sums, pos) in sums.into_iter().zip(pos) {
+        rough_index(simd, sums, odd, params).store_slice(&mut pos[8 * HALF..8 * HALF + 8]);
+    }
 }
 
-/// The three § 7.20.5 `gdfIdx` sums of a row, in the halves of [`Lanes`].
-type Sums<S> = [[i32x8<S>; 2]; 3];
-
-/// The § 7.20.5 error index `pos` of the biased `gdfIdx` sums `sums`.
+/// The § 7.20.5 error indices of 8 samples from their [`rough_half`] sums,
+/// which hold sums 0 and 1 exchanged where `odd` is set.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn error_index<S: Simd, L: Lanes<S>>(
+fn rough_index<S: Simd>(
     simd: S,
-    lanes: L,
-    sums: Sums<S>,
+    sums: HalfSums<S>,
+    odd: mask16x8<S>,
     params: &GdfSymParams,
-) -> [u16; 16] {
+) -> u16x8<S> {
     let scale = params.scale;
-    let [first, second, third] = sums.map(|sums| lanes.digits(simd, sums, scale));
+    let [first, second, third] = sums.map(|sum| {
+        let rounded = (sum + (sum >> 31) + (1 << 15)).bitcast::<i16x16<S>>();
+        let (low, high) = simd.split_i16x16(rounded);
+        simd.unzip_high_i16x8(low, high)
+            .clamp(i16x8::splat(simd, -scale), i16x8::splat(simd, scale - 1))
+    });
+    let (first, second) = (odd.select(second, first), odd.select(first, second));
     let radix = 2 * scale;
     let offset = (scale * radix + scale) * radix + scale;
-    ((first * radix + second) * radix + third + offset)
-        .bitcast::<u16x16<S>>()
-        .to_array()
+    ((first * radix + second) * radix + third + offset).bitcast()
+}
+
+/// Byte `b` of each half's lookup index: the low byte of lane `b / 2`'s
+/// class block, then its high byte.
+const HALF_INDEX: [u8; 16] = [0, 1, 0, 1, 4, 5, 4, 5, 8, 9, 8, 9, 12, 13, 12, 13];
+
+/// Filters a row pair through [`rough_half`] into `sink`: `classes` holds
+/// each class block's class and gradient bias.
+#[inline(never)]
+fn rough_rows<S: Simd, W: WindowRows, R: RowSink>(
+    simd: S,
+    window: &W,
+    mut sink: R,
+    classes: i32x8<S>,
+    (clipped, range): (u8, u16),
+    block: &GdfBlock,
+    params: &GdfSymParams,
+) {
+    let factor = 2 * i32::from(params.scale);
+    let odd = (classes & 1).simd_ne(i32x8::splat(simd, 0));
+    let [b0, b1, b2] = params.bias.map(|bias| i32x8::splat(simd, bias * factor));
+    let spread = |blocks: i32x8<S>| simd.interleave_i32x8(blocks, blocks);
+    let (first, second, third) = (
+        spread(odd.select(b1, b0)),
+        spread(odd.select(b0, b1)),
+        spread((classes >> 2) * factor + b2),
+    );
+    let class = (classes & 3) * 0x202 + 0x100;
+    let (low, high) = simd.split_u8x32(class.bitcast::<u8x32<S>>());
+    let pattern = u8x16::from_slice(simd, &HALF_INDEX);
+    let index = [low, high].map(|blocks| simd.swizzle_dyn_within_blocks_u8x16(blocks, pattern));
+    let parity =
+        index.map(|index| (index.bitcast::<u16x8<S>>() & 2).simd_ne(u16x8::splat(simd, 0)));
+    let init = |half: usize| -> HalfSums<S> {
+        let half = |pair: (i32x8<S>, i32x8<S>)| if half == 0 { pair.0 } else { pair.1 };
+        [half(first), half(second), half(third)]
+    };
+    let mut pos = [[0; 16]; 2];
+    macro_rules! halves {
+        ($clip:literal, $comb:literal) => {{
+            let state = (&mut pos, params);
+            rough_half::<S, W, 0, $clip, $comb>(
+                simd,
+                window,
+                (index[0], parity[0]),
+                &init(0),
+                state,
+            );
+            let state = (&mut pos, params);
+            rough_half::<S, W, 1, $clip, $comb>(
+                simd,
+                window,
+                (index[1], parity[1]),
+                &init(1),
+                state,
+            );
+        }};
+    }
+    match (clipped != 0, range > LINEAR_RANGE) {
+        _ if range == 0 => {
+            for half in 0..2 {
+                let first = rough_index(simd, init(half), parity[half], params);
+                first.store_slice(&mut pos[0][8 * half..8 * half + 8]);
+            }
+            pos[1] = pos[0];
+        }
+        (true, true) => halves!(true, true),
+        (true, false) => halves!(true, false),
+        (false, true) => halves!(false, true),
+        (false, false) => halves!(false, false),
+    }
+    sink.row(simd, 0, &pos[0], block);
+    sink.row(simd, 1, &pos[1], block);
 }
 
 /// Adds to the samples of `output` the § 7.20.5 residual of the error
@@ -737,6 +600,8 @@ pub(super) trait GdfSample: Copy + Default {
     fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S>;
     /// Stores 16 lanes, each within the sample range, into `samples`.
     fn store<S: Simd>(simd: S, lanes: i16x16<S>, samples: &mut [Self; 16]);
+    /// Adds to each sample of `output` its § 7.20.5 residual in `residuals`.
+    fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], block: &GdfBlock);
 }
 
 impl GdfSample for u16 {
@@ -751,16 +616,23 @@ impl GdfSample for u16 {
     fn store<S: Simd>(_simd: S, lanes: i16x16<S>, samples: &mut [Self; 16]) {
         lanes.bitcast::<u16x16<S>>().store_slice(samples);
     }
+
+    fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], block: &GdfBlock) {
+        let (residuals, _) = residuals.as_chunks::<16>();
+        let (output, _) = output.as_chunks_mut::<16>();
+        for (residuals, output) in residuals.iter().zip(output) {
+            let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, residuals));
+            apply_residuals(simd, simd.combine_i16x8(low, high), output, block);
+        }
+    }
 }
 
 impl GdfSample for u8 {
     #[allow(clippy::inline_always)]
     #[inline(always)]
     fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S> {
-        let lanes = u8x16::from_slice(simd, samples);
-        simd.widen_u8x32(simd.combine_u8x16(lanes, lanes))
-            .0
-            .bitcast()
+        let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, samples));
+        simd.combine_u16x8(low, high).bitcast()
     }
 
     #[allow(clippy::inline_always)]
@@ -769,121 +641,58 @@ impl GdfSample for u8 {
         let (low, high) = simd.split_u16x16(lanes.bitcast());
         simd.narrow_u16x8(low, high).store_slice(samples);
     }
-}
 
-/// The interleaved negated combs of one row for each `COMB_PAIRS` slot, in
-/// the halves of [`Lanes::pairs`].
-type RowPairs<S> = [[i16x16<S>; 2]; COMB_PAIRS.len()];
-
-/// The negated combs of row `ROW` of 16 samples of any class mix, paired
-/// for [`row_index`]. Taps are grouped so that each group's combs share
-/// their candidate samples and selects: a tap and its transpose read
-/// mirrored offsets, and taps `4`, `6`, `7`, `11` form a cycle. Kept apart
-/// from the multiply-adds, whose six sums would otherwise force LLVM to
-/// spill the combs.
-#[inline(never)]
-fn row_pairs<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
-    simd: S,
-    lanes: L,
-    window: &W,
-    masks: Masks<S>,
-    params: &GdfSymParams,
-) -> RowPairs<S> {
-    let center = samples(simd, window.row(TAP_REACH + ROW), TAP_REACH);
-    let centers = (center + ABOVE_OFFSET, center + BELOW_OFFSET);
-    let (transposed, mirrored) = masks;
-    let mut out = [[i16x16::splat(simd, 0); 2]; COMB_PAIRS.len()];
-    let [tap0, tap12] = paired_combs::<S, W, 0, 12, ROW>(simd, window, centers, transposed, params);
-    let [tap1, tap13] = paired_combs::<S, W, 1, 13, ROW>(simd, window, centers, transposed, params);
-    out[0] = lanes.pairs(simd, tap0, tap1);
-    out[1] = lanes.pairs(simd, tap12, tap13);
-    let [tap2, tap14] = paired_combs::<S, W, 2, 14, ROW>(simd, window, centers, transposed, params);
-    let [tap3, tap15] = paired_combs::<S, W, 3, 15, ROW>(simd, window, centers, transposed, params);
-    out[2] = lanes.pairs(simd, tap2, tap3);
-    out[3] = lanes.pairs(simd, tap14, tap15);
-    out[4] = lanes.pairs(simd, tap3, tap15);
-    let [tap4, tap6, tap7, tap11] =
-        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params);
-    out[5] = lanes.pairs(simd, tap4, tap6);
-    out[6] = lanes.pairs(simd, tap7, tap11);
-    let [tap8, tap10] = paired_combs::<S, W, 8, 10, ROW>(simd, window, centers, mirrored, params);
-    out[7] = lanes.pairs(simd, tap8, tap10);
-    let [tap9, tap17] = paired_combs::<S, W, 9, 17, ROW>(simd, window, centers, transposed, params);
-    out[8] = lanes.pairs(simd, tap9, tap17);
-    let [tap5, tap16] = paired_combs::<S, W, 5, 16, ROW>(simd, window, centers, transposed, params);
-    out[9] = lanes.pairs(simd, tap5, tap16);
-    out
-}
-
-/// The error indices of a row from its paired combs: each `SYM_PAIRS` entry
-/// subtracts its weighted combs from its sum.
-#[inline(never)]
-fn row_index<S: Simd, L: Lanes<S>>(
-    simd: S,
-    lanes: L,
-    pairs: &RowPairs<S>,
-    init: &Sums<S>,
-    params: &GdfSymParams,
-) -> [u16; 16] {
-    let mut sums = *init;
-    macro_rules! add_pairs {
-        ($($pair:literal)*) => {$({
-            const PAIR: usize = $pair;
-            let weights = i16x16::from_slice(simd, &params.pair_weights[PAIR]);
-            let sum = &mut sums[SYM_PAIRS[PAIR].2];
-            for (sum, half) in sum.iter_mut().zip(pairs[PAIR_SLOT[PAIR]]) {
-                *sum -= simd.pairwise_dot_product_i16x16(half, weights);
-            }
-        })*};
+    fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], _block: &GdfBlock) {
+        let (residual_pairs, residuals) = residuals.as_chunks::<32>();
+        let (output_pairs, output) = output.as_chunks_mut::<32>();
+        for (residuals, output) in residual_pairs.iter().zip(output_pairs) {
+            let samples = (u8x32::from_slice(simd, output) ^ 0x80).bitcast::<i8x32<S>>();
+            let sum = samples.saturating_add(i8x32::from_slice(simd, residuals));
+            (sum.bitcast::<u8x32<S>>() ^ 0x80).store_slice(output);
+        }
+        if let (Some(residuals), Some(output)) =
+            (residuals.first_chunk::<16>(), output.first_chunk_mut())
+        {
+            let samples = (u8x16::from_slice(simd, output) ^ 0x80).bitcast::<i8x16<S>>();
+            let sum = samples.saturating_add(i8x16::from_slice(simd, residuals));
+            (sum.bitcast::<u8x16<S>>() ^ 0x80).store_array(output);
+        }
     }
-    add_pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
-    error_index(simd, lanes, sums, params)
 }
 
 /// Filters in place a row pair of 16 samples whose class changes every two
-/// samples, reading class-0 weights and moving each lane's taps by its
-/// class. A window with `tap_range` 0 adds zero at every tap, so its sums
+/// samples. A window with `tap_range` 0 adds zero at every tap, so its sums
 /// stay at the bias.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn sym_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
+fn sym_rows_with<S: Simd, W: WindowRows, R: RowSink>(
     simd: S,
-    lanes: L,
     window: &W,
-    mut sink: R,
+    sink: R,
     classes: i32x8<S>,
     block: &GdfBlock,
     params: &GdfSymParams,
 ) {
-    let flat = window_is_flat(simd, window);
-    if flat && params.keeps_flat && (classes >> 2).simd_eq(i32x8::splat(simd, 0)).all_true() {
+    let range = window_range(simd, window, CLIP_RANGE, |low, high| {
+        simd.reduce_max_u16x16(high) - simd.reduce_min_u16x16(low)
+    });
+    if range == 0 && params.keeps_flat && (classes >> 2).simd_eq(i32x8::splat(simd, 0)).all_true() {
+        let mut sink = sink;
         sink.keep(simd);
         return;
     }
-    let biases = |bias: [i32; 3]| {
-        [
-            lanes.spread(simd, i32x8::splat(simd, bias[0])),
-            lanes.spread(simd, i32x8::splat(simd, bias[1])),
-            lanes.spread(simd, (classes >> 2) + bias[2]),
-        ]
-    };
-    if flat {
-        let pos = error_index(simd, lanes, biases(params.bias), params);
-        sink.row(simd, 0, &pos, block);
-        sink.row(simd, 1, &pos, block);
-        return;
-    }
-    let init = biases(params.tap_bias);
-    let class = classes & 3;
-    let class = (class | (class << 16)).bitcast::<u16x16<S>>();
-    let zero = u16x16::splat(simd, 0);
-    let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
-    let pairs = row_pairs::<S, L, W, 0>(simd, lanes, window, masks, params);
-    let pos = row_index(simd, lanes, &pairs, &init, params);
-    sink.row(simd, 0, &pos, block);
-    let pairs = row_pairs::<S, L, W, 1>(simd, lanes, window, masks, params);
-    let pos = row_index(simd, lanes, &pairs, &init, params);
-    sink.row(simd, 1, &pos, block);
+    let below = u16x16::from_slice(simd, &params.group_bounds).simd_lt(u16x16::splat(simd, range));
+    let bits = u16x16::from_slice(simd, &LANE_BITS);
+    let groups = simd.reduce_sum_u16x16(below.select(bits, u16x16::splat(simd, 0)));
+    rough_rows(
+        simd,
+        window,
+        sink,
+        classes,
+        ((groups >> 8) as u8, range),
+        block,
+        params,
+    );
 }
 
 /// Where [`sym_rows_with`] puts a row pair's § 7.20.5 error indices.
@@ -909,7 +718,7 @@ impl<O: GdfSample> RowSink for [&mut [O; 16]; 2] {
     fn keep<S: Simd>(&mut self, _simd: S) {}
 }
 
-/// Stores the pair's residual bytes for [`add_residuals`]: each is a scalar
+/// Stores the pair's residual bytes for [`GdfSample::add_residuals`]: each is a scalar
 /// load and store, independent of the others, where inserting them into one
 /// vector chains every lookup on the one before. The table holds the
 /// residual of each entry of the block's error table from index 0, so that
@@ -937,22 +746,6 @@ impl RowSink for ErrorRows<'_> {
     }
 }
 
-/// Adds to each sample of `output` its § 7.20.5 residual in `residuals`, 16
-/// samples at a time.
-fn add_residuals<S: Simd, O: GdfSample>(
-    simd: S,
-    residuals: &[i8],
-    output: &mut [O],
-    block: &GdfBlock,
-) {
-    let (residuals, _) = residuals.as_chunks::<16>();
-    let (output, _) = output.as_chunks_mut::<16>();
-    for (residuals, output) in residuals.iter().zip(output) {
-        let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, residuals));
-        apply_residuals(simd, simd.combine_i16x8(low, high), output, block);
-    }
-}
-
 /// [`sym_rows_with`] through the target's widest kernel.
 #[inline(never)]
 pub(super) fn sym_rows<O: GdfSample>(
@@ -963,15 +756,15 @@ pub(super) fn sym_rows<O: GdfSample>(
     params: &GdfSymParams,
 ) {
     #[cfg(target_arch = "x86_64")]
-    if let Some(avx2) = Level::baseline().as_avx2() {
+    if let Some(avx2) = fearless_simd::Level::baseline().as_avx2() {
         let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
-        return sym_rows_with(avx2, InLane, window, output, classes, block, params);
+        return inlane::InLane.rows(avx2, window, output, classes, (block, params));
     }
-    sym_rows_interleaved(window, output, classes, block, params);
+    sym_rows_portable(window, output, classes, block, params);
 }
 
 /// [`sym_rows_with`] through the portable kernel.
-pub(super) fn sym_rows_interleaved<O: GdfSample>(
+pub(super) fn sym_rows_portable<O: GdfSample>(
     window: &Window<'_>,
     output: [&mut [O; 16]; 2],
     classes: &[GdfClass; 8],
@@ -980,7 +773,6 @@ pub(super) fn sym_rows_interleaved<O: GdfSample>(
 ) {
     crate::baseline_simd!(simd => sym_rows_with(
         simd,
-        Interleaved,
         window,
         output,
         i32x8::from_slice(simd, &classes.map(|class| class.0)),
@@ -1027,6 +819,65 @@ pub(super) fn sym_rows_narrow<O: GdfSample>(
     Some(())
 }
 
+/// A source row sample type that [`copy_shifted`] widens to `u16` lanes.
+pub(super) trait SourceLanes: Copy + Default {
+    fn lanes<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S>;
+}
+
+impl SourceLanes for u8 {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn lanes<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
+        let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, samples));
+        simd.combine_u16x8(low, high)
+    }
+}
+
+impl SourceLanes for u16 {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn lanes<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
+        u16x16::from_slice(simd, samples)
+    }
+}
+
+/// Writes `src << shift` into `dst`, as long as `src`, and returns the
+/// largest sample of `src`.
+pub(super) fn copy_shifted<T: SourceLanes>(src: &[T], dst: &mut [u16], shift: u32) -> u16 {
+    baseline_simd!(simd => copy_shifted_with(simd, src, dst, shift))
+}
+
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn copy_shifted_with<S: Simd, T: SourceLanes>(
+    simd: S,
+    src: &[T],
+    dst: &mut [u16],
+    shift: u32,
+) -> u16 {
+    let len = src.len().min(dst.len());
+    let mut max = u16x16::splat(simd, 0);
+    let mut chunk = |samples: &[T; 16], out: &mut [u16; 16]| {
+        let samples = T::lanes(simd, samples);
+        max = max.max(samples);
+        (samples << shift).store_array(out);
+    };
+    let (src, dst) = (&src[..len], &mut dst[..len]);
+    if let (Some(last), Some(last_out)) = (src.last_chunk(), dst.last_chunk_mut()) {
+        chunk(last, last_out);
+        let (dst, _) = dst.as_chunks_mut::<16>();
+        for (samples, out) in src.as_chunks::<16>().0.iter().zip(dst) {
+            chunk(samples, out);
+        }
+    } else {
+        let (mut padded, mut out) = ([T::default(); 16], [0; 16]);
+        padded[..len].copy_from_slice(&src[..len]);
+        chunk(&padded, &mut out);
+        dst[..len].copy_from_slice(&out[..len]);
+    }
+    simd.reduce_max_u16x16(max)
+}
+
 /// Gradient sums of 16 columns, one row per direction.
 type GradChunk = [[u16; 16]; 4];
 
@@ -1037,7 +888,7 @@ type GradChunk = [[u16; 16]; 4];
 pub(super) struct ClassScratch {
     pub(super) grads: Vec<GradChunk>,
     /// A row pair's residual bytes, two rows of [`ClassScratch::error_row`]
-    /// each, for [`add_residuals`].
+    /// each, for [`GdfSample::add_residuals`].
     pub(super) errors: Vec<i8>,
     /// [`ErrorRows`]' table, and the block facts it was built for.
     pub(super) table: Vec<i8>,
@@ -1082,10 +933,16 @@ fn gradients<S: Simd>(simd: S, rows: [&[u16; 18]; 3]) -> [i16x16<S>; 4] {
 /// source rows, summed over its two rows, for the columns from column 1 of
 /// each row; a chunk that reads past the rows reads zeros there.
 fn gradient_row<S: Simd>(simd: S, rows: &[&[u16]; 4], out: &mut [GradChunk]) -> Option<()> {
+    let len = rows[0].len();
+    if rows.iter().any(|row| row.len() != len) {
+        return None;
+    }
     for (chunk, out) in out.iter_mut().enumerate() {
         let start = 16 * chunk;
         let chunks = rows.map(|row| row.get(start..).and_then(<[u16]>::first_chunk::<18>));
-        if let [Some(a), Some(b), Some(c), Some(d)] = chunks {
+        if start + 18 <= len
+            && let [Some(a), Some(b), Some(c), Some(d)] = chunks
+        {
             pair_gradients(simd, [a, b, c, d], out);
         } else {
             padded_gradients(simd, rows, start, out)?;
@@ -1208,6 +1065,7 @@ fn class_tables(block: &GdfBlock) -> [[i16; 16]; 4] {
 /// `block.base_stride` apart, the run at column `block.x`) whose top-left
 /// source sample sits at `origin`: per row pair it fills the next gradient
 /// row pair, then classifies and filters each 16-column chunk in one pass.
+#[inline(never)]
 pub(super) fn filter_run<O: GdfSample>(
     source: &GdfSource<'_>,
     origin: (usize, usize),
@@ -1216,19 +1074,17 @@ pub(super) fn filter_run<O: GdfSample>(
     scratch: &mut ClassScratch,
 ) -> Option<()> {
     #[cfg(target_arch = "x86_64")]
-    if let Some(avx2) = Level::baseline().as_avx2() {
-        return filter_run_with(avx2, InLane, source, origin, block, output, scratch);
+    if let Some(avx2) = fearless_simd::Level::baseline().as_avx2() {
+        return filter_run_with(avx2, inlane::InLane, source, origin, block, output, scratch);
     }
-    crate::baseline_simd!(simd => filter_run_with(
-        simd, Interleaved, source, origin, block, output, scratch,
-    ))
+    crate::baseline_simd!(simd => filter_run_with(simd, Rough, source, origin, block, output, scratch))
 }
 
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
+fn filter_run_with<S: Simd, P: RowPairs<S>, O: GdfSample>(
     simd: S,
-    lanes: L,
+    pairs: P,
     source: &GdfSource<'_>,
     origin: (usize, usize),
     block: &GdfBlock,
@@ -1317,7 +1173,7 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
                 };
                 let (window, classes) = (TiledWindow(window), i32x8::from_slice(simd, classes));
                 let sink = ErrorRows([top, bottom], table);
-                sym_rows_with(simd, lanes, &window, sink, classes, block, &params);
+                pairs.rows(simd, &window, sink, classes, (block, &params));
                 done += 1;
             }
         }
@@ -1333,13 +1189,13 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
                 let top = top.get_mut(x..)?.first_chunk_mut::<16>()?;
                 let bottom = bottom.get_mut(x..)?.first_chunk_mut::<16>()?;
                 let window = TiledWindow(span);
-                sym_rows_with(simd, lanes, &window, [top, bottom], classes, block, &params);
+                pairs.rows(simd, &window, [top, bottom], classes, (block, &params));
             } else if width == 16
                 && let Some(window) = window_at::<28>(&window_rows()?, x)
             {
                 let top = top.get_mut(x..)?.first_chunk_mut::<16>()?;
                 let bottom = bottom.get_mut(x..)?.first_chunk_mut::<16>()?;
-                sym_rows_with(simd, lanes, &window, [top, bottom], classes, block, &params);
+                pairs.rows(simd, &window, [top, bottom], classes, (block, &params));
             } else {
                 let classes = classes.to_array().map(GdfClass);
                 let output = [&mut top[x..], &mut bottom[x..]];
@@ -1348,8 +1204,8 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
         }
         if let Some((top_errors, bottom_errors)) = deferred {
             let end = 16 * done;
-            add_residuals(simd, top_errors.get(..end)?, top.get_mut(..end)?, block);
-            add_residuals(
+            O::add_residuals(simd, top_errors.get(..end)?, top.get_mut(..end)?, block);
+            O::add_residuals(
                 simd,
                 bottom_errors.get(..end)?,
                 bottom.get_mut(..end)?,
@@ -1409,4 +1265,51 @@ fn band_classes_with<S: Simd>(
         }
     }
     Some(())
+}
+
+#[cfg(test)]
+#[test]
+fn copy_shifted_matches_scalar_shift_and_max() {
+    fn check<T: SourceLanes + Into<u16>>(src: &[T], shift: u32) {
+        let mut dst = vec![u16::MAX; src.len() + 3];
+        let max = copy_shifted(src, &mut dst[..src.len()], shift);
+        let expected: Vec<u16> = src.iter().map(|&sample| sample.into() << shift).collect();
+        assert_eq!(
+            &dst[..src.len()],
+            expected,
+            "len {} shift {shift}",
+            src.len()
+        );
+        assert_eq!(&dst[src.len()..], [u16::MAX; 3]);
+        assert_eq!(
+            max,
+            src.iter().map(|&sample| sample.into()).max().unwrap_or(0)
+        );
+    }
+    let mut seed = 0x1234_5678_u32;
+    let mut next = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        seed >> 8
+    };
+    for len in 0..70 {
+        for case in 0..4 {
+            let bytes: Vec<u8> = (0..len)
+                .map(|_| match (next() % 4, case) {
+                    (0, _) => 0,
+                    (1, 1) => u8::MAX,
+                    _ => next() as u8,
+                })
+                .collect();
+            check(&bytes, 2);
+            let words: Vec<u16> = (0..len)
+                .map(|_| match (next() % 4, case) {
+                    (0, _) => 0,
+                    (1, 1) => 1023,
+                    (1, 2) => u16::MAX,
+                    _ => (next() % 1024) as u16,
+                })
+                .collect();
+            check(&words, 0);
+        }
+    }
 }

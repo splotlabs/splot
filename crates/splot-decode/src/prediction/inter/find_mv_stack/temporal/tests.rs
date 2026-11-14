@@ -261,6 +261,168 @@ fn published_band_resets_keep_cell_capacity_after_readers_retire() {
 }
 
 #[test]
+fn recycled_band_resets_every_cell_to_no_reference() {
+    let layout = MotionFieldLayout::new(16, 16, 16).unwrap();
+    let metadata = TemporalMotionField::new_with_metadata(16, 16, true, (64, 64), &[Some(2)])
+        .unwrap()
+        .metadata();
+    let inter = TemporalMotionBlock::new(
+        0,
+        0,
+        16,
+        16,
+        16,
+        16,
+        4,
+        [Some(2), None],
+        [Mv { row: 8, col: -12 }, Mv::ZERO],
+        [None; 2],
+    );
+    let mut band = TemporalMotionBand::vacant(layout, &metadata);
+    band.reset(layout, &metadata, 0).unwrap();
+    band.record_blocks(&[inter]).unwrap();
+    assert!(
+        band.cells
+            .cells()
+            .iter()
+            .all(|&cell| cell != TemporalMotionCell::STORED_EMPTY)
+    );
+    band = band.into_shared();
+    drop(band.clone());
+    band.reset(layout, &metadata, 0).unwrap();
+    assert_eq!(band.cells.cells().len(), 64);
+    assert!(
+        band.cells
+            .cells()
+            .iter()
+            .all(|&cell| cell == TemporalMotionCell::STORED_EMPTY)
+    );
+}
+
+fn tile_leaves(
+    next: &mut impl FnMut(u32) -> usize,
+    leaves: &mut Vec<[usize; 4]>,
+    leaf: [usize; 4],
+) {
+    const SPLITS: [&[usize]; 4] = [&[1, 1], &[1, 1, 1, 1], &[1, 2, 4, 1], &[1, 4, 2, 1]];
+    let [row, col, h, w] = leaf;
+    let choice = next(11);
+    let horizontal = choice & 1 == 0;
+    let side = if horizontal { h } else { w };
+    let pattern = SPLITS[choice.saturating_sub(3) / 2 % 4];
+    let total: usize = pattern.iter().sum();
+    if choice < 3 || side < total {
+        leaves.push(leaf);
+        return;
+    }
+    let unit = side / total;
+    let mut offset = 0;
+    for &part in pattern {
+        let size = part * unit;
+        let child = if horizontal {
+            [row + offset, col, size, w]
+        } else {
+            [row, col + offset, h, size]
+        };
+        tile_leaves(next, leaves, child);
+        offset += size;
+    }
+}
+
+#[test]
+fn skipped_clear_records_of_whole_cell_intra_leaves_leave_the_field_unchanged() {
+    let (mi_rows, mi_cols) = (32, 32);
+    let hints = [Some(2), Some(6)];
+    let new_field = || {
+        TemporalMotionField::new_with_metadata(mi_rows, mi_cols, true, (128, 128), &hints).unwrap()
+    };
+    let layout = MotionFieldLayout::new(mi_rows, mi_cols, 16).unwrap();
+    let metadata = new_field().metadata();
+    let fold_field = |records: &[TemporalMotionBlock]| {
+        let mut field = new_field();
+        field.record_blocks(records);
+        field.contiguous_cells().to_vec()
+    };
+    let fold_bands = |records: &[TemporalMotionBlock]| {
+        (0..layout.band_count())
+            .map(|index| {
+                let mut band = TemporalMotionBand::vacant(layout, &metadata);
+                band.reset(layout, &metadata, index).unwrap();
+                band.record_blocks(records).unwrap();
+                band.cells.cells().to_vec()
+            })
+            .collect::<Vec<_>>()
+    };
+    for seed in 1..=8u64 {
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut next = |bound: u32| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % u64::from(bound)) as usize
+        };
+        let mut leaves = Vec::new();
+        for sb_row in (0..mi_rows).step_by(16) {
+            for sb_col in (0..mi_cols).step_by(16) {
+                tile_leaves(&mut next, &mut leaves, [sb_row, sb_col, 16, 16]);
+            }
+        }
+        let mut records: Vec<_> = leaves
+            .into_iter()
+            .map(|[row, col, h, w]| {
+                let is_inter = next(2) == 0;
+                let block = if is_inter {
+                    let mv = |next: &mut dyn FnMut(u32) -> usize| Mv {
+                        row: 1 + next(255) as i32,
+                        col: -1 - next(255) as i32,
+                    };
+                    let second = next(2) == 0;
+                    TemporalMotionBlock::new(
+                        row,
+                        col,
+                        w,
+                        h,
+                        mi_rows,
+                        mi_cols,
+                        4,
+                        [hints[0], hints[1].filter(|_| second)],
+                        [mv(&mut next), mv(&mut next)],
+                        [None; 2],
+                    )
+                } else {
+                    TemporalMotionBlock::new(
+                        row,
+                        col,
+                        w,
+                        h,
+                        mi_rows,
+                        mi_cols,
+                        4,
+                        [None; 2],
+                        [Mv::ZERO; 2],
+                        [None; 2],
+                    )
+                };
+                (block, is_inter || (row | col | w | h) & 1 != 0)
+            })
+            .collect();
+        if seed % 2 == 0 {
+            for i in (1..records.len()).rev() {
+                records.swap(i, next(i as u32 + 1));
+            }
+        }
+        let every: Vec<_> = records.iter().map(|&(block, _)| block).collect();
+        let kept: Vec<_> = records
+            .iter()
+            .filter_map(|&(block, keep)| keep.then_some(block))
+            .collect();
+        assert!(kept.len() < every.len(), "seed {seed} skips no record");
+        assert_eq!(fold_field(&every), fold_field(&kept), "seed {seed}");
+        assert_eq!(fold_bands(&every), fold_bands(&kept), "seed {seed}");
+    }
+}
+
+#[test]
 fn spatial_derivation_uses_reference_trajectories() {
     let mut candidate = TrajectoryMotionField::new(2, 2).unwrap();
     candidate.set(
@@ -499,6 +661,54 @@ fn carried_slots_match_delayed_resolution_for_every_reference_pair() {
 }
 
 #[test]
+fn merged_neighbour_records_write_the_same_field() {
+    let (mi_rows, mi_cols) = (4, 11);
+    let hints = [Some(2), Some(6)];
+    let mv = Mv { row: 8, col: -12 };
+    let record = |mi_col: usize, n4w: usize, mvs: [Mv; 2]| {
+        TemporalMotionBlock::new(
+            0, mi_col, n4w, 2, mi_rows, mi_cols, 4, hints, mvs, [None; 2],
+        )
+    };
+    let blocks = [
+        record(0, 2, [mv, Mv::ZERO]),
+        record(2, 2, [mv, Mv::ZERO]),
+        record(4, 2, [Mv::ZERO, mv]),
+        record(6, 2, [Mv::ZERO, mv]),
+        record(8, 2, [Mv::ZERO, mv]),
+        record(10, 1, [Mv::ZERO, mv]),
+    ];
+    let mut merged = Vec::new();
+    for block in blocks {
+        TemporalMotionBlock::push_merged(&mut merged, 0, block);
+    }
+    assert_eq!(merged.len(), 2);
+    let mut kept = vec![record(0, 2, [mv, Mv::ZERO])];
+    TemporalMotionBlock::push_merged(&mut kept, 1, record(2, 2, [mv, Mv::ZERO]));
+    TemporalMotionBlock::push_merged(&mut kept, 0, record(4, 1, [mv, Mv::ZERO]));
+    TemporalMotionBlock::push_merged(&mut kept, 0, record(5, 2, [mv, Mv::ZERO]));
+    assert_eq!(
+        kept.len(),
+        3,
+        "records before `first` and after an odd width stay apart"
+    );
+
+    let field = |records: &[TemporalMotionBlock]| {
+        let mut field = TemporalMotionField::new_with_metadata(
+            mi_rows,
+            mi_cols,
+            true,
+            (mi_cols * 4, mi_rows * 4),
+            &hints,
+        )
+        .unwrap();
+        field.record_blocks(records);
+        field
+    };
+    assert_eq!(field(&merged), field(&blocks));
+}
+
+#[test]
 fn compressed_component_matches_the_saturating_step_formula() {
     for value in -(1i32 << 17)..=(1 << 17) {
         let abs_value = value.unsigned_abs();
@@ -657,6 +867,7 @@ fn step_two_projection_samples_and_stores_on_the_even_grid() {
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         },
         &[0, 1],
         &[true, true],
@@ -1338,6 +1549,7 @@ fn refresh_reuses_projected_and_trajectory_storage() {
         enable_tip: false,
         enable_trajectory: true,
         reduced: false,
+        bru_ref: None,
     };
     let ref_frame_idx = [0];
     let ref_valid = [false];
@@ -1413,6 +1625,7 @@ fn trajectories_do_not_change_the_projected_motion_field() {
                 enable_tip: false,
                 enable_trajectory,
                 reduced: false,
+                bru_ref: None,
             },
             &[0, 1],
             &[true, true],
@@ -1450,6 +1663,7 @@ fn refresh_rejects_a_malformed_selected_projection_source() {
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         },
         &[0, 1],
         &[true, true],
@@ -1484,6 +1698,7 @@ fn frame_temporal_storage_reuses_bands_and_clears_previous_products() {
                     enable_tip: false,
                     enable_trajectory: iteration % 2 == 0,
                     reduced: false,
+                    bru_ref: None,
                 },
                 &[0],
                 &[true],
@@ -1519,4 +1734,72 @@ fn frame_temporal_storage_reuses_bands_and_clears_previous_products() {
             }
         }
     }
+}
+
+#[test]
+fn a_band_projects_once_the_same_band_of_every_reference_field_is_published() {
+    use crate::prediction::inter::MotionFieldHandle;
+    let layout = MotionFieldLayout::new(64, 16, 16).unwrap();
+    let source = TemporalMotionField::metadata_only(layout, true, (64, 256), &[Some(1)]);
+    let other = TemporalMotionField::metadata_only(layout, true, (64, 256), &[Some(3)]);
+    let metadata = [Some(source.metadata()), Some(other.metadata())];
+    let mut context = TemporalMvContext::empty();
+    let plan = context
+        .begin_banded_refresh(
+            layout,
+            2,
+            TemporalProjectionConfig {
+                frame_size: (64, 256),
+                step: 1,
+                unit_size8: 8,
+                enable_tip: false,
+                enable_trajectory: false,
+                reduced: false,
+                bru_ref: None,
+            },
+            &[0, 1],
+            &[true, true],
+            &[3, 1],
+            &metadata,
+            &[Some(layout), Some(layout)],
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+    assert_eq!(plan.len(), 4);
+    let fields = [source, other].map(|field| {
+        let handle = MotionFieldHandle::pending_with_layout(layout);
+        handle.begin_bands(&field.metadata()).unwrap();
+        Some(handle)
+    });
+    let band = 1;
+    let reads: Vec<_> = plan.requirements(band).collect();
+    assert!(!reads.is_empty());
+    assert!(
+        reads.iter().all(|&(_, read)| read == band),
+        "§ 7.9.8 keeps a projection in its row"
+    );
+    for neighbour in [0, 2, 3] {
+        for field in fields.iter().flatten() {
+            field.publish_builder_band(neighbour);
+        }
+    }
+    assert!(
+        !plan.sources_settled(band, &fields),
+        "neighbour bands never admit a band"
+    );
+    let (last, first) = reads.split_last().unwrap();
+    for &(slot, read) in first {
+        fields[slot].as_ref().unwrap().publish_builder_band(read);
+    }
+    assert!(
+        !plan.sources_settled(band, &fields),
+        "one reference band is still owed"
+    );
+    fields[last.0]
+        .as_ref()
+        .unwrap()
+        .publish_builder_band(last.1);
+    assert!(plan.sources_settled(band, &fields));
 }

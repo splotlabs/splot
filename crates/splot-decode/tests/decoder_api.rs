@@ -18,6 +18,9 @@ const MULTIREF: &[u8] =
 const EIGHT_FRAME: &[u8] = include_bytes!(
     "../../../tests/conformance/vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"
 );
+const POOLED_FRAMES: &[u8] = include_bytes!(
+    "../../../tests/conformance/vectors/valid/syn-4frame-inter-skip-chroma-256x128.ivf"
+);
 const SEF_FAMILIES: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-frame-sef-families-64x64.ivf");
 const TIP_FAMILIES: &[u8] =
@@ -176,7 +179,7 @@ fn held_pictures_neither_stall_the_decoder_nor_change_its_output() {
 
 #[test]
 fn a_dropped_picture_gives_its_storage_back_to_the_decoder() {
-    let units: Vec<Vec<u8>> = (0..4).flat_map(|_| units(EIGHT_FRAME)).collect();
+    let units: Vec<Vec<u8>> = (0..8).flat_map(|_| units(POOLED_FRAMES)).collect();
     let mut decoder = decoder(1, 1);
     let mut seen = Vec::new();
     let mut reused = false;

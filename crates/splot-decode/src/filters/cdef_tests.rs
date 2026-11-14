@@ -7,9 +7,91 @@ use super::*;
 use crate::filters::source::DeblockedWindow;
 use crate::test_support::yuv420_workspace as workspace_8bit;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize, cdef_direction,
-    cdef_filter_sample,
+    CDEF_DIRECTIONS, CdefSampleTaps, CdefTap, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex,
+    PixelFormat, PlaneSize, cdef_direction, cdef_filter_sample,
 };
+
+const UNAVAILABLE_TAP: CdefTap = CdefTap {
+    value: 0,
+    available: false,
+};
+
+struct CdefTapOffsets {
+    primary: [[(isize, isize); 2]; 2],
+    secondary: [[[(isize, isize); 2]; 2]; 2],
+}
+
+impl CdefTapOffsets {
+    fn for_direction(dir: usize) -> Self {
+        let offset = |dir: usize, k: usize, sign: isize| -> (isize, isize) {
+            (
+                sign * CDEF_DIRECTIONS[dir & 7][k][0] as isize,
+                sign * CDEF_DIRECTIONS[dir & 7][k][1] as isize,
+            )
+        };
+        let mut primary = [[(0isize, 0isize); 2]; 2];
+        let mut secondary = [[[(0isize, 0isize); 2]; 2]; 2];
+        for k in 0..2 {
+            for (sign_index, sign) in [-1isize, 1].into_iter().enumerate() {
+                primary[k][sign_index] = offset(dir, k, sign);
+                for (dir_off_index, dir_off) in [6usize, 2].into_iter().enumerate() {
+                    secondary[k][sign_index][dir_off_index] = offset(dir + dir_off, k, sign);
+                }
+            }
+        }
+        Self { primary, secondary }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gather_taps<T: ReconSample>(
+    snap: FramePlane<'_, T>,
+    offsets: &CdefTapOffsets,
+    x: usize,
+    y: usize,
+    start_x: usize,
+    start_y: usize,
+    inside_x: usize,
+    inside_y: usize,
+    center: i32,
+) -> CdefSampleTaps {
+    let fetch = |(dy, dx): (isize, isize)| -> CdefTap {
+        let y = y as isize + dy;
+        let x = x as isize + dx;
+        if x >= start_x as isize
+            && y >= start_y as isize
+            && (x as usize) < inside_x
+            && (y as usize) < inside_y
+        {
+            match snap.row(y as usize).and_then(|row| row.get(x as usize)) {
+                Some(value) => CdefTap {
+                    value: i32::from(value.to_u16()),
+                    available: true,
+                },
+                None => UNAVAILABLE_TAP,
+            }
+        } else {
+            UNAVAILABLE_TAP
+        }
+    };
+
+    let mut primary = [[UNAVAILABLE_TAP; 2]; 2];
+    let mut secondary = [[[UNAVAILABLE_TAP; 2]; 2]; 2];
+    for k in 0..2 {
+        for sign_index in 0..2 {
+            primary[k][sign_index] = fetch(offsets.primary[k][sign_index]);
+            for (dir_off_index, tap) in secondary[k][sign_index].iter_mut().enumerate() {
+                *tap = fetch(offsets.secondary[k][sign_index][dir_off_index]);
+            }
+        }
+    }
+
+    CdefSampleTaps {
+        center,
+        primary,
+        secondary,
+    }
+}
 
 pub(super) fn constant_cdef_grid(
     mi_rows: usize,
@@ -95,17 +177,37 @@ fn cdef_general_intra_frame_indexed<T: ReconSample>(
                 .enumerate()
             {
                 workspace
-                    .set_reconstructed_sample(
-                        plane,
-                        x,
-                        y,
-                        T::try_from_u16(sample).map_err(|_| CdefError::Workspace)?,
-                    )
+                    .set_reconstructed_sample(plane, x, y, sample)
                     .map_err(|_| CdefError::Workspace)?;
             }
         }
     }
     Ok(())
+}
+
+/// The chroma-pair
+/// gather interleaves `u` and `v` lane by lane, from either storage type.
+#[test]
+fn pair_gather_matches_the_scalar_copy() {
+    let side = CHROMA_PAIR_SIDE + 2 * CDEF_TAP_REACH;
+    let u: Vec<u8> = (0..side * 9).map(|i| (i * 7 % 256) as u8).collect();
+    let v: Vec<u8> = (0..side * 9).map(|i| (i * 11 % 256) as u8).collect();
+    let mut pad = [0u16; CDEF_PADDED_AREA];
+    gather_chroma_pair(&u, &v, 1, 9, &mut pad).unwrap();
+    let wide = |x: &[u8]| x.iter().map(|&b| u16::from(b)).collect::<Vec<_>>();
+    let mut pad16 = [0u16; CDEF_PADDED_AREA];
+    gather_chroma_pair(&wide(&u), &wide(&v), 1, 9, &mut pad16).unwrap();
+    assert_eq!(pad16, pad);
+    for row in 0..side {
+        for col in 0..CHROMA_PAIR_SPAN {
+            let at = row * CDEF_PAIR_STRIDE + 2 * col;
+            let source = 1 + row * 9 + col;
+            assert_eq!(
+                pad[at..at + 2],
+                [u16::from(u[source]), u16::from(v[source])]
+            );
+        }
+    }
 }
 
 #[test]
@@ -391,7 +493,6 @@ fn assert_cdef_block_matches_per_sample_reference(
                     damping: 4,
                 },
                 coeff_shift: 0,
-                max_sample: 255,
                 mi_rows: 16,
                 mi_cols: 16,
                 sub_x: 1,
@@ -424,7 +525,7 @@ fn assert_cdef_block_matches_per_sample_reference(
                         filter.damping,
                         filter.coeff_shift,
                     )
-                    .clamp(0, ctx.max_sample);
+                    .clamp(0, 255);
                     assert_eq!(
                         i32::from(filtered.row(y).unwrap()[x]),
                         expected,
@@ -565,14 +666,7 @@ fn stripe_frames_match_full_frame_across_restoration_boundaries() {
             .unwrap();
             actual.extend_from_slice(filtered.samples());
         }
-        let expected = full
-            .samples(plane)
-            .unwrap()
-            .iter()
-            .copied()
-            .map(u16::from)
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected, "plane {plane:?}");
+        assert_eq!(actual, full.samples(plane).unwrap(), "plane {plane:?}");
     }
 }
 
@@ -697,5 +791,39 @@ fn uv_dir_selection_tracks_luma_direction_only_when_uv_pri_nonzero() {
         chroma_top_left_4x4(&horiz0, PlaneId::U),
         chroma_top_left_4x4(&vert0, PlaneId::U),
         "uv_pri == 0: direction is forced to 0, so the luma direction is ignored",
+    );
+}
+
+#[test]
+fn stripe_identity_follows_strengths_and_skipped_blocks() {
+    let params = |y_sec, uv_pri| CdefFrameParams {
+        y_pri: 0,
+        y_sec,
+        uv_pri,
+        uv_sec: 0,
+        damping: 4,
+    };
+    let strengths = [params(0, 0), params(2, 0), params(0, 3)];
+    let grid = CdefUnitGrid::new(2, 1, vec![Some(1), Some(2)]).unwrap();
+    let identity = |strengths: Option<&[CdefFrameParams]>, skip: Option<&CdefSkipGrid>, rows| {
+        cdef_stripe_identity(strengths, Some(&grid), skip, (32, 16), rows)
+    };
+    assert_eq!(
+        cdef_stripe_identity(None, None, None, (32, 16), (0, 64)),
+        [true; 2]
+    );
+    assert_eq!(identity(Some(&strengths[..1]), None, (0, 64)), [false; 2]);
+    assert_eq!(identity(Some(&strengths), None, (0, 64)), [false, true]);
+    assert_eq!(identity(Some(&strengths), None, (64, 128)), [true, false]);
+    assert_eq!(identity(Some(&strengths), None, (0, 128)), [false; 2]);
+    let mut skipped = vec![true; 32 * 16];
+    let all = CdefSkipGrid::new(32, 16, skipped.clone()).unwrap();
+    assert_eq!(identity(Some(&strengths), Some(&all), (0, 128)), [true; 2]);
+    skipped[20 * 16 + 5] = false;
+    let one = CdefSkipGrid::new(32, 16, skipped).unwrap();
+    assert_eq!(identity(Some(&strengths), Some(&one), (0, 64)), [true; 2]);
+    assert_eq!(
+        identity(Some(&strengths), Some(&one), (64, 128)),
+        [true, false]
     );
 }

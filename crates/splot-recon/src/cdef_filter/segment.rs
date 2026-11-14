@@ -25,8 +25,6 @@ const LUMA_BYTES_AREA: usize = LUMA_SEGMENT_AREA + 8;
 const LUMA_BLOCK_BYTES: usize = CDEF_SEGMENT_BLOCK_AREA + 8;
 const PAIR_BYTES_AREA: usize = PAIR_SEGMENT_AREA + 8;
 const PAIR_BLOCK_BYTES: usize = CDEF_PAIR_SEGMENT_BLOCK_AREA + 8;
-/// No byte scratch, for the kernels of samples wider than 8 bits.
-static NO_BYTES: [u8; LUMA_BLOCK_BYTES] = [0; LUMA_BLOCK_BYTES];
 
 /// The tap rows of one luma row segment of [`CDEF_SEGMENT_BLOCKS`] 8x8
 /// blocks at [`CDEF_SEGMENT_STRIDE`] lanes per row, and the least and
@@ -82,7 +80,7 @@ impl CdefLumaSegment {
     /// [`CdefLumaSegment::gather`] of 8-bit samples into the byte scratch
     /// alone: [`CdefLumaSegment::block`] then holds nothing, and
     /// [`cdef_filter_segment`] filters the segment's luma only through the
-    /// 32-lane kernel, which [`CdefStrengths::luma_bytes_suffice`] checks.
+    /// 32-lane kernel, which [`CdefUnitFilters::luma_bytes_suffice`] checks.
     #[inline]
     pub fn gather_bytes(
         &mut self,
@@ -230,16 +228,6 @@ fn reach_rows<T>(
     samples.get(first..)?.get(..len)
 }
 
-/// The first 16 samples as `u16` lanes.
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
-#[inline(always)]
-fn widen<S: SimdToken, T: crate::ReconSample>(simd: S, samples: &[T]) -> Option<u16x16<S>> {
-    if let Some(samples) = T::u8_slice(samples) {
-        return Some(widen_u8(simd, u8x16::from_slice(simd, samples.get(..16)?)));
-    }
-    Some(u16x16::from_slice(simd, T::u16_slice(samples)?.get(..16)?))
-}
-
 /// How a gather reduces eight `u16` lanes to their least and greatest.
 trait LaneBounds<S: SimdToken>: Copy {
     fn bounds(self, simd: S, min: u16x8<S>, max: u16x8<S>) -> [u16; 2];
@@ -329,11 +317,11 @@ fn gather_luma_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample>(
     (pad, bytes): (&mut [u16; LUMA_SEGMENT_AREA], &mut [u8; LUMA_BYTES_AREA]),
     origin: (usize, usize),
 ) -> Option<[[u16; 2]; CDEF_SEGMENT_BLOCKS]> {
-    const STARTS: [usize; 3] = [0, 16, CDEF_SEGMENT_STRIDE - 16];
+    const STARTS: [usize; 5] = [0, 8, 16, 24, CDEF_SEGMENT_STRIDE - 8];
     const { assert!(CDEF_SEGMENT_BLOCKS == 4 && CDEF_SEGMENT_STRIDE == 36) };
     let rows = reach_rows(samples, width, stride, origin, (CDEF_SEGMENT_STRIDE, 12))?;
-    let mut wide_min = [u16x16::splat(simd, u16::MAX); 3];
-    let mut wide_max = [u16x16::splat(simd, 0); 3];
+    let mut min = [u16x8::splat(simd, u16::MAX); 5];
+    let mut max = [u16x8::splat(simd, 0); 5];
     for row in 0..12 {
         let src = rows
             .get(row * stride..)?
@@ -352,54 +340,52 @@ fn gather_luma_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample>(
                 .first_chunk_mut::<CDEF_SEGMENT_STRIDE>()?;
             (head ^ bias).store_slice(&mut row_bytes[..32]);
             (tail ^ bias).store_slice(&mut row_bytes[4..]);
-            let (first, second) = simd.widen_u8x32(head);
-            let (_, third) = simd.widen_u8x32(tail);
-            [first, second, third]
+            byte_eighths(simd, head, tail)
         } else {
             let src = T::u16_slice(src)?;
-            STARTS.map(|start| u16x16::from_slice(simd, &src[start..start + 16]))
+            STARTS.map(|start| u16x8::from_slice(simd, &src[start..start + 8]))
         };
         for (chunk, (start, lanes)) in STARTS.into_iter().zip(chunks).enumerate() {
-            lanes.store_slice(&mut dst[start..start + 16]);
-            wide_min[chunk] = wide_min[chunk].min(lanes);
-            wide_max[chunk] = wide_max[chunk].max(lanes);
+            lanes.store_slice(&mut dst[start..start + 8]);
+            min[chunk] = min[chunk].min(lanes);
+            max[chunk] = max[chunk].max(lanes);
         }
     }
-    Some(segment_bounds(simd, reduce, wide_min, wide_max))
+    Some(segment_bounds(simd, reduce, min, max))
+}
+
+/// The 8-lane `u16` chunks at columns 0, 8, 16, 24 and
+/// `CDEF_SEGMENT_STRIDE - 8` of a row whose bytes from 0 are `head` and
+/// from 4 are `tail`.
+#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[inline(always)]
+fn byte_eighths<S: SimdToken>(simd: S, head: u8x32<S>, tail: u8x32<S>) -> [u16x8<S>; 5] {
+    let (first, second) = simd.widen_u8x32(head);
+    let ((a, b), (c, d)) = (simd.split_u16x16(first), simd.split_u16x16(second));
+    [a, b, c, d, simd.split_u16x16(simd.widen_u8x32(tail).1).1]
 }
 
 /// The least and greatest sample of each block's 12-column window from the
 /// column-wise least and greatest of a segment's rows at the chunk starts
-/// `0`, `16` and `CDEF_SEGMENT_STRIDE - 16`.
+/// of [`byte_eighths`].
 #[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
 fn segment_bounds<S: SimdToken, R: LaneBounds<S>>(
     simd: S,
     reduce: R,
-    wide_min: [u16x16<S>; 3],
-    wide_max: [u16x16<S>; 3],
+    min: [u16x8<S>; 5],
+    max: [u16x8<S>; 5],
 ) -> [[u16; 2]; CDEF_SEGMENT_BLOCKS] {
-    let eighths = |[a, b, c]: [u16x16<S>; 3]| {
-        let (a, b, c) = (
-            simd.split_u16x16(a),
-            simd.split_u16x16(b),
-            simd.split_u16x16(c),
-        );
-        [a.0, a.1, b.0, b.1, c.1]
-    };
-    let (min, max) = (eighths(wide_min), eighths(wide_max));
-    core::array::from_fn(|block| {
-        let next = if block + 1 < CDEF_SEGMENT_BLOCKS {
-            (min[block + 1], max[block + 1])
-        } else {
-            let (min, max) = (min[4], max[4]);
-            (
-                simd.slide_u16x8::<4>(min, min),
-                simd.slide_u16x8::<4>(max, max),
-            )
-        };
-        window_bounds(simd, reduce, (min[block], max[block]), next)
-    })
+    let tail = (
+        simd.slide_u16x8::<4>(min[4], min[4]),
+        simd.slide_u16x8::<4>(max[4], max[4]),
+    );
+    [
+        window_bounds(simd, reduce, (min[0], max[0]), (min[1], max[1])),
+        window_bounds(simd, reduce, (min[1], max[1]), (min[2], max[2])),
+        window_bounds(simd, reduce, (min[2], max[2]), (min[3], max[3])),
+        window_bounds(simd, reduce, (min[3], max[3]), tail),
+    ]
 }
 
 /// [`gather_luma`] into the byte scratch alone.
@@ -451,10 +437,7 @@ fn gather_luma_bytes_with<S: SimdToken, R: LaneBounds<S>>(
             max[half] = max[half].max(lanes[half]);
         }
     }
-    let chunks = |[head, tail]: [u8x32<S>; 2]| {
-        let (first, second) = simd.widen_u8x32(head);
-        [first, second, simd.widen_u8x32(tail).1]
-    };
+    let chunks = |[head, tail]: [u8x32<S>; 2]| byte_eighths(simd, head, tail);
     Some(segment_bounds(simd, reduce, chunks(min), chunks(max)))
 }
 
@@ -481,9 +464,9 @@ fn direction_from_bytes(bytes: &[u8; LUMA_BLOCK_BYTES]) -> (usize, i32) {
 
 /// Interleaves the chroma segment's tap rows, `PAIR_SPAN` samples of each
 /// plane, into `pad` and returns for each block the larger of its two
-/// planes' window ranges. Block `b` covers plane columns `4b..4b + 8`: of
-/// the 16 columns from 0 and the 16 from 4 in each row, the halves hold
-/// blocks 0, 2 and blocks 1, 3.
+/// planes' window ranges. Block `b` covers plane columns `4b..4b + 8`: the
+/// three 8-column chunks of a row from 0, 8 and 12 hold blocks 0, 2 and 3,
+/// and block 1 is the upper half of chunk 0 and the lower half of chunk 1.
 fn gather_pair<T: crate::ReconSample>(
     u_samples: &[T],
     v_samples: &[T],
@@ -519,61 +502,106 @@ fn gather_pair_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample>(
     const { assert!(CDEF_SEGMENT_BLOCKS == 4 && PAIR_SPAN == 20) };
     let u_rows = reach_rows(u_samples, width, stride, origin, (PAIR_SPAN, PAIR_ROWS))?;
     let v_rows = reach_rows(v_samples, width, stride, origin, (PAIR_SPAN, PAIR_ROWS))?;
-    let mut min = [[u16x16::splat(simd, u16::MAX); 2]; 2];
-    let mut max = [[u16x16::splat(simd, 0); 2]; 2];
+    if let (Some(u_rows), Some(v_rows)) = (T::u8_slice(u_rows), T::u8_slice(v_rows)) {
+        let bias = u8x16::splat(simd, 0x80);
+        let mut min = [[u8x16::splat(simd, u8::MAX); 2]; 2];
+        let mut max = [[u8x16::splat(simd, 0); 2]; 2];
+        for row in 0..PAIR_ROWS {
+            let rows = [u_rows, v_rows].map(|rows| rows.get(row * stride..)?.get(..PAIR_SPAN));
+            let [Some(u_row), Some(v_row)] = rows else {
+                return None;
+            };
+            let at = row * CDEF_PAIR_SEGMENT_STRIDE;
+            let lanes = pad.get_mut(at..at + CDEF_PAIR_SEGMENT_STRIDE)?;
+            let row_bytes = bytes.get_mut(at..at + CDEF_PAIR_SEGMENT_STRIDE)?;
+            for (half, start) in [0, PAIR_SPAN - 16].into_iter().enumerate() {
+                let planes =
+                    [u_row, v_row].map(|row| u8x16::from_slice(simd, &row[start..start + 16]));
+                for plane in 0..2 {
+                    min[plane][half] = min[plane][half].min(planes[plane]);
+                    max[plane][half] = max[plane][half].max(planes[plane]);
+                }
+                let pairs = [
+                    simd.zip_low_u8x16(planes[0], planes[1]),
+                    simd.zip_high_u8x16(planes[0], planes[1]),
+                ];
+                for (index, pair) in pairs.into_iter().enumerate() {
+                    let lane = 2 * start + 16 * index;
+                    (pair ^ bias).store_slice(&mut row_bytes[lane..lane + 16]);
+                    widen_u8(simd, pair).store_slice(&mut lanes[lane..lane + 16]);
+                }
+            }
+        }
+        let chunks = |[head, tail]: [u8x16<S>; 2]| {
+            let (first, second) = simd.split_u16x16(widen_u8(simd, head));
+            [first, second, simd.split_u16x16(widen_u8(simd, tail)).1]
+        };
+        return Some(pair_ranges(simd, reduce, min.map(chunks), max.map(chunks)));
+    }
+    let (u_rows, v_rows) = (T::u16_slice(u_rows)?, T::u16_slice(v_rows)?);
+    let mut min = [[u16x8::splat(simd, u16::MAX); 3]; 2];
+    let mut max = [[u16x8::splat(simd, 0); 3]; 2];
     for row in 0..PAIR_ROWS {
         let u_row = u_rows.get(row * stride..)?.first_chunk::<PAIR_SPAN>()?;
         let v_row = v_rows.get(row * stride..)?.first_chunk::<PAIR_SPAN>()?;
         let lanes = pad
             .get_mut(row * CDEF_PAIR_SEGMENT_STRIDE..)?
             .first_chunk_mut::<CDEF_PAIR_SEGMENT_STRIDE>()?;
-        if let (Some(u_row), Some(v_row)) = (T::u8_slice(u_row), T::u8_slice(v_row)) {
-            let row_bytes = bytes
-                .get_mut(row * CDEF_PAIR_SEGMENT_STRIDE..)?
-                .first_chunk_mut::<CDEF_PAIR_SEGMENT_STRIDE>()?;
-            let bias = u8x16::splat(simd, 0x80);
-            for start in [0, PAIR_SPAN - 16] {
-                let u = u8x16::from_slice(simd, u_row.get(start..start + 16)?) ^ bias;
-                let v = u8x16::from_slice(simd, v_row.get(start..start + 16)?) ^ bias;
-                simd.zip_low_u8x16(u, v)
-                    .store_slice(&mut row_bytes[2 * start..2 * start + 16]);
-                simd.zip_high_u8x16(u, v)
-                    .store_slice(&mut row_bytes[2 * start + 16..2 * start + 32]);
-            }
-        }
-        for (chunk, start) in [0, PAIR_SPAN - 16].into_iter().enumerate() {
-            let planes = [widen(simd, &u_row[start..])?, widen(simd, &v_row[start..])?];
+        let planes = [pair_eighths(simd, u_row), pair_eighths(simd, v_row)];
+        for (chunk, start) in [0, 8, PAIR_SPAN - 8].into_iter().enumerate() {
             for plane in 0..2 {
-                min[plane][chunk] = min[plane][chunk].min(planes[plane]);
-                max[plane][chunk] = max[plane][chunk].max(planes[plane]);
+                min[plane][chunk] = min[plane][chunk].min(planes[plane][chunk]);
+                max[plane][chunk] = max[plane][chunk].max(planes[plane][chunk]);
             }
-            let (low, high) = simd.interleave_u16x16(planes[0], planes[1]);
-            low.store_slice(&mut lanes[2 * start..2 * start + 16]);
-            high.store_slice(&mut lanes[2 * start + 16..2 * start + 32]);
+            let (u, v) = (planes[0][chunk], planes[1][chunk]);
+            simd.zip_low_u16x8(u, v)
+                .store_slice(&mut lanes[2 * start..2 * start + 8]);
+            simd.zip_high_u16x8(u, v)
+                .store_slice(&mut lanes[2 * start + 8..2 * start + 16]);
         }
     }
-    let range = |plane: usize, chunk: usize, half: usize| {
-        let (min, max) = (
-            simd.split_u16x16(min[plane][chunk]),
-            simd.split_u16x16(max[plane][chunk]),
-        );
-        let (min, max) = if half == 0 {
-            (min.0, max.0)
-        } else {
-            (min.1, max.1)
+    Some(pair_ranges(simd, reduce, min, max))
+}
+
+/// The larger plane window range of each block from the column-wise least
+/// and greatest of the two planes' rows at the chunk starts of
+/// [`pair_eighths`].
+#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[inline(always)]
+fn pair_ranges<S: SimdToken, R: LaneBounds<S>>(
+    simd: S,
+    reduce: R,
+    min: [[u16x8<S>; 3]; 2],
+    max: [[u16x8<S>; 3]; 2],
+) -> [u16; CDEF_SEGMENT_BLOCKS] {
+    let range = |plane: usize, block: usize| {
+        let pick = |[first, second, third]: [u16x8<S>; 3]| match block {
+            0 => first,
+            1 => simd.slide_u16x8::<4>(first, second),
+            2 => second,
+            _ => third,
         };
-        let [least, greatest] = reduce.bounds(simd, min, max);
+        let [least, greatest] = reduce.bounds(simd, pick(min[plane]), pick(max[plane]));
         greatest - least
     };
-    let block = |chunk: usize, half: usize| range(0, chunk, half).max(range(1, chunk, half));
-    Some([block(0, 0), block(1, 0), block(0, 1), block(1, 1)])
+    let block = |block: usize| range(0, block).max(range(1, block));
+    [block(0), block(1), block(2), block(3)]
+}
+
+/// The 8-column chunks of a chroma row from columns 0, 8 and
+/// `PAIR_SPAN - 8` as `u16` lanes.
+#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[inline(always)]
+fn pair_eighths<S: SimdToken>(simd: S, row: &[u16; PAIR_SPAN]) -> [u16x8<S>; 3] {
+    let eighth = |start: usize| u16x8::from_slice(simd, &row[start..start + 8]);
+    [eighth(0), eighth(8), eighth(PAIR_SPAN - 8)]
 }
 
 /// [`cdef_filter_block_chroma_pair`] for block `block` of `segment`. The
 /// block's window range selects the kernel: the linear kernel, which skips
-/// `constrain`, when `cdef_window_linear` admits the range; its `CLAMP`
-/// mode, which clips each tap to the centre -/+ strength, when
-/// `cdef_window_clamped` admits it; else the 32-lane kernel when
+/// `constrain`, when `cdef_window_mode` calls the range linear; its `CLAMP`
+/// mode, which clips each tap to the centre -/+ strength, when it calls it
+/// clamped; else the 32-lane kernel when
 /// `cdef_wide8_fits` admits the filter, or the general kernel. The taps of
 /// one lane all come from one plane, so the larger plane range bounds every
 /// tap difference. Returns `false` when `block` is not below
@@ -588,16 +616,17 @@ pub fn cdef_filter_block_chroma_pair_segment(
         return false;
     };
     let bytes = segment.block_bytes(block);
+    let plan = &CdefFilterPlan::new(*filter);
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = Level::baseline().as_avx2() {
-        return pair_segment_with(avx2, InLane, (pad, bytes), range, filter, out);
+        return pair_segment_with(avx2, InLane, (pad, bytes), range, plan, out);
     }
     baseline_simd!(simd => pair_segment_with(
         simd,
         Ordered,
         (pad, bytes),
         range,
-        filter,
+        plan,
         out,
     ))
 }
@@ -612,7 +641,7 @@ fn pair_segment_with<S: SimdToken, Q: QuadLanes<S>>(
         Option<&[u8; PAIR_BLOCK_BYTES]>,
     ),
     range: u16,
-    filter: &CdefBlockFilter,
+    plan: &CdefFilterPlan,
     out: &mut [u16; CDEF_PAIR_OUTPUT],
 ) -> bool {
     const SPAN: usize = 3 * CDEF_PAIR_SEGMENT_STRIDE + 8;
@@ -621,52 +650,42 @@ fn pair_segment_with<S: SimdToken, Q: QuadLanes<S>>(
     const AREA8: usize = PAIR_BLOCK_BYTES;
     const STRIDE: usize = CDEF_PAIR_SEGMENT_STRIDE;
     let starts = &CDEF_PAIR_SEGMENT_TAP_STARTS;
+    let filter = &plan.filter;
     let args = (pad, 4, filter, starts, &mut out[..], 8);
     macro_rules! copy {
         () => {
-            cdef_copy_centre_rows::<8, STRIDE, 4, 4, AREA>(pad, 4, out, 8)
+            cdef_copy_centre_rows::<S, 8, STRIDE, 4, 4, AREA, _>(simd, pad, 4, out, 8)
         };
     }
     macro_rules! clamped {
         ($clamp:literal) => {
             cdef_by_families!(
                 filter,
-                cdef_filter_rows_clamped::<S, 8, STRIDE, 4, 4, SPAN, AREA, $clamp>(simd, args),
+                cdef_filter_rows_clamped::<S, _, 8, STRIDE, 4, 4, SPAN, AREA, $clamp>(simd, args),
                 copy!()
             )
             .is_some()
         };
     }
-    let range = i32::from(range);
-    if cdef_window_linear(filter, range) {
-        return clamped!(false);
+    match plan.mode(i32::from(range)) {
+        CDEF_LINEAR => return clamped!(false),
+        CDEF_CLAMPED => return clamped!(true),
+        _ => {}
     }
-    if cdef_window_clamped(filter, range) {
-        return clamped!(true);
-    }
-    if cdef_wide8_fits(filter) {
-        let Some(no_bytes) = NO_BYTES.first_chunk::<PAIR_BLOCK_BYTES>() else {
-            return false;
-        };
-        return match bytes {
-            Some(bytes) => cdef_by_families!(
-                filter,
-                cdef_filter_rows_wide8::<S, Q, STRIDE, 4, 4, SPAN, AREA, true, SPAN8, AREA8>(
-                    simd, quads, bytes, args
-                ),
-                copy!()
+    if let (Some(bytes), true) = (bytes, plan.wide8) {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_wide8::<S, Q, _, STRIDE, 4, 4, SPAN8, AREA8, CDEF_GENERAL>(
+                simd,
+                quads,
+                (bytes, plan, starts),
+                (out, 8)
             ),
-            None => cdef_by_families!(
-                filter,
-                cdef_filter_rows_wide8::<S, Q, STRIDE, 4, 4, SPAN, AREA, false, SPAN8, AREA8>(
-                    simd, quads, no_bytes, args
-                ),
-                copy!()
-            ),
-        }
+            copy!()
+        )
         .is_some();
     }
-    cdef_filter_block_rows::<S, 8, false, STRIDE, 4, 4, SPAN, AREA>(simd, args).is_some()
+    cdef_filter_block_rows::<S, _, 8, false, STRIDE, 4, 4, SPAN, AREA>(simd, args).is_some()
 }
 
 /// Whether [`cdef_filter_rows_wide8`] computes `filter` exactly: besides
@@ -806,10 +825,10 @@ struct CdefConstrainWide<S: SimdToken> {
 }
 
 impl<S: SimdToken> CdefConstrainWide<S> {
-    fn new(simd: S, threshold: i32, damping: i32) -> Self {
+    fn new(simd: S, threshold: i32, adj: i32) -> Self {
         Self {
             threshold: u8x32::splat(simd, threshold as u8),
-            shift: constrain_damping_adj(threshold, damping) as u32,
+            shift: adj as u32,
         }
     }
 
@@ -822,11 +841,13 @@ impl<S: SimdToken> CdefConstrainWide<S> {
     }
 }
 
-/// [`cdef_filter_rows_diff8`] over a segment's `ROWS`-row block, 8 lanes
-/// wide, four rows per 32-lane vector, for filters [`cdef_wide8_fits`] admits. The constrained
-/// taps are summed in `i8` per family, the primary as `2 * pair0 + pair1`
-/// for `Cdef_Pri_Taps` `[4, 2]` or `pair0 + pair1` for `[3, 3]`, then widen
-/// once and take the remaining weight 2 or 3.
+/// [`cdef_filter_rows_diff8`] over the byte scratch of a segment's
+/// `ROWS`-row block, 8 lanes wide, four rows per 32-lane vector, for
+/// filters [`cdef_wide8_fits`] admits, with `constrain` in the
+/// [`cdef_window_mode`] `MODE`.
+/// The constrained taps are summed in `i8` per family, the primary as
+/// `2 * pair0 + pair1` for `Cdef_Pri_Taps` `[4, 2]` or `pair0 + pair1` for
+/// `[3, 3]`, then widen once and take the remaining weight 2 or 3.
 ///
 /// Kept out of line: inlined into the kernel dispatch it ran more
 /// instructions.
@@ -834,38 +855,31 @@ impl<S: SimdToken> CdefConstrainWide<S> {
 fn cdef_filter_rows_wide8<
     S: SimdToken,
     Q: QuadLanes<S>,
+    T: crate::ReconSample,
     const STRIDE: usize,
     const CENTER: usize,
     const ROWS: usize,
-    const SPAN: usize,
-    const AREA: usize,
-    const BYTES: bool,
     const SPAN8: usize,
     const AREA8: usize,
+    const MODE: u8,
     const PRI: bool,
     const SEC: bool,
 >(
     simd: S,
     quads: Q,
-    bytes: &[u8; AREA8],
-    (pad, _, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA>,
+    (bytes, plan, starts): (&[u8; AREA8], &CdefFilterPlan, &CdefTapStarts),
+    (out, out_stride): (&mut [T], usize),
 ) -> Option<()> {
-    let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+    let filter = &plan.filter;
     let (center_bytes, pri_bytes, sec_bytes) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN8, AREA8, PRI, SEC>(bytes, filter.dir, starts)?;
+    let out = out.get_mut(..out_stride.checked_mul(ROWS - 1)?.checked_add(8)?)?;
     let heavy_first = (filter.pri_str >> filter.coeff_shift) & 1 == 0;
     let pri_double = i8x32::splat(simd, if heavy_first { -1 } else { 0 });
     let pri_weight: i16 = if heavy_first { 2 } else { 3 };
-    let pri = CdefConstrainWide::new(simd, filter.pri_str, filter.damping);
-    let sec = CdefConstrainWide::new(simd, filter.sec_str, filter.damping);
-    for first in (0..ROWS).step_by(4) {
-        let quad = |view: &[u16; SPAN]| -> Option<[i16x16<S>; 2]> {
-            Some([
-                cdef_row_pair_i16::<S, STRIDE, SPAN>(simd, view, first)?,
-                cdef_row_pair_i16::<S, STRIDE, SPAN>(simd, view, first + 2)?,
-            ])
-        };
+    let pri = CdefConstrainWide::new(simd, filter.pri_str, plan.adj[0]);
+    let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
+    for_each_row_pair!([0, 4], ROWS, ROWS, |first| {
         let byte_quad = |view: &[u8; SPAN8]| -> Option<i8x32<S>> {
             let row = |index: usize| -> Option<u64x2<S>> {
                 let at = (first + Q::ROWS[index]) * STRIDE;
@@ -875,42 +889,35 @@ fn cdef_filter_rows_wide8<
             let high = simd.zip_low_u64x2(row(2)?, row(3)?);
             Some(simd.combine_u64x2(low, high).bitcast())
         };
-        let center_signed = if BYTES {
-            byte_quad(center_bytes)?
-        } else {
-            i8x32::splat(simd, 0)
-        };
-        let center = if BYTES {
-            quads.widen(simd, center_signed).map(|center| center + 128)
-        } else {
-            quad(center_view)?
-        };
+        let center_signed = byte_quad(center_bytes)?;
+        let center = quads.widen(simd, center_signed).map(|center| center + 128);
         let (mut min, mut max) = (i8x32::splat(simd, 0), i8x32::splat(simd, 0));
         macro_rules! tap {
             ($view:expr, $constrain:expr) => {{
-                let diff = if BYTES {
-                    byte_quad($view.1)?.saturating_sub(center_signed)
-                } else {
-                    let [low, high] = quad($view.0)?;
-                    quads.narrow(simd, [low - center[0], high - center[1]])
-                };
+                let diff = byte_quad($view)?.saturating_sub(center_signed);
                 if PRI && SEC {
                     min = min.min(diff);
                     max = max.max(diff);
                 }
-                $constrain.apply_diff(simd, quads, diff)
+                match MODE {
+                    CDEF_LINEAR => diff,
+                    CDEF_CLAMPED => {
+                        let strength = $constrain.threshold.bitcast::<i8x32<S>>();
+                        diff.min(strength).max(-strength)
+                    }
+                    _ => $constrain.apply_diff(simd, quads, diff),
+                }
             }};
         }
         let mut sum = [i16x16::splat(simd, 0); 2];
         if PRI {
-            let view = |k: usize| (pri_views[k], pri_bytes[k]);
-            let pair0 = tap!(view(0), pri) + tap!(view(1), pri);
-            let pair1 = tap!(view(2), pri) + tap!(view(3), pri);
+            let pair0 = tap!(pri_bytes[0], pri) + tap!(pri_bytes[1], pri);
+            let pair1 = tap!(pri_bytes[2], pri) + tap!(pri_bytes[3], pri);
             let primary = quads.widen(simd, pair0 + pair1 + (pair0 & pri_double));
             sum = primary.map(|primary| primary * pri_weight);
         }
         if SEC {
-            let view = |k: usize| (sec_views[k], sec_bytes[k]);
+            let view = |k: usize| sec_bytes[k];
             let family0 =
                 tap!(view(0), sec) + tap!(view(1), sec) + tap!(view(2), sec) + tap!(view(3), sec);
             let family1 =
@@ -919,35 +926,50 @@ fn cdef_filter_rows_wide8<
             sum = [sum[0] + secondary[0], sum[1] + secondary[1]];
         }
         let offset = sum.map(cdef_round);
-        let offset = if PRI && SEC {
-            quads.widen(simd, quads.narrow(simd, offset).max(min).min(max))
+        let clamped = (PRI && SEC).then(|| quads.narrow(simd, offset).max(min).min(max));
+        if let Some(out) = T::u8_slice_mut(&mut *out) {
+            // The filtered sample is a valid 8-bit sample, so the biased byte sum does not wrap.
+            let offset = clamped.unwrap_or_else(|| quads.narrow(simd, offset));
+            let bias = u8x32::splat(simd, 0x80);
+            let bytes = ((center_signed + offset).bitcast::<u8x32<S>>() ^ bias).to_array();
+            for (lanes, &row) in bytes.chunks_exact(8).zip(&Q::ROWS) {
+                let at = (first + row) * out_stride;
+                out.get_mut(at..at + 8)?.copy_from_slice(lanes); // splot-copy-ok: publish the filtered byte rows into output
+            }
         } else {
-            offset
-        };
-        for half in 0..2 {
-            let filtered = (center[half] + offset[half]).bitcast::<u16x16<S>>();
-            cdef_store_row_pair::<S, 8>(filtered, out, out_stride, first + 2 * half, ROWS)?;
+            let offset = clamped.map_or(offset, |clamped| quads.widen(simd, clamped));
+            let out = T::u16_slice_mut(&mut *out)?;
+            for half in 0..2 {
+                let filtered = (center[half] + offset[half])
+                    .bitcast::<u16x16<S>>()
+                    .to_array();
+                for (lanes, row) in filtered.chunks_exact(8).zip(first + 2 * half..) {
+                    let at = row * out_stride;
+                    out.get_mut(at..at + 8)?.copy_from_slice(lanes); // splot-copy-ok: publish the filtered rows into output
+                }
+            }
         }
-    }
+        Some(())
+    });
     Some(())
 }
 
 /// AV2 § 7.18.3 CDEF over interior 8x8 luma block `block` of `segment`.
 /// With `use_range`, the block's window range selects the kernel: the
-/// linear kernel, which skips `constrain`, when `cdef_window_linear` admits
-/// the range; its `CLAMP` mode, which clips each tap to the centre -/+
-/// strength, when `cdef_window_clamped` admits it; else the 32-lane kernel
+/// linear kernel, which skips `constrain`, when `cdef_window_mode` calls
+/// the range linear; its `CLAMP` mode, which clips each tap to the centre -/+
+/// strength, when it calls it clamped; else the 32-lane kernel
 /// when `cdef_wide8_fits` admits the filter, or `u8` lanes when the range is
 /// below 256 and the filter fits them. Other blocks take the
 /// kernel of [`cdef_filter_block_interior_to`]. Returns `false` without
 /// writing when `block` is not below [`CDEF_SEGMENT_BLOCKS`], `out_stride` is
 /// below 8, or `out` cannot hold the block at `out_stride`.
-pub fn cdef_filter_block_segment(
+pub fn cdef_filter_block_segment<T: crate::ReconSample>(
     segment: &CdefLumaSegment,
     block: usize,
     filter: &CdefBlockFilter,
     use_range: bool,
-    out: &mut [u16],
+    out: &mut [T],
     out_stride: usize,
 ) -> bool {
     let (Some(pad), Some(range)) = (segment.block(block), segment.range(block)) else {
@@ -961,23 +983,24 @@ pub fn cdef_filter_block_segment(
     }
     let range = use_range.then_some(range);
     let pad = (pad, segment.block_bytes(block));
+    let plan = &CdefFilterPlan::new(*filter);
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = Level::baseline().as_avx2() {
-        return luma_segment_with(avx2, InLane, pad, range, filter, (out, out_stride));
+        return luma_segment_with(avx2, InLane, pad, range, plan, (out, out_stride));
     }
     baseline_simd!(simd => luma_segment_with(
         simd,
         Ordered,
         pad,
         range,
-        filter,
+        plan,
         (out, out_stride),
     ))
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>>(
+fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     simd: S,
     quads: Q,
     (pad, bytes): (
@@ -985,8 +1008,8 @@ fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>>(
         Option<&[u8; LUMA_BLOCK_BYTES]>,
     ),
     range: Option<[u16; 2]>,
-    filter: &CdefBlockFilter,
-    (out, out_stride): (&mut [u16], usize),
+    plan: &CdefFilterPlan,
+    (out, out_stride): (&mut [T], usize),
 ) -> bool {
     const SPAN: usize = 7 * CDEF_SEGMENT_STRIDE + 8;
     const AREA: usize = CDEF_SEGMENT_BLOCK_AREA;
@@ -994,93 +1017,93 @@ fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>>(
     const AREA8: usize = LUMA_BLOCK_BYTES;
     const STRIDE: usize = CDEF_SEGMENT_STRIDE;
     let starts = &CDEF_SEGMENT_TAP_STARTS;
+    let filter = &plan.filter;
     let args = (pad, 8, filter, starts, &mut *out, out_stride);
     let Some([base, max]) = range else {
-        return cdef_filter_block_rows::<S, 8, false, STRIDE, 2, 8, SPAN, AREA>(simd, args)
+        return cdef_filter_block_rows::<S, _, 8, false, STRIDE, 2, 8, SPAN, AREA>(simd, args)
             .is_some();
     };
     let range = i32::from(max) - i32::from(base);
     macro_rules! copy {
         () => {
-            cdef_copy_centre_rows::<8, STRIDE, 2, 8, AREA>(pad, 8, out, out_stride)
+            cdef_copy_centre_rows::<S, 8, STRIDE, 2, 8, AREA, _>(simd, pad, 8, out, out_stride)
         };
     }
     macro_rules! clamped {
         ($clamp:literal) => {
             cdef_by_families!(
                 filter,
-                cdef_filter_rows_clamped::<S, 8, STRIDE, 2, 8, SPAN, AREA, $clamp>(simd, args),
+                cdef_filter_rows_clamped::<S, _, 8, STRIDE, 2, 8, SPAN, AREA, $clamp>(simd, args),
                 copy!()
             )
             .is_some()
         };
     }
-    if cdef_window_linear(filter, range) {
-        return clamped!(false);
+    match plan.mode(range) {
+        CDEF_LINEAR => return clamped!(false),
+        CDEF_CLAMPED => return clamped!(true),
+        _ => {}
     }
-    if cdef_window_clamped(filter, range) {
-        return clamped!(true);
-    }
-    if cdef_wide8_fits(filter) {
-        return match bytes {
-            Some(bytes) => cdef_by_families!(
-                filter,
-                cdef_filter_rows_wide8::<S, Q, STRIDE, 2, 8, SPAN, AREA, true, SPAN8, AREA8>(
-                    simd, quads, bytes, args
-                ),
-                copy!()
-            ),
-            None => cdef_by_families!(
-                filter,
-                cdef_filter_rows_wide8::<S, Q, STRIDE, 2, 8, SPAN, AREA, false, SPAN8, AREA8>(
-                    simd, quads, &NO_BYTES, args
-                ),
-                copy!()
-            ),
-        }
-        .is_some();
-    }
-    if range <= 255 && cdef_u8_lanes_fit(filter) {
+    if let (Some(bytes), true) = (bytes, plan.wide8) {
         return cdef_by_families!(
             filter,
-            cdef_filter_rows_8bit::<S, 8, STRIDE, 2, 8, SPAN, AREA>(simd, args, base),
+            cdef_filter_rows_wide8::<S, Q, _, STRIDE, 2, 8, SPAN8, AREA8, CDEF_GENERAL>(
+                simd,
+                quads,
+                (bytes, plan, starts),
+                (out, out_stride)
+            ),
             copy!()
         )
         .is_some();
     }
-    cdef_filter_block_rows::<S, 8, false, STRIDE, 2, 8, SPAN, AREA>(simd, args).is_some()
+    if range <= 255 && plan.u8_lanes {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_8bit::<S, _, 8, STRIDE, 2, 8, SPAN, AREA>(simd, args, base),
+            copy!()
+        )
+        .is_some();
+    }
+    cdef_filter_block_rows::<S, _, 8, false, STRIDE, 2, 8, SPAN, AREA>(simd, args).is_some()
 }
 
 /// The 32-lane kernel of [`luma_segment_with`] alone, for a block of a
 /// bytes-only segment; `false` when the filter does not fit it.
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn luma_wide8_with<S: SimdToken, Q: QuadLanes<S>>(
+fn luma_wide8_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     simd: S,
     quads: Q,
-    (pad, bytes): (
-        &[u16; CDEF_SEGMENT_BLOCK_AREA],
-        Option<&[u8; LUMA_BLOCK_BYTES]>,
-    ),
-    filter: &CdefBlockFilter,
-    (out, out_stride): (&mut [u16], usize),
+    bytes: Option<&[u8; LUMA_BLOCK_BYTES]>,
+    range: i32,
+    plan: &CdefFilterPlan,
+    out: (&mut [T], usize),
 ) -> bool {
-    const SPAN: usize = 7 * CDEF_SEGMENT_STRIDE + 8;
-    const AREA: usize = CDEF_SEGMENT_BLOCK_AREA;
-    const SPAN8: usize = SPAN + 8;
-    const AREA8: usize = LUMA_BLOCK_BYTES;
     const STRIDE: usize = CDEF_SEGMENT_STRIDE;
-    let (Some(bytes), true) = (bytes, cdef_wide8_fits(filter)) else {
+    const SPAN8: usize = 7 * STRIDE + 16;
+    const AREA8: usize = LUMA_BLOCK_BYTES;
+    let (Some(bytes), true) = (bytes, plan.wide8) else {
         return false;
     };
-    let args = (pad, 8, filter, &CDEF_SEGMENT_TAP_STARTS, out, out_stride);
-    cdef_by_families!(
-        filter,
-        cdef_filter_rows_wide8::<S, Q, STRIDE, 2, 8, SPAN, AREA, true, SPAN8, AREA8>(
-            simd, quads, bytes, args
-        ),
-        Some(())
-    )
+    let filter = &plan.filter;
+    let inputs = (bytes, plan, &CDEF_SEGMENT_TAP_STARTS);
+    macro_rules! run {
+        ($mode:ident) => {
+            cdef_by_families!(
+                filter,
+                cdef_filter_rows_wide8::<S, Q, _, STRIDE, 2, 8, SPAN8, AREA8, $mode>(
+                    simd, quads, inputs, out
+                ),
+                Some(())
+            )
+        };
+    }
+    match plan.mode(range) {
+        CDEF_LINEAR => run!(CDEF_LINEAR),
+        CDEF_CLAMPED => run!(CDEF_CLAMPED),
+        _ => run!(CDEF_GENERAL),
+    }
     .is_some()
 }
 
@@ -1139,16 +1162,119 @@ impl CdefStrengths {
             },
         ]
     }
+}
 
-    /// Whether every luma filter [`CdefStrengths::filters`] can give, over
-    /// every variance, fits the 32-lane kernel of 8-bit samples, so that a
-    /// segment gathered with [`CdefLumaSegment::gather_bytes`] filters.
+/// A filter and what selects its kernel: the `constrain` dampingAdj of each
+/// strength and the largest window ranges that [`cdef_window_mode`] calls
+/// linear and clamped.
+#[derive(Clone, Copy, Debug)]
+struct CdefFilterPlan {
+    filter: CdefBlockFilter,
+    adj: [i32; 2],
+    linear_max: i32,
+    clamped_max: i32,
+    wide8: bool,
+    u8_lanes: bool,
+}
+
+impl CdefFilterPlan {
+    fn new(filter: CdefBlockFilter) -> Self {
+        let (mut linear_max, mut clamped_max) = (i32::MAX, i32::MAX);
+        let adj = [filter.pri_str, filter.sec_str]
+            .map(|strength| constrain_damping_adj(strength, filter.damping));
+        for (strength, adj) in [filter.pri_str, filter.sec_str].into_iter().zip(adj) {
+            if strength == 0 {
+                continue;
+            }
+            let mut linear = strength.max(-1);
+            while linear >= 0 && linear + shr_or_zero(linear, adj) > strength {
+                linear -= 1;
+            }
+            let clamped = match (strength > 0, u32::try_from(adj)) {
+                (false, _) => -1,
+                (true, Ok(adj @ 0..31)) => (1 << adj) - 1,
+                (true, _) => i32::MAX,
+            };
+            linear_max = linear_max.min(linear);
+            clamped_max = clamped_max.min(clamped);
+        }
+        Self {
+            filter,
+            adj,
+            linear_max,
+            clamped_max,
+            wide8: cdef_wide8_fits(&filter),
+            u8_lanes: cdef_u8_lanes_fit(&filter),
+        }
+    }
+
+    /// [`cdef_window_mode`] of the filter for a window spanning `range`.
+    #[allow(clippy::inline_always, reason = "measured CDEF per-block hot path")]
+    #[inline(always)]
+    fn mode(&self, range: i32) -> u8 {
+        if range <= self.linear_max {
+            CDEF_LINEAR
+        } else if range <= self.clamped_max {
+            CDEF_CLAMPED
+        } else {
+            CDEF_GENERAL
+        }
+    }
+}
+
+/// The filters [`CdefStrengths::filters`] gives a unit, for each luma
+/// variance level and for chroma, with their kernel selection.
+#[derive(Clone, Copy, Debug)]
+pub struct CdefUnitFilters {
+    luma: [CdefFilterPlan; 14],
+    chroma: CdefFilterPlan,
+    dirs: [[usize; 8]; 2],
+    luma_active: bool,
+    directions: bool,
+    luma_bytes: bool,
+}
+
+impl CdefUnitFilters {
+    /// The filters of a unit with `strengths`.
+    pub fn new(strengths: &CdefStrengths) -> Self {
+        let level_var = |level: usize| if level == 0 { 0 } else { 64 << (level - 1) };
+        let luma = core::array::from_fn(|level| {
+            CdefFilterPlan::new(strengths.filters(0, level_var(level))[0])
+        });
+        let dirs =
+            [0, 1].map(|plane| core::array::from_fn(|dir| strengths.filters(dir, 64)[plane].dir));
+        let pri_base = strengths.y_pri << strengths.coeff_shift;
+        Self {
+            luma,
+            chroma: CdefFilterPlan::new(strengths.filters(0, 0)[1]),
+            dirs,
+            luma_active: strengths.y_sec != 0 || pri_base != 0,
+            directions: pri_base != 0 || strengths.uv_pri != 0,
+            luma_bytes: strengths.coeff_shift == 0 && luma.iter().all(|plan| plan.wide8),
+        }
+    }
+
+    /// Whether every luma filter of the unit, over every variance, fits the
+    /// 32-lane kernel of 8-bit samples, so that a segment gathered with
+    /// [`CdefLumaSegment::gather_bytes`] filters.
     pub fn luma_bytes_suffice(&self) -> bool {
-        self.coeff_shift == 0
-            && (0..=13).all(|var_log| {
-                let var = if var_log == 0 { 0 } else { 64 << (var_log - 1) };
-                cdef_wide8_fits(&self.filters(0, var)[0])
-            })
+        self.luma_bytes
+    }
+
+    /// The luma and chroma filters of a block with § 7.18.2 direction
+    /// `y_dir` and variance `var`.
+    #[allow(clippy::inline_always, reason = "measured CDEF per-block hot path")]
+    #[inline(always)]
+    fn block(&self, y_dir: usize, var: i32) -> [CdefFilterPlan; 2] {
+        let level = if var == 0 {
+            0
+        } else {
+            1 + (var >> 6).checked_ilog2().unwrap_or(0).min(12) as usize
+        };
+        let (mut luma, mut chroma) = (self.luma[level.min(13)], self.chroma);
+        luma.filter.dir = self.dirs[0][y_dir & 7];
+        chroma.filter.dir = self.dirs[1][y_dir & 7];
+        [luma, chroma]
     }
 }
 
@@ -1167,9 +1293,9 @@ pub struct CdefSegmentBlock {
 /// One segment's output rows: luma rows from the segment's first sample on
 /// with their stride, and, when its chroma pair was gathered, the pair
 /// segment and the U and V rows.
-pub type CdefSegmentOutput<'a> = (
-    (&'a mut [u16], usize),
-    Option<(&'a CdefPairSegment, [(&'a mut [u16], usize); 2])>,
+pub type CdefSegmentOutput<'a, T> = (
+    (&'a mut [T], usize),
+    Option<(&'a CdefPairSegment, [(&'a mut [T], usize); 2])>,
 );
 
 /// AV2 § 7.18.2 and § 7.18.3 CDEF over the [`CDEF_SEGMENT_BLOCKS`] blocks of
@@ -1178,32 +1304,33 @@ pub type CdefSegmentOutput<'a> = (
 /// [`cdef_filter_block_chroma_pair_segment`]; a block whose window is flat
 /// filters to itself, and is written only for the planes `fill_flat` marks
 /// (luma, U, V). Returns `false` when the rows cannot hold the segment.
-pub fn cdef_filter_segment(
+#[inline(never)]
+pub fn cdef_filter_segment<T: crate::ReconSample>(
     segment: &CdefLumaSegment,
-    strengths: &CdefStrengths,
+    unit: &CdefUnitFilters,
     blocks: [CdefSegmentBlock; CDEF_SEGMENT_BLOCKS],
     fill_flat: [bool; 3],
-    output: CdefSegmentOutput<'_>,
+    output: CdefSegmentOutput<'_, T>,
 ) -> bool {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = Level::baseline().as_avx2() {
-        return segment_with(avx2, InLane, segment, strengths, blocks, fill_flat, output);
+        return segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output);
     }
     baseline_simd!(simd => segment_with(
-        simd, Ordered, segment, strengths, blocks, fill_flat, output,
+        simd, Ordered, segment, unit, blocks, fill_flat, output,
     ))
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn segment_with<S: SimdToken, Q: QuadLanes<S>>(
+fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     simd: S,
     quads: Q,
     segment: &CdefLumaSegment,
-    strengths: &CdefStrengths,
+    unit: &CdefUnitFilters,
     blocks: [CdefSegmentBlock; CDEF_SEGMENT_BLOCKS],
     fill_flat: [bool; 3],
-    ((luma_out, luma_stride), mut chroma): CdefSegmentOutput<'_>,
+    ((luma_out, luma_stride), mut chroma): CdefSegmentOutput<'_, T>,
 ) -> bool {
     const WIDTH: usize = 8 * CDEF_SEGMENT_BLOCKS;
     let fits = |len: usize, stride: usize, rows: usize, width: usize| {
@@ -1222,10 +1349,7 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>>(
     {
         return false;
     }
-    let shift = strengths.coeff_shift;
-    let pri_base = strengths.y_pri << shift;
-    let uv_pri = strengths.uv_pri << shift;
-    let luma_active = strengths.y_sec != 0 || pri_base != 0;
+    let shift = unit.luma[0].filter.coeff_shift;
     for (block, filters) in blocks.into_iter().enumerate() {
         let chroma_block = chroma.as_mut().filter(|_| filters.chroma);
         if !filters.luma && chroma_block.is_none() {
@@ -1236,9 +1360,9 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>>(
             return false;
         };
         let bytes = segment.block_bytes(block);
-        let use_range = filters.luma && luma_active;
+        let use_range = filters.luma && unit.luma_active;
         let luma_flat = use_range && least == greatest;
-        let (y_dir, var) = if (pri_base == 0 && uv_pri == 0) || luma_flat {
+        let (y_dir, var) = if !unit.directions || luma_flat {
             (0, 0)
         } else if segment.has_pad {
             cdef_direction_strided::<CDEF_SEGMENT_STRIDE, CDEF_SEGMENT_BLOCK_AREA>(luma, shift)
@@ -1247,8 +1371,8 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>>(
         } else {
             return false;
         };
-        let [y_filter, uv_filter] = strengths.filters(y_dir, var);
-        if filters.luma && (y_filter.pri_str != 0 || y_filter.sec_str != 0) {
+        let [y_plan, uv_plan] = unit.block(y_dir, var);
+        if filters.luma && (y_plan.filter.pri_str != 0 || y_plan.filter.sec_str != 0) {
             let Some(out) = luma_out.get_mut(8 * block..) else {
                 return false;
             };
@@ -1260,11 +1384,12 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>>(
                     quads,
                     (luma, bytes),
                     Some([least, greatest]),
-                    &y_filter,
+                    &y_plan,
                     (out, luma_stride),
                 )
             } else {
-                luma_wide8_with(simd, quads, (luma, bytes), &y_filter, (out, luma_stride))
+                let range = i32::from(greatest) - i32::from(least);
+                luma_wide8_with(simd, quads, bytes, range, &y_plan, (out, luma_stride))
             };
             if !written {
                 return false;
@@ -1273,7 +1398,7 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>>(
         let Some((pair, planes)) = chroma_block else {
             continue;
         };
-        if uv_filter.pri_str == 0 && uv_filter.sec_str == 0 {
+        if uv_plan.filter.pri_str == 0 && uv_plan.filter.sec_str == 0 {
             continue;
         }
         let (Some(pad), Some(range)) = (pair.block(block), pair.range(block)) else {
@@ -1293,7 +1418,7 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>>(
                 quads,
                 (pad, pair.block_bytes(block)),
                 range,
-                &uv_filter,
+                &uv_plan,
                 &mut output,
             ) && publish_pair(simd, &output, [(u, *u_stride), (v, *v_stride)]).is_some()
         };
@@ -1308,11 +1433,27 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>>(
 /// with `value`.
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn fill_rows(rows: &mut [u16], stride: usize, side: usize, value: u16) -> Option<()> {
+fn fill_rows<T: crate::ReconSample>(
+    rows: &mut [T],
+    stride: usize,
+    side: usize,
+    value: u16,
+) -> Option<()> {
+    let value = T::try_from_u16(value).ok()?;
     for row in 0..side {
         rows.get_mut(row * stride..)?.get_mut(..side)?.fill(value);
     }
     Some(())
+}
+
+/// Writes the interleaved chroma pair `output` of
+/// [`super::cdef_filter_block_chroma_pair`] into the four rows of the U and V
+/// `planes`; `false` when a plane cannot hold them.
+pub fn cdef_publish_chroma_pair<T: crate::ReconSample>(
+    output: &[u16; CDEF_PAIR_OUTPUT],
+    planes: [(&mut [T], usize); 2],
+) -> bool {
+    baseline_simd!(simd => publish_pair(simd, output, planes)).is_some()
 }
 
 /// Writes the interleaved chroma pair `output` into the four rows of the U
@@ -1320,27 +1461,48 @@ fn fill_rows(rows: &mut [u16], stride: usize, side: usize, value: u16) -> Option
 /// kernels store it, so that each load forwards from one store.
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn publish_pair<S: SimdToken>(
+fn publish_pair<S: SimdToken, T: crate::ReconSample>(
     simd: S,
     output: &[u16; CDEF_PAIR_OUTPUT],
-    planes: [(&mut [u16], usize); 2],
+    planes: [(&mut [T], usize); 2],
 ) -> Option<()> {
     let row = |row: usize| u16x8::from_slice(simd, &output[8 * row..8 * row + 8]);
     let (low, high) = (
         simd.combine_u16x8(row(0), row(1)),
         simd.combine_u16x8(row(2), row(3)),
     );
-    let lanes = [
-        simd.unzip_low_u16x16(low, high),
-        simd.unzip_high_u16x16(low, high),
-    ]
-    .map(SimdBase::to_array);
-    for (lanes, (out, stride)) in lanes.iter().zip(planes) {
-        let rows = out.get_mut(..stride.checked_mul(3)?.checked_add(4)?)?;
-        for (row, lanes) in lanes.chunks_exact(4).enumerate() {
-            let start = row * stride;
-            rows.get_mut(start..start + 4)?.copy_from_slice(lanes); // splot-copy-ok: publish the pair's deinterleaved samples
-        }
+    let [u, v] = planes;
+    store_lanes(simd, simd.unzip_low_u16x16(low, high), u)?;
+    store_lanes(simd, simd.unzip_high_u16x16(low, high), v)
+}
+
+/// [`store_quad`] of 16 `u16` lanes into `T` rows.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn store_lanes<S: SimdToken, T: crate::ReconSample>(
+    simd: S,
+    lanes: u16x16<S>,
+    (out, stride): (&mut [T], usize),
+) -> Option<()> {
+    if let Some(out) = T::u8_slice_mut(out) {
+        let (low, high) = simd.split_u16x16(lanes);
+        return store_quad(
+            simd.saturating_narrow_u16x8(low, high).to_array(),
+            out,
+            stride,
+        );
+    }
+    store_quad(lanes.to_array(), T::u16_slice_mut(out)?, stride)
+}
+
+/// Stores the 4x4 block `lanes` into the rows of `out`, `stride` apart.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn store_quad<E: Copy>(lanes: [E; 16], out: &mut [E], stride: usize) -> Option<()> {
+    let rows = out.get_mut(..stride.checked_mul(3)?.checked_add(4)?)?;
+    for (row, lanes) in lanes.chunks_exact(4).enumerate() {
+        let start = row * stride;
+        rows.get_mut(start..start + 4)?.copy_from_slice(lanes); // splot-copy-ok: publish the pair's deinterleaved samples
     }
     Some(())
 }
@@ -1487,14 +1649,14 @@ mod tests {
             for (dir, (pri_str, sec_str)) in
                 (0..8).zip([(4, 2), (21, 0), (0, 10), (12, 8)].iter().cycle())
             {
-                let filter = CdefBlockFilter {
+                let filter = CdefFilterPlan::new(CdefBlockFilter {
                     pri_str: *pri_str,
                     sec_str: *sec_str,
                     damping: 3 + dir as i32 % 4,
                     dir,
                     coeff_shift: 0,
-                };
-                assert!(cdef_wide8_fits(&filter));
+                });
+                assert!(filter.wide8);
                 for block in 0..CDEF_SEGMENT_BLOCKS {
                     let (Some(luma), Some(chroma)) = (segment.block(block), pair.block(block))
                     else {
@@ -1615,7 +1777,7 @@ mod tests {
         let (mut out, mut u, mut v) = ([7u16; 40 * 8], [7u16; 20 * 4], [7u16; 20 * 4]);
         assert!(cdef_filter_segment(
             &segment,
-            &strengths,
+            &CdefUnitFilters::new(&strengths),
             blocks,
             [true; 3],
             ((&mut out, 40), Some((&pair, [(&mut u, 20), (&mut v, 20)]))),
@@ -1666,7 +1828,7 @@ mod tests {
         let short = &mut [0u16; 40 * 7 + 31];
         assert!(!cdef_filter_segment(
             &segment,
-            &strengths,
+            &CdefUnitFilters::new(&strengths),
             blocks,
             [true; 3],
             ((short, 40), None),
@@ -1706,7 +1868,8 @@ mod tests {
                 coeff_shift: 0,
                 uv_dir: CDEF_UV_DIR[1][1],
             };
-            assert!(strengths.luma_bytes_suffice());
+            let unit = CdefUnitFilters::new(&strengths);
+            assert!(unit.luma_bytes_suffice());
             let blocks = [CdefSegmentBlock {
                 luma: true,
                 chroma: true,
@@ -1722,11 +1885,29 @@ mod tests {
                 }
                 assert!(cdef_filter_segment(
                     &segment,
-                    &strengths,
+                    &unit,
                     blocks,
                     [true; 3],
                     ((out, 40), Some((&pair, [(u, 20), (v, 20)]))),
                 ));
+                let (mut out8, mut u8_, mut v8) = ([0u8; 40 * 8], [0u8; 20 * 4], [0u8; 20 * 4]);
+                assert!(cdef_filter_segment(
+                    &segment,
+                    &unit,
+                    blocks,
+                    [true; 3],
+                    (
+                        (&mut out8, 40),
+                        Some((&pair, [(&mut u8_, 20), (&mut v8, 20)]))
+                    ),
+                ));
+                let same = |bytes: &[u8], wide: &[u16]| {
+                    bytes.iter().map(|&b| u16::from(b)).eq(wide.iter().copied())
+                };
+                assert!(
+                    same(&out8, out) && same(&u8_, u) && same(&v8, v),
+                    "u8 output {strengths:?}"
+                );
             }
             assert_eq!(outputs[0], outputs[1], "{strengths:?}");
         }
@@ -1742,7 +1923,33 @@ mod tests {
                 uv_dir: CDEF_UV_DIR[1][1],
             }
         };
-        assert!(!deep.luma_bytes_suffice());
+        assert!(!CdefUnitFilters::new(&deep).luma_bytes_suffice());
+    }
+
+    /// The kernel selection a plan derives once is the per-window one.
+    #[test]
+    fn filter_plans_select_the_window_modes() {
+        for (pri_str, sec_str, damping) in (-2..70)
+            .step_by(3)
+            .flat_map(|pri| [0, 1, 2, 4, 9, 16, -1].map(|sec| (pri, sec)))
+            .flat_map(|(pri, sec)| [0, 2, 3, 6, 9, 12].map(|damping| (pri, sec, damping)))
+        {
+            let filter = CdefBlockFilter {
+                pri_str,
+                sec_str,
+                damping,
+                dir: 0,
+                coeff_shift: 0,
+            };
+            let plan = CdefFilterPlan::new(filter);
+            for range in (0..1100).chain([65_535]) {
+                assert_eq!(
+                    plan.mode(range),
+                    cdef_window_mode(&filter, range),
+                    "{filter:?} {range}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -43,7 +43,7 @@ const MAX_CLASSES: usize = 16;
 /// Bytes per staged row: the widest § 7.20 block, a last restoration unit
 /// of 1.5 times `RESTORATION_TILESIZE_MAX`, plus the tap reach. A fixed row
 /// size puts every tap of a vector group at a constant offset from one base.
-const STAGE_STRIDE: usize = 3 * 512 / 2 + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+pub(crate) const STAGE_STRIDE: usize = 3 * 512 / 2 + 2 * WIENER_NS_LUMA_TAP_RADIUS;
 /// Source rows of one 4x4 cell row group.
 const GROUP_ROWS: usize = 12;
 
@@ -170,9 +170,9 @@ pub(super) struct EightBitLuma {
 impl EightBitLuma {
     /// Narrows the padded rows `rows(i)` of a `width` x `height` block;
     /// returns whether every row is present and every sample at most 255.
-    pub(super) fn stage<'r>(
+    pub(super) fn stage<'r, T: crate::ReconSample>(
         &mut self,
-        rows: impl Fn(usize) -> Option<&'r [u16]>,
+        rows: impl Fn(usize) -> Option<&'r [T]>,
         width: usize,
         height: usize,
     ) -> bool {
@@ -325,8 +325,14 @@ fn kernel_available() -> bool {
 }
 
 /// Copies `row` into `staged` as bytes; returns `false` for a sample above 255.
-fn narrow_row(staged: &mut [u8], row: &[u16]) -> bool {
-    crate::lr_madd::lr_simd!(simd => narrow_row_lanes(simd, staged, row))
+pub(crate) fn narrow_row<T: crate::ReconSample>(staged: &mut [u8], row: &[T]) -> bool {
+    if let Some(row) = T::u8_slice(row) {
+        let len = staged.len().min(row.len());
+        staged[..len].copy_from_slice(&row[..len]); // splot-copy-ok: fixed-stride byte-lane kernel rows
+        return true;
+    }
+    T::u16_slice(row)
+        .is_some_and(|row| crate::lr_madd::lr_simd!(simd => narrow_row_lanes(simd, staged, row)))
 }
 
 #[inline]
@@ -707,6 +713,13 @@ mod avx2 {
         else {
             return 0;
         };
+        let known = match layout {
+            LumaSubclassLayout::Cells { values, cols } => values
+                .get((first / 4) * cols..)
+                .and_then(|row| row.get(..cols))
+                .is_some_and(|row| usize::from(row.iter().fold(0, |m, &c| m.max(c))) < classes),
+            _ => false,
+        };
         let mut x = 0;
         while x + LANES <= width && x + REACH <= STAGE_STRIDE {
             if let Some(value) = flat.chunk_value(x / LANES) {
@@ -735,10 +748,10 @@ mod avx2 {
                     else {
                         break;
                     };
-                    if cells.iter().any(|&class| usize::from(class) >= classes) {
+                    if !known && cells.iter().any(|&class| usize::from(class) >= classes) {
                         break;
                     }
-                    if cells.iter().all(|&class| class == cells[0]) {
+                    if *cells == [cells[0]; 8] {
                         uniform_weights(t, &luma.classes[usize::from(cells[0])])
                     } else {
                         mixed_weights(t, &luma.tables, cells)

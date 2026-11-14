@@ -15,7 +15,7 @@
 //! [`RowReferenceGate::bounds_for_row`] derives that requirement per reference
 //! list, as the last luma row of the reference the row's reads can touch. It
 //! runs after the row's § 7.12 resolve pass, so warp models, final motion
-//! vectors and the § 7.13.5 TIP motion field are all settled by then:
+//! vectors and the § 7.10 TIP motion field are all settled by then:
 //!
 //! - single-reference translational prediction is exact: the row's blocks read
 //!   through the same § 7.13.3.18 scaling the prediction derives, so the bound
@@ -27,7 +27,7 @@
 //!   model projects the block's plane rectangle onto;
 //! - a § 7.13.3.25 BAWP list adds [`bawp_reference_luma_rows`], the template
 //!   window below the block's full-pel reference position;
-//! - a § 7.13.5 TIP block reads the frame's TIP reference pair through the
+//! - a § 7.13.3.2 TIP block reads the frame's TIP reference pair through the
 //!   projected motion field, so it is bounded band by band over the 8x8 field
 //!   cells its prediction units sample.
 //!
@@ -62,10 +62,10 @@ use crate::pipeline::inflight::RefFrameSlot;
 /// bridge slot.
 const MAX_LISTS: usize = 8;
 
-/// Luma side of the § 7.13.5 motion-field cell one TIP prediction unit samples.
+/// Luma side of the § 7.10 motion-field cell one TIP prediction unit samples.
 const TIP_FIELD_CELL: usize = 8;
 
-/// Largest § 7.13.5 prediction unit, the luma rows one field cell's motion
+/// Largest § 7.13.3.2 prediction unit, the luma rows one field cell's motion
 /// vector can predict.
 const TIP_MAX_UNIT: usize = 16;
 
@@ -191,12 +191,12 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         let placed = command.placed();
         let block = &placed.block;
         if command.is_tip() {
-            self.note_tip(placed, bounds);
+            self.note_tip(placed, command.tip_unit_size(), bounds);
             return;
         }
         let compound = block.ref_frame1.is_some();
         let bawp = if block.bawp.enabled {
-            bawp_reference_luma_rows(placed.luma_y, placed.luma_h, block.mv.row)
+            bawp_reference_luma_rows(placed.luma_y(), placed.luma_h(), block.mv.row)
         } else {
             0
         };
@@ -229,36 +229,67 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         }
     }
 
-    /// The reference rows one § 7.13.5 TIP block reads, as a bound a
+    /// The reference rows one § 7.13.3.2 TIP block reads, as a bound a
     /// scheduler can check later through [`bounds_satisfied`].
     pub(super) fn tip_bounds(&self, placed: &PlacedInterBlock) -> RowReferenceBounds {
         let mut bounds = RowReferenceBounds::default();
-        self.note_tip(placed, &mut bounds);
+        self.note_tip(placed, TIP_FIELD_CELL, &mut bounds);
         bounds
     }
 
-    /// Bounds one § 7.13.5 TIP block against the frame's TIP reference pair.
+    /// Bounds one § 7.13.3.2 TIP block against the frame's TIP reference pair.
     ///
-    /// The block's prediction units read the projected motion field at
-    /// [`TIP_FIELD_CELL`] granularity and predict at most [`TIP_MAX_UNIT`] rows
-    /// from each cell they sample, so each band of cells is bounded as a
+    /// The block's prediction units read the projected motion field at their
+    /// `unit` origins and predict at most [`TIP_MAX_UNIT`] rows
+    /// from each cell they sample, so each band of units is bounded as a
     /// [`TIP_MAX_UNIT`]-tall rectangle carrying that band's furthest-reaching
     /// projected vector. The batched optical-flow path also opens the whole
     /// block from its first unit's candidate before applying that grid, so the
     /// same candidate bounds the full block rectangle. Both lists are bounded
     /// even when the frame's weighting leaves the future reference unread,
     /// which only delays admission.
-    fn note_tip(&self, placed: &PlacedInterBlock, bounds: &mut RowReferenceBounds) {
+    fn note_tip(&self, placed: &PlacedInterBlock, unit: usize, bounds: &mut RowReferenceBounds) {
         let Some(references) = self.tip else {
             bounds.settle = true;
             return;
         };
         let base = placed.block.mv;
-        let Some(batch_mvs) = self.temporal.tip_candidate(
-            placed.luma_y / TIP_FIELD_CELL,
-            placed.luma_x / TIP_FIELD_CELL,
-            base,
-        ) else {
+        let mut batch_mvs = None;
+        for band in (0..placed.luma_h()).step_by(unit) {
+            let luma_y = placed.luma_y().saturating_add(band);
+            let mut furthest = [Mv::ZERO; 2];
+            let Some(candidate) = self
+                .temporal
+                .tip_candidate_row(luma_y / TIP_FIELD_CELL, base)
+            else {
+                bounds.settle = true;
+                return;
+            };
+            for column in (0..placed.luma_w()).step_by(unit) {
+                let luma_x = placed.luma_x().saturating_add(column);
+                let Some(mvs) = candidate(luma_x / TIP_FIELD_CELL) else {
+                    bounds.settle = true;
+                    return;
+                };
+                batch_mvs.get_or_insert(mvs);
+                for (reach, candidate) in furthest.iter_mut().zip(mvs) {
+                    reach.row = reach.row.max(candidate.row);
+                }
+            }
+            let rect =
+                McBlockRect::from_luma_rect(placed.luma_x(), luma_y, placed.luma_w(), TIP_MAX_UNIT);
+            let reach = ListReach {
+                compound: true,
+                ..ListReach::default()
+            };
+            for (list, mv) in [references.past_ref, references.future_ref]
+                .into_iter()
+                .zip(furthest)
+            {
+                self.note_list(bounds, list, mv, rect, placed.predict_chroma, reach);
+            }
+        }
+        let Some(batch_mvs) = batch_mvs else {
             bounds.settle = true;
             return;
         };
@@ -278,36 +309,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
                 placed.predict_chroma,
                 batch_reach,
             );
-        }
-        for band in (0..placed.luma_h).step_by(TIP_FIELD_CELL) {
-            let luma_y = placed.luma_y.saturating_add(band);
-            let mut furthest = [Mv::ZERO; 2];
-            for column in (0..placed.luma_w).step_by(TIP_FIELD_CELL) {
-                let luma_x = placed.luma_x.saturating_add(column);
-                let Some(mvs) = self.temporal.tip_candidate(
-                    luma_y / TIP_FIELD_CELL,
-                    luma_x / TIP_FIELD_CELL,
-                    base,
-                ) else {
-                    bounds.settle = true;
-                    return;
-                };
-                for (reach, candidate) in furthest.iter_mut().zip(mvs) {
-                    reach.row = reach.row.max(candidate.row);
-                }
-            }
-            let rect =
-                McBlockRect::from_luma_rect(placed.luma_x, luma_y, placed.luma_w, TIP_MAX_UNIT);
-            let reach = ListReach {
-                compound: true,
-                ..ListReach::default()
-            };
-            for (list, mv) in [references.past_ref, references.future_ref]
-                .into_iter()
-                .zip(furthest)
-            {
-                self.note_list(bounds, list, mv, rect, placed.predict_chroma, reach);
-            }
         }
     }
 

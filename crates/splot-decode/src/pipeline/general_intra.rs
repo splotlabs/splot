@@ -98,26 +98,6 @@ pub(crate) struct GeneralIntraReconScratch<T: ReconSample> {
     pub(crate) cfl_prediction: Vec<T>,
     pub(crate) mhccp_refs: [Vec<u16>; 3],
     pub(crate) paeth_edges: [Vec<T>; 2],
-    cctx: Option<Box<CctxReconScratch<T>>>,
-}
-
-pub(crate) struct CctxReconScratch<T: ReconSample> {
-    pub(crate) u_prediction: Vec<T>,
-    pub(crate) v_prediction: Vec<T>,
-    pub(crate) u_output: Vec<T>,
-    pub(crate) v_output: Vec<T>,
-}
-
-impl<T: ReconSample> Default for CctxReconScratch<T> {
-    fn default() -> Self {
-        let vector = || Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES);
-        Self {
-            u_prediction: vector(),
-            v_prediction: vector(),
-            u_output: vector(),
-            v_output: vector(),
-        }
-    }
 }
 
 impl<T: ReconSample> Default for GeneralIntraReconScratch<T> {
@@ -129,75 +109,7 @@ impl<T: ReconSample> Default for GeneralIntraReconScratch<T> {
             cfl_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
             mhccp_refs: core::array::from_fn(|_| Vec::with_capacity(MAX_INTRA_EDGE_SAMPLES)),
             paeth_edges: core::array::from_fn(|_| Vec::with_capacity(MAX_INTRA_EDGE_SAMPLES)),
-            cctx: None,
         }
-    }
-}
-
-impl<T: ReconSample> GeneralIntraReconScratch<T> {
-    pub(crate) fn cctx_mut(&mut self) -> &mut CctxReconScratch<T> {
-        self.cctx
-            .get_or_insert_with(|| Box::new(CctxReconScratch::default()))
-    }
-}
-
-#[cfg(test)]
-mod scratch_tests {
-    use super::{GeneralIntraReconScratch, MAX_INTRA_BLOCK_SAMPLES};
-    use splot_recon::ReconSample;
-
-    fn assert_cctx_is_lazy_and_reused<T: ReconSample>() {
-        let mut scratch = GeneralIntraReconScratch::<T>::default();
-        assert!(scratch.cctx.is_none());
-
-        let first = scratch.cctx_mut();
-        let capacities = [
-            first.u_prediction.capacity(),
-            first.v_prediction.capacity(),
-            first.u_output.capacity(),
-            first.v_output.capacity(),
-        ];
-        assert!(
-            capacities
-                .iter()
-                .all(|&capacity| capacity >= MAX_INTRA_BLOCK_SAMPLES)
-        );
-        first.u_prediction.resize(16, T::default());
-        first.v_prediction.resize(16, T::default());
-        first.u_output.resize(16, T::default());
-        first.v_output.resize(16, T::default());
-        let pointers = [
-            first.u_prediction.as_ptr(),
-            first.v_prediction.as_ptr(),
-            first.u_output.as_ptr(),
-            first.v_output.as_ptr(),
-        ];
-
-        let reused = scratch.cctx_mut();
-        assert_eq!(
-            [
-                reused.u_prediction.capacity(),
-                reused.v_prediction.capacity(),
-                reused.u_output.capacity(),
-                reused.v_output.capacity(),
-            ],
-            capacities
-        );
-        assert_eq!(
-            [
-                reused.u_prediction.as_ptr(),
-                reused.v_prediction.as_ptr(),
-                reused.u_output.as_ptr(),
-                reused.v_output.as_ptr(),
-            ],
-            pointers
-        );
-    }
-
-    #[test]
-    fn cctx_scratch_is_lazy_and_reused_for_each_sample_type() {
-        assert_cctx_is_lazy_and_reused::<u8>();
-        assert_cctx_is_lazy_and_reused::<u16>();
     }
 }
 
@@ -351,8 +263,8 @@ pub(crate) struct GeneralIntraLeafParse<'a, 'p> {
 }
 
 /// The residual-plan facts of one leaf beside its [`GeneralIntraLeafParse`].
-struct LeafResidualFacts {
-    block_ctx: BlockCtx,
+struct LeafResidualFacts<'a> {
+    block_ctx: &'a BlockCtx,
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     lossless: bool,
     uv_mode: usize,
@@ -434,13 +346,13 @@ pub(crate) fn decode_one_general_intra_block(
             lossless && neighbours.collocated.uses_fsc_at(frontier.r, frontier.c);
         let residual_plan = leaf
             .arena
-            .plan_chroma(block_ctx, chroma_plan, lossless_luma_fsc)
+            .plan_chroma(&block_ctx, chroma_plan, lossless_luma_fsc)
             .map_err(general_intra_residual_plan_error)?;
         let command = parse_general_intra_residual_plan(
             leaf,
             residual_plan,
             &LeafResidualFacts {
-                block_ctx,
+                block_ctx: &block_ctx,
                 intra_edge,
                 lossless,
                 uv_mode: chroma.coeff_uv_mode(),
@@ -525,12 +437,12 @@ pub(crate) fn decode_one_general_intra_block(
         None
     };
 
-    let luma_plan = rect_luma_plan(&modes, block_ctx, leaf.luma_use_tcq, tools.sb_mib)?;
+    let luma_plan = rect_luma_plan(&modes, &block_ctx, leaf.luma_use_tcq, tools.sb_mib)?;
     let chroma_plan = rect_chroma_plan(&modes, tools.cfl_ds_filter_index, tools.sb_mib);
     let residual_plan = leaf
         .arena
         .plan_rect(
-            block_ctx,
+            &block_ctx,
             luma_plan,
             chroma_plan,
             modes.uses_active_fsc(),
@@ -542,7 +454,7 @@ pub(crate) fn decode_one_general_intra_block(
         leaf,
         residual_plan,
         &LeafResidualFacts {
-            block_ctx,
+            block_ctx: &block_ctx,
             intra_edge,
             lossless,
             uv_mode: modes.coeff_uv_mode(),
@@ -637,7 +549,7 @@ fn frame_tx_mode(core: &FrameHeaderCore) -> Option<TxMode> {
 #[inline]
 pub(crate) fn rect_luma_plan(
     modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
+    block_ctx: &BlockCtx,
     use_tcq: bool,
     sb_mib: usize,
 ) -> core::result::Result<RectLumaPlan, crate::DecodeHeaderStateError> {
@@ -672,7 +584,7 @@ fn rect_luma_mrl_plan_for_parts(
     y_mode: IntraYMode,
     angle_delta_y: i8,
     mrl: MrlSelection,
-    block_ctx: BlockCtx,
+    block_ctx: &BlockCtx,
     use_tcq: bool,
     sb_mib: usize,
 ) -> core::result::Result<RectLumaPlan, crate::DecodeHeaderStateError> {
@@ -780,7 +692,7 @@ fn rect_luma_plan_for_mode(
 fn directional_p_angle_for_luma(
     y_mode: IntraYMode,
     angle_delta_y: i8,
-    block_ctx: BlockCtx,
+    block_ctx: &BlockCtx,
 ) -> core::result::Result<Option<u16>, crate::DecodeHeaderStateError> {
     let Some(base) = y_mode.mode_to_angle() else {
         return Ok(None);
@@ -888,7 +800,7 @@ pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i3
 fn parse_general_intra_residual_plan(
     leaf: &mut GeneralIntraLeafParse<'_, '_>,
     residual_plan: crate::residual::pipeline::PlannedGeneralIntraResidual,
-    facts: &LeafResidualFacts,
+    facts: &LeafResidualFacts<'_>,
 ) -> Result<GeneralIntraReconCommand> {
     let block = facts.block_ctx.block();
     let mut deblock = crate::residual::pipeline::DeblockRecorder {
@@ -950,19 +862,17 @@ fn general_intra_residual_error(
         GeneralIntraResidualError::CoeffSpanOutOfRange => {
             DecodeError::from(crate::DecodeHeaderStateError::InvalidInterResidualReconstruction)
         }
-        error @ (GeneralIntraResidualError::AllZeroRead { .. }
-        | GeneralIntraResidualError::NonZeroStart { .. }
+        error @ (GeneralIntraResidualError::NonZeroStart { .. }
         | GeneralIntraResidualError::StagedNonZeroPass { .. }
-        | GeneralIntraResidualError::StagedFscPass { .. }
-        | GeneralIntraResidualError::CctxTypeRead { .. }) => {
+        | GeneralIntraResidualError::StagedFscPass { .. }) => {
             general_intra_coeff_error(&error, offset, GENERAL_INTRA_RESIDUAL_SPEC_SECTION)
+        }
+        error @ GeneralIntraResidualError::TransformTypeRead { .. } => {
+            general_intra_coeff_error(&error, offset, "5.20.8.2")
         }
         error @ (GeneralIntraResidualError::TransformPartitionRead { .. }
         | GeneralIntraResidualError::TransformPartitionGeometry { .. }) => {
             general_intra_coeff_error(&error, offset, "5.20.6.3")
-        }
-        error @ GeneralIntraResidualError::TransformTypeRead { .. } => {
-            general_intra_coeff_error(&error, offset, "5.20.8.2")
         }
         GeneralIntraResidualError::InvalidTransformPartitionDimensions { .. } => {
             malformed_tile_payload(offset, "6.19.6.3", error)

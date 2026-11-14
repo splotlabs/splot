@@ -30,6 +30,7 @@ macro_rules! tile_cdf_common_count_rows {
         $row!(lossless_inter_tx_type);
         $row!(delta_q);
         $row!(use_gdf);
+        $row!(bru_mode);
         $rows!(cdef_index0);
         $rows!(ccso_blk.flatten());
         $row!(cdef_index_minus1_with3);
@@ -74,6 +75,7 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::MAX_CDEF_STRENGTH_SETS;
 use splot_core::symbol::CdfUpdateMode;
+use splot_core::tables::cdf::DEFAULT_BRU_MODE_CDF;
 use splot_core::tables::cdf::{
     DEFAULT_CCSO_BLK_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH3_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH4_CDF,
     DEFAULT_CDEF_INDEX_MINUS1_WITH5_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH6_CDF,
@@ -90,13 +92,15 @@ use splot_core::tables::cdf::{
     DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_USE_GDF_CDF,
 };
 
-use self::block_rows::BlockCdfRows;
+pub(crate) use self::block_rows::BlockCdfRows;
 pub use self::block_rows::MvCdfSelector;
 pub(crate) use self::block_rows::{
     COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, EobPtSize,
     PB_MV_PRECISION_CDF_ROW_LEN,
 };
 pub(crate) use self::coeff_rows::{CoeffBaseRow, CoeffCdfRows, CoeffCdfSelector, CoeffLevelRows};
+#[cfg(any(debug_assertions, fuzzing, test))]
+pub(in crate::bitstream::tile_payload::cdf) use self::util::cdf_rows_valid;
 pub(in crate::bitstream::tile_payload::cdf) use self::util::{
     avg_cdf_row, avg_cdf_rows, blend_cdf_row, blend_cdf_rows, scale_cdf_count, scale_cdf_rows,
 };
@@ -281,6 +285,11 @@ impl FrameCdfSubset {
 
     pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
         self.rows.blend_from_saved(&saved.rows);
+        #[cfg(any(debug_assertions, fuzzing))]
+        assert!(
+            self.rows.rows_valid(),
+            "a blended CDF row left the § 8.2.6 invariants"
+        );
     }
 
     #[must_use]
@@ -464,6 +473,7 @@ pub(crate) enum TileCdfSelector {
     LosslessInterTxType,
     DeltaQ,
     UseGdf,
+    BruMode,
     CdefIndex0 {
         ctx: usize,
     },
@@ -986,6 +996,7 @@ pub(crate) struct TileCdfRows {
     lossless_inter_tx_type: LosslessInterTxTypeCdfRow,
     delta_q: DeltaQCdfRow,
     use_gdf: [u16; CDF_ROW_LEN],
+    bru_mode: [u16; 4],
     cdef_index0: CdefIndex0CdfRows,
     ccso_blk: CcsoBlkCdfRows,
     cdef_index_minus1_with3: CdefIndexMinus1With3CdfRow,
@@ -1066,6 +1077,7 @@ impl TileCdfRows {
             lossless_inter_tx_type: DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF,
             delta_q: DEFAULT_DELTA_Q_CDF,
             use_gdf: DEFAULT_USE_GDF_CDF,
+            bru_mode: DEFAULT_BRU_MODE_CDF,
             cdef_index0: DEFAULT_CDEF_INDEX0_CDF,
             ccso_blk: DEFAULT_CCSO_BLK_CDF,
             cdef_index_minus1_with3: DEFAULT_CDEF_INDEX_MINUS1_WITH3_CDF,
@@ -1229,6 +1241,7 @@ impl TileCdfRows {
             TileCdfSelector::LosslessInterTxType => Ok(self.lossless_inter_tx_type.as_mut_slice()),
             TileCdfSelector::DeltaQ => Ok(self.delta_q.as_mut_slice()),
             TileCdfSelector::UseGdf => Ok(self.use_gdf.as_mut_slice()),
+            TileCdfSelector::BruMode => Ok(self.bru_mode.as_mut_slice()),
             TileCdfSelector::CdefIndex0 { ctx } => {
                 selected_cdf_row!(self.cdef_index0, ctx, TileCdfArray::CdefIndex0, "ctx")
             }
@@ -1351,6 +1364,23 @@ impl TileCdfRows {
 
         tile_cdf_saved_rows!(blend_row, blend_rows);
         self.block.blend_from_saved(&saved.block);
+    }
+
+    #[cfg(any(debug_assertions, fuzzing, test))]
+    pub(crate) fn rows_valid(&self) -> bool {
+        let mut valid = true;
+        macro_rules! row_valid {
+            ($field:ident) => {
+                valid &= cdf_rows_valid(core::slice::from_ref(&self.$field));
+            };
+        }
+        macro_rules! rows_valid {
+            ($field:ident $(. $flatten:ident())*) => {
+                valid &= cdf_rows_valid(flat_cdf_rows!(self.$field $(, $flatten)*));
+            };
+        }
+        tile_cdf_saved_rows!(row_valid, rows_valid);
+        valid && self.block.rows_valid()
     }
 }
 

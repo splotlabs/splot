@@ -8,11 +8,11 @@ use splot_recon::{
     IntraDirectionalAngle, IntraDirectionalAngleEdges, IntraMiddleDirectionalAngle,
     IntraMiddleDirectionalAngleEdges, IntraPaethEdges, IntraRectBlockSize, IntraSmoothEdges,
     IntraSmoothMode, IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
-    ReconSample, apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
-    predict_intra_dc_rect_into, predict_intra_dc_rect_value, predict_intra_dc_square,
-    predict_intra_dc_square_into, predict_intra_dc_square_value,
-    predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
-    predict_intra_directional_angle_rect_into, predict_intra_middle_directional_angle_rect_into,
+    ReconSample, predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_into,
+    predict_intra_dc_rect_value, predict_intra_dc_square, predict_intra_dc_square_into,
+    predict_intra_dc_square_value, predict_intra_dc_subsampled_rect_into,
+    predict_intra_dc_subsampled_rect_value, predict_intra_directional_angle_rect_into,
+    predict_intra_ibp_dc_rect_into, predict_intra_middle_directional_angle_rect_into,
     predict_intra_paeth_rect_into, predict_intra_smooth_rect_into,
 };
 
@@ -216,7 +216,7 @@ fn run_direct_ibp_dc_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_depth: 
     let above_len = maybe_short_len(size.width(), selector & 0b0000_0010 != 0);
     let edges = dc_edges(selector, &left[..left_len], &above[..above_len]);
     let stride = output_stride(input, size.width());
-    let _ = apply_intra_ibp_dc_rect(bit_depth, size, edges, &mut output, stride);
+    let _ = predict_intra_ibp_dc_rect_into(bit_depth, size, edges, &mut output, stride);
 }
 
 fn run_direct_directional_angle_case<T: ReconSample>(

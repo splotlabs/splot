@@ -156,8 +156,8 @@ impl EncoderInterTile {
         };
         Ok(WarpMotionSyntax {
             source,
-            ref_mv_idx: warp.ref_mv_idx,
-            ref_warp_idx: warp.ref_warp_idx,
+            ref_mv_idx: warp.ref_mv_idx as u8,
+            ref_warp_idx: warp.ref_warp_idx as u8,
             mvd: warp.mvd,
             extend_delta: find_mode_ctx(&self.grid, block).extend_delta,
             derive_wrl: block.bw4 >= 2 && block.bh4 >= 2,
@@ -324,25 +324,23 @@ impl EncoderInterTile {
         warp: EncoderWarpMotion,
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<()> {
-        let mut syntax = self.inter_syntax(frontier, EncoderMotion::Warp(warp), true)?;
-        let mut resolved = self.resolve_motion(&syntax)?;
+        let (block, syntax, mut parsed) =
+            self.inter_syntax(frontier, EncoderMotion::Warp(warp), true)?;
+        let mut resolved = self.resolve_motion(&block, &syntax)?;
         predict_by_translation_under_integer_mv(&syntax, &self.core, &mut resolved);
-        let geometry = prediction::placed_inter_geometry_at(
+        resolved.apply(&mut parsed);
+        let placed = prediction::placed_inter_block_at(
             frontier,
             (0, 0),
-            (syntax.block_ctx.bw4, syntax.block_ctx.bh4),
+            (block.bw4, block.bh4),
             false,
+            parsed,
         )?;
-        let placed = geometry.place(single_inter_block(&mut syntax, &resolved));
         prediction::reconstruct_pure_inter_block(
             &mut mc::WorkspaceSink::Frame(workspace),
-            &mut self.residual_scratch,
             &placed,
             &[],
             &[],
-            None,
-            false,
-            false,
             &self.ref_frame_idx,
             &self.reference,
             self.qindex,

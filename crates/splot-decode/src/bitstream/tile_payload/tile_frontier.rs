@@ -102,6 +102,11 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         self.tree.sb_mask()
     }
 
+    /// The § 5.20.2.1 `bru_mode` of the last superblock decoded.
+    pub(crate) const fn bru_mode(&self) -> u8 {
+        self.tree.bru_mode()
+    }
+
     /// Whether the next superblock starts a new superblock row.
     pub(crate) const fn at_row_start(&self) -> bool {
         self.tree.at_row_start()

@@ -14,6 +14,8 @@
 //! Feature tracking: `RECON-SECONDARY-INVERSE-TRANSFORM`.
 
 use fearless_simd::{Bytes as _, Simd, SimdBase as _, SimdIntWiden as _, i16x16, i32x8, u32x8};
+#[cfg(target_arch = "aarch64")]
+use fearless_simd::{SimdCombine as _, i16x8, i32x4};
 
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
@@ -390,12 +392,12 @@ fn transform_into(
         });
         return len;
     }
-    let clipped: [i32; IST_8X8_WIDTH] = baseline_simd!(simd => {
-        let mut sums = [i32x8::splat(simd, 0); IST_8X8_WIDTH / 8];
+    let clipped: [i32; IST_4X4_WIDTH] = baseline_simd!(simd => {
+        let mut sums = [i32x8::splat(simd, 0); IST_4X4_WIDTH / 8];
         if let Some(pairs) = IST_4X4_PAIRS.get(kernel).and_then(|set| set.get(stx)) {
             accumulate_kernel_pairs(simd, pairs, coefs, wide, &mut sums);
         }
-        let mut clipped = [0i32; IST_8X8_WIDTH];
+        let mut clipped = [0i32; IST_4X4_WIDTH];
         for (&t, out) in sums.iter().zip(clipped.as_chunks_mut::<8>().0) {
             clip(simd, t, bound).store_slice(out);
         }
@@ -523,8 +525,8 @@ const fn pair_kernels<
 }
 
 /// Adds `coef * row` over the kernel rows of the nonzero input coefficients
-/// (an even count, zero padded) as `pmaddwd` pairs of adjacent rows, keeping
-/// the up to 48 sums in vector registers.
+/// (an even count, zero padded) as `pmaddwd` pairs of adjacent rows, the sums
+/// in registers; NEON keeps 32 unpaired `smlal2` sums per pass and pairs them.
 ///
 /// A coefficient inside `i16` (every 8-bit one) is one multiply-add operand;
 /// a `wide` coefficient `c` splits into `a = c >> 8` and `b = c & 255`, both
@@ -540,6 +542,29 @@ fn accumulate_kernel_pairs<S: Simd, const W2: usize, const N: usize>(
 ) {
     let operand =
         |a: i32, b: i32| i32x8::splat(simd, (a & 0xffff) | (b << 16)).bitcast::<i16x16<S>>();
+    #[cfg(target_arch = "aarch64")]
+    if !wide {
+        for (pass, out) in sums.chunks_mut(4).enumerate() {
+            let mut acc = [i32x4::splat(simd, 0); 16];
+            for (pair, &[a, b]) in pairs.iter().zip(coefs.as_chunks::<2>().0) {
+                if a | b == 0 {
+                    continue;
+                }
+                let op = i16x8::splat(simd, a as i16).zip_low(i16x8::splat(simd, b as i16));
+                let chunks = pair.get(64 * pass..).unwrap_or_default().as_chunks::<8>().0;
+                for (chunk, acc) in chunks.iter().zip(acc.as_chunks_mut::<2>().0) {
+                    let (low, high) = i16x8::from_slice(simd, chunk).widening_mul(op);
+                    acc[0] += low;
+                    acc[1] += high;
+                }
+            }
+            for (sum, [a, b, c, d]) in out.iter_mut().zip(acc.as_chunks::<4>().0) {
+                let pair_sums = |x: i32x4<S>, y| x.unzip_low(y) + x.unzip_high(y);
+                *sum = pair_sums(*a, *b).combine(pair_sums(*c, *d));
+            }
+        }
+        return;
+    }
     for (pair, &[a, b]) in pairs.iter().zip(coefs.as_chunks::<2>().0) {
         if a | b == 0 {
             continue;

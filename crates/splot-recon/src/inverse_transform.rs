@@ -10,16 +10,14 @@
 //!   multiplication of the input coefficients by the size-and-type § 9.6 kernel
 //!   (from the dependency-free `splot-tables` crate), followed by § 4.8 `Round2`
 //!   and the `colTx`-dependent `Clip3`.
-//! - § 7.15.2.2 ([`inverse_walsh_hadamard`]): the 4-element inverse
+//! - § 7.15.2.2 (`inverse_walsh_hadamard`, the test oracle): the 4-element inverse
 //!   Walsh-Hadamard butterfly used by lossless blocks (no kernel, no `Clip3`).
-//! - § 7.15.2.3 ([`inverse_identity_transform`]): the inverse identity transform
+//! - § 7.15.2.3 (`inverse_identity_transform`, the test oracle): the inverse identity transform
 //!   (the Table 7.1 `IDT` type) — a per-sample `Round2(src * scale, shift)`
 //!   followed by the same `colTx`-dependent `Clip3`.
 //!
 //! Feature tracking: `RECON-INVERSE-TRANSFORM-1D`,
 //! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`.
-
-use fearless_simd::{Simd, SimdBase, SimdInt, i32x4, i32x8};
 
 use splot_tables::tables::transform_1d::{
     ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
@@ -144,282 +142,6 @@ pub(crate) fn select_kernel(sz: usize, tx_type: InverseTransform1dType) -> Optio
     })
 }
 
-/// One § 7.15.4.1 column pass over a row-major block of `stride`-sample rows.
-///
-/// `len` is the column length (the § 7.15.4 adjusted transform height) and
-/// `nonzero_rows` marks the source rows the row pass wrote: a clear bit means
-/// the row is all zero and contributes only zero terms to every column sum, so
-/// the pass never reads it.
-#[derive(Clone, Copy)]
-pub(crate) struct ColumnPass {
-    /// Row stride of both blocks, in samples.
-    pub stride: usize,
-    /// Column length (`1 << Min(log2H, 5)`).
-    pub len: usize,
-    /// Bit `i` marks source row `i` as written and possibly non-zero. Every
-    /// marked row holds row-pass output inside the § 7.15.2.1 row `Clip3` bound
-    /// `±2^(BitDepth + 7)`.
-    pub nonzero_rows: u32,
-    /// Column-pass down-shift (`colShift`).
-    pub shift: u8,
-    /// Active decoded bit depth.
-    pub bit_depth: BitDepth,
-}
-
-/// Applies the AV2 § 7.15.2.1 kernel transform down `LANES` adjacent columns of
-/// `src` at once, writing the same columns of `out`.
-///
-/// Both slices start at the first sample of the column group, so lane `l` of row
-/// `i` is at offset `i * pass.stride + l`. Because each column's § 7.15.2.1 sum
-/// is independent of every other column, running `LANES` of them in lanes
-/// re-associates nothing: every lane performs exactly the scalar
-/// [`kernel_transform`] sequence of `i32` products, adds, `Round2`, and `Clip3`
-/// on its own column. Returns `false` when `pass.len` is not a spec 1D length,
-/// which leaves the block to the caller's per-column path.
-pub(crate) fn inverse_transform_1d_columns<const LANES: usize>(
-    src: &[i32],
-    out: &mut [i32],
-    tx_type: InverseTransform1dType,
-    pass: ColumnPass,
-) -> bool {
-    let dct = tx_type == InverseTransform1dType::Dct;
-    let Some(kernel) = select_kernel(pass.len, tx_type) else {
-        return false;
-    };
-    baseline_simd!(simd => {
-        if LANES == 8 {
-            columns_in::<_, i32x8<_>>(simd, src, out, kernel, dct, pass);
-        } else {
-            columns_in::<_, i32x4<_>>(simd, src, out, kernel, dct, pass);
-        }
-    });
-    true
-}
-
-#[allow(
-    clippy::inline_always,
-    reason = "measured § 7.15.4.1 column-pass hot path"
-)]
-#[inline(always)]
-fn columns_in<S: Simd, V: SimdInt<S, Element = i32>>(
-    simd: S,
-    src: &[i32],
-    out: &mut [i32],
-    kernel: Kernel1d,
-    dct: bool,
-    pass: ColumnPass,
-) {
-    match kernel {
-        Kernel1d::N4(k) => kernel_columns::<_, V, 4>(simd, src, out, k, false, false, pass),
-        Kernel1d::N8(k, rev) => kernel_columns::<_, V, 8>(simd, src, out, k, rev, dct, pass),
-        Kernel1d::N16(k, rev) => kernel_columns::<_, V, 16>(simd, src, out, k, rev, dct, pass),
-        Kernel1d::N32(k) => kernel_columns::<_, V, 32>(simd, src, out, k, false, true, pass),
-    }
-}
-
-/// One § 7.15.4.1 row pass over four consecutive rows at once.
-#[derive(Clone, Copy)]
-pub(crate) struct RowQuad {
-    /// Row length (`1 << Min(log2W, 5)`).
-    pub len: usize,
-    /// Row-pass down-shift (`rowShift`).
-    pub shift: u8,
-    /// Whether each input takes the § 7.15.4.1 `Round2(x * 2896, 12)` rescale.
-    pub rescale: bool,
-    /// Active decoded bit depth.
-    pub bit_depth: BitDepth,
-}
-
-/// Applies the AV2 § 7.15.2.1 kernel transform to four consecutive `pass.len`
-/// sample rows of `src`, one row per lane, writing the same rows of `out`.
-///
-/// Each lane repeats [`kernel_transform`] (and, when `pass.rescale`, the
-/// § 7.15.4.1 rescale before it) on its own row, so every value is unchanged;
-/// the lanes share each kernel-row broadcast instead of paying the row loop
-/// four times. Returns `false` when `pass.len` is not 4 or 8, or a slice is
-/// shorter than four rows, which leaves the rows to the caller's per-row path.
-pub(crate) fn inverse_transform_1d_row_quad(
-    src: &[i32],
-    out: &mut [i32],
-    tx_type: InverseTransform1dType,
-    pass: RowQuad,
-) -> bool {
-    match select_kernel(pass.len, tx_type) {
-        Some(Kernel1d::N4(k)) => kernel_row_quad(src, out, k, false, pass),
-        Some(Kernel1d::N8(k, rev)) => kernel_row_quad(src, out, k, rev, pass),
-        _ => false,
-    }
-}
-
-fn kernel_row_quad<const N: usize>(
-    src: &[i32],
-    out: &mut [i32],
-    kernel: &[[i32; N]; N],
-    reversed: bool,
-    pass: RowQuad,
-) -> bool {
-    let (Some(rows), Some(out_rows)) = (
-        src.as_chunks::<N>().0.first_chunk::<4>(),
-        out.as_chunks_mut::<N>().0.first_chunk_mut::<4>(),
-    ) else {
-        return false;
-    };
-    baseline_simd!(simd => row_quad_lanes(simd, rows, out_rows, kernel, reversed, pass));
-    true
-}
-
-#[inline]
-fn row_quad_lanes<S: Simd, const N: usize>(
-    simd: S,
-    rows: &[[i32; N]; 4],
-    out_rows: &mut [[i32; N]; 4],
-    kernel: &[[i32; N]; N],
-    reversed: bool,
-    pass: RowQuad,
-) {
-    let input_bound = transform_input_bound(pass.bit_depth);
-    let zero = i32x4::splat(simd, 0);
-    let mut columns: [i32x4<S>; N] =
-        core::array::from_fn(|column| i32x4::from_fn(simd, |lane| rows[lane][column]));
-    if pass.rescale {
-        for coeff in &mut columns {
-            *coeff = (*coeff * 2896 + (1 << 11)) >> 12;
-        }
-    }
-    let (low, high) = (
-        i32x4::splat(simd, -input_bound),
-        i32x4::splat(simd, input_bound - 1),
-    );
-    let mut acc = [zero; N];
-    for (&coeff, kernel_row) in columns.iter().zip(kernel) {
-        if *coeff == [0; 4] {
-            continue;
-        }
-        let coeff = coeff.max(low).min(high);
-        for (slot, &k) in acc.iter_mut().zip(kernel_row) {
-            *slot += coeff * k;
-        }
-    }
-    let (lo, hi) = transform_clip_bounds(false, pass.bit_depth);
-    for index in 0..N {
-        let value = acc[if reversed { N - 1 - index } else { index }];
-        let rounded = round2_lanes(value, u32::from(pass.shift));
-        let clamped = rounded
-            .max(i32x4::splat(simd, lo))
-            .min(i32x4::splat(simd, hi));
-        for (row, &sample) in out_rows.iter_mut().zip(clamped.iter()) {
-            row[index] = sample;
-        }
-    }
-}
-
-/// The scalar [`round2_i32`] of every lane.
-fn round2_lanes<S: Simd>(value: i32x4<S>, n: u32) -> i32x4<S> {
-    if n == 0 {
-        value
-    } else if n >= i32::BITS {
-        i32x4::splat(value.simd, 0)
-    } else {
-        (value >> n) + ((value >> (n - 1)) & 1)
-    }
-}
-
-/// One `LANES`-wide column group of [`inverse_transform_1d_columns`].
-///
-/// Each lane repeats [`kernel_transform`]: the `i32` accumulation over the rows
-/// `nonzero_rows` marks, the `FDDT` output reversal, the § 4.8 `Round2`, and the
-/// § 7.15.2.1 `Clip3`. It skips the § 7.14.4 input clamp, because the rows hold
-/// row-pass output that is already inside that bound (see [`ColumnPass`]). So
-/// `|acc| <= 32 * 2^7 * 2^17 = 2^29`, and `(v + 2^(n - 1)) >> n` with
-/// `n = Min(colShift, 31)` is the [`round2_i32`] value with no overflow (zero
-/// at `n == 31`).
-///
-/// `dct` marks a `DCT` kernel (the length-32 kernel always is one). Every `DCT`
-/// row is even or odd about its centre:
-/// `kernel[r][N - 1 - i] == (-1)^r * kernel[r][i]`. So that path sums the even
-/// and the odd rows over the first half of the outputs only, four outputs at a
-/// time so the sums stay in registers, and writes `even + odd` at `i` and
-/// `even - odd` at `N - 1 - i`: half the multiplies, and the same wrapping
-/// `i32` sums.
-#[allow(
-    clippy::inline_always,
-    reason = "measured § 7.15.4.1 column-pass hot path"
-)]
-#[inline(always)]
-fn kernel_columns<S: Simd, V: SimdInt<S, Element = i32>, const N: usize>(
-    simd: S,
-    src: &[i32],
-    out: &mut [i32],
-    kernel: &[[i32; N]; N],
-    reversed: bool,
-    dct: bool,
-    pass: ColumnPass,
-) {
-    let lanes = V::LEN;
-    let (lo, hi) = transform_clip_bounds(true, pass.bit_depth);
-    let (lo, hi) = (V::splat(simd, lo), V::splat(simd, hi));
-    let shift = u32::from(pass.shift).min(i32::BITS - 1);
-    let round_add = ((1u32 << shift) >> 1) as i32;
-    let zero = V::splat(simd, 0);
-    let mut emit = |index: usize, value: V| {
-        let rounded = (value + round_add) >> shift;
-        let start = index * pass.stride;
-        if let Some(dst) = out.get_mut(start..start + lanes) {
-            rounded.max(lo).min(hi).store_slice(dst);
-        }
-    };
-    let coeff_at = |row: usize| {
-        let start = row * pass.stride;
-        src.get(start..start + lanes)
-            .map(|lanes| V::from_slice(simd, lanes))
-    };
-    let mask = if N >= 32 {
-        pass.nonzero_rows
-    } else {
-        pass.nonzero_rows & ((1u32 << N) - 1)
-    };
-    if dct && !reversed && N >= 8 {
-        const OUTPUTS: usize = 4;
-        for base in (0..N / 2).step_by(OUTPUTS) {
-            let mut sums = [[zero; OUTPUTS]; 2];
-            for (parity, half) in sums.iter_mut().enumerate() {
-                let mut rows = mask & (0x5555_5555 << parity);
-                while rows != 0 {
-                    let row = rows.trailing_zeros() as usize;
-                    rows &= rows - 1;
-                    let Some(coeff) = coeff_at(row) else {
-                        break;
-                    };
-                    for (slot, &k) in half.iter_mut().zip(&kernel[row][base..]) {
-                        *slot += coeff * k;
-                    }
-                }
-            }
-            let [even, odd] = sums;
-            for offset in 0..OUTPUTS {
-                emit(base + offset, even[offset] + odd[offset]);
-                emit(N - 1 - base - offset, even[offset] - odd[offset]);
-            }
-        }
-        return;
-    }
-    let mut acc = [zero; N];
-    let mut rows = mask;
-    while rows != 0 {
-        let row = rows.trailing_zeros() as usize;
-        rows &= rows - 1;
-        let Some(coeff) = coeff_at(row) else {
-            break;
-        };
-        for (slot, &k) in acc.iter_mut().zip(kernel[row].iter()) {
-            *slot += coeff * k;
-        }
-    }
-    for index in 0..N {
-        emit(index, acc[if reversed { N - 1 - index } else { index }]);
-    }
-}
-
 /// AV2 § 7.15.2.2 inverse Walsh-Hadamard transform: the 4-element lossless
 /// butterfly over `src` with a pre-scaling `shift`.
 ///
@@ -429,9 +151,10 @@ fn kernel_columns<S: Simd, V: SimdInt<S, Element = i32>, const N: usize>(
 /// width, so an out-of-contract `shift` saturates to the arithmetic-shift limit
 /// instead of panicking (spec-conformant callers use shift 0 or 3). The result
 /// is returned as `i32` (lossless residuals are bounded well within `i32`).
+#[cfg(test)]
 #[allow(clippy::many_single_char_names)]
 #[must_use]
-pub fn inverse_walsh_hadamard(src: [i32; 4], shift: u8) -> [i32; 4] {
+pub(crate) fn inverse_walsh_hadamard(src: [i32; 4], shift: u8) -> [i32; 4] {
     let shift = u32::from(shift).min(i32::BITS - 1);
     let bound = 1 << 17;
     let mut a = src[0].clamp(-bound, bound - 1) >> shift;
@@ -460,7 +183,8 @@ pub fn inverse_walsh_hadamard(src: [i32; 4], shift: u8) -> [i32; 4] {
 /// # Errors
 /// Returns [`ReconError::InverseTransformLengthMismatch`] if `out.len()` does not
 /// equal `src.len()`.
-pub fn inverse_identity_transform(
+#[cfg(test)]
+pub(crate) fn inverse_identity_transform(
     src: &[i32],
     scale: i32,
     shift: u8,

@@ -43,7 +43,7 @@ pub(crate) use cdf::block_context::{
     IntraYMode, IntraYModeClass, MrlSelection, SupportedChromaMode, SupportedDirectionalLumaMode,
     SupportedNonDcLumaMode,
 };
-pub(crate) use cdf::block_read::BlockSymbolTraceReadError;
+pub(crate) use cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 pub(crate) use cdf::{
     COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, FrameCdfSubset,
     MvCdfSelector, PB_MV_PRECISION_CDF_ROW_LEN, TileCdfSelector, TileCdfSubset,
@@ -74,12 +74,11 @@ pub(crate) use general_intra_residual::{
     FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope,
     GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext,
     LumaTransformPartitionUnits, LumaTransformTypeContext, LumaTxPartition, PlaneCoeffBlock,
-    PositionedLumaCoeffBlock, TransformToolResidualPolicy,
-    add_general_intra_coeff_block_residual_in_place, current_frame_qm_segment_id,
-    current_segment_lossless, decode_general_intra_luma_partition_coeffs,
-    decode_general_intra_plane_coeffs, is_cctx_geometry_allowed, luma_partition_record_fills_block,
+    PositionedLumaCoeffBlock, TransformToolResidualPolicy, add_cctx_pair_residual_in_place,
+    add_general_intra_coeff_block_residual_in_place, current_segment_lossless,
+    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
+    is_cctx_geometry_allowed, luma_partition_record_fills_block,
     luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
-    reconstruct_general_intra_chroma_cctx_pair_into,
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
     reconstruct_inter_coeff_block_residual_rect_into,
@@ -89,15 +88,21 @@ pub(crate) use input::plan_derived_tile_payload_boundary;
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
-    TileGroupPositionFacts, plan_derived_tile_payload_boundary_with_scratch,
+    FrameCandidateTileUnsupportedReason, TileGroupPositionFacts,
+    plan_derived_tile_payload_boundary_with_scratch,
 };
+#[cfg(test)]
+pub(crate) use intra_joint_modes::IntraNeighbours;
 pub(crate) use intra_joint_modes::{
     FrameSegmentIdMap, LumaPalette, TileSegmentIdState, TileSegmentIdStateError, neg_deinterleave,
 };
 #[cfg(test)]
+pub(crate) use mi_size_state::{PartitionNeighbours, UvEdges};
+#[cfg(test)]
 pub(crate) use partition::PartitionDecisionError;
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;
+pub(crate) use partition_traversal::BRU_ACTIVE;
 pub(crate) use partition_traversal::LrUnitRestorationType;
 pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 #[cfg(test)]
@@ -331,6 +336,13 @@ impl<'a> DecodeTilePayloadPlan<'a> {
         &self.work_units
     }
 
+    /// Records the § 5.19 `bru_tile_active` flags of tiles `tg_start..` in order.
+    pub(crate) fn set_bru_tile_actives(&mut self, actives: &[bool]) {
+        for (unit, active) in self.work_units.iter_mut().zip(actives) {
+            unit.bru_tile_active = Some(*active);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn work_units_mut(&mut self) -> &mut [DecodeTileWorkUnit] {
         &mut self.work_units
@@ -367,11 +379,11 @@ impl<'a> DecodeTilePayloadPlan<'a> {
     }
 
     pub(crate) fn retire_into(mut self, scratch: &mut TilePayloadScratch) {
-        scratch.tile_cdfs.clear();
-        for tile in self.work_units.drain(..) {
-            scratch.tile_cdfs.push(tile.cdf.into_storage());
-        }
-        core::mem::swap(&mut scratch.work_units, &mut self.work_units);
+        retire_work_units(&mut self.work_units, scratch);
+    }
+
+    pub(crate) fn take_work_units(&mut self) -> Vec<DecodeTileWorkUnit> {
+        core::mem::take(&mut self.work_units)
     }
 
     pub(crate) fn rebase_payload(
@@ -462,6 +474,18 @@ impl Default for TilePayloadScratch {
     }
 }
 
+/// Keeps the work units' CDF storage and list for the next frame.
+pub(crate) fn retire_work_units(
+    work_units: &mut Vec<DecodeTileWorkUnit>,
+    scratch: &mut TilePayloadScratch,
+) {
+    scratch.tile_cdfs.clear();
+    for tile in work_units.drain(..) {
+        scratch.tile_cdfs.push(tile.cdf.into_storage());
+    }
+    core::mem::swap(&mut scratch.work_units, work_units);
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTileWorkUnit {
     tile_num: u32,
@@ -478,9 +502,16 @@ pub(crate) struct DecodeTileWorkUnit {
     coeff_frame_facts: TileCoeffFrameFacts,
     symbol: SymbolInitBoundary,
     cdf: TileCdfWorkUnitBoundary,
+    /// § 5.19 `BruTileActives[ tileRow ][ tileCol ]` of a `use_bru == 1` frame; `None`
+    /// when `use_bru == 0`.
+    bru_tile_active: Option<bool>,
 }
 
 impl DecodeTileWorkUnit {
+    pub(crate) const fn bru_tile_active(&self) -> Option<bool> {
+        self.bru_tile_active
+    }
+
     #[cfg(test)]
     pub(crate) const fn tile_bytes(&self) -> &'static [u8] {
         self.test_tile_bytes
@@ -858,6 +889,7 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
             coeff_frame_facts: input.frame.coeff_frame_facts,
             symbol,
             cdf,
+            bru_tile_active: None,
         });
     }
     Ok(DecodeTilePayloadPlan {

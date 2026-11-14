@@ -130,6 +130,8 @@ impl PartitionContextInput {
         }
     }
 
+    #[allow(clippy::inline_always, reason = "measured: once per partition read")]
+    #[inline(always)]
     fn neighbour_context(self, size_adjustments: &[u8; 32]) -> usize {
         let bsw = log2_wide(self.b_size).max(1);
         let bsh = log2_high(self.b_size).max(1);
@@ -160,8 +162,9 @@ impl PartitionContextInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SquareSplitContextInput {
     b_size: BlockSize,
-    above: Option<u8>,
-    left: Option<u8>,
+    /// 0 for an unavailable neighbour, which gives the same context bit.
+    above: u8,
+    left: u8,
 }
 
 impl SquareSplitContextInput {
@@ -173,8 +176,14 @@ impl SquareSplitContextInput {
     ) -> Self {
         Self {
             b_size,
-            above,
-            left,
+            above: match above {
+                Some(above) => above,
+                None => 0,
+            },
+            left: match left {
+                Some(left) => left,
+                None => 0,
+            },
         }
     }
 
@@ -184,19 +193,19 @@ impl SquareSplitContextInput {
         above: Option<u8>,
         left: Option<u8>,
     ) -> Result<Self, TileCdfError> {
-        Ok(Self {
-            b_size: checked_block_size(b_size)?,
+        Ok(Self::from_neighbours(
+            checked_block_size(b_size)?,
             above,
             left,
-        })
+        ))
     }
 
     #[inline]
     pub(crate) fn do_square_split_selector(self) -> TileCdfSelector {
         let bsw = log2_wide(self.b_size);
         let bsh = log2_high(self.b_size);
-        let above = self.above.map_or(0, |above| smaller(above, bsw));
-        let left = self.left.map_or(0, |left| smaller(left, bsh));
+        let above = smaller(self.above, bsw);
+        let left = smaller(self.left, bsh);
         TileCdfSelector::DoSquareSplit {
             plane_start: 0,
             ctx: partition_context(

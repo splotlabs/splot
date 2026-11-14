@@ -6,15 +6,14 @@ use splot_recon::wedge_mask_plane_sample;
 
 use super::super::CompoundOrderHint;
 use super::super::compound::{
-    CompoundBlockSyntax, CompoundParseInput, CompoundYMode, read_compound_mode_syntax,
-    read_compound_reference_pair,
+    CompoundParseInput, CompoundYMode, read_compound_mode_syntax, read_compound_reference_pair,
 };
 use super::super::find_mv_stack::TemporalMotionBlock;
 use super::super::read_mv::apply_inter_mvd_sign_pair;
 use super::temporal::temporal_motion_block;
 use super::warp::mvd_sign_derivation_block_scope_allowed;
 use super::*;
-use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
+use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset, read_row, row_at};
 
 const REFINE_SWITCHABLE: u32 = 1;
 const REFINE_ALL: u32 = 2;
@@ -22,64 +21,337 @@ const MV_PROJECTION_DIV_MULT: [i32; 32] = [
     0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
     1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
 ];
+/// Logical references `0..=TIP_REF_FRAME`, the indices a block can name.
+const FACT_REFS: usize = 8;
+
+/// A failed logical-reference lookup, kept `Copy` so the per-frame table can
+/// sit in the tile walk parameters.
+#[derive(Clone, Copy, Debug)]
+enum RefFactError {
+    /// The index is outside `ref_frame_idx`.
+    List,
+    Slot {
+        slot: usize,
+        slot_count: usize,
+    },
+}
+
+/// One logical reference's lookups, each with the error its per-block
+/// derivation reported first.
+#[derive(Clone, Copy, Debug)]
+struct RefFact {
+    hint: core::result::Result<CompoundOrderHint, RefFactError>,
+    /// Width and height.
+    dims: core::result::Result<(u32, u32), RefFactError>,
+    /// The raw order hint the temporal-first distance reads.
+    temporal_hint: Option<i32>,
+    /// The raw order hint `ref_dist_gt4` reads, slot 0 for an absent index.
+    bawp_hint: i32,
+    /// The § 8.3.2 `comp_group_idx` absolute distance to the current frame.
+    abs_dist: i32,
+    /// Whether the reference is scaled, `None` without frame or reference size.
+    scaled: Option<bool>,
+}
+
+/// The frame-constant reference facts every block derived per block before:
+/// order hints, distances and sizes of the logical references, looked up
+/// once per frame. A block that names a reference whose lookup failed gets
+/// the error the per-block derivation returned.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FrameRefFacts {
+    current_order_hint: u32,
+    current: CompoundOrderHint,
+    frame_size: Option<(u32, u32)>,
+    switch: bool,
+    list_len: usize,
+    refs: [RefFact; FACT_REFS],
+    /// The facts of an index past the table.
+    absent: RefFact,
+    /// § 7.12 comp-mode context: the reference lies after the current frame.
+    backward: [bool; FACT_REFS],
+    distance_signs: core::result::Result<[bool; 7], RefFactError>,
+    /// The § 8.3.2 furthest future reference, or the index whose order hint
+    /// is missing.
+    furthest_future: core::result::Result<Option<i8>, i8>,
+}
+
+impl FrameRefFacts {
+    pub(super) fn new<T: ReconSample>(
+        core: &FrameHeaderCore,
+        reference: &InterReferenceState<T>,
+        ref_frame_idx: &[u32],
+        num_total_refs: usize,
+    ) -> Self {
+        Self::from_parts(
+            core.frame_size.map(|size| (size.width, size.height)),
+            core.frame_type == Some(FrameType::Switch),
+            core.display_order_hint().unwrap_or(0),
+            reference,
+            ref_frame_idx,
+            num_total_refs,
+        )
+    }
+
+    fn from_parts<T: ReconSample>(
+        frame_size: Option<(u32, u32)>,
+        switch: bool,
+        current_order_hint: u32,
+        reference: &InterReferenceState<T>,
+        ref_frame_idx: &[u32],
+        num_total_refs: usize,
+    ) -> Self {
+        let current = CompoundOrderHint::current(current_order_hint);
+        let slot_value = |values: &[u32], slot: usize| {
+            values.get(slot).copied().ok_or(RefFactError::Slot {
+                slot,
+                slot_count: values.len(),
+            })
+        };
+        let fact = |index: usize| {
+            let slot = ref_frame_idx.get(index).map(|&slot| slot as usize);
+            let hint = slot
+                .ok_or(RefFactError::List)
+                .and_then(|slot| slot_value(&reference.ref_order_hint, slot))
+                .map(CompoundOrderHint::reference);
+            let dims = slot.ok_or(RefFactError::List).and_then(|slot| {
+                Ok((
+                    slot_value(&reference.ref_frame_width, slot)?,
+                    slot_value(&reference.ref_frame_height, slot)?,
+                ))
+            });
+            let raw_hint = |slot: usize| {
+                reference
+                    .ref_order_hint
+                    .get(slot)
+                    .map(|&hint| i32::try_from(hint).unwrap_or(i32::MAX))
+            };
+            RefFact {
+                hint,
+                abs_dist: hint.map_or(0, |hint| current.relative_dist(hint).abs()),
+                scaled: frame_size
+                    .zip(dims.ok())
+                    .map(|((frame_w, frame_h), (w, h))| {
+                        super::super::mv_scaling::reference_is_scaled(
+                            w as i32,
+                            h as i32,
+                            frame_w as i32,
+                            frame_h as i32,
+                        )
+                    }),
+                dims,
+                temporal_hint: slot.and_then(raw_hint),
+                bawp_hint: raw_hint(slot.unwrap_or(0)).unwrap_or(0),
+            }
+        };
+        let refs = core::array::from_fn(fact);
+        let backward = core::array::from_fn(|index: usize| {
+            ref_frame_idx
+                .get(index)
+                .and_then(|&slot| reference.ref_order_hint.get(slot as usize))
+                .is_some_and(|&hint| {
+                    CompoundOrderHint::reference(hint).frame_distance_from(current) < 0
+                })
+        });
+        let mut distance_signs = Ok([true; 7]);
+        for index in 0..num_total_refs.min(7) {
+            let sign = ref_frame_idx
+                .get(index)
+                .ok_or(RefFactError::List)
+                .and_then(|&slot| slot_value(&reference.ref_order_hint, slot as usize))
+                .map(|hint| CompoundOrderHint::reference(hint).frame_distance_from(current) >= 0);
+            match (sign, &mut distance_signs) {
+                (Ok(sign), Ok(signs)) => signs[index] = sign,
+                (Err(error), Ok(_)) => distance_signs = Err(error),
+                (_, Err(_)) => {}
+            }
+        }
+        let mut furthest_future = Ok(None::<(i64, i8)>);
+        for index in 0..num_total_refs {
+            let Ok(best) = furthest_future else { break };
+            let Some(Ok(hint)) = refs.get(index).map(|fact: &RefFact| fact.hint) else {
+                furthest_future = Err(index as i8);
+                break;
+            };
+            let CompoundOrderHint::Value(order_hint) = hint else {
+                continue;
+            };
+            if hint.relative_dist(current) > 0
+                && best.is_none_or(|(best_order_hint, _)| order_hint > best_order_hint)
+            {
+                furthest_future = Ok(Some((order_hint, index as i8)));
+            }
+        }
+        Self {
+            current_order_hint,
+            current,
+            frame_size,
+            switch,
+            list_len: ref_frame_idx.len(),
+            refs,
+            absent: fact(usize::MAX),
+            backward,
+            distance_signs,
+            furthest_future: furthest_future.map(|best| best.map(|(_, index)| index)),
+        }
+    }
+
+    fn error(&self, index: i8, error: RefFactError) -> crate::error::DecodeError {
+        match error {
+            RefFactError::List => crate::DecodeReferenceStateError::ReferenceListIndexOutOfRange {
+                index,
+                list_len: self.list_len,
+            }
+            .into(),
+            RefFactError::Slot { slot, slot_count } => {
+                crate::DecodeReferenceStateError::SlotOutOfRange { slot, slot_count }.into()
+            }
+        }
+    }
+
+    fn fact(&self, index: i8) -> &RefFact {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.refs.get(index))
+            .unwrap_or(&self.absent)
+    }
+
+    fn hint(&self, index: i8) -> Result<CompoundOrderHint> {
+        self.fact(index)
+            .hint
+            .map_err(|error| self.error(index, error))
+    }
+
+    /// Whether `ref_frame` is scaled against the current frame.
+    pub(super) fn scaled(&self, ref_frame: i8) -> Result<bool> {
+        let fact = self.fact(ref_frame);
+        match (fact.scaled, fact.dims) {
+            (Some(scaled), _) => Ok(scaled),
+            (None, Err(error)) if self.frame_size.is_some() => Err(self.error(ref_frame, error)),
+            (None, _) => Err(DecodeHeaderStateError::MissingFrameSize.into()),
+        }
+    }
+
+    /// Whether `ref_frame` lies within the temporal-first distance.
+    pub(super) fn temporal_near(&self, ref_frame: i8) -> bool {
+        self.fact(ref_frame).temporal_hint.is_some_and(|hint| {
+            super::super::get_relative_dist(self.current_order_hint as i32, hint).abs() <= 2
+        })
+    }
+
+    /// `bawp` with the § 7.13.3.25 `ref_dist_gt4` of `ref_frame0`.
+    pub(super) fn bawp_with_ref_distance(&self, bawp: BawpSyntax, ref_frame0: i8) -> BawpSyntax {
+        if !bawp.enabled {
+            return bawp;
+        }
+        BawpSyntax {
+            ref_dist_gt4: super::super::get_relative_dist(
+                self.fact(ref_frame0).bawp_hint,
+                self.current_order_hint as i32,
+            )
+            .abs()
+                > 4,
+            ..bawp
+        }
+    }
+
+    /// The order hint, width and height of `index`.
+    fn size(&self, index: i8) -> Result<(CompoundOrderHint, u32, u32)> {
+        let fact = self.fact(index);
+        let sized = fact.hint.and_then(|hint| Ok((hint, fact.dims?)));
+        let (hint, (width, height)) = sized.map_err(|error| self.error(index, error))?;
+        Ok((hint, width, height))
+    }
+
+    /// The order hints of a compound pair whose references are unrestricted
+    /// and unscaled, `None` otherwise or on a switch frame.
+    fn sized_pair(
+        &self,
+        ref_frame0: i8,
+        ref_frame1: i8,
+    ) -> Result<Option<(CompoundOrderHint, CompoundOrderHint)>> {
+        if self.switch {
+            return Ok(None);
+        }
+        let (width, height) = self
+            .frame_size
+            .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
+        let (ref0, ref1) = (self.size(ref_frame0)?, self.size(ref_frame1)?);
+        let full = |(hint, w, h): (CompoundOrderHint, u32, u32)| {
+            !hint.is_restricted() && w == width && h == height
+        };
+        Ok((full(ref0) && full(ref1)).then_some((ref0.0, ref1.0)))
+    }
+
+    /// The § 5.20.7.4 per-reference distance signs.
+    pub(super) fn distance_signs(&self) -> Result<[bool; 7]> {
+        self.distance_signs.map_err(|error| match error {
+            RefFactError::List => DecodeHeaderStateError::InvalidInterReferenceMap.into(),
+            error @ RefFactError::Slot { .. } => self.error(0, error),
+        })
+    }
+
+    /// The § 8.3.2 `compound_is_joint` context of a compound pair.
+    pub(super) fn is_joint_context(&self, (ref_frame0, ref_frame1): (i8, i8)) -> Result<usize> {
+        Ok(super::super::compound_is_joint_context_from_order_hints(
+            self.hint(ref_frame0)?,
+            self.hint(ref_frame1)?,
+            self.current,
+        ))
+    }
+
+    /// Per logical reference: whether it lies after the current frame.
+    pub(super) const fn backward(&self) -> &[bool; FACT_REFS] {
+        &self.backward
+    }
+
+    fn furthest_future_ref(&self) -> Result<Option<i8>> {
+        self.furthest_future
+            .or_else(|index| self.hint(index).map(|_| None))
+    }
+}
+
 pub(super) fn read_reference_mode(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     neighbour_ctx: &BlockNeighbourContext,
-    ref_frame_idx: &[u32],
-    ref_order_hint: &[u32],
-    current_order_hint: u32,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    let ctx = neighbour_ctx.comp_mode_ctx(
-        ref_frame_idx,
-        ref_order_hint,
-        CompoundOrderHint::current(current_order_hint),
-    );
-    let mode = cdfs
-        .read_block_symbol_trace(TileCdfSelector::CompMode { ctx }, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?
-        .get();
-    match mode {
-        0 => Ok(false),
-        _ => Ok(true),
-    }
+    facts: &FrameRefFacts,
+) -> bool {
+    let ctx = neighbour_ctx.comp_mode_ctx(facts.backward());
+    read_row(symbols, row_at(&mut cdfs.block_rows_mut().comp_mode, ctx)) != 0
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn decode_compound_inter_block<T: ReconSample>(
+pub(super) fn decode_compound_inter_block(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    residual_scratch: &mut InterResidualParseScratch,
-    residual_blocks: &mut Vec<InterResidualBlock>,
-    residual_arena: &mut Vec<i32>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
+    sink: &mut super::InterLeafSink<'_>,
     frontier: &DecodeBlockFrontier,
-    mv_grid: &mut NeighbourMvGrid,
-    tip_ref_pair: Option<(i8, i8)>,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
-    filter_records: &mut tile::TileFilterRecords,
-    intrabc_state: &mut TileIntrabcPreludeState,
-    ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
-    num_total_refs: usize,
-    num_same_ref_compound: u8,
-    skip: u8,
+    leaf: (u8, u8, u32),
     n4w: usize,
     n4h: usize,
-    mi_rows: usize,
-    mi_cols: usize,
-    max_drl_bits_minus_1: u32,
-    temporal_first_frame: bool,
-    enable_adaptive_mvd: bool,
-    residual_tool_policy: TransformToolResidualPolicy,
-    block_qindex: u32,
-    frame_interpolation_filter: FrameInterpolationFilter,
-    tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
+) -> Result<u32> {
+    let super::InterLeafSink {
+        sequence,
+        core,
+        params,
+        tile_offset,
+        ..
+    } = *sink;
+    let tile::TileWalkParams {
+        tip_ref_pair,
+        ref ref_facts,
+        num_total_refs,
+        num_same_ref_compound,
+        max_drl_bits_minus_1,
+        temporal_first_frame,
+        enable_adaptive_mvd,
+        frame_interpolation_filter,
+        force_integer_mv,
+        ..
+    } = *params;
+    let facts = ref_facts;
     let opfl_refine_type = core
         .inter
         .as_ref()
@@ -91,52 +363,32 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?
         .enable_refinemv;
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-    let ref_contexts = compound_ref_contexts(neighbour_ctx, num_total_refs)?;
-    let ref_distance_nonnegative = compound_ref_distance_signs(
-        ref_frame_idx,
-        reference,
-        core.display_order_hint().unwrap_or(0),
-        num_total_refs,
-    )?;
+    let ref_distance_nonnegative = facts.distance_signs()?;
     let pair = read_compound_reference_pair(
         cdfs,
         symbols,
         CompoundParseInput {
             num_total_refs,
             num_same_ref_compound,
-            ref_contexts,
+            ref_counts: neighbour_ctx.ref_counts(),
             ref_distance_nonnegative,
         },
         tile_offset,
     )?;
-    let compound_is_joint_ctx = super::super::compound_is_joint_context(
-        ref_frame_idx,
-        &reference.ref_order_hint,
-        pair,
-        core.display_order_hint().unwrap_or(0),
-    )?;
+    let compound_is_joint_ctx = facts.is_joint_context(pair)?;
     block_ctx.ref_frame0 = pair.0;
     block_ctx.ref_frame1 = Some(pair.1);
-    let mode_ctx = mode_ctx_from_neighbours(mv_grid, block_ctx, tip_ref_pair, neighbour_ctx);
+    let new_mv_context = new_mv_ctx_from_neighbours(block_ctx, tip_ref_pair, neighbour_ctx);
     let mut compound = read_compound_mode_syntax(
         cdfs,
         symbols,
         pair,
-        mode_ctx.new_mv_context,
+        new_mv_context,
         compound_is_joint_ctx,
         tile_offset,
     )?;
-    if compound_switchable_opfl_reachable(
-        opfl_refine_type,
-        core,
-        reference,
-        ref_frame_idx,
-        compound,
-        n4w,
-        n4h,
-    )? {
-        compound.use_optflow =
-            read_compound_use_optflow_syntax(cdfs, symbols, compound.y_mode, tile_offset)?;
+    if compound_switchable_opfl_reachable(opfl_refine_type, facts, compound, n4w, n4h)? {
+        compound.use_optflow = read_compound_use_optflow_syntax(cdfs, symbols, compound.y_mode);
     }
     let use_amvd = read_compound_use_amvd_syntax(
         cdfs,
@@ -156,18 +408,16 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         compound,
         n4w,
         n4h,
-        effective_force_integer_mv(core),
+        force_integer_mv,
         opfl_refine_type,
-        [mode_ctx.warp_sample_found, mode_ctx.warp_sample_found1],
         frame_modes[splot_core::headers::frame::LOCALWARP],
+        || {
+            let warp = warp_ctx_from_neighbours(sink.mv_grid, block_ctx, neighbour_ctx);
+            [warp.warp_sample_found, warp.warp_sample_found1]
+        },
     );
-    let local_warp = read_compound_motion_mode_syntax(
-        cdfs,
-        symbols,
-        signal_local_warp,
-        neighbour_ctx,
-        tile_offset,
-    )?;
+    let local_warp =
+        read_compound_motion_mode_syntax(cdfs, symbols, signal_local_warp, neighbour_ctx);
     let jmvd_scale_mode = read_compound_jmvd_scale_mode_syntax(
         cdfs,
         symbols,
@@ -178,15 +428,10 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     let mut ref_mv_idx = 0;
     let mut ref_mv_idx0 = 0;
     let mut ref_mv_idx1 = 0;
+    let second_drl = compound_reads_second_drl(compound);
     if compound.y_mode.reads_drl_idx() {
-        if compound_reads_second_drl(compound) {
-            ref_mv_idx0 = read_drl_idx(
-                cdfs,
-                symbols,
-                mode_ctx.new_mv_context,
-                max_drl_bits_minus_1,
-                tile_offset,
-            )?;
+        if second_drl {
+            ref_mv_idx0 = read_drl_idx(cdfs, symbols, new_mv_context, max_drl_bits_minus_1);
             let second_min_idx = if compound.ref_frame0 == compound.ref_frame1
                 && compound.y_mode == CompoundYMode::NearNear
             {
@@ -197,27 +442,19 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             ref_mv_idx1 = read_drl_idx_from(
                 cdfs,
                 symbols,
-                mode_ctx.new_mv_context,
+                new_mv_context,
                 max_drl_bits_minus_1,
                 second_min_idx,
-                tile_offset,
-            )?;
+            );
         } else {
-            ref_mv_idx = read_drl_idx(
-                cdfs,
-                symbols,
-                mode_ctx.new_mv_context,
-                max_drl_bits_minus_1,
-                tile_offset,
-            )?;
+            ref_mv_idx = read_drl_idx(cdfs, symbols, new_mv_context, max_drl_bits_minus_1);
         }
     }
-    let frame_mv_config = inter_mv_read_config(core)?;
+    let frame_mv_config = params.mv_config(core)?;
     let precision = read_block_mv_precision_syntax(
         cdfs,
         symbols,
-        sequence,
-        core,
+        params.per_block_mv_precision,
         neighbour_ctx,
         frame_mv_config.precision(),
         compound.y_mode.has_newmv(),
@@ -225,27 +462,17 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         tile_offset,
     )?;
     let joint = (compound.y_mode == CompoundYMode::JointNew)
-        .then(|| {
-            compound_joint_mv_projection(
-                core,
-                reference,
-                ref_frame_idx,
-                compound.ref_frame0,
-                compound.ref_frame1,
-            )
-        })
+        .then(|| compound_joint_mv_projection(facts, compound.ref_frame0, compound.ref_frame1))
         .transpose()?;
     let mvd = read_compound_mvd_syntax(
         cdfs,
         symbols,
-        sequence,
-        core,
         CompoundMvdInput {
             y_mode: compound.y_mode,
             use_amvd,
             ref_mv_idx,
             precision,
-            frame_mv_config,
+            mvd_sign_derive: params.mvd_sign_derive,
             motion_mode: if local_warp {
                 MotionMode::LocalWarp
             } else {
@@ -259,21 +486,13 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         && compound_refinemv_reachable(
             enable_refinemv,
             opfl_refine_type,
-            core,
-            reference,
-            ref_frame_idx,
+            facts,
             compound,
             n4w,
             n4h,
         )? {
         if refinemv_switchable {
-            read_compound_use_refinemv_syntax(
-                cdfs,
-                symbols,
-                compound.y_mode,
-                compound.use_optflow,
-                tile_offset,
-            )?
+            read_compound_use_refinemv_syntax(cdfs, symbols, compound.y_mode, compound.use_optflow)
         } else {
             true
         }
@@ -281,45 +500,35 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         false
     };
     let compound_blend_tools = CompoundBlendToolConfig::from_sequence(sequence);
-    let compound_blend_thin = compound_blend_is_thin(n4w, n4h);
-    let comp_group_idx_ctx = if !compound_blend_tools.masked_enabled || compound_blend_thin {
-        0
-    } else {
-        compound_group_idx_context(
+    let mut blend_input = CompoundBlendInput {
+        use_optflow: compound.use_optflow,
+        joint_amvd: compound.y_mode == CompoundYMode::JointNew && use_amvd,
+        switchable_refinemv_on: refinemv_signalled && refinemv_switchable,
+        n4w,
+        n4h,
+        block_size_index: frontier.b_size.index(),
+        comp_group_idx_ctx: 0,
+    };
+    if compound_reads_group_idx(compound_blend_tools, blend_input) {
+        blend_input.comp_group_idx_ctx = compound_group_idx_context(
             neighbour_ctx,
-            reference,
-            ref_frame_idx,
-            core,
+            facts,
             compound.ref_frame0,
             compound.ref_frame1,
-            num_total_refs,
-        )?
-    };
+        )?;
+    }
     let compound_blend = read_compound_blend_syntax(
         cdfs,
         symbols,
         compound_blend_tools,
-        CompoundBlendInput {
-            use_optflow: compound.use_optflow,
-            joint_amvd: compound.y_mode == CompoundYMode::JointNew && use_amvd,
-            switchable_refinemv_on: refinemv_signalled && refinemv_switchable,
-            n4w,
-            n4h,
-            block_size_index: frontier.b_size.index(),
-            comp_group_idx_ctx,
-        },
+        blend_input,
         tile_offset,
     )?;
     let use_refinemv = compound_refinemv_active_after_blend(refinemv_signalled, compound_blend);
     let compound_blend = read_compound_cwp_syntax(
         cdfs,
         symbols,
-        CompoundCwpContext {
-            sequence,
-            core,
-            reference,
-            ref_frame_idx,
-        },
+        CompoundCwpContext { sequence, facts },
         CompoundCwpInput {
             y_mode: compound.y_mode,
             jmvd_scale_mode,
@@ -330,19 +539,9 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             ref_frame1: compound.ref_frame1,
             blend: compound_blend,
         },
-        tile_offset,
     )?;
     let compound_blend = compound_warp_blend(compound_blend, local_warp, compound.y_mode);
-    if compound_all_opfl_reachable(
-        opfl_refine_type,
-        core,
-        reference,
-        ref_frame_idx,
-        compound,
-        n4w,
-        n4h,
-        compound_blend,
-    )? {
+    if compound_all_opfl_reachable(opfl_refine_type, facts, compound, n4w, n4h, compound_blend)? {
         compound.use_optflow = true;
     }
     let interp = resolve_compound_interp_filter(
@@ -352,67 +551,56 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         compound.use_optflow || refinemv_signalled,
         compound_needs_interp_filter(n4w, n4h, compound.y_mode, local_warp),
         neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
-        tile_offset,
     )?;
     let temporal_allowed = compound.ref_frame0 != compound.ref_frame1;
-    let temporal_first = |ref_frame| {
-        temporal_first_frame
-            && super::block_ref_within_temporal_distance(
-                reference,
-                ref_frame_idx,
-                core.display_order_hint().unwrap_or(0),
-                ref_frame,
-            )
+    let temporal_first = |ref_frame| temporal_first_frame && facts.temporal_near(ref_frame);
+    let motion = CompoundMotionSyntax {
+        y_mode: compound.y_mode,
+        ref_frame1: compound.ref_frame1,
+        skip_mode: false,
+        use_optflow: compound.use_optflow,
+        local_warp,
+        ref_mv_idx: ref_mv_idx as u8,
+        independent_idx: second_drl.then_some([ref_mv_idx0 as u8, ref_mv_idx1 as u8]),
+        mvd,
+        joint,
+        jmvd_scale_mode,
+        temporal_allowed,
+        temporal_first: [
+            temporal_first(compound.ref_frame0),
+            temporal_first(compound.ref_frame1),
+        ],
+        use_refinemv,
+        refinemv_switchable,
     };
-    finish_compound_inter_block(
+    let optflow_distances = compound_optflow_distances(facts, compound.ref_frame0, &motion)?;
+    super::finish_inter_leaf(
         work_unit,
         symbols,
-        coeff_ctx,
-        residual_scratch,
-        residual_blocks,
-        residual_arena,
-        sequence,
-        core,
+        sink,
         frontier,
-        mv_grid,
-        frame_mv_config.precision(),
-        filter_records,
-        intrabc_state,
-        ref_frame_idx,
-        reference,
-        ParsedCompoundBlock {
-            block_ctx: *block_ctx,
-            motion: CompoundMotionSyntax {
-                y_mode: compound.y_mode,
-                ref_frame1: compound.ref_frame1,
-                skip_mode: false,
-                use_optflow: compound.use_optflow,
-                local_warp,
-                ref_mv_idx,
-                independent_idx: compound_reads_second_drl(compound)
-                    .then_some([ref_mv_idx0, ref_mv_idx1]),
-                mvd,
-                joint,
-                jmvd_scale_mode,
-                temporal_allowed,
-                temporal_first: [
-                    temporal_first(compound.ref_frame0),
-                    temporal_first(compound.ref_frame1),
-                ],
-                use_refinemv,
-                refinemv_switchable,
-            },
-            blend: compound_blend,
+        InterBlockSyntax {
+            motion: InterMotionSyntax::Compound(motion),
             interp,
-            use_amvd,
             precision,
+            skip: leaf.0 == 1,
+            use_amvd,
+            tip_size_16x16: false,
+            blend: compound_blend,
         },
-        skip,
-        mi_rows,
-        mi_cols,
-        residual_tool_policy,
-        block_qindex,
-        tile_offset,
+        InterBlock {
+            compound_blend,
+            optflow_distances,
+            ..super::parsed_inter_block(compound.ref_frame0, Some(compound.ref_frame1), interp)
+        },
+        compound_deblock_sub_pu_size(
+            motion.use_optflow,
+            motion.use_refinemv,
+            n4w * MI_SIZE,
+            n4h * MI_SIZE,
+        ),
+        (n4w, n4h),
+        leaf,
     )
 }
 
@@ -423,7 +611,6 @@ fn resolve_compound_interp_filter(
     force_sharp: bool,
     needs_interp_filter: bool,
     ctx: usize,
-    tile_offset: ByteOffset,
 ) -> Result<ReconInterpolationFilter> {
     if force_sharp {
         return Ok(ReconInterpolationFilter::EightTapSharp);
@@ -434,42 +621,28 @@ fn resolve_compound_interp_filter(
         frame_interpolation_filter,
         needs_interp_filter,
         ctx,
-        tile_offset,
     )
 }
 
 /// The signed order-hint distances of an optical-flow compound block
 /// `motion` over `ref_frame0` to its two references; `None` without optical
 /// flow.
-pub(super) fn compound_optflow_distances<T: ReconSample>(
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
+pub(super) fn compound_optflow_distances(
+    facts: &FrameRefFacts,
     ref_frame0: i8,
     motion: &CompoundMotionSyntax,
 ) -> Result<Option<[i32; 2]>> {
     if !motion.use_optflow {
         return Ok(None);
     }
-    let reference_pair = CompoundBlockSyntax {
-        y_mode: motion.y_mode,
-        use_optflow: motion.use_optflow,
-        ref_frame0,
-        ref_frame1: motion.ref_frame1,
-        mv0: Mv::ZERO,
-        mv1: Mv::ZERO,
-    };
-    Ok(
-        compound_sized_reference_facts(core, reference, ref_frame_idx, reference_pair)?.map(
-            |(ref0, ref1)| {
-                let current = compound_current_order_hint(core);
-                [
-                    current.relative_dist(ref0.order_hint),
-                    current.relative_dist(ref1.order_hint),
-                ]
-            },
-        ),
-    )
+    Ok(facts
+        .sized_pair(ref_frame0, motion.ref_frame1)?
+        .map(|(ref0, ref1)| {
+            [
+                facts.current.relative_dist(ref0),
+                facts.current.relative_dist(ref1),
+            ]
+        }))
 }
 
 pub(super) fn compound_needs_interp_filter(
@@ -487,8 +660,8 @@ pub(super) fn compound_local_warp_signal_allowed(
     n4h: usize,
     force_integer_mv: bool,
     opfl_refine_type: u32,
-    warp_sample_found: [bool; 2],
     local_warp_enabled: bool,
+    warp_sample_found: impl FnOnce() -> [bool; 2],
 ) -> bool {
     compound.y_mode == CompoundYMode::NewNew
         && compound.ref_frame0 != compound.ref_frame1
@@ -497,9 +670,8 @@ pub(super) fn compound_local_warp_signal_allowed(
         && !force_integer_mv
         && !compound.use_optflow
         && opfl_refine_type != REFINE_ALL
-        && warp_sample_found[0]
-        && warp_sample_found[1]
         && local_warp_enabled
+        && warp_sample_found() == [true; 2]
 }
 
 /// AV2 § 7.13.3.23: § 7.12.3 warp-sample search plus least-squares estimation
@@ -582,159 +754,9 @@ fn read_compound_motion_mode_syntax(
     symbols: &mut SymbolDecoder<'_>,
     signal_local_warp: bool,
     neighbour_ctx: &BlockNeighbourContext,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    if !signal_local_warp {
-        return Ok(false);
-    }
-    let use_local_warp = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::UseLocalWarp {
-                ctx: neighbour_ctx.use_local_warp_ctx(),
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?
-        .get();
-    Ok(use_local_warp != 0)
-}
-
-/// Parsed § 5.20.7.6 compound syntax handed to the § 7.12 resolution step.
-#[derive(Clone, Copy)]
-pub(super) struct ParsedCompoundBlock {
-    pub(super) block_ctx: MvBlockContext,
-    pub(super) motion: CompoundMotionSyntax,
-    pub(super) blend: mc::CompoundBlend,
-    pub(super) interp: ReconInterpolationFilter,
-    pub(super) use_amvd: bool,
-    pub(super) precision: BlockPrecisionRecord,
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn finish_compound_inter_block<T: ReconSample>(
-    work_unit: &mut DecodeTileWorkUnit,
-    symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    residual_scratch: &mut InterResidualParseScratch,
-    residual_blocks: &mut Vec<InterResidualBlock>,
-    residual_arena: &mut Vec<i32>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    frontier: &DecodeBlockFrontier,
-    mv_grid: &mut NeighbourMvGrid,
-    frame_precision: u8,
-    filter_records: &mut tile::TileFilterRecords,
-    intrabc_state: &mut TileIntrabcPreludeState,
-    ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
-    parsed: ParsedCompoundBlock,
-    skip: u8,
-    mi_rows: usize,
-    mi_cols: usize,
-    residual_tool_policy: TransformToolResidualPolicy,
-    block_qindex: u32,
-    tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
-    let ParsedCompoundBlock {
-        block_ctx,
-        motion,
-        blend,
-        interp,
-        use_amvd,
-        precision,
-    } = parsed;
-    let (mi_row, mi_col, n4w, n4h) = (
-        block_ctx.mi_row,
-        block_ctx.mi_col,
-        block_ctx.bw4,
-        block_ctx.bh4,
-    );
-    let residual = if skip == 0 {
-        Some(read_inter_residual(
-            work_unit,
-            symbols,
-            coeff_ctx,
-            residual_scratch,
-            residual_blocks,
-            residual_arena,
-            sequence,
-            core,
-            frontier,
-            n4w,
-            n4h,
-            mi_rows,
-            mi_cols,
-            current_residual_lossless(work_unit),
-            InterResidualLumaTxSizeMode::Inter,
-            residual_tool_policy,
-            tile_offset,
-        )?)
-    } else {
-        reset_inter_skip_coeff_contexts(
-            coeff_ctx,
-            frontier,
-            n4w,
-            n4h,
-            super::block_chroma_subsampling(sequence.general.chroma_format_idc),
-        )?;
-        None
-    };
-    let sub_pu_size = compound_deblock_sub_pu_size(
-        motion.use_optflow,
-        motion.use_refinemv,
-        n4w * MI_SIZE,
-        n4h * MI_SIZE,
-    );
-    filter_records.defer_inter_leaf(
-        frontier,
-        (n4w, n4h),
-        residual.as_ref(),
-        sub_pu_size,
-        block_qindex,
-        current_residual_lossless(work_unit),
-    );
-    let placement = inter_leaf_placement(
-        frontier,
-        work_unit,
-        sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
-    );
-    let optflow_distances = compound_optflow_distances(
-        core,
-        reference,
-        ref_frame_idx,
-        block_ctx.ref_frame0,
-        &motion,
-    )?;
-    intrabc_state.record_block(
-        frontier.r,
-        frontier.c,
-        n4w,
-        n4h,
-        IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
-            use_intrabc: false,
-            skip_flag: skip == 1,
-        })
-        .mark_inter(),
-    )?;
-    let syntax = InterBlockSyntax {
-        block_ctx,
-        motion: InterMotionSyntax::Compound(motion),
-        interp,
-        precision,
-        skip: skip == 1,
-        use_amvd,
-        tip_size_16x16: false,
-        blend,
-        bawp: BawpSyntax::default(),
-        interintra: None,
-        optflow_distances,
-        residual,
-    };
-    mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
-    Ok((
-        GeneralIntraLeafMode::no_luma_mode(),
-        pending_inter_leaf(syntax, placement, block_qindex, frame_precision),
-    ))
+) -> bool {
+    let rows = &mut cdfs.block_rows_mut().use_local_warp;
+    signal_local_warp && read_row(symbols, row_at(rows, neighbour_ctx.use_local_warp_ctx())) != 0
 }
 
 /// Input to the § 5.20.7.7 compound motion-vector difference reads.
@@ -744,7 +766,7 @@ struct CompoundMvdInput {
     use_amvd: bool,
     ref_mv_idx: usize,
     precision: BlockPrecisionRecord,
-    frame_mv_config: MvReadConfig,
+    mvd_sign_derive: bool,
     motion_mode: MotionMode,
 }
 
@@ -753,8 +775,6 @@ struct CompoundMvdInput {
 fn read_compound_mvd_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
     input: CompoundMvdInput,
     tile_offset: ByteOffset,
 ) -> Result<[Mv; 2]> {
@@ -766,11 +786,9 @@ fn read_compound_mvd_syntax(
     let derive_sign =
         mvd_sign_derivation_block_scope_allowed(input.motion_mode, false, Some(input.ref_mv_idx))
             && inter_mvd_sign_derivation_allowed(
-                sequence,
-                core,
+                input.mvd_sign_derive,
                 SINGLE_MODE_NEWMV,
                 input.use_amvd,
-                input.frame_mv_config,
                 config,
             );
     match input.y_mode {
@@ -857,25 +875,26 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
     placed: &PlacedInterBlock,
     compound: super::super::compound::CompoundBlockSyntax,
     warp_params: [Option<[i32; 6]>; 2],
-    motion_grid: Option<&mc::CompoundMotionGrid>,
+    motion: Option<&mc::RefinedUnits>,
     mi_row: usize,
     mi_col: usize,
     mi_rows: usize,
     mi_cols: usize,
     current_order_hint: u32,
 ) -> Result<()> {
-    let uniform = motion_grid.is_none()
+    let uniform = motion.is_none()
         && warp_params == [None, None]
         && !matches!(placed.block.compound_blend, mc::CompoundBlend::Wedge { .. });
     let (step_w, step_h) = if uniform {
-        (placed.luma_w.max(8), placed.luma_h.max(8))
+        (placed.luma_w().max(8), placed.luma_h().max(8))
     } else {
         (8, 8)
     };
-    for y in (0..placed.luma_h).step_by(step_h) {
-        for x in (0..placed.luma_w).step_by(step_w) {
-            let mvs = if let Some(grid) = motion_grid {
-                grid.temporal_mvs_at_luma_offset(x, y)?
+    let first = records.len();
+    for y in (0..placed.luma_h()).step_by(step_h) {
+        for x in (0..placed.luma_w()).step_by(step_w) {
+            let mvs = if let Some(motion) = motion {
+                motion.temporal_mvs_at_luma_offset(x, y)?
             } else {
                 let unit_mv = |params: Option<[i32; 6]>, block_mv: Mv| {
                     params.map_or(block_mv, |params| {
@@ -895,8 +914,8 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
             };
             let allowed = wedge_temporal_allowed_lists(
                 placed.block.compound_blend,
-                placed.luma_w,
-                placed.luma_h,
+                placed.luma_w(),
+                placed.luma_h(),
                 x,
                 y,
             )?;
@@ -905,13 +924,13 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
                 [false, true] => (compound.ref_frame1, None, [mvs[1], Mv::ZERO]),
                 _ => (compound.ref_frame0, Some(compound.ref_frame1), mvs),
             };
-            records.push(temporal_motion_block(
+            let record = temporal_motion_block(
                 reference,
                 ref_frame_idx,
                 mi_row + y / 4,
                 mi_col + x / 4,
-                (placed.luma_w - x).min(step_w).div_ceil(4),
-                (placed.luma_h - y).min(step_h).div_ceil(4),
+                (placed.luma_w() - x).min(step_w).div_ceil(4),
+                (placed.luma_h() - y).min(step_h).div_ceil(4),
                 mi_rows,
                 mi_cols,
                 current_order_hint,
@@ -920,7 +939,8 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
                 mvs[0],
                 mvs[1],
                 [None, None],
-            ));
+            );
+            TemporalMotionBlock::push_merged(records, first, record);
         }
     }
     Ok(())
@@ -962,39 +982,27 @@ fn wedge_temporal_allowed_lists(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
+pub(super) fn decode_skip_mode_inter_block(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    residual_scratch: &mut InterResidualParseScratch,
-    residual_blocks: &mut Vec<InterResidualBlock>,
-    residual_arena: &mut Vec<i32>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
+    sink: &mut super::InterLeafSink<'_>,
     frontier: &DecodeBlockFrontier,
-    mv_grid: &mut NeighbourMvGrid,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
-    tip_ref_pair: Option<(i8, i8)>,
-    filter_records: &mut tile::TileFilterRecords,
-    intrabc_state: &mut TileIntrabcPreludeState,
-    ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
-    num_total_refs: usize,
-    skip: u8,
-    mi_rows: usize,
-    mi_cols: usize,
-    max_drl_bits_minus_1: u32,
-    residual_tool_policy: TransformToolResidualPolicy,
-    block_qindex: u32,
-    tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
-    let (ref_frame0, ref_frame1) = skip_mode_reference_pair(
+    leaf: (u8, u8, u32),
+) -> Result<u32> {
+    let super::InterLeafSink {
+        sequence,
         core,
-        (reference, ref_frame_idx, num_total_refs),
+        params,
+        tile_offset,
+        ..
+    } = *sink;
+    let (ref_frame0, ref_frame1) = skip_mode_reference_pair(
+        &params.ref_facts,
+        params.num_total_refs,
         neighbour_ctx,
-        tip_ref_pair,
+        params.tip_ref_pair,
         tile_offset,
     )?;
     block_ctx.ref_frame0 = ref_frame0;
@@ -1002,35 +1010,26 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     let ref_mv_idx = read_skip_drl_idx(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
-        max_drl_bits_minus_1,
+        params.max_drl_bits_minus_1,
         tile_offset,
     )?;
-    let precision = frame_mv_precision(core)?;
-    finish_compound_inter_block(
+    let precision = params.mv_config(core)?.precision();
+    let blend = mc::CompoundBlend::average_with_implicit_mask(
+        CompoundBlendToolConfig::from_sequence(sequence).implicit_mask,
+    );
+    super::finish_inter_leaf(
         work_unit,
         symbols,
-        coeff_ctx,
-        residual_scratch,
-        residual_blocks,
-        residual_arena,
-        sequence,
-        core,
+        sink,
         frontier,
-        mv_grid,
-        precision,
-        filter_records,
-        intrabc_state,
-        ref_frame_idx,
-        reference,
-        ParsedCompoundBlock {
-            block_ctx: *block_ctx,
-            motion: CompoundMotionSyntax {
+        InterBlockSyntax {
+            motion: InterMotionSyntax::Compound(CompoundMotionSyntax {
                 y_mode: CompoundYMode::NearNear,
                 ref_frame1,
                 skip_mode: true,
                 use_optflow: false,
                 local_warp: false,
-                ref_mv_idx,
+                ref_mv_idx: ref_mv_idx as u8,
                 independent_idx: None,
                 mvd: [Mv::ZERO; 2],
                 joint: None,
@@ -1039,20 +1038,25 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
                 temporal_first: [false; 2],
                 use_refinemv: false,
                 refinemv_switchable: false,
-            },
-            blend: mc::CompoundBlend::average_with_implicit_mask(
-                CompoundBlendToolConfig::from_sequence(sequence).implicit_mask,
-            ),
+            }),
             interp: ReconInterpolationFilter::EightTapSharp,
-            use_amvd: false,
             precision: BlockPrecisionRecord::most_probable(precision),
+            skip: leaf.0 == 1,
+            use_amvd: false,
+            tip_size_16x16: false,
+            blend,
         },
-        skip,
-        mi_rows,
-        mi_cols,
-        residual_tool_policy,
-        block_qindex,
-        tile_offset,
+        InterBlock {
+            compound_blend: blend,
+            ..super::parsed_inter_block(
+                ref_frame0,
+                Some(ref_frame1),
+                ReconInterpolationFilter::EightTapSharp,
+            )
+        },
+        None,
+        (block_ctx.bw4, block_ctx.bh4),
+        leaf,
     )
 }
 
@@ -1063,23 +1067,19 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     reason = "keeps the parse path of the parent with the facade as second caller"
 )]
 #[inline(always)]
-pub(super) fn skip_mode_reference_pair<T: ReconSample>(
-    core: &FrameHeaderCore,
-    (reference, ref_frame_idx, num_total_refs): (&InterReferenceState<T>, &[u32], usize),
+pub(super) fn skip_mode_reference_pair(
+    facts: &FrameRefFacts,
+    num_total_refs: usize,
     neighbour_ctx: &BlockNeighbourContext,
     tip_ref_pair: Option<(i8, i8)>,
     tile_offset: ByteOffset,
 ) -> Result<(i8, i8)> {
-    let current = compound_current_order_hint(core);
     let ref_order_hints = if num_total_refs > 1 {
-        Some((
-            compound_reference_order_hint(reference, ref_frame_idx, 0)?,
-            compound_reference_order_hint(reference, ref_frame_idx, 1)?,
-        ))
+        Some((facts.hint(0)?, facts.hint(1)?))
     } else {
         None
     };
-    let default_pair = skip_mode_default_pair(current, ref_order_hints);
+    let default_pair = skip_mode_default_pair(facts.current, ref_order_hints);
     checked_skip_mode_reference_pair(
         neighbour_ctx.skip_mode_ref_pair(default_pair, tip_ref_pair),
         num_total_refs,
@@ -1126,11 +1126,9 @@ fn checked_skip_mode_reference_pair(
     Ok(pair)
 }
 
-pub(super) fn compound_switchable_opfl_reachable<T: ReconSample>(
+pub(super) fn compound_switchable_opfl_reachable(
     opfl_refine_type: u32,
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
+    facts: &FrameRefFacts,
     compound: super::super::compound::CompoundBlockSyntax,
     n4w: usize,
     n4h: usize,
@@ -1141,24 +1139,16 @@ pub(super) fn compound_switchable_opfl_reachable<T: ReconSample>(
     if opfl_refine_type != REFINE_SWITCHABLE || !compound_opfl_block_size_allowed(n4w, n4h) {
         return Ok(false);
     }
-    compound_opfl_reference_allowed(core, reference, ref_frame_idx, compound)
+    compound_opfl_reference_allowed(facts, compound)
 }
 
 fn read_compound_use_optflow_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     y_mode: CompoundYMode,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    let use_optflow = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::UseOptflow {
-                ctx: use_optflow_ctx(y_mode),
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    Ok(use_optflow.get() != 0)
+) -> bool {
+    let rows = &mut cdfs.block_rows_mut().use_optflow;
+    read_row(symbols, row_at(rows, use_optflow_ctx(y_mode))) != 0
 }
 
 /// The § 8.3.2 `use_refinemv` context `1 + (YMode - NEAR_NEARMV) + 6 *
@@ -1193,17 +1183,9 @@ fn read_compound_use_refinemv_syntax(
     symbols: &mut SymbolDecoder<'_>,
     y_mode: CompoundYMode,
     use_optflow: bool,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    let use_refinemv = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::UseRefinemv {
-                ctx: use_refinemv_ctx(y_mode, use_optflow),
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    Ok(use_refinemv.get() != 0)
+) -> bool {
+    let rows = &mut cdfs.block_rows_mut().use_refinemv;
+    read_row(symbols, row_at(rows, use_refinemv_ctx(y_mode, use_optflow))) != 0
 }
 
 const fn compound_reads_second_drl(compound: super::super::compound::CompoundBlockSyntax) -> bool {
@@ -1223,11 +1205,9 @@ pub(super) fn select_near_near_candidates(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn compound_all_opfl_reachable<T: ReconSample>(
+pub(super) fn compound_all_opfl_reachable(
     opfl_refine_type: u32,
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
+    facts: &FrameRefFacts,
     compound: super::super::compound::CompoundBlockSyntax,
     n4w: usize,
     n4h: usize,
@@ -1237,7 +1217,7 @@ pub(super) fn compound_all_opfl_reachable<T: ReconSample>(
     {
         return Ok(false);
     }
-    compound_opfl_reference_allowed(core, reference, ref_frame_idx, compound)
+    compound_opfl_reference_allowed(facts, compound)
 }
 
 fn compound_all_opfl_block_allowed(
@@ -1256,30 +1236,23 @@ const fn compound_opfl_block_size_allowed(n4w: usize, n4h: usize) -> bool {
     n4w >= 2 && n4h >= 2
 }
 
-fn compound_opfl_reference_allowed<T: ReconSample>(
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
+fn compound_opfl_reference_allowed(
+    facts: &FrameRefFacts,
     compound: super::super::compound::CompoundBlockSyntax,
 ) -> Result<bool> {
-    let Some((ref0, ref1)) =
-        compound_sized_reference_facts(core, reference, ref_frame_idx, compound)?
-    else {
+    let Some((ref0, ref1)) = facts.sized_pair(compound.ref_frame0, compound.ref_frame1)? else {
         return Ok(false);
     };
-    let current = compound_current_order_hint(core);
-    let d0 = current.relative_dist(ref0.order_hint);
-    let d1 = current.relative_dist(ref1.order_hint);
+    let d0 = facts.current.relative_dist(ref0);
+    let d1 = facts.current.relative_dist(ref1);
     Ok((d0 <= 0) ^ (d1 <= 0))
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn compound_refinemv_reachable<T: ReconSample>(
+pub(super) fn compound_refinemv_reachable(
     enable_refinemv: bool,
     opfl_refine_type: u32,
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
+    facts: &FrameRefFacts,
     compound: super::super::compound::CompoundBlockSyntax,
     n4w: usize,
     n4h: usize,
@@ -1290,7 +1263,7 @@ pub(super) fn compound_refinemv_reachable<T: ReconSample>(
     if !compound_refinemv_mode_allowed(compound, opfl_refine_type) {
         return Ok(false);
     }
-    compound_refinemv_reference_allowed(core, reference, ref_frame_idx, compound)
+    compound_refinemv_reference_allowed(facts, compound)
 }
 
 const fn compound_refinemv_size_allowed(n4w: usize, n4h: usize) -> bool {
@@ -1324,218 +1297,39 @@ pub(super) const fn compound_refinemv_active_after_blend(
     refinemv_default && matches!(blend, mc::CompoundBlend::Average { .. })
 }
 
-fn compound_refinemv_reference_allowed<T: ReconSample>(
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
+fn compound_refinemv_reference_allowed(
+    facts: &FrameRefFacts,
     compound: super::super::compound::CompoundBlockSyntax,
 ) -> Result<bool> {
-    let Some((ref0, ref1)) =
-        compound_sized_reference_facts(core, reference, ref_frame_idx, compound)?
-    else {
+    let Some((ref0, ref1)) = facts.sized_pair(compound.ref_frame0, compound.ref_frame1)? else {
         return Ok(false);
     };
-    let current = compound_current_order_hint(core);
-    let d0 = current.relative_dist(ref0.order_hint);
-    let d1 = current.relative_dist(ref1.order_hint);
+    let d0 = facts.current.relative_dist(ref0);
+    let d1 = facts.current.relative_dist(ref1);
     Ok(d0 != 0 && d0 == -d1)
 }
 
-fn compound_sized_reference_facts<T: ReconSample>(
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
-    compound: super::super::compound::CompoundBlockSyntax,
-) -> Result<Option<(CompoundReferenceFacts, CompoundReferenceFacts)>> {
-    if core.frame_type == Some(FrameType::Switch) {
-        return Ok(None);
-    }
-    let frame_size = core
-        .frame_size
-        .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
-    let ref0 = compound_reference_facts(reference, ref_frame_idx, compound.ref_frame0)?;
-    let ref1 = compound_reference_facts(reference, ref_frame_idx, compound.ref_frame1)?;
-    if ref0.order_hint.is_restricted()
-        || ref1.order_hint.is_restricted()
-        || ref0.width != frame_size.width
-        || ref0.height != frame_size.height
-        || ref1.width != frame_size.width
-        || ref1.height != frame_size.height
-    {
-        return Ok(None);
-    }
-    Ok(Some((ref0, ref1)))
-}
-
-fn compound_current_order_hint(core: &FrameHeaderCore) -> CompoundOrderHint {
-    CompoundOrderHint::current(core.display_order_hint().unwrap_or(0))
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CompoundReferenceFacts {
-    order_hint: CompoundOrderHint,
-    width: u32,
-    height: u32,
-}
-
-fn compound_reference_facts<T: ReconSample>(
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
-    ref_frame: i8,
-) -> Result<CompoundReferenceFacts> {
-    let slot = super::super::block_reference_slot(ref_frame_idx, ref_frame)?;
-    let slot = usize::try_from(slot).unwrap_or(usize::MAX);
-    let order_hint = reference.ref_order_hint.get(slot).copied().ok_or(
-        crate::DecodeReferenceStateError::SlotOutOfRange {
-            slot,
-            slot_count: reference.ref_order_hint.len(),
-        },
-    )?;
-    let order_hint = CompoundOrderHint::reference(order_hint);
-    let width = *reference.ref_frame_width.get(slot).ok_or(
-        crate::DecodeReferenceStateError::SlotOutOfRange {
-            slot,
-            slot_count: reference.ref_frame_width.len(),
-        },
-    )?;
-    let height = *reference.ref_frame_height.get(slot).ok_or(
-        crate::DecodeReferenceStateError::SlotOutOfRange {
-            slot,
-            slot_count: reference.ref_frame_height.len(),
-        },
-    )?;
-    Ok(CompoundReferenceFacts {
-        order_hint,
-        width,
-        height,
-    })
-}
-
-#[inline]
-pub(super) fn compound_ref_contexts(
+pub(super) fn compound_group_idx_context(
     neighbour_ctx: &BlockNeighbourContext,
-    num_total_refs: usize,
-) -> Result<[usize; 7]> {
-    neighbour_ctx
-        .single_ref_ctxs(num_total_refs)
-        .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterReferenceMap.into())
-}
-
-#[allow(
-    clippy::inline_always,
-    reason = "keeps the parse path of the parent with the facade as second caller"
-)]
-#[inline(always)]
-pub(super) fn compound_ref_distance_signs<T: ReconSample>(
-    ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
-    current_order_hint: u32,
-    num_total_refs: usize,
-) -> Result<[bool; 7]> {
-    let mut signs = [true; 7];
-    let current_order_hint = CompoundOrderHint::current(current_order_hint);
-    for (ref_idx, sign) in signs.iter_mut().take(num_total_refs).enumerate() {
-        let slot = *ref_frame_idx
-            .get(ref_idx)
-            .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
-        let slot = usize::try_from(slot).unwrap_or(usize::MAX);
-        let ref_order_hint = reference
-            .ref_order_hint
-            .get(slot)
-            .copied()
-            .map(CompoundOrderHint::reference)
-            .ok_or(crate::DecodeReferenceStateError::SlotOutOfRange {
-                slot,
-                slot_count: reference.ref_order_hint.len(),
-            })?;
-        *sign = ref_order_hint.frame_distance_from(current_order_hint) >= 0;
-    }
-    Ok(signs)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn compound_group_idx_context<T: ReconSample>(
-    neighbour_ctx: &BlockNeighbourContext,
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
-    core: &FrameHeaderCore,
+    facts: &FrameRefFacts,
     ref_frame0: i8,
     ref_frame1: i8,
-    num_total_refs: usize,
 ) -> Result<usize> {
-    let current_order_hint = compound_current_order_hint(core);
-    let ref0_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame0)?;
-    let ref1_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame1)?;
-    let equal_ref_distance = current_order_hint.relative_dist(ref0_order_hint).abs()
-        == ref1_order_hint.relative_dist(current_order_hint).abs();
-    let furthest_future_ref =
-        compound_furthest_future_ref(reference, ref_frame_idx, current_order_hint, num_total_refs)?;
+    let equal_ref_distance = facts.fact(ref_frame0).abs_dist == facts.fact(ref_frame1).abs_dist;
+    let furthest_future_ref = facts.furthest_future_ref()?;
     Ok(neighbour_ctx.compound_group_idx_ctx(equal_ref_distance, furthest_future_ref))
 }
 
-fn compound_furthest_future_ref<T: ReconSample>(
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
-    current_order_hint: CompoundOrderHint,
-    num_total_refs: usize,
-) -> Result<Option<i8>> {
-    let mut best = None;
-    for ref_idx in 0..num_total_refs {
-        let ref_order_hint =
-            compound_reference_order_hint(reference, ref_frame_idx, ref_idx as i8)?;
-        let CompoundOrderHint::Value(order_hint) = ref_order_hint else {
-            continue;
-        };
-        let distance = ref_order_hint.relative_dist(current_order_hint);
-        if distance <= 0 {
-            continue;
-        }
-        if best.is_none_or(|(best_order_hint, _)| order_hint > best_order_hint) {
-            best = Some((order_hint, ref_idx as i8));
-        }
-    }
-    Ok(best.map(|(_, ref_idx)| ref_idx))
-}
-
-fn compound_reference_order_hint<T: ReconSample>(
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
-    ref_frame: i8,
-) -> Result<CompoundOrderHint> {
-    let slot = usize::try_from(super::super::block_reference_slot(
-        ref_frame_idx,
-        ref_frame,
-    )?)
-    .unwrap_or(usize::MAX);
-    reference
-        .ref_order_hint
-        .get(slot)
-        .copied()
-        .ok_or_else(|| {
-            crate::DecodeReferenceStateError::SlotOutOfRange {
-                slot,
-                slot_count: reference.ref_order_hint.len(),
-            }
-            .into()
-        })
-        .map(CompoundOrderHint::reference)
-}
-
 #[inline]
-pub(super) fn compound_joint_mv_projection<T: ReconSample>(
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
+pub(super) fn compound_joint_mv_projection(
+    facts: &FrameRefFacts,
     ref_frame0: i8,
     ref_frame1: i8,
 ) -> Result<CompoundJointMvProjection> {
-    let current = compound_current_order_hint(core);
-    let ref0_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame0)?;
-    let ref1_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame1)?;
     Ok(compound_joint_mv_projection_from_order_hints(
-        current,
-        ref0_order_hint,
-        ref1_order_hint,
+        facts.current,
+        facts.hint(ref_frame0)?,
+        facts.hint(ref_frame1)?,
     ))
 }
 
@@ -1560,7 +1354,7 @@ fn compound_joint_mv_projection_from_order_hints(
         second_dist = -second_dist;
     }
     CompoundJointMvProjection {
-        base_list,
+        base_list: base_list as u8,
         first_dist,
         second_dist,
     }
@@ -1632,9 +1426,9 @@ fn read_compound_use_amvd_syntax(
         return Ok(false);
     };
     let use_amvd = cdfs
-        .read_block_symbol_trace(selector, symbols)
+        .read_block_symbol(selector, symbols)
         .map_err(|error| symbol_read_error(error, tile_offset))?;
-    Ok(use_amvd.get() != 0)
+    Ok(use_amvd != 0)
 }
 
 /// The `use_amvd` selector of a compound block coding `y_mode` (§ 5.20.7.6);
@@ -1666,8 +1460,7 @@ fn read_compound_jmvd_scale_mode_syntax(
     } else {
         TileCdfSelector::JmvdScaleMode
     };
-    cdfs.read_block_symbol_trace(selector, symbols)
-        .map(splot_core::symbol::Symbol::get)
+    cdfs.read_block_symbol(selector, symbols)
         .map_err(|error| symbol_read_error(error, tile_offset))
 }
 
@@ -1716,11 +1509,9 @@ pub(super) struct CompoundCwpInput {
 }
 
 #[derive(Clone, Copy)]
-struct CompoundCwpContext<'a, T: ReconSample> {
+struct CompoundCwpContext<'a> {
     sequence: &'a SequenceHeader,
-    core: &'a FrameHeaderCore,
-    reference: &'a InterReferenceState<T>,
-    ref_frame_idx: &'a [u32],
+    facts: &'a FrameRefFacts,
 }
 
 fn read_compound_blend_syntax(
@@ -1734,26 +1525,14 @@ fn read_compound_blend_syntax(
     if !compound_reads_group_idx(tools, input) {
         return Ok(average_blend);
     }
-    let comp_group_idx = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::CompGroupIdx {
-                ctx: input.comp_group_idx_ctx,
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?
-        .get();
-    if comp_group_idx == 0 {
+    let rows = &mut cdfs.block_rows_mut().comp_group_idx;
+    if read_row(symbols, row_at(rows, input.comp_group_idx_ctx)) == 0 {
         return Ok(average_blend);
     }
     let compound_type = if wedge_bits(input.block_size_index) == 0 {
         MaskedCompoundType::DiffWeighted
     } else {
-        match cdfs
-            .read_block_symbol_trace(TileCdfSelector::CompoundType, symbols)
-            .map_err(|error| symbol_read_error(error, tile_offset))?
-            .get()
-        {
+        match read_row(symbols, &mut cdfs.block_rows_mut().compound_type) {
             0 => MaskedCompoundType::Wedge,
             _ => MaskedCompoundType::DiffWeighted,
         }
@@ -1806,12 +1585,11 @@ pub(super) fn wedge_bits(block_size_index: usize) -> u8 {
 
 pub(super) const CWP_WEIGHTING_FACTOR: [[i16; 5]; 2] = [[8, 12, 4, 10, 6], [8, 12, 4, 20, -4]];
 
-fn read_compound_cwp_syntax<T: ReconSample>(
+fn read_compound_cwp_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    context: CompoundCwpContext<'_, T>,
+    context: CompoundCwpContext<'_>,
     input: CompoundCwpInput,
-    tile_offset: ByteOffset,
 ) -> Result<mc::CompoundBlend> {
     let cwp_enabled = context
         .sequence
@@ -1823,22 +1601,13 @@ fn read_compound_cwp_syntax<T: ReconSample>(
     }
     let mut coding_idx = 0usize;
     for idx in 0..CWP_WEIGHTING_FACTOR[0].len() - 1 {
-        let symbol = cdfs
-            .read_block_symbol_trace(TileCdfSelector::CwpIdx { idx }, symbols)
-            .map_err(|error| symbol_read_error(error, tile_offset))?
-            .get();
+        let symbol = read_row(symbols, row_at(&mut cdfs.block_rows_mut().cwp_idx, idx));
         coding_idx = idx + usize::from(symbol != 0);
         if symbol == 0 {
             break;
         }
     }
-    let same_side = compound_cwp_same_side(
-        context.core,
-        context.reference,
-        context.ref_frame_idx,
-        input.ref_frame0,
-        input.ref_frame1,
-    )?;
+    let same_side = compound_cwp_same_side(context.facts, input.ref_frame0, input.ref_frame1)?;
     Ok(input
         .blend
         .average_with_cwp_weight(CWP_WEIGHTING_FACTOR[usize::from(same_side)][coding_idx]))
@@ -1858,20 +1627,15 @@ const fn compound_cwp_mode_allowed(y_mode: CompoundYMode, jmvd_scale_mode: u8) -
         || matches!(y_mode, CompoundYMode::JointNew) && jmvd_scale_mode == 0
 }
 
-pub(super) fn compound_cwp_same_side<T: ReconSample>(
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
+pub(super) fn compound_cwp_same_side(
+    facts: &FrameRefFacts,
     ref_frame0: i8,
     ref_frame1: i8,
 ) -> Result<bool> {
-    let current = compound_current_order_hint(core);
-    let ref0_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame0)?;
-    let ref1_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame1)?;
     Ok(compound_references_same_side(
-        current,
-        ref0_order_hint,
-        ref1_order_hint,
+        facts.current,
+        facts.hint(ref_frame0)?,
+        facts.hint(ref_frame1)?,
     ))
 }
 

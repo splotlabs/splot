@@ -341,6 +341,13 @@ fixtureable = true
 spec_sections = ["5.20.3.1", "5.20.5.3"]
 
 [[capability]]
+id = "partition.extended_sdp"
+name = "Inter-frame extended SDP region_type (MIXED and INTRA regions)"
+category = "partition"
+fixtureable = true
+spec_sections = ["5.20.3.1", "5.20.2.1"]
+
+[[capability]]
 id = "partition.recursive"
 name = "Recursive multi-level partition tree"
 category = "partition"
@@ -587,6 +594,7 @@ name = "Reference-size scaling in inter prediction"
 category = "inter"
 fixtureable = true
 spec_sections = ["5.20.7.12", "5.20.7.14", "5.20.7.17", "7.13.3.14", "7.13.3.17", "7.13.3.18", "7.13.3.20"]
+notes = "Covered by AVMenc resize-mode streams in 4:2:0, 4:2:2 and 4:4:4 at 8 and 10 bits: single-reference and compound blocks from larger and smaller references, reads outside the reference frame, scaled extended warp, and compound pairs that lose optical flow and refine-MV. AVMenc never codes TIP with a scaled TIP reference, so the TIP gates have no fixture."
 
 [[capability]]
 id = "inter.subpel_mc"
@@ -601,7 +609,7 @@ name = "Temporal interpolated prediction (TIP)"
 category = "inter"
 fixtureable = true
 spec_sections = ["7.9.1", "7.9.3", "7.10.6", "7.13.3.2", "7.16", "7.22"]
-notes = "Covered by AVMenc streams with regular and leading TIP output, natural multi-tile monochrome prediction, 4:2:2 and 4:4:4 chroma, and active sample-changing multi-tile deblocking."
+notes = "Covered by AVMenc streams with regular and leading TIP output, natural multi-tile monochrome prediction, 4:2:2 and 4:4:4 chroma, and active sample-changing multi-tile deblocking; TIP blocks in TIP_FRAME_AS_REF inter frames with 8x8 optical-flow units in 4:2:0, 4:2:2 and 4:4:4 at 8 and 10 bits, and with 16x16 units, 8x8 units without optical flow or a single reference, and TIP output, in 4:2:0, 4:2:2 and 4:4:4 at 8 and 10 bits; TIP blocks whose 16x16 units cross the right and bottom storage edge in 4:2:0 and 4:2:2 at 8 and 10 bits (syn-tip-edge-*), and 8x8 optical-flow units that cross the bottom edge in 4:4:4 (syn-warp-occlusion-444-160x120-q180)."
 
 [[capability]]
 id = "inter.warp"
@@ -609,7 +617,7 @@ name = "Warped / global motion prediction"
 category = "inter"
 fixtureable = true
 spec_sections = ["5.18.9.1", "5.20.7.7", "7.12.2.1", "7.12.2.2", "7.13.3.1", "7.13.3.19", "7.13.3.23"]
-notes = "The translation, ROTZOOM, and AFFINE global-motion fixtures signal non-identity frame models and select GLOBALMV; local-warp coverage is recorded by separate fixtures and tests."
+notes = "The translation, ROTZOOM, and AFFINE global-motion fixtures signal non-identity frame models and select GLOBALMV; local-warp coverage is recorded by separate fixtures and tests. The syn-warp-* AVMenc fixtures cover LOCALWARP, EXTENDWARP, DELTAWARP, WARPMV, warp inter-intra, single-reference GLOBALMV warp, compound LOCALWARP with COMPOUND_WEDGE and COMPOUND_DIFFWTD, and the scaled extended warp in 4:2:0, 4:2:2, 4:4:4 and monochrome at 8 and 10 bits. The syn-warp-globalglobal-* fixtures cover GLOBAL_GLOBALMV warp. Not covered: 10-bit monochrome COMPOUND_WEDGE warp (avmenc did not pick it)."
 
 [[capability]]
 id = "inter.warp.extend_list1"
@@ -640,6 +648,14 @@ category = "inter"
 fixtureable = true
 spec_sections = ["7.13.3.14"]
 notes = "A WARPMV block of a frame with force_integer_mv keeps its warp model but predicts with useWarp = 0."
+
+[[capability]]
+id = "inter.bru"
+name = "Backward reference update (use_bru == 1) frames"
+category = "inter"
+fixtureable = true
+spec_sections = ["5.18.2", "5.19", "5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.5.2"]
+notes = "use_bru == 1 frames with partial activity, BRU_SUPPORT superblocks, a bru_inactive frame, per-tile bru_tile_active flags, 10-bit and 4:4:4 decode byte-exact against avmdec. Frames whose loop restoration or GDF runs are rejected with decode/unsupported-feature backward_reference_update."
 
 [[capability]]
 id = "transform.cctx"

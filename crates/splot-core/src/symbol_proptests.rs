@@ -15,7 +15,7 @@ proptest! {
         let mut decoder = SymbolDecoder::new(&data).unwrap();
         let _ = decoder.read_bool();
         let _ = decoder.read_literal(literal_width);
-        let mut cdf = [8192, 16_384, 24_576, 0, count];
+        let mut cdf = [8192, 16_384, 24_576, count << CDF_COUNT_SHIFT, 0];
         let _ = decoder.read_symbol(&mut cdf);
         let _ = decoder.finish();
     }
@@ -41,8 +41,7 @@ proptest! {
             acc += *gap; // gap >= 1 keeps the cumulative values strictly increasing
             *entry = acc; // bounded by (MAX_SYMBOLS - 1) * 4000 < CDF_PROB_MAX
         }
-        row[n - 1] = rate_index as i32;
-        row[n] = count;
+        row[n - 1] = rate_index as i32 | count << CDF_COUNT_SHIFT;
 
         let config = SymbolDecoderConfig::new().with_cdf_update_mode(if update_enabled {
             CdfUpdateMode::Enabled
@@ -66,7 +65,7 @@ proptest! {
             for value in first_row.iter().take(n - 1) {
                 prop_assert!(*value >= 1 && *value <= CDF_PROB_MAX);
             }
-            prop_assert!(first_row[n] <= MAX_CDF_COUNT);
+            prop_assert!(first_row[n - 1] >> CDF_COUNT_SHIFT <= MAX_CDF_COUNT);
         } else {
             prop_assert_eq!(&first_row, &before);
         }
@@ -86,8 +85,7 @@ proptest! {
         probs[..n - 1].sort_unstable();
         let mut row = vec![0i32; n + 1];
         row[..n - 1].copy_from_slice(&probs[..n - 1]);
-        row[n - 1] = rate_index as i32;
-        row[n] = count;
+        row[n - 1] = rate_index as i32 | count << CDF_COUNT_SHIFT;
         let mut compact: Vec<u16> = row.iter().map(|&value| value as u16).collect();
         let trusted = SymbolDecoderConfig::new().with_cdf_validation_mode(CdfValidationMode::Trusted);
 
@@ -121,8 +119,7 @@ proptest! {
             acc += *gap;
             *entry = acc;
         }
-        row[n - 1] = rate_index as i32;
-        row[n] = count;
+        row[n - 1] = rate_index as i32 | count << CDF_COUNT_SHIFT;
 
         let trusted_config =
             SymbolDecoderConfig::new().with_cdf_validation_mode(CdfValidationMode::Trusted);
@@ -158,8 +155,7 @@ proptest! {
             acc += gap;
             *entry = acc;
         }
-        row[n - 1] = rate_index;
-        row[n] = count;
+        row[n - 1] = rate_index | count << CDF_COUNT_SHIFT;
         let mode = if update { CdfUpdateMode::Enabled } else { CdfUpdateMode::Disabled };
         let config = SymbolDecoderConfig::new().with_cdf_update_mode(mode);
         let mut checked = SymbolDecoder::with_config(&data, config).unwrap();
@@ -262,8 +258,7 @@ proptest! {
     ) {
         let mut row = vec![0i32; n + 1];
         row[..n - 1].copy_from_slice(&probs[..n - 1]);
-        row[n - 1] = rate_index as i32;
-        row[n] = count;
+        row[n - 1] = rate_index as i32 | count << CDF_COUNT_SHIFT;
 
         let trusted_config =
             SymbolDecoderConfig::new().with_cdf_validation_mode(CdfValidationMode::Trusted);
@@ -342,4 +337,98 @@ fn trusted_read<const L: usize, const UPDATE: bool>(
         return u32::MAX;
     };
     decoder.read_trusted::<L, UPDATE>(prefix)
+}
+
+/// One read of an `N`-ary row through the word path and one through the lane
+/// path, each on its own decoder and row copy.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn word_and_lane_read<const N: usize>(
+    (word, word_row): (&mut SymbolDecoder<'_>, &mut [u16]),
+    (lane, lane_row): (&mut SymbolDecoder<'_>, &mut [u16]),
+    update: bool,
+) -> (u32, u32) {
+    let token = lane_token().expect("x86-64-v3 or NEON lanes");
+    word.ensure_buffered(15);
+    let initial = row_word::<N>(word_row);
+    let from_word = word.read_trusted_word::<N>(word_row, initial, update).0;
+    lane.ensure_buffered(15);
+    let value = (lane.dif >> SV_SHIFT) as u32;
+    let from_lanes = lane.read_trusted_lanes::<N>(token, lane_row, value, update);
+    (from_word, from_lanes)
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn word_and_lane_read_n(
+    n: usize,
+    word: (&mut SymbolDecoder<'_>, &mut [u16]),
+    lane: (&mut SymbolDecoder<'_>, &mut [u16]),
+    update: bool,
+) -> (u32, u32) {
+    match n {
+        3 => word_and_lane_read::<3>(word, lane, update),
+        4 => word_and_lane_read::<4>(word, lane, update),
+        5 => word_and_lane_read::<5>(word, lane, update),
+        _ => word_and_lane_read::<6>(word, lane, update),
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+proptest! {
+    /// The word path (aarch64) and the lane path (x86-64) of trusted reads
+    /// of 3 to 6 symbols decode, adapt and advance identically on
+    /// well-formed rows, whichever path this target selects.
+    #[test]
+    fn trusted_word_and_lane_paths_match(
+        n in 3usize..=6,
+        gaps in proptest::collection::vec(prop_oneof![Just(0u32), 1u32..=20_000], MAX_SYMBOLS - 1),
+        rate_index in 0u16..PARA_ADJUSTMENT_LIST.len() as u16,
+        count in 0u16..=MAX_CDF_COUNT as u16,
+        update in any::<bool>(),
+        data in proptest::collection::vec(any::<u8>(), 2..24),
+    ) {
+        let mut row = [0u16; MAX_SYMBOLS + 1];
+        let mut acc = 0u32;
+        for (entry, gap) in row.iter_mut().take(n - 1).zip(&gaps) {
+            acc = (acc + gap).min(CDF_PROB_SCALE);
+            *entry = acc as u16;
+        }
+        row[n - 1] = rate_index | count << CDF_COUNT_SHIFT;
+        let (mut word_row, mut lane_row) = (row, row);
+        let mut word = SymbolDecoder::new(&data).unwrap();
+        let mut lane = SymbolDecoder::new(&data).unwrap();
+        for _ in 0..12 {
+            let (from_word, from_lanes) = word_and_lane_read_n(
+                n,
+                (&mut word, &mut word_row[..=n]),
+                (&mut lane, &mut lane_row[..=n]),
+                update,
+            );
+            prop_assert_eq!(from_word, from_lanes);
+            prop_assert_eq!(word_row, lane_row);
+            prop_assert_eq!(word.checkpoint(), lane.checkpoint());
+        }
+    }
+
+    /// Both paths stay panic-free and in the alphabet on arbitrary row
+    /// contents, where the symbol and adaptation are unspecified.
+    #[test]
+    fn trusted_word_and_lane_paths_survive_hostile_rows(
+        n in 3usize..=6,
+        row in proptest::array::uniform9(any::<u16>()),
+        update in any::<bool>(),
+        data in proptest::collection::vec(any::<u8>(), 2..16),
+    ) {
+        let (mut word_row, mut lane_row) = (row, row);
+        let mut word = SymbolDecoder::new(&data).unwrap();
+        let mut lane = SymbolDecoder::new(&data).unwrap();
+        for _ in 0..8 {
+            let (from_word, from_lanes) = word_and_lane_read_n(
+                n,
+                (&mut word, &mut word_row[..=n]),
+                (&mut lane, &mut lane_row[..=n]),
+                update,
+            );
+            prop_assert!((from_word as usize) < n && (from_lanes as usize) < n);
+        }
+    }
 }

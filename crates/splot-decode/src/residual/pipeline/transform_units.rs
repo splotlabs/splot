@@ -12,7 +12,7 @@ use crate::bitstream::tile_payload::{
     luma_partition_record_fills_block, luma_transform_record_starts_in_frame,
     luma_transform_records_for_partition,
 };
-use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
+use crate::tile::block_context::{BlockRect, FrameTileCtx, TxShape};
 
 use super::{
     GeneralIntraResidualPlan, RectLumaPlan, ResidualPlanePlan, ResidualReconstructionPlan, TX_4X4,
@@ -53,6 +53,7 @@ impl GeneralIntraResidualPlan {
         };
         plane.apply_reconstruction_tx_type(&mut coeffs);
         plane.reconstruct(
+            self.frame,
             scratch,
             workspace,
             CoeffBlock::new(&coeffs, quant)?,
@@ -99,6 +100,7 @@ impl GeneralIntraResidualPlan {
         let (u_plane, u_coeffs) = block(u, Some(cctx_type as u8))?;
         let (v_plane, v_coeffs) = block(v, None)?;
         super::chroma_pair::reconstruct_chroma_pair_or_planes(
+            self.frame,
             scratch,
             workspace,
             block_decoded,
@@ -124,30 +126,34 @@ impl GeneralIntraResidualPlan {
                 context: "luma transform partition plane",
             });
         }
-        let records = luma_transform_records_for_partition(luma.x, luma.y, tx_size, partition)?;
+        let (luma_x, luma_y) = (luma.x as usize, luma.y as usize);
+        let records = luma_transform_records_for_partition(luma_x, luma_y, tx_size, partition)?;
         let count = records.len();
         let (frame_width, frame_height) = (
-            luma.block_ctx.frame_mi_cols() * 4,
-            luma.block_ctx.frame_mi_rows() * 4,
+            self.frame.frame_mi_cols() * 4,
+            self.frame.frame_mi_rows() * 4,
         );
         let mut units = Vec::with_capacity(count);
         for record in records {
             if !luma_transform_record_starts_in_frame(&record, frame_width, frame_height) {
                 continue;
             }
-            let unit = luma.transform_unit_plan(&PositionedLumaCoeffBlock {
-                x: record.x,
-                y: record.y,
-                tx_size: record.tx_size,
-                middle: record.middle,
-                coeffs: LumaCoeffBlock::empty(0, false),
-            })?;
+            let unit = luma.transform_unit_plan(
+                self.frame,
+                &PositionedLumaCoeffBlock {
+                    x: record.x,
+                    y: record.y,
+                    tx_size: record.tx_size,
+                    middle: record.middle,
+                    coeffs: LumaCoeffBlock::empty(0, false),
+                },
+            )?;
             let fills = luma_partition_record_fills_block(
                 luma.tx_fills_residual_block(),
                 count,
                 record,
-                luma.x,
-                luma.y,
+                luma_x,
+                luma_y,
             );
             units.push(if fills {
                 unit
@@ -231,32 +237,39 @@ impl ResidualPlanePlan {
         &self,
         segment_lossless: Option<bool>,
     ) -> Option<usize> {
-        if segment_lossless != Some(true) || (!self.fsc_mode && self.tx_size == TX_4X4) {
+        let tx_size = usize::from(self.tx_size);
+        if segment_lossless != Some(true) || (!self.fsc_mode && tx_size == TX_4X4) {
             return None;
         }
         if !self.fsc_mode {
             return Some(TX_4X4);
         }
-        let (log2_width, log2_height) = tx_size_log2(self.tx_size).ok()?;
+        let (log2_width, log2_height) = tx_size_log2(tx_size).ok()?;
         let unit_width4 = (1usize << log2_width) >> 2;
         let unit_height4 = (1usize << log2_height) >> 2;
-        (unit_width4 < self.tx.width4() || unit_height4 < self.tx.height4()).then_some(self.tx_size)
+        (unit_width4 < self.tx.width4() || unit_height4 < self.tx.height4()).then_some(tx_size)
     }
 
-    pub(super) fn lossless_unit_starts_in_frame(&self, x: usize, y: usize) -> bool {
-        let (sub_x, sub_y) = self.block_ctx.chroma().subsampling(self.plane_id);
-        let max_x = (self.block_ctx.frame_mi_cols() * 4) >> sub_x;
-        let max_y = (self.block_ctx.frame_mi_rows() * 4) >> sub_y;
+    pub(super) fn lossless_unit_starts_in_frame(
+        &self,
+        frame: FrameTileCtx,
+        x: usize,
+        y: usize,
+    ) -> bool {
+        let (sub_x, sub_y) = frame.chroma().subsampling(self.plane_id);
+        let max_x = (frame.frame_mi_cols() * 4) >> sub_x;
+        let max_y = (frame.frame_mi_rows() * 4) >> sub_y;
         x < max_x && y < max_y
     }
 
     pub(super) fn transform_unit_plan(
         &self,
+        frame: FrameTileCtx,
         block: &PositionedLumaCoeffBlock,
     ) -> core::result::Result<ResidualPlanePlan, GeneralIntraResidualError> {
         let reconstruction = self
             .reconstruction
-            .for_luma_transform_row(block.y == self.y);
+            .for_luma_transform_row(block.y == self.y as usize);
         let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
         let width4 = (1usize << log2_width) >> 2;
         let height4 = (1usize << log2_height) >> 2;
@@ -266,12 +279,17 @@ impl ResidualPlanePlan {
                 index: block.tx_size,
             });
         };
-        let block_ctx = self.transform_unit_block_ctx(block, tx, width4.max(1), height4.max(1))?;
+        let rect = self.transform_unit_rect(frame, block, width4.max(1), height4.max(1))?;
         Ok(ResidualPlanePlan {
-            block_ctx,
-            tx_size: block.tx_size,
-            x: block.x,
-            y: block.y,
+            rect,
+            tx_size: u8::try_from(block.tx_size).map_err(|_| {
+                GeneralIntraResidualError::TransformPartitionGeometry {
+                    table: "Tx_Width_Log2",
+                    index: block.tx_size,
+                }
+            })?,
+            x: block.x as u32,
+            y: block.y as u32,
             tx,
             residual_width4: width4.max(1) as u16,
             residual_height4: height4.max(1) as u16,
@@ -281,25 +299,17 @@ impl ResidualPlanePlan {
         })
     }
 
-    fn transform_unit_block_ctx(
+    fn transform_unit_rect(
         &self,
+        frame: FrameTileCtx,
         block: &PositionedLumaCoeffBlock,
-        tx: TxShape,
         width4: usize,
         height4: usize,
-    ) -> core::result::Result<BlockCtx, GeneralIntraResidualError> {
+    ) -> core::result::Result<BlockRect, GeneralIntraResidualError> {
         if self.plane_id == PlaneId::Y {
-            return Ok(BlockCtx::new(
-                BlockRect::new(block.y >> 2, block.x >> 2, width4, height4),
-                tx,
-                self.block_ctx.frame_mi_cols(),
-                self.block_ctx.frame_mi_rows(),
-                self.block_ctx.bit_depth(),
-                self.block_ctx.chroma(),
-            )
-            .with_tile_bounds_from(self.block_ctx));
+            return Ok(BlockRect::new(block.y >> 2, block.x >> 2, width4, height4));
         }
-        let (sub_x, sub_y) = self.block_ctx.chroma().subsampling(self.plane_id);
+        let (sub_x, sub_y) = frame.chroma().subsampling(self.plane_id);
         let scale_x = 1usize << sub_x;
         let scale_y = 1usize << sub_y;
         let chroma_ref = BlockRect::new(
@@ -308,23 +318,13 @@ impl ResidualPlanePlan {
             width4 * scale_x,
             height4 * scale_y,
         );
-        let Some(chroma_tx) = TxShape::from_luma_4x4(chroma_ref.width4(), chroma_ref.height4())
-        else {
+        if TxShape::from_luma_4x4(chroma_ref.width4(), chroma_ref.height4()).is_none() {
             return Err(GeneralIntraResidualError::TransformPartitionGeometry {
                 table: "Lossless_Chroma_Tx",
                 index: block.tx_size,
             });
-        };
-        Ok(BlockCtx::new(
-            self.block_ctx.block(),
-            self.block_ctx.plane_block(PlaneId::Y).tx(),
-            self.block_ctx.frame_mi_cols(),
-            self.block_ctx.frame_mi_rows(),
-            self.block_ctx.bit_depth(),
-            self.block_ctx.chroma(),
-        )
-        .with_tile_bounds_from(self.block_ctx)
-        .with_chroma_ref(chroma_ref, chroma_tx))
+        }
+        Ok(chroma_ref)
     }
 
     pub(super) const fn tx_fills_residual_block(&self) -> bool {

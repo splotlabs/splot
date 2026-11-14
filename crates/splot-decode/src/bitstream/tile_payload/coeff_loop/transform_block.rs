@@ -11,13 +11,13 @@ use splot_core::coefficient::LF_SIG_COEF_CONTEXTS_2D;
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoder};
 use splot_recon::{TransformClass, coefficient_scan_position};
 
-use super::super::cdf::block_read::BlockSymbolTraceReadError;
+use super::super::cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 use super::super::cdf::coeff_context::{
     CHROMA_2D_PLANE_CONTEXT_OFFSET, HF_2D_CONTEXT_OFFSET, LF_2D_CONTEXT_CAP_AND_OFFSET,
     LF_SIG_COEF_CONTEXTS_2D_UV, MAG_REF_OFFSET_WITH_TX_CLASS, MAX_BASE_BR_RANGE, SIG_OFFSETS,
     coeff_base_eob_ctx, dc_sign_ctx,
 };
-use super::super::cdf::{CoeffLevelRows, TileCdfSelector, TileCdfSubset};
+use super::super::cdf::{CoeffLevelRows, TileCdfSubset};
 use super::super::coeff_state::{
     CoeffBlockLines, CoeffLevelWords, CoeffNonzeroList, LEVEL_STRIDE, LEVEL_WORDS_MASK,
     TileCoeffContextState, TileCoeffStateError,
@@ -40,8 +40,8 @@ use super::quant_state::{
 use super::read_quant::{CoeffReadQuantConfig, CoeffReadQuantInput, CoeffReadQuantState};
 use super::scan_walk::CoeffScanEntry;
 use super::sign_symbol::{
-    CoeffSignReadError, CoeffSignReadSymbol, CoeffSignSourceDeriveConfig,
-    derive_nonzero_coeff_sign_input, read_preflighted_nonzero_coeff_sign,
+    CoeffSignReadSymbol, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_input,
+    read_preflighted_nonzero_coeff_sign,
 };
 
 const PHTHRESH: u32 = 4;
@@ -163,23 +163,6 @@ static HALF_CAPPED: [[u8; 32]; 16] = {
     }
     table
 };
-
-/// `Tcq_Next_State[state][parity]` at `state << 1 | parity`.
-static TCQ_NEXT: [u8; 16] = {
-    let mut out = [0; 16];
-    let mut index = 0;
-    while index < 16 {
-        out[index] = next_tcq_state(index >> 1, (index & 1) as u32) as u8;
-        index += 1;
-    }
-    out
-};
-
-#[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
-#[inline(always)]
-fn tcq_next(state: usize, level: u32) -> usize {
-    usize::from(TCQ_NEXT[((state << 1) | (level as usize & 1)) & 15])
-}
 
 const SCAN_DIMS: usize = 4;
 const GRID_SCAN_LEN: usize = 3600;
@@ -335,14 +318,6 @@ fn half_capped(mag: u32, cap: usize) -> usize {
     usize::from(HALF_CAPPED[cap & 15][mag as usize & 31])
 }
 
-/// `rows[ctx]` with the context clamped into the array: every context the
-/// pass derives is in range, so the clamp only keeps the read panic-free.
-#[allow(clippy::inline_always, reason = "measured: per-coefficient row")]
-#[inline(always)]
-pub(super) fn row_at<T, const C: usize>(rows: &mut [T; C], ctx: usize) -> &mut T {
-    &mut rows[ctx.min(C - 1)]
-}
-
 /// One past the last low-frequency scan index of `get_lf_limits`
 /// (§ 5.20.7.27): the 2D diagonal scan visits the ten positions with
 /// `row + col < 4` first, the horizontal-class scan whole columns first and
@@ -379,46 +354,13 @@ pub(crate) fn decode_ordinary_transform_block(
     input: CoeffTransformBlockInput<'_>,
     quant: &mut [i32],
 ) -> Result<usize, CoeffOrdinaryPassError> {
-    let config = input.config;
     preflight(&input, quant.len())?;
-    let scan = grid_scan(
-        config.tx_class,
-        config.tx_width,
-        config.tx_height,
-        input.start.eob_read().eob(),
-    )?;
-    let lines = input.lines;
-    let plane = config.plane;
-    let (above_dc, left_dc, levels, nonzero) = state.dc_lines_and_levels(plane)?;
-    let block = Block {
-        scan,
-        config,
-        dc: CoeffSignSourceDeriveConfig {
-            plane,
-            plane_type: usize::from(plane > 0),
-            tx_class: config.tx_class,
-            is_hidden: false,
-            sum_abs1: 0,
-            above_dc,
-            left_dc,
-            x4: lines.x4,
-            y4: lines.y4,
-            w4: lines.w4,
-            h4: lines.h4,
-        },
-        lossless: input.lossless,
-    };
-    let summary = if symbols.cdf_update_mode() == CdfUpdateMode::Enabled {
-        dispatch::<true>(cdfs, symbols, (levels, nonzero), quant, &block)
+    let run = if symbols.cdf_update_mode() == CdfUpdateMode::Enabled {
+        dispatch::<true>(input.config)
     } else {
-        dispatch::<false>(cdfs, symbols, (levels, nonzero), quant, &block)
-    }?;
-    state.commit_block(
-        lines,
-        summary.state.cul_level(),
-        summary.state.dc_category(),
-    );
-    Ok(summary.quant_end)
+        dispatch::<false>(input.config)
+    };
+    run(state, cdfs, symbols, &input, quant)
 }
 
 fn preflight(
@@ -469,51 +411,73 @@ struct BlockSummary {
 
 #[allow(clippy::inline_always, reason = "measured: one body per tool set")]
 #[inline(always)]
-fn dispatch<const UPD: bool>(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    levels: (&mut CoeffLevelWords, &mut CoeffNonzeroList),
-    quant: &mut [i32],
-    block: &Block<'_>,
-) -> Result<BlockSummary, CoeffOrdinaryPassError> {
+fn dispatch<const UPD: bool>(config: CoeffBaseDerivedLevelPassConfig) -> RunFn {
     use CoeffTransformClass::{Horizontal, TwoD, Vertical};
-    let config = block.config;
-    let args = (cdfs, symbols, levels, quant, block);
     match (
         config.tx_class,
         config.plane == 0,
         config.use_tcq,
         config.parity_hiding,
     ) {
-        (TwoD, true, true, _) => run::<0, true, true, false, UPD>(args),
-        (TwoD, true, false, true) => run::<0, true, false, true, UPD>(args),
-        (TwoD, true, false, false) => run::<0, true, false, false, UPD>(args),
-        (Horizontal, true, _, true) => run::<1, true, false, true, UPD>(args),
-        (Horizontal, true, _, false) => run::<1, true, false, false, UPD>(args),
-        (Vertical, true, _, true) => run::<2, true, false, true, UPD>(args),
-        (Vertical, true, _, false) => run::<2, true, false, false, UPD>(args),
-        (TwoD, false, ..) => run::<0, false, false, false, UPD>(args),
-        (Horizontal, false, ..) => run::<1, false, false, false, UPD>(args),
-        (Vertical, false, ..) => run::<2, false, false, false, UPD>(args),
+        (TwoD, true, true, _) => run::<0, true, true, false, UPD>,
+        (TwoD, true, false, true) => run::<0, true, false, true, UPD>,
+        (TwoD, true, false, false) => run::<0, true, false, false, UPD>,
+        (Horizontal, true, _, true) => run::<1, true, false, true, UPD>,
+        (Horizontal, true, _, false) => run::<1, true, false, false, UPD>,
+        (Vertical, true, _, true) => run::<2, true, false, true, UPD>,
+        (Vertical, true, _, false) => run::<2, true, false, false, UPD>,
+        (TwoD, false, ..) => run::<0, false, false, false, UPD>,
+        (Horizontal, false, ..) => run::<1, false, false, false, UPD>,
+        (Vertical, false, ..) => run::<2, false, false, false, UPD>,
     }
 }
 
-type RunArgs<'r, 'a, 'b> = (
-    &'r mut TileCdfSubset,
-    &'r mut SymbolDecoder<'a>,
-    (&'r mut CoeffLevelWords, &'r mut CoeffNonzeroList),
-    &'r mut [i32],
-    &'r Block<'b>,
-);
+type RunFn = fn(
+    &mut TileCoeffContextState,
+    &mut TileCdfSubset,
+    &mut SymbolDecoder<'_>,
+    &CoeffTransformBlockInput<'_>,
+    &mut [i32],
+) -> Result<usize, CoeffOrdinaryPassError>;
 
 /// One specialised block body per class, plane type and tool set, kept out
 /// of line so its loops own the registers.
 #[inline(never)]
 fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, const UPD: bool>(
-    (cdfs, symbols, (levels, nonzero), quant, block): RunArgs<'_, '_, '_>,
-) -> Result<BlockSummary, CoeffOrdinaryPassError> {
-    let config = block.config;
-    let scan = block.scan;
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: &CoeffTransformBlockInput<'_>,
+    quant: &mut [i32],
+) -> Result<usize, CoeffOrdinaryPassError> {
+    let config = input.config;
+    let tx_class = [
+        CoeffTransformClass::TwoD,
+        CoeffTransformClass::Horizontal,
+        CoeffTransformClass::Vertical,
+    ][CLASS];
+    let eob = input.start.eob_read().eob();
+    let scan = grid_scan(tx_class, config.tx_width, config.tx_height, eob)?;
+    let lines = input.lines;
+    let (above_dc, left_dc, levels, nonzero) = state.dc_lines_and_levels(config.plane)?;
+    let block = Block {
+        scan,
+        config,
+        dc: CoeffSignSourceDeriveConfig {
+            plane: config.plane,
+            plane_type: usize::from(!LUMA),
+            tx_class,
+            is_hidden: false,
+            sum_abs1: 0,
+            above_dc,
+            left_dc,
+            x4: lines.x4,
+            y4: lines.y4,
+            w4: lines.w4,
+            h4: lines.h4,
+        },
+        lossless: input.lossless,
+    };
     let Some(&eob_entry) = scan.last() else {
         return Err(CoeffLoopContextError::InvalidScanWalkEob { eob: 0 }.into());
     };
@@ -529,7 +493,6 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
     let mut pass = LevelPass::<UPD> {
         symbols: symbols.snapshot(),
         levels: &mut *levels,
-        rows,
         width_log2: config.tx_width_log2,
         plane: config.plane,
         tcq: 0,
@@ -538,7 +501,7 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
         nonzero: &mut *nonzero,
         nonzero_len: 0,
     };
-    pass.levels_pass::<CLASS, LUMA, TCQ, PH>(scan, eob_entry, eob_level, lf_end);
+    pass.levels_pass::<CLASS, LUMA, TCQ, PH>(&mut rows, scan, eob_entry, eob_level, lf_end);
     let (mut owned, ph, nonzero_len) = (pass.symbols, pass.ph, pass.nonzero_len);
     let nonzero = nonzero.get(..nonzero_len).unwrap_or_default();
     let facts = SignFacts {
@@ -547,12 +510,18 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
         sum_abs1: if PH { ph & 1 } else { 0 },
     };
     let result =
-        sign_pass::<CLASS, LUMA, TCQ>(cdfs, &mut owned, levels, quant, block, facts, nonzero);
+        sign_pass::<CLASS, LUMA, TCQ>(cdfs, &mut owned, levels, quant, &block, facts, nonzero);
     symbols.restore(owned);
     if result.is_err() {
         levels.fill(0);
     }
-    result
+    let summary = result?;
+    state.commit_block(
+        lines,
+        summary.state.cul_level(),
+        summary.state.dc_category(),
+    );
+    Ok(summary.quant_end)
 }
 
 /// Reads the `coeff_base_eob` symbol of context `ctx` (§ 8.3.2).
@@ -565,10 +534,14 @@ fn read_eob_base<const LUMA: bool, const UPD: bool>(
     lf: bool,
 ) -> u32 {
     match (LUMA, lf) {
-        (true, true) => symbols.read_trusted::<6, UPD>(row_at(rows.base_lf_eob, ctx)),
-        (true, false) => symbols.read_trusted::<4, UPD>(row_at(rows.base_eob, ctx)),
-        (false, true) => symbols.read_trusted::<6, UPD>(row_at(rows.base_lf_eob_uv, ctx)),
-        (false, false) => symbols.read_trusted::<4, UPD>(row_at(rows.base_eob_uv, ctx)),
+        (true, true) => symbols.read_trusted::<6, UPD>(row_at(rows.base_lf_eob(), ctx)),
+        (true, false) => symbols.read_trusted::<4, UPD>(row_at(rows.base_eob(), ctx)),
+        (false, true) => {
+            symbols.read_trusted::<6, UPD>(row_at(&mut rows.cdf.coeff_base_lf_eob_uv, ctx))
+        }
+        (false, false) => {
+            symbols.read_trusted::<4, UPD>(row_at(&mut rows.cdf.coeff_base_eob_uv, ctx))
+        }
     }
 }
 
@@ -586,11 +559,10 @@ const fn ctx_class_of(entry: u32) -> usize {
 
 /// The base and range pass state: an owned decoder whose reads skip every
 /// per-symbol check (the coefficient rows are decoder-owned), the level
-/// grid, and the CDF rows of the block's transform-size context.
+/// grid and the TCQ, parity and nonzero-list state.
 struct LevelPass<'a, 'r, const UPD: bool> {
     symbols: SymbolDecoder<'a>,
     levels: &'r mut CoeffLevelWords,
-    rows: CoeffLevelRows<'r>,
     width_log2: u32,
     plane: usize,
     tcq: usize,
@@ -667,6 +639,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     #[inline(always)]
     fn add_range<const CLASS: usize, const LUMA: bool, const LF: bool>(
         &mut self,
+        rows: &mut CoeffLevelRows<'_>,
         grid: usize,
         is_dc: bool,
         level: u32,
@@ -682,13 +655,13 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         let ctx = self.br_ctx::<CLASS, LUMA>(grid, LF && (!is_dc || CLASS != 0));
         level
             + if !LUMA {
-                let row = row_at(self.rows.br_uv, ctx);
+                let row = row_at(&mut rows.cdf.coeff_br_uv, ctx);
                 self.symbols.read_trusted::<5, UPD>(row)
             } else if LF {
-                let row = row_at(self.rows.br_lf, ctx);
+                let row = row_at(&mut rows.cdf.coeff_br_lf, ctx);
                 self.symbols.read_trusted::<5, UPD>(row)
             } else {
-                let row = row_at(self.rows.br, ctx);
+                let row = row_at(&mut rows.cdf.coeff_br, ctx);
                 self.symbols.read_trusted::<5, UPD>(row)
             }
     }
@@ -713,6 +686,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     #[inline(always)]
     fn read_lf_base<const CLASS: usize, const LUMA: bool, const DC: bool>(
         &mut self,
+        rows: &mut CoeffLevelRows<'_>,
         entry: u32,
     ) -> u32 {
         let (grid, pos) = (entry_grid(entry), (entry >> 16) as usize);
@@ -723,7 +697,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         };
         if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
-            let row = row_at(self.rows.base_lf_uv, ctx);
+            let row = row_at(&mut rows.cdf.coeff_base_lf_uv, ctx);
             return self.symbols.read_trusted::<7, UPD>(row);
         }
         let ctx = if CLASS == 0 {
@@ -746,7 +720,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
             }
         };
         let q0 = self.tcq_q0 & 1;
-        let row = &mut row_at(self.rows.base_lf, ctx)[q0];
+        let row = &mut row_at(rows.base_lf(), ctx)[q0];
         self.symbols.read_trusted::<7, UPD>(row)
     }
 
@@ -756,19 +730,23 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         reason = "measured: per-coefficient symbol read"
     )]
     #[inline(always)]
-    fn read_hf_base<const CLASS: usize, const LUMA: bool>(&mut self, entry: u32) -> u32 {
+    fn read_hf_base<const CLASS: usize, const LUMA: bool>(
+        &mut self,
+        rows: &mut CoeffLevelRows<'_>,
+        entry: u32,
+    ) -> u32 {
         let mag = self.base_mag::<CLASS, LUMA, false, false>(entry_grid(entry));
         if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
-            let row = row_at(self.rows.base_uv, ctx);
+            let row = row_at(&mut rows.cdf.coeff_base_uv, ctx);
             return self.symbols.read_trusted::<5, UPD>(row);
         }
         let q0 = self.tcq_q0 & 1;
         let row = if CLASS == 0 {
             let first = usize::from(CTX_2D[0][ctx_class_of(entry)][mag as usize & 31]);
-            &mut self.rows.base.as_flattened_mut()[(first | q0) & 31]
+            &mut rows.base().as_flattened_mut()[(first | q0) & 31]
         } else {
-            &mut row_at(self.rows.base, half_capped(mag, 4) + 15)[q0]
+            &mut row_at(rows.base(), half_capped(mag, 4) + 15)[q0]
         };
         self.symbols.read_trusted::<5, UPD>(row)
     }
@@ -791,7 +769,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         }
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;
-            self.tcq = tcq_next(self.tcq, level);
+            self.tcq = next_tcq_state(self.tcq, level);
         }
         if PH && scan_index > 0 {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
@@ -804,14 +782,31 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     #[inline(never)]
     fn hf_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         &mut self,
+        mut rows: CoeffLevelRows<'_>,
         hf: &[u32],
         lf_end: usize,
     ) {
         for (offset, &entry) in hf.iter().enumerate().rev() {
             let grid = entry_grid(entry);
-            let level = self.read_hf_base::<CLASS, LUMA>(entry);
-            let level = self.add_range::<CLASS, LUMA, false>(grid, false, level);
+            let level = self.read_hf_base::<CLASS, LUMA>(&mut rows, entry);
+            let level = self.add_range::<CLASS, LUMA, false>(&mut rows, grid, false, level);
             self.finish::<TCQ, PH>(lf_end + offset, grid, level);
+        }
+    }
+
+    #[allow(clippy::inline_always, reason = "measured: one loop per tool set")]
+    #[cfg_attr(target_arch = "x86_64", inline(never))]
+    #[cfg_attr(not(target_arch = "x86_64"), inline(always))]
+    fn lf_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
+        &mut self,
+        mut rows: CoeffLevelRows<'_>,
+        lf: &[u32],
+    ) {
+        for (offset, &entry) in lf.iter().enumerate().rev() {
+            let grid = entry_grid(entry);
+            let level = self.read_lf_base::<CLASS, LUMA, false>(&mut rows, entry);
+            let level = self.add_range::<CLASS, LUMA, true>(&mut rows, grid, false, level);
+            self.finish::<TCQ, PH>(1 + offset, grid, level);
         }
     }
 
@@ -823,6 +818,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     #[inline(always)]
     fn levels_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         &mut self,
+        rows: &mut CoeffLevelRows<'_>,
         scan: &[u32],
         eob_entry: u32,
         eob_level: u32,
@@ -831,33 +827,29 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         let eob_index = scan.len() - 1;
         let eob_grid = entry_grid(eob_entry);
         let eob_level = if eob_index < lf_end {
-            self.add_range::<CLASS, LUMA, true>(eob_grid, eob_index == 0, eob_level)
+            self.add_range::<CLASS, LUMA, true>(rows, eob_grid, eob_index == 0, eob_level)
         } else {
-            self.add_range::<CLASS, LUMA, false>(eob_grid, false, eob_level)
+            self.add_range::<CLASS, LUMA, false>(rows, eob_grid, false, eob_level)
         };
         self.finish::<TCQ, PH>(eob_index, eob_grid, eob_level);
         if eob_index == 0 {
             return;
         }
         self.hf_pass::<CLASS, LUMA, TCQ, PH>(
+            rows.reborrow(),
             scan.get(lf_end..eob_index).unwrap_or_default(),
             lf_end,
         );
         let lf = scan.get(1..lf_end.min(eob_index)).unwrap_or_default();
-        for (offset, &entry) in lf.iter().enumerate().rev() {
-            let grid = entry_grid(entry);
-            let level = self.read_lf_base::<CLASS, LUMA, false>(entry);
-            let level = self.add_range::<CLASS, LUMA, true>(grid, false, level);
-            self.finish::<TCQ, PH>(1 + offset, grid, level);
-        }
+        self.lf_pass::<CLASS, LUMA, TCQ, PH>(rows.reborrow(), lf);
         let dc_grid = entry_grid(scan[0]);
         let level = if PH && (self.ph >> 1) >= PHTHRESH {
             let mag = self.base_mag::<CLASS, LUMA, false, false>(dc_grid);
-            let row = row_at(self.rows.base_ph, half_capped(mag, 4));
+            let row = row_at(&mut rows.cdf.coeff_base_ph, half_capped(mag, 4));
             self.symbols.read_trusted::<5, UPD>(row)
         } else {
-            let level = self.read_lf_base::<CLASS, LUMA, true>(scan[0]);
-            self.add_range::<CLASS, LUMA, true>(dc_grid, true, level)
+            let level = self.read_lf_base::<CLASS, LUMA, true>(rows, scan[0]);
+            self.add_range::<CLASS, LUMA, true>(rows, dc_grid, true, level)
         };
         self.finish::<TCQ, PH>(0, dc_grid, level);
     }
@@ -999,14 +991,10 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         let sign = if LUMA {
             let dc = &block.dc;
             let ctx = dc_sign_ctx(dc.above_dc, dc.left_dc, dc.x4, dc.y4, dc.w4, dc.h4);
-            let selector = TileCdfSelector::DcSign {
-                plane_type: 0,
-                group: 0,
-                ctx,
-            };
-            cdfs.read_trusted_symbol(selector, symbols)
-                .map_err(CoeffSignReadError::from)?
-                != 0
+            read_row(
+                symbols,
+                row_at(&mut cdfs.block_rows_mut().dc_sign[0][0], ctx),
+            ) != 0
         } else {
             symbols.read_bool_trusted()
         };

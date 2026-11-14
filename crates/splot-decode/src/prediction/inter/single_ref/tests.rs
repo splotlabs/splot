@@ -7,10 +7,8 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::SymbolEncoder;
 
-use super::{SingleRefReadError, read_single_ref};
-use crate::bitstream::tile_payload::{
-    BlockSymbolTraceReadError, FrameCdfSubset, TileCdfSelector, TileCdfSubset,
-};
+use super::read_single_ref;
+use crate::bitstream::tile_payload::{FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 
 const REFS_PER_FRAME: usize = 7;
 
@@ -79,8 +77,7 @@ fn single_ref_selection_roundtrips_through_symbol_encoder_for_every_value() {
 
         let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&bytes);
-        let decoded = read_single_ref(&mut dec_tile, &mut symbols, num_total_refs, &contexts)
-            .unwrap_or_else(|e| panic!("read_single_ref failed for selection {selection}: {e}"));
+        let decoded = read_single_ref(&mut dec_tile, &mut symbols, num_total_refs, |i| contexts[i]);
 
         assert_eq!(
             decoded, selection,
@@ -113,7 +110,7 @@ fn single_ref_roundtrips_across_num_total_refs_and_distinct_contexts() {
             let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
             let mut symbols = symbol_decoder(&bytes);
             let decoded =
-                read_single_ref(&mut dec_tile, &mut symbols, num_total_refs, &contexts).unwrap();
+                read_single_ref(&mut dec_tile, &mut symbols, num_total_refs, |i| contexts[i]);
 
             assert_eq!(
                 decoded, selection,
@@ -134,13 +131,9 @@ fn single_ref_context_indexing_is_load_bearing() {
 
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
-    let decoded = read_single_ref(
-        &mut dec_tile,
-        &mut symbols,
-        num_total_refs,
-        &encode_contexts,
-    )
-    .unwrap();
+    let decoded = read_single_ref(&mut dec_tile, &mut symbols, num_total_refs, |i| {
+        encode_contexts[i]
+    });
     assert_eq!(decoded, selection);
     symbols.exit_symbol().unwrap();
 
@@ -148,11 +141,10 @@ fn single_ref_context_indexing_is_load_bearing() {
     wrong_contexts[2] = 0;
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
-    let wrong = read_single_ref(&mut dec_tile, &mut symbols, num_total_refs, &wrong_contexts);
-    let mismatched = match wrong {
-        Ok(value) => value != selection || symbols.exit_symbol().is_err(),
-        Err(_) => true,
-    };
+    let wrong = read_single_ref(&mut dec_tile, &mut symbols, num_total_refs, |i| {
+        wrong_contexts[i]
+    });
+    let mismatched = wrong != selection || symbols.exit_symbol().is_err();
     assert!(
         mismatched,
         "swapping the terminating single_ref context must change the decode or fail exit_symbol()"
@@ -165,40 +157,18 @@ fn single_ref_num_total_refs_one_returns_zero_without_reading() {
     let payload = [0x80u8, 0x00];
     let mut symbols = symbol_decoder(&payload);
     let before = symbols.consumed_bits();
-    let selection = read_single_ref(&mut dec_tile, &mut symbols, 1, &[]).unwrap();
+    let selection = read_single_ref(&mut dec_tile, &mut symbols, 1, |_| 0);
     assert_eq!(selection, 0, "NumTotalRefs == 1 -> RefFrame[0] == 0");
     assert_eq!(symbols.consumed_bits(), before);
 }
 
 #[test]
-fn single_ref_rejects_zero_refs() {
+fn single_ref_zero_refs_reads_nothing() {
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let payload = [0x80u8, 0x00];
     let mut symbols = symbol_decoder(&payload);
     let before = symbols.consumed_bits();
-    let err = read_single_ref(&mut dec_tile, &mut symbols, 0, &[]).unwrap_err();
-    assert!(matches!(
-        err,
-        SingleRefReadError::InsufficientRefs { num_total_refs: 0 }
-    ));
-    assert_eq!(symbols.consumed_bits(), before);
-}
-
-#[test]
-fn single_ref_missing_context_is_a_typed_error_not_a_panic() {
-    let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
-    let payload = [0x80u8, 0x00, 0x00];
-    let mut symbols = symbol_decoder(&payload);
-    let before = symbols.consumed_bits();
-    let err = read_single_ref(&mut dec_tile, &mut symbols, 3, &[0]).unwrap_err();
-    assert!(matches!(
-        err,
-        SingleRefReadError::MissingContext {
-            needed: 2,
-            got: 1,
-            num_total_refs: 3,
-        }
-    ));
+    assert_eq!(read_single_ref(&mut dec_tile, &mut symbols, 0, |_| 0), 0);
     assert_eq!(symbols.consumed_bits(), before);
 }
 
@@ -207,14 +177,7 @@ fn single_ref_out_of_range_context_is_a_typed_error_not_a_panic() {
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let payload = [0x80u8, 0x00, 0x00];
     let mut symbols = symbol_decoder(&payload);
-    let err = read_single_ref(&mut dec_tile, &mut symbols, 2, &[3]).unwrap_err();
-    assert!(matches!(
-        err,
-        SingleRefReadError::SymbolRead {
-            ref_idx: 0,
-            source: BlockSymbolTraceReadError::Cdf(_),
-        }
-    ));
+    assert!(read_single_ref(&mut dec_tile, &mut symbols, 2, |_| 3) < 2);
 }
 
 #[test]
@@ -222,17 +185,7 @@ fn single_ref_short_buffer_does_not_panic() {
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let payload = [0x00u8];
     let mut symbols = symbol_decoder(&payload);
-    match read_single_ref(
-        &mut dec_tile,
-        &mut symbols,
-        REFS_PER_FRAME,
-        &distinct_contexts(6),
-    ) {
-        Ok(selection) => assert!(selection < REFS_PER_FRAME),
-        Err(SingleRefReadError::SymbolRead { ref_idx, source }) => {
-            assert!(ref_idx < REFS_PER_FRAME);
-            assert!(matches!(source, BlockSymbolTraceReadError::Symbol(_)));
-        }
-        Err(other) => panic!("unexpected error variant: {other}"),
-    }
+    let contexts = distinct_contexts(6);
+    let selection = read_single_ref(&mut dec_tile, &mut symbols, REFS_PER_FRAME, |i| contexts[i]);
+    assert!(selection < REFS_PER_FRAME);
 }

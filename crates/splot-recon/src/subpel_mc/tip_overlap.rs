@@ -2,16 +2,24 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use fearless_simd::{Simd, SimdBase, SimdNarrow, SimdWiden, u8x16, u16x8, u32x4};
+use fearless_simd::{Simd, SimdBase, SimdIntWiden, SimdNarrow, SimdWiden, u8x16, u16x8, u32x4};
 
 /// Output columns 4..12 of the last block that
 /// [`subpel_predict_12x12_bilinear_overlap_into`] predicted, with the reference
 /// and geometry it read them at. Only that function writes it; the held
 /// reference borrow keeps those samples unchanged while the carry lives.
-#[derive(Default)]
 pub struct BilinearOverlapCarry<'a, T: ReconSample> {
     source: Option<(&'a [T], usize, [i32; 4])>,
     columns: [[u16; 8]; 12],
+}
+
+impl<T: ReconSample> Default for BilinearOverlapCarry<'_, T> {
+    fn default() -> Self {
+        Self {
+            source: None,
+            columns: [[0; 8]; 12],
+        }
+    }
 }
 
 /// Predicts an unscaled 12x12 bilinear block whose every tap lies inside both
@@ -132,10 +140,9 @@ fn bilinear_12x12_block<S: Simd, T: ReconSample, const REUSE: bool>(
             });
         }
         _ => bilinear_12x12_rows::<S, T, REUSE>(block, horizontal, |top, bottom| {
-            let ((top_low, top_high), (bottom_low, bottom_high)) = (top.widen(), bottom.widen());
-            let blend = |top: u32x4<S>, bottom: u32x4<S>| {
-                (top * u32::from(top_weight) + bottom * u32::from(bottom_weight) + 128) >> 8
-            };
+            let (top_low, top_high) = top.widening_mul(u16x8::splat(simd, top_weight));
+            let (bottom_low, bottom_high) = bottom.widening_mul(u16x8::splat(simd, bottom_weight));
+            let blend = |top: u32x4<S>, bottom: u32x4<S>| (top + bottom + 128) >> 8;
             blend(top_low, bottom_low).narrow(blend(top_high, bottom_high))
         }),
     }

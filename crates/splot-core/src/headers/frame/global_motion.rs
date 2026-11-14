@@ -957,6 +957,34 @@ mod tests {
     }
 
     #[test]
+    fn complete_state_reports_eof_inside_model_after_saved_base() {
+        let ref_order_hint = [1];
+        let ref_num_total_refs = [3];
+        let saved_order_hints = [[0; REFS_PER_FRAME]];
+        let saved_gm_params = [[GlobalMotionRef::identity().gm_params; REFS_PER_FRAME]];
+        let mut r = reader(&[0b1001_1100]);
+        let error = parse_global_motion_params(
+            &mut r,
+            &GlobalMotionInput {
+                frame_is_intra: false,
+                frame_type: FrameType::Inter,
+                enable_global_motion: true,
+                num_total_refs: 1,
+                ref_frame_idx: &[0],
+                reference_state: Some(GlobalMotionReferenceState {
+                    order_hint: 2,
+                    ref_order_hint: &ref_order_hint,
+                    ref_num_total_refs: &ref_num_total_refs,
+                    saved_order_hints: &saved_order_hints,
+                    saved_gm_params: &saved_gm_params,
+                }),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::UnexpectedEof { .. }));
+    }
+
+    #[test]
     fn complete_state_rejects_restricted_saved_reference() {
         let ref_order_hint = [1];
         let ref_num_total_refs = [1];

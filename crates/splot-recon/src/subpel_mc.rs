@@ -12,28 +12,50 @@
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
 use crate::math::round2_i32;
+
+/// Expands `$body` with `$row` bound to each listed index below `$rows`, a
+/// constant, so a kernel's rows or ring phases unroll.
+#[cfg_attr(not(target_arch = "aarch64"), allow(unused_macros))]
+macro_rules! unroll {
+    ($row:ident < $rows:expr, [$($n:literal)*] => $body:block) => {
+        $(
+            if $n < $rows {
+                let $row: usize = $n;
+                $body
+            }
+        )*
+    };
+}
+
 mod block;
 mod cell;
 mod copy;
 mod eight_bit;
 mod fullpel_u8;
 mod portable;
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    allow(
+        dead_code,
+        reason = "walked by the NEON kernels; AVX2 has its own rows"
+    )
+)]
+mod rows;
 mod search_window;
 mod sixteen_bit;
 mod tip_overlap;
 use block::Sink;
-pub use cell::{CompoundCells, subpel_compound_cells_u8};
+pub use cell::{CompoundCells, subpel_compound_cells};
 pub use copy::{
     blend_compound_average_equal, blend_compound_average_weighted,
     blend_compound_average_weighted_sample,
 };
 pub use fullpel_u8::{
-    UnscaledPut, subpel_predict_block_compound_average_fullpel_strided_into_u8,
-    subpel_predict_block_strided_into_u8, subpel_put_u8_block,
+    UnscaledPut, subpel_compound_block, subpel_predict_block_strided_into_u8, subpel_put_block,
 };
 pub use search_window::{
-    REFINEMV_NEIGHBORS, refinemv_search_u8, subpel_predict_bilinear_search_window_u8,
-    subpel_predict_bilinear_u8,
+    REFINEMV_NEIGHBORS, refinemv_area_sad_u8, refinemv_search_u8, refinemv_search_u16,
+    subpel_predict_bilinear_search_window_u8, subpel_predict_bilinear_u8,
 };
 pub use tip_overlap::{BilinearOverlapCarry, subpel_predict_12x12_bilinear_overlap_into};
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
@@ -419,8 +441,18 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
         i32::from(self.samples[row * self.stride + col].to_u16())
     }
 
+    /// The `[stride, width, readable rows, storage length]` of the view.
+    #[inline]
+    pub(crate) fn geometry(&self) -> [usize; 4] {
+        [
+            self.stride,
+            self.width,
+            self.readable_rows,
+            self.samples.len(),
+        ]
+    }
+
     /// The samples from row `row` on, rows `stride` apart, and the stride.
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     pub(crate) fn rows_from(&self, row: usize) -> Option<(&'a [T], usize)> {
         Some((self.samples.get(row * self.stride..)?, self.stride))
     }
@@ -659,18 +691,27 @@ pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
 /// [`ReconError::StrideTooSmall`] when `output_stride < params.w`, and
 /// [`ReconError::BufferLengthMismatch`] when `output` cannot hold the strided
 /// prediction rectangle.
-pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample>(
+pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample, P: CompoundPredictor>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     scratch: Option<&mut [i16]>,
-    output: &mut [i32],
+    output: &mut [P],
     output_stride: usize,
 ) -> Result<()> {
     validate_subpel_params(params)?;
     validate_output_len(params, output.len(), output_stride)?;
-    let sink = Sink::Prep {
-        output,
-        stride: output_stride,
+    let sink = match P::slice_mut(output) {
+        Ok(output) => Sink::Prep {
+            output,
+            stride: output_stride,
+        },
+        Err(output) => {
+            narrow_admitted(reference, params)?;
+            Sink::PrepNarrow {
+                output,
+                stride: output_stride,
+            }
+        }
     };
     block::predict(reference, params, sink, scratch);
     Ok(())
@@ -705,11 +746,60 @@ pub fn subpel_predict_block_compound_average_into<T: ReconSample>(
     )
 }
 
+/// A § 7.13.3.18 compound predictor sample: `i32` at every bit depth, or
+/// `i16` for eight-bit references, whose predictors span `-5132..=9212`.
+pub trait CompoundPredictor: Copy + sealed::Sealed {
+    /// `Ok` of `i32` storage, `Err` of `i16` storage.
+    #[doc(hidden)]
+    fn slice(values: &[Self]) -> core::result::Result<&[i32], &[i16]>;
+    /// [`Self::slice`] of mutable storage.
+    #[doc(hidden)]
+    fn slice_mut(values: &mut [Self]) -> core::result::Result<&mut [i32], &mut [i16]>;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for i16 {}
+    impl Sealed for i32 {}
+}
+
+impl CompoundPredictor for i32 {
+    fn slice(values: &[i32]) -> core::result::Result<&[i32], &[i16]> {
+        Ok(values)
+    }
+    fn slice_mut(values: &mut [i32]) -> core::result::Result<&mut [i32], &mut [i16]> {
+        Ok(values)
+    }
+}
+
+impl CompoundPredictor for i16 {
+    fn slice(values: &[i16]) -> core::result::Result<&[i32], &[i16]> {
+        Err(values)
+    }
+    fn slice_mut(values: &mut [i16]) -> core::result::Result<&mut [i32], &mut [i16]> {
+        Err(values)
+    }
+}
+
+/// Rejects `i16` compound predictors of a reference that is not eight-bit.
+fn narrow_admitted<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+) -> Result<()> {
+    if params.bit_depth == BitDepth::Eight && reference.as_u8().is_some() {
+        return Ok(());
+    }
+    Err(ReconError::SampleTypeUnsupportedBitDepth {
+        sample_type: "i16",
+        bit_depth: params.bit_depth,
+    })
+}
+
 /// Validates the parameters, the first predictor and the strided output of
 /// a compound-average prediction.
-fn validate_compound_average(
+fn validate_compound_average<P>(
     params: &SubpelPredictParams,
-    pred0: &[i32],
+    pred0: &[P],
     output_len: usize,
     output_stride: usize,
 ) -> Result<()> {
@@ -763,10 +853,13 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
 ///
 /// # Errors
 /// Returns the same validation and output-layout errors as the `u16` variant.
-pub fn subpel_predict_block_compound_average_strided_into_u8<T: ReconSample>(
+pub fn subpel_predict_block_compound_average_strided_into_u8<
+    T: ReconSample,
+    P: CompoundPredictor,
+>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
-    pred0: &[i32],
+    pred0: &[P],
     cwp_weight: i16,
     scratch: Option<&mut [i16]>,
     output: &mut [u8],
@@ -774,11 +867,23 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<T: ReconSample>(
 ) -> Result<()> {
     crate::intra_dc_math::validate_sample_type::<u8>(params.bit_depth)?;
     validate_compound_average(params, pred0, output.len(), output_stride)?;
-    let sink = Sink::Average {
-        pred0,
-        forward: i32::from(cwp_weight),
-        output,
-        stride: output_stride,
+    let forward = i32::from(cwp_weight);
+    let sink = match P::slice(pred0) {
+        Ok(pred0) => Sink::Average {
+            pred0,
+            forward,
+            output,
+            stride: output_stride,
+        },
+        Err(pred0) => {
+            narrow_admitted(reference, params)?;
+            Sink::AverageNarrow {
+                pred0,
+                forward,
+                output,
+                stride: output_stride,
+            }
+        }
     };
     block::predict(reference, params, sink, scratch);
     Ok(())
@@ -842,7 +947,6 @@ pub fn subpel_predict_block_compound_average_unscaled_strided_into<
         reference1,
         params1,
         cwp_weight,
-        &mut [],
         output,
         output_stride,
     )
@@ -872,7 +976,6 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
     reference1: &ReferencePlaneView<'_, T>,
     params1: &SubpelPredictParams,
     cwp_weight: i16,
-    scratch: &mut [i16],
     output: &mut [O],
     output_stride: usize,
 ) -> Result<bool> {
@@ -885,70 +988,81 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
         [reference0, reference1],
         [params0, params1],
         cwp_weight,
-        scratch,
         output,
         output_stride,
     ))
 }
 
-/// Predicts the first predictor of an admitted pair into retained storage,
-/// then blends the second into `output`; `false`, having written nothing,
-/// when `O` is neither 8- nor 16-bit storage.
+/// The COMPOUND_AVERAGE of an admitted pair into `output`; `false`, having
+/// written nothing, when the references are neither 8- nor 16-bit storage of
+/// one depth or `O` is neither 8- nor 16-bit storage.
+#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[inline(always)]
 fn compound_average<T: ReconSample, O: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
     params: [&SubpelPredictParams; 2],
     cwp_weight: i16,
-    scratch: &mut [i16],
     output: &mut [O],
     output_stride: usize,
 ) -> bool {
-    let (w, h) = (params[0].w, params[0].h);
-    let forward = i32::from(cwp_weight);
-    if let (Some(first), Some(second)) = (references[0].as_u8(), references[1].as_u8())
-        && let Some(output) = O::u8_slice_mut(output)
-        && cell::compound([&first, &second], params, forward, output, output_stride)
-    {
-        return true;
+    let windows = params.map(|p| block::Window::new(p.interp, p.w, p.h, [p.start_x, p.start_y]));
+    let bounds = params.map(SubpelPredictParams::bounds);
+    let clip = (i32::from(cwp_weight), params[0].bit_depth.max_sample());
+    compound_windows(references, windows, bounds, clip, output, output_stride)
+}
+
+/// [`compound_average`] of two windows of one shape within `bounds`.
+#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[inline(always)]
+fn compound_windows<T: ReconSample, O: ReconSample>(
+    references: [&ReferencePlaneView<'_, T>; 2],
+    windows: [block::Window; 2],
+    bounds: [[i32; 4]; 2],
+    clip: (i32, u16),
+    output: &mut [O],
+    output_stride: usize,
+) -> bool {
+    if let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) {
+        return block::compound(
+            [&first, &second],
+            windows,
+            bounds,
+            clip,
+            output,
+            output_stride,
+        );
     }
-    if block::small_compound(references, params, forward, scratch, output, output_stride) {
-        return true;
+    if let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u16) {
+        return block::compound(
+            [&first, &second],
+            windows,
+            bounds,
+            clip,
+            output,
+            output_stride,
+        );
     }
-    if O::u8_slice(&[]).is_none() && O::u16_slice(&[]).is_none() {
-        return false;
-    }
-    with_compound_pred0(w * h, |pred0| {
-        let sink = Sink::Prep {
-            output: pred0,
-            stride: w,
-        };
-        block::predict(references[0], params[0], sink, Some(&mut *scratch));
-        let pred0 = &*pred0;
-        let sink = if let Some(output) = O::u8_slice_mut(output) {
-            Sink::Average {
-                pred0,
-                forward,
-                output,
-                stride: output_stride,
-            }
-        } else if let Some(output) = O::u16_slice_mut(output) {
-            Sink::AverageWide {
-                pred0,
-                forward,
-                output,
-                stride: output_stride,
-                max: params[0].bit_depth.max_sample(),
-            }
-        } else {
-            return;
-        };
-        block::predict(references[1], params[1], sink, Some(scratch));
-    });
-    true
+    false
 }
 
 std::thread_local! {
     /// Retained storage of the first compound predictor of a fused pair.
     static COMPOUND_PRED0: std::cell::Cell<Vec<i32>> = const { std::cell::Cell::new(Vec::new()) };
+    /// [`COMPOUND_PRED0`] of eight-bit references.
+    static COMPOUND_PRED0_NARROW: std::cell::Cell<Vec<i16>> =
+        const { std::cell::Cell::new(Vec::new()) };
+}
+
+pub(super) fn with_compound_pred0_narrow<R>(len: usize, f: impl FnOnce(&mut [i16]) -> R) -> R {
+    COMPOUND_PRED0_NARROW.with(|slot| {
+        let mut pred0 = slot.take();
+        if pred0.len() < len {
+            pred0.resize(len, 0);
+        }
+        let result = f(&mut pred0[..len]);
+        slot.set(pred0);
+        result
+    })
 }
 
 pub(super) fn with_compound_pred0<R>(len: usize, f: impl FnOnce(&mut [i32]) -> R) -> R {
@@ -1005,54 +1119,62 @@ pub fn subpel_predict_block_compound_average_fast_pair_into<T: ReconSample, O: R
         [reference0, reference1],
         params,
         cwp_weight,
-        &mut [],
         output,
         output_stride,
     );
-    let second = compound_average(
-        second,
-        params,
-        cwp_weight,
-        &mut [],
-        second_output,
-        second_stride,
-    );
+    let second = compound_average(second, params, cwp_weight, second_output, second_stride);
     Ok(usize::from(first) + usize::from(first && second))
 }
 
-/// The eight-bit COMPOUND_AVERAGE of one unscaled `size`-square cell, 4 or
-/// 8, from each reference's [`CellPlacement`] into `output` rows `stride`
-/// apart, as [`subpel_predict_block_compound_average_fast_validated_strided_into`]
+/// The COMPOUND_AVERAGE, clipped to `bit_depth`, of one unscaled
+/// `size`-square cell, 4 or 8, from each reference's [`CellPlacement`] into
+/// `output` rows `stride` apart, as
+/// [`subpel_predict_block_compound_average_fast_validated_strided_into`]
 /// stores it; `false` without writing for a cell outside the register-cell
 /// subset or an output that cannot hold it.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 #[inline]
-pub fn subpel_compound_cell_u8<T: ReconSample>(
+pub fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
     interp: InterpolationFilter,
     size: usize,
     placements: [CellPlacement; 2],
-    cwp_weight: i16,
-    output: &mut [u8],
+    (cwp_weight, bit_depth): (i16, BitDepth),
+    output: &mut [O],
     stride: usize,
 ) -> bool {
-    let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) else {
-        return false;
-    };
-    stride >= size
+    let forward = i32::from(cwp_weight);
+    let fits = stride >= size
         && size
             .checked_sub(1)
-            .is_some_and(|rows| rows * stride + size <= output.len())
-        && cell::compound_at(
-            [&first, &second],
-            interp,
-            size,
-            placements,
-            i32::from(cwp_weight),
-            output,
-            stride,
-        )
+            .is_some_and(|rows| rows * stride + size <= output.len());
+    if !fits {
+        return false;
+    }
+    let clip = (forward, bit_depth.max_sample());
+    if let ([Some(first), Some(second)], Some(output)) = (
+        references.map(ReferencePlaneView::as_u8),
+        O::u8_slice_mut(output),
+    ) {
+        let references = [&first, &second];
+        return cell::compound_at(references, interp, size, placements, clip, output, stride);
+    }
+    let ([Some(first), Some(second)], Some(output)) = (
+        references.map(ReferencePlaneView::as_u16),
+        O::u16_slice_mut(output),
+    ) else {
+        return false;
+    };
+    cell::compound_at(
+        [&first, &second],
+        interp,
+        size,
+        placements,
+        clip,
+        output,
+        stride,
+    )
 }
 
 /// Whether both blocks have one unscaled shape in `1..=MAX_BLOCK_DIM`, one
@@ -1104,22 +1226,6 @@ fn plane_bounded<T: ReconSample>(
         last_y: params.last_y.max(0).min(last_row),
         ..*params
     }
-}
-
-#[inline]
-fn subpel_params_are_valid_fullpel(params: &SubpelPredictParams) -> bool {
-    params.w > 0
-        && params.h > 0
-        && params.w <= MAX_BLOCK_DIM
-        && params.h <= MAX_BLOCK_DIM
-        && params.step_x == 1 << SCALE_SUBPEL_BITS
-        && params.step_y == 1 << SCALE_SUBPEL_BITS
-        && (params.start_x >> 6) & SUBPEL_MASK == 0
-        && (params.start_y >> 6) & SUBPEL_MASK == 0
-        && params
-            .start_x
-            .checked_add((params.w as i32 - 1) << SCALE_SUBPEL_BITS)
-            .is_some()
 }
 
 std::thread_local! {

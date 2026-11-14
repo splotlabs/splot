@@ -5,7 +5,7 @@ use super::facts::PlaneFacts;
 use super::{DeblockBlock, DeblockError};
 
 /// A cell holds its record index plus one, so that an empty cell is zero.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub(super) struct MiCell {
     pub(super) base: u32,
 }
@@ -84,27 +84,50 @@ impl MiGrid<'_> {
         }
     }
 
-    const fn index(&self, row: usize, col: usize) -> usize {
-        row.wrapping_mul(self.base.mi_cols).wrapping_add(col)
+    /// The first `cols` cells of plane `PLANE` along mode-info row `row`.
+    pub(super) fn row_cells<const PLANE: usize>(
+        &self,
+        row: usize,
+        cols: usize,
+    ) -> Result<&[MiCell], DeblockError> {
+        let uncovered = || DeblockError::UncoveredMi { row, col: 0 };
+        let (cells, stride, cell_row) = if PLANE == 0 {
+            (&self.base.cells, self.base.mi_cols, row)
+        } else {
+            let grid = self.chroma.ok_or_else(uncovered)?;
+            (&grid.cells, grid.cell_cols, row >> grid.sub_y)
+        };
+        let start = cell_row.saturating_mul(stride);
+        cells
+            .get(start..start.saturating_add(cols))
+            .ok_or_else(uncovered)
     }
 
-    #[allow(clippy::inline_always, reason = "measured luma deblock hot path")]
+    /// The record `cell`, at mode-info (`row`, `col`) of plane `PLANE`, names.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
-    pub(super) fn get_luma_edge(&self, row: usize, col: usize) -> Option<&DeblockBlock> {
-        let cell = self.base.cells.get(self.index(row, col))?;
-        self.base_blocks.get(record(cell.base))
+    pub(super) fn record<const PLANE: usize>(
+        &self,
+        cell: MiCell,
+        row: usize,
+        col: usize,
+    ) -> Result<&DeblockBlock, DeblockError> {
+        let blocks = if PLANE == 0 {
+            self.base_blocks
+        } else {
+            self.overlay_blocks
+        };
+        blocks
+            .get(record(cell.base))
+            .ok_or(DeblockError::UncoveredMi { row, col })
     }
 
-    #[allow(clippy::inline_always, reason = "measured chroma deblock hot path")]
-    #[inline(always)]
-    pub(super) fn get_edge(&self, row: usize, col: usize) -> Option<&DeblockBlock> {
-        let grid = self.chroma?;
-        let cell = grid.cells.get(
-            (row >> grid.sub_y)
-                .wrapping_mul(grid.cell_cols)
-                .wrapping_add(col >> grid.sub_x),
-        )?;
-        self.overlay_blocks.get(record(cell.base))
+    /// The record of the cell over mode-info (`row`, `col`).
+    #[cfg(test)]
+    pub(super) fn cell<const PLANE: usize>(&self, row: usize, col: usize) -> Option<&DeblockBlock> {
+        let sub_x = if PLANE == 0 { 0 } else { self.chroma?.sub_x };
+        let cells = self.row_cells::<PLANE>(row, (col >> sub_x) + 1).ok()?;
+        self.record::<PLANE>(*cells.last()?, row, col).ok()
     }
 }
 

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::sync::Arc;
-
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, FramePlanes,
     InterpolationFilter, OutputIndex, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize,
@@ -12,7 +10,8 @@ use super::{
     ReferenceSamples, apply_bawp, apply_intrabc_morph_pred, bawp_reference_luma_rows,
     bawp_template_counts,
 };
-use crate::pipeline::frame_progress::FrameProgress;
+use crate::pipeline::frame_progress::PublishedFrame;
+use crate::pipeline::inflight::RefFrameSlot;
 use crate::prediction::inter::{BawpSyntax, InterBlock, Mv, PlacedInterBlock, mc::CompoundBlend};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -190,7 +189,8 @@ fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult
     )?;
     let mut published_references = [None, None];
     for (reference, rows) in published_references.iter_mut().zip([needed, needed - 1]) {
-        let progress = Arc::new(FrameProgress::<u8>::new(info)?);
+        let (slot, writer) = RefFrameSlot::<u8>::pending(info)?;
+        let progress = writer.progress_handle();
         progress.begin(&[(0, rows), (rows, 160)])?;
         let mut lease = progress
             .direct_stripe(0)
@@ -205,16 +205,16 @@ fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult
                 .fill(20);
         }
         assert!(lease.submit());
-        *reference = Some(progress);
+        *reference = Some((slot, writer));
     }
     let [admitted_progress, short_progress] = published_references;
 
-    let admitted_progress = admitted_progress.ok_or("admitted published progress")?;
-    let admitted_frame = admitted_progress.read().ok_or("published frame")?;
+    let (admitted_slot, _writer) = admitted_progress.ok_or("admitted published slot")?;
+    let admitted_frame = PublishedFrame::of_slot(&admitted_slot).ok_or("published frame")?;
     let mut admitted = workspace(160, 160, 40)?;
     apply_bawp(
         &mut admitted,
-        ReferenceSamples::publishing(&admitted_frame)?,
+        ReferenceSamples::publishing(&admitted_frame),
         &placed,
         syntax,
         Mv::ZERO,
@@ -222,12 +222,12 @@ fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult
     )?;
     assert_eq!(admitted.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);
 
-    let short_progress = short_progress.ok_or("short published progress")?;
-    let short_frame = short_progress.read().ok_or("short published frame")?;
+    let (short_slot, _short_writer) = short_progress.ok_or("short published slot")?;
+    let short_frame = PublishedFrame::of_slot(&short_slot).ok_or("short published frame")?;
     let mut short = workspace(160, 160, 40)?;
     let refused = apply_bawp(
         &mut short,
-        ReferenceSamples::publishing(&short_frame)?,
+        ReferenceSamples::publishing(&short_frame),
         &placed,
         syntax,
         Mv::ZERO,
@@ -319,14 +319,8 @@ fn plane(
 
 fn placed_luma_block(x: usize, y: usize, width: usize, height: usize) -> PlacedInterBlock {
     PlacedInterBlock {
-        luma_x: x,
-        luma_y: y,
-        luma_w: width,
-        luma_h: height,
-        chroma_luma_x: x,
-        chroma_luma_y: y,
-        chroma_luma_w: width,
-        chroma_luma_h: height,
+        luma: [x, y, width, height].map(|v| v as u32),
+        chroma_luma: [x, y, width, height].map(|v| v as u32),
         predict_chroma: false,
         sub8x8_chroma: false,
         interintra_chroma: false,

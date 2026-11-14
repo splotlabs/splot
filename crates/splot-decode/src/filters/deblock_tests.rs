@@ -529,6 +529,7 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
             grids: crate::filters::deblock::DeblockGridStorage::default(),
             blocks: owned_blocks,
             chroma: blocks.clone(),
+            bru_modes: None,
         },
         mi_rows,
         mi_cols,
@@ -1009,7 +1010,17 @@ fn batched_passes_match_every_edge_alone_across_frame_edges_and_chroma() {
             lossless: true,
             ..block(4, 24, 8, 4, 1, (4, 24), None, false, 70)
         },
-        block(0, 32, 8, 8, 2, (0, 32), None, false, 150),
+        block(
+            0,
+            32,
+            8,
+            8,
+            2,
+            (0, 32),
+            Some(DeblockSubPuSize::square(4)),
+            false,
+            150,
+        ),
         block(0, 40, 1, 8, 0, (0, 40), None, false, 120),
         block(0, 41, 3, 8, 0, (0, 41), None, false, 200),
         block(8, 0, 8, 12, 1, (8, 0), tall, false, 90),
@@ -1117,9 +1128,7 @@ fn filter_edge_alone<const PLANE: usize, const PASS: usize>(
             (col * MI_SIZE) >> plane_pass.plane_sub_x,
             (row * MI_SIZE) >> plane_pass.plane_sub_y,
         );
-        edges::LoneEdge { x_p, y_p, edge }
-            .filter_lines::<u8, PASS>(ctx, BitDepth::Eight)
-            .unwrap();
+        filter_edge_lines::<u8, PASS>((x_p, y_p, edge), ctx, BitDepth::Eight).unwrap();
     }
 }
 
@@ -1692,20 +1701,20 @@ fn mi_grid_covers_decoded_blocks() {
     }];
     let storage = build_mi_grid(&blocks, 16, 16, &mut DeblockGridStorage::default()).unwrap();
     let grid = MiGrid::new(&storage, None, &blocks, &[]);
-    assert!(grid.get_luma_edge(0, 0).is_some(), "top-left MI is covered");
+    assert!(grid.cell::<0>(0, 0).is_some(), "top-left MI is covered");
     assert!(
-        grid.get_luma_edge(0, 0).is_some_and(|info| info.lossless),
+        grid.cell::<0>(0, 0).is_some_and(|info| info.lossless),
         "MI records preserve per-segment lossless state"
     );
     assert!(
-        grid.get_luma_edge(7, 7).is_some(),
+        grid.cell::<0>(7, 7).is_some(),
         "bottom-right of the 8x8 footprint is covered"
     );
     assert!(
-        grid.get_luma_edge(8, 8).is_none(),
+        grid.cell::<0>(8, 8).is_none(),
         "an MI outside the block is uncovered"
     );
-    let info = grid.get_luma_edge(0, 0).unwrap();
+    let info = grid.cell::<0>(0, 0).unwrap();
     assert_eq!((info.r, info.c), (0, 0));
     assert_eq!(info.tx, 3, "luma tx index");
 }
@@ -1747,7 +1756,7 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
     .unwrap();
     let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
 
-    let info = grid.get_edge(1, 3).unwrap();
+    let info = grid.cell::<1>(1, 3).unwrap();
     assert_eq!((info.prediction.base_r, info.prediction.base_c), (7, 7));
     assert_eq!((info.r, info.c), (0, 2));
     assert_eq!(info.tx, 5);
@@ -1783,7 +1792,7 @@ fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
     )
     .unwrap();
     let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
-    let info = grid.get_edge(6, 4).unwrap();
+    let info = grid.cell::<1>(6, 4).unwrap();
     assert_eq!((info.prediction.base_r, info.prediction.base_c), (6, 4));
     assert_eq!((info.r, info.c), (6, 4));
     assert_eq!(info.qindex, 77);

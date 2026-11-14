@@ -10,8 +10,8 @@
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, InterIntraMode, IntraCardinalDirection, IntraDcEdges,
     IntraDirectionalAngleEdges, IntraRectBlockSize, IntraSmoothMode, PlaneId as ReconPlaneId,
-    ReconError, ReconSample, apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
-    predict_intra_dc_rect_value,
+    ReconError, ReconSample, predict_intra_cardinal_directional_rect_into,
+    predict_intra_dc_rect_value, predict_intra_ibp_dc_rect_into,
 };
 
 use super::super::{PlacedInterBlock, mc};
@@ -151,13 +151,18 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
             continue;
         }
         let (luma_x, luma_y, luma_w, luma_h) = if plane == ReconPlaneId::Y {
-            (placed.luma_x, placed.luma_y, placed.luma_w, placed.luma_h)
+            (
+                placed.luma_x(),
+                placed.luma_y(),
+                placed.luma_w(),
+                placed.luma_h(),
+            )
         } else {
             (
-                placed.chroma_luma_x,
-                placed.chroma_luma_y,
-                placed.chroma_luma_w,
-                placed.chroma_luma_h,
+                placed.chroma_luma_x(),
+                placed.chroma_luma_y(),
+                placed.chroma_luma_w(),
+                placed.chroma_luma_h(),
             )
         };
         let x = luma_x >> sub_x;
@@ -194,10 +199,10 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
         let samples = &mut scratch.samples[sample_start..];
         match mode {
             InterIntraMode::Dc => {
-                let dc = predict_intra_dc_rect_value(bit_depth, size, dc_edges)?;
-                samples.fill(dc);
                 if enable_ibp && !(w == 4 && h == 4) {
-                    apply_intra_ibp_dc_rect(bit_depth, size, dc_edges, samples, w)?;
+                    predict_intra_ibp_dc_rect_into(bit_depth, size, dc_edges, samples, w)?;
+                } else {
+                    samples.fill(predict_intra_dc_rect_value(bit_depth, size, dc_edges)?);
                 }
             }
             InterIntraMode::Vertical | InterIntraMode::Horizontal => {

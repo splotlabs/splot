@@ -763,11 +763,11 @@ impl CflLumaEdges {
         let mut sum = 0u32;
         let mut count = 0u32;
         if neighbours.has_above() && block.y > 0 {
-            sum += edge_sum(&self.above[..block.width], |q3| q3 as u32);
+            sum += edge_sum(&self.above[..block.width]);
             count += (block.width / dc_step(block.width)) as u32;
         }
         if neighbours.has_left() && block.x > 0 {
-            sum += edge_sum(&self.left[..block.height], |q3| q3 as u32);
+            sum += edge_sum(&self.left[..block.height]);
             count += (block.height / dc_step(block.height)) as u32;
         }
         let bits = block.bit_depth.bits();
@@ -840,7 +840,7 @@ impl CflLumaEdges {
         derive: bool,
     ) -> core::result::Result<[(i32, i32); N], GeneralIntraResidualError> {
         let CflBlock { width, height, .. } = block;
-        let sum = |edge: &[T]| edge_sum(edge, |sample| u32::from(sample.to_u16()));
+        let sum = sample_edge_sum::<T>;
         let mut models = [(0, 0); N];
         for (plane, model) in models.iter_mut().enumerate() {
             let dc: T = splot_recon::predict_intra_dc_value_from_edge_sums(
@@ -890,36 +890,28 @@ impl CflLumaEdges {
             (height, num_left, &self.left, left),
         ];
         let (mut sum_x, mut sum_xx) = (0i32, 0i32);
-        let mut taps = [[(0usize, 0i32); NUM_REF_SAM_CFL]; 2];
-        for (&(len, num, edge, _), taps) in edges.iter().zip(&mut taps) {
-            let step = if num == 0 {
-                0
-            } else {
-                len >> num.trailing_zeros()
+        let mut sums = [(0i32, 0i32); N];
+        for &(len, num, edge, chroma) in &edges {
+            let (Some(chroma), Some(log2)) = (chroma, num.checked_ilog2()) else {
+                continue;
             };
-            for (k, tap) in taps[..num.min(NUM_REF_SAM_CFL)].iter_mut().enumerate() {
+            let step = len >> log2;
+            for k in 0..num.min(NUM_REF_SAM_CFL) {
                 let at = (step >> 1) + k * step;
                 let luma = i32::from(edge[at] >> 3);
-                *tap = (at, luma);
                 sum_x += luma;
                 sum_xx += luma * luma;
+                for ((sum_y, sum_xy), plane) in sums.iter_mut().zip(chroma) {
+                    let sample = i32::from(plane[at].to_u16());
+                    *sum_y += sample;
+                    *sum_xy += luma * sample;
+                }
             }
         }
         let count = (num_above + num_left) as i32;
         let divide = |n: i32| n >> count.trailing_zeros();
         let der = sum_xx - divide(sum_x * sum_x);
-        for (plane, model) in models.iter_mut().enumerate() {
-            let (mut sum_y, mut sum_xy) = (0i32, 0i32);
-            for (&(_, num, _, chroma), taps) in edges.iter().zip(&taps) {
-                let Some(chroma) = chroma else {
-                    continue;
-                };
-                for &(at, luma) in &taps[..num.min(NUM_REF_SAM_CFL)] {
-                    let sample = i32::from(chroma[plane][at].to_u16());
-                    sum_y += sample;
-                    sum_xy += luma * sample;
-                }
-            }
+        for (model, (sum_y, sum_xy)) in models.iter_mut().zip(sums) {
             let nor = sum_xy - divide(sum_x * sum_y);
             if der != 0 && nor != 0 {
                 model.1 = i32::from(resolve_division(nor, der, CFL_DERIVED_ALPHA_SHIFT));
@@ -937,12 +929,17 @@ const fn dc_step(len: usize) -> usize {
 /// The sum of an edge's samples at its [`dc_step`]; every sample is at most
 /// `8 << 10`, so a 64-sample edge cannot overflow.
 #[inline]
-fn edge_sum<V: Copy>(edge: &[V], value: impl Fn(V) -> u32) -> u32 {
-    if dc_step(edge.len()) == 1 {
-        edge.iter().map(|&sample| value(sample)).sum()
-    } else {
-        edge.iter().step_by(2).map(|&sample| value(sample)).sum()
-    }
+fn edge_sum<V: splot_recon::SummedSample>(edge: &[V]) -> u32 {
+    splot_recon::sum_samples(edge, dc_step(edge.len()) == 2)
+}
+
+/// [`edge_sum`] of `u8` or `u16` sample storage.
+#[inline]
+fn sample_edge_sum<T: ReconSample>(edge: &[T]) -> u32 {
+    T::u8_slice(edge)
+        .map(edge_sum)
+        .or_else(|| T::u16_slice(edge).map(edge_sum))
+        .unwrap_or(0)
 }
 
 fn cfl_above_min_luma_ref_y(
@@ -1123,12 +1120,8 @@ impl MhccpGeometry {
                 *dst = (sample >> 3) as u16;
             }
         }
-        let block_rows = above..above + covered;
         let mut q3 = [0i16; 128];
-        for row in first_luma_row..self.reference_height {
-            if block_rows.contains(&row) {
-                continue;
-            }
+        for row in (first_luma_row..above).chain(above + covered..self.reference_height) {
             let luma_cols = if row < above {
                 reference_width
             } else if row < above + block.height {

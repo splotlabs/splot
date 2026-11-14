@@ -59,13 +59,6 @@ pub(crate) trait CdfStorage: Copy {
     }
     fn from_i32(value: i32) -> Self;
 
-    /// The row as `u16` storage, which the lane reads search and
-    /// adapt directly.
-    #[cfg(target_arch = "x86_64")]
-    fn u16_row(_cdf: &mut [Self]) -> Option<&mut [u16]> {
-        None
-    }
-
     /// Adapts the `n - 1` probability entries of a row (§ 8.2.6).
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
@@ -96,11 +89,6 @@ impl CdfStorage for u16 {
     fn from_i32(value: i32) -> Self {
         debug_assert!((0..=i32::from(u16::MAX)).contains(&value));
         value as u16
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn u16_row(cdf: &mut [u16]) -> Option<&mut [u16]> {
-        Some(cdf)
     }
 
     /// Adapts whole rows in vector lanes; `n` is a constant at every inlined
@@ -272,39 +260,67 @@ fearless_simd::kernel!(
     }
 );
 
-/// `3 + timeInterval + Para_Adjustment_List[ index ][ timeInterval ]`
-/// (§ 8.2.6) for every rate index and use count below 64, so a read takes
-/// the count-dependent part of its adaptation rate with one load. The rows
-/// past the list repeat row 0, so a masked index is always in bounds. A
-/// `const`, so each crate inlining a read addresses its own copy directly
-/// instead of through the global offset table.
-const RATE_ROWS: usize = PARA_ADJUSTMENT_LIST.len().next_power_of_two();
-const ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS] = {
-    let mut rates = [[0; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS];
-    let mut index = 0;
-    while index < rates.len() {
+/// The shift of the § 8.2.6 use count in the adaptation state `cdf[N - 1]`,
+/// whose low bits hold the `Para_Adjustment_List` row: `index | count << 7`.
+pub const CDF_COUNT_SHIFT: u32 = 7;
+const RATE_INDEX_MASK: i32 = (1 << CDF_COUNT_SHIFT) - 1;
+/// The adaptation states a rate table covers: every index and count below 64.
+const RATE_STATES: usize = 1 << (CDF_COUNT_SHIFT + 6);
+
+/// The § 8.2.6 adaptation rate `3 + timeInterval + n_term +
+/// Para_Adjustment_List[ index ][ timeInterval ]`, `n_term` being
+/// `Min(FloorLog2(N), 2)`, for every adaptation state, so a read takes its
+/// whole rate with one load, plus the use-count step `count < 32` already
+/// at the count's position (see [`RATE_BITS`]). Indices past the list take
+/// row 0, so a masked state is always in bounds.
+const fn adaptation_rates(n_term: i32) -> [u8; RATE_STATES] {
+    let mut rates = [0; RATE_STATES];
+    let mut state = 0;
+    while state < RATE_STATES {
+        let index = state & RATE_INDEX_MASK as usize;
         let list = if index < PARA_ADJUSTMENT_LIST.len() {
             index
         } else {
             0
         };
-        let mut count = 0;
-        while count < rates[index].len() {
-            let time_interval = if count > 31 {
-                2
-            } else if count > 15 {
-                1
-            } else {
-                0
-            };
-            rates[index][count] =
-                (3 + time_interval as i32 + PARA_ADJUSTMENT_LIST[list][time_interval]) as u8;
-            count += 1;
-        }
-        index += 1;
+        let count = state >> CDF_COUNT_SHIFT;
+        let time_interval = if count > 31 {
+            2
+        } else if count > 15 {
+            1
+        } else {
+            0
+        };
+        let rate = 3 + time_interval as i32 + n_term + PARA_ADJUSTMENT_LIST[list][time_interval];
+        rates[state] = rate as u8 | ((count < 32) as u8) << CDF_COUNT_SHIFT;
+        state += 1;
     }
     rates
-};
+}
+
+/// The rate bits of an [`adaptation_rates`] entry; a 64-bit shift by the
+/// whole entry shifts by its rate.
+const RATE_BITS: u32 = 63;
+
+/// The state after a § 8.2.6 use of a row with rate entry `rate`.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+const fn counted(state: u16, rate: u32) -> u16 {
+    state.wrapping_add((rate & !RATE_BITS) as u16)
+}
+
+/// The [`adaptation_rates`] of an `N`-ary row, one constant per `n_term` so
+/// each crate inlining a read addresses its own copy directly instead of
+/// through the global offset table.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn arity_rates<const N: usize>() -> &'static [u8; RATE_STATES] {
+    if N <= 3 {
+        &const { adaptation_rates(1) }
+    } else {
+        &const { adaptation_rates(2) }
+    }
+}
 
 /// `CDF_PROB_SCALE` in the lanes past the `N - 1` probabilities of a row.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -384,11 +400,11 @@ fn search_lanes<const N: usize>(
     if N <= 4 {
         let word = |lanes: i16x8<LaneToken>| lanes.bitcast::<u64x2<LaneToken>>().as_array()[0];
         let mask = word(token.to_vector_mask16x8(below));
-        let above = (u64::BITS - mask.leading_zeros()) >> 4;
+        let shift = mask.count_ones();
         let low = word(boundaries.bitcast());
-        let cur = low.wrapping_shr(16 * above) as u16;
-        let prev = ((low << 16) | u64::from(range)).wrapping_shr(16 * above) as u16;
-        return (above, cur, prev, below);
+        let cur = low.wrapping_shr(shift) as u16;
+        let prev = ((low << 16) | u64::from(range)).wrapping_shr(shift) as u16;
+        return (shift >> 4, cur, prev, below);
     }
     #[cfg(target_arch = "x86_64")]
     let above = below.to_bitmask().count_ones();
@@ -475,14 +491,74 @@ fn adapt_lanes<const N: usize>(
     }
 }
 
-/// The adaptation rate of a trusted `N`-ary row (§ 8.2.6), with its rate
-/// index and count masked into the table.
+/// The [`adaptation_rates`] entry of a trusted `N`-ary row's state
+/// (§ 8.2.6), masked into the table.
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn trusted_rate<const N: usize>(cdf: &[u16]) -> u32 {
-    let rates = &ADAPTATION_RATES[usize::from(cdf[N - 1]) & (RATE_ROWS - 1)];
-    let n_term = if N <= 3 { 1 } else { 2 };
-    u32::from(rates[usize::from(cdf[N]) & (2 * MAX_CDF_COUNT as usize - 1)]) + n_term
+fn trusted_rate<const N: usize>(state: u16) -> u32 {
+    u32::from(arity_rates::<N>()[usize::from(state) & (RATE_STATES - 1)])
+}
+
+/// One in each 16-bit lane of a row word.
+const LANES: u64 = 0x0001_0001_0001_0001;
+
+/// `0xffff >> rate` in each probability lane of an `N`-ary row word, by any
+/// `u8` rate entry: the bits of a lane shifted right by the rate that came
+/// from the lane itself.
+const fn keep_lanes<const N: usize>() -> [u64; 256] {
+    let mut keep = [0; 256];
+    let mut entry = 0;
+    while entry < 256 {
+        keep[entry] =
+            ((0xffff_u64 >> (entry & RATE_BITS as usize)) * LANES) & probability_lanes::<N>();
+        entry += 1;
+    }
+    keep
+}
+
+/// The row-word lanes below a symbol, at most four.
+const LOWER_LANES: [u64; 8] = {
+    let mut lanes = [u64::MAX; 8];
+    let mut symbol = 0;
+    while symbol < 4 {
+        lanes[symbol] = (1 << (16 * symbol)) - 1;
+        symbol += 1;
+    }
+    lanes
+};
+
+/// The entries of an `N`-ary row that its word holds, entry `i` in lane `i`:
+/// the whole row up to four entries.
+const fn word_entries<const N: usize>() -> usize {
+    if N < 4 { N + 1 } else { 4 }
+}
+
+/// The lanes of a row word that hold probabilities.
+const fn probability_lanes<const N: usize>() -> u64 {
+    if N > 4 {
+        u64::MAX
+    } else {
+        (1 << (16 * (N - 1))) - 1
+    }
+}
+
+/// The [`word_entries`] of a row in one word.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn row_word<const N: usize>(cdf: &[u16]) -> u64 {
+    cdf.iter()
+        .take(word_entries::<N>())
+        .enumerate()
+        .fold(0, |word, (i, &entry)| word | u64::from(entry) << (16 * i))
+}
+
+/// Writes a row word back to the row.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn store_row_word<const N: usize>(cdf: &mut [u16], word: u64) {
+    for (i, entry) in cdf.iter_mut().take(word_entries::<N>()).enumerate() {
+        *entry = (word >> (16 * i)) as u16;
+    }
 }
 
 /// Relative bit position inside the tile payload consumed by a symbol decoder.
@@ -857,12 +933,7 @@ impl<'a> SymbolDecoder<'a> {
     #[inline]
     pub fn read_literal(&mut self, n: u32) -> Result<u32> {
         if n > MAX_LITERAL_BITS {
-            return Err(
-                self.state_error(SymbolDecoderErrorKind::LiteralWidthTooLarge {
-                    requested: n,
-                    max: MAX_LITERAL_BITS,
-                }),
-            );
+            return Err(self.literal_width_error(n));
         }
 
         self.count_symbols(u64::from(n));
@@ -881,12 +952,7 @@ impl<'a> SymbolDecoder<'a> {
     /// propagates [`Error::UnexpectedEof`] from the bounded bit reader.
     pub fn read_unary(&mut self, max_bits: u32) -> Result<u32> {
         if max_bits > MAX_LITERAL_BITS {
-            return Err(
-                self.state_error(SymbolDecoderErrorKind::LiteralWidthTooLarge {
-                    requested: max_bits,
-                    max: MAX_LITERAL_BITS,
-                }),
-            );
+            return Err(self.literal_width_error(max_bits));
         }
         if max_bits == 0 {
             return Ok(0);
@@ -920,7 +986,8 @@ impl<'a> SymbolDecoder<'a> {
     /// Decodes one AV2 § 8.2.6 symbol from a caller-supplied mutable CDF row.
     ///
     /// The row layout is `N + 1` entries: `N - 1` cumulative probability entries,
-    /// `cdf[N - 1]` adaptation-rate index, and `cdf[N]` capped use count. This
+    /// `cdf[N - 1]` the adaptation-rate index and capped use count packed as in
+    /// [`CDF_COUNT_SHIFT`], and an unused `cdf[N]`, zero in the spec tables. This
     /// primitive validates that shape before indexing generated § 9 tables.
     ///
     /// # Errors
@@ -1007,44 +1074,10 @@ impl<'a> SymbolDecoder<'a> {
         &mut self,
         cdf: &mut [T],
     ) -> Result<Symbol> {
-        let rate_index = cdf[N - 1].to_i32();
-        let Some(rates) = usize::try_from(rate_index)
-            .ok()
-            .filter(|&index| index < PARA_ADJUSTMENT_LIST.len())
-            .and_then(|index| ADAPTATION_RATES.get(index))
-        else {
-            return Err(
-                self.cdf_error(SymbolCdfErrorKind::AdaptationRateOutOfRange {
-                    index: N - 1,
-                    value: rate_index,
-                }),
-            );
-        };
-        let count = cdf[N].to_i32();
+        trusted_cdf_shape(cdf).map_err(|kind| self.cdf_error(kind))?;
+        let state = cdf[N - 1].to_u32() as u16;
+        let rate = trusted_rate::<N>(state);
         self.ensure_buffered(15);
-        #[cfg(target_arch = "x86_64")]
-        if N > 2
-            && let Some(token) = lane_token()
-            && let Some(row) = T::u16_row(cdf)
-        {
-            let symbol_value = (self.dif >> SV_SHIFT) as u32;
-            let (symbol, cur, prev, value, below) =
-                row_search_lanes::<N>(token, row, symbol_value, self.range());
-            if prev.saturating_sub(cur) == 0 {
-                return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
-            }
-            self.consume(cur << 16, prev << 16);
-            if self.config.cdf_update == CdfUpdateMode::Enabled {
-                let n_term = if N <= 3 { 1 } else { 2 };
-                let rate =
-                    u32::from(rates[count.clamp(0, MAX_CDF_COUNT * 2 - 1) as usize]) + n_term;
-                adapt_lanes::<N>(token, row, value, below, rate);
-                if count < MAX_CDF_COUNT {
-                    row[N] = (count + 1) as u16;
-                }
-            }
-            return Ok(Symbol::new(symbol as u8));
-        }
         let (symbol, cur, prev) = early_exit_search::<T, N>(cdf, self.dif, self.range_hi);
 
         if prev.saturating_sub(cur) == 0 {
@@ -1053,12 +1086,8 @@ impl<'a> SymbolDecoder<'a> {
         self.consume(cur, prev);
 
         if self.config.cdf_update == CdfUpdateMode::Enabled {
-            let n_term = if N <= 3 { 1 } else { 2 };
-            let rate = u32::from(rates[count.clamp(0, MAX_CDF_COUNT * 2 - 1) as usize]) + n_term;
-            T::adapt_probabilities(cdf, N, rate, symbol);
-            if count < MAX_CDF_COUNT {
-                cdf[N] = T::from_i32(count + 1);
-            }
+            T::adapt_probabilities(cdf, N, rate & RATE_BITS, symbol);
+            cdf[N - 1] = T::from_i32(i32::from(counted(state, rate)));
         }
 
         Ok(Symbol::new(symbol as u8))
@@ -1079,6 +1108,45 @@ impl<'a> SymbolDecoder<'a> {
     #[inline(always)]
     pub fn read_trusted<const L: usize, const UPDATE: bool>(&mut self, cdf: &mut [u16; L]) -> u32 {
         self.read_trusted_len(cdf, UPDATE).unwrap_or(0)
+    }
+
+    /// [`Self::read_trusted`] of a row of three to five symbols, from its
+    /// first entries as `carried`, the word the previous read of the same
+    /// row returned, or from memory when `None`. Returns the symbol and the
+    /// row's word after the read: a loop that reads one row repeatedly takes
+    /// it from a register instead of waiting for its own store.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    pub fn read_trusted_carried<const L: usize, const UPDATE: bool>(
+        &mut self,
+        cdf: &mut [u16; L],
+        carried: Option<u64>,
+    ) -> (u32, u64) {
+        match L {
+            4 => self.read_carried::<3>(cdf, carried, UPDATE),
+            5 => self.read_carried::<4>(cdf, carried, UPDATE),
+            6 => self.read_carried::<5>(cdf, carried, UPDATE),
+            _ => (self.read_trusted_len(cdf, UPDATE).unwrap_or(0), 0),
+        }
+    }
+
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn read_carried<const N: usize>(
+        &mut self,
+        cdf: &mut [u16],
+        carried: Option<u64>,
+        update: bool,
+    ) -> (u32, u64) {
+        if cdf.len() <= N {
+            return (0, 0);
+        }
+        debug_assert!(carried.is_none_or(|word| word == row_word::<N>(cdf)));
+        self.ensure_buffered(15);
+        match carried {
+            Some(word) => self.read_trusted_word::<N>(cdf, word, update),
+            None => self.read_trusted_word::<N>(cdf, row_word::<N>(cdf), update),
+        }
     }
 
     /// [`Self::read_trusted`] of a slice row in the configured update mode.
@@ -1178,6 +1246,8 @@ impl<'a> SymbolDecoder<'a> {
         }
     }
 
+    /// The word, lane and early-exit searches agree only on rows that are
+    /// non-decreasing and at most 32768, which the decoder's `rows_valid` asserts.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_trusted_arity<const N: usize>(&mut self, cdf: &mut [u16], update: bool) -> u32 {
@@ -1185,6 +1255,11 @@ impl<'a> SymbolDecoder<'a> {
             return 0;
         }
         self.ensure_buffered(15);
+        if (3..=6).contains(&N) && !cfg!(target_arch = "x86_64") {
+            return self
+                .read_trusted_word::<N>(cdf, row_word::<N>(cdf), update)
+                .0;
+        }
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         if N > 2
             && let Some(token) = lane_token()
@@ -1195,15 +1270,94 @@ impl<'a> SymbolDecoder<'a> {
         let (symbol, cur, prev) = early_exit_search::<u16, N>(cdf, self.dif, self.range_hi);
         self.consume(cur, prev);
         if update {
-            let count = cdf[N];
-            let rate = trusted_rate::<N>(cdf);
-            u16::adapt_probabilities(cdf, N, rate, symbol);
-            cdf[N] = count + u16::from(count < MAX_CDF_COUNT as u16);
+            let state = cdf[N - 1];
+            let rate = trusted_rate::<N>(state);
+            u16::adapt_probabilities(cdf, N, rate & RATE_BITS, symbol);
+            cdf[N - 1] = counted(state, rate);
         }
         symbol as u32
     }
 
-    /// [`Self::read_trusted_arity`] for `N > 2` in vector lanes, see
+    /// [`Self::read_trusted_arity`] for rows of three to six symbols, all in
+    /// general registers (the fifth probability of a six-symbol row on its
+    /// own): the boundaries are independent products of
+    /// the range, so the symbol and its interval are selects instead of a
+    /// vector round trip, and the § 8.2.6 step adapts the row as one word.
+    /// Each lane holds `p` and `gap = CDF_PROB_SCALE - p`, neither borrowing
+    /// from the next lane for entries up to `CDF_PROB_SCALE`; a boundary
+    /// `((r8 * pp) >> 7) << 19` is one product and a mask. Both steps,
+    /// `p >> rate` and `gap >> rate`, are ready before the symbol, which only
+    /// selects them through [`LOWER_LANES`]: the lanes below the symbol
+    /// shrink, the others grow; lanes without a probability stay.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn read_trusted_word<const N: usize>(
+        &mut self,
+        cdf: &mut [u16],
+        word: u64,
+        update: bool,
+    ) -> (u32, u64) {
+        let gap = (u64::from(CDF_PROB_SCALE) * LANES).wrapping_sub(word);
+        let r12 = (self.range_hi >> 24) << 12;
+        let mut boundaries = [0u32; 6];
+        for (i, boundary) in boundaries.iter_mut().enumerate().take((N - 1).min(4)) {
+            let pp = ((gap >> (16 * i + 3)) as u32 & 0x1ff0) | PROB_INC_U32[N - 2][i];
+            *boundary = r12.wrapping_mul(pp) & 0xfff8_0000;
+        }
+        let fifth = if N == 6 { u32::from(cdf[4]) } else { 0 };
+        let fifth_gap = CDF_PROB_SCALE.wrapping_sub(fifth);
+        if N == 6 {
+            let pp = ((fifth_gap >> (EC_PROB_SHIFT - 4)) & 0x1ff0) | PROB_INC_U32[N - 2][4];
+            boundaries[4] = r12.wrapping_mul(pp) & 0xfff8_0000;
+        }
+        let value = (self.dif >> 32) as u32;
+        let (mut cur, mut prev, mut symbol) = (boundaries[0], self.range_hi, 0);
+        for i in 0..N - 1 {
+            let above = value < boundaries[i];
+            cur = if above { boundaries[i + 1] } else { cur };
+            prev = if above { boundaries[i] } else { prev };
+            symbol += u32::from(above);
+        }
+        self.consume(cur, prev);
+        if update {
+            let below = LOWER_LANES[symbol as usize & 7];
+            let state = if N < 4 {
+                (word >> (16 * (N - 1))) as u16
+            } else {
+                cdf[N - 1]
+            };
+            let rate = trusted_rate::<N>(state);
+            let keep = const { keep_lanes::<N>() }[rate as usize];
+            let (shrink, grow) = (
+                word.wrapping_shr(rate) & keep,
+                gap.wrapping_shr(rate) & keep,
+            );
+            let adapted = word
+                .wrapping_add(grow & !below)
+                .wrapping_sub(shrink & below);
+            if N <= 4 {
+                let step = u64::from(counted(0, rate)) << (16 * (N - 1));
+                let adapted = adapted.wrapping_add(step);
+                store_row_word::<N>(cdf, adapted);
+                return (symbol, adapted);
+            }
+            store_row_word::<N>(cdf, adapted);
+            if N == 6 {
+                let shrinks = symbol > 4;
+                let step = (if shrinks { fifth } else { fifth_gap }).wrapping_shr(rate);
+                cdf[4] = if shrinks {
+                    fifth - step
+                } else {
+                    fifth.wrapping_add(step)
+                } as u16;
+            }
+            cdf[N - 1] = counted(state, rate);
+            return (symbol, adapted);
+        }
+        (symbol, word)
+    }
+
+    /// [`Self::read_trusted_arity`] for `N > 6`, or `N > 2` on x86-64, in vector lanes, see
     /// [`row_search_lanes`]. Branch-free on purpose: coefficient symbols
     /// mispredict too often for [`early_exit_search`] on some streams.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -1220,9 +1374,10 @@ impl<'a> SymbolDecoder<'a> {
             row_search_lanes::<N>(token, cdf, symbol_value, self.range());
         self.consume(cur << 16, prev << 16);
         if update {
-            let count = cdf[N];
-            adapt_lanes::<N>(token, cdf, value, below, trusted_rate::<N>(cdf));
-            cdf[N] = count + u16::from(count < MAX_CDF_COUNT as u16);
+            let state = cdf[N - 1];
+            let rate = trusted_rate::<N>(state);
+            adapt_lanes::<N>(token, cdf, value, below, rate & RATE_BITS);
+            cdf[N - 1] = counted(state, rate);
         }
         symbol
     }
@@ -1364,6 +1519,14 @@ impl<'a> SymbolDecoder<'a> {
         cdf_error_at(self.base, self.consumed_bits().get(), kind)
     }
 
+    #[cold]
+    fn literal_width_error(&self, requested: u32) -> Error {
+        self.state_error(SymbolDecoderErrorKind::LiteralWidthTooLarge {
+            requested,
+            max: MAX_LITERAL_BITS,
+        })
+    }
+
     #[inline]
     fn state_error(&self, kind: SymbolDecoderErrorKind) -> Error {
         state_error_at(self.base, self.consumed_bits().get(), kind)
@@ -1432,7 +1595,12 @@ pub(crate) fn trusted_cdf_shape<T: CdfStorage>(
     if !(MIN_SYMBOLS..=MAX_SYMBOLS).contains(&n) {
         return Err(SymbolCdfErrorKind::UnsupportedLength { len });
     }
-    let rate_index = cdf[n - 1].to_i32();
+    let state = cdf[n - 1].to_i32();
+    let rate_index = if state < 0 {
+        state
+    } else {
+        state & RATE_INDEX_MASK
+    };
     if !(0..PARA_ADJUSTMENT_LIST.len() as i32).contains(&rate_index) {
         return Err(SymbolCdfErrorKind::AdaptationRateOutOfRange {
             index: n - 1,
@@ -1442,7 +1610,7 @@ pub(crate) fn trusted_cdf_shape<T: CdfStorage>(
     Ok(CdfShape {
         n,
         rate_index: rate_index as usize,
-        count: cdf[n].to_i32(),
+        count: state >> CDF_COUNT_SHIFT,
     })
 }
 
@@ -1468,27 +1636,14 @@ pub(crate) fn validate_cdf_shape<T: CdfStorage>(
         }
     }
 
-    let rate_index = cdf[n - 1].to_i32();
-    if !(0..PARA_ADJUSTMENT_LIST.len() as i32).contains(&rate_index) {
-        return Err(SymbolCdfErrorKind::AdaptationRateOutOfRange {
-            index: n - 1,
-            value: rate_index,
-        });
-    }
-
-    let count = cdf[n].to_i32();
-    if !(0..=MAX_CDF_COUNT).contains(&count) {
+    let shape = trusted_cdf_shape(cdf)?;
+    if !(0..=MAX_CDF_COUNT).contains(&shape.count) {
         return Err(SymbolCdfErrorKind::CountOutOfRange {
-            index: n,
-            value: count,
+            index: n - 1,
+            value: shape.count,
         });
     }
-
-    Ok(CdfShape {
-        n,
-        rate_index: rate_index as usize,
-        count,
-    })
+    Ok(shape)
 }
 
 fn symbol_max_bits_for_len(len: usize, base: ByteOffset) -> Result<i64> {
@@ -1529,38 +1684,11 @@ pub(crate) fn floor_log2(value: u32) -> u32 {
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: usize) {
-    update_cdf_arity::<T>(cdf, shape, shape.n, symbol);
-}
-
-/// Applies the AV2 § 8.2.6 adaptation step with compile-time or explicit arity `n`.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-#[inline(always)]
-pub(crate) fn update_cdf_arity<T: CdfStorage>(
-    cdf: &mut [T],
-    shape: CdfShape,
-    n: usize,
-    symbol: usize,
-) {
-    update_cdf_with_rates(
-        cdf,
-        &PARA_ADJUSTMENT_LIST[shape.rate_index],
-        shape.count,
+    let CdfShape {
         n,
-        symbol,
-    );
-}
-
-/// [`update_cdf_arity`] with the row's `Para_Adjustment_List` entry and
-/// use count already read.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-#[inline(always)]
-fn update_cdf_with_rates<T: CdfStorage>(
-    cdf: &mut [T],
-    rates: &[i32; 3],
-    count: i32,
-    n: usize,
-    symbol: usize,
-) {
+        rate_index,
+        count,
+    } = shape;
     let time_interval = if count > 31 {
         2usize
     } else {
@@ -1570,10 +1698,10 @@ fn update_cdf_with_rates<T: CdfStorage>(
         2 | 3 => 1,
         _ => 2,
     };
-    let rate = 3 + time_interval as i32 + n_term + rates[time_interval];
+    let rate = 3 + time_interval as i32 + n_term + PARA_ADJUSTMENT_LIST[rate_index][time_interval];
     T::adapt_probabilities(cdf, n, rate as u32, symbol);
     if count < MAX_CDF_COUNT {
-        cdf[n] = T::from_i32(count + 1);
+        cdf[n - 1] = T::from_i32(rate_index as i32 | (count + 1) << CDF_COUNT_SHIFT);
     }
 }
 

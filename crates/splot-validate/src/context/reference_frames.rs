@@ -146,6 +146,7 @@ impl ValidatorContext {
         ) else {
             return FrameRefUpdate::PoisonAll;
         };
+        facts.global_motion = core.saved_global_motion_state();
 
         if let Some(lr) = core.lr_params.as_ref() {
             for (plane, params) in lr.planes.iter().enumerate() {

@@ -788,8 +788,8 @@ fn optflow_derivation_is_independent_of_the_final_interpolation_filter() {
     let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
     let derive = |interp| {
         let mut workspace = workspace(width, height);
-        motion_compensate_inter_block(
-            &mut super::WorkspaceSink::Frame(&mut workspace),
+        refined_units(
+            &super::WorkspaceSink::Frame(&mut workspace),
             InterBlockParams::compound_average(
                 ReferenceSamples::settled(&reference0),
                 ReferenceSamples::settled(&reference1),
@@ -800,12 +800,8 @@ fn optflow_derivation_is_independent_of_the_final_interpolation_filter() {
                 CompoundBlend::default(),
             )
             .with_optflow_distances(Some([1, -1])),
-            None,
-            ByteOffset::new(0),
         )
-        .expect("optical-flow dispatcher")
-        .expect("optical-flow motion grid")
-        .at_luma_offset(0, 0)
+        .cell_mvs(0)
         .expect("optical-flow motion cell")
     };
 
@@ -820,98 +816,36 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
     let reference0 = flat_frame(8, 8, 40, 90, 120);
     let reference1 = flat_frame(8, 8, 80, 110, 140);
     let mut workspace = workspace(8, 8);
-    let compound = InterBlockParams::compound_average(
-        ReferenceSamples::settled(&reference0),
-        ReferenceSamples::settled(&reference1),
-        McBlockRect::from_luma_rect(0, 0, 8, 8),
-        Mv::ZERO,
-        Mv::ZERO,
-        InterpolationFilter::EightTap,
-        CompoundBlend::default(),
-    )
-    .with_optflow_distances(Some([1, -1]))
-    .into_compound()
-    .expect("compound block");
-    let grid = compound_block_motion_grid(
+    let grid = refined_units(
         &super::WorkspaceSink::Frame(&mut workspace),
-        compound,
-        Some(8),
-        ByteOffset::new(0),
-    )
-    .expect("TIP output optical-flow dispatcher")
-    .expect("TIP output optical-flow motion grid");
-
-    assert_eq!(
-        grid.stored_mvs_at_luma_offset(0, 0)
-            .expect("TIP output stored motion vectors"),
-        [Mv::ZERO; 2]
-    );
-}
-
-#[test]
-fn tip_optflow_skips_low_sad_predictors() {
-    let pred0 = vec![55; 64];
-    let mut pred1 = pred0.clone();
-    pred1.iter_mut().take(10).for_each(|sample| *sample -= 1);
-    let chroma = vec![128; 16];
-    let reference0 = frame(8, 8, pred0, chroma.clone(), chroma.clone());
-    let reference1 = frame(8, 8, pred1, chroma.clone(), chroma);
-    let mut workspace = workspace(8, 8);
-    let compound = InterBlockParams::compound_average(
-        ReferenceSamples::settled(&reference0),
-        ReferenceSamples::settled(&reference1),
-        McBlockRect::from_luma_rect(0, 0, 8, 8),
-        Mv::ZERO,
-        Mv::ZERO,
-        InterpolationFilter::Bilinear,
-        CompoundBlend::default(),
-    )
-    .with_optflow_distances(Some([1, -1]))
-    .with_optflow_sad_threshold(Some(15))
-    .into_compound()
-    .expect("compound block");
-    let grid = compound_block_motion_grid(
-        &super::WorkspaceSink::Frame(&mut workspace),
-        compound,
-        Some(8),
-        ByteOffset::new(0),
-    )
-    .expect("TIP optical-flow SAD gate");
-
-    assert!(grid.is_none());
-}
-
-#[test]
-fn optflow_sad_gate_preserves_refinemv_motion_grid() {
-    let reference0 = flat_frame(8, 8, 55, 128, 128);
-    let reference1 = flat_frame(8, 8, 55, 128, 128);
-    let mut workspace = workspace(8, 8);
-    let grid = motion_compensate_inter_block(
-        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
             McBlockRect::from_luma_rect(0, 0, 8, 8),
             Mv::ZERO,
             Mv::ZERO,
-            InterpolationFilter::Bilinear,
+            InterpolationFilter::EightTap,
             CompoundBlend::default(),
         )
-        .with_refinemv(true)
-        .with_refinemv_search(false)
-        .with_optflow_distances(Some([1, -1]))
-        .with_optflow_sad_threshold(Some(1)),
-        None,
-        ByteOffset::new(0),
-    )
-    .expect("refine-MV optical-flow SAD gate")
-    .expect("preserved refine-MV motion grid");
+        .with_optflow_distances(Some([1, -1])),
+    );
 
     assert_eq!(
         grid.temporal_mvs_at_luma_offset(0, 0)
-            .expect("stored refine-MVs"),
+            .expect("stored motion vectors"),
         [Mv::ZERO; 2]
     );
+}
+
+/// The refined units [`refine_block_units`] derives for the compound `block`.
+fn refined_units<T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
+    block: InterBlockParams<'_, T>,
+) -> RefinedUnits {
+    let compound = block.into_compound().expect("compound block");
+    let mut units = RefinedUnits::default();
+    refine_block_units(sink, &compound, &mut units, ByteOffset::new(0)).expect("refined units");
+    units
 }
 
 #[test]
@@ -930,8 +864,8 @@ fn dispatcher_returns_default_refinemv_motion_grid() {
     let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
     let mut workspace = workspace(width, height);
 
-    let grid = motion_compensate_inter_block(
-        &mut super::WorkspaceSink::Frame(&mut workspace),
+    let grid = refined_units(
+        &super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
@@ -942,11 +876,7 @@ fn dispatcher_returns_default_refinemv_motion_grid() {
             CompoundBlend::default(),
         )
         .with_refinemv(true),
-        None,
-        ByteOffset::new(0),
-    )
-    .expect("default refine-MV dispatcher")
-    .expect("refine-MV motion grid");
+    );
 
     assert_eq!(
         grid.temporal_mvs_at_luma_offset(0, 0)
@@ -963,8 +893,8 @@ fn dispatcher_switchable_refinemv_excludes_low_sad_center() {
     let reference1 = flat_frame(width, height, 80, 128, 128);
     let mut workspace = workspace(width, height);
 
-    let grid = motion_compensate_inter_block(
-        &mut super::WorkspaceSink::Frame(&mut workspace),
+    let grid = refined_units(
+        &super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
@@ -976,11 +906,7 @@ fn dispatcher_switchable_refinemv_excludes_low_sad_center() {
         )
         .with_refinemv(true)
         .with_switchable_refinemv(true),
-        None,
-        ByteOffset::new(0),
-    )
-    .expect("switchable refine-MV dispatcher")
-    .expect("refine-MV motion grid");
+    );
 
     assert_eq!(
         grid.temporal_mvs_at_luma_offset(0, 0)
@@ -1005,8 +931,8 @@ fn dispatcher_skips_refinemv_search_without_disabling_refinemv() {
     let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
     let mut workspace = workspace(width, height);
 
-    let grid = motion_compensate_inter_block(
-        &mut super::WorkspaceSink::Frame(&mut workspace),
+    let grid = refined_units(
+        &super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
@@ -1018,11 +944,7 @@ fn dispatcher_skips_refinemv_search_without_disabling_refinemv() {
         )
         .with_refinemv(true)
         .with_refinemv_search(false),
-        None,
-        ByteOffset::new(0),
-    )
-    .expect("refine-MV dispatcher without search")
-    .expect("refine-MV motion grid");
+    );
 
     assert_eq!(
         grid.temporal_mvs_at_luma_offset(0, 0)
@@ -1120,361 +1042,8 @@ fn dispatcher_uses_implicit_mask_for_offscreen_compound_refs() {
     assert_eq!(y[28], 12);
 }
 
-#[allow(clippy::too_many_arguments)]
-fn per_pixel_reference_blend(
-    pred0: &[i32],
-    pred1: &[i32],
-    w: usize,
-    motion: &CompoundMotionGrid,
-    plane_x: usize,
-    plane_y: usize,
-    scalings: [crate::prediction::inter::mv_scaling::PlaneScaling; 2],
-    frame_w: usize,
-    frame_h: usize,
-) -> Vec<u16> {
-    let shift = 1 + compound_inter_post_round();
-    let mut expected = vec![0u16; pred0.len()];
-    for (idx, slot) in expected.iter_mut().enumerate() {
-        let row = idx / w;
-        let col = idx % w;
-        let mvs = motion.at_luma_offset(col, row).expect("cell lookup");
-        let starts: [(i32, i32); 2] = core::array::from_fn(|reference| {
-            let scaling = scalings[reference].with_prescaled_mv(
-                (plane_x + col) as i32,
-                (plane_y + row) as i32,
-                mvs[reference][0],
-                mvs[reference][1],
-                0,
-                0,
-            );
-            (scaling.start_x >> 10, scaling.start_y >> 10)
-        });
-        let onscreen = |start: (i32, i32)| {
-            (0..=(frame_w as i32 - 1)).contains(&start.0)
-                && (0..=(frame_h as i32 - 1)).contains(&start.1)
-        };
-        let mask = match (onscreen(starts[0]), onscreen(starts[1])) {
-            (true, false) => 2,
-            (false, true) => 0,
-            _ => 1,
-        };
-        let sample = round2_i32(mask * pred0[idx] + (2 - mask) * pred1[idx], shift);
-        *slot = sample.clamp(0, 255) as u16;
-    }
-    expected
-}
-
 #[test]
-fn multi_span_implicit_mask_blend_matches_per_pixel_reference() {
-    let w = 40usize;
-    let h = 2usize;
-    let pred0: Vec<i32> = (0..w * h)
-        .map(|index| (index as i32 * 7 % 900) * 16)
-        .collect();
-    let pred1: Vec<i32> = (0..w * h)
-        .map(|index| (index as i32 * 11 % 800) * 16)
-        .collect();
-    let cells = vec![
-        MotionCell::from_refinemv([Mv::ZERO; 2]),
-        MotionCell::from_refinemv([Mv { row: 0, col: -640 }, Mv::ZERO]),
-        MotionCell::from_refinemv([Mv { row: 0, col: 96 }, Mv { row: 640, col: 0 }]),
-    ];
-    let motion = CompoundMotionGrid::from_refinemv(3, [Mv::ZERO; 2], cells);
-    let (plane_x, plane_y) = (4usize, 4usize);
-    let (frame_w, frame_h) = (48usize, 8usize);
-    let blend = CompoundBlend::average_with_implicit_mask(true);
-    let scaling = derive_plane_scaling(
-        plane_x as i32,
-        plane_y as i32,
-        0,
-        0,
-        0,
-        0,
-        frame_w as i32,
-        frame_h as i32,
-        frame_w as i32,
-        frame_h as i32,
-    );
-    let mut output = vec![0u16; w * h];
-    blend_compound_average::<u16>(
-        &pred0,
-        &pred1,
-        BitDepth::Eight,
-        w,
-        h,
-        blend,
-        w,
-        h,
-        Some(&motion),
-        plane_x,
-        plane_y,
-        scaling,
-        scaling,
-        frame_w,
-        frame_h,
-        None,
-        0,
-        0,
-        &mut output,
-        w,
-    )
-    .expect("multi-span implicit-mask blend");
-    let stride = w + 3;
-    let mut strided = vec![u16::MAX; (h - 1) * stride + w];
-    blend_compound_average::<u16>(
-        &pred0,
-        &pred1,
-        BitDepth::Eight,
-        w,
-        h,
-        blend,
-        w,
-        h,
-        Some(&motion),
-        plane_x,
-        plane_y,
-        scaling,
-        scaling,
-        frame_w,
-        frame_h,
-        None,
-        0,
-        0,
-        &mut strided,
-        stride,
-    )
-    .expect("strided implicit-mask blend");
-    for (row, packed) in output.chunks_exact(w).enumerate() {
-        assert_eq!(&strided[row * stride..][..w], packed, "row {row}");
-    }
-    assert!(strided[w..stride].iter().all(|&sample| sample == u16::MAX));
-    let expected = per_pixel_reference_blend(
-        &pred0,
-        &pred1,
-        w,
-        &motion,
-        plane_x,
-        plane_y,
-        [scaling, scaling],
-        frame_w,
-        frame_h,
-    );
-    assert_eq!(output, expected);
-    assert!(output.windows(2).any(|pair| pair[0] != pair[1]));
-}
-
-#[test]
-fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
-    let pred0 = [20 * 16, 60 * 16, 100 * 16, 140 * 16];
-    let pred1 = [44 * 16, 120 * 16, 80 * 16, 180 * 16];
-    let mvs = [Mv::ZERO; 2];
-    let uniform = CompoundMotionGrid::from_refinemv(1, mvs, vec![MotionCell::from_refinemv(mvs)]);
-    let multiple =
-        CompoundMotionGrid::from_refinemv(2, mvs, vec![MotionCell::from_refinemv(mvs); 2]);
-    let scaling = derive_plane_scaling(4, 4, 0, 0, 0, 0, 32, 32, 32, 32);
-    let blend = CompoundBlend::average_with_implicit_mask(true);
-    let run = |motion| {
-        let mut output = vec![0; pred0.len()];
-        blend_compound_average::<u16>(
-            &pred0,
-            &pred1,
-            BitDepth::Eight,
-            2,
-            2,
-            blend,
-            2,
-            2,
-            Some(motion),
-            4,
-            4,
-            scaling,
-            scaling,
-            32,
-            32,
-            None,
-            0,
-            0,
-            &mut output,
-            2,
-        )
-        .expect("implicit-mask blend");
-        output
-    };
-
-    assert_eq!(run(&uniform), run(&multiple));
-}
-
-#[test]
-fn uniform_motion_direct_average_matches_materialized_path() {
-    let width = 16usize;
-    let height = 16usize;
-    let chroma_len = width.div_ceil(2) * height.div_ceil(2);
-    let reference0 = frame_for(
-        BitDepth::Ten,
-        PixelFormat::Yuv420,
-        width,
-        height,
-        (0..width * height)
-            .map(|index| 128 + (index * 13 % 700) as u16)
-            .collect(),
-        vec![384; chroma_len],
-        vec![512; chroma_len],
-    );
-    let reference1 = frame_for(
-        BitDepth::Ten,
-        PixelFormat::Yuv420,
-        width,
-        height,
-        (0..width * height)
-            .map(|index| 192 + (index * 17 % 600) as u16)
-            .collect(),
-        vec![448; chroma_len],
-        vec![576; chroma_len],
-    );
-    let rect = McBlockRect::from_luma_rect(4, 4, 8, 8);
-    let mvs = [Mv { row: 1, col: 1 }, Mv { row: -1, col: 2 }];
-    let cell = MotionCell::from_refinemv(mvs);
-    let uniform = CompoundMotionGrid::from_refinemv(1, mvs, vec![cell]);
-    let multiple = CompoundMotionGrid::from_refinemv(2, mvs, vec![cell; 2]);
-    let run = |motion| {
-        let mut workspace = workspace_for::<u16>(BitDepth::Ten, PixelFormat::Yuv420, width, height);
-        let mut output = vec![0; rect.luma_w * rect.luma_h];
-        let block = InterBlockParams::compound_average(
-            ReferenceSamples::settled(&reference0),
-            ReferenceSamples::settled(&reference1),
-            rect,
-            mvs[0],
-            mvs[1],
-            InterpolationFilter::EightTap,
-            CompoundBlend::average_with_implicit_mask(true),
-        )
-        .into_compound()
-        .expect("compound block");
-        predict_compound_plane_output(
-            WorkspaceSink::Frame(&mut workspace).info(),
-            block,
-            PlaneId::Y,
-            0,
-            0,
-            &mut None,
-            Some(motion),
-            ByteOffset::new(0),
-            &mut output,
-            rect.luma_w,
-            None,
-        )
-        .expect("compound motion prediction");
-        output
-    };
-
-    assert_eq!(run(&uniform), run(&multiple));
-}
-
-#[test]
-fn mixed_implicit_mask_grid_matches_the_whole_plane_blend() {
-    let (width, height) = (32usize, 16usize);
-    let chroma_len = (width / 2) * (height / 2);
-    let reference = |seed: usize| {
-        frame_for(
-            BitDepth::Ten,
-            PixelFormat::Yuv420,
-            width,
-            height,
-            (0..width * height)
-                .map(|index| 64 + (index * seed % 900) as u16)
-                .collect(),
-            vec![384; chroma_len],
-            vec![512; chroma_len],
-        )
-    };
-    let (reference0, reference1) = (reference(13), reference(17));
-    let rect = McBlockRect::from_luma_rect(0, 0, 16, 8);
-    let blend = CompoundBlend::average_with_implicit_mask(true);
-    let mvs = [Mv { row: 1, col: 3 }, Mv { row: -1, col: 2 }];
-    let off_screen = [Mv { row: 0, col: -40 }, Mv { row: 2, col: 1 }];
-    let cells = vec![
-        MotionCell::from_refinemv(off_screen),
-        MotionCell::from_refinemv(mvs),
-    ];
-    let grid = CompoundMotionGrid::from_refinemv(2, mvs, cells);
-    let mut workspace = workspace_for::<u16>(BitDepth::Ten, PixelFormat::Yuv420, width, height);
-    let sink = WorkspaceSink::Frame(&mut workspace);
-    let mut hybrid = vec![0u16; 16 * 8];
-    let block = InterBlockParams::compound_average(
-        ReferenceSamples::settled(&reference0),
-        ReferenceSamples::settled(&reference1),
-        rect,
-        mvs[0],
-        mvs[1],
-        InterpolationFilter::EightTap,
-        blend,
-    )
-    .into_compound()
-    .expect("compound block");
-    predict_compound_plane_output(
-        sink.info(),
-        block,
-        PlaneId::Y,
-        0,
-        0,
-        &mut None,
-        Some(&grid),
-        ByteOffset::new(0),
-        &mut hybrid,
-        16,
-        None,
-    )
-    .expect("per-cell compound prediction");
-
-    let prediction = compound_plane_prediction_for_block(
-        sink.info(),
-        block,
-        PlaneId::Y,
-        0,
-        0,
-        Some(&grid),
-        ByteOffset::new(0),
-    )
-    .expect("whole-plane prediction");
-    let (pred0, pred1) = prediction.predictions();
-    let mut whole_plane = vec![0u16; 16 * 8];
-    blend_compound_average::<u16>(
-        pred0,
-        pred1,
-        BitDepth::Ten,
-        16,
-        8,
-        blend,
-        16,
-        8,
-        Some(&grid),
-        0,
-        0,
-        prediction.scaling0,
-        prediction.scaling1,
-        width,
-        height,
-        None,
-        0,
-        0,
-        &mut whole_plane,
-        16,
-    )
-    .expect("whole-plane implicit-mask blend");
-    let equal_weights = pred0
-        .iter()
-        .zip(pred1)
-        .map(|(&left, &right)| round2_i32(left + right, 5).clamp(0, 1023) as u16);
-
-    assert_eq!(hybrid, whole_plane);
-    assert!(
-        !equal_weights.eq(whole_plane.iter().copied()),
-        "a cell is off screen"
-    );
-}
-
-#[test]
-fn u8_translational_compound_direct_preflights_all_planes_before_writing() {
+fn u8_translational_compound_direct_fallback_matches_the_general_path() {
     let (width, height) = (17, 15);
     let reference0 = patterned_frame_with_format(PixelFormat::Yuv420, width, height, 11);
     let reference1 = patterned_frame_with_format(PixelFormat::Yuv420, width, height, 71);
@@ -1491,23 +1060,33 @@ fn u8_translational_compound_direct_preflights_all_planes_before_writing() {
     .expect("compound block");
     block.rect.chroma_luma_x = 16;
 
-    let mut workspace = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, width, height);
+    let mut direct = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, width, height);
     assert!(
         !compound_average::predict_translational_direct(
-            &mut WorkspaceSink::Frame(&mut workspace),
-            block,
+            &mut WorkspaceSink::Frame(&mut direct),
+            &block,
             ByteOffset::new(0),
         )
         .expect("geometry fallback")
     );
+    predict_compound_into(
+        &mut WorkspaceSink::Frame(&mut direct),
+        &block,
+        ByteOffset::new(0),
+    )
+    .expect("general path after the fallback");
+    let mut general = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, width, height);
+    predict_compound_into(
+        &mut WorkspaceSink::Frame(&mut general),
+        &block,
+        ByteOffset::new(0),
+    )
+    .expect("general path");
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        assert!(
-            workspace
-                .samples(plane)
-                .expect("workspace plane")
-                .iter()
-                .all(|&sample| sample == 0),
-            "{plane:?} mutated before geometry fallback"
+        assert_eq!(
+            direct.samples(plane).expect("direct plane"),
+            general.samples(plane).expect("general plane"),
+            "{plane:?} differs after the geometry fallback"
         );
     }
 }
@@ -1551,6 +1130,44 @@ fn direct_compound_blend_preserves_sample_storage_width() {
     assert_eq!(ten_bit, [950]);
 }
 
+fn weighted_rows_match_the_per_sample_blend<T: ReconSample>(bit_depth: BitDepth) {
+    for w in [3usize, 4, 6, 8, 17, 24] {
+        let pred0: Vec<i32> = (0..w as i32)
+            .map(|i| (i * 7919 % 4500) * 16 - 3000)
+            .collect();
+        let pred1: Vec<i32> = (0..w as i32)
+            .map(|i| (i * 104_729 % 5000) * 16 - 9000)
+            .collect();
+        for cwp_weight in [2, 8, 12, 14] {
+            let mut output = vec![T::default(); w];
+            blend_compound_average_weighted_samples(
+                &pred0,
+                &pred1,
+                bit_depth,
+                cwp_weight,
+                &mut output,
+            )
+            .expect("weighted row");
+            for (col, sample) in output.iter().enumerate() {
+                let want = splot_recon::blend_compound_average_weighted_sample(
+                    pred0[col], pred1[col], bit_depth, cwp_weight,
+                );
+                assert_eq!(
+                    sample.to_u16(),
+                    want,
+                    "{bit_depth:?} w={w} cwp={cwp_weight} {col}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn weighted_rows_match_the_per_sample_blend_for_every_width() {
+    weighted_rows_match_the_per_sample_blend::<u8>(BitDepth::Eight);
+    weighted_rows_match_the_per_sample_blend::<u16>(BitDepth::Ten);
+}
+
 #[test]
 fn scaled_compound_references_disable_implicit_mask_blending() {
     let pred0 = [20 * 16, 60 * 16, 100 * 16, 140 * 16];
@@ -1565,18 +1182,10 @@ fn scaled_compound_references_disable_implicit_mask_blending() {
         2,
         2,
         CompoundBlend::average_with_implicit_mask(true),
-        2,
-        2,
-        None,
-        4,
-        4,
         scaling,
         scaling,
         32,
         32,
-        None,
-        0,
-        0,
         &mut got,
         2,
     )
@@ -1714,73 +1323,6 @@ fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
         );
     }
     assert!(y[4 * 16..].iter().all(|&sample| sample == 0));
-}
-
-#[test]
-fn tip_unit_motion_cell_matches_the_motion_grid_cell() {
-    let (width, height) = (32usize, 32usize);
-    let chroma_len = (width / 2) * (height / 2);
-    let reference = |seed: usize| {
-        let luma = (0..width * height).map(|i| 64 + (i * seed % 900) as u16);
-        let chroma = vec![384; chroma_len];
-        frame_for(
-            BitDepth::Ten,
-            PixelFormat::Yuv420,
-            width,
-            height,
-            luma.collect(),
-            chroma.clone(),
-            chroma,
-        )
-    };
-    let (reference0, reference1) = (reference(13), reference(17));
-    let mut workspace = workspace_for::<u16>(BitDepth::Ten, PixelFormat::Yuv420, width, height);
-    let sink = WorkspaceSink::Frame(&mut workspace);
-    let offset = ByteOffset::new(0);
-    let (mv0, mv1) = (Mv { row: 3, col: -5 }, Mv { row: -2, col: 7 });
-    for (threshold, use_refinemv, distances) in [
-        (None, false, Some([1, -1])),
-        (None, true, Some([2, -1])),
-        (Some(u32::MAX), true, Some([1, -2])),
-        (None, true, None),
-    ] {
-        let rect = McBlockRect::from_luma_rect(8, 8, 8, 8);
-        let block = InterBlockParams::compound_average(
-            ReferenceSamples::settled(&reference0),
-            ReferenceSamples::settled(&reference1),
-            rect,
-            mv0,
-            mv1,
-            InterpolationFilter::EightTap,
-            CompoundBlend::default(),
-        )
-        .with_optflow_distances(distances)
-        .with_optflow_sad_threshold(threshold)
-        .with_refinemv(use_refinemv)
-        .into_compound()
-        .expect("compound block");
-        let mut luma = optflow::LumaReference::pair(sink.info(), &block, offset);
-        let cell =
-            optflow::tip_unit_motion_cell(&sink, block, 8, offset, &mut luma).expect("unit cell");
-        let fast = CompoundMotionGrid::from_single_refinemv([mv0, mv1], cell);
-        let refinemv = use_refinemv
-            .then(|| refinemv::compound_default_refinemv_motion_grid(&sink, block, offset))
-            .transpose()
-            .expect("refine-MV grid");
-        let grid = optflow::compound_motion_grid(&sink, block, Some(8), refinemv, offset)
-            .expect("motion grid");
-        let stored = grid
-            .as_ref()
-            .map(|grid| grid.stored_mvs_at_luma_offset(0, 0));
-        let uniform = grid.as_ref().and_then(CompoundMotionGrid::uniform_mvs);
-        assert_eq!(
-            stored.unwrap_or(Ok([mv0, mv1])),
-            fast.stored_mvs_at_luma_offset(0, 0)
-        );
-        if grid.is_some() {
-            assert_eq!(uniform, fast.uniform_mvs());
-        }
-    }
 }
 
 fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8> {

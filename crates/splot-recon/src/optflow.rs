@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use fearless_simd::{i16x8, i16x16, i32x4, i32x8, mask16x8, prelude::*, u16x8, u64x2};
+use fearless_simd::{i16x8, i16x16, i32x8, mask16x8, prelude::*, u16x8};
 
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2_signed_i32;
 use crate::{BitDepth, ReconError, Result};
+
+#[cfg(target_arch = "x86_64")]
+mod x86_sums;
+#[cfg(target_arch = "x86_64")]
+use x86_sums::{rows_8x8_sums, unit_8x8, unit_16x16_lane_sums};
 
 const GRADIENT_UNIT: usize = 16;
 const MAX_LS_BITS: u32 = 26;
@@ -181,17 +186,26 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         )?;
         return Ok(&scratch.deltas);
     }
-    if let (8, Ok(weighted), Ok(difference)) = (
-        unit_size,
-        <&[i16; 256]>::try_from(&*weighted),
-        <&[i16; 256]>::try_from(&*difference),
-    ) && width == 16
+    if unit_size == 8 && width.is_multiple_of(GRADIENT_UNIT) && height.is_multiple_of(GRADIENT_UNIT)
     {
-        push_unit_deltas(
-            &mut scratch.deltas,
-            unit_16x16_sums(weighted, difference),
-            distances,
-        )?;
+        scratch.deltas.resize(unit_count, [[0; 2]; 2]);
+        let columns = width / 8;
+        for y in (0..height).step_by(GRADIENT_UNIT) {
+            for x in (0..width).step_by(GRADIENT_UNIT) {
+                let tile = |plane| gradient_tile(plane, width, x, y);
+                let units = unit_16x16_sums(&tile(weighted), &tile(difference));
+                for (unit, sums) in units.into_iter().enumerate() {
+                    let index = (y / 8 + unit / 2) * columns + x / 8 + unit % 2;
+                    match solve_sums(sums, distances) {
+                        Ok(delta) => scratch.deltas[index] = delta,
+                        Err(error) => {
+                            scratch.deltas.clear();
+                            return Err(error);
+                        }
+                    }
+                }
+            }
+        }
         return Ok(&scratch.deltas);
     }
     gradients(weighted, width, height, gradient_x, gradient_y);
@@ -405,8 +419,7 @@ fn strided_sample_out_of_range(
 /// The § 7.13.3.8 refinement of an eight-bit 8x8 optical-flow unit whose two
 /// predictions are `rows`, eight little-endian samples per row: `None` when
 /// their SAD is below `sad_threshold`, else the § 7.13.3.12 delta of
-/// [`derive_optflow_mv_delta_8x8_strided_into`], zero without a solve for
-/// equal predictions.
+/// [`derive_optflow_mv_delta_8x8_strided_into`].
 ///
 /// # Errors
 ///
@@ -418,9 +431,6 @@ pub fn optflow_unit_8x8_u8(
     sad_threshold: Option<u32>,
 ) -> Result<Option<[[i32; 2]; 2]>> {
     let threshold = sad_threshold.unwrap_or(0);
-    if rows[0] == rows[1] {
-        return Ok((threshold == 0).then_some([[0; 2]; 2]));
-    }
     let reduced = if distances.contains(&0) {
         [0; 2]
     } else {
@@ -431,6 +441,7 @@ pub fn optflow_unit_8x8_u8(
 
 /// [`optflow_unit_8x8_u8`] of its eight-byte rows and reduced `distances`:
 /// the SAD from the `i16` differences, then the sums of [`rows_8x8_sums`].
+#[cfg(not(target_arch = "x86_64"))]
 #[inline]
 fn unit_8x8<S: Simd>(
     simd: S,
@@ -446,7 +457,8 @@ fn unit_8x8<S: Simd>(
             .iter()
             .zip(lanes.as_chunks_mut::<2>().0)
         {
-            let (low, high) = simd.widen_u8x16(u64x2::load_array_ref(simd, pair).bitcast());
+            let (low, high) =
+                simd.widen_u8x16(fearless_simd::u64x2::load_array_ref(simd, pair).bitcast());
             *lanes = [low.bitcast(), high.bitcast()];
         }
         lanes
@@ -469,6 +481,53 @@ fn unit_8x8<S: Simd>(
         distances,
     )
     .map(Some)
+}
+
+/// [`optflow_unit_8x8_u8`] of two 16-bit 8x8 predictions, each sample
+/// clipped to `bit_depth` first; the SAD is compared at eight bits, and
+/// differences that round to zero give a zero delta, as in
+/// [`derive_optflow_mv_delta_8x8_strided_into`].
+///
+/// # Errors
+///
+/// Returns the arithmetic errors of the solve.
+#[doc(hidden)]
+pub fn optflow_unit_8x8_u16(
+    rows: [[[u16; 8]; 8]; 2],
+    bit_depth: BitDepth,
+    distances: [i32; 2],
+    sad_threshold: Option<u32>,
+) -> Result<Option<[[i32; 2]; 2]>> {
+    let threshold = sad_threshold.unwrap_or(0);
+    let downshift = u32::from(bit_depth.bits().saturating_sub(8));
+    let max = bit_depth.max_sample();
+    baseline_simd!(simd => {
+        let load = |rows: &[[u16; 8]; 8]| {
+            rows.map(|row| u16x8::load_array(simd, row).min(u16x8::splat(simd, max)))
+        };
+        let (first, second) = (load(&rows[0]), load(&rows[1]));
+        let sad = first.iter().zip(&second).fold(0, |sum, (a, b)| {
+            sum + u32::from((a.max(*b) - a.min(*b)).reduce_sum())
+        });
+        if sad >> downshift < threshold {
+            return Ok(None);
+        }
+        if distances.contains(&0) {
+            return Ok(Some([[0; 2]; 2]));
+        }
+        let distances = reduce_distances(distances);
+        let rows: [(i16x8<_>, i16x8<_>); 8] = core::array::from_fn(|row| {
+            weighted_difference_row(first[row], second[row], distances, downshift)
+        });
+        let (weighted, difference) = (rows.map(|row| row.0), rows.map(|row| row.1));
+        let changed = difference.iter().fold(u16x8::splat(simd, 0), |changed, row| {
+            changed | row.bitcast::<u16x8<_>>()
+        });
+        if changed.reduce_max() == 0 {
+            return Ok(Some([[0; 2]; 2]));
+        }
+        solve_sums(whole_8x8(rows_8x8_sums(simd, &weighted, &difference)), distances).map(Some)
+    })
 }
 
 /// The § 7.13.3.9 `weighted` and `difference` rows of eight predictor sample
@@ -626,17 +685,18 @@ fn gradient_planes<S: Simd>(
         let (source_units, source_remainder) = source.as_chunks::<GRADIENT_UNIT>();
         let (output_units, output_remainder) = output.as_chunks_mut::<GRADIENT_UNIT>();
         for (source, output) in source_units.iter().zip(output_units) {
-            horizontal_gradient_16(simd, source).store_array(output);
+            horizontal_gradient_16(simd, source, GRADIENT_UNIT - 1).store_array(output);
         }
         if let (Ok(source), Ok(output)) = (
             <&[i16; 8]>::try_from(source_remainder),
             <&mut [i16; 8]>::try_from(&mut *output_remainder),
         ) {
             horizontal_gradient_8(simd, source).store_array(output);
-        } else {
-            for (col, output) in output_remainder.iter_mut().enumerate() {
-                *output = horizontal_gradient_scalar(source_remainder, col);
-            }
+        } else if let Some(&last) = source_remainder.last() {
+            let mut padded = [last; GRADIENT_UNIT];
+            padded[..source_remainder.len()].copy_from_slice(source_remainder); // splot-copy-ok: edge-padded lanes of a partial gradient unit
+            let lanes = horizontal_gradient_16(simd, &padded, source_remainder.len() - 1);
+            output_remainder.copy_from_slice(&lanes.to_array()[..output_remainder.len()]); // splot-copy-ok: store the real lanes of a partial gradient unit
         }
     }
     for row in 0..height {
@@ -665,14 +725,20 @@ fn gradient_planes<S: Simd>(
                 &mut output[wide..],
                 |taps: [i16x8<S>; 4]| gradient_lanes_8(taps, double),
             );
-        for col in narrow..width {
-            let [next, prev, next2, prev2] = rows.map(|row| i32::from(row[col]));
-            let mut value = 42 * (next - prev) - 5 * (next2 - prev2);
-            if double {
-                value *= 2;
-            }
-            output[col] = round2_signed_i32(value, 7) as i16;
+        if narrow == width {
+            continue;
         }
+        let tail = width.saturating_sub(8).min(narrow);
+        let taps = rows.map(|row| {
+            let mut lanes = [0; 8];
+            let row = &row[tail..];
+            lanes[..row.len().min(8)].copy_from_slice(&row[..row.len().min(8)]); // splot-copy-ok: zero-padded lanes of a row narrower than eight
+            i16x8::from_slice(simd, &lanes)
+        });
+        let lanes = gradient_lanes_8(taps, double).to_array();
+        let output = &mut output[tail..];
+        let len = output.len().min(8);
+        output[..len].copy_from_slice(&lanes[..len]); // splot-copy-ok: store the real lanes of a narrow gradient row
     }
 }
 
@@ -681,7 +747,7 @@ fn gradient_planes<S: Simd>(
 /// applied lane-wise.
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
-fn horizontal_gradient_16<S: Simd>(simd: S, samples: &[i16; 16]) -> i16x16<S> {
+fn horizontal_gradient_16<S: Simd>(simd: S, samples: &[i16; 16], end: usize) -> i16x16<S> {
     let [first, last] = edge_lanes(simd, samples);
     let (low, high) = i16x16::load_array_ref(simd, samples).widen();
     let low_taps = [
@@ -696,9 +762,13 @@ fn horizontal_gradient_16<S: Simd>(simd: S, samples: &[i16; 16]) -> i16x16<S> {
         high.slide::<2>(last),
         low.slide::<6>(high),
     ];
-    let edge = |lanes| i32x8::load_array(simd, lanes);
-    gradient_lanes(low_taps, edge([1, 0, 0, 0, 0, 0, 0, 0]))
-        .narrow(gradient_lanes(high_taps, edge([0, 0, 0, 0, 0, 0, 0, 1])))
+    let edge = |from: usize| {
+        i32x8::load_array(
+            simd,
+            core::array::from_fn(|lane| i32::from(from + lane == 0 || from + lane == end)),
+        )
+    };
+    gradient_lanes(low_taps, edge(0)).narrow(gradient_lanes(high_taps, edge(8)))
 }
 
 /// [`horizontal_gradient_16`] of an eight-sample gradient unit.
@@ -718,6 +788,7 @@ fn edge_lanes<S: Simd, const N: usize>(simd: S, samples: &[i16; N]) -> [i32x8<S>
         .map(|sample| i32x8::splat(simd, sample.copied().map_or(0, i32::from)))
 }
 
+#[cfg(test)]
 fn horizontal_gradient_scalar(source: &[i16], col: usize) -> i16 {
     let col_end = source.len() - 1;
     let col_prev = col.saturating_sub(1);
@@ -892,10 +963,7 @@ fn unit_4x4_sums(weighted: &[i16; 64], difference: &[i16; 64]) -> [[i32; 5]; 4] 
         let mut units = [[0; 5]; 4];
         for (half, sums) in halves.iter().enumerate() {
             for (sum, &lanes) in sums.iter().enumerate() {
-                let (first, second) = lanes.split();
-                let [a, b, c, d] = *(first + second);
-                units[2 * half][sum] = a + b;
-                units[2 * half + 1][sum] = c + d;
+                [units[2 * half][sum], units[2 * half + 1][sum]] = column_halves(lanes);
             }
         }
         units.map(|sums| unit_sums(sums, 16))
@@ -908,7 +976,9 @@ fn plane_rows_8x8<S: Simd>(simd: S, plane: &[i16; 64]) -> [i16x8<S>; 8] {
 }
 
 /// The lane sums of the top and bottom halves of an 8x8 unit held in lanes,
-/// one row per call so that every row's clamped neighbours are constants.
+/// one row per call so that every row's clamped neighbours are constants,
+/// each row's products widened into one lane per column (`smlal`).
+#[cfg(not(target_arch = "x86_64"))]
 #[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn rows_8x8_sums<S: Simd>(
@@ -927,15 +997,21 @@ fn rows_8x8_sums<S: Simd>(
         row_8x8_gradients::<S, 7>(weighted),
     ];
     let mut halves = [[i32x8::splat(simd, 0); 5]; 2];
-    for pair in 0..4 {
-        let (top, bottom) = (gradients[2 * pair], gradients[2 * pair + 1]);
-        accumulate_unit_sums(
-            &mut halves[pair / 2],
-            top.0.combine(bottom.0),
-            top.1.combine(bottom.1),
-            difference[2 * pair].combine(difference[2 * pair + 1]),
-        );
-    }
+    let accumulate =
+        |sums: &mut [i32x8<S>; 5], rows: &[(i16x8<S>, i16x8<S>)], difference: &[i16x8<S>]| {
+            for (&(u, v), &w) in rows.iter().zip(difference) {
+                for (sum, (left, right)) in
+                    sums.iter_mut()
+                        .zip([(u, u), (v, v), (u, v), (u, w), (v, w)])
+                {
+                    let (low, high) = left.widening_mul(right);
+                    *sum += low.combine(high);
+                }
+            }
+        };
+    let (top, bottom) = gradients.split_at(4);
+    accumulate(&mut halves[0], top, &difference[..4]);
+    accumulate(&mut halves[1], bottom, &difference[4..]);
     halves
 }
 
@@ -965,8 +1041,25 @@ fn accumulate_unit_sums<S: Simd>(
     sums[4] += v.pairwise_dot_product(w);
 }
 
+/// The sums of columns 0..4 and 4..8 in the lanes [`rows_8x8_sums`] fills.
+#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[inline(always)]
+fn column_halves<S: Simd>(lanes: i32x8<S>) -> [i32; 2] {
+    let (first, second) = lanes.split();
+    #[cfg(target_arch = "x86_64")]
+    {
+        let [a, b, c, d] = *(first + second);
+        [a + b, c + d]
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        [first.reduce_sum(), second.reduce_sum()]
+    }
+}
+
 /// The horizontal and vertical gradients of one row of an 8x8 unit; a doubled
 /// edge tap rounds by 6 bits instead of doubling before 7.
+#[cfg(not(target_arch = "x86_64"))]
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn row_8x8_gradients<S: Simd, const ROW: usize>(rows: &[i16x8<S>; 8]) -> (i16x8<S>, i16x8<S>) {
@@ -1002,28 +1095,36 @@ fn gradient_i16<S: Simd>(
     (magnitude ^ sign) - sign
 }
 
-/// [`solve_unit_sums`] of the four 8x8 units of a 16x16 predictor pair, which
-/// is one gradient unit, in the order of [`derive_optflow_mv_deltas_into`].
-fn unit_16x16_sums(weighted: &[i16; 256], difference: &[i16; 256]) -> [[i32; 5]; 4] {
+/// The 16 rows of one 16x16 gradient unit of a plane.
+type GradientTile<'a> = [&'a [i16; GRADIENT_UNIT]; GRADIENT_UNIT];
+
+/// The rows of the gradient unit at `x`, `y` of a `width`-sample plane.
+fn gradient_tile(plane: &[i16], width: usize, x: usize, y: usize) -> GradientTile<'_> {
+    let (rows, _) = plane.as_chunks::<GRADIENT_UNIT>();
+    core::array::from_fn(|row| &rows[((y + row) * width + x) / GRADIENT_UNIT])
+}
+
+/// [`solve_unit_sums`] of the four 8x8 units of a 16x16 gradient unit, in
+/// raster order.
+fn unit_16x16_sums(weighted: &GradientTile<'_>, difference: &GradientTile<'_>) -> [[i32; 5]; 4] {
     baseline_simd!(simd => unit_16x16_lane_sums(simd, weighted, difference))
 }
 
 /// [`unit_16x16_sums`] with whole 16-lane rows: each 8x8 unit accumulates
 /// the products of its half-row in its own `i32x4` lanes, with no pairwise
 /// add.
+#[cfg(not(target_arch = "x86_64"))]
 #[inline]
 fn unit_16x16_lane_sums<S: Simd>(
     simd: S,
-    weighted: &[i16; 256],
-    difference: &[i16; 256],
+    rows: &GradientTile<'_>,
+    diff_rows: &GradientTile<'_>,
 ) -> [[i32; 5]; 4] {
-    let (rows, _) = weighted.as_chunks::<16>();
-    let (diff_rows, _) = difference.as_chunks::<16>();
     let half_sums = |half: core::ops::Range<usize>| {
-        let mut sums = [[i32x4::splat(simd, 0); 2]; 5];
+        let mut sums = [[fearless_simd::i32x4::splat(simd, 0); 2]; 5];
         for row in half {
             let (u, v) = gradient_row(simd, rows, row);
-            let w = i16x16::load_array_ref(simd, &diff_rows[row]);
+            let w = i16x16::load_array_ref(simd, diff_rows[row]);
             for (sums, (left, right)) in
                 sums.iter_mut()
                     .zip([(u, u), (v, v), (u, v), (u, w), (v, w)])
@@ -1053,13 +1154,13 @@ fn unit_16x16_lane_sums<S: Simd>(
 
 /// The horizontal and vertical § 7.13.3.9 gradients of `row` in one gradient
 /// unit of `rows`, with its clamped and doubled edges, in `i16` halves as
-/// [`row_8x8_gradients`] derives them: `weighted` has the span bound of
+/// the 8x8 unit derives them: `weighted` has the span bound of
 /// [`unit_8x8_sums`].
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
-fn gradient_row<S: Simd>(simd: S, rows: &[[i16; 16]], row: usize) -> (i16x16<S>, i16x16<S>) {
+fn gradient_row<S: Simd>(simd: S, rows: &GradientTile<'_>, row: usize) -> (i16x16<S>, i16x16<S>) {
     let last = rows.len() - 1;
-    let lanes = |row: usize| i16x16::load_array_ref(simd, &rows[row]).split();
+    let lanes = |row: usize| i16x16::load_array_ref(simd, rows[row]).split();
     let (low, high) = lanes(row);
     let [first, end] = [rows[row][0], rows[row][15]].map(|sample| i16x8::splat(simd, sample));
     let edge = |bits: u64| {
@@ -1220,6 +1321,54 @@ mod tests {
         }
     }
 
+    /// The 10-bit unit kernel matches the strided derivation, including
+    /// differences that round to zero, and skips exactly when the eight-bit
+    /// SAD is below the threshold.
+    #[test]
+    fn word_8x8_units_match_the_strided_derivation() {
+        let fills: [fn(usize) -> u16; 5] = [
+            |i| ((i * 73 + i / 13 * 29 + (i * i) % 7) % 1024) as u16,
+            |i| if (i + i / 13) % 3 == 0 { 1023 } else { 0 },
+            |i| ((i * 7919) % 1024) as u16,
+            |i| (i % 2) as u16 + 500,
+            |_| 700,
+        ];
+        for distances in [[1, -1], [3, 2], [-4, 1], [0, 2]] {
+            for (first, second) in [(0, 1), (1, 2), (2, 0), (3, 3), (0, 0), (4, 4)] {
+                let a: Vec<u16> = (0..64).map(fills[first]).collect();
+                let b: Vec<u16> = (0..64).map(|i| fills[second](i + 5)).collect();
+                let sad: u32 = a
+                    .iter()
+                    .zip(&b)
+                    .map(|(&x, &y)| u32::from(x.abs_diff(y)))
+                    .sum();
+                let delta = derive_optflow_mv_delta_8x8_strided_into(
+                    &a,
+                    0,
+                    &b,
+                    0,
+                    8,
+                    BitDepth::Ten,
+                    distances,
+                )
+                .unwrap();
+                let rows = [&a, &b].map(|pred| {
+                    core::array::from_fn(|row| core::array::from_fn(|col| pred[row * 8 + col]))
+                });
+                for threshold in [None, Some(sad >> 2), Some((sad >> 2) + 1)] {
+                    let expected =
+                        (threshold.is_none_or(|threshold| sad >> 2 >= threshold)).then_some(delta);
+                    let actual =
+                        optflow_unit_8x8_u16(rows, BitDepth::Ten, distances, threshold).unwrap();
+                    assert_eq!(
+                        actual, expected,
+                        "{distances:?} {first}/{second} {threshold:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// The `i16` lane sums match the stored `i32`-rounded gradient planes for
     /// every reduced distance pair over in-range samples, including the
     /// extreme steps that bound the lane arithmetic.
@@ -1314,7 +1463,42 @@ mod tests {
             let want = [(0, 0), (8, 0), (0, 8), (8, 8)].map(|(x, y)| {
                 solve_unit_sums::<8>(&gradient_x, &gradient_y, &difference, 16, x, y)
             });
-            assert_eq!(unit_16x16_sums(&weighted, &difference), want);
+            let tile = |plane| gradient_tile(plane, 16, 0, 0);
+            assert_eq!(unit_16x16_sums(&tile(&weighted), &tile(&difference)), want);
+        }
+    }
+
+    #[test]
+    fn gradient_tiles_match_the_stored_gradient_planes() {
+        for (width, height) in [(32, 16), (16, 32), (64, 32)] {
+            let len = width * height;
+            let pred0: Vec<u16> = (0..len).map(|i| ((i * 7919 + 31) % 256) as u16).collect();
+            let pred1: Vec<u16> = (0..len).map(|i| ((i * 104_729 + 7) % 256) as u16).collect();
+            let distances = reduce_distances([2, -1]);
+            let (mut weighted, mut difference) = (vec![0i16; len], vec![0i16; len]);
+            baseline_simd!(simd => weighted_difference_planes(
+                simd, &pred0, &pred1, &mut weighted, &mut difference, distances, 0,
+            ));
+            let (mut gradient_x, mut gradient_y) = (vec![0i16; len], vec![0i16; len]);
+            gradients(&weighted, width, height, &mut gradient_x, &mut gradient_y);
+            let want: Vec<_> = (0..height)
+                .step_by(8)
+                .flat_map(|y| (0..width).step_by(8).map(move |x| (x, y)))
+                .map(|(x, y)| {
+                    let (gx, gy, d) = (&gradient_x, &gradient_y, &difference);
+                    solve_unit(gx, gy, d, width, x, y, 8, distances).unwrap()
+                })
+                .collect();
+            let deltas = derive_optflow_mv_deltas(
+                &pred0,
+                &pred1,
+                width,
+                height,
+                8,
+                BitDepth::Eight,
+                [2, -1],
+            );
+            assert_eq!(deltas.unwrap(), want, "{width}x{height}");
         }
     }
 
@@ -1335,10 +1519,44 @@ mod tests {
             .collect();
         let (got8, got16) = baseline_simd!(simd => (
             horizontal_gradient_8(simd, &source8).to_array(),
-            horizontal_gradient_16(simd, &source16).to_array(),
+            horizontal_gradient_16(simd, &source16, 15).to_array(),
         ));
         assert_eq!(got8[..], want8[..]);
         assert_eq!(got16[..], want16[..]);
+    }
+
+    /// Gradient planes of every width up to 40, whose rows end in partial
+    /// gradient units, against the clamped scalar taps of each unit.
+    #[test]
+    fn gradient_plane_tails_match_the_clamped_scalar_taps() {
+        for width in 1..=40 {
+            for height in [1, 3, 8, 17] {
+                let values = (0..width * height)
+                    .map(|index| ((index * 7919 + 13) % 4001) as i16 - 2000)
+                    .collect::<Vec<i16>>();
+                let (mut x, mut y) = (vec![0; width * height], vec![0; width * height]);
+                gradients(&values, width, height, &mut x, &mut y);
+                for row in 0..height {
+                    let line = &values[row * width..][..width];
+                    for col in 0..width {
+                        let unit = col / 16 * 16;
+                        let want = horizontal_gradient_scalar(
+                            &line[unit..(unit + 16).min(width)],
+                            col - unit,
+                        );
+                        assert_eq!(x[row * width + col], want, "x {width}x{height} {row},{col}");
+                        let column: Vec<i16> =
+                            (0..height).map(|r| values[r * width + col]).collect();
+                        let unit = row / 16 * 16;
+                        let want = horizontal_gradient_scalar(
+                            &column[unit..(unit + 16).min(height)],
+                            row - unit,
+                        );
+                        assert_eq!(y[row * width + col], want, "y {width}x{height} {row},{col}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

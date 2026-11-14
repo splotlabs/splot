@@ -28,6 +28,11 @@ const BLOCK_32X32: usize = 9;
 const BLOCK_64X64: usize = 12;
 const BLOCK_128X128: usize = 15;
 const BLOCK_32X8: usize = 22;
+const BLOCK_8X4: usize = 2;
+const BLOCK_8X8: usize = 3;
+const BLOCK_16X8: usize = 5;
+const BLOCK_64X32: usize = 11;
+const BLOCK_128X64: usize = 14;
 const PARTITION_CONTEXT_4X4_U8: u8 = 63;
 
 /// MI-size lines of a `size`-square tile at the origin reading as 4x4 blocks.
@@ -162,6 +167,7 @@ pub(crate) fn make_work_unit_at(
             tile_cdf_save_policy(TileCdfPolicyInput::single_tile_default(), 0).unwrap(),
             std::sync::Arc::new(FrameCdfSubset::from_defaults()),
         ),
+        bru_tile_active: None,
     }
 }
 
@@ -281,18 +287,26 @@ fn assert_child_positions_for(
 fn child_positions_for(partition: PartitionType, b_size: usize) -> Vec<(usize, usize)> {
     let call = root_call(b_size);
     let sub_size = valid_subsize(partition, call.b_size).unwrap();
-    child_calls(call, partition, sub_size, &frame(b_size), false)
-        .unwrap()
-        .as_slice()
-        .iter()
-        .map(|child| (child.r(), child.c()))
-        .collect()
+    child_calls(
+        call,
+        call.own_chroma_ref(),
+        partition,
+        sub_size,
+        &frame(b_size),
+        false,
+    )
+    .unwrap()
+    .as_slice()
+    .iter()
+    .map(|child| (child.r(), child.c()))
+    .collect()
 }
 
 #[test]
 fn chroma_ref_geometry_captures_own_block_until_chroma_offset() {
     let call = root_call(BLOCK_64X64);
-    let geometry = call.chroma_ref_geometry();
+    let other = ChromaRefGeometry::new(4, 4, BlockSize::new(BLOCK_32X32).unwrap());
+    let geometry = call.chroma_ref(other);
     assert_eq!(
         (geometry.row, geometry.col, geometry.size.index()),
         (0, 0, BLOCK_64X64)
@@ -305,14 +319,15 @@ fn child_calls_thread_chroma_reference_to_chroma_offset_descendants() {
     let sub_size = valid_subsize(PartitionType::Horz, call.b_size).unwrap();
     let children = child_calls(
         call,
+        call.own_chroma_ref(),
         PartitionType::Horz,
         sub_size,
         &frame(BLOCK_64X64),
         true,
     )
     .unwrap();
-    for child in children.as_slice() {
-        let geometry = child.chroma_ref_geometry();
+    for (child, &inherited) in children.as_slice().iter().zip(children.chroma_refs()) {
+        let geometry = child.chroma_ref(inherited);
         assert_eq!(
             (geometry.row, geometry.col, geometry.size.index()),
             (0, 0, BLOCK_64X64),
@@ -332,13 +347,13 @@ fn shared_mixed_chroma_ref_size_mismatch_forces_inter() {
         true,
         false,
         PartitionTreeType::Shared,
-        Some(chroma_ref),
         true,
         false,
     );
 
     let frontier = decode_block_frontier(
         call,
+        call.chroma_ref(chroma_ref),
         &frame(BLOCK_64X64),
         call.b_size,
         true,
@@ -426,7 +441,15 @@ fn sdp_cfl_allowed_state_propagates_to_chroma_children() {
         .with_cfl_allowed_in_sdp(false);
     let sub_size = valid_subsize(PartitionType::Vert, chroma_root.b_size).unwrap();
 
-    let children = child_calls(chroma_root, PartitionType::Vert, sub_size, &frame, false).unwrap();
+    let children = child_calls(
+        chroma_root,
+        chroma_root.own_chroma_ref(),
+        PartitionType::Vert,
+        sub_size,
+        &frame,
+        false,
+    )
+    .unwrap();
 
     assert!(
         children
@@ -606,6 +629,7 @@ fn split_child_sdp_recognizes_nested_64x64_shared_roots() {
     let sub_size = valid_subsize(PartitionType::Split, root.b_size).unwrap();
     let children = child_calls(
         root,
+        root.own_chroma_ref(),
         PartitionType::Split,
         sub_size,
         &frame(BLOCK_128X128),
@@ -628,12 +652,22 @@ fn extended_sdp_propagates_through_large_parent_to_eligible_child() {
     let mut facts = frame(BLOCK_128X128);
     facts.enable_extended_sdp = true;
     facts.frame_is_intra = false;
-    let children = child_calls(root, PartitionType::Split, sub_size, &facts, false).unwrap();
+    let children = child_calls(
+        root,
+        root.own_chroma_ref(),
+        PartitionType::Split,
+        sub_size,
+        &facts,
+        false,
+    )
+    .unwrap();
     let child = children.as_slice()[0];
 
     assert_eq!(child.b_size.index(), BLOCK_64X64);
     assert!(child.extended_sdp_allowed());
-    assert!(should_read_extended_sdp_region_type(&facts, child, PartitionType::Horz).unwrap());
+    assert!(
+        should_read_extended_sdp_region_type(&facts, child, PartitionType::Horz, true).unwrap()
+    );
 }
 
 #[test]
@@ -682,6 +716,7 @@ fn inter_extended_sdp_root_does_not_consume_region_type() {
         &facts,
         &mut call,
         PartitionType::Horz,
+        true,
         &mut cdfs,
         &mut symbols,
     )
@@ -714,7 +749,6 @@ fn inter_extended_sdp_mixed_child_consumes_region_type() {
         false,
         true,
         PartitionTreeType::Shared,
-        None,
         true,
         false,
     );
@@ -723,6 +757,7 @@ fn inter_extended_sdp_mixed_child_consumes_region_type() {
         &facts,
         &mut call,
         PartitionType::Horz,
+        true,
         &mut cdfs,
         &mut symbols,
     )
@@ -732,6 +767,332 @@ fn inter_extended_sdp_mixed_child_consumes_region_type() {
     assert_eq!(call.tree_type(), PartitionTreeType::Shared);
     assert!(!call.intra_region());
     assert_eq!(symbols.symbol_count(), 1);
+}
+
+fn extended_sdp_child(
+    b_size: usize,
+    tree_type: PartitionTreeType,
+    allowed: bool,
+) -> TilePartitionCall {
+    TilePartitionCall::child(
+        0,
+        0,
+        BlockSize::new(b_size).unwrap(),
+        Some(BlockSize::new(BLOCK_128X128).unwrap()),
+        false,
+        true,
+        tree_type,
+        allowed,
+        false,
+    )
+}
+
+#[test]
+fn extended_sdp_region_type_gate_requires_every_spec_term() {
+    let mut facts = frame(BLOCK_128X128);
+    facts.enable_extended_sdp = true;
+    facts.frame_is_intra = false;
+    let gate = |facts: &TilePartitionFrameFacts, call, partition, bru_active| {
+        should_read_extended_sdp_region_type(facts, call, partition, bru_active).unwrap()
+    };
+    let child = extended_sdp_child(BLOCK_32X32, PartitionTreeType::Shared, true);
+    for partition in [
+        PartitionType::Horz,
+        PartitionType::Vert,
+        PartitionType::Horz3,
+        PartitionType::Vert3,
+    ] {
+        assert!(gate(&facts, child, partition, true), "{partition:?}");
+    }
+    for partition in [
+        PartitionType::None,
+        PartitionType::Split,
+        PartitionType::Horz4A,
+        PartitionType::Horz4B,
+        PartitionType::Vert4A,
+        PartitionType::Vert4B,
+    ] {
+        assert!(!gate(&facts, child, partition, true), "{partition:?}");
+    }
+    assert!(!gate(&facts, child, PartitionType::Horz, false));
+    assert!(!gate(
+        &facts,
+        root_call(BLOCK_128X128),
+        PartitionType::Horz,
+        true
+    ));
+    let luma = extended_sdp_child(BLOCK_32X32, PartitionTreeType::LumaPart, true);
+    assert!(!gate(&facts, luma, PartitionType::Horz, true));
+    let disallowed = extended_sdp_child(BLOCK_32X32, PartitionTreeType::Shared, false);
+    assert!(!gate(&facts, disallowed, PartitionType::Horz, true));
+    for (b_size, expected) in [
+        (BLOCK_8X8, true),
+        (BLOCK_64X64, true),
+        (BLOCK_8X4, false),
+        (BLOCK_128X64, false),
+    ] {
+        let call = extended_sdp_child(b_size, PartitionTreeType::Shared, true);
+        assert_eq!(
+            gate(&facts, call, PartitionType::Vert, true),
+            expected,
+            "{b_size}"
+        );
+    }
+    let mut intra = facts;
+    intra.frame_is_intra = true;
+    assert!(!gate(&intra, child, PartitionType::Horz, true));
+    let mut off = facts;
+    off.enable_extended_sdp = false;
+    assert!(!gate(&off, child, PartitionType::Horz, true));
+}
+
+#[test]
+fn inactive_bru_superblock_reads_no_region_type() {
+    let payload = encode_symbol_sequence(&[(TileCdfSelector::RegionType { ctx: 2 }, INTRA_REGION)]);
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        &payload,
+        ByteOffset::new(0),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    )
+    .unwrap();
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let mut facts = frame(BLOCK_128X128);
+    facts.enable_extended_sdp = true;
+    facts.frame_is_intra = false;
+    let mut call = extended_sdp_child(BLOCK_32X32, PartitionTreeType::Shared, true);
+
+    let using_extended_sdp = read_extended_sdp_region_type(
+        &facts,
+        &mut call,
+        PartitionType::Vert,
+        false,
+        &mut cdfs,
+        &mut symbols,
+    )
+    .unwrap();
+
+    assert!(!using_extended_sdp);
+    assert_eq!(call.tree_type(), PartitionTreeType::Shared);
+    assert_eq!(symbols.symbol_count(), 0);
+}
+
+const REGION_64X32: TileCdfSelector = TileCdfSelector::RegionType { ctx: 3 };
+const REGION_32X32: TileCdfSelector = TileCdfSelector::RegionType { ctx: 2 };
+const REGION_32X16: TileCdfSelector = TileCdfSelector::RegionType { ctx: 1 };
+const RECT_32X16: TileCdfSelector = TileCdfSelector::RectType {
+    plane_start: 0,
+    ctx: 8,
+};
+const EXT_32X16: TileCdfSelector = TileCdfSelector::DoExtPartition {
+    plane_start: 0,
+    ctx: 8,
+};
+const SPLIT_16X8: TileCdfSelector = TileCdfSelector::DoSplit {
+    plane_start: 0,
+    ctx: 4,
+};
+
+/// Walks the one superblock of a 2x8-MI inter frame. The 64x64 root takes the
+/// implied `PARTITION_HORZ` and its 64x32 child the implied `PARTITION_VERT`,
+/// so the first coded symbol is that child's `region_type`.
+fn walk_edge_superblock(
+    enable_extended_sdp: bool,
+    symbols: &[(TileCdfSelector, u8)],
+    payload_len: Option<usize>,
+) -> (Vec<CapturedLeaf>, GeneralIntraPartitionTreeOutput<'static>) {
+    let mut sequence = symbols.to_vec();
+    sequence.push((TileCdfSelector::DeltaQ, 2));
+    let mut payload = encode_symbol_sequence(&sequence);
+    payload.truncate(payload_len.unwrap_or(payload.len()));
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Disabled);
+    let mut facts = frame(BLOCK_64X64);
+    facts.mi_rows = 2;
+    facts.mi_cols = 8;
+    facts.frame_is_intra = false;
+    facts.enable_extended_sdp = enable_extended_sdp;
+    run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap()
+}
+
+fn assert_walk_end(output: &mut GeneralIntraPartitionTreeOutput<'_>, walk_symbols: usize) {
+    assert_eq!(output.symbols.symbol_count(), walk_symbols as u64);
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let marker = cdfs
+        .with_row_mut(TileCdfSelector::DeltaQ, |row| {
+            output.symbols.read_symbol_u16(row)
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        marker.get(),
+        2,
+        "the walk must stop right before the marker"
+    );
+}
+
+fn leaf_shape(leaf: &CapturedLeaf) -> (u64, usize, usize, bool) {
+    let frontier = &leaf.frontier;
+    (
+        leaf.symbol_count,
+        frontier.c,
+        frontier.b_size.index(),
+        frontier.intra_region,
+    )
+}
+
+#[test]
+fn walk_reads_mixed_region_type_between_partition_and_children() {
+    let symbols = [
+        (REGION_64X32, MIXED_REGION),
+        (REGION_32X32, MIXED_REGION),
+        (RECT_32X16, 1),
+        (EXT_32X16, 0),
+        (REGION_32X16, MIXED_REGION),
+        (REGION_32X16, MIXED_REGION),
+        (SPLIT_16X8, 0),
+        (REGION_32X16, MIXED_REGION),
+        (SPLIT_16X8, 0),
+    ];
+    let (leaves, mut output) = walk_edge_superblock(true, &symbols, None);
+
+    let shapes: Vec<_> = leaves.iter().map(leaf_shape).collect();
+    assert_eq!(
+        shapes,
+        [(7, 0, BLOCK_16X8, false), (9, 4, BLOCK_16X8, false)]
+    );
+    assert!(
+        leaves
+            .iter()
+            .all(|leaf| leaf.frontier.part == DecodeBlockPart::Shared)
+    );
+    assert_walk_end(&mut output, symbols.len());
+}
+
+#[test]
+fn walk_reads_intra_region_type_then_luma_tree_then_chroma_block() {
+    let symbols = [
+        (REGION_64X32, INTRA_REGION),
+        (RECT_32X16, 1),
+        (EXT_32X16, 0),
+        (SPLIT_16X8, 0),
+        (SPLIT_16X8, 0),
+    ];
+    let (leaves, mut output) = walk_edge_superblock(true, &symbols, None);
+
+    let shapes: Vec<_> = leaves.iter().map(leaf_shape).collect();
+    assert_eq!(
+        shapes,
+        [
+            (4, 0, BLOCK_16X8, true),
+            (5, 4, BLOCK_16X8, true),
+            (5, 0, BLOCK_64X32, true)
+        ]
+    );
+    assert_eq!(leaves[0].frontier.part, DecodeBlockPart::LumaPart);
+    assert_eq!(leaves[1].frontier.part, DecodeBlockPart::LumaPart);
+    assert!(leaves[2].frontier.is_chroma_part());
+    assert_walk_end(&mut output, symbols.len());
+}
+
+#[test]
+fn walk_without_extended_sdp_reads_no_region_type() {
+    let symbols = [
+        (RECT_32X16, 1),
+        (EXT_32X16, 0),
+        (SPLIT_16X8, 0),
+        (SPLIT_16X8, 0),
+    ];
+    let (leaves, mut output) = walk_edge_superblock(false, &symbols, None);
+
+    let shapes: Vec<_> = leaves.iter().map(leaf_shape).collect();
+    assert_eq!(
+        shapes,
+        [(3, 0, BLOCK_16X8, false), (4, 4, BLOCK_16X8, false)]
+    );
+    assert_walk_end(&mut output, symbols.len());
+}
+
+#[test]
+fn walk_region_type_past_tile_end_fails_the_symbol_exit_check() {
+    let (leaves, output) = walk_edge_superblock(true, &[(REGION_64X32, INTRA_REGION)], Some(0));
+
+    assert!(leaves[0].symbol_count >= 1);
+    assert!(output.symbols.exit_symbol().is_err());
+}
+
+/// Walks the first 32x32 superblock of an inter frame whose tile carries
+/// `bru_tile_active`, over `symbols` then a `DeltaQ = 2` marker.
+fn walk_bru_superblock(
+    bru_tile_active: bool,
+    symbols: &[(TileCdfSelector, u8)],
+) -> (Vec<CapturedLeaf>, GeneralIntraPartitionTreeOutput<'static>) {
+    let mut sequence = symbols.to_vec();
+    sequence.push((TileCdfSelector::DeltaQ, 2));
+    let mut work_unit = make_work_unit(&encode_symbol_sequence(&sequence), CdfUpdateMode::Disabled);
+    work_unit.bru_tile_active = Some(bru_tile_active);
+    let mut facts = frame(BLOCK_32X32);
+    facts.frame_is_intra = false;
+    facts.enable_extended_sdp = true;
+    run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap()
+}
+
+#[test]
+fn bru_inactive_superblock_reads_mode_then_infers_partition_none() {
+    let (leaves, mut output) = walk_bru_superblock(true, &[(TileCdfSelector::BruMode, 0)]);
+
+    assert_eq!(leaves.len(), 1);
+    assert_eq!(leaves[0].symbol_count, 1);
+    assert_eq!(leaves[0].frontier.b_size.index(), BLOCK_32X32);
+    assert!(!leaves[0].frontier.bru_active());
+    assert_walk_end(&mut output, 1);
+}
+
+#[test]
+fn bru_support_superblock_is_not_active() {
+    let (leaves, mut output) = walk_bru_superblock(true, &[(TileCdfSelector::BruMode, 1)]);
+
+    assert!(!leaves[0].frontier.bru_active());
+    assert_walk_end(&mut output, 1);
+}
+
+#[test]
+fn bru_active_superblock_reads_its_partition() {
+    let symbols = [
+        (TileCdfSelector::BruMode, 2),
+        (
+            TileCdfSelector::DoSplit {
+                plane_start: 0,
+                ctx: 8,
+            },
+            0,
+        ),
+    ];
+    let (leaves, mut output) = walk_bru_superblock(true, &symbols);
+
+    assert_eq!(leaves.len(), 1);
+    assert_eq!(leaves[0].symbol_count, 2);
+    assert!(leaves[0].frontier.bru_active());
+    assert_walk_end(&mut output, 2);
+}
+
+#[test]
+fn inactive_bru_tile_reads_no_mode_symbol() {
+    let (leaves, mut output) = walk_bru_superblock(false, &[]);
+
+    assert_eq!(leaves[0].symbol_count, 0);
+    assert!(!leaves[0].frontier.bru_active());
+    assert_walk_end(&mut output, 0);
+}
+
+#[test]
+fn bru_mode_past_tile_end_fails_the_symbol_exit_check() {
+    let mut work_unit = make_work_unit(&[], CdfUpdateMode::Disabled);
+    work_unit.bru_tile_active = Some(true);
+    let mut facts = frame(BLOCK_32X32);
+    facts.frame_is_intra = false;
+    let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+
+    assert!(output.symbols.symbol_count() >= 1);
+    assert!(output.symbols.exit_symbol().is_err());
 }
 
 #[test]

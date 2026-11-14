@@ -10,12 +10,12 @@
 //! motion plane and updates the reference MV and warp parameter banks.
 //!
 //! The parse pass publishes only the flag plane and stores one
-//! [`LeafResolveRecord`] on each reconstruction entry. [`resolve_parsed_leaves`]
+//! [`EntryState`] on each reconstruction entry. [`resolve_parsed_leaves`]
 //! then replays those entries in leaf order, so every bank reseed, bank hit and
 //! motion publication lands in the fused walk's order even though symbol
 //! decode has already run ahead to the end of the unit.
 
-use super::super::compound::{CompoundBlockSyntax, CompoundYMode};
+use super::super::compound::CompoundYMode;
 use super::super::find_mv_stack::{
     ALL_CANDIDATES, CompoundMvCandidate, CompoundMvStack, INTRABC_REF_FRAME, MvStack,
     NeighbourFlagSyntax, NeighbourMotionValues, OrderHintMvContext, RefMvBank, WarpParamBank,
@@ -25,42 +25,33 @@ use super::compound_path::{
     add_mv_clamped, compound_local_warp_models, project_joint_mvd, scale_joint_projected_mvd,
     select_near_near_candidates,
 };
-use super::prediction::InterLeafPlacement;
-use super::tile::{LeafSlot, ReconRowEntry};
+use super::tile::{EntryState, LeafSlot, ReconRowEntry};
 use super::warp::{
     ExtendWarpContext, apply_warp_delta, extend_warp_estimation, set_warp_translation,
 };
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-/// The § 7.12 work owned by one reconstruction entry.
-pub(super) enum LeafResolveRecord {
-    /// Nothing: chroma-part leaves publish no neighbour record.
-    Reseed(ReconCommand),
-    /// Zero motion plus the § 7.12.5 bank hit budget: intra and intra block
-    /// copy leaves.
-    NonInter {
-        command: ReconCommand,
-        n4w: u8,
-        n4h: u8,
-    },
-    Inter(PendingInterBlock),
-    /// Boxed: only screen-content intra frames carry these, and inline they
-    /// would set the size of every entry.
-    Intrabc(Box<PendingIntrabcBlock>),
-}
-
-impl LeafResolveRecord {
+impl LeafSlot {
     /// The neighbour flags the parser published for this leaf.
     pub(super) fn flag_syntax(&self, frame_precision: u8) -> NeighbourFlagSyntax {
         match self {
-            Self::Inter(block) => block.syntax.flag_syntax(),
+            Self::Command(ReconCommand::Inter(command)) => command.flag_syntax(),
             Self::Intrabc(block) => {
                 non_inter_flag_syntax(Some(block.residual.is_none()), frame_precision)
             }
-            Self::Reseed(_) | Self::NonInter { .. } => non_inter_flag_syntax(None, frame_precision),
+            Self::Command(ReconCommand::Intrabc(_)) | Self::Spent => {
+                non_inter_flag_syntax(None, frame_precision)
+            }
         }
     }
+}
+
+/// Stores `slot` as the row's next slot. Rows hold far fewer than `u32::MAX` leaves.
+fn push_slot(slots: &mut Vec<LeafSlot>, slot: LeafSlot) -> EntryState {
+    let index = slots.len() as u32;
+    slots.push(slot);
+    EntryState::Slot(index)
 }
 
 /// The bank and motion-plane work of a leaf whose command is already final,
@@ -68,22 +59,15 @@ impl LeafResolveRecord {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum LeafReset {
     None,
-    /// [`LeafResolveRecord::Reseed`].
+    /// A chroma-part leaf, which publishes no neighbour record.
     Reseed,
-    /// [`LeafResolveRecord::NonInter`].
+    /// Zero motion plus the § 7.12.5 bank hit budget.
     NonInter {
         n4w: usize,
         n4h: usize,
     },
-}
-
-/// One inter leaf's parse output, held until the resolve pass reaches it.
-pub(super) struct PendingInterBlock {
-    syntax: InterBlockSyntax,
-    placement: InterLeafPlacement,
-    segment_id: u8,
-    qindex: u32,
-    frame_precision: u8,
+    /// [`EntryState::Slot`]: the slot's motion is still to resolve.
+    Slot,
 }
 
 pub(super) struct PendingIntrabcBlock {
@@ -105,25 +89,11 @@ pub(super) struct PendingIntrabcBlock {
     pub(super) avail_left: bool,
 }
 
-pub(super) fn pending_intrabc_leaf(pending: PendingIntrabcBlock) -> LeafResolveRecord {
-    LeafResolveRecord::Intrabc(Box::new(pending))
-}
-
-/// Packages one parsed inter leaf for the resolve pass that completes its
-/// reconstruction command.
-pub(super) fn pending_inter_leaf(
-    syntax: InterBlockSyntax,
-    placement: InterLeafPlacement,
-    qindex: u32,
-    frame_precision: u8,
-) -> LeafResolveRecord {
-    LeafResolveRecord::Inter(PendingInterBlock {
-        syntax,
-        placement,
-        segment_id: current_frame_qm_segment_id() as u8,
-        qindex,
-        frame_precision,
-    })
+pub(super) fn pending_intrabc_leaf(
+    slots: &mut Vec<LeafSlot>,
+    pending: PendingIntrabcBlock,
+) -> EntryState {
+    push_slot(slots, LeafSlot::Intrabc(Box::new(pending)))
 }
 
 /// Replays one parse unit's queued § 7.12 work in leaf order.
@@ -134,13 +104,12 @@ pub(super) fn resolve_parsed_leaves(
     entries: &mut [ReconRowEntry],
     slots: &mut [LeafSlot],
     state: &mut MvResolutionState<'_>,
-    sb_h4: usize,
 ) -> Result<()> {
+    let sb_h4 = state.sb_h4;
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, state.core.frame_is_intra == Some(true));
     for entry in entries {
-        let reset = entry.take_reset(slots);
-        let pending = entry.has_pending_resolve(slots);
-        if reset == LeafReset::None && !pending {
+        let reset = entry.take_reset();
+        if reset == LeafReset::None {
             continue;
         }
         let [mi_row, mi_col] = entry.publication.block_origin();
@@ -157,33 +126,27 @@ pub(super) fn resolve_parsed_leaves(
             .warp_param_bank
             .reset_for_leaf(state.grid, mi_row, mi_col, sb_h4);
         if let LeafReset::NonInter { n4w, n4h } = reset {
-            state
-                .grid
-                .record_motion(mi_row, mi_col, n4w, n4h, ZERO_NEIGHBOUR_MOTION_VALUES);
+            state.grid.record_zero_motion(mi_row, mi_col, n4w, n4h);
             if let Some(bank) = state.ref_mv_bank.as_mut() {
                 bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
             }
         }
-        if let Some(LeafResolveRecord::Inter(block)) = entry.pending_resolve_mut(slots) {
-            let command = resolve_pending_inter(block, state)?;
-            entry.store_command(slots, ReconCommand::Inter(command));
+        if reset != LeafReset::Slot {
             continue;
         }
-        let Some(resolve) = entry.take_resolve(slots) else {
-            continue;
-        };
-        match resolve {
-            LeafResolveRecord::Reseed(_)
-            | LeafResolveRecord::NonInter { .. }
-            | LeafResolveRecord::Inter(_) => {
-                return Err(invalid_inter_tile_scheduling_state());
+        match entry.slot_mut(slots) {
+            Some(LeafSlot::Command(ReconCommand::Inter(command))) => command.resolve(state)?,
+            Some(slot @ LeafSlot::Intrabc(_)) => {
+                let LeafSlot::Intrabc(block) = core::mem::replace(slot, LeafSlot::Spent) else {
+                    return Err(invalid_inter_tile_scheduling_state());
+                };
+                *slot = LeafSlot::Command(ReconCommand::Intrabc(resolve_pending_intrabc(
+                    *block,
+                    state,
+                    intrabc_sb_h4,
+                )?));
             }
-            LeafResolveRecord::Intrabc(block) => {
-                entry.store_command(
-                    slots,
-                    ReconCommand::Intrabc(resolve_pending_intrabc(*block, state, intrabc_sb_h4)?),
-                );
-            }
+            Some(LeafSlot::Command(ReconCommand::Intrabc(_)) | LeafSlot::Spent) | None => {}
         }
     }
     Ok(())
@@ -315,74 +278,6 @@ fn resolve_pending_intrabc(
     Ok(command)
 }
 
-/// Resolves a pending block's motion and assembles its reconstruction. A
-/// warp block of a `force_integer_mv` frame keeps its stored warp model but
-/// predicts by translation (`useWarp = 0`, § 7.13.3.14).
-fn resolve_pending_inter(
-    pending: &mut PendingInterBlock,
-    state: &mut MvResolutionState<'_>,
-) -> Result<deferred_recon::InterReconCommand> {
-    let PendingInterBlock {
-        syntax,
-        placement,
-        segment_id,
-        qindex,
-        frame_precision,
-    } = pending;
-    let geometry = placement.geometry((syntax.block_ctx.bw4, syntax.block_ctx.bh4))?;
-    let (segment_id, qindex) = (*segment_id, *qindex);
-    state.frame_precision = *frame_precision;
-    let mut resolved = resolve_inter_block(syntax, state)?;
-    predict_by_translation_under_integer_mv(syntax, state.core, &mut resolved);
-    let compound = match &syntax.motion {
-        InterMotionSyntax::Compound(compound) => Some(*compound),
-        InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) => None,
-    };
-    let tip_ref = matches!(
-        &syntax.motion,
-        InterMotionSyntax::Single(SingleMotionSyntax { tip_ref: true, .. })
-    );
-    let (block, kind) = match compound {
-        None => (
-            single_inter_block(syntax, &resolved),
-            if tip_ref {
-                deferred_recon::PendingKind::Tip
-            } else {
-                deferred_recon::PendingKind::Single
-            },
-        ),
-        Some(compound) => {
-            let (mi_row, mi_col) = (syntax.block_ctx.mi_row, syntax.block_ctx.mi_col);
-            let ref_frame0 = syntax.block_ctx.ref_frame0;
-            (
-                compound_inter_block(syntax, &compound, &resolved),
-                deferred_recon::PendingKind::Compound {
-                    syntax: CompoundBlockSyntax {
-                        y_mode: compound.y_mode,
-                        use_optflow: compound.use_optflow,
-                        ref_frame0,
-                        ref_frame1: compound.ref_frame1,
-                        mv0: resolved.mv[0],
-                        mv1: resolved.mv[1],
-                    },
-                    mi_row: mi_row as u32,
-                    mi_col: mi_col as u32,
-                    use_refinemv: compound.use_refinemv,
-                    refinemv_switchable: compound.refinemv_switchable,
-                },
-            )
-        }
-    };
-    let placed = geometry.place(block);
-    Ok(deferred_recon::InterReconCommand::new(
-        placed,
-        kind,
-        segment_id,
-        qindex,
-        state.tile_offset,
-    ))
-}
-
 /// Drops the warp model a warp block of a `force_integer_mv` frame predicts
 /// with: it keeps the stored model but predicts by translation (`useWarp = 0`,
 /// § 7.13.3.14). The encoder facade predicts through it too.
@@ -396,9 +291,9 @@ pub(super) fn predict_by_translation_under_integer_mv(
     }
 }
 
-/// Per-leaf § 5.20.7 inter syntax, before any § 7.12 candidate is resolved.
+/// Per-leaf § 5.20.7 inter syntax that § 7.12 resolution and the neighbour
+/// flags read; the leaf's [`InterBlock`] holds the rest.
 pub(super) struct InterBlockSyntax {
-    pub(super) block_ctx: MvBlockContext,
     pub(super) motion: InterMotionSyntax,
     pub(super) interp: ReconInterpolationFilter,
     pub(super) precision: BlockPrecisionRecord,
@@ -406,10 +301,6 @@ pub(super) struct InterBlockSyntax {
     pub(super) use_amvd: bool,
     pub(super) tip_size_16x16: bool,
     pub(super) blend: mc::CompoundBlend,
-    pub(super) bawp: BawpSyntax,
-    pub(super) interintra: Option<InterIntraPrediction>,
-    pub(super) optflow_distances: Option<[i32; 2]>,
-    pub(super) residual: Option<InterResidual>,
 }
 
 /// Mode-dependent half of [`InterBlockSyntax`].
@@ -417,24 +308,25 @@ pub(super) enum InterMotionSyntax {
     Single(SingleMotionSyntax),
     Warp(WarpMotionSyntax),
     Compound(CompoundMotionSyntax),
+    /// § 5.20.5.2 `bru_mode_info()`: `NEWMV` with `BlockMvs` set to zero, in a
+    /// superblock whose `bru_mode` is not `BRU_ACTIVE`.
+    Bru,
 }
 
 /// § 5.20.7.11 single-reference and § 5.20.7.16 TIP syntax.
 pub(super) struct SingleMotionSyntax {
     pub(super) mode: u8,
     pub(super) tip_ref: bool,
-    pub(super) ref_mv_idx: usize,
+    pub(super) ref_mv_idx: u8,
     pub(super) mvd: Mv,
     pub(super) use_temporal_first: bool,
-    /// § 7.13.3.22 GLOBALMV warp model, absent for every other mode.
-    pub(super) global_warp: Option<[i32; 6]>,
 }
 
 /// § 5.20.7.13 warp-mode syntax.
 pub(super) struct WarpMotionSyntax {
     pub(super) source: WarpModelSource,
-    pub(super) ref_mv_idx: usize,
-    pub(super) ref_warp_idx: usize,
+    pub(super) ref_mv_idx: u8,
+    pub(super) ref_warp_idx: u8,
     pub(super) mvd: Option<Mv>,
     pub(super) extend_delta: (i32, i32),
     pub(super) derive_wrl: bool,
@@ -473,7 +365,7 @@ pub(super) struct WarpDeltaSyntax {
 /// § 7.12.2.4 joint-MVD projection distances and base list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CompoundJointMvProjection {
-    pub(super) base_list: usize,
+    pub(super) base_list: u8,
     pub(super) first_dist: i32,
     pub(super) second_dist: i32,
 }
@@ -486,8 +378,8 @@ pub(super) struct CompoundMotionSyntax {
     pub(super) skip_mode: bool,
     pub(super) use_optflow: bool,
     pub(super) local_warp: bool,
-    pub(super) ref_mv_idx: usize,
-    pub(super) independent_idx: Option<[usize; 2]>,
+    pub(super) ref_mv_idx: u8,
+    pub(super) independent_idx: Option<[u8; 2]>,
     pub(super) mvd: [Mv; 2],
     pub(super) joint: Option<CompoundJointMvProjection>,
     pub(super) jmvd_scale_mode: u8,
@@ -524,6 +416,9 @@ pub(super) struct MvResolutionState<'a> {
     pub(super) max_drl_bits_minus_1: u32,
     pub(super) frame_precision: u8,
     pub(super) tile_offset: ByteOffset,
+    pub(super) sb_h4: usize,
+    pub(super) mi_rows: usize,
+    pub(super) mi_cols: usize,
 }
 
 impl MvResolutionState<'_> {
@@ -537,7 +432,7 @@ impl MvResolutionState<'_> {
 impl InterBlockSyntax {
     /// Flag-plane record for this leaf. Symbol decode of later leaves reads
     /// only this half, so the parse side publishes it before resolution runs.
-    pub(super) fn flag_syntax(&self) -> NeighbourFlagSyntax {
+    pub(super) fn flag_syntax(&self, ref_frame0: i8) -> NeighbourFlagSyntax {
         let (ref_frame1, newmv, skip_mode, motion_mode) = match &self.motion {
             InterMotionSyntax::Single(single) => (
                 None,
@@ -548,6 +443,7 @@ impl InterBlockSyntax {
             InterMotionSyntax::Warp(warp) => {
                 (None, [false, false], false, warp.source.motion_mode())
             }
+            InterMotionSyntax::Bru => (None, [true, false], false, MotionMode::Simple),
             InterMotionSyntax::Compound(compound) => (
                 Some(compound.ref_frame1),
                 [
@@ -560,7 +456,7 @@ impl InterBlockSyntax {
         };
         NeighbourFlagSyntax {
             is_inter: true,
-            ref_frame0: self.block_ctx.ref_frame0,
+            ref_frame0,
             ref_frame1,
             newmv,
             skip: self.skip,
@@ -584,14 +480,16 @@ impl CompoundMotionSyntax {
 /// Resolves one parsed inter leaf: § 7.12 stack, warp models, motion-plane
 /// publication and bank maintenance, in the fused walk's order.
 pub(super) fn resolve_inter_block(
+    block: &MvBlockContext,
     syntax: &InterBlockSyntax,
+    leaf: u32,
     state: &mut MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
-    let block = &syntax.block_ctx;
     let resolved = match &syntax.motion {
-        InterMotionSyntax::Single(single) => resolve_single(syntax, single, state),
-        InterMotionSyntax::Warp(warp) => resolve_warp(syntax, warp, state)?,
-        InterMotionSyntax::Compound(compound) => resolve_compound(syntax, compound, state)?,
+        InterMotionSyntax::Single(single) => resolve_single(block, syntax, single, state),
+        InterMotionSyntax::Warp(warp) => resolve_warp(block, syntax, warp, state)?,
+        InterMotionSyntax::Compound(compound) => resolve_compound(block, syntax, compound, state)?,
+        InterMotionSyntax::Bru => return Ok(resolve_bru(block, syntax, leaf, state)),
     };
     let (stored_warp, global_mv) = match &syntax.motion {
         InterMotionSyntax::Single(single) => (
@@ -602,7 +500,9 @@ pub(super) fn resolve_inter_block(
                 false,
             ],
         ),
-        InterMotionSyntax::Warp(_) => (resolved.warp_params[0], [false, false]),
+        InterMotionSyntax::Warp(_) | InterMotionSyntax::Bru => {
+            (resolved.warp_params[0], [false, false])
+        }
         InterMotionSyntax::Compound(compound) => {
             let stored_warp = if compound.local_warp {
                 resolved.warp_params[0]
@@ -617,7 +517,8 @@ pub(super) fn resolve_inter_block(
             (stored_warp, global_mv.unwrap_or([false; 2]))
         }
     };
-    state.grid.record_motion(
+    state.grid.record_leaf_motion(
+        leaf,
         block.mi_row,
         block.mi_col,
         block.bw4,
@@ -632,7 +533,9 @@ pub(super) fn resolve_inter_block(
                 InterMotionSyntax::Compound(compound) if compound.local_warp => {
                     resolved.warp_params
                 }
-                InterMotionSyntax::Single(_) | InterMotionSyntax::Compound(_) => [None, None],
+                InterMotionSyntax::Single(_)
+                | InterMotionSyntax::Compound(_)
+                | InterMotionSyntax::Bru => [None, None],
             },
         },
     );
@@ -653,46 +556,45 @@ pub(super) fn resolve_inter_block(
     Ok(resolved)
 }
 
-/// § 7.13 single-reference reconstruction input, assembled from the parsed
-/// syntax and its resolved motion.
-pub(super) fn single_inter_block(
-    syntax: &mut InterBlockSyntax,
-    resolved: &ResolvedInterBlock,
-) -> InterBlock {
-    InterBlock {
-        ref_frame0: syntax.block_ctx.ref_frame0,
-        ref_frame1: None,
-        mv: resolved.mv[0],
-        mv1: Mv::ZERO,
-        interp: syntax.interp,
-        warp_params: resolved.warp_params,
-        bawp: syntax.bawp,
-        interintra: syntax.interintra,
-        compound_blend: resolved.blend,
-        optflow_distances: syntax.optflow_distances,
-        residual: syntax.residual.take(),
-    }
+/// § 5.20.5.2 `bru_mode_info()` motion: a zero motion vector, published to
+/// the motion planes without the § 5.20.4.1 bank update of a non-active
+/// superblock.
+#[cold]
+#[inline(never)]
+fn resolve_bru(
+    block: &MvBlockContext,
+    syntax: &InterBlockSyntax,
+    leaf: u32,
+    state: &mut MvResolutionState<'_>,
+) -> ResolvedInterBlock {
+    let resolved = ResolvedInterBlock {
+        mv: [Mv::ZERO, Mv::ZERO],
+        warp_params: [None, None],
+        blend: syntax.blend,
+    };
+    state.grid.record_leaf_motion(
+        leaf,
+        block.mi_row,
+        block.mi_col,
+        block.bw4,
+        block.bh4,
+        NeighbourMotionValues {
+            mv: resolved.mv,
+            cwp_weight: resolved.blend.cwp_weight(),
+            stored_warp: None,
+            global_mv: [false, false],
+            splat_warp: [None, None],
+        },
+    );
+    resolved
 }
 
-/// § 7.13 compound reconstruction input, assembled from the parsed syntax and
-/// its resolved motion.
-pub(super) fn compound_inter_block(
-    syntax: &mut InterBlockSyntax,
-    compound: &CompoundMotionSyntax,
-    resolved: &ResolvedInterBlock,
-) -> InterBlock {
-    InterBlock {
-        ref_frame0: syntax.block_ctx.ref_frame0,
-        ref_frame1: Some(compound.ref_frame1),
-        mv: resolved.mv[0],
-        mv1: resolved.mv[1],
-        interp: syntax.interp,
-        warp_params: resolved.warp_params,
-        bawp: BawpSyntax::default(),
-        interintra: None,
-        compound_blend: resolved.blend,
-        optflow_distances: syntax.optflow_distances,
-        residual: syntax.residual.take(),
+impl ResolvedInterBlock {
+    /// Writes this motion into the leaf's parsed `block`.
+    pub(super) const fn apply(&self, block: &mut InterBlock) {
+        [block.mv, block.mv1] = self.mv;
+        block.warp_params = self.warp_params;
+        block.compound_blend = self.blend;
     }
 }
 
@@ -704,11 +606,11 @@ pub(super) fn compound_inter_block(
 )]
 #[inline(always)]
 pub(super) fn resolve_single(
+    block: &MvBlockContext,
     syntax: &InterBlockSyntax,
     single: &SingleMotionSyntax,
     state: &MvResolutionState<'_>,
 ) -> ResolvedInterBlock {
-    let block = &syntax.block_ctx;
     let mv = if single.mode == SINGLE_MODE_GLOBALMV {
         global_motion_mv(
             state.core,
@@ -722,7 +624,7 @@ pub(super) fn resolve_single(
             single.tip_ref,
             single.use_temporal_first,
             state,
-            single.ref_mv_idx,
+            usize::from(single.ref_mv_idx),
         );
         single_mode_mv(
             single,
@@ -734,7 +636,20 @@ pub(super) fn resolve_single(
     };
     ResolvedInterBlock {
         mv: [mv, Mv::ZERO],
-        warp_params: [single.global_warp, None],
+        warp_params: [
+            (!single.tip_ref && single.mode == SINGLE_MODE_GLOBALMV)
+                .then(|| {
+                    global_motion_warp(
+                        state.core,
+                        block.ref_frame0,
+                        effective_force_integer_mv(state.core),
+                        block.bw4,
+                        block.bh4,
+                    )
+                })
+                .flatten(),
+            None,
+        ],
         blend: syntax.blend,
     }
 }
@@ -778,7 +693,7 @@ pub(super) fn single_mode_mv(
     block: &MvBlockContext,
     state: &MvResolutionState<'_>,
 ) -> Mv {
-    let pred_mv = stack.candidate(single.ref_mv_idx);
+    let pred_mv = stack.candidate(usize::from(single.ref_mv_idx));
     match single.mode {
         SINGLE_MODE_GLOBALMV => {
             global_motion_mv(state.core, block.ref_frame0, block, precision.mv_precision)
@@ -796,15 +711,14 @@ pub(super) fn single_mode_mv(
 }
 
 fn resolve_warp(
+    block: &MvBlockContext,
     syntax: &InterBlockSyntax,
     warp: &WarpMotionSyntax,
     state: &mut MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
-    let resolved = warp_motion(syntax, warp, state)?;
+    let resolved = warp_motion(block, syntax, warp, state)?;
     if let Some(params) = resolved.warp_params[0] {
-        state
-            .warp_param_bank
-            .update(syntax.block_ctx.ref_frame0, params);
+        state.warp_param_bank.update(block.ref_frame0, params);
     }
     Ok(resolved)
 }
@@ -812,11 +726,11 @@ fn resolve_warp(
 /// The § 7.12 motion and § 7.13.3 model of a warp block, before the warp bank
 /// update; the encoder facade calls it too.
 pub(super) fn warp_motion(
+    block: &MvBlockContext,
     syntax: &InterBlockSyntax,
     warp: &WarpMotionSyntax,
     state: &MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
-    let block = &syntax.block_ctx;
     let global_mv = global_motion_mv(state.core, block.ref_frame0, block, state.frame_precision);
     let stack = find_mv_stack_upto(
         state.grid,
@@ -830,7 +744,7 @@ pub(super) fn warp_motion(
         state.temporal,
         Some(state.order_hints),
         warp.use_temporal_first,
-        warp.ref_mv_idx,
+        usize::from(warp.ref_mv_idx),
     );
     let (mv, params) = match &warp.source {
         WarpModelSource::Candidate => {
@@ -840,12 +754,12 @@ pub(super) fn warp_motion(
                 MV_PRECISION_EIGHTH_PEL
             };
             let base_mv = warp_predicted_mv(
-                stack.warp_candidate(warp.ref_warp_idx),
+                stack.warp_candidate(usize::from(warp.ref_warp_idx)),
                 block,
                 base_precision,
             );
             let mv = warp.mvd.map_or(base_mv, |mvd| add_mv_clamped(base_mv, mvd));
-            let mut params = stack.warp_candidate(warp.ref_warp_idx);
+            let mut params = stack.warp_candidate(usize::from(warp.ref_warp_idx));
             reduce_warp_model(&mut params);
             set_warp_translation(
                 &mut params,
@@ -871,7 +785,10 @@ pub(super) fn warp_motion(
 }
 
 fn warp_newmv(syntax: &InterBlockSyntax, warp: &WarpMotionSyntax, stack: &MvStack) -> Mv {
-    let pred_mv = lowered_pred_mv(syntax.precision, stack.candidate(warp.ref_mv_idx));
+    let pred_mv = lowered_pred_mv(
+        syntax.precision,
+        stack.candidate(usize::from(warp.ref_mv_idx)),
+    );
     add_mv_clamped(pred_mv, warp.mvd.unwrap_or(Mv::ZERO))
 }
 
@@ -903,27 +820,29 @@ fn warp_newmv_model(
                 global_warp_params: global_motion_model(state.core, block.ref_frame0).gm_params,
             },
             stack,
-            warp.ref_mv_idx,
+            usize::from(warp.ref_mv_idx),
             mv,
         ),
-        WarpModelSource::Delta(delta) => {
-            apply_warp_delta(stack.warp_candidate(warp.ref_warp_idx), *delta, mv, block)
-        }
+        WarpModelSource::Delta(delta) => apply_warp_delta(
+            stack.warp_candidate(usize::from(warp.ref_warp_idx)),
+            *delta,
+            mv,
+            block,
+        ),
         WarpModelSource::Candidate => Ok(DEFAULT_WARP_PARAMS),
     }
 }
 
 fn resolve_compound(
+    block: &MvBlockContext,
     syntax: &InterBlockSyntax,
     compound: &CompoundMotionSyntax,
     state: &mut MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
-    let resolved = compound_motion(syntax, compound, state)?;
+    let resolved = compound_motion(block, syntax, compound, state)?;
     if compound.local_warp {
         if let Some(params) = resolved.warp_params[0] {
-            state
-                .warp_param_bank
-                .update(syntax.block_ctx.ref_frame0, params);
+            state.warp_param_bank.update(block.ref_frame0, params);
         }
         if let Some(params) = resolved.warp_params[1] {
             state.warp_param_bank.update(compound.ref_frame1, params);
@@ -941,11 +860,11 @@ fn resolve_compound(
 )]
 #[inline(always)]
 pub(super) fn compound_motion(
+    block: &MvBlockContext,
     syntax: &InterBlockSyntax,
     compound: &CompoundMotionSyntax,
     state: &MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
-    let block = &syntax.block_ctx;
     let precision = state.frame_precision;
     let global_mvs = [
         global_motion_mv(state.core, block.ref_frame0, block, precision),
@@ -969,7 +888,7 @@ pub(super) fn compound_motion(
         .candidate(idx)
     };
     if compound.skip_mode {
-        let candidate = paired(compound.ref_mv_idx);
+        let candidate = paired(usize::from(compound.ref_mv_idx));
         return Ok(ResolvedInterBlock {
             mv: candidate.mvs,
             warp_params: [None, None],
@@ -1079,20 +998,21 @@ fn single_list_stack(
 /// that differ in DRL indices, from one paired stack and one stack per list
 /// instead of one per block; `None` for any other block.
 pub(super) fn near_near_mvs(
+    block: &MvBlockContext,
     syntaxes: &[Option<InterBlockSyntax>],
     state: &MvResolutionState<'_>,
 ) -> Vec<Option<[Mv; 2]>> {
-    let mut paired: Vec<((MvBlockContext, bool), CompoundMvStack)> = Vec::new();
-    let mut lists: Vec<((MvBlockContext, i8, bool), MvStack)> = Vec::new();
+    let mut paired: Vec<(bool, CompoundMvStack)> = Vec::new();
+    let mut lists: Vec<((i8, bool), MvStack)> = Vec::new();
     let mut out = Vec::with_capacity(syntaxes.len());
     for syntax in syntaxes {
-        let Some((block, compound)) = syntax.as_ref().and_then(|syntax| match &syntax.motion {
+        let Some(compound) = syntax.as_ref().and_then(|syntax| match &syntax.motion {
             InterMotionSyntax::Compound(compound)
                 if compound.y_mode == CompoundYMode::NearNear
                     && !compound.skip_mode
                     && !compound.local_warp =>
             {
-                Some((syntax.block_ctx, compound))
+                Some(compound)
             }
             _ => None,
         }) else {
@@ -1102,37 +1022,37 @@ pub(super) fn near_near_mvs(
         let precision = state.frame_precision;
         let refs = [block.ref_frame0, compound.ref_frame1];
         let global_mvs =
-            refs.map(|ref_frame| global_motion_mv(state.core, ref_frame, &block, precision));
+            refs.map(|ref_frame| global_motion_mv(state.core, ref_frame, block, precision));
         let mvs = if let Some(indices) = compound.independent_idx {
             core::array::from_fn(|list| {
-                let key = (block, refs[list], compound.temporal_first[list]);
+                let key = (refs[list], compound.temporal_first[list]);
                 let index = lists
                     .iter()
                     .position(|(seen, _)| *seen == key)
                     .unwrap_or_else(|| {
                         let stack = single_list_stack(
                             state,
-                            &block,
-                            key.1,
+                            block,
+                            key.0,
                             global_mvs[list],
-                            key.2,
+                            key.1,
                             ALL_CANDIDATES,
                         );
                         lists.push((key, stack));
                         lists.len() - 1
                     });
-                lists[index].1.candidate(indices[list])
+                lists[index].1.candidate(usize::from(indices[list]))
             })
         } else {
-            let key = (block, compound.temporal_allowed);
+            let key = compound.temporal_allowed;
             let index = paired
                 .iter()
                 .position(|(seen, _)| *seen == key)
                 .unwrap_or_else(|| {
-                    let temporal = if key.1 { state.temporal } else { None };
+                    let temporal = if key { state.temporal } else { None };
                     let stack = find_compound_mv_stack_upto(
                         state.grid,
-                        &block,
+                        block,
                         global_mvs,
                         state.bank(),
                         state.drl_reorder,
@@ -1142,7 +1062,10 @@ pub(super) fn near_near_mvs(
                     paired.push((key, stack));
                     paired.len() - 1
                 });
-            paired[index].1.candidate(compound.ref_mv_idx).mvs
+            paired[index]
+                .1
+                .candidate(usize::from(compound.ref_mv_idx))
+                .mvs
         };
         out.push(Some(mvs));
     }
@@ -1163,8 +1086,8 @@ fn compound_mvs(
 ) -> [Mv; 2] {
     let candidates = || {
         select_near_near_candidates(
-            compound.independent_idx,
-            compound.ref_mv_idx,
+            compound.independent_idx.map(|idx| idx.map(usize::from)),
+            usize::from(compound.ref_mv_idx),
             |idx| paired(idx).mvs,
             independent,
         )
@@ -1181,9 +1104,13 @@ fn compound_mvs(
             );
             mvs
         }
-        CompoundYMode::JointNew => joint_new_mvs(syntax, compound, paired(compound.ref_mv_idx).mvs),
+        CompoundYMode::JointNew => joint_new_mvs(
+            syntax,
+            compound,
+            paired(usize::from(compound.ref_mv_idx)).mvs,
+        ),
         CompoundYMode::NewNew => {
-            let candidate = paired(compound.ref_mv_idx).mvs;
+            let candidate = paired(usize::from(compound.ref_mv_idx)).mvs;
             [
                 add_mv_clamped(lowered_amvd_pred(syntax, candidate[0]), compound.mvd[0]),
                 add_mv_clamped(lowered_amvd_pred(syntax, candidate[1]), compound.mvd[1]),
@@ -1204,7 +1131,7 @@ fn joint_new_mvs(
     };
     let diff = compound.mvd[0];
     let base_mv = add_mv_clamped(
-        lowered_amvd_pred(syntax, candidates[projection.base_list]),
+        lowered_amvd_pred(syntax, candidates[usize::from(projection.base_list)]),
         diff,
     );
     let projected = scale_joint_projected_mvd(
@@ -1212,7 +1139,7 @@ fn joint_new_mvs(
         compound.jmvd_scale_mode,
         syntax.use_amvd,
     );
-    let other_mv = add_mv_clamped(candidates[1 - projection.base_list], projected);
+    let other_mv = add_mv_clamped(candidates[usize::from(1 - projection.base_list)], projected);
     if projection.base_list == 0 {
         [base_mv, other_mv]
     } else {

@@ -15,11 +15,17 @@
 
 use fearless_simd::{Simd, SimdBase, u8x16, u16x16};
 use std::ops::Range;
+#[cfg(target_arch = "aarch64")]
+use {
+    core::arch::aarch64::int16x8_t,
+    fearless_simd::{Bytes, Neon, SimdFrom, i16x8},
+};
 
 use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
 use crate::loop_restoration::PaddedRows;
-use crate::lr_madd::{self, MaddPattern, MaddWeights, TapPairs};
+use crate::lr_madd::{self, TapPairs};
+#[cfg(test)]
 use crate::math::round2_i32;
 use crate::workspace::u16_samples_exceed;
 use crate::{BitDepth, ReconError, ReconSample, Result};
@@ -121,26 +127,29 @@ pub struct WienerNsLumaFilter<'a> {
     pub subclasses: Option<&'a [usize]>,
 }
 
-/// Reusable working storage for padded luma Wiener NS filtering.
-#[derive(Debug, Default)]
+/// Reusable working storage for padded luma Wiener NS filtering of `T`
+/// samples.
+#[derive(Debug)]
 pub struct WienerNsLumaScratch<T> {
     clean_rows: Vec<bool>,
-    filtered: Vec<T>,
     prepared_classes: Vec<PreparedLumaClass>,
     eight_bit: eight_bit::EightBitLuma,
+    samples: core::marker::PhantomData<T>,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct PreparedLumaClass {
-    center_scale: i32,
-    coeffs: [i16; WIENER_NS_LUMA_COEFFS],
-    /// The coefficients as `pmaddwd` pairs, then the center scale paired
-    /// with the rounding offset when the scale fits `i16`.
-    madd_pairs: Option<[MaddPattern; MADD_PAIRS + 1]>,
-    /// [`PreparedLumaClass::madd_pairs`] as the weights of four cells of
-    /// this class, reused whenever four cells share it.
-    cell_weights: Option<[MaddWeights; MADD_PAIRS + 1]>,
+impl<T> Default for WienerNsLumaScratch<T> {
+    fn default() -> Self {
+        Self {
+            clean_rows: Vec::new(),
+            prepared_classes: Vec::new(),
+            eight_bit: eight_bit::EightBitLuma::default(),
+            samples: core::marker::PhantomData,
+        }
+    }
 }
+
+/// One class's coefficients and center scale.
+type PreparedLumaClass = lr_madd::LaneClass;
 
 /// The § 7.20.3 luma taps for [`lr_madd`].
 struct LumaTaps;
@@ -148,6 +157,8 @@ struct LumaTaps;
 impl TapPairs for LumaTaps {
     #[cfg(target_arch = "x86_64")]
     lr_madd::madd_avx2!(LumaTaps, 9, 24);
+    #[cfg(target_arch = "aarch64")]
+    lr_madd::by_lane_kernel!(LumaTaps, 9, 24);
     const RADIUS: usize = WIENER_NS_LUMA_TAP_RADIUS;
     const TAPS: &'static [(isize, isize)] = &{
         let mut taps = [(0, 0); WIENER_NS_LUMA_COEFFS];
@@ -178,7 +189,6 @@ enum LumaSubclassLayout<'a> {
 
 struct PreparedLumaFilter {
     max_sample: u16,
-    direct: bool,
     /// The block takes the byte-lane kernel of [`eight_bit`].
     eight_bit: bool,
 }
@@ -199,8 +209,8 @@ struct PreparedLumaFilter {
 /// out-of-range subclass maps, and source samples outside the active bit-depth
 /// range. The caller output is not modified unless all validation and filtering
 /// succeeds.
-#[inline]
-pub fn wiener_ns_filter_luma_block<T, F>(
+#[cfg(test)]
+pub(crate) fn wiener_ns_filter_luma_block<T, F>(
     output: &mut [T],
     params: &WienerNsLumaFilter<'_>,
     mut source_sample: F,
@@ -278,16 +288,15 @@ impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
 }
 
 /// Applies AV2 § 7.20.3 luma non-separable Wiener filtering from a padded
-/// pre-resolved source, with the output and errors of
-/// [`wiener_ns_filter_luma_block`].
+/// pre-resolved source.
 ///
 /// `scratch` retains its allocations between calls, and `output` is not
 /// modified unless filtering succeeds.
 ///
 /// # Errors
-/// Returns the callback filter's errors, including source samples outside
-/// the active bit-depth range, plus a typed allocation error when the
-/// scratch buffers cannot reserve enough storage.
+/// Returns typed errors for parameter and output shape errors, missing
+/// coefficient classes, source samples outside the active bit-depth range,
+/// and scratch buffers that cannot reserve enough storage.
 #[inline]
 pub fn wiener_ns_filter_luma_block_padded_into<T: ReconSample>(
     output: &mut [T],
@@ -385,29 +394,17 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
     scratch: &mut WienerNsLumaScratch<T>,
 ) -> Result<()> {
     let context = prepare_luma_padded(output.len(), params, source, subclasses, scratch)?;
-    if context.direct {
-        return filter_padded_luma_rows_in_range(
-            output,
-            params.output_stride,
-            source.rows,
-            0..params.height,
-            params,
-            &scratch.prepared_classes,
-            subclasses,
-            context.max_sample,
-            context.eight_bit.then_some(&scratch.eight_bit),
-        );
-    }
-    filter_luma_rows_to_scratch(params, source, subclasses, scratch, &context)?;
-    for row_index in 0..params.height {
-        let src_start = row_index * params.width;
-        let src_end = src_start + params.width;
-        let dst_start = row_index * params.output_stride;
-        let dst_end = dst_start + params.width;
-        output[dst_start..dst_end].copy_from_slice(&scratch.filtered[src_start..src_end]); // splot-copy-ok: publish fail-atomic Wiener NS scratch row into caller output
-    }
-
-    Ok(())
+    filter_padded_luma_rows_in_range(
+        output,
+        params.output_stride,
+        source.rows,
+        0..params.height,
+        params,
+        &scratch.prepared_classes,
+        subclasses,
+        context.max_sample,
+        context.eight_bit.then_some(&scratch.eight_bit),
+    )
 }
 
 fn prepare_luma_padded<T: ReconSample>(
@@ -418,7 +415,6 @@ fn prepare_luma_padded<T: ReconSample>(
     scratch: &mut WienerNsLumaScratch<T>,
 ) -> Result<PreparedLumaFilter> {
     scratch.clean_rows.clear();
-    scratch.filtered.clear();
     scratch.prepared_classes.clear();
     validate_sample_type::<T>(params.bit_depth)?;
     let sample_count = validate_luma_params(output_len, params)?;
@@ -442,39 +438,16 @@ fn prepare_luma_padded<T: ReconSample>(
             plane: PlaneId::Y,
             context: "Wiener NS prepared-class scratch",
         })?;
-    scratch
-        .prepared_classes
-        .extend(params.coeffs_by_class.iter().map(|&coeffs| {
-            let center_scale = (1 << WIENER_NS_PREC_BITS)
-                - 2 * coeffs.iter().map(|&coeff| i32::from(coeff)).sum::<i32>();
-            let madd_pairs = i16::try_from(center_scale).ok().map(|center_scale| {
-                core::array::from_fn(|pair| {
-                    let (low, high) = coeffs
-                        .get(2 * pair..2 * pair + 2)
-                        .map_or((center_scale, 1 << (WIENER_NS_PREC_BITS - 1)), |pair| {
-                            (pair[0], pair[1])
-                        });
-                    [low, high, low, high, low, high, low, high]
-                })
-            });
-            let cell_weights = madd_pairs
-                .as_ref()
-                .map(|madd_pairs| madd_pairs.each_ref().map(lr_madd::uniform));
-            PreparedLumaClass {
-                center_scale,
-                coeffs,
-                madd_pairs,
-                cell_weights,
-            }
-        }));
+    for &coeffs in params.coeffs_by_class {
+        let center_scale = (1 << WIENER_NS_PREC_BITS)
+            - 2 * coeffs.iter().map(|&coeff| i32::from(coeff)).sum::<i32>();
+        let center = i16::try_from(center_scale)
+            .map_err(|_| ReconError::WienerNsFilterCenterScaleOutOfRange { center_scale })?;
+        scratch.prepared_classes.push((coeffs, center));
+    }
     let staged = params.bit_depth == BitDepth::Eight
-        && T::u16_slice(&[]).is_some()
         && scratch.eight_bit.stage(
-            |index| {
-                padded_row(source.rows, index, padded_width)
-                    .ok()
-                    .and_then(T::u16_slice)
-            },
+            |index| padded_row(source.rows, index, padded_width).ok(),
             params.width,
             params.height,
         );
@@ -489,24 +462,23 @@ fn prepare_luma_padded<T: ReconSample>(
         }
     }
 
-    let direct = scratch.clean_rows.iter().all(|&clean| clean);
+    if !scratch.clean_rows.iter().all(|&clean| clean) {
+        for r in 0..params.height {
+            let window_in_range = scratch
+                .clean_rows
+                .get(r..r + LUMA_WINDOW_ROWS)
+                .is_some_and(|rows| rows.iter().all(|&clean| clean));
+            if !window_in_range {
+                first_out_of_range_read(source.rows, r, params.width, max_sample)?;
+            }
+        }
+    }
     let eight_bit = staged
         && scratch
             .eight_bit
             .prepare(params.width, params.coeffs_by_class, subclasses);
-    if !direct {
-        scratch
-            .filtered
-            .try_reserve_exact(sample_count)
-            .map_err(|_| ReconError::WorkspaceAllocationFailed {
-                plane: PlaneId::Y,
-                context: "Wiener NS filtered scratch",
-            })?;
-        scratch.filtered.resize(sample_count, T::default());
-    }
     Ok(PreparedLumaFilter {
         max_sample,
-        direct,
         eight_bit,
     })
 }
@@ -520,20 +492,6 @@ fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(
 ) -> Result<()> {
     validate_sample_type::<u8>(params.bit_depth)?;
     let context = prepare_luma_padded(output.len(), params, source, subclasses, scratch)?;
-    if !context.direct {
-        filter_luma_rows_to_scratch(params, source, subclasses, scratch, &context)?;
-        for row_index in 0..params.height {
-            let src_start = row_index * params.width;
-            let dst_start = row_index * params.output_stride;
-            for (dst, src) in output[dst_start..dst_start + params.width]
-                .iter_mut()
-                .zip(&scratch.filtered[src_start..src_start + params.width])
-            {
-                *dst = src.to_u16() as u8;
-            }
-        }
-        return Ok(());
-    }
     macro_rules! filter_source {
         ($cast:expr) => {
             filter_padded_luma_rows_simd(
@@ -562,43 +520,54 @@ fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(
     }
 }
 
-fn filter_luma_rows_to_scratch<T: ReconSample>(
-    params: &WienerNsLumaFilter<'_>,
-    source: &WienerNsLumaPaddedSource<'_, T>,
-    subclasses: LumaSubclassLayout<'_>,
-    scratch: &mut WienerNsLumaScratch<T>,
-    context: &PreparedLumaFilter,
+/// Reports the first sample above `max_sample` that the § 7.20.3 filter of
+/// output row `r` reads, in its per-sample read order (columns left to
+/// right, the centre and then each tap), as the per-sample filter would.
+/// Each tap's source row is compared 16 lanes at a time; only a hit is
+/// located sample by sample.
+fn first_out_of_range_read<T: ReconSample>(
+    rows: PaddedRows<'_, T>,
+    r: usize,
+    width: usize,
+    max_sample: u16,
 ) -> Result<()> {
-    for r in 0..params.height {
-        let filtered = &mut scratch.filtered[r * params.width..(r + 1) * params.width];
-        let window_in_range = scratch
-            .clean_rows
-            .get(r..r + 2 * WIENER_NS_LUMA_TAP_RADIUS + 1)
-            .is_some_and(|rows| rows.iter().all(|&clean| clean));
-        if window_in_range {
-            filter_padded_luma_rows_in_range(
-                filtered,
-                params.width,
-                source.rows,
-                r..r + 1,
-                params,
-                &scratch.prepared_classes,
-                subclasses,
-                context.max_sample,
-                None,
-            )?;
-        } else {
-            filter_padded_luma_row_validated(
-                filtered,
-                source.rows,
-                r,
-                params,
-                subclasses,
-                context.max_sample,
-            )?;
+    const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
+    let padded_width = width + 2 * R;
+    let taps =
+        core::iter::once((0, 0)).chain(WIENER_NS_CONFIG_Y.iter().map(|&(dy, dx, _)| (dy, dx)));
+    let mut first: Option<(usize, isize, isize, u16)> = None;
+    for (dy, dx) in taps {
+        let row = padded_row(rows, (r + R).wrapping_add_signed(dy), padded_width)?;
+        let Some(samples) = T::u16_slice(row) else {
+            return Ok(());
+        };
+        let start = R.wrapping_add_signed(dx);
+        let reads = samples
+            .get(start..start + width)
+            .ok_or(ReconError::BufferLengthMismatch {
+                expected: start + width,
+                actual: samples.len(),
+            })?;
+        let limit = first.map_or(width, |(c, ..)| c);
+        let Some(reads) = reads.get(..limit) else {
+            continue;
+        };
+        if !u16_samples_exceed(reads, max_sample) {
+            continue;
+        }
+        if let Some(c) = reads.iter().position(|&value| value > max_sample) {
+            first = Some((c, dy, dx, reads[c]));
         }
     }
-    Ok(())
+    match first {
+        Some((c, dy, dx, value)) => Err(ReconError::WienerNsFilterSourceSampleOutOfRange {
+            x: c as isize + dx,
+            y: r as isize + dy,
+            value,
+            max: max_sample,
+        }),
+        None => Ok(()),
+    }
 }
 
 fn padded_row<T>(rows: PaddedRows<'_, T>, row_index: usize, padded_width: usize) -> Result<&[T]> {
@@ -817,27 +786,30 @@ fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput
 /// weights; returns the columns done. Sample-subclass layouts are left to
 /// the segment filter.
 #[allow(clippy::too_many_arguments)]
-fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
+fn filter_luma_cell_groups<'a, T: LumaSimdSource, O: LumaSimdOutput>(
     output: &mut [O],
     output_stride: usize,
-    source: &[&[T]; LUMA_WINDOW_ROWS + 3],
+    source: &[&'a [T]; LUMA_WINDOW_ROWS + 3],
     (first, end, origin): (usize, usize, usize),
     (mut x, width): (usize, usize),
     prepared_classes: &[PreparedLumaClass],
     subclasses: LumaSubclassLayout<'_>,
     (max_sample, flat): (u16, &FlatChunks<WIENER_NS_LUMA_TAP_RADIUS>),
 ) -> Result<usize> {
-    let cell_class = |cell: usize| -> Option<&PreparedLumaClass> {
-        let class = match subclasses {
-            LumaSubclassLayout::Uniform => 0,
-            LumaSubclassLayout::Cells { values, cols } => {
-                usize::from(*values.get((first / 4) * cols + cell)?)
-            }
-            LumaSubclassLayout::Samples(_) => return None,
-        };
-        prepared_classes.get(class)
+    let cell_row = match subclasses {
+        LumaSubclassLayout::Uniform => None,
+        LumaSubclassLayout::Cells { values, cols } => {
+            Some(values.get((first / 4) * cols..).unwrap_or_default())
+        }
+        LumaSubclassLayout::Samples(_) => return Ok(x),
     };
-    let mut mixed = [[[0; 16]; 2]; MADD_PAIRS + 1];
+    let padded = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+    let rows = end - first + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+    let span = |row: &&'a [T]| row.get(..padded).ok_or_else(|| luma_segment_error(width));
+    let mut window = [span(&source[0])?; LUMA_WINDOW_ROWS + 3];
+    for (slot, row) in window.iter_mut().zip(source).take(rows) {
+        *slot = span(row)?;
+    }
     while x + 16 <= width {
         if let Some(value) = flat.chunk_value(x / 32) {
             let value = O::from_u16(value.min(max_sample));
@@ -851,49 +823,56 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
             x += 16;
             continue;
         }
-        let classes: [Option<&PreparedLumaClass>; 4] =
-            core::array::from_fn(|cell| cell_class(x / 4 + cell));
-        let [Some(c0), Some(c1), Some(c2), Some(c3)] = classes else {
+        let cells = match cell_row {
+            None => [0; 4],
+            Some(row) => match row.get(x / 4..).and_then(<[u8]>::first_chunk::<4>) {
+                Some(&cells) => cells,
+                None => break,
+            },
+        };
+        let classes = cells.map(|class| prepared_classes.get(usize::from(class)));
+        let [Some(c0), Some(_), Some(_), Some(_)] = classes else {
             break;
         };
-        let uniform = core::ptr::eq(c0, c1) && core::ptr::eq(c1, c2) && core::ptr::eq(c2, c3);
-        let weights = if uniform {
-            c0.cell_weights.as_ref()
-        } else if let [Some(m0), Some(m1), Some(m2), Some(m3)] =
-            [c0, c1, c2, c3].map(|class| class.madd_pairs.as_ref())
+        let uniform = cells == [cells[0]; 4];
+        let mut run_end = x + 16;
+        while run_end + 16 <= width
+            && flat.chunk_value(run_end / 32).is_none()
+            && cell_row.is_none_or(|row| {
+                row.get(run_end / 4..)
+                    .and_then(<[u8]>::first_chunk::<4>)
+                    .is_some_and(|next| {
+                        if uniform {
+                            *next == cells
+                        } else {
+                            *next != [next[0]; 4]
+                        }
+                    })
+            })
         {
-            for (pair, weights) in mixed.iter_mut().enumerate() {
-                lr_madd::arrange_into::<T>(weights, [&m0[pair], &m1[pair], &m2[pair], &m3[pair]]);
-            }
-            Some(&mixed)
-        } else {
-            None
+            run_end += 16;
+        }
+        let classes = match cell_row.and_then(|row| row.get(x / 4..run_end / 4)) {
+            Some(cells) if !uniform => lr_madd::Classes::Cells {
+                cells,
+                table: prepared_classes,
+            },
+            _ => lr_madd::Classes::Uniform(c0),
         };
-        let Some(weights) = weights else {
-            break;
-        };
-        let rows = end - first + 2 * WIENER_NS_LUMA_TAP_RADIUS;
-        let Some(group) = source.get(..rows).and_then(|rows| cell_window(rows, x)) else {
+        let Some(out) = output.get_mut((first - origin) * output_stride..) else {
             return Err(luma_segment_error(width));
         };
-        for r in first..end {
-            let start = (r - origin) * output_stride + x;
-            let (Some(window), Some(filtered)) = (
-                group[r - first..].first_chunk::<LUMA_WINDOW_ROWS>(),
-                output
-                    .get_mut(start..)
-                    .and_then(<[O]>::first_chunk_mut::<16>),
-            ) else {
-                return Err(luma_segment_error(width));
-            };
-            O::store16(
-                lr_madd::filter16::<LumaTaps, T, LUMA_WINDOW_ROWS, CELL_REACH>(
-                    window, weights, max_sample,
-                ),
-                filtered,
-            );
+        if !lr_madd::filter_run::<LumaTaps, T, O, LUMA_WINDOW_ROWS, CELL_REACH>(
+            &window,
+            end - first,
+            (x, run_end),
+            classes,
+            (out, output_stride),
+            max_sample,
+        ) {
+            return Err(luma_segment_error(width));
         }
-        x += 16;
+        x = run_end;
     }
     Ok(x)
 }
@@ -922,6 +901,10 @@ pub(crate) trait LumaSimdOutput: Copy + eight_bit::ByteLaneOutput {
 
     /// Stores 16 values already within the sample range.
     fn store16(values: [u16; 16], output: &mut [Self; 16]);
+
+    /// The output as samples of the AArch64 run kernel.
+    #[cfg(target_arch = "aarch64")]
+    fn lanes_mut(output: &mut [Self]) -> lr_madd::by_lane::Out<'_>;
 }
 
 impl LumaSimdOutput for u16 {
@@ -933,6 +916,12 @@ impl LumaSimdOutput for u16 {
     #[inline]
     fn store16(values: [u16; 16], output: &mut [Self; 16]) {
         *output = values;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn lanes_mut(output: &mut [Self]) -> lr_madd::by_lane::Out<'_> {
+        lr_madd::by_lane::Out::Words(output)
     }
 }
 
@@ -946,13 +935,15 @@ impl LumaSimdOutput for u8 {
     fn store16(values: [u16; 16], output: &mut [Self; 16]) {
         *output = values.map(|value| value as u8);
     }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn lanes_mut(output: &mut [Self]) -> lr_madd::by_lane::Out<'_> {
+        lr_madd::by_lane::Out::Bytes(output)
+    }
 }
 
-pub(crate) trait LumaSimdSource: Copy {
-    /// The samples are `u16`, which the x86 tap-pair kernel reads.
-    #[cfg(target_arch = "x86_64")]
-    const WIDE: bool;
-
+pub(crate) trait LumaSimdSource: Copy + Default {
     /// Zero-extends 16 samples.
     fn widen16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S>;
 
@@ -962,12 +953,29 @@ pub(crate) trait LumaSimdSource: Copy {
         rows: &[&'a [Self; REACH]; ROWS],
     ) -> Option<[&'a [u16; REACH]; ROWS]>;
 
+    /// The rows as `u8` rows when the samples are `u8`.
+    #[cfg(target_arch = "x86_64")]
+    fn u8_rows<'a, const ROWS: usize, const REACH: usize>(
+        rows: &[&'a [Self; REACH]; ROWS],
+    ) -> Option<[&'a [u8; REACH]; ROWS]>;
+
     fn scalar(samples: &[Self], index: usize) -> u16;
+
+    /// The rows of the AArch64 run kernel.
+    #[cfg(target_arch = "aarch64")]
+    fn lane_rows<'a>(window: &'a [&'a [Self]]) -> lr_madd::by_lane::Rows<'a>;
+
+    /// 16 samples as the two `i16` halves of the AArch64 run kernel.
+    #[cfg(target_arch = "aarch64")]
+    fn lanes16(t: Neon, samples: &[Self; 16]) -> [int16x8_t; 2];
+
+    /// `lanes` with a known-zero sign hidden from LLVM by OR-ing the opaque
+    /// zero `pad`, where the samples are bytes.
+    #[cfg(target_arch = "aarch64")]
+    fn hide(t: Neon, lanes: [int16x8_t; 2], pad: i16x8<Neon>) -> [int16x8_t; 2];
 }
 
 impl LumaSimdSource for u16 {
-    #[cfg(target_arch = "x86_64")]
-    const WIDE: bool = true;
     #[inline]
     fn widen16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
         u16x16::load_array_ref(simd, samples)
@@ -981,20 +989,54 @@ impl LumaSimdSource for u16 {
         Some(*rows)
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn u8_rows<'a, const ROWS: usize, const REACH: usize>(
+        _rows: &[&'a [Self; REACH]; ROWS],
+    ) -> Option<[&'a [u8; REACH]; ROWS]> {
+        None
+    }
+
     #[inline]
     fn scalar(samples: &[Self], index: usize) -> u16 {
         samples[index]
     }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn lane_rows<'a>(window: &'a [&'a [Self]]) -> lr_madd::by_lane::Rows<'a> {
+        lr_madd::by_lane::Rows::Words(window)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn lanes16(t: Neon, samples: &[Self; 16]) -> [int16x8_t; 2] {
+        let (low, high) = t.split_u16x16(u16x16::load_array_ref(t, samples));
+        [low, high].map(|half| half.bitcast::<i16x8<Neon>>().into())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn hide(_t: Neon, lanes: [int16x8_t; 2], _pad: i16x8<Neon>) -> [int16x8_t; 2] {
+        lanes
+    }
 }
 
 impl LumaSimdSource for u8 {
-    #[cfg(target_arch = "x86_64")]
-    const WIDE: bool = false;
     #[inline]
     fn widen16<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
         use fearless_simd::prelude::*;
-        let (low, high) = u8x16::load_array_ref(simd, samples).widen();
-        simd.combine_u16x8(low, high)
+        let lanes = u8x16::load_array_ref(simd, samples);
+        #[cfg(target_arch = "x86_64")]
+        {
+            let zero = u8x16::splat(simd, 0);
+            simd.widen_u8x32(simd.combine_u8x16(lanes, zero)).0
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let (low, high) = lanes.widen();
+            simd.combine_u16x8(low, high)
+        }
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -1005,17 +1047,46 @@ impl LumaSimdSource for u8 {
         None
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn u8_rows<'a, const ROWS: usize, const REACH: usize>(
+        rows: &[&'a [Self; REACH]; ROWS],
+    ) -> Option<[&'a [u8; REACH]; ROWS]> {
+        Some(*rows)
+    }
+
     #[inline]
     fn scalar(samples: &[Self], index: usize) -> u16 {
         u16::from(samples[index])
     }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn lane_rows<'a>(window: &'a [&'a [Self]]) -> lr_madd::by_lane::Rows<'a> {
+        lr_madd::by_lane::Rows::Bytes(window)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn lanes16(t: Neon, samples: &[Self; 16]) -> [int16x8_t; 2] {
+        use fearless_simd::prelude::*;
+        let (low, high) = u8x16::load_array_ref(t, samples).widen();
+        [low, high].map(|half| half.bitcast::<i16x8<Neon>>().into())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn hide(t: Neon, lanes: [int16x8_t; 2], pad: i16x8<Neon>) -> [int16x8_t; 2] {
+        lanes.map(|half| (i16x8::simd_from(t, half) | pad).into())
+    }
 }
 
 /// Filters output columns `c0..c0 + filtered.len()` of one row from its nine
-/// padded source `rows`, 16 columns at a time, then one by one.
+/// padded source `rows`, 16 columns at a time: the last group of a segment
+/// at least 16 wide overlaps the one before it, and a narrower segment, or a
+/// group whose window runs past its rows, reads a zero-padded copy of the
+/// window and stores only its own columns.
 ///
-/// A center scale outside `i16`, reachable only with coefficients outside the
-/// § 5.20.2.1 `Wiener_Ns_Taps_Min` ranges, takes the scalar loop throughout.
 /// The lane groups follow [`lr_madd`]: `plus + minus` stays in `i16` lanes
 /// because § 6 Table 6.3 caps `BitDepth` at 10 and this path only runs over
 /// rows validated against `max_sample`, so every factor is 16-bit; `|sum|`
@@ -1027,51 +1098,46 @@ fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput>(
     class: &PreparedLumaClass,
     max_sample: u16,
 ) {
-    const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
+    let weights = lr_madd::run_weights::<LumaTaps, T>([class; 4]);
+    let weights = &weights[..=MADD_PAIRS];
     let len = filtered.len();
+    let mut copy = [[T::default(); CELL_REACH]; LUMA_WINDOW_ROWS];
     let mut col = 0usize;
-    if let Some(weights) = class.cell_weights.as_ref() {
-        while col < len {
-            let Some(window) = cell_window(rows, c0 + col) else {
-                break;
-            };
-            let Some(window) = window.first_chunk::<LUMA_WINDOW_ROWS>() else {
-                break;
-            };
-            let values = lr_madd::filter16::<LumaTaps, T, LUMA_WINDOW_ROWS, CELL_REACH>(
+    while col < len {
+        let at = if len >= 16 { col.min(len - 16) } else { 0 };
+        let window = cell_window(rows, c0 + at);
+        let values = if let Some(window) = window
+            .as_ref()
+            .and_then(|window| window.first_chunk::<LUMA_WINDOW_ROWS>())
+        {
+            lr_madd::filter16::<LumaTaps, T, LUMA_WINDOW_ROWS, CELL_REACH>(
                 window, weights, max_sample,
-            );
-            match filtered
-                .get_mut(col..)
-                .and_then(<[O]>::first_chunk_mut::<16>)
-            {
-                Some(slot) => O::store16(values, slot),
-                None => {
-                    for (slot, value) in filtered[col..].iter_mut().zip(values) {
-                        *slot = O::from_u16(value);
-                    }
-                }
+            )
+        } else {
+            for (row, copy) in rows.iter().zip(&mut copy) {
+                let source = row.get(c0 + at..).unwrap_or_default();
+                let source = &source[..source.len().min(CELL_REACH)];
+                *copy = [T::default(); CELL_REACH];
+                copy[..source.len()].copy_from_slice(source); // splot-copy-ok: zero-padded window row
             }
-            col += 16;
-        }
-        col = col.min(len);
-    }
-    let rows = &rows.map(|row| &row[c0..c0 + len + 2 * R]);
-    for (offset, slot) in filtered[col..].iter_mut().enumerate() {
-        let x = col + offset + R;
-        let tap = |dy: isize, dx: isize| {
-            i32::from(T::scalar(
-                rows[R.wrapping_add_signed(dy)],
-                x.wrapping_add_signed(dx),
-            ))
+            let window = copy.each_ref();
+            lr_madd::filter16::<LumaTaps, T, LUMA_WINDOW_ROWS, CELL_REACH>(
+                &window, weights, max_sample,
+            )
         };
-        let mut sum = class.center_scale * tap(0, 0);
-        for (&(dy, dx, _), &coeff) in WIENER_NS_CONFIG_Y_PAIRS.iter().zip(&class.coeffs) {
-            sum += i32::from(coeff) * (tap(dy, dx) + tap(-dy, -dx));
+        if let Some(slot) = filtered
+            .get_mut(at..)
+            .and_then(<[O]>::first_chunk_mut::<16>)
+        {
+            O::store16(values, slot);
+        } else {
+            let mut lanes = [O::from_u16(0); 16];
+            O::store16(values, &mut lanes);
+            let tail = &mut filtered[at..];
+            let len = tail.len().min(16);
+            tail[..len].copy_from_slice(&lanes[..len]); // splot-copy-ok: the columns of a block narrower than one lane group
         }
-        *slot = O::from_u16(
-            round2_i32(sum, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample)) as u16,
-        );
+        col = at + 16;
     }
 }
 
@@ -1080,71 +1146,6 @@ const fn luma_segment_error(width: usize) -> ReconError {
         expected: width,
         actual: 0,
     }
-}
-
-/// Per-sample § 7.20.3 filtering for rows whose padded window may hold
-/// out-of-range samples, preserving the original read-order error identity.
-#[allow(clippy::too_many_arguments)]
-fn filter_padded_luma_row_validated<T: ReconSample>(
-    filtered: &mut [T],
-    source: PaddedRows<'_, T>,
-    r: usize,
-    params: &WienerNsLumaFilter<'_>,
-    subclasses: LumaSubclassLayout<'_>,
-    max_sample: u16,
-) -> Result<()> {
-    const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
-    let padded_width = params.width + 2 * R;
-    for (c, slot) in filtered.iter_mut().enumerate().take(params.width) {
-        let subclass = subclass_for_position(subclasses, params.width, r, c);
-        let coeffs = &params.coeffs_by_class[subclass];
-        let sample = |dy: isize, dx: isize| {
-            padded_row(source, (r + R).wrapping_add_signed(dy), padded_width).and_then(|row| {
-                validated_padded_sample(
-                    row,
-                    (c + R).wrapping_add_signed(dx),
-                    c as isize + dx,
-                    r as isize + dy,
-                    max_sample,
-                )
-            })
-        };
-        let m = sample(0, 0)?;
-        let mut s = i32::from(m) << WIENER_NS_PREC_BITS;
-        for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y {
-            let tap = sample(dy, dx)?;
-            let diff = i32::from(tap) - i32::from(m);
-            s += diff * i32::from(coeffs[coeff_index]);
-        }
-        let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample));
-        *slot = T::try_from_u16(value as u16)?;
-    }
-    Ok(())
-}
-
-fn validated_padded_sample<T: ReconSample>(
-    samples: &[T],
-    index: usize,
-    x: isize,
-    y: isize,
-    max_sample: u16,
-) -> Result<u16> {
-    let value = samples
-        .get(index)
-        .ok_or(ReconError::BufferLengthMismatch {
-            expected: index.saturating_add(1),
-            actual: samples.len(),
-        })?
-        .to_u16();
-    if value > max_sample {
-        return Err(ReconError::WienerNsFilterSourceSampleOutOfRange {
-            x,
-            y,
-            value,
-            max: max_sample,
-        });
-    }
-    Ok(value)
 }
 
 fn validate_luma_params(output_len: usize, params: &WienerNsLumaFilter<'_>) -> Result<usize> {
@@ -1259,21 +1260,7 @@ fn validate_subclass_layout(
     Ok(())
 }
 
-fn subclass_for_position(
-    subclasses: LumaSubclassLayout<'_>,
-    width: usize,
-    row: usize,
-    col: usize,
-) -> usize {
-    match subclasses {
-        LumaSubclassLayout::Uniform => 0,
-        LumaSubclassLayout::Samples(values) => values[row * width + col],
-        LumaSubclassLayout::Cells { values, cols } => {
-            usize::from(values[(row / 4) * cols + col / 4])
-        }
-    }
-}
-
+#[cfg(test)]
 fn coeffs_for_sample<'a>(
     params: &'a WienerNsLumaFilter<'_>,
     sample_index: usize,
@@ -1285,6 +1272,7 @@ fn coeffs_for_sample<'a>(
     &params.coeffs_by_class[subclass]
 }
 
+#[cfg(test)]
 #[allow(clippy::many_single_char_names)]
 fn filter_sample<T, F>(
     coeffs: &[i16; WIENER_NS_LUMA_COEFFS],

@@ -15,6 +15,7 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrame, PlaneId, ReconS
 use std::sync::Arc;
 
 use crate::Result;
+use crate::pipeline::inflight::FrameSlotWriter;
 use parking_lot::Mutex;
 
 const MI_SIZE: usize = 4;
@@ -59,7 +60,7 @@ impl<T: ReconSample> FilteredFrameSink<T> {
     }
 
     fn publish_stripe(
-        mut samples: final_filters::FilteredStripe,
+        samples: final_filters::FilteredStripe<T>,
         direct: crate::pipeline::frame_progress::DirectStripeLease<T>,
     ) -> Result<()> {
         if !samples.y.is_direct()
@@ -68,20 +69,6 @@ impl<T: ReconSample> FilteredFrameSink<T> {
         {
             return Err(lr_pipeline_state_error());
         }
-        samples
-            .y
-            .finish_direct()
-            .map_err(|_| lr_pipeline_state_error())?;
-        if let Some(plane) = samples.u.as_mut() {
-            plane
-                .finish_direct()
-                .map_err(|_| lr_pipeline_state_error())?;
-        }
-        if let Some(plane) = samples.v.as_mut() {
-            plane
-                .finish_direct()
-                .map_err(|_| lr_pipeline_state_error())?;
-        }
         drop(samples);
         if !direct.submit() {
             return Err(lr_pipeline_state_error());
@@ -89,13 +76,16 @@ impl<T: ReconSample> FilteredFrameSink<T> {
         Ok(())
     }
 
-    /// Freezes the filtered output and hands the frozen frame to `publish`.
-    ///
-    /// A published frame freezes under its own lock, so the slot `publish`
-    /// settles is visible to every consumer before the published prefix stops
-    /// being readable.
-    fn freeze<R>(self, publish: impl FnOnce(DecodedFrame<T>) -> R) -> Result<R> {
-        self.progress.freeze_workspace(publish)
+    /// Freezes the filtered output into the paired slot `writer` settles, or
+    /// returns the frozen frame of a private sink.
+    fn freeze(mut self, writer: Option<FrameSlotWriter<T>>) -> Result<Option<DecodedFrame<T>>> {
+        match writer {
+            Some(writer) => self.progress.freeze_workspace(writer).map(|()| None),
+            None => Arc::get_mut(&mut self.progress)
+                .ok_or_else(lr_pipeline_state_error)?
+                .freeze()
+                .map(Some),
+        }
     }
 }
 
@@ -155,16 +145,27 @@ pub(crate) struct OwnedFilterSetup<T: ReconSample> {
     /// Each stripe's filter outcome, borrowed from the records with the rest.
     stripe_outcomes: Vec<Option<crate::Result<()>>>,
     deblock_records: Mutex<Option<crate::filters::deblock::OwnedDeblockRecords>>,
-    /// Spent stripe windows, for the frontier to fill again.
+    /// Spent stripe windows of a frame that has no decode-wide pool.
     windows: Mutex<Vec<splot_recon::RetiredFramePlanes>>,
 }
 
 pub(crate) type OwnedFilterShell<T> = Arc<Option<OwnedFilterSetup<T>>>;
 
+/// A stripe window's planes, and the rows the last CDEF block row reads of
+/// each plane that holds only the rows of its first and last block rows.
+type WindowPlanes<'a, T> = (
+    crate::filters::source::DeblockedPlanes<'a, T>,
+    [Option<crate::filters::source::FramePlane<'a, T>>; 3],
+);
+
+/// The terminal freeze's result: the frame of a private sink, or `None` once a
+/// slot writer settled it, plus the records handed back to the scratch.
+pub(crate) type FrozenFrame<T> = Result<(Option<DecodedFrame<T>>, super::FrameFilterRecords)>;
+
 /// One completed stripe whose index and samples move together into publication.
 pub(crate) struct OwnedFilteredStripe<T: ReconSample> {
     stripe: usize,
-    frame: final_filters::FilteredStripe,
+    frame: final_filters::FilteredStripe<T>,
     direct: crate::pipeline::frame_progress::DirectStripeLease<T>,
 }
 
@@ -467,21 +468,21 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         })
     }
 
-    pub(crate) fn into_filtered_frame<R>(
+    pub(crate) fn into_filtered_frame(
         self,
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
-        progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        publish: impl FnOnce(DecodedFrame<T>) -> R,
-    ) -> Result<(R, super::FrameFilterRecords)> {
+        writer: Option<FrameSlotWriter<T>>,
+    ) -> FrozenFrame<T> {
+        let progress = writer.as_ref().map(FrameSlotWriter::progress_handle);
         let setup =
             self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress)?;
         let mut frontier = OwnedFilterFrontier::start(setup, deblock_quant_deltas, None)?;
         while let Some(job) = frontier.advance()? {
             job.run()?;
         }
-        let (frame, _shell) = frontier.finish()?.finish(publish);
+        let (frame, _shell) = frontier.finish()?.finish(writer);
         frame
     }
 }
@@ -623,6 +624,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             grids: core::mem::take(&mut self.filter_records.deblock_grids),
             blocks: core::mem::take(&mut self.filter_records.deblock_blocks),
             chroma: core::mem::take(&mut self.filter_records.chroma_deblock_blocks),
+            bru_modes: self.filter_records.bru_modes.clone(),
         }
     }
 
@@ -664,15 +666,12 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     /// The planes whose deblocked window rows a filter of this frame may read.
     ///
     /// A plane is left out only when CDEF is off, no `cdef_overlap_planes`
-    /// fringe is built, and the `u16` stripe target already holds the
+    /// fringe is built, and the stripe target already holds the
     /// deblocked rows, so CDEF initializes it without a read. Then GDF and
     /// CCSO read only luma, and loop restoration of any plane reads luma and
     /// its own plane.
     fn window_reads(&self) -> Result<[bool; 3]> {
-        if !self.one_tile_row()
-            || T::u16_slice(&[]).is_none()
-            || (self.cdef_strengths.is_some() && self.cdef_grid.is_some())
-        {
+        if !self.one_tile_row() || (self.cdef_strengths.is_some() && self.cdef_grid.is_some()) {
             return Ok([true; 3]);
         }
         let [y_end, u_end] = self.lr_plane_ends;
@@ -701,8 +700,15 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         Ok((final_rows.min(self.luma_height) >= needed).then_some((start, end)))
     }
 
+    fn spare_windows(&self) -> &Mutex<Vec<splot_recon::RetiredFramePlanes>> {
+        self.filter_records
+            .buffers
+            .as_deref()
+            .map_or(&self.windows, |buffers| &buffers.filter_windows)
+    }
+
     fn take_window(&self) -> crate::filters::source::DeblockedWindow<T> {
-        self.windows
+        self.spare_windows()
             .lock()
             .pop()
             .map(|mut spent| {
@@ -712,7 +718,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     }
 
     fn give_window(&self, window: crate::filters::source::DeblockedWindow<T>) {
-        let mut windows = self.windows.lock();
+        let mut windows = self.spare_windows().lock();
         if windows.try_reserve(1).is_ok() {
             windows.push(T::retire_planes(window.into_samples()));
         }
@@ -730,13 +736,77 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             .ok_or_else(lr_pipeline_state_error)?;
         let mut window = self.take_window();
         let filled = self.window_reads().and_then(|read| {
-            window.copy_window(frame, Some(carry), range, self.window_margin(), read)
+            let chain = self.chain();
+            let [y_end, u_end] = self.lr_plane_ends;
+            let (y_runs, rest) = self.lr_source_blocks.split_at(y_end);
+            let (u_runs, v_runs) = rest.split_at(u_end - y_end);
+            let active_lr = chain.active_lr_planes(range.0, range.1, [y_runs, u_runs, v_runs]);
+            let gdf_active = crate::filters::gdf::is_active(
+                &self.core,
+                chain.gdf_grid,
+                self.bit_depth,
+                chain.gdf_reference,
+            )?;
+            let [all, chroma, luma] = self.stripe_in_place(&chain, range, active_lr, gdf_active);
+            let skip = [all || luma, chroma, chroma];
+            let edges = self.edge_planes(range, active_lr, skip, [y_runs, u_runs, v_runs], frame);
+            let margin = self.window_margin();
+            window.copy_window(frame, Some(carry), range, margin, read, skip, edges)
         });
         if let Err(error) = filled {
             self.give_window(window);
             return Err(error);
         }
         Ok(window)
+    }
+
+    /// The planes whose window holds only the rows the first and the last
+    /// CDEF block row of the stripe read: one tile row, and loop restoration
+    /// writes the whole stripe of the plane, so CDEF reads the deblocked rows
+    /// inside the stripe from its target before loop restoration writes it.
+    /// CDEF reads U and V at one offset, so both chroma planes or neither. A
+    /// frame with a lossless segment keeps the full window: loop restoration
+    /// copies its lossless samples from the deblocked rows inside the stripe.
+    fn edge_planes(
+        &self,
+        (start, end): (usize, usize),
+        active_lr: [bool; 3],
+        in_place: [bool; 3],
+        blocks: [&[crate::bitstream::tile_payload::WienerNsLrSourceBlock]; 3],
+        frame: &crate::pipeline::frame_progress::FrontierRows<T>,
+    ) -> [bool; 3] {
+        let [luma, u, v] = core::array::from_fn(|index| {
+            let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
+            let shift = usize::from(index > 0) * self.subsampling.1;
+            let params = self
+                .core
+                .lr_params
+                .as_ref()
+                .and_then(|lr| lr.planes.get(index));
+            self.one_tile_row()
+                && !self
+                    .core
+                    .lossless_info
+                    .as_ref()
+                    .is_some_and(|lossless| lossless.has_lossless_segment)
+                && active_lr[index]
+                && !in_place[index]
+                && frame
+                    .plane_size(plane)
+                    .zip(params)
+                    .is_some_and(|((width, height), params)| {
+                        final_filters::lr_plane_fully_overwritten(
+                            blocks[index],
+                            plane,
+                            params.restoration_type,
+                            width,
+                            height,
+                            start >> shift,
+                            end.div_ceil(1 << shift).min(height),
+                        )
+                    })
+        });
+        [luma, u && v, u && v]
     }
 
     /// Claims, filters and publishes one stripe, then keeps its window.
@@ -759,7 +829,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         self.claim(stripe)
             .and_then(|range| {
                 let planes = window.planes().ok_or_else(lr_pipeline_state_error)?;
-                self.run_claimed_planes(stripe, range, planes)
+                let lower = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| window.lower(plane));
+                self.run_claimed_planes(stripe, range, &(planes, lower))
             })
             .and_then(|filtered| self.publish(filtered))
     }
@@ -800,7 +871,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         &self,
         stripe: usize,
         range: &(usize, usize),
-        deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
+        deblocked: &WindowPlanes<'_, T>,
     ) -> Result<OwnedFilteredStripe<T>> {
         let mut direct = self.sink.direct_stripe(stripe)?;
         let target = direct.take_target().ok_or_else(lr_pipeline_state_error)?;
@@ -865,7 +936,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         chain: &StripeChain<'_>,
         start: usize,
         end: usize,
-        target: Option<crate::pipeline::frame_progress::DirectStripeTarget>,
+        target: Option<crate::pipeline::frame_progress::DirectStripeTarget<T>>,
+        luma_output: bool,
     ) -> Result<crate::filters::cdef::CdefFrame<'d, T>> {
         let mut cdef = crate::filters::cdef::cdef_stripe_into(
             deblocked,
@@ -880,6 +952,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             start,
             end,
             target,
+            luma_output,
         )
         .map_err(|error| cdef_filter_error(&error))?;
         if let Some((grid, config)) = chain.ccso_grid.zip(self.ccso_config.as_ref()) {
@@ -889,6 +962,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 config,
                 chain.lossless_grid,
                 self.tile_starts(),
+                self.filter_records.bru_modes.as_deref(),
             )
             .map_err(|error| ccso_filter_error(&error))?;
         }
@@ -915,18 +989,19 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         chain: &StripeChain<'_>,
         start: usize,
         end: usize,
-    ) -> Result<final_filters::CdefOverlap> {
+    ) -> Result<final_filters::CdefOverlap<T>> {
         const CDEF_START_ALIGN: usize = 8;
         let mut overlap = final_filters::CdefOverlap::default();
         if self.one_tile_row() {
             return Ok(overlap);
         }
         let frame_height = self.ranges.last().map_or(0, |&(_, last_end)| last_end);
-        let push_range = |overlap: &mut final_filters::CdefOverlap,
+        let push_range = |overlap: &mut final_filters::CdefOverlap<T>,
                           range_start: usize,
                           range_end: usize|
          -> Result<()> {
-            let fringe = self.cdef_ccso_range(deblocked, chain, range_start, range_end, None)?;
+            let fringe =
+                self.cdef_ccso_range(deblocked, chain, range_start, range_end, None, true)?;
             overlap.y.push(fringe.filtered_y);
             overlap.u.extend(fringe.filtered_u);
             overlap.v.extend(fringe.filtered_v);
@@ -949,12 +1024,48 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         Ok(overlap)
     }
 
+    /// Whether no filter changes stripe `(start, end)`, whether none changes
+    /// its chroma planes, so their targets keep the deblocked rows, and
+    /// whether none changes its luma and the chroma filters read no luma past
+    /// the stripe, so the luma target serves as the deblocked luma.
+    fn stripe_in_place(
+        &self,
+        chain: &StripeChain<'_>,
+        (start, end): (usize, usize),
+        active_lr: [bool; 3],
+        gdf_active: bool,
+    ) -> [bool; 3] {
+        let [luma, chroma] = crate::filters::cdef::cdef_stripe_identity(
+            self.cdef_strengths.as_deref(),
+            chain.cdef_grid,
+            self.cdef_skip_grid.as_ref(),
+            (self.mi_rows, self.mi_cols),
+            (start, end),
+        );
+        let ccso = chain.ccso_grid.and(self.ccso_config.as_ref());
+        let unfiltered = |plane: PlaneId| {
+            !active_lr[plane.index()] && !ccso.is_some_and(|config| config.filters_plane(plane))
+        };
+        let chroma = chroma && unfiltered(PlaneId::U) && unfiltered(PlaneId::V);
+        let luma = luma && !gdf_active && unfiltered(PlaneId::Y);
+        let chroma_reads_luma = active_lr[PlaneId::U.index()]
+            || active_lr[PlaneId::V.index()]
+            || ccso.is_some_and(|config| {
+                config.filters_plane(PlaneId::U) || config.filters_plane(PlaneId::V)
+            });
+        [
+            chroma && luma,
+            chroma,
+            luma && !chroma && !chroma_reads_luma,
+        ]
+    }
+
     fn run_planes(
         &self,
         &(start, end): &(usize, usize),
-        deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
-        target: crate::pipeline::frame_progress::DirectStripeTarget,
-    ) -> Result<final_filters::FilteredStripe> {
+        &(deblocked, lower): &WindowPlanes<'_, T>,
+        mut target: crate::pipeline::frame_progress::DirectStripeTarget<T>,
+    ) -> Result<final_filters::FilteredStripe<T>> {
         let chain = self.chain();
         let [y_end, u_end] = self.lr_plane_ends;
         let y_runs = &self.lr_source_blocks[..y_end];
@@ -968,54 +1079,109 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             self.bit_depth,
             chain.gdf_reference,
         )?;
-        let direct_u8_lr = core::array::from_fn(|index| {
-            let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
-            if self.bit_depth != BitDepth::Eight || !active_lr[index] {
-                return false;
-            }
-            let Some(target) = target.get(plane) else {
-                return false;
+        let [all_in_place, chroma_in_place, luma_in_place] =
+            self.stripe_in_place(&chain, (start, end), active_lr, gdf_active);
+        let mut in_place = |plane: PlaneId| {
+            target
+                .take(plane)
+                .map(|target| {
+                    target
+                        .holds_deblocked()
+                        .then(|| crate::filters::source::StripePlane::from_target(target))
+                        .ok_or_else(lr_pipeline_state_error)
+                })
+                .transpose()
+        };
+        if all_in_place {
+            return Ok(final_filters::FilteredStripe {
+                y: in_place(PlaneId::Y)?.ok_or_else(lr_pipeline_state_error)?,
+                u: in_place(PlaneId::U)?,
+                v: in_place(PlaneId::V)?,
+            });
+        }
+        let chroma = if chroma_in_place {
+            Some([in_place(PlaneId::U)?, in_place(PlaneId::V)?])
+        } else {
+            None
+        };
+        if luma_in_place {
+            let luma = in_place(PlaneId::Y)?.ok_or_else(lr_pipeline_state_error)?;
+            let deblocked = crate::filters::source::DeblockedPlanes {
+                y: luma.view().map_err(|_| lr_pipeline_state_error())?,
+                ..deblocked
             };
-            let frame_type = self
-                .core
-                .lr_params
-                .as_ref()
-                .and_then(|params| params.planes.get(index))
-                .map(|plane| plane.restoration_type);
-            if plane == PlaneId::Y {
-                return final_filters::terminal_luma_wiener_direct_u8(
-                    self.bit_depth,
-                    frame_type,
-                    gdf_active && chain.lossless_grid.is_some(),
-                    plane_blocks[index],
-                    target,
-                );
+            let crate::filters::cdef::CdefFrame {
+                filtered_u: u,
+                filtered_v: v,
+                ..
+            } = self.cdef_ccso_range(deblocked, &chain, start, end, Some(target), false)?;
+            return Ok(final_filters::FilteredStripe { y: luma, u, v });
+        }
+        let deblocked = if chroma_in_place {
+            crate::filters::source::DeblockedPlanes {
+                u: None,
+                v: None,
+                ..deblocked
             }
-            let Some(target_end_y) = target.end_y().filter(|_| !target.is_u16()) else {
-                return false;
-            };
-            frame_type.is_some_and(|frame_type| {
-                final_filters::lr_plane_fully_overwritten(
-                    plane_blocks[index],
-                    plane,
-                    frame_type,
-                    target.width(),
-                    target.frame_height(),
-                    target.origin_y(),
-                    target_end_y,
-                )
-            })
-        });
+        } else {
+            deblocked
+        };
         let lr_initializations =
             final_filters::lr_initializations(&self.core, active_lr, plane_blocks, &target);
+        let edges = lower.map(|plane| plane.is_some());
         let lr_copies = core::array::from_fn(|index| {
-            active_lr[index]
-                && !target
-                    .get([PlaneId::Y, PlaneId::U, PlaneId::V][index])
-                    .is_some_and(|target| target.is_u16() && target.holds_deblocked())
+            edges[index]
+                || active_lr[index]
+                    && !target
+                        .get([PlaneId::Y, PlaneId::U, PlaneId::V][index])
+                        .is_some_and(
+                            crate::pipeline::frame_progress::DirectPlaneTarget::holds_deblocked,
+                        )
         });
         let (cdef_target, lr_target) = target.split(lr_copies);
-        let cdef = self.cdef_ccso_range(deblocked, &chain, start, end, Some(cdef_target))?;
+        let planes = [Some(deblocked.y), deblocked.u, deblocked.v];
+        let mut edged = [None; 3];
+        let mut cores = [None; 3];
+        for (index, plane) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().enumerate() {
+            let Some(lower) = lower[index].as_ref() else {
+                continue;
+            };
+            let core = lr_target
+                .get(plane)
+                .filter(|target| target.holds_deblocked())
+                .and_then(crate::pipeline::frame_progress::DirectPlaneTarget::rows)
+                .filter(|_| {
+                    lr_initializations[index]
+                        == crate::filters::source::StripeInitialization::FullyOverwritten
+                });
+            edged[index] = planes[index].map(|plane| plane.over(lower));
+            cores[index] = Some(core.ok_or_else(lr_pipeline_state_error)?);
+        }
+        let full: [_; 3] = core::array::from_fn(|index| {
+            cores[index]
+                .zip(edged[index].as_ref())
+                .map(|(core, edged)| core.over(edged))
+        });
+        let cdef = self.cdef_ccso_range(
+            crate::filters::source::DeblockedPlanes {
+                y: full[0].or(planes[0]).ok_or_else(lr_pipeline_state_error)?,
+                u: full[1].or(planes[1]),
+                v: full[2].or(planes[2]),
+            },
+            &chain,
+            start,
+            end,
+            Some(cdef_target),
+            true,
+        )?;
+        let cdef = crate::filters::cdef::CdefFrame {
+            deblocked_y: edged[0].or(planes[0]).ok_or_else(lr_pipeline_state_error)?,
+            deblocked_u: edged[1].or(planes[1]),
+            deblocked_v: edged[2].or(planes[2]),
+            filtered_y: cdef.filtered_y,
+            filtered_u: cdef.filtered_u,
+            filtered_v: cdef.filtered_v,
+        };
         let cdef_overlap = self.cdef_overlap_planes(deblocked, &chain, start, end)?;
         let mut frame = chain.apply_lr_stripe(
             &self.core,
@@ -1025,7 +1191,6 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             &self.lr_unit_filters,
             final_filters::LrStripeOutput {
                 active_planes: active_lr,
-                direct_u8_planes: direct_u8_lr,
                 initializations: lr_initializations,
                 target: lr_target,
             },
@@ -1033,12 +1198,9 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         if gdf_active {
             let (separate_cdef_luma, output_luma) =
                 if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
-                    (
-                        Some(&frame.cdef_y),
-                        gdf_luma(post_lr_y).ok_or_else(lr_pipeline_state_error)?,
-                    )
+                    (Some(&frame.cdef_y), post_lr_y)
                 } else {
-                    (None, crate::filters::gdf::GdfLuma::U16(&mut frame.cdef_y))
+                    (None, &mut frame.cdef_y)
                 };
             crate::filters::gdf::apply_stripe(
                 &self.core,
@@ -1053,15 +1215,16 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 chain.gdf_reference,
             )?;
         }
-        Ok(frame.into_filtered())
+        let mut filtered = frame.into_filtered();
+        if let Some([u, v]) = chroma {
+            (filtered.u, filtered.v) = (u, v);
+        }
+        Ok(filtered)
     }
 
     /// Publishes every completed stripe, then consumes the sole output owner to
     /// freeze exactly once.
-    pub(crate) fn finish<R>(
-        mut self,
-        publish: impl FnOnce(DecodedFrame<T>) -> R,
-    ) -> Result<(R, super::FrameFilterRecords)> {
+    pub(crate) fn finish(mut self, writer: Option<FrameSlotWriter<T>>) -> FrozenFrame<T> {
         let complete = self
             .stripe_state
             .get_mut()
@@ -1100,7 +1263,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         if let Some(config) = self.ccso_config.take() {
             config.return_offset_luts(&mut self.filter_records.ccso_offset_luts);
         }
-        let frame = self.sink.freeze(publish)?;
+        let frame = self.sink.freeze(writer)?;
         Ok((frame, self.filter_records))
     }
 }
@@ -1123,15 +1286,15 @@ impl<T: ReconSample> OwnedFilterJob<T> {
 
 impl<T: ReconSample> OwnedFilterFinish<T> {
     /// Freezes only when this is the last live setup owner.
-    pub(crate) fn finish<R>(
+    pub(crate) fn finish(
         self,
-        publish: impl FnOnce(DecodedFrame<T>) -> R,
-    ) -> (Result<(R, super::FrameFilterRecords)>, OwnedFilterShell<T>) {
+        writer: Option<FrameSlotWriter<T>>,
+    ) -> (FrozenFrame<T>, OwnedFilterShell<T>) {
         let mut setup = self.setup;
         let result = Arc::get_mut(&mut setup)
             .ok_or_else(lr_pipeline_state_error)
             .and_then(|setup| setup.take().ok_or_else(lr_pipeline_state_error))
-            .and_then(|setup| setup.finish(publish));
+            .and_then(|setup| setup.finish(writer));
         (result, setup)
     }
 }
@@ -1197,26 +1360,6 @@ fn lossless_grid(
         }
         crate::filters::lossless::LosslessGridError::Geometry => lr_pipeline_state_error(),
     })
-}
-
-/// The post-LR luma rows GDF filters in place.
-fn gdf_luma(
-    plane: &mut crate::filters::source::StripeOutputPlane,
-) -> Option<crate::filters::gdf::GdfLuma<'_>> {
-    use crate::filters::source::StripeOutputPlane;
-    let (width, frame_height, origin_y) = (plane.width(), plane.frame_height(), plane.origin_y());
-    let rows = plane.end_y()?.checked_sub(origin_y)?;
-    match plane {
-        StripeOutputPlane::U16(plane) => Some(crate::filters::gdf::GdfLuma::U16(plane)),
-        StripeOutputPlane::DirectU8(target) => Some(crate::filters::gdf::GdfLuma::U8 {
-            stride: target.stride(),
-            samples: target.u8_samples_mut()?,
-            width,
-            frame_height,
-            origin_y,
-            rows,
-        }),
-    }
 }
 
 /// How many plane rows past each end of a stripe the § 7.2 chain reads.
@@ -1347,10 +1490,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 }
 
 impl StripeChain<'_> {
-    fn validate_filter_stripe(
+    fn validate_filter_stripe<T: ReconSample>(
         &self,
         plane: PlaneId,
-        stripe: &crate::filters::source::StripeOutputPlane,
+        stripe: &crate::filters::source::StripePlane<T>,
     ) -> Result<()> {
         let error = || lr_pipeline_state_error();
         let size = self.plane_sizes[plane.index()].ok_or_else(error)?;

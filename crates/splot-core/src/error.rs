@@ -168,7 +168,7 @@ pub enum SymbolCdfErrorKind {
         /// Offending CDF index.
         index: usize,
     },
-    /// `cdf[N - 1]` is not a valid `Para_Adjustment_List` row.
+    /// The rate index of `cdf[N - 1]` is not a valid `Para_Adjustment_List` row.
     #[error("CDF adaptation-rate entry {index} has value {value}, expected 0..=124")]
     AdaptationRateOutOfRange {
         /// Offending CDF index.
@@ -176,7 +176,7 @@ pub enum SymbolCdfErrorKind {
         /// Offending value.
         value: i32,
     },
-    /// `cdf[N]` is not in the AV2 capped use-count range `0..=32`.
+    /// The use count of `cdf[N - 1]` is not in the AV2 capped range `0..=32`.
     #[error("CDF use-count entry {index} has value {value}, expected 0..=32")]
     CountOutOfRange {
         /// Offending CDF index.

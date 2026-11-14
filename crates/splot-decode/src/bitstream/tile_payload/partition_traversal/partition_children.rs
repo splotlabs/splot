@@ -21,6 +21,7 @@ const MAX_CHILD_CALLS: usize = 4;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionChildCalls {
     calls: [TilePartitionCall; MAX_CHILD_CALLS],
+    chroma_refs: [ChromaRefGeometry; MAX_CHILD_CALLS],
     len: usize,
 }
 
@@ -28,21 +29,18 @@ impl TilePartitionChildCalls {
     fn new(fill: TilePartitionCall) -> Self {
         Self {
             calls: [fill; MAX_CHILD_CALLS],
+            chroma_refs: [fill.own_chroma_ref(); MAX_CHILD_CALLS],
             len: 0,
         }
     }
 
-    fn push(&mut self, call: TilePartitionCall) -> Result<(), TilePartitionTraversalError> {
-        let Some(slot) = self.calls.get_mut(self.len) else {
-            return Err(TilePartitionTraversalError::TooManyChildCalls);
-        };
-        *slot = call;
-        self.len += 1;
-        Ok(())
-    }
-
     pub(crate) fn as_slice(&self) -> &[TilePartitionCall] {
         &self.calls[..self.len]
+    }
+
+    /// The inherited chroma reference block of each call in [`Self::as_slice`].
+    pub(crate) fn chroma_refs(&self) -> &[ChromaRefGeometry] {
+        &self.chroma_refs[..self.len]
     }
 }
 
@@ -50,26 +48,51 @@ impl TilePartitionChildCalls {
 pub(crate) trait ChildCallSink {
     type Error: From<TilePartitionTraversalError>;
 
-    fn push_call(&mut self, call: TilePartitionCall) -> Result<(), Self::Error>;
+    /// `chroma_ref` is the block `call` inherits as its chroma reference
+    /// when it is chroma-offset or has no chroma.
+    fn push_call(
+        &mut self,
+        call: TilePartitionCall,
+        chroma_ref: ChromaRefGeometry,
+    ) -> Result<(), Self::Error>;
 }
 
 /// Each child call goes straight to the closure, as the decoder walk recurses.
-impl<E: From<TilePartitionTraversalError>, F: FnMut(TilePartitionCall) -> Result<(), E>>
-    ChildCallSink for F
+impl<
+    E: From<TilePartitionTraversalError>,
+    F: FnMut(TilePartitionCall, ChromaRefGeometry) -> Result<(), E>,
+> ChildCallSink for F
 {
     type Error = E;
 
     #[inline(always)]
-    fn push_call(&mut self, call: TilePartitionCall) -> Result<(), E> {
-        self(call)
+    fn push_call(
+        &mut self,
+        call: TilePartitionCall,
+        chroma_ref: ChromaRefGeometry,
+    ) -> Result<(), E> {
+        self(call, chroma_ref)
     }
 }
 
 impl ChildCallSink for TilePartitionChildCalls {
     type Error = TilePartitionTraversalError;
 
-    fn push_call(&mut self, call: TilePartitionCall) -> Result<(), TilePartitionTraversalError> {
-        self.push(call)
+    fn push_call(
+        &mut self,
+        call: TilePartitionCall,
+        chroma_ref: ChromaRefGeometry,
+    ) -> Result<(), TilePartitionTraversalError> {
+        let (Some(slot), Some(chroma_slot)) = (
+            self.calls.get_mut(self.len),
+            self.chroma_refs.get_mut(self.len),
+        ) else {
+            return Err(TilePartitionTraversalError::TooManyChildCalls);
+        };
+        *slot = call;
+        *chroma_slot = chroma_ref;
+        self.len += 1;
+        Ok(())
     }
 }
 
@@ -87,12 +110,12 @@ impl<'s, S: ChildCallSink> ChildCallBuilder<'s, S> {
     fn new(
         calls: &'s mut S,
         call: TilePartitionCall,
+        inherited_chroma_ref: ChromaRefGeometry,
         partition: PartitionType,
         sub_size: BlockSize,
         frame: &TilePartitionFrameFacts,
         chroma_offset: bool,
     ) -> Self {
-        let inherited_chroma_ref = call.chroma_ref_geometry();
         let template = TilePartitionCall::child(
             call.r(),
             call.c(),
@@ -101,7 +124,6 @@ impl<'s, S: ChildCallSink> ChildCallBuilder<'s, S> {
             chroma_offset,
             call.has_chroma(),
             call.tree_type(),
-            Some(inherited_chroma_ref),
             super::extended_sdp_allowed_for_child(frame, call, partition, sub_size),
             call.intra_region(),
         )
@@ -156,8 +178,8 @@ impl<'s, S: ChildCallSink> ChildCallBuilder<'s, S> {
     ) -> Result<(), S::Error> {
         let call = self
             .template
-            .at_child(r, c, b_size, chroma_offset, has_chroma, chroma_ref);
-        self.calls.push_call(call)
+            .at_child(r, c, b_size, chroma_offset, has_chroma);
+        self.calls.push_call(call, chroma_ref)
     }
 }
 
@@ -273,15 +295,25 @@ fn push_four_way_children<S: ChildCallSink>(
     children.push(r, c, sub_size, call.has_chroma())
 }
 
+/// `call`'s child calls; `chroma_ref` is `call`'s own chroma reference block.
 pub(crate) fn child_calls(
     call: TilePartitionCall,
+    chroma_ref: ChromaRefGeometry,
     partition: PartitionType,
     sub_size: BlockSize,
     frame: &TilePartitionFrameFacts,
     chroma_offset: bool,
 ) -> Result<TilePartitionChildCalls, TilePartitionTraversalError> {
     let mut calls = TilePartitionChildCalls::new(call);
-    child_calls_into(&mut calls, call, partition, sub_size, frame, chroma_offset)?;
+    child_calls_into(
+        &mut calls,
+        call,
+        chroma_ref,
+        partition,
+        sub_size,
+        frame,
+        chroma_offset,
+    )?;
     Ok(calls)
 }
 
@@ -290,6 +322,7 @@ pub(crate) fn child_calls(
 pub(crate) fn child_calls_into<S: ChildCallSink>(
     sink: &mut S,
     call: TilePartitionCall,
+    chroma_ref: ChromaRefGeometry,
     partition: PartitionType,
     sub_size: BlockSize,
     frame: &TilePartitionFrameFacts,
@@ -306,7 +339,15 @@ pub(crate) fn child_calls_into<S: ChildCallSink>(
     let half_w = num4x4wide >> 1;
     let half_h = num4x4high >> 1;
     let has_chroma_before_offset = call.has_chroma() && !chroma_offset;
-    let mut children = ChildCallBuilder::new(sink, call, partition, sub_size, frame, chroma_offset);
+    let mut children = ChildCallBuilder::new(
+        sink,
+        call,
+        chroma_ref,
+        partition,
+        sub_size,
+        frame,
+        chroma_offset,
+    );
     match partition {
         PartitionType::None => {}
         PartitionType::Horz => {

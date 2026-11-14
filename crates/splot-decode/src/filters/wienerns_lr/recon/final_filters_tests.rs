@@ -10,7 +10,6 @@ use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
 use crate::pipeline::frame_progress::{FrameProgress, FrontierRows};
 use splot_recon::{BitDepth, CurrentFrameWorkspace};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
     WienerNsLrSourceBlock {
@@ -210,9 +209,9 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let combined = combined.unwrap();
 
     let mut source = crate::test_support::frontier_rows(deblock_workspace()).1;
     let mut deblock = crate::filters::deblock::FrameDeblock::prepare(
@@ -245,9 +244,9 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let staged = staged.unwrap();
 
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&staged).compute_hash(),
@@ -323,9 +322,10 @@ fn a_filtered_frame_keeps_its_reconstruction_buffer() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+
+    let frame = frame.unwrap();
 
     assert_eq!(
         frame.y().samples().as_ptr(),
@@ -353,26 +353,21 @@ fn multi_stripe_pool_path_matches_off_pool_at_one_and_four_workers() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let expected = expected.unwrap();
     let expected = splot_recon::DecodedFrameHashInput::new(&expected).compute_hash();
 
     {
-        let publishes = AtomicUsize::new(0);
         let (actual, _) = final_filter_sink_10bit()
             .into_filtered_frame(
                 Arc::clone(&core),
                 false,
                 crate::filters::deblock::DeblockQuantDeltas::ZERO,
                 None,
-                |frame| {
-                    publishes.fetch_add(1, Ordering::SeqCst);
-                    frame
-                },
             )
             .unwrap();
-        assert_eq!(publishes.load(Ordering::SeqCst), 1);
+        let actual = actual.unwrap();
         assert_eq!(
             splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
             expected,
@@ -387,20 +382,14 @@ fn one_worker_multi_stripe_task_failure_returns_without_publishing() {
     core.deblocking_filter_params = None;
     let mut sink = final_filter_sink_10bit();
     sink.plane_sizes[PlaneId::Y.index()] = None;
-    let publishes = AtomicUsize::new(0);
     let result = sink.into_filtered_frame(
         Arc::new(core),
         false,
         crate::filters::deblock::DeblockQuantDeltas::ZERO,
         None,
-        |frame| {
-            publishes.fetch_add(1, Ordering::SeqCst);
-            frame
-        },
     );
 
     assert!(result.is_err());
-    assert_eq!(publishes.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -414,9 +403,9 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let expected = expected.unwrap();
 
     let mut sink = final_filter_sink_8bit::<u8>();
     let progress = progress_of(&mut sink);
@@ -432,7 +421,9 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
             .run_window(stripe, windows[stripe].take().unwrap())
             .unwrap();
     }
-    let (actual, _) = setup.finish(core::convert::identity).unwrap();
+    drop(progress);
+    let (actual, _) = setup.finish(None).unwrap();
+    let actual = actual.unwrap();
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
         splot_recon::DecodedFrameHashInput::new(&expected).compute_hash(),
@@ -450,9 +441,9 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let expected = expected.unwrap();
 
     let mut sink = final_filter_sink_10bit();
     let progress = progress_of(&mut sink);
@@ -470,19 +461,9 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
         assert_eq!(progress.published_luma_rows(), expected_rows);
     }
 
-    let freezes = AtomicUsize::new(0);
-    let (actual, _) = setup
-        .finish(|frame| {
-            freezes.fetch_add(1, Ordering::SeqCst);
-            frame
-        })
-        .unwrap();
-
-    assert_eq!(freezes.load(Ordering::SeqCst), 1);
-    assert!(
-        progress.read().is_none(),
-        "the terminal freeze must take the progressive workspace"
-    );
+    drop(progress);
+    let (actual, _) = setup.finish(None).unwrap();
+    let actual = actual.unwrap();
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
         splot_recon::DecodedFrameHashInput::new(&expected).compute_hash(),
@@ -513,17 +494,10 @@ fn owned_filter_failure_never_freezes_and_settles_the_pending_slot_once() {
         "an out-of-range stripe must fail closed"
     );
 
-    let freezes = AtomicUsize::new(0);
     assert!(
-        setup
-            .finish(|frame| {
-                freezes.fetch_add(1, Ordering::SeqCst);
-                frame
-            })
-            .is_err(),
+        setup.finish(None).is_err(),
         "terminal freeze must reject missing stripes"
     );
-    assert_eq!(freezes.load(Ordering::SeqCst), 0);
     drop(writer);
     assert!(slot.is_settled());
     assert_eq!(slot.progress().unwrap().published_luma_rows(), 0);
@@ -615,9 +589,9 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let expected = expected.unwrap();
     let (setup, progress) = arc_owned_filter_setup();
     let mut rows = final_rows(&progress);
     assert_eq!(owned_setup(&setup).stripe_ranges().len(), 3);
@@ -630,19 +604,17 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
             grids: crate::filters::deblock::DeblockGridStorage::default(),
             blocks: restored.clone(),
             chroma: crate::filters::deblock::ChromaDeblockRecords::default(),
+            bru_modes: None,
         })
         .unwrap();
     drop(rows);
 
-    let freezes = AtomicUsize::new(0);
-    let (outcome, shell) = OwnedFilterSetup::owned_finish(setup).finish(|frame| {
-        freezes.fetch_add(1, Ordering::SeqCst);
-        frame
-    });
+    drop(progress);
+    let (outcome, shell) = OwnedFilterSetup::owned_finish(setup).finish(None);
     let (actual, records) = outcome.unwrap();
+    let actual = actual.unwrap();
     assert!(shell.as_ref().is_none());
 
-    assert_eq!(freezes.load(Ordering::SeqCst), 1);
     assert_eq!(
         records
             .deblock_blocks
@@ -654,7 +626,6 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
             .map(|block| (block.r, block.c, block.n4w, block.n4h, block.qindex))
             .collect::<Vec<_>>()
     );
-    assert!(progress.read().is_none());
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
         splot_recon::DecodedFrameHashInput::new(&expected).compute_hash(),
@@ -669,9 +640,8 @@ fn owned_filter_shell_is_stable_across_consecutive_frames() {
     for job in owned_filter_jobs(&setup, &mut rows, &[0, 1, 2]) {
         job.run().unwrap();
     }
-    drop(rows);
-    let (outcome, mut setup) =
-        OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+    drop((rows, progress));
+    let (outcome, mut setup) = OwnedFilterSetup::owned_finish(setup).finish(None);
     assert!(outcome.is_ok());
     assert_eq!(Arc::as_ptr(&setup), shell);
     assert!(setup.as_ref().is_none());
@@ -687,8 +657,8 @@ fn owned_filter_shell_is_stable_across_consecutive_frames() {
     for job in owned_filter_jobs(&setup, &mut rows, &[0, 1, 2]) {
         job.run().unwrap();
     }
-    drop(rows);
-    let (outcome, setup) = OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+    drop((rows, progress));
+    let (outcome, setup) = OwnedFilterSetup::owned_finish(setup).finish(None);
     assert!(outcome.is_ok());
     assert_eq!(Arc::as_ptr(&setup), shell);
     assert!(setup.as_ref().is_none());
@@ -718,8 +688,8 @@ fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() 
         for job in owned_filter_jobs(&setup, &mut rows, &order) {
             job.run().unwrap();
         }
-        drop(rows);
-        let (outcome, _) = OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+        drop((rows, progress));
+        let (outcome, _) = OwnedFilterSetup::owned_finish(setup).finish(None);
         outcome.unwrap().1
     }
 
@@ -777,7 +747,7 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     );
     assert!(
         OwnedFilterSetup::owned_finish(setup)
-            .finish(core::convert::identity)
+            .finish(None)
             .0
             .is_err(),
         "missing stripes must prevent terminal freeze"
@@ -792,7 +762,7 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     let lingering = Arc::clone(&setup);
     assert!(
         OwnedFilterSetup::owned_finish(setup)
-            .finish(core::convert::identity)
+            .finish(None)
             .0
             .is_err(),
         "terminal freeze requires the sole Arc owner"
@@ -821,7 +791,7 @@ fn apply_luma_lr(
     sink: &WienerNsLrReconSink<u8>,
     core: &FrameHeaderCore,
     blocks: &[WienerNsLrSourceBlock],
-    direct_u8: bool,
+    fully_overwritten: bool,
 ) -> Vec<u8> {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(sink.frame_info()).unwrap(),
@@ -832,8 +802,7 @@ fn apply_luma_lr(
     poison_target
         .take(PlaneId::Y)
         .unwrap()
-        .u8_samples_mut()
-        .unwrap()
+        .samples_mut()
         .fill(0xa5);
     drop(poison_target);
     drop(poison_lease);
@@ -865,18 +834,19 @@ fn apply_luma_lr(
             &[],
             super::LrStripeOutput {
                 active_planes: [true, false, false],
-                direct_u8_planes: [direct_u8, false, false],
-                initializations: [StripeInitialization::CopyAll; 3],
+                initializations: [if fully_overwritten {
+                    StripeInitialization::FullyOverwritten
+                } else {
+                    StripeInitialization::CopyAll
+                }; 3],
                 target,
             },
         )
         .unwrap()
         .into_filtered();
-    let mut filtered = filtered;
-    filtered.y.finish_direct().unwrap();
     drop(filtered);
     assert!(lease.submit());
-    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
     crate::test_support::packed(frame.y())
 }
 
@@ -914,7 +884,6 @@ fn inactive_filter_planes_reuse_cdef_storage() {
             &[],
             super::LrStripeOutput {
                 active_planes: [false; 3],
-                direct_u8_planes: [false; 3],
                 initializations: [StripeInitialization::CopyAll; 3],
                 target,
             },
@@ -922,7 +891,7 @@ fn inactive_filter_planes_reuse_cdef_storage() {
         .unwrap()
         .into_filtered();
 
-    assert_eq!(filtered.y.as_u16().unwrap().samples().as_ptr(), cdef_ptr);
+    assert_eq!(filtered.y.samples().as_ptr(), cdef_ptr);
 }
 
 fn merges(first: WienerNsLrSourceBlock, next: WienerNsLrSourceBlock) -> [Option<usize>; 2] {
@@ -1154,7 +1123,7 @@ fn loop_restoration_coverage_is_plane_independent_for_every_pixel_format() {
 }
 
 #[test]
-fn terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts() {
+fn fully_overwritten_luma_wiener_matches_copy_all_for_class_layouts() {
     let snapshot: Vec<u8> = (0..256)
         .map(|index| 32 + ((index * 37 + index / 16 * 19) % 192) as u8)
         .collect();
@@ -1177,9 +1146,9 @@ fn terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts() {
     luma.num_filter_classes = Some(2);
 
     for core in [&single_core, &cell_core] {
-        let staged = apply_luma_lr(&lr_sink(&snapshot), core, &blocks, false);
+        let copied = apply_luma_lr(&lr_sink(&snapshot), core, &blocks, false);
         let direct = apply_luma_lr(&lr_sink(&snapshot), core, &blocks, true);
-        assert_eq!(direct, staged);
+        assert_eq!(direct, copied);
         assert!(direct.iter().any(|&sample| sample != 0xa5));
     }
 }
@@ -1293,7 +1262,7 @@ fn apply_wide_luma_lr(
     let mut poison_lease = progress.direct_stripe(0).unwrap();
     let mut poison_target = poison_lease.take_target().unwrap();
     let mut poison = poison_target.take(PlaneId::Y).unwrap();
-    poison.u16_samples_mut().unwrap().fill(0x2a5);
+    poison.samples_mut().fill(0x2a5);
     drop((poison, poison_target, poison_lease));
     let mut lease = progress.direct_stripe(0).unwrap();
     let (target, _) = lease.take_target().unwrap().split([false, true, true]);
@@ -1307,7 +1276,6 @@ fn apply_wide_luma_lr(
             &[],
             super::LrStripeOutput {
                 active_planes: [true, false, false],
-                direct_u8_planes: [false; 3],
                 initializations: [initialization; 3],
                 target,
             },
@@ -1317,7 +1285,7 @@ fn apply_wide_luma_lr(
     assert_eq!(frame.post_lr_y_holds_cdef, holds_cdef);
     drop(frame.into_filtered());
     assert!(lease.submit());
-    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
     frame.y().visible_rows().flatten().copied().collect()
 }
 
@@ -1809,22 +1777,17 @@ fn lr_source_scratch_does_not_retain_oversized_buffers() {
 #[test]
 fn lr_block_destination_lands_in_its_rectangle() {
     fn filtered_plane() -> Vec<u16> {
-        let mut plane =
-            StripeOutputPlane::u16(StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap());
+        let mut plane = StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap();
         let mut source = block(0, 2, 5);
         source.width = 3;
         source.height = 2;
-        let (LrDestination::U16(output), stride) =
-            lr_block_destination(&mut plane, &source).unwrap()
-        else {
-            unreachable!()
-        };
+        let (output, stride) = lr_block_destination(&mut plane, &source).unwrap();
         for row in 0..source.height {
             for col in 0..source.width {
                 output[row * stride + col] = (row * source.width + col + 1) as u16;
             }
         }
-        plane.as_u16_mut().unwrap().samples().to_vec()
+        plane.samples().to_vec()
     }
 
     let expected = vec![
@@ -1838,13 +1801,11 @@ fn lr_block_destination_lands_in_its_rectangle() {
 
 #[test]
 fn lr_block_output_refuses_a_rectangle_wider_than_the_stripe() {
-    let mut plane =
-        StripeOutputPlane::u16(StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap());
+    let mut plane = StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap();
     let mut source = block(0, 6, 5);
     source.width = 3;
     source.height = 1;
     assert!(lr_block_destination(&mut plane, &source).is_err());
-    let plane = plane.as_u16_mut().unwrap();
     assert!(plane.samples().iter().all(|sample| *sample == 9));
 }
 

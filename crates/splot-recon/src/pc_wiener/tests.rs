@@ -165,7 +165,7 @@ fn grid_classification_matches_scalar_cells_across_shapes_and_clamps() {
     };
     let tx_skip =
         |lookup: PcWienerTxSkipLookup| Ok(i32::from((lookup.row * 3 + lookup.col * 5) % 3 == 1));
-    for cell_cols in 1..=10usize {
+    for cell_cols in (1..=10usize).chain([15, 16, 17, 31, 33, 65]) {
         for cell_rows in 1..=4usize {
             for (x, block_start_x) in [(8, 0), (64, 64), (66, 64)] {
                 for block_end_offset in [2usize, 7, 27, 63, 200] {
@@ -1152,6 +1152,58 @@ fn tx_skip_sums_match_scalar_cells_at_every_clip() {
             .map(|cell| table[usize::from(cell.class)])
             .collect();
         assert_eq!(classes.unwrap(), expected, "{case}");
+        let eight = PcWienerClassifyParams {
+            bit_depth: BitDepth::Eight,
+            ..params
+        };
+        let words: Vec<u16> = padded.iter().map(|&sample| sample & 255).collect();
+        let bytes: Vec<u8> = words.iter().map(|&sample| sample as u8).collect();
+        let word_lines: Vec<_> = words.chunks(stride).collect();
+        let byte_lines: Vec<_> = bytes.chunks(stride).collect();
+        let tx_skip = |run: PcWienerTxSkipRun| {
+            Ok(&tx_skip_grid[run.row * grid_cols + run.col..(run.row + 1) * grid_cols])
+        };
+        let mut by_words = Vec::new();
+        let source = PcWienerClassifyPaddedSource::from_rows(
+            &word_lines,
+            0,
+            origin_x,
+            origin_y,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        pc_wiener_classify_grid_padded_classes_into::<u16, _>(
+            &eight,
+            cols,
+            rows,
+            &source,
+            tx_skip,
+            table,
+            &mut scratch,
+            &mut by_words,
+        )
+        .unwrap();
+        let mut by_bytes = Vec::new();
+        let source = PcWienerClassifyPaddedSource::from_rows(
+            &byte_lines,
+            0,
+            origin_x,
+            origin_y,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        pc_wiener_classify_grid_padded_classes_into::<u8, _>(
+            &eight,
+            cols,
+            rows,
+            &source,
+            tx_skip,
+            table,
+            &mut scratch,
+            &mut by_bytes,
+        )
+        .unwrap();
+        assert_eq!(by_bytes, by_words, "{case} u8");
     }
 }
 
@@ -1204,10 +1256,8 @@ fn padded_into_reuses_capacity_from_large_to_small_grid() {
     )
     .unwrap()
     .as_ptr();
-    let source_ptr = scratch.source_cache.as_ptr();
     let feature_ptr = scratch.feature_rows.as_ptr();
     let capacities = (
-        scratch.source_cache.capacity(),
         scratch.feature_rows.capacity(),
         scratch.skip_sums.capacity(),
         scratch.classifications.capacity(),
@@ -1224,12 +1274,10 @@ fn padded_into_reuses_capacity_from_large_to_small_grid() {
     .unwrap()
     .as_ptr();
 
-    assert_eq!(scratch.source_cache.as_ptr(), source_ptr);
     assert_eq!(scratch.feature_rows.as_ptr(), feature_ptr);
     assert_eq!(small_output_ptr, large_output_ptr);
     assert_eq!(
         (
-            scratch.source_cache.capacity(),
             scratch.feature_rows.capacity(),
             scratch.skip_sums.capacity(),
             scratch.classifications.capacity(),

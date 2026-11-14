@@ -300,20 +300,20 @@ fn apply_bawp_plane<T: ReconSample>(
     luma_alpha: i16,
     tile_offset: ByteOffset,
 ) -> Result<i16> {
-    let plane_x = placed.luma_x >> sub_x;
-    let plane_y = placed.luma_y >> sub_y;
-    let plane_w = placed.luma_w >> sub_x;
-    let plane_h = placed.luma_h >> sub_y;
-    let last_row = (bawp_reference_luma_rows(placed.luma_y, placed.luma_h, mv.row) >> sub_y)
+    let plane_x = placed.luma_x() >> sub_x;
+    let plane_y = placed.luma_y() >> sub_y;
+    let plane_w = placed.luma_w() >> sub_x;
+    let plane_h = placed.luma_h() >> sub_y;
+    let last_row = (bawp_reference_luma_rows(placed.luma_y(), placed.luma_h(), mv.row) >> sub_y)
         .saturating_sub(1) as i32;
     let (ref_samples, ref_width, ref_height) =
         reference_plane(reference, plane, last_row, tile_offset)?;
     let dy = to_fullmv(mv.row);
     let dx = to_fullmv(mv.col);
-    let Some(ref_y) = fullpel_ref_pos(placed.luma_y, dy).map(|y| y >> sub_y) else {
+    let Some(ref_y) = fullpel_ref_pos(placed.luma_y(), dy).map(|y| y >> sub_y) else {
         return Ok(luma_alpha);
     };
-    let Some(ref_x) = fullpel_ref_pos(placed.luma_x, dx).map(|x| x >> sub_x) else {
+    let Some(ref_x) = fullpel_ref_pos(placed.luma_x(), dx).map(|x| x >> sub_x) else {
         return Ok(luma_alpha);
     };
     let Some(plane_width) = i32::try_from(ref_width).ok() else {

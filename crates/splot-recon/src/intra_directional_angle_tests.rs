@@ -4,6 +4,19 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crate::intra_dc_math::round2_u32;
+use crate::math::round2_i32;
+
+const INTERP_SCALE: u16 = 32;
+/// `Round2` shift applied to the §7.13.2.8 IDIF 4-tap sum (`pred = Clip1(Round2(s, 7))`).
+const DR_INTERP_FILTER_ROUND: u8 = 7;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MiddleSampleReference {
+    edge: IntraDirectionalAngleEdge,
+    base: i32,
+    shift: u16,
+}
 
 /// The § 7.13.2.8 zone-2 reference for one predicted sample, retained as the
 /// per-sample reference [`MiddleRowWalk`] is proven against.
@@ -1142,7 +1155,11 @@ fn one_sided_idif_u16_lines_match_the_per_sample_reference() {
                 for mrl_index in 0..3usize {
                     let edge_len = required_one_sided_idif_edge_len(size, mrl_index).unwrap();
                     let edge: Vec<u16> = (0..edge_len)
-                        .map(|index| ((index * 37 + 11) % 1024) as u16)
+                        .map(|index| match (index % 16, index.div_ceil(2) % 2) {
+                            (0..8, 0) => 0,
+                            (0..8, _) => 1023,
+                            _ => ((index * 37 + 11) % 1024) as u16,
+                        })
                         .collect();
                     let edges = match angle.required_edge() {
                         IntraDirectionalAngleEdge::Above => {
@@ -1208,12 +1225,20 @@ fn one_sided_idif_u16_lines_match_the_per_sample_reference() {
                                 branch, row, column, derivative, mrl_index,
                             )
                             .unwrap();
-                            let expected = if reference.base <= max_base {
-                                idif_tap(&edge, reference.base, reference.shift, BitDepth::Ten)
-                                    .unwrap()
-                            } else {
-                                logical_idif_edge_sample(&edge, max_base).unwrap()
+                            let tap = |edge: &[u16], depth| {
+                                if reference.base <= max_base {
+                                    idif_tap(edge, reference.base, reference.shift, depth).unwrap()
+                                } else {
+                                    logical_idif_edge_sample(edge, max_base).unwrap()
+                                }
                             };
+                            let expected = tap(&edge, BitDepth::Ten);
+                            assert_eq!(
+                                u16::from(narrow_output[row * stride + column]),
+                                tap(&wide, BitDepth::Eight),
+                                "8-bit p_angle {p_angle} width {} mrl {mrl_index} ({row}, {column})",
+                                size.width()
+                            );
                             assert_eq!(
                                 output[row * stride + column],
                                 expected,
@@ -1373,12 +1398,12 @@ fn lcg(state: &mut u64) -> u16 {
     (*state >> 48) as u16
 }
 
-/// The bilinear lane writers (one-sided rows and columns, zone-2 above rows and
-/// left columns) must write the per-sample samples for every angle and block
-/// shape over random 10-bit `u16` and 8-bit `u8` edges, and leave the stride
-/// padding alone.
+/// The bilinear writers (one-sided rows and columns, zone-2 above rows and left
+/// columns) must write the per-sample samples for every angle and block shape
+/// over random 10-bit `u16` and 8-bit `u8` edges, and leave the stride padding
+/// alone.
 #[test]
-fn bilinear_lanes_match_the_per_sample_writers_over_random_edges() {
+fn bilinear_lines_match_the_per_sample_writers_over_random_edges() {
     const PAD: u16 = 0xbeef;
     let mut state = 5;
     let mut middle_blocks = 0;
@@ -1389,16 +1414,17 @@ fn bilinear_lanes_match_the_per_sample_writers_over_random_edges() {
             for log2_height in 2..=6u8 {
                 let size = rect_size(log2_width, log2_height);
                 let stride = size.width() + 3;
-                for max in [1023u16, 255] {
+                for (max, bit_depth) in [(1023u16, BitDepth::Ten), (255, BitDepth::Eight)] {
                     let mut edge = |len: usize| -> Vec<u16> {
                         (0..len).map(|_| lcg(&mut state) % (max + 1)).collect()
                     };
                     let edges = [edge(size.width() + size.height()), edge(size.height() + 1)];
                     let above = &edges[0][..=size.width()];
-                    let mut lanes = vec![PAD; stride * size.height()];
-                    let mut samples = lanes.clone();
+                    let mut wide = vec![PAD; stride * size.height()];
+                    let mut samples = wide.clone();
                     if let Some(angle) = one_sided {
-                        write_bilinear_lanes(size, angle, &edges[0], &mut lanes, stride);
+                        write_prediction(bit_depth, size, angle, &edges[0], &mut wide, stride)
+                            .unwrap();
                         write_prediction_samples(size, angle, &edges[0], &mut samples, stride)
                             .unwrap();
                     } else if let Some(angle) = middle {
@@ -1408,8 +1434,10 @@ fn bilinear_lanes_match_the_per_sample_writers_over_random_edges() {
                             continue;
                         }
                         middle_blocks += 1;
-                        write_middle_lanes(size, angle, &edges[1], above, &mut lanes, stride)
-                            .unwrap();
+                        write_middle_prediction(
+                            bit_depth, size, angle, &edges[1], above, &mut wide, stride,
+                        )
+                        .unwrap();
                         write_middle_prediction_samples(
                             size,
                             angle,
@@ -1422,26 +1450,23 @@ fn bilinear_lanes_match_the_per_sample_writers_over_random_edges() {
                     } else {
                         continue;
                     }
-                    assert_eq!(lanes, samples, "p_angle {p_angle} size {size:?} max {max}");
-                    let mut wide = vec![PAD; lanes.len()];
-                    if let Some(angle) = one_sided {
-                        write_prediction(size, angle, &edges[0], &mut wide, stride).unwrap();
-                    } else if let Some(angle) = middle {
-                        write_middle_prediction(size, angle, &edges[1], above, &mut wide, stride)
-                            .unwrap();
-                    }
-                    assert_eq!(wide, samples, "u16 p_angle {p_angle} size {size:?}");
+                    assert_eq!(
+                        wide, samples,
+                        "u16 p_angle {p_angle} size {size:?} max {max}"
+                    );
                     if max != 255 {
                         continue;
                     }
                     let narrow = |edge: &[u16]| edge.iter().map(|&v| v as u8).collect::<Vec<_>>();
                     let (narrow_edge, narrow_left) = (narrow(&edges[0]), narrow(&edges[1]));
-                    let mut output = vec![0xa5u8; lanes.len()];
+                    let mut output = vec![0xa5u8; wide.len()];
                     if let Some(angle) = one_sided {
-                        write_prediction(size, angle, &narrow_edge, &mut output, stride).unwrap();
+                        write_prediction(bit_depth, size, angle, &narrow_edge, &mut output, stride)
+                            .unwrap();
                     } else if let Some(angle) = middle {
                         let above = &narrow_edge[..=size.width()];
                         write_middle_prediction(
+                            bit_depth,
                             size,
                             angle,
                             &narrow_left,
@@ -1453,10 +1478,10 @@ fn bilinear_lanes_match_the_per_sample_writers_over_random_edges() {
                     }
                     let widened: Vec<u16> = output
                         .iter()
-                        .zip(&lanes)
+                        .zip(&samples)
                         .map(|(&got, &want)| if want == PAD { PAD } else { u16::from(got) })
                         .collect();
-                    assert_eq!(widened, lanes, "u8 p_angle {p_angle} size {size:?}");
+                    assert_eq!(widened, samples, "u8 p_angle {p_angle} size {size:?}");
                 }
             }
         }
@@ -1501,4 +1526,246 @@ fn middle_index_bounds_match_a_per_sample_walk() {
             }
         }
     }
+}
+
+// Per-sample § 7.13.2.8 references the line writers are proven against.
+
+/// The per-sample form of [`write_prediction`], and the reference its lane
+/// form is proven against.
+fn write_prediction_samples<T: ReconSample>(
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edge: &[T],
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    let max_base = size.width() + size.height() - 1;
+    match angle.branch() {
+        DirectionalAngleBranch::Above { derivative } => {
+            for row in 0..size.height() {
+                let idx = (row + 1) * usize::from(derivative);
+                let base_prefix = idx >> 6;
+                let shift = ((idx >> 1) & 0x1f) as u16;
+                let row_start = row * stride_samples;
+                for column in 0..size.width() {
+                    let base = base_prefix + column;
+                    let value = if base < max_base {
+                        bilinear(edge[base], edge[base + 1], shift)
+                    } else {
+                        edge[max_base].to_u16()
+                    };
+                    output[row_start + column] = T::try_from_u16(value)?;
+                }
+            }
+        }
+        DirectionalAngleBranch::Left { derivative } => {
+            for row in 0..size.height() {
+                let row_start = row * stride_samples;
+                for column in 0..size.width() {
+                    let idx = (column + 1) * usize::from(derivative);
+                    let base = (idx >> 6) + row;
+                    let shift = ((idx >> 1) & 0x1f) as u16;
+                    let value = if base < max_base {
+                        bilinear(edge[base], edge[base + 1], shift)
+                    } else {
+                        edge[max_base].to_u16()
+                    };
+                    output[row_start + column] = T::try_from_u16(value)?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// The per-sample form of [`write_middle_prediction`], and the reference its
+/// lane form is proven against.
+fn write_middle_prediction_samples<T: ReconSample>(
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    left: &[T],
+    above: &[T],
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    let branch = angle.branch();
+    for row in 0..size.height() {
+        let row_start = row * stride_samples;
+        let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
+        for column in 0..size.width() {
+            let reference = walk.next();
+            let edge = match reference.edge {
+                IntraDirectionalAngleEdge::Left => left,
+                IntraDirectionalAngleEdge::Above => above,
+            };
+            let next_base =
+                reference
+                    .base
+                    .checked_add(1)
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "middle directional angle next edge base",
+                    })?;
+            let value = bilinear(
+                logical_edge_sample(edge, reference.base)?,
+                logical_edge_sample(edge, next_base)?,
+                reference.shift,
+            );
+            output[row_start + column] = T::try_from_u16(value)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Computes one §7.13.2.8 IDIF sample: `s = Σ(t=0..3) Dr_Interp_Filter[shift][t]
+/// * Edge[base + t - 1]`, then `Clip1(Round2(s, 7))`. The 4-tap sum is signed
+/// (the filter has negative taps), so `Round2` floors the signed value and
+/// `Clip1` clamps a negative result to `0`.
+fn idif_tap<T: ReconSample>(edge: &[T], base: i32, shift: u16, bit_depth: BitDepth) -> Result<u16> {
+    idif_tap_with_mrl(edge, base, shift, bit_depth, 0)
+}
+
+fn idif_tap_with_mrl<T: ReconSample>(
+    edge: &[T],
+    base: i32,
+    shift: u16,
+    bit_depth: BitDepth,
+    mrl_index: usize,
+) -> Result<u16> {
+    if shift == 0 {
+        let offset = logical_idif_edge_offset_mrl(base, edge.len(), mrl_index)?;
+        return Ok(edge[offset].to_u16());
+    }
+    let taps = DR_INTERP_FILTER
+        .get(usize::from(shift))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF shift index",
+        })?;
+    let first_logical = base.checked_sub(1).ok_or(ReconError::ArithmeticOverflow {
+        context: "middle directional angle IDIF tap index",
+    })?;
+    let first_offset = logical_idif_edge_offset_mrl(first_logical, edge.len(), mrl_index)?;
+    let samples = edge
+        .get(first_offset..)
+        .and_then(|samples| samples.first_chunk::<4>())
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF tap index",
+        })?;
+    let sum = taps
+        .iter()
+        .zip(samples)
+        .map(|(&tap, sample)| tap * i32::from(sample.to_u16()))
+        .sum();
+    Ok(idif_round2_clip(sum, bit_depth))
+}
+
+/// AV2 §4 `Clip1(Round2(s, 7))` for a signed IDIF sum: `Round2(x, n) =
+/// ⌊(x + 2^(n-1)) / 2^n⌋` (floor, via arithmetic shift on the signed value),
+/// then clamp to `0..=max_sample`.
+#[inline]
+fn idif_round2_clip(sum: i32, bit_depth: BitDepth) -> u16 {
+    let rounded = round2_i32(sum, u32::from(DR_INTERP_FILTER_ROUND));
+    rounded.clamp(0, i32::from(bit_depth.max_sample())) as u16
+}
+
+fn logical_idif_edge_sample<T: ReconSample>(samples: &[T], logical_index: i32) -> Result<T> {
+    let offset = logical_idif_edge_offset(logical_index, samples.len())?;
+    Ok(samples[offset])
+}
+
+/// One row's § 7.13.2.8 zone-2 references, advanced column by column.
+///
+/// Both projections are affine in the column — `aboveIdx = j * 64 - (i + 1 +
+/// mrlIndex) * dx` steps by `64` and `leftIdx = i * 64 - (j + 1 + mrlIndex) *
+/// dy` by `-dy` — so one derivation per row replaces one per sample. The
+/// constructor resolves the row's first and last column with the same checked
+/// arithmetic [`middle_sample_reference_mrl`] uses, which bounds every step in
+/// between.
+#[derive(Clone, Copy)]
+struct MiddleRowWalk {
+    above_idx: i32,
+    left_idx: i32,
+    dy: i32,
+    min_base: i32,
+}
+
+impl MiddleRowWalk {
+    fn new(
+        row: usize,
+        columns: usize,
+        branch: MiddleDirectionalAngleBranch,
+        mrl_index: usize,
+    ) -> Result<Self> {
+        let mrl = i32::try_from(mrl_index).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "middle directional angle MRL index",
+        })?;
+        let first = middle_row_indices(row, 0, branch, mrl)?;
+        let last = columns.saturating_sub(1);
+        middle_row_indices(row, last, branch, mrl)?;
+        Ok(Self {
+            above_idx: first.0,
+            left_idx: first.1,
+            dy: i32::from(branch.dy),
+            min_base: -1 - mrl,
+        })
+    }
+
+    fn next(&mut self) -> MiddleSampleReference {
+        let above_base = self.above_idx >> 6;
+        let reference = if above_base >= self.min_base {
+            MiddleSampleReference {
+                edge: IntraDirectionalAngleEdge::Above,
+                base: above_base,
+                shift: directional_shift(self.above_idx),
+            }
+        } else {
+            MiddleSampleReference {
+                edge: IntraDirectionalAngleEdge::Left,
+                base: self.left_idx >> 6,
+                shift: directional_shift(self.left_idx),
+            }
+        };
+        self.above_idx += 64;
+        self.left_idx -= self.dy;
+        reference
+    }
+}
+
+/// The § 7.13.2.8 zone-2 `(aboveIdx, leftIdx)` pair for one predicted sample.
+fn middle_row_indices(
+    row: usize,
+    column: usize,
+    branch: MiddleDirectionalAngleBranch,
+    mrl: i32,
+) -> Result<(i32, i32)> {
+    let indices = || {
+        let row = i32::try_from(row).ok()?;
+        let column = i32::try_from(column).ok()?;
+        let above_delta = row
+            .checked_add(1)?
+            .checked_add(mrl)?
+            .checked_mul(i32::from(branch.dx))?;
+        let above_idx = column.checked_mul(64)?.checked_sub(above_delta)?;
+        let left_delta = column
+            .checked_add(1)?
+            .checked_add(mrl)?
+            .checked_mul(i32::from(branch.dy))?;
+        let left_idx = row.checked_mul(64)?.checked_sub(left_delta)?;
+        Some((above_idx, left_idx))
+    };
+    indices().ok_or(ReconError::ArithmeticOverflow {
+        context: "middle directional angle index",
+    })
+}
+
+fn logical_edge_sample<T: ReconSample>(samples: &[T], logical_index: i32) -> Result<T> {
+    let offset = logical_edge_offset(logical_index, samples.len())?;
+    Ok(samples[offset])
+}
+
+fn bilinear<T: ReconSample>(a: T, b: T, shift: u16) -> u16 {
+    let weighted = u32::from(a.to_u16()) * u32::from(INTERP_SCALE - shift)
+        + u32::from(b.to_u16()) * u32::from(shift);
+    round2_u32(weighted, 5) as u16
 }

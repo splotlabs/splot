@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use splot_decode::{
-    DecodeContext, DecodeDiagnosticReport, DecodeError, DecodeLimitThreshold, DecodeLimits,
-    DecodeOptions, DecodeRuntimeConfig,
+    DecodeContext, DecodeDiagnosticReport, DecodeError, DecodeLimitName, DecodeLimitThreshold,
+    DecodeLimits, DecodeOptions, DecodeRuntimeConfig,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
 
@@ -36,6 +36,8 @@ const TEN_BIT_INTER: &[u8] = include_bytes!(
 );
 const ORDER_HINT_WRAP: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-orderhint-wrap-64x64.ivf");
+const TIP_OUTPUT_WINDOW: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-tip-output-window-64x64-q210.ivf");
 
 const FIXTURES: &[(&str, &[u8])] = &[
     ("syn-3frame-multiref-64x64", MULTIREF),
@@ -316,6 +318,22 @@ fn orderhint_output_matches_depth_one_at_every_capacity() {
     }
 }
 
+/// Between two split inter frames run several TIP output frames, so the
+/// reference handles finished split slots keep span more frames than the
+/// frame store holds; the full store must not wait for those slots' reuse.
+#[test]
+fn tip_output_run_does_not_exhaust_the_frame_store() {
+    let expected = collect_raw(&depth_one(), TIP_OUTPUT_WINDOW, DecodeOptions::default()).unwrap();
+
+    for depth in [8usize, 12, 16] {
+        let actual =
+            collect_raw_with_timeout(depth, FrameDelay::Auto, TIP_OUTPUT_WINDOW.to_vec()).unwrap();
+        assert_eq!(actual, expected, "output diverged at frame delay {depth}");
+    }
+}
+
+const SERIAL_PEAK: u64 = 110_592;
+
 fn reference_store_capped(bytes: u64) -> DecodeOptions {
     DecodeOptions::new(
         DecodeLimits::default().with_max_reference_store_bytes(DecodeLimitThreshold::Max(bytes)),
@@ -355,7 +373,6 @@ fn reference_store_capped(bytes: u64) -> DecodeOptions {
 /// frame per effective pipeline-capacity slot plus the capped handoff.
 #[test]
 fn pipelined_hash_decode_bounds_reference_storage_by_effective_capacity() {
-    const SERIAL_PEAK: u64 = 110_592;
     const DECODED_FRAME: u64 = 12_288;
     const OUTSTANDING_HASH_FRAMES: u64 = 4;
 
@@ -378,5 +395,40 @@ fn pipelined_hash_decode_bounds_reference_storage_by_effective_capacity() {
             });
 
         assert_eq!(report.frames.len(), 121);
+    }
+}
+
+/// A frame delay deeper than `max_reference_store_bytes` allows waits for its
+/// in-flight frames instead of failing, so it decodes inside the depth-one
+/// peak to depth-one bytes, and a limit below that peak still fails typed.
+#[test]
+fn deep_pipeline_shrinks_to_the_reference_store_limit() {
+    let expected = collect_raw(
+        &depth_one(),
+        ORDER_HINT_WRAP,
+        reference_store_capped(SERIAL_PEAK),
+    )
+    .unwrap();
+
+    for threads in [1usize, 2, 8] {
+        let decoder = context(threads, FrameDelay::Auto);
+        let actual = collect_raw(
+            &decoder,
+            ORDER_HINT_WRAP,
+            reference_store_capped(SERIAL_PEAK),
+        )
+        .unwrap_or_else(|error| panic!("{threads} workers exceeded {SERIAL_PEAK}: {error}"));
+        assert_eq!(actual, expected, "output diverged at {threads} workers");
+
+        let error = collect_raw(
+            &decoder,
+            ORDER_HINT_WRAP,
+            reference_store_capped(SERIAL_PEAK - 1),
+        )
+        .unwrap_err();
+        let DecodeError::Limit { source } = error else {
+            panic!("{threads} workers below the depth-one peak gave {error}");
+        };
+        assert_eq!(source.name(), DecodeLimitName::MaxReferenceStoreBytes);
     }
 }

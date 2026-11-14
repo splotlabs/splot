@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-pub(crate) use block::{ParseProgress, ReconRowBuffers};
+pub(crate) use block::{ParseProgress, ReconRowBuffers, TileParseState};
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use std::sync::Arc;
@@ -18,14 +18,13 @@ use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_core::types::ObuType;
 use splot_recon::{
     BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
-    PlaneId as ReconPlaneId, PlaneRect, QuantizerDeltas, ReconSample, ReferenceFrameStore,
-    ReferenceSlot,
+    PlaneId as ReconPlaneId, QuantizerDeltas, ReconSample, ReferenceFrameStore, ReferenceSlot,
 };
 
 use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::tile_payload::{
     FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap, GeneralIntraResidualError,
-    reconstruct_general_intra_chroma_cctx_pair_into,
+    add_cctx_pair_residual_in_place,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateError};
 use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
@@ -91,7 +90,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     bit_depth: BitDepth,
     products: &mut FrameProductWriters,
 ) -> Result<FrameWalk<T>> {
-    if frame_envelope.header.obu_type == ObuType::BridgeFrame {
+    if frame_envelope.header.obu_type == ObuType::BridgeFrame || bru_inactive_frame(&core) {
         reference
             .pixel_reference_gate(named_pixel_reference_slots(&core))
             .wait()?;
@@ -284,6 +283,7 @@ fn decode_bridge_frame<T: ReconSample>(
     )?;
     let ref_slot = core
         .bridge_frame_ref_idx
+        .or_else(|| bru_ref_slot(&core))
         .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
     let source = hold_reference_slot(reference, ref_slot)?;
     let ref_slot_index = usize::try_from(ref_slot).unwrap_or(usize::MAX);
@@ -651,10 +651,6 @@ const fn cdf_blending_enabled(enable_avg_cdf: bool, tip_frame_mode: Option<TipFr
 }
 
 /// The reference frames one inter block reads, borrowed for the block only.
-///
-/// A still-filtering reference is readable only while its shared borrow lives,
-/// so the borrows are taken once per block, kept on the reconstructing thread's
-/// stack, and released before it waits on anything.
 pub(in crate::prediction::inter) struct HeldInterBlockReferences<'a, T: ReconSample> {
     reference0: reference::HeldFrameSamples<'a, T>,
     /// The second list's borrow, absent when it names the first list's slot.
@@ -664,13 +660,13 @@ pub(in crate::prediction::inter) struct HeldInterBlockReferences<'a, T: ReconSam
 
 /// Borrows the reference frames one placed inter block names.
 ///
-/// Two lists that name the same slot share one borrow, since borrowing a
-/// still-filtering frame twice at once would deadlock against its filter phase.
+/// Two lists that name the same slot share one borrow.
 ///
 /// # Errors
 ///
 /// Returns a typed reference-state diagnostic when a named slot has no readable
 /// frame samples.
+#[inline]
 pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSample>(
     ref_frame_idx: &[u32],
     reference: &'a InterReferenceState<T>,
@@ -697,25 +693,21 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
         self.reference0.samples()
     }
 
-    /// Predicts the held block into `sink` from the compound `motion` grid,
-    /// a single-reference translation straight from its motion vector.
+    /// Predicts the held block, which does not refine its motion, into
+    /// `sink`: a single-reference translation straight from its motion vector.
     ///
     /// # Errors
     ///
-    /// As [`Self::block_params`] and [`mc::predict_inter_block_from_grid`].
-    #[allow(clippy::too_many_arguments)]
+    /// As [`Self::block_params`] and [`mc::predict_inter_block`].
     pub(in crate::prediction::inter) fn predict_into(
         &self,
         sink: &mut mc::WorkspaceSink<'_, '_, T>,
         placed: &PlacedInterBlock,
         rect: mc::McBlockRect,
-        use_refinemv: bool,
-        refinemv_switchable: bool,
-        motion: Option<mc::CompoundMotionGrid>,
         offset: ByteOffset,
-    ) -> Result<Option<mc::CompoundMotionGrid>> {
+    ) -> Result<()> {
         if !self.compound && placed.block.warp_params[0].is_none() {
-            mc::motion_compensate_single_block_into(
+            return mc::motion_compensate_single_block_into(
                 sink,
                 self.reference0.samples()?,
                 rect,
@@ -723,14 +715,9 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
                 placed.block.interp,
                 placed.predict_chroma,
                 offset,
-            )?;
-            return Ok(motion);
+            );
         }
-        let block = self
-            .block_params(placed, rect)?
-            .with_refinemv(use_refinemv)
-            .with_switchable_refinemv(refinemv_switchable);
-        mc::predict_inter_block_from_grid(sink, block, motion, offset)
+        mc::predict_inter_block(sink, &self.block_params(placed, rect)?, offset)
     }
 
     /// Builds the § 7.13.3 prediction parameters for the held block.
@@ -811,9 +798,7 @@ fn hold_reference_slot<T: ReconSample>(
         .map_err(Into::into)
 }
 
-/// Borrows two named references in a stable lock order while returning them in
-/// list order. This prevents two compound readers from each holding one live
-/// frame's progress lock while waiting behind the other frame's writer.
+/// Borrows two named references in list order, once when both name one slot.
 pub(in crate::prediction::inter) fn hold_reference_pair<T: ReconSample>(
     reference: &InterReferenceState<T>,
     first: u32,
@@ -822,28 +807,12 @@ pub(in crate::prediction::inter) fn hold_reference_pair<T: ReconSample>(
     reference::HeldFrameSamples<'_, T>,
     Option<reference::HeldFrameSamples<'_, T>>,
 )> {
-    let Some(second) = second.filter(|second| *second != first) else {
-        return Ok((hold_reference_slot(reference, first)?, None));
-    };
-    let first_progress = reference.slot(first).and_then(RefFrameSlot::progress);
-    let second_progress = reference.slot(second).and_then(RefFrameSlot::progress);
-    if first_progress
-        .zip(second_progress)
-        .is_some_and(|(first, second)| core::ptr::eq(first, second))
-    {
-        return Ok((hold_reference_slot(reference, first)?, None));
-    }
-    let first_key = first_progress.map_or(0, |progress| core::ptr::from_ref(progress).addr());
-    let second_key = second_progress.map_or(0, |progress| core::ptr::from_ref(progress).addr());
-    if first_key <= second_key {
-        let first = hold_reference_slot(reference, first)?;
-        let second = hold_reference_slot(reference, second)?;
-        Ok((first, Some(second)))
-    } else {
-        let second = hold_reference_slot(reference, second)?;
-        let first = hold_reference_slot(reference, first)?;
-        Ok((first, Some(second)))
-    }
+    let first_held = hold_reference_slot(reference, first)?;
+    let second = second
+        .filter(|second| *second != first)
+        .map(|second| hold_reference_slot(reference, second))
+        .transpose()?;
+    Ok((first_held, second))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -888,66 +857,6 @@ impl CompoundOrderHint {
     }
 }
 
-#[inline]
-fn compound_is_joint_context(
-    ref_frame_idx: &[u32],
-    ref_order_hint: &[u32],
-    pair: (i8, i8),
-    current_order_hint: u32,
-) -> Result<usize> {
-    let order_hint_of = |ref_frame: i8| -> Result<CompoundOrderHint> {
-        let slot = block_reference_slot(ref_frame_idx, ref_frame)?;
-        let slot_index = usize::try_from(slot).unwrap_or(usize::MAX);
-        let slot_count = ref_order_hint.len();
-        ref_order_hint
-            .get(slot_index)
-            .copied()
-            .map(CompoundOrderHint::reference)
-            .ok_or_else(|| {
-                DecodeReferenceStateError::SlotOutOfRange {
-                    slot: slot_index,
-                    slot_count,
-                }
-                .into()
-            })
-    };
-    let first_order_hint = order_hint_of(pair.0)?;
-    let second_order_hint = order_hint_of(pair.1)?;
-    Ok(compound_is_joint_context_from_order_hints(
-        first_order_hint,
-        second_order_hint,
-        CompoundOrderHint::current(current_order_hint),
-    ))
-}
-
-#[cfg(test)]
-#[test]
-fn compound_is_joint_context_keeps_reference_list_bounds_fail_closed() {
-    assert!(matches!(
-        compound_is_joint_context(&[0, 1], &[9, 11], (2, 0), 10),
-        Err(DecodeError::ReferenceState {
-            source: DecodeReferenceStateError::ReferenceListIndexOutOfRange {
-                index: 2,
-                list_len: 2,
-            }
-        })
-    ));
-}
-
-#[cfg(test)]
-#[test]
-fn compound_is_joint_context_keeps_reference_slot_bounds_fail_closed() {
-    assert!(matches!(
-        compound_is_joint_context(&[2], &[9, 11], (0, 0), 10),
-        Err(DecodeError::ReferenceState {
-            source: DecodeReferenceStateError::SlotOutOfRange {
-                slot: 2,
-                slot_count: 2,
-            }
-        })
-    ));
-}
-
 fn compound_is_joint_context_from_order_hints(
     first_order_hint: CompoundOrderHint,
     second_order_hint: CompoundOrderHint,
@@ -963,7 +872,6 @@ fn compound_is_joint_context_from_order_hints(
 }
 #[allow(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSample>(
-    scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     residual: &InterResidual,
     residual_blocks: &[InterResidualBlock],
@@ -987,7 +895,6 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
             let v_block = inter_residual_chroma_pair(blocks, index, block)
                 .ok_or(DecodeHeaderStateError::MissingInterResidualCctxPair)?;
             reconstruct_inter_residual_chroma_cctx_pair(
-                scratch,
                 sink,
                 [block, v_block],
                 residual_coeffs,
@@ -1075,7 +982,6 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
-    scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     [u, v]: [&InterResidualBlock; 2],
     residual_coeffs: &[i32],
@@ -1090,49 +996,23 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
             index: u.tx_size,
         }
     })?;
-    let width = 1usize << log2_width;
-    let height = 1usize << log2_height;
-    let u_rect = PlaneRect::new(u.x, u.y, width, height)?;
-    let v_rect = PlaneRect::new(v.x, v.y, width, height)?;
-    read_inter_residual_prediction(sink, u, u_rect, &mut scratch.u_prediction)?;
-    read_inter_residual_prediction(sink, v, v_rect, &mut scratch.v_prediction)?;
-    reconstruct_general_intra_chroma_cctx_pair_into(
-        crate::bitstream::tile_payload::CoeffBlock::new(&u.coeffs, residual_coeffs)?,
-        &scratch.u_prediction,
-        crate::bitstream::tile_payload::CoeffBlock::new(&v.coeffs, residual_coeffs)?,
-        &scratch.v_prediction,
+    let size = splot_recon::IntraRectBlockSize::new(
+        u8::try_from(log2_width).unwrap_or(u8::MAX),
+        u8::try_from(log2_height).unwrap_or(u8::MAX),
+    )?;
+    let coeffs = crate::bitstream::tile_payload::CoeffBlock::new;
+    add_cctx_pair_residual_in_place(
+        sink,
+        [
+            coeffs(&u.coeffs, residual_coeffs)?,
+            coeffs(&v.coeffs, residual_coeffs)?,
+        ],
+        (u.x, u.y, size),
         qindex,
-        log2_width,
-        log2_height,
         cctx_type,
         use_ddt,
         bit_depth,
-        &mut scratch.u_output,
-        &mut scratch.v_output,
-    )?;
-    write_inter_residual_block(sink, u, u_rect, &scratch.u_output)?;
-    write_inter_residual_block(sink, v, v_rect, &scratch.v_output)?;
-    Ok(())
-}
-
-fn read_inter_residual_prediction<T: ReconSample>(
-    sink: &mc::WorkspaceSink<'_, '_, T>,
-    block: &InterResidualBlock,
-    rect: PlaneRect,
-    prediction: &mut Vec<T>,
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    crate::residual::pipeline::read_cctx_prediction(sink, block.plane, rect, prediction)?;
-    Ok(())
-}
-
-fn write_inter_residual_block<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
-    block: &InterResidualBlock,
-    rect: PlaneRect,
-    samples: &[T],
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    sink.write_rect(block.plane, rect, samples, rect.width())?;
-    Ok(())
+    )
 }
 
 fn inter_residual_log2(
@@ -1205,14 +1085,8 @@ pub(crate) type InterDecodeOutput<T> = (
 
 #[derive(Clone, Debug)]
 pub(crate) struct PlacedInterBlock {
-    pub(crate) luma_x: usize,
-    pub(crate) luma_y: usize,
-    pub(crate) luma_w: usize,
-    pub(crate) luma_h: usize,
-    pub(crate) chroma_luma_x: usize,
-    pub(crate) chroma_luma_y: usize,
-    pub(crate) chroma_luma_w: usize,
-    pub(crate) chroma_luma_h: usize,
+    pub(crate) luma: [u32; 4],
+    pub(crate) chroma_luma: [u32; 4],
     pub(crate) predict_chroma: bool,
     pub(crate) sub8x8_chroma: bool,
     pub(crate) interintra_chroma: bool,
@@ -1221,8 +1095,40 @@ pub(crate) struct PlacedInterBlock {
 }
 
 impl PlacedInterBlock {
+    pub(crate) const fn luma_x(&self) -> usize {
+        self.luma[0] as usize
+    }
+
+    pub(crate) const fn luma_y(&self) -> usize {
+        self.luma[1] as usize
+    }
+
+    pub(crate) const fn luma_w(&self) -> usize {
+        self.luma[2] as usize
+    }
+
+    pub(crate) const fn luma_h(&self) -> usize {
+        self.luma[3] as usize
+    }
+
+    pub(crate) const fn chroma_luma_x(&self) -> usize {
+        self.chroma_luma[0] as usize
+    }
+
+    pub(crate) const fn chroma_luma_y(&self) -> usize {
+        self.chroma_luma[1] as usize
+    }
+
+    pub(crate) const fn chroma_luma_w(&self) -> usize {
+        self.chroma_luma[2] as usize
+    }
+
+    pub(crate) const fn chroma_luma_h(&self) -> usize {
+        self.chroma_luma[3] as usize
+    }
+
     pub(in crate::prediction::inter) const fn motion_compensation_rect(&self) -> mc::McBlockRect {
-        mc::McBlockRect::from_luma_rect(self.luma_x, self.luma_y, self.luma_w, self.luma_h)
+        mc::McBlockRect::from_luma_rect(self.luma_x(), self.luma_y(), self.luma_w(), self.luma_h())
     }
 }
 #[derive(Clone, Debug)]
@@ -1246,13 +1152,6 @@ impl InterResidual {
     }
 }
 
-#[derive(Debug, Default)]
-pub(in crate::prediction::inter) struct InterResidualReconScratch<T: ReconSample> {
-    u_prediction: Vec<T>,
-    v_prediction: Vec<T>,
-    u_output: Vec<T>,
-    v_output: Vec<T>,
-}
 #[derive(Clone, Debug)]
 pub(crate) struct InterResidualBlock {
     pub(crate) plane: ReconPlaneId,
@@ -1401,6 +1300,22 @@ pub(crate) struct PixelReferenceGate<'a, T: ReconSample> {
 }
 
 /// The reference slots a parsed frame header names for pixel prediction.
+/// Whether `core` is a `bru_inactive == 1` frame, whose § 7.2 wrapup copies
+/// `FrameStore[ ref_frame_idx[ bru_ref ] ]` and records a zero motion field on
+/// `bru_ref` instead of decoding tiles.
+pub(crate) fn bru_inactive_frame(core: &FrameHeaderCore) -> bool {
+    core.inter
+        .as_ref()
+        .is_some_and(|inter| inter.bru_inactive == Some(true))
+}
+
+/// The reference slot `ref_frame_idx[ bru_ref ]` of a `use_bru == 1` frame.
+fn bru_ref_slot(core: &FrameHeaderCore) -> Option<u32> {
+    let inter = core.inter.as_ref()?;
+    let bru_ref = usize::try_from(inter.bru_ref?).ok()?;
+    inter.ref_frame_idx.get(bru_ref).copied()
+}
+
 pub(crate) fn named_pixel_reference_slots(core: &FrameHeaderCore) -> impl Iterator<Item = u32> {
     core.inter
         .as_ref()
@@ -2059,6 +1974,20 @@ fn validate_inter_frame_core(core: &FrameHeaderCore, sequence: &SequenceHeader) 
     if core.obu_type == ObuType::BridgeFrame {
         return validate_bridge_frame_core(core);
     }
+    if bru_inactive_frame(core) {
+        if core.status != FrameHeaderParseStatus::InterHeaderComplete
+            || core.order_hint.is_none()
+            || core.quantization_params.is_none()
+            || core.bridge_film_grain.is_none()
+            || core
+                .frame_size
+                .is_none_or(|size| size.width == 0 || size.height == 0)
+            || bru_ref_slot(core).is_none()
+        {
+            return Err(DecodeHeaderStateError::IncompleteInterFrame.into());
+        }
+        return Ok(());
+    }
     if core.status != FrameHeaderParseStatus::InterHeaderComplete {
         return Err(DecodeHeaderStateError::IncompleteInterFrame.into());
     }
@@ -2249,7 +2178,7 @@ pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
     InterFrameParse, InterFrameParser, InterReconScratchPool, PendingFilterAttach,
     RowReferenceBounds, ScheduledTileRecon, ScheduledTileWorkspace, TipOutputStages, TipSpares,
-    bounds_satisfied, decode_inter_blocks, invalid_inter_tile_scheduling_state,
+    bounds_satisfied, deblock_tip_output, decode_inter_blocks, invalid_inter_tile_scheduling_state,
 };
 pub(crate) use compound::CompoundYMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
@@ -2263,7 +2192,8 @@ pub(crate) use frame_products::{
     CcsoGridHandle, FrameCdfHandle, FrameProductWriters, FrameProducts, SegmentIdMapHandle,
 };
 pub(crate) use frame_walk::{
-    DeferredInterWalk, FrameDecodeGeometry, InterFrameStart, InterWalkEarly, splittable_inter_frame,
+    DeferredInterWalk, FrameDecodeGeometry, InterFrameStart, InterWalkEarly, TileParseJobs,
+    splittable_inter_frame,
 };
 pub(crate) use motion_field::MotionFieldHandle;
 

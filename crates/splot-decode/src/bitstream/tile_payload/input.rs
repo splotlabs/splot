@@ -14,7 +14,8 @@ use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{FrameHeaderCore, FrameHeaderParseStatus};
 use splot_core::headers::sequence::SequenceTqEntropyConfig;
 use splot_core::headers::tile_group::{
-    TileGroupLayout, TileGroupStructure, TileGroupStructureOutcome, parse_tile_group_structure,
+    TileGroupLayout, TileGroupStructure, TileGroupStructureOutcome,
+    parse_tile_group_structure_with_bru,
 };
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
@@ -106,6 +107,7 @@ pub(crate) struct FrameCandidateTileFacts<'a> {
     coeff_frame_facts: TileCoeffFrameFacts,
     disable_cdf_update: bool,
     tile_group_structure_start_bits: u64,
+    use_bru: bool,
 }
 
 impl<'a> FrameCandidateTileFacts<'a> {
@@ -141,6 +143,21 @@ impl<'a> FrameCandidateTileFacts<'a> {
         if core.is_bridge {
             return Err(FrameCandidateTileBoundaryError::Unsupported {
                 reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
+            });
+        }
+        let use_bru = core.inter.as_ref().and_then(|inter| inter.use_bru) == Some(true);
+        let unsupported_bru_tools = core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr)
+            || core
+                .gdf_params
+                .as_ref()
+                .is_some_and(|gdf| gdf.gdf_frame_enable)
+            || core.allow_intrabc == Some(true);
+        if use_bru
+            && (unsupported_bru_tools
+                || core.inter.as_ref().and_then(|inter| inter.bru_inactive) != Some(false))
+        {
+            return Err(FrameCandidateTileBoundaryError::Unsupported {
+                reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
             });
         }
         let tile_info = core
@@ -199,6 +216,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
                     right: 1,
                 },
             )?,
+            use_bru,
         })
     }
 
@@ -232,6 +250,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
             coeff_frame_facts: TileCoeffFrameFacts::default_for_base_q(base_q_idx),
             disable_cdf_update,
             tile_group_structure_start_bits: 8,
+            use_bru: false,
         }
     }
 
@@ -423,6 +442,10 @@ pub(crate) enum FrameCandidateTileUnsupportedReason {
     CandidateNotFrame,
     IncompleteFrameHeader,
     NonIntraFrame,
+    /// A `use_bru == 1` frame whose § 7.20.1 loop restoration or GDF runs, or that
+    /// allows IntraBC: the § 7.20.1 superblock gate and the § 5.20.4.1
+    /// `update_ibc_buffers` reset of non-active superblocks are not applied.
+    BackwardReferenceUpdate,
 }
 
 impl fmt::Display for FrameCandidateTileUnsupportedReason {
@@ -431,6 +454,7 @@ impl fmt::Display for FrameCandidateTileUnsupportedReason {
             Self::CandidateNotFrame => "candidate_not_frame",
             Self::IncompleteFrameHeader => "incomplete_frame_header",
             Self::NonIntraFrame => "non_intra_frame",
+            Self::BackwardReferenceUpdate => "backward_reference_update",
         })
     }
 }
@@ -457,7 +481,12 @@ pub(crate) fn plan_derived_tile_payload_boundary_with_scratch<'payload>(
     )?;
     validate_supported_frame(input.candidate, input.facts)?;
 
-    let structure = derive_tile_group_structure(input.envelope, input.facts)?;
+    let mut bru_tile_actives = Vec::new();
+    let structure = derive_tile_group_structure(
+        input.envelope,
+        input.facts,
+        input.facts.use_bru.then_some(&mut bru_tile_actives),
+    )?;
     let (payload, payload_base) = tile_group_payload_region(input.envelope, structure)?;
     let group_tile_count = tile_group_tile_count(structure)?;
     input
@@ -540,6 +569,9 @@ pub(crate) fn plan_derived_tile_payload_boundary_with_scratch<'payload>(
             actual: payload_base.get(),
         })?;
     plan.rebase_payload(input.input_bytes.bytes(), base)?;
+    if input.facts.use_bru {
+        plan.set_bru_tile_actives(&bru_tile_actives);
+    }
     Ok(plan)
 }
 
@@ -733,6 +765,7 @@ fn tile_group_payload_region(
 fn derive_tile_group_structure(
     envelope: ObuEnvelope<'_>,
     facts: FrameCandidateTileFacts<'_>,
+    bru_tile_actives: Option<&mut Vec<bool>>,
 ) -> Result<TileGroupStructure, FrameCandidateTileBoundaryError> {
     let payload_offset = checked_payload_offset(envelope)?;
     let mut reader = BitReader::new(envelope.payload, payload_offset);
@@ -743,16 +776,20 @@ fn derive_tile_group_structure(
         facts.tile_cols_log2,
         facts.tile_rows_log2,
     );
-    parse_tile_group_structure(&mut reader, layout, declared_payload_len(envelope)?).map_err(
-        |error| match error {
-            Error::UnexpectedEof { .. } => FrameCandidateTileBoundaryError::Malformed(
-                FrameCandidateTileMalformed::TileGroupStructureIncomplete,
-            ),
-            _ => FrameCandidateTileBoundaryError::Malformed(
-                FrameCandidateTileMalformed::TileGroupStructureInvalid,
-            ),
-        },
+    parse_tile_group_structure_with_bru(
+        &mut reader,
+        layout,
+        declared_payload_len(envelope)?,
+        bru_tile_actives,
     )
+    .map_err(|error| match error {
+        Error::UnexpectedEof { .. } => FrameCandidateTileBoundaryError::Malformed(
+            FrameCandidateTileMalformed::TileGroupStructureIncomplete,
+        ),
+        _ => FrameCandidateTileBoundaryError::Malformed(
+            FrameCandidateTileMalformed::TileGroupStructureInvalid,
+        ),
+    })
 }
 
 fn advance_reader_bits(

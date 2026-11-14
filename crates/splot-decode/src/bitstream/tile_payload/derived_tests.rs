@@ -490,6 +490,52 @@ fn derived_boundary_rejects_absent_frame_header_facts_without_guessing() {
 }
 
 #[test]
+fn derived_boundary_rejects_backward_reference_update_frames() {
+    let mut core = parsed_frame_header_fixture().core;
+    core.status = splot_core::headers::frame::FrameHeaderParseStatus::InterHeaderComplete;
+    core.frame_is_intra = Some(false);
+    let mut inter = splot_core::headers::frame::InterControl::default();
+    inter.use_bru = Some(true);
+    core.inter = Some(inter.clone());
+
+    let error =
+        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).unwrap_err();
+    assert_unsupported_error(
+        &error,
+        FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
+    );
+
+    inter.bru_inactive = Some(false);
+    core.inter = Some(inter.clone());
+    core.gdf_params = core.gdf_params.map(|mut gdf| {
+        gdf.gdf_frame_enable = true;
+        gdf
+    });
+    let error =
+        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).unwrap_err();
+    assert_unsupported_error(
+        &error,
+        FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
+    );
+
+    core.gdf_params = core.gdf_params.map(|mut gdf| {
+        gdf.gdf_frame_enable = false;
+        gdf
+    });
+    core.lr_params = core.lr_params.map(|mut lr| {
+        lr.uses_lr = false;
+        lr
+    });
+    let other = FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).err();
+    assert!(!matches!(
+        other,
+        Some(FrameCandidateTileBoundaryError::Unsupported {
+            reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate
+        })
+    ));
+}
+
+#[test]
 fn derived_boundary_rejects_incomplete_tile_group_structure() {
     let bytes = annex_b_tile_group_obu();
     let facts = base_candidate_facts(false).with_tile_group_structure_start_bits(25);

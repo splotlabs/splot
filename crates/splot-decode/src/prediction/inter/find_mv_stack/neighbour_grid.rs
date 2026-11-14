@@ -46,6 +46,7 @@ impl NeighbourFlags {
         if enabled { mask } else { 0 }
     }
 
+    #[inline]
     fn from_syntax(syntax: NeighbourFlagSyntax) -> Self {
         Self(u64::from_le_bytes([
             Self::flag(syntax.is_inter, Self::IS_INTER)
@@ -117,6 +118,10 @@ impl NeighbourFlags {
             Self::NO_REF => None,
             ref_frame => Some(ref_frame as i8),
         }
+    }
+
+    pub(super) const fn list_ref_frame(self, list: usize) -> i8 {
+        self.byte(1 + list as u32) as i8
     }
 
     pub(super) const fn interp_filter(self) -> u8 {
@@ -257,6 +262,10 @@ pub(super) struct ProbedLeaf<'g> {
 impl ProbedLeaf<'_> {
     pub(super) const fn flags(&self) -> NeighbourFlags {
         self.leaf.flags
+    }
+
+    pub(super) const fn base_c(&self) -> u32 {
+        self.leaf.base_c
     }
 
     pub(super) const fn cwp_weight(&self) -> i16 {
@@ -413,6 +422,10 @@ pub(crate) const NON_INTER_FLAG_SYNTAX: NeighbourFlagSyntax = NeighbourFlagSynta
         mv_precision: 0,
     },
 };
+
+/// The [`NeighbourMvGrid::record_flags`] result of a leaf the grid keeps no
+/// record of.
+pub(crate) const NO_LEAF: u32 = u32::MAX;
 
 /// Motion-plane inputs for one leaf, all of them AV2 § 7.12 resolution output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -618,14 +631,8 @@ impl NeighbourMvGrid {
         bw4: usize,
         bh4: usize,
     ) -> [NeighbourFlags; 4] {
-        let (up, left) = (r.wrapping_sub(1), c.wrapping_sub(1));
         if self.above.is_empty() {
-            return self.flags_at_each([
-                (r + bh4 - 1, left),
-                (up, c + bw4 - 1),
-                (r, left),
-                (up, c),
-            ]);
+            return self.immediate_plane_flags(r, c, bw4, bh4);
         }
         let (row, col) = (
             r.wrapping_sub(self.origin_row),
@@ -637,6 +644,20 @@ impl NeighbourMvGrid {
             edge(&self.left, col != 0, row),
             edge(&self.above, row != 0, col),
         ]
+    }
+
+    /// [`Self::immediate_flags`] of a grid without edge lines (the encoder's).
+    #[cold]
+    #[inline(never)]
+    fn immediate_plane_flags(
+        &self,
+        r: usize,
+        c: usize,
+        bw4: usize,
+        bh4: usize,
+    ) -> [NeighbourFlags; 4] {
+        let (up, left) = (r.wrapping_sub(1), c.wrapping_sub(1));
+        self.flags_at_each([(r + bh4 - 1, left), (up, c + bw4 - 1), (r, left), (up, c)])
     }
 
     /// The flags on row `up` above a block at column `c` on its superblock
@@ -659,6 +680,9 @@ impl NeighbourMvGrid {
 
     /// Publishes the flag plane for one leaf. The entropy pass calls this as
     /// soon as the leaf's syntax is parsed, before any § 7.12 resolution.
+    /// Returns the leaf's record index for [`Self::record_leaf_motion`], or
+    /// [`NO_LEAF`] when this grid keeps no record of it.
+    #[inline]
     pub(crate) fn record_flags(
         &mut self,
         r: usize,
@@ -666,36 +690,42 @@ impl NeighbourMvGrid {
         n4w: usize,
         n4h: usize,
         syntax: NeighbourFlagSyntax,
-    ) {
-        self.publish_flags(r, c, n4w, n4h, NeighbourFlags::from_syntax(syntax));
+    ) -> u32 {
+        self.publish_flags(r, c, n4w, n4h, NeighbourFlags::from_syntax(syntax))
     }
 
-    fn publish_flags(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, flags: NeighbourFlags) {
-        let (row, col) = (
-            r.wrapping_sub(self.origin_row),
-            c.wrapping_sub(self.origin_col),
-        );
-        if row < self.mi_rows && col < self.mi_cols && !self.above.is_empty() {
-            self.enter_sb_row(r);
-            for (line, at, len) in [(&mut self.above, col, n4w), (&mut self.left, row, n4h)] {
-                let end = (at + len).min(line.len());
-                if let Some(run) = line.get_mut(at..end) {
+    fn publish_flags(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        flags: NeighbourFlags,
+    ) -> u32 {
+        let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
+            return NO_LEAF;
+        };
+        self.enter_sb_row(rows.start);
+        let (row, col) = (rows.start - self.origin_row, cols.start - self.origin_col);
+        let (row_end, col_end) = (rows.end - self.origin_row, cols.end - self.origin_col);
+        if (rows.start, cols.start) == (r, c) && !self.above.is_empty() {
+            for (line, run) in [
+                (&mut self.above, col..col_end),
+                (&mut self.left, row..row_end),
+            ] {
+                if let Some(run) = line.get_mut(run) {
                     crate::support::fill_mi_run(run, flags);
                 }
             }
             if self.edges_only {
-                return;
+                return NO_LEAF;
             }
         }
-        let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
-            return;
-        };
-        self.enter_sb_row(rows.start);
         let Some(slot) = u32::try_from(self.planes.leaves.len())
             .ok()
             .and_then(|leaf| NonZeroU32::new(leaf.wrapping_add(1)))
         else {
-            return;
+            return NO_LEAF;
         };
         self.planes.leaves.push(LeafRecord {
             flags,
@@ -711,19 +741,25 @@ impl NeighbourMvGrid {
             model_bits: 0,
             resolved: false,
         });
-        let (width, stride, last) = (cols.len(), self.mi_cols, rows.end - 1);
-        if let (Some(first), Some(end)) = (
-            self.index_at(rows.start, cols.start),
-            self.index_at(last, cols.start),
-        ) && end == first + (last - rows.start) * stride
-            && let Some(region) = self.planes.cells.get_mut(first..end + width)
+        let (lo, hi, bias) = self.readable;
+        let (width, stride) = (cols.len(), self.mi_cols);
+        let first = row
+            .wrapping_add(bias)
+            .wrapping_mul(stride)
+            .wrapping_add(col);
+        if row >= lo
+            && row_end <= hi
+            && let Some(region) = self
+                .planes
+                .cells
+                .get_mut(first..first + (rows.len() - 1) * stride + width)
         {
             for run in region.chunks_mut(stride) {
                 if let Some(run) = run.get_mut(..width) {
                     crate::support::fill_mi_run(run, Some(slot));
                 }
             }
-            return;
+            return slot.get() - 1;
         }
         for rr in rows {
             if let Some(span) = self.row_span(rr, &cols)
@@ -732,6 +768,7 @@ impl NeighbourMvGrid {
                 crate::support::fill_mi_run(cells, Some(slot));
             }
         }
+        slot.get() - 1
     }
 
     /// Resolves the motion of one leaf whose flags this grid already holds,
@@ -751,13 +788,40 @@ impl NeighbourMvGrid {
         let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
             return;
         };
-        let Some(leaf) = self
+        if let Some(slot) = self
             .index_at(rows.start, cols.start)
             .and_then(|index| *self.planes.cells.get(index)?)
-            .map(|slot| slot.get() as usize - 1)
-        else {
-            return;
-        };
+        {
+            self.record_leaf_motion(slot.get() - 1, r, c, n4w, n4h, values);
+        }
+    }
+
+    /// [`Self::record_motion`] of [`ZERO_NEIGHBOUR_MOTION_VALUES`], which a
+    /// leaf's record holds from its publication.
+    pub(crate) fn record_zero_motion(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
+        if let Some(slot) = self
+            .index_at(r, c)
+            .and_then(|index| *self.planes.cells.get(index)?)
+            && let Some(record) = self.planes.leaves.get_mut(slot.get() as usize - 1)
+            && (record.base_r, record.base_c, record.bw4, record.bh4)
+                == (r as u32, c as u32, n4w as u8, n4h as u8)
+        {
+            record.resolved = true;
+        }
+    }
+
+    /// [`Self::record_motion`] for the leaf whose [`Self::record_flags`]
+    /// returned `leaf`; a record that is not that leaf's stays unresolved.
+    pub(crate) fn record_leaf_motion(
+        &mut self,
+        leaf: u32,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        values: NeighbourMotionValues,
+    ) {
+        let leaf = leaf as usize;
         let Some(record) = self.planes.leaves.get(leaf) else {
             return;
         };

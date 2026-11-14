@@ -16,11 +16,11 @@ use crate::filters::source::DeblockedPlanes;
 use crate::pipeline::frame_progress::{DirectStripeTarget, FrameProgress};
 use crate::test_support::yuv420_workspace;
 
-fn poison_u16_target(target: &mut DirectStripeTarget, poison: u16) {
+fn poison_u16_target(target: &mut DirectStripeTarget<u16>, poison: u16) {
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         let mut plane = target.take(plane).unwrap();
         let (width, stride) = (plane.width(), plane.stride());
-        for row in plane.u16_samples_mut().unwrap().chunks_mut(stride) {
+        for row in plane.samples_mut().chunks_mut(stride) {
             row[..width].fill(poison);
         }
     }
@@ -104,9 +104,8 @@ fn direct_cdef_10bit(
         sub_y: subsampling.1,
         has_chroma: true,
         coeff_shift: 2,
-        max_sample: 1023,
         fill_flat: [true; 3],
-        bytes_suffice: [false; 8],
+        units: cdef_units(params, 2, subsampling),
     };
     let geometry = [
         Some(CdefPlaneGeometry {
@@ -151,12 +150,13 @@ fn direct_cdef_10bit(
         0,
         size.height(),
         Some(target),
+        true,
     )
     .unwrap();
     let samples = cdef_frame_samples(&frame);
     drop(frame);
     assert!(lease.submit());
-    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
     for (plane, expected) in [PlaneId::Y, PlaneId::U, PlaneId::V]
         .into_iter()
         .zip(&samples)
@@ -335,7 +335,7 @@ fn partial_skip_and_lossless_cdef_keep_poison_out_of_direct_output() {
 }
 
 #[test]
-fn disabled_cdef_initializes_u8_direct_staging_from_source() {
+fn disabled_cdef_initializes_u8_direct_target_from_source() {
     let workspace = yuv420_workspace(18, 14, 91);
     let height = workspace.plane(PlaneId::Y).unwrap().storage_size().height();
     let progress = Arc::new(FrameProgress::<u8>::new(workspace.info()).unwrap());
@@ -344,12 +344,7 @@ fn disabled_cdef_initializes_u8_direct_staging_from_source() {
         let mut lease = progress.direct_stripe(0).unwrap();
         let mut target = lease.take_target().unwrap();
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-            target
-                .take(plane)
-                .unwrap()
-                .u8_samples_mut()
-                .unwrap()
-                .fill(0xde);
+            target.take(plane).unwrap().samples_mut().fill(0xde);
         }
     }
     let mut lease = progress.direct_stripe(0).unwrap();
@@ -367,6 +362,7 @@ fn disabled_cdef_initializes_u8_direct_staging_from_source() {
         0,
         height,
         Some(target),
+        true,
     )
     .unwrap();
     for filtered in [
@@ -377,12 +373,15 @@ fn disabled_cdef_initializes_u8_direct_staging_from_source() {
     .into_iter()
     .flatten()
     {
-        assert!(filtered.samples().iter().all(|&sample| sample == 91));
-        filtered.finish_direct().unwrap();
+        assert!(
+            crate::test_support::stripe_rows(filtered)
+                .iter()
+                .all(|&sample| sample == 91)
+        );
     }
     drop(frame);
     assert!(lease.submit());
-    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
     assert!(
         crate::test_support::packed(frame.y())
             .iter()
@@ -426,6 +425,7 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
             0,
             16,
             Some(target),
+            true,
         )
         .is_err()
     );
@@ -436,7 +436,7 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         let mut target = target.take(plane).unwrap();
         let (width, stride) = (target.width(), target.stride());
-        let samples = target.u16_samples_mut().unwrap();
+        let samples = target.samples_mut();
         assert!(
             samples
                 .chunks(stride)
@@ -630,6 +630,7 @@ fn flat_blocks_keep_a_deblocked_direct_target() {
             0,
             24,
             lease.take_target(),
+            true,
         )
         .unwrap();
         let mut kept = cdef_frame_samples(&frame);
@@ -693,9 +694,8 @@ fn run_segment(
         sub_y: 1,
         has_chroma: true,
         coeff_shift: 2,
-        max_sample: 1023,
         fill_flat: [true; 3],
-        bytes_suffice: [false; 8],
+        units: cdef_units(&[params], 2, (1, 1)),
     };
     if segment {
         let mut scratch = CdefSegmentScratch::default();
@@ -706,6 +706,7 @@ fn run_segment(
                 (2, c),
                 (0, 6),
                 &mut scratch,
+                (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
                 &mut frame
             )
             .unwrap()
@@ -786,9 +787,8 @@ fn edge_segment_falls_back_to_the_per_block_path() {
         sub_y: 1,
         has_chroma: true,
         coeff_shift: 2,
-        max_sample: 1023,
         fill_flat: [true; 3],
-        bytes_suffice: [false; 8],
+        units: cdef_units(&active_params(), 2, (1, 1)),
     };
     let mut frame = cdef_stripe(
         DeblockedPlanes::frame(&workspace).unwrap(),
@@ -815,6 +815,7 @@ fn edge_segment_falls_back_to_the_per_block_path() {
                 (r, c),
                 (0, 6),
                 &mut scratch,
+                (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
                 &mut frame
             )
             .unwrap(),
@@ -829,6 +830,7 @@ fn edge_segment_falls_back_to_the_per_block_path() {
             (2, 16),
             (0, 6),
             &mut scratch,
+            (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
             &mut frame
         )
         .unwrap()

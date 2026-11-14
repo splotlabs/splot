@@ -24,6 +24,8 @@ pub(crate) fn step_range(
 #[allow(clippy::inline_always, reason = "measured: per-block grid write")]
 #[inline(always)]
 pub(crate) fn fill_mi_run<T: Copy>(run: &mut [T], value: T) {
+    #[allow(clippy::inline_always, reason = "measured: per-row grid write")]
+    #[inline(always)]
     fn ends<T: Copy, const N: usize>(run: &mut [T], value: T) {
         let len = run.len();
         run[..N].copy_from_slice(&[value; N]);

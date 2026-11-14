@@ -769,11 +769,9 @@ fn padded_into_reuses_maximum_restoration_stripe_scratch() {
         .unwrap();
 
     assert!(output.iter().all(|&sample| sample == 91));
-    assert!(scratch.filtered.capacity() >= width * height);
     assert!(scratch.clean_rows.capacity() >= height + 2 * WIENER_NS_LUMA_TAP_RADIUS);
     assert!(scratch.prepared_classes.capacity() >= coeffs.len());
     let clean_rows_capacity = scratch.clean_rows.capacity();
-    let filtered_ptr = scratch.filtered.as_ptr();
 
     let width = 2;
     let height = 2;
@@ -787,7 +785,6 @@ fn padded_into_reuses_maximum_restoration_stripe_scratch() {
 
     assert_eq!(output, [37; 4]);
     assert_eq!(scratch.clean_rows.capacity(), clean_rows_capacity);
-    assert_eq!(scratch.filtered.as_ptr(), filtered_ptr);
 }
 
 #[test]
@@ -836,8 +833,10 @@ fn padded_cells_partial_cell_rows_match_the_callback_reference() {
     }
 }
 
+/// A class whose centre scale leaves `i16` (only coefficients outside the
+/// § 5.20.2.1 ranges give one) is rejected by the padded filter.
 #[test]
-fn padded_center_scale_outside_i16_matches_the_callback_reference() {
+fn padded_center_scale_outside_i16_is_rejected() {
     let (width, height) = (37, 2);
     let coeffs = [[2000; WIENER_NS_LUMA_COEFFS]];
     let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
@@ -854,14 +853,74 @@ fn padded_center_scale_outside_i16_matches_the_callback_reference() {
     let mut actual = vec![0u16; width * height];
     let source_lines: Vec<_> = padded.chunks(stride).collect();
     let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
-    wiener_ns_filter_luma_block_padded_into(
+    let error = wiener_ns_filter_luma_block_padded_into(
         &mut actual,
         &params,
         &source,
         &mut WienerNsLumaScratch::default(),
     )
-    .unwrap();
-    assert_eq!(actual, reference);
+    .unwrap_err();
+    assert_eq!(
+        error,
+        ReconError::WienerNsFilterCenterScaleOutOfRange {
+            center_scale: 128 - 2 * 2000 * WIENER_NS_LUMA_COEFFS as i32
+        }
+    );
+    assert!(reference.iter().any(|&v| v != 0));
+}
+
+/// With out-of-range samples anywhere in the padded window (read taps or
+/// unread corners) and narrow, odd-width and per-sample subclass segments,
+/// the padded filter returns exactly the callback reference: the same
+/// samples, or the same first read-order error.
+#[test]
+fn padded_out_of_range_samples_and_segments_match_the_callback_reference() {
+    let mut state = 0x0bad_c0de_u64;
+    let mut next = move |range: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % range as u64) as usize
+    };
+    let classes = [
+        [3, -2, 5, 1, -4, 2, 0, 1, -1, 2, 3, -3, 1, 0, 2, -1],
+        [-5, 4, 2, -2, 1, 0, 3, -1, 2, -2, 1, 1, -3, 2, 0, 1],
+    ];
+    for trial in 0..120 {
+        let (width, height) = (1 + next(40), 1 + next(5));
+        let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+        let mut padded: Vec<u16> = (0..(height + 2 * WIENER_NS_LUMA_TAP_RADIUS) * stride)
+            .map(|_| next(1024) as u16)
+            .collect();
+        for _ in 0..trial % 3 {
+            let spot = next(padded.len());
+            padded[spot] = 1024 + next(100) as u16;
+        }
+        let subclasses: Vec<usize> = (0..width * height)
+            .map(|i| (i / (1 + trial % 5)) % 2)
+            .collect();
+        let layout = (trial % 2 == 1).then_some(&subclasses[..]);
+        let params = params(width, height, width, BitDepth::Ten, &classes, layout);
+        let source_at = |x: isize, y: isize| {
+            let radius = WIENER_NS_LUMA_TAP_RADIUS as isize;
+            padded[((y + radius) as usize) * stride + (x + radius) as usize]
+        };
+        let mut reference = vec![0u16; width * height];
+        let expected = wiener_ns_filter_luma_block(&mut reference, &params, source_at);
+        let source_lines: Vec<_> = padded.chunks(stride).collect();
+        let source = WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
+        let mut actual = vec![0u16; width * height];
+        let got = wiener_ns_filter_luma_block_padded_into(
+            &mut actual,
+            &params,
+            &source,
+            &mut WienerNsLumaScratch::default(),
+        );
+        assert_eq!(got, expected, "trial {trial} {width}x{height}");
+        if got.is_ok() {
+            assert_eq!(actual, reference, "trial {trial} {width}x{height}");
+        }
+    }
 }
 
 #[test]
@@ -1243,4 +1302,149 @@ fn eight_bit_pair_weights_take_every_ranged_class() {
     let mut past = highest;
     past[6] = 26;
     assert!(eight_bit::pair_weights(&past).is_none());
+}
+
+/// The run kernel matches the § 7.20.3 per-sample sum for random and
+/// extreme § 5.20.2.1 classes and samples, for one class per run, with every
+/// count of trailing zero weights, and for a random class per cell, over runs that
+/// cover a row or start and end inside it, on one to four rows, from `u16`
+/// and `u8` rows into `u16` and `u8` output, and writes nothing outside the
+/// run.
+#[test]
+fn luma_runs_match_the_scalar_filter() {
+    const MIN: [i16; WIENER_NS_LUMA_COEFFS] = [
+        -24, -24, -14, -14, -16, -16, -8, -8, -8, -8, -8, -8, -8, -8, -8, -8,
+    ];
+    const K: [u32; WIENER_NS_LUMA_COEFFS] = [6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4];
+    const UNTOUCHED: u16 = 0xdead;
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move |limit: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % limit
+    };
+    let r = WIENER_NS_LUMA_TAP_RADIUS;
+    for case in 0..900 {
+        let max = [255u16, 1023][case % 2];
+        let groups = 1 + next(5) as usize;
+        let lead = 16 * next(3) as usize;
+        let width = lead + 16 * groups + 16 * next(2) as usize;
+        let rows = 1 + next(4) as usize;
+        let uniform = case % 3 != 2;
+        let mut class = || {
+            let style = next(4) as usize;
+            let mut coeffs: [i16; WIENER_NS_LUMA_COEFFS] = core::array::from_fn(|j| {
+                let span = 1u64 << K[j];
+                MIN[j] + [0, span - 1, next(span), next(span)][style] as i16
+            });
+            let zero_tail = WIENER_NS_LUMA_COEFFS - next(17) as usize;
+            for (j, coeff) in coeffs.iter_mut().enumerate() {
+                if j >= zero_tail || next(4) == 0 {
+                    *coeff = 0;
+                }
+            }
+            (coeffs, 128 - 2 * coeffs.iter().sum::<i16>())
+        };
+        let first = class();
+        let classes = if uniform {
+            [first; 4]
+        } else {
+            [first, class(), class(), class()]
+        };
+        let source: Vec<Vec<u16>> = (0..rows + 2 * r)
+            .map(|_| {
+                let extreme = next(3) == 0;
+                (0..width + 2 * r)
+                    .map(|_| {
+                        if extreme {
+                            [0, max][next(2) as usize]
+                        } else {
+                            next(u64::from(max) + 1) as u16
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let window: Vec<&[u16]> = source.iter().map(Vec::as_slice).collect();
+        let stride = width + 3;
+        let span = (lead, lead + 16 * groups);
+        let cells: Vec<u8> = (0..4 * groups).map(|_| next(4) as u8).collect();
+        let run = if uniform {
+            lr_madd::Classes::Uniform(&classes[0])
+        } else {
+            lr_madd::Classes::Cells {
+                cells: &cells,
+                table: &classes,
+            }
+        };
+        let bytes: Vec<Vec<u8>> = source
+            .iter()
+            .map(|row| row.iter().map(|&sample| sample as u8).collect())
+            .collect();
+        let byte_window: Vec<&[u8]> = bytes.iter().map(Vec::as_slice).collect();
+        let output: Vec<u16> = if max == 255 && case % 4 == 3 {
+            let mut output = vec![UNTOUCHED; rows * stride];
+            assert!(lr_madd::filter_run::<
+                LumaTaps,
+                u8,
+                u16,
+                LUMA_WINDOW_ROWS,
+                CELL_REACH,
+            >(
+                &byte_window, rows, span, run, (&mut output, stride), max
+            ));
+            output
+        } else if max == 255 && case % 4 == 1 {
+            let mut output = vec![0x5a_u8; rows * stride];
+            assert!(lr_madd::filter_run::<
+                LumaTaps,
+                u16,
+                u8,
+                LUMA_WINDOW_ROWS,
+                CELL_REACH,
+            >(
+                &window, rows, span, run, (&mut output, stride), max
+            ));
+            output.iter().map(|&value| u16::from(value)).collect()
+        } else {
+            let mut output = vec![UNTOUCHED; rows * stride];
+            assert!(lr_madd::filter_run::<
+                LumaTaps,
+                u16,
+                u16,
+                LUMA_WINDOW_ROWS,
+                CELL_REACH,
+            >(
+                &window, rows, span, run, (&mut output, stride), max
+            ));
+            output
+        };
+        let untouched = if max == 255 && case % 4 == 1 {
+            0x5a
+        } else {
+            UNTOUCHED
+        };
+        for y in 0..rows {
+            for x in 0..width {
+                let got = output[y * stride + x];
+                if !(span.0..span.1).contains(&x) {
+                    assert_eq!(got, untouched, "case {case} ({x}, {y})");
+                    continue;
+                }
+                let coeffs = &classes[usize::from(cells[(x - lead) / 4])].0;
+                let at = |dy: isize, dx: isize| {
+                    let row = &source[(y + r).wrapping_add_signed(dy)];
+                    i32::from(row[(x + r).wrapping_add_signed(dx)])
+                };
+                let m = at(0, 0);
+                let mut sum = m << WIENER_NS_PREC_BITS;
+                for &(dy, dx, j) in &WIENER_NS_CONFIG_Y {
+                    sum += (at(dy, dx) - m) * i32::from(coeffs[j]);
+                }
+                let expected = round2_i32(sum, WIENER_NS_PREC_BITS).clamp(0, i32::from(max));
+                assert_eq!(i32::from(got), expected, "case {case} ({x}, {y})");
+            }
+        }
+    }
 }

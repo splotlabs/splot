@@ -5,7 +5,8 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraDcEdges, IntraPredictionScratchBuffer,
-    IntraRectBlockSize, PlaneId, ReconSample, apply_intra_ibp_dc_rect, predict_intra_dc_rect_value,
+    IntraRectBlockSize, PlaneId, ReconSample, predict_intra_dc_rect_value,
+    predict_intra_ibp_dc_rect_into,
 };
 #[cfg(test)]
 use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
@@ -19,9 +20,6 @@ use crate::bitstream::tile_payload::{
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
     reconstruct_inter_coeff_block_residual_rect_into,
 };
-
-/// The widest intra prediction block side.
-const MAX_INTRA_SIDE: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntraEdgeAvailability {
@@ -78,35 +76,17 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
-    let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     if bit_depth == workspace.info().bit_depth() {
-        let mut gathered = [[T::default(); MAX_INTRA_SIDE]; 2];
-        let [left, above] = &mut gathered;
-        let mut have = (false, false);
         let in_frame = workspace.with_intra_block_frame(plane_id, x, y, block_size, |frame| {
-            have.0 = availability.left && frame.left_column(&mut left[..height]) == height;
-            if let Some(row) = frame
-                .above_row()
-                .get(..width)
-                .filter(|_| availability.above)
-            {
-                above[..width].copy_from_slice(row); // splot-copy-ok: DC above edge from its frame row
-                have.1 = true;
-            }
-            let dc_edges = IntraDcEdges::new(
-                have.0.then_some(&left[..height]),
-                have.1.then_some(&above[..width]),
-            );
-            let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
-            let (output, stride) = frame.target();
-            fill_block(output, stride, block_size, dc);
-            if ibp_dc {
-                apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, output, stride)?;
-            }
-            Ok::<_, GeneralIntraResidualError>(())
+            frame.predict_dc(
+                block_size,
+                bit_depth,
+                [availability.left, availability.above],
+                ibp_dc,
+            )
         })?;
         if in_frame.is_some() {
             if block.eob != 0 {
@@ -133,14 +113,15 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
         availability.left.then(|| edges.left_samples()).flatten(),
         availability.above.then(|| edges.above_samples()).flatten(),
     );
-    let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
     let predict_dc = |output: &mut [T], stride: usize| {
-        for row in output.chunks_mut(stride) {
-            let filled = width.min(row.len());
-            row[..filled].fill(dc);
-        }
         if ibp_dc {
-            apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, output, stride)?;
+            predict_intra_ibp_dc_rect_into(bit_depth, block_size, dc_edges, output, stride)?;
+        } else {
+            let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
+            for row in output.chunks_mut(stride) {
+                let filled = width.min(row.len());
+                row[..filled].fill(dc);
+            }
         }
         Ok(())
     };
@@ -192,18 +173,19 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
         block_size.sample_count(),
         T::default(),
     )?;
-    let fill_result = prediction.iter_mut().zip(color_map).try_for_each(
-        |(output, &color_index)| -> core::result::Result<(), GeneralIntraResidualError> {
-            let sample = palette.sample(color_index).ok_or_else(|| {
-                GeneralIntraResidualError::PaletteColorIndex {
-                    color_index: usize::from(color_index),
-                    palette_size: palette.size(),
+    let fill_result =
+        splot_recon::predict_intra_palette_into(&palette.colors(), color_map, &mut prediction)
+            .map_err(GeneralIntraResidualError::from)
+            .and_then(|max_index| {
+                if usize::from(max_index) < palette.size() {
+                    Ok(())
+                } else {
+                    Err(GeneralIntraResidualError::PaletteColorIndex {
+                        color_index: usize::from(max_index),
+                        palette_size: palette.size(),
+                    })
                 }
-            })?;
-            *output = T::try_from_u16(sample)?;
-            Ok(())
-        },
-    );
+            });
     if let Err(error) = fill_result {
         workspace
             .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
@@ -283,19 +265,6 @@ fn noneighbour_sample<T: ReconSample>(value: u16) -> T {
     T::try_from_u16(value).unwrap_or_default()
 }
 
-pub(super) fn average_luma_prediction_with<T: ReconSample>(
-    prediction: &mut [T],
-    secondary: &[T],
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    for (primary, secondary) in prediction.iter_mut().zip(secondary) {
-        let average = (u32::from(primary.to_u16()) + u32::from(secondary.to_u16()) + 1) >> 1;
-        let average = u16::try_from(average)
-            .map_err(|_| GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
-        *primary = T::try_from_u16(average)?;
-    }
-    Ok(())
-}
-
 pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block_size: IntraRectBlockSize,
@@ -320,8 +289,9 @@ pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
             block_size.sample_count(),
             T::default(),
         )?;
-        let result = predict(workspace, true, &mut secondary)
-            .and_then(|()| average_luma_prediction_with(&mut prediction, &secondary));
+        let result = predict(workspace, true, &mut secondary).and_then(|()| {
+            splot_recon::average_intra_predictions(&mut prediction, &secondary).map_err(Into::into)
+        });
         workspace
             .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, secondary);
         result?;
@@ -360,26 +330,6 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
     );
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
     result
-}
-
-/// Fills the `size` block of `output`, rows `stride` apart, with `value`,
-/// one fixed-width store per row.
-fn fill_block<T: Copy>(output: &mut [T], stride: usize, size: IntraRectBlockSize, value: T) {
-    fn rows<T: Copy, const N: usize>(output: &mut [T], stride: usize, height: usize, value: T) {
-        for row in output.chunks_mut(stride).take(height) {
-            if let Some(row) = row.first_chunk_mut::<N>() {
-                *row = [value; N];
-            }
-        }
-    }
-    let height = size.height();
-    match size.width() {
-        4 => rows::<T, 4>(output, stride, height, value),
-        8 => rows::<T, 8>(output, stride, height, value),
-        16 => rows::<T, 16>(output, stride, height, value),
-        32 => rows::<T, 32>(output, stride, height, value),
-        _ => rows::<T, 64>(output, stride, height, value),
-    }
 }
 
 /// Predicts an in-frame block straight into its frame rows, then adds any

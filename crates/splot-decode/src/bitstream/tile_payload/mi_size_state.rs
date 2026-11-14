@@ -17,13 +17,13 @@ const PLANE_COUNT: usize = 2;
 const LUMA_PLANE: usize = 0;
 const CHROMA_PLANE: usize = 1;
 const CLEAR_PARTITION_CONTEXT: u8 = 0;
-const PARTITION_CONTEXT_ABOVE: [u8; 29] = [
+const PARTITION_CONTEXT_ABOVE: [u8; 32] = [
     63, 63, 62, 62, 62, 60, 60, 60, 56, 56, 56, 48, 48, 48, 32, 32, 32, 0, 0, 63, 60, 62, 56, 60,
-    48, 63, 56, 62, 48,
+    48, 63, 56, 62, 48, 0, 0, 0,
 ];
-const PARTITION_CONTEXT_LEFT: [u8; 29] = [
+const PARTITION_CONTEXT_LEFT: [u8; 32] = [
     63, 62, 63, 62, 60, 62, 60, 56, 60, 56, 48, 56, 48, 32, 48, 32, 0, 32, 0, 60, 63, 56, 62, 48,
-    60, 56, 63, 48, 62,
+    60, 56, 63, 48, 62, 0, 0, 0,
 ];
 
 /// Bit 6 of a luma entry: its leaf recorded [`IntraFacts`] (an intra or intra
@@ -84,6 +84,10 @@ pub(crate) struct TileMiSizeState {
     origin_col: usize,
     rows: usize,
     above_len: usize,
+    /// `above_len` rounded up to `SB_ROW_SPAN`: the distance between the
+    /// above lines, which [`Self::partition_neighbours`] reads in
+    /// `SB_ROW_SPAN` chunks.
+    above_stride: usize,
     /// The tile's rows and columns inside the frame; facts beyond read as
     /// outside the tile.
     tile_rows: usize,
@@ -112,7 +116,11 @@ impl TileMiSizeState {
         }
         let padded_rows = padded_dimension("rows", mi_rows, sb_size.num_4x4_high()?)?;
         let padded_cols = padded_dimension("cols", mi_cols, sb_size.num_4x4_wide()?)?;
-        let entry_count = checked_mul_usize("padded_cols * planes", padded_cols, PLANE_COUNT)?;
+        let entry_count = checked_mul_usize(
+            "padded_cols * planes",
+            padded_cols.next_multiple_of(SB_ROW_SPAN),
+            PLANE_COUNT,
+        )?;
         Ok(TileMiSizeStateAllocation {
             padded_rows,
             padded_cols,
@@ -139,6 +147,7 @@ impl TileMiSizeState {
             origin_col: col_range.start,
             rows: allocation.padded_rows,
             above_len: allocation.padded_cols,
+            above_stride: allocation.entry_count / PLANE_COUNT,
             tile_rows: mi_rows,
             tile_cols: mi_cols,
             sb_size4: sb_size.num_4x4_high()?,
@@ -151,7 +160,7 @@ impl TileMiSizeState {
     }
 
     const fn above_base(&self, plane: usize) -> usize {
-        plane * self.above_len
+        plane * self.above_stride
     }
 
     #[cfg(test)]
@@ -303,7 +312,8 @@ impl TileMiSizeState {
 
     /// Writes a luma leaf's MiSizes and, for an intra or intra block copy
     /// leaf, its `facts` with `palette`.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: once per decoded leaf")]
+    #[inline(always)]
     pub(crate) fn update_luma_block(
         &mut self,
         r: usize,
@@ -351,9 +361,39 @@ impl TileMiSizeState {
         .map(drop)
     }
 
+    /// Checks that the `rows` x `cols` block at (`r`, `c`) lies in the tile's
+    /// padded extent: the superblock of a walk, whose blocks
+    /// [`Self::partition_neighbours`] then reads without a check of its own.
+    pub(crate) fn check_extent(
+        &self,
+        r: usize,
+        c: usize,
+        rows: usize,
+        cols: usize,
+    ) -> Result<(), TileMiSizeStateError> {
+        match (
+            r.checked_sub(self.origin_row),
+            c.checked_sub(self.origin_col),
+        ) {
+            (Some(row), Some(col))
+                if row.saturating_add(rows) <= self.rows
+                    && col.saturating_add(cols) <= self.above_len =>
+            {
+                Ok(())
+            }
+            _ => Err(TileMiSizeStateError::BlockOutOfBounds {
+                plane: LUMA_PLANE,
+                r,
+                c,
+            }),
+        }
+    }
+
     /// The § 8.3.2 partition-context entries of the block at tile position
     /// (`r`, `c`): plane `plane` lines at `r`, `r + half_h`, `c` and
-    /// `c + half_w`, and the luma lines at `r` and `c`.
+    /// `c + half_w`, and the luma lines at `r` and `c`. The block lies in a
+    /// superblock that [`Self::check_extent`] accepted, so its columns share
+    /// one `SB_ROW_SPAN` chunk of each above line.
     #[inline]
     pub(crate) fn partition_neighbours(
         &self,
@@ -363,23 +403,19 @@ impl TileMiSizeState {
         half_h: usize,
         half_w: usize,
     ) -> Option<PartitionNeighbours> {
-        let local_r = r.checked_sub(self.origin_row)?;
-        let local_c = c.checked_sub(self.origin_col)?;
-        if plane >= PLANE_COUNT
-            || local_r + half_h >= self.rows
-            || local_c + half_w >= self.above_len
-        {
+        if plane >= PLANE_COUNT {
             return None;
         }
-        let (left, luma_left) = (&self.left[plane & 1], &self.left[LUMA_PLANE]);
-        let row = r % SB_ROW_SPAN;
-        let base = self.above_base(plane) + local_c;
-        let above = self.above.get(base..=base + half_w)?;
+        let col = c.wrapping_sub(self.origin_col);
+        let (chunk, at) = (col / SB_ROW_SPAN, col % SB_ROW_SPAN);
+        let lines = self.above.as_chunks::<SB_ROW_SPAN>().0;
+        let above = lines.get(self.above_base(plane) / SB_ROW_SPAN + chunk)?;
+        let (left, row) = (&self.left[plane], r % SB_ROW_SPAN);
         Some(PartitionNeighbours {
             left: [left[row], left[(row + half_h) % SB_ROW_SPAN]],
-            above: [*above.first()?, *above.last()?],
-            luma_left: luma_left[row],
-            luma_above: *self.above.get(self.above_base(LUMA_PLANE) + local_c)?,
+            above: [above[at], above[(at + half_w) % SB_ROW_SPAN]],
+            luma_left: self.left[LUMA_PLANE][row],
+            luma_above: lines.get(chunk)?[at],
         })
     }
 
@@ -395,15 +431,14 @@ impl TileMiSizeState {
         mi_size: BlockSize,
         flags: u8,
     ) -> Result<(Range<usize>, Range<usize>), TileMiSizeStateError> {
-        let index = mi_size.index();
-        let (Some(local_r), Some(local_c), Some(&left), Some(&above)) = (
+        let (Some(local_r), Some(local_c)) = (
             r.checked_sub(self.origin_row),
             c.checked_sub(self.origin_col),
-            PARTITION_CONTEXT_LEFT.get(index),
-            PARTITION_CONTEXT_ABOVE.get(index),
         ) else {
             return Err(TileMiSizeStateError::BlockOutOfBounds { plane, r, c });
         };
+        let left = mi_size.entry(&PARTITION_CONTEXT_LEFT) as u8;
+        let above = mi_size.entry(&PARTITION_CONTEXT_ABOVE) as u8;
         let rows_end = local_r.saturating_add(mi_size.num_4x4_high()?);
         let cols_end = local_c.saturating_add(mi_size.num_4x4_wide()?);
         if rows_end > self.rows || cols_end > self.above_len {

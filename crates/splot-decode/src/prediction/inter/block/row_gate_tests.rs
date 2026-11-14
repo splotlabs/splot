@@ -45,14 +45,8 @@ fn cropped_info(width: usize, height: usize, crop_y: usize) -> DecodedFrameInfo 
 
 fn placed(luma_y: usize, luma_h: usize, mv_row: i32) -> PlacedInterBlock {
     PlacedInterBlock {
-        luma_x: 0,
-        luma_y,
-        luma_w: 64,
-        luma_h,
-        chroma_luma_x: 0,
-        chroma_luma_y: luma_y,
-        chroma_luma_w: 64,
-        chroma_luma_h: luma_h,
+        luma: [0, luma_y, 64, luma_h].map(|v| v as u32),
+        chroma_luma: [0, luma_y, 64, luma_h].map(|v| v as u32),
         predict_chroma: true,
         sub8x8_chroma: false,
         interintra_chroma: false,
@@ -287,11 +281,11 @@ fn a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle() {
         tip: Some(references),
     };
     let mut block = placed(384, 128, 0);
-    block.luma_w = 128;
-    block.chroma_luma_w = 128;
+    block.luma[2] = 128;
+    block.chroma_luma[2] = 128;
     let mut bounds = RowReferenceBounds::default();
 
-    gate.note_tip(&block, &mut bounds);
+    gate.note_tip(&block, TIP_FIELD_CELL, &mut bounds);
 
     assert_eq!(bounds.needs[1], 582);
 }
@@ -302,10 +296,10 @@ fn a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle() {
 /// model, then read seven rows below the projected row.
 fn warp_read_luma_rows(block: &PlacedInterBlock, warp_params: [i32; 6]) -> u32 {
     let mut last = 0i64;
-    for section_y in (0..block.luma_h).step_by(WARPED_BLOCK_SIZE) {
-        for section_x in (0..block.luma_w).step_by(WARPED_BLOCK_SIZE) {
-            let source_x = (block.luma_x + section_x + 4) as i64;
-            let source_y = (block.luma_y + section_y + 4) as i64;
+    for section_y in (0..block.luma_h()).step_by(WARPED_BLOCK_SIZE) {
+        for section_x in (0..block.luma_w()).step_by(WARPED_BLOCK_SIZE) {
+            let source_x = (block.luma_x() + section_x + 4) as i64;
+            let source_y = (block.luma_y() + section_y + 4) as i64;
             let destination = i64::from(warp_params[4]) * source_x
                 + i64::from(warp_params[5]) * source_y
                 + i64::from(warp_params[1]);

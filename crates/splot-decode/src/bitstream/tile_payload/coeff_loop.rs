@@ -10,8 +10,8 @@ use splot_core::tables::conversion::{
     TX_WIDTH_LOG2,
 };
 
-use super::cdf::block_read::BlockSymbolTraceReadError;
-use super::cdf::{EobPtSize, TileCdfSelector, TileCdfSubset};
+use super::cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
+use super::cdf::{EobPtSize, TileCdfSubset};
 use super::coeff_state::TileCoeffStateError;
 
 const EOB_MULTISIZE_OFFSET: usize = 4;
@@ -182,8 +182,6 @@ impl NonZeroCoeffEob {
 pub(crate) enum CoeffLoopContextError {
     #[error("coefficient context state error: {0}")]
     State(#[from] TileCoeffStateError),
-    #[error("coefficient EOB symbol read failed: {0}")]
-    EobSymbolRead(#[from] BlockSymbolTraceReadError),
     #[error("coefficient EOB literal read failed for {syntax}: {source}")]
     EobLiteralRead {
         syntax: &'static str,
@@ -264,20 +262,24 @@ pub(crate) fn read_nonzero_coeff_eob(
     symbols: &mut SymbolDecoder<'_>,
     input: NonZeroCoeffEobSymbolInput,
 ) -> Result<NonZeroCoeffEob, CoeffLoopContextError> {
-    let eob_pt_symbol = cdfs.read_trusted_symbol(
-        TileCdfSelector::EobPt {
-            size: input.size,
-            eob_ctx: input.eob_ctx,
-        },
-        symbols,
-    )?;
+    let rows = cdfs.block_rows_mut();
+    let ctx = input.eob_ctx;
+    let eob_pt_symbol = match input.size {
+        EobPtSize::Pt16 => read_row(symbols, row_at(&mut rows.eob_pt_16, ctx)),
+        EobPtSize::Pt32 => read_row(symbols, row_at(&mut rows.eob_pt_32, ctx)),
+        EobPtSize::Pt64 => read_row(symbols, row_at(&mut rows.eob_pt_64, ctx)),
+        EobPtSize::Pt128 => read_row(symbols, row_at(&mut rows.eob_pt_128, ctx)),
+        EobPtSize::Pt256 => read_row(symbols, row_at(&mut rows.eob_pt_256, ctx)),
+        EobPtSize::Pt512 => read_row(symbols, row_at(&mut rows.eob_pt_512, ctx)),
+        EobPtSize::Pt1024 => read_row(symbols, row_at(&mut rows.eob_pt_1024, ctx)),
+    } as u8;
     let eob_pt_extra_width = eob_pt_extra_width(input.size, eob_pt_symbol);
     let eob_pt_extra = read_eob_literal(symbols, eob_pt_extra_width, "eob_pt_extra")?;
     let eob_pt =
         checked_resolved_eob_pt(input.size, eob_pt_symbol, eob_pt_extra_width, eob_pt_extra)?;
 
     let (eob_extra, eob_extra_bits) = if eob_pt >= 3 {
-        let eob_extra = cdfs.read_trusted_symbol(TileCdfSelector::EobExtra {}, symbols)? != 0;
+        let eob_extra = read_row(symbols, &mut cdfs.block_rows_mut().eob_extra) != 0;
         let width = eob_extra_bits_width(eob_pt)? as u32;
         (
             eob_extra,
@@ -350,7 +352,11 @@ fn eob_extra_bits_width(eob_pt: usize) -> Result<usize, CoeffLoopContextError> {
     Ok(width.saturating_sub(1))
 }
 
-#[inline]
+#[allow(
+    clippy::inline_always,
+    reason = "measured: once or twice per nonzero block"
+)]
+#[inline(always)]
 fn read_eob_literal(
     symbols: &mut SymbolDecoder<'_>,
     width: u32,

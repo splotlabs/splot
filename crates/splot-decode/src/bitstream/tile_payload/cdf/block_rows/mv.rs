@@ -16,6 +16,11 @@ use splot_core::tables::cdf::{
     DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF, DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF,
 };
 
+use splot_core::symbol::SymbolDecoder;
+
+use super::super::block_read::{read_row, row_at};
+#[cfg(any(debug_assertions, fuzzing, test))]
+use super::super::cdf_rows_valid;
 use super::super::util::checked_context;
 use super::super::{
     CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_rows, blend_cdf_rows, scale_cdf_rows,
@@ -260,6 +265,75 @@ impl MvCdfRows {
         }
     }
 
+    /// The trusted read of the row of `selector`; `None` for a shell-class
+    /// precision without a row.
+    #[allow(
+        clippy::inline_always,
+        reason = "constant selectors fold into a direct row read"
+    )]
+    #[inline(always)]
+    pub(crate) fn read(
+        &mut self,
+        symbols: &mut SymbolDecoder<'_>,
+        selector: MvCdfSelector,
+    ) -> Option<u8> {
+        let symbol = match selector {
+            MvCdfSelector::JointShellSet { mv_ctx } => {
+                read_row(symbols, row_at(&mut self.joint_shell_set, mv_ctx))
+            }
+            MvCdfSelector::JointShellClass {
+                precision,
+                shell_set,
+                mv_ctx,
+            } => match (precision, shell_set) {
+                (0, 0) => read_row(symbols, row_at(&mut self.joint_shell0_class0, mv_ctx)),
+                (0, _) => read_row(symbols, row_at(&mut self.joint_shell0_class1, mv_ctx)),
+                (1, 0) => read_row(symbols, row_at(&mut self.joint_shell1_class0, mv_ctx)),
+                (1, _) => read_row(symbols, row_at(&mut self.joint_shell1_class1, mv_ctx)),
+                (3, 0) => read_row(symbols, row_at(&mut self.joint_shell3_class0, mv_ctx)),
+                (3, _) => read_row(symbols, row_at(&mut self.joint_shell3_class1, mv_ctx)),
+                (4, 0) => read_row(symbols, row_at(&mut self.joint_shell4_class0, mv_ctx)),
+                (4, _) => read_row(symbols, row_at(&mut self.joint_shell4_class1, mv_ctx)),
+                (5, 0) => read_row(symbols, row_at(&mut self.joint_shell5_class0, mv_ctx)),
+                (5, _) => read_row(symbols, row_at(&mut self.joint_shell5_class1, mv_ctx)),
+                (6, 0) => read_row(symbols, row_at(&mut self.joint_shell6_class0, mv_ctx)),
+                (6, _) => read_row(symbols, row_at(&mut self.joint_shell6_class1, mv_ctx)),
+                _ => return None,
+            },
+            MvCdfSelector::JointShellLastTwo { mv_ctx } => {
+                read_row(symbols, row_at(&mut self.joint_shell_last_two, mv_ctx))
+            }
+            MvCdfSelector::ShellOffsetLowClass {
+                mv_ctx,
+                shell_class,
+            } => read_row(
+                symbols,
+                row_at(
+                    row_at(&mut self.shell_offset_low_class, mv_ctx),
+                    shell_class,
+                ),
+            ),
+            MvCdfSelector::ShellOffsetClass2 { mv_ctx } => {
+                read_row(symbols, row_at(&mut self.shell_offset_class2, mv_ctx))
+            }
+            MvCdfSelector::ShellOffsetOtherClass { mv_ctx, i } => read_row(
+                symbols,
+                row_at(row_at(&mut self.shell_offset_other_class, mv_ctx), i),
+            ),
+            MvCdfSelector::ColMvGreater { mv_ctx, i } => {
+                read_row(symbols, row_at(row_at(&mut self.col_mv_greater, mv_ctx), i))
+            }
+            MvCdfSelector::ColMvIndex { mv_ctx, ctx } => {
+                read_row(symbols, row_at(row_at(&mut self.col_mv_index, mv_ctx), ctx))
+            }
+            MvCdfSelector::AmvdJoint => read_row(symbols, &mut self.amvd_joint[0]),
+            MvCdfSelector::AmvdIndex { comp } => {
+                read_row(symbols, row_at(&mut self.amvd_index, comp))
+            }
+        };
+        Some(symbol as u8)
+    }
+
     pub(crate) fn average_from_tile(&mut self, tile: &Self, tile_num: u32, num_log2: u8) {
         macro_rules! avg_rows {
             ($field:ident $(. $flatten:ident())*) => {
@@ -286,6 +360,18 @@ impl MvCdfRows {
         }
 
         visit_mv_cdf_rows!(blend_rows);
+    }
+
+    #[cfg(any(debug_assertions, fuzzing, test))]
+    pub(crate) fn rows_valid(&self) -> bool {
+        let mut valid = true;
+        macro_rules! rows_valid {
+            ($field:ident $(. $flatten:ident())*) => {
+                valid &= cdf_rows_valid(flat_cdf_rows!(self.$field $(, $flatten)*));
+            };
+        }
+        visit_mv_cdf_rows!(rows_valid);
+        valid
     }
 
     pub(crate) fn scale_counts(&mut self) {

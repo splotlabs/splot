@@ -4,41 +4,6 @@
 use super::*;
 use crate::pipeline::reconstruct::IntraEdgeAvailability;
 
-/// Positions in luma samples, which a `u32` frame size bounds.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct PlacedInterGeometry {
-    pub(super) luma: [u32; 4],
-    pub(super) chroma_luma: [u32; 4],
-    pub(super) predict_chroma: bool,
-    pub(super) sub8x8_chroma: bool,
-    pub(super) interintra_chroma: bool,
-    pub(super) interintra_edges: [IntraEdgeAvailability; 2],
-}
-
-impl PlacedInterGeometry {
-    /// `block` placed at this geometry.
-    pub(super) fn place(self, block: InterBlock) -> PlacedInterBlock {
-        let [luma_x, luma_y, luma_w, luma_h] = self.luma.map(|v| v as usize);
-        let [chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h] =
-            self.chroma_luma.map(|v| v as usize);
-        PlacedInterBlock {
-            luma_x,
-            luma_y,
-            luma_w,
-            luma_h,
-            chroma_luma_x,
-            chroma_luma_y,
-            chroma_luma_w,
-            chroma_luma_h,
-            predict_chroma: self.predict_chroma,
-            sub8x8_chroma: self.sub8x8_chroma,
-            interintra_chroma: self.interintra_chroma,
-            interintra_edges: self.interintra_edges,
-            block,
-        }
-    }
-}
-
 pub(super) const fn leaf_predicts_chroma(chroma_planes: bool, luma_part: bool) -> bool {
     chroma_planes && !luma_part
 }
@@ -63,44 +28,15 @@ fn is_thin_4xn_nx4_block(size: BlockSize) -> bool {
     width.min(height) == 4 && width.max(height) >= 16
 }
 
-/// What [`placed_inter_geometry_at`] reads of a parsed leaf, kept for the
-/// resolve pass to place it.
-#[derive(Clone, Copy)]
-pub(super) struct InterLeafPlacement {
-    frontier: DecodeBlockFrontier,
-    tile_start: (usize, usize),
-    chroma_planes: bool,
-}
-
-impl InterLeafPlacement {
-    pub(super) fn geometry(&self, size4: (usize, usize)) -> Result<PlacedInterGeometry> {
-        placed_inter_geometry_at(&self.frontier, self.tile_start, size4, self.chroma_planes)
-    }
-}
-
-pub(super) fn inter_leaf_placement(
-    frontier: &DecodeBlockFrontier,
-    work_unit: &DecodeTileWorkUnit,
-    chroma_planes: bool,
-) -> InterLeafPlacement {
-    InterLeafPlacement {
-        frontier: *frontier,
-        tile_start: (
-            work_unit.mi_row_range().start as usize,
-            work_unit.mi_col_range().start as usize,
-        ),
-        chroma_planes,
-    }
-}
-
-/// A leaf's placed geometry in a tile that starts at 4x4 position `(row, col)`.
+/// `block` placed at its leaf in a tile that starts at 4x4 position `(row, col)`.
 #[inline]
-pub(super) fn placed_inter_geometry_at(
+pub(super) fn placed_inter_block_at(
     frontier: &DecodeBlockFrontier,
     (tile_row_start, tile_col_start): (usize, usize),
     (n4w, n4h): (usize, usize),
     chroma_planes: bool,
-) -> Result<PlacedInterGeometry> {
+    block: InterBlock,
+) -> Result<PlacedInterBlock> {
     let luma_x = frontier.c * 4;
     let luma_y = frontier.r * 4;
     let luma_w = n4w * 4;
@@ -136,7 +72,7 @@ pub(super) fn placed_inter_geometry_at(
             frontier.has_chroma && chroma_ref.col() > tile_col_start,
         ),
     ];
-    Ok(PlacedInterGeometry {
+    Ok(PlacedInterBlock {
         luma: [luma_x, luma_y, luma_w, luma_h].map(|v| v as u32),
         chroma_luma: [chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h].map(|v| v as u32),
         predict_chroma,
@@ -144,20 +80,17 @@ pub(super) fn placed_inter_geometry_at(
             && sub8x8_chroma_disables_compound(frontier.b_size, chroma_ref.size()),
         interintra_chroma: frontier.has_chroma && !mixed_offset_chroma,
         interintra_edges,
+        block,
     })
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
-    residual_scratch: &mut super::super::InterResidualReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
-    motion: Option<mc::CompoundMotionGrid>,
-    use_refinemv: bool,
-    refinemv_switchable: bool,
     block_decoded: &TileBlockDecodedState,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
@@ -167,7 +100,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     bit_depth: BitDepth,
     enable_ibp: bool,
     tile_offset: ByteOffset,
-) -> Result<Option<mc::CompoundMotionGrid>> {
+) -> Result<()> {
     let rect = placed.motion_compensation_rect();
     if let Some(prediction) = placed.block.interintra {
         super::predict_interintra_planes(
@@ -181,13 +114,10 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
         )?;
     }
     let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
-    let motion = held.predict_into(
+    held.predict_into(
         &mut mc::WorkspaceSink::Frame(workspace),
         placed,
         rect,
-        use_refinemv,
-        refinemv_switchable,
-        motion,
         tile_offset,
     )?;
     if placed.block.bawp.enabled {
@@ -200,7 +130,6 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             tile_offset,
         )?;
     }
-    drop(held);
     if let Some(interintra) = placed.block.interintra {
         for (prediction, samples) in interintra_scratch.planes() {
             let blend = match interintra {
@@ -219,8 +148,8 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
                         prediction.x,
                         prediction.y,
                         prediction.size,
-                        placed.luma_w,
-                        placed.luma_h,
+                        placed.luma_w(),
+                        placed.luma_h(),
                         usize::from(wedge_index),
                         prediction.sub_x,
                         prediction.sub_y,
@@ -232,7 +161,6 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     }
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
-            residual_scratch,
             &mut mc::WorkspaceSink::Frame(workspace),
             residual,
             residual_blocks,
@@ -244,21 +172,18 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             bit_depth,
         )?;
     }
-    Ok(motion)
+    Ok(())
 }
 
 /// Reconstructs one deferable inter block (no interintra, no BAWP, no
-/// current-frame reads) into `sink`: motion compensation, then residual add.
+/// current-frame reads, no refined motion) into `sink`: motion compensation,
+/// then residual add.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
-    residual_scratch: &mut super::super::InterResidualReconScratch<T>,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
-    motion: Option<mc::CompoundMotionGrid>,
-    use_refinemv: bool,
-    refinemv_switchable: bool,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     qindex: u32,
@@ -266,21 +191,11 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
-) -> Result<Option<mc::CompoundMotionGrid>> {
+) -> Result<()> {
     let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
-    let motion = held.predict_into(
-        sink,
-        placed,
-        placed.motion_compensation_rect(),
-        use_refinemv,
-        refinemv_switchable,
-        motion,
-        tile_offset,
-    )?;
-    drop(held);
+    held.predict_into(sink, placed, placed.motion_compensation_rect(), tile_offset)?;
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
-            residual_scratch,
             sink,
             residual,
             residual_blocks,
@@ -292,5 +207,35 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
             bit_depth,
         )?;
     }
-    Ok(motion)
+    Ok(())
+}
+
+/// Predicts the compound block `placed` that refines its motion (§ 7.13.3.3
+/// refine-MV, § 7.13.3.8 optical flow) in one pass: the luma motion of every
+/// unit into `units`, then `records` from it (§ 7.22), then with `predict`
+/// every plane from it into `sink`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn predict_refined_inter_block<T: ReconSample>(
+    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    units: &mut mc::RefinedUnits,
+    placed: &PlacedInterBlock,
+    (use_refinemv, refinemv_switchable): (bool, bool),
+    (ref_frame_idx, reference): (&[u32], &InterReferenceState<T>),
+    predict: bool,
+    tile_offset: ByteOffset,
+    records: impl FnOnce(&mc::RefinedUnits) -> Result<()>,
+) -> Result<()> {
+    let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
+    let block = held
+        .block_params(placed, placed.motion_compensation_rect())?
+        .with_refinemv(use_refinemv)
+        .with_switchable_refinemv(refinemv_switchable)
+        .into_compound()
+        .ok_or(crate::DecodeHeaderStateError::InvalidInterBlockModeState)?;
+    mc::refine_block_units(sink, &block, units, tile_offset)?;
+    records(units)?;
+    if predict {
+        mc::predict_refined_block(sink, &block, units, tile_offset)?;
+    }
+    Ok(())
 }

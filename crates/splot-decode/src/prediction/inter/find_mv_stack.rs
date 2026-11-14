@@ -6,7 +6,7 @@ pub(crate) use splot_recon::IDENTITY_WARP_PARAMS as DEFAULT_WARP_PARAMS;
 use splot_recon::math::round2_signed;
 
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
-use super::{CompoundOrderHint, Mv, mc::CWP_EQUAL};
+use super::{Mv, mc::CWP_EQUAL};
 use crate::tile::superblock_of;
 
 pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
@@ -96,7 +96,7 @@ mod temporal;
 mod warp_bank;
 use derived::{CompoundScanState, DerivedMvState};
 use extra_search::{compound_extra_search, extra_search};
-use neighbour_grid::{ABSENT_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags};
+use neighbour_grid::{ABSENT_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags, ProbedLeaf};
 pub(crate) use neighbour_grid::{
     BlockPrecisionRecord, GridCheckpoint, GridEdge, NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax,
     NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES, compound_motion_mode,
@@ -315,14 +315,41 @@ pub(crate) fn mode_ctx_from_neighbours(
     tip_ref_pair: Option<(i8, i8)>,
     neighbours: &BlockNeighbourContext,
 ) -> ModeContext {
-    let mut cells = neighbours.immediate;
+    ModeContext {
+        new_mv_context: new_mv_ctx_from_neighbours(block, tip_ref_pair, neighbours),
+        ..warp_ctx_from_neighbours(grid, block, neighbours)
+    }
+}
+
+/// The § 7.11.2 `NewMvContext` of [`mode_ctx_from_neighbours`].
+#[allow(clippy::inline_always, reason = "measured: per-leaf mode context")]
+#[inline(always)]
+pub(crate) fn new_mv_ctx_from_neighbours(
+    block: &MvBlockContext,
+    tip_ref_pair: Option<(i8, i8)>,
+    neighbours: &BlockNeighbourContext,
+) -> usize {
     let (mut found, mut newmv) = (0u32, false);
-    for (index, &cell) in cells.iter().enumerate() {
+    for (index, &cell) in neighbours.immediate.iter().enumerate() {
         if let Some(is_newmv) = mode_ctx_match_newmv(cell, block, tip_ref_pair) {
             found |= 1 << index;
             newmv |= is_newmv;
         }
     }
+    let nearest_match = usize::from(found & 0b1010 != 0) + usize::from(found & 0b0101 != 0);
+    nearest_match + 2 * usize::from(newmv)
+}
+
+/// The § 7.11.2 warp outputs of [`mode_ctx_from_neighbours`]; its
+/// `new_mv_context` is left 0.
+#[allow(clippy::inline_always, reason = "measured: per-leaf mode context")]
+#[inline(always)]
+pub(crate) fn warp_ctx_from_neighbours(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    neighbours: &BlockNeighbourContext,
+) -> ModeContext {
+    let mut cells = neighbours.immediate;
     let is_sb_border = block.is_sb_border();
     let (bw4, bh4) = (block.bw4 as i32, block.bh4 as i32);
     let odd_col = (block.mi_col & 1) as i32;
@@ -356,9 +383,8 @@ pub(crate) fn mode_ctx_from_neighbours(
             .ref_frame1
             .is_some_and(|ref1| neighbour_matches_ref(cell, ref1));
     }
-    let nearest_match = usize::from(found & 0b1010 != 0) + usize::from(found & 0b0101 != 0);
     ModeContext {
-        new_mv_context: nearest_match + 2 * usize::from(newmv),
+        new_mv_context: 0,
         warp_mv_count,
         warp_sample_found: samples != 0,
         warp_sample_found1,
@@ -371,11 +397,6 @@ pub(crate) fn mode_ctx_from_neighbours(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockNeighbourContext {
-    pub(crate) is_inter_ctx: usize,
-    pub(crate) skip_mode_ctx: usize,
-    pub(crate) skip_ctx: usize,
-    /// Per-reference use counts, a nibble per reference.
-    ref_counts: u32,
     cells: [NeighbourFlags; 2],
     cell_count: usize,
     npos_cells: [NeighbourFlags; 2],
@@ -387,23 +408,40 @@ pub(crate) struct BlockNeighbourContext {
 impl BlockNeighbourContext {
     const MAX_NEIGHBOUR_REFS: usize = 7;
 
-    /// The single-reference contexts of references `0..num_total_refs`.
-    pub(crate) fn single_ref_ctxs(
-        &self,
-        num_total_refs: usize,
-    ) -> Option<[usize; Self::MAX_NEIGHBOUR_REFS]> {
-        if num_total_refs > Self::MAX_NEIGHBOUR_REFS {
-            return None;
+    pub(crate) fn is_inter_ctx(&self) -> usize {
+        let intra = |n: usize| self.cell_count > n && !self.cells[n].is_inter();
+        match (self.cell_count, intra(0), intra(1)) {
+            (2, true, true) => 3,
+            (2, first, second) => usize::from(first || second),
+            (_, first, _) => 2 * usize::from(first),
         }
-        let mut contexts = [0; Self::MAX_NEIGHBOUR_REFS];
-        let mut next =
-            (self.ref_counts & ((1 << (4 * num_total_refs)) - 1)).wrapping_mul(0x1111_1111) >> 28;
-        for (ref_idx, ctx) in contexts.iter_mut().take(num_total_refs).enumerate() {
-            let this = (self.ref_counts >> (4 * ref_idx)) & 0xf;
-            next -= this;
-            *ctx = usize::from(this >= next) + usize::from(this > next);
+    }
+
+    pub(crate) fn skip_mode_ctx(&self) -> usize {
+        self.cells
+            .map(|cell| usize::from(cell.skip_mode()))
+            .iter()
+            .sum()
+    }
+
+    pub(crate) fn skip_ctx(&self) -> usize {
+        self.cells.map(|cell| usize::from(cell.skip())).iter().sum()
+    }
+
+    /// The § 8.3.2 `count_refs` of references `0..7`, one per nibble.
+    pub(crate) fn ref_counts(&self) -> u32 {
+        let mut ref_counts = 0u32;
+        for cell in self.cells.iter().take(self.cell_count) {
+            if !cell.is_inter() {
+                continue;
+            }
+            for ref_frame in [cell.ref_frame0(), cell.ref_frame1().unwrap_or(-1)] {
+                if (ref_frame as u8 as usize) < Self::MAX_NEIGHBOUR_REFS {
+                    ref_counts += 1 << (4 * ref_frame as u8);
+                }
+            }
         }
-        Some(contexts)
+        ref_counts
     }
 
     pub(crate) fn skip_mode_ref_pair(
@@ -436,12 +474,10 @@ impl BlockNeighbourContext {
             .count()
     }
 
-    pub(crate) fn comp_mode_ctx(
-        &self,
-        ref_frame_idx: &[u32],
-        ref_order_hint: &[u32],
-        current_order_hint: CompoundOrderHint,
-    ) -> usize {
+    /// The § 8.3.2 comp-mode context; `backward[r]` says whether logical
+    /// reference `r` lies after the current frame.
+    pub(crate) fn comp_mode_ctx(&self, backward: &[bool]) -> usize {
+        let is_backward = |cell| is_backward_ref_frame(cell, backward);
         match self.cell_count {
             0 => 1,
             1 => {
@@ -449,51 +485,16 @@ impl BlockNeighbourContext {
                 if neighbour.ref_frame1().is_some() {
                     3
                 } else {
-                    usize::from(is_backward_ref_frame(
-                        neighbour,
-                        ref_frame_idx,
-                        ref_order_hint,
-                        current_order_hint,
-                    ))
+                    usize::from(is_backward(neighbour))
                 }
             }
             _ => {
                 let first = self.cells[0];
                 let second = self.cells[1];
                 match (first.ref_frame1().is_some(), second.ref_frame1().is_some()) {
-                    (false, false) => usize::from(
-                        is_backward_ref_frame(
-                            first,
-                            ref_frame_idx,
-                            ref_order_hint,
-                            current_order_hint,
-                        ) ^ is_backward_ref_frame(
-                            second,
-                            ref_frame_idx,
-                            ref_order_hint,
-                            current_order_hint,
-                        ),
-                    ),
-                    (false, true) => {
-                        2 + usize::from(
-                            is_backward_ref_frame(
-                                first,
-                                ref_frame_idx,
-                                ref_order_hint,
-                                current_order_hint,
-                            ) || !first.is_inter(),
-                        )
-                    }
-                    (true, false) => {
-                        2 + usize::from(
-                            is_backward_ref_frame(
-                                second,
-                                ref_frame_idx,
-                                ref_order_hint,
-                                current_order_hint,
-                            ) || !second.is_inter(),
-                        )
-                    }
+                    (false, false) => usize::from(is_backward(first) ^ is_backward(second)),
+                    (false, true) => 2 + usize::from(is_backward(first) || !first.is_inter()),
+                    (true, false) => 2 + usize::from(is_backward(second) || !second.is_inter()),
                     (true, true) => 4,
                 }
             }
@@ -602,6 +603,27 @@ impl BlockNeighbourContext {
     }
 }
 
+/// The § 8.3.2 `single_ref` / `comp_ref` context of `ref_idx` from the
+/// [`BlockNeighbourContext::ref_counts`] `counts`.
+pub(crate) const fn ref_count_ctx(counts: u32, num_total_refs: usize, ref_idx: usize) -> usize {
+    let refs = if num_total_refs < 7 {
+        num_total_refs
+    } else {
+        7
+    };
+    let this = counts.wrapping_shr(4 * ref_idx as u32) & 0xf;
+    let next = (counts & ((1 << (4 * refs)) - 1))
+        .wrapping_shr(4 * ref_idx as u32 + 4)
+        .wrapping_mul(0x1111_1111)
+        >> 28;
+    (this >= next) as usize + (this > next) as usize
+}
+
+#[allow(
+    clippy::inline_always,
+    reason = "measured: per-leaf neighbour contexts"
+)]
+#[inline(always)]
 pub(crate) fn block_neighbour_ctx(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -628,33 +650,7 @@ pub(crate) fn block_neighbour_ctx(
     } else {
         present
     });
-
-    let n_intra_0 = num_buf >= 1 && !buf[0].is_inter();
-    let n_intra_1 = num_buf >= 2 && !buf[1].is_inter();
-    let is_inter_ctx = if num_buf == 2 {
-        if n_intra_0 && n_intra_1 {
-            3
-        } else {
-            usize::from(n_intra_0 || n_intra_1)
-        }
-    } else {
-        2 * usize::from(n_intra_0)
-    };
-
-    let mut ref_counts = 0u32;
-    for cell in buf.iter().filter(|cell| cell.is_inter()) {
-        for ref_frame in [cell.ref_frame0(), cell.ref_frame1().unwrap_or(-1)] {
-            if (ref_frame as u8 as usize) < BlockNeighbourContext::MAX_NEIGHBOUR_REFS {
-                ref_counts += 1 << (4 * ref_frame as u8);
-            }
-        }
-    }
-
     BlockNeighbourContext {
-        is_inter_ctx,
-        skip_mode_ctx: buf.iter().map(|cell| usize::from(cell.skip_mode())).sum(),
-        skip_ctx: buf.iter().map(|cell| usize::from(cell.skip())).sum(),
-        ref_counts,
         cells: buf,
         cell_count: num_buf,
         npos_cells,
@@ -663,31 +659,21 @@ pub(crate) fn block_neighbour_ctx(
     }
 }
 
-fn is_backward_ref_frame(
-    cell: NeighbourFlags,
-    ref_frame_idx: &[u32],
-    ref_order_hint: &[u32],
-    current_order_hint: CompoundOrderHint,
-) -> bool {
+fn is_backward_ref_frame(cell: NeighbourFlags, backward: &[bool]) -> bool {
     if !cell.is_inter() || cell.ref_frame0() < 0 {
         return false;
     }
-    if cell.ref_frame0() == TIP_REF_FRAME {
-        return true;
-    }
-    let Some(&slot) = ref_frame_idx.get(cell.ref_frame0() as usize) else {
-        return false;
-    };
-    let Some(&order_hint) = ref_order_hint.get(slot as usize) else {
-        return false;
-    };
-    CompoundOrderHint::reference(order_hint).frame_distance_from(current_order_hint) < 0
+    cell.ref_frame0() == TIP_REF_FRAME
+        || backward
+            .get(cell.ref_frame0() as usize)
+            .copied()
+            .unwrap_or(false)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MvStack {
     stack: FixedStack<(Mv, (i32, i32)), MAX_REF_MV_STACK_SIZE>,
-    warp: WarpParamStack,
+    warp: Option<WarpParamStack>,
 }
 
 impl MvStack {
@@ -712,15 +698,22 @@ impl MvStack {
 
     pub(crate) fn warp_candidate(&self, idx: usize) -> [i32; 6] {
         self.warp
-            .slots
-            .get(idx)
-            .copied()
+            .and_then(|warp| warp.slots.get(idx).copied())
             .unwrap_or(DEFAULT_WARP_PARAMS)
     }
 }
 
-/// AV2 § 7.12.2.2 `get_warp_motion_vector()` for a block center.
+/// AV2 § 7.12.2.2 `get_warp_motion_vector()` for a block center. The identity
+/// model moves no sample, and the precision and border clamps keep zero.
 pub(crate) fn warp_predicted_mv(params: [i32; 6], block: &MvBlockContext, precision: u8) -> Mv {
+    if params
+        .iter()
+        .zip(DEFAULT_WARP_PARAMS)
+        .fold(0, |diff, (&a, b)| diff | (a ^ b))
+        == 0
+    {
+        return Mv::ZERO;
+    }
     let x = block.mi_col as i32 * 4 + (block.bw4 as i32 * 4) / 2 - 1;
     let y = block.mi_row as i32 * 4 + (block.bh4 as i32 * 4) / 2 - 1;
     let (row, col) = projected_warp_mv(params, x, y);
@@ -981,6 +974,7 @@ impl RefMvBank {
         }
     }
 
+    #[inline]
     pub(crate) fn reset_for_leaf(
         &mut self,
         grid: &NeighbourMvGrid,
@@ -990,9 +984,18 @@ impl RefMvBank {
         seed_from_above: bool,
     ) {
         let sb = superblock_of(mi_row, mi_col, sb_size4);
-        if self.current_sb == Some(sb) {
-            return;
+        if self.current_sb != Some(sb) {
+            self.enter_superblock(grid, sb, sb_size4, seed_from_above);
         }
+    }
+
+    fn enter_superblock(
+        &mut self,
+        grid: &NeighbourMvGrid,
+        sb: (usize, usize),
+        sb_size4: usize,
+        seed_from_above: bool,
+    ) {
         let new_sb_row = self.current_sb.is_none_or(|(row, _)| row != sb.0);
         self.current_sb = Some(sb);
         self.sb_hits = 0;
@@ -1028,12 +1031,12 @@ impl RefMvBank {
         n4h: usize,
         sb_size4: usize,
     ) {
-        let unit_size4 = (sb_size4 >> 3).max(1);
-        let unit_count = ((n4w / unit_size4).max(1) * (n4h / unit_size4).max(1)) as i32;
-        if mi_row.is_multiple_of(sb_size4) && mi_col.is_multiple_of(sb_size4) {
+        let unit_shift = (sb_size4 >> 3).max(1).trailing_zeros();
+        let unit_count = ((n4w >> unit_shift).max(1) * (n4h >> unit_shift).max(1)) as i32;
+        if (mi_row | mi_col) & sb_size4.wrapping_sub(1) == 0 {
             self.remain_hits = unit_count.max(4);
             self.unit_hits = 0;
-        } else if mi_row.is_multiple_of(unit_size4) && mi_col.is_multiple_of(unit_size4) {
+        } else if (mi_row | mi_col) & ((1 << unit_shift) - 1) == 0 {
             self.remain_hits += unit_count;
             self.unit_hits = 0;
         }
@@ -1390,21 +1393,27 @@ pub(crate) fn find_mv_stack_upto(
     let mut derived = DerivedMvState::new(temporal, order_hints, global_mv);
     let mut warp = derive_wrl.then(WarpParamStack::new);
     if let Some(warp) = warp.as_mut() {
-        generate_points_from_corners(grid, block, 0, warp);
-        if warp.num_found == 0 && block.bw4 <= 16 {
-            generate_points_from_corners(grid, block, 1, warp);
-        }
+        generate_points_from_corners(grid, block, warp);
     }
     if use_temporal_first {
         scan_temporal_mv_stack(grid, block, temporal, &mut entries, &mut prune_count);
     }
 
     let probes = mv_stack_spatial_probes(block);
-    for probe in probes[..6].iter().flatten() {
+    let probed = |probe: RelativeProbe| {
+        let (row, col, _) = probe.adjusted_target(block);
+        Some((probe, grid.probe(row, col)?))
+    };
+    for (probe, leaf) in probes[..6]
+        .iter()
+        .flatten()
+        .filter_map(|&probe| probed(probe))
+    {
         scan_mv_stack_probe(
             grid,
             block,
-            *probe,
+            probe,
+            leaf,
             &mut entries,
             &mut prune_count,
             &mut derived,
@@ -1414,11 +1423,12 @@ pub(crate) fn find_mv_stack_upto(
     if !use_temporal_first {
         scan_temporal_mv_stack(grid, block, temporal, &mut entries, &mut prune_count);
     }
-    if let Some(probe) = probes[6] {
+    if let Some((probe, leaf)) = probes[6].and_then(probed) {
         scan_mv_stack_probe(
             grid,
             block,
             probe,
+            leaf,
             &mut entries,
             &mut prune_count,
             &mut derived,
@@ -1477,10 +1487,7 @@ pub(crate) fn find_mv_stack_upto(
             .map(|entry| (clamp_mv(block, entry.mv), entry.offsets)),
     );
 
-    MvStack {
-        stack,
-        warp: warp.unwrap_or_else(WarpParamStack::new),
-    }
+    MvStack { stack, warp }
 }
 
 #[cfg(test)]
@@ -1785,19 +1792,20 @@ fn scan_mv_stack_col(
     {
         let mv_row = block.mi_row as i32 + delta_row;
         let mv_col = block.mi_col as i32 + delta_col;
-        let Some(cell_base_c) = grid.base_c_at(mv_row, mv_col) else {
+        let Some(leaf) = grid.probe(mv_row, mv_col) else {
             continue;
         };
         let Some(left_base_c) = grid.base_c_at(mv_row, block.mi_col as i32 - 1) else {
             continue;
         };
-        if cell_base_c == left_base_c {
+        if leaf.base_c() == left_base_c {
             continue;
         }
         scan_mv_stack_probe(
             grid,
             block,
             RelativeProbe::new(delta_row, delta_col),
+            leaf,
             entries,
             prune_count,
             derived,
@@ -1808,6 +1816,7 @@ fn scan_mv_stack_col(
 
 #[allow(
     clippy::inline_always,
+    clippy::too_many_arguments,
     reason = "measured: keeps the stack state in registers across probes"
 )]
 #[inline(always)]
@@ -1815,15 +1824,13 @@ fn scan_mv_stack_probe(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     probe: RelativeProbe,
+    leaf: ProbedLeaf<'_>,
     entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
     derived: &mut DerivedMvState<'_>,
     warp: Option<&mut WarpParamStack>,
 ) {
-    let (row, col, adjusted_delta_col) = probe.adjusted_target(block);
-    let Some(leaf) = grid.probe(row, col) else {
-        return;
-    };
+    let adjusted_delta_col = probe.delta_col;
     let flags = leaf.flags();
     if let Some(warp) = warp
         && flags.is_inter()
@@ -1848,10 +1855,9 @@ fn scan_mv_stack_probe(
     {
         scan_tip_spatial_probe(grid, block, probe, entries, prune_count, derived, weight);
     }
-    for (list, candidate_ref) in [(0, Some(flags.ref_frame0())), (1, flags.ref_frame1())] {
-        let Some(candidate_ref) = candidate_ref else {
-            continue;
-        };
+    let lists = if flags.ref_frame1().is_some() { 2 } else { 1 };
+    for list in 0..lists {
+        let candidate_ref = flags.list_ref_frame(list);
         if candidate_ref == block.ref_frame0 {
             let candidate_mv = if leaf.is_global_mv(list) {
                 derived.global_mv()
@@ -2001,24 +2007,34 @@ fn add_temporal_mv_sample(
 fn generate_points_from_corners(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
-    iter: i32,
     warp: &mut WarpParamStack,
 ) {
     let bw4 = block.bw4 as i32;
     let bh4 = block.bh4 as i32;
-    let mut pts = [[0i32; 2]; 3];
-    let mut mvs = [[0i32; 2]; 3];
-    let mut found = 0usize;
-    for (delta_row, delta_col, adjust_col) in
-        [(-1, -1, iter), (-1, bw4 - 1, iter), (bh4 - 1, -1, 0)]
-    {
-        warp_corner(
-            grid, block, delta_row, delta_col, adjust_col, &mut pts, &mut mvs, &mut found,
-        );
-    }
-    if found != 3 {
+    let Some(bottom_left) = warp_corner(grid, block, bh4 - 1, -1, 0) else {
         return;
+    };
+    for iter in 0..2 {
+        if iter == 1 && (warp.num_found != 0 || block.bw4 > 16) {
+            return;
+        }
+        let Some(top_left) = warp_corner(grid, block, -1, -1, iter) else {
+            continue;
+        };
+        let Some(top_right) = warp_corner(grid, block, -1, bw4 - 1, iter) else {
+            continue;
+        };
+        let [pts, mvs] = [0, 1].map(|i| [top_left[i], top_right[i], bottom_left[i]]);
+        model_from_corners(block, pts, mvs, warp);
     }
+}
+
+fn model_from_corners(
+    block: &MvBlockContext,
+    pts: [[i32; 2]; 3],
+    mvs: [[i32; 2]; 3],
+    warp: &mut WarpParamStack,
+) {
     let mut ref_pts = [[0i64; 2]; 3];
     let mut all_mvs_same = true;
     for n in 0..3 {
@@ -2058,17 +2074,13 @@ fn generate_points_from_corners(
     warp.insert(wmmat);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn warp_corner(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     delta_row: i32,
     delta_col: i32,
     adjust_col: i32,
-    pts: &mut [[i32; 2]; 3],
-    mvs: &mut [[i32; 2]; 3],
-    found: &mut usize,
-) {
+) -> Option<[[i32; 2]; 2]> {
     let mv_row = block.mi_row as i32 + delta_row;
     let mv_col = block.mi_col as i32 + delta_col;
     let is_sb_border = block.is_sb_border();
@@ -2080,40 +2092,28 @@ fn warp_corner(
         block.mi_col as i32 + delta_col
     };
     if is_sb_border && delta_col == 0 && block.bw4 <= 2 {
-        return;
+        return None;
     }
-    let Some(leaf) = grid.probe(mv_row, mv_col2) else {
-        return;
-    };
+    let leaf = grid.probe(mv_row, mv_col2)?;
     let flags = leaf.flags();
-    if !flags.is_inter() || *found >= 3 {
-        return;
+    if !flags.is_inter() {
+        return None;
     }
-    for ref_list in 0..2usize {
-        let ref_matches = if ref_list == 0 {
-            flags.ref_frame0() == block.ref_frame0
+    let corner_mv = if flags.ref_frame0() == block.ref_frame0 {
+        if flags.is_warp() {
+            warp_motion_vector_at(leaf.stored_warp()?, block, mv_row + 1, mv_col + 1)
         } else {
-            flags.ref_frame1() == Some(block.ref_frame0)
-        };
-        if !ref_matches {
-            continue;
+            leaf.sub_mv(0)
         }
-        let corner_mv = if flags.is_warp() {
-            if ref_list > 0 {
-                return;
-            }
-            let Some(params) = leaf.stored_warp() else {
-                return;
-            };
-            warp_motion_vector_at(params, block, mv_row + 1, mv_col + 1)
-        } else {
-            leaf.sub_mv(ref_list)
-        };
-        pts[*found] = [(mv_row + 1) * 4, (mv_col + 1) * 4];
-        mvs[*found] = [corner_mv.row, corner_mv.col];
-        *found += 1;
-        return;
-    }
+    } else if flags.ref_frame1() == Some(block.ref_frame0) && !flags.is_warp() {
+        leaf.sub_mv(1)
+    } else {
+        return None;
+    };
+    Some([
+        [(mv_row + 1) * 4, (mv_col + 1) * 4],
+        [corner_mv.row, corner_mv.col],
+    ])
 }
 
 pub(crate) fn warp_sub_mv_at(
@@ -2259,5 +2259,7 @@ fn clamp_mv(block: &MvBlockContext, mv: Mv) -> Mv {
 mod bank_tests;
 #[cfg(test)]
 mod global_motion_tests;
+#[cfg(test)]
+pub(crate) mod neighbour_state_tests;
 #[cfg(test)]
 mod tests;

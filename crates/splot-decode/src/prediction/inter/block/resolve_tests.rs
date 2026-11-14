@@ -71,7 +71,6 @@ fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 
         refinemv_switchable: false,
     };
     let syntax = InterBlockSyntax {
-        block_ctx: block,
         motion: InterMotionSyntax::Compound(compound),
         interp: ReconInterpolationFilter::EightTap,
         precision: BlockPrecisionRecord::explicit(MV_PRECISION_ONE_PEL),
@@ -79,10 +78,6 @@ fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 
         use_amvd: false,
         tip_size_16x16: false,
         blend: mc::CompoundBlend::average_with_implicit_mask(false),
-        bawp: BawpSyntax::default(),
-        interintra: None,
-        optflow_distances: None,
-        residual: None,
     };
     let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
     let order_hints = [Some(0), Some(0)];
@@ -97,8 +92,13 @@ fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 
         max_drl_bits_minus_1: 0,
         frame_precision: MV_PRECISION_QUARTER_PEL,
         tile_offset: ByteOffset::new(0),
+        sb_h4: block.sb_h4,
+        mi_rows: MI_DIM,
+        mi_cols: MI_DIM,
     };
-    let mv = compound_motion(&syntax, &compound, &state).unwrap().mv;
+    let mv = compound_motion(&block, &syntax, &compound, &state)
+        .unwrap()
+        .mv;
     let global = |precision| [0, 1].map(|r| global_motion_mv(&core, r, &block, precision));
     (
         mv,

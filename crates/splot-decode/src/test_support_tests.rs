@@ -89,7 +89,9 @@ pub(crate) fn workspace_rows<T: ReconSample>(
     rows.flat_map(|row| &row[..width]).copied().collect()
 }
 
-pub(crate) fn stripe_rows(plane: &crate::filters::source::StripePlane) -> Vec<u16> {
+pub(crate) fn stripe_rows<T: ReconSample>(
+    plane: &crate::filters::source::StripePlane<T>,
+) -> Vec<T> {
     let rows = plane.origin_y()..plane.end_y().unwrap();
     rows.flat_map(|y| plane.row(y).unwrap()).copied().collect()
 }

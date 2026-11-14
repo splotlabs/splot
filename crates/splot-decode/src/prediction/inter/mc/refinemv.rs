@@ -4,11 +4,30 @@
 use super::*;
 use crate::prediction::inter::mv_scaling::PlaneScaling;
 use crate::prediction::inter::read_mv::{MV_LOW, MV_UPP};
-use fearless_simd::{Simd, SimdBase, SimdNarrow, SimdWiden, u16x8, u16x16, u32x4, u32x8};
+use fearless_simd::{
+    Bytes, Simd, SimdBase, SimdIntWiden, SimdNarrow, SimdWiden, u8x16, u16x8, u32x4, u64x2,
+};
 
 const REFINEMV_UNIT_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_AREA: usize = TIP_PREDICTION_SIZE * TIP_PREDICTION_SIZE;
+
+/// The 16x16 TIP refine-MV search areas of both references, kept by the
+/// caller so that no unit zeroes them: each unit writes what it reads.
+#[derive(Debug)]
+pub(crate) struct TipSearchScratch {
+    predictions: [[u16; TIP_PREDICTION_AREA]; 2],
+    windows: [[u8; TIP_PREDICTION_AREA]; 2],
+}
+
+impl Default for TipSearchScratch {
+    fn default() -> Self {
+        Self {
+            predictions: [[0; TIP_PREDICTION_AREA]; 2],
+            windows: [[0; TIP_PREDICTION_AREA]; 2],
+        }
+    }
+}
 pub(super) const SEARCH_PADDING: i32 = 4 * 8;
 use splot_recon::REFINEMV_NEIGHBORS as SEARCH_NEIGHBORS;
 
@@ -184,17 +203,15 @@ fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>
     let v = ((params.start_y >> 6) & 15) as u16;
     let max_sample = params.bit_depth.max_sample();
     baseline_simd!(simd => {
-        let horizontal = |span: &[T]| -> [u16x8<_>; G] {
+        let horizontal = |span: &[T; M]| -> [u16x8<_>; G] {
             let mut lanes = [u16x8::splat(simd, 0); G];
             for (group, lanes) in lanes.iter_mut().enumerate() {
                 let (left, right) = if group == 0 {
-                    let samples = sample_lanes(simd, span, 0).to_array();
-                    let shifted = core::array::from_fn(|lane| samples[lane.saturating_sub(1)]);
-                    (u16x8::load_array(simd, shifted), u16x8::load_array(simd, samples))
+                    let samples = sample_lanes(simd, span, 0);
+                    (u16x8::splat(simd, samples[0]).slide::<7>(samples), samples)
                 } else if group == G - 1 {
-                    let samples = sample_lanes(simd, span, 8 * group - 1).to_array();
-                    let shifted = core::array::from_fn(|lane| samples[(lane + 1).min(7)]);
-                    (u16x8::load_array(simd, samples), u16x8::load_array(simd, shifted))
+                    let samples = sample_lanes(simd, span, 8 * group - 1);
+                    (samples, samples.slide::<1>(u16x8::splat(simd, samples[7])))
                 } else {
                     (sample_lanes(simd, span, 8 * group - 1), sample_lanes(simd, span, 8 * group))
                 };
@@ -211,16 +228,23 @@ fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>
                 }
             }
         };
-        let mut top = horizontal(spans[0]);
-        write(0, top, top);
-        for (row, span) in spans.iter().enumerate().skip(1) {
-            let bottom = horizontal(span);
-            write(row, top, bottom);
-            top = bottom;
+        let mut upper = None;
+        for row in 0..N {
+            let lower = match spans.get(row) {
+                Some(span) => match span.first_chunk::<M>() {
+                    Some(span) => horizontal(span),
+                    None => return false,
+                },
+                None => match upper {
+                    Some(upper) => upper,
+                    None => return false,
+                },
+            };
+            write(row, upper.unwrap_or(lower), lower);
+            upper = Some(lower);
         }
-        write(N - 1, top, top);
-    });
-    true
+        true
+    })
 }
 
 /// Eight samples from `at` widened to `u16`, zero past the span.
@@ -240,105 +264,33 @@ fn sample_lanes<S: Simd, T: ReconSample>(simd: S, span: &[T], at: usize) -> u16x
 /// `Min(Round2(top * (16 - v) + bottom * v, 8), max)` of two horizontal rows.
 #[inline]
 fn vertical_blend<S: Simd>(simd: S, top: u16x8<S>, bottom: u16x8<S>, v: u16, max: u16) -> u16x8<S> {
-    let ((top_low, top_high), (bottom_low, bottom_high)) = (top.widen(), bottom.widen());
-    let blend = |top: u32x4<S>, bottom: u32x4<S>| {
-        (top * u32::from(16 - v) + bottom * u32::from(v) + 128) >> 8
-    };
+    let (top_low, top_high) = top.widening_mul(u16x8::splat(simd, 16 - v));
+    let (bottom_low, bottom_high) = bottom.widening_mul(u16x8::splat(simd, v));
+    let blend = |top: u32x4<S>, bottom: u32x4<S>| (top + bottom + 128) >> 8;
     blend(top_low, bottom_low)
         .narrow(blend(top_high, bottom_high))
         .min(u16x8::splat(simd, max))
 }
 
-/// `Σ |left - right|` over the common length of two runs.
-#[inline]
-pub(super) fn abs_diff_sum(left: &[u16], right: &[u16]) -> u32 {
-    baseline_simd!(simd => abs_diff_lanes(simd, left, right))
-}
+/// The bilinear `(w + 8) x (h + 8)` § 7.13.3.6 search areas of one refine-MV
+/// unit of at most 16x16, for both references, as bytes or as samples.
+pub(super) type SearchBytes = [[u8; SEARCH_AREA]; 2];
+pub(super) type SearchSamples = [[u16; SEARCH_AREA]; 2];
+pub(super) const SEARCH_AREA: usize = (REFINEMV_UNIT_SIZE + 8) * (REFINEMV_UNIT_SIZE + 8);
 
-#[inline]
-fn abs_diff_lanes<S: Simd>(simd: S, left: &[u16], right: &[u16]) -> u32 {
-    let (left_chunks, left_tail) = left.as_chunks::<16>();
-    let (right_chunks, right_tail) = right.as_chunks::<16>();
-    let mut sums = u32x8::splat(simd, 0);
-    for (left, right) in left_chunks.iter().zip(right_chunks) {
-        let (left, right) = (
-            u16x16::load_array_ref(simd, left),
-            u16x16::load_array_ref(simd, right),
-        );
-        let (low, high) = (left.max(right) - left.min(right)).widen();
-        sums = sums + low + high;
-    }
-    let (left_eights, left_rest) = left_tail.as_chunks::<8>();
-    let (right_eights, right_rest) = right_tail.as_chunks::<8>();
-    let mut quads = u32x4::splat(simd, 0);
-    for (left, right) in left_eights.iter().zip(right_eights) {
-        let (left, right) = (
-            u16x8::load_array_ref(simd, left),
-            u16x8::load_array_ref(simd, right),
-        );
-        let (low, high) = (left.max(right) - left.min(right)).widen();
-        quads = quads + low + high;
-    }
-    let rest = left_rest
-        .iter()
-        .zip(right_rest)
-        .map(|(&left, &right)| u32::from(left.abs_diff(right)))
-        .sum::<u32>();
-    sums.reduce_sum() + quads.reduce_sum() + rest
-}
-
-pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
-    offset: ByteOffset,
-) -> Result<CompoundMotionGrid> {
-    let columns = block.rect.luma_w.div_ceil(REFINEMV_UNIT_SIZE);
-    let rows = block.rect.luma_h.div_ceil(REFINEMV_UNIT_SIZE);
-    let cell_count = columns
-        .checked_mul(rows)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "refine-MV motion-grid size",
-        })?;
-    let candidates = [block.mv0, block.mv1];
-    let motion_cell = |local_x: usize, local_y: usize| -> Result<MotionCell> {
-        let width = (block.rect.luma_w - local_x).min(REFINEMV_UNIT_SIZE);
-        let height = (block.rect.luma_h - local_y).min(REFINEMV_UNIT_SIZE);
-        let mut rect = block.rect;
-        rect.luma_x += local_x;
-        rect.luma_y += local_y;
-        rect.luma_w = width;
-        rect.luma_h = height;
-        let mvs = if block.search_refinemv {
-            search_refinemv(sink, block, rect, offset)?
-        } else {
-            candidates
-        };
-        Ok(MotionCell::from_refinemv(mvs))
-    };
-    if cell_count == 1 {
-        return Ok(CompoundMotionGrid::from_single_refinemv(
-            candidates,
-            motion_cell(0, 0)?,
-        ));
-    }
-    let mut cells =
-        super::optflow::take_motion_cells(cell_count, MotionCell::from_refinemv(candidates));
-    let mut index = 0usize;
-    for local_y in (0..block.rect.luma_h).step_by(REFINEMV_UNIT_SIZE) {
-        for local_x in (0..block.rect.luma_w).step_by(REFINEMV_UNIT_SIZE) {
-            cells[index] = motion_cell(local_x, local_y)?;
-            index += 1;
-        }
-    }
-    Ok(CompoundMotionGrid::from_refinemv(
-        columns, candidates, cells,
-    ))
+/// Which search area of [`search_unit`] holds the bilinear predictions of
+/// the unit's `(w + 8) x (h + 8)` area, at least its centre `w x h` samples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SearchArea {
+    None,
+    Bytes,
+    Samples,
 }
 
 #[inline(never)]
-fn search_refinemv<T: ReconSample>(
+pub(super) fn search_refinemv<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
+    block: &CompoundMcBlock<'_, T>,
     rect: McBlockRect,
     offset: ByteOffset,
 ) -> Result<[Mv; 2]> {
@@ -346,43 +298,102 @@ fn search_refinemv<T: ReconSample>(
     if !search_range_allowed(candidates) {
         return Ok(candidates);
     }
-    let prediction_width = rect
-        .luma_w
-        .checked_add(8)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "refine-MV prediction width",
-        })?;
-    let prediction_height = rect
-        .luma_h
-        .checked_add(8)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "refine-MV prediction height",
-        })?;
-    let mut prediction_rect = rect;
-    prediction_rect.luma_w = prediction_width;
-    prediction_rect.luma_h = prediction_height;
-    let mut luma = super::optflow::LumaReference::pair(sink.info(), &block, offset);
+    let mut luma = super::optflow::LumaReference::pair(sink.info(), block, offset);
+    let prediction_rect = search_rect(rect);
     // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
     let allow_center = !block.refinemv_switchable;
     if T::u8_slice(&[]).is_some() {
-        if allow_center
-            && super::optflow::fullpel_center_ends_search(&mut luma, prediction_rect, candidates)?
-                == Some(true)
-        {
-            return Ok(candidates);
-        }
-        let mut windows = [[0u8; 24 * 24]; 2];
-        if super::optflow::search_windows_u8(&mut luma, prediction_rect, candidates, &mut windows)?
-            && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
-                [&windows[0], &windows[1]],
-                prediction_rect.luma_w,
-                prediction_rect.luma_h - 4,
-                allow_center,
-            )
-        {
-            return Ok(refined_mvs(candidates, dx, dy));
+        let mut windows = [[0u8; SEARCH_AREA]; 2];
+        let search = (prediction_rect, candidates, allow_center);
+        if let Some(mvs) = search_bytes(&mut luma, search, &mut windows)?.0 {
+            return Ok(mvs);
         }
     }
+    let (width, height) = (prediction_rect.luma_w, prediction_rect.luma_h);
+    let (dx, dy) = super::with_initial_luma_predictions(width, height, |pred0, pred1| {
+        search_samples(&mut luma, rect, candidates, allow_center, [pred0, pred1])
+    })?;
+    Ok(refined_mvs(candidates, dx, dy))
+}
+
+/// The § 7.13.3.6 search of the refine-MV unit `rect` (at most 16x16) from
+/// `candidates`: the refined motion vectors and which of `bytes` and
+/// `samples` holds the search area they were chosen from.
+pub(super) fn search_unit<T: ReconSample>(
+    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
+    (rect, candidates, allow_center): (McBlockRect, [Mv; 2], bool),
+    bytes: &mut SearchBytes,
+    samples: &mut SearchSamples,
+) -> Result<([Mv; 2], SearchArea)> {
+    if !search_range_allowed(candidates) {
+        return Ok((candidates, SearchArea::None));
+    }
+    let prediction_rect = search_rect(rect);
+    if T::u8_slice(&[]).is_some()
+        && let (Some(mvs), area) =
+            search_bytes(luma, (prediction_rect, candidates, allow_center), bytes)?
+    {
+        return Ok((mvs, area));
+    }
+    let len = prediction_rect.luma_w * prediction_rect.luma_h;
+    let [first, second] = samples;
+    let (Some(pred0), Some(pred1)) = (first.get_mut(..len), second.get_mut(..len)) else {
+        return Err(ReconError::SubpelBlockDimensionUnsupported {
+            w: rect.luma_w,
+            h: rect.luma_h,
+        }
+        .into());
+    };
+    let (dx, dy) = search_samples(luma, rect, candidates, allow_center, [pred0, pred1])?;
+    Ok((refined_mvs(candidates, dx, dy), SearchArea::Samples))
+}
+
+/// The `(w + 8) x (h + 8)` search area of the refine-MV unit `rect`.
+const fn search_rect(rect: McBlockRect) -> McBlockRect {
+    let mut prediction_rect = rect;
+    prediction_rect.luma_w = rect.luma_w + 8;
+    prediction_rect.luma_h = rect.luma_h + 8;
+    prediction_rect
+}
+
+/// The eight-bit search: the candidates when both are full-pel and the
+/// centre SAD read from the references keeps them, else the search of the
+/// byte windows; `None` when the byte kernels do not cover the unit.
+fn search_bytes<T: ReconSample>(
+    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
+    (prediction_rect, candidates, allow_center): (McBlockRect, [Mv; 2], bool),
+    windows: &mut SearchBytes,
+) -> Result<(Option<[Mv; 2]>, SearchArea)> {
+    if allow_center
+        && super::optflow::fullpel_center_ends_search(luma, prediction_rect, candidates)?
+            == Some(true)
+    {
+        return Ok((Some(candidates), SearchArea::None));
+    }
+    if super::optflow::search_windows_u8(luma, prediction_rect, candidates, windows)?
+        && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
+            [&windows[0], &windows[1]],
+            prediction_rect.luma_w,
+            prediction_rect.luma_h - 4,
+            allow_center,
+        )
+    {
+        return Ok((Some(refined_mvs(candidates, dx, dy)), SearchArea::Bytes));
+    }
+    Ok((None, SearchArea::None))
+}
+
+/// The search offset from sample predictions of the search area: the centre
+/// alone first when it may keep the candidates, else the whole area.
+fn search_samples<T: ReconSample>(
+    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
+    rect: McBlockRect,
+    candidates: [Mv; 2],
+    allow_center: bool,
+    [pred0, pred1]: [&mut [u16]; 2],
+) -> Result<(i32, i32)> {
+    let prediction_rect = search_rect(rect);
+    let bit_depth = luma[0].bit_depth();
     let mut predict = |center_only: bool, pred0: &mut [u16], pred1: &mut [u16]| {
         for ((luma, candidate), prediction) in luma.iter_mut().zip(candidates).zip([pred0, pred1]) {
             let search_mv = Mv {
@@ -415,31 +426,24 @@ fn search_refinemv<T: ReconSample>(
         }
         Ok::<_, crate::error::DecodeError>(())
     };
-    let bit_depth = sink.info().bit_depth();
-    let (dx, dy) = super::with_initial_luma_predictions(
-        prediction_width,
-        prediction_height,
-        |pred0, pred1| {
-            if allow_center {
-                predict(true, pred0, pred1)?;
-                let (stride, width, height) = (prediction_width, rect.luma_w, rect.luma_h);
-                if refinemv_center_sad(pred0, pred1, stride, width, height, bit_depth)?.is_none() {
-                    return Ok((0, 0));
-                }
+    let stride = prediction_rect.luma_w;
+    if allow_center {
+        predict(true, pred0, pred1)?;
+        if refinemv_center_sad(pred0, pred1, stride, rect.luma_w, rect.luma_h, bit_depth)?.is_none()
+        {
+            return Ok((0, 0));
+        }
+    }
+    predict(false, pred0, pred1)?;
+    let sad_h = prediction_rect.luma_h - 4;
+    splot_recon::refinemv_search_u16([pred0, pred1], stride, sad_h, allow_center, bit_depth)
+        .ok_or_else(|| {
+            ReconError::SubpelBlockDimensionUnsupported {
+                w: rect.luma_w + 4,
+                h: rect.luma_h + 4,
             }
-            predict(false, pred0, pred1)?;
-            Ok(search_refinemv_offset(
-                pred0,
-                pred1,
-                prediction_width,
-                rect.luma_w,
-                rect.luma_h,
-                bit_depth,
-                allow_center,
-            )?)
-        },
-    )?;
-    Ok(refined_mvs(candidates, dx, dy))
+            .into()
+        })
 }
 
 /// The candidates moved by the full-sample search offset `(dx, dy)`, in
@@ -676,44 +680,27 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
             }
             Some(rows)
         });
-        if let [Some(first), Some(second)] = rows {
-            let delta = splot_recon::optflow_unit_8x8_u8(
-                [first, second],
-                distances,
-                batch.optflow_sad_threshold,
-            )?;
-            return Ok(Some(delta.map_or_else(
-                || MotionCell::from_refinemv(mvs),
-                |delta| MotionCell::from_optflow(mvs, delta),
-            )));
-        }
-        let Some(sad) = self.sad(&spans) else {
-            return Ok(None);
-        };
-        if batch
-            .optflow_sad_threshold
-            .is_some_and(|threshold| sad >> self.shift < threshold)
-        {
-            return Ok(Some(MotionCell::from_refinemv(mvs)));
-        }
-        let mut predictions = [[0u16; 64]; 2];
-        for (prediction, spans) in predictions.iter_mut().zip(&spans) {
-            for (output, samples) in prediction.chunks_exact_mut(8).zip(spans) {
-                for (output, sample) in output.iter_mut().zip(*samples) {
-                    *output = sample.to_u16().min(self.max_sample);
+        let threshold = batch.optflow_sad_threshold;
+        let delta = if let [Some(first), Some(second)] = rows {
+            splot_recon::optflow_unit_8x8_u8([first, second], distances, threshold)?
+        } else {
+            let rows = spans.map(|spans| {
+                let mut rows = [[0u16; 8]; 8];
+                for (row, span) in rows.iter_mut().zip(spans) {
+                    *row = *T::u16_slice(span)?.first_chunk::<8>()?;
                 }
-            }
-        }
-        let delta = splot_recon::derive_optflow_mv_delta_8x8_strided_into(
-            &predictions[0],
-            0,
-            &predictions[1],
-            0,
-            8,
-            sink.info().bit_depth(),
-            distances,
-        )?;
-        Ok(Some(MotionCell::from_optflow(mvs, delta)))
+                Some(rows)
+            });
+            let [Some(first), Some(second)] = rows else {
+                return Ok(None);
+            };
+            let bit_depth = sink.info().bit_depth();
+            splot_recon::optflow_unit_8x8_u16([first, second], bit_depth, distances, threshold)?
+        };
+        Ok(Some(delta.map_or_else(
+            || MotionCell::from_refinemv(mvs),
+            |delta| MotionCell::from_optflow(mvs, delta),
+        )))
     }
 
     /// The `width`-sample spans from columns `xs` of each reference's `rows`,
@@ -743,88 +730,96 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
                 };
                 continue;
             }
-            let (left, right) = (self.lanes(left, width)?, self.lanes(right, width)?);
-            sad += abs_diff_sum(&left[..width], &right[..width]);
+            let (left, right) = (T::u16_slice(left)?, T::u16_slice(right)?);
+            let rows = core::iter::once((left, right));
+            sad += if width == 8 {
+                sad_rows::<8>(rows, self.max_sample)
+            } else {
+                sad_rows::<12>(rows, self.max_sample)
+            };
         }
         Some(sad)
     }
-
-    /// The first `width` (at most 12) samples as the copy writes them:
-    /// clipped to the maximum.
-    fn lanes(&self, samples: &[T], width: usize) -> Option<[u16; 12]> {
-        let samples = samples.get(..width)?;
-        let mut lanes = [0; 12];
-        for (lane, sample) in lanes.iter_mut().zip(samples) {
-            *lane = sample.to_u16().min(self.max_sample);
-        }
-        Some(lanes)
-    }
 }
 
-/// `Σ |left - right|` over the first `W` eight-bit samples, which need no
-/// clip to the maximum.
+/// `Σ |left - right|` over the first `W` eight-bit samples, 8 or 12, which
+/// need no clip to the maximum.
 fn byte_sad<const W: usize>(left: &[u8], right: &[u8]) -> Option<u32> {
-    let (left, right) = (left.first_chunk::<W>()?, right.first_chunk::<W>()?);
-    Some(
-        left.iter()
-            .zip(right)
-            .map(|(&a, &b)| u32::from(a.abs_diff(b)))
-            .sum(),
-    )
+    let words = |samples: &[u8]| -> Option<[u64; 2]> {
+        let low = u64::from_le_bytes(*samples.first_chunk::<8>()?);
+        if W == 8 {
+            return Some([low, 0]);
+        }
+        let high = samples.get(8..)?.first_chunk::<4>()?;
+        Some([low, u64::from(u32::from_le_bytes(*high))])
+    };
+    let (left, right) = (words(left)?, words(right)?);
+    Some(baseline_simd!(simd => byte_sad_lanes(simd, left, right)))
+}
+
+/// `Σ |left - right|` over the bytes of two pairs of words.
+#[inline]
+fn byte_sad_lanes<S: Simd>(simd: S, left: [u64; 2], right: [u64; 2]) -> u32 {
+    let (left, right): (u8x16<S>, u8x16<S>) = (
+        u64x2::from_slice(simd, &left).bitcast(),
+        u64x2::from_slice(simd, &right).bitcast(),
+    );
+    let (low, high) =
+        simd.widening_add_u8x16(left.max(right) - left.min(right), u8x16::splat(simd, 0));
+    let (low, high) = (low + high).widen();
+    (low + high).reduce_sum()
 }
 
 /// Refines one 8x8 TIP unit. The centre SAD and the centre optical flow read
 /// only the 12x12 centre of the 16x16 bilinear search area, so the centre is
 /// predicted first and the whole area only when the search goes on.
 pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
-    block: CompoundMcBlock<'_, T>,
-    predictions: &mut [[u16; TIP_PREDICTION_AREA]; 2],
+    block: &CompoundMcBlock<'_, T>,
+    (rect, candidates): (McBlockRect, [Mv; 2]),
+    search: &mut TipSearchScratch,
     luma: &mut [super::optflow::LumaReference<'a, T>; 2],
     carries: &mut [splot_recon::BilinearOverlapCarry<'a, T>; 2],
 ) -> Result<Option<MotionCell>> {
     const PREDICTION_SIZE: usize = TIP_PREDICTION_SIZE;
+    let TipSearchScratch {
+        predictions,
+        windows,
+    } = search;
 
     let Some(distances) = block.optflow_distances else {
         return Ok(None);
     };
-    let candidates = [block.mv0, block.mv1];
     if !block.search_refinemv
-        || block.rect.luma_w != 8
-        || block.rect.luma_h != 8
+        || rect.luma_w != 8
+        || rect.luma_h != 8
         || !search_range_allowed(candidates)
     {
         return Ok(None);
     }
-    let mut prediction_rect = block.rect;
+    let mut prediction_rect = rect;
     prediction_rect.luma_w = PREDICTION_SIZE;
     prediction_rect.luma_h = PREDICTION_SIZE;
-    if T::u8_slice(&[]).is_some() {
-        let mut windows = [[0u8; TIP_PREDICTION_AREA]; 2];
-        if super::optflow::search_windows_u8(luma, prediction_rect, candidates, &mut windows)?
-            && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
-                [&windows[0], &windows[1]],
-                PREDICTION_SIZE,
-                12,
-                true,
-            )
-        {
-            let base_mvs = refined_mvs(candidates, dx, dy);
-            let starts = [unit_start(dx, dy), unit_start(-dx, -dy)];
-            let rows = [0, 1].map(|reference| {
-                core::array::from_fn(|row| {
-                    windows[reference]
-                        .get(starts[reference] + row * PREDICTION_SIZE..)
-                        .and_then(<[u8]>::first_chunk::<8>)
-                        .map_or(0, |bytes| u64::from_le_bytes(*bytes))
-                })
-            });
-            let delta =
-                splot_recon::optflow_unit_8x8_u8(rows, distances, block.optflow_sad_threshold)?;
-            return Ok(Some(delta.map_or_else(
-                || MotionCell::from_refinemv(base_mvs),
-                |delta| MotionCell::from_optflow(base_mvs, delta),
-            )));
-        }
+    if T::u8_slice(&[]).is_some()
+        && super::optflow::search_windows_u8(luma, prediction_rect, candidates, windows)?
+        && let Some((dx, dy)) =
+            splot_recon::refinemv_search_u8([&windows[0], &windows[1]], PREDICTION_SIZE, 12, true)
+    {
+        let base_mvs = refined_mvs(candidates, dx, dy);
+        let starts = [unit_start(dx, dy), unit_start(-dx, -dy)];
+        let rows = [0, 1].map(|reference| {
+            let unit = windows[reference]
+                .get(starts[reference]..)
+                .and_then(<[u8]>::first_chunk::<{ 7 * PREDICTION_SIZE + 8 }>);
+            core::array::from_fn(|row| {
+                unit.and_then(|unit| unit.get(row * PREDICTION_SIZE..)?.first_chunk::<8>())
+                    .map_or(0, |bytes| u64::from_le_bytes(*bytes))
+            })
+        });
+        let delta = splot_recon::optflow_unit_8x8_u8(rows, distances, block.optflow_sad_threshold)?;
+        return Ok(Some(delta.map_or_else(
+            || MotionCell::from_refinemv(base_mvs),
+            |delta| MotionCell::from_optflow(base_mvs, delta),
+        )));
     }
     let (dx, dy) = tip_search(luma, prediction_rect, candidates, predictions, carries)?;
     let [pred0, pred1] = predictions;
@@ -951,15 +946,19 @@ fn tip_refinemv_sad(
         return u32::MAX;
     };
     let shift = bit_depth.bits().saturating_sub(8);
-    let mut sad = 0;
-    for row in (0..12).step_by(2) {
-        let at = row * TIP_PREDICTION_SIZE;
-        sad += abs_diff_sum(&left[at..at + 12], &right[at..at + 12]);
-        if row == 4 && sad >> shift >= limit {
-            return limit;
-        }
+    let rows = |range: core::ops::Range<usize>| {
+        let pairs = left[range.clone()].chunks(2 * TIP_PREDICTION_SIZE);
+        sad_rows::<12>(
+            pairs.zip(right[range].chunks(2 * TIP_PREDICTION_SIZE)),
+            u16::MAX,
+        )
+    };
+    let half = 6 * TIP_PREDICTION_SIZE;
+    let sad = rows(0..half);
+    if sad >> shift >= limit {
+        return limit;
     }
-    sad >> shift
+    (sad + rows(half..SPAN)) >> shift
 }
 
 fn search_range_allowed(candidates: [Mv; 2]) -> bool {
@@ -968,42 +967,6 @@ fn search_range_allowed(candidates: [Mv; 2]) -> bool {
             (MV_LOW + 1 + SEARCH_PADDING..=MV_UPP - 1 - 2 * 8).contains(&component)
         })
     })
-}
-
-fn search_refinemv_offset(
-    pred0: &[u16],
-    pred1: &[u16],
-    stride: usize,
-    width: usize,
-    height: usize,
-    bit_depth: splot_recon::BitDepth,
-    allow_center: bool,
-) -> splot_recon::Result<(i32, i32)> {
-    let (sad_width, sad_height) = sad_extent(width, height)?;
-    let (mut best, mut best_sad, first_unchecked_neighbor) = if allow_center {
-        let Some(biased_center) =
-            refinemv_center_sad(pred0, pred1, stride, width, height, bit_depth)?
-        else {
-            return Ok((0, 0));
-        };
-        ((0, 0), biased_center, 0)
-    } else {
-        let (dy, dx) = SEARCH_NEIGHBORS[0];
-        let sad = refinemv_sad(
-            pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth,
-        )?;
-        ((dx, dy), sad, 1)
-    };
-    for &(dy, dx) in &SEARCH_NEIGHBORS[first_unchecked_neighbor..] {
-        let sad = refinemv_sad(
-            pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth,
-        )?;
-        if sad < best_sad {
-            best_sad = sad;
-            best = (dx, dy);
-        }
-    }
-    Ok(best)
 }
 
 /// The `(width + 4) x (height + 4)` area each § 7.13.3.6 SAD compares.
@@ -1022,9 +985,9 @@ fn sad_extent(width: usize, height: usize) -> splot_recon::Result<(usize, usize)
 /// The biased § 7.13.3.6 centre SAD, or `None` when it keeps the
 /// candidates. It reads only the predictions' centre area, two samples in
 /// from each edge.
-fn refinemv_center_sad(
-    pred0: &[u16],
-    pred1: &[u16],
+fn refinemv_center_sad<'a>(
+    pred0: &'a [u16],
+    pred1: &'a [u16],
     stride: usize,
     width: usize,
     height: usize,
@@ -1037,94 +1000,65 @@ fn refinemv_center_sad(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "refine-MV SAD threshold",
         })? as u32;
-    let center = refinemv_sad(pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth)?;
+    let span = |pred: &'a [u16]| {
+        let start = stride.checked_mul(2)?.checked_add(2)?;
+        let last_row = sad_height.saturating_sub(1) & !1;
+        let len = last_row.checked_mul(stride)?.checked_add(sad_width)?;
+        pred.get(start..start.checked_add(len)?)
+    };
+    let (Some(left), Some(right)) = (span(pred0), span(pred1)) else {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "refine-MV SAD lookup",
+        });
+    };
+    let rows = left.chunks(2 * stride).zip(right.chunks(2 * stride));
+    let center = match sad_width {
+        12 => sad_rows::<12>(rows, u16::MAX),
+        20 => sad_rows::<20>(rows, u16::MAX),
+        _ => {
+            return Err(ReconError::SubpelBlockDimensionUnsupported {
+                w: sad_width,
+                h: sad_height,
+            });
+        }
+    } >> bit_depth.bits().saturating_sub(8);
     let biased_center = center - (center >> 3);
     Ok((biased_center >= threshold).then_some(biased_center))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn refinemv_sad<'a>(
-    pred0: &'a [u16],
-    pred1: &'a [u16],
-    stride: usize,
-    width: usize,
-    height: usize,
-    dx: i32,
-    dy: i32,
-    bit_depth: splot_recon::BitDepth,
-) -> splot_recon::Result<u32> {
-    let start0_x = usize::try_from(2 + dx).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD left offset",
-    })?;
-    let start0_y = usize::try_from(2 + dy).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD top offset",
-    })?;
-    let start1_x = usize::try_from(2 - dx).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD right offset",
-    })?;
-    let start1_y = usize::try_from(2 - dy).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD bottom offset",
-    })?;
-    let downshift = u32::from(bit_depth.bits().saturating_sub(8));
-    let span = |pred: &'a [u16], start_y: usize, start_x: usize| {
-        let last_row = height.saturating_sub(1) & !1;
-        let start = start_y.checked_mul(stride)?.checked_add(start_x)?;
-        let end = last_row.checked_mul(stride)?.checked_add(width)?;
-        pred.get(start..start.checked_add(end)?)
-    };
-    let left = span(pred0, start0_y, start0_x).ok_or(ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD first lookup",
-    })?;
-    let right = span(pred1, start1_y, start1_x).ok_or(ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD second lookup",
-    })?;
-    let rows = left.chunks(2 * stride).zip(right.chunks(2 * stride));
-    let sad = match width {
-        12 => sad_rows::<12>(rows),
-        20 => sad_rows::<20>(rows),
-        _ => rows
-            .map(
-                |(left, right)| match (left.get(..width), right.get(..width)) {
-                    (Some(left), Some(right)) => left
-                        .iter()
-                        .zip(right)
-                        .map(|(&left, &right)| u32::from(left.abs_diff(right)))
-                        .sum::<u32>(),
-                    _ => u32::MAX,
-                },
-            )
-            .fold(0, u32::saturating_add),
-    };
-    Ok(sad >> downshift)
 }
 
 /// Lanes 4..8 of a `u16x8`: the last four of the final eight samples of a
 /// row, past the samples of the full vectors.
 const HIGH_HALF: [u16; 8] = [0, 0, 0, 0, u16::MAX, u16::MAX, u16::MAX, u16::MAX];
 
-/// `Σ |left - right|` over the first `W` samples of each row pair, `W % 8`
-/// being 4: each column's differences add up in `u16` lanes for up to 16
-/// rows at a time, which 12-bit samples keep below `2^16`.
-fn sad_rows<'a, const W: usize>(rows: impl Iterator<Item = (&'a [u16], &'a [u16])>) -> u32 {
-    baseline_simd!(simd => sad_row_lanes::<_, W>(simd, rows))
+/// `Σ |Min(left, max) - Min(right, max)|` over the first `W` samples, 8 or
+/// `W % 8 == 4`, of each row pair: each column's differences add up in `u16`
+/// lanes for up to 16 rows at a time, which 12-bit samples keep below `2^16`.
+pub(super) fn sad_rows<'a, const W: usize>(
+    rows: impl Iterator<Item = (&'a [u16], &'a [u16])>,
+    max: u16,
+) -> u32 {
+    baseline_simd!(simd => sad_row_lanes::<_, W>(simd, rows, max))
 }
 
 #[inline]
 fn sad_row_lanes<'a, S: Simd, const W: usize>(
     simd: S,
     rows: impl Iterator<Item = (&'a [u16], &'a [u16])>,
+    max: u16,
 ) -> u32 {
-    let zero = u16x8::splat(simd, 0);
+    let (zero, max) = (u16x8::splat(simd, 0), u16x8::splat(simd, max));
     let mut lanes = [zero; 3];
     let mut sad = 0;
     let flush = |lanes: &mut [u16x8<S>; 3]| -> u32 {
         let total = lanes
             .iter()
-            .flat_map(|lanes| lanes.to_array())
-            .map(u32::from)
-            .sum::<u32>();
+            .take(W.div_ceil(8))
+            .fold(u32x4::splat(simd, 0), |total, lanes| {
+                let (low, high) = lanes.widen();
+                total + low + high
+            });
         *lanes = [zero; 3];
-        total
+        total.reduce_sum()
     };
     for (row, (left, right)) in rows.enumerate() {
         let (Some(left), Some(right)) = (left.first_chunk::<W>(), right.first_chunk::<W>()) else {
@@ -1140,7 +1074,10 @@ fn sad_row_lanes<'a, S: Simd, const W: usize>(
             }),
         };
         for (vector, lanes) in lanes.iter_mut().enumerate().take(W.div_ceil(8)) {
-            let (left, right) = (load(left, 8 * vector), load(right, 8 * vector));
+            let (left, right) = (
+                load(left, 8 * vector).min(max),
+                load(right, 8 * vector).min(max),
+            );
             *lanes += left.max(right) - left.min(right);
         }
         if row % 16 == 15 {
@@ -1160,14 +1097,12 @@ mod tests {
     fn default_search_keeps_a_low_sad_centre() {
         let prediction = vec![80u16; 24 * 24];
         assert_eq!(
-            search_refinemv_offset(
-                &prediction,
-                &prediction,
+            splot_recon::refinemv_search_u16(
+                [&prediction[..], &prediction[..]],
                 24,
-                16,
-                16,
-                splot_recon::BitDepth::Eight,
+                20,
                 true,
+                splot_recon::BitDepth::Eight,
             )
             .expect("centre search"),
             (0, 0)
@@ -1184,14 +1119,12 @@ mod tests {
             .flat_map(|y| (0..24).map(move |x| sample(y - 2, x + 2)))
             .collect();
         assert_eq!(
-            search_refinemv_offset(
-                &pred0,
-                &pred1,
+            splot_recon::refinemv_search_u16(
+                [&pred0[..], &pred1[..]],
                 24,
-                16,
-                16,
-                splot_recon::BitDepth::Eight,
+                20,
                 true,
+                splot_recon::BitDepth::Eight,
             )
             .expect("offset search"),
             (1, -1)
@@ -1202,14 +1135,12 @@ mod tests {
     fn switchable_search_rejects_low_sad_center_and_starts_with_first_neighbor() {
         let prediction = vec![80u16; 24 * 24];
         assert_eq!(
-            search_refinemv_offset(
-                &prediction,
-                &prediction,
+            splot_recon::refinemv_search_u16(
+                [&prediction[..], &prediction[..]],
                 24,
-                16,
-                16,
-                splot_recon::BitDepth::Eight,
+                20,
                 false,
+                splot_recon::BitDepth::Eight,
             )
             .expect("center-disabled search"),
             (-2, -2)

@@ -44,12 +44,13 @@ fn residual_table_bounds_failure_is_typed_coefficient_state() {
 #[test]
 fn residual_parse_failures_keep_typed_boundary() {
     let offset = ByteOffset::new(19);
-    let parse_error = crate::bitstream::tile_payload::GeneralIntraResidualError::AllZeroRead {
-        source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
-            offset: ByteOffset::new(0),
-            needed: 1,
-        }),
-    };
+    let parse_error =
+        crate::bitstream::tile_payload::GeneralIntraResidualError::PaletteSymbolRead {
+            source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+                offset: ByteOffset::new(0),
+                needed: 1,
+            }),
+        };
     let error = residual_plane_read_error(&parse_error, offset);
     assert!(matches!(
         error,
@@ -59,7 +60,7 @@ fn residual_parse_failures_keep_typed_boundary() {
 
     let mut decoder = SymbolDecoder::new(&[0x80]).unwrap();
     let source = decoder.read_symbol_u16(&mut [0, 0, 0]).unwrap_err();
-    let cdf_error = crate::bitstream::tile_payload::GeneralIntraResidualError::AllZeroRead {
+    let cdf_error = crate::bitstream::tile_payload::GeneralIntraResidualError::PaletteSymbolRead {
         source: BlockSymbolTraceReadError::Symbol(source),
     };
     let decoder = SymbolDecoder::new(&[]).unwrap();
@@ -140,24 +141,6 @@ fn transform_type_eof_uses_transform_type_spec_section() {
         crate::DecodeError::MalformedSource { issue }
             if issue.offset() == Some(offset)
                 && issue.spec_section() == Some(SPEC_TRANSFORM_TYPE)
-    ));
-}
-
-#[test]
-fn cctx_type_eof_uses_residual_spec_section() {
-    let offset = ByteOffset::new(31);
-    let parse_error = crate::bitstream::tile_payload::GeneralIntraResidualError::CctxTypeRead {
-        source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
-            offset: ByteOffset::new(0),
-            needed: 1,
-        }),
-    };
-
-    let error = residual_plane_read_error(&parse_error, offset);
-    assert!(matches!(
-        error,
-        crate::DecodeError::MalformedSource { issue }
-            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_RESIDUAL)
     ));
 }
 

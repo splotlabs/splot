@@ -37,6 +37,7 @@ mod workspace_intra_dc;
 mod workspace_intra_directional_angle;
 #[path = "workspace_rows.rs"]
 mod workspace_rows;
+use crate::plane_buf::PlaneSamples;
 pub use owned_rect::{OwnedFrameRect, OwnedFrameRectRows};
 pub use workspace_edges::CurrentFrameIntraEdges;
 pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
@@ -585,48 +586,34 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     contiguous_rect_writer!(with_contiguous_u16_rect_mut, u16, T::u16_slice_mut);
     contiguous_rect_writer!(with_contiguous_u8_rect_mut, u8, T::u8_slice_mut);
 
-    /// The target [`Self::with_contiguous_u8_rect_mut`] runs its writer on,
+    /// The target [`Self::with_contiguous_rect_mut`] runs its writer on,
     /// or `None` wherever that returns `Ok(None)` or an error.
     #[inline]
-    pub fn u8_rect_mut(&mut self, plane: PlaneId, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
+    pub fn rect_mut(&mut self, plane: PlaneId, rect: PlaneRect) -> Option<(&mut [T], usize)> {
         if let Self::Frame(workspace) = self {
-            return workspace.plane_mut(plane).ok()?.u8_rect_mut(rect);
+            return workspace.plane_mut(plane).ok()?.rect_mut(rect);
         }
-        let (samples, stride) = self.contiguous_rect(plane, rect).ok()??;
-        Some((T::u8_slice_mut(samples)?, stride))
+        self.contiguous_rect(plane, rect).ok()?
     }
 
-    /// The [`Self::u8_rect_mut`] targets of `rect` in both chroma planes, or
+    /// The [`Self::rect_mut`] targets of `rect` in both chroma planes, or
     /// `None` wherever either is `None`.
     #[inline]
-    pub fn u8_chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [u8], usize); 2]> {
-        let [(u, u_stride), (v, v_stride)] = self.chroma_rects_mut(rect)?;
-        Some([
-            (T::u8_slice_mut(u)?, u_stride),
-            (T::u8_slice_mut(v)?, v_stride),
-        ])
-    }
-
-    /// [`Self::u8_chroma_rects_mut`] of samples of any depth.
-    #[inline]
     pub fn chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [T], usize); 2]> {
-        if let Self::Frame(workspace) = self {
-            let (u, v) = (workspace.u.as_mut()?, workspace.v.as_mut()?);
-            return Some([u.rect_mut(rect)?, v.rect_mut(rect)?]);
-        }
-        let storage = self.plane_storage_size(PlaneId::U).ok()?;
+        let surface = match self {
+            Self::Frame(workspace) => {
+                let (u, v) = (workspace.u.as_mut()?, workspace.v.as_mut()?);
+                return Some([u.rect_mut(rect)?, v.rect_mut(rect)?]);
+            }
+            Self::OwnedRect(surface) => return surface.chroma_rects_mut(rect),
+            Self::Rect(surface) => surface,
+        };
+        let storage = surface.plane(PlaneId::U).ok()?.storage_size();
         if clamp_rect_to_storage(PlaneId::U, storage, rect).ok()? != rect {
             return None;
         }
-        let [u, v] = match self {
-            Self::Frame(_) => return None,
-            Self::Rect(surface) => [surface.u.as_mut()?, surface.v.as_mut()?]
-                .map(|target| (&mut target.samples[..], target.stride, 0, target.rect)),
-            Self::OwnedRect(surface) => surface.chroma_planes_mut()?.map(|target| {
-                let band = target.rect();
-                (target.into_samples_mut(), band.width(), band.x(), band)
-            }),
-        };
+        let [u, v] = [surface.u.as_mut()?, surface.v.as_mut()?]
+            .map(|target| (&mut target.samples[..], target.stride, 0, target.rect));
         let span = |(samples, stride, x0, band): (_, _, usize, PlaneRect)| {
             ensure_surface_rect(PlaneId::U, band, rect).ok()?;
             contiguous_span(samples, stride, rect.x() - x0, rect.y() - band.y(), rect).ok()
@@ -724,41 +711,33 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         Ok(())
     }
 
-    /// The 8-bit samples of a residual block from its origin and their row
-    /// stride, for a reconstruction added in place, after the same checks as
-    /// [`Self::add_residual_rect_block`]; `None` when the samples are not
-    /// 8-bit or the block overhangs storage.
+    /// The samples of a residual block from its origin and their row stride,
+    /// for a reconstruction added in place, after the same checks as
+    /// [`Self::add_residual_rect_block`]; `None` when the block overhangs
+    /// storage.
     ///
     /// # Errors
     /// Returns the [`Self::add_residual_rect_block`] geometry errors.
-    pub fn u8_residual_rect_mut(
+    pub fn residual_rect_mut(
         &mut self,
         plane: PlaneId,
         x: usize,
         y: usize,
         size: IntraRectBlockSize,
-    ) -> Result<Option<(&mut [u8], usize)>> {
+    ) -> Result<Option<(&mut [T], usize)>> {
         let rect = block_rect(x, y, size)?;
         if let Self::Frame(workspace) = self {
-            let target = workspace.plane_mut(plane)?;
-            if target.clamp_rect_to_storage(rect)? != rect {
-                return Ok(None);
-            }
-            let stride = target.stride;
-            let base = target.band_row(rect.y(), rect.height())? * stride + rect.x();
-            let end = base + (rect.height() - 1) * stride + rect.width();
-            let samples = T::u8_slice_mut(&mut target.samples[..]);
-            return Ok(samples
-                .and_then(|samples| samples.get_mut(base..end))
-                .map(|samples| (samples, stride)));
+            return Ok(workspace.plane_mut(plane)?.rect_mut(rect));
         }
         let target = self.residual_rect_target(plane, rect)?;
         if target.rect != rect {
             return Ok(None);
         }
         let stride = target.stride;
-        let samples = target.samples.get_mut(target.base..).unwrap_or_default();
-        Ok(T::u8_slice_mut(samples).map(|samples| (samples, stride)))
+        Ok(target
+            .samples
+            .get_mut(target.base..)
+            .map(|samples| (samples, stride)))
     }
 
     /// Adds an adjusted-size signed residual block directly to reconstructed
@@ -807,9 +786,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                 target.add_row(row, source)?;
                 continue;
             }
-            for (pair, &value) in duplicated.chunks_exact_mut(2).zip(source) {
-                pair.fill(value);
-            }
+            crate::inverse_transform_2d_outer::duplicate_columns(source, &mut duplicated);
             target.add_row(row, &duplicated)?;
         }
         Ok(())
@@ -839,32 +816,12 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         if target.max_sample == u16::from(u8::MAX)
             && let Some(samples) = T::u8_slice_mut(&mut *target.samples)
         {
-            let magnitude = residual.unsigned_abs().min(255) as u8;
-            let (plus, minus) = if residual < 0 {
-                (0, magnitude)
-            } else {
-                (magnitude, 0)
-            };
-            let add = |row: &mut [u8]| {
-                for sample in row {
-                    *sample = sample.saturating_add(plus).saturating_sub(minus);
-                }
-            };
             let height = target.rect.height();
-            match width {
-                4 => add_constant_rows::<4>(samples, base, stride, height, add),
-                8 => add_constant_rows::<8>(samples, base, stride, height, add),
-                16 => add_constant_rows::<16>(samples, base, stride, height, add),
-                32 => add_constant_rows::<32>(samples, base, stride, height, add),
-                _ => {
-                    for row in 0..height {
-                        let start = base + row * stride;
-                        if let Some(row) = samples.get_mut(start..start + width) {
-                            add(row);
-                        }
-                    }
-                }
-            }
+            crate::reconstruct::add_constant_u8_rows(
+                samples,
+                (base, stride, width, height),
+                residual,
+            );
             return Ok(());
         }
         let constant = [residual; 64];
@@ -1241,9 +1198,9 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     #[must_use]
     pub fn into_plane_samples(mut self) -> FramePlaneSamples<T> {
         FramePlaneSamples::new(
-            mem::take(&mut self.y.samples),
-            self.u.as_mut().map(|plane| mem::take(&mut plane.samples)),
-            self.v.as_mut().map(|plane| mem::take(&mut plane.samples)),
+            self.y.samples.take(),
+            self.u.as_mut().map(|plane| plane.samples.take()),
+            self.v.as_mut().map(|plane| plane.samples.take()),
         )
     }
 
@@ -1517,11 +1474,56 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// Returns [`ReconError`] if the existing immutable plane/frame validators
     /// reject the workspace storage.
-    pub fn freeze(self) -> Result<DecodedFrame<T>> {
-        let y = self.y.freeze()?;
-        let u = self.u.map(CurrentFramePlane::freeze).transpose()?;
-        let v = self.v.map(CurrentFramePlane::freeze).transpose()?;
-        DecodedFrame::try_new(self.info, FramePlanes::new(y, u, v))
+    pub fn freeze(mut self) -> Result<DecodedFrame<T>> {
+        self.freeze_in_place()
+    }
+
+    /// [`Self::freeze`] that moves each plane's sample buffer without copying
+    /// or reallocating it, and on error leaves every buffer in this workspace.
+    ///
+    /// # Errors
+    /// As [`Self::freeze`].
+    pub fn freeze_in_place(&mut self) -> Result<DecodedFrame<T>> {
+        self.freeze_planes(true)
+    }
+
+    /// [`Self::freeze_in_place`] without the sample-range scan, for a decoder
+    /// workspace: every AV2 writer ends in `Clip1` or copies in-range samples.
+    ///
+    /// # Errors
+    /// As [`Self::freeze`], except [`ReconError::SampleOutOfRange`].
+    pub fn freeze_in_place_clamped(&mut self) -> Result<DecodedFrame<T>> {
+        self.freeze_planes(false)
+    }
+
+    fn freeze_planes(&mut self, scan: bool) -> Result<DecodedFrame<T>> {
+        for plane in [Some(&self.y), self.u.as_ref(), self.v.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            plane.check_freeze()?;
+        }
+        let planes = FramePlanes::new(
+            self.y.take_frozen(),
+            self.u.as_mut().map(CurrentFramePlane::take_frozen),
+            self.v.as_mut().map(CurrentFramePlane::take_frozen),
+        );
+        if let Err(error) = DecodedFrame::validate(self.info, &planes, scan) {
+            let (y, u, v) = planes.into_parts();
+            self.y.samples = PlaneSamples::owned(y.into_samples());
+            for (plane, frozen) in [(self.u.as_mut(), u), (self.v.as_mut(), v)] {
+                if let (Some(plane), Some(frozen)) = (plane, frozen) {
+                    plane.samples = PlaneSamples::owned(frozen.into_samples());
+                }
+            }
+            return Err(error);
+        }
+        #[cfg(any(debug_assertions, fuzzing))]
+        assert!(
+            scan || DecodedFrame::validate(self.info, &planes, true).is_ok(),
+            "a decoder writer stored a sample above the bit depth"
+        );
+        Ok(DecodedFrame::from_validated(self.info, planes))
     }
 
     fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlane<T>> {
@@ -1554,34 +1556,25 @@ pub struct CurrentFramePlane<T: ReconSample> {
     origin_y: usize,
     /// Samples from one row to the next; see [`crate::plane_stride`].
     stride: usize,
-    samples: crate::PlaneBuf<T>,
+    samples: PlaneSamples<T>,
     pool: Option<Arc<crate::PlanePool>>,
 }
 
 impl<T: ReconSample> CurrentFramePlane<T> {
-    /// [`Self::rect_mut`] of eight-bit samples.
-    #[inline]
-    fn u8_rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
-        let (samples, stride) = self.rect_mut(rect)?;
-        Some((T::u8_slice_mut(samples)?, stride))
-    }
-
     /// The in-storage `rect` of this plane from its top-left sample through
     /// its last row, and their row stride.
     #[inline]
     fn rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [T], usize)> {
         let (stride, storage) = (self.stride, self.storage_size);
-        let (right, bottom) = (
-            rect.x().saturating_add(rect.width()),
-            rect.y().saturating_add(rect.height()),
-        );
         let local_y = rect.y().checked_sub(self.origin_y)?;
-        let rows = (bottom - self.origin_y).saturating_mul(stride);
-        if right > storage.width() || bottom > storage.height() || rows > self.samples.len() {
+        if rect.x().saturating_add(rect.width()) > storage.width()
+            || rect.y().saturating_add(rect.height()) > storage.height()
+        {
             return None;
         }
-        let base = local_y * stride + rect.x();
-        Some((self.samples.get_mut(base..rows - stride + right)?, stride))
+        let len = (rect.height() - 1) * stride + rect.width();
+        let rows = self.samples.get_mut(local_y * stride + rect.x()..)?;
+        Some((rows.get_mut(..len)?, stride))
     }
 }
 
@@ -1590,7 +1583,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 impl<T: ReconSample> Drop for CurrentFramePlane<T> {
     fn drop(&mut self) {
         if let Some(pool) = self.pool.take() {
-            pool.recycle(mem::take(&mut self.samples));
+            pool.recycle(self.samples.take());
         }
     }
 }
@@ -1659,7 +1652,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             visible_rect,
             origin_y: 0,
             stride: stride_samples,
-            samples,
+            samples: PlaneSamples::owned(samples),
         })
     }
 
@@ -1684,12 +1677,12 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     }
 
     /// Returns the required backing sample count.
-    pub const fn required_samples(&self) -> usize {
+    pub fn required_samples(&self) -> usize {
         self.samples.len()
     }
 
     /// Returns the backing allocation size in bytes for the sample type.
-    pub const fn allocation_bytes(&self) -> usize {
+    pub fn allocation_bytes(&self) -> usize {
         self.samples.len() * mem::size_of::<T>()
     }
 
@@ -1963,13 +1956,22 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         )
     }
 
-    fn freeze(mut self) -> Result<Plane<T>> {
-        let stride_samples = self.stride_samples();
-        Plane::from_buf(
+    fn check_freeze(&self) -> Result<()> {
+        Plane::<T>::check_buf(
             self.storage_size,
-            stride_samples,
+            self.stride_samples(),
             self.visible_rect,
-            mem::take(&mut self.samples),
+            self.samples.len(),
+        )
+    }
+
+    /// Moves the samples into a plane once [`Self::check_freeze`] accepted them.
+    fn take_frozen(&mut self) -> Plane<T> {
+        Plane::from_checked_buf(
+            self.storage_size,
+            self.stride_samples(),
+            self.visible_rect,
+            self.samples.take(),
         )
     }
 
@@ -2457,26 +2459,6 @@ fn required_row_strided_samples(rect: PlaneRect, row_stride_samples: usize) -> R
         .ok_or(ReconError::ArithmeticOverflow {
             context: "current-frame workspace source sample span",
         })
-}
-
-/// Runs `add` over `N` samples of each of `height` rows `stride` apart from
-/// `base`.
-#[inline]
-fn add_constant_rows<const N: usize>(
-    samples: &mut [u8],
-    base: usize,
-    stride: usize,
-    height: usize,
-    add: impl Fn(&mut [u8]),
-) {
-    for row in 0..height {
-        if let Some(row) = samples
-            .get_mut(base + row * stride..)
-            .and_then(<[u8]>::first_chunk_mut::<N>)
-        {
-            add(row);
-        }
-    }
 }
 
 #[cfg(test)]

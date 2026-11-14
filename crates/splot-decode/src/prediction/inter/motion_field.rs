@@ -283,11 +283,6 @@ impl MotionFieldHandle {
         self.0.bands.get(index)?.ready.get()
     }
 
-    /// Whether the whole field was published or failed.
-    pub(crate) fn field_settled(&self) -> bool {
-        self.0.field.is_set()
-    }
-
     /// Whether the metadata was published or the field failed.
     pub(crate) fn metadata_settled(&self) -> bool {
         self.0.metadata.is_set()

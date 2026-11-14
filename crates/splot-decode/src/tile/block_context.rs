@@ -216,11 +216,9 @@ pub(crate) const fn normalize_intra_corner_counts(
     }
 }
 
+/// The frame and tile facts shared by every block of one tile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BlockCtx {
-    block: BlockRect,
-    tx: TxShape,
-    chroma_ref: Option<(BlockRect, TxShape)>,
+pub(crate) struct FrameTileCtx {
     frame_mi_cols: u32,
     frame_mi_rows: u32,
     tile_mi_col_start: u32,
@@ -230,19 +228,14 @@ pub(crate) struct BlockCtx {
     chroma: ChromaSampling,
 }
 
-impl BlockCtx {
+impl FrameTileCtx {
     pub(crate) const fn new(
-        block: BlockRect,
-        tx: TxShape,
         frame_mi_cols: usize,
         frame_mi_rows: usize,
         bit_depth: BitDepth,
         chroma: ChromaSampling,
     ) -> Self {
         Self {
-            block,
-            tx,
-            chroma_ref: None,
             frame_mi_cols: frame_mi_cols as u32,
             frame_mi_rows: frame_mi_rows as u32,
             tile_mi_col_start: 0,
@@ -251,10 +244,6 @@ impl BlockCtx {
             bit_depth,
             chroma,
         }
-    }
-
-    pub(crate) const fn block(self) -> BlockRect {
-        self.block
     }
 
     pub(crate) const fn bit_depth(self) -> BitDepth {
@@ -269,12 +258,11 @@ impl BlockCtx {
         self.frame_mi_rows as usize
     }
 
-    pub(crate) fn with_tile_bounds(
-        mut self,
-        row_start: usize,
-        col_start: usize,
-        col_end: usize,
-    ) -> Self {
+    pub(crate) const fn chroma(self) -> ChromaSampling {
+        self.chroma
+    }
+
+    fn with_tile_bounds(mut self, row_start: usize, col_start: usize, col_end: usize) -> Self {
         let frame_mi_rows = self.frame_mi_rows();
         let frame_mi_cols = self.frame_mi_cols();
         let col_start = col_start.min(frame_mi_cols);
@@ -284,15 +272,137 @@ impl BlockCtx {
         self
     }
 
-    pub(crate) const fn with_tile_bounds_from(mut self, other: Self) -> Self {
-        self.tile_mi_col_start = other.tile_mi_col_start;
-        self.tile_mi_col_end = other.tile_mi_col_end;
-        self.tile_mi_row_start = other.tile_mi_row_start;
+    /// The `plane` samples of `block`, a luma 4x4 rectangle with shape `tx`.
+    pub(crate) fn plane_block(self, block: BlockRect, tx: TxShape, plane: PlaneId) -> PlaneBlock {
+        let (sub_x, sub_y) = self.chroma.subsampling(plane);
+        PlaneBlock {
+            x: (block.col4 * 4) >> sub_x,
+            y: (block.row4 * 4) >> sub_y,
+            width4: (block.width4 >> sub_x).max(1),
+            height4: (block.height4 >> sub_y).max(1),
+            tx: tx.subsampled(sub_x, sub_y),
+        }
+    }
+
+    /// The tile-edge availability of `block`, the `plane` geometry with plane
+    /// transform `plane_tx`.
+    pub(crate) fn neighbours(
+        self,
+        block: BlockRect,
+        plane_tx: TxShape,
+        plane: PlaneId,
+    ) -> NeighbourAvailability {
+        let (sub_x, _) = self.chroma.subsampling(plane);
+        let width4 = (block.width4 >> sub_x).max(1) as usize;
+        let above_decoded_cols =
+            (self.tile_mi_col_end.saturating_sub(block.col4) >> sub_x) as usize;
+        let (num_above_right, num_below_left) = normalize_intra_corner_counts(
+            plane,
+            plane_tx.width_log2(),
+            plane_tx.height_log2(),
+            above_decoded_cols.saturating_sub(width4).min(width4),
+            0,
+        );
+        NeighbourAvailability::new(
+            block.row4 > self.tile_mi_row_start,
+            block.col4 > self.tile_mi_col_start,
+            num_above_right,
+            num_below_left,
+        )
+    }
+
+    pub(crate) fn neighbours_from_block_decoded(
+        self,
+        block: BlockRect,
+        plane_tx: TxShape,
+        plane: PlaneId,
+        block_decoded: &crate::bitstream::tile_payload::TileBlockDecodedState,
+    ) -> NeighbourAvailability {
+        let (sub_x, sub_y) = self.chroma.subsampling(plane);
+        let sb_mask = block_decoded.sb_size4().saturating_sub(1);
+        let x4 = (block.col4() & sb_mask) >> sub_x;
+        let y4 = (block.row4() & sb_mask) >> sub_y;
+        let width4 = (block.width4() >> sub_x).max(1);
+        let height4 = (block.height4() >> sub_y).max(1);
+        let num_above_right = block_decoded.count_top_right_avail(plane.index(), x4, y4, width4);
+        let num_below_left = block_decoded.count_bottom_left_avail(plane.index(), x4, y4, height4);
+        let (num_above_right, num_below_left) = normalize_intra_corner_counts(
+            plane,
+            plane_tx.width_log2(),
+            plane_tx.height_log2(),
+            num_above_right,
+            num_below_left,
+        );
+        NeighbourAvailability::new(
+            block.row4 > self.tile_mi_row_start,
+            block.col4 > self.tile_mi_col_start,
+            num_above_right,
+            num_below_left,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BlockCtx {
+    block: BlockRect,
+    tx: TxShape,
+    chroma_ref: Option<(BlockRect, TxShape)>,
+    frame: FrameTileCtx,
+}
+
+impl BlockCtx {
+    pub(crate) const fn new(
+        block: BlockRect,
+        tx: TxShape,
+        frame_mi_cols: usize,
+        frame_mi_rows: usize,
+        bit_depth: BitDepth,
+        chroma: ChromaSampling,
+    ) -> Self {
+        Self::from_frame(
+            block,
+            tx,
+            FrameTileCtx::new(frame_mi_cols, frame_mi_rows, bit_depth, chroma),
+        )
+    }
+
+    pub(crate) const fn from_frame(block: BlockRect, tx: TxShape, frame: FrameTileCtx) -> Self {
+        Self {
+            block,
+            tx,
+            chroma_ref: None,
+            frame,
+        }
+    }
+
+    pub(crate) const fn block(self) -> BlockRect {
+        self.block
+    }
+
+    pub(crate) const fn frame(self) -> FrameTileCtx {
+        self.frame
+    }
+
+    pub(crate) const fn frame_mi_cols(self) -> usize {
+        self.frame.frame_mi_cols()
+    }
+
+    pub(crate) const fn frame_mi_rows(self) -> usize {
+        self.frame.frame_mi_rows()
+    }
+
+    pub(crate) fn with_tile_bounds(
+        mut self,
+        row_start: usize,
+        col_start: usize,
+        col_end: usize,
+    ) -> Self {
+        self.frame = self.frame.with_tile_bounds(row_start, col_start, col_end);
         self
     }
 
     pub(crate) const fn chroma(self) -> ChromaSampling {
-        self.chroma
+        self.frame.chroma
     }
 
     pub(crate) const fn with_chroma_ref(mut self, block: BlockRect, tx: TxShape) -> Self {
@@ -306,80 +416,37 @@ impl BlockCtx {
 
     pub(crate) fn plane_block(self, plane: PlaneId) -> PlaneBlock {
         let (block, tx) = self.plane_geometry(plane);
-        let (sub_x, sub_y) = self.chroma.subsampling(plane);
-        PlaneBlock {
-            x: (block.col4 * 4) >> sub_x,
-            y: (block.row4 * 4) >> sub_y,
-            width4: (block.width4 >> sub_x).max(1),
-            height4: (block.height4 >> sub_y).max(1),
-            tx: tx.subsampled(sub_x, sub_y),
-        }
+        self.frame.plane_block(block, tx, plane)
     }
 
+    #[cfg(test)]
     pub(crate) fn neighbours(self, plane: PlaneId) -> NeighbourAvailability {
         let (block, _) = self.plane_geometry(plane);
-        let plane_block = self.plane_block(plane);
-        let (num_above_right, num_below_left) = normalize_intra_corner_counts(
-            plane,
-            plane_block.tx().width_log2(),
-            plane_block.tx().height_log2(),
-            self.uncapped_num_above_right(plane),
-            0,
-        );
-        NeighbourAvailability::new(
-            block.row4 > self.tile_mi_row_start,
-            block.col4 > self.tile_mi_col_start,
-            num_above_right,
-            num_below_left,
-        )
+        self.frame
+            .neighbours(block, self.plane_block(plane).tx(), plane)
     }
 
+    #[cfg(test)]
     pub(crate) fn neighbours_from_block_decoded(
         self,
         plane: PlaneId,
         block_decoded: &crate::bitstream::tile_payload::TileBlockDecodedState,
     ) -> NeighbourAvailability {
         let (block, _) = self.plane_geometry(plane);
-        let plane_block = self.plane_block(plane);
-        let (sub_x, sub_y) = self.chroma.subsampling(plane);
-        let sb_mask = block_decoded.sb_size4().saturating_sub(1);
-        let x4 = (block.col4() & sb_mask) >> sub_x;
-        let y4 = (block.row4() & sb_mask) >> sub_y;
-        let num_above_right =
-            block_decoded.count_top_right_avail(plane.index(), x4, y4, plane_block.width4());
-        let num_below_left =
-            block_decoded.count_bottom_left_avail(plane.index(), x4, y4, plane_block.height4());
-        let (num_above_right, num_below_left) = normalize_intra_corner_counts(
+        self.frame.neighbours_from_block_decoded(
+            block,
+            self.plane_block(plane).tx(),
             plane,
-            plane_block.tx().width_log2(),
-            plane_block.tx().height_log2(),
-            num_above_right,
-            num_below_left,
-        );
-        NeighbourAvailability::new(
-            block.row4 > self.tile_mi_row_start,
-            block.col4 > self.tile_mi_col_start,
-            num_above_right,
-            num_below_left,
+            block_decoded,
         )
     }
 
-    fn plane_geometry(self, plane: PlaneId) -> (BlockRect, TxShape) {
+    /// The luma 4x4 rectangle and shape that `plane` covers.
+    pub(crate) fn plane_geometry(self, plane: PlaneId) -> (BlockRect, TxShape) {
         match (plane, self.chroma_ref) {
             (PlaneId::Y, _) | (_, None) => (self.block, self.tx),
             (PlaneId::U | PlaneId::V, Some(chroma_ref)) => chroma_ref,
         }
-    }
-
-    fn uncapped_num_above_right(self, plane: PlaneId) -> usize {
-        let (block, _) = self.plane_geometry(plane);
-        let plane_block = self.plane_block(plane);
-        let (sub_x, _) = self.chroma.subsampling(plane);
-        let above_decoded_cols =
-            (self.tile_mi_col_end.saturating_sub(block.col4) >> sub_x) as usize;
-        above_decoded_cols
-            .saturating_sub(plane_block.width4())
-            .min(plane_block.width4())
     }
 }
 

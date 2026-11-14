@@ -32,6 +32,7 @@ impl WarpParamBank {
         }
     }
 
+    #[inline]
     pub(crate) fn reset_for_leaf(
         &mut self,
         grid: &NeighbourMvGrid,
@@ -40,9 +41,12 @@ impl WarpParamBank {
         sb_size4: usize,
     ) {
         let sb = superblock_of(mi_row, mi_col, sb_size4);
-        if self.current_sb == Some(sb) {
-            return;
+        if self.current_sb != Some(sb) {
+            self.enter_superblock(grid, sb, sb_size4);
         }
+    }
+
+    fn enter_superblock(&mut self, grid: &NeighbourMvGrid, sb: (usize, usize), sb_size4: usize) {
         let new_sb_row = self.current_sb.is_none_or(|(row, _)| row != sb.0);
         self.current_sb = Some(sb);
         self.sb_hits = 0;

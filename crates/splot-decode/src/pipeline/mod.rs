@@ -183,6 +183,50 @@ fn reclaim_unowned_frames(
     Ok(())
 }
 
+/// Runs the `max_reference_store_bytes` admission `check` of the next frame.
+/// While it fails, collects the oldest in-flight frame and reclaims what that
+/// releases, so a deep pipeline shrinks to the limit instead of failing. The
+/// error stands once nothing is in flight and every pool work has finished.
+#[allow(clippy::too_many_arguments)]
+fn admit_within_reference_store(
+    mut check: impl FnMut(u64) -> Result<()>,
+    options: &DecodeOptions,
+    rows: Option<&splot_parallel::RowScheduler>,
+    pools: &mut frame_tasks::RowPools,
+    ring: &mut inflight::InflightRing,
+    frames: &mut FrameStore,
+    reference: &reference_buffer::RuntimeReferenceBuffer,
+    scheduler: &mut OutputScheduler,
+    emission: &mut output_schedule::EmissionQueue,
+    emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
+    retained_frame_bytes: &mut u64,
+    retain_decoded_frames: bool,
+) -> Result<()> {
+    let mut drained = false;
+    loop {
+        match check(*retained_frame_bytes) {
+            Err(crate::DecodeError::Limit { .. }) if !retain_decoded_frames && !drained => {}
+            outcome => return outcome,
+        }
+        if !ring.harvest_oldest(pools) {
+            if let Some(rows) = rows {
+                pools.drain(rows);
+            }
+            drained = true;
+        }
+        charge_emitted_outputs(options, frames, scheduler, emission, &[], emit)?;
+        pools.retire_idle();
+        reclaim_unowned_frames(
+            frames,
+            reference,
+            scheduler,
+            emission,
+            ring,
+            retained_frame_bytes,
+        )?;
+    }
+}
+
 fn parse_key_core_with_effects(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
@@ -1021,6 +1065,7 @@ fn decode_frames_in_order(
             ring.harvest_all(pools);
             emission_queue.flush(frames, &mut emit)?;
             let mut reclaim = || {
+                pools.retire_idle();
                 reclaim_unowned_frames(
                     frames,
                     &reference,
@@ -1298,12 +1343,27 @@ fn decode_frames_in_order(
                         )?;
                         ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
                     }
-                    ensure_retained_frame_byte_limits_for_core(
-                        options.limits(),
-                        retained_frame_bytes,
-                        &inter_core,
-                        &sequence,
-                        inter_envelope.offset,
+                    admit_within_reference_store(
+                        |retained| {
+                            ensure_retained_frame_byte_limits_for_core(
+                                options.limits(),
+                                retained,
+                                &inter_core,
+                                &sequence,
+                                inter_envelope.offset,
+                            )
+                        },
+                        options,
+                        rows,
+                        pools,
+                        ring,
+                        frames,
+                        &reference,
+                        &mut scheduler,
+                        &mut emission_queue,
+                        &mut emit,
+                        &mut retained_frame_bytes,
+                        retain_decoded_frames,
                     )?;
                     let split = rows.filter(|_| {
                         inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
@@ -1641,12 +1701,27 @@ fn decode_frames_in_order(
                 output_effect_state
                     .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
                 let key_output_effects = output_effect_state.finish_frame();
-                ensure_retained_frame_byte_limits_for_core(
-                    options.limits(),
-                    retained_frame_bytes,
-                    &key_core,
-                    &sequence,
-                    key_envelope.offset,
+                admit_within_reference_store(
+                    |retained| {
+                        ensure_retained_frame_byte_limits_for_core(
+                            options.limits(),
+                            retained,
+                            &key_core,
+                            &sequence,
+                            key_envelope.offset,
+                        )
+                    },
+                    options,
+                    rows,
+                    pools,
+                    ring,
+                    frames,
+                    &reference,
+                    &mut scheduler,
+                    &mut emission_queue,
+                    &mut emit,
+                    &mut retained_frame_bytes,
+                    retain_decoded_frames,
                 )?;
                 let frame_index = frames.len();
                 let key_frame = decode_key_frame_with_effects(
@@ -1849,7 +1924,7 @@ pub(crate) fn derive_tile_plan_with<'payload>(
         TileFactsKind::Intra => FrameCandidateTileFacts::from_frame_core(core, coeff),
         TileFactsKind::Inter => FrameCandidateTileFacts::from_inter_frame_core(core, coeff),
     }
-    .map_err(decode_tile_boundary_error)?;
+    .map_err(|error| decode_tile_boundary_error(error, envelope.offset))?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
     let candidates = core::iter::once(candidate.clone()).chain(
         crate::bitstream::stream_plan::tile_group_continuations(bytes, candidate),
@@ -1895,11 +1970,11 @@ pub(crate) fn derive_tile_plan_with<'payload>(
             crate::bitstream::tile_payload::plan_derived_tile_payload_boundary_with_scratch(
                 &input, scratch,
             )
-            .map_err(decode_tile_boundary_error)?;
+            .map_err(|error| decode_tile_boundary_error(error, group_envelope.offset))?;
         if let Some(plan) = merged.as_mut() {
             plan.append_continuation(group_plan, &mut scratch.continuation_work_units)
                 .map_err(FrameCandidateTileBoundaryError::from)
-                .map_err(decode_tile_boundary_error)?;
+                .map_err(|error| decode_tile_boundary_error(error, group_envelope.offset))?;
         } else {
             merged = Some(group_plan);
         }
