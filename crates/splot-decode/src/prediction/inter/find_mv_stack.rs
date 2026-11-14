@@ -2260,4 +2260,6 @@ mod bank_tests;
 #[cfg(test)]
 mod global_motion_tests;
 #[cfg(test)]
+pub(crate) mod neighbour_state_tests;
+#[cfg(test)]
 mod tests;

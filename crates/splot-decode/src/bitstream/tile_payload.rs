@@ -91,9 +91,13 @@ pub(crate) use input::{
     FrameCandidateTileUnsupportedReason, TileGroupPositionFacts,
     plan_derived_tile_payload_boundary_with_scratch,
 };
+#[cfg(test)]
+pub(crate) use intra_joint_modes::IntraNeighbours;
 pub(crate) use intra_joint_modes::{
     FrameSegmentIdMap, LumaPalette, TileSegmentIdState, TileSegmentIdStateError, neg_deinterleave,
 };
+#[cfg(test)]
+pub(crate) use mi_size_state::{PartitionNeighbours, UvEdges};
 #[cfg(test)]
 pub(crate) use partition::PartitionDecisionError;
 pub(crate) use partition_allowed::get_plane_residual_size;
