@@ -133,7 +133,7 @@ fn blend_rows<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn blend_compound_diff_weighted<T: ReconSample>(
+pub(super) fn blend_compound_diff_weighted<T: ReconSample>(
     pred0: &[i32],
     pred1: &[i32],
     bit_depth: splot_recon::BitDepth,

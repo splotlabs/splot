@@ -195,7 +195,7 @@ fn predict_planes<T: ReconSample>(
     Ok(true)
 }
 
-fn predict_unscaled_or_two_call<T: ReconSample, O: CompoundAverageOutput>(
+pub(super) fn predict_unscaled_or_two_call<T: ReconSample, O: CompoundAverageOutput>(
     translation: &TranslationalCompoundPlane<'_, T>,
     cwp_weight: i16,
     output: &mut [O],

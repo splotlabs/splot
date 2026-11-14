@@ -29,6 +29,7 @@ use splot_recon::math::{clip3, round2_i32};
 
 mod blend;
 mod compound_average;
+mod compound_mask;
 mod optflow;
 mod refinemv;
 use blend::{blend_compound_average, diff_weighted_mask_into, store_clamped_samples};
@@ -607,6 +608,9 @@ pub(super) fn predict_compound_into<T: ReconSample>(
     motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
 ) -> Result<()> {
+    if motion.is_none() && compound_mask::predict(sink, block, offset)? {
+        return Ok(());
+    }
     let info = sink.info();
     let mut luma_diff_weighted_mask = None;
     let shares_chroma_grid = motion.is_some_and(|motion| motion.uniform_mvs().is_none())
