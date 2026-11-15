@@ -702,7 +702,12 @@ impl TileResolveState {
                 continue;
             };
             let start = row.temporal.len();
-            if let Some(op) = command.simple_op_at_resolve(&hints, frame, &mut row.temporal)
+            if let Some(op) = command.simple_op_at_resolve(
+                super::block_chroma_subsampling(context.sequence.general.chroma_format_idc),
+                &hints,
+                frame,
+                &mut row.temporal,
+            )
                 && let Some(target) = row.ops.get_mut(index)
             {
                 *target = op;

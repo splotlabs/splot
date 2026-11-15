@@ -53,6 +53,39 @@ pub(super) struct SimpleOp {
     pub(super) residual: [u32; 2],
     pub(super) interp: Option<splot_recon::InterpolationFilter>,
     pub(super) tile_offset: u64,
+    pub(super) luma_start: [i32; 2],
+    pub(super) chroma_rect: [u16; 4],
+    pub(super) chroma_start: [i32; 2],
+}
+
+/// Prototype: one reference list's unscaled views and clip bounds, built once
+/// per row.
+#[derive(Clone, Copy)]
+pub(super) struct RowView<'a, T: ReconSample> {
+    y: splot_recon::ReferencePlaneView<'a, T>,
+    uv: Option<[splot_recon::ReferencePlaneView<'a, T>; 2]>,
+    last: [[i32; 2]; 2],
+}
+
+pub(super) fn row_views<'a, T: ReconSample>(
+    held: &super::super::RowReferences<'a, T>,
+) -> [Option<RowView<'a, T>>; 8] {
+    core::array::from_fn(|list| {
+        let reference = (*held.get(list)?)?;
+        let luma = reference.scaling(PlaneId::Y);
+        if luma.is_scaled() {
+            return None;
+        }
+        let chroma = reference.scaling(PlaneId::U);
+        Some(RowView {
+            y: reference.settled_plane_view(PlaneId::Y)?,
+            uv: reference
+                .settled_plane_view(PlaneId::U)
+                .zip(reference.settled_plane_view(PlaneId::V))
+                .map(|(u, v)| [u, v]),
+            last: [[luma.last_x, luma.last_y], [chroma.last_x, chroma.last_y]],
+        })
+    })
 }
 
 #[derive(Default)]
@@ -181,6 +214,7 @@ impl InterReconCommand {
     /// the per-list order hints hoisted, and returns its op.
     pub(super) fn simple_op_at_resolve(
         &mut self,
+        (sub_x, sub_y): (u32, u32),
         hints: &[Option<u32>; 8],
         (mi_rows, mi_cols, current_order_hint): (usize, usize, u32),
         temporal: &mut Vec<TemporalMotionBlock>,
@@ -216,6 +250,11 @@ impl InterReconCommand {
             .residual
             .as_ref()
             .map_or([0, 0], |r| [r.block_range.start, r.block_range.end]);
+        let rect = placed.motion_compensation_rect();
+        let start = |pos: usize, mv: i32, sub: u32| {
+            ((((pos as i32) << 4) + ((2 * mv) >> sub)) << 6) + 32
+        };
+        let (cx, cy, cw, ch) = rect.plane_rect(PlaneId::U, sub_x, sub_y);
         Some(SimpleOp {
             kind: 1,
             list,
@@ -227,6 +266,12 @@ impl InterReconCommand {
             residual,
             interp: Some(block.interp),
             tile_offset: self.tile_offset.get() as u64,
+            luma_start: [
+                start(placed.luma_x(), block.mv.col, 0),
+                start(placed.luma_y(), block.mv.row, 0),
+            ],
+            chroma_rect: [cx, cy, cw, ch].map(|v| v as u16),
+            chroma_start: [start(cx, block.mv.col, sub_x), start(cy, block.mv.row, sub_y)],
         })
     }
 
@@ -719,22 +764,50 @@ pub(super) fn replay_simple_op<T: ReconSample>(
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
     shared: &ReconShared<'_, T>,
+    views: &[Option<RowView<'_, T>>; 8],
 ) -> Result<bool> {
     let Some(Some(reference)) = shared.held.get(usize::from(op.list)) else {
         return Ok(false);
     };
     let [x, y, w, h] = op.luma.map(usize::from);
-    let offset = ByteOffset::new(op.tile_offset);
+    let interp = op.interp.unwrap_or(splot_recon::InterpolationFilter::EightTap);
     let mut sink = WorkspaceSink::Frame(workspace);
-    mc::motion_compensate_single_block_into(
-        &mut sink,
-        *reference,
-        mc::McBlockRect::from_luma_rect(x, y, w, h),
-        op.mv,
-        op.interp.unwrap_or(splot_recon::InterpolationFilter::EightTap),
-        op.chroma,
-        offset,
-    )?;
+    let direct = views.get(usize::from(op.list)).copied().flatten().is_some_and(|view| {
+        let Ok(rect) = splot_recon::PlaneRect::new(x, y, w, h) else {
+            return false;
+        };
+        let luma = splot_recon::UnscaledPut {
+            rect,
+            start: op.luma_start,
+            last: view.last[0],
+        };
+        if !op.chroma {
+            return splot_recon::subpel_put_block(&mut sink, interp, (&view.y, luma), None)[0];
+        }
+        let [cx, cy, cw, ch] = op.chroma_rect.map(usize::from);
+        let (Some([u, v]), Ok(rect)) = (view.uv, splot_recon::PlaneRect::new(cx, cy, cw, ch))
+        else {
+            return false;
+        };
+        let chroma = splot_recon::UnscaledPut {
+            rect,
+            start: op.chroma_start,
+            last: view.last[1],
+        };
+        splot_recon::subpel_put_block(&mut sink, interp, (&view.y, luma), Some(([&u, &v], chroma)))
+            == [true, true]
+    });
+    if !direct {
+        mc::motion_compensate_single_block_into(
+            &mut sink,
+            *reference,
+            mc::McBlockRect::from_luma_rect(x, y, w, h),
+            op.mv,
+            interp,
+            op.chroma,
+            ByteOffset::new(op.tile_offset),
+        )?;
+    }
     if op.residual[0] != op.residual[1] {
         let _segment_scope = FrameQmSegmentScope::install(usize::from(op.segment_id));
         super::super::add_inter_residual_to_workspace(

@@ -131,6 +131,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             current_order_hint,
             tip: core::cell::OnceCell::new(),
         };
+        let views = deferred_recon::row_views(&shared.held);
         has_intra = entries
             .iter()
             .any(|entry| matches!(entry.command(&slots), Some(ReconCommandRef::GeneralIntra)));
@@ -180,6 +181,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                         &residual_blocks,
                         &residual_coeffs,
                         &shared,
+                        &views,
                     )?
                 {
                     if motion_owed {
