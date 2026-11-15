@@ -2222,7 +2222,6 @@ fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
         &mut ws,
         all_zero_luma_block().view(&[]),
         45, // pAngle (zone-1)
-        PlaneId::Y,
         8,
         8,
         3, // log2_width = 3 -> 8
@@ -2276,7 +2275,6 @@ fn one_sided_ibp_p203_synthesizes_missing_left_edge_from_above() {
         &mut ws,
         all_zero_luma_block().view(&[]),
         203,
-        PlaneId::Y,
         0,
         8,
         3,
@@ -2328,7 +2326,6 @@ fn one_sided_ibp_p45_synthesizes_both_missing_edges() {
         &mut workspace,
         all_zero_luma_block().view(&[]),
         45,
-        PlaneId::Y,
         0,
         0,
         3,
