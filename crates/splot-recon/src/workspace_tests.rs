@@ -307,7 +307,6 @@ fn contiguous_u8_rect_writer_matches_u16_geometry_and_storage_rules() {
         })
         .unwrap();
     assert_eq!(written, Some(2));
-    drop(split);
     let samples = packed(&workspace, PlaneId::Y);
     assert_eq!(samples[6], 30);
     assert_eq!(samples[11], 40);
@@ -363,7 +362,6 @@ fn rectangular_surface_reports_plane_global_sample_index() {
         surface.write_rect(PlaneId::Y, rect(0, 2, 1, 2), &[9; 2], 1),
         Err(ReconError::WorkspaceRowBandRectOutOfBounds { .. })
     ));
-    drop(band);
     assert!(
         workspace
             .samples(PlaneId::Y)
