@@ -291,10 +291,6 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     (avail_up, avail_left): (bool, bool),
     mv: Mv,
 ) -> Result<()> {
-    if !target.width().is_power_of_two() || !target.height().is_power_of_two() {
-        return Ok(());
-    }
-
     let dy = to_fullmv(mv.row);
     let dx = to_fullmv(mv.col);
     let Some(ref_y) = fullpel_ref_pos(target.y(), dy) else {

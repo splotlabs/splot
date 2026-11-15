@@ -192,7 +192,8 @@ pub(crate) fn record_inter_deblock_geometry(
         let chroma_plane_size = get_plane_residual_size(chroma_ref.size(), 1, sub_x, sub_y)
             .map_err(|_| super::residual::residual_geometry_error())?
             .ok_or_else(super::residual::residual_geometry_error)?;
-        let chroma_tx = super::residual::max_tx_size(chroma_plane_size.index())?;
+        let chroma_tx =
+            super::residual::fixed_inter_residual_tx_size(chroma_plane_size.index(), lossless)?;
         let chroma_n4w = chroma_ref
             .size()
             .num_4x4_wide()
@@ -216,7 +217,8 @@ pub(crate) fn record_inter_deblock_geometry(
         chroma_deblock_blocks.push(block);
     }
     let Some(residual) = residual else {
-        let tx_size = super::residual::max_tx_size(frontier.b_size.index())?;
+        let tx_size =
+            super::residual::fixed_inter_residual_tx_size(frontier.b_size.index(), lossless)?;
         let tx_w4 = super::residual::tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
         let tx_h4 = super::residual::tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
         for row4 in crate::support::step_range(0..n4h, tx_h4) {
@@ -332,7 +334,7 @@ fn record_skipped_chroma_deblock_geometry(
     let plane_size = get_plane_residual_size(chroma_ref_size, 1, sub_x, sub_y)
         .map_err(|_| super::residual::residual_geometry_error())?
         .ok_or_else(super::residual::residual_geometry_error)?;
-    let chroma_tx = super::residual::max_tx_size(plane_size.index())?;
+    let chroma_tx = super::residual::fixed_inter_residual_tx_size(plane_size.index(), lossless)?;
     let width = plane_size
         .width_samples()
         .map_err(|_| super::residual::residual_geometry_error())?;
@@ -395,6 +397,63 @@ mod tests {
         assert_eq!((record.n4h, record.n4w), (32, 16));
         assert!(record.skip);
         assert_eq!(record.qindex, 200);
+    }
+
+    /// § 5.20.6.1 gives a skipped lossless inter block `TxSize = TX_4X4` and
+    /// § 5.20.7.23 its chroma `TX_4X4`, so the § 7.17.4 filter size of a
+    /// horizontal edge between two skipped 16x16 blocks is 4 next to a lossless
+    /// block, inside a superblock (row 4) and on its edge (row 16), and 16
+    /// (luma) and 8 (4:2:0 chroma) between two lossy blocks.
+    #[test]
+    fn skipped_lossless_inter_blocks_record_4x4_transforms_for_deblocking() {
+        let size = BlockSize::new(6).unwrap();
+        let tx_height = |tx: u8| TX_HEIGHT[usize::from(tx)] as usize;
+        for row in [4, 16] {
+            for (above, below, luma, chroma) in [
+                (true, false, 4, 4),
+                (false, true, 4, 4),
+                (true, true, 4, 4),
+                (false, false, 16, 8),
+            ] {
+                let mut luma_records = Vec::new();
+                let mut chroma_records = crate::filters::deblock::ChromaDeblockRecords::new();
+                for (r, lossless) in [(row - 4, above), (row, below)] {
+                    record_inter_deblock_geometry(
+                        &mut luma_records,
+                        &mut chroma_records,
+                        &mut Vec::new(),
+                        &DecodeBlockFrontier::shared_leaf(r, 0, size),
+                        (4, 4),
+                        ChromaFormatIdc::Yuv420,
+                        None,
+                        &[],
+                        None,
+                        100,
+                        lossless,
+                    )
+                    .unwrap();
+                }
+                let size_at = |records: &[crate::filters::deblock::DeblockBlock], r: usize| {
+                    let record = records
+                        .iter()
+                        .find(|b| usize::from(b.r) <= r && r < usize::from(b.r + u16::from(b.n4h)))
+                        .unwrap();
+                    (tx_height(record.tx), record.lossless)
+                };
+                let edge = |records: &[_]| {
+                    let ((prev, prev_ll), (curr, curr_ll)) =
+                        (size_at(records, row - 1), size_at(records, row));
+                    assert_eq!((prev_ll, curr_ll), (above, below), "row {row}");
+                    prev.min(curr)
+                };
+                assert_eq!(edge(&luma_records), luma, "luma row {row} {above} {below}");
+                assert_eq!(
+                    edge(&chroma_records),
+                    chroma,
+                    "chroma row {row} {above} {below}"
+                );
+            }
+        }
     }
 
     #[test]

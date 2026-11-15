@@ -207,6 +207,29 @@ fn intrabc_morph_pred_applies_large_luma_block() -> TestResult {
     Ok(())
 }
 
+/// § 7.13.3.25 clips `bh` to `MiRows * MI_SIZE - y` only for the template
+/// counts: a 16x32 block that the frame bottom cuts to 16x20 still adapts.
+#[test]
+fn intrabc_morph_pred_applies_block_cut_by_the_frame_edge() -> TestResult {
+    let mut workspace = workspace(48, 36, 40)?;
+    for i in 16..32 {
+        workspace.set_reconstructed_sample(PlaneId::Y, i, 15, 20)?;
+        workspace.set_reconstructed_sample(PlaneId::Y, 15, i, 20)?;
+    }
+
+    apply_intrabc_morph_pred(
+        &mut workspace,
+        PlaneRect::new(16, 16, 16, 20)?,
+        (true, true),
+        Mv { row: -64, col: -64 },
+    )?;
+
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 16, 16)?, 20);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 31, 35)?, 20);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 32, 16)?, 40);
+    Ok(())
+}
+
 #[test]
 fn inter_bawp_applies_large_luma_block() -> TestResult {
     let mut workspace = workspace(160, 160, 40)?;

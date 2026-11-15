@@ -883,7 +883,7 @@ fn inter_residual_tx_size(
         .map_err(|error| residual_read_error(&error, SPEC_TX_SIZE, tile_offset))
 }
 
-fn fixed_inter_residual_tx_size(block_size: usize, lossless: bool) -> Result<usize> {
+pub(crate) fn fixed_inter_residual_tx_size(block_size: usize, lossless: bool) -> Result<usize> {
     if lossless {
         Ok(TX_4X4)
     } else {
