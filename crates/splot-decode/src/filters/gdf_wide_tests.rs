@@ -287,10 +287,20 @@ fn segment_columns_with_two_wide_tail_match_scalar_samples() {
 #[test]
 fn band_classes_match_reference_over_chunks_and_tail() {
     let mut scratch = simd::ClassScratch::default();
-    for (width, height) in [(2, 2), (6, 4), (14, 2), (20, 4), (34, 6), (64, 2)] {
+    let sizes = [(2, 2), (6, 4), (14, 2), (20, 4), (34, 6), (64, 2)];
+    for ((width, height), extreme) in sizes
+        .into_iter()
+        .flat_map(|size| [(size, false), (size, true)])
+    {
         let stride = width + GDF_READ_RADIUS * 2;
         let samples: Vec<u16> = (0..stride * (height + GDF_READ_RADIUS * 2))
-            .map(|index| ((index * 73 + index / stride * 29) % 1024) as u16)
+            .map(|index| {
+                if extreme {
+                    1023 * u16::from((index ^ (index / stride)).is_multiple_of(3))
+                } else {
+                    ((index * 73 + index / stride * 29) % 1024) as u16
+                }
+            })
             .collect();
         let radius = GDF_READ_RADIUS as isize;
         let source = GdfSource {
@@ -317,7 +327,7 @@ fn band_classes_match_reference_over_chunks_and_tail() {
                 assert!(result.is_ok());
                 assert_eq!(
                     actual, expected,
-                    "width {width}, reference {ref_dst_idx}, qp {qp_idx}"
+                    "width {width}, extreme {extreme}, reference {ref_dst_idx}, qp {qp_idx}"
                 );
             }
         }

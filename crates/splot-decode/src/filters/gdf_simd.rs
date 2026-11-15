@@ -931,42 +931,14 @@ fn gradients<S: Simd>(simd: S, rows: [&[u16; 18]; 3]) -> [i16x16<S>; 4] {
 
 /// Fills `out` with the gradients of the gradient row pair between the four
 /// source rows, summed over its two rows, for the columns from column 1 of
-/// each row; a chunk that reads past the rows reads zeros there.
+/// each row; the rows must hold every chunk's reach, whose columns past the
+/// run are don't-care lanes no class reads.
 fn gradient_row<S: Simd>(simd: S, rows: &[&[u16]; 4], out: &mut [GradChunk]) -> Option<()> {
-    let len = rows[0].len();
-    if rows.iter().any(|row| row.len() != len) {
-        return None;
-    }
     for (chunk, out) in out.iter_mut().enumerate() {
         let start = 16 * chunk;
-        let chunks = rows.map(|row| row.get(start..).and_then(<[u16]>::first_chunk::<18>));
-        if start + 18 <= len
-            && let [Some(a), Some(b), Some(c), Some(d)] = chunks
-        {
-            pair_gradients(simd, [a, b, c, d], out);
-        } else {
-            padded_gradients(simd, rows, start, out)?;
-        }
+        let [a, b, c, d] = rows.map(|row| row.get(start..).and_then(<[u16]>::first_chunk::<18>));
+        pair_gradients(simd, [a?, b?, c?, d?], out);
     }
-    Some(())
-}
-
-/// [`gradient_row`] for one chunk whose rows end before its reach, on
-/// zero-padded copies; out of line, so that the padding is only built here.
-#[inline(never)]
-fn padded_gradients<S: Simd>(
-    simd: S,
-    rows: &[&[u16]; 4],
-    start: usize,
-    out: &mut GradChunk,
-) -> Option<()> {
-    let mut padded = [[0; 18]; 4];
-    for (padded, row) in padded.iter_mut().zip(rows) {
-        let tail = row.get(start..).unwrap_or_default();
-        let tail = tail.get(..tail.len().min(18))?;
-        padded.get_mut(..tail.len())?.copy_from_slice(tail);
-    }
-    pair_gradients(simd, padded.each_ref(), out);
     Some(())
 }
 
@@ -1026,7 +998,8 @@ fn classify_chunk<S: Simd>(
 }
 
 /// The four source rows of gradient row pair `row_pair` of the run of
-/// `class_cols` class columns whose top-left sample sits at `origin`.
+/// `class_cols` class columns whose top-left sample sits at `origin`, each
+/// running on into the rows below for the reach of [`gradient_row`].
 fn gradient_source_rows<'a>(
     source: &GdfSource<'a>,
     origin: (usize, usize),
@@ -1035,12 +1008,10 @@ fn gradient_source_rows<'a>(
 ) -> Option<[&'a [u16]; 4]> {
     let first_row = (origin.1 + 2 * row_pair).checked_sub(2)?;
     let first_col = origin.0.checked_sub(2)?;
+    let reach = 16 * ClassScratch::chunks(class_cols) + 2;
     let row = |index: usize| {
-        exact_slice(
-            source.samples,
-            (first_row + index) * source.stride + first_col,
-            2 * class_cols + 4,
-        )
+        let start = (first_row + index) * source.stride + first_col;
+        source.samples.get(start..).filter(|row| row.len() >= reach)
     };
     Some([row(0)?, row(1)?, row(2)?, row(3)?])
 }
