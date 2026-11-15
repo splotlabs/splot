@@ -354,33 +354,8 @@ impl<'a, T: ReconSample> IntraMiddleDirectionalAngleEdges<'a, T> {
 /// `AboveRow[w] = AboveRow[w + 1] = AboveRow[w - 1]`). Each supplied slice maps
 /// `slice[0]` to logical `-2`, `slice[1]` to the logical `-1` corner, and
 /// `slice[index + 2]` to logical index `index`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IntraMiddleDirectionalAngleIdifEdges<'a, T: ReconSample> {
-    left_idif: Option<&'a [T]>,
-    above_idif: Option<&'a [T]>,
-}
-
-impl<'a, T: ReconSample> IntraMiddleDirectionalAngleIdifEdges<'a, T> {
-    /// Creates an IDIF middle-edge set from optional left and above edges.
-    ///
-    /// Each slice spans the logical range `-2 ..= side + 1` (length `side + 4`):
-    /// `slice[0]` is logical `-2`, `slice[1]` the `-1` corner, `slice[index + 2]`
-    /// logical index `index`. AV2 §7.13.2.1 edge availability, fallback
-    /// preparation, the §7.13.2.8 spec edge extension, MRL, and angle deltas
-    /// remain outside this type.
-    pub const fn new(left_idif: Option<&'a [T]>, above_idif: Option<&'a [T]>) -> Self {
-        Self {
-            left_idif,
-            above_idif,
-        }
-    }
-
-    /// Creates an IDIF edge set with both logical `LeftCol[-2..=h+1]` and
-    /// `AboveRow[-2..=w+1]` available.
-    pub const fn both(left_idif: &'a [T], above_idif: &'a [T]) -> Self {
-        Self::new(Some(left_idif), Some(above_idif))
-    }
-}
+pub type IntraMiddleDirectionalAngleIdifEdges<'a, T> =
+    IntraMiddleDirectionalAngleIdifMrlEdges<'a, T>;
 
 /// Caller-provided prepared edge samples for luma IDIF middle prediction with
 /// AV2 §5.20.5.5 `MrlIndex > 0`.
@@ -553,19 +528,14 @@ pub fn predict_intra_middle_directional_angle_rect_idif_into<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let context =
-        validate_middle_idif_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
-    write_middle_idif_mrl_prediction(
-        MiddleIdifMrlPrediction {
-            bit_depth,
-            size,
-            angle,
-            left: context.left,
-            above: context.above,
-            mrl_index: 0,
-            stride_samples,
-        },
+    predict_intra_middle_directional_angle_rect_idif_mrl_into(
+        bit_depth,
+        size,
+        angle,
+        edges,
+        0,
         output,
+        stride_samples,
     )
 }
 
@@ -735,12 +705,6 @@ struct ValidatedMiddleInputs<'a, T: ReconSample> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ValidatedMiddleIdifInputs<'a, T: ReconSample> {
-    left: &'a [T],
-    above: &'a [T],
-}
-
-#[derive(Clone, Copy, Debug)]
 struct MiddleIdifMrlPrediction<'a, T: ReconSample> {
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
@@ -836,48 +800,6 @@ fn validate_middle_inputs<T: ReconSample>(
     Ok(ValidatedMiddleInputs { left, above })
 }
 
-fn validate_middle_idif_inputs<T: ReconSample>(
-    bit_depth: BitDepth,
-    size: IntraRectBlockSize,
-    angle: IntraMiddleDirectionalAngle,
-    edges: IntraMiddleDirectionalAngleIdifEdges<'_, T>,
-    output_len: usize,
-    stride_samples: usize,
-) -> Result<ValidatedMiddleIdifInputs<'_, T>> {
-    validate_sample_type::<T>(bit_depth)?;
-    validate_output_shape(
-        size,
-        output_len,
-        stride_samples,
-        "intra prediction output buffer length",
-    )?;
-
-    let left = edges
-        .left_idif
-        .ok_or(ReconError::IntraMiddleDirectionalAngleEdgeUnavailable {
-            angle,
-            edge: IntraDirectionalAngleEdge::Left,
-        })?;
-    let above = edges
-        .above_idif
-        .ok_or(ReconError::IntraMiddleDirectionalAngleEdgeUnavailable {
-            angle,
-            edge: IntraDirectionalAngleEdge::Above,
-        })?;
-
-    let left_len = size.height() + 4;
-    let above_len = size.width() + 4;
-    validate_middle_edge(IntraDirectionalAngleEdge::Left, left, left_len, bit_depth)?;
-    validate_middle_edge(
-        IntraDirectionalAngleEdge::Above,
-        above,
-        above_len,
-        bit_depth,
-    )?;
-
-    Ok(ValidatedMiddleIdifInputs { left, above })
-}
-
 fn validate_middle_idif_mrl_inputs<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
@@ -886,7 +808,7 @@ fn validate_middle_idif_mrl_inputs<T: ReconSample>(
     mrl_index: usize,
     output_len: usize,
     stride_samples: usize,
-) -> Result<ValidatedMiddleIdifInputs<'_, T>> {
+) -> Result<ValidatedMiddleInputs<'_, T>> {
     validate_sample_type::<T>(bit_depth)?;
     validate_output_shape(
         size,
@@ -918,7 +840,7 @@ fn validate_middle_idif_mrl_inputs<T: ReconSample>(
         bit_depth,
     )?;
 
-    Ok(ValidatedMiddleIdifInputs { left, above })
+    Ok(ValidatedMiddleInputs { left, above })
 }
 
 fn required_middle_idif_mrl_left_len(size: IntraRectBlockSize, mrl_index: usize) -> Result<usize> {
