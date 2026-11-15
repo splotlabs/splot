@@ -143,6 +143,7 @@ pub(crate) fn read_inter_residual(
     tile_offset: ByteOffset,
 ) -> Result<InterResidual> {
     let block_start = blocks.len();
+    let arena_start = arena.len();
     let result = (|| -> Result<()> {
         let (subsampling_x, subsampling_y) = chroma_subsampling(sequence.general.chroma_format_idc);
         let width_chunks = (n4w >> 4).max(1);
@@ -247,6 +248,7 @@ pub(crate) fn read_inter_residual(
     })();
     if let Err(error) = result {
         blocks.truncate(block_start);
+        arena.truncate(arena_start);
         return Err(error);
     }
     Ok(InterResidual::new(block_start..blocks.len()))

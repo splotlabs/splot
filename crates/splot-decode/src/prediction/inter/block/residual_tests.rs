@@ -505,3 +505,51 @@ fn lossless_chroma_group_at_payload_end_reads_only_units_inside_the_plane() {
         [(ReconPlaneId::U, 32, 24), (ReconPlaneId::V, 32, 24)]
     );
 }
+
+/// A 16x16 luma read that fails on an overlong Golomb prefix leaves the
+/// block list and the coefficient arena as they were before the block.
+#[test]
+fn failed_inter_residual_drops_its_blocks_and_coefficients() {
+    const BLOCK_16X16: usize = 6;
+    const FIXTURE: &[u8] = include_bytes!(
+        "../../../../../../tests/conformance/vectors/valid/syn-2frame-global-rotzoom-64x64-q80.ivf"
+    );
+    let payload = [0x12, 0x02, 0x00, 0x00, 0x52, 0xb1, 0xc4, 0x0c];
+    let (sequence, core, _) =
+        super::super::super::tests::parse_inter_core_for_validation(FIXTURE).unwrap();
+    let frontier = DecodeBlockFrontier::shared_leaf(0, 0, BlockSize::new(BLOCK_16X16).unwrap());
+    let mut work_unit = make_test_work_unit(&payload, CdfUpdateMode::Disabled);
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        &payload,
+        ByteOffset::new(0),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    )
+    .unwrap();
+    let mut coeff_ctx =
+        TileCoeffContextState::new_for_tile_chroma(0..16, 0..16, ChromaFormatIdc::Yuv420).unwrap();
+    let mut blocks = Vec::new();
+    let mut arena = vec![7; 3];
+
+    let result = read_inter_residual(
+        &mut work_unit,
+        &mut symbols,
+        &mut coeff_ctx,
+        &mut InterResidualParseScratch::default(),
+        &mut blocks,
+        &mut arena,
+        &sequence,
+        &core,
+        &frontier,
+        4,
+        4,
+        16,
+        16,
+        false,
+        TransformToolResidualPolicy::default(),
+        ByteOffset::new(0),
+    );
+
+    assert!(result.is_err());
+    assert!(blocks.is_empty());
+    assert_eq!(arena, [7; 3]);
+}
