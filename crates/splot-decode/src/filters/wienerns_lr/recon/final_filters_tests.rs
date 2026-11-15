@@ -1823,6 +1823,28 @@ fn stripe_traversal_streams_ranges_and_stops_after_error() {
     assert!(invalid.next().is_none());
 }
 
+fn lr_plane_fully_overwritten(
+    blocks: &[WienerNsLrSourceBlock],
+    plane: PlaneId,
+    frame_type: FrameRestorationType,
+    width: usize,
+    frame_height: usize,
+    start_y: usize,
+    end_y: usize,
+) -> bool {
+    let rows = (start_y, end_y);
+    for_each_lr_gap(
+        blocks,
+        plane,
+        frame_type,
+        width,
+        frame_height,
+        rows,
+        |_, _| None,
+    )
+    .is_some()
+}
+
 fn luma_wiener_covers(
     blocks: &[WienerNsLrSourceBlock],
     width: usize,

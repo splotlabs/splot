@@ -1103,8 +1103,6 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         } else {
             deblocked
         };
-        let mut lr_initializations =
-            final_filters::lr_initializations(&self.core, active_lr, plane_blocks, &target);
         let edges = lower.map(|plane| plane.is_some());
         let lr_copies: [bool; 3] = core::array::from_fn(|index| {
             edges[index]
@@ -1115,12 +1113,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                             crate::pipeline::frame_progress::DirectPlaneTarget::holds_deblocked,
                         )
         });
-        for (initialization, copies) in lr_initializations.iter_mut().zip(lr_copies) {
-            if !copies {
-                *initialization = crate::filters::source::StripeInitialization::CopyAll;
-            }
-        }
         let (cdef_target, lr_target) = target.split(lr_copies);
+        let lr_initializations = final_filters::lr_initializations(active_lr, &lr_target);
         let planes = [Some(deblocked.y), deblocked.u, deblocked.v];
         let mut edged = [None; 3];
         let mut cores = [None; 3];
