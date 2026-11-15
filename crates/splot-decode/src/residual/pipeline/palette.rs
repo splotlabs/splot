@@ -50,6 +50,30 @@ pub(super) fn recycle_palette_map(map: Option<Vec<u8>>) {
     }
 }
 
+/// Moves `map` into the row's `maps` and gives its index there. A row holds
+/// far fewer than `u32::MAX` maps.
+pub(super) fn store_palette_map(maps: &mut Vec<Vec<u8>>, map: Option<Vec<u8>>) -> Option<u32> {
+    let map = map?;
+    let index = maps.len() as u32;
+    maps.push(map);
+    Some(index)
+}
+
+/// Takes the map that [`store_palette_map`] stored at `index` out of `maps`.
+pub(super) fn take_stored_palette_map(
+    maps: &mut [Vec<u8>],
+    index: Option<u32>,
+) -> core::result::Result<Option<Vec<u8>>, GeneralIntraResidualError> {
+    let Some(index) = index else {
+        return Ok(None);
+    };
+    maps.get_mut(index as usize)
+        .map(|map| Some(core::mem::take(map)))
+        .ok_or(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "palette color map index",
+        })
+}
+
 impl ResidualPlanePlan {
     pub(super) fn palette_color_map_for_unit(
         &self,

@@ -732,9 +732,7 @@ pub(super) enum EntryState {
     reason = "nearly every slot is an inter command; boxing it costs an allocation per leaf"
 )]
 pub(super) enum LeafSlot {
-    /// Boxed: only screen-content intra frames carry these, and inline they
-    /// would set the size of every slot.
-    Intrabc(Box<PendingIntrabcBlock>),
+    Intrabc(PendingIntrabcBlock),
     Command(ReconCommand),
     Spent,
 }
