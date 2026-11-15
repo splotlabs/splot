@@ -283,11 +283,14 @@ fn chroma_parse_group_start(
 }
 
 fn residual_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
-    let tx_mode = match (&core.inter_tail, &core.intra_tail) {
-        (Some(tail), _) => Some(tail.tx_mode),
-        (None, tail) => tail.as_ref().map(|tail| tail.tx_mode),
+    let tx_mode_select = match &core.inter_tail {
+        Some(tail) => tail.tx_mode == TxMode::Select,
+        None => core
+            .intra_tail
+            .as_ref()
+            .is_some_and(|tail| tail.tx_mode == TxMode::Select),
     };
-    tx_mode == Some(TxMode::Select)
+    tx_mode_select
         && core
             .lossless_info
             .as_ref()

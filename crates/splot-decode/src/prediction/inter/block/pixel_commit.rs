@@ -312,7 +312,7 @@ pub(super) fn reconstruct_command<T: ReconSample>(
         ),
         ReconCommandMut::Inter(command) => scratch.reconstruct(
             command,
-            &mut super::super::mc::WorkspaceSink::Frame(workspace),
+            workspace,
             block_decoded,
             folded,
             residuals.blocks,

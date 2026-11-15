@@ -1427,7 +1427,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
             };
             let start = row.temporal.len();
             let result = {
-                scratch.reconstruct(
+                scratch.reconstruct_logged(
                     command,
                     surface,
                     block_decoded,
