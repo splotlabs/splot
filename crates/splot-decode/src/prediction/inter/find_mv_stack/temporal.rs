@@ -1629,15 +1629,10 @@ impl TemporalMvContext {
         &mut self,
         references: TipReferencePair,
         projection_step: usize,
-        superblock_size8: usize,
+        tmvp_unit_size8: usize,
         fill_holes: bool,
     ) -> crate::Result<()> {
         let projection_step = projection_step.clamp(1, 2);
-        let tmvp_unit_size8 = if projection_step == 1 {
-            8
-        } else {
-            superblock_size8.max(1)
-        };
         prepare_tip_field(
             &mut self.field,
             references,

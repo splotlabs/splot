@@ -3,9 +3,9 @@
 
 use splot_recon::math::round2_signed_i32;
 
+use super::{Mv, REFMVS_LIMIT, project_no_constraint};
 #[cfg(test)]
-use super::temporal_grid_index;
-use super::{Mv, REFMVS_LIMIT, allocate_temporal_grid, project_no_constraint};
+use super::{allocate_temporal_grid, temporal_grid_index};
 
 type Position = (usize, usize);
 type PhasePositions = [PackedPosition; 3];
@@ -92,6 +92,7 @@ impl TrajectoryPositions {
     };
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TrajectoryMotionField {
     width8: usize,
@@ -99,6 +100,7 @@ pub(super) struct TrajectoryMotionField {
     pub(super) cells: Vec<PackedTrajectoryMv>,
 }
 
+#[cfg(test)]
 impl TrajectoryMotionField {
     pub(super) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let (width8, height8, cells) =
@@ -156,20 +158,17 @@ impl TrajectoryState {
         step: usize,
         unit_size8: usize,
     ) -> Option<Self> {
-        let template = TrajectoryMotionField::new(mi_dimensions.0, mi_dimensions.1)?;
-        let cell_count = template.cells.len();
-        let step = step.clamp(1, 2);
-        let unit_size8 = unit_size8.max(1);
-        let (width8, height8) = (template.width8, template.height8);
-        Some(Self {
-            cells: vec![PackedTrajectoryMv::INVALID; cell_count.checked_mul(reference_count)?],
+        let mut state = Self {
+            cells: Vec::new(),
             reference_count,
             scratch: Vec::new(),
             step,
             unit_size8,
-            width8,
-            height8,
-        })
+            width8: 0,
+            height8: 0,
+        };
+        state.reset(mi_dimensions, reference_count, step, unit_size8)?;
+        Some(state)
     }
 
     /// Writes one reference's trajectory vector at a whole-field cell.
