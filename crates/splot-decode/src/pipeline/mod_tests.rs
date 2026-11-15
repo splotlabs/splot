@@ -234,7 +234,7 @@ fn multiple_tile_groups_decode_bit_exact() -> std::result::Result<(), Box<dyn st
     let plan = DecodeContext::plan_bytes(MULTIPLE_TILE_GROUP_FIXTURE, options)?;
     assert_eq!(plan.frame_candidate_count(), 1);
     let decoded = decode_frame_from_plan(MULTIPLE_TILE_GROUP_FIXTURE, &options)?;
-    let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame()? else {
+    let PipelineDecodedFrame::Eight(frame) = decoded else {
         return Err("fixture decoded as 10-bit".into());
     };
     assert_eq!(frame.y().samples().len(), 128 * 64);
