@@ -102,12 +102,17 @@ fn cdef_only_builds_cdef_grid_without_retaining_lr_grid() {
     let mut sink =
         WienerNsLrReconSink::for_final_filtering(workspace, 16, 16, splot_recon::BitDepth::Eight);
     sink.filter_records.tx_skip_records = skip_grid_records(true, 0);
+    sink.filter_records.cdef_skip_grid_values = Vec::with_capacity(16);
+    let retained = sink.filter_records.cdef_skip_grid_values.as_ptr();
 
     assert!(!sink.needs_lr_tx_skip_grid(&core));
+    let grid = sink.cdef_skip_grid(&core, 4, 4).unwrap().unwrap();
     assert_eq!(
-        sink.cdef_skip_grid(&core, 4, 4).unwrap(),
-        Some(crate::filters::cdef::CdefSkipGrid::new(4, 4, vec![true; 16]).unwrap())
+        grid,
+        crate::filters::cdef::CdefSkipGrid::new(4, 4, vec![1; 16]).unwrap()
     );
+    let values = grid.into_values();
+    assert_eq!(values.as_ptr(), retained);
     assert!(sink.tx_skip_grid.is_none());
 }
 

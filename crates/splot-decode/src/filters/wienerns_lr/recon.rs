@@ -1230,6 +1230,9 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         if let Some(grid) = self.tx_skip_grid.take() {
             self.filter_records.tx_skip_grid_values = grid.into_values();
         }
+        if let Some(grid) = self.cdef_skip_grid.take() {
+            self.filter_records.cdef_skip_grid_values = grid.into_values();
+        }
         let frame = self.sink.freeze(writer)?;
         Ok((frame, self.filter_records))
     }

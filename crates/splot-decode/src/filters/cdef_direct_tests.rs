@@ -300,9 +300,9 @@ fn partial_skip_and_lossless_cdef_keep_poison_out_of_direct_output() {
     let workspace = patterned_10bit_workspace(PixelFormat::Yuv420, 20, 18);
     let params = active_params();
     let grid = constant_cdef_grid(5, 5, 0).unwrap();
-    let mut skipped = vec![false; 25];
+    let mut skipped = vec![0; 25];
     for index in [0, 1, 5, 6] {
-        skipped[index] = true;
+        skipped[index] = 1;
     }
     let skip_grid = CdefSkipGrid::new(5, 5, skipped).unwrap();
     assert_eq!(
