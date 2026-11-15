@@ -2603,3 +2603,23 @@ expect = "clean"
 path = "vectors/valid/syn-cfl-deferred-422-256x192-q220.ivf"
 description = "AVM-encoded 1-frame 256x192 8-bit 4:2:2 intra stream of a project-generated picture whose chroma follows its luma (avmenc --profile=2 --cpu-used=1 --end-usage=q --qp=220 --sb-size=128 --enable-mhccp=0): 1 derived-alpha 64x64 CfL chroma block in a 128-wide luma block, so its chroma waits for the whole block's luma (§ 5.20.7.23), and 6 CfL chroma blocks of 32x64 that do not wait; 5 of them on the right or bottom frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 c73ef79a261b766015d0f331283d6846ca3a41af4b26c2f2de7e4e06d7db3fd0; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-gdf-xtile-lr-512x256-q190.ivf"
+description = "AVM-encoded 2-frame 512x256 8-bit 4:2:0 stream of a project-generated moving texture (avmenc --profile=0 --bit-depth=8 --cpu-used=2 --end-usage=q --qp=190 --lag-in-frames=0 --tile-columns=1 --tile-rows=1 --disable-loopfilters-across-tiles=1): a 2x2 tile grid with disable_loopfilters_across_tiles = 1, so § 7.20.1 clips the GDF source of every stripe to its tile (LumaStartX..LumaEndX and LumaStartY..LumaEndY) and § 7.20.2 repeats the tile's edge columns and rows; CDEF and loop restoration on luma in the same stripes, so GDF reads CdefFrame and adds to the LR output; one frame codes GDF per block (gdf_per_block = 1). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 04c960d34206732f75c761f8981109d281e15ae008b64fd203ee56b210a04d63; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-gdf-xtile-lr-10bit-512x256-q190.ivf"
+description = "AVM-encoded 2-frame 512x256 10-bit 4:2:0 stream of a project-generated moving texture (avmenc --profile=0 --bit-depth=10 --cpu-used=2 --end-usage=q --qp=190 --lag-in-frames=0 --tile-columns=1 --tile-rows=1 --disable-loopfilters-across-tiles=1): a 2x2 tile grid with disable_loopfilters_across_tiles = 1, so § 7.20.1 clips the GDF source of every stripe to its tile (LumaStartX..LumaEndX and LumaStartY..LumaEndY) and § 7.20.2 repeats the tile's edge columns and rows; CDEF and loop restoration on luma in the same stripes, so GDF reads CdefFrame and adds to the LR output. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 9de2ea1de5750b2320de95adff4e1ed98c0cdef68d4289de8ce20b8c234de5f8; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-gdf-lossless-segments-lr-10bit-384x256-q180.ivf"
+description = "AVM-encoded 1-frame 384x256 10-bit 4:2:0 stream of a project-generated moving texture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --bit-depth=10 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame codes lossless segments (qindex 0) next to lossy segment 0, and GDF filters luma stripes that hold lossless blocks, which § 7.20.1 leaves at their LrFrame samples, with CDEF and loop restoration on luma in the same stripes. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 530348a5ba8c79af79c347904d70f6f3c985679a7ea644a4a481f0eb023df4d5; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-gdf-lossless-segments-inter-10bit-384x256-q180.ivf"
+description = "AVM-encoded 3-frame 384x256 10-bit 4:2:0 stream of a project-generated moving texture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --bit-depth=10 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180 --enable-tip=0): the frames code lossless segments (qindex 0) next to lossy segment 0, and GDF filters luma stripes that hold lossless blocks, which § 7.20.1 leaves at their LrFrame samples, without loop restoration on luma, so GDF writes the CDEF output it reads. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 11f3fef8e49447cc3d6aa91f19932d543c356a6251488bc7af77f7ee09489502; validates clean."
+expect = "clean"
