@@ -110,7 +110,7 @@ jobs:
   dav2d-test-data:
     runs-on: ubuntu-latest
     env:
-      DAV2D_TEST_DATA_REV: ec53c12d4170372c1ad71532217a204e1553f898
+      DAV2D_TEST_DATA_REV: ca31004227c1f6eaad79c380edf33d1e509d7ff8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

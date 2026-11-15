@@ -16,11 +16,14 @@ import urllib.request
 
 def check(corpus, root, splot, thread_override=None):
     if corpus == "dav2d":
-        root = root / "avm"
-        entries = re.findall(
-            r"\['([^']+)',\s*files\('([^']+)'\),\s*'([0-9a-f]{32})'\]",
-            (root / "meson.build").read_text(),
-        )
+        entries = [
+            (name, f"{suite.parent.name}/{path}", digest)
+            for suite in sorted(root.glob("avm*/meson.build"))
+            for name, path, digest in re.findall(
+                r"\['([^']+)',\s*files\('([^']+)'\),\s*'([0-9a-f]{32})'\]",
+                suite.read_text(),
+            )
+        ]
         streams = [dict(path=path, digest=digest) for _, path, digest in entries]
         names = [name for name, _, _ in entries]
         if len(names) != len(set(names)):
