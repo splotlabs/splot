@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use crate::filters::source::StripeInitialization;
+use crate::filters::source::StripeInitialization::{self, CopyAll};
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
     PlaneRect, PlaneSize, ReconSample,
@@ -73,9 +73,13 @@ fn cdef_frame(workspace: &CurrentFrameWorkspace<u16>) -> CdefFrame<'_, u16> {
         deblocked_y: y,
         deblocked_u: u,
         deblocked_v: v,
-        filtered_y: StripePlane::copy_from(y, 0, y.frame_height()).unwrap(),
-        filtered_u: u.map(|plane| StripePlane::copy_from(plane, 0, plane.frame_height()).unwrap()),
-        filtered_v: v.map(|plane| StripePlane::copy_from(plane, 0, plane.frame_height()).unwrap()),
+        filtered_y: StripePlane::copy_from_into(y, 0, y.frame_height(), None, CopyAll).unwrap(),
+        filtered_u: u.map(|plane| {
+            StripePlane::copy_from_into(plane, 0, plane.frame_height(), None, CopyAll).unwrap()
+        }),
+        filtered_v: v.map(|plane| {
+            StripePlane::copy_from_into(plane, 0, plane.frame_height(), None, CopyAll).unwrap()
+        }),
     }
 }
 
@@ -122,7 +126,7 @@ fn block(
     }
 }
 
-fn blocks_for_target<T>(
+fn blocks_for_target<T: ReconSample>(
     target: &crate::pipeline::frame_progress::DirectPlaneTarget<T>,
     plane: PlaneId,
 ) -> Vec<WienerNsLrSourceBlock> {

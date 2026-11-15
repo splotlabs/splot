@@ -733,7 +733,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         .map_err(|error| CdefError::from(error.for_plane(PlaneId::V)))?;
     }
     let filtered_y = if luma_output {
-        StripePlane::copy_from_into_mode(
+        StripePlane::copy_from_into(
             deblocked_y,
             luma_start,
             luma_end,
@@ -752,7 +752,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
     };
     let filtered_u = deblocked_u
         .map(|u| {
-            StripePlane::copy_from_into_mode(
+            StripePlane::copy_from_into(
                 u,
                 chroma_start,
                 chroma_end,
@@ -764,7 +764,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         .transpose()?;
     let filtered_v = deblocked_v
         .map(|v| {
-            StripePlane::copy_from_into_mode(
+            StripePlane::copy_from_into(
                 v,
                 chroma_start,
                 chroma_end,
