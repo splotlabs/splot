@@ -45,6 +45,7 @@ pub(crate) struct FrameFilterRecords {
     pub(crate) cdef_strengths: Vec<crate::filters::cdef::CdefFrameParams>,
     pub(crate) tx_skip_grid_values: Vec<u8>,
     pub(crate) cdef_skip_grid_values: Vec<u8>,
+    pub(crate) lossless_cells: [Vec<bool>; 2],
     /// Spent stripe input windows, for the next filter phase to fill.
     pub(crate) filter_windows: Vec<splot_recon::RetiredFramePlanes>,
     /// The frame's `BruModes`, `None` when `use_bru == 0`.

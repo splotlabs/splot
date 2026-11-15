@@ -358,10 +358,9 @@ impl CdefBlockLookup<'_> {
         let luma_lossless = self
             .lossless_grid
             .is_some_and(|grid| grid.cdef_luma_lossless(r, c));
-        let chroma_lossless = self.lossless_grid.is_some_and(|grid| {
-            grid.cdef_chroma_lossless(PlaneId::U, r, c)
-                && grid.cdef_chroma_lossless(PlaneId::V, r, c)
-        });
+        let chroma_lossless = self
+            .lossless_grid
+            .is_some_and(|grid| grid.cdef_chroma_lossless(r, c));
         if luma_lossless && (!self.has_chroma || chroma_lossless) {
             return Ok(None);
         }
@@ -535,7 +534,7 @@ fn copy_unfiltered_blocks<T: ReconSample>(
             while c < unit_end {
                 let lossless = lookup.lossless_grid.is_some_and(|grid| match plane {
                     PlaneId::Y => grid.cdef_luma_lossless(r, c),
-                    PlaneId::U | PlaneId::V => grid.cdef_chroma_lossless(plane, r, c),
+                    PlaneId::U | PlaneId::V => grid.cdef_chroma_lossless(r, c),
                 });
                 let skipped = match lookup.skip_grid {
                     Some(grid) => grid.all_skipped_8x8(r, c)?,
