@@ -32,17 +32,6 @@ pub enum IntraSmoothMode {
     SmoothHorizontal,
 }
 
-impl IntraSmoothMode {
-    /// Returns a stable human-readable mode name.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Smooth => "smooth",
-            Self::SmoothVertical => "smooth_v",
-            Self::SmoothHorizontal => "smooth_h",
-        }
-    }
-}
-
 /// Edge identifier for smooth intra prediction inputs.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum IntraSmoothEdge {

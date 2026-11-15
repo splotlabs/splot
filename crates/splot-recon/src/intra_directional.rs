@@ -34,14 +34,6 @@ impl IntraCardinalDirection {
             Self::Horizontal => 180,
         }
     }
-
-    /// Returns a stable human-readable mode name.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Vertical => "vertical",
-            Self::Horizontal => "horizontal",
-        }
-    }
 }
 
 /// Writes AV2 §7.13.2.8 pAngle 90/180 prediction into caller storage.

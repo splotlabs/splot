@@ -113,7 +113,12 @@ pub fn predict_intra_dip_rect_into<T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
-    validate_dip_mode(dip_mode)?;
+    let Some(rows) = DIP_ROW_WEIGHTS[usize::from(dip_transpose)].get(dip_mode) else {
+        return Err(ReconError::UnsupportedIntraDipMode {
+            mode: dip_mode,
+            max: DIP_MODE_COUNT - 1,
+        });
+    };
     validate_dip_edges(bit_depth, size, edges)?;
     validate_output_shape(
         size,
@@ -123,12 +128,6 @@ pub fn predict_intra_dip_rect_into<T: ReconSample>(
     )?;
 
     let features = dip_features(size, edges, dip_transpose);
-    let Some(rows) = DIP_ROW_WEIGHTS[usize::from(dip_transpose)].get(dip_mode) else {
-        return Err(ReconError::UnsupportedIntraDipMode {
-            mode: dip_mode,
-            max: DIP_MODE_COUNT - 1,
-        });
-    };
     let shape_error = || ReconError::ArithmeticOverflow {
         context: "DIP intra prediction output shape",
     };
@@ -181,17 +180,6 @@ fn predict_dip_samples<S: Simd, P: IntraLaneSample>(
         16 => dip_bands::<S, P, 16, 1>(simd, block, inputs, output),
         32 => dip_bands::<S, P, 32, 2>(simd, block, inputs, output),
         _ => dip_bands::<S, P, 64, 4>(simd, block, inputs, output),
-    }
-}
-
-fn validate_dip_mode(dip_mode: usize) -> Result<()> {
-    if dip_mode < DIP_MODE_COUNT {
-        Ok(())
-    } else {
-        Err(ReconError::UnsupportedIntraDipMode {
-            mode: dip_mode,
-            max: DIP_MODE_COUNT - 1,
-        })
     }
 }
 
