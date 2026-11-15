@@ -102,7 +102,7 @@ pub fn derive_mhccp_params<const N: usize>(
                 lanes.add(linear, centre, targets, n, bits);
             }
         }
-        lanes.reduce_into(&mut luma, &mut cross);
+        lanes.reduce_into(simd, &mut luma, &mut cross);
     });
     let mid = 1i32 << (bits - 1);
     if luma.count == 0 {
@@ -174,12 +174,10 @@ impl<S: Simd, const N: usize> LaneSums<S, N> {
     }
 
     #[inline]
-    fn reduce_into(self, luma: &mut LumaSums, cross: &mut [[i32; 3]; N]) {
+    fn reduce_into(self, simd: S, luma: &mut LumaSums, cross: &mut [[i32; 3]; N]) {
         let reduce = |lanes: i32x8<S>| {
-            lanes
-                .as_slice()
-                .iter()
-                .fold(0i32, |sum, &lane| sum.wrapping_add(lane))
+            let (low, high) = simd.split_i32x8(lanes);
+            simd.reduce_sum_i32x4(low + high)
         };
         for (sum, acc) in luma.sums.iter_mut().zip(self.luma) {
             *sum = sum.wrapping_add(reduce(acc));
@@ -568,11 +566,13 @@ impl WideLanes for i16 {
     }
 }
 
-/// Multiplies fixed-point values with adaptive down-shifting to avoid overflow.
+/// Multiplies fixed-point values with adaptive down-shifting to avoid
+/// overflow: the shifted terms have at most 29 bits in all, so their
+/// product is exact in `i32`.
 #[must_use]
 pub fn mul_fixed32_adapt(a: i32, b: i32, shift: u32) -> i32 {
     let (lhs, rhs, adjustment) = scaled_multiply_terms(a, b, shift);
-    round_scaled_product(lhs.saturating_mul(rhs), adjustment)
+    round_scaled_product(lhs.wrapping_mul(rhs), adjustment)
 }
 
 fn round_scaled_product(product: i32, adjustment: i32) -> i32 {
