@@ -989,7 +989,14 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
     let mut parsed = ParsedResidualPlane {
         plane,
         kind: plane
-            .retain_partitioned_luma(block_ctx.frame(), visible, None, &mut deblock, &mut units)
+            .retain_partitioned_luma(
+                block_ctx.frame(),
+                visible,
+                None,
+                &mut deblock,
+                &mut units,
+                &mut Vec::new(),
+            )
             .expect("visible transform unit has valid geometry"),
         cctx_role: CctxRole::None,
     };
@@ -1060,6 +1067,7 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
             },
             LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::Dc, 0),
             &mut units,
+            &mut [],
         )
         .expect("visible transform unit reconstructs");
     assert!(units.iter().all(Option::is_none));
@@ -1492,4 +1500,10 @@ fn plans_no_chunk_that_starts_outside_the_frame() {
 #[test]
 fn residual_plane_record_fits_its_budget() {
     assert!(core::mem::size_of::<ParsedResidualPlane>() <= 120);
+}
+
+#[test]
+fn row_arena_lists_clear_without_an_element_walk() {
+    assert!(!core::mem::needs_drop::<ParsedResidualPlane>());
+    assert!(!core::mem::needs_drop::<Option<ParsedTransformUnit>>());
 }
