@@ -7961,7 +7961,6 @@ tests = [
     "crates/splot-recon/src/intra_ibp_dc.rs::tests",
     "crates/splot-recon/src/intra_smooth.rs::tests",
     "crates/splot-recon/src/workspace_tests.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle_tests.rs",
 ]
 commands = [
     "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
@@ -7971,7 +7970,6 @@ commands = [
     "cargo test -p splot-recon intra_directional --locked",
     "cargo test -p splot-recon intra_directional_angle --locked",
     "cargo test -p splot-recon intra --locked",
-    "cargo test -p splot-recon workspace_intra_directional_angle --locked",
     "cargo test -p splot-recon workspace --locked",
     "cargo +nightly fuzz run recon_intra_prediction_bytes (local/nightly; CI fuzz smoke runs every target)",
 ]
@@ -7981,8 +7979,6 @@ fixtures = [
     "crates/splot-recon/src/intra_directional_angle_tests.rs",
     "crates/splot-recon/src/intra_ibp_dc.rs",
     "crates/splot-recon/src/workspace_intra_dc.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle_tests.rs",
 ]
 diagnostics = []
 
@@ -9386,8 +9382,6 @@ tests = [
     "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_validates_sample_type_against_bit_depth",
     "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_validates_output_stride_and_length",
     "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_rejects_overflowing_output_shape",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_rectangular_paeth_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_paeth_rejects_missing_prepared_edges",
 ]
 commands = [
     "cargo test -p splot-recon --locked",
@@ -9453,7 +9447,6 @@ tests = [
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_subsampled_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_subsampled_dc_top_left_uses_midpoint_without_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_subsampled_dc_uses_available_edge_without_synthesizing_missing_edge",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_subsampled_dc_rejects_missing_plane_and_out_of_bounds_target",
 ]
 commands = [
     "cargo test -p splot-recon intra_dc_subsampled --locked",
@@ -9517,8 +9510,6 @@ tests = [
     "crates/splot-recon/src/intra_smooth.rs::tests::smooth_prediction_validates_sample_type_against_bit_depth",
     "crates/splot-recon/src/intra_smooth.rs::tests::smooth_prediction_validates_output_stride_and_length",
     "crates/splot-recon/src/intra_smooth.rs::tests::smooth_prediction_rejects_overflowing_output_shape",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_rectangular_smooth_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_smooth_rejects_missing_prepared_edges",
 ]
 commands = [
     "cargo test -p splot-recon --locked",
@@ -9580,8 +9571,6 @@ tests = [
     "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_validates_sample_type_against_bit_depth",
     "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_validates_output_stride_and_length",
     "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_rejects_overflowing_output_shape",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_cardinal_directional_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_cardinal_directional_rejects_missing_prepared_edges",
 ]
 commands = [
     "cargo test -p splot-recon intra_directional --locked",
@@ -9732,71 +9721,6 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
-id = "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION"
-name = "Workspace directional-angle intra prediction"
-category = "infrastructure"
-kind = "infrastructure"
-spec_sections = ["4.8", "7.13.2.1", "7.13.2.7", "7.13.2.8", "9.2"]
-sources = [
-    "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
-    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
-]
-crate = "splot-recon"
-module = "crates/splot-recon/src/workspace_intra_directional_angle.rs"
-change_id = "recon-workspace-directional-angle-prediction"
-owner = "decoder"
-risk = "medium"
-notes = "Workspace directional helpers gather available in-storage edges and select bilinear chroma or IDIF luma prediction. Luma edge extension includes corner fallback. Decoded-neighbor availability and syntax-driven prediction selection remain with decoder callers."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "done"
-write = "not-applicable"
-encode = "not-applicable"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = [
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_one_sided_directional_angle_from_in_storage_above_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_one_sided_directional_angle_from_in_storage_left_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_middle_directional_angle_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_accepts_10_bit_u16_samples",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_luma_one_sided_idif_from_in_storage_above_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_luma_one_sided_idif_from_in_storage_left_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_luma_one_sided_idif_uses_own_edge_sample_when_corner_is_out_of_frame",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_rejects_missing_prepared_edges",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_rejects_missing_plane_and_out_of_bounds_target",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_invalid_edge_sample_does_not_mutate_target",
-]
-commands = [
-    "cargo test -p splot-recon workspace_intra_directional_angle --locked",
-    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
-    "cargo xtask check-fuzz-targets",
-    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
-    "cargo xtask check-source-lines",
-    "cargo xtask check-decoder-support",
-    "cargo xtask check-decoder-conformance-coverage",
-    "cargo xtask check-feature-status",
-]
-fixtures = [
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle_tests.rs",
-    "crates/splot-recon/src/workspace.rs",
-    "crates/splot-recon/src/error.rs",
-    "crates/splot-recon/src/lib.rs",
-    "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs",
-]
-diagnostics = []
-
-[[feature]]
 id = "RECON-INTRA-IBP-DC-PREDICTION"
 name = "IBP DC intra prediction"
 category = "infrastructure"
@@ -9843,7 +9767,6 @@ tests = [
     "crates/splot-recon/src/intra_ibp_dc.rs::tests::ibp_dc_rejects_invalid_output_shape",
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_ibp_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_top_left_uses_dc_midpoint_without_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_rejects_missing_plane_and_out_of_bounds_target",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target",
 ]
 commands = [
@@ -9909,7 +9832,6 @@ tests = [
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_subsampled_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_ibp_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_top_left_uses_dc_midpoint_without_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_rejects_missing_plane_and_out_of_bounds_target",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target",
 ]
 commands = [
