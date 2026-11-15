@@ -806,7 +806,7 @@ pub(super) mod generic {
         }
     }
 
-    /// The search of [`super::refinemv_search_u8`] of `[stride, sad_h]`:
+    /// The byte refine-MV search of `[stride, sad_h]`:
     /// each row's masked absolute differences widened and summed in `u16`
     /// lanes.
     #[inline(never)]
@@ -835,7 +835,7 @@ pub(super) mod generic {
         )
     }
 
-    /// [`super::refinemv_search_u16`] of `STRIDE`-wide windows of `AREA`
+    /// The 16-bit refine-MV search of `STRIDE`-wide windows of `AREA`
     /// samples: per row the full vectors from columns 0 and 8 and the last
     /// four samples of the vector ending at the row end, each column vector
     /// summed in its own `u16` lanes, which ten 12-bit rows keep below
