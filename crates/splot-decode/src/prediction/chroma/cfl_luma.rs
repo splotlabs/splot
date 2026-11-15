@@ -6,11 +6,11 @@
 //! row, and the left tap where the filter has one. Also the CfL prediction
 //! from `L` in 16-bit lanes.
 
-use super::cfl::CFL_FILTERS_420;
+use super::cfl::{CFL_FILTERS_420, gathered_q3};
 #[cfg(target_arch = "aarch64")]
 pub(super) use neon::{
-    cfl_predict_u8, cfl_predict_u16, luma_420_pairs_f0, luma_420_pairs_f1, luma_420_rows_f0,
-    luma_420_rows_f1, luma_420_rows_f2,
+    cfl_predict_pair_u8, cfl_predict_pair_u16, cfl_predict_u8, cfl_predict_u16, luma_420_pairs_f0,
+    luma_420_pairs_f1, luma_420_rows_f0, luma_420_rows_f1, luma_420_rows_f2,
 };
 
 /// The token of this target's kernels.
@@ -106,24 +106,6 @@ fn tap_rows(block: &Luma420Block, r: usize) -> [usize; 3] {
     ]
 }
 
-/// The § 7.13.5 sum of `weights[dy + 1][dx + 1]` around the centre samples
-/// `centres` (top, middle, bottom row); the left tap reads the centre when
-/// `clamp_left`.
-#[allow(clippy::inline_always, reason = "folds the constant filter taps")]
-#[inline(always)]
-fn tap_sum(luma: &[u8], weights: &[[i32; 3]; 3], centres: [usize; 3], clamp_left: bool) -> i32 {
-    let mut total = 0;
-    for (&centre, weights) in centres.iter().zip(weights) {
-        let cols = [centre - usize::from(!clamp_left), centre, centre + 1];
-        for (&col, &weight) in cols.iter().zip(weights) {
-            if weight != 0 {
-                total += weight * i32::from(luma[col]);
-            }
-        }
-    }
-    total
-}
-
 /// `pmaddubsw` byte-pair weights of each tap row: the (centre, right) pair
 /// read from the centre column and the (left, centre) pair from one before;
 /// with `clamped`, the left tap folded into the centre.
@@ -184,10 +166,10 @@ static LANE_TAPS: [[[[[i16; 16]; 3]; 2]; 3]; 3] = {
 
 /// Writes `L` of the block rows with the 4:2:0 filter `F` into `out` (row
 /// `r` at `r * width`) and, when given, the downsampled luma left of each
-/// row into `left`; `false`, writing nothing, for a filter outside 4:2:0.
-/// Clamped columns on a 16-lane group start clamp in the lane pass, the
-/// rest per sample; blocks up to 8 wide whose taps reach 17 samples before
-/// the first tap row take the left column from lane 7.
+/// row into `left`; `false`, writing nothing, for a filter outside 4:2:0 or
+/// a clamped column off a 16-lane group start. Blocks up to 8 wide whose
+/// taps reach 17 samples before the first tap row take the left column from
+/// lane 7; [`left_420`] gathers it for the others.
 #[inline]
 pub(super) fn luma_420<const F: usize>(
     token: LumaToken,
@@ -209,20 +191,25 @@ pub(super) fn luma_420<const F: usize>(
         first_periodic
     };
     let mut clamp_groups = u8::from(clamp_cols);
-    let mut lone_columns = periodic && first_periodic < width;
-    if periodic && width > 8 && first_periodic.is_multiple_of(16) {
+    if periodic && first_periodic < width {
+        if width <= 8 || !first_periodic.is_multiple_of(16) {
+            return false;
+        }
         let mut j = first_periodic;
         while j < width {
             clamp_groups |= 1 << (j / 16);
             j += 32;
         }
-        lone_columns = false;
     }
+    let top_taps = weights[0] != [0; 3];
     let lane_left = width <= 8
         && luma_x >= 4
         && block.first_tap_row().is_some_and(|row| row >= 17)
-        && left.is_some();
-    let top_taps = weights[0] != [0; 3];
+        && left.is_some()
+        && !(top_taps && block.periodic && {
+            let height = out.len() / width - usize::from(block.above.is_some());
+            (block.luma_y + 2).next_multiple_of(64) < block.luma_y + 2 * height
+        });
     let stride = block.stride;
     let first_mid = tap_rows(&block, 0)[1];
     let paired = !top_taps
@@ -235,52 +222,48 @@ pub(super) fn luma_420<const F: usize>(
         .checked_sub(17)
         .and_then(|start| luma.get(start..))
         .filter(|rows| paired && rows.len() >= 2 * stride * (out.len() >> width.trailing_zeros()));
-    match (F, pairs, left.as_deref_mut()) {
+    match (F, pairs, left.as_deref_mut().filter(|_| lane_left)) {
         (0, Some(rows), Some(left)) => {
             luma_420_pairs_f0(token, clamp_groups, rows, block, left, out);
         }
         (1, Some(rows), Some(left)) => {
             luma_420_pairs_f1(token, clamp_groups, rows, block, left, out);
         }
-        (_, _, left) => {
-            let lane_out = if lane_left { left } else { None };
-            match F {
-                0 => luma_420_rows_f0(token, clamp_groups, luma, block, lane_out, out),
-                1 => luma_420_rows_f1(token, clamp_groups, luma, block, lane_out, out),
-                _ => luma_420_rows_f2(token, clamp_groups, luma, block, lane_out, out),
-            }
-        }
+        (_, _, lane_out) => match F {
+            0 => luma_420_rows_f0(token, clamp_groups, luma, block, lane_out, out),
+            1 => luma_420_rows_f1(token, clamp_groups, luma, block, lane_out, out),
+            _ => luma_420_rows_f2(token, clamp_groups, luma, block, lane_out, out),
+        },
     }
-    if !lone_columns && (left.is_none() || (lane_left && !top_taps)) {
-        return true;
-    }
-    let first = usize::from(block.above.is_some());
-    for (r, out) in out.chunks_exact_mut(width).enumerate() {
-        let rows = tap_rows(&block, r);
-        if lone_columns {
-            let mut j = first_periodic;
-            while j < width {
-                out[j] = tap_sum(luma, &weights, rows.map(|row| row + 2 * j), true) as i16;
-                j += 32;
-            }
-        }
-        if let Some(slot) = left
-            .as_deref_mut()
-            .and_then(|left| left.get_mut(r.wrapping_sub(first)))
-        {
-            let [lane_top, mid, bottom] = rows;
-            let top = if r == first { mid } else { mid - block.stride };
-            if !lane_left || (top_taps && top != lane_top) {
-                *slot = tap_sum(
-                    luma,
-                    &weights,
-                    [top, mid, bottom].map(|row| row - 2),
-                    luma_x == 2,
-                ) as i16;
-            }
-        }
+    if let Some(left) = left.filter(|_| !lane_left) {
+        left_420(luma, &block, weights, left);
     }
     true
+}
+
+/// The downsampled luma left of each block row into `left`: each row's taps
+/// (clamped only on the block's first row) gathered, then summed in lanes.
+fn left_420(luma: &[u8], block: &Luma420Block, weights: [[i32; 3]; 3], left: &mut [i16]) {
+    let first = usize::from(block.above.is_some());
+    let clamp_left = usize::from(block.luma_x != 2);
+    for (g, group) in left.chunks_mut(8).enumerate() {
+        let mut taps = [[[0u16; 8]; 3]; 3];
+        for lane in 0..group.len() {
+            let r = first + 8 * g + lane;
+            let [_, mid, bottom] = tap_rows(block, r);
+            let top = if r == first { mid } else { mid - block.stride };
+            for ((taps, row), weights) in taps.iter_mut().zip([top, mid, bottom]).zip(weights) {
+                let cols = [row - 2 - clamp_left, row - 2, row - 1];
+                for ((tap, col), weight) in taps.iter_mut().zip(cols).zip(weights) {
+                    if weight != 0 {
+                        tap[lane] = luma[col].into();
+                    }
+                }
+            }
+        }
+        let lanes = gathered_q3(&taps, weights);
+        group.copy_from_slice(&lanes[..group.len()]); // splot-copy-ok: publish CfL lumaLeft samples
+    }
 }
 
 /// Defines the `pmaddubsw` part of [`luma_420`] for one constant filter.
@@ -546,50 +529,55 @@ macro_rules! cfl_predict_constants {
     }};
 }
 
-/// Writes the rows of a CfL block narrower than 16 samples: each group of
-/// sixteen `samples(luma)` covers `16 / $width` rows.
+/// Writes the rows of a CfL block narrower than 16 samples into each
+/// `(out, stride, samples)` plane: each group of sixteen `samples(luma)`
+/// covers `16 / $width` rows.
 macro_rules! cfl_narrow_rows {
-    ($width:literal, $luma:ident, $out:ident, $stride:ident, $samples:ident) => {
-        let mut rest = &mut *$out;
+    ($width:literal, $luma:ident, $(($out:ident, $stride:ident, $samples:ident)),+) => {
+        $(let mut $out = &mut *$out;)+
         for luma in $luma.chunks_exact(16) {
-            let samples = $samples(luma);
-            for samples in samples.as_chunks::<$width>().0 {
-                if let Some(out) = rest.first_chunk_mut::<$width>() {
-                    *out = *samples;
+            $(
+                for samples in $samples(luma).as_chunks::<$width>().0 {
+                    if let Some(out) = $out.first_chunk_mut::<$width>() {
+                        *out = *samples;
+                    }
+                    $out = core::mem::take(&mut $out)
+                        .get_mut($stride..)
+                        .unwrap_or_default();
                 }
-                rest = core::mem::take(&mut rest)
-                    .get_mut($stride..)
-                    .unwrap_or_default();
-            }
+            )+
         }
     };
 }
 
-/// [`cfl_narrow_rows`] for any CfL width: 4, 8, or a multiple of 16.
+/// [`cfl_narrow_rows`] for any CfL width: 4, 8, or a multiple of 16; each
+/// group of `L` serves every plane.
 macro_rules! cfl_rows {
-    ($width:ident, $luma:ident, $out:ident, $stride:ident, $samples:ident) => {
+    ($width:ident, $luma:ident, $(($out:ident, $stride:ident, $samples:ident)),+) => {
         match $width {
             4 => {
-                cfl_narrow_rows!(4, $luma, $out, $stride, $samples);
+                cfl_narrow_rows!(4, $luma, $(($out, $stride, $samples)),+);
             }
             8 => {
-                cfl_narrow_rows!(8, $luma, $out, $stride, $samples);
+                cfl_narrow_rows!(8, $luma, $(($out, $stride, $samples)),+);
             }
             _ => {
-                let mut rest = &mut *$out;
+                $(let mut $out = &mut *$out;)+
                 for luma in $luma.chunks_exact($width) {
-                    let out = rest.get_mut(..$width).unwrap_or_default();
-                    for (out, luma) in out
-                        .as_chunks_mut::<16>()
-                        .0
-                        .iter_mut()
-                        .zip(luma.chunks_exact(16))
-                    {
-                        *out = $samples(luma);
-                    }
-                    rest = core::mem::take(&mut rest)
-                        .get_mut($stride..)
-                        .unwrap_or_default();
+                    $(
+                        let out = $out.get_mut(..$width).unwrap_or_default();
+                        for (out, luma) in out
+                            .as_chunks_mut::<16>()
+                            .0
+                            .iter_mut()
+                            .zip(luma.chunks_exact(16))
+                        {
+                            *out = $samples(luma);
+                        }
+                        $out = core::mem::take(&mut $out)
+                            .get_mut($stride..)
+                            .unwrap_or_default();
+                    )+
                 }
             }
         }
@@ -624,7 +612,7 @@ fearless_simd::kernel!(
                 _mm_packus_epi16(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
             u8x16::simd_from(token, packed).into()
         };
-        cfl_rows!(width, luma, out, stride, samples);
+        cfl_rows!(width, luma, (out, stride, samples));
     }
 );
 
@@ -652,7 +640,80 @@ fearless_simd::kernel!(
             let v = cfl_predict16!(token, luma, [average, sign, scale, dc]);
             u16x16::simd_from(token, _mm256_min_epi16(_mm256_max_epi16(v, zero), max)).into()
         };
-        cfl_rows!(width, luma, out, stride, samples);
+        cfl_rows!(width, luma, (out, stride, samples));
+    }
+);
+
+fearless_simd::kernel!(
+    /// [`cfl_predict_u8`] of the U and V `[dc, alpha, lumaAvg, max]` models of
+    /// one `L` in one pass: each group of `L` serves both planes.
+    #[inline]
+    pub(super) fn cfl_predict_pair_u8(
+        token: Avx2,
+        models: [[i32; 4]; 2],
+        luma: &[i16],
+        width: usize,
+        outs: [&mut [u8]; 2],
+        strides: [usize; 2],
+    ) {
+        use core::arch::x86_64::{
+            __m256i, _mm_packus_epi16, _mm256_abs_epi16, _mm256_add_epi16, _mm256_castsi256_si128,
+            _mm256_extracti128_si256, _mm256_mulhrs_epi16, _mm256_set1_epi16, _mm256_sign_epi16,
+            _mm256_sub_epi16,
+        };
+        use fearless_simd::{SimdBase as _, SimdFrom as _, i16x16, u8x16};
+        let [u_constants, v_constants] = models.map(|model| cfl_predict_constants!(model));
+        let samples = |[average, sign, scale, dc]: [__m256i; 4], luma: &[i16]| -> [u8; 16] {
+            let v = cfl_predict16!(token, luma, [average, sign, scale, dc]);
+            let packed =
+                _mm_packus_epi16(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+            u8x16::simd_from(token, packed).into()
+        };
+        let u_samples = |luma: &[i16]| samples(u_constants, luma);
+        let v_samples = |luma: &[i16]| samples(v_constants, luma);
+        let ([u, v], [u_stride, v_stride]) = (outs, strides);
+        cfl_rows!(
+            width,
+            luma,
+            (u, u_stride, u_samples),
+            (v, v_stride, v_samples)
+        );
+    }
+);
+
+fearless_simd::kernel!(
+    /// [`cfl_predict_pair_u8`] for samples up to `models[_][3]`, at most 10 bits.
+    #[inline]
+    pub(super) fn cfl_predict_pair_u16(
+        token: Avx2,
+        models: [[i32; 4]; 2],
+        luma: &[i16],
+        width: usize,
+        outs: [&mut [u16]; 2],
+        strides: [usize; 2],
+    ) {
+        use core::arch::x86_64::{
+            __m256i, _mm256_abs_epi16, _mm256_add_epi16, _mm256_max_epi16, _mm256_min_epi16,
+            _mm256_mulhrs_epi16, _mm256_set1_epi16, _mm256_setzero_si256, _mm256_sign_epi16,
+            _mm256_sub_epi16,
+        };
+        use fearless_simd::{SimdBase as _, SimdFrom as _, i16x16, u16x16};
+        let [u_constants, v_constants] = models.map(|model| cfl_predict_constants!(model));
+        let max = _mm256_set1_epi16(models[0][3] as i16);
+        let zero = _mm256_setzero_si256();
+        let samples = |[average, sign, scale, dc]: [__m256i; 4], luma: &[i16]| -> [u16; 16] {
+            let v = cfl_predict16!(token, luma, [average, sign, scale, dc]);
+            u16x16::simd_from(token, _mm256_min_epi16(_mm256_max_epi16(v, zero), max)).into()
+        };
+        let u_samples = |luma: &[i16]| samples(u_constants, luma);
+        let v_samples = |luma: &[i16]| samples(v_constants, luma);
+        let ([u, v], [u_stride, v_stride]) = (outs, strides);
+        cfl_rows!(
+            width,
+            luma,
+            (u, u_stride, u_samples),
+            (v, v_stride, v_samples)
+        );
     }
 );
 
@@ -913,7 +974,73 @@ mod neon {
                 let high = vqmovun_s16(predict8(token, constants, &luma[8..]));
                 u8x16::simd_from(token, vcombine_u8(low, high)).into()
             };
-            cfl_rows!(width, luma, out, stride, samples);
+            cfl_rows!(width, luma, (out, stride, samples));
+        }
+    );
+
+    fearless_simd::kernel!(
+        /// The NEON `cfl_predict_pair_u8`.
+        #[inline]
+        pub(in super::super) fn cfl_predict_pair_u8(
+            token: Neon,
+            models: [[i32; 4]; 2],
+            luma: &[i16],
+            width: usize,
+            outs: [&mut [u8]; 2],
+            strides: [usize; 2],
+        ) {
+            let [u_constants, v_constants] = models.map(|model| constants(model));
+            let samples = |constants: [int16x8_t; 4], luma: &[i16]| -> [u8; 16] {
+                let low = vqmovun_s16(predict8(token, constants, &luma[..8]));
+                let high = vqmovun_s16(predict8(token, constants, &luma[8..]));
+                u8x16::simd_from(token, vcombine_u8(low, high)).into()
+            };
+            let u_samples = |luma: &[i16]| samples(u_constants, luma);
+            let v_samples = |luma: &[i16]| samples(v_constants, luma);
+            let ([u, v], [u_stride, v_stride]) = (outs, strides);
+            cfl_rows!(
+                width,
+                luma,
+                (u, u_stride, u_samples),
+                (v, v_stride, v_samples)
+            );
+        }
+    );
+
+    fearless_simd::kernel!(
+        /// The NEON `cfl_predict_pair_u16`.
+        #[inline]
+        pub(in super::super) fn cfl_predict_pair_u16(
+            token: Neon,
+            models: [[i32; 4]; 2],
+            luma: &[i16],
+            width: usize,
+            outs: [&mut [u16]; 2],
+            strides: [usize; 2],
+        ) {
+            let [u_constants, v_constants] = models.map(|model| constants(model));
+            let (zero, max) = (vdupq_n_s16(0), vdupq_n_s16(models[0][3] as i16));
+            let clip = |constants: [int16x8_t; 4], luma: &[i16]| {
+                let v = predict8(token, constants, luma);
+                u16x8::simd_from(
+                    token,
+                    vreinterpretq_u16_s16(vminq_s16(vmaxq_s16(v, zero), max)),
+                )
+            };
+            let samples = |constants: [int16x8_t; 4], luma: &[i16]| -> [u16; 16] {
+                token
+                    .combine_u16x8(clip(constants, &luma[..8]), clip(constants, &luma[8..]))
+                    .into()
+            };
+            let u_samples = |luma: &[i16]| samples(u_constants, luma);
+            let v_samples = |luma: &[i16]| samples(v_constants, luma);
+            let ([u, v], [u_stride, v_stride]) = (outs, strides);
+            cfl_rows!(
+                width,
+                luma,
+                (u, u_stride, u_samples),
+                (v, v_stride, v_samples)
+            );
         }
     );
 
@@ -942,7 +1069,7 @@ mod neon {
                     .combine_u16x8(clip(&luma[..8]), clip(&luma[8..]))
                     .into()
             };
-            cfl_rows!(width, luma, out, stride, samples);
+            cfl_rows!(width, luma, (out, stride, samples));
         }
     );
 }

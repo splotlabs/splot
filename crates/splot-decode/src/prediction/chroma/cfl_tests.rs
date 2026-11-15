@@ -695,7 +695,8 @@ fn cfl_predict_lanes_match_scalar_over_random_inputs() {
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
         let max = i32::from(bit_depth.max_sample());
         for _ in 0..400 {
-            let len = 1 + lcg(&mut state) % 70;
+            let width = 4 << (lcg(&mut state) % 5);
+            let len = width * 2 * (1 + lcg(&mut state) % 4);
             let dc = (lcg(&mut state) % (max as usize + 1)) as i32;
             let alpha_q3 = (lcg(&mut state) % 65_536) as i32 - 32_768;
             let luma_ac: Vec<i16> = (0..len)
@@ -703,7 +704,7 @@ fn cfl_predict_lanes_match_scalar_over_random_inputs() {
                 .collect();
             let mut actual = vec![0u16; len];
             let model = [dc, alpha_q3, 0, max];
-            cfl_predict_block(model, &luma_ac, len, &mut actual, len).unwrap();
+            cfl_predict_block(model, &luma_ac, width, &mut actual, width).unwrap();
             let expected: Vec<u16> = luma_ac
                 .iter()
                 .map(|&ac| cfl_predict(model, i32::from(ac)) as u16)
@@ -802,7 +803,7 @@ fn specialised_run<const F: usize>(
     let luma = CflLuma::<_, F>::new(frame, samples, F).unwrap();
     let rows = luma.row(y - 1, clamp_y, min_luma_ref_y).unwrap();
     let mut run = vec![0; len];
-    baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, &mut run));
+    baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, false, &mut run));
     run
 }
 
@@ -826,7 +827,7 @@ fn cfl_luma_runs_match_per_sample_q3_over_random_planes() {
                     let x0 = lcg(&mut state) % (width / 2);
                     let clamp_first = lcg(&mut state).is_multiple_of(2);
                     let mut run = vec![0; (width / 2 - x0).min(70)];
-                    baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, &mut run));
+                    baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, false, &mut run));
                     for (i, &q3) in run.iter().enumerate() {
                         let expected = luma.q3(&rows, x0 + i, clamp_first && i == 0);
                         assert_eq!(i32::from(q3), expected, "x0={x0} i={i}");
@@ -848,6 +849,178 @@ fn cfl_luma_runs_match_per_sample_q3_over_random_planes() {
         }
     }
     assert!(lane_runs > 500, "{lane_runs}");
+}
+
+fn workspace_of<T: ReconSample>(
+    pixel_format: PixelFormat,
+    bit_depth: BitDepth,
+    width: usize,
+    height: usize,
+) -> CurrentFrameWorkspace<T> {
+    let luma = PlaneSize::new(width, height).unwrap();
+    let visible = PlaneRect::new(0, 0, width, height).unwrap();
+    let info = DecodedFrameInfo::new(OutputIndex::new(0), bit_depth, pixel_format, luma, visible);
+    CurrentFrameWorkspace::new(info.unwrap(), T::default()).unwrap()
+}
+
+/// Every format and depth, with random, extreme and asymmetric samples.
+fn random_frames(state: &mut u64, mut check: impl FnMut(&mut u64, &dyn AnyFrame)) {
+    for round in 0..6 {
+        for pixel_format in [
+            PixelFormat::Yuv420,
+            PixelFormat::Yuv422,
+            PixelFormat::Yuv444,
+        ] {
+            let (width, height) = (20 + 2 * (lcg(state) % 60), 12 + 2 * (lcg(state) % 40));
+            let mut frame = workspace_of::<u8>(pixel_format, BitDepth::Eight, width, height);
+            randomise(&mut frame, state, if round == 0 { 1 } else { 255 });
+            if round == 1 {
+                extreme(&mut frame, 255);
+            }
+            check(state, &frame);
+            let mut frame = workspace_of::<u16>(pixel_format, BitDepth::Ten, width, height);
+            randomise(&mut frame, state, 1023);
+            if round == 1 {
+                extreme(&mut frame, 1023);
+            }
+            check(state, &frame);
+        }
+    }
+}
+
+/// Alternating zero and maximum samples in a checkerboard of 3x2 cells.
+fn extreme<T: ReconSample>(frame: &mut CurrentFrameWorkspace<T>, max: u16) {
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let size = frame.plane(plane).unwrap().storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                let sample = T::try_from_u16(if (x / 3 + y / 2) % 2 == 0 { max } else { 0 });
+                frame
+                    .set_reconstructed_sample(plane, x, y, sample.unwrap())
+                    .unwrap();
+            }
+        }
+    }
+}
+
+/// A frame of either sample type, for the format-generic checks.
+trait AnyFrame {
+    fn with_u8(&self) -> Option<&CurrentFrameWorkspace<u8>>;
+    fn with_u16(&self) -> Option<&CurrentFrameWorkspace<u16>>;
+}
+
+impl AnyFrame for CurrentFrameWorkspace<u8> {
+    fn with_u8(&self) -> Option<&CurrentFrameWorkspace<u8>> {
+        Some(self)
+    }
+    fn with_u16(&self) -> Option<&CurrentFrameWorkspace<u16>> {
+        None
+    }
+}
+
+impl AnyFrame for CurrentFrameWorkspace<u16> {
+    fn with_u8(&self) -> Option<&CurrentFrameWorkspace<u8>> {
+        None
+    }
+    fn with_u16(&self) -> Option<&CurrentFrameWorkspace<u16>> {
+        Some(self)
+    }
+}
+
+/// Runs `$body` with `$frame` bound to the frame of either sample type.
+macro_rules! any_frame {
+    ($any:expr, |$frame:ident| $body:expr) => {
+        if let Some($frame) = $any.with_u8() {
+            $body
+        } else if let Some($frame) = $any.with_u16() {
+            $body
+        }
+    };
+}
+
+#[test]
+fn cfl_luma_runs_match_per_sample_q3_in_every_format() {
+    let mut state = 0x5eed_0fc3;
+    let mut past_edge = 0;
+    random_frames(&mut state, |state, any| {
+        any_frame!(any, |frame| for filter in 0..3u8 {
+            with_luma!(frame, filter, |luma| for _ in 0..30 {
+                let chroma = frame.plane(PlaneId::U).unwrap().storage_size();
+                let edge = (luma.plane.width - 1) >> luma.sub_x;
+                let rows = luma.row(
+                    lcg(state) % chroma.height(),
+                    lcg(state).is_multiple_of(2),
+                    None,
+                );
+                let rows = rows.unwrap();
+                let x0 = lcg(state) % (chroma.width() + 2);
+                let (clamp_first, periodic) =
+                    (lcg(state).is_multiple_of(2), lcg(state).is_multiple_of(2));
+                let mut run = vec![0; 1 + lcg(state) % 70];
+                baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, periodic, &mut run));
+                for (i, &q3) in run.iter().enumerate() {
+                    let column = (x0 + i).min(edge) << luma.sub_x;
+                    let clamp = (clamp_first && i == 0) || (periodic && column % 64 == 0);
+                    let expected = luma.q3(&rows, x0 + i, clamp);
+                    assert_eq!(
+                        i32::from(q3),
+                        expected,
+                        "{filter} x0={x0} i={i} {clamp_first} {periodic}"
+                    );
+                }
+                past_edge += usize::from(x0 + run.len() > edge + 1);
+            });
+        });
+    });
+    assert!(past_edge > 500, "{past_edge}");
+}
+
+/// [`CflLuma::fill_luma`] of random blocks, some past the right or bottom
+/// edge, against per-sample [`CflLuma::q3`]: `L` and `lumaLeft`.
+#[test]
+fn cfl_block_luma_matches_per_sample_q3_in_every_format() {
+    let mut state = 0x00b1_0c4a;
+    random_frames(&mut state, |state, any| {
+        any_frame!(any, |frame| for filter in 0..3u8 {
+            with_luma!(frame, filter, |luma| for _ in 0..12 {
+                let chroma = frame.plane(PlaneId::U).unwrap().storage_size();
+                let (log2_w, log2_h) = (2 + lcg(state) % 5, 2 + lcg(state) % 5);
+                let (w, h) = (1usize << log2_w, 1usize << log2_h);
+                let x = 4 * (lcg(state) % chroma.width().div_ceil(4));
+                let y = 4 * (lcg(state) % chroma.height().div_ceil(4));
+                let block = cfl_block(x, y, w, h, 16, frame.info().bit_depth());
+                let mut left = [0; MAX_CFL_AXIS];
+                let mut actual = Vec::new();
+                baseline_simd!(simd => luma.fill_luma(simd, block, (x > 0).then_some(&mut left[..h]), &mut actual))
+                    .unwrap();
+                let (max_x, max_y) = (luma.plane.width - 1, luma.plane.height - 1);
+                for row in 0..h {
+                    let luma_y = clamped_cfl_luma_coordinate(y + row, luma.sub_y, max_y);
+                    let rows = luma
+                        .row(y + row, row == 0 || luma_y.is_multiple_of(64), None)
+                        .unwrap();
+                    for col in 0..w {
+                        let luma_x = clamped_cfl_luma_coordinate(x + col, luma.sub_x, max_x);
+                        let expected =
+                            luma.q3(&rows, x + col, col == 0 || luma_x.is_multiple_of(64));
+                        let got = i32::from(actual[row * w + col]);
+                        assert_eq!(
+                            got, expected,
+                            "{filter} ({x},{y}) {w}x{h} row {row} col {col}"
+                        );
+                    }
+                    if x > 0 {
+                        let rows = luma.row(y + row, row == 0, None).unwrap();
+                        assert_eq!(
+                            i32::from(left[row]),
+                            luma.q3(&rows, x - 1, false),
+                            "left {row}"
+                        );
+                    }
+                }
+            });
+        });
+    });
 }
 
 /// [`CflLuma::fill_luma`] of random blocks inside `frame` against per-sample
@@ -1029,7 +1202,7 @@ fn check_u8_reference_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, st
         for (row, actual) in actual.chunks_exact(block_width).enumerate() {
             let rows = luma.row(y + row, clamp_row0 && row == 0, None).unwrap();
             let mut expected = vec![0; block_width];
-            baseline_simd!(simd => luma.q3_run(simd, &rows, x, clamp_col0, &mut expected));
+            baseline_simd!(simd => luma.q3_run(simd, &rows, x, clamp_col0, false, &mut expected));
             assert_eq!(
                 actual, expected,
                 "F={F} x={x} y={y} {block_width}x{block_height} row={row}"
@@ -1258,4 +1431,212 @@ fn mhccp_blocks_match_spec_capture_derivation_and_prediction() {
     let mut frame = workspace_10bit_420(136, 100);
     randomise(&mut frame, &mut state, 1023);
     assert!(check_mhccp_against_spec(&mut frame, &mut state, BitDepth::Ten) > 60);
+}
+
+/// The scalar `lumaAvg`, DC and `implicitAlpha` of § 7.13.5 sample by
+/// sample: the oracle of [`CflLumaEdges::average_q3`] and
+/// [`CflLumaEdges::chroma_models`].
+fn scalar_models<T: ReconSample>(
+    edges: &CflLumaEdges,
+    above: Option<&[T]>,
+    left: Option<&[T]>,
+    block: CflBlock,
+    neighbours: NeighbourAvailability,
+    derive: bool,
+) -> (i32, (i32, i32)) {
+    let (w, h) = (block.width, block.height);
+    let stepped = |len: usize| if len > 32 { 2 } else { 1 };
+    let sum = |edge: &[i32]| -> u32 {
+        edge.iter()
+            .step_by(stepped(edge.len()))
+            .map(|&v| v as u32)
+            .sum()
+    };
+    let luma = |edge: &[i16]| edge.iter().map(|&v| i32::from(v)).collect::<Vec<_>>();
+    let chroma = |edge: &[T]| {
+        edge.iter()
+            .map(|v| i32::from(v.to_u16()))
+            .collect::<Vec<_>>()
+    };
+    let (mut luma_sum, mut count) = (0, 0);
+    if neighbours.has_above() && block.y > 0 {
+        luma_sum += sum(&luma(&edges.above[..w]));
+        count += (w / stepped(w)) as u32;
+    }
+    if neighbours.has_left() && block.x > 0 {
+        luma_sum += sum(&luma(&edges.left[..h]));
+        count += (h / stepped(h)) as u32;
+    }
+    let bits = block.bit_depth.bits();
+    let average = if count == 0 {
+        8 << (bits - 1)
+    } else {
+        i32::from(approx_divide(luma_sum, count).unwrap().min((8 << bits) - 1))
+    };
+    let dc: T = splot_recon::predict_intra_dc_value_from_edge_sums(
+        block.bit_depth,
+        block.size,
+        left.map(|left| sum(&chroma(&left[..h]))),
+        above.map(|above| sum(&chroma(&above[..w]))),
+    )
+    .unwrap();
+    let (mut num_above, mut num_left) = (0, 0);
+    if derive {
+        let (a, l) = (neighbours.has_above(), neighbours.has_left());
+        (num_above, num_left) = match (a, l) {
+            (true, true) if w > 2 * h => (8, 0),
+            (true, true) if h > 2 * w => (0, 8),
+            (true, true) => (4, 4),
+            _ => (if a { 8 } else { 0 }, if l { 8 } else { 0 }),
+        };
+    }
+    let (num_above, num_left) = (num_above.min(w), num_left.min(h));
+    let (mut sx, mut sxx, mut sy, mut sxy) = (0, 0, 0, 0);
+    for (num, len, luma, samples) in [
+        (num_above, w, &edges.above, above),
+        (num_left, h, &edges.left, left),
+    ] {
+        if num == 0 {
+            continue;
+        }
+        let samples = samples.unwrap();
+        let step = len / num;
+        for i in (step / 2..len).step_by(step) {
+            let (x, y) = (i32::from(luma[i] >> 3), i32::from(samples[i].to_u16()));
+            (sx, sxx, sy, sxy) = (sx + x, sxx + x * x, sy + y, sxy + x * y);
+        }
+    }
+    let count = (num_above + num_left) as i32;
+    let mut alpha = 0;
+    if count > 0 {
+        let (der, nor) = (sxx - sx * sx / count, sxy - sx * sy / count);
+        if der != 0 && nor != 0 {
+            alpha = i32::from(resolve_division(nor, der, CFL_DERIVED_ALPHA_SHIFT));
+        }
+    }
+    (average, (i32::from(dc.to_u16()), alpha))
+}
+
+fn check_lane_models<T: ReconSample>(state: &mut u64, bit_depth: BitDepth) -> usize {
+    let max = u64::from(bit_depth.max_sample());
+    let mut checked = 0;
+    for round in 0..3000 {
+        let (w, h) = (4usize << (lcg(state) % 5), 4usize << (lcg(state) % 5));
+        let pick = |state: &mut u64| match round % 4 {
+            0 => (lcg(state) as u64 % 2) * max,
+            1 => max,
+            _ => lcg(state) as u64 % (max + 1),
+        };
+        let mut edges = CflLumaEdges::default();
+        for v in edges.above.iter_mut().chain(edges.left.iter_mut()) {
+            *v = (8 * pick(state) + lcg(state) as u64 % 8) as i16;
+        }
+        let chroma = |state: &mut u64, len: usize| -> Vec<T> {
+            (0..len)
+                .map(|_| T::try_from_u16(pick(state) as u16).unwrap())
+                .collect()
+        };
+        let lens = [w + lcg(state) % 20, h + lcg(state) % 20];
+        let (above, left) = (chroma(state, lens[0]), chroma(state, lens[1]));
+        let neighbours = NeighbourAvailability::new(
+            !lcg(state).is_multiple_of(4),
+            !lcg(state).is_multiple_of(4),
+            0,
+            0,
+        );
+        let (x, y) = (4 * (lcg(state) % 3), 4 * (lcg(state) % 3));
+        let block = cfl_block(x, y, w, h, 16, bit_depth);
+        let derive = lcg(state).is_multiple_of(2);
+        let above = (neighbours.has_above() && y > 0).then_some(&above[..]);
+        let left = (neighbours.has_left() && x > 0).then_some(&left[..]);
+        let models = edges.chroma_models(
+            above.map(|a| [a]),
+            left.map(|l| [l]),
+            block,
+            neighbours,
+            derive,
+        );
+        let pair = edges.chroma_models(
+            above.map(|a| [a, a]),
+            left.map(|l| [l, l]),
+            block,
+            neighbours,
+            derive,
+        );
+        if models.is_err() {
+            assert!(derive && pair.is_err());
+            continue;
+        }
+        let expected = scalar_models(&edges, above, left, block, neighbours, derive);
+        let average = edges.average_q3(block, neighbours).unwrap();
+        assert_eq!(
+            (average, models.unwrap()[0]),
+            expected,
+            "{w}x{h} ({x},{y}) {neighbours:?} {derive}"
+        );
+        assert_eq!(pair.unwrap(), [expected.1; 2]);
+        checked += 1;
+    }
+    checked
+}
+
+#[test]
+fn cfl_lane_models_match_scalar_sums() {
+    let mut state = 0xd0c_a1fa;
+    assert!(check_lane_models::<u8>(&mut state, BitDepth::Eight) > 1000);
+    assert!(check_lane_models::<u16>(&mut state, BitDepth::Ten) > 1000);
+}
+
+fn check_cfl_predict_pair<T: ReconSample>(max: i32, state: &mut u64) {
+    let (width, height) = (4 << (lcg(state) % 5), 4 << (lcg(state) % 5));
+    let strides = [width + lcg(state) % 9, width + lcg(state) % 9];
+    let sample = |state: &mut u64| (lcg(state) % (8 * max as usize + 1)) as i32;
+    let average = sample(state);
+    let alpha = |state: &mut u64| match lcg(state) % 4 {
+        0 => [-2047, 2047, 0, -4096][lcg(state) % 4],
+        _ => (lcg(state) % 4095) as i32 - 2047,
+    };
+    let models = [0, 1].map(|_| {
+        [
+            (lcg(state) % (max as usize + 1)) as i32,
+            alpha(state),
+            average,
+            max,
+        ]
+    });
+    let luma: Vec<i16> = (0..width * height).map(|_| sample(state) as i16).collect();
+    let sentinel = T::try_from_u16(7).unwrap();
+    let mut outs = strides.map(|stride| vec![sentinel; (height - 1) * stride + width]);
+    let [u, v] = &mut outs;
+    cfl_predict_pair(
+        models,
+        &luma,
+        width,
+        [
+            (u.as_mut_slice(), strides[0]),
+            (v.as_mut_slice(), strides[1]),
+        ],
+    )
+    .unwrap();
+    for ((out, model), stride) in outs.iter().zip(models).zip(strides) {
+        for (i, &got) in out.iter().enumerate() {
+            let (row, col) = (i / stride, i % stride);
+            let expected = if col < width {
+                cfl_predict(model, i32::from(luma[row * width + col])) as u16
+            } else {
+                7
+            };
+            assert_eq!(got.to_u16(), expected, "{width}x{height} {model:?} at {i}");
+        }
+    }
+}
+
+#[test]
+fn cfl_predict_pairs_match_per_sample_formula() {
+    let mut state = 0x9a12;
+    for _ in 0..400 {
+        check_cfl_predict_pair::<u8>(255, &mut state);
+        check_cfl_predict_pair::<u16>(255, &mut state);
+        check_cfl_predict_pair::<u16>(1023, &mut state);
+    }
 }
