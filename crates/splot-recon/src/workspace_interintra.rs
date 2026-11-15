@@ -676,8 +676,11 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// rect whose origin lies outside storage scales nothing.
     ///
     /// # Errors
-    /// Returns [`ReconError`] when the plane is absent or the rect rows are
-    /// not stored.
+    /// Returns [`ReconError`] when the plane is absent, the rect rows are
+    /// not stored, or the storage-clamped width is not a multiple of 4: AV2
+    /// plane storage is `MiCols * 4 >> subX` wide with an even `MiCols`
+    /// (§ 5.18.4.4 `MiCols = 2 * ((FrameWidth + 7) >> 3)`) and BAWP blocks
+    /// start on 4-sample columns, so a decoded block never clamps to one.
     pub fn apply_bawp_rect(
         &mut self,
         plane: PlaneId,
@@ -711,6 +714,11 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         let short = || ReconError::ArithmeticOverflow {
             context: "bawp rectangle rows",
         };
+        if !width.is_multiple_of(4) {
+            return Err(ReconError::ArithmeticOverflow {
+                context: "bawp rectangle width",
+            });
+        }
         let first = self.band_row(rect.y(), height)? * stride + rect.x();
         let rows = self
             .samples
@@ -734,27 +742,13 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                     }
                 }
             };
-            ($rows:expr, $lanes:literal, ragged) => {
-                for row in $rows.chunks_mut(stride) {
-                    let row = row.get_mut(..width).unwrap_or_default();
-                    let (chunks, tail) = row.as_chunks_mut::<$lanes>();
-                    for lanes in chunks {
-                        scale_lanes!(lanes);
-                    }
-                    let mut padded = [0; $lanes];
-                    padded[..tail.len()].copy_from_slice(tail); // splot-copy-ok: zero-padded last chunk of a BAWP row
-                    scale_lanes!(&mut padded);
-                    tail.copy_from_slice(&padded[..tail.len()]); // splot-copy-ok: scaled last chunk back into the frame row
-                }
-            };
         }
         macro_rules! scale_by_width {
             ($rows:expr) => {
                 match width % 16 {
                     0 => scale_rows!($rows, 16),
                     8 => scale_rows!($rows, 8),
-                    4 | 12 => scale_rows!($rows, 4),
-                    _ => scale_rows!($rows, 4, ragged),
+                    _ => scale_rows!($rows, 4),
                 }
             };
         }
@@ -1196,10 +1190,12 @@ mod tests {
                 let frame = (w + 3, h + 1);
                 let (mut workspace, mut want) = noisy_workspace::<T>(bit_depth, frame, w as u32);
                 let rect = PlaneRect::new(3, 1, w + 4, h).unwrap();
-                workspace
-                    .apply_bawp_rect(PlaneId::Y, rect, alpha, beta)
-                    .unwrap();
+                let scaled = workspace.apply_bawp_rect(PlaneId::Y, rect, alpha, beta);
+                assert_eq!(scaled.is_ok(), w % 4 == 0, "{w}x{h}");
                 for (i, sample) in want.iter_mut().enumerate() {
+                    if w % 4 != 0 {
+                        break;
+                    }
                     if i % frame.0 >= 3 && i / frame.0 >= 1 {
                         let scaled = (i32::from(*sample) * i32::from(alpha) + beta) >> 8;
                         *sample = scaled.clamp(0, max) as u16;
@@ -1215,11 +1211,11 @@ mod tests {
         }
     }
 
-    /// § 7.13.3.25 scales of rects clipped at the storage edge to widths
-    /// that are not a multiple of four (chroma storage `MiCols * 2` of an
-    /// odd `MiCols`), against the per-sample `Clip1`.
+    /// § 7.13.3.25 scales of rects clipped at the storage edge, against the
+    /// per-sample `Clip1`; a clamped width that is not a multiple of 4 is an
+    /// error and writes nothing.
     #[test]
-    fn bawp_scale_of_ragged_widths_matches_the_sample_oracle() {
+    fn bawp_scale_of_clipped_rects_matches_the_sample_oracle() {
         check_bawp_scales::<u8>(BitDepth::Eight);
         check_bawp_scales::<u16>(BitDepth::Ten);
     }
