@@ -618,59 +618,84 @@ fn ext_warp_integer_translation_shifts_the_source_window() {
 
 /// Fractional translations at all four plane edges and inside: every
 /// sample is the per-tap § 7.13.3.20 sum of the clamped reference reads.
+/// The extended-warp unit against the per-tap trace at every plane border
+/// and corner, of 8- and 10-bit planes, with the reference bounds the whole
+/// plane, inside it, and past its right edge.
 #[test]
 fn ext_warp_unit_matches_the_per_tap_sum_at_edges() {
     let (ref_w, ref_h) = (24usize, 20usize);
-    let samples = noise_samples(ref_w * ref_h, 1023, 11);
-    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-    let fetch = |row: i32, col: i32| {
-        let (row, col) = (
-            row.clamp(0, ref_h as i32 - 1),
-            col.clamp(0, ref_w as i32 - 1),
-        );
-        i32::from(samples[row as usize * ref_w + col as usize])
-    };
     let mut cases = vec![
         (0, 0, -150_000, -90_000, 0usize, 0usize),
         (16, 12, 170_000, 140_000, 1, 1),
         (8, 4, 12_345, 54_321, 0, 1),
         (4, 8, -7_777, 33_000, 1, 0),
+        (16, 0, 150_000, -90_000, 1, 0),
+        (0, 12, -150_000, 140_000, 0, 1),
     ];
     for block in 0..20i32 {
         let (tx, ty) = (block * 9_973 - 90_000, 70_000 - block * 7_919);
         let (i4, j4) = (block as usize % 2, block as usize / 2 % 2);
         cases.push((block % 5 * 4, block / 5 * 4, tx, ty, i4, j4));
     }
-    for (block_x, block_y, tx, ty, i4, j4) in cases {
-        let mut params = default_params(block_x, block_y, ref_w as i32, ref_h as i32);
-        params.bit_depth = BitDepth::Ten;
-        params.warp_params[0] = tx;
-        params.warp_params[1] = ty;
-        let x4 = i64::from(block_x + j4 as i32 * 4 + 2) * 65536 + i64::from(tx);
-        let y4 = i64::from(block_y + i4 as i32 * 4 + 2) * 65536 + i64::from(ty);
-        let (ix4, iy4) = ((x4 >> 16) as i32, (y4 >> 16) as i32);
-        let taps = |s: i64| &EXT_WARPED_FILTERS[round2_i32((s & 0xffff) as i32, 10) as usize];
-        let (taps_x, taps_y) = (taps(x4), taps(y4));
-        let mut intermediate = [0i32; 36];
-        for k in 0..9 {
-            for l in 0..4 {
-                let sum: i32 = (0..6)
-                    .map(|m| taps_x[m] * fetch(iy4 + k as i32 - 4, ix4 + (l + m) as i32 - 4))
-                    .sum();
-                intermediate[k * 4 + l] = round2_i32(sum, INTER_ROUND0);
+    let bounds = [
+        [0, 0, ref_w as i32 - 1, ref_h as i32 - 1],
+        [3, 2, 17, 15],
+        [5, 0, ref_w as i32 + 6, ref_h as i32 - 1],
+    ];
+    for (ten_bit, [first_x, first_y, last_x, last_y]) in [false, true]
+        .into_iter()
+        .flat_map(|ten_bit| bounds.map(|b| (ten_bit, b)))
+    {
+        let samples = noise_samples(ref_w * ref_h, if ten_bit { 1023 } else { 255 }, 11);
+        let fetch = |row: i32, col: i32| {
+            let row = row.clamp(first_y, last_y);
+            let col = col.clamp(first_x, last_x).min(ref_w as i32 - 1);
+            i32::from(samples[row as usize * ref_w + col as usize])
+        };
+        let bytes = samples.iter().map(|&s| s as u8).collect::<Vec<u8>>();
+        for &(block_x, block_y, tx, ty, i4, j4) in &cases {
+            let mut params = default_params(block_x, block_y, ref_w as i32, ref_h as i32);
+            [params.first_x, params.first_y, params.last_x, params.last_y] =
+                [first_x, first_y, last_x, last_y];
+            params.bit_depth = if ten_bit {
+                BitDepth::Ten
+            } else {
+                BitDepth::Eight
+            };
+            params.warp_params[0] = tx;
+            params.warp_params[1] = ty;
+            let x4 = i64::from(block_x + j4 as i32 * 4 + 2) * 65536 + i64::from(tx);
+            let y4 = i64::from(block_y + i4 as i32 * 4 + 2) * 65536 + i64::from(ty);
+            let (ix4, iy4) = ((x4 >> 16) as i32, (y4 >> 16) as i32);
+            let taps = |s: i64| &EXT_WARPED_FILTERS[round2_i32((s & 0xffff) as i32, 10) as usize];
+            let (taps_x, taps_y) = (taps(x4), taps(y4));
+            let mut intermediate = [0i32; 36];
+            for k in 0..9 {
+                for l in 0..4 {
+                    let sum: i32 = (0..6)
+                        .map(|m| taps_x[m] * fetch(iy4 + k as i32 - 4, ix4 + (l + m) as i32 - 4))
+                        .sum();
+                    intermediate[k * 4 + l] = round2_i32(sum, INTER_ROUND0);
+                }
             }
-        }
-        for compound in [false, true] {
-            let round1 = if compound { 7 } else { 11 };
-            let want: [i32; 16] = core::array::from_fn(|index| {
-                let (k, l) = (index / 4, index % 4);
-                let sum = (0..6)
-                    .map(|m| taps_y[m] * intermediate[(k + m) * 4 + l])
-                    .sum();
-                round2_i32(sum, round1)
-            });
-            let got = ext_warp_predict_unit(&view, &params, i4, j4, compound).unwrap();
-            assert_eq!(got, want, "{block_x} {block_y} {tx} {ty} {compound}");
+            for compound in [false, true] {
+                let round1 = if compound { 7 } else { 11 };
+                let want: [i32; 16] = core::array::from_fn(|index| {
+                    let (k, l) = (index / 4, index % 4);
+                    let sum = (0..6)
+                        .map(|m| taps_y[m] * intermediate[(k + m) * 4 + l])
+                        .sum();
+                    round2_i32(sum, round1)
+                });
+                let got = if ten_bit {
+                    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+                    ext_warp_predict_unit(&view, &params, i4, j4, compound)
+                } else {
+                    let view = ReferencePlaneView::new(&bytes, ref_w, ref_h).unwrap();
+                    ext_warp_predict_unit(&view, &params, i4, j4, compound)
+                };
+                assert_eq!(got.unwrap(), want, "{params:?} {i4} {j4} {compound}");
+            }
         }
     }
 }
@@ -1055,6 +1080,8 @@ fn eight_bit_sections_with_full_shear_match_the_spec_trace() {
         ],
         [0, 0, unit + 64, 4000, -3000, unit - 64],
         [translation(1, 0, 0), 0, unit, 0, 0, unit + 2000],
+        [0, 0, unit + 32000, 8000, -30000, unit + 16000],
+        [0, 0, unit - 32000, -8000, 30000, unit - 16000],
     ];
     for samples in &textures {
         let bytes = samples.iter().map(|&s| s as u8).collect::<Vec<u8>>();
@@ -1116,12 +1143,13 @@ fn eight_bit_kernels_match_the_spec_trace_for_random_models() {
         }
         let mut params = default_params(0, 0, ref_w as i32, ref_h as i32);
         params.warp_params = warp_params;
-        params.subsampling_x = u8::from(seed % 3 == 0);
-        params.subsampling_y = params.subsampling_x;
+        params.subsampling_x = u8::from(seed % 3 != 1);
+        params.subsampling_y = u8::from(seed % 3 == 0);
         let Ok(prepared) = PreparedWarpPrediction::new(&params) else {
             continue;
         };
         checked += 1;
+        ten_bit_kernels_match_the_spec_trace(seed, &params);
         let (x, y) = (8 * (seed as usize % 6), 8 * (seed as usize % 5));
         let (width, height) = (24, 16);
         let stride = width + 5;
@@ -1159,6 +1187,57 @@ fn eight_bit_kernels_match_the_spec_trace_for_random_models() {
         }
     }
     assert!(checked >= 24, "only {checked} valid models");
+}
+
+/// The 16-bit row and section kernels of
+/// [`eight_bit_kernels_match_the_spec_trace_for_random_models`] on 10-bit
+/// noise, and on all-maximum and checkerboard samples.
+fn ten_bit_kernels_match_the_spec_trace(seed: u32, params: &WarpPredictBlockParams) {
+    let (ref_w, ref_h) = (72usize, 56usize);
+    let samples = match seed % 3 {
+        0 => noise_samples(ref_w * ref_h, 1023, seed),
+        1 => vec![1023u16; ref_w * ref_h],
+        _ => (0..ref_w * ref_h)
+            .map(|index| 1023 * ((index + index / ref_w) % 2) as u16)
+            .collect(),
+    };
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let params = WarpPredictBlockParams {
+        bit_depth: BitDepth::Ten,
+        ..*params
+    };
+    let prepared = PreparedWarpPrediction::new(&params).unwrap();
+    let (x, y, width, height, stride) =
+        (8 * (seed as usize % 6), 8 * (seed as usize % 5), 24, 16, 29);
+    let mut clipped = vec![0u16; stride * height];
+    prepared
+        .predict_clipped_into(&view, [x, y, width, height], &mut clipped, stride)
+        .unwrap();
+    for local_y in (0..height).step_by(8) {
+        for local_x in (0..width).step_by(8) {
+            let section = WarpPredictBlockParams {
+                block_x: (x + local_x) as i32,
+                block_y: (y + local_y) as i32,
+                ..params
+            };
+            let want = reference_warp_8x8(&samples, ref_w, ref_h, &section);
+            for (row, want) in want.chunks_exact(8).enumerate() {
+                let start = (local_y + row) * stride + local_x;
+                assert_eq!(
+                    clipped[start..start + 8],
+                    *want,
+                    "{params:?} {local_x} {local_y}"
+                );
+            }
+            let want =
+                reference_warp_rounded(&samples, ref_w, ref_h, &section, INTER_ROUND1_COMPOUND);
+            let mut got = [0i32; 64];
+            prepared
+                .predict_block_into(&view, section.block_x, section.block_y, true, &mut got)
+                .unwrap();
+            assert!(got.iter().map(|&v| i64::from(v)).eq(want), "{params:?}");
+        }
+    }
 }
 
 /// The clipped-window swizzle and the partial row store against the
