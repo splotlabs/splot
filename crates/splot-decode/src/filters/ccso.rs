@@ -864,11 +864,8 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
             .zip(taps0.chunks_exact(2 * step))
             .zip(taps1.chunks_exact(2 * step))
             .zip(outputs.chunks_exact_mut(2 * CCSO_LANES));
-        for (((centers, taps0), taps1), output) in wide_lanes {
-            let Some(index) = wide_index(centers, taps0, taps1) else {
-                break;
-            };
-            let offset = ccso_lookup(&tables, blocks, index).bitcast::<i8x32<S>>();
+        let add = |offset: u8x32<S>, output: &mut [D]| {
+            let offset = offset.bitcast::<i8x32<S>>();
             if let Some(bytes) = D::u8_slice_mut(&mut *output)
                 && config.max_sample == i32::from(u8::MAX)
             {
@@ -878,8 +875,7 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
                     .saturating_add(up.bitcast::<u8x32<S>>())
                     .saturating_sub(down.bitcast::<u8x32<S>>())
                     .store_slice(bytes);
-                x += 2 * CCSO_LANES;
-                continue;
+                return;
             }
             let (low, high) = simd.widen_i8x32(offset);
             for (output, offset) in output.chunks_exact_mut(CCSO_LANES).zip([low, high]) {
@@ -891,8 +887,15 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
                     .min(max_sample);
                 store_lanes(lanes.bitcast(), output);
             }
-            x += 2 * CCSO_LANES;
-        }
+        };
+        let chunk = (&tables, wide_index, add);
+        x += match blocks {
+            1 => ccso_wide_chunks::<_, D, L, 1>(wide_lanes, chunk),
+            2 => ccso_wide_chunks::<_, D, L, 2>(wide_lanes, chunk),
+            3 => ccso_wide_chunks::<_, D, L, 3>(wide_lanes, chunk),
+            4 => ccso_wide_chunks::<_, D, L, 4>(wide_lanes, chunk),
+            _ => ccso_wide_chunks::<_, D, L, 5>(wide_lanes, chunk),
+        };
     }
     let done = (x - first) / CCSO_LANES * step;
     let lanes = centers
@@ -1000,6 +1003,30 @@ fn ccso_lookup<S: Simd, V: SimdInt<S, Element = u8, ByteVector = V>>(
         offset = index.simd_gt(16 * block - 1).select(entries, offset);
     }
     offset
+}
+
+/// Filters the 32-column chunks of `chunks` with a `BLOCKS`-block offset
+/// table, fixed per instance so the loop does not branch on it, and returns
+/// the columns it filtered.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn ccso_wide_chunks<'a, S: Simd, D: ReconSample, L: ReconSample, const BLOCKS: usize>(
+    chunks: impl Iterator<Item = (((&'a [L], &'a [L]), &'a [L]), &'a mut [D])>,
+    (tables, index, add): (
+        &[u8x32<S>; CCSO_LUT_LEN / 16],
+        impl Fn(&[L], &[L], &[L]) -> Option<u8x32<S>>,
+        impl Fn(u8x32<S>, &mut [D]),
+    ),
+) -> usize {
+    let mut done = 0;
+    for (((centers, taps0), taps1), output) in chunks {
+        let Some(index) = index(centers, taps0, taps1) else {
+            break;
+        };
+        add(ccso_lookup(tables, BLOCKS, index), output);
+        done += 2 * CCSO_LANES;
+    }
+    done
 }
 
 /// The lane numbers of a CCSO chunk.
