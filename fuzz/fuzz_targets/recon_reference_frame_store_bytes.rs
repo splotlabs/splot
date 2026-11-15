@@ -3,19 +3,17 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use splot_recon::{ReconError, ReferenceFrameStore, ReferenceRefreshMask, ReferenceSlot};
+use splot_recon::{ReconError, ReferenceFrameStore, ReferenceSlot};
 
 const MAX_RAW_CAPACITY: usize = 32;
 const MAX_RAW_SLOT: usize = 20;
 const MAX_OPERATIONS: usize = 64;
 const PAYLOAD_BYTES: usize = 4;
-const VALID_REFRESH_BITS: u32 = (1u32 << ReferenceSlot::MAX_SLOTS) - 1;
 
 fuzz_target!(|data: &[u8]| {
     let mut input = FuzzInput::new(data);
     assert_eq!(ReferenceSlot::MAX_SLOTS, 16);
     assert_slot_construction();
-    assert_refresh_mask_construction(mask_from_input(&mut input));
     assert_capacity_construction(input.byte());
 
     let initial_capacity = capacity_from_seed(input.byte());
@@ -23,7 +21,7 @@ fuzz_target!(|data: &[u8]| {
     let mut case = StoreCase::new(initial_capacity);
 
     for _ in 0..operation_count {
-        match input.byte() % 12 {
+        match input.byte() % 9 {
             0 => {
                 let capacity = capacity_from_seed(input.byte());
                 case.reset(capacity);
@@ -55,23 +53,15 @@ fuzz_target!(|data: &[u8]| {
             7 => {
                 case.assert_entries();
             }
-            8 => {
-                let raw_mask = mask_from_input(&mut input);
-                assert_refresh_mask(raw_mask);
-            }
-            9 => {
-                let raw_mask = mask_from_input(&mut input);
-                let raw_slot = raw_slot_from_seed(input.byte());
-                assert_refresh_contains(raw_mask, raw_slot);
-            }
-            10 => {
-                let raw_mask = mask_from_input(&mut input);
-                assert_refresh_slots(raw_mask);
-            }
             _ => {
                 let raw_mask = mask_from_input(&mut input);
                 let payload = payload_from_input(&mut input).into_meta();
-                case.assert_refresh(raw_mask, payload);
+                for raw_slot in
+                    (0..ReferenceSlot::MAX_SLOTS).filter(|slot| raw_mask & (1 << slot) != 0)
+                {
+                    let meta = refresh_payload_meta(payload, slot_from_valid_index(raw_slot));
+                    case.assert_put(raw_slot, Payload::new(meta));
+                }
             }
         }
         case.assert_invariants();
@@ -97,58 +87,6 @@ fn assert_slot(raw_slot: usize) {
         }
         Err(other) => panic!("unexpected reference slot error: {other:?}"),
     }
-}
-
-fn assert_refresh_mask_construction(raw_mask: u32) {
-    assert_refresh_mask(0);
-    assert_refresh_mask(1);
-    assert_refresh_mask(1 << 15);
-    assert_refresh_mask(1 << 16);
-    assert_refresh_mask(raw_mask);
-}
-
-fn assert_refresh_mask(raw_mask: u32) {
-    match ReferenceRefreshMask::new(raw_mask) {
-        Ok(mask) => {
-            assert_eq!(raw_mask & !VALID_REFRESH_BITS, 0);
-            assert_eq!(mask.bits(), raw_mask);
-            assert_eq!(mask.is_empty(), raw_mask == 0);
-            assert_refresh_slots(raw_mask);
-        }
-        Err(ReconError::InvalidReferenceRefreshMask { mask, max_slots }) => {
-            assert_ne!(raw_mask & !VALID_REFRESH_BITS, 0);
-            assert_eq!(mask, raw_mask);
-            assert_eq!(max_slots, ReferenceSlot::MAX_SLOTS);
-        }
-        Err(other) => panic!("unexpected refresh mask error: {other:?}"),
-    }
-}
-
-fn assert_refresh_contains(raw_mask: u32, raw_slot: usize) {
-    let Ok(mask) = ReferenceRefreshMask::new(raw_mask) else {
-        return;
-    };
-    let Some(slot) = ReferenceSlot::new(raw_slot).ok() else {
-        return;
-    };
-
-    assert_eq!(
-        mask.contains(slot),
-        (raw_mask & (1u32 << slot.index())) != 0
-    );
-}
-
-fn assert_refresh_slots(raw_mask: u32) {
-    let Ok(mask) = ReferenceRefreshMask::new(raw_mask) else {
-        return;
-    };
-
-    let slots: Vec<usize> = mask.slots().map(ReferenceSlot::index).collect();
-    let expected: Vec<usize> = (0..ReferenceSlot::MAX_SLOTS)
-        .filter(|slot| (raw_mask & (1u32 << slot)) != 0)
-        .collect();
-    assert_eq!(slots, expected);
-    assert!(slots.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
 fn assert_capacity_construction(seed: u8) {
@@ -216,64 +154,6 @@ impl StoreCase {
         if let Some(store) = self.store.as_mut() {
             store.clear();
             self.oracle.fill(None);
-        }
-    }
-
-    fn assert_refresh(&mut self, raw_mask: u32, payload: PayloadMeta) {
-        assert_refresh_mask(raw_mask);
-        let Ok(mask) = ReferenceRefreshMask::new(raw_mask) else {
-            return;
-        };
-        let Some(store) = self.store.as_mut() else {
-            return;
-        };
-
-        let before = self.oracle.clone();
-        let selected: Vec<usize> = mask.slots().map(ReferenceSlot::index).collect();
-        let out_of_capacity = selected.iter().any(|slot| *slot >= self.oracle.len());
-        let mut calls = Vec::new();
-        let result = store.refresh_slots_with(mask, |slot| {
-            calls.push(slot.index());
-            Payload::new(refresh_payload_meta(payload, slot))
-        });
-
-        if out_of_capacity {
-            match result {
-                Err(ReconError::ReferenceRefreshMaskOutOfBounds {
-                    mask: observed,
-                    capacity,
-                }) => {
-                    assert_eq!(observed, raw_mask);
-                    assert_eq!(capacity, self.oracle.len());
-                    assert!(calls.is_empty());
-                    assert_eq!(self.oracle, before);
-                }
-                Err(other) => panic!("unexpected refresh error: {other:?}"),
-                Ok(_) => panic!("out-of-capacity refresh mask unexpectedly succeeded"),
-            }
-            return;
-        }
-
-        let outcome = match result {
-            Ok(outcome) => outcome,
-            Err(other) => panic!("valid refresh mask failed: {other:?}"),
-        };
-        assert_eq!(calls, selected);
-
-        let replacements: Vec<(usize, Option<PayloadMeta>)> = outcome
-            .into_replacements()
-            .into_iter()
-            .map(|replacement| {
-                let slot = replacement.slot().index();
-                (slot, replacement.into_previous().map(Payload::into_meta))
-            })
-            .collect();
-        let expected_replacements: Vec<(usize, Option<PayloadMeta>)> =
-            selected.iter().map(|slot| (*slot, before[*slot])).collect();
-        assert_eq!(replacements, expected_replacements);
-
-        for slot in selected {
-            self.oracle[slot] = Some(refresh_payload_meta(payload, slot_from_valid_index(slot)));
         }
     }
 

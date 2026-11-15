@@ -540,27 +540,11 @@ pub enum ReconError {
         /// Maximum supported slot count.
         max_slots: usize,
     },
-    /// A caller-derived reference refresh mask selected unsupported bits.
-    #[error("reference refresh mask 0x{mask:08x} contains bits outside 0..{max_slots}")]
-    InvalidReferenceRefreshMask {
-        /// Requested refresh mask bits.
-        mask: u32,
-        /// Maximum supported slot count.
-        max_slots: usize,
-    },
     /// A valid reference slot was outside a particular store's capacity.
     #[error("reference slot {} is outside store capacity {capacity}", .slot.index())]
     ReferenceSlotOutOfBounds {
         /// Requested reference slot.
         slot: ReferenceSlot,
-        /// Store capacity used for the bounds check.
-        capacity: usize,
-    },
-    /// A valid refresh mask selected a slot outside a store's capacity.
-    #[error("reference refresh mask 0x{mask:08x} selects a slot outside store capacity {capacity}")]
-    ReferenceRefreshMaskOutOfBounds {
-        /// Requested refresh mask bits.
-        mask: u32,
         /// Store capacity used for the bounds check.
         capacity: usize,
     },

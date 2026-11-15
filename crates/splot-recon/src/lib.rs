@@ -201,8 +201,7 @@ pub use reconstruct_block::{
     reconstruct_transform_block_residual_with_secondary,
 };
 pub use reference::{
-    ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,
-    ReferenceRefreshMask, ReferenceRefreshOutcome, ReferenceRefreshSlots, ReferenceSlot,
+    ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameStore, ReferenceSlot,
 };
 pub use secondary_transform::{
     SecondaryInverseTransform, SecondaryTransformLayout, secondary_inverse_transform,
