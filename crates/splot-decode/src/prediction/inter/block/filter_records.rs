@@ -76,13 +76,15 @@ impl TileFilterRecords {
         ];
         let mut published = [0; 3];
         for leaf in &self.inter_leaves {
-            self.copy_parsed(
-                published..leaf.marks,
-                deblock_blocks,
-                chroma_deblock_blocks,
-                tx_skip_records,
-            );
-            published = leaf.marks;
+            if published != leaf.marks {
+                self.copy_parsed(
+                    published..leaf.marks,
+                    deblock_blocks,
+                    chroma_deblock_blocks,
+                    tx_skip_records,
+                );
+                published = leaf.marks;
+            }
             record_inter_deblock_geometry(
                 deblock_blocks,
                 chroma_deblock_blocks,
@@ -493,21 +495,23 @@ mod tests {
         for (index, leaf) in leaves.iter().enumerate() {
             parsed(&mut unit, 90 + index as u16);
             parsed(&mut expected, 90 + index as u16);
-            unit.defer_inter_leaf(leaf, (2, 2), None, None, 40, false);
-            record_inter_deblock_geometry(
-                &mut expected.deblock_blocks,
-                &mut expected.chroma_deblock_blocks,
-                &mut expected.tx_skip_records,
-                leaf,
-                (2, 2),
-                chroma,
-                None,
-                &[],
-                None,
-                40,
-                false,
-            )
-            .unwrap();
+            for _ in 0..2 {
+                unit.defer_inter_leaf(leaf, (2, 2), None, None, 40, false);
+                record_inter_deblock_geometry(
+                    &mut expected.deblock_blocks,
+                    &mut expected.chroma_deblock_blocks,
+                    &mut expected.tx_skip_records,
+                    leaf,
+                    (2, 2),
+                    chroma,
+                    None,
+                    &[],
+                    None,
+                    40,
+                    false,
+                )
+                .unwrap();
+            }
         }
         parsed(&mut unit, 99);
         parsed(&mut expected, 99);
