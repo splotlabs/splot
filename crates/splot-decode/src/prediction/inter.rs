@@ -942,11 +942,9 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
     residual_coeffs: &[i32],
     qindex: u32,
     luma_use_tcq: bool,
-    enable_inter_ddt: bool,
-    use_intrabc: bool,
+    use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<()> {
-    let use_ddt = enable_inter_ddt && !use_intrabc;
     let blocks = residual
         .blocks(residual_blocks)
         .ok_or(DecodeHeaderStateError::InvalidInterResidualReconstruction)?;

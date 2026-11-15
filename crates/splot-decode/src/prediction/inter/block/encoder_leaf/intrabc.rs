@@ -245,7 +245,6 @@ impl EncoderInterTile {
             0,
             self.qindex,
             false,
-            false,
             self.bit_depth,
         )
         .reconstruct(&[], &[], workspace)

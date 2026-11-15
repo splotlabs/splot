@@ -646,8 +646,8 @@ impl EncoderInterTile {
             true,
             self.sequence
                 .transform_quant_entropy
-                .is_some_and(|tq| tq.enable_inter_ddt),
-            use_intrabc,
+                .is_some_and(|tq| tq.enable_inter_ddt)
+                && !use_intrabc,
             self.bit_depth,
         )
     }

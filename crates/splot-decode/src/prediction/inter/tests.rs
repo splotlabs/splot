@@ -569,7 +569,6 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
         101,
         false,
         true,
-        false,
         BitDepth::Eight,
     )
     .unwrap();
@@ -634,8 +633,7 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
         &quant,
         150,
         false,
-        true,
-        true,
+        false,
         BitDepth::Ten,
     )
     .unwrap();

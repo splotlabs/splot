@@ -436,7 +436,6 @@ impl InterReconCommand {
             self.qindex,
             shared.luma_use_tcq,
             shared.residual_use_ddt,
-            false,
             shared.bit_depth,
         )
     }
@@ -523,7 +522,7 @@ impl<T: ReconSample> InterReconScratch<T> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn reconstruct_logged(
+    pub(super) fn reconstruct(
         &mut self,
         command: &mut InterReconCommand,
         sink: &mut WorkspaceSink<'_, '_, T>,
@@ -545,38 +544,6 @@ impl<T: ReconSample> InterReconScratch<T> {
                 sink,
                 block_decoded,
                 temporal_records,
-                residual_blocks,
-                residual_coeffs,
-                shared,
-                (tip, refined),
-                interintra,
-            )
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn reconstruct(
-        &mut self,
-        command: &mut InterReconCommand,
-        workspace: &mut CurrentFrameWorkspace<T>,
-        block_decoded: &TileBlockDecodedState,
-        temporal: &mut Vec<TemporalMotionBlock>,
-        residual_blocks: &[InterResidualBlock],
-        residual_coeffs: &[i32],
-        shared: &ReconShared<'_, T>,
-    ) -> Result<()> {
-        let Self {
-            tip,
-            refined,
-            interintra,
-            mc,
-            ..
-        } = self;
-        mc.with_installed(|| {
-            command.reconstruct_ordered(
-                &mut WorkspaceSink::Frame(workspace),
-                block_decoded,
-                temporal,
                 residual_blocks,
                 residual_coeffs,
                 shared,

@@ -81,7 +81,6 @@ pub(super) struct PendingIntrabcBlock {
     pub(super) segment_id: u8,
     pub(super) qindex: u32,
     pub(super) luma_use_tcq: bool,
-    pub(super) residual_use_ddt: bool,
     pub(super) bit_depth: BitDepth,
     pub(super) subsampling: (u32, u32),
     /// § 7.13.3.25 `AvailU` / `AvailL`, which `is_inside` scopes to the current tile.
@@ -177,7 +176,6 @@ fn resolve_pending_intrabc(
         segment_id,
         qindex,
         luma_use_tcq,
-        residual_use_ddt,
         bit_depth,
         subsampling,
         avail_up,
@@ -245,7 +243,6 @@ fn resolve_pending_intrabc(
         segment_id,
         qindex,
         luma_use_tcq,
-        residual_use_ddt,
         bit_depth,
     );
     state.grid.record_motion(

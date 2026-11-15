@@ -166,7 +166,6 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
         100,
         false,
         false,
-        false,
         BitDepth::Eight,
     )
     .expect_err("mismatched CCTX pair");
@@ -197,7 +196,6 @@ fn invalid_inter_residual_block_ranges_are_reconstruction_state() {
             &[],
             &[],
             0,
-            false,
             false,
             false,
             BitDepth::Eight,
@@ -240,7 +238,6 @@ fn invalid_inter_residual_tx_size_is_reconstruction_state() {
         &residual_blocks,
         &[],
         0,
-        false,
         false,
         false,
         BitDepth::Eight,
@@ -296,7 +293,6 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
         &residual_blocks,
         &[],
         0,
-        false,
         false,
         false,
         BitDepth::Eight,

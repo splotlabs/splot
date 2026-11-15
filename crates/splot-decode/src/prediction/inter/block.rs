@@ -1527,7 +1527,6 @@ fn decode_block<T: ReconSample>(
                         segment_id,
                         qindex: block_qindex,
                         luma_use_tcq: params.luma_use_tcq,
-                        residual_use_ddt: params.residual_use_ddt,
                         bit_depth: params.bit_depth,
                         subsampling: (u32::from(sub_x), u32::from(sub_y)),
                         avail_up,
