@@ -274,6 +274,36 @@ pub fn wedge_mask_rows(
     Ok(rows.map(move |row| row.get(..luma_width).unwrap_or_default()))
 }
 
+/// The 8x8 unit at luma `(x, y)` of the § 7.13.3.27 wedge mask of a
+/// `luma_width x luma_height` block, row by row.
+///
+/// # Errors
+/// Returns [`ReconError`] when the block size or the wedge index does not
+/// select an AV2 wedge mask, or when the unit leaves the block.
+pub fn wedge_mask_unit(
+    luma_width: usize,
+    luma_height: usize,
+    (wedge_index, sign): (usize, bool),
+    (x, y): (usize, usize),
+) -> Result<[u8; 64]> {
+    let window = wedge_mask_window(luma_width, luma_height, wedge_index, sign)?;
+    let outside = || ReconError::ArithmeticOverflow {
+        context: "wedge mask unit position",
+    };
+    if x + 8 > luma_width || y + 8 > luma_height {
+        return Err(outside());
+    }
+    let mut unit = [0; 64];
+    for (row, lanes) in unit.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+        let start = (y + row) * MASK_MASTER_SIZE + x;
+        *lanes = *window
+            .get(start..)
+            .and_then(<[u8]>::first_chunk)
+            .ok_or_else(outside)?;
+    }
+    Ok(unit)
+}
+
 /// Writes the wedge mask of a `luma` block for a `w x h` plane block, as
 /// § 7.13.3.30 subsamples it by `(sub_x, sub_y)`, into the packed `mask`.
 /// The mask does not depend on the bit depth.

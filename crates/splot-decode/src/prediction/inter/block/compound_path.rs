@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::symbol::SymbolDecoder;
-use splot_recon::wedge_mask_rows;
+use splot_recon::wedge_mask_unit;
 
 use super::super::CompoundOrderHint;
 use super::super::compound::{
@@ -961,6 +961,8 @@ fn wedge_temporal_allowed_lists(
 
 /// The lists that keep a temporal record of the 8x8 unit at `(x, y)` of a
 /// wedge block: one list where the mask of 60 or more samples favours it.
+/// Lane counts of `mask > 60` and `mask < 4` stay at most 4, their sums at
+/// most 64.
 #[cold]
 #[inline(never)]
 fn wedge_dominant_lists(
@@ -970,14 +972,18 @@ fn wedge_dominant_lists(
     x: usize,
     y: usize,
 ) -> Result<[bool; 2]> {
-    let mut dominant = [0usize; 2];
-    let rows = wedge_mask_rows(luma_width, luma_height, usize::from(index), sign)?;
-    for row in rows.skip(y).take(8) {
-        for &mask in row.get(x..x + 8).unwrap_or_default() {
-            dominant[0] += usize::from(mask > 60);
-            dominant[1] += usize::from(mask < 4);
+    use fearless_simd::{prelude::*, u8x16};
+    let unit = wedge_mask_unit(luma_width, luma_height, (usize::from(index), sign), (x, y))?;
+    let dominant = crate::baseline_simd!(simd => {
+        let (one, zero) = (u8x16::splat(simd, 1), u8x16::splat(simd, 0));
+        let (mut first, mut second) = (zero, zero);
+        for lanes in unit.as_chunks::<16>().0 {
+            let mask = u8x16::load_array_ref(simd, lanes);
+            first += mask.saturating_sub(u8x16::splat(simd, 60)).min(one);
+            second += u8x16::splat(simd, 4).saturating_sub(mask).min(one);
         }
-    }
+        [first.reduce_sum(), second.reduce_sum()]
+    });
     Ok(if dominant[0] >= 60 {
         [true, false]
     } else if dominant[1] >= 60 {

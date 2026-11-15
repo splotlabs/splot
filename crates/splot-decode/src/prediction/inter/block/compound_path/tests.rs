@@ -1344,3 +1344,40 @@ fn compound_temporal_motion_merges_records_only_for_uniform_blocks() {
     };
     assert_eq!(records(16, 16, wedge, [None, None]).len(), 4);
 }
+
+/// Every 8x8 unit of every wedge block size, index and sign: the lane
+/// counts pick the lists the per-sample count of the mask rows picks.
+#[test]
+fn wedge_dominant_lists_match_the_sample_count() {
+    let sides = [8, 16, 32, 64];
+    let mut seen = [0usize; 3];
+    for (width, height) in sides.into_iter().flat_map(|w| sides.map(|h| (w, h))) {
+        for (index, sign) in (0..68u8).flat_map(|index| [(index, false), (index, true)]) {
+            for (x, y) in (0..height)
+                .step_by(8)
+                .flat_map(|y| (0..width).step_by(8).map(move |x| (x, y)))
+            {
+                let mut dominant = [0usize; 2];
+                let rows = splot_recon::wedge_mask_rows(width, height, usize::from(index), sign);
+                for row in rows.unwrap().skip(y).take(8) {
+                    for &mask in &row[x..x + 8] {
+                        dominant[0] += usize::from(mask > 60);
+                        dominant[1] += usize::from(mask < 4);
+                    }
+                }
+                let want = if dominant[0] >= 60 {
+                    [true, false]
+                } else if dominant[1] >= 60 {
+                    [false, true]
+                } else {
+                    [true; 2]
+                };
+                let got = wedge_dominant_lists(width, height, (index, sign), x, y).unwrap();
+                assert_eq!(got, want, "{width}x{height} {index} {sign} {x},{y}");
+                seen[usize::from(got[0]) + 2 * usize::from(got[1]) - 1] += 1;
+            }
+        }
+    }
+    assert!(seen.iter().all(|&count| count > 0), "{seen:?}");
+    assert!(wedge_dominant_lists(8, 8, (0, false), 8, 0).is_err());
+}

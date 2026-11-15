@@ -254,7 +254,7 @@ pub use workspace::{
     CurrentFrameRectRowsMut, CurrentFrameSurface, CurrentFrameWorkspace, InterIntraMode,
     IntraBlockFrame, IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameRect,
     OwnedFrameRectRows, WorkspaceRectRows, wedge_mask_into, wedge_mask_plane_sample,
-    wedge_mask_rows,
+    wedge_mask_rows, wedge_mask_unit,
 };
 pub use y4m::{
     Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,
