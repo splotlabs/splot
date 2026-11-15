@@ -12,6 +12,7 @@ use splot_recon::{
 use super::reference::ReferenceSamples;
 use super::{BawpSyntax, Mv, PlacedInterBlock};
 use crate::Result;
+use fearless_simd::{prelude::*, u16x16};
 
 const SHIFT: u32 = 8;
 
@@ -40,6 +41,7 @@ pub(super) fn bawp_reference_luma_rows(luma_y: usize, luma_h: usize, mv_row: i32
 }
 
 #[derive(Default)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct TemplateStats {
     sum_x: i32,
     sum_y: i32,
@@ -73,38 +75,101 @@ impl TemplateStats {
     }
 }
 
-impl TemplateStats {
-    /// Adds the `(reference, current)` sample pairs at `step >> 1`,
-    /// `step + (step >> 1)`, ... below `len`.
-    fn add_arm(
+/// The `(reference, current)` samples of a § 7.13.3.25 template, widened to
+/// `u16`: the leading 16 samples of both above rows, of which the sums keep
+/// the `len_up / num_up` step, and the `num_left <= 16` left pairs, the
+/// unused lanes zero. With samples at most 1023, `sumX` and `sumY` stay at
+/// most `32 * 1023` and `sumXX` and `sumXY` at most `32 * 1023 * 1023 < 2^31`.
+#[derive(Default)]
+struct TemplatePairs {
+    above: [[u16; 16]; 2],
+    left: [[u16; 16]; 2],
+    up: (usize, usize),
+    count: i32,
+}
+
+impl TemplatePairs {
+    /// The above arm of `len` samples and `num` pairs from the rows
+    /// `reference` and `current`, which hold at least `len` samples.
+    #[inline]
+    fn add_above<T: ReconSample>(
         &mut self,
-        len: usize,
-        num: usize,
-        mut pair: impl FnMut(usize) -> Option<(i32, i32)>,
+        (len, num): (usize, usize),
+        [reference, current]: [&[T]; 2],
     ) -> Option<()> {
-        let step = len.checked_div(num)?;
-        let mut i = step >> 1;
-        while i < len {
-            let (x, y) = pair(i)?;
-            self.sum_x += x;
-            self.sum_y += y;
-            self.sum_xy += x * y;
-            self.sum_xx += x * x;
-            i += step;
+        let step = len.checked_div(num).filter(|&step| step > 0 && len <= 16)?;
+        for (lanes, row) in self.above.iter_mut().zip([reference, current]) {
+            if let Some(row) = T::u8_slice(row).and_then(<[u8]>::first_chunk::<16>) {
+                *lanes = row.map(u16::from);
+            } else if let Some(row) = T::u16_slice(row).and_then(<[u16]>::first_chunk::<16>) {
+                *lanes = *row;
+            } else {
+                let row = row.get(..len)?;
+                lanes
+                    .iter_mut()
+                    .zip(row)
+                    .for_each(|(lane, sample)| *lane = sample.to_u16());
+            }
+        }
+        self.up = (len, step);
+        self.count = self.count.checked_add(i32::try_from(num).ok()?)?;
+        Some(())
+    }
+
+    /// The left arm: the pairs `pair(i)` at `i = step >> 1, step + (step >> 1),
+    /// ...` below `len`, `step = len / num`.
+    fn add_left(
+        &mut self,
+        (len, num): (usize, usize),
+        mut pair: impl FnMut(usize) -> Option<(u16, u16)>,
+    ) -> Option<()> {
+        let step = len.checked_div(num).filter(|&step| step > 0)?;
+        let [reference, current] = &mut self.left;
+        for k in 0..num.min(16) {
+            (reference[k], current[k]) = pair((step >> 1) + k * step)?;
         }
         self.count = self.count.checked_add(i32::try_from(num).ok()?)?;
         Some(())
     }
+
+    /// The template sums: the above lanes past `len` or off the step
+    /// zeroed, `u16` lanes for the sample sums and `u32` lanes for the
+    /// products.
+    #[inline]
+    fn stats(&self) -> TemplateStats {
+        const LANE: [u16; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let (len, step) = self.up;
+        baseline_simd!(simd => {
+            let lane = u16x16::load_array(simd, LANE);
+            let keep = lane.simd_lt(u16x16::splat(simd, len as u16))
+                & (lane & u16x16::splat(simd, step.wrapping_sub(1) as u16))
+                    .simd_eq(u16x16::splat(simd, (step >> 1) as u16));
+            let zero = u16x16::splat(simd, 0);
+            let above = self.above.map(|lanes| keep.select(u16x16::load_array(simd, lanes), zero));
+            let left = self.left.map(|lanes| u16x16::load_array(simd, lanes));
+            let (x, y) = ([above[0], left[0]], [above[1], left[1]]);
+            let products = |a: [u16x16<_>; 2], b: [u16x16<_>; 2]| {
+                let ((low0, high0), (low1, high1)) = (a[0].widening_mul(b[0]), a[1].widening_mul(b[1]));
+                (low0 + high0 + low1 + high1).reduce_sum() as i32
+            };
+            TemplateStats {
+                sum_x: i32::from((x[0] + x[1]).reduce_sum()),
+                sum_y: i32::from((y[0] + y[1]).reduce_sum()),
+                sum_xx: products(x, x),
+                sum_xy: products(x, y),
+                count: self.count,
+            }
+        })
+    }
 }
 
-/// The current-frame samples above and left of a block's template, clamped
-/// to storage like the DC edges: indices past the stored extent repeat the
-/// last stored sample.
+/// The samples above and left of a block's template in a current-frame
+/// plane, clamped to storage like the DC edges: indices past the stored
+/// extent repeat the last stored sample.
 struct CurrentTemplate<'a, T> {
-    rows: &'a [T],
+    above: &'a [T],
+    left: &'a [T],
     stride: usize,
-    x: usize,
-    up: usize,
     last_col: usize,
     last_row: usize,
 }
@@ -134,46 +199,61 @@ impl<'a, T: ReconSample> CurrentTemplate<'a, T> {
         if num_left > 0 && x == 0 {
             return Ok(None);
         }
+        let (stride, rows) = (plane.stride_samples(), plane.rows(top, y + last_row + 1)?);
         Ok(Some(Self {
-            rows: plane.rows(top, y + last_row + 1)?,
-            stride: plane.stride_samples(),
-            x,
-            up,
+            above: rows.get(x..).unwrap_or_default(),
+            left: rows
+                .get((up * stride + x).saturating_sub(1)..)
+                .unwrap_or_default(),
+            stride,
             last_col,
             last_row,
         }))
     }
 
-    fn above(&self, i: usize) -> Option<i32> {
-        let sample = self.rows.get(self.x + i.min(self.last_col))?;
-        Some(i32::from(sample.to_u16()))
+    /// The row above the template from its first column, at least `len`
+    /// samples: past the stored extent, `padded` repeats the last stored
+    /// sample.
+    fn above_row<'b>(&'b self, len: usize, padded: &'b mut [T; 16]) -> Option<&'b [T]> {
+        if self.last_col + 1 >= len {
+            return self.above.get(..len).map(|_| self.above);
+        }
+        let stored = self.above.get(..=self.last_col)?;
+        let (head, tail) = padded.get_mut(..len)?.split_at_mut(stored.len());
+        head.copy_from_slice(stored); // splot-copy-ok: template row padded past the frame edge
+        tail.fill(*stored.last()?);
+        Some(padded)
     }
 
-    fn left(&self, i: usize) -> Option<i32> {
-        let row = self.up + i.min(self.last_row);
-        let sample = self
-            .rows
-            .get((row * self.stride + self.x).checked_sub(1)?)?;
-        Some(i32::from(sample.to_u16()))
+    #[inline]
+    fn left(&self, i: usize) -> Option<u16> {
+        Some(self.left.get(i.min(self.last_row) * self.stride)?.to_u16())
     }
 }
 
-/// The § 7.13.3.25 template sums: `above_ref(i)` is the reference sample
-/// above block column `i`, `left_ref(i)` the one left of block row `i`.
+/// The § 7.13.3.25 template sums: `above_ref` is the reference row above
+/// the block from its first column, `left_ref(i)` the reference sample left
+/// of block row `i`.
+#[inline]
 fn collect_template_stats<T: ReconSample>(
     current: &CurrentTemplate<'_, T>,
     (width, height, num_up, num_left): (usize, usize, usize, usize),
-    mut above_ref: impl FnMut(usize) -> Option<i32>,
-    mut left_ref: impl FnMut(usize) -> Option<i32>,
+    above_ref: &[T],
+    mut left_ref: impl FnMut(usize) -> Option<u16>,
 ) -> Option<TemplateStats> {
-    let mut stats = TemplateStats::default();
+    let mut pairs = TemplatePairs::default();
     if num_up > 0 {
-        stats.add_arm(width, num_up, |i| Some((above_ref(i)?, current.above(i)?)))?;
+        let mut padded = [T::default(); 16];
+        let above = current.above_row(width, &mut padded)?;
+        above_ref.get(..width)?;
+        pairs.add_above((width, num_up), [above_ref, above])?;
     }
     if num_left > 0 {
-        stats.add_arm(height, num_left, |i| Some((left_ref(i)?, current.left(i)?)))?;
+        pairs.add_left((height, num_left), |i| {
+            Some((left_ref(i)?, current.left(i)?))
+        })?;
     }
-    Some(stats)
+    Some(pairs.stats())
 }
 
 pub(crate) fn apply_bawp<T: ReconSample>(
@@ -256,27 +336,22 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     if morph_dimensions_size(width, height).is_none() {
         return Ok(());
     }
-    let Some(current) =
-        CurrentTemplate::new(workspace.plane(PlaneId::Y)?, (target.x(), target.y()), dims)?
-    else {
+    let plane = workspace.plane(PlaneId::Y)?;
+    let Some(current) = CurrentTemplate::new(plane, (target.x(), target.y()), dims)? else {
         return Ok(());
     };
-
     let (Ok(ref_x), Ok(ref_y)) = (usize::try_from(ref_x), usize::try_from(ref_y)) else {
         return Ok(());
     };
-    let recon = |row: usize, col: usize| {
-        workspace
-            .reconstructed_sample(PlaneId::Y, col, row)
-            .ok()
-            .map(|sample| i32::from(sample.to_u16()))
+    let Some(reference) = CurrentTemplate::new(plane, (ref_x, ref_y), dims)
+        .ok()
+        .flatten()
+    else {
+        return Ok(());
     };
-    let Some(stats) = collect_template_stats(
-        &current,
-        dims,
-        |i| recon(ref_y - 1, ref_x + i),
-        |i| recon(ref_y + i, ref_x - 1),
-    ) else {
+    let mut padded = [T::default(); 16];
+    let above = reference.above_row(width, &mut padded).unwrap_or_default();
+    let Some(stats) = collect_template_stats(&current, dims, above, |i| reference.left(i)) else {
         return Ok(());
     };
 
@@ -379,12 +454,9 @@ fn apply_bawp_plane<T: ReconSample>(
         return Ok(luma_alpha);
     };
     let above_row = ref_samples.row(ref_y - 1).get(ref_x..).unwrap_or_default();
-    let Some(stats) = collect_template_stats(
-        &current,
-        dims,
-        |i| above_row.get(i).map(|sample| i32::from(sample.to_u16())),
-        |i| Some(ref_samples.sample(ref_y + i, ref_x - 1)),
-    ) else {
+    let Some(stats) = collect_template_stats(&current, dims, above_row, |i| {
+        Some(ref_samples.sample(ref_y + i, ref_x - 1) as u16)
+    }) else {
         return Ok(luma_alpha);
     };
 

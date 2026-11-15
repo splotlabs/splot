@@ -7,8 +7,8 @@ use splot_recon::{
 };
 
 use super::{
-    ReferenceSamples, apply_bawp, apply_intrabc_morph_pred, bawp_reference_luma_rows,
-    bawp_template_counts,
+    ReferenceSamples, TemplatePairs, TemplateStats, apply_bawp, apply_intrabc_morph_pred,
+    bawp_reference_luma_rows, bawp_template_counts,
 };
 use crate::pipeline::frame_progress::PublishedFrame;
 use crate::pipeline::inflight::RefFrameSlot;
@@ -38,6 +38,113 @@ fn template_counts_follow_the_clamped_size_table() {
             "bw={bw} bh={bh} luma={luma} up={up} left={left}"
         );
     }
+}
+
+/// The § 7.13.3.25 sums of the oracle: every `(reference, current)` pair of
+/// both arms added one at a time.
+fn oracle_stats(
+    arms: [(usize, usize); 2],
+    pair: impl Fn(usize, usize) -> (u16, u16),
+) -> TemplateStats {
+    let mut stats = TemplateStats::default();
+    for (arm, (len, num)) in arms.into_iter().enumerate() {
+        if num == 0 {
+            continue;
+        }
+        let step = len / num;
+        let mut i = step >> 1;
+        while i < len {
+            let (x, y) = pair(arm, i);
+            let (x, y) = (i32::from(x), i32::from(y));
+            stats.sum_x += x;
+            stats.sum_y += y;
+            stats.sum_xy += x * y;
+            stats.sum_xx += x * x;
+            i += step;
+        }
+        stats.count += num as i32;
+    }
+    stats
+}
+
+/// Every template shape [`bawp_template_counts`] yields, at both bit
+/// depths, with extreme and asymmetric samples: the lane sums equal the
+/// per-pair oracle.
+#[test]
+fn template_lane_sums_match_the_pair_oracle() {
+    let sides = [4, 8, 12, 16, 32, 64];
+    for (bw, bh, luma, up, left) in sides.into_iter().flat_map(|bw| {
+        sides.into_iter().flat_map(move |bh| {
+            [(true, true, true), (false, true, true), (true, true, false)]
+                .into_iter()
+                .chain([(true, false, true), (true, false, false)])
+                .map(move |(luma, up, left)| (bw, bh, luma, up, left))
+        })
+    }) {
+        let (width, height, num_up, num_left) = bawp_template_counts(bw, bh, luma, up, left);
+        for (max, seed) in [(255u16, 3usize), (1023, 7), (1023, 0)] {
+            let pair = |arm: usize, i: usize| {
+                let k = (arm * 16 + i) * 2_654_435_761 + seed;
+                let value = |k: usize| match k % 5 {
+                    0 => max,
+                    1 => 0,
+                    _ => (k >> 9) as u16 % (max + 1),
+                };
+                (value(k), value(k / 3 + 1))
+            };
+            let want = oracle_stats([(width, num_up), (height, num_left)], pair);
+            for row_len in [width, 16, 24] {
+                let rows: [Vec<u16>; 2] = core::array::from_fn(|side| {
+                    let sample = |i: usize| [pair(0, i).0, pair(0, i).1][side];
+                    (0..row_len)
+                        .map(|i| if i < width { sample(i) } else { max - 1 })
+                        .collect()
+                });
+                let bytes: [Vec<u8>; 2] = rows
+                    .clone()
+                    .map(|row| row.into_iter().map(|v| v as u8).collect());
+                let mut pairs = TemplatePairs::default();
+                let mut byte_pairs = TemplatePairs::default();
+                if num_up > 0 {
+                    let up = (width, num_up);
+                    assert!(pairs.add_above(up, [&rows[0][..], &rows[1]]).is_some());
+                    assert!(
+                        byte_pairs
+                            .add_above(up, [&bytes[0][..], &bytes[1]])
+                            .is_some()
+                    );
+                }
+                if num_left > 0 {
+                    let left = (height, num_left);
+                    assert!(pairs.add_left(left, |i| Some(pair(1, i))).is_some());
+                    assert!(byte_pairs.add_left(left, |i| Some(pair(1, i))).is_some());
+                }
+                assert_eq!(
+                    pairs.stats(),
+                    want,
+                    "{bw}x{bh} {luma} {up} {left} {max} {row_len}"
+                );
+                if max == 255 {
+                    assert_eq!(
+                        byte_pairs.stats(),
+                        want,
+                        "u8 {bw}x{bh} {up} {left} {row_len}"
+                    );
+                }
+            }
+        }
+    }
+    let mut pairs = TemplatePairs::default();
+    let full_rows = [&[1023u16; 16][..], &[1023; 16]];
+    assert!(pairs.add_above((16, 16), full_rows).is_some());
+    assert!(pairs.add_left((16, 16), |_| Some((1023, 1023))).is_some());
+    let full = oracle_stats([(16, 16); 2], |_, _| (1023, 1023));
+    assert_eq!((pairs.stats(), full.sum_xx), (full, 32 * 1023 * 1023));
+    assert!(
+        TemplatePairs::default()
+            .add_above((8, 8), [&[0u16; 7][..], &[0; 8]])
+            .is_none()
+    );
 }
 
 #[test]
