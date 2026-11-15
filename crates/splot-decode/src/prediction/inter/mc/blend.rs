@@ -554,8 +554,9 @@ impl ImplicitMaskBlend {
         T::try_from_u16(sample.clamp(0, self.max_sample) as u16)
     }
 
-    /// [`Self::sample`] over one row whose first sample reads the reference
-    /// positions `starts` and whose later samples step one column right.
+    /// The implicit-mask blend of one row whose first sample reads the
+    /// reference positions `starts` and whose later samples step one column
+    /// right.
     fn row<T: ReconSample>(
         self,
         left: &[i32],

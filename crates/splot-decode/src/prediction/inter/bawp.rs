@@ -6,7 +6,6 @@
 use splot_core::span::ByteOffset;
 use splot_recon::{
     CurrentFramePlane, CurrentFrameWorkspace, IntraRectBlockSize, PlaneId, PlaneRect, ReconSample,
-    ReferencePlaneView,
 };
 
 use super::reference::ReferenceSamples;
@@ -377,8 +376,8 @@ fn apply_bawp_plane<T: ReconSample>(
     let plane_h = placed.luma_h() >> sub_y;
     let last_row = (bawp_reference_luma_rows(placed.luma_y(), placed.luma_h(), mv.row) >> sub_y)
         .saturating_sub(1) as i32;
-    let (ref_samples, ref_width, ref_height) =
-        reference_plane(reference, plane, last_row, tile_offset)?;
+    let ref_samples = reference.plane_view(plane, last_row, tile_offset)?;
+    let (ref_width, ref_height) = (ref_samples.width(), ref_samples.height());
     let dy = to_fullmv(mv.row);
     let dx = to_fullmv(mv.col);
     let Some(ref_y) = fullpel_ref_pos(placed.luma_y(), dy).map(|y| y >> sub_y) else {
@@ -504,17 +503,6 @@ fn fullpel_ref_pos(origin: usize, delta: i32) -> Option<i32> {
     i32::try_from(origin)
         .ok()
         .and_then(|origin| origin.checked_add(delta))
-}
-
-fn reference_plane<T: ReconSample>(
-    reference: ReferenceSamples<'_, T>,
-    plane: PlaneId,
-    last_row: i32,
-    tile_offset: ByteOffset,
-) -> Result<(ReferencePlaneView<'_, T>, usize, usize)> {
-    let view = reference.plane_view(plane, last_row, tile_offset)?;
-    let (width, height) = (view.width(), view.height());
-    Ok((view, width, height))
 }
 
 fn bawp_template_counts(

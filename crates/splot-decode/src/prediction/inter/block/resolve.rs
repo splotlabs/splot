@@ -750,13 +750,9 @@ pub(super) fn warp_motion(
             } else {
                 MV_PRECISION_EIGHTH_PEL
             };
-            let base_mv = warp_predicted_mv(
-                stack.warp_candidate(usize::from(warp.ref_warp_idx)),
-                block,
-                base_precision,
-            );
-            let mv = warp.mvd.map_or(base_mv, |mvd| add_mv_clamped(base_mv, mvd));
             let mut params = stack.warp_candidate(usize::from(warp.ref_warp_idx));
+            let base_mv = warp_predicted_mv(params, block, base_precision);
+            let mv = warp.mvd.map_or(base_mv, |mvd| add_mv_clamped(base_mv, mvd));
             reduce_warp_model(&mut params);
             set_warp_translation(
                 &mut params,

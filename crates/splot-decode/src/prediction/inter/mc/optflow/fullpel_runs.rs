@@ -103,9 +103,8 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
     Ok(merged)
 }
 
-/// The area whose § 7.13.3.5 bounds clip grid cell `cell_index`, as
-/// [`compound_optflow_bounds`] picks it, or `None` when only the plane clips
-/// the cell.
+/// The area whose § 7.13.3.5 bounds clip grid cell `cell_index`, or `None`
+/// when only the plane clips the cell.
 fn cell_clip_area(
     (candidates, step, unit_size): (&[[Mv; 2]], usize, usize),
     cell: MotionCell,

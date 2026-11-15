@@ -838,7 +838,7 @@ impl CflLumaEdges {
         Ok(i32::from(approx_divide(sum, count)?.min(max)))
     }
 
-    /// [`Self::chroma_model`] from the edges of `chroma`, each sample past
+    /// The chroma model from the edges of `chroma`, each sample past
     /// its right or bottom edge repeating the last.
     fn plane_chroma_model<T: ReconSample>(
         &self,
@@ -1656,7 +1656,7 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
         past[from..].fill(last);
     }
 
-    /// Eight [`Self::q3`] samples of chroma columns `x..x + 8`, the first one
+    /// Eight Q3 downsampled luma samples of chroma columns `x..x + 8`, the first one
     /// clamped when `clamp_first` and every 64th luma column when `periodic`;
     /// taps past the end of a row read its last sample.
     #[allow(
