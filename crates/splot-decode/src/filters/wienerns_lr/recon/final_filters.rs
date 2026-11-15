@@ -433,6 +433,66 @@ fn lr_blocks_near_rows(
     &blocks[relevant_start..relevant_end]
 }
 
+/// Calls `gap(rows, columns)` for each rectangle of the plane rows
+/// `start_y..end_y` that no block of `blocks` writes whole, or returns `None`
+/// on bad geometry or when `gap` does. Blocks out of column order can add
+/// gaps that a block does write, never drop one.
+#[allow(clippy::too_many_arguments)]
+fn for_each_lr_gap(
+    blocks: &[WienerNsLrSourceBlock],
+    plane: PlaneId,
+    frame_type: FrameRestorationType,
+    width: usize,
+    frame_height: usize,
+    (start_y, end_y): (usize, usize),
+    mut gap: impl FnMut((usize, usize), (usize, usize)) -> Option<()>,
+) -> Option<()> {
+    if width == 0 || start_y >= end_y || end_y > frame_height {
+        return None;
+    }
+    let blocks = lr_blocks_near_rows(blocks, start_y, end_y);
+    let span = |block: &WienerNsLrSourceBlock| {
+        let end_x = block.x.checked_add(block.width)?.min(width);
+        let end_y = block.y.checked_add(block.height)?.min(frame_height);
+        Some(((block.x, end_x), (block.y, end_y)))
+    };
+    let mut y = start_y;
+    while y < end_y {
+        let mut next_y = end_y;
+        for block in blocks {
+            let (_, (top, bottom)) = span(block)?;
+            if top > y {
+                next_y = next_y.min(top);
+            } else if bottom > y {
+                next_y = next_y.min(bottom);
+            }
+        }
+        let mut x = 0usize;
+        for block in blocks {
+            let ((left, right), (top, bottom)) = span(block)?;
+            if top > y
+                || bottom <= y
+                || !lr_restoration_writes_complete_rectangle(
+                    plane,
+                    frame_type,
+                    block.restoration_type,
+                )
+            {
+                continue;
+            }
+            if left > x {
+                gap((y, next_y), (x, left))?;
+            }
+            x = x.max(right);
+        }
+        if x < width {
+            gap((y, next_y), (x, width))?;
+        }
+        y = next_y;
+    }
+    Some(())
+}
+
 pub(crate) fn lr_plane_fully_overwritten(
     blocks: &[WienerNsLrSourceBlock],
     plane: PlaneId,
@@ -442,45 +502,44 @@ pub(crate) fn lr_plane_fully_overwritten(
     start_y: usize,
     end_y: usize,
 ) -> bool {
-    if width == 0 || start_y >= end_y || end_y > frame_height {
-        return false;
-    }
-    let blocks = lr_blocks_near_rows(blocks, start_y, end_y);
-    let mut y = start_y;
-    while y < end_y {
-        let mut x = 0usize;
-        let mut next_y = end_y;
-        for block in blocks {
-            let Some(block_end_y) = block.y.checked_add(block.height) else {
-                return false;
-            };
-            let block_end_y = block_end_y.min(frame_height);
-            if block.y > y {
-                next_y = next_y.min(block.y);
-                continue;
-            }
-            if block_end_y <= y {
-                continue;
-            }
-            next_y = next_y.min(block_end_y);
-            let Some(block_end_x) = block.x.checked_add(block.width) else {
-                return false;
-            };
-            let block_end_x = block_end_x.min(width);
-            if !lr_restoration_writes_complete_rectangle(plane, frame_type, block.restoration_type)
-                || block.x >= block_end_x
-                || block.x != x
-            {
-                return false;
-            }
-            x = block_end_x;
-        }
-        if x != width {
-            return false;
-        }
-        y = next_y;
-    }
-    true
+    let rows = (start_y, end_y);
+    for_each_lr_gap(
+        blocks,
+        plane,
+        frame_type,
+        width,
+        frame_height,
+        rows,
+        |_, _| None,
+    )
+    .is_some()
+}
+
+/// Copies from `cdef` into `post_lr` the samples that no block of `blocks`
+/// writes whole, so that they hold the CDEF output after loop restoration.
+fn copy_lr_gaps<T: ReconSample>(
+    blocks: &[WienerNsLrSourceBlock],
+    plane: PlaneId,
+    frame_type: FrameRestorationType,
+    cdef: &StripePlane<T>,
+    post_lr: &mut StripePlane<T>,
+) -> Result<()> {
+    let source = cdef.view().map_err(|_| super::lr_pipeline_state_error())?;
+    let rows = (
+        post_lr.origin_y(),
+        post_lr.end_y().ok_or_else(super::lr_pipeline_state_error)?,
+    );
+    let (width, frame_height) = (post_lr.width(), post_lr.frame_height());
+    for_each_lr_gap(
+        blocks,
+        plane,
+        frame_type,
+        width,
+        frame_height,
+        rows,
+        |rows, columns| post_lr.copy_columns_from(source, rows, columns),
+    )
+    .ok_or_else(super::lr_pipeline_state_error)
 }
 
 pub(crate) fn lr_initializations<T>(
@@ -516,7 +575,7 @@ pub(crate) fn lr_initializations<T>(
         if covered {
             StripeInitialization::FullyOverwritten
         } else {
-            StripeInitialization::CopyAll
+            StripeInitialization::Partial
         }
     })
 }
@@ -1074,6 +1133,24 @@ impl StripeChain<'_> {
             }
             StripeCopyError::Geometry => super::lr_pipeline_state_error(),
         })?;
+        let planes = [
+            (Some(&frame.cdef_y), frame.post_lr_y.as_mut()),
+            (frame.cdef_u.as_ref(), frame.post_lr_u.as_mut()),
+            (frame.cdef_v.as_ref(), frame.post_lr_v.as_mut()),
+        ];
+        for (index, planes) in planes.into_iter().enumerate() {
+            if let (Some(cdef), Some(post_lr)) = planes
+                && output.initializations[index] == StripeInitialization::Partial
+            {
+                let frame_type = core
+                    .lr_params
+                    .as_ref()
+                    .and_then(|params| params.planes.get(index))
+                    .map_or(FrameRestorationType::None, |params| params.restoration_type);
+                let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
+                copy_lr_gaps(plane_blocks[index], plane, frame_type, cdef, post_lr)?;
+            }
+        }
         let Some(lr_params) = core.lr_params.as_ref() else {
             return Ok(frame);
         };

@@ -749,7 +749,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             )?;
             let [all, chroma, luma] = self.stripe_in_place(&chain, range, active_lr, gdf_active);
             let skip = [all || luma, chroma, chroma];
-            let edges = self.edge_planes(range, active_lr, skip, [y_runs, u_runs, v_runs], frame);
+            let edges = self.edge_planes(active_lr, skip);
             let margin = self.window_margin();
             window.copy_window(frame, Some(carry), range, margin, read, skip, edges)
         });
@@ -762,49 +762,20 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
 
     /// The planes whose window holds only the rows the first and the last
     /// CDEF block row of the stripe read: one tile row, and loop restoration
-    /// writes the whole stripe of the plane, so CDEF reads the deblocked rows
-    /// inside the stripe from its target before loop restoration writes it.
-    /// CDEF reads U and V at one offset, so both chroma planes or neither. A
-    /// frame with a lossless segment keeps the full window: loop restoration
-    /// copies its lossless samples from the deblocked rows inside the stripe.
-    fn edge_planes(
-        &self,
-        (start, end): (usize, usize),
-        active_lr: [bool; 3],
-        in_place: [bool; 3],
-        blocks: [&[crate::bitstream::tile_payload::WienerNsLrSourceBlock]; 3],
-        frame: &crate::pipeline::frame_progress::FrontierRows<T>,
-    ) -> [bool; 3] {
+    /// filters the plane in the stripe, so CDEF reads the deblocked rows
+    /// inside the stripe from its target before loop restoration writes it,
+    /// with the CDEF output in the samples it does not filter. CDEF reads U
+    /// and V at one offset, so both chroma planes or neither. A frame with a
+    /// lossless segment keeps the full window: loop restoration copies its
+    /// lossless samples from the deblocked rows inside the stripe.
+    fn edge_planes(&self, active_lr: [bool; 3], in_place: [bool; 3]) -> [bool; 3] {
+        let lossless = self
+            .core
+            .lossless_info
+            .as_ref()
+            .is_some_and(|lossless| lossless.has_lossless_segment);
         let [luma, u, v] = core::array::from_fn(|index| {
-            let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
-            let shift = usize::from(index > 0) * self.subsampling.1;
-            let params = self
-                .core
-                .lr_params
-                .as_ref()
-                .and_then(|lr| lr.planes.get(index));
-            self.one_tile_row()
-                && !self
-                    .core
-                    .lossless_info
-                    .as_ref()
-                    .is_some_and(|lossless| lossless.has_lossless_segment)
-                && active_lr[index]
-                && !in_place[index]
-                && frame
-                    .plane_size(plane)
-                    .zip(params)
-                    .is_some_and(|((width, height), params)| {
-                        final_filters::lr_plane_fully_overwritten(
-                            blocks[index],
-                            plane,
-                            params.restoration_type,
-                            width,
-                            height,
-                            start >> shift,
-                            end.div_ceil(1 << shift).min(height),
-                        )
-                    })
+            self.one_tile_row() && !lossless && active_lr[index] && !in_place[index]
         });
         [luma, u && v, u && v]
     }
@@ -1126,10 +1097,10 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         } else {
             deblocked
         };
-        let lr_initializations =
+        let mut lr_initializations =
             final_filters::lr_initializations(&self.core, active_lr, plane_blocks, &target);
         let edges = lower.map(|plane| plane.is_some());
-        let lr_copies = core::array::from_fn(|index| {
+        let lr_copies: [bool; 3] = core::array::from_fn(|index| {
             edges[index]
                 || active_lr[index]
                     && !target
@@ -1138,6 +1109,11 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                             crate::pipeline::frame_progress::DirectPlaneTarget::holds_deblocked,
                         )
         });
+        for (initialization, copies) in lr_initializations.iter_mut().zip(lr_copies) {
+            if !copies {
+                *initialization = crate::filters::source::StripeInitialization::CopyAll;
+            }
+        }
         let (cdef_target, lr_target) = target.split(lr_copies);
         let planes = [Some(deblocked.y), deblocked.u, deblocked.v];
         let mut edged = [None; 3];
@@ -1152,7 +1128,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 .and_then(crate::pipeline::frame_progress::DirectPlaneTarget::rows)
                 .filter(|_| {
                     lr_initializations[index]
-                        == crate::filters::source::StripeInitialization::FullyOverwritten
+                        != crate::filters::source::StripeInitialization::CopyAll
                 });
             edged[index] = planes[index].map(|plane| plane.over(lower));
             cores[index] = Some(core.ok_or_else(lr_pipeline_state_error)?);

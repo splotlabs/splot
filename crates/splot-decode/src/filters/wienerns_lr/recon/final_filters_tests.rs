@@ -925,7 +925,7 @@ fn merges_contiguous_blocks_and_splits_on_filter_visible_fields() {
 }
 
 #[test]
-fn loop_restoration_requires_exact_full_plane_coverage() {
+fn loop_restoration_requires_full_plane_coverage() {
     let covered = [
         block(1, 0, 0),
         block(1, 4, 0),
@@ -973,7 +973,7 @@ fn loop_restoration_requires_exact_full_plane_coverage() {
     ));
     let mut overlapping = covered.to_vec();
     overlapping.push(block(1, 0, 0));
-    assert!(!lr_plane_fully_overwritten(
+    assert!(lr_plane_fully_overwritten(
         &overlapping,
         PlaneId::U,
         FrameRestorationType::WienerNonsep,

@@ -231,7 +231,7 @@ fn poisoned_u16_targets_are_fully_written_for_all_plane_formats_and_odd_dimensio
 }
 
 #[test]
-fn a_coverage_hole_selects_copy_all_and_replaces_poison_with_cdef() {
+fn a_coverage_hole_selects_partial_and_fills_only_the_hole_with_cdef() {
     let workspace = workspace(PixelFormat::Monochrome, 8, 8);
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
@@ -241,7 +241,7 @@ fn a_coverage_hole_selects_copy_all_and_replaces_poison_with_cdef() {
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
     let mut blocks = blocks_for_target(target.get(PlaneId::Y).unwrap(), PlaneId::Y);
-    blocks.remove(1);
+    let hole = blocks.remove(1);
     let core = lr_core([
         FrameRestorationType::WienerNonsep,
         FrameRestorationType::None,
@@ -249,18 +249,25 @@ fn a_coverage_hole_selects_copy_all_and_replaces_poison_with_cdef() {
     ]);
     let initializations =
         lr_initializations(&core, [true, false, false], [&blocks, &[], &[]], &target);
-    assert_eq!(initializations[0], StripeInitialization::CopyAll);
-    let frame = LrFrame::from_cdef(
+    assert_eq!(initializations[0], StripeInitialization::Partial);
+    let mut frame = LrFrame::from_cdef(
         cdef_frame(&workspace),
         [true, false, false],
         initializations,
         target,
     )
     .unwrap();
-    assert_eq!(
-        crate::test_support::stripe_rows(frame.post_lr_y.as_ref().unwrap()),
-        crate::test_support::workspace_rows(&workspace, PlaneId::Y)
-    );
+    let post_lr = frame.post_lr_y.as_mut().unwrap();
+    let wiener = FrameRestorationType::WienerNonsep;
+    copy_lr_gaps(&blocks, PlaneId::Y, wiener, &frame.cdef_y, post_lr).unwrap();
+    let rows = crate::test_support::stripe_rows(post_lr);
+    let source = crate::test_support::workspace_rows(&workspace, PlaneId::Y);
+    for (index, (&sample, &cdef)) in rows.iter().zip(&source).enumerate() {
+        let (x, y) = (index % 8, index / 8);
+        let in_hole = (hole.x..hole.x + hole.width).contains(&x)
+            && (hole.y..hole.y + hole.height).contains(&y);
+        assert_eq!(sample, if in_hole { cdef } else { POISON }, "({x}, {y})");
+    }
 }
 
 #[test]

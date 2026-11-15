@@ -281,6 +281,86 @@ fn edge_windows_hold_the_first_and_last_block_rows_and_carry_the_shared_rows() {
     assert!((118..129).all(|y| luma.row(y) == Some(pattern(y, 16).as_slice())));
 }
 
+/// Every CDEF block row `r` of every stripe reads rows `r - 2..r + bh + 2`
+/// from one span of the chain CDEF gets: the stripe's frame rows over an
+/// edge window, or a whole window with the margin of a multi-tile-row frame.
+/// The last stripe ends at the frame bottom, and no span holds rows past it.
+#[test]
+fn every_cdef_block_row_reads_one_span() {
+    let height = 129;
+    for format in [
+        PixelFormat::Monochrome,
+        PixelFormat::Yuv420,
+        PixelFormat::Yuv422,
+        PixelFormat::Yuv444,
+    ] {
+        let workspace = workspace_with_format(16, height, format);
+        for (margin, edges) in [(2, true), (10, false)] {
+            let (_progress, mut rows) =
+                crate::test_support::frontier_rows(workspace_with_format(16, height, format));
+            assert!(rows.publish_final_rows(height));
+            let (mut window, mut carry) = (DeblockedWindow::default(), DeblockedWindow::default());
+            for (start, end) in [(0, 56), (56, height)] {
+                window
+                    .copy_window(
+                        &mut rows,
+                        Some(&mut carry),
+                        (start, end),
+                        margin,
+                        [true; 3],
+                        [false; 3],
+                        [edges; 3],
+                    )
+                    .expect("stripe window");
+                let planes = window.planes().expect("window planes");
+                for (plane, top) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().zip([
+                    Some(planes.y),
+                    planes.u,
+                    planes.v,
+                ]) {
+                    let Some(top) = top else { continue };
+                    let shift =
+                        usize::from(plane != PlaneId::Y) * usize::from(format.subsampling_y());
+                    let frame = workspace.plane(plane).expect("frame plane");
+                    let (stride, plane_height) = (frame.stride_samples(), top.frame_height());
+                    let (first, last) = (start >> shift, end.div_ceil(1 << shift));
+                    let core = FramePlane::strided(
+                        &frame.samples()[first * stride..last * stride],
+                        (top.width(), plane_height),
+                        stride,
+                        first,
+                        last - first,
+                    )
+                    .expect("stripe frame rows");
+                    let lower = window.lower(plane);
+                    assert_eq!(lower.is_some(), edges, "{format:?} {plane:?}");
+                    let edged = lower.as_ref().map(|lower| top.over(lower));
+                    let chain = edged.as_ref().map_or(top, |edged| core.over(edged));
+                    let block = 8 >> shift;
+                    for r in (first..last).step_by(block) {
+                        let reach = (r.saturating_sub(2), (r + block + 2).min(plane_height));
+                        let span = chain.covering(reach.0, reach.1);
+                        assert!(
+                            span.origin_y() <= reach.0
+                                && reach.1 <= span.end_y()
+                                && span.end_y() <= plane_height,
+                            "{format:?} {plane:?} margin {margin} block row {r}"
+                        );
+                        for y in reach.0..reach.1 {
+                            let offset = (y - span.origin_y()) * span.stride();
+                            assert_eq!(
+                                span.samples().get(offset..offset + span.width()),
+                                frame.samples().get(y * stride..y * stride + span.width()),
+                                "{format:?} {plane:?} row {y}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn stripe_rect_mut_rejects_a_rectangle_overhanging_the_row() {
     let mut stripe = StripePlane::from_samples(4, 2, 0, vec![0u16; 8]).expect("a valid stripe");
