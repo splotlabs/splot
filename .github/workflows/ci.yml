@@ -82,7 +82,46 @@ jobs:
             cargo xtask check-conventional-commits "$PUSH_COMMIT_RANGE"
           fi
 
-      - run: cargo xtask ci
+      - run: cargo xtask ci --exclude-tests splot-encode
+
+  # The splot-encode tests that `ci` leaves out, in two shards that together select every test once.
+  # The wavefront_search test alone runs for about 4.6 minutes, so it has its own shard.
+  test-encode:
+    runs-on: ubuntu-latest
+    env:
+      FILTER: "intra_frame::tests::wavefront_search::"
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [wavefront-search, rest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Restore cargo registry, git, and target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-v2-
+
+      - name: Test splot-encode
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          if [ "$SHARD" = wavefront-search ]; then
+            cargo test -p splot-encode --all-targets --locked -- "$FILTER"
+          else
+            cargo test -p splot-encode --all-targets --locked -- --skip "$FILTER"
+          fi
 
   decode-release:
     runs-on: ubuntu-latest

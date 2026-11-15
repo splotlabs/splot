@@ -103,6 +103,9 @@ enum Task {
         /// Only fmt, clippy and the in-process repo checks; GitHub CI runs the rest.
         #[arg(long)]
         fast: bool,
+        /// Leave this package out of the `--all-targets` test run; GitHub CI tests it in its own job.
+        #[arg(long, value_name = "PACKAGE")]
+        exclude_tests: Option<String>,
     },
     /// Verify commit subjects follow Conventional Commits.
     CheckConventionalCommits {
@@ -322,7 +325,10 @@ enum DecoderFixturesCmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Task::Ci { fast } => run_ci(fast),
+        Task::Ci {
+            fast,
+            exclude_tests,
+        } => run_ci(fast, exclude_tests.as_deref()),
         Task::CheckConventionalCommits { rev_range } => {
             check_conventional_commits(&workspace_root()?, rev_range.as_deref())
         }
@@ -450,7 +456,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_ci(fast: bool) -> Result<()> {
+fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
     run_cargo(&["fmt", "--all", "--", "--check"])?;
     run_cargo(&[
         "clippy",
@@ -463,7 +469,11 @@ fn run_ci(fast: bool) -> Result<()> {
         "warnings",
     ])?;
     if !fast {
-        run_cargo(&["test", "--workspace", "--all-targets", "--locked"])?;
+        let mut test = vec!["test", "--workspace", "--all-targets", "--locked"];
+        if let Some(package) = exclude_tests {
+            test.extend(["--exclude", package]);
+        }
+        run_cargo(&test)?;
         run_cargo(&["test", "--doc", "--workspace", "--locked"])?;
         run_cargo_with_env(
             &[("RUSTDOCFLAGS", "-D warnings")],
