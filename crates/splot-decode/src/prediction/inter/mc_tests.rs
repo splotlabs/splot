@@ -146,7 +146,6 @@ fn compound_sample_recycler_keeps_two_same_type_buffers() {
 fn mc_worker_scratch_reuses_all_installed_buffers() {
     COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
     INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
-    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
     MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
     let mut scratch = McScratch::default();
     let use_buffers = || {
@@ -164,18 +163,11 @@ fn mc_worker_scratch_reuses_all_installed_buffers() {
             slot.set(Some(samples));
             pointer
         });
-        let subpel = SUBPEL_PREDICTION_BUFFER.with(|slot| {
-            let mut samples = slot.take().unwrap_or_default();
-            samples.resize(64, 0);
-            let pointer = samples.as_ptr() as usize;
-            slot.set(Some(samples));
-            pointer
-        });
         let mut output = take_mc_samples::<u16>();
         output.resize(64, 0);
         let output_pointer = output.as_ptr() as usize;
         recycle_mc_samples(&mut output);
-        [compound, initial, subpel, output_pointer]
+        [compound, initial, output_pointer]
     };
 
     let first = scratch.with_installed(use_buffers);
@@ -184,7 +176,6 @@ fn mc_worker_scratch_reuses_all_installed_buffers() {
     assert_eq!(second, first);
     COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
     INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
-    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
     MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
 }
 
@@ -192,7 +183,6 @@ fn mc_worker_scratch_reuses_all_installed_buffers() {
 fn nested_mc_install_keeps_the_outer_worker_buffers_active() {
     COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
     INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
-    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
     MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
     let mut outer = McScratch::default();
     let mut nested = McScratch::default();
@@ -225,7 +215,6 @@ fn nested_mc_install_keeps_the_outer_worker_buffers_active() {
     MC_INSTALL_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
     COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
     INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
-    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
     MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
 }
 
@@ -233,7 +222,6 @@ fn nested_mc_install_keeps_the_outer_worker_buffers_active() {
 fn panicking_mc_install_restores_worker_buffers_and_depth() {
     COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
     INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
-    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
     MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
     let mut scratch = McScratch::default();
 
@@ -255,7 +243,6 @@ fn panicking_mc_install_restores_worker_buffers_and_depth() {
     MC_INSTALL_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
     COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
     INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
-    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
     MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
 }
 
@@ -543,7 +530,6 @@ fn single_reference_u8_frame_and_band_surfaces_match_across_chroma_formats_and_e
                 InterpolationFilter::EightTapSharp,
             ),
         ] {
-            SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
             let block = InterBlockParams::single(
                 ReferenceSamples::settled(&reference),
                 block_rect,
@@ -567,9 +553,6 @@ fn single_reference_u8_frame_and_band_surfaces_match_across_chroma_formats_and_e
                 ] {
                     motion_compensate_inter_block_into(&mut sink, block, ByteOffset::new(0))
                         .expect("u8 single-reference prediction");
-                    SUBPEL_PREDICTION_BUFFER.with(|slot| {
-                        assert!(slot.take().is_none(), "surface used packed u16 storage");
-                    });
                 }
             }
 
@@ -584,37 +567,6 @@ fn single_reference_u8_frame_and_band_surfaces_match_across_chroma_formats_and_e
             }
         }
     }
-    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
-}
-
-#[test]
-fn a_frame_edge_overhanging_eight_bit_block_stages_as_bytes() {
-    let width = 17;
-    let height = 15;
-    let reference = patterned_frame_with_format(PixelFormat::Yuv420, width, height, 23);
-    let block_rect = McBlockRect::from_luma_rect(12, 10, 8, 8);
-    let block = InterBlockParams::single(
-        ReferenceSamples::settled(&reference),
-        block_rect,
-        Mv { row: 5, col: -3 },
-        InterpolationFilter::EightTapSharp,
-    );
-
-    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
-    let mut workspace = workspace_with_format(PixelFormat::Yuv420, width, height);
-    motion_compensate_inter_block_into(
-        &mut super::WorkspaceSink::Frame(&mut workspace),
-        block,
-        ByteOffset::new(0),
-    )
-    .expect("clipped u8 single-reference prediction");
-
-    SUBPEL_PREDICTION_BUFFER.with(|slot| {
-        assert!(
-            slot.take().is_none(),
-            "a clipped eight-bit rectangle staged through u16 storage"
-        );
-    });
 }
 
 #[test]

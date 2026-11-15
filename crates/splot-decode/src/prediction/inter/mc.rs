@@ -687,25 +687,14 @@ fn predict_plane<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "single-reference prediction sample count",
         })?;
-    if T::u8_slice(&[]).is_some() {
-        let mut staged = RecycledMcSamples::<T>::take();
-        staged.resize(len, T::default());
-        if let Some(output) = T::u8_slice_mut(&mut staged) {
-            subpel_predict_block_strided_into_u8(&view, &params, output, params.w)?;
-            return Ok(sink.write_rect(plane, target, &staged, params.w)?);
-        }
+    let mut staged = RecycledMcSamples::<T>::take();
+    staged.resize(len, T::default());
+    if let Some(output) = T::u8_slice_mut(&mut staged) {
+        subpel_predict_block_strided_into_u8(&view, &params, output, params.w)?;
+    } else if let Some(output) = T::u16_slice_mut(&mut staged) {
+        subpel_predict_block_into(&view, &params, output)?;
     }
-    SUBPEL_PREDICTION_BUFFER.with(|slot| {
-        let mut predicted = slot.take().unwrap_or_default();
-        predicted.resize(len, 0);
-        let result: Result<()> = (|| {
-            subpel_predict_block_into(&view, &params, &mut predicted)?;
-            sink.write_u16_rect(plane, target, &predicted, params.w)?;
-            Ok(())
-        })();
-        slot.set(Some(predicted));
-        result
-    })
+    Ok(sink.write_rect(plane, target, &staged, params.w)?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1032,7 +1021,6 @@ struct CompoundPlanePrediction {
 pub(crate) struct McScratch {
     compound_predictions: [Vec<i32>; 2],
     initial_luma_predictions: Vec<u16>,
-    subpel_prediction: Vec<u16>,
     samples: [Option<Box<dyn std::any::Any + Send>>; 2],
 }
 
@@ -1045,7 +1033,6 @@ impl Default for McScratch {
             initial_luma_predictions: Vec::with_capacity(
                 2 * MAX_REFINEMV_PREDICTION_DIM * MAX_REFINEMV_PREDICTION_DIM,
             ),
-            subpel_prediction: Vec::with_capacity(MAX_MC_BLOCK_SAMPLES),
             samples: [None, None],
         }
     }
@@ -1070,7 +1057,6 @@ impl McScratch {
         Self {
             compound_predictions: [Vec::new(), Vec::new()],
             initial_luma_predictions: Vec::new(),
-            subpel_prediction: Vec::new(),
             samples: [None, None],
         }
     }
@@ -1103,11 +1089,6 @@ impl McScratch {
             std::mem::swap(&mut active, &mut self.initial_luma_predictions);
             slot.set(Some(active));
         });
-        SUBPEL_PREDICTION_BUFFER.with(|slot| {
-            let mut active = slot.take().unwrap_or_default();
-            std::mem::swap(&mut active, &mut self.subpel_prediction);
-            slot.set(Some(active));
-        });
         MC_SAMPLES_RECYCLER.with(|slot| {
             std::mem::swap(&mut *slot.borrow_mut(), &mut self.samples);
         });
@@ -1119,8 +1100,6 @@ std::thread_local! {
     static COMPOUND_PREDICTION_BUFFERS: std::cell::Cell<Option<[Vec<i32>; 2]>> =
         const { std::cell::Cell::new(None) };
     static INITIAL_LUMA_PREDICTIONS: std::cell::Cell<Option<Vec<u16>>> =
-        const { std::cell::Cell::new(None) };
-    static SUBPEL_PREDICTION_BUFFER: std::cell::Cell<Option<Vec<u16>>> =
         const { std::cell::Cell::new(None) };
     static MC_SAMPLES_RECYCLER: std::cell::RefCell<[Option<Box<dyn std::any::Any + Send>>; 2]> =
         std::cell::RefCell::new([None, None]);
@@ -1657,36 +1636,16 @@ pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
                 context: "IntrABC prediction sample count",
             })?;
     let window = (first_row, rows, storage.width());
-    if T::u8_slice(&[]).is_some() {
-        let mut staged = RecycledMcSamples::<T>::take();
-        staged.resize(prediction_len, T::default());
-        if let Some(output) = T::u8_slice_mut(&mut staged) {
-            let view = rows_view(workspace, plane, window)?;
-            subpel_predict_block_strided_into_u8(&view, &params, output, target.width())?;
-            let mut surface = CurrentFrameSurface::Frame(workspace);
-            return Ok(surface.write_rect(plane, target, &staged, target.width())?);
-        }
+    let mut staged = RecycledMcSamples::<T>::take();
+    staged.resize(prediction_len, T::default());
+    let view = rows_view(workspace, plane, window)?;
+    if let Some(output) = T::u8_slice_mut(&mut staged) {
+        subpel_predict_block_strided_into_u8(&view, &params, output, target.width())?;
+    } else if let Some(output) = T::u16_slice_mut(&mut staged) {
+        subpel_predict_block_into(&view, &params, output)?;
     }
-    SUBPEL_PREDICTION_BUFFER.with(|slot| {
-        let mut predicted = slot.take().unwrap_or_default();
-        predicted.resize(prediction_len, 0);
-        let result: Result<()> = (|| {
-            subpel_predict_block_into(
-                &rows_view(workspace, plane, window)?,
-                &params,
-                &mut predicted,
-            )?;
-            CurrentFrameSurface::Frame(workspace).write_u16_rect(
-                plane,
-                target,
-                &predicted[..prediction_len],
-                target.width(),
-            )?;
-            Ok(())
-        })();
-        slot.set(Some(predicted));
-        result
-    })
+    let mut surface = CurrentFrameSurface::Frame(workspace);
+    Ok(surface.write_rect(plane, target, &staged, target.width())?)
 }
 
 #[cfg(test)]
