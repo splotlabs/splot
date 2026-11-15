@@ -201,6 +201,14 @@ const fn size_code(size: u32) -> u32 {
 }
 
 impl PassEdges {
+    /// This storage for the next frame, whose tiles may differ.
+    pub(super) fn for_frame(mut self) -> Self {
+        for (controls, _) in &mut self.controls {
+            controls.clear();
+        }
+        self
+    }
+
     /// Drops the decided edges whose luma position lies in a superblock that
     /// is not `BRU_ACTIVE` (§ 7.17.2).
     pub(super) fn clear_bru_inactive(

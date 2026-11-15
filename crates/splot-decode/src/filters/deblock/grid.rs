@@ -140,6 +140,7 @@ pub(crate) struct DeblockGridStorage {
     pub(super) cells: Vec<MiCell>,
     pub(super) chroma: Vec<MiCell>,
     pub(super) facts: [PlaneFacts; 2],
+    pub(super) edges: [super::edges::PassEdges; 2],
 }
 
 /// The cell rows and columns `block` covers in a grid whose cells are

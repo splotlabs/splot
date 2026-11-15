@@ -243,6 +243,7 @@ impl FrameDeblock {
         });
         let grid = MiGridStorage::new(mi_cols, &mut records.grids);
         let facts = core::mem::take(&mut records.grids.facts);
+        let edges = core::mem::take(&mut records.grids.edges).map(PassEdges::for_frame);
         Ok(Some(Self {
             records,
             grid,
@@ -257,7 +258,7 @@ impl FrameDeblock {
             quant_deltas,
             next_pass_0_mi_row: 0,
             next_pass_1_mi_row: 0,
-            edges: Default::default(),
+            edges,
         }))
     }
 
@@ -542,6 +543,7 @@ impl FrameDeblock {
             storage.chroma = core::mem::take(&mut grid.cells);
         }
         storage.facts = core::mem::take(&mut self.facts);
+        storage.edges = core::mem::take(&mut self.edges);
     }
 
     pub(crate) fn finish(mut self) -> OwnedDeblockRecords {
