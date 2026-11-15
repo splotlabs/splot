@@ -14,6 +14,7 @@ use std::ops::Range;
 
 use crate::bitstream::tile_payload::{
     BlockSymbolTraceReadError, DecodeBlockFrontier, DecodeTileWorkUnit, TileCdfSelector,
+    TileCdfSubset,
 };
 use crate::error::Result;
 use crate::filters::cdef::CdefUnitGrid;
@@ -26,7 +27,6 @@ pub(crate) mod gdf;
 const BLOCK_4X4: usize = 0;
 const MI_SIZE: usize = 4;
 const CDEF_UNIT_MI: usize = 16;
-const TX_INVALID: usize = 255;
 const TX_PARTITION_NONE: usize = 0;
 const TX_PARTITION_SPLIT: usize = 1;
 const TX_PARTITION_HORZ: usize = 2;
@@ -221,7 +221,7 @@ fn selectable_transform_record_error(
         SelectableTransformRecordError::Unsupported {
             reason: "record-allocation",
         } => selectable_allocation_error(),
-        _ => crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into(),
+        _ => selectable_state_error(),
     }
 }
 
@@ -246,7 +246,7 @@ fn selectable_allocation_error() -> crate::error::DecodeError {
     .into()
 }
 
-fn selectable_state_error() -> crate::error::DecodeError {
+pub(super) fn selectable_state_error() -> crate::error::DecodeError {
     crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
@@ -767,7 +767,7 @@ impl SelectableLumaTxGrid {
                 records.push(record);
             }
         }
-        self.index(row, col)?;
+        self.check_bounds(row, col)?;
         let scan_order = scan_order.ok_or(SelectableTransformRecordError::Incomplete {
             expected: 1,
             actual: 0,
@@ -793,11 +793,11 @@ impl SelectableLumaTxGrid {
         Ok(records)
     }
 
-    fn index(
+    fn check_bounds(
         &self,
         row: usize,
         col: usize,
-    ) -> std::result::Result<usize, SelectableTransformRecordError> {
+    ) -> std::result::Result<(), SelectableTransformRecordError> {
         if row >= self.rows || col >= self.cols {
             return Err(SelectableTransformRecordError::OutOfBounds {
                 row,
@@ -806,11 +806,7 @@ impl SelectableLumaTxGrid {
                 cols: self.cols,
             });
         }
-        row.checked_mul(self.cols)
-            .and_then(|start| start.checked_add(col))
-            .ok_or(SelectableTransformRecordError::Unsupported {
-                reason: "grid-index-overflow",
-            })
+        Ok(())
     }
 }
 
@@ -1120,18 +1116,30 @@ fn read_tx_symbol(
     tile_offset: ByteOffset,
     spec_section: &'static str,
 ) -> Result<usize> {
-    let value = work_unit
-        .cdf_mut()
-        .tile_cdfs_mut()
-        .read_block_symbol(selector, symbols)
+    read_symbol(
+        work_unit.cdf_mut().tile_cdfs_mut(),
+        symbols,
+        selector,
+        tile_offset,
+        spec_section,
+    )
+}
+
+pub(super) fn read_symbol(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    selector: TileCdfSelector,
+    tile_offset: ByteOffset,
+    spec_section: &'static str,
+) -> Result<usize> {
+    cdfs.read_block_symbol(selector, symbols)
         .map(usize::from)
         .map_err(|error| match error {
             BlockSymbolTraceReadError::Cdf(_) => selectable_state_error(),
             BlockSymbolTraceReadError::Symbol(_) => {
                 selectable_symbol_read_error(tile_offset, spec_section)
             }
-        })?;
-    Ok(value)
+        })
 }
 
 fn read_delta_q_abs(
@@ -1220,7 +1228,6 @@ fn tx_size_from_dimensions(width: usize, height: usize) -> Option<usize> {
             usize::try_from(tx_width).ok() == Some(width)
                 && usize::try_from(tx_height).ok() == Some(height)
         })
-        .filter(|&tx_size| tx_size != TX_INVALID)
 }
 
 #[cfg(test)]

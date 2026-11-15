@@ -92,7 +92,7 @@ impl GdfState {
         };
         let block_size = usize::try_from(gdf_block_size(filter.gdf_unit_matches_sb_size, geometry))
             .map_err(|_| gdf_state_error())?;
-        let sb_size4 = sb_size4(sb_size);
+        let sb_size4 = crate::tile::frame_superblock_h4(partition.seq_sb_size(), frame_is_intra);
         let sb_width = sb_size4.checked_mul(4).ok_or_else(gdf_state_error)?;
         let sb_per_gdf = block_size
             .checked_div(sb_width)
@@ -244,14 +244,6 @@ fn read_use_gdf(
         return Err(gdf_state_error());
     }
     Ok(value)
-}
-
-const fn sb_size4(sb_size: SuperblockSize) -> usize {
-    match sb_size {
-        SuperblockSize::Block64x64 => 16,
-        SuperblockSize::Block128x128 => 32,
-        SuperblockSize::Block256x256 => 64,
-    }
 }
 
 fn gdf_state_error() -> crate::error::DecodeError {
