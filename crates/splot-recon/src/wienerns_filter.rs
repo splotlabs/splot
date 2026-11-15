@@ -127,25 +127,12 @@ pub struct WienerNsLumaFilter<'a> {
     pub subclasses: Option<&'a [usize]>,
 }
 
-/// Reusable working storage for padded luma Wiener NS filtering of `T`
-/// samples.
-#[derive(Debug)]
-pub struct WienerNsLumaScratch<T> {
+/// Reusable working storage for padded luma Wiener NS filtering.
+#[derive(Debug, Default)]
+pub struct WienerNsLumaScratch {
     clean_rows: Vec<bool>,
     prepared_classes: Vec<PreparedLumaClass>,
     eight_bit: eight_bit::EightBitLuma,
-    samples: core::marker::PhantomData<T>,
-}
-
-impl<T> Default for WienerNsLumaScratch<T> {
-    fn default() -> Self {
-        Self {
-            clean_rows: Vec::new(),
-            prepared_classes: Vec::new(),
-            eight_bit: eight_bit::EightBitLuma::default(),
-            samples: core::marker::PhantomData,
-        }
-    }
 }
 
 /// One class's coefficients and center scale.
@@ -302,7 +289,7 @@ pub fn wiener_ns_filter_luma_block_padded_into<T: ReconSample>(
     output: &mut [T],
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
-    scratch: &mut WienerNsLumaScratch<T>,
+    scratch: &mut WienerNsLumaScratch,
 ) -> Result<()> {
     let subclasses = params
         .subclasses
@@ -325,7 +312,7 @@ pub fn wiener_ns_filter_luma_block_padded_cells_into<T: ReconSample>(
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
     cell_subclasses: &[u8],
-    scratch: &mut WienerNsLumaScratch<T>,
+    scratch: &mut WienerNsLumaScratch,
 ) -> Result<()> {
     wiener_ns_filter_luma_block_padded_layout_into(
         output,
@@ -344,7 +331,7 @@ fn wiener_ns_filter_luma_block_padded_u8_into<T: ReconSample>(
     output: &mut [u8],
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
-    scratch: &mut WienerNsLumaScratch<T>,
+    scratch: &mut WienerNsLumaScratch,
 ) -> Result<()> {
     let subclasses = params
         .subclasses
@@ -358,7 +345,7 @@ fn wiener_ns_filter_luma_block_padded_cells_u8_into<T: ReconSample>(
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
     cell_subclasses: &[u8],
-    scratch: &mut WienerNsLumaScratch<T>,
+    scratch: &mut WienerNsLumaScratch,
 ) -> Result<()> {
     wiener_ns_filter_luma_block_padded_layout_u8_into(
         output,
@@ -377,7 +364,7 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
     subclasses: LumaSubclassLayout<'_>,
-    scratch: &mut WienerNsLumaScratch<T>,
+    scratch: &mut WienerNsLumaScratch,
 ) -> Result<()> {
     let context = prepare_luma_padded(output.len(), params, source, subclasses, scratch)?;
     filter_padded_luma_rows_in_range(
@@ -398,7 +385,7 @@ fn prepare_luma_padded<T: ReconSample>(
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
     subclasses: LumaSubclassLayout<'_>,
-    scratch: &mut WienerNsLumaScratch<T>,
+    scratch: &mut WienerNsLumaScratch,
 ) -> Result<PreparedLumaFilter> {
     scratch.clean_rows.clear();
     scratch.prepared_classes.clear();
@@ -475,7 +462,7 @@ fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
     subclasses: LumaSubclassLayout<'_>,
-    scratch: &mut WienerNsLumaScratch<T>,
+    scratch: &mut WienerNsLumaScratch,
 ) -> Result<()> {
     validate_sample_type::<u8>(params.bit_depth)?;
     let context = prepare_luma_padded(output.len(), params, source, subclasses, scratch)?;

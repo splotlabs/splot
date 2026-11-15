@@ -1543,17 +1543,6 @@ fn checked_extent_boundaries_and_other_domains_do_not_merge() {
 }
 
 #[test]
-fn wiener_ns_luma_worker_scratch_retention_is_bounded() {
-    WIENER_NS_LUMA_SCRATCH.with(|slot| slot.set(None));
-
-    with_wiener_ns_luma_scratch::<u16, _>(MAX_RETAINED_WIENER_NS_LUMA_SAMPLES + 1, |_| ());
-    WIENER_NS_LUMA_SCRATCH.with(|slot| assert!(slot.take().is_none()));
-
-    with_wiener_ns_luma_scratch::<u16, _>(MAX_RETAINED_WIENER_NS_LUMA_SAMPLES, |_| ());
-    WIENER_NS_LUMA_SCRATCH.with(|slot| assert!(slot.take().is_some()));
-}
-
-#[test]
 fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,

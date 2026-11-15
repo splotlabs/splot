@@ -29,31 +29,12 @@ use splot_recon::{
 thread_local! {
     static PC_WIENER_CLASSIFY_SCRATCH: std::cell::RefCell<PcWienerClassifyScratch> =
         std::cell::RefCell::new(PcWienerClassifyScratch::default());
-    static WIENER_NS_LUMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
-        const { std::cell::Cell::new(None) };
+    static WIENER_NS_LUMA_SCRATCH: std::cell::RefCell<WienerNsLumaScratch> =
+        std::cell::RefCell::new(WienerNsLumaScratch::default());
     static WIENER_NS_CHROMA_SCRATCH: std::cell::RefCell<WienerNsChromaScratch> =
         std::cell::RefCell::new(WienerNsChromaScratch::default());
     static LR_SOURCE_SCRATCH: std::cell::Cell<Option<Box<LrSourceScratch>>> =
         const { std::cell::Cell::new(None) };
-}
-
-const MAX_RETAINED_WIENER_NS_LUMA_SAMPLES: usize = 512 * 64;
-
-fn with_wiener_ns_luma_scratch<T: ReconSample, R>(
-    sample_count: usize,
-    f: impl FnOnce(&mut WienerNsLumaScratch<T>) -> R,
-) -> R {
-    WIENER_NS_LUMA_SCRATCH.with(|slot| {
-        let mut scratch = slot
-            .take()
-            .and_then(|scratch| scratch.downcast::<WienerNsLumaScratch<T>>().ok())
-            .unwrap_or_default();
-        let result = f(&mut scratch);
-        if sample_count <= MAX_RETAINED_WIENER_NS_LUMA_SAMPLES {
-            slot.set(Some(scratch));
-        }
-        result
-    })
 }
 
 const MAX_RETAINED_LR_SCRATCH_ELEMENTS: usize = 64 * 1024;
@@ -1619,10 +1600,6 @@ impl StripeChain<'_> {
                             T::try_from_u16(value).map_err(|_| super::lr_pipeline_state_error())?;
                         return fill_lr_rect(output, output_stride, sub.width, sub.height, value);
                     }
-                    let sample_count = sub
-                        .width
-                        .checked_mul(sub.height)
-                        .ok_or_else(super::lr_pipeline_state_error)?;
                     let cell_subclass_map = if num_classes > 1 {
                         Some(self.luma_lr_cell_subclasses(
                             &sub,
@@ -1647,7 +1624,7 @@ impl StripeChain<'_> {
                         WienerNsLumaPaddedSource::from_rows(rows, col + x, sub.width, sub.height)
                             .map_err(lr_window_error)?;
                     let source = &padded_source;
-                    with_wiener_ns_luma_scratch::<T, _>(sample_count, |scratch| {
+                    with_reusable_scratch(&WIENER_NS_LUMA_SCRATCH, |scratch| {
                         if let Some(cells) = cell_subclass_map {
                             wiener_ns_filter_luma_block_padded_cells_into(
                                 output, &params, source, cells, scratch,
