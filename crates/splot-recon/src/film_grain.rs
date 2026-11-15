@@ -20,8 +20,8 @@ use splot_core::headers::film_grain::{FilmGrainModel, FilmGrainScalingPoint};
 use splot_core::tables::conversion::GAUSSIAN_SEQUENCE;
 
 use crate::{
-    DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, Plane, PlaneRect, PlaneSize,
-    ReconError, ReconSample, Result,
+    DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, OutputIndex, Plane, PlaneId,
+    PlaneRect, PlaneSize, ReconError, ReconSample, Result,
 };
 
 const LUMA_GRAIN_WIDTH: usize = 82;
@@ -45,14 +45,23 @@ pub fn apply_film_grain<T: ReconSample>(
     model: &FilmGrainModel,
     grain_seed: u16,
 ) -> Result<DecodedFrame<T>> {
-    let grain = ActiveFilmGrain { model, grain_seed };
-    apply_grain(frame, &grain)
+    apply_film_grain_into(frame, model, grain_seed, FramePlaneSamples::default())
 }
 
-fn apply_grain<T: ReconSample>(
+/// [`apply_film_grain`] into the plane buffers of `spare`, so the grained frame
+/// reuses a retired frame's storage. A buffer too small for its plane is
+/// replaced from the pool `spare` names, or newly allocated without one.
+///
+/// # Errors
+///
+/// See [`apply_film_grain`].
+pub fn apply_film_grain_into<T: ReconSample>(
     frame: &DecodedFrame<T>,
-    grain: &ActiveFilmGrain<'_>,
+    model: &FilmGrainModel,
+    grain_seed: u16,
+    mut spare: FramePlaneSamples<T>,
 ) -> Result<DecodedFrame<T>> {
+    let grain = ActiveFilmGrain { model, grain_seed };
     let visible = frame.visible_luma_rect();
     let width = visible.width();
     let height = visible.height();
@@ -89,7 +98,7 @@ fn apply_grain<T: ReconSample>(
             });
         }
     }
-    let mut outputs = synthesize(&sources, &geometry, grain)?.into_iter();
+    let mut outputs = synthesize(&sources, &geometry, &grain, &mut spare)?.into_iter();
 
     let info = DecodedFrameInfo::new(
         OutputIndex::new(frame.output_index().get()),
@@ -134,10 +143,22 @@ struct GrainDestination<T: ReconSample> {
 }
 
 impl<T: ReconSample> GrainDestination<T> {
-    fn with_rows(width: usize, height: usize) -> Self {
+    fn with_rows(
+        width: usize,
+        height: usize,
+        mut samples: crate::PlaneBuf<T>,
+        pool: Option<&crate::PlanePool>,
+    ) -> Self {
         let stride = crate::plane_buf::plane_stride::<T>(width).unwrap_or(width);
-        let mut samples = crate::plane_buf();
-        samples.reserve_exact(stride * height);
+        let len = stride * height;
+        if let Some(pool) = pool
+            && samples.capacity() < len
+        {
+            pool.recycle(core::mem::take(&mut samples));
+            samples = pool.take(len);
+        }
+        samples.clear();
+        samples.reserve_exact(len);
         Self { samples, stride }
     }
 
@@ -187,12 +208,25 @@ fn synthesize<T: ReconSample>(
     sources: &[Vec<&[T]>],
     geometry: &GrainGeometry,
     grain: &ActiveFilmGrain<'_>,
+    spare: &mut FramePlaneSamples<T>,
 ) -> Result<Vec<GrainDestination<T>>> {
     let model = grain.model;
     let bit_depth = geometry.bit_depth;
     let num_planes = sources.len();
-    let mut outputs: Vec<GrainDestination<T>> = (0..num_planes)
-        .map(|plane| GrainDestination::with_rows(geometry.widths[plane], geometry.heights[plane]))
+    let pool = spare.pool.clone();
+    let mut outputs: Vec<GrainDestination<T>> = [PlaneId::Y, PlaneId::U, PlaneId::V]
+        .into_iter()
+        .take(num_planes)
+        .map(|plane| {
+            let index = plane.index();
+            let samples = spare.take(plane);
+            GrainDestination::with_rows(
+                geometry.widths[index],
+                geometry.heights[index],
+                samples,
+                pool.as_deref(),
+            )
+        })
         .collect();
     let (min_value, max_luma, max_chroma) = output_ranges(grain, bit_depth);
     let noise: Vec<Option<PlaneNoise>> = (0..num_planes)

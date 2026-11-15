@@ -13,7 +13,7 @@ use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 use crate::DecodeOptions;
 use crate::bitstream::byte_stream::UnitSource;
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
-use crate::output::film_grain;
+use crate::output::film_grain::{GrainPlanes, write_display};
 use crate::pipeline::PipelineDecodedFrame;
 
 pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
@@ -22,6 +22,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     session: &crate::pipeline::DecodeSession,
     mut writer: W,
 ) -> Result<()> {
+    let mut spare = GrainPlanes::default();
     crate::pipeline::emit_frames(
         source,
         options,
@@ -29,7 +30,12 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
         |_| Ok(()),
         |output| {
             let frame = output.ready_frame()?;
-            write_display_frame(&frame, output.display_grain.as_ref(), &mut writer)
+            write_display_frame(
+                &frame,
+                output.display_grain.as_ref(),
+                &mut spare,
+                &mut writer,
+            )
         },
     )?;
     Ok(())
@@ -40,16 +46,19 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
 fn write_display_frame(
     frame: &PipelineDecodedFrame,
     display_grain: Option<&crate::pipeline::ActiveFilmGrain>,
+    spare: &mut GrainPlanes,
     writer: &mut impl Write,
 ) -> Result<()> {
     catch_unwind(AssertUnwindSafe(|| match frame {
         PipelineDecodedFrame::Eight(frame) => {
-            let display = film_grain::frame_for_output(frame.get(), display_grain)?;
-            write_raw_frame(display.as_ref(), writer)
+            write_display(frame.get(), display_grain, &mut spare.eight, |display| {
+                write_raw_frame(display, writer)
+            })
         }
         PipelineDecodedFrame::Ten(frame) => {
-            let display = film_grain::frame_for_output(frame.get(), display_grain)?;
-            write_raw_frame(display.as_ref(), writer)
+            write_display(frame.get(), display_grain, &mut spare.ten, |display| {
+                write_raw_frame(display, writer)
+            })
         }
     }))
     .unwrap_or_else(|_| Err(raw_output_task_error("raw output task panicked")))
@@ -60,22 +69,22 @@ pub(crate) fn discard_raw_stream_from_plan(
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<()> {
+    let mut spare = GrainPlanes::default();
     crate::pipeline::emit_frames(
         source,
         options,
         session,
         |_| Ok(()),
         |output| {
-            let frame = output.ready_frame()?;
-            match &frame {
+            let grain = output.display_grain.as_ref();
+            match &output.ready_frame()? {
                 PipelineDecodedFrame::Eight(frame) => {
-                    film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;
+                    write_display(frame.get(), grain, &mut spare.eight, |_| Ok(()))
                 }
                 PipelineDecodedFrame::Ten(frame) => {
-                    film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;
+                    write_display(frame.get(), grain, &mut spare.ten, |_| Ok(()))
                 }
             }
-            Ok(())
         },
     )?;
     Ok(())

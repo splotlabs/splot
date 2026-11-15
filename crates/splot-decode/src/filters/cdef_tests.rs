@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::filters::source::DeblockedWindow;
+use crate::filters::source::StripeInitialization::CopyAll;
 use crate::test_support::yuv420_workspace as workspace_8bit;
 use splot_recon::{
     CDEF_DIRECTIONS, CdefSampleTaps, CdefTap, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex,
@@ -509,7 +510,7 @@ fn assert_cdef_block_matches_per_sample_reference(
                 coeff_shift: 0,
             };
             let mut pad = [0u16; CDEF_PADDED_AREA];
-            let mut filtered = StripePlane::copy_from(snap, 0, 64).unwrap();
+            let mut filtered = StripePlane::copy_from_into(snap, 0, 64, None, CopyAll).unwrap();
             compute_cdef_filter_plane::<u8>(snap, &ctx, false, &filter, &mut pad, &mut filtered)
                 .unwrap();
             let offsets = CdefTapOffsets::for_direction(filter.dir);
@@ -1028,7 +1029,7 @@ fn run_reference_case<T: ReconSample>(case: &ReferenceCase<'_>, bit_depth: BitDe
         has_chroma: !case.format.is_monochrome(),
         coeff_shift,
         fill_flat: [true; 3],
-        units: cdef_units(case.strengths, coeff_shift, subsampling),
+        units: &cdef_units(case.strengths, coeff_shift, subsampling),
     };
     let want = reference_cdef(&ws, case, &lookup, coeff_shift);
     let input = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {

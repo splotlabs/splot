@@ -3,9 +3,10 @@
 
 #![allow(clippy::unwrap_used)]
 
-use super::super::{OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
+use super::super::{FilledWindow, OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
 use super::*;
 use crate::filters::source::DeblockedWindow;
+use crate::filters::source::StripeInitialization::CopyAll;
 use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
 use crate::pipeline::frame_progress::{FrameProgress, FrontierRows};
 use splot_recon::{BitDepth, CurrentFrameWorkspace};
@@ -174,8 +175,8 @@ fn progress_of<T: splot_recon::ReconSample>(
 /// Copies every stripe's window out of the frame `setup` filters, in order.
 fn stripe_windows<T: splot_recon::ReconSample>(
     setup: &OwnedFilterSetup<T>,
-) -> Vec<Option<DeblockedWindow<T>>> {
-    let mut rows = setup.sink.progress.frontier_rows().unwrap();
+) -> Vec<Option<FilledWindow<T>>> {
+    let mut rows = setup.progress.frontier_rows().unwrap();
     assert!(rows.publish_final_rows(setup.luma_height));
     let mut carry = DeblockedWindow::default();
     (0..setup.stripe_ranges().len())
@@ -226,7 +227,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         (1, 1),
         &mut crate::filters::deblock::DeblockGridStorage::default(),
     )
-    .unwrap()
     .unwrap();
     deblock
         .advance_source(&mut source, 8, BitDepth::Eight)
@@ -1591,8 +1591,8 @@ fn lr_source_rows_resolve_in_stripe_rows_from_overlap_planes() {
             .unwrap();
     }
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let band = StripePlane::copy_from(cdef_source, 0, 4).unwrap();
-    let overlap = [StripePlane::copy_from(cdef_source, 4, 8).unwrap()];
+    let band = StripePlane::copy_from_into(cdef_source, 0, 4, None, CopyAll).unwrap();
+    let overlap = [StripePlane::copy_from_into(cdef_source, 4, 8, None, CopyAll).unwrap()];
     let mut storage = Vec::new();
 
     assert!(resolve_rows(&mut storage, curr, &band, &[], &bounds, (2, 2), (4, 4)).is_err());
@@ -1630,7 +1630,7 @@ fn lr_source_rows_match_the_source_sample_process() {
     }
     let curr = FramePlane::new(&curr_workspace, PlaneId::Y).unwrap();
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let band = StripePlane::copy_from(cdef_source, 2, 14).unwrap();
+    let band = StripePlane::copy_from_into(cdef_source, 2, 14, None, CopyAll).unwrap();
     let resolved = LoopRestorationPlaneBounds::new(PlaneId::Y, &bounds).unwrap();
     for (block_x, block_y) in [(0, 4), (6, 6), (11, 8), (5, 4)] {
         let mut storage = Vec::new();
@@ -1686,8 +1686,8 @@ fn lr_source_rows_reuse_storage_after_an_error() {
             .unwrap();
     }
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let cdef = StripePlane::copy_from(cdef_source, 0, 8).unwrap();
-    let short_cdef = StripePlane::copy_from(cdef_source, 0, 1).unwrap();
+    let cdef = StripePlane::copy_from_into(cdef_source, 0, 8, None, CopyAll).unwrap();
+    let short_cdef = StripePlane::copy_from_into(cdef_source, 0, 1, None, CopyAll).unwrap();
     let mut storage = Vec::new();
 
     let window = resolve_rows(&mut storage, curr, &cdef, &[], &bounds, (2, 2), (4, 4)).unwrap();
@@ -1781,6 +1781,28 @@ fn stripe_traversal_streams_ranges_and_stops_after_error() {
     assert!(invalid.next().unwrap().is_err());
     assert!(invalid.next().is_none());
     assert!(invalid.next().is_none());
+}
+
+fn lr_plane_fully_overwritten(
+    blocks: &[WienerNsLrSourceBlock],
+    plane: PlaneId,
+    frame_type: FrameRestorationType,
+    width: usize,
+    frame_height: usize,
+    start_y: usize,
+    end_y: usize,
+) -> bool {
+    let rows = (start_y, end_y);
+    for_each_lr_gap(
+        blocks,
+        plane,
+        frame_type,
+        width,
+        frame_height,
+        rows,
+        |_, _| None,
+    )
+    .is_some()
 }
 
 fn luma_wiener_covers(

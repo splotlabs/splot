@@ -548,7 +548,7 @@ fn window_bounds(
         .ok_or(StripeCopyError::Geometry)
 }
 
-enum StripeOwner<T> {
+enum StripeOwner<T: ReconSample> {
     Owned(Vec<T>),
     Direct(
         #[allow(dead_code, reason = "keeps the leased stripe region alive")] DirectPlaneTarget<T>,
@@ -663,31 +663,6 @@ impl<T: ReconSample> StripePlane<T> {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn copy_from(
-        source: FramePlane<'_, T>,
-        origin_y: usize,
-        end_y: usize,
-    ) -> Result<Self, StripeCopyError> {
-        Self::copy_from_into(source, origin_y, end_y, None)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn copy_from_into(
-        source: FramePlane<'_, T>,
-        origin_y: usize,
-        end_y: usize,
-        target: Option<DirectPlaneTarget<T>>,
-    ) -> Result<Self, StripeCopyError> {
-        Self::copy_from_into_mode(
-            source,
-            origin_y,
-            end_y,
-            target,
-            StripeInitialization::CopyAll,
-        )
-    }
-
     pub(crate) fn preflight_copy_from_into(
         source: FramePlane<'_, T>,
         origin_y: usize,
@@ -713,7 +688,7 @@ impl<T: ReconSample> StripePlane<T> {
 
     /// Rows `origin_y..end_y` of `source` in `target`, or in a pooled buffer
     /// without one; a `FullyOverwritten` target is not initialized.
-    pub(crate) fn copy_from_into_mode(
+    pub(crate) fn copy_from_into(
         source: FramePlane<'_, T>,
         origin_y: usize,
         end_y: usize,
@@ -745,16 +720,6 @@ impl<T: ReconSample> StripePlane<T> {
         Ok(output)
     }
 
-    #[cfg(test)]
-    pub(crate) fn copy_rows_into(
-        &self,
-        origin_y: usize,
-        end_y: usize,
-        target: Option<DirectPlaneTarget<T>>,
-    ) -> Result<Self, StripeCopyError> {
-        self.copy_rows_into_mode(origin_y, end_y, target, StripeInitialization::CopyAll)
-    }
-
     pub(crate) fn preflight_copy_rows_into(
         &self,
         origin_y: usize,
@@ -768,7 +733,7 @@ impl<T: ReconSample> StripePlane<T> {
         Self::preflight_copy_from_into(self.view()?, origin_y, end_y, target, initialization)
     }
 
-    pub(crate) fn copy_rows_into_mode(
+    pub(crate) fn copy_rows_into(
         &self,
         origin_y: usize,
         end_y: usize,
@@ -776,7 +741,7 @@ impl<T: ReconSample> StripePlane<T> {
         initialization: StripeInitialization,
     ) -> Result<Self, StripeCopyError> {
         self.preflight_copy_rows_into(origin_y, end_y, target.as_ref(), initialization)?;
-        Self::copy_from_into_mode(self.view()?, origin_y, end_y, target, initialization)
+        Self::copy_from_into(self.view()?, origin_y, end_y, target, initialization)
     }
 
     /// These rows as a frame-plane view.
