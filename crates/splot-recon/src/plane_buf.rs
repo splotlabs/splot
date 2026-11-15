@@ -194,8 +194,8 @@ pub struct LentRows<T: 'static> {
     _lender: Arc<dyn Send + Sync>,
 }
 
-unsafe impl<T: Send + 'static> Send for LentRows<T> {} // SAFETY: the rows are reached only through `&self` / `&mut self`, as through the `&'static mut [T]` this replaced.
-unsafe impl<T: Sync + 'static> Sync for LentRows<T> {} // SAFETY: a shared value gives only shared access to the rows, as a `&'static mut [T]` does.
+unsafe impl<T: Send + 'static> Send for LentRows<T> {} // SAFETY: the rows are reached only through `&self` / `&mut self`, as with an owned `&mut [T]`.
+unsafe impl<T: Sync + 'static> Sync for LentRows<T> {} // SAFETY: a shared value gives only shared access to the rows, as a shared `&mut [T]` does.
 
 impl<T: Copy> LentRows<T> {
     #[must_use]

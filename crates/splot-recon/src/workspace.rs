@@ -822,10 +822,6 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
 }
 
 /// The chroma rectangle covering one luma rectangle.
-///
-/// The rectangle form exists because callers that want a single rectangle
-/// vastly outnumber the one that partitions a whole frame, and building a
-/// `Vec` to take its first element was one allocation per rectangle.
 pub(crate) fn subsampled_rect(
     rect: PlaneRect,
     shift_x: u8,
@@ -1814,7 +1810,7 @@ fn copy_into_rect<T, S>(
 /// power-of-two pieces that fold into inline vector loads and stores; any copy
 /// loop here would be recognized by LLVM and re-lowered to a library call.
 /// Rows at or above 512 bytes keep the tuned library memcpy, where it wins.
-#[allow(clippy::inline_always, reason = "measured no-LTO row-copy hot path")]
+#[allow(clippy::inline_always, reason = "measured row-copy hot path")]
 #[inline(always)]
 fn copy_row_samples<T: ReconSample>(dst: &mut [T], src: &[T]) {
     debug_assert_eq!(dst.len(), src.len(), "rect row copy length mismatch");

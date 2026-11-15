@@ -19,14 +19,10 @@ pub(crate) fn samples_exceed<T: ReconSample>(samples: &[T], max_sample: u16) -> 
 
 /// Reports whether any `u16` sample exceeds the active bit depth.
 ///
-/// The scan accumulates a running lane-wise peak and compares once at the end
-/// rather than comparing and reducing every lane group: a clean buffer — every
-/// buffer on a conforming stream — costs one load and one `umax` per group
-/// instead of a compare, a cross-lane reduction and a branch. The comparison is
-/// against the same peak either way, so the answer is unchanged; only the error
-/// path loses an early exit it does not need, because it already rescans sample
-/// by sample to name the offender. A ragged tail rereads the last full lane
-/// group instead of walking sample by sample.
+/// The scan keeps a running lane-wise peak and compares it once at the end, so
+/// a clean buffer costs one load and one `umax` per lane group; it has no early
+/// exit, because the error path rescans to name the offender. A ragged tail
+/// rereads the last full lane group.
 pub(crate) fn u16_samples_exceed(samples: &[u16], max_sample: u16) -> bool {
     baseline_simd!(simd => u16_peak_exceeds(simd, samples, max_sample))
 }

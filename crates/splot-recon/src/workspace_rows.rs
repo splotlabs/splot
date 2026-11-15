@@ -670,7 +670,7 @@ impl<'a, T: ReconSample> IntraBlockFrame<'a, T> {
     /// storage or its above row lies outside a band.
     #[allow(
         clippy::inline_always,
-        reason = "measured: keeps the intra glue as lean as before"
+        reason = "measured: the intra glue folds into its caller"
     )]
     #[inline(always)]
     fn of(
