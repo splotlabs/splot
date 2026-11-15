@@ -359,19 +359,26 @@ fn push_chroma_plans(
     txb_skip_fsc_mode: bool,
     defer_reconstruction: bool,
 ) -> core::result::Result<(), ResidualPlanError> {
-    for plane_id in CHROMA_PLANES {
-        ResidualPlanePlan::push(
-            planes,
-            block_ctx,
-            plane_id,
-            reconstruction,
-            residual_width4,
-            residual_height4,
-            false,
-            txb_skip_fsc_mode,
-            None,
-            defer_reconstruction,
-        )?;
+    let mut u = None;
+    ResidualPlanePlan::push(
+        &mut |plan| u = Some(plan),
+        block_ctx,
+        PlaneId::U,
+        reconstruction,
+        residual_width4,
+        residual_height4,
+        false,
+        txb_skip_fsc_mode,
+        None,
+        defer_reconstruction,
+    )?;
+    if let Some(u) = u {
+        planes(u);
+        planes(ResidualPlanePlan {
+            plane_id: PlaneId::V,
+            coeff_plane: coeff_plane(PlaneId::V) as u8,
+            ..u
+        });
     }
     Ok(())
 }
