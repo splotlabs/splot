@@ -289,15 +289,6 @@ pub enum Error {
         max: u32,
     },
 
-    /// A byte-read requested more bytes than the reader supports for the target.
-    #[error("cannot read {requested} little-endian byte(s) (maximum is {max})")]
-    ByteWidthTooLarge {
-        /// Number of bytes requested.
-        requested: u32,
-        /// Maximum number of bytes supported for this read.
-        max: u32,
-    },
-
     /// The input ended before a complete syntax element could be read.
     #[error("unexpected end of input at byte {offset}: needed {needed} more byte(s)")]
     UnexpectedEof {
