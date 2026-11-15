@@ -10,7 +10,7 @@ use splot_core::symbol::SymbolDecoder;
 use splot_recon::{PlaneRect, PlaneSize};
 
 use crate::bitstream::tile_payload::{
-    BlockSize, BlockSymbolTraceReadError, DecodeBlockFrontier, TileCdfSelector, TileCdfSubset,
+    BlockSize, DecodeBlockFrontier, TileCdfSelector, TileCdfSubset,
 };
 use crate::error::{DecodeError, Result};
 use crate::prediction::inter::mv_scaling::{PlaneScaling, derive_plane_scaling};
@@ -26,6 +26,7 @@ use crate::tile::SbRowWindow;
 use super::intrabc_ref_mv_stack::{
     SpatialIntrabcProbes, SpatialScanGeometry, capture_spatial_intrabc_probes,
 };
+use super::tx_records::{read_symbol, selectable_state_error};
 use super::{frame_sb_size4, selectable_symbol_read_error};
 
 const BLOCK_64X64: usize = 12;
@@ -39,10 +40,6 @@ fn intrabc_invalid_block_vector_error(tile_offset: ByteOffset) -> DecodeError {
         "6.19.7.12",
         "IntraBC block vector fails the is_mv_valid conformance check",
     )
-}
-
-fn intrabc_state_error() -> DecodeError {
-    crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -128,8 +125,12 @@ impl IntrabcBlockGeometry {
     }
 
     pub(crate) fn from_chroma_ref(row: usize, col: usize, b_size: BlockSize) -> Result<Self> {
-        let n4w = b_size.num_4x4_wide().map_err(|_| intrabc_state_error())?;
-        let n4h = b_size.num_4x4_high().map_err(|_| intrabc_state_error())?;
+        let n4w = b_size
+            .num_4x4_wide()
+            .map_err(|_| selectable_state_error())?;
+        let n4h = b_size
+            .num_4x4_high()
+            .map_err(|_| selectable_state_error())?;
         Ok(Self {
             block: IntrabcBlockContext::from_chroma_ref(row, col, b_size),
             n4w,
@@ -294,7 +295,7 @@ impl IntrabcMiArea {
         let y = checked_mi_to_luma(self.rows.start)?;
         let width = checked_mi_to_luma(self.cols.len())?;
         let height = checked_mi_to_luma(self.rows.len())?;
-        PlaneRect::new(x, y, width, height).map_err(|_| intrabc_state_error())
+        PlaneRect::new(x, y, width, height).map_err(|_| selectable_state_error())
     }
 }
 
@@ -368,7 +369,7 @@ impl IntrabcGridCell {
         let base_col = u32::try_from(facts.base_col)
             .ok()
             .filter(|&col| col < 1 << 24)
-            .ok_or_else(intrabc_state_error)?;
+            .ok_or_else(selectable_state_error)?;
         let flags = Self::CODED
             | (u8::from(facts.use_intrabc) * Self::USE_INTRABC)
             | (u8::from(facts.is_inter) * Self::IS_INTER)
@@ -422,7 +423,7 @@ impl TileIntrabcPreludeState {
             window
                 .plane_rows()
                 .checked_mul(cols)
-                .ok_or_else(intrabc_state_error)?
+                .ok_or_else(selectable_state_error)?
         } else {
             0
         };
@@ -473,11 +474,11 @@ impl TileIntrabcPreludeState {
                 };
                 let end = start
                     .checked_add(area.cols.len())
-                    .ok_or_else(intrabc_state_error)?;
+                    .ok_or_else(selectable_state_error)?;
                 let row_values = self
                     .values
                     .get_mut(start..end)
-                    .ok_or_else(intrabc_state_error)?;
+                    .ok_or_else(selectable_state_error)?;
                 row_values.fill(value);
             }
         }
@@ -534,7 +535,7 @@ impl TileIntrabcPreludeState {
         context: IntrabcNeighborContext,
     ) -> Result<usize> {
         if !self.enabled {
-            return Err(intrabc_state_error());
+            return Err(selectable_state_error());
         }
         let mut ctx = 0usize;
         self.visit_neighbor_positions(
@@ -570,10 +571,14 @@ impl TileIntrabcPreludeState {
             same_sb_row,
         } = scan;
         if n4w == 0 || n4h == 0 {
-            return Err(intrabc_state_error());
+            return Err(selectable_state_error());
         }
-        let bottom_row = row.checked_add(n4h - 1).ok_or_else(intrabc_state_error)?;
-        let right_col = col.checked_add(n4w - 1).ok_or_else(intrabc_state_error)?;
+        let bottom_row = row
+            .checked_add(n4h - 1)
+            .ok_or_else(selectable_state_error)?;
+        let right_col = col
+            .checked_add(n4w - 1)
+            .ok_or_else(selectable_state_error)?;
         let candidates = [
             col.checked_sub(1).map(|left_col| (bottom_row, left_col)),
             row.checked_sub(1).map(|above_row| (above_row, right_col)),
@@ -610,12 +615,12 @@ impl TileIntrabcPreludeState {
     /// Plane index of a tile position, `None` while its row is unpublished.
     fn index(&self, row: usize, col: usize) -> Result<Option<usize>> {
         if !self.is_inside(row, col) {
-            return Err(intrabc_state_error());
+            return Err(selectable_state_error());
         }
         let plane_row = self
             .window
             .checked_plane_row(row - self.origin_row)
-            .map_err(|_| intrabc_state_error())?;
+            .map_err(|_| selectable_state_error())?;
         Ok(plane_row.map(|plane_row| plane_row * self.tile_cols + (col - self.origin_col)))
     }
 
@@ -847,7 +852,7 @@ fn read_intrabc_info_syntax(
     let m = usize::try_from(max_bvp_drl_bits_minus_1)
         .ok()
         .and_then(|bits| bits.checked_add(1))
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(selectable_state_error)?;
     let intrabc_mode = read_symbol(
         cdfs,
         symbols,
@@ -864,7 +869,7 @@ fn read_intrabc_info_syntax(
             ref_mv_idx = idx;
             break;
         }
-        ref_mv_idx = idx.checked_add(1).ok_or_else(intrabc_state_error)?;
+        ref_mv_idx = idx.checked_add(1).ok_or_else(selectable_state_error)?;
     }
 
     let mut mv_precision = if force_integer_mv {
@@ -887,7 +892,7 @@ fn read_intrabc_info_syntax(
         };
     }
     let ref_selection = IntrabcRefSelection::new(max_bvp_drl_bits_minus_1, ref_mv_idx)
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(selectable_state_error)?;
     Ok(IntrabcInfoSyntax {
         intrabc_mode,
         ref_selection,
@@ -900,7 +905,7 @@ fn resolve_intrabc_force_integer_mv(core: &FrameHeaderCore) -> Result<bool> {
         return Ok(force_integer_mv);
     }
     let Some(inter) = core.inter.as_ref() else {
-        return Err(intrabc_state_error());
+        return Err(selectable_state_error());
     };
     if let Some(force_integer_mv) = inter.force_integer_mv {
         return Ok(force_integer_mv);
@@ -908,7 +913,7 @@ fn resolve_intrabc_force_integer_mv(core: &FrameHeaderCore) -> Result<bool> {
     match inter.mv_precision {
         Some(MvPrecision::OnePel) => Ok(true),
         Some(MvPrecision::HalfPel | MvPrecision::QuarterPel | MvPrecision::EighthPel) => Ok(false),
-        Some(_) | None => Err(intrabc_state_error()),
+        Some(_) | None => Err(selectable_state_error()),
     }
 }
 
@@ -976,9 +981,9 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
     {
         return Err(intrabc_invalid_block_vector_error(tile_offset));
     }
-    let frame_size = core.frame_size.ok_or_else(intrabc_state_error)?;
-    let frame_width = i32::try_from(frame_size.width).map_err(|_| intrabc_state_error())?;
-    let frame_height = i32::try_from(frame_size.height).map_err(|_| intrabc_state_error())?;
+    let frame_size = core.frame_size.ok_or_else(selectable_state_error)?;
+    let frame_width = i32::try_from(frame_size.width).map_err(|_| selectable_state_error())?;
+    let frame_height = i32::try_from(frame_size.height).map_err(|_| selectable_state_error())?;
     let scaling = derive_plane_scaling(
         checked_i32_from_usize(block.x)?,
         checked_i32_from_usize(block.y)?,
@@ -1015,16 +1020,16 @@ fn intrabc_clamped_target(
     let tile_y = domain.tile_bounds.y();
     let tile_right = tile_x
         .checked_add(domain.tile_bounds.width())
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(selectable_state_error)?;
     let tile_bottom = tile_y
         .checked_add(domain.tile_bounds.height())
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(selectable_state_error)?;
     let nominal_right = target_x
         .checked_add(width)
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(selectable_state_error)?;
     let nominal_bottom = target_y
         .checked_add(height)
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(selectable_state_error)?;
     let visible_right = nominal_right.min(domain.storage.width()).min(tile_right);
     let visible_bottom = nominal_bottom.min(domain.storage.height()).min(tile_bottom);
     if target_x < tile_x
@@ -1034,35 +1039,35 @@ fn intrabc_clamped_target(
         || target_x >= visible_right
         || target_y >= visible_bottom
     {
-        return Err(intrabc_state_error());
+        return Err(selectable_state_error());
     }
     let eff_width = visible_right - target_x;
     let eff_height = visible_bottom - target_y;
-    PlaneRect::new(target_x, target_y, eff_width, eff_height).map_err(|_| intrabc_state_error())
+    PlaneRect::new(target_x, target_y, eff_width, eff_height).map_err(|_| selectable_state_error())
 }
 
 fn intrabc_luma_prediction_domain(
     core: &FrameHeaderCore,
     geometry: IntrabcBlockGeometry,
 ) -> Result<IntrabcLumaPredictionDomain> {
-    core.frame_size.ok_or_else(intrabc_state_error)?;
-    let tile_info = core.tile_info.as_ref().ok_or_else(intrabc_state_error)?;
+    core.frame_size.ok_or_else(selectable_state_error)?;
+    let tile_info = core.tile_info.as_ref().ok_or_else(selectable_state_error)?;
     let mi_cols = tile_info
         .mi_col_starts
         .last()
         .copied()
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(selectable_state_error)?;
     let mi_rows = tile_info
         .mi_row_starts
         .last()
         .copied()
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(selectable_state_error)?;
     if mi_cols == 0 || mi_rows == 0 {
-        return Err(intrabc_state_error());
+        return Err(selectable_state_error());
     }
     let width = checked_mi_u32_to_luma(mi_cols)?;
     let height = checked_mi_u32_to_luma(mi_rows)?;
-    let storage = PlaneSize::new(width, height).map_err(|_| intrabc_state_error())?;
+    let storage = PlaneSize::new(width, height).map_err(|_| selectable_state_error())?;
     let tile_area = IntrabcMiArea::from_tile_starts(
         &tile_info.mi_row_starts,
         &tile_info.mi_col_starts,
@@ -1082,13 +1087,13 @@ fn tile_interval_for_block(
 ) -> Result<(usize, usize)> {
     checked_mi_end(block_start, block_len)?;
     for window in starts.windows(2) {
-        let start = usize::try_from(window[0]).map_err(|_| intrabc_state_error())?;
-        let end = usize::try_from(window[1]).map_err(|_| intrabc_state_error())?;
+        let start = usize::try_from(window[0]).map_err(|_| selectable_state_error())?;
+        let end = usize::try_from(window[1]).map_err(|_| selectable_state_error())?;
         if block_start >= start && block_start < end {
             return Ok((start, end));
         }
     }
-    Err(intrabc_state_error())
+    Err(selectable_state_error())
 }
 
 fn clipped_mi_range(start: usize, len: usize, limit: usize) -> Result<Range<usize>> {
@@ -1097,19 +1102,19 @@ fn clipped_mi_range(start: usize, len: usize, limit: usize) -> Result<Range<usiz
 }
 
 fn checked_mi_end(start: usize, len: usize) -> Result<usize> {
-    start.checked_add(len).ok_or_else(intrabc_state_error)
+    start.checked_add(len).ok_or_else(selectable_state_error)
 }
 
 fn checked_mi_to_luma(mi: usize) -> Result<usize> {
-    mi.checked_mul(MI_SIZE).ok_or_else(intrabc_state_error)
+    mi.checked_mul(MI_SIZE).ok_or_else(selectable_state_error)
 }
 
 fn checked_mi_u32_to_luma(mi: u32) -> Result<usize> {
-    checked_mi_to_luma(usize::try_from(mi).map_err(|_| intrabc_state_error())?)
+    checked_mi_to_luma(usize::try_from(mi).map_err(|_| selectable_state_error())?)
 }
 
 fn checked_i32_from_usize(value: usize) -> Result<i32> {
-    i32::try_from(value).map_err(|_| intrabc_state_error())
+    i32::try_from(value).map_err(|_| selectable_state_error())
 }
 
 fn rect_is_within_rect(rect: PlaneRect, bounds: PlaneRect) -> bool {
@@ -1202,25 +1207,6 @@ pub(crate) fn frame_allows_intrabc(core: &FrameHeaderCore) -> bool {
             .is_some_and(|inter| inter.allow_intrabc == Some(true))
 }
 
-fn read_symbol(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    selector: TileCdfSelector,
-    tile_offset: ByteOffset,
-    spec_section: &'static str,
-) -> Result<usize> {
-    cdfs.read_block_symbol(selector, symbols)
-        .map(usize::from)
-        .map_err(|error| match error {
-            BlockSymbolTraceReadError::Cdf(_) => {
-                crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
-            }
-            BlockSymbolTraceReadError::Symbol(_) => {
-                super::selectable_symbol_read_error(tile_offset, spec_section)
-            }
-        })
-}
-
 pub(crate) fn max_bvp_drl_bits_minus_1(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -1232,7 +1218,7 @@ pub(crate) fn max_bvp_drl_bits_minus_1(
     {
         return Ok(max);
     }
-    let inter = sequence.inter.as_ref().ok_or_else(intrabc_state_error)?;
+    let inter = sequence.inter.as_ref().ok_or_else(selectable_state_error)?;
     Ok(inter.seq_max_bvp_drl_bits_minus_1)
 }
 

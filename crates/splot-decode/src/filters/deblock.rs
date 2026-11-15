@@ -221,10 +221,6 @@ impl FrameDeblock {
     /// Takes ownership of detached deblock records; the first advance lays
     /// the frame's mode-info grids out from them.
     #[allow(clippy::too_many_arguments)]
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "callers keep preparation fallible across frame setup paths"
-    )]
     pub(crate) fn prepare_owned(
         mut records: OwnedDeblockRecords,
         mi_rows: usize,
@@ -234,9 +230,9 @@ impl FrameDeblock {
         disable_loopfilters_across_tiles: bool,
         quant_deltas: DeblockQuantDeltas,
         chroma_subsampling: (usize, usize),
-    ) -> Result<Option<Self>, DeblockError> {
+    ) -> Option<Self> {
         if filter.apply_deblocking_filter == [false; 4] {
-            return Ok(None);
+            return None;
         }
         let chroma = (filter.apply_deblocking_filter[2..] != [false; 2]).then(|| {
             ChromaMiGridStorage::new(mi_cols, chroma_subsampling, &mut records.grids.chroma)
@@ -244,7 +240,7 @@ impl FrameDeblock {
         let grid = MiGridStorage::new(mi_cols, &mut records.grids);
         let facts = core::mem::take(&mut records.grids.facts);
         let edges = core::mem::take(&mut records.grids.edges).map(PassEdges::for_frame);
-        Ok(Some(Self {
+        Some(Self {
             records,
             grid,
             chroma,
@@ -259,7 +255,7 @@ impl FrameDeblock {
             next_pass_0_mi_row: 0,
             next_pass_1_mi_row: 0,
             edges,
-        }))
+        })
     }
 
     /// Deblocks the frame rows past its final prefix in place, then publishes
@@ -578,7 +574,7 @@ impl FrameDeblock {
         quant_deltas: DeblockQuantDeltas,
         chroma_subsampling: (usize, usize),
         grids: &mut DeblockGridStorage,
-    ) -> Result<Option<Self>, DeblockError> {
+    ) -> Option<Self> {
         Self::prepare_owned(
             OwnedDeblockRecords {
                 grids: core::mem::take(grids),

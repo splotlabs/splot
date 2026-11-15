@@ -130,8 +130,7 @@ fn deblock_through_live_source<T: ReconSample>(
         quant_deltas,
         (1, 1),
         &mut DeblockGridStorage::default(),
-    )?
-    else {
+    ) else {
         return Ok(());
     };
     let mut source = source_from_workspace(workspace);
@@ -216,7 +215,6 @@ fn one_row_advance_matches_the_whole_frame_deblock() {
         (1, 1),
         &mut DeblockGridStorage::default(),
     )
-    .unwrap()
     .unwrap();
     let mut staged_source = source_from_workspace(&mut staged);
     plan.advance_source(&mut staged_source, mi_rows, BitDepth::Eight)
@@ -358,7 +356,6 @@ fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
         (1, 1),
         &mut DeblockGridStorage::default(),
     )
-    .unwrap()
     .unwrap();
     let mut source = source_from_workspace(&mut actual);
     for mi_row_end in [16, 32] {
@@ -403,7 +400,6 @@ fn records_appended_per_superblock_row_deblock_like_the_whole_frame() {
             (1, 1),
             &mut DeblockGridStorage::default(),
         )
-        .unwrap()
         .unwrap()
     };
     let mut expected = patterned_yuv420_workspace(128, 128);
@@ -460,7 +456,6 @@ fn in_place_deblock_matches_workspace_across_stripe_windows() {
         (1, 1),
         &mut DeblockGridStorage::default(),
     )
-    .unwrap()
     .unwrap();
     plan.advance_source(&mut source, 16, BitDepth::Eight)
         .unwrap();
@@ -514,7 +509,6 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
         (1, 1),
         &mut DeblockGridStorage::default(),
     )
-    .unwrap()
     .unwrap();
     let owned_blocks = blocks.clone();
     let owned_pointer = owned_blocks.as_ptr();
@@ -539,7 +533,6 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
         DeblockQuantDeltas::ZERO,
         (1, 1),
     )
-    .unwrap()
     .unwrap();
 
     let mut borrowed_source = source_from_workspace(&mut borrowed);
@@ -591,7 +584,6 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
             DeblockQuantDeltas::ZERO,
             (1, 1),
         )
-        .unwrap()
         .unwrap();
         records = plan.finish();
         assert_eq!(addresses(&records.grids), original);
@@ -617,7 +609,6 @@ fn incremental_deblock_enforces_frontiers_and_leases_exact_window() {
         (1, 1),
         &mut DeblockGridStorage::default(),
     )
-    .unwrap()
     .unwrap();
 
     assert_eq!(plan.final_luma_rows(1), 0);
@@ -677,7 +668,6 @@ fn incremental_deblock_clamps_completed_window_to_clipped_frame_height() {
         (1, 1),
         &mut DeblockGridStorage::default(),
     )
-    .unwrap()
     .unwrap();
     let mut source = source_from_workspace(&mut actual);
     plan.advance_source(&mut source, mi_rows, BitDepth::Eight)
@@ -735,7 +725,6 @@ fn incremental_deblock_matches_tile_boundary_rules() {
             (1, 1),
             &mut DeblockGridStorage::default(),
         )
-        .unwrap()
         .unwrap();
         let mut source = source_from_workspace(&mut actual);
         plan.advance_source(&mut source, mi_rows, BitDepth::Eight)

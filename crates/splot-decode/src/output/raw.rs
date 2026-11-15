@@ -15,15 +15,13 @@ use crate::bitstream::byte_stream::UnitSource;
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::output::film_grain::{GrainPlanes, write_display};
 use crate::pipeline::PipelineDecodedFrame;
-use parking_lot::Mutex;
 
 pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
-    writer: W,
+    mut writer: W,
 ) -> Result<()> {
-    let writer = Mutex::new(writer);
     let mut spare = GrainPlanes::default();
     crate::pipeline::emit_frames(
         source,
@@ -32,7 +30,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
         |_| Ok(()),
         |output| {
             let frame = output.ready_frame()?;
-            write_display_frame(&frame, output.display_grain.as_ref(), &mut spare, &writer)
+            write_display_frame(&frame, output.display_grain.as_ref(), &mut spare, &mut writer)
         },
     )?;
     Ok(())
@@ -44,21 +42,18 @@ fn write_display_frame(
     frame: &PipelineDecodedFrame,
     display_grain: Option<&crate::pipeline::ActiveFilmGrain>,
     spare: &mut GrainPlanes,
-    writer: &Mutex<impl Write>,
+    writer: &mut impl Write,
 ) -> Result<()> {
-    catch_unwind(AssertUnwindSafe(|| {
-        let writer = &mut *writer.lock();
-        match frame {
-            PipelineDecodedFrame::Eight(frame) => {
-                write_display(frame.get(), display_grain, &mut spare.eight, |display| {
-                    write_raw_frame(display, writer)
-                })
-            }
-            PipelineDecodedFrame::Ten(frame) => {
-                write_display(frame.get(), display_grain, &mut spare.ten, |display| {
-                    write_raw_frame(display, writer)
-                })
-            }
+    catch_unwind(AssertUnwindSafe(|| match frame {
+        PipelineDecodedFrame::Eight(frame) => {
+            write_display(frame.get(), display_grain, &mut spare.eight, |display| {
+                write_raw_frame(display, writer)
+            })
+        }
+        PipelineDecodedFrame::Ten(frame) => {
+            write_display(frame.get(), display_grain, &mut spare.ten, |display| {
+                write_raw_frame(display, writer)
+            })
         }
     }))
     .unwrap_or_else(|_| Err(raw_output_task_error("raw output task panicked")))

@@ -234,12 +234,7 @@ impl CcsoBlockMap {
     /// a unit is never smaller than a superblock.
     #[must_use]
     pub fn units(&self) -> Vec<(usize, usize)> {
-        let state = &self.state;
-        (state.row_start..state.row_start + state.grid_rows)
-            .flat_map(|row| {
-                (state.col_start..state.col_start + state.grid_cols).map(move |col| (row, col))
-            })
-            .collect()
+        self.state.window.units().collect()
     }
 
     /// The `ccso_blk` context of `plane` at `unit`, or `None` when the plane

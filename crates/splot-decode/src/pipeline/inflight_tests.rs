@@ -420,7 +420,7 @@ fn failed_finish_reports_its_error_before_harvest() {
         frame.info(),
         PipelineFrameSlot::Eight,
         &mut ring,
-        &mut crate::pipeline::FrameStore::new(false, 2),
+        &mut crate::pipeline::FrameStore::new(2),
         0,
     )
     .expect("pending finish");

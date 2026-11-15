@@ -14,6 +14,7 @@ use std::ops::Range;
 
 use crate::bitstream::tile_payload::{
     BlockSymbolTraceReadError, DecodeBlockFrontier, DecodeTileWorkUnit, TileCdfSelector,
+    TileCdfSubset,
 };
 use crate::error::Result;
 use crate::filters::cdef::CdefUnitGrid;
@@ -26,7 +27,6 @@ pub(crate) mod gdf;
 const BLOCK_4X4: usize = 0;
 const MI_SIZE: usize = 4;
 const CDEF_UNIT_MI: usize = 16;
-const TX_INVALID: usize = 255;
 const TX_PARTITION_NONE: usize = 0;
 const TX_PARTITION_SPLIT: usize = 1;
 const TX_PARTITION_HORZ: usize = 2;
@@ -86,12 +86,98 @@ pub(crate) struct DeltaQState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CdefState {
+    window: UnitWindow,
+    values: Vec<Option<usize>>,
+    sb_size4: usize,
+}
+
+/// The units of a frame's filter-unit grid that one state holds: all of them
+/// for the frame state, one tile's for a tile state.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct UnitWindow {
     row_start: usize,
     col_start: usize,
     rows: usize,
     cols: usize,
-    values: Vec<Option<usize>>,
-    sb_size4: usize,
+}
+
+impl UnitWindow {
+    const fn frame(rows: usize, cols: usize) -> Self {
+        Self {
+            row_start: 0,
+            col_start: 0,
+            rows,
+            cols,
+        }
+    }
+
+    const fn is_frame(self) -> bool {
+        self.row_start == 0 && self.col_start == 0
+    }
+
+    /// The units of this frame window that a tile of `mi_rows` x `mi_cols`
+    /// covers, with `unit_mi` MI rows and columns per unit.
+    fn tile(self, mi_rows: &Range<usize>, mi_cols: &Range<usize>, unit_mi: usize) -> Self {
+        let row_start = mi_rows.start / unit_mi;
+        let col_start = mi_cols.start / unit_mi;
+        Self {
+            row_start,
+            col_start,
+            rows: mi_rows
+                .end
+                .div_ceil(unit_mi)
+                .min(self.rows)
+                .saturating_sub(row_start),
+            cols: mi_cols
+                .end
+                .div_ceil(unit_mi)
+                .min(self.cols)
+                .saturating_sub(col_start),
+        }
+    }
+
+    fn len(self) -> Option<usize> {
+        self.rows.checked_mul(self.cols)
+    }
+
+    #[allow(clippy::inline_always, reason = "measured: per-leaf guards read it")]
+    #[inline(always)]
+    fn index(self, row: usize, col: usize) -> Option<usize> {
+        crate::tile::local_grid_index(
+            row,
+            col,
+            self.row_start,
+            self.col_start,
+            self.rows,
+            self.cols,
+        )
+    }
+
+    /// The units in raster order, which is their coding order.
+    pub(crate) fn units(self) -> impl Iterator<Item = (usize, usize)> {
+        (self.row_start..self.row_start + self.rows).flat_map(move |row| {
+            (self.col_start..self.col_start + self.cols).map(move |col| (row, col))
+        })
+    }
+
+    /// The indices in this frame window's values of row `row` of `tile`.
+    fn tile_row(self, tile: Self, row: usize) -> Option<Range<usize>> {
+        let start = self.index(tile.row_start.checked_add(row)?, tile.col_start)?;
+        Some(start..start.checked_add(tile.cols)?)
+    }
+
+    /// Copies the values of `tile` into this frame window's `frame` values.
+    fn merge<T: Copy>(self, tile: Self, values: &[T], frame: &mut [T]) -> Option<()> {
+        for row in 0..tile.rows {
+            let source = values
+                .get(row.checked_mul(tile.cols)?..)?
+                .get(..tile.cols)?;
+            frame
+                .get_mut(self.tile_row(tile, row)?)?
+                .copy_from_slice(source);
+        }
+        Some(())
+    }
 }
 
 pub(crate) const CCSO_PLANES: usize = 3;
@@ -135,7 +221,7 @@ fn selectable_transform_record_error(
         SelectableTransformRecordError::Unsupported {
             reason: "record-allocation",
         } => selectable_allocation_error(),
-        _ => crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into(),
+        _ => selectable_state_error(),
     }
 }
 
@@ -160,7 +246,7 @@ fn selectable_allocation_error() -> crate::error::DecodeError {
     .into()
 }
 
-fn selectable_state_error() -> crate::error::DecodeError {
+pub(super) fn selectable_state_error() -> crate::error::DecodeError {
     crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
@@ -269,32 +355,29 @@ impl CdefState {
         mi_cols: Range<usize>,
         spare: Option<Self>,
     ) -> Result<Self> {
-        let row_start = mi_rows.start / CDEF_UNIT_MI;
-        let col_start = mi_cols.start / CDEF_UNIT_MI;
-        let row_end = mi_rows
-            .end
-            .div_ceil(CDEF_UNIT_MI)
-            .min(self.row_start + self.rows);
-        let col_end = mi_cols
-            .end
-            .div_ceil(CDEF_UNIT_MI)
-            .min(self.col_start + self.cols);
-        let rows = row_end.saturating_sub(row_start);
-        let cols = col_end.saturating_sub(col_start);
-        let len = rows.checked_mul(cols).ok_or_else(selectable_state_error)?;
-        let mut values = spare.map(|spare| spare.values).unwrap_or_default();
+        let window = self.window.tile(&mi_rows, &mi_cols, CDEF_UNIT_MI);
+        Self::with_window(
+            window,
+            spare.map(|spare| spare.values).unwrap_or_default(),
+            self.sb_size4,
+        )
+    }
+
+    fn with_window(
+        window: UnitWindow,
+        mut values: Vec<Option<usize>>,
+        sb_size4: usize,
+    ) -> Result<Self> {
+        let len = window.len().ok_or_else(selectable_state_error)?;
         values.clear();
         values
             .try_reserve_exact(len)
             .map_err(|_| selectable_allocation_error())?;
         values.resize(len, None);
         Ok(Self {
-            row_start,
-            col_start,
-            rows,
-            cols,
+            window,
             values,
-            sb_size4: self.sb_size4,
+            sb_size4,
         })
     }
 
@@ -303,24 +386,13 @@ impl CdefState {
         mi_cols: usize,
         sequence: &SequenceHeader,
         frame_is_intra: bool,
-        mut values: Vec<Option<usize>>,
+        values: Vec<Option<usize>>,
     ) -> Result<Self> {
-        let rows = mi_rows.div_ceil(CDEF_UNIT_MI);
-        let cols = mi_cols.div_ceil(CDEF_UNIT_MI);
-        let values_len = rows.checked_mul(cols).ok_or_else(selectable_state_error)?;
-        values.clear();
-        values
-            .try_reserve_exact(values_len)
-            .map_err(|_| selectable_allocation_error())?;
-        values.resize(values_len, None);
-        Ok(Self {
-            row_start: 0,
-            col_start: 0,
-            rows,
-            cols,
-            values,
-            sb_size4: frame_sb_size4(sequence, frame_is_intra)?,
-        })
+        let window = UnitWindow::frame(
+            mi_rows.div_ceil(CDEF_UNIT_MI),
+            mi_cols.div_ceil(CDEF_UNIT_MI),
+        );
+        Self::with_window(window, values, frame_sb_size4(sequence, frame_is_intra)?)
     }
 
     /// Reads the block's CDEF unit index unless the unit already has one, which
@@ -389,11 +461,7 @@ impl CdefState {
 
         let unit_row = frontier.r / CDEF_UNIT_MI;
         let unit_col = frontier.c / CDEF_UNIT_MI;
-        if unit_row < self.row_start
-            || unit_col < self.col_start
-            || unit_row >= self.row_start + self.rows
-            || unit_col >= self.col_start + self.cols
-        {
+        if self.window.index(unit_row, unit_col).is_none() {
             return Err(selectable_state_error());
         }
 
@@ -476,10 +544,16 @@ impl CdefState {
         let start_unit_col = mi_col / CDEF_UNIT_MI;
         let unit_rows = n4h.div_ceil(CDEF_UNIT_MI).max(1);
         let unit_cols = n4w.div_ceil(CDEF_UNIT_MI).max(1);
-        let row_end = (self.row_start + self.rows).min(start_unit_row.saturating_add(unit_rows));
-        let col_end = (self.col_start + self.cols).min(start_unit_col.saturating_add(unit_cols));
-        for row in start_unit_row.max(self.row_start)..row_end {
-            for col in start_unit_col.max(self.col_start)..col_end {
+        let UnitWindow {
+            row_start,
+            col_start,
+            rows,
+            cols,
+        } = self.window;
+        let row_end = (row_start + rows).min(start_unit_row.saturating_add(unit_rows));
+        let col_end = (col_start + cols).min(start_unit_col.saturating_add(unit_cols));
+        for row in start_unit_row.max(row_start)..row_end {
+            for col in start_unit_col.max(col_start)..col_end {
                 let index = self.index(row, col)?;
                 self.values[index] = Some(strength);
             }
@@ -503,18 +577,8 @@ impl CdefState {
     )]
     #[inline(always)]
     fn index(&self, row: usize, col: usize) -> Result<usize> {
-        let local_row = row
-            .checked_sub(self.row_start)
-            .ok_or_else(selectable_state_error)?;
-        let local_col = col
-            .checked_sub(self.col_start)
-            .ok_or_else(selectable_state_error)?;
-        if local_row >= self.rows || local_col >= self.cols {
-            return Err(selectable_state_error());
-        }
-        local_row
-            .checked_mul(self.cols)
-            .and_then(|start| start.checked_add(local_col))
+        self.window
+            .index(row, col)
             .ok_or_else(selectable_state_error)
     }
 
@@ -524,34 +588,23 @@ impl CdefState {
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
     ) -> Result<()> {
-        let expected_row_start = mi_rows.start / CDEF_UNIT_MI;
-        let expected_col_start = mi_cols.start / CDEF_UNIT_MI;
-        let row_end = mi_rows.end.div_ceil(CDEF_UNIT_MI).min(self.rows);
-        let col_end = mi_cols.end.div_ceil(CDEF_UNIT_MI).min(self.cols);
-        if self.row_start != 0
-            || self.col_start != 0
+        if !self.window.is_frame()
             || self.sb_size4 != tile.sb_size4
-            || tile.row_start != expected_row_start
-            || tile.col_start != expected_col_start
-            || tile.rows != row_end.saturating_sub(expected_row_start)
-            || tile.cols != col_end.saturating_sub(expected_col_start)
+            || tile.window != self.window.tile(&mi_rows, &mi_cols, CDEF_UNIT_MI)
         {
             return Err(selectable_state_error());
         }
-        for row in mi_rows.start / CDEF_UNIT_MI..row_end {
-            for col in mi_cols.start / CDEF_UNIT_MI..col_end {
-                let index = self.index(row, col)?;
-                self.values[index] = tile.value(row, col)?;
-            }
-        }
-        Ok(())
+        self.window
+            .merge(tile.window, &tile.values, &mut self.values)
+            .ok_or_else(selectable_state_error)
     }
 
     pub(crate) fn into_grid(self) -> Result<CdefUnitGrid> {
-        if self.row_start != 0 || self.col_start != 0 {
+        if !self.window.is_frame() {
             return Err(selectable_state_error());
         }
-        CdefUnitGrid::new(self.rows, self.cols, self.values).map_err(|_| selectable_state_error())
+        CdefUnitGrid::new(self.window.rows, self.window.cols, self.values)
+            .map_err(|_| selectable_state_error())
     }
 }
 
@@ -714,7 +767,7 @@ impl SelectableLumaTxGrid {
                 records.push(record);
             }
         }
-        self.index(row, col)?;
+        self.check_bounds(row, col)?;
         let scan_order = scan_order.ok_or(SelectableTransformRecordError::Incomplete {
             expected: 1,
             actual: 0,
@@ -740,11 +793,11 @@ impl SelectableLumaTxGrid {
         Ok(records)
     }
 
-    fn index(
+    fn check_bounds(
         &self,
         row: usize,
         col: usize,
-    ) -> std::result::Result<usize, SelectableTransformRecordError> {
+    ) -> std::result::Result<(), SelectableTransformRecordError> {
         if row >= self.rows || col >= self.cols {
             return Err(SelectableTransformRecordError::OutOfBounds {
                 row,
@@ -753,11 +806,7 @@ impl SelectableLumaTxGrid {
                 cols: self.cols,
             });
         }
-        row.checked_mul(self.cols)
-            .and_then(|start| start.checked_add(col))
-            .ok_or(SelectableTransformRecordError::Unsupported {
-                reason: "grid-index-overflow",
-            })
+        Ok(())
     }
 }
 
@@ -1067,18 +1116,30 @@ fn read_tx_symbol(
     tile_offset: ByteOffset,
     spec_section: &'static str,
 ) -> Result<usize> {
-    let value = work_unit
-        .cdf_mut()
-        .tile_cdfs_mut()
-        .read_block_symbol(selector, symbols)
+    read_symbol(
+        work_unit.cdf_mut().tile_cdfs_mut(),
+        symbols,
+        selector,
+        tile_offset,
+        spec_section,
+    )
+}
+
+pub(super) fn read_symbol(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    selector: TileCdfSelector,
+    tile_offset: ByteOffset,
+    spec_section: &'static str,
+) -> Result<usize> {
+    cdfs.read_block_symbol(selector, symbols)
         .map(usize::from)
         .map_err(|error| match error {
             BlockSymbolTraceReadError::Cdf(_) => selectable_state_error(),
             BlockSymbolTraceReadError::Symbol(_) => {
                 selectable_symbol_read_error(tile_offset, spec_section)
             }
-        })?;
-    Ok(value)
+        })
 }
 
 fn read_delta_q_abs(
@@ -1167,7 +1228,6 @@ fn tx_size_from_dimensions(width: usize, height: usize) -> Option<usize> {
             usize::try_from(tx_width).ok() == Some(width)
                 && usize::try_from(tx_height).ok() == Some(height)
         })
-        .filter(|&tx_size| tx_size != TX_INVALID)
 }
 
 #[cfg(test)]
