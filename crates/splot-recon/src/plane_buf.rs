@@ -14,6 +14,8 @@ use std::collections::TryReserveError;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use crate::ReconSample;
+
 /// The byte alignment of every plane buffer's first sample and row stride.
 pub const PLANE_ALIGNMENT: usize = 64;
 
@@ -60,7 +62,7 @@ impl<T> PlaneBuf<T> {
     }
 }
 
-impl<T: Copy> PlaneBuf<T> {
+impl<T: ReconSample> PlaneBuf<T> {
     const SAMPLES_PER_BLOCK: usize = {
         assert!(size_of::<T>() > 0 && PLANE_ALIGNMENT.is_multiple_of(size_of::<T>()));
         assert!(align_of::<T>() <= PLANE_ALIGNMENT);
@@ -141,36 +143,36 @@ impl<T> Default for PlaneBuf<T> {
     }
 }
 
-impl<T: Copy> core::ops::Deref for PlaneBuf<T> {
+impl<T: ReconSample> core::ops::Deref for PlaneBuf<T> {
     type Target = [T];
 
     fn deref(&self) -> &[T] {
-        // `len` samples fit in the initialized 64-byte-aligned blocks (`grow_to`) and
-        // SAFETY: each was written as a `T`, whose size divides the block and align <= 64.
+        // `len` samples fit in the initialized 64-byte-aligned blocks (`grow_to`), and
+        // SAFETY: any bytes there, zero fill included, are a valid `ReconSample` (`u8` or `u16`).
         unsafe { core::slice::from_raw_parts(self.blocks.as_ptr().cast::<T>(), self.len) }
     }
 }
 
-impl<T: Copy> core::ops::DerefMut for PlaneBuf<T> {
+impl<T: ReconSample> core::ops::DerefMut for PlaneBuf<T> {
     fn deref_mut(&mut self) -> &mut [T] {
         // SAFETY: as in `deref`, through the unique borrow of the blocks.
         unsafe { core::slice::from_raw_parts_mut(self.blocks.as_mut_ptr().cast::<T>(), self.len) }
     }
 }
 
-impl<T: Copy + core::fmt::Debug> core::fmt::Debug for PlaneBuf<T> {
+impl<T: ReconSample + core::fmt::Debug> core::fmt::Debug for PlaneBuf<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_list().entries(self.iter()).finish()
     }
 }
 
-impl<T: Copy + PartialEq> PartialEq for PlaneBuf<T> {
+impl<T: ReconSample + PartialEq> PartialEq for PlaneBuf<T> {
     fn eq(&self, other: &Self) -> bool {
         **self == **other
     }
 }
 
-impl<T: Copy + Eq> Eq for PlaneBuf<T> {}
+impl<T: ReconSample + Eq> Eq for PlaneBuf<T> {}
 
 /// An empty plane buffer; it allocates nothing.
 #[must_use]
@@ -184,7 +186,7 @@ pub const fn plane_buf<T>() -> PlaneBuf<T> {
 
 /// A plane buffer holding a copy of `samples`.
 #[must_use]
-pub fn plane_buf_from<T: Copy>(samples: &[T]) -> PlaneBuf<T> {
+pub fn plane_buf_from<T: ReconSample>(samples: &[T]) -> PlaneBuf<T> {
     let mut buffer = plane_buf();
     buffer.append_samples(samples);
     buffer
@@ -259,7 +261,7 @@ fn held_beside() -> Arc<dyn Send + Sync> {
     Arc::clone(LENDER.get_or_init(|| Arc::new(())))
 }
 
-impl<T: Copy + Send + Sync + 'static> PlaneSamples<T> {
+impl<T: ReconSample> PlaneSamples<T> {
     /// The samples of `buf`, which the value owns until [`Self::take`].
     pub(crate) fn owned(mut owned: PlaneBuf<T>) -> Self {
         let (len, samples) = (owned.len(), NonNull::from(&mut owned[..]).cast::<T>());
