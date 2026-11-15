@@ -758,6 +758,7 @@ impl<T: ReconSample> InterReconScratch<T> {
 
 /// Prototype: replays a simple op with a direct call; `Ok(false)` when the
 /// row holds no borrow of its reference, for the generic path to take over.
+#[inline(never)]
 pub(super) fn replay_simple_op<T: ReconSample>(
     op: &SimpleOp,
     workspace: &mut CurrentFrameWorkspace<T>,
