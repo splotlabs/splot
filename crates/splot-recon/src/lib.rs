@@ -187,13 +187,12 @@ pub use optflow::{
     derive_optflow_mv_deltas_into, optflow_unit_8x8_u8, optflow_unit_8x8_u16,
 };
 pub use pc_wiener::{
-    PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_FILTER_TAP_RADIUS,
-    PC_WIENER_FULL_CLASSES, PC_WIENER_LUT_CLASSES, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES,
-    PcWienerClassification, PcWienerClassifyPaddedSource, PcWienerClassifyParams,
-    PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PcWienerTxSkipLookup,
-    PcWienerTxSkipRun, pc_wiener_classify_grid, pc_wiener_classify_grid_padded_classes_into,
-    pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_set_index,
-    pc_wiener_subclass_table,
+    PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES,
+    PC_WIENER_LUT_CLASSES, PcWienerClassification, PcWienerClassifyPaddedSource,
+    PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource,
+    PcWienerTxSkipLookup, PcWienerTxSkipRun, pc_wiener_classify_grid,
+    pc_wiener_classify_grid_padded_classes_into, pc_wiener_filter_block,
+    pc_wiener_filter_block_padded, pc_wiener_filter_set_index, pc_wiener_subclass_table,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
@@ -238,14 +237,14 @@ pub use warp_prediction::{
     ext_warp_predict_unit, warp_predict_block, warp_predict_block_into, warp_shear_is_valid,
 };
 pub use wienerns_chroma_filter::{
-    WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAPS,
-    WIENER_NS_CONFIG_UV, WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch,
+    WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CONFIG_UV,
+    WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch,
     wiener_ns_chroma_luma_plane, wiener_ns_filter_chroma_block_padded_into,
 };
 pub use wienerns_filter::{
-    WIENER_NS_CONFIG_Y_PAIRS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
-    WIENER_NS_LUMA_TAPS, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
-    wiener_ns_filter_luma_block_padded_cells_into, wiener_ns_filter_luma_block_padded_into,
+    WIENER_NS_CONFIG_Y_PAIRS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS, WienerNsLumaFilter,
+    WienerNsLumaPaddedSource, WienerNsLumaScratch, wiener_ns_filter_luma_block_padded_cells_into,
+    wiener_ns_filter_luma_block_padded_into,
 };
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameRect, CurrentFrameRectRowsMut,
