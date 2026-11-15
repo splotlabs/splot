@@ -576,13 +576,13 @@ fn sequence_partition_and_frame_transform_type_reductions_are_independent() {
     let mut input = frame_facts_input();
     input.reduced_tx_set = 3;
     let frame_type_reduced = input;
-    assert_eq!(frame_type_reduced.reduced_tx_set(), 3);
+    assert_eq!(frame_type_reduced.reduced_tx_set, 3);
     assert!(!frame_type_reduced.reduced_tx_part_set());
 
     input.reduced_tx_set = 0;
     input.reduced_tx_part_set = true;
     let sequence_partition_reduced = input;
-    assert_eq!(sequence_partition_reduced.reduced_tx_set(), 0);
+    assert_eq!(sequence_partition_reduced.reduced_tx_set, 0);
     assert!(sequence_partition_reduced.reduced_tx_part_set());
 }
 

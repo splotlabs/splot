@@ -11,9 +11,7 @@ use crate::filters::wienerns_lr::intrabc_records::{
     derive_intrabc_luma_prediction_geometry,
 };
 use crate::prediction::inter::mv_scaling::{PlaneScaling, derive_plane_scaling};
-use crate::prediction::inter::{
-    InterResidual, InterResidualBlock, InterResidualReconScratch, Mv, mc,
-};
+use crate::prediction::inter::{InterResidual, InterResidualBlock, Mv, mc};
 use crate::{Result, prediction::inter::add_inter_residual_to_workspace};
 
 pub(super) struct IntrabcReconPrediction {
@@ -123,7 +121,6 @@ pub(super) struct IntrabcReconCommand {
     segment_id: u8,
     qindex: u32,
     luma_use_tcq: bool,
-    residual_use_ddt: bool,
     bit_depth: BitDepth,
 }
 
@@ -134,7 +131,6 @@ impl IntrabcReconCommand {
         segment_id: u8,
         qindex: u32,
         luma_use_tcq: bool,
-        residual_use_ddt: bool,
         bit_depth: BitDepth,
     ) -> Self {
         Self {
@@ -143,14 +139,12 @@ impl IntrabcReconCommand {
             segment_id,
             qindex,
             luma_use_tcq,
-            residual_use_ddt,
             bit_depth,
         }
     }
 
     pub(super) fn reconstruct<T: ReconSample>(
         &self,
-        residual_scratch: &mut InterResidualReconScratch<T>,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -192,15 +186,13 @@ impl IntrabcReconCommand {
         }
         if let Some(residual) = self.residual.as_ref() {
             add_inter_residual_to_workspace(
-                residual_scratch,
                 &mut mc::WorkspaceSink::Frame(workspace),
                 residual,
                 residual_blocks,
                 residual_coeffs,
                 self.qindex,
                 self.luma_use_tcq,
-                self.residual_use_ddt,
-                true,
+                false,
                 self.bit_depth,
             )?;
         }

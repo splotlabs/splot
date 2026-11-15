@@ -8,10 +8,9 @@ use splot_recon::{DpcmDirection, IntraCardinalDirection, PlaneId};
 use crate::bitstream::tile_payload::{
     CflParams, LumaPalette, SupportedChromaMode, SupportedNonDcLumaMode,
 };
-use crate::tile::block_context::{BlockCtx, TxShape};
+use crate::tile::block_context::{BlockRect, FrameTileCtx, TxShape};
 
 mod chroma_pair;
-pub(crate) use chroma_pair::read_cctx_prediction;
 mod deblock_recorder;
 mod palette;
 pub(crate) use palette::palette_color_index_context;
@@ -49,6 +48,7 @@ const IDTX: usize = 9;
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraResidualPlan {
     planes: Vec<ResidualPlanePlan>,
+    frame: FrameTileCtx,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -146,11 +146,11 @@ pub(crate) enum ResidualPlanError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ResidualPlanePlan {
     plane_id: PlaneId,
-    block_ctx: BlockCtx,
+    rect: BlockRect,
     coeff_plane: u8,
-    tx_size: usize,
-    x: usize,
-    y: usize,
+    tx_size: u8,
+    x: u32,
+    y: u32,
     tx: TxShape,
     residual_width4: u16,
     residual_height4: u16,

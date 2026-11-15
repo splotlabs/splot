@@ -170,9 +170,9 @@ fn window<const VERTICAL: bool>(
     }
 }
 
-/// Largest row stride the vertical kernel takes: bounding it lets the line
-/// loops prove their trip count.
-const MAX_STRIDE: usize = 1 << 24;
+/// Largest row stride the kernels take: bounding it lets the line loops
+/// prove their trip counts and row offsets.
+pub(super) const MAX_STRIDE: usize = 1 << 24;
 
 /// Runs `$body` for each chunk of a run of `edges.len() >= 8` segments that
 /// filters something, with `$start` its first segment, `$low` and `$high`
@@ -417,7 +417,7 @@ kernel!(
         first: usize,
         edges: &[DeblockEdge],
     ) {
-        if stride < LINES {
+        if !(LINES..=MAX_STRIDE).contains(&stride) {
             return;
         }
         for_chunks!(token, edges, |start, low, high, widest| {
@@ -430,10 +430,8 @@ kernel!(
                     if let Some(band) = samples.get_mut(origin..origin + span + LINES) {
                         let vectors = &mut rows[REACH - $reach..REACH + $reach];
                         for (line, $vector) in vectors.iter_mut().enumerate() {
-                            let at = line * stride;
-                            if let Some($row) = band.get_mut(at..at + LINES) {
-                                $body
-                            }
+                            let $row = &mut band[line * stride..line * stride + LINES];
+                            $body
                         }
                     }
                 }};
@@ -506,8 +504,8 @@ kernel!(
     /// segments, `edges[c + k * edge_stride]` for column `c` and row `k`,
     /// chunk row by chunk row and the `live` columns of each left to right:
     /// bytes `s[-4..4]` of each line for chunks no wider than 3, `s[-8..8]`
-    /// otherwise. Lines pass through a stack copy of exact-stride rows,
-    /// which folds into direct loads without per-line bounds checks.
+    /// otherwise. Lines load and store in place: the bounded stride lets one
+    /// check of the chunk's block cover every line.
     #[inline]
     fn vertical(
         token: Avx2,
@@ -549,102 +547,76 @@ kernel!(
                 let Some(block) = band.get_mut(4 * column..4 * column + block_len) else {
                     return;
                 };
-                macro_rules! lines {
-                    ($lines:ident, $line:ident, $row:ident, $body:block) => {{
-                        let (head, last) = block.split_at_mut(span);
-                        for ($line, $row) in $lines.iter_mut().zip(head.chunks_exact_mut(stride)) {
-                            let $row = &mut $row[..2 * REACH];
-                            $body
+                macro_rules! line {
+                    ($i:expr) => {
+                        &mut block[$i * stride..$i * stride + 2 * REACH]
+                    };
+                }
+                macro_rules! narrow {
+                    ($class:literal) => {{
+                        let mut word = |i: usize| {
+                            let mut bytes = [0; 8];
+                            bytes.copy_from_slice(&line!(i)[REACH / 2..REACH / 2 + 8]); // splot-copy-ok: one 8-byte load
+                            f64::from_bits(u64::from_le_bytes(bytes))
+                        };
+                        let mut pair = |low, high| _mm_castpd_si128(_mm_setr_pd(word(low), word(high)));
+                        let mut v = [_mm256_setzero_si256(); 8];
+                        each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
+                            v[I] = _mm256_inserti128_si256::<1>(
+                                _mm256_castsi128_si256(pair(2 * I, 2 * I + 1)),
+                                pair(16 + 2 * I, 17 + 2 * I),
+                            );
+                        });
+                        for _ in 0..4 {
+                            narrow_round(token, &mut v);
                         }
-                        if let Some($line) = $lines.last_mut() {
-                            let $row = &mut last[..2 * REACH];
-                            $body
+                        let mut rows = [_mm256_setzero_si256(); 2 * REACH];
+                        each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
+                            rows[REACH / 2 + I] = v[I];
+                        });
+                        if filter_chunk!(token, rows, low, high, $class) {
+                            each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
+                                v[I] = rows[REACH / 2 + I];
+                            });
+                            for _ in 0..3 {
+                                narrow_round(token, &mut v);
+                            }
+                            let mut put = |i: usize, word: i64| {
+                                line!(i)[REACH / 2..REACH / 2 + 8].copy_from_slice(&word.to_le_bytes()); // splot-copy-ok: one 8-byte store
+                            };
+                            each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
+                                put(2 * I, _mm256_extract_epi64::<0>(v[I]));
+                                put(2 * I + 1, _mm256_extract_epi64::<1>(v[I]));
+                                put(16 + 2 * I, _mm256_extract_epi64::<2>(v[I]));
+                                put(17 + 2 * I, _mm256_extract_epi64::<3>(v[I]));
+                            });
                         }
                     }};
                 }
-                macro_rules! narrow {
-            ($class:literal) => {{
-                let mut copies = [[0u8; 2 * REACH]; LINES];
-                lines!(copies, copy, row, {
-                    copy.copy_from_slice(row); // splot-copy-ok: one 16-byte load
-                });
-                let word = |line: &[u8; 2 * REACH]| {
-                    let mut bytes = [0; 8];
-                    bytes.copy_from_slice(&line[REACH / 2..REACH / 2 + 8]); // splot-copy-ok: one 8-byte load
-                    f64::from_bits(u64::from_le_bytes(bytes))
-                };
-                // Double lanes: two lines load as one `movsd` and one `movhps`.
-                let pair = |low, high| _mm_castpd_si128(_mm_setr_pd(word(low), word(high)));
-                let mut v = [_mm256_setzero_si256(); 8];
-                each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
-                    v[I] = _mm256_inserti128_si256::<1>(
-                        _mm256_castsi128_si256(pair(&copies[2 * I], &copies[2 * I + 1])),
-                        pair(&copies[16 + 2 * I], &copies[17 + 2 * I]),
-                    );
-                });
-                for _ in 0..4 {
-                    narrow_round(token, &mut v);
-                }
-                let mut rows = [_mm256_setzero_si256(); 2 * REACH];
-                each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
-                    rows[REACH / 2 + I] = v[I];
-                });
-                if filter_chunk!(token, rows, low, high, $class) {
-                    each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
-                        v[I] = rows[REACH / 2 + I];
-                    });
-                    for _ in 0..3 {
-                        narrow_round(token, &mut v);
-                    }
-                    let mut put = |line: usize, word: i64| {
-                        copies[line][REACH / 2..REACH / 2 + 8].copy_from_slice(&word.to_le_bytes()); // splot-copy-ok: one 8-byte store
-                    };
-                    each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
-                        put(2 * I, _mm256_extract_epi64::<0>(v[I]));
-                        put(2 * I + 1, _mm256_extract_epi64::<1>(v[I]));
-                        put(16 + 2 * I, _mm256_extract_epi64::<2>(v[I]));
-                        put(17 + 2 * I, _mm256_extract_epi64::<3>(v[I]));
-                    });
-                    lines!(copies, copy, row, {
-                        row[REACH / 2..REACH / 2 + 8].copy_from_slice(&copy[REACH / 2..REACH / 2 + 8]); // splot-copy-ok: one 8-byte store
-                    });
-                }
-            }};
-        }
                 macro_rules! wide {
-            ($class:literal) => {{
-                let mut copies = [[0u8; 2 * REACH]; LINES];
-                lines!(copies, copy, row, {
-                    copy.copy_from_slice(row); // splot-copy-ok: one 16-byte load
-                });
-                let load = |line: &[u8; 2 * REACH]| -> __m128i { u8x16::from_slice(token, line).into() };
-                let mut v = [_mm256_setzero_si256(); 16];
-                each!(I in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] {
-                    v[I] = _mm256_inserti128_si256::<1>(
-                        _mm256_castsi128_si256(load(&copies[I])),
-                        load(&copies[I + 16]),
-                    );
-                });
-                for _ in 0..4 {
-                    wide_round(token, &mut v);
+                    ($class:literal) => {{
+                        let mut load = |i: usize| -> __m128i { u8x16::from_slice(token, line!(i)).into() };
+                        let mut v = [_mm256_setzero_si256(); 16];
+                        each!(I in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] {
+                            v[I] = _mm256_inserti128_si256::<1>(_mm256_castsi128_si256(load(I)), load(I + 16));
+                        });
+                        for _ in 0..4 {
+                            wide_round(token, &mut v);
+                        }
+                        if filter_chunk!(token, v, low, high, $class) {
+                            for _ in 0..4 {
+                                wide_round(token, &mut v);
+                            }
+                            let mut put = |i: usize, value: __m128i| {
+                                u8x16::simd_from(token, value).store_slice(line!(i));
+                            };
+                            each!(I in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] {
+                                put(I, _mm256_castsi256_si128(v[I]));
+                                put(I + 16, _mm256_extracti128_si256::<1>(v[I]));
+                            });
+                        }
+                    }};
                 }
-                if filter_chunk!(token, v, low, high, $class) {
-                    for _ in 0..4 {
-                        wide_round(token, &mut v);
-                    }
-                    let mut put = |line: usize, value: __m128i| {
-                        u8x16::simd_from(token, value).store_slice(&mut copies[line]);
-                    };
-                    each!(I in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] {
-                        put(I, _mm256_castsi256_si128(v[I]));
-                        put(I + 16, _mm256_extracti128_si256::<1>(v[I]));
-                    });
-                    lines!(copies, copy, row, {
-                        row.copy_from_slice(copy); // splot-copy-ok: one 16-byte store
-                    });
-                }
-            }};
-        }
                 match widest {
                     1 => narrow!(1),
                     3 => narrow!(3),

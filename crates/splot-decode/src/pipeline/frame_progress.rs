@@ -16,16 +16,16 @@
 //!
 //! [`FrameProgress`] owns that workspace for the pipelined path and tracks how
 //! many luma rows from the top are final. Stripes complete out of order, so the
-//! watermark advances over the contiguous published prefix only. Reads take the
-//! shared lock and are refused past the watermark, so a consumer can never
-//! observe a row the filter chain has not written.
+//! watermark advances over the contiguous published prefix only. Reads take no
+//! lock: a [`PublishedFrame`] borrows, through its slot, only rows below the
+//! watermark it loaded, which no writer touches again and whose allocation the
+//! slot keeps alive across the freeze.
 
 #![allow(
     unsafe_code,
     reason = "disjoint filter stripes write directly into one canonical frame allocation"
 )]
 
-use core::cell::UnsafeCell;
 use core::num::NonZeroUsize;
 use core::ptr::NonNull;
 use core::slice;
@@ -35,9 +35,10 @@ use std::sync::{Arc, OnceLock};
 use splot_parallel::{CompletionCell, WatermarkCell};
 use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, PlaneSize, ReconSample};
 
+use super::inflight::{FrameSlotWriter, RefFrameSlot};
 use crate::error::{DecodeError, Result};
 use crate::pipeline::unsupported;
-use parking_lot::{Mutex, RwLock, RwLockReadGuard};
+use parking_lot::Mutex;
 
 /// One stripe's publication state.
 #[derive(Clone, Copy, Default)]
@@ -63,28 +64,8 @@ struct ProgressLayout {
 }
 
 #[derive(Clone, Copy)]
-enum DirectPlaneSamples {
-    U8(NonNull<u8>),
-    U16(NonNull<u16>),
-}
-
-impl DirectPlaneSamples {
-    fn offset(self, offset: usize) -> Option<Self> {
-        match self {
-            Self::U8(samples) => Some(Self::U8(NonNull::new(
-                samples.as_ptr().wrapping_add(offset),
-            )?)),
-            Self::U16(samples) => Some(Self::U16(NonNull::new(
-                samples.as_ptr().wrapping_add(offset),
-            )?)),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
 struct PlaneStorage<T> {
     samples: NonNull<T>,
-    direct_samples: Option<DirectPlaneSamples>,
     len: usize,
     stride: usize,
     height: usize,
@@ -97,110 +78,40 @@ unsafe impl<T: ReconSample> Send for PlaneStorage<T> {}
 /// SAFETY: as for `Send`; a shared table copy creates no sample access itself.
 unsafe impl<T: ReconSample> Sync for PlaneStorage<T> {}
 
-struct DirectWorkspace<T: ReconSample> {
-    workspace: UnsafeCell<CurrentFrameWorkspace<T>>,
-    info: DecodedFrameInfo,
-    planes: [Option<PlaneStorage<T>>; 3],
-}
-
-// SAFETY: tracked disjoint lends exclude published prefixes and terminal freeze.
-unsafe impl<T: ReconSample> Send for DirectWorkspace<T> {}
-// SAFETY: shared access exposes only immutable geometry or published rows.
-unsafe impl<T: ReconSample> Sync for DirectWorkspace<T> {}
-
-impl<T: ReconSample> DirectWorkspace<T> {
-    fn new(mut workspace: CurrentFrameWorkspace<T>) -> crate::Result<Self> {
-        let info = workspace.info();
-        let mut planes = [None, None, None];
-        let sizes = crate::filters::wienerns_lr::recon::plane_storage_sizes(&workspace);
-        {
-            let mut frame = workspace.as_frame_mut()?;
-            for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-                let Some(view) = frame.plane_mut(plane) else {
-                    continue;
-                };
-                let stride = view.stride_samples();
-                let Some(size) = sizes[plane.index()] else {
-                    continue;
-                };
-                let samples = view.samples_mut();
-                let len = samples.len();
-                let (samples, direct_samples) = if let Some(samples) = T::u16_slice_mut(samples) {
-                    let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
-                        continue;
-                    };
-                    (samples.cast(), Some(DirectPlaneSamples::U16(samples)))
-                } else if let Some(samples) = T::u8_slice_mut(samples) {
-                    let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
-                        continue;
-                    };
-                    (samples.cast(), Some(DirectPlaneSamples::U8(samples)))
-                } else {
-                    let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
-                        continue;
-                    };
-                    (samples, None)
-                };
-                planes[plane.index()] = Some(PlaneStorage {
-                    samples,
-                    direct_samples,
-                    len,
-                    stride,
-                    height: len / stride,
-                    size,
-                });
-            }
-        }
-        Ok(Self {
-            workspace: UnsafeCell::new(workspace),
-            info,
-            planes,
-        })
-    }
-
-    fn direct_region(&self, plane: PlaneId, start: usize, end: usize) -> Option<DirectPlaneRegion> {
-        let storage = self.planes[plane.index()]?;
-        if start >= end || end > storage.height {
-            return None;
-        }
-        let start_sample = start.checked_mul(storage.stride)?;
-        let len = (end - start).checked_mul(storage.stride)?;
-        if start_sample.checked_add(len)? > storage.len {
-            return None;
-        }
-        let samples = storage.direct_samples?.offset(start_sample)?;
-        Some(DirectPlaneRegion {
+/// The raw table of `workspace`'s planes, which stays valid while its sample
+/// buffers live: neither the freeze nor a plane take moves their allocation.
+fn plane_table<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+) -> crate::Result<[Option<PlaneStorage<T>>; 3]> {
+    let mut planes = [None, None, None];
+    let sizes = crate::filters::wienerns_lr::recon::plane_storage_sizes(workspace);
+    let mut frame = workspace.as_frame_mut()?;
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let Some(view) = frame.plane_mut(plane) else {
+            continue;
+        };
+        let stride = view.stride_samples();
+        let Some(size) = sizes[plane.index()] else {
+            continue;
+        };
+        let samples = view.samples_mut();
+        let len = samples.len();
+        let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
+            continue;
+        };
+        planes[plane.index()] = Some(PlaneStorage {
             samples,
             len,
-            width: storage.size.width(),
-            stride: storage.stride,
-            frame_height: storage.height,
-            origin_y: start,
-        })
+            stride,
+            height: len / stride,
+            size,
+        });
     }
-
-    fn published_plane(&self, plane: PlaneId, rows: usize) -> Option<PublishedPlane<'_, T>> {
-        let storage = self.planes[plane.index()]?;
-        let rows = rows.min(storage.height);
-        let len = rows.checked_mul(storage.stride)?.min(storage.len);
-        let samples = unsafe {
-            // SAFETY: release/acquire publishes this prefix before it is read.
-            slice::from_raw_parts(storage.samples.as_ptr(), len)
-        };
-        Some(PublishedPlane {
-            samples,
-            stride: storage.stride,
-            size: storage.size,
-        })
-    }
-
-    fn into_workspace(self) -> CurrentFrameWorkspace<T> {
-        self.workspace.into_inner()
-    }
+    Ok(planes)
 }
 
-struct DirectPlaneRegion {
-    samples: DirectPlaneSamples,
+struct DirectPlaneRegion<T> {
+    samples: NonNull<T>,
     len: usize,
     width: usize,
     stride: usize,
@@ -208,17 +119,17 @@ struct DirectPlaneRegion {
     origin_y: usize,
 }
 
-pub(crate) struct DirectPlaneTarget {
-    region: DirectPlaneRegion,
+pub(crate) struct DirectPlaneTarget<T> {
+    region: DirectPlaneRegion<T>,
     progress: Arc<dyn DirectLeaseRelease>,
     stripe: usize,
     deblocked: bool,
 }
 
 /// SAFETY: moving this unique disjoint-band capability transfers ownership.
-unsafe impl Send for DirectPlaneTarget {}
+unsafe impl<T: Send> Send for DirectPlaneTarget<T> {}
 
-impl DirectPlaneTarget {
+impl<T> DirectPlaneTarget<T> {
     pub(crate) const fn width(&self) -> usize {
         self.region.width
     }
@@ -241,10 +152,6 @@ impl DirectPlaneTarget {
             .checked_add(self.region.len.checked_div(self.region.stride)?)
     }
 
-    pub(crate) const fn is_u16(&self) -> bool {
-        matches!(self.region.samples, DirectPlaneSamples::U16(_))
-    }
-
     /// The region still holds the deblocked rows the frontier released to
     /// this stripe's window.
     pub(crate) const fn holds_deblocked(&self) -> bool {
@@ -253,38 +160,50 @@ impl DirectPlaneTarget {
 
     #[inline]
     /// The target uniquely owns this non-overlapping stripe region.
-    pub(crate) fn u8_samples_mut(&mut self) -> Option<&mut [u8]> {
-        let DirectPlaneSamples::U8(samples) = self.region.samples else {
-            return None;
-        }; // SAFETY: this target owns a checked non-overlapping stripe region.
-        Some(unsafe { slice::from_raw_parts_mut(samples.as_ptr(), self.region.len) })
-    }
-
-    #[inline]
-    pub(crate) fn u16_samples_mut(&mut self) -> Option<&mut [u16]> {
-        let DirectPlaneSamples::U16(samples) = self.region.samples else {
-            return None;
-        };
-        Some(unsafe {
-            // SAFETY: the layout lends each non-overlapping stripe once.
-            slice::from_raw_parts_mut(samples.as_ptr(), self.region.len)
-        })
+    pub(crate) fn samples_mut(&mut self) -> &mut [T] {
+        // SAFETY: disjoint checked stripes are lent once each; the whole workspace only with none leased.
+        unsafe { slice::from_raw_parts_mut(self.region.samples.as_ptr(), self.region.len) }
     }
 }
 
-impl Drop for DirectPlaneTarget {
+impl<T: ReconSample> DirectPlaneTarget<T> {
+    /// The region's rows as they are, viewed while no `samples_mut` borrow lives.
+    pub(crate) fn rows(&self) -> Option<crate::filters::source::FramePlane<'_, T>> {
+        let (start, len) = (self.region.samples.as_ptr(), self.region.len);
+        let span = unsafe { slice::from_raw_parts(start, len) }; // SAFETY: leased to this target alone; `&self` excludes `samples_mut`.
+        let region = &self.region;
+        let size = (region.width, region.frame_height);
+        let rows = region.len.checked_div(region.stride)?;
+        crate::filters::source::FramePlane::strided(
+            span,
+            size,
+            region.stride,
+            region.origin_y,
+            rows,
+        )
+    }
+}
+
+#[cfg(test)]
+impl<T: ReconSample> DirectPlaneTarget<T> {
+    pub(crate) fn u8_samples_mut(&mut self) -> Option<&mut [u8]> {
+        T::u8_slice_mut(self.samples_mut())
+    }
+}
+
+impl<T> Drop for DirectPlaneTarget<T> {
     fn drop(&mut self) {
         self.progress.release_hold(self.stripe);
     }
 }
 
-impl DirectPlaneRegion {
+impl<T> DirectPlaneRegion<T> {
     fn into_target(
         self,
         progress: Arc<dyn DirectLeaseRelease>,
         stripe: usize,
         deblocked: bool,
-    ) -> DirectPlaneTarget {
+    ) -> DirectPlaneTarget<T> {
         DirectPlaneTarget {
             region: self,
             progress,
@@ -294,16 +213,16 @@ impl DirectPlaneRegion {
     }
 }
 
-pub(crate) struct DirectStripeTarget {
-    planes: [Option<DirectPlaneTarget>; 3],
+pub(crate) struct DirectStripeTarget<T> {
+    planes: [Option<DirectPlaneTarget<T>>; 3],
 }
 
-impl DirectStripeTarget {
-    pub(crate) fn get(&self, plane: PlaneId) -> Option<&DirectPlaneTarget> {
+impl<T> DirectStripeTarget<T> {
+    pub(crate) fn get(&self, plane: PlaneId) -> Option<&DirectPlaneTarget<T>> {
         self.planes[plane.index()].as_ref()
     }
 
-    pub(crate) fn take(&mut self, plane: PlaneId) -> Option<DirectPlaneTarget> {
+    pub(crate) fn take(&mut self, plane: PlaneId) -> Option<DirectPlaneTarget<T>> {
         self.planes[plane.index()].take()
     }
 
@@ -339,7 +258,7 @@ impl DirectStripeTarget {
 pub(crate) struct DirectStripeLease<T: ReconSample> {
     progress: Arc<FrameProgress<T>>,
     stripe: usize,
-    target: Option<DirectStripeTarget>,
+    target: Option<DirectStripeTarget<T>>,
 }
 
 impl<T: ReconSample> Drop for DirectStripeLease<T> {
@@ -349,7 +268,7 @@ impl<T: ReconSample> Drop for DirectStripeLease<T> {
 }
 
 impl<T: ReconSample> DirectStripeLease<T> {
-    pub(crate) fn take_target(&mut self) -> Option<DirectStripeTarget> {
+    pub(crate) fn take_target(&mut self) -> Option<DirectStripeTarget<T>> {
         self.target.take()
     }
 
@@ -374,33 +293,15 @@ pub(crate) struct PublishedPlane<'a, T> {
     pub(crate) size: PlaneSize,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct PublishedStorage<'a, T: ReconSample> {
-    workspace: &'a DirectWorkspace<T>,
-}
-
-impl<T: ReconSample> core::fmt::Debug for PublishedStorage<'_, T> {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("PublishedStorage")
-    }
-}
-
-impl<'a, T: ReconSample> PublishedStorage<'a, T> {
-    pub(crate) const fn info(self) -> DecodedFrameInfo {
-        self.workspace.info
-    }
-
-    pub(crate) fn plane(self, plane: PlaneId, rows: usize) -> Option<PublishedPlane<'a, T>> {
-        self.workspace.published_plane(plane, rows)
-    }
-}
-
 /// One pending frame's filtered workspace and its published-row watermark.
 pub(crate) struct FrameProgress<T: ReconSample> {
     /// The decode's reusable storage, carried so every frame can hand it back
     /// to the scratch it is scheduled with.
     buffers: Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
-    workspace: RwLock<Option<DirectWorkspace<T>>>,
+    /// The filtered workspace while it owns the frame's sample buffers. Only
+    /// `begin`, the freeze and an unpublished pass lock it; readers and
+    /// stripes reach the samples through `planes`.
+    workspace: Mutex<Option<CurrentFrameWorkspace<T>>>,
     layout: OnceLock<Mutex<ProgressLayout>>,
     spare_stripes: Mutex<Vec<StripeProgress>>,
     published_luma_rows: WatermarkCell,
@@ -408,8 +309,8 @@ pub(crate) struct FrameProgress<T: ReconSample> {
     luma_height: usize,
     subsampling_y: usize,
     info: DecodedFrameInfo,
-    /// The workspace's plane table, kept beside the lock so the frontier
-    /// reaches its own rows without taking it.
+    /// The workspace's plane table, fixed from `from_workspace` or `reset`
+    /// until the next `reset`.
     planes: [Option<PlaneStorage<T>>; 3],
     /// [`UNCLAIMED`], [`RELEASED`], or the luma row end of the last stripe the
     /// live [`FrontierRows`] handed to a filter job.
@@ -418,6 +319,11 @@ pub(crate) struct FrameProgress<T: ReconSample> {
 
 const UNCLAIMED: usize = usize::MAX;
 const RELEASED: usize = usize::MAX - 1;
+
+/// The terminal watermark of a frame whose samples are in its settled slot.
+/// It satisfies every row threshold like the frame height, but tells a
+/// reader to read the slot instead of the plane table.
+const FROZEN: usize = WatermarkCell::FAILED - 1;
 
 impl<T: ReconSample> DirectLeaseRelease for FrameProgress<T> {
     fn release_hold(&self, stripe: usize) {
@@ -437,18 +343,18 @@ impl<T: ReconSample> FrameProgress<T> {
     /// Opens the workspace one pending frame's filter phase filters in place
     /// and publishes, before that phase is handed to a worker.
     pub(crate) fn from_workspace(
-        workspace: CurrentFrameWorkspace<T>,
+        mut workspace: CurrentFrameWorkspace<T>,
         buffers: Option<&std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
     ) -> crate::Result<Self> {
         let buffers = buffers.cloned();
         let info = workspace.info();
-        let workspace = DirectWorkspace::new(workspace)?;
+        let planes = plane_table(&mut workspace)?;
         Ok(Self {
             buffers,
             info,
-            planes: workspace.planes,
+            planes,
             frontier: AtomicUsize::new(UNCLAIMED),
-            workspace: RwLock::new(Some(workspace)),
+            workspace: Mutex::new(Some(workspace)),
             layout: OnceLock::new(),
             spare_stripes: Mutex::new(Vec::new()),
             published_luma_rows: WatermarkCell::new(),
@@ -458,15 +364,15 @@ impl<T: ReconSample> FrameProgress<T> {
         })
     }
 
-    pub(crate) fn reset(&mut self, workspace: CurrentFrameWorkspace<T>) -> crate::Result<()> {
+    pub(crate) fn reset(&mut self, mut workspace: CurrentFrameWorkspace<T>) -> crate::Result<()> {
         let info = workspace.info();
-        let workspace = DirectWorkspace::new(workspace)?;
+        let planes = plane_table(&mut workspace)?;
         if let Some(layout) = self.layout.take() {
             *self.spare_stripes.get_mut() = layout.into_inner().stripes;
         }
         self.spare_stripes.get_mut().clear();
         self.info = info;
-        self.planes = workspace.planes;
+        self.planes = planes;
         *self.frontier.get_mut() = UNCLAIMED;
         *self.workspace.get_mut() = Some(workspace);
         self.published_luma_rows.reset();
@@ -489,13 +395,14 @@ impl<T: ReconSample> FrameProgress<T> {
 
     /// Publishes the terminal watermark of a filter phase that ended.
     ///
-    /// `filtered` publishes the whole frame height, which every row threshold
-    /// satisfies with rows that are genuinely final; a phase that failed
-    /// publishes [`WatermarkCell::FAILED`] instead, so a consumer waiting on a
-    /// row it will never get is released and fails closed on the settled slot.
+    /// `filtered` publishes [`FROZEN`] after the slot settled with the frame,
+    /// which every row threshold satisfies with rows that are genuinely final;
+    /// a phase that failed publishes [`WatermarkCell::FAILED`] instead, so a
+    /// consumer waiting on a row it will never get is released and fails
+    /// closed on the settled slot.
     pub(crate) fn publish_terminal(&self, filtered: bool) {
         self.published_luma_rows.publish(if filtered {
-            self.luma_height
+            FROZEN
         } else {
             WatermarkCell::FAILED
         });
@@ -511,7 +418,8 @@ impl<T: ReconSample> FrameProgress<T> {
     /// The ranges must ascend, be contiguous, and start at the frame top, since
     /// the watermark is the end of the contiguous published prefix. A geometry
     /// that does not satisfy that leaves the frame unpublished rather than
-    /// letting a consumer read an unwritten row.
+    /// letting a consumer read an unwritten row. A frame whose planes were
+    /// taken has no workspace left to publish.
     pub(crate) fn begin(&self, ranges: &[(usize, usize)]) -> Result<()> {
         let invalid = crate::filters::wienerns_lr::recon::lr_pipeline_state_error;
         let mut next = 0usize;
@@ -521,7 +429,8 @@ impl<T: ReconSample> FrameProgress<T> {
             }
             next = end;
         }
-        if self.layout.get().is_some() {
+        let workspace = self.workspace.lock();
+        if workspace.is_none() || self.layout.get().is_some() {
             return Err(invalid());
         }
         let mut stripes = core::mem::take(&mut *self.spare_stripes.lock());
@@ -571,13 +480,11 @@ impl<T: ReconSample> FrameProgress<T> {
             return None;
         }
         let deblocked = frontier != UNCLAIMED;
-        let workspace_guard = self.workspace.read();
-        let workspace = workspace_guard.as_ref()?;
         let chroma_start = start >> self.subsampling_y;
         let chroma_end = end.div_ceil(1 << self.subsampling_y);
-        let y = workspace.direct_region(PlaneId::Y, start, end)?;
-        let u = workspace.direct_region(PlaneId::U, chroma_start, chroma_end);
-        let v = workspace.direct_region(PlaneId::V, chroma_start, chroma_end);
+        let y = self.direct_region(PlaneId::Y, start, end)?;
+        let u = self.direct_region(PlaneId::U, chroma_start, chroma_end);
+        let v = self.direct_region(PlaneId::V, chroma_start, chroma_end);
         if u.is_some() != v.is_some() {
             return None;
         }
@@ -590,7 +497,6 @@ impl<T: ReconSample> FrameProgress<T> {
         {
             *slot = holds;
         }
-        drop(workspace_guard);
         drop(layout);
         let progress: Arc<dyn DirectLeaseRelease> = self.clone();
         let y = y.into_target(Arc::clone(&progress), stripe, deblocked);
@@ -602,6 +508,71 @@ impl<T: ReconSample> FrameProgress<T> {
             target: Some(DirectStripeTarget {
                 planes: [Some(y), u, v],
             }),
+        })
+    }
+
+    fn direct_region(
+        &self,
+        plane: PlaneId,
+        start: usize,
+        end: usize,
+    ) -> Option<DirectPlaneRegion<T>> {
+        let storage = self.planes[plane.index()]?;
+        if start >= end || end > storage.height {
+            return None;
+        }
+        let start_sample = start.checked_mul(storage.stride)?;
+        let len = (end - start).checked_mul(storage.stride)?;
+        if start_sample.checked_add(len)? > storage.len {
+            return None;
+        }
+        let samples = NonNull::new(storage.samples.as_ptr().wrapping_add(start_sample))?;
+        Some(DirectPlaneRegion {
+            samples,
+            len,
+            width: storage.size.width(),
+            stride: storage.stride,
+            frame_height: storage.height,
+            origin_y: start,
+        })
+    }
+
+    /// The rows of `plane` below the watermark published now: none after a
+    /// failed phase, every row after the freeze.
+    fn readable_rows(&self, plane: PlaneId) -> usize {
+        let rows = self.published_luma_rows();
+        if plane == PlaneId::Y {
+            rows
+        } else if rows == self.luma_height {
+            rows.div_ceil(1 << self.subsampling_y)
+        } else {
+            rows >> self.subsampling_y
+        }
+    }
+
+    /// Borrows at most the first `rows` rows of one plane that are below the
+    /// watermark, for as long as the slot the caller reads through lives; see
+    /// [`PublishedFrame::of_slot`].
+    ///
+    /// Safety argument of the read: rows <= W from an Acquire load
+    /// synchronizes with every stripe write below W. No writer touches rows
+    /// below W. The allocation outlives 'a because 'a is bounded by a
+    /// &RefFrameSlot borrow whose cell (after the freeze) or progress (before
+    /// it) owns the allocation, and both can be released only through &mut or
+    /// Arc::get_mut. The freeze moves no allocation and writes no sample, and
+    /// on error or unwind it neither frees nor recycles.
+    fn published_plane(&self, plane: PlaneId, rows: usize) -> Option<PublishedPlane<'_, T>> {
+        let storage = self.planes[plane.index()]?;
+        let rows = rows.min(self.readable_rows(plane)).min(storage.height);
+        let len = rows.checked_mul(storage.stride)?.min(storage.len);
+        let samples = unsafe {
+            // SAFETY: rows below W of a slot-bounded allocation; see the doc above.
+            slice::from_raw_parts(storage.samples.as_ptr(), len)
+        };
+        Some(PublishedPlane {
+            samples,
+            stride: storage.stride,
+            size: storage.size,
         })
     }
 
@@ -678,62 +649,50 @@ impl<T: ReconSample> FrameProgress<T> {
         published.min(self.luma_height)
     }
 
-    /// Borrows the published prefix of the frame's filtered samples.
-    ///
-    /// Returns `None` once the filter phase has taken the workspace to freeze
-    /// it; the caller then waits for the slot, which is about to settle. A
-    /// phase that failed publishes no readable row, so it also returns `None`
-    /// and the caller reads the settled failure instead of unfiltered samples.
-    pub(crate) fn read(&self) -> Option<PublishedFrame<'_, T>> {
-        let rows = self.published_luma_rows();
-        let luma_rows = NonZeroUsize::new(rows)?;
-        let workspace = self.workspace.read();
-        if workspace.is_none() {
-            return None;
+    /// Lends the whole workspace to a pass of a frame that publishes no row
+    /// before its freeze. The layout lock it holds lets no stripe lease
+    /// start, and no lease, frontier or published row is live.
+    pub(crate) fn with_unpublished_workspace<R>(
+        &self,
+        f: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> R,
+    ) -> Result<R> {
+        let layout = self.layout.get().map(|layout| layout.lock());
+        let released = self.frontier.compare_exchange(
+            UNCLAIMED,
+            RELEASED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        if layout
+            .as_ref()
+            .is_some_and(|layout| layout.stripes.iter().any(|stripe| stripe.leased))
+            || released.is_err_and(|frontier| frontier != RELEASED)
+            || self.published_luma_rows.current() != 0
+        {
+            return Err(live_direct_lease());
         }
-        let chroma_rows = if rows == self.luma_height {
-            rows.div_ceil(1 << self.subsampling_y)
-        } else {
-            rows >> self.subsampling_y
-        };
-        Some(PublishedFrame {
-            workspace,
-            luma_rows,
-            chroma_rows,
-        })
+        let mut workspace = self.workspace.lock();
+        Ok(f(workspace.as_mut().ok_or_else(taken_workspace)?))
     }
 
-    /// Takes the filtered workspace's planes from a frame that is published
-    /// whole instead of filtered, so its reconstruction writes into them.
-    pub(crate) fn take_unfiltered_planes(&self) -> Option<splot_recon::FramePlaneSamples<T>> {
-        if self.layout.get().is_some() || self.frontier_live() {
-            return None;
-        }
-        let workspace = self.workspace.write().take()?;
-        Some(
-            workspace
-                .into_workspace()
-                .into_plane_samples()
-                .with_pool(self.buffers.as_ref().map(|buffers| buffers.planes())),
-        )
-    }
-
-    /// Freezes the filtered workspace and publishes the frozen frame, both
-    /// under the exclusive lock.
+    /// Freezes the filtered workspace into the paired slot.
     ///
-    /// The freeze is the one moment the published prefix stops being readable,
-    /// so `publish` — which settles the frame's slot — runs before the lock is
-    /// released. A reader that arrives during the freeze waits for the lock and
-    /// then finds the slot settled, instead of finding neither storage.
+    /// Each plane's sample buffer moves into the frozen frame with its
+    /// allocation unchanged, so a reader that loaded the watermark before the
+    /// freeze keeps reading the same immutable rows, now owned by the slot.
+    /// The slot settles before [`FROZEN`] is published, so a reader that sees
+    /// [`FROZEN`] finds the frame in the slot. A failed freeze leaves the
+    /// workspace and its buffers in place.
     ///
     /// # Errors
     ///
     /// Returns the freeze's own diagnostic, or an internal diagnostic when the
-    /// workspace has already been taken.
-    pub(crate) fn freeze_workspace<R>(
-        &self,
-        publish: impl FnOnce(splot_recon::DecodedFrame<T>) -> R,
-    ) -> Result<R> {
+    /// writer belongs to another frame, a stripe or the frontier is still live,
+    /// or the workspace has already been taken.
+    pub(crate) fn freeze_workspace(&self, writer: FrameSlotWriter<T>) -> Result<()> {
+        if !core::ptr::eq(Arc::as_ptr(&writer.progress), self) {
+            return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
+        }
         if self.frontier_live() {
             return Err(live_direct_lease());
         }
@@ -744,9 +703,45 @@ impl<T: ReconSample> FrameProgress<T> {
             }
             layout.freezing = true;
         }
-        let mut guard = self.workspace.write();
-        let workspace = guard.take().ok_or_else(taken_workspace)?;
-        Ok(publish(workspace.into_workspace().freeze()?))
+        let mut workspace = self.workspace.lock();
+        let window = AbortOnUnwind;
+        let frame = workspace
+            .as_mut()
+            .ok_or_else(taken_workspace)?
+            .freeze_in_place_clamped()?;
+        *workspace = None;
+        drop(workspace);
+        writer.complete(frame);
+        drop(window);
+        Ok(())
+    }
+
+    /// Freezes the workspace of a progress no slot shares, which no reader or
+    /// stripe can hold since the caller has it exclusively.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::freeze_workspace`].
+    pub(crate) fn freeze(&mut self) -> Result<splot_recon::DecodedFrame<T>> {
+        let mut workspace = self
+            .workspace
+            .get_mut()
+            .take()
+            .ok_or_else(taken_workspace)?;
+        Ok(workspace.freeze_in_place_clamped()?)
+    }
+}
+
+/// Aborts the process when the freeze window unwinds: readers may hold rows of
+/// the buffers it moves, so dropping them on the way out would free memory
+/// still in use.
+struct AbortOnUnwind;
+
+impl Drop for AbortOnUnwind {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
     }
 }
 
@@ -761,6 +756,8 @@ impl<T: ReconSample> FrameProgress<T> {
             progress: Arc::clone(self),
             final_luma_rows: 0,
             released_luma_rows: 0,
+            commit_start: [usize::MAX; 3],
+            commit_lease: None,
         })
     }
 
@@ -774,16 +771,23 @@ impl<T: ReconSample> FrameProgress<T> {
 ///
 /// Rows below `released_luma_rows` belong to stripe jobs and readers; rows at
 /// or past `final_luma_rows` are still sealed and deblocked in place; the rows
-/// between are final and are only copied into stripe windows.
+/// between are final and are only copied into stripe windows. The plane rows
+/// from `commit_start` are lent to the commit spine, which reconstructs them.
 pub(crate) struct FrontierRows<T: ReconSample> {
     progress: Arc<FrameProgress<T>>,
     final_luma_rows: usize,
     released_luma_rows: usize,
+    commit_start: [usize; 3],
+    /// The first luma sample address of the live commit band, which keeps
+    /// the frontier claimed when this handle drops, so the frame cannot freeze.
+    commit_lease: Option<usize>,
 }
 
 impl<T: ReconSample> Drop for FrontierRows<T> {
     fn drop(&mut self) {
-        self.progress.frontier.store(RELEASED, Ordering::Release);
+        if self.commit_lease.is_none() {
+            self.progress.frontier.store(RELEASED, Ordering::Release);
+        }
     }
 }
 
@@ -827,12 +831,14 @@ impl<T: ReconSample> FrontierRows<T> {
         end: usize,
         f: impl FnOnce(&mut [T], usize, usize, usize, usize) -> R,
     ) -> Option<R> {
-        if (start << self.shift(plane)) < self.final_luma_rows {
+        if (start << self.shift(plane)) < self.final_luma_rows
+            || end > self.commit_start[plane.index()]
+        {
             return None;
         }
         let (width, height) = self.plane_size(plane)?;
         let stride = self.progress.planes[plane.index()]?.stride;
-        let (samples, len) = self.span(plane, start, end)?; // SAFETY: rows at or past `final_luma_rows` (never below `released_luma_rows`) are this unique frontier's alone: `direct_stripe` refuses a stripe ending past the release and the published prefix is made of such stripes; freeze and plane take refuse while this handle lives, so the storage stays allocated.
+        let (samples, len) = self.span(plane, start, end)?; // SAFETY: rows from `final_luma_rows` (never below `released_luma_rows`) up to `commit_start` are this unique frontier's alone: `direct_stripe` refuses a stripe ending past the release and the published prefix is made of such stripes; the rows from `commit_start` belong to the commit band, which this call refuses and which only this handle's `lend_commit_rows(&mut self)` moves down; freeze and plane take refuse while this handle lives, so the storage stays allocated.
         let samples = unsafe { slice::from_raw_parts_mut(samples, len) };
         Some(f(samples, stride, width, height, start))
     }
@@ -870,7 +876,13 @@ impl<T: ReconSample> FrontierRows<T> {
 
     pub(crate) fn publish_final_rows(&mut self, rows: usize) -> bool {
         let rows = rows.min(self.progress.luma_height);
-        if rows < self.final_luma_rows {
+        if rows < self.final_luma_rows
+            || [PlaneId::Y, PlaneId::U, PlaneId::V]
+                .into_iter()
+                .any(|plane| {
+                    rows.div_ceil(1 << self.shift(plane)) > self.commit_start[plane.index()]
+                })
+        {
             return false;
         }
         self.final_luma_rows = rows;
@@ -916,6 +928,89 @@ impl<T: ReconSample> FrontierRows<T> {
         self.progress.frontier.store(luma_end, Ordering::Release);
         true
     }
+
+    /// Lends the commit spine the full-width rows of the superblock row from
+    /// luma row `top`, `rows` tall, and the plane row above it, as a band
+    /// that keeps `scratch`.
+    ///
+    /// # Errors
+    /// Returns an internal diagnostic while another band lives, or when the
+    /// rows reach a final row.
+    pub(crate) fn lend_commit_rows(
+        &mut self,
+        top: usize,
+        rows: usize,
+        scratch: splot_recon::IntraPredictionScratch<T>,
+    ) -> Result<CurrentFrameWorkspace<T>> {
+        if self.commit_lease.is_some() {
+            return Err(live_direct_lease());
+        }
+        let bottom = top.saturating_add(rows);
+        let mut starts = [usize::MAX; 3];
+        let mut spans = [None, None, None];
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            let Some(storage) = self.progress.planes[plane.index()] else {
+                continue;
+            };
+            let shift = self.shift(plane);
+            let start = (top >> shift).saturating_sub(1);
+            let end = bottom.div_ceil(1 << shift).min(storage.height);
+            if start < self.final_luma_rows.div_ceil(1 << shift) {
+                return Err(live_direct_lease());
+            }
+            let (samples, len) = self.span(plane, start, end).ok_or_else(live_direct_lease)?;
+            starts[plane.index()] = start;
+            spans[plane.index()] = Some((
+                NonNull::new(samples).ok_or_else(live_direct_lease)?,
+                len,
+                start,
+            ));
+        }
+        let lender: Arc<dyn Send + Sync> = self.progress.clone();
+        let planes = spans.map(|span| {
+            span.map(|(samples, len, start)| {
+                // SAFETY: these rows are at or past `final_luma_rows` and below no stripe, so only this frontier could reach them, and `with_plane_rows_mut` refuses them from `commit_start` on; no other band lives; `lender` keeps the frame allocated and a live band keeps the frontier claimed, so the frame cannot freeze or be reset under it.
+                (
+                    unsafe { splot_recon::LentRows::lend(samples, len, Arc::clone(&lender)) },
+                    start,
+                )
+            })
+        });
+        self.commit_start = starts;
+        let band = CurrentFrameWorkspace::lend_band(self.progress.info, planes, scratch)?;
+        self.commit_lease = band.lent_luma_addr();
+        Ok(band)
+    }
+
+    /// The most luma rows [`Self::publish_final_rows`] accepts while the
+    /// commit band holds the rows from `commit_start`.
+    pub(crate) fn unlent_luma_rows(&self) -> usize {
+        [PlaneId::Y, PlaneId::U, PlaneId::V]
+            .into_iter()
+            .map(|plane| self.commit_start[plane.index()].saturating_mul(1 << self.shift(plane)))
+            .min()
+            .unwrap_or(usize::MAX)
+    }
+
+    /// Takes back the commit band, so every row is this frontier's again,
+    /// and hands back its scratch.
+    ///
+    /// # Errors
+    /// Returns an internal diagnostic when `band` is not the live band.
+    pub(crate) fn return_commit_rows(
+        &mut self,
+        mut band: CurrentFrameWorkspace<T>,
+    ) -> Result<splot_recon::IntraPredictionScratch<T>> {
+        if self.commit_lease.is_none() || band.lent_luma_addr() != self.commit_lease {
+            return Err(live_direct_lease());
+        }
+        let mut scratch = splot_recon::IntraPredictionScratch::new();
+        band.swap_intra_prediction_scratch(&mut scratch);
+        drop(band);
+        self.commit_lease = None;
+        self.commit_start = [usize::MAX; 3];
+        Ok(scratch)
+    }
 }
 
 fn complete_stripe(layout: &mut ProgressLayout, stripe: usize) -> usize {
@@ -946,33 +1041,69 @@ fn complete_stripe(layout: &mut ProgressLayout, stripe: usize) -> usize {
 }
 
 /// A shared borrow of one frame's published filtered prefix.
+#[derive(Clone, Copy)]
 pub(crate) struct PublishedFrame<'a, T: ReconSample> {
-    workspace: RwLockReadGuard<'a, Option<DirectWorkspace<T>>>,
+    progress: &'a FrameProgress<T>,
     luma_rows: NonZeroUsize,
     chroma_rows: usize,
 }
 
-impl<T: ReconSample> PublishedFrame<'_, T> {
+impl<T: ReconSample> core::fmt::Debug for PublishedFrame<'_, T> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("PublishedFrame")
+    }
+}
+
+impl<'a, T: ReconSample> PublishedFrame<'a, T> {
+    /// Borrows the published prefix of a still-filtering slot's samples.
+    ///
+    /// Returns `None` before the first stripe lands, after a failed phase
+    /// (whose rows must fail closed) and after the freeze, whose frame the
+    /// caller then reads from the settled slot. A frame written whole
+    /// publishes no row before its freeze, so its plane table is never read.
+    pub(crate) fn of_slot(slot: &'a RefFrameSlot<T>) -> Option<Self> {
+        Self::of_progress(slot.progress()?)
+    }
+
+    fn of_progress(progress: &'a FrameProgress<T>) -> Option<Self> {
+        let rows = progress.published_luma_rows.current();
+        if rows == FROZEN || rows == WatermarkCell::FAILED {
+            return None;
+        }
+        let luma_rows = NonZeroUsize::new(rows.min(progress.luma_height))?;
+        progress.layout.get()?;
+        let chroma_rows = if luma_rows.get() == progress.luma_height {
+            luma_rows.get().div_ceil(1 << progress.subsampling_y)
+        } else {
+            luma_rows.get() >> progress.subsampling_y
+        };
+        Some(Self {
+            progress,
+            luma_rows,
+            chroma_rows,
+        })
+    }
+
+    /// The frame's storage alone, which a reader carries beside these rows.
+    pub(crate) const fn storage(self) -> PublishedStorage<'a, T> {
+        PublishedStorage {
+            progress: self.progress,
+        }
+    }
+
+    /// Borrows one plane's published rows.
     #[cfg(test)]
-    pub(crate) fn plane(&self, plane: PlaneId) -> Result<Option<PublishedPlane<'_, T>>> {
-        let workspace = self.workspace.as_ref().ok_or_else(taken_workspace)?;
+    pub(crate) fn plane(self, plane: PlaneId) -> Option<PublishedPlane<'a, T>> {
         let rows = if plane == PlaneId::Y {
             self.luma_rows()
         } else {
             self.chroma_rows()
         };
-        Ok(workspace.published_plane(plane, rows))
-    }
-
-    pub(crate) fn storage(&self) -> Result<PublishedStorage<'_, T>> {
-        self.workspace
-            .as_ref()
-            .map(|workspace| PublishedStorage { workspace })
-            .ok_or_else(taken_workspace)
+        self.storage().plane(plane, rows)
     }
 
     /// The number of final luma rows, which is never zero.
-    pub(crate) const fn luma_rows(&self) -> usize {
+    pub(crate) const fn luma_rows(self) -> usize {
         self.luma_rows.get()
     }
 
@@ -981,8 +1112,31 @@ impl<T: ReconSample> PublishedFrame<'_, T> {
     /// A chroma row is final once every in-frame luma row it subsamples is, so
     /// interior prefixes truncate while a complete odd-height frame includes
     /// its terminal chroma row.
-    pub(crate) const fn chroma_rows(&self) -> usize {
+    pub(crate) const fn chroma_rows(self) -> usize {
         self.chroma_rows
+    }
+}
+
+/// The storage of a [`PublishedFrame`], one pointer wide.
+#[derive(Clone, Copy)]
+pub(crate) struct PublishedStorage<'a, T: ReconSample> {
+    progress: &'a FrameProgress<T>,
+}
+
+impl<T: ReconSample> core::fmt::Debug for PublishedStorage<'_, T> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("PublishedStorage")
+    }
+}
+
+impl<'a, T: ReconSample> PublishedStorage<'a, T> {
+    pub(crate) const fn info(self) -> DecodedFrameInfo {
+        self.progress.info
+    }
+
+    /// Borrows at most `rows` published rows of one plane.
+    pub(crate) fn plane(self, plane: PlaneId, rows: usize) -> Option<PublishedPlane<'a, T>> {
+        self.progress.published_plane(plane, rows)
     }
 }
 

@@ -264,6 +264,7 @@ fn nonmatching_globalmv_neighbour_derives_from_its_stored_sub_mv() {
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         },
         &[0, 1],
         &[true, true],

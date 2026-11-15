@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use crate::error::SymbolCdfErrorKind;
-use crate::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
+use crate::symbol::{CDF_COUNT_SHIFT, CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 use crate::tables::conversion::PARA_ADJUSTMENT_LIST;
 use crate::write::WriteError;
 
@@ -346,8 +346,9 @@ pub(super) struct MixedStream {
 fn random_cdf(rng: &mut Rng, n: usize) -> Vec<i32> {
     let mut row: Vec<i32> = (1..n).map(|_| 1 + rng.below(32_767) as i32).collect();
     row.sort_unstable();
-    row.push(rng.below(PARA_ADJUSTMENT_LIST.len() as u64) as i32);
-    row.push(rng.below(33) as i32);
+    let rate_index = rng.below(PARA_ADJUSTMENT_LIST.len() as u64) as i32;
+    row.push(rate_index | (rng.below(33) as i32) << CDF_COUNT_SHIFT);
+    row.push(0);
     row
 }
 

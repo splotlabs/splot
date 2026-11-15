@@ -1209,8 +1209,8 @@ fn read_symbol(
     tile_offset: ByteOffset,
     spec_section: &'static str,
 ) -> Result<usize> {
-    cdfs.read_block_symbol_trace(selector, symbols)
-        .map(|symbol| usize::from(symbol.get()))
+    cdfs.read_block_symbol(selector, symbols)
+        .map(usize::from)
         .map_err(|error| match error {
             BlockSymbolTraceReadError::Cdf(_) => {
                 crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()

@@ -60,7 +60,7 @@ impl ValidatorContext {
     /// end-of-bitstream flush (the final frame has no following delimiter).
     pub(super) fn commit_pending_ref_update(&mut self) {
         if let Some((xlayer, update)) = self.pending_ref_update.take() {
-            self.reference_state.apply(xlayer, update);
+            self.reference_state.apply(xlayer, &update);
         }
     }
 
@@ -146,6 +146,7 @@ impl ValidatorContext {
         ) else {
             return FrameRefUpdate::PoisonAll;
         };
+        facts.global_motion = core.saved_global_motion_state();
 
         if let Some(lr) = core.lr_params.as_ref() {
             for (plane, params) in lr.planes.iter().enumerate() {

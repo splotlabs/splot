@@ -138,7 +138,16 @@ fn check_runs(bit_depth: BitDepth, seed: u64, widths: &mut [usize; REACH + 1]) {
             } else {
                 (edges_len * LINES + 3 + noise.below(5) as usize, 18)
             };
-            let original = plane(&mut noise, stride * rows, max_sample);
+            let mut original = plane(&mut noise, stride * rows, max_sample);
+            if seed.is_multiple_of(4) {
+                for v in &mut original {
+                    *v = if i32::from(*v) > max_sample / 2 {
+                        max_sample as u16
+                    } else {
+                        0
+                    };
+                }
+            }
             let first = if vertical {
                 stride + REACH + noise.below((stride - 2 * REACH + 1) as u64) as usize
             } else {
@@ -251,6 +260,7 @@ fn check_portable(
         };
         let mut portable = original.to_vec(); // splot-copy-ok: per-path test copies
         let mut dispatched = original.to_vec(); // splot-copy-ok: per-path test copies
+        let mut narrow: Vec<u8> = original.iter().map(|&v| v as u8).collect();
         if vertical {
             portable_chunk::<_, u16, true>(simd, &mut portable, stride, start, chunk, max_sample);
             u16::chunk::<true>(&mut dispatched, stride, start, chunk, max_sample);
@@ -259,6 +269,19 @@ fn check_portable(
             u16::chunk::<false>(&mut dispatched, stride, start, chunk, max_sample);
         }
         assert_eq!(portable, dispatched);
+        if bit_depth == BitDepth::Eight {
+            if vertical {
+                portable_chunk::<_, u8, true>(simd, &mut narrow, stride, start, chunk, max_sample);
+            } else {
+                portable_chunk::<_, u8, false>(simd, &mut narrow, stride, start, chunk, max_sample);
+            }
+            assert!(
+                narrow
+                    .iter()
+                    .zip(&portable)
+                    .all(|(&a, &b)| u16::from(a) == b)
+            );
+        }
     }
 }
 
@@ -278,6 +301,115 @@ fn edge_runs_match_the_per_edge_spec_primitives_10bit() {
         check_runs(BitDepth::Ten, seed, &mut widths);
     }
     assert!(WIDTHS.iter().all(|&width| widths[width] > 20), "{widths:?}");
+}
+
+/// Chunks whose lines are all still, partly still (one segment steps), or
+/// not still filter as the per-edge primitives do, at 8 and 10 bits and
+/// across vertical and horizontal edges.
+#[test]
+fn still_and_partly_still_chunks_match_the_per_edge_spec_primitives() {
+    for (bit_depth, scale) in [(BitDepth::Eight, 1), (BitDepth::Ten, 4)] {
+        let max_sample = i32::from(bit_depth.max_sample());
+        for stepped in [0, 1, 16] {
+            for vertical in [true, false] {
+                let mut noise = Noise(0x57111 + stepped as u64);
+                let count = 16;
+                let edges: Vec<_> = (0..count)
+                    .map(|_| random_edge(&mut noise, max_sample, 8))
+                    .collect();
+                let (stride, rows) = if vertical {
+                    (40, count * LINES + 2)
+                } else {
+                    (count * LINES + 20, 18)
+                };
+                let first = if vertical {
+                    stride + 16
+                } else {
+                    REACH * stride + 8
+                };
+                let original: Vec<u16> = (0..stride * rows)
+                    .map(|i| {
+                        let (x, y) = (i % stride, i / stride);
+                        let (across, along) = if vertical {
+                            (x as i32 - 16, y)
+                        } else {
+                            (y as i32 - REACH as i32, x)
+                        };
+                        let segment = along / LINES;
+                        let step = if segment < stepped && across >= 0 {
+                            9
+                        } else {
+                            0
+                        };
+                        ((100 + step + (along % 2) as i32) * scale) as u16
+                    })
+                    .collect();
+                let mut expected = original.clone();
+                for (k, &edge) in edges.iter().enumerate() {
+                    let (q0, across, along) = if vertical {
+                        (first + k * LINES * stride, 1, stride)
+                    } else {
+                        (first + k * LINES, stride, 1)
+                    };
+                    reference(&mut expected, q0, across, along, edge, bit_depth);
+                }
+                let mut wide = original.clone();
+                let filter = if vertical {
+                    deblock_vertical_edges::<u16>
+                } else {
+                    deblock_horizontal_edges::<u16>
+                };
+                filter(&mut wide, stride, first, &edges, bit_depth).unwrap();
+                let label = format!("{bit_depth:?} stepped={stepped} vertical={vertical}");
+                assert_eq!(wide, expected, "u16 {label}");
+                if bit_depth == BitDepth::Eight {
+                    let filter = if vertical {
+                        deblock_vertical_edges::<u8>
+                    } else {
+                        deblock_horizontal_edges::<u8>
+                    };
+                    let mut narrow: Vec<u8> = original.iter().map(|&v| v as u8).collect();
+                    filter(&mut narrow, stride, first, &edges, bit_depth).unwrap();
+                    let narrow: Vec<u16> = narrow.into_iter().map(u16::from).collect();
+                    assert_eq!(narrow, expected, "u8 {label}");
+                }
+            }
+        }
+    }
+}
+
+/// No § 7.17.7.1 width moves a line whose `|p1 - q1 + 3 * (q0 - p0)|` is at
+/// most 2, which lets the portable chunk skip such chunks.
+#[test]
+fn lines_with_a_small_step_never_move() {
+    for (neg, pos) in NEG
+        .iter()
+        .flat_map(|&neg| POS.iter().map(move |&pos| (neg, pos)))
+    {
+        for (a, b) in (-8..=8).flat_map(|a| (-2..=2).map(move |b| (a, b))) {
+            if i32::abs(a + 3 * b) > 2 || neg > pos {
+                continue;
+            }
+            let mut line = [512u16; 16];
+            line[REACH] = (512 + b) as u16;
+            line[REACH + 1] = (512 - a) as u16;
+            let before = line;
+            let params = DeblockSampleFilter {
+                boundary: REACH,
+                q_thr: 700,
+                max_width_neg: neg,
+                max_width_pos: pos,
+                q_thresh_mult: Q_THRESH_MULTS[neg.max(pos) - 1],
+                w_mult_neg: W_MULT[neg - 1],
+                w_mult_pos: W_MULT[pos - 1],
+                prev_lossless: false,
+                curr_lossless: false,
+                bit_depth: BitDepth::Ten,
+            };
+            deblock_sample_filter(&mut line, &params).unwrap();
+            assert_eq!(line, before, "neg={neg} pos={pos} a={a} b={b}");
+        }
+    }
 }
 
 #[test]
@@ -345,10 +477,18 @@ fn check_from_words<S: Simd>(simd: S) {
             field(|edge| (edge.max_width_pos() | edge.max_width_neg() << 8) as u16),
             field(|edge| u16::from(edge.prev_lossless()) | u16::from(edge.curr_lossless()) << 1),
         ];
-        assert_eq!(DeblockEdge::from_words(simd, words), edges);
+        let mut out = [DeblockEdge::NONE; 16];
+        DeblockEdge::from_words(simd, words, &mut out);
+        assert_eq!(out, edges);
     }
     let over = u16x16::splat(simd, 0xffff);
-    let clamped = DeblockEdge::from_words(simd, [over, over, u16x16::splat(simd, 0x0808), over])[0];
+    let mut clamped = [DeblockEdge::NONE; 16];
+    DeblockEdge::from_words(
+        simd,
+        [over, over, u16x16::splat(simd, 0x0808), over],
+        &mut clamped,
+    );
+    let clamped = clamped[0];
     assert_eq!(
         (
             clamped.q_thr(),

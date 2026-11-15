@@ -30,11 +30,10 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
         InterpolationFilter,
         Option<(usize, usize)>,
     ),
-    (uniform_everywhere, implicit_mask, cwp_weight, frame): (bool, bool, i16, (usize, usize)),
-    intermediate_scratch: &mut [i16],
+    (implicit_mask, cwp_weight, frame): (bool, i16, (usize, usize)),
     output: &mut [O],
     output_stride: usize,
-    mut second: Option<SecondPlane<'_, '_, T, O>>,
+    mut second: Option<GridPlane<'_, '_, T, O>>,
 ) -> Result<[u64; 2]> {
     let columns = (prediction.block_w / subblock_w).min(64);
     let row_cells = cells
@@ -70,7 +69,7 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
                 [col, row, run * subblock_w, height],
                 (sub_x, sub_y),
                 (bit_depth, interp),
-                (uniform_everywhere, implicit_mask, cwp_weight, frame),
+                (implicit_mask, cwp_weight, frame),
             )
         {
             let run_cells = ((1 << run) - 1) << start;
@@ -80,7 +79,6 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
                 &prediction.views[1],
                 &params[1],
                 cwp_weight,
-                intermediate_scratch,
                 &mut output[col..],
                 output_stride,
             )? {
@@ -93,7 +91,6 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
                     &views[1],
                     &params[1],
                     cwp_weight,
-                    intermediate_scratch,
                     &mut output[col..],
                     *output_stride,
                 )?
@@ -106,9 +103,8 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
     Ok(merged)
 }
 
-/// The area whose § 7.13.3.5 bounds clip grid cell `cell_index`, as
-/// [`compound_optflow_bounds`] picks it, or `None` when only the plane clips
-/// the cell.
+/// The area whose § 7.13.3.5 bounds clip grid cell `cell_index`, or `None`
+/// when only the plane clips the cell.
 fn cell_clip_area(
     (candidates, step, unit_size): (&[[Mv; 2]], usize, usize),
     cell: MotionCell,
@@ -157,7 +153,7 @@ fn fullpel_rect_params<T: ReconSample>(
     [col, row, width, height]: [usize; 4],
     (sub_x, sub_y): (u32, u32),
     (bit_depth, interp): (splot_recon::BitDepth, InterpolationFilter),
-    (uniform_everywhere, implicit_mask, cwp_weight, frame): (bool, bool, i16, (usize, usize)),
+    (implicit_mask, cwp_weight, frame): (bool, i16, (usize, usize)),
 ) -> Option<[SubpelPredictParams; 2]> {
     if !fullpel_motion(cell.mvs, sub_x, sub_y) {
         return None;
@@ -173,17 +169,15 @@ fn fullpel_rect_params<T: ReconSample>(
             sub_y,
         )
     });
-    if !(uniform_everywhere
-        || super::compound_average_weights_are_uniform(
-            implicit_mask,
-            cwp_weight,
-            width,
-            height,
-            prediction.scalings,
-            Some(scalings),
-            frame,
-        ))
-    {
+    if !super::compound_average_weights_are_uniform(
+        implicit_mask,
+        cwp_weight,
+        width,
+        height,
+        prediction.scalings,
+        scalings,
+        frame,
+    ) {
         return None;
     }
     let block = [prediction.block_w, prediction.block_h];
@@ -274,7 +268,7 @@ pub(super) fn uniform_fullpel_params<T: ReconSample>(
         InterpolationFilter,
         Option<(usize, usize)>,
     ),
-    weights: (bool, bool, i16, (usize, usize)),
+    weights: (bool, i16, (usize, usize)),
 ) -> Option<[SubpelPredictParams; 2]> {
     let cell = *cells.first()?;
     let candidates = refine.0.get(..cells.len() * refine.1)?;

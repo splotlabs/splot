@@ -3,16 +3,18 @@
 
 //! Paired chroma residual reconstruction.
 
-use splot_recon::{CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
+use splot_recon::{
+    CurrentFrameSurface, CurrentFrameWorkspace, IntraRectBlockSize, PlaneId, ReconSample,
+};
 
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
-    TileBlockDecodedState, is_cctx_geometry_allowed,
-    reconstruct_general_intra_chroma_cctx_pair_into,
+    TileBlockDecodedState, add_cctx_pair_residual_in_place, is_cctx_geometry_allowed,
 };
 use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_pair_into;
 
 use super::{ResidualPlanePlan, ResidualReconstructionPlan};
+use crate::tile::block_context::FrameTileCtx;
 
 pub(super) fn can_hold_for_cctx_pair(
     plane: &ResidualPlanePlan,
@@ -21,12 +23,12 @@ pub(super) fn can_hold_for_cctx_pair(
     plane.plane_id == PlaneId::U && !plane.defer_reconstruction && segment_lossless == Some(false)
 }
 
-pub(super) fn cctx_allowed(plane: &ResidualPlanePlan) -> bool {
+pub(super) fn cctx_allowed(plane: &ResidualPlanePlan, frame: FrameTileCtx) -> bool {
     if plane.plane_id == PlaneId::Y {
         return false;
     }
-    let (sub_x, sub_y) = plane.block_ctx.chroma().subsampling(plane.plane_id);
-    let block = plane.block_ctx.plane_block(plane.plane_id);
+    let (sub_x, sub_y) = frame.chroma().subsampling(plane.plane_id);
+    let block = frame.plane_block(plane.rect, plane.tx, plane.plane_id);
     is_cctx_geometry_allowed(
         sub_x != 0 && sub_y != 0,
         block.width4() * 4,
@@ -36,6 +38,7 @@ pub(super) fn cctx_allowed(plane: &ResidualPlanePlan) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
+    frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
@@ -54,6 +57,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             });
         }
         return u_plane.reconstruct(
+            frame,
             scratch,
             workspace,
             u_coeffs,
@@ -66,6 +70,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
     };
     if cctx_type == 0 {
         if reconstruct_cfl_pair(
+            frame,
             scratch,
             workspace,
             block_decoded,
@@ -76,6 +81,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             return Ok(());
         }
         u_plane.reconstruct(
+            frame,
             scratch,
             workspace,
             u_coeffs,
@@ -86,6 +92,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             luma_context,
         )?;
         return v_plane.reconstruct(
+            frame,
             scratch,
             workspace,
             v_coeffs,
@@ -97,6 +104,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
         );
     }
     reconstruct_chroma_cctx_pair(
+        frame,
         scratch,
         workspace,
         block_decoded,
@@ -110,6 +118,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
 }
 
 fn reconstruct_cfl_pair<T: ReconSample>(
+    frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
@@ -146,15 +155,15 @@ fn reconstruct_cfl_pair<T: ReconSample>(
         return Ok(false);
     }
 
-    let u_neighbours = u_plane.plane_neighbours(u_plane.block_ctx, block_decoded);
-    let v_neighbours = v_plane.plane_neighbours(v_plane.block_ctx, block_decoded);
+    let u_neighbours = u_plane.plane_neighbours(frame, block_decoded);
+    let v_neighbours = v_plane.plane_neighbours(frame, block_decoded);
     reconstruct_general_intra_chroma_cfl_pair_into(
         scratch,
         workspace,
         u_coeffs,
         v_coeffs,
-        u_plane.x,
-        u_plane.y,
+        u_plane.x as usize,
+        u_plane.y as usize,
         u_plane.tx.width_log2(),
         u_plane.tx.height_log2(),
         qindex,
@@ -163,13 +172,14 @@ fn reconstruct_cfl_pair<T: ReconSample>(
         u_sb_mib,
         u_neighbours,
         v_neighbours,
-        u_plane.block_ctx.bit_depth(),
+        frame.bit_depth(),
     )?;
     Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_chroma_cctx_pair<T: ReconSample>(
+    frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
@@ -194,6 +204,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     }
     let u_prediction_block = prediction_only_coeff_block(u_coeffs);
     u_plane.reconstruct(
+        frame,
         scratch,
         workspace,
         CoeffBlock::new(&u_prediction_block, &[])?,
@@ -203,9 +214,9 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
         intra_edge,
         luma_context,
     )?;
-    read_plane_prediction(workspace, u_plane, &mut scratch.cctx_mut().u_prediction)?;
     let v_prediction_block = prediction_only_coeff_block(v_coeffs);
     v_plane.reconstruct(
+        frame,
         scratch,
         workspace,
         CoeffBlock::new(&v_prediction_block, &[])?,
@@ -215,100 +226,23 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
         intra_edge,
         luma_context,
     )?;
-    let cctx = scratch.cctx_mut();
-    read_plane_prediction(workspace, v_plane, &mut cctx.v_prediction)?;
-    reconstruct_general_intra_chroma_cctx_pair_into(
-        u_coeffs,
-        &cctx.u_prediction,
-        v_coeffs,
-        &cctx.v_prediction,
+    let log2 = |log2: u32| u8::try_from(log2).unwrap_or(u8::MAX);
+    let size = IntraRectBlockSize::new(
+        log2(u_plane.tx.width_log2()),
+        log2(u_plane.tx.height_log2()),
+    )?;
+    add_cctx_pair_residual_in_place(
+        &mut CurrentFrameSurface::Frame(workspace),
+        [u_coeffs, v_coeffs],
+        (u_plane.x as usize, u_plane.y as usize, size),
         qindex,
-        u_plane.tx.width_log2(),
-        u_plane.tx.height_log2(),
         cctx_type,
         false,
-        u_plane.block_ctx.bit_depth(),
-        &mut cctx.u_output,
-        &mut cctx.v_output,
+        frame.bit_depth(),
     )?;
-    write_plane_block(workspace, u_plane, &cctx.u_output)?;
-    write_plane_block(workspace, v_plane, &cctx.v_output)?;
     Ok(())
 }
 
 fn prediction_only_coeff_block(coeffs: CoeffBlock<'_>) -> LumaCoeffBlock {
     LumaCoeffBlock::empty(coeffs.plane_tx_type(), coeffs.lossless)
-}
-
-fn plane_rect(
-    plane: &ResidualPlanePlan,
-) -> core::result::Result<(PlaneRect, usize), GeneralIntraResidualError> {
-    let width = 1usize << plane.tx.width_log2();
-    let height = 1usize << plane.tx.height_log2();
-    Ok((PlaneRect::new(plane.x, plane.y, width, height)?, width))
-}
-
-fn read_plane_prediction<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    plane: &ResidualPlanePlan,
-    out: &mut Vec<T>,
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    let (rect, _) = plane_rect(plane)?;
-    read_cctx_prediction(
-        &splot_recon::CurrentFrameSurface::Frame(workspace),
-        plane.plane_id,
-        rect,
-        out,
-    )?;
-    Ok(())
-}
-
-fn write_plane_block<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    plane: &ResidualPlanePlan,
-    samples: &[T],
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    let (rect, width) = plane_rect(plane)?;
-    workspace.write_rect(plane.plane_id, rect, samples, width)?;
-    Ok(())
-}
-
-pub(crate) fn read_cctx_prediction<T: ReconSample>(
-    surface: &splot_recon::CurrentFrameSurface<'_, '_, T>,
-    plane: PlaneId,
-    rect: PlaneRect,
-    out: &mut Vec<T>,
-) -> splot_recon::Result<()> {
-    let storage = surface.plane_storage_size(plane)?;
-    if rect.x() >= storage.width() || rect.y() >= storage.height() {
-        return Err(splot_recon::ReconError::WorkspaceRectOutOfBounds {
-            plane,
-            storage,
-            rect,
-        });
-    }
-    let clipped = PlaneRect::new(
-        rect.x(),
-        rect.y(),
-        rect.width().min(storage.width() - rect.x()),
-        rect.height().min(storage.height() - rect.y()),
-    )?;
-    let rows = surface.rect_rows(plane, clipped)?;
-    let samples = rect.width().checked_mul(rect.height()).ok_or(
-        splot_recon::ReconError::ArithmeticOverflow {
-            context: "CCTX prediction sample count",
-        },
-    )?;
-    out.clear();
-    out.try_reserve_exact(samples).map_err(|_| {
-        splot_recon::ReconError::WorkspaceAllocationFailed {
-            plane,
-            context: "CCTX prediction samples",
-        }
-    })?;
-    out.resize(samples, T::default());
-    for (target, row) in out.chunks_exact_mut(rect.width()).zip(rows) {
-        target[..row.len()].copy_from_slice(row);
-    }
-    Ok(())
 }

@@ -10,12 +10,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::Metadata;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
-use crate::git_util::sha256_hex;
+use crate::git_util::{run_git, sha256_hex};
 use crate::util::{is_windows_absolute_path, tokenized};
 
 pub(crate) const MANIFEST_PATH: &str = "docs/LOCAL-REFERENCE-EVIDENCE.toml";
@@ -182,10 +181,12 @@ fn validate_manifest(root: &Path, manifest: &Manifest) -> Result<()> {
         load_ids(root, DECODER_SUPPORT_MATRIX_PATH, "row", &mut problems)
     };
 
+    let tracked = git_tracked_paths(root);
     let mut evidence_ids = BTreeSet::new();
     for (index, evidence) in manifest.evidence.iter().enumerate() {
         validate_evidence(
             root,
+            tracked.as_ref(),
             &mut problems,
             &known_features,
             &known_rows,
@@ -205,8 +206,10 @@ fn validate_manifest(root: &Path, manifest: &Manifest) -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_evidence(
     root: &Path,
+    tracked: Option<&TrackedPaths>,
     problems: &mut Vec<String>,
     known_features: &BTreeSet<String>,
     known_rows: &BTreeSet<String>,
@@ -289,6 +292,7 @@ fn validate_evidence(
     for (fixture_index, fixture) in evidence.fixture.iter().enumerate() {
         validate_fixture(
             root,
+            tracked,
             problems,
             &label,
             &mut fixture_ids,
@@ -310,6 +314,7 @@ fn validate_evidence(
 
 fn validate_fixture(
     root: &Path,
+    tracked: Option<&TrackedPaths>,
     problems: &mut Vec<String>,
     evidence_label: &str,
     fixture_ids: &mut BTreeSet<String>,
@@ -356,7 +361,8 @@ fn validate_fixture(
     let Some(relpath) = validate_repo_relative_path(problems, &label, path) else {
         return;
     };
-    let Some((fixture_path, meta)) = fixture_metadata(root, &relpath, problems, &label, path)
+    let Some((fixture_path, meta)) =
+        fixture_metadata(root, tracked, &relpath, problems, &label, path)
     else {
         return;
     };
@@ -662,15 +668,16 @@ fn validate_repo_relative_path(
 
 fn fixture_metadata(
     root: &Path,
+    tracked: Option<&TrackedPaths>,
     relpath: &Path,
     problems: &mut Vec<String>,
     label: &str,
     display_path: &str,
 ) -> Option<(PathBuf, Metadata)> {
-    if git_metadata_exists(root) {
-        match git_tracks_path(root, relpath) {
-            Ok(true) => {}
-            Ok(false) => {
+    if let Some(tracked) = tracked {
+        match tracked {
+            Ok(paths) if paths.contains(relpath) => {}
+            Ok(_) => {
                 problems.push(format!(
                     "{label}: fixture path `{display_path}` must be tracked by git"
                 ));
@@ -733,21 +740,19 @@ fn fixture_metadata(
     final_meta.map(|meta| (current, meta))
 }
 
-fn git_metadata_exists(root: &Path) -> bool {
-    root.join(".git").exists()
-}
+type TrackedPaths = Result<BTreeSet<PathBuf>, String>;
 
-fn git_tracks_path(root: &Path, relpath: &Path) -> Result<bool> {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "--error-unmatch", "--"])
-        .arg(relpath)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("failed to spawn git ls-files")?;
-    Ok(status.success())
+fn git_tracked_paths(root: &Path) -> Option<TrackedPaths> {
+    root.join(".git").exists().then(|| {
+        run_git(root, &["ls-files", "-z"])
+            .map(|out| {
+                out.split('\0')
+                    .filter(|path| !path.is_empty())
+                    .map(PathBuf::from)
+                    .collect()
+            })
+            .map_err(|err| err.to_string())
+    })
 }
 
 fn check_text(problems: &mut Vec<String>, label: &str, value: &str) {

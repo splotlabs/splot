@@ -330,28 +330,19 @@ impl<T: ReconSample> OwnedFrameRect<T> {
         })
     }
 
-    /// Both chroma planes at once, or `None` without them.
-    pub(super) fn chroma_planes_mut(&mut self) -> Option<[OwnedPlaneMut<'_, T>; 2]> {
+    /// Both chroma planes' spans of `rect`, or `None` where it is clipped or outside them.
+    pub(super) fn chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [T], usize); 2]> {
         let (u, v) = (self.u?, self.v?);
-        let (first, second) = if u.start <= v.start { (u, v) } else { (v, u) };
-        let (head, tail) = self.samples.split_at_mut(second.start);
-        let first_samples = head.get_mut(first.start..first.end())?;
-        let second_samples = tail.get_mut(..second.len)?;
-        let [first, second] = [
-            OwnedPlaneMut {
-                region: first,
-                samples: first_samples,
-            },
-            OwnedPlaneMut {
-                region: second,
-                samples: second_samples,
-            },
-        ];
-        Some(if u.start <= v.start {
-            [first, second]
-        } else {
-            [second, first]
-        })
+        if clamp_rect_to_storage(PlaneId::U, u.storage_size, rect).ok()? != rect {
+            return None;
+        }
+        u.ensure_rect(rect).ok()?;
+        let (head, tail) = self.samples.split_at_mut_checked(v.start)?;
+        let (x, y, stride) = (rect.x() - u.rect.x(), rect.y() - u.rect.y(), u.rect.width());
+        Some([
+            contiguous_span(head.get_mut(u.start..u.end())?, stride, x, y, rect).ok()?,
+            contiguous_span(tail.get_mut(..v.len)?, stride, x, y, rect).ok()?,
+        ])
     }
 
     /// Publishes this completed rectangle into its matching frame workspace.

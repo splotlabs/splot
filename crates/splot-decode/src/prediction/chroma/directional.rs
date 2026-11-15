@@ -218,10 +218,13 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         | SupportedChromaMode::D67 => reconstruct_general_intra_one_sided_neighbour_block_into(
             workspace,
             block,
-            match mode {
-                SupportedChromaMode::D45Follow | SupportedChromaMode::D45 => 45,
-                SupportedChromaMode::D67Follow | SupportedChromaMode::D67 => 67,
-                _ => unreachable!(),
+            if matches!(
+                mode,
+                SupportedChromaMode::D45Follow | SupportedChromaMode::D45
+            ) {
+                45
+            } else {
+                67
             },
             plane_id,
             x,
@@ -283,7 +286,6 @@ fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
         IntraPredictionScratchBuffer::Primary,
         plane_id,
         side * side,
-        T::default(),
     )?;
     predict_directional_noneighbour_into(mode, block_size, side, bit_depth, &mut prediction)?;
     write_intra_prediction_block(
@@ -315,7 +317,6 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
         IntraPredictionScratchBuffer::Primary,
         plane_id,
         width * height,
-        T::default(),
     )?;
     predict_intra_cardinal_directional_rect_into(
         bit_depth,

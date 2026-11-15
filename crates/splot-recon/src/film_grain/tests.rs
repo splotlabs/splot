@@ -260,7 +260,7 @@ fn destination_allocation_is_retained<T: ReconSample + std::fmt::Debug + Partial
     samples: &[T],
 ) -> Vec<T> {
     let destination = GrainDestination {
-        samples: crate::plane_buf_from(samples),
+        samples: crate::plane_buf::plane_buf_from(samples),
         stride: 2,
     };
     let pointer = destination.samples.as_ptr();

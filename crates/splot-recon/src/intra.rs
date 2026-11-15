@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Scalar intra prediction primitives.
+//! DC, palette and prediction-average intra primitives.
 //!
 //! Feature tracking: `RECON-INTRA-DC-SQUARE-PREDICTION`,
 //! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`.
 
+use crate::intra_dc_math::IntraLaneSample;
 use crate::intra_dc_math::{
     fill_validated_output_shape, predict_intra_dc_rect_value_from_sums, validate_dc_edge,
     validate_output_shape, validate_sample_type,
 };
 use crate::{BitDepth, ReconError, ReconSample, Result};
+use fearless_simd::{Bytes as _, Simd, SimdBase, u8x16, u16x8};
 
 const MIN_SQUARE_BLOCK_LOG2: u8 = 2;
 const MAX_SQUARE_BLOCK_LOG2: u8 = 6;
@@ -407,10 +409,177 @@ pub fn predict_intra_dc_square<T: ReconSample>(
     SquareIntraPredictionBlock::filled(size, sample)
 }
 
+/// Writes the § 7.11.4 palette prediction `output[i] = colors[map[i]]` and
+/// returns the largest color index of `map`, which the caller checks against
+/// the palette size. `map` and `output` have the same length, a multiple of 16.
+///
+/// # Errors
+/// Returns [`ReconError::BufferLengthMismatch`] for other lengths.
+pub fn predict_intra_palette_into<T: ReconSample>(
+    colors: &[u16; 8],
+    map: &[u8],
+    output: &mut [T],
+) -> Result<u8> {
+    if map.len() != output.len() || !map.len().is_multiple_of(16) {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output.len().next_multiple_of(16),
+            actual: map.len(),
+        });
+    }
+    let byte = |shift: u32| -> [u8; 16] {
+        core::array::from_fn(|i| colors.get(i).map_or(0, |&color| (color >> shift) as u8))
+    };
+    let (low, high) = (byte(0), byte(8));
+    if let Some(output) = T::u8_slice_mut(output) {
+        return Ok(baseline_simd!(simd => palette_lanes(simd, low, None, map, output)));
+    }
+    if let Some(output) = T::u16_slice_mut(output) {
+        return Ok(baseline_simd!(simd => palette_lanes(simd, low, Some(high), map, output)));
+    }
+    Err(ReconError::SampleValueUnsupportedStorage {
+        sample_type: T::TYPE_NAME,
+        value: 0,
+        max: 0,
+    })
+}
+
+/// Sample storage a palette lookup writes: bytes from the low table, or
+/// `u16` from the low and high byte tables.
+trait PaletteSample: Sized {
+    fn store<S: Simd>(simd: S, low: u8x16<S>, high: Option<u8x16<S>>, out: &mut [Self; 16]);
+}
+
+impl PaletteSample for u8 {
+    #[inline]
+    fn store<S: Simd>(_simd: S, low: u8x16<S>, _high: Option<u8x16<S>>, out: &mut [u8; 16]) {
+        low.store_slice(out);
+    }
+}
+
+impl PaletteSample for u16 {
+    #[inline]
+    fn store<S: Simd>(simd: S, low: u8x16<S>, high: Option<u8x16<S>>, out: &mut [u16; 16]) {
+        let high = high.unwrap_or(u8x16::splat(simd, 0));
+        let lo: [u16; 8] = simd.zip_low_u8x16(low, high).bitcast::<u16x8<S>>().into();
+        let hi: [u16; 8] = simd.zip_high_u8x16(low, high).bitcast::<u16x8<S>>().into();
+        out[..8].copy_from_slice(&lo); // splot-copy-ok: publish eight palette lanes
+        out[8..].copy_from_slice(&hi); // splot-copy-ok: publish eight palette lanes
+    }
+}
+
+#[inline]
+fn palette_lanes<S: Simd, P: PaletteSample>(
+    simd: S,
+    low: [u8; 16],
+    high: Option<[u8; 16]>,
+    map: &[u8],
+    output: &mut [P],
+) -> u8 {
+    let low = u8x16::from_slice(simd, &low);
+    let high = high.map(|high| u8x16::from_slice(simd, &high));
+    let mut max = u8x16::splat(simd, 0);
+    for (indices, out) in map
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .zip(output.as_chunks_mut::<16>().0)
+    {
+        let indices = u8x16::from_slice(simd, indices);
+        max = max.max(indices);
+        P::store(
+            simd,
+            simd.swizzle_dyn_u8x16(low, indices),
+            high.map(|high| simd.swizzle_dyn_u8x16(high, indices)),
+            out,
+        );
+    }
+    simd.reduce_max_u8x16(max)
+}
+
+/// Replaces `primary` with the rounded average `(primary + secondary + 1) >>
+/// 1` of two predictions of the same length, a multiple of 16.
+///
+/// # Errors
+/// Returns [`ReconError::BufferLengthMismatch`] for other lengths.
+pub fn average_intra_predictions<T: ReconSample>(primary: &mut [T], secondary: &[T]) -> Result<()> {
+    if primary.len() != secondary.len() || !primary.len().is_multiple_of(16) {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: primary.len(),
+            actual: secondary.len(),
+        });
+    }
+    if let (Some(primary), Some(secondary)) = (T::u8_slice_mut(primary), T::u8_slice(secondary)) {
+        baseline_simd!(simd => average_lanes(simd, primary, secondary));
+    } else if let (Some(primary), Some(secondary)) =
+        (T::u16_slice_mut(primary), T::u16_slice(secondary))
+    {
+        baseline_simd!(simd => average_lanes(simd, primary, secondary));
+    }
+    Ok(())
+}
+
+#[inline]
+fn average_lanes<S: Simd, P: IntraLaneSample>(simd: S, primary: &mut [P], secondary: &[P]) {
+    for (a, b) in primary
+        .as_chunks_mut::<16>()
+        .0
+        .iter_mut()
+        .zip(secondary.as_chunks::<16>().0)
+    {
+        let sum = P::load16(simd, a) + P::load16(simd, b) + 1;
+        P::store16(simd, sum >> 1, a);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_and_average_lanes_match_the_scalar_walk() {
+        let colors = [3u16, 1000, 77, 512, 9, 1023, 0, 600];
+        for len in [16usize, 32, 64, 256, 4096] {
+            let map: Vec<u8> = (0..len).map(|i| ((i * 5 + i / 7) % 6) as u8).collect();
+            let mut wide = vec![0u16; len];
+            assert_eq!(
+                predict_intra_palette_into(&colors, &map, &mut wide).unwrap(),
+                5
+            );
+            assert!(
+                wide.iter()
+                    .zip(&map)
+                    .all(|(&v, &i)| v == colors[usize::from(i)])
+            );
+            let narrow_colors = colors.map(|c| c >> 2);
+            let mut narrow = vec![0u8; len];
+            predict_intra_palette_into(&narrow_colors, &map, &mut narrow).unwrap();
+            assert!(
+                narrow
+                    .iter()
+                    .zip(&map)
+                    .all(|(&v, &i)| u16::from(v) == narrow_colors[usize::from(i)])
+            );
+
+            let other: Vec<u16> = (0..len).map(|i| (i * 31 % 1024) as u16).collect();
+            let want: Vec<u16> = wide
+                .iter()
+                .zip(&other)
+                .map(|(&a, &b)| (a + b + 1) >> 1)
+                .collect();
+            average_intra_predictions(&mut wide, &other).unwrap();
+            assert_eq!(wide, want);
+            let other8: Vec<u8> = other.iter().map(|&v| (v >> 2) as u8).collect();
+            let want8: Vec<u8> = narrow
+                .iter()
+                .zip(&other8)
+                .map(|(&a, &b)| ((u16::from(a) + u16::from(b) + 1) >> 1) as u8)
+                .collect();
+            average_intra_predictions(&mut narrow, &other8).unwrap();
+            assert_eq!(narrow, want8);
+        }
+        assert!(predict_intra_palette_into(&colors, &[0; 15], &mut [0u16; 15]).is_err());
+    }
 
     fn size(log2_size: u8) -> IntraSquareBlockSize {
         IntraSquareBlockSize::new(log2_size).unwrap()

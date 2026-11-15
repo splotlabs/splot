@@ -543,6 +543,18 @@ fn tiled_ccso<L: ReconSample>(
         tiles,
     )
     .unwrap();
+    let pre8 = pre.iter().map(|&sample| sample as u8).collect();
+    let mut bytes = StripePlane::from_samples(pw, ph, 0, pre8).unwrap();
+    let luma = FramePlane::window(&stored_luma, lw, lh, 0, lh).unwrap();
+    ccso_apply(&mut bytes, luma, plane, &prepared, &grid, None, tiles).unwrap();
+    assert!(
+        bytes
+            .samples()
+            .iter()
+            .zip(destination.samples())
+            .all(|(&byte, &wide)| u16::from(byte) == wide),
+        "u8 destination"
+    );
     let plane_blk = blk >> sub;
     let expected = (0..pw * ph)
         .map(|index| {

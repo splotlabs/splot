@@ -36,11 +36,10 @@ fn square_context() -> SquareSplitContextInput {
 fn input(
     allowed: AllowedPartitions,
     implied_partition: Option<PartitionType>,
-    bru_active: bool,
     rect_type: Option<RectPartitionType>,
 ) -> ReadPartitionDecisionInput {
     PartitionDecisionFacts::new(implied_partition, allowed, rect_type)
-        .read_partition_decision_input(bru_active, partition_context(), square_context())
+        .read_partition_decision_input(partition_context(), square_context())
 }
 
 fn decoder(payload: &'static [u8], update_mode: CdfUpdateMode) -> SymbolDecoder<'static> {
@@ -80,7 +79,6 @@ fn implied_partition_returns_without_symbol_consumption() {
         input(
             allowed(&[PartitionType::Horz, PartitionType::Vert]),
             Some(PartitionType::Vert),
-            true,
             None,
         ),
         &mut cdfs,
@@ -96,32 +94,11 @@ fn implied_partition_returns_without_symbol_consumption() {
 #[test]
 fn single_allowed_returns_in_spec_order_without_symbol_consumption() {
     let (result, cdfs_after, symbols) = decision(
-        input(allowed(&[PartitionType::Horz4B]), None, true, None),
+        input(allowed(&[PartitionType::Horz4B]), None, None),
         &[0xFF, 0xFF],
     );
 
     assert_eq!(result.unwrap(), PartitionType::Horz4B);
-    assert_eq!(symbols.symbol_count(), 0);
-    assert_eq!(cdfs_after, cdfs());
-}
-
-#[test]
-fn inactive_bru_returns_none_without_symbol_consumption() {
-    let (result, cdfs_after, symbols) = decision(
-        input(
-            allowed(&[
-                PartitionType::None,
-                PartitionType::Horz,
-                PartitionType::Vert,
-            ]),
-            None,
-            false,
-            None,
-        ),
-        &[0xFF, 0xFF],
-    );
-
-    assert_eq!(result.unwrap(), PartitionType::None);
     assert_eq!(symbols.symbol_count(), 0);
     assert_eq!(cdfs_after, cdfs());
 }
@@ -132,7 +109,6 @@ fn disallowed_implied_partition_falls_through_to_single_allowed() {
         input(
             allowed(&[PartitionType::Horz]),
             Some(PartitionType::Vert),
-            true,
             None,
         ),
         &[0xFF, 0xFF],
@@ -149,7 +125,6 @@ fn disallowed_implied_partition_falls_through_to_reached_syntax() {
         input(
             allowed(&[PartitionType::None, PartitionType::Horz]),
             Some(PartitionType::Vert),
-            true,
             Some(RectPartitionType::Horz),
         ),
         &[0x00, 0x80],
@@ -158,23 +133,6 @@ fn disallowed_implied_partition_falls_through_to_reached_syntax() {
 
     assert_eq!(result, PartitionType::None);
     assert_eq!(symbols.symbol_count(), 1);
-}
-
-#[test]
-fn inactive_bru_returns_none_even_when_none_is_disallowed() {
-    let (result, cdfs_after, symbols) = decision(
-        input(
-            allowed(&[PartitionType::Horz, PartitionType::Vert]),
-            None,
-            false,
-            None,
-        ),
-        &[0xFF, 0xFF],
-    );
-
-    assert_eq!(result.unwrap(), PartitionType::None);
-    assert_eq!(symbols.symbol_count(), 0);
-    assert_eq!(cdfs_after, cdfs());
 }
 
 #[test]
@@ -187,7 +145,6 @@ fn do_split_false_returns_none_and_stops() {
                 PartitionType::Horz,
             ]),
             None,
-            true,
             Some(RectPartitionType::Horz),
         ),
         &[0x00, 0x80],
@@ -209,7 +166,6 @@ fn square_split_true_returns_split_before_rect_symbols() {
                 PartitionType::Vert,
             ]),
             None,
-            true,
             None,
         ),
         &[0xFF, 0xFF],
@@ -226,7 +182,6 @@ fn rect_type_symbol_selects_vertical_non_extended_partition() {
         input(
             allowed(&[PartitionType::Horz, PartitionType::Vert]),
             None,
-            true,
             None,
         ),
         &[0xFF, 0xFF],
@@ -243,7 +198,6 @@ fn forced_horizontal_rect_reads_ext_symbol_once() {
         input(
             allowed(&[PartitionType::Horz, PartitionType::Horz3]),
             None,
-            true,
             Some(RectPartitionType::Horz),
         ),
         &[0xFF, 0xFF],
@@ -265,7 +219,6 @@ fn uneven_four_way_literal_selects_table_variant() {
                 PartitionType::Horz4B,
             ]),
             None,
-            true,
             Some(RectPartitionType::Horz),
         ),
         &[0xFF, 0xFF],
@@ -286,7 +239,6 @@ fn uneven_four_way_without_three_way_reads_only_literal() {
                 PartitionType::Vert4B,
             ]),
             None,
-            true,
             Some(RectPartitionType::Vert),
         ),
         &[0xFF, 0xFF],
@@ -307,7 +259,6 @@ fn empty_allowed_set_is_rejected_before_symbol_consumption() {
         input(
             AllowedPartitions::new([false; EXT_PARTITION_TYPES]),
             None,
-            true,
             None,
         ),
         &mut cdfs,
@@ -329,7 +280,6 @@ fn impossible_final_table_result_is_rejected() {
         input(
             allowed(&[PartitionType::Vert, PartitionType::Vert3]),
             None,
-            true,
             Some(RectPartitionType::Horz),
         ),
         &mut cdfs,
@@ -354,7 +304,6 @@ fn empty_payload_literal_branch_is_deterministic() {
         input(
             allowed(&[PartitionType::Vert4A, PartitionType::Vert4B]),
             None,
-            true,
             Some(RectPartitionType::Vert),
         ),
         &mut cdfs,
@@ -375,7 +324,6 @@ fn repeated_inputs_are_deterministic() {
             PartitionType::Vert,
         ]),
         None,
-        true,
         None,
     );
 
@@ -425,8 +373,7 @@ fn bounded_payload_matrix_never_panics() {
                 SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
             )
             .unwrap();
-            let _ =
-                read_partition_decision(input(allowed, None, true, None), &mut cdfs, &mut symbols);
+            let _ = read_partition_decision(input(allowed, None, None), &mut cdfs, &mut symbols);
         }
     }
 }

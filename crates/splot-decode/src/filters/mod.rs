@@ -3,6 +3,7 @@
 
 //! Loop-filter and restoration orchestration.
 
+pub(crate) mod bru;
 pub(crate) mod ccso;
 pub(crate) mod cdef;
 pub(crate) mod deblock;

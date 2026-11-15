@@ -118,7 +118,8 @@ pub enum SendStatus {
 /// boundary and its row stride is a multiple of that many bytes; the visible
 /// area may start inside it (see [`PlaneRef::visible_rect`]). The decoder never
 /// writes the planes again; dropping the last picture that holds them gives
-/// the storage back to the decoder. Film grain, when the stream signals it, is
+/// the storage back to the decoder, which reuses frame-sized planes for later
+/// pictures and frees smaller ones. Film grain, when the stream signals it, is
 /// applied to a new buffer with the same layout guarantees.
 #[derive(Debug)]
 pub struct Picture {

@@ -20,8 +20,6 @@ use std::sync::OnceLock;
 
 const IBP_WEIGHT_SIZE_LOG2: u32 = 4;
 const IBP_WEIGHT_SIZE: usize = 1 << IBP_WEIGHT_SIZE_LOG2;
-const IBP_WEIGHT_SHIFT: u8 = DIV_LUT_BITS;
-const IBP_WEIGHT_MAX: u16 = 1 << IBP_WEIGHT_SHIFT;
 const IBP_WEIGHT_MIN_ANGLE: u16 = 39;
 
 // AV2 §7.13.2.9 `angle_to_mode_index[90]`; slot 15 is disabled.
@@ -40,9 +38,8 @@ const IS_IBP_ENABLED: [bool; 16] = [
     false, true,
 ];
 
-/// Returns whether AV2 §7.13.2.9 applies the IBP blend for `p_angle`.
-#[must_use]
-pub fn ibp_blend_fires(p_angle: u16) -> bool {
+#[cfg(test)]
+fn ibp_blend_fires(p_angle: u16) -> bool {
     enabled_weight_angle(p_angle).is_some()
 }
 
@@ -171,37 +168,18 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
     let shift = IBP_WEIGHT_SIZE_LOG2 + 1;
     let c_shift = (width as u32) >> shift;
     let r_shift = (height as u32) >> shift;
-    if width <= 64 && height <= 64 && width.is_multiple_of(4) {
-        let (primary, second) = (&mut primary[..needed], &second[..needed]);
-        if let (Some(primary), Some(second)) = (T::u16_slice_mut(primary), T::u16_slice(second)) {
-            blend_rows_lanes(weights, (c_shift, r_shift), width, true, primary, second);
-            return Ok(());
-        }
-        if let (Some(primary), Some(second)) = (T::u8_slice_mut(primary), T::u8_slice(second)) {
-            blend_rows_lanes(weights, (c_shift, r_shift), width, false, primary, second);
-            return Ok(());
-        }
+    let (primary, second) = (&mut primary[..needed], &second[..needed]);
+    if let (Some(primary), Some(second)) = (T::u16_slice_mut(primary), T::u16_slice(second)) {
+        blend_rows_lanes(weights, (c_shift, r_shift), width, true, primary, second);
+        return Ok(());
     }
-    for (row, (primary_row, second_row)) in primary
-        .chunks_exact_mut(width)
-        .zip(second.chunks_exact(width))
-        .take(height)
-        .enumerate()
-    {
-        let row_weights = weight_row(weights, (row as u32 >> r_shift) as usize)?;
-        for (column, (target, &source)) in primary_row.iter_mut().zip(second_row).enumerate() {
-            let s = weight_lane(row_weights, (column as u32 >> c_shift) as usize)?;
-            let primary_value = u32::from(target.to_u16());
-            let second_value = u32::from(source.to_u16());
-            let inverse = u32::from(IBP_WEIGHT_MAX - s);
-            let blended = round2_u32(
-                primary_value * u32::from(s) + second_value * inverse,
-                IBP_WEIGHT_SHIFT,
-            ) as u16;
-            *target = T::try_from_u16(blended)?;
-        }
+    if let (Some(primary), Some(second)) = (T::u8_slice_mut(primary), T::u8_slice(second)) {
+        blend_rows_lanes(weights, (c_shift, r_shift), width, false, primary, second);
+        return Ok(());
     }
-    Ok(())
+    Err(ReconError::ArithmeticOverflow {
+        context: "IBP angular blend sample type",
+    })
 }
 
 /// The lane form of the blend over `width`-sample rows, 16 lanes at a time:
@@ -299,23 +277,6 @@ fn blend_rows<S: Simd, O: IntraLaneSample, const W: usize>(
         );
         O::store16(simd, blended, target);
     }
-}
-
-fn weight_row(weights: &IbpWeights, outer: usize) -> Result<&[u16]> {
-    weights
-        .get(outer)
-        .map(AsRef::as_ref)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "IBP angular weight index",
-        })
-}
-
-fn weight_lane(row: &[u16], inner: usize) -> Result<u16> {
-    row.get(inner)
-        .copied()
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "IBP angular weight index",
-        })
 }
 
 #[cfg(test)]

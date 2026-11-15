@@ -84,9 +84,9 @@ impl CoeffReadQuantState {
         if input.level < threshold {
             return Ok(CoeffQuantReadInput { quant: input.level });
         }
-        let owned = symbols.snapshot();
+        let owned = symbols.clone();
         let (owned, read) = self.read_remainder(owned, index, input);
-        symbols.restore(owned);
+        *symbols = owned;
         read
     }
 

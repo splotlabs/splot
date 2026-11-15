@@ -4160,7 +4160,7 @@ module = "crates/splot-validate/src/reference_state.rs"
 change_id = "frame-reference-state-model"
 owner = "validator"
 risk = "high"
-notes = "ReferenceStateTracker maintains per-extended-layer Unknown/ProvenInvalid/Valid slots with order hints, dimensions, quantizers, output flags, long-term ids, and frame counters. Updates are deferred to the next decided frame boundary or EOF; continuations do not re-update. Key/switch refreshes validate only the lowest refreshed slot, CLK resets active slots, and unconfirmed effects poison state. The parser and validator consume this state for inter references, sizes, TIP quantization, and selected-slot checks. Mid-stream joins remain unknown. Reconstruction-only stores remain in the decoder; full shown/output-buffer semantics are not claimed by this validator tracker."
+notes = "ReferenceStateTracker maintains per-extended-layer Unknown/ProvenInvalid/Valid slots with order hints, dimensions, quantizers, output flags, long-term ids, § 5.18.9.1 global-motion saved state, and frame counters. Updates are deferred to the next decided frame boundary or EOF; continuations do not re-update. Key/switch refreshes validate only the lowest refreshed slot, CLK resets active slots, and unconfirmed effects poison state. The parser and validator consume this state for inter references, sizes, TIP quantization, and selected-slot checks. Mid-stream joins remain unknown; a buffer with any Unknown slot below NumRefFrames is withheld from the parser. Reconstruction-only stores remain in the decoder; full shown/output-buffer semantics are not claimed by this validator tracker."
 
 [feature.status]
 mapped = "done"
@@ -4175,7 +4175,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/reference_state.rs::tests", "crates/splot-validate/src/reference_state.rs::tests::refresh_stores_facts_into_set_slots_only", "crates/splot-validate/src/reference_state.rs::tests::key_switch_first_rule_validates_only_lowest_refreshed_slot", "crates/splot-validate/src/reference_state.rs::tests::clk_reset_invalidates_then_refreshes", "crates/splot-validate/src/reference_state.rs::tests::clk_reset_with_all_frames_mask_validates_only_lowest", "crates/splot-validate/src/reference_state.rs::tests::sef_does_not_update", "crates/splot-validate/src/reference_state.rs::tests::poison_all_makes_every_slot_unknown", "crates/splot-validate/src/reference_state.rs::tests::view_into_reflects_slot_validity", "crates/splot-validate/src/reference_state.rs::tests::apply_never_panics", "crates/splot-validate/src/reference_state.rs::tests::refresh_validates_exactly_set_bits", "crates/splot-validate/src/reference_state.rs::tests::poison_all_dominates", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_proven_invalid_slot_fires", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_valid_slot_is_silent", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_poisoned_slot_drops_to_silence", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_inter_frame_poisons_then_sef_is_silent", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_invalid_then_inter_then_sef_silent_proves_poison_lifetime", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_clk_reset_across_cvs_revalidates_only_slot_zero", "crates/splot-validate/src/reference_state.rs::tests::slot_long_term_id_reads_only_valid_slots", "crates/splot-validate/src/reference_state.rs::tests::slot_facts_requires_order_hint_and_dims_but_not_long_term_id"]
+tests = ["crates/splot-validate/src/reference_state.rs::tests", "crates/splot-validate/src/reference_state.rs::tests::refresh_stores_facts_into_set_slots_only", "crates/splot-validate/src/reference_state.rs::tests::key_switch_first_rule_validates_only_lowest_refreshed_slot", "crates/splot-validate/src/reference_state.rs::tests::clk_reset_invalidates_then_refreshes", "crates/splot-validate/src/reference_state.rs::tests::clk_reset_with_all_frames_mask_validates_only_lowest", "crates/splot-validate/src/reference_state.rs::tests::sef_does_not_update", "crates/splot-validate/src/reference_state.rs::tests::poison_all_makes_every_slot_unknown", "crates/splot-validate/src/reference_state.rs::tests::view_into_reflects_slot_validity", "crates/splot-validate/src/reference_state.rs::tests::view_into_withholds_a_partially_unknown_buffer", "crates/splot-validate/src/validator/tests/frame_header_core.rs::validator_threads_saved_global_motion_state", "crates/splot-validate/src/reference_state.rs::tests::apply_never_panics", "crates/splot-validate/src/reference_state.rs::tests::refresh_validates_exactly_set_bits", "crates/splot-validate/src/reference_state.rs::tests::poison_all_dominates", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_proven_invalid_slot_fires", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_valid_slot_is_silent", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_poisoned_slot_drops_to_silence", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_inter_frame_poisons_then_sef_is_silent", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_invalid_then_inter_then_sef_silent_proves_poison_lifetime", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_clk_reset_across_cvs_revalidates_only_slot_zero", "crates/splot-validate/src/reference_state.rs::tests::slot_long_term_id_reads_only_valid_slots", "crates/splot-validate/src/reference_state.rs::tests::slot_facts_requires_order_hint_and_dims_but_not_long_term_id"]
 commands = ["cargo test -p splot-validate reference_state", "cargo test -p splot-validate ref_state"]
 fixtures = []
 diagnostics = ["frame-header/show-existing-frame-invalid-slot"]
@@ -7961,7 +7961,6 @@ tests = [
     "crates/splot-recon/src/intra_ibp_dc.rs::tests",
     "crates/splot-recon/src/intra_smooth.rs::tests",
     "crates/splot-recon/src/workspace_tests.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle_tests.rs",
 ]
 commands = [
     "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
@@ -7971,7 +7970,6 @@ commands = [
     "cargo test -p splot-recon intra_directional --locked",
     "cargo test -p splot-recon intra_directional_angle --locked",
     "cargo test -p splot-recon intra --locked",
-    "cargo test -p splot-recon workspace_intra_directional_angle --locked",
     "cargo test -p splot-recon workspace --locked",
     "cargo +nightly fuzz run recon_intra_prediction_bytes (local/nightly; CI fuzz smoke runs every target)",
 ]
@@ -7981,8 +7979,6 @@ fixtures = [
     "crates/splot-recon/src/intra_directional_angle_tests.rs",
     "crates/splot-recon/src/intra_ibp_dc.rs",
     "crates/splot-recon/src/workspace_intra_dc.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle_tests.rs",
 ]
 diagnostics = []
 
@@ -9386,8 +9382,6 @@ tests = [
     "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_validates_sample_type_against_bit_depth",
     "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_validates_output_stride_and_length",
     "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_rejects_overflowing_output_shape",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_rectangular_paeth_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_paeth_rejects_missing_prepared_edges",
 ]
 commands = [
     "cargo test -p splot-recon --locked",
@@ -9453,7 +9447,6 @@ tests = [
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_subsampled_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_subsampled_dc_top_left_uses_midpoint_without_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_subsampled_dc_uses_available_edge_without_synthesizing_missing_edge",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_subsampled_dc_rejects_missing_plane_and_out_of_bounds_target",
 ]
 commands = [
     "cargo test -p splot-recon intra_dc_subsampled --locked",
@@ -9517,8 +9510,6 @@ tests = [
     "crates/splot-recon/src/intra_smooth.rs::tests::smooth_prediction_validates_sample_type_against_bit_depth",
     "crates/splot-recon/src/intra_smooth.rs::tests::smooth_prediction_validates_output_stride_and_length",
     "crates/splot-recon/src/intra_smooth.rs::tests::smooth_prediction_rejects_overflowing_output_shape",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_rectangular_smooth_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_smooth_rejects_missing_prepared_edges",
 ]
 commands = [
     "cargo test -p splot-recon --locked",
@@ -9580,8 +9571,6 @@ tests = [
     "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_validates_sample_type_against_bit_depth",
     "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_validates_output_stride_and_length",
     "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_rejects_overflowing_output_shape",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_cardinal_directional_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_cardinal_directional_rejects_missing_prepared_edges",
 ]
 commands = [
     "cargo test -p splot-recon intra_directional --locked",
@@ -9732,71 +9721,6 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
-id = "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION"
-name = "Workspace directional-angle intra prediction"
-category = "infrastructure"
-kind = "infrastructure"
-spec_sections = ["4.8", "7.13.2.1", "7.13.2.7", "7.13.2.8", "9.2"]
-sources = [
-    "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
-    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
-]
-crate = "splot-recon"
-module = "crates/splot-recon/src/workspace_intra_directional_angle.rs"
-change_id = "recon-workspace-directional-angle-prediction"
-owner = "decoder"
-risk = "medium"
-notes = "Workspace directional helpers gather available in-storage edges and select bilinear chroma or IDIF luma prediction. Luma edge extension includes corner fallback. Decoded-neighbor availability and syntax-driven prediction selection remain with decoder callers."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "done"
-write = "not-applicable"
-encode = "not-applicable"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = [
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_one_sided_directional_angle_from_in_storage_above_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_one_sided_directional_angle_from_in_storage_left_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_middle_directional_angle_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_accepts_10_bit_u16_samples",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_luma_one_sided_idif_from_in_storage_above_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_luma_one_sided_idif_from_in_storage_left_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_luma_one_sided_idif_uses_own_edge_sample_when_corner_is_out_of_frame",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_rejects_missing_prepared_edges",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_rejects_missing_plane_and_out_of_bounds_target",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_invalid_edge_sample_does_not_mutate_target",
-]
-commands = [
-    "cargo test -p splot-recon workspace_intra_directional_angle --locked",
-    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
-    "cargo xtask check-fuzz-targets",
-    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
-    "cargo xtask check-source-lines",
-    "cargo xtask check-decoder-support",
-    "cargo xtask check-decoder-conformance-coverage",
-    "cargo xtask check-feature-status",
-]
-fixtures = [
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle_tests.rs",
-    "crates/splot-recon/src/workspace.rs",
-    "crates/splot-recon/src/error.rs",
-    "crates/splot-recon/src/lib.rs",
-    "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs",
-]
-diagnostics = []
-
-[[feature]]
 id = "RECON-INTRA-IBP-DC-PREDICTION"
 name = "IBP DC intra prediction"
 category = "infrastructure"
@@ -9843,7 +9767,6 @@ tests = [
     "crates/splot-recon/src/intra_ibp_dc.rs::tests::ibp_dc_rejects_invalid_output_shape",
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_ibp_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_top_left_uses_dc_midpoint_without_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_rejects_missing_plane_and_out_of_bounds_target",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target",
 ]
 commands = [
@@ -9909,7 +9832,6 @@ tests = [
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_subsampled_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_ibp_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_top_left_uses_dc_midpoint_without_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_rejects_missing_plane_and_out_of_bounds_target",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target",
 ]
 commands = [
@@ -20388,7 +20310,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs"
 change_id = "tile-partition-traversal-boundary"
 owner = "decoder"
 risk = "medium"
-notes = "The live partition cursor walks superblocks and leaves with one SymbolDecoder, bounded partition steps and tile-derived neighbour availability. It publishes MI/mode state and supports intra SDP with extended-SDP continuation. Tree-specific restoration reads retain source blocks and coded filters for final filtering. Cursor and scheduler share effective superblock geometry, including SB128 for sequence-SB256 intra frames. Unsupported restoration combinations and BRU/bridge paths remain explicit gates."
+notes = "The live partition cursor walks superblocks and leaves with one SymbolDecoder, bounded partition steps and tile-derived neighbour availability. It publishes MI/mode state and supports intra SDP with extended-SDP continuation. Tree-specific restoration reads retain source blocks and coded filters for final filtering. Cursor and scheduler share effective superblock geometry, including SB128 for sequence-SB256 intra frames. BRU superblocks read bru_mode, infer PARTITION_NONE and skip region_type when not BRU_ACTIVE, and decode their leaves through § 5.20.5.2 bru_mode_info; unsupported restoration combinations remain explicit gates."
 
 [feature.status]
 mapped = "done"
@@ -20406,6 +20328,10 @@ perf = "not-applicable"
 tests = [
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::frame_level_lr_symbol_precedes_partition_read",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::bru_inactive_superblock_reads_mode_then_infers_partition_none",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::bru_active_superblock_reads_its_partition",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::inactive_bru_tile_reads_no_mode_symbol",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::walk_reads_intra_region_type_then_luma_tree_then_chroma_block",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::inactive_frame_level_wiener_ns_advances_current_cursor_without_source_output",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::current_cursor_advances_every_covered_inactive_wiener_ns_unit",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_rejects_invalid_unit_size_before_partition_read",

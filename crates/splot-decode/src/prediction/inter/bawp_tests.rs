@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::sync::Arc;
-
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, FramePlanes,
     InterpolationFilter, OutputIndex, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize,
 };
 
 use super::{
-    ReferenceSamples, apply_bawp, apply_intrabc_morph_pred, bawp_reference_luma_rows,
-    bawp_template_counts,
+    ReferenceSamples, TemplatePairs, TemplateStats, apply_bawp, apply_intrabc_morph_pred,
+    bawp_reference_luma_rows, bawp_template_counts,
 };
-use crate::pipeline::frame_progress::FrameProgress;
+use crate::pipeline::frame_progress::PublishedFrame;
+use crate::pipeline::inflight::RefFrameSlot;
 use crate::prediction::inter::{BawpSyntax, InterBlock, Mv, PlacedInterBlock, mc::CompoundBlend};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -39,6 +38,113 @@ fn template_counts_follow_the_clamped_size_table() {
             "bw={bw} bh={bh} luma={luma} up={up} left={left}"
         );
     }
+}
+
+/// The § 7.13.3.25 sums of the oracle: every `(reference, current)` pair of
+/// both arms added one at a time.
+fn oracle_stats(
+    arms: [(usize, usize); 2],
+    pair: impl Fn(usize, usize) -> (u16, u16),
+) -> TemplateStats {
+    let mut stats = TemplateStats::default();
+    for (arm, (len, num)) in arms.into_iter().enumerate() {
+        if num == 0 {
+            continue;
+        }
+        let step = len / num;
+        let mut i = step >> 1;
+        while i < len {
+            let (x, y) = pair(arm, i);
+            let (x, y) = (i32::from(x), i32::from(y));
+            stats.sum_x += x;
+            stats.sum_y += y;
+            stats.sum_xy += x * y;
+            stats.sum_xx += x * x;
+            i += step;
+        }
+        stats.count += num as i32;
+    }
+    stats
+}
+
+/// Every template shape [`bawp_template_counts`] yields, at both bit
+/// depths, with extreme and asymmetric samples: the lane sums equal the
+/// per-pair oracle.
+#[test]
+fn template_lane_sums_match_the_pair_oracle() {
+    let sides = [4, 8, 12, 16, 32, 64];
+    for (bw, bh, luma, up, left) in sides.into_iter().flat_map(|bw| {
+        sides.into_iter().flat_map(move |bh| {
+            [(true, true, true), (false, true, true), (true, true, false)]
+                .into_iter()
+                .chain([(true, false, true), (true, false, false)])
+                .map(move |(luma, up, left)| (bw, bh, luma, up, left))
+        })
+    }) {
+        let (width, height, num_up, num_left) = bawp_template_counts(bw, bh, luma, up, left);
+        for (max, seed) in [(255u16, 3usize), (1023, 7), (1023, 0)] {
+            let pair = |arm: usize, i: usize| {
+                let k = (arm * 16 + i) * 2_654_435_761 + seed;
+                let value = |k: usize| match k % 5 {
+                    0 => max,
+                    1 => 0,
+                    _ => (k >> 9) as u16 % (max + 1),
+                };
+                (value(k), value(k / 3 + 1))
+            };
+            let want = oracle_stats([(width, num_up), (height, num_left)], pair);
+            for row_len in [width, 16, 24] {
+                let rows: [Vec<u16>; 2] = core::array::from_fn(|side| {
+                    let sample = |i: usize| [pair(0, i).0, pair(0, i).1][side];
+                    (0..row_len)
+                        .map(|i| if i < width { sample(i) } else { max - 1 })
+                        .collect()
+                });
+                let bytes: [Vec<u8>; 2] = rows
+                    .clone()
+                    .map(|row| row.into_iter().map(|v| v as u8).collect());
+                let mut pairs = TemplatePairs::default();
+                let mut byte_pairs = TemplatePairs::default();
+                if num_up > 0 {
+                    let up = (width, num_up);
+                    assert!(pairs.add_above(up, [&rows[0][..], &rows[1]]).is_some());
+                    assert!(
+                        byte_pairs
+                            .add_above(up, [&bytes[0][..], &bytes[1]])
+                            .is_some()
+                    );
+                }
+                if num_left > 0 {
+                    let left = (height, num_left);
+                    assert!(pairs.add_left(left, |i| Some(pair(1, i))).is_some());
+                    assert!(byte_pairs.add_left(left, |i| Some(pair(1, i))).is_some());
+                }
+                assert_eq!(
+                    pairs.stats(),
+                    want,
+                    "{bw}x{bh} {luma} {up} {left} {max} {row_len}"
+                );
+                if max == 255 {
+                    assert_eq!(
+                        byte_pairs.stats(),
+                        want,
+                        "u8 {bw}x{bh} {up} {left} {row_len}"
+                    );
+                }
+            }
+        }
+    }
+    let mut pairs = TemplatePairs::default();
+    let full_rows = [&[1023u16; 16][..], &[1023; 16]];
+    assert!(pairs.add_above((16, 16), full_rows).is_some());
+    assert!(pairs.add_left((16, 16), |_| Some((1023, 1023))).is_some());
+    let full = oracle_stats([(16, 16); 2], |_, _| (1023, 1023));
+    assert_eq!((pairs.stats(), full.sum_xx), (full, 32 * 1023 * 1023));
+    assert!(
+        TemplatePairs::default()
+            .add_above((8, 8), [&[0u16; 7][..], &[0; 8]])
+            .is_none()
+    );
 }
 
 #[test]
@@ -98,6 +204,29 @@ fn intrabc_morph_pred_applies_large_luma_block() -> TestResult {
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 143, 143)?, 60);
+    Ok(())
+}
+
+/// § 7.13.3.25 clips `bh` to `MiRows * MI_SIZE - y` only for the template
+/// counts: a 16x32 block that the frame bottom cuts to 16x20 still adapts.
+#[test]
+fn intrabc_morph_pred_applies_block_cut_by_the_frame_edge() -> TestResult {
+    let mut workspace = workspace(48, 36, 40)?;
+    for i in 16..32 {
+        workspace.set_reconstructed_sample(PlaneId::Y, i, 15, 20)?;
+        workspace.set_reconstructed_sample(PlaneId::Y, 15, i, 20)?;
+    }
+
+    apply_intrabc_morph_pred(
+        &mut workspace,
+        PlaneRect::new(16, 16, 16, 20)?,
+        (true, true),
+        Mv { row: -64, col: -64 },
+    )?;
+
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 16, 16)?, 20);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 31, 35)?, 20);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 32, 16)?, 40);
     Ok(())
 }
 
@@ -190,7 +319,8 @@ fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult
     )?;
     let mut published_references = [None, None];
     for (reference, rows) in published_references.iter_mut().zip([needed, needed - 1]) {
-        let progress = Arc::new(FrameProgress::<u8>::new(info)?);
+        let (slot, writer) = RefFrameSlot::<u8>::pending(info)?;
+        let progress = writer.progress_handle();
         progress.begin(&[(0, rows), (rows, 160)])?;
         let mut lease = progress
             .direct_stripe(0)
@@ -205,16 +335,16 @@ fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult
                 .fill(20);
         }
         assert!(lease.submit());
-        *reference = Some(progress);
+        *reference = Some((slot, writer));
     }
     let [admitted_progress, short_progress] = published_references;
 
-    let admitted_progress = admitted_progress.ok_or("admitted published progress")?;
-    let admitted_frame = admitted_progress.read().ok_or("published frame")?;
+    let (admitted_slot, _writer) = admitted_progress.ok_or("admitted published slot")?;
+    let admitted_frame = PublishedFrame::of_slot(&admitted_slot).ok_or("published frame")?;
     let mut admitted = workspace(160, 160, 40)?;
     apply_bawp(
         &mut admitted,
-        ReferenceSamples::publishing(&admitted_frame)?,
+        ReferenceSamples::publishing(&admitted_frame),
         &placed,
         syntax,
         Mv::ZERO,
@@ -222,12 +352,12 @@ fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult
     )?;
     assert_eq!(admitted.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);
 
-    let short_progress = short_progress.ok_or("short published progress")?;
-    let short_frame = short_progress.read().ok_or("short published frame")?;
+    let (short_slot, _short_writer) = short_progress.ok_or("short published slot")?;
+    let short_frame = PublishedFrame::of_slot(&short_slot).ok_or("short published frame")?;
     let mut short = workspace(160, 160, 40)?;
     let refused = apply_bawp(
         &mut short,
-        ReferenceSamples::publishing(&short_frame)?,
+        ReferenceSamples::publishing(&short_frame),
         &placed,
         syntax,
         Mv::ZERO,
@@ -319,14 +449,8 @@ fn plane(
 
 fn placed_luma_block(x: usize, y: usize, width: usize, height: usize) -> PlacedInterBlock {
     PlacedInterBlock {
-        luma_x: x,
-        luma_y: y,
-        luma_w: width,
-        luma_h: height,
-        chroma_luma_x: x,
-        chroma_luma_y: y,
-        chroma_luma_w: width,
-        chroma_luma_h: height,
+        luma: [x, y, width, height].map(|v| v as u32),
+        chroma_luma: [x, y, width, height].map(|v| v as u32),
         predict_chroma: false,
         sub8x8_chroma: false,
         interintra_chroma: false,

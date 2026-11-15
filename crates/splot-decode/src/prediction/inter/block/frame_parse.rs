@@ -41,8 +41,10 @@ pub(crate) struct InterFrameParser<'payload> {
     parser: Option<Box<tile::TileParser<'payload>>>,
     setup: super::InterParseSetup,
     tiles: usize,
-    /// The tile being parsed; earlier tiles are merged into the frame state.
+    /// Tiles parsed so far.
     tile: usize,
+    /// The parsed tiles of a multi-tile frame, until they merge in tile order.
+    kept: Vec<Option<tile::ParsedTile>>,
     /// Units the merged tiles published: all but the last tile parse a
     /// trailing empty unit they do not publish.
     merged_units: usize,
@@ -56,9 +58,93 @@ impl<'payload> InterFrameParser<'payload> {
             setup,
             tiles,
             tile: 0,
+            kept: Vec::new(),
             merged_units: 0,
             segment_ids: Vec::new(),
         }
+    }
+
+    /// The parser with no tile open, which borrows no payload.
+    pub(crate) fn detached(self) -> Result<InterFrameParser<'static>> {
+        if self.parser.is_some() {
+            return Err(tile::invalid_inter_tile_scheduling_state());
+        }
+        Ok(InterFrameParser {
+            parser: None,
+            setup: self.setup,
+            tiles: self.tiles,
+            tile: self.tile,
+            kept: self.kept,
+            merged_units: self.merged_units,
+            segment_ids: self.segment_ids,
+        })
+    }
+
+    /// Lays tile `tile`'s filter states out of the frame's, which no tile
+    /// merges into before every tile is parsed.
+    pub(crate) fn open_tile(
+        &self,
+        tile: &crate::bitstream::tile_payload::DecodeTileWorkUnit,
+        parse_progress: &tile::ParseProgress,
+    ) -> Result<OpenTile> {
+        let mut parse = parse_progress.take_parse_state();
+        let (cdef, gdf, ccso) = self
+            .setup
+            .filter_states
+            .as_ref()
+            .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
+        let states = tile::tile_filter_states((cdef, gdf, ccso), tile, parse.spent_filters.take())?;
+        Ok(OpenTile {
+            params: self.setup.params.clone(),
+            states,
+            parse,
+        })
+    }
+
+    /// Keeps tile `index`'s parse, returning whether every tile is kept.
+    pub(crate) fn keep_tile(&mut self, index: usize, parsed: TileParse) -> Result<bool> {
+        if self.kept.is_empty() {
+            self.kept
+                .try_reserve_exact(self.tiles)
+                .map_err(|_| inter_allocation!("inter parsed tiles"))?;
+            self.kept.resize_with(self.tiles, || None);
+        }
+        match self.kept.get_mut(index) {
+            Some(slot @ None) => *slot = Some(parsed.0),
+            _ => return Err(tile::invalid_inter_tile_scheduling_state()),
+        }
+        self.tile += 1;
+        Ok(self.tile == self.tiles)
+    }
+
+    /// Merges the kept tiles into the frame in tile order.
+    pub(crate) fn merge_tiles(
+        &mut self,
+        work_units: &[crate::bitstream::tile_payload::DecodeTileWorkUnit],
+        parse_progress: &tile::ParseProgress,
+        records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+    ) -> Result<()> {
+        records.clear();
+        let frame = self
+            .setup
+            .filter_states
+            .as_mut()
+            .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
+        let last = self.tiles.saturating_sub(1);
+        for (index, (tile, parsed)) in work_units.iter().zip(&mut self.kept).enumerate() {
+            let units = parsed
+                .take()
+                .ok_or_else(tile::invalid_inter_tile_scheduling_state)?
+                .merge_scheduled_tile(
+                    tile,
+                    parse_progress,
+                    frame,
+                    records,
+                    &mut self.segment_ids,
+                )?;
+            self.merged_units += units - usize::from(index < last);
+        }
+        Ok(())
     }
 
     /// The tile the next unit belongs to.
@@ -78,26 +164,20 @@ impl<'payload> InterFrameParser<'payload> {
         ref_frame_idx: &[u32],
         reference: &InterReferenceState<T>,
         parse_progress: &tile::ParseProgress,
-        records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     ) -> Result<bool> {
         let context = &self
             .setup
             .params
             .context(sequence, core, reference, ref_frame_idx);
+        if self.tiles != 1 {
+            return Err(tile::invalid_inter_tile_scheduling_state());
+        }
         if self.parser.is_none() {
-            let (cdef_state, gdf_state, ccso_state) = if self.tiles == 1 {
-                self.setup.filter_states.take()
-            } else {
-                let spent = parse_progress.take_spent_filters();
-                self.setup
-                    .filter_states
-                    .as_ref()
-                    .map(|(cdef, gdf, ccso)| {
-                        tile::tile_filter_states((cdef, gdf, ccso), tile, spent)
-                    })
-                    .transpose()?
-            }
-            .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
+            let (cdef_state, gdf_state, ccso_state) = self
+                .setup
+                .filter_states
+                .take()
+                .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
             self.parser = Some(Box::new(tile::TileParser::scheduled(
                 tile,
                 tile_bytes,
@@ -105,41 +185,15 @@ impl<'payload> InterFrameParser<'payload> {
                 cdef_state,
                 gdf_state,
                 ccso_state,
+                parse_progress.take_parse_state(),
                 parse_progress,
-                (self.tile, self.tiles),
+                (0, 1),
             )?));
         }
-        let ended = self
-            .parser
+        self.parser
             .as_mut()
             .ok_or_else(tile::invalid_inter_tile_scheduling_state)?
-            .parse_scheduled_unit(tile, context, parse_progress)?;
-        if !ended || self.tiles == 1 {
-            return Ok(ended);
-        }
-        let parsed = self
-            .parser
-            .take()
-            .ok_or_else(tile::invalid_inter_tile_scheduling_state)?
-            .finish_scheduled(parse_progress)?;
-        if self.tile == 0 {
-            records.clear();
-        }
-        let frame = self
-            .setup
-            .filter_states
-            .as_mut()
-            .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
-        let units = parsed.merge_scheduled_tile(
-            tile,
-            parse_progress,
-            frame,
-            records,
-            &mut self.segment_ids,
-        )?;
-        self.merged_units += units - usize::from(self.tile + 1 < self.tiles);
-        self.tile += 1;
-        Ok(self.tile == self.tiles)
+            .parse_scheduled_unit(tile, context, parse_progress)
     }
 
     pub(crate) fn finish<T: ReconSample>(
@@ -201,6 +255,50 @@ impl<'payload> InterFrameParser<'payload> {
             gdf_grid: gdf_state.into_grid()?,
             products: Some(products),
         })
+    }
+}
+
+/// One tile of a multi-tile frame, laid out to parse on its own.
+pub(crate) struct OpenTile {
+    params: tile::TileWalkParams,
+    states: (CdefState, GdfState, CcsoState),
+    parse: tile::TileParseState,
+}
+
+/// One parsed tile, kept until the frame merges every tile.
+pub(crate) struct TileParse(tile::ParsedTile);
+
+impl OpenTile {
+    /// Runs tile `index` of `tiles` through its whole § 8.2 pass.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn parse<T: ReconSample>(
+        self,
+        tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
+        tile_bytes: &[u8],
+        sequence: &SequenceHeader,
+        core: &FrameHeaderCore,
+        ref_frame_idx: &[u32],
+        reference: &InterReferenceState<T>,
+        parse_progress: &tile::ParseProgress,
+        (index, tiles): (usize, usize),
+    ) -> Result<TileParse> {
+        let context = &self
+            .params
+            .context(sequence, core, reference, ref_frame_idx);
+        let (cdef, gdf, ccso) = self.states;
+        let mut parser = tile::TileParser::scheduled(
+            tile,
+            tile_bytes,
+            context,
+            cdef,
+            gdf,
+            ccso,
+            self.parse,
+            parse_progress,
+            (index, tiles),
+        )?;
+        while !parser.parse_scheduled_unit(tile, context, parse_progress)? {}
+        parser.finish_scheduled(parse_progress).map(TileParse)
     }
 }
 
@@ -320,7 +418,7 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         parked,
         reusable,
         workers,
-        *params,
+        params.clone(),
         sequence,
         Arc::clone(&core),
         Arc::clone(temporal),

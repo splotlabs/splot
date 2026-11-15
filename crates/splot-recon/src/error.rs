@@ -223,14 +223,6 @@ pub enum ReconError {
         /// First plane row this split had not handed out yet.
         settled_rows: usize,
     },
-    /// Two requested current-frame rectangle surfaces overlap.
-    #[error("current-frame workspace rectangles x={} y={} width={} height={} and x={} y={} width={} height={} overlap", .first.x(), .first.y(), .first.width(), .first.height(), .second.x(), .second.y(), .second.width(), .second.height())]
-    WorkspaceRectSurfacesOverlap {
-        /// Earlier requested luma rectangle.
-        first: PlaneRect,
-        /// Later requested luma rectangle.
-        second: PlaneRect,
-    },
     /// A caller-provided workspace write stride was too small.
     #[error("current-frame workspace {} write stride {stride_samples} samples is smaller than write width {width}", .plane.name())]
     WorkspaceWriteStrideTooSmall {
@@ -302,16 +294,6 @@ pub enum ReconError {
         /// Edge containing the out-of-range sample.
         edge: IntraDcEdge,
         /// Zero-based index within the edge samples.
-        sample_index: usize,
-        /// Observed sample value.
-        value: u16,
-        /// Maximum sample value allowed by the active bit depth.
-        max: u16,
-    },
-    /// A caller-owned intra prediction output sample exceeded the active bit depth.
-    #[error("intra prediction output sample {sample_index} value {value} exceeds maximum {max}")]
-    IntraPredictionOutputSampleOutOfRange {
-        /// Zero-based sample index within the caller-owned strided output buffer.
         sample_index: usize,
         /// Observed sample value.
         value: u16,
@@ -462,16 +444,6 @@ pub enum ReconError {
         /// Maximum supported `dip_mode` value.
         max: usize,
     },
-    /// A DIP block was too small for AV2 data-driven intra prediction.
-    #[error(
-        "unsupported DIP intra prediction block size {width}x{height}; expected each side at least 4 samples"
-    )]
-    UnsupportedIntraDipBlockSize {
-        /// Block width in samples.
-        width: usize,
-        /// Block height in samples.
-        height: usize,
-    },
     /// A supplied DIP intra prediction edge did not match the block size.
     #[error("DIP intra prediction {} edge length mismatch: expected {expected} samples, got {actual}", .edge.name())]
     IntraDipEdgeLengthMismatch {
@@ -520,38 +492,6 @@ pub enum ReconError {
         /// Actual output slice length.
         actual: usize,
     },
-    /// A workspace intra prediction helper could not read a required edge.
-    #[error("current-frame workspace {} intra prediction requires {} edge for rectangle x={} y={} width={} height={}", .plane.name(), .edge.name(), .rect.x(), .rect.y(), .rect.width(), .rect.height())]
-    WorkspaceIntraPredictionEdgeUnavailable {
-        /// Plane whose workspace storage was checked.
-        plane: PlaneId,
-        /// Required edge that was outside workspace storage.
-        edge: IntraPaethEdge,
-        /// Prediction rectangle needing the edge.
-        rect: PlaneRect,
-    },
-    /// A workspace smooth intra helper could not read a required prepared edge.
-    #[error("current-frame workspace {} smooth intra prediction requires {} edge for rectangle x={} y={} width={} height={}", .plane.name(), .edge.name(), .rect.x(), .rect.y(), .rect.width(), .rect.height())]
-    WorkspaceSmoothIntraPredictionEdgeUnavailable {
-        /// Plane whose workspace storage was checked.
-        plane: PlaneId,
-        /// Required edge that was outside workspace storage.
-        edge: IntraSmoothEdge,
-        /// Prediction rectangle needing the edge.
-        rect: PlaneRect,
-    },
-    /// A workspace directional-angle helper could not read a required edge.
-    #[error("current-frame workspace {} directional intra prediction pAngle {} requires {} edge for rectangle x={} y={} width={} height={}", .plane.name(), .p_angle, .edge.name(), .rect.x(), .rect.y(), .rect.width(), .rect.height())]
-    WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
-        /// Plane whose workspace storage was checked.
-        plane: PlaneId,
-        /// Directional pAngle being computed.
-        p_angle: u16,
-        /// Required edge that was outside workspace storage.
-        edge: IntraDirectionalAngleEdge,
-        /// Prediction rectangle needing the edge.
-        rect: PlaneRect,
-    },
     /// A reference frame store capacity was outside the supported slot range.
     #[error("reference frame store capacity {capacity} is outside 1..={max_slots}")]
     InvalidReferenceStoreCapacity {
@@ -568,27 +508,11 @@ pub enum ReconError {
         /// Maximum supported slot count.
         max_slots: usize,
     },
-    /// A caller-derived reference refresh mask selected unsupported bits.
-    #[error("reference refresh mask 0x{mask:08x} contains bits outside 0..{max_slots}")]
-    InvalidReferenceRefreshMask {
-        /// Requested refresh mask bits.
-        mask: u32,
-        /// Maximum supported slot count.
-        max_slots: usize,
-    },
     /// A valid reference slot was outside a particular store's capacity.
     #[error("reference slot {} is outside store capacity {capacity}", .slot.index())]
     ReferenceSlotOutOfBounds {
         /// Requested reference slot.
         slot: ReferenceSlot,
-        /// Store capacity used for the bounds check.
-        capacity: usize,
-    },
-    /// A valid refresh mask selected a slot outside a store's capacity.
-    #[error("reference refresh mask 0x{mask:08x} selects a slot outside store capacity {capacity}")]
-    ReferenceRefreshMaskOutOfBounds {
-        /// Requested refresh mask bits.
-        mask: u32,
         /// Store capacity used for the bounds check.
         capacity: usize,
     },
@@ -820,6 +744,13 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
+    /// A § 7.20.3 Wiener NS luma class had a centre scale outside `i16`,
+    /// which only coefficients outside the § 5.20.2.1 ranges produce.
+    #[error("Wiener NS luma centre scale {center_scale} does not fit i16")]
+    WienerNsFilterCenterScaleOutOfRange {
+        /// `(1 << 7) - 2 * sum(coeffs)` of the class.
+        center_scale: i32,
+    },
     /// A § 7.20.3 Wiener NS chroma filter was supplied an invalid
     /// `cfl_ds_filter_index`.
     #[error("invalid Wiener NS chroma cfl_ds_filter_index {index}; expected 0..=3")]
@@ -944,6 +875,12 @@ pub enum ReconError {
         /// Supplied dequantized-output buffer length.
         out_len: usize,
     },
+    /// A § 7.14.4 `dq_denom` was not the power of two `1 << shift`.
+    #[error("dequantization denominator {dq_denom} is not a power of two")]
+    InvalidDequantDenominator {
+        /// Supplied `dq_denom`.
+        dq_denom: u32,
+    },
     /// A § 7.14.4 quantization-matrix weight lookup index was out of range for
     /// the generated `Quantizer_Matrix`.
     #[error(
@@ -997,17 +934,6 @@ pub enum ReconError {
         step_x: i32,
         /// Supplied vertical step (`stepY`).
         step_y: i32,
-    },
-    /// A § 7.13.3.18 sub-pel vertical-pass intermediate row index reached past
-    /// the derived `intermediateHeight`.
-    #[error(
-        "subpel vertical-pass base row {base} exceeds intermediate height {intermediate_height}"
-    )]
-    SubpelIntermediateOutOfRange {
-        /// The vertical-pass base row (`p >> SCALE_SUBPEL_BITS`).
-        base: usize,
-        /// The derived intermediate-array height.
-        intermediate_height: usize,
     },
     /// Two § 7.13.3.18 compound predictors being blended did not cover the same
     /// number of output samples.

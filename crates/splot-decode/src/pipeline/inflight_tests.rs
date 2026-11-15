@@ -13,32 +13,6 @@ use crate::pipeline::frame_tasks::SplitSample;
 use crate::prediction::inter::InterReferenceState;
 use crate::test_support::decoded_frame;
 
-#[test]
-fn parse_slots_are_bounded_and_reset_only_after_readers_release() {
-    let mut ring = InflightRing::new(nz(2), test_plane_pool(), 1);
-    let first = ring.claim_parse_slot();
-    let pointer = Arc::as_ptr(&first) as usize;
-    first.cell().publish(1);
-    let second = ring.claim_parse_slot();
-    let reader = splot_parallel::spawn_thread("reader", move || {
-        for _ in 0..1024 {
-            assert_eq!(first.cell().current(), 1);
-            std::thread::yield_now();
-        }
-    })
-    .expect("reader thread");
-    let reused = ring.claim_parse_slot();
-    assert_eq!(Arc::as_ptr(&reused) as usize, pointer);
-    assert_eq!(reused.cell().current(), 0);
-    reader.join().expect("reader joins");
-    drop(reused);
-    drop(second);
-    for _ in 0..128 {
-        drop(ring.claim_parse_slot());
-    }
-    assert_eq!(ring.parse_slots.len(), 2);
-}
-
 /// The luma buffer the next workspace of `info` takes from the ring's pool.
 fn next_luma(ring: &InflightRing, info: DecodedFrameInfo) -> *const u8 {
     let mut planes =
@@ -534,7 +508,7 @@ fn retired_publications_keep_their_identity_and_exclude_direct_readers() {
         assert_eq!(Arc::as_ptr(&slot.cell), cell);
         assert_eq!(Arc::as_ptr(slot.progress.as_ref().unwrap()), progress);
         assert!(!slot.is_settled());
-        assert!(slot.progress().unwrap().read().is_none());
+        assert!(PublishedFrame::of_slot(&slot).is_none());
         writer.progress.begin(&[(0, 8)]).expect("stripe geometry");
         let lease = writer.progress.direct_stripe(0).unwrap();
         drop(writer);

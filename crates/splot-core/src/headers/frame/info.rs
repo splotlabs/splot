@@ -38,7 +38,9 @@ use crate::headers::sequence::{SequenceHeader, SequenceHeaderId};
 use crate::hls::{MfhId, MultiFrameHeaderRecord};
 use crate::types::ObuType;
 
-use super::global_motion::{SavedGlobalMotionOrderHints, SavedGlobalMotionParams};
+use super::global_motion::{
+    DEFAULT_WARP_PARAMS, REFS_PER_FRAME, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
+};
 use super::{FrameHeaderPrefix, parse_frame_header_prefix};
 
 mod seq_view;
@@ -508,6 +510,29 @@ impl FrameHeaderCore {
     pub const fn display_order_hint(&self) -> Option<u32> {
         self.order_hint
     }
+
+    /// Returns the § 7.23 `RefNumTotalRefs`, `SavedOrderHints` and `SavedGmParams` values
+    /// that this frame stores into each refreshed slot. Unparsed parts take the identity
+    /// values that `global_motion_params()` (§ 5.18.9.1) sets before its early returns.
+    #[must_use]
+    pub fn saved_global_motion_state(
+        &self,
+    ) -> (u32, SavedGlobalMotionOrderHints, SavedGlobalMotionParams) {
+        let mut order_hints = [0; REFS_PER_FRAME];
+        let mut params = [DEFAULT_WARP_PARAMS; REFS_PER_FRAME];
+        let num_total_refs = self.inter.as_ref().map_or(0, |inter| {
+            for (target, &hint) in order_hints.iter_mut().zip(&inter.order_hints) {
+                *target = hint;
+            }
+            inter.num_total_refs.unwrap_or(0)
+        });
+        if let Some(tail) = self.inter_tail.as_ref() {
+            for (target, model) in params.iter_mut().zip(tail.global_motion.references) {
+                *target = model.gm_params;
+            }
+        }
+        (num_total_refs, order_hints, params)
+    }
 }
 
 /// Derives `OrderHint` per AV2 v1.0.0 § 5.18.2 `get_disp_order_hint()`.
@@ -880,6 +905,11 @@ fn parse_inter_path(
                 tail_ran = true;
                 parse_tip_output_tail(reader, core, seq, &mut control)?;
             }
+            Some(InterStop::BruInactiveOrBridgeReturn) => {
+                tail_ran = true;
+                control.disable_cdf_update = Some(true);
+                parse_bru_inactive_tail(reader, core, seq, &control, reference_state)?;
+            }
             _ => {}
         }
         Ok(())
@@ -1171,6 +1201,60 @@ fn parse_bridge_return_tail(
             single_picture_header_flag: false,
             immediate_output_frame: false,
             implicit_output_frame: false,
+        },
+    )?);
+    core.status = FrameHeaderParseStatus::InterHeaderComplete;
+    Ok(())
+}
+
+/// Completes the `bru_inactive == 1` early-return arm of § 5.18.2 (mirror
+/// :4971-5045): no `tile_info()`, the quantizer of `ref_frame_idx[ bru_ref ]`, then
+/// `film_grain_config()`. Missing reference facts stop as unsupported.
+fn parse_bru_inactive_tail(
+    reader: &mut BitReader<'_>,
+    core: &mut FrameHeaderCore,
+    seq: &CoreSeqView,
+    control: &crate::headers::frame::inter::InterControl,
+    reference_state: &FrameReferenceStateView<'_>,
+) -> Result<()> {
+    let slot = control
+        .bru_ref
+        .and_then(|bru_ref| usize::try_from(bru_ref).ok())
+        .and_then(|bru_ref| control.ref_frame_idx.get(bru_ref).copied())
+        .and_then(|slot| usize::try_from(slot).ok());
+    let quantizer = slot.and_then(|index| {
+        reference_state
+            .ref_base_q_idx
+            .and_then(|values| values.get(index))
+            .copied()
+            .zip(
+                reference_state
+                    .ref_chroma_ac_deltas
+                    .and_then(|values| values.get(index))
+                    .copied(),
+            )
+    });
+    let (Some((base_q_idx, [delta_q_u_ac, delta_q_v_ac])), Some(film_grain_params_present)) =
+        (quantizer, seq.film_grain_params_present)
+    else {
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: FRAME_HEADER_INFO_FEATURE,
+        };
+        return Ok(());
+    };
+    core.quantization_params = Some(QuantizationParams::inferred_tip(
+        base_q_idx,
+        delta_q_u_ac,
+        delta_q_v_ac,
+    ));
+    core.bridge_film_grain = Some(parse_film_grain_config(
+        reader,
+        &FrameTailInput {
+            coded_lossless: false,
+            film_grain_params_present,
+            single_picture_header_flag: false,
+            immediate_output_frame: core.immediate_output_frame == Some(true),
+            implicit_output_frame: core.implicit_output_frame == Some(true),
         },
     )?);
     core.status = FrameHeaderParseStatus::InterHeaderComplete;

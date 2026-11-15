@@ -23,7 +23,7 @@ extend-exclude = [
 # real false positive by running `typos`. Keep this list minimal and justified.
 # Backticked git commit hashes in docs tokenize into flaggable fragments
 # (`5d78ba974` -> "ba").
-extend-ignore-re = ["`[0-9a-f]{7,40}`"]
+extend-ignore-re = ["`[0-9a-f]{7,40}`", "=[0-9a-f]{16}\\b"]
 
 [default.extend-words]
 # AV2 § 7.13.3.20 integer-position variables (ix4/iy4).

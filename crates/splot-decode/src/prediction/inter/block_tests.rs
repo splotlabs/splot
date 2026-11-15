@@ -13,16 +13,14 @@ use splot_recon::{
     PlaneSize,
 };
 
-use super::super::single_ref::{SingleRefReadError, read_single_ref};
 use super::interintra::InterIntraScratch;
-use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
+use super::prediction::sub8x8_chroma_disables_compound;
 use super::resolve::effective_intrabc_sb_h4;
 use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_allowed};
 use super::{
     frame_segment_id_map, frame_superblock_h4, inter_skip_txfm_ctx, leaf_uses_general_intra,
     map_inter_multiblock_error, predict_interintra_planes, read_inter_intra_syntax_enabled,
-    scheduled_motion_field_inputs, single_ref_read_error, skip_segment_reference,
-    symbol_read_error, validate_segment_id,
+    scheduled_motion_field_inputs, skip_segment_reference, symbol_read_error, validate_segment_id,
 };
 
 #[test]
@@ -181,12 +179,18 @@ use crate::prediction::inter::{
 
 #[test]
 fn inter_block_reference_hold_rejects_every_invalid_bawp_list_index() -> TestResult {
+    let fixture =
+        include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
+    let (_, core, _) = super::super::tests::parse_inter_core_for_validation(fixture)?;
     let reference = InterReferenceState::<u8>::empty()?;
+    let facts = super::compound_path::FrameRefFacts::new(&core, &reference, &[0], 1);
     for index in [-1, 1] {
         let mut placed = placed_luma_block(0, 0, 4, 4, InterIntraMode::Dc);
         placed.block.ref_frame0 = index;
         placed.block.bawp.enabled = true;
-        let Err(error) = hold_inter_block_references(&[0], &reference, &placed) else {
+        let Err(error) =
+            hold_inter_block_references((&[0], &facts, &[None; 8]), &reference, &placed)
+        else {
             return Err(format!("reference list index {index} must fail before BAWP").into());
         };
         assert!(matches!(
@@ -209,7 +213,8 @@ fn block_reference_dimension_metadata_bounds_are_typed() -> TestResult {
     let (_, core, _) = super::super::tests::parse_inter_core_for_validation(fixture)?;
     let mut reference = InterReferenceState::<u8>::empty()?;
 
-    let Err(error) = super::block_reference_is_scaled(&core, &reference, &[0], 0) else {
+    let Err(error) = super::compound_path::FrameRefFacts::new(&core, &reference, &[0], 1).scaled(0)
+    else {
         return Err("missing reference-width metadata must fail closed".into());
     };
 
@@ -224,7 +229,8 @@ fn block_reference_dimension_metadata_bounds_are_typed() -> TestResult {
     ));
 
     reference.ref_frame_width.push(64);
-    let Err(error) = super::block_reference_is_scaled(&core, &reference, &[0], 0) else {
+    let Err(error) = super::compound_path::FrameRefFacts::new(&core, &reference, &[0], 1).scaled(0)
+    else {
         return Err("missing reference-height metadata must fail closed".into());
     };
     assert!(matches!(
@@ -290,101 +296,6 @@ fn block_mode_failures_keep_typed_boundary() -> TestResult {
         DecodeError::HeaderState {
             source: DecodeHeaderStateError::InvalidInterBlockModeState,
         }
-    ));
-    Ok(())
-}
-
-#[test]
-fn single_ref_read_failures_keep_typed_boundary() -> TestResult {
-    let offset = ByteOffset::new(44);
-    for invariant in [
-        SingleRefReadError::InsufficientRefs { num_total_refs: 0 },
-        SingleRefReadError::MissingContext {
-            needed: 2,
-            got: 1,
-            num_total_refs: 3,
-        },
-    ] {
-        assert!(matches!(
-            single_ref_read_error(invariant, offset),
-            DecodeError::HeaderState {
-                source: DecodeHeaderStateError::InvalidInterReferenceMap,
-            }
-        ));
-    }
-
-    let eof = splot_core::Error::UnexpectedEof {
-        offset: ByteOffset::new(46),
-        needed: 1,
-    };
-    let expected_message = eof.to_string();
-    assert!(matches!(
-        single_ref_read_error(
-            SingleRefReadError::SymbolRead {
-                ref_idx: 0,
-                source: BlockSymbolTraceReadError::Symbol(eof),
-            },
-            offset,
-        ),
-        DecodeError::MalformedSource { issue }
-            if issue.offset() == Some(offset)
-                && issue.spec_section() == Some("5.20.7.12")
-                && issue.message() == expected_message
-    ));
-
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = SymbolDecoder::new(&[0x80])?;
-    let Err(source) = tile.read_block_symbol_trace(
-        TileCdfSelector::SingleRef {
-            ctx: usize::MAX,
-            ref_idx: 0,
-        },
-        &mut symbols,
-    ) else {
-        return Err("invalid single-ref context must fail before reading input".into());
-    };
-    assert!(matches!(
-        single_ref_read_error(
-            SingleRefReadError::SymbolRead { ref_idx: 0, source },
-            offset,
-        ),
-        DecodeError::HeaderState {
-            source: DecodeHeaderStateError::InvalidSingleReferenceCdfState,
-        }
-    ));
-
-    let selector = TileCdfSelector::SingleRef { ctx: 0, ref_idx: 0 };
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    tile.with_row_mut(selector, |row| row[0] = 0)?;
-    let mut symbols = SymbolDecoder::new(&[])?;
-    let Err(error) = read_single_ref(&mut tile, &mut symbols, 2, &[0]) else {
-        return Err("invalid single-ref CDF row must fail before reading input".into());
-    };
-    assert!(matches!(
-        single_ref_read_error(error, offset),
-        DecodeError::HeaderState {
-            source: DecodeHeaderStateError::InvalidSingleReferenceCdfState,
-        }
-    ));
-
-    let invalid = splot_core::Error::InvalidSymbolDecoderState {
-        offset: ByteOffset::new(47),
-        bit_offset: splot_core::span::BitOffset::from_bits(3),
-        kind: splot_core::error::SymbolDecoderErrorKind::InvalidArithmeticRange,
-    };
-    let expected_message = invalid.to_string();
-    assert!(matches!(
-        single_ref_read_error(
-            SingleRefReadError::SymbolRead {
-                ref_idx: 0,
-                source: BlockSymbolTraceReadError::Symbol(invalid),
-            },
-            offset,
-        ),
-        DecodeError::MalformedSource { issue }
-            if issue.offset() == Some(offset)
-                && issue.spec_section() == Some("5.20.7.12")
-                && issue.message() == expected_message
     ));
     Ok(())
 }
@@ -762,13 +673,6 @@ fn segment_id_validation_reports_values_above_the_active_range_as_malformed() {
 }
 
 #[test]
-fn shared_inter_leaves_predict_chroma_before_the_offset_owner() {
-    assert!(leaf_predicts_chroma(true, false));
-    assert!(!leaf_predicts_chroma(true, true));
-    assert!(!leaf_predicts_chroma(false, false));
-}
-
-#[test]
 fn shared_chroma_size_disables_compound_prediction() -> TestResult {
     let block_8x8 = BlockSize::new(3)?;
     let block_16x16 = BlockSize::new(6)?;
@@ -828,7 +732,7 @@ fn regular_interintra_syntax_precedes_drl() -> TestResult {
         2,
         ByteOffset::new(0),
     )?;
-    let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3, ByteOffset::new(0))?;
+    let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3);
 
     assert_eq!(
         interintra,
@@ -891,7 +795,7 @@ fn regular_interintra_wedge_syntax_couples_index_to_wedge() -> TestResult {
         2,
         ByteOffset::new(0),
     )?;
-    let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3, ByteOffset::new(0))?;
+    let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3);
 
     assert_eq!(
         interintra,
@@ -1013,8 +917,8 @@ fn interintra_smooth_chroma_reads_below_left_from_chroma_ref_origin() -> TestRes
     let mut block_decoded = TileBlockDecodedState::new(3, 1, 1, 16, 36, 36)?;
     block_decoded.clear_superblock(16, 16);
     let mut placed = placed_luma_block(72, 72, 8, 8, InterIntraMode::Smooth);
-    placed.chroma_luma_x = 64;
-    placed.chroma_luma_y = 64;
+    placed.chroma_luma[0] = 64;
+    placed.chroma_luma[1] = 64;
     placed.interintra_chroma = true;
 
     let low = interintra_smooth_predictions(&low, &placed, &block_decoded)?;
@@ -1248,14 +1152,8 @@ fn placed_luma_block(
     mode: InterIntraMode,
 ) -> PlacedInterBlock {
     PlacedInterBlock {
-        luma_x: x,
-        luma_y: y,
-        luma_w: width,
-        luma_h: height,
-        chroma_luma_x: x,
-        chroma_luma_y: y,
-        chroma_luma_w: width,
-        chroma_luma_h: height,
+        luma: [x, y, width, height].map(|v| v as u32),
+        chroma_luma: [x, y, width, height].map(|v| v as u32),
         predict_chroma: false,
         sub8x8_chroma: false,
         interintra_chroma: false,
@@ -1279,10 +1177,10 @@ fn placed_luma_block(
 #[test]
 fn offset_chroma_motion_compensation_stays_leaf_scoped() {
     let mut placed = placed_luma_block(16, 4, 8, 4, InterIntraMode::Dc);
-    placed.chroma_luma_x = 16;
-    placed.chroma_luma_y = 0;
-    placed.chroma_luma_w = 8;
-    placed.chroma_luma_h = 8;
+    placed.chroma_luma[0] = 16;
+    placed.chroma_luma[1] = 0;
+    placed.chroma_luma[2] = 8;
+    placed.chroma_luma[3] = 8;
     placed.predict_chroma = true;
 
     assert_eq!(

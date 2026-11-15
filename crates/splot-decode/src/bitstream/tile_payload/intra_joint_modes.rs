@@ -223,11 +223,6 @@ impl LumaPalette {
     pub(crate) fn colors(self) -> [u16; PALETTE_MAX_SIZE] {
         self.colors
     }
-
-    pub(crate) fn sample(self, color_index: u8) -> Option<u16> {
-        let color_index = usize::from(color_index);
-        (color_index < self.size()).then_some(self.colors[color_index])
-    }
 }
 
 /// The § 5.20.4.1 intra arrays of one mode-info position (`YModes` with its

@@ -772,6 +772,7 @@ dependencies = [
  "fearless_simd",
  "proptest",
  "serde",
+ "splot-tables",
  "thiserror",
  "zerocopy",
 ]

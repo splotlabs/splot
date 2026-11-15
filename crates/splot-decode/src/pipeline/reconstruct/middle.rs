@@ -379,20 +379,18 @@ fn predict_two_sided_middle_luma_mrl_into<T: ReconSample>(
         (false, false) => {
             let corner = noneighbour_corner::<T>(bit_depth);
             (
-                build_two_sided_middle_mrl_idif_edge(width, mrl_index, |logical| {
-                    Ok(if logical < 0 {
-                        corner
-                    } else {
-                        noneighbour_above::<T>(bit_depth)
-                    })
-                })?,
-                build_two_sided_middle_mrl_idif_edge(height, mrl_index, |logical| {
-                    Ok(if logical < 0 {
-                        corner
-                    } else {
-                        noneighbour_left::<T>(bit_depth)
-                    })
-                })?,
+                filled_middle_mrl_idif_edge(
+                    width,
+                    mrl_index,
+                    corner,
+                    noneighbour_above::<T>(bit_depth),
+                )?,
+                filled_middle_mrl_idif_edge(
+                    height,
+                    mrl_index,
+                    corner,
+                    noneighbour_left::<T>(bit_depth),
+                )?,
             )
         }
     };
@@ -441,22 +439,24 @@ fn build_top_row_left_only_middle_mrl_left_idif_edge<T: ReconSample>(
         .and_then(|col| col.checked_sub(mrl_index))
         .ok_or_else(invalid_directional_edge_state)?;
     let seed = workspace.reconstructed_sample(PlaneId::Y, left_col, y)?;
-    let max_y = workspace
-        .plane(PlaneId::Y)?
-        .storage_size()
-        .height()
-        .checked_sub(1)
-        .ok_or_else(invalid_directional_edge_state)?;
-    build_two_sided_middle_mrl_idif_edge(height, mrl_index, |logical| {
-        if logical < 0 {
-            return Ok(seed);
-        }
-        let logical = logical.unsigned_abs() as usize;
-        let row = y
-            .saturating_add(logical.min(height.saturating_sub(1)))
-            .min(max_y);
-        Ok(workspace.reconstructed_sample(PlaneId::Y, left_col, row)?)
-    })
+    let limit = clamped_limit(workspace, PlaneId::Y, y, height, false)?;
+    build_two_sided_middle_mrl_idif_edge(
+        height,
+        mrl_index,
+        |negative| {
+            negative.fill(seed);
+            Ok(())
+        },
+        |positive| {
+            Ok(gather_column_clamped(
+                workspace,
+                PlaneId::Y,
+                (left_col, y),
+                limit,
+                positive,
+            )?)
+        },
+    )
 }
 
 fn build_above_only_middle_mrl_left_idif_edge<T: ReconSample>(
@@ -472,7 +472,28 @@ fn build_above_only_middle_mrl_left_idif_edge<T: ReconSample>(
         .and_then(|row| row.checked_sub(above_mrl_index))
         .ok_or_else(invalid_directional_edge_state)?;
     let seed = workspace.reconstructed_sample(PlaneId::Y, x, above_row)?;
-    build_two_sided_middle_mrl_idif_edge(height, mrl_index, |_| Ok(seed))
+    filled_middle_mrl_idif_edge(height, mrl_index, seed, seed)
+}
+
+/// The last plane position, along the row (`row`) or column, of a `side`-long
+/// edge run from `start` clamped to the plane storage.
+fn clamped_limit<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    start: usize,
+    side: usize,
+    row: bool,
+) -> core::result::Result<usize, GeneralIntraResidualError> {
+    let storage = workspace.plane(plane_id)?.storage_size();
+    let len = if row {
+        storage.width()
+    } else {
+        storage.height()
+    };
+    let max = len
+        .checked_sub(1)
+        .ok_or_else(invalid_directional_edge_state)?;
+    Ok(start.saturating_add(side.saturating_sub(1)).min(max))
 }
 
 fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
@@ -488,28 +509,31 @@ fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
         .checked_sub(1)
         .and_then(|row| row.checked_sub(above_mrl_index))
         .ok_or_else(invalid_directional_edge_state)?;
-    let max_x = workspace
-        .plane(PlaneId::Y)?
-        .storage_size()
-        .width()
-        .checked_sub(1)
-        .ok_or_else(invalid_directional_edge_state)?;
-    build_two_sided_middle_mrl_idif_edge(width, mrl_index, |logical| {
-        let column = if logical < 0 {
+    let limit = clamped_limit(workspace, PlaneId::Y, x, width, true)?;
+    build_two_sided_middle_mrl_idif_edge(
+        width,
+        mrl_index,
+        |negative| {
             if have_left {
-                let back = logical.unsigned_abs() as usize;
-                x.checked_sub(back)
-                    .ok_or_else(invalid_directional_edge_state)?
+                let first = x
+                    .checked_sub(negative.len())
+                    .ok_or_else(invalid_directional_edge_state)?;
+                gather_row_clamped(workspace, PlaneId::Y, (first, above_row), x - 1, negative)?;
             } else {
-                x
+                negative.fill(workspace.reconstructed_sample(PlaneId::Y, x, above_row)?);
             }
-        } else {
-            let logical = logical.unsigned_abs() as usize;
-            x.saturating_add(logical.min(width.saturating_sub(1)))
-                .min(max_x)
-        };
-        Ok(workspace.reconstructed_sample(PlaneId::Y, column, above_row)?)
-    })
+            Ok(())
+        },
+        |positive| {
+            Ok(gather_row_clamped(
+                workspace,
+                PlaneId::Y,
+                (x, above_row),
+                limit,
+                positive,
+            )?)
+        },
+    )
 }
 
 fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
@@ -524,49 +548,75 @@ fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
         .checked_sub(1)
         .and_then(|col| col.checked_sub(mrl_index))
         .ok_or_else(invalid_directional_edge_state)?;
-    let max_y = workspace
-        .plane(PlaneId::Y)?
-        .storage_size()
-        .height()
-        .checked_sub(1)
-        .ok_or_else(invalid_directional_edge_state)?;
-    build_two_sided_middle_mrl_idif_edge(height, mrl_index, |logical| {
-        let row = if logical < 0 {
+    let limit = clamped_limit(workspace, PlaneId::Y, y, height, false)?;
+    build_two_sided_middle_mrl_idif_edge(
+        height,
+        mrl_index,
+        |negative| {
+            let above = y
+                .checked_sub(1)
+                .ok_or_else(invalid_directional_edge_state)?;
             if is_sb_boundary {
-                y.checked_sub(1)
-                    .ok_or_else(invalid_directional_edge_state)?
+                negative.fill(workspace.reconstructed_sample(PlaneId::Y, left_col, above)?);
             } else {
-                let back = logical.unsigned_abs() as usize;
-                y.checked_sub(back)
-                    .ok_or_else(invalid_directional_edge_state)?
+                let first = y
+                    .checked_sub(negative.len())
+                    .ok_or_else(invalid_directional_edge_state)?;
+                gather_column_clamped(workspace, PlaneId::Y, (left_col, first), above, negative)?;
             }
-        } else {
-            let logical = logical.unsigned_abs() as usize;
-            y.saturating_add(logical.min(height.saturating_sub(1)))
-                .min(max_y)
-        };
-        Ok(workspace.reconstructed_sample(PlaneId::Y, left_col, row)?)
-    })
+            Ok(())
+        },
+        |positive| {
+            Ok(gather_column_clamped(
+                workspace,
+                PlaneId::Y,
+                (left_col, y),
+                limit,
+                positive,
+            )?)
+        },
+    )
 }
 
+/// An MRL IDIF edge whose negative logical positions hold `negative` and
+/// whose others hold `positive`.
+fn filled_middle_mrl_idif_edge<T: ReconSample>(
+    side: usize,
+    mrl_index: usize,
+    negative: T,
+    positive: T,
+) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
+    build_two_sided_middle_mrl_idif_edge(
+        side,
+        mrl_index,
+        |run| {
+            run.fill(negative);
+            Ok(())
+        },
+        |run| {
+            run.fill(positive);
+            Ok(())
+        },
+    )
+}
+
+/// The `side + mrlIndex + 4` MRL IDIF edge: `negative` writes logical
+/// `-1 - mrlIndex ..= -1`, `positive` logical `0 ..= side + 1`, and slice index
+/// zero repeats logical `-1 - mrlIndex`.
 fn build_two_sided_middle_mrl_idif_edge<T: ReconSample>(
     side: usize,
     mrl_index: usize,
-    sample: impl Fn(i32) -> core::result::Result<T, GeneralIntraResidualError>,
+    negative: impl FnOnce(&mut [T]) -> core::result::Result<(), GeneralIntraResidualError>,
+    positive: impl FnOnce(&mut [T]) -> core::result::Result<(), GeneralIntraResidualError>,
 ) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
     let len = side
         .checked_add(mrl_index)
         .and_then(|v| v.checked_add(4))
         .ok_or_else(invalid_directional_edge_state)?;
-    let mrl = i32::try_from(mrl_index)
-        .map_err(|_| GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
-    let max_logical = i32::try_from(side)
-        .map_err(|_| GeneralIntraResidualError::InvalidDirectionalEdgeState)?
-        + 1;
     let mut edge = TwoSidedMiddleIdifEdge::new(len)?;
-    for (offset, logical) in (-1 - mrl..=max_logical).enumerate() {
-        edge[offset + 1] = sample(logical)?;
-    }
+    let (head, rest) = edge.split_at_mut(2 + mrl_index);
+    negative(&mut head[1..])?;
+    positive(rest)?;
     edge[0] = edge[1];
     Ok(edge)
 }

@@ -5,9 +5,10 @@
 
 use parking_lot::{Condvar, Mutex};
 use std::sync::OnceLock;
+use std::sync::atomic::{Ordering, fence};
 
-/// A write-once slot a driver can wait on. Publishing wakes every live row
-/// scheduler and every parked waiter.
+/// A write-once slot a driver can wait on. Publishing wakes the row
+/// scheduler the publishing thread works for and every parked waiter.
 #[derive(Debug)]
 pub struct CompletionCell<V> {
     value: OnceLock<V>,
@@ -58,7 +59,8 @@ impl<V> CompletionCell<V> {
     /// Returns the given value unchanged if the cell was already set.
     pub fn set(&self, value: V) -> Result<(), V> {
         self.value.set(value)?;
-        crate::rows::wake_all();
+        fence(Ordering::SeqCst);
+        crate::rows::wake_bound();
         if let Some(wait) = self.wait.get() {
             let parked = wait.parked.lock();
             if *parked != 0 {
@@ -97,6 +99,7 @@ impl<V> CompletionCell<V> {
             parked: Mutex::new(0),
             cond: Condvar::new(),
         });
+        fence(Ordering::SeqCst);
         let mut parked = wait.parked.lock();
         while self.value.get().is_none() {
             *parked += 1;

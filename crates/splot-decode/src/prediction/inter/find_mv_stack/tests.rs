@@ -213,17 +213,16 @@ fn skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default() {
 }
 
 #[test]
-fn compound_mode_context_preserves_wide_order_hints() {
+fn compound_mode_context_reads_the_backward_reference_table() {
     let mut grid = empty_grid();
     let block = block_at(0, N4_32);
     record_inter_ref(&mut grid, 0, 0, 0, false, Mv::ZERO, false);
     let mut context = block_neighbour_ctx(&grid, &block);
     context.cell_count = 1;
-    let current = CompoundOrderHint::current(0x8000_0000);
 
-    assert_eq!(context.comp_mode_ctx(&[0], &[0x7fff_fffe], current), 0);
-    assert_eq!(context.comp_mode_ctx(&[0], &[0x8000_0002], current), 1);
-    assert_eq!(context.comp_mode_ctx(&[0], &[u32::MAX], current), 0);
+    assert_eq!(context.comp_mode_ctx(&[false]), 0);
+    assert_eq!(context.comp_mode_ctx(&[true]), 1);
+    assert_eq!(context.comp_mode_ctx(&[]), 0);
 }
 
 #[test]
@@ -284,8 +283,8 @@ fn recorded_skip_mode_contributes_to_the_next_block_context() {
         [None, None],
     );
     let ctx = block_neighbour_ctx(&grid, &block_at(0, N4_32));
-    assert_eq!(ctx.skip_mode_ctx, 2);
-    assert_eq!(ctx.skip_ctx, 2);
+    assert_eq!(ctx.skip_mode_ctx(), 2);
+    assert_eq!(ctx.skip_ctx(), 2);
 }
 
 #[test]
@@ -1078,9 +1077,9 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
     assert_eq!(ctx.warp_mv_count, 0, "top-left WarpMvCount");
 
     let nctx = block_neighbour_ctx(&grid, &block0);
-    assert_eq!(nctx.is_inter_ctx, 0, "no-neighbour is_inter ctx");
-    assert_eq!(nctx.skip_mode_ctx, 0, "no-neighbour skip_mode ctx");
-    assert_eq!(nctx.skip_ctx, 0, "no-neighbour skip ctx");
+    assert_eq!(nctx.is_inter_ctx(), 0, "no-neighbour is_inter ctx");
+    assert_eq!(nctx.skip_mode_ctx(), 0, "no-neighbour skip_mode ctx");
+    assert_eq!(nctx.skip_ctx(), 0, "no-neighbour skip ctx");
 
     let stack = find_mv_stack(
         &grid,
@@ -1266,12 +1265,14 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
 
     let nctx = block_neighbour_ctx(&grid, &block1);
     assert_eq!(
-        nctx.is_inter_ctx, 0,
+        nctx.is_inter_ctx(),
+        0,
         "all-inter neighbours -> is_inter ctx 0"
     );
-    assert_eq!(nctx.skip_ctx, 2, "two skip=1 neighbours -> skip ctx 2");
+    assert_eq!(nctx.skip_ctx(), 2, "two skip=1 neighbours -> skip ctx 2");
     assert_eq!(
-        nctx.skip_mode_ctx, 0,
+        nctx.skip_mode_ctx(),
+        0,
         "regular skip neighbours do not affect skip_mode ctx"
     );
 
@@ -1342,7 +1343,7 @@ fn block3_predicts_block0_mv_via_above_and_left() {
     assert_eq!(ctx.new_mv_context, 2, "above+left NEARMV NewMvContext");
 
     let nctx = block_neighbour_ctx(&grid, &block3);
-    assert_eq!(nctx.skip_ctx, 2, "two skip=1 neighbours -> skip ctx 2");
+    assert_eq!(nctx.skip_ctx(), 2, "two skip=1 neighbours -> skip ctx 2");
 
     let stack = find_mv_stack(
         &grid,
@@ -1386,7 +1387,8 @@ fn intra_neighbour_does_not_contribute() {
 
     let nctx = block_neighbour_ctx(&grid, &block1);
     assert_eq!(
-        nctx.is_inter_ctx, 3,
+        nctx.is_inter_ctx(),
+        3,
         "two intra neighbours -> is_inter ctx 3"
     );
 
@@ -1600,7 +1602,8 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
 
     let nctx = block_neighbour_ctx(&grid, &sb2);
     assert_eq!(
-        nctx.skip_ctx, 2,
+        nctx.skip_ctx(),
+        2,
         "skip context counts both above-SB NPosBuf neighbours"
     );
 
@@ -1679,8 +1682,8 @@ fn single_ref_ctx_no_neighbour_is_one() {
     let block0 = block_at(0, 0);
     let nctx = block_neighbour_ctx(&grid, &block0);
     assert_eq!(
-        nctx.single_ref_ctxs(2).map(|contexts| contexts[0]),
-        Some(1),
+        ref_count_ctx(nctx.ref_counts(), 2, 0),
+        1,
         "no-neighbour single_ref context is 1 (both count_refs are 0)"
     );
 }
@@ -1691,10 +1694,28 @@ fn single_ref_ctx_counts_a_ref0_neighbour() {
     let block1 = block_at(0, N4_32);
     let nctx = block_neighbour_ctx(&grid, &block1);
     assert_eq!(
-        nctx.single_ref_ctxs(2).map(|contexts| contexts[0]),
-        Some(2),
+        ref_count_ctx(nctx.ref_counts(), 2, 0),
+        2,
         "a ref-0 neighbour makes thisRefCount > nextRefsCount -> ctx 2"
     );
+}
+
+#[test]
+fn ref_count_ctx_compares_this_count_with_later_counts() {
+    for counts in [0u32, 0x1, 0x10, 0x2000, 0x0110_0011, 0x0400_0000, 0x13] {
+        for refs in 1..=7 {
+            for ref_idx in 0..refs {
+                let nibble = |i: usize| (counts >> (4 * i)) & 0xf;
+                let next: u32 = (ref_idx + 1..refs).map(nibble).sum();
+                let expected = match nibble(ref_idx).cmp(&next) {
+                    std::cmp::Ordering::Less => 0,
+                    std::cmp::Ordering::Equal => 1,
+                    std::cmp::Ordering::Greater => 2,
+                };
+                assert_eq!(ref_count_ctx(counts, refs, ref_idx), expected);
+            }
+        }
+    }
 }
 
 #[test]
@@ -1705,32 +1726,14 @@ fn single_ref_ctx_counts_refs_above_two() {
     let nctx = block_neighbour_ctx(&grid, &block);
 
     assert_eq!(
-        nctx.single_ref_ctxs(3).map(|contexts| contexts[0]),
-        Some(0),
+        ref_count_ctx(nctx.ref_counts(), 3, 0),
+        0,
         "ref-2 neighbour makes ref-0 count lower than later refs"
     );
     assert_eq!(
-        nctx.single_ref_ctxs(3).map(|contexts| contexts[1]),
-        Some(0),
+        ref_count_ctx(nctx.ref_counts(), 3, 1),
+        0,
         "ref-2 neighbour makes ref-1 count lower than later refs"
-    );
-}
-
-#[test]
-fn single_ref_ctx_is_total_for_every_admitted_reference_count() {
-    let grid = empty_grid();
-    let nctx = block_neighbour_ctx(&grid, &block_at(0, 0));
-
-    for num_total_refs in 2..=BlockNeighbourContext::MAX_NEIGHBOUR_REFS {
-        assert!(
-            nctx.single_ref_ctxs(num_total_refs).is_some(),
-            "every ref_idx must be valid for {num_total_refs} references"
-        );
-    }
-    assert_eq!(
-        nctx.single_ref_ctxs(BlockNeighbourContext::MAX_NEIGHBOUR_REFS + 1),
-        None,
-        "the guard remains load-bearing outside the admitted reference domain"
     );
 }
 
@@ -2162,6 +2165,7 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         },
         &[0, 1],
         &[true, true],
@@ -2211,6 +2215,7 @@ fn same_side_spatial_projection_survives_disabled_temporal_scan() {
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         },
         &[0, 1],
         &[true, true],

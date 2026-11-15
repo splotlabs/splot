@@ -47,6 +47,8 @@ pub(crate) struct FrameFilterRecords {
     pub(crate) ccso_offset_luts: [Vec<i32>; 3],
     /// Spent stripe input windows, for the next filter phase to fill.
     pub(crate) filter_windows: Vec<splot_recon::RetiredFramePlanes>,
+    /// The frame's `BruModes`, `None` when `use_bru == 0`.
+    pub(crate) bru_modes: Option<std::sync::Arc<crate::filters::bru::BruModeMap>>,
 }
 
 /// The per-stripe lists one frame's filter phase works through.

@@ -185,10 +185,18 @@ pub(super) fn record_active_wiener_ns_source_blocks_for_unit(
         return Ok(());
     };
     let cols = col_end - col_start;
-    for row in tile.mi_row_start + row_start..tile.mi_row_start + row_end {
-        let mut block = lr_source_block_for(input, row, tile.mi_col_start + col_start)?;
+    let mut row = row_start;
+    while row < row_end {
+        let run_end = row_end.min(((row + 2) / 16 + 1) * 16 - 2);
+        let mut block = lr_source_block_for(
+            input,
+            tile.mi_row_start + row,
+            tile.mi_col_start + col_start,
+        )?;
         block.width = checked_mul("lr_source_run_width", block.width, cols)?;
+        block.height = checked_mul("lr_source_run_height", block.height, run_end - row)?;
         lr_activity.record_source_block(block, limits)?;
+        row = run_end;
     }
     Ok(())
 }
@@ -366,7 +374,75 @@ pub(super) fn ceil_unit_index(
 
 #[cfg(test)]
 mod tests {
-    use super::{MI_SIZE, UnitMiAxis};
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn stripe_runs_match_merged_per_row_blocks() {
+        let lr = super::super::TilePartitionLoopRestorationState::NoSyntax;
+        let features = super::super::PartitionFeatureFlags::new(true, true);
+        for (rows, cols, across) in [(270, 480, false), (135, 240, true), (37, 21, false)] {
+            let frame = TilePartitionFrameFacts::new(
+                rows, cols, 12, 3, true, true, false, false, false, across, lr, features, 4,
+            )
+            .unwrap();
+            for tile_bounds in [
+                TilePartitionBounds::new(0..rows, 0..cols),
+                TilePartitionBounds::new(rows / 3..rows, cols / 2..cols),
+            ] {
+                for (unit_size, sub) in [(64, 0), (128, 0), (32, 1), (64, 1), (256, 0)] {
+                    for unit in 0..12 {
+                        let input = LrSourceBlockDerivation {
+                            restoration_type: LrUnitRestorationType::PcWiener,
+                            plane: sub,
+                            unit_size,
+                            unit_row: unit,
+                            unit_col: unit / 2,
+                            unit_filter_index: None,
+                            frame,
+                            tile_bounds,
+                            sub_x: sub,
+                            sub_y: sub,
+                        };
+                        let mut runs = WienerNsLrUnitActivity::default();
+                        record_active_wiener_ns_source_blocks_for_unit(
+                            input,
+                            DecodeLimits::default(),
+                            &mut runs,
+                        )
+                        .unwrap();
+                        let mut per_row = WienerNsLrUnitActivity::default();
+                        let g = lr_unit_geometry(input).unwrap();
+                        let axis = |offset, units, s, bias, mi_count| UnitMiAxis {
+                            offset,
+                            units,
+                            unit_size,
+                            sub: s,
+                            bias,
+                            mi_count,
+                        };
+                        let rows = axis(g.lr_row_offset, g.unit_rows, sub, 8, g.mi_rows).span(unit);
+                        let cols =
+                            axis(g.lr_col_offset, g.unit_cols, sub, 0, g.mi_cols).span(unit / 2);
+                        if let (Some((r0, r1)), Some((c0, c1))) = (rows.unwrap(), cols.unwrap()) {
+                            for row in tile_bounds.mi_row_start + r0..tile_bounds.mi_row_start + r1
+                            {
+                                let mut block =
+                                    lr_source_block_for(input, row, tile_bounds.mi_col_start + c0)
+                                        .unwrap();
+                                block.width *= c1 - c0;
+                                per_row
+                                    .record_source_block(block, DecodeLimits::default())
+                                    .unwrap();
+                            }
+                        }
+                        assert_eq!(runs.active_source_blocks, per_row.active_source_blocks);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn unit_mi_span_inverts_the_mi_to_unit_map() {

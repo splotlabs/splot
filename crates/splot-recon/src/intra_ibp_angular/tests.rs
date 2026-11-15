@@ -105,7 +105,7 @@ fn ibp_u16_lane_blend_matches_the_scalar_blend() {
     for p_angle in (0..ZONE_3_INDEX_BASE).filter(|&p| ibp_blend_fires(p)) {
         let [weights, transposed] =
             ibp_weight_table(enabled_weight_angle(p_angle).unwrap()).unwrap();
-        assert!(weights.iter().flatten().all(|&s| s <= IBP_WEIGHT_MAX));
+        assert!(weights.iter().flatten().all(|&s| s <= 1 << DIV_LUT_BITS));
         assert!(
             (0..IBP_WEIGHT_SIZE)
                 .all(|r| (0..IBP_WEIGHT_SIZE).all(|c| weights[r][c] == transposed[c][r]))

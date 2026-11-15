@@ -3,7 +3,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::{
+    CDF_COUNT_SHIFT, CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig,
+};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::write::WriteError;
 
@@ -186,8 +188,10 @@ fn cdf_row(n: usize, cursor: &mut std::iter::Copied<std::slice::Iter<'_, u8>>) -
             row.sort_unstable();
         }
     }
-    row.push(i32::from(cursor.next().unwrap_or(0) % 125));
-    row.push(i32::from(cursor.next().unwrap_or(0) % 33));
+    let rate_index = i32::from(cursor.next().unwrap_or(0) % 125);
+    let count = i32::from(cursor.next().unwrap_or(0) % 33);
+    row.push(rate_index | count << CDF_COUNT_SHIFT);
+    row.push(0);
     row
 }
 
@@ -197,7 +201,7 @@ fn malformed_cdf(cursor: &mut std::iter::Copied<std::slice::Iter<'_, u8>>) -> Ve
         1 => vec![0, 0, 0],
         2 => vec![100, 99, 0, 0],
         3 => vec![16_384, 125, 0],
-        _ => vec![16_384, 0, 33],
+        _ => vec![16_384, 33 << CDF_COUNT_SHIFT, 0],
     }
 }
 

@@ -35,14 +35,9 @@ pub(super) struct ProjectionTarget {
     /// projection factor with the offset sign folded in, which projects the
     /// stored vector exactly as the factor projects its negation.
     pub(super) divisor: i16,
-    /// `DIV_MULT[|ref_offset|]` when the offset is a frame distance, else 0.
-    /// With `end_numerator` it is the factor that projects the stored vector
-    /// onto the § 7.9.8 trajectory end, the vector `observe_projection_at`
-    /// records for `end_ref`.
-    pub(super) end_divisor: i16,
-    /// `clamp(|ref_offset| - observed, ±MAX_FRAME_DISTANCE)`, the numerator of
-    /// the same projection.
-    pub(super) end_numerator: i16,
+    /// The factor that projects the stored vector onto the § 7.9.8 trajectory
+    /// end, the vector `observe_projection_at` records for `end_ref`.
+    pub(super) end_factor: i32,
     /// Whether `end_ref` is the projection's target reference.
     pub(super) end_is_target: bool,
     /// [`PROJECTS`] when the reference admits a projection factor, and
@@ -79,10 +74,7 @@ const TRAJECTORY_CELL: usize = 7;
 /// The trajectory band cell where the unprojected vector lands, the end of a
 /// § 7.9.8 trajectory.
 const END_CELL: usize = 8;
-/// The § 7.9.8 trajectory-end projection of the decompressed vector (two
-/// rows), tracked scans only.
-const END_MV: usize = 10;
-const INT_ROWS: usize = 12;
+const INT_ROWS: usize = 9;
 /// One lane's view of [`ChunkLanes::ints`], from its first row to its last.
 const LANE_SPAN: usize = (INT_ROWS - 1) * CHUNK + 1;
 
@@ -134,8 +126,6 @@ struct TargetTables<S: Simd> {
     /// The lane bits each reference admits.
     allow: u8x16<S>,
     divisor: [u8x16<S>; 2],
-    end_divisor: [u8x16<S>; 2],
-    end_numerator: u8x16<S>,
     source_to_current: i32,
 }
 
@@ -143,8 +133,6 @@ impl<S: Simd> TargetTables<S> {
     fn new(simd: S, prepared: &TemporalProjectionSource, trajectory_refs: usize) -> Self {
         let entry = |index: usize| prepared.targets.get(index).copied().unwrap_or_default();
         let byte = |index: usize, shift: u32| (entry(index).divisor >> shift) as u8;
-        let end_byte = |index: usize, shift: u32| (entry(index).end_divisor >> shift) as u8;
-        let end_num = |index: usize| entry(index).end_numerator as u8;
         let tracked = |target: ProjectionTarget| {
             prepared.source_ref < trajectory_refs
                 && target.end_ref.is_some_and(|end| end < trajectory_refs)
@@ -163,8 +151,6 @@ impl<S: Simd> TargetTables<S> {
             simd,
             allow: u8x16::from_fn(simd, allow),
             divisor: [0, 8].map(|shift| u8x16::from_fn(simd, |i| byte(i, shift))),
-            end_divisor: [0, 8].map(|shift| u8x16::from_fn(simd, |i| end_byte(i, shift))),
-            end_numerator: u8x16::from_fn(simd, end_num),
             source_to_current: prepared.source_to_current,
         }
     }
@@ -183,18 +169,12 @@ impl<S: Simd> TargetTables<S> {
         )
     }
 
-    /// The admitted lane bits, the folded projection factor and the § 7.9.8
-    /// trajectory-end factor of each lane's reference.
-    fn lookup(&self, refs: u8x16<S>) -> (u8x16<S>, Lanes<S>, Lanes<S>) {
+    /// The admitted lane bits and the folded projection factor of each lane's
+    /// reference.
+    fn lookup(&self, refs: u8x16<S>) -> (u8x16<S>, Lanes<S>) {
         let factor = self.folded(self.divisor, refs) * self.source_to_current;
-        let end_numerator = widen_i8(self.simd, self.end_numerator.swizzle_dyn_precise(refs));
-        let end_factor = self.folded(self.end_divisor, refs) * end_numerator;
         let allow = u8x16::splat(self.simd, REVERSE | END_WRITE);
-        (
-            self.allow.swizzle_dyn_precise(refs) | allow,
-            factor,
-            end_factor,
-        )
+        (self.allow.swizzle_dyn_precise(refs) | allow, factor)
     }
 }
 
@@ -475,9 +455,9 @@ impl<'a> ChunkWalk<'a> {
                     source_slot,
                     ints.cell(TRAJECTORY_CELL),
                     Mv { row, col },
-                    || {
-                        let (row, col) = ints.pair(END_MV);
-                        Mv { row, col }
+                    || Mv {
+                        row: project_component(mv.row, target.end_factor),
+                        col: project_component(mv.col, target.end_factor),
                     },
                     (y8 as usize, x8 as usize),
                     end_slot,
@@ -568,7 +548,7 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
         let [refs, saved_rows, saved_cols] =
             deinterleave(simd, &lanes.window, group, geometry.step)?;
         lanes.refs[group] = refs.into();
-        let (allow, factor, end_factor) = tables.lookup(refs);
+        let (allow, factor) = tables.lookup(refs);
         let (mut sampled, mut ended) = (simd.splat_mask32x16(true), simd.splat_mask32x16(true));
         let mut base = [Lanes::splat(simd, 0); 2];
         let mut position = [Lanes::splat(simd, 0); 2];
@@ -578,9 +558,6 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
             lanes.ints[MV + component][group] = mv.into();
             let projected = project(mv, factor);
             lanes.ints[PROJECTED + component][group] = projected.into();
-            if TRACKED {
-                lanes.ints[END_MV + component][group] = project(mv, end_factor).into();
-            }
             let (origin, limit) = if component == 0 {
                 (y, geometry.height8)
             } else {
@@ -752,7 +729,6 @@ fn project<S: Simd>(component: Lanes<S>, factor: Lanes<S>) -> Lanes<S> {
 }
 
 /// [`project`] for one component.
-#[cfg(test)]
 fn project_component(component: i32, factor: i32) -> i32 {
     let scaled = component * factor;
     (scaled + (scaled >> 31) + (1 << 13)) >> 14
@@ -1007,8 +983,8 @@ mod tests {
                     let offset = offset.unwrap();
                     let observed_end = project_tmvp_mv(mv, offset.abs() - observed, offset.abs());
                     let lane_end = Mv {
-                        row: lanes.ints[END_MV].as_flattened()[lane],
-                        col: lanes.ints[END_MV + 1].as_flattened()[lane],
+                        row: project_component(mv.row, target.end_factor),
+                        col: project_component(mv.col, target.end_factor),
                     };
                     assert_eq!(lane_end, observed_end, "case {case} lane {lane}");
                     let cell = |row: usize| lanes.ints[row].as_flattened()[lane] as u32 as usize;

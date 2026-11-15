@@ -592,7 +592,7 @@ impl LrLayout {
             for col4 in self.cols.clone().step_by(sb4) {
                 let root =
                     TilePartitionCall::root(row4, col4, self.frame.sb_size(), ROOT_HAS_CHROMA);
-                units.extend(self.units(PartitionNode(root))?);
+                units.extend(self.units(PartitionNode(root, root.own_chroma_ref()))?);
             }
         }
         Ok(units)
@@ -697,17 +697,17 @@ pub fn apply_loop_filters(
         sink.set_gdf_grid(grid);
         sink.set_gdf_reference_context(reference);
     }
-    let (filtered, _) = sink
-        .into_filtered_frame(
-            Arc::new(core.clone()),
-            seq.filter
-                .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
-            crate::pipeline::deblock_quant_deltas(seq, core),
-            None,
-            core::convert::identity,
-        )
-        .map_err(rule("loop filters"))?;
-    Ok(filtered)
+    sink.into_filtered_frame(
+        Arc::new(core.clone()),
+        seq.filter
+            .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
+        crate::pipeline::deblock_quant_deltas(seq, core),
+        None,
+    )
+    .and_then(|(filtered, _)| {
+        filtered.ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)
+    })
+    .map_err(rule("loop filters"))
 }
 
 /// The decoder's CCSO grid of the frame `core` with `blocks`, or `None` when

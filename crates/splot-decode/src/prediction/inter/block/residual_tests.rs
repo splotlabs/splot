@@ -44,12 +44,13 @@ fn residual_table_bounds_failure_is_typed_coefficient_state() {
 #[test]
 fn residual_parse_failures_keep_typed_boundary() {
     let offset = ByteOffset::new(19);
-    let parse_error = crate::bitstream::tile_payload::GeneralIntraResidualError::AllZeroRead {
-        source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
-            offset: ByteOffset::new(0),
-            needed: 1,
-        }),
-    };
+    let parse_error =
+        crate::bitstream::tile_payload::GeneralIntraResidualError::PaletteSymbolRead {
+            source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+                offset: ByteOffset::new(0),
+                needed: 1,
+            }),
+        };
     let error = residual_plane_read_error(&parse_error, offset);
     assert!(matches!(
         error,
@@ -59,7 +60,7 @@ fn residual_parse_failures_keep_typed_boundary() {
 
     let mut decoder = SymbolDecoder::new(&[0x80]).unwrap();
     let source = decoder.read_symbol_u16(&mut [0, 0, 0]).unwrap_err();
-    let cdf_error = crate::bitstream::tile_payload::GeneralIntraResidualError::AllZeroRead {
+    let cdf_error = crate::bitstream::tile_payload::GeneralIntraResidualError::PaletteSymbolRead {
         source: BlockSymbolTraceReadError::Symbol(source),
     };
     let decoder = SymbolDecoder::new(&[]).unwrap();
@@ -140,24 +141,6 @@ fn transform_type_eof_uses_transform_type_spec_section() {
         crate::DecodeError::MalformedSource { issue }
             if issue.offset() == Some(offset)
                 && issue.spec_section() == Some(SPEC_TRANSFORM_TYPE)
-    ));
-}
-
-#[test]
-fn cctx_type_eof_uses_residual_spec_section() {
-    let offset = ByteOffset::new(31);
-    let parse_error = crate::bitstream::tile_payload::GeneralIntraResidualError::CctxTypeRead {
-        source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
-            offset: ByteOffset::new(0),
-            needed: 1,
-        }),
-    };
-
-    let error = residual_plane_read_error(&parse_error, offset);
-    assert!(matches!(
-        error,
-        crate::DecodeError::MalformedSource { issue }
-            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_RESIDUAL)
     ));
 }
 
@@ -408,4 +391,143 @@ fn block_chroma_subsampling_follows_the_chroma_format() {
     ] {
         assert_eq!(block_chroma_subsampling(format), expected, "{format:?}");
     }
+}
+
+/// § 5.20.7.23 stops each luma chunk loop at `MiCols` / `MiRows`: a 66x50
+/// frame has `MiCols` 18 and `MiRows` 14.
+#[test]
+fn luma_chunk_loop_stops_at_the_mode_info_grid() {
+    assert_eq!(luma_chunk_end(8, 0, 18), 8);
+    assert_eq!(luma_chunk_end(32, 0, 64), 16);
+    assert_eq!(luma_chunk_end(16, 0, 14), 14);
+    assert_eq!(luma_chunk_end(32, 16, 18), 18);
+    assert_eq!(luma_chunk_end(32, 16, 16), 16);
+}
+
+/// § 5.20.7.24 `maxX = (MiCols * MI_SIZE) >> subX`: with `MiCols` 18 and
+/// `MiRows` 14 a plane ends at 4x4 column 18 (luma, 4:4:4) or 9 (4:2:0,
+/// 4:2:2), and at row 14 or 7 (4:2:0). An odd `MiCols` 17 leaves a 2-sample
+/// column at 4:2:0 that still starts a transform block.
+#[test]
+fn transform_units_at_or_past_the_plane_edge_are_not_coded() {
+    assert_eq!(plane_end4(18, false), 18);
+    assert_eq!(plane_end4(18, true), 9);
+    assert_eq!(plane_end4(14, false), 14);
+    assert_eq!(plane_end4(14, true), 7);
+    assert_eq!(plane_end4(17, true), 9);
+}
+
+fn read_edge_chroma_group(payload: &[u8]) -> Result<Vec<InterResidualBlock>> {
+    const BLOCK_16X16: usize = 6;
+    let frontier = DecodeBlockFrontier::shared_leaf(12, 16, BlockSize::new(BLOCK_16X16).unwrap());
+    let mut work_unit = make_test_work_unit(payload, CdfUpdateMode::Disabled);
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        payload,
+        ByteOffset::new(0),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    )
+    .unwrap();
+    let mut coeff_ctx =
+        TileCoeffContextState::new_for_tile_chroma(0..14, 0..18, ChromaFormatIdc::Yuv420).unwrap();
+    let mut blocks = Vec::new();
+    read_inter_residual_chroma_group(
+        &mut work_unit,
+        &mut symbols,
+        &mut coeff_ctx,
+        &mut blocks,
+        &mut Vec::new(),
+        &InterLumaTxTypeMap::new(12, 16, 4, 4).unwrap(),
+        &mut Vec::new(),
+        &frontier,
+        frontier.b_size,
+        true,
+        true,
+        0,
+        0,
+        Some((14, 18)),
+        Some(TX_4X4),
+        false,
+        TransformToolResidualPolicy::default(),
+        ByteOffset::new(0),
+    )?;
+    Ok(blocks)
+}
+
+/// A lossless 16x16 4:2:0 block at mi (12, 16) of a 66x50 frame has four
+/// 4x4 chroma units per plane; only the one at chroma (8, 6) starts before
+/// `maxX` 36 and `maxY` 28, so U and V read one `all_zero` each.
+#[test]
+fn lossless_chroma_group_reads_only_units_inside_the_plane() {
+    let blocks = read_edge_chroma_group(&[0xff; 16]).unwrap();
+    let units: Vec<_> = blocks
+        .iter()
+        .map(|block| (block.plane, block.x, block.y, block.coeffs.eob))
+        .collect();
+    assert_eq!(
+        units,
+        [(ReconPlaneId::U, 32, 24, 0), (ReconPlaneId::V, 32, 24, 0)]
+    );
+}
+
+/// Past the payload end the § 8.2 decoder reads padding, and the group
+/// still reads only the units inside the plane.
+#[test]
+fn lossless_chroma_group_at_payload_end_reads_only_units_inside_the_plane() {
+    let blocks = read_edge_chroma_group(&[]).unwrap();
+    let units: Vec<_> = blocks
+        .iter()
+        .map(|block| (block.plane, block.x, block.y))
+        .collect();
+    assert_eq!(
+        units,
+        [(ReconPlaneId::U, 32, 24), (ReconPlaneId::V, 32, 24)]
+    );
+}
+
+/// A 16x16 luma read that fails on an overlong Golomb prefix leaves the
+/// block list and the coefficient arena as they were before the block.
+#[test]
+fn failed_inter_residual_drops_its_blocks_and_coefficients() {
+    const BLOCK_16X16: usize = 6;
+    const FIXTURE: &[u8] = include_bytes!(
+        "../../../../../../tests/conformance/vectors/valid/syn-2frame-global-rotzoom-64x64-q80.ivf"
+    );
+    let payload = [0x12, 0x02, 0x00, 0x00, 0x52, 0xb1, 0xc4, 0x0c];
+    let (sequence, core, _) =
+        super::super::super::tests::parse_inter_core_for_validation(FIXTURE).unwrap();
+    let frontier = DecodeBlockFrontier::shared_leaf(0, 0, BlockSize::new(BLOCK_16X16).unwrap());
+    let mut work_unit = make_test_work_unit(&payload, CdfUpdateMode::Disabled);
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        &payload,
+        ByteOffset::new(0),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    )
+    .unwrap();
+    let mut coeff_ctx =
+        TileCoeffContextState::new_for_tile_chroma(0..16, 0..16, ChromaFormatIdc::Yuv420).unwrap();
+    let mut blocks = Vec::new();
+    let mut arena = vec![7; 3];
+
+    let result = read_inter_residual(
+        &mut work_unit,
+        &mut symbols,
+        &mut coeff_ctx,
+        &mut InterResidualParseScratch::default(),
+        &mut blocks,
+        &mut arena,
+        &sequence,
+        &core,
+        &frontier,
+        4,
+        4,
+        16,
+        16,
+        false,
+        TransformToolResidualPolicy::default(),
+        ByteOffset::new(0),
+    );
+
+    assert!(result.is_err());
+    assert!(blocks.is_empty());
+    assert_eq!(arena, [7; 3]);
 }

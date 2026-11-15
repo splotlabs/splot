@@ -224,7 +224,6 @@ fn activation_only_frame_header_core() -> FrameHeaderCore {
 }
 
 fn assert_first_work_unit_cdf_update(plan: &DecodeTilePayloadPlan<'_>, expected: CdfUpdateMode) {
-    assert_eq!(plan.work_units()[0].symbol().cdf_update_mode(), expected);
     assert_eq!(plan.work_units()[0].cdf().update_mode(), expected);
 }
 
@@ -320,8 +319,6 @@ fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
     assert_eq!(plan.work_units().len(), 2);
     let first = &plan.work_units()[0];
     assert_eq!(first.tile_num(), 0);
-    assert_eq!(first.tile_row(), 0);
-    assert_eq!(first.tile_col(), 0);
     assert_eq!(first.mi_row_range(), 0..8);
     assert_eq!(first.mi_col_range(), 0..16);
     assert_eq!(first.tile_byte_span(), ByteSpan::new(ByteOffset::new(5), 1));
@@ -329,8 +326,6 @@ fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
     assert!(first.cdf().save_policy().copy_cdf);
     let second = &plan.work_units()[1];
     assert_eq!(second.tile_num(), 1);
-    assert_eq!(second.tile_row(), 0);
-    assert_eq!(second.tile_col(), 1);
     assert_eq!(second.mi_row_range(), 0..8);
     assert_eq!(second.mi_col_range(), 16..32);
     assert_eq!(
@@ -409,23 +404,17 @@ fn derived_boundary_threads_parser_coeff_frame_facts() {
     let tail = fixture.core.intra_tail.unwrap();
     let quant = fixture.core.quantization_params.unwrap();
 
-    assert_eq!(coeff_facts.enable_fsc(), tq.enable_fsc);
-    assert_eq!(coeff_facts.enable_intra_ist(), tq.enable_intra_ist);
-    assert_eq!(coeff_facts.enable_inter_ist(), tq.enable_inter_ist);
-    assert_eq!(
-        coeff_facts.enable_chroma_dctonly(),
-        tq.enable_chroma_dctonly
-    );
-    assert_eq!(coeff_facts.enable_cctx(), tq.enable_cctx);
+    assert_eq!(coeff_facts.enable_fsc, tq.enable_fsc);
+    assert_eq!(coeff_facts.enable_intra_ist, tq.enable_intra_ist);
+    assert_eq!(coeff_facts.enable_inter_ist, tq.enable_inter_ist);
+    assert_eq!(coeff_facts.enable_chroma_dctonly, tq.enable_chroma_dctonly);
+    assert_eq!(coeff_facts.enable_cctx, tq.enable_cctx);
     assert_eq!(coeff_facts.reduced_tx_part_set(), tq.reduced_tx_part_set);
+    assert_eq!(coeff_facts.reduced_tx_set, usize::from(tail.reduced_tx_set));
+    assert_eq!(coeff_facts.base_q_idx, quant.base_q_idx);
+    assert_eq!(coeff_facts.allow_tcq, lossless.allow_tcq);
     assert_eq!(
-        coeff_facts.reduced_tx_set(),
-        usize::from(tail.reduced_tx_set)
-    );
-    assert_eq!(coeff_facts.base_q_idx(), quant.base_q_idx);
-    assert_eq!(coeff_facts.allow_tcq(), lossless.allow_tcq);
-    assert_eq!(
-        coeff_facts.allow_parity_hiding(),
+        coeff_facts.allow_parity_hiding,
         lossless.allow_parity_hiding
     );
     assert_eq!(
@@ -487,6 +476,52 @@ fn derived_boundary_rejects_absent_frame_header_facts_without_guessing() {
         &error,
         FrameCandidateTileUnsupportedReason::IncompleteFrameHeader,
     );
+}
+
+#[test]
+fn derived_boundary_rejects_backward_reference_update_frames() {
+    let mut core = parsed_frame_header_fixture().core;
+    core.status = splot_core::headers::frame::FrameHeaderParseStatus::InterHeaderComplete;
+    core.frame_is_intra = Some(false);
+    let mut inter = splot_core::headers::frame::InterControl::default();
+    inter.use_bru = Some(true);
+    core.inter = Some(inter.clone());
+
+    let error =
+        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).unwrap_err();
+    assert_unsupported_error(
+        &error,
+        FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
+    );
+
+    inter.bru_inactive = Some(false);
+    core.inter = Some(inter.clone());
+    core.gdf_params = core.gdf_params.map(|mut gdf| {
+        gdf.gdf_frame_enable = true;
+        gdf
+    });
+    let error =
+        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).unwrap_err();
+    assert_unsupported_error(
+        &error,
+        FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
+    );
+
+    core.gdf_params = core.gdf_params.map(|mut gdf| {
+        gdf.gdf_frame_enable = false;
+        gdf
+    });
+    core.lr_params = core.lr_params.map(|mut lr| {
+        lr.uses_lr = false;
+        lr
+    });
+    let other = FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).err();
+    assert!(!matches!(
+        other,
+        Some(FrameCandidateTileBoundaryError::Unsupported {
+            reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate
+        })
+    ));
 }
 
 #[test]

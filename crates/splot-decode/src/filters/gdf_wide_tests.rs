@@ -4,14 +4,14 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
-use crate::filters::gdf::simd::{WINDOW_ROWS, sym_rows, sym_rows_interleaved};
+use crate::filters::gdf::simd::{WINDOW_ROWS, sym_rows, sym_rows_portable};
 
 /// A 16-sample row-pair kernel.
 type Kernel =
     fn(&[&[u16; 28]; WINDOW_ROWS], [&mut [u16; 16]; 2], &[GdfClass; 8], &GdfBlock, &GdfSymParams);
 
 /// The target's kernel and the portable one.
-const KERNELS: [Kernel; 2] = [sym_rows, sym_rows_interleaved];
+const KERNELS: [Kernel; 2] = [sym_rows, sym_rows_portable];
 
 /// A two-row window of `width` samples with the full tap reach around it.
 fn test_source(width: usize, max_sample: u16, case: usize) -> (Vec<u16>, usize) {
@@ -29,7 +29,7 @@ fn test_source(width: usize, max_sample: u16, case: usize) -> (Vec<u16>, usize) 
             }
             3 => ((index * 73 + index / stride * 29) % (usize::from(max_sample) + 1)) as u16,
             _ => {
-                let spread = [9, 100, 256][case - 4].min(usize::from(max_sample) + 1);
+                let spread = [9, 100, 256, 400][case - 4].min(usize::from(max_sample) + 1);
                 (usize::from(max_sample) / 3 + (index * 73 + index / stride * 29) % spread) as u16
             }
         })
@@ -117,7 +117,7 @@ fn class_patterns() -> [[u8; 8]; 6] {
 #[test]
 fn sixteen_lanes_match_scalar_samples_for_all_tables_and_classes() {
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        for case in 0..7 {
+        for case in 0..8 {
             let (samples, stride) = test_source(16, bit_depth.max_sample(), case);
             for ref_dst_idx in 0..GDF_ALPHA.len() {
                 for qp_idx in 0..GDF_ALPHA[0].len() {
@@ -330,6 +330,7 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
     let mut scratch = simd::ClassScratch::default();
     for (width, height, bit_depth) in [
         (38, 4, BitDepth::Eight),
+        (48, 4, BitDepth::Eight),
         (64, 6, BitDepth::Ten),
         (6, 2, BitDepth::Ten),
     ] {
@@ -403,9 +404,15 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
         assert!(simd::filter_run(&source, ORIGIN, &block, &mut actual, &mut scratch).is_some());
         assert_eq!(actual, expected, "width {width}, height {height}");
         if bit_depth == BitDepth::Eight {
+            let mut tiled_bytes = bytes.clone();
             assert!(simd::filter_run(&source, ORIGIN, &block, &mut bytes, &mut scratch).is_some());
-            let bytes: Vec<u16> = bytes.into_iter().map(u16::from).collect();
-            assert_eq!(bytes, expected, "u8 rows, width {width}, height {height}");
+            assert!(
+                simd::filter_run(&tiled, ORIGIN, &block, &mut tiled_bytes, &mut scratch).is_some()
+            );
+            for (bytes, label) in [(bytes, "u8 rows"), (tiled_bytes, "tiled u8 rows")] {
+                let bytes: Vec<u16> = bytes.into_iter().map(u16::from).collect();
+                assert_eq!(bytes, expected, "{label}, width {width}, height {height}");
+            }
         }
     }
 }

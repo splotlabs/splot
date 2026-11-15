@@ -10,6 +10,7 @@ use fearless_simd::u8x16;
 use fearless_simd::{Level, Simd, SimdBase, dispatch, u8x32, u16x8, u16x16};
 
 use crate::intra_dc_math::{IntraLaneSample, validate_output_shape, validate_sample_type};
+#[cfg(test)]
 use crate::math::round2_i32;
 use crate::{
     BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result,
@@ -29,17 +30,6 @@ pub enum IntraSmoothMode {
     SmoothVertical,
     /// AV2 `SMOOTH_H_PRED`.
     SmoothHorizontal,
-}
-
-impl IntraSmoothMode {
-    /// Returns a stable human-readable mode name.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Smooth => "smooth",
-            Self::SmoothVertical => "smooth_v",
-            Self::SmoothHorizontal => "smooth_h",
-        }
-    }
 }
 
 /// Edge identifier for smooth intra prediction inputs.
@@ -757,6 +747,7 @@ pub(crate) fn predict_smooth_sample<T: ReconSample>(
     )
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SmoothSampleEdges<T: ReconSample> {
     pub(crate) left: T,
@@ -765,12 +756,14 @@ pub(crate) struct SmoothSampleEdges<T: ReconSample> {
     pub(crate) top_right: T,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SmoothSamplePosition {
     pub(crate) row: usize,
     pub(crate) column: usize,
 }
 
+#[cfg(test)]
 pub(crate) fn predict_smooth_sample_values<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
@@ -913,7 +906,10 @@ fn validate_edges<T: ReconSample>(
         });
     }
 
-    if T::MAX_VALUE <= bit_depth.max_sample() {
+    let max = bit_depth.max_sample();
+    if !crate::sample_range::samples_exceed(edges.left, max)
+        && !crate::sample_range::samples_exceed(edges.above, max)
+    {
         return Ok(());
     }
     for (sample_index, sample) in edges.left[..size.height()].iter().copied().enumerate() {

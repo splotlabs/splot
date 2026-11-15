@@ -8,7 +8,9 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::filters::wienerns_lr::FrameFilterRecordCapacities;
-use crate::prediction::inter::{ReconRowBuffers, TemporalMotionBlock, TemporalMvContext};
+use crate::prediction::inter::{
+    ReconRowBuffers, TemporalMotionBlock, TemporalMvContext, TileParseState,
+};
 
 /// A frame walk's temporal context and motion records.
 pub(crate) type WalkTemporal = (TemporalMvContext, Vec<TemporalMotionBlock>);
@@ -22,6 +24,10 @@ pub(crate) struct DecodeBuffers {
     unit_lengths: Mutex<UnitLengths>,
     /// Spent superblock units' row buffers, lent to the next unit parsed.
     units: Mutex<Vec<ReconRowBuffers>>,
+    pub(crate) parse_states: Mutex<Vec<TileParseState>>,
+    /// Spent filter stripe windows of every frame: a frame's frontier fills
+    /// only the few stripes its filters have not run yet.
+    pub(crate) filter_windows: Mutex<Vec<splot_recon::RetiredFramePlanes>>,
     /// One walk's temporal state for the whole decode: the inter and TIP output
     /// walks take turns, so a copy per walk or lane is memory nobody reads.
     walk_temporal: Mutex<Option<WalkTemporal>>,

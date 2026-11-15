@@ -193,6 +193,9 @@ pub(super) fn projection_queue(
             || source.frame_size != Some(config.frame_size)
             || source_layout.is_none_or(|layout| (layout.width8(), layout.height8()) != expected)
             || relative_distance(source_hint, current_hint).abs() > MAX_FRAME_DISTANCE
+            || config.bru_ref.is_some_and(|bru_ref| {
+                bru_ref == projection.ref_index || projection.target_ref == Some(bru_ref)
+            })
         {
             return;
         }
@@ -369,6 +372,7 @@ mod tests {
             enable_tip: true,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         };
 
         assert_eq!(
@@ -403,6 +407,69 @@ mod tests {
     }
 
     #[test]
+    fn bru_ref_motion_field_is_not_projected() {
+        let products = [
+            Some(reference_field(4, 4, &[3])),
+            Some(reference_field(4, 4, &[1])),
+        ];
+        let fields = products
+            .iter()
+            .map(|product| product.as_ref().map(|product| product.0.clone()))
+            .collect::<Vec<_>>();
+        let layouts = products
+            .iter()
+            .map(|product| product.as_ref().map(|product| product.1))
+            .collect::<Vec<_>>();
+        let config = |bru_ref| TemporalProjectionConfig {
+            frame_size: (16, 16),
+            step: 1,
+            unit_size8: 8,
+            enable_tip: true,
+            enable_trajectory: false,
+            reduced: false,
+            bru_ref,
+        };
+        let queue = |bru_ref| {
+            projection_queue(
+                (4, 4),
+                2,
+                config(bru_ref),
+                &[0, 1],
+                &[Some(1), Some(3)],
+                &fields,
+                &layouts,
+            )
+            .as_ref()
+            .to_vec()
+        };
+
+        assert_eq!(
+            queue(Some(0)),
+            vec![TemporalProjection {
+                ref_index: 1,
+                side: 0,
+                target_ref: None,
+            }]
+        );
+        assert_eq!(
+            queue(Some(1)),
+            vec![
+                TemporalProjection {
+                    ref_index: 0,
+                    side: 1,
+                    target_ref: None,
+                },
+                TemporalProjection {
+                    ref_index: 0,
+                    side: 0,
+                    target_ref: None,
+                },
+            ]
+        );
+        assert_eq!(queue(None).len(), 3);
+    }
+
+    #[test]
     fn tip_projection_pair_matches_sort_ref_order_for_equal_future_hints() {
         let products = std::array::from_fn::<_, 7, _>(|_| Some(reference_field(4, 4, &[])));
         let fields = products
@@ -432,6 +499,7 @@ mod tests {
                 enable_tip: true,
                 enable_trajectory: false,
                 reduced: false,
+                bru_ref: None,
             },
             &[0, 1, 2, 3, 4, 5, 6],
             &ref_order_hints,
@@ -475,6 +543,7 @@ mod tests {
                     enable_tip: true,
                     enable_trajectory: false,
                     reduced: true,
+                    bru_ref: None,
                 },
                 &[0, 1],
                 &[Some(1), Some(3)],
@@ -515,6 +584,7 @@ mod tests {
                 enable_tip: true,
                 enable_trajectory: false,
                 reduced: false,
+                bru_ref: None,
             },
             &[0, 1],
             &[Some(1), Some(2)],

@@ -315,6 +315,7 @@ version = "0.0.0"
 dependencies = [
  "fearless_simd",
  "serde",
+ "splot-tables",
  "thiserror",
  "zerocopy",
 ]

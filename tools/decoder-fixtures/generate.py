@@ -137,6 +137,13 @@ SB256_INTRA = [
     "--disable-warning-prompt",
 ]
 
+# Masked compound coverage (wedge, difference weight, implicit mask) per chroma
+# format and bit depth: 17 frames of a panning testsrc2 crop, so compound
+# blocks read past the frame edge and moving content splits them.
+MASKED_INTER = ["--limit=17", "--lag-in-frames=16", "--kf-max-dist=60", "--passes=1",
+                "--threads=1", "--quiet", "--disable-warning-prompt"]
+MASKED_SOURCE = "testsrc2=size=256x192:rate=30:duration=0.6,crop=128:96:x='20+t*120':y='10+t*60'"
+
 # The COMPLETE recipe for every committed coverage fixture, deterministic via `-D`.
 # Each row: (id, lavfi_src, pix_fmt, input_flag, avmenc_flags, cpu, qp[, source]).
 # `source` defaults to Y4M; the optional mapping selects deterministic raw input.
@@ -433,6 +440,26 @@ COVERAGE = [
              "-pix_fmt", "yuv420p10le", "-strict", "-1",
          ],
      }),
+    ("syn-masked-422-128x96-q90", "", "yuv422p", "--i422",
+     MASKED_INTER + ["--i422", "--input-bit-depth=8", "--bit-depth=8"], "3", "90",
+     {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", MASKED_SOURCE, "-pix_fmt", "yuv422p",
+                                       "-strict", "-1"]}),
+    ("syn-masked-422-128x96-10bit-q90", "", "yuv422p10le", "--i422",
+     MASKED_INTER + ["--i422", "--input-bit-depth=10", "--bit-depth=10"], "3", "90",
+     {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", MASKED_SOURCE, "-pix_fmt", "yuv422p10le",
+                                       "-strict", "-1"]}),
+    ("syn-masked-444-128x96-10bit-q90", "", "yuv444p10le", "--i444",
+     MASKED_INTER + ["--i444", "--input-bit-depth=10", "--bit-depth=10"], "3", "90",
+     {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", MASKED_SOURCE, "-pix_fmt", "yuv444p10le",
+                                       "-strict", "-1"]}),
+    ("syn-masked-mono-128x96-q150", "", "yuv420p", "--monochrome",
+     MASKED_INTER + ["--monochrome", "--input-bit-depth=8", "--bit-depth=8"], "3", "150",
+     {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", MASKED_SOURCE, "-pix_fmt", "yuv420p",
+                                       "-strict", "-1"]}),
+    ("syn-masked-mono-128x96-10bit-q120", "", "yuv420p10le", "--monochrome",
+     MASKED_INTER + ["--monochrome", "--input-bit-depth=10", "--bit-depth=10"], "3", "120",
+     {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", MASKED_SOURCE, "-pix_fmt", "yuv420p10le",
+                                       "-strict", "-1"]}),
 ]
 
 PINNED_RECIPE_HASHES = {

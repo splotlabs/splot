@@ -230,9 +230,7 @@ pub(crate) fn add_residual_in_place<T: ReconSample>(
             for (group, residual) in groups.iter_mut().zip(residual_groups) {
                 *group = add_residual_lanes(simd, *group, residual, max);
             }
-            for (sample, &res) in samples.iter_mut().zip(residual) {
-                *sample = i32::from(*sample).saturating_add(res).clamp(0, max) as u16;
-            }
+            add_residual_u16_tail(simd, None, residual, max, samples);
         });
         return Ok(());
     }
@@ -279,20 +277,41 @@ fn add_residual_u16_lanes<S: Simd>(
     {
         *slot = add_residual_lanes(simd, pred, res, max);
     }
-    let (out, prediction, residual) = match (
-        out.split_first_chunk_mut::<4>(),
-        prediction.split_first_chunk::<4>(),
-        residual.split_first_chunk::<4>(),
-    ) {
-        (Some((slot, out)), Some((&pred, prediction)), Some((res, residual))) => {
-            *slot = add_residual_lanes(simd, pred, res, max);
-            (out, prediction, residual)
+    add_residual_u16_tail(simd, Some(prediction), residual, max, out);
+}
+
+/// [`add_residual_lanes`] over the fewer than eight samples of `out`: one
+/// 4-lane group, then the rest as one zero-padded group; `prediction` is
+/// `out` itself when `None`.
+#[inline]
+fn add_residual_u16_tail<S: Simd>(
+    simd: S,
+    prediction: Option<&[u16]>,
+    residual: &[i32],
+    max: i32,
+    out: &mut [u16],
+) {
+    let len = out.len().min(residual.len());
+    let mut start = 0;
+    if let (Some(slot), Some(res)) = (out.first_chunk::<4>(), residual.first_chunk::<4>()) {
+        let pred = prediction
+            .and_then(<[u16]>::first_chunk::<4>)
+            .unwrap_or(slot);
+        let sum = add_residual_lanes(simd, *pred, res, max);
+        if let Some(slot) = out.first_chunk_mut::<4>() {
+            *slot = sum;
         }
-        _ => (out, prediction, residual),
-    };
-    for ((slot, &pred), &res) in out.iter_mut().zip(prediction).zip(residual) {
-        *slot = i32::from(pred).saturating_add(res).clamp(0, max) as u16;
+        start = 4;
     }
+    if start >= len {
+        return;
+    }
+    let n = len - start;
+    let (mut pred, mut res) = ([0u16; 4], [0i32; 4]);
+    pred[..n].copy_from_slice(&prediction.unwrap_or(&*out)[start..len]); // splot-copy-ok: zero-padded lane group
+    res[..n].copy_from_slice(&residual[start..len]); // splot-copy-ok: zero-padded lane group
+    let sum = add_residual_lanes(simd, pred, &res, max);
+    out[start..len].copy_from_slice(&sum[..n]); // splot-copy-ok: the group's own lanes
 }
 
 /// `Clip1(prediction + residual)` over `u8` storage, sixteen, eight, then
@@ -339,17 +358,67 @@ fn add_residual_u8_lanes<S: Simd>(
     lanes!(16);
     lanes!(8);
     lanes!(4);
-    for index in done..out.len().min(residual.len()) {
-        let pred = match prediction {
-            Some(prediction) => prediction.get(index).copied(),
-            None => out.get(index).copied(),
-        };
-        if let (Some(pred), Some(&res), Some(slot)) =
-            (pred, residual.get(index), out.get_mut(index))
-        {
-            *slot = i32::from(pred).saturating_add(res).clamp(0, max) as u8;
-        }
+    let len = out.len().min(residual.len());
+    if let Some(source) = prediction.unwrap_or(&*out).get(done..len)
+        && !source.is_empty()
+    {
+        let n = len - done;
+        let (mut pred, mut res) = ([0u8; 4], [0i32; 4]);
+        pred[..n].copy_from_slice(source); // splot-copy-ok: zero-padded lane group
+        res[..n].copy_from_slice(&residual[done..len]); // splot-copy-ok: zero-padded lane group
+        let sum = clip_add_u8(simd, &pred, &res, max);
+        out[done..len].copy_from_slice(&sum[..n]); // splot-copy-ok: the group's own lanes
     }
+}
+
+/// `Clip1(sample + residual)` over the 8-bit `width x height` block from
+/// `base` of `samples`, rows `stride` apart, as saturating byte adds of the
+/// constant `residual`: 16 lanes at a time, a row's short last group
+/// zero-padded.
+pub(crate) fn add_constant_u8_rows(
+    samples: &mut [u8],
+    (base, stride, width, height): (usize, usize, usize, usize),
+    residual: i32,
+) {
+    let magnitude = residual.unsigned_abs().min(255) as u8;
+    let (plus, minus) = if residual < 0 {
+        (0, magnitude)
+    } else {
+        (magnitude, 0)
+    };
+    baseline_simd!(simd => {
+        let (plus, minus) = (u8x16::splat(simd, plus), u8x16::splat(simd, minus));
+        let add = |v: [u8; 16]| -> [u8; 16] {
+            let v = simd.saturating_add_u8x16(u8x16::load_array(simd, v), plus);
+            simd.saturating_sub_u8x16(v, minus).into()
+        };
+        macro_rules! rows {
+            ($width:expr) => {
+                for row in 0..height {
+                    let Some(row) = samples.get_mut(base + row * stride..).and_then(|r| r.get_mut(..$width)) else {
+                        break;
+                    };
+                    let (groups, tail) = row.as_chunks_mut::<16>();
+                    for group in groups {
+                        *group = add(*group);
+                    }
+                    if !tail.is_empty() {
+                        let mut lanes = [0u8; 16];
+                        lanes[..tail.len()].copy_from_slice(tail); // splot-copy-ok: zero-padded lane group
+                        let len = tail.len();
+                        tail.copy_from_slice(&add(lanes)[..len]); // splot-copy-ok: the group's own lanes
+                    }
+                }
+            };
+        }
+        match width {
+            4 => rows!(4),
+            8 => rows!(8),
+            16 => rows!(16),
+            32 => rows!(32),
+            _ => rows!(width),
+        }
+    });
 }
 
 /// One lane group of [`add_residual_u8`], `LANES <= 16`. The residual
@@ -566,6 +635,28 @@ mod tests {
                 let mut in_place = prediction.clone();
                 add_residual_u8(None, &residual, max, &mut in_place);
                 assert_eq!(in_place, expected, "in place len {len} max {max}");
+            }
+        }
+    }
+
+    /// The constant byte adds match the scalar `Clip1` step for every width,
+    /// leave the samples between rows alone, and stop at a short buffer.
+    #[test]
+    fn constant_u8_rows_match_the_scalar_add() {
+        for width in 1..=40usize {
+            for residual in [i32::MIN, -300, -255, -7, 0, 9, 255, 256, i32::MAX] {
+                let (stride, height) = (width + 3, 5);
+                let start: Vec<u8> = (0..stride * height).map(|i| (i * 37 % 256) as u8).collect();
+                let mut expected = start.clone();
+                for (i, sample) in expected.iter_mut().enumerate().skip(2) {
+                    if (i - 2) % stride < width && (i - 2) / stride < height - 1 {
+                        *sample = i32::from(*sample).saturating_add(residual).clamp(0, 255) as u8;
+                    }
+                }
+                let mut got = start.clone();
+                let span = 2 + (height - 2) * stride + width;
+                add_constant_u8_rows(&mut got[..span], (2, stride, width, height), residual);
+                assert_eq!(got, expected, "width {width} residual {residual}");
             }
         }
     }

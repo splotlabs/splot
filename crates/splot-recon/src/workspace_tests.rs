@@ -9,8 +9,9 @@ use crate::{
     BitDepth, DecodedFrameHash, DecodedFrameHashInput, DpcmDirection, IntraDcEdge, IntraDcEdges,
     InverseTransform1dType, InverseTransform2dDim, InverseTransform2dOuter, OutputIndex,
     PixelFormat, ReferenceFrameStore, ReferenceSlot, Y4mFrameRate, Y4mWriter,
-    apply_intra_ibp_dc_rect, inverse_transform_2d_outer, inverse_transform_2d_outer_adjusted,
-    predict_intra_dc_rect_into, reconstruct_add_residual,
+    inverse_transform_2d_outer, inverse_transform_2d_outer_adjusted, predict_intra_dc_rect_into,
+    predict_intra_dc_subsampled_rect_into, predict_intra_ibp_dc_rect_into,
+    reconstruct_add_residual,
 };
 
 #[test]
@@ -69,55 +70,58 @@ fn rect(x: usize, y: usize, width: usize, height: usize) -> PlaneRect {
     PlaneRect::new(x, y, width, height).unwrap()
 }
 
+/// The surface over the full-width bands of `workspace` that `luma` covers.
+fn band_rect<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    luma: PlaneRect,
+) -> CurrentFrameRect<'_, T> {
+    fn band<T: ReconSample>(
+        plane: &mut CurrentFramePlane<T>,
+        (top, bottom): (usize, usize),
+        shift: u8,
+    ) -> (&mut [T], usize) {
+        let stride = plane.stride;
+        let rows = (top >> shift) * stride..bottom.div_ceil(1 << shift) * stride;
+        (&mut plane.samples[rows], stride)
+    }
+    let rows = (luma.y(), luma.y() + luma.height());
+    let CurrentFrameWorkspace { info, y, u, v, .. } = workspace;
+    let shift = info.pixel_format().subsampling_y();
+    let (u, v) = (u.as_mut(), v.as_mut());
+    let chroma = [u, v].map(|plane| plane.map(|c| band(c, rows, shift)));
+    let [u, v] = chroma;
+    CurrentFrameRect::from_bands(*info, luma, [Some(band(y, rows, 0)), u, v]).unwrap()
+}
+
+/// Predicts a DC-family block as the decoder does: the workspace edges, the
+/// kernel into scratch, then the block write.
+fn predict_dc_with<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    (x, y): (usize, usize),
+    block: IntraRectBlockSize,
+    kernel: impl FnOnce(
+        BitDepth,
+        IntraRectBlockSize,
+        IntraDcEdges<'_, T>,
+        &mut [T],
+        usize,
+    ) -> Result<()>,
+) -> Result<()> {
+    let edges = workspace.intra_dc_edges_for_rect(PlaneId::Y, x, y, block)?;
+    let mut out = vec![T::default(); block.sample_count()];
+    let bit_depth = workspace.info().bit_depth();
+    kernel(
+        bit_depth,
+        block,
+        edges.as_dc_edges(),
+        &mut out,
+        block.width(),
+    )?;
+    workspace.write_rect_block(PlaneId::Y, x, y, block, &out)
+}
+
 fn rect_block(log2_width: u8, log2_height: u8) -> IntraRectBlockSize {
     IntraRectBlockSize::new(log2_width, log2_height).unwrap()
-}
-
-fn assert_paeth_edge_unavailable(
-    result: &Result<()>,
-    edge: IntraPaethEdge,
-    expected_rect: PlaneRect,
-) {
-    assert!(matches!(
-        result,
-        Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: actual_edge,
-            rect
-        }) if *actual_edge == edge && *rect == expected_rect
-    ));
-}
-
-fn assert_directional_edge_unavailable(
-    result: &Result<()>,
-    p_angle: u16,
-    edge: IntraDirectionalAngleEdge,
-    expected_rect: PlaneRect,
-) {
-    assert!(matches!(
-        result,
-        Err(ReconError::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            p_angle: actual_p_angle,
-            edge: actual_edge,
-            rect
-        }) if *actual_p_angle == p_angle && *actual_edge == edge && *rect == expected_rect
-    ));
-}
-
-fn assert_smooth_edge_unavailable(
-    result: &Result<()>,
-    edge: IntraSmoothEdge,
-    expected_rect: PlaneRect,
-) {
-    assert!(matches!(
-        result,
-        Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: actual_edge,
-            rect
-        }) if *actual_edge == edge && *rect == expected_rect
-    ));
 }
 
 fn info(
@@ -158,23 +162,24 @@ fn yuv420_info(width: usize, height: usize) -> DecodedFrameInfo {
 fn intra_prediction_scratch_is_task_local_and_reusable() {
     let mut first = IntraPredictionScratch::<u8>::new();
     let mut second = IntraPredictionScratch::<u8>::new();
-    let first_buffer = first
-        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64, 7)
+    let mut first_buffer = first
+        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64)
         .unwrap();
+    first_buffer.fill(7);
     let first_pointer = first_buffer.as_ptr();
     first.recycle_buffer(IntraPredictionScratchBuffer::Primary, first_buffer);
 
     let second_buffer = second
-        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64, 9)
+        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64)
         .unwrap();
     assert_ne!(second_buffer.as_ptr(), first_pointer);
-    assert_eq!(second_buffer, vec![9; 64]);
+    assert_eq!(second_buffer, vec![0; 64]);
 
     let first_buffer = first
-        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 16, 11)
+        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 16)
         .unwrap();
     assert_eq!(first_buffer.as_ptr(), first_pointer);
-    assert_eq!(first_buffer, vec![11; 16]);
+    assert_eq!(first_buffer, vec![7; 16], "the stale samples stay");
 }
 
 #[test]
@@ -217,13 +222,9 @@ fn a_filled_workspace_overwrites_a_recycled_buffer_whole() {
 #[test]
 fn rectangular_surfaces_write_stacked_row_bands_independently() {
     let mut workspace = CurrentFrameWorkspace::<u8>::new(yuv420_info(8, 8), 3).unwrap();
-    let surfaces = workspace
-        .rect_surfaces(&[rect(0, 0, 8, 4), rect(0, 4, 8, 4)])
-        .unwrap();
-
-    for (index, mut band) in surfaces.into_iter().enumerate() {
+    for (index, luma) in [rect(0, 0, 8, 4), rect(0, 4, 8, 4)].into_iter().enumerate() {
         let value = 7 + index as u8;
-        let luma = band.luma_rect();
+        let mut band = band_rect(&mut workspace, luma);
         let mut surface = CurrentFrameSurface::Rect(&mut band);
         surface
             .write_rect(PlaneId::Y, luma, &[value; 32], 8)
@@ -297,8 +298,8 @@ fn contiguous_u8_rect_writer_matches_u16_geometry_and_storage_rules() {
             .all(|&sample| sample == 7)
     );
 
-    let mut split = workspace.rect_surfaces(&[rect(0, 0, 5, 4)]).unwrap();
-    let written = CurrentFrameSurface::Rect(&mut split[0])
+    let mut split = band_rect(&mut workspace, rect(0, 0, 5, 4));
+    let written = CurrentFrameSurface::Rect(&mut split)
         .with_contiguous_u8_rect_mut(PlaneId::Y, target, |samples, stride| {
             samples[0] = 30;
             samples[stride] = 40;
@@ -306,56 +307,9 @@ fn contiguous_u8_rect_writer_matches_u16_geometry_and_storage_rules() {
         })
         .unwrap();
     assert_eq!(written, Some(2));
-    drop(split);
     let samples = packed(&workspace, PlaneId::Y);
     assert_eq!(samples[6], 30);
     assert_eq!(samples[11], 40);
-}
-
-#[test]
-fn rectangular_surface_publishes_only_its_owned_region() {
-    let info = yuv420_info(8, 8);
-    let mut shadow = CurrentFrameWorkspace::<u8>::new(info, 0).unwrap();
-    let mut output = CurrentFrameWorkspace::<u8>::new(info, 3).unwrap();
-    let mut surfaces = shadow
-        .rect_surfaces(&[rect(0, 0, 8, 4), rect(0, 4, 8, 4)])
-        .unwrap();
-    {
-        let mut source = CurrentFrameSurface::Rect(&mut surfaces[1]);
-        source
-            .write_rect(PlaneId::Y, rect(0, 4, 8, 4), &[9; 32], 8)
-            .unwrap();
-        source
-            .write_rect(PlaneId::U, rect(0, 2, 4, 2), &[7; 8], 4)
-            .unwrap();
-        source
-            .write_rect(PlaneId::V, rect(0, 2, 4, 2), &[8; 8], 4)
-            .unwrap();
-    }
-
-    surfaces[1].publish_into(&mut output).unwrap();
-
-    for (y, row) in output
-        .rect_rows(PlaneId::Y, rect(0, 0, 8, 8))
-        .unwrap()
-        .enumerate()
-    {
-        assert_eq!(row, &[if y < 4 { 3 } else { 9 }; 8][..]);
-    }
-    for (y, row) in output
-        .rect_rows(PlaneId::U, rect(0, 0, 4, 4))
-        .unwrap()
-        .enumerate()
-    {
-        assert_eq!(row, &[if y < 2 { 3 } else { 7 }; 4][..]);
-    }
-    for (y, row) in output
-        .rect_rows(PlaneId::V, rect(0, 0, 4, 4))
-        .unwrap()
-        .enumerate()
-    {
-        assert_eq!(row, &[if y < 2 { 3 } else { 8 }; 4][..]);
-    }
 }
 
 #[test]
@@ -392,8 +346,8 @@ fn owned_rectangular_surface_round_trips_without_borrowing_the_frame() {
 fn rectangular_surface_reports_plane_global_sample_index() {
     let mut workspace =
         CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 8, 4), 3).unwrap();
-    let mut surfaces = workspace.rect_surfaces(&[rect(0, 1, 8, 2)]).unwrap();
-    let mut surface = CurrentFrameSurface::Rect(&mut surfaces[0]);
+    let mut band = band_rect(&mut workspace, rect(0, 1, 8, 2));
+    let mut surface = CurrentFrameSurface::Rect(&mut band);
 
     assert!(matches!(
         surface.write_rect(PlaneId::Y, rect(4, 1, 2, 2), &[1, 2, 3, 300], 2),
@@ -408,7 +362,6 @@ fn rectangular_surface_reports_plane_global_sample_index() {
         surface.write_rect(PlaneId::Y, rect(0, 2, 1, 2), &[9; 2], 1),
         Err(ReconError::WorkspaceRowBandRectOutOfBounds { .. })
     ));
-    drop(surfaces);
     assert!(
         workspace
             .samples(PlaneId::Y)
@@ -419,17 +372,16 @@ fn rectangular_surface_reports_plane_global_sample_index() {
 }
 
 #[test]
-fn rectangular_surface_partition_rejects_overlap() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 4), 0).unwrap();
-    assert!(matches!(
-        workspace.rect_surfaces(&[rect(0, 0, 4, 4)]),
-        Err(ReconError::WorkspaceRectSurfaceNotABand { .. })
-    ));
-    assert!(matches!(
-        workspace.rect_surfaces(&[rect(0, 0, 8, 3), rect(0, 2, 8, 2)]),
-        Err(ReconError::WorkspaceRectSurfaceNotABand { .. })
-    ));
+fn rectangular_surface_rejects_bands_that_are_not_its_rows() {
+    let info = monochrome_info(BitDepth::Eight, 8, 4);
+    let mut samples = vec![0u8; 64 * 4];
+    for (luma, rows) in [(rect(0, 0, 4, 4), 4), (rect(0, 0, 8, 3), 2)] {
+        let band = Some((&mut samples[..64 * rows], 64));
+        assert!(matches!(
+            CurrentFrameRect::from_bands(info, luma, [band, None, None]),
+            Err(ReconError::WorkspaceRectSurfaceNotABand { .. })
+        ));
+    }
 }
 
 fn assert_surface_add_residual_matches_reference<T>(bit_depth: BitDepth)
@@ -1099,9 +1051,7 @@ fn workspace_extracts_edges_and_predicts_rectangular_dc() {
     assert_eq!(edges.left_samples(), Some(&[0, 1, 2, 3, 4, 5, 6, 7][..]));
     assert_eq!(edges.above_samples(), Some(&[8, 9, 10, 11][..]));
 
-    workspace
-        .predict_intra_dc_rect(PlaneId::Y, 2, 1, block)
-        .unwrap();
+    predict_dc_with(&mut workspace, (2, 1), block, predict_intra_dc_rect_into).unwrap();
     let rows: Vec<&[u8]> = workspace
         .rect_rows(PlaneId::Y, rect(2, 1, 4, 8))
         .unwrap()
@@ -1151,9 +1101,13 @@ fn workspace_predicts_subsampled_dc_from_in_storage_edges() {
     workspace
         .write_rect(PlaneId::Y, rect(1, 0, 64, 1), &above, 64)
         .unwrap();
-    workspace
-        .predict_intra_dc_subsampled_rect(PlaneId::Y, 1, 1, block)
-        .unwrap();
+    predict_dc_with(
+        &mut workspace,
+        (1, 1),
+        block,
+        predict_intra_dc_subsampled_rect_into,
+    )
+    .unwrap();
 
     let rows: Vec<&[u8]> = workspace
         .rect_rows(PlaneId::Y, rect(1, 1, 64, 64))
@@ -1170,9 +1124,14 @@ fn workspace_subsampled_dc_top_left_uses_midpoint_without_edges() {
     let mut workspace =
         CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Ten, 4, 4), 0).unwrap();
 
-    workspace
-        .predict_intra_dc_subsampled_rect(PlaneId::Y, 0, 0, rect_block(2, 2))
-        .unwrap();
+    let block = rect_block(2, 2);
+    predict_dc_with(
+        &mut workspace,
+        (0, 0),
+        block,
+        predict_intra_dc_subsampled_rect_into,
+    )
+    .unwrap();
 
     assert_eq!(packed(&workspace, PlaneId::Y), &[512; 16]);
 }
@@ -1185,33 +1144,20 @@ fn workspace_subsampled_dc_uses_available_edge_without_synthesizing_missing_edge
     workspace
         .write_rect(PlaneId::Y, rect(0, 0, 4, 1), &[40, 40, 40, 40], 4)
         .unwrap();
-    workspace
-        .predict_intra_dc_subsampled_rect(PlaneId::Y, 0, 1, rect_block(2, 2))
-        .unwrap();
+    let block = rect_block(2, 2);
+    predict_dc_with(
+        &mut workspace,
+        (0, 1),
+        block,
+        predict_intra_dc_subsampled_rect_into,
+    )
+    .unwrap();
 
     let rows: Vec<&[u8]> = workspace
         .rect_rows(PlaneId::Y, rect(0, 1, 4, 4))
         .unwrap()
         .collect();
     assert_eq!(rows, vec![&[40, 40, 40, 40][..]; 4]);
-}
-
-#[test]
-fn workspace_subsampled_dc_rejects_missing_plane_and_out_of_bounds_target() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
-
-    assert!(matches!(
-        workspace.predict_intra_dc_subsampled_rect(PlaneId::U, 0, 0, rect_block(2, 2)),
-        Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
-    ));
-    assert!(matches!(
-        workspace.predict_intra_dc_subsampled_rect(PlaneId::Y, 5, 1, rect_block(2, 3)),
-        Err(ReconError::WorkspaceRectOutOfBounds {
-            plane: PlaneId::Y,
-            ..
-        })
-    ));
 }
 
 #[test]
@@ -1228,20 +1174,16 @@ fn workspace_predicts_ibp_dc_from_in_storage_edges() {
     workspace
         .write_rect(PlaneId::Y, rect(1, 0, 8, 1), &above, 8)
         .unwrap();
-    workspace
-        .predict_intra_ibp_dc_rect(PlaneId::Y, 1, 1, block)
-        .unwrap();
-
-    let mut expected = [0u8; 64];
-    predict_intra_dc_rect_into(
-        BitDepth::Eight,
+    predict_dc_with(
+        &mut workspace,
+        (1, 1),
         block,
-        IntraDcEdges::both(&left, &above),
-        &mut expected,
-        8,
+        predict_intra_ibp_dc_rect_into,
     )
     .unwrap();
-    apply_intra_ibp_dc_rect(
+
+    let mut expected = [0u8; 64];
+    predict_intra_ibp_dc_rect_into(
         BitDepth::Eight,
         block,
         IntraDcEdges::both(&left, &above),
@@ -1261,35 +1203,24 @@ fn workspace_predicts_ibp_dc_from_in_storage_edges() {
 
 #[test]
 fn workspace_rectangular_and_ibp_dc_top_left_use_midpoint_without_edges() {
-    for predict in [
-        CurrentFrameWorkspace::<u8>::predict_intra_dc_rect,
-        CurrentFrameWorkspace::<u8>::predict_intra_ibp_dc_rect,
-    ] {
+    for ibp in [false, true] {
         let mut workspace =
             CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 4), 0).unwrap();
-
-        predict(&mut workspace, PlaneId::Y, 0, 0, rect_block(2, 2)).unwrap();
+        let block = rect_block(2, 2);
+        if ibp {
+            predict_dc_with(
+                &mut workspace,
+                (0, 0),
+                block,
+                predict_intra_ibp_dc_rect_into,
+            )
+            .unwrap();
+        } else {
+            predict_dc_with(&mut workspace, (0, 0), block, predict_intra_dc_rect_into).unwrap();
+        }
 
         assert_eq!(packed(&workspace, PlaneId::Y), &[128; 16]);
     }
-}
-
-#[test]
-fn workspace_ibp_dc_rejects_missing_plane_and_out_of_bounds_target() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
-
-    assert!(matches!(
-        workspace.predict_intra_ibp_dc_rect(PlaneId::U, 0, 0, rect_block(2, 2)),
-        Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
-    ));
-    assert!(matches!(
-        workspace.predict_intra_ibp_dc_rect(PlaneId::Y, 5, 1, rect_block(2, 3)),
-        Err(ReconError::WorkspaceRectOutOfBounds {
-            plane: PlaneId::Y,
-            ..
-        })
-    ));
 }
 
 #[test]
@@ -1303,7 +1234,12 @@ fn workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target() {
     }
 
     assert!(matches!(
-        workspace.predict_intra_ibp_dc_rect(PlaneId::Y, 1, 1, rect_block(2, 2)),
+        predict_dc_with(
+            &mut workspace,
+            (1, 1),
+            rect_block(2, 2),
+            predict_intra_ibp_dc_rect_into
+        ),
         Err(ReconError::IntraPredictionSampleOutOfRange {
             edge: IntraDcEdge::Above,
             sample_index: 0,
@@ -1319,209 +1255,30 @@ fn workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target() {
 }
 
 #[test]
-fn workspace_predicts_rectangular_paeth_from_in_storage_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 6, 6), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    workspace
-        .write_rect(PlaneId::Y, rect(0, 0, 1, 1), &[10], 1)
-        .unwrap();
-    workspace
-        .write_rect(PlaneId::Y, rect(0, 1, 1, 4), &[30, 30, 30, 30], 1)
-        .unwrap();
-    workspace
-        .write_rect(PlaneId::Y, rect(1, 0, 4, 1), &[12, 12, 12, 12], 4)
-        .unwrap();
-
-    workspace
-        .predict_intra_paeth_rect(PlaneId::Y, 1, 1, block)
-        .unwrap();
-
-    let rows: Vec<&[u8]> = workspace
-        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
-        .unwrap()
-        .collect();
-    assert_eq!(rows, vec![&[30, 30, 30, 30][..]; block.height()]);
-}
-
-#[test]
-fn workspace_paeth_rejects_missing_prepared_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    for (x, y, edge) in [(0, 1, IntraPaethEdge::Left), (1, 0, IntraPaethEdge::Above)] {
-        let result = workspace.predict_intra_paeth_rect(PlaneId::Y, x, y, block);
-        assert_paeth_edge_unavailable(&result, edge, rect(x, y, 4, 4));
-    }
-}
-
-#[test]
-fn workspace_predicts_cardinal_directional_from_in_storage_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 6, 6), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    workspace
-        .write_rect(PlaneId::Y, rect(1, 0, 4, 1), &[10, 20, 30, 40], 4)
-        .unwrap();
-    workspace
-        .predict_intra_cardinal_directional_rect(
-            PlaneId::Y,
-            1,
-            1,
-            block,
-            IntraCardinalDirection::Vertical,
-        )
-        .unwrap();
-
-    let vertical_rows: Vec<&[u8]> = workspace
-        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
-        .unwrap()
-        .collect();
-    assert_eq!(vertical_rows, vec![&[10, 20, 30, 40][..]; 4]);
-
-    workspace
-        .write_rect(PlaneId::Y, rect(0, 1, 1, 4), &[3, 5, 7, 9], 1)
-        .unwrap();
-    workspace
-        .predict_intra_cardinal_directional_rect(
-            PlaneId::Y,
-            1,
-            1,
-            block,
-            IntraCardinalDirection::Horizontal,
-        )
-        .unwrap();
-
-    let horizontal_rows: Vec<&[u8]> = workspace
-        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
-        .unwrap()
-        .collect();
-    assert_eq!(
-        horizontal_rows,
-        vec![
-            &[3, 3, 3, 3][..],
-            &[5, 5, 5, 5][..],
-            &[7, 7, 7, 7][..],
-            &[9, 9, 9, 9][..],
-        ]
-    );
-}
-
-#[test]
-fn workspace_cardinal_directional_rejects_missing_prepared_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    for (x, y, direction, edge) in [
-        (
-            1,
-            0,
-            IntraCardinalDirection::Vertical,
-            IntraDirectionalAngleEdge::Above,
-        ),
-        (
-            0,
-            1,
-            IntraCardinalDirection::Horizontal,
-            IntraDirectionalAngleEdge::Left,
-        ),
-    ] {
-        let result =
-            workspace.predict_intra_cardinal_directional_rect(PlaneId::Y, x, y, block, direction);
-        assert_directional_edge_unavailable(&result, direction.p_angle(), edge, rect(x, y, 4, 4));
-    }
-}
-
-#[test]
-fn workspace_predicts_rectangular_smooth_from_in_storage_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 6, 6), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    workspace
-        .write_rect(PlaneId::Y, rect(0, 1, 1, 5), &[20, 40, 60, 80, 100], 1)
-        .unwrap();
-    workspace
-        .write_rect(PlaneId::Y, rect(1, 0, 5, 1), &[10, 30, 50, 70, 90], 5)
-        .unwrap();
-
-    workspace
-        .predict_intra_smooth_rect(PlaneId::Y, 1, 1, block, IntraSmoothMode::Smooth)
-        .unwrap();
-
-    let rows: Vec<&[u8]> = workspace
-        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
-        .unwrap()
-        .collect();
-    assert_eq!(
-        rows,
-        vec![
-            &[26, 45, 64, 82][..],
-            &[48, 62, 75, 87][..],
-            &[70, 77, 85, 91][..],
-            &[91, 92, 94, 95][..],
-        ]
-    );
-}
-
-#[test]
-fn workspace_smooth_rejects_missing_prepared_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    for (x, y, edge) in [
-        (0, 1, IntraSmoothEdge::Left),
-        (1, 0, IntraSmoothEdge::Above),
-        (1, 4, IntraSmoothEdge::BottomLeft),
-        (4, 1, IntraSmoothEdge::TopRight),
-    ] {
-        let result =
-            workspace.predict_intra_smooth_rect(PlaneId::Y, x, y, block, IntraSmoothMode::Smooth);
-        assert_smooth_edge_unavailable(&result, edge, rect(x, y, 4, 4));
-    }
-}
-
-#[test]
 fn workspace_reuses_two_intra_prediction_buffers() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
     let primary = workspace
-        .take_intra_prediction_buffer(
-            IntraPredictionScratchBuffer::Primary,
-            PlaneId::Y,
-            64 * 64,
-            7,
-        )
+        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64 * 64)
         .unwrap();
     let primary_ptr = primary.as_ptr();
     let secondary = workspace
-        .take_intra_prediction_buffer(
-            IntraPredictionScratchBuffer::Secondary,
-            PlaneId::Y,
-            64 * 64,
-            9,
-        )
+        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, PlaneId::Y, 64 * 64)
         .unwrap();
     let secondary_ptr = secondary.as_ptr();
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, primary);
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, secondary);
 
     let primary = workspace
-        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 16, 11)
+        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 16)
         .unwrap();
     let secondary = workspace
-        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, PlaneId::Y, 16, 13)
+        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, PlaneId::Y, 16)
         .unwrap();
 
     assert_eq!(primary.as_ptr(), primary_ptr);
     assert_eq!(secondary.as_ptr(), secondary_ptr);
-    assert_eq!(primary, vec![11; 16]);
-    assert_eq!(secondary, vec![13; 16]);
+    assert_eq!((primary.len(), secondary.len()), (16, 16));
 }
 
 #[test]
@@ -1534,7 +1291,6 @@ fn workspace_rejects_oversized_intra_prediction_scratch() {
             IntraPredictionScratchBuffer::Primary,
             PlaneId::Y,
             64 * 64 + 1,
-            0,
         ),
         Err(ReconError::WorkspaceIntraPredictionScratchTooLarge {
             sample_count: 4097,
@@ -1576,6 +1332,61 @@ fn workspace_freezes_into_hash_y4m_and_reference_store_inputs() {
         store.get(slot).unwrap().unwrap().output_index(),
         expected_index
     );
+}
+
+#[test]
+fn a_rejected_freeze_in_place_keeps_every_buffer_where_it_was() {
+    let mut workspace = CurrentFrameWorkspace::<u16>::new(yuv420_info(4, 4), 8).unwrap();
+    let pointers = |workspace: &CurrentFrameWorkspace<u16>| {
+        [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| workspace.samples(plane).unwrap().as_ptr())
+    };
+    let before = pointers(&workspace);
+    workspace
+        .as_frame_mut()
+        .unwrap()
+        .plane_mut(PlaneId::V)
+        .unwrap()
+        .samples_mut()[0] = 300;
+
+    assert!(matches!(
+        workspace.freeze_planes(true),
+        Err(ReconError::SampleOutOfRange {
+            plane: PlaneId::V,
+            ..
+        })
+    ));
+    assert_eq!(pointers(&workspace), before);
+    assert_eq!(workspace.samples(PlaneId::V).unwrap()[0], 300);
+
+    workspace
+        .as_frame_mut()
+        .unwrap()
+        .plane_mut(PlaneId::V)
+        .unwrap()
+        .samples_mut()[0] = 8;
+    let frame = workspace.freeze_planes(true).unwrap();
+    assert_eq!(
+        [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| frame
+            .plane(plane)
+            .unwrap()
+            .samples()
+            .as_ptr()),
+        before
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "above the bit depth")]
+fn a_clamped_freeze_asserts_the_sample_range_in_checked_builds() {
+    let mut workspace = CurrentFrameWorkspace::<u16>::new(yuv420_info(4, 4), 8).unwrap();
+    workspace
+        .as_frame_mut()
+        .unwrap()
+        .plane_mut(PlaneId::U)
+        .unwrap()
+        .samples_mut()[0] = 300;
+    let _ = workspace.freeze_in_place_clamped();
 }
 
 #[test]
@@ -1688,7 +1499,7 @@ fn u8_rect_target_matches_the_contiguous_writer() {
         let mut surface = CurrentFrameSurface::Frame(&mut workspace);
         let target = rect(x, y, w, h);
         let direct = surface
-            .u8_rect_mut(PlaneId::Y, target)
+            .rect_mut(PlaneId::Y, target)
             .map(|(samples, stride)| span(samples, stride));
         let written = surface
             .with_contiguous_u8_rect_mut(PlaneId::Y, target, |samples, stride| {
@@ -1728,6 +1539,37 @@ fn bawp_rect_scales_every_width_like_the_scalar_formula() {
                 orig
             };
             assert_eq!(sample, expected, "{width}x{height} at {x},{y}");
+        }
+    }
+}
+
+/// `u16` rows narrowed into eight-bit storage at every width up to 40 and at
+/// the storage edge equal the per-sample `as u8` oracle.
+#[test]
+fn u16_rect_writes_into_eight_bit_storage_narrow_exactly() {
+    for (width, x) in (1..=40).map(|width| (width, (44 - width - width % 4).min(41))) {
+        let frame = info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(42, 3),
+            rect(0, 0, 42, 3),
+        );
+        let mut workspace = CurrentFrameWorkspace::<u8>::new(frame, 7).unwrap();
+        let samples: Vec<u16> = (0..2 * width)
+            .map(|i| [255, 0, (i * 37 % 256) as u16][i % 3])
+            .collect();
+        CurrentFrameSurface::Frame(&mut workspace)
+            .write_u16_rect(PlaneId::Y, rect(x, 1, width, 2), &samples, width)
+            .unwrap();
+        for (y, x_at) in (0..3).flat_map(|y| (0..42).map(move |x_at| (y, x_at))) {
+            let stored = workspace.reconstructed_sample(PlaneId::Y, x_at, y).unwrap();
+            let inside = y >= 1 && x_at >= x && x_at < x + width;
+            let want = if inside {
+                samples[(y - 1) * width + x_at - x] as u8
+            } else {
+                7
+            };
+            assert_eq!(stored, want, "{width} {x} at {x_at},{y}");
         }
     }
 }

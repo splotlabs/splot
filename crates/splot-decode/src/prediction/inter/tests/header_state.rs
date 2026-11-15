@@ -151,7 +151,6 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
         },
     ];
     let residual = super::super::InterResidual { block_range: 0..2 };
-    let mut scratch = super::super::InterResidualReconScratch::default();
     let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
         16,
         16,
@@ -160,13 +159,11 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
     )
     .unwrap();
     let error = super::super::add_inter_residual_to_workspace(
-        &mut scratch,
         &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
         &[],
         100,
-        false,
         false,
         false,
         BitDepth::Eight,
@@ -189,11 +186,9 @@ fn invalid_inter_residual_block_ranges_are_reconstruction_state() {
         PixelFormat::Yuv420,
     )
     .unwrap();
-    let mut scratch = super::super::InterResidualReconScratch::default();
 
     for (start, end) in [(1, 2), (1, 0)] {
         let error = super::super::add_inter_residual_to_workspace(
-            &mut scratch,
             &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
             &super::super::InterResidual {
                 block_range: start..end,
@@ -201,7 +196,6 @@ fn invalid_inter_residual_block_ranges_are_reconstruction_state() {
             &[],
             &[],
             0,
-            false,
             false,
             false,
             BitDepth::Eight,
@@ -230,7 +224,6 @@ fn invalid_inter_residual_tx_size_is_reconstruction_state() {
         coeffs: all_zero_inter_coeff_block(),
     }];
     let residual = super::super::InterResidual { block_range: 0..1 };
-    let mut scratch = super::super::InterResidualReconScratch::default();
     let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
         4,
         4,
@@ -240,13 +233,11 @@ fn invalid_inter_residual_tx_size_is_reconstruction_state() {
     .unwrap();
 
     let error = super::super::add_inter_residual_to_workspace(
-        &mut scratch,
         &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
         &[],
         0,
-        false,
         false,
         false,
         BitDepth::Eight,
@@ -288,7 +279,6 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
         },
     ];
     let residual = super::super::InterResidual { block_range: 0..2 };
-    let mut scratch = super::super::InterResidualReconScratch::default();
     let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
         16,
         16,
@@ -298,13 +288,11 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
     .unwrap();
 
     let error = super::super::add_inter_residual_to_workspace(
-        &mut scratch,
         &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
         &[],
         0,
-        false,
         false,
         false,
         BitDepth::Eight,
@@ -619,9 +607,12 @@ fn admitted_reference_samples_survive_a_later_slot_failure() {
 
     let (reference0, reference1) =
         super::super::hold_reference_pair(&reference, 0, None).expect("published samples");
+    let info = frame.info();
+    let scalings =
+        super::super::mv_scaling::PlaneScaling::of_reference_planes(info, info.coded_luma_size());
     let held = super::super::HeldInterBlockReferences {
-        reference0,
-        reference1,
+        reference0: reference0.samples(&scalings),
+        reference1: reference1.unwrap_or(reference0).samples(&scalings),
         compound: false,
     };
     drop(writer);
@@ -632,7 +623,7 @@ fn admitted_reference_samples_survive_a_later_slot_failure() {
             .and_then(crate::pipeline::inflight::RefFrameSlot::hold_samples)
             .is_none()
     );
-    assert!(held.reference0_samples().is_ok());
+    assert_eq!(held.reference0_samples().info(), info);
 }
 
 #[test]

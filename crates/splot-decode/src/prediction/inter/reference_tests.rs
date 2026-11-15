@@ -20,8 +20,9 @@ use splot_recon::{
     OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
 };
 
-use super::{ALL_ROWS, HeldFrameSamples, ReferenceSamples, set_forced_banded_reads};
-use crate::pipeline::frame_progress::FrameProgress;
+use super::{ALL_ROWS, HeldFrameSamples, PlaneScaling, ReferenceSamples, set_forced_banded_reads};
+use crate::pipeline::frame_progress::PublishedFrame;
+use crate::pipeline::inflight::{FrameSlotWriter, RefFrameSlot};
 use crate::prediction::inter::Mv;
 use crate::prediction::inter::mc::{
     InterBlockParams, McBlockRect, WorkspaceSink, motion_compensate_inter_block_into,
@@ -55,10 +56,7 @@ fn reference_reads_mi_storage_outside_the_output_crop() {
         .unwrap();
     let frame = workspace.freeze().unwrap();
     let reference = ReferenceSamples::settled(&frame);
-    let (view, cols, rows) = reference
-        .plane_view_with_mi_dims(PlaneId::Y, ALL_ROWS, OFFSET)
-        .unwrap();
-    assert_eq!((cols, rows), (68, 68));
+    let view = reference.plane_view(PlaneId::Y, ALL_ROWS, OFFSET).unwrap();
     assert_eq!((view.width(), view.height()), (272, 272));
     assert_eq!(view.sample(0, 0), 31);
     assert_eq!(view.sample(271, 271), 201);
@@ -73,7 +71,8 @@ fn reference_waits_for_mi_padding_rows_to_be_published() {
     let info = info(270, 270)
         .with_storage_luma_size(PlaneSize::new(272, 272).unwrap())
         .unwrap();
-    let progress = std::sync::Arc::new(FrameProgress::<u8>::new(info).unwrap());
+    let (slot, writer) = RefFrameSlot::<u8>::pending(info).unwrap();
+    let progress = writer.progress_handle();
     progress
         .begin(&[(0, 270), (270, 272)])
         .expect("stripe geometry");
@@ -88,8 +87,8 @@ fn reference_waits_for_mi_padding_rows_to_be_published() {
             .unwrap()
             .fill(value);
         assert!(lease.submit());
-        let published = progress.read().unwrap();
-        let reference = ReferenceSamples::publishing(&published).unwrap();
+        let published = PublishedFrame::of_slot(&slot).unwrap();
+        let reference = ReferenceSamples::publishing(&published);
         let view = reference.plane_view(PlaneId::Y, 269, OFFSET).unwrap();
         assert_eq!((view.width(), view.height()), (272, 272));
         assert_eq!(view.sample(269, 271), 11);
@@ -146,10 +145,11 @@ fn settled_frame() -> DecodedFrame<u8> {
     workspace.freeze().expect("frozen frame")
 }
 
-/// Opens a progress whose first stripe covers `published` rows of the ramp.
-fn published_progress(published: usize) -> FrameProgress<u8> {
-    let progress =
-        std::sync::Arc::new(FrameProgress::new(info(WIDTH, HEIGHT)).expect("frame progress"));
+/// Opens a slot whose first stripe covers `published` rows of the ramp, and
+/// its writer.
+fn published_progress(published: usize) -> (RefFrameSlot<u8>, FrameSlotWriter<u8>) {
+    let (slot, writer) = RefFrameSlot::pending(info(WIDTH, HEIGHT)).expect("pending slot");
+    let progress = writer.progress_handle();
     progress
         .begin(&[(0, published), (published, HEIGHT)])
         .expect("stripe geometry");
@@ -168,7 +168,7 @@ fn published_progress(published: usize) -> FrameProgress<u8> {
     }
     drop(y);
     assert!(lease.submit());
-    std::sync::Arc::into_inner(progress).expect("sole progress owner")
+    (slot, writer)
 }
 
 fn block(
@@ -188,18 +188,18 @@ fn block(
 #[test]
 fn a_banded_read_inside_the_watermark_returns_the_settled_samples() {
     let settled = settled_frame();
-    let progress = published_progress(64);
-    let held = HeldFrameSamples::Filtering(progress.read().expect("a published prefix"));
-    let banded = held.samples().expect("banded samples");
+    let (slot, _writer) = published_progress(64);
+    let held = HeldFrameSamples::Filtering(PublishedFrame::of_slot(&slot).expect("a prefix"));
+    let scalings = own_scalings(&held);
+    let banded = held.samples(&scalings);
 
-    let (settled_view, settled_cols, settled_rows) = ReferenceSamples::settled(&settled)
-        .plane_view_with_mi_dims(PlaneId::Y, 63, OFFSET)
+    let settled_view = ReferenceSamples::settled(&settled)
+        .plane_view(PlaneId::Y, 63, OFFSET)
         .expect("settled view");
-    let (banded_view, banded_cols, banded_rows) = banded
-        .plane_view_with_mi_dims(PlaneId::Y, 63, OFFSET)
+    let banded_view = banded
+        .plane_view(PlaneId::Y, 63, OFFSET)
         .expect("a read inside the watermark is admitted");
 
-    assert_eq!((banded_cols, banded_rows), (settled_cols, settled_rows));
     assert_eq!(
         (banded_view.width(), banded_view.height()),
         (settled_view.width(), settled_view.height()),
@@ -218,9 +218,10 @@ fn a_banded_read_inside_the_watermark_returns_the_settled_samples() {
 
 #[test]
 fn a_banded_read_past_the_watermark_is_refused() {
-    let progress = published_progress(64);
-    let held = HeldFrameSamples::Filtering(progress.read().expect("a published prefix"));
-    let banded = held.samples().expect("banded samples");
+    let (slot, _writer) = published_progress(64);
+    let held = HeldFrameSamples::Filtering(PublishedFrame::of_slot(&slot).expect("a prefix"));
+    let scalings = own_scalings(&held);
+    let banded = held.samples(&scalings);
 
     let error = banded
         .plane_view(PlaneId::Y, 64, OFFSET)
@@ -237,9 +238,10 @@ fn a_banded_read_past_the_watermark_is_refused() {
 
 #[test]
 fn a_refused_banded_read_propagates_out_of_motion_compensation() {
-    let progress = published_progress(64);
-    let held = HeldFrameSamples::Filtering(progress.read().expect("a published prefix"));
-    let banded = held.samples().expect("banded samples");
+    let (slot, _writer) = published_progress(64);
+    let held = HeldFrameSamples::Filtering(PublishedFrame::of_slot(&slot).expect("a prefix"));
+    let scalings = own_scalings(&held);
+    let banded = held.samples(&scalings);
     let mut output = CurrentFrameWorkspace::new(info(WIDTH, HEIGHT), 0u8).expect("workspace");
 
     motion_compensate_inter_block_into(
@@ -353,4 +355,9 @@ fn forced_banded_reads_decode_every_inter_fixture_byte_identically() {
             .unwrap_or_else(|error| panic!("banded decode of {name} failed: {error}"));
         assert_eq!(&actual, expected, "{name} diverged under banded reads");
     }
+}
+
+fn own_scalings(held: &HeldFrameSamples<'_, u8>) -> [PlaneScaling; 2] {
+    let info = held.info();
+    PlaneScaling::of_reference_planes(info, info.coded_luma_size())
 }

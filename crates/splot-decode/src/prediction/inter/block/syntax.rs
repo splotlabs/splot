@@ -17,7 +17,8 @@ use super::super::{Mv, SINGLE_MODE_NEWMV};
 use super::warp::inter_mv_read_config;
 use super::{
     DecodeBlockFrontier, INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE,
-    INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET, TileCdfSelector, TileCdfSubset, symbol_read_error,
+    INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET, TileCdfSelector, TileCdfSubset, read_row, row_at,
+    symbol_read_error,
 };
 use crate::Result;
 
@@ -27,7 +28,6 @@ pub(super) fn resolve_interp_filter(
     frame_interpolation_filter: FrameInterpolationFilter,
     needs_interp_filter: bool,
     ctx: usize,
-    tile_offset: ByteOffset,
 ) -> Result<ReconInterpolationFilter> {
     match frame_interpolation_filter {
         FrameInterpolationFilter::Eighttap => Ok(ReconInterpolationFilter::EightTap),
@@ -38,10 +38,11 @@ pub(super) fn resolve_interp_filter(
             if !needs_interp_filter {
                 return Ok(ReconInterpolationFilter::EightTap);
             }
-            let symbol = cdfs
-                .read_block_symbol_trace(TileCdfSelector::InterpFilter { ctx }, symbols)
-                .map_err(|error| symbol_read_error(error, tile_offset))?;
-            Ok(interp_filter_from_symbol(symbol.get()))
+            let symbol = read_row(
+                symbols,
+                row_at(&mut cdfs.block_rows_mut().interp_filter, ctx),
+            );
+            Ok(interp_filter_from_symbol(symbol as u8))
         }
         _ => Err(crate::error::DecodeHeaderStateError::InvalidInterpolationFilter.into()),
     }
@@ -74,16 +75,8 @@ pub(super) fn read_drl_idx(
     symbols: &mut SymbolDecoder<'_>,
     new_mv_context: usize,
     max_drl_bits_minus_1: u32,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
-    read_drl_idx_from(
-        cdfs,
-        symbols,
-        new_mv_context,
-        max_drl_bits_minus_1,
-        0,
-        tile_offset,
-    )
+) -> usize {
+    read_drl_idx_from(cdfs, symbols, new_mv_context, max_drl_bits_minus_1, 0)
 }
 
 pub(super) fn read_drl_idx_from(
@@ -92,25 +85,15 @@ pub(super) fn read_drl_idx_from(
     new_mv_context: usize,
     max_drl_bits_minus_1: u32,
     min_idx: usize,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
+) -> usize {
     let m = max_drl_bits_minus_1.saturating_add(1) as usize;
     for idx in min_idx.min(m)..m {
-        let bank = idx.min(2);
-        let drl_mode = cdfs
-            .read_block_symbol_trace(
-                TileCdfSelector::DrlMode {
-                    idx: bank,
-                    ctx: new_mv_context,
-                },
-                symbols,
-            )
-            .map_err(|error| symbol_read_error(error, tile_offset))?;
-        if drl_mode.get() == 0 {
-            return Ok(idx);
+        let bank = row_at(&mut cdfs.block_rows_mut().drl_mode, idx.min(2));
+        if read_row(symbols, row_at(bank, new_mv_context)) == 0 {
+            return idx;
         }
     }
-    Ok(m)
+    m
 }
 
 pub(super) fn read_skip_drl_idx(
@@ -134,9 +117,9 @@ fn read_indexed_drl_idx(
     let max_drl_bits = max_drl_bits_minus_1.saturating_add(1) as usize;
     for idx in 0..max_drl_bits {
         let drl_mode = cdfs
-            .read_block_symbol_trace(selector(idx.min(2)), symbols)
+            .read_block_symbol(selector(idx.min(2)), symbols)
             .map_err(|error| symbol_read_error(error, tile_offset))?;
-        if drl_mode.get() == 0 {
+        if drl_mode == 0 {
             return Ok(idx);
         }
     }
@@ -160,15 +143,9 @@ pub(super) fn read_use_amvd_syntax(
     enable_adaptive_mvd: bool,
     single_mode: u8,
     ctx: usize,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    let Some(selector) = single_use_amvd_selector(enable_adaptive_mvd, single_mode, ctx) else {
-        return Ok(false);
-    };
-    let use_amvd = cdfs
-        .read_block_symbol_trace(selector, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    Ok(use_amvd.get() != 0)
+) -> bool {
+    single_use_amvd_selector(enable_adaptive_mvd, single_mode, ctx).is_some()
+        && read_row(symbols, row_at(&mut cdfs.block_rows_mut().use_amvd[4], ctx)) != 0
 }
 
 /// The `use_amvd` selector of a single-reference block coding `single_mode`
@@ -189,19 +166,15 @@ pub(super) fn read_skip_mode_syntax(
     frontier: &DecodeBlockFrontier,
     comp_ref_allowed: bool,
     ctx: usize,
-    tile_offset: ByteOffset,
-) -> Result<u8> {
+) -> u8 {
     if !skip_mode_present
         || frontier.is_luma_part()
         || frontier.is_chroma_part()
         || !comp_ref_allowed
     {
-        return Ok(0);
+        return 0;
     }
-    Ok(cdfs
-        .read_block_symbol_trace(TileCdfSelector::SkipMode { ctx }, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?
-        .get())
+    read_row(symbols, row_at(&mut cdfs.block_rows_mut().skip_mode, ctx)) as u8
 }
 
 pub(super) fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
@@ -217,7 +190,11 @@ pub(crate) fn frame_mv_precision(core: &FrameHeaderCore) -> Result<u8> {
     Ok(inter_mv_read_config(core)?.precision())
 }
 
-fn use_per_block_mv_precision(sequence: &SequenceHeader, core: &FrameHeaderCore) -> bool {
+/// Whether the frame codes a per-block MV precision (§ 5.20.7.6).
+pub(crate) fn use_per_block_mv_precision(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+) -> bool {
     sequence
         .inter
         .as_ref()
@@ -229,8 +206,7 @@ fn use_per_block_mv_precision(sequence: &SequenceHeader, core: &FrameHeaderCore)
 pub(super) fn read_block_mv_precision_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
+    per_block_precision: bool,
     neighbour_ctx: &BlockNeighbourContext,
     frame_precision: u8,
     block_has_newmv: bool,
@@ -238,26 +214,24 @@ pub(super) fn read_block_mv_precision_syntax(
     tile_offset: ByteOffset,
 ) -> Result<BlockPrecisionRecord> {
     block_mv_precision_with(
-        sequence,
-        core,
+        per_block_precision,
         neighbour_ctx,
         frame_precision,
         (block_has_newmv, is_adaptive_mvd),
         |selector| {
-            cdfs.read_block_symbol_trace(selector, symbols)
-                .map(splot_core::symbol::Symbol::get)
+            cdfs.read_block_symbol(selector, symbols)
                 .map_err(|error| symbol_read_error(error, tile_offset))
         },
     )
 }
 
 /// The § 5.20.7.6 block motion vector precision of a block that codes
-/// `NEWMV` and adaptive MVD as `(block_has_newmv, is_adaptive_mvd)`; `read`
-/// gives each `use_most_probable_precision` and `pb_mv_precision` value, and
-/// the encoder facade answers it for a target.
+/// `NEWMV` and adaptive MVD as `(block_has_newmv, is_adaptive_mvd)` in a
+/// frame whose [`use_per_block_mv_precision`] is `per_block_precision`;
+/// `read` gives each `use_most_probable_precision` and `pb_mv_precision`
+/// value, and the encoder facade answers it for a target.
 pub(crate) fn block_mv_precision_with(
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
+    per_block_precision: bool,
     neighbour_ctx: &BlockNeighbourContext,
     frame_precision: u8,
     (block_has_newmv, is_adaptive_mvd): (bool, bool),
@@ -265,7 +239,7 @@ pub(crate) fn block_mv_precision_with(
 ) -> Result<BlockPrecisionRecord> {
     if is_adaptive_mvd
         || !block_has_newmv
-        || !use_per_block_mv_precision(sequence, core)
+        || !per_block_precision
         || frame_precision < MV_PRECISION_HALF_PEL
     {
         return Ok(BlockPrecisionRecord::most_probable(frame_precision));
@@ -358,7 +332,7 @@ mod tests {
         let mut tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&payload);
 
-        let idx = read_drl_idx_from(&mut tile, &mut symbols, 0, 3, 2, TILE_OFFSET).unwrap();
+        let idx = read_drl_idx_from(&mut tile, &mut symbols, 0, 3, 2);
 
         assert_eq!(idx, 2);
     }
@@ -369,7 +343,7 @@ mod tests {
         let mut tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&payload);
 
-        let idx = read_drl_idx_from(&mut tile, &mut symbols, 0, 3, 1, TILE_OFFSET).unwrap();
+        let idx = read_drl_idx_from(&mut tile, &mut symbols, 0, 3, 1);
 
         assert_eq!(idx, 2);
     }
@@ -380,7 +354,7 @@ mod tests {
         let mut tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&payload);
 
-        let idx = read_drl_idx_from(&mut tile, &mut symbols, 0, 3, 4, TILE_OFFSET).unwrap();
+        let idx = read_drl_idx_from(&mut tile, &mut symbols, 0, 3, 4);
 
         assert_eq!(idx, 4);
     }

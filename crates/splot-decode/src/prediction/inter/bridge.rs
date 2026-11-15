@@ -15,7 +15,8 @@ use crate::error::Result;
 use super::Mv;
 use super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField};
 use super::mc::{InterBlockParams, McBlockRect, WorkspaceSink, motion_compensate_inter_block_into};
-use super::reference::ReferenceSamples;
+use super::mv_scaling::PlaneScaling;
+use super::reference::HeldFrameSamples;
 
 /// Reconstructs an `OBU_BRIDGE_FRAME` from its sole reference.
 ///
@@ -24,7 +25,7 @@ use super::reference::ReferenceSamples;
 /// frame filters disabled by § 5.18.2, the resulting coded frame is a sharp-filtered,
 /// zero-motion prediction from the selected reference, including reference scaling.
 pub(crate) fn reconstruct<T: ReconSample>(
-    reference: ReferenceSamples<'_, T>,
+    held: &HeldFrameSamples<'_, T>,
     frame_size: FrameSize,
     visible: PlaneRect,
     output_index: u64,
@@ -54,7 +55,9 @@ pub(crate) fn reconstruct<T: ReconSample>(
                 context: "bridge storage height",
             })?;
     visible.ensure_within(luma_size)?;
-    let reference_info = reference.info();
+    let reference_info = held.info();
+    let scalings = PlaneScaling::of_reference_planes(reference_info, luma_size);
+    let reference = held.samples(&scalings);
     let info = DecodedFrameInfo::new(
         OutputIndex::new(output_index),
         reference_info.bit_depth(),
@@ -133,7 +136,7 @@ mod tests {
         }
         let source = source.freeze()?;
         let bridge = reconstruct(
-            ReferenceSamples::settled(&source),
+            &HeldFrameSamples::Settled(&source),
             FrameSize::new(10, 14),
             info.visible_luma_rect(),
             1,
@@ -147,14 +150,14 @@ mod tests {
         }
 
         let from_source = reconstruct(
-            ReferenceSamples::settled(&source),
+            &HeldFrameSamples::Settled(&source),
             FrameSize::new(8, 8),
             PlaneRect::new(0, 0, 8, 8)?,
             2,
             ByteOffset::new(0),
         )?;
         let from_bridge = reconstruct(
-            ReferenceSamples::settled(&bridge),
+            &HeldFrameSamples::Settled(&bridge),
             FrameSize::new(8, 8),
             PlaneRect::new(0, 0, 8, 8)?,
             2,
@@ -185,7 +188,7 @@ mod tests {
         )?;
 
         let bridge = reconstruct(
-            ReferenceSamples::settled(&source),
+            &HeldFrameSamples::Settled(&source),
             FrameSize::new(2, 3),
             PlaneRect::new(0, 0, 2, 3)?,
             11,

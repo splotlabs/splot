@@ -527,6 +527,29 @@ impl TileCoeffContextState {
         &mut self,
         input: CoeffContextReset,
     ) -> Result<(), TileCoeffStateError> {
+        let (plane, above, left) = self.reset_spans(input)?;
+        zero_context_span(&mut self.above[plane], above)?;
+        zero_context_span(&mut self.left[plane], left)
+    }
+
+    /// [`Self::reset_block_context_plane`] of every chroma plane at once:
+    /// they share one line layout, so `input` (of plane 1) sizes them all.
+    pub(crate) fn reset_chroma_block_context(
+        &mut self,
+        input: CoeffContextReset,
+    ) -> Result<(), TileCoeffStateError> {
+        let (_, above, left) = self.reset_spans(input)?;
+        for plane in 1..PLANE_COUNT {
+            zero_context_span(&mut self.above[plane], above.clone())?;
+            zero_context_span(&mut self.left[plane], left.clone())?;
+        }
+        Ok(())
+    }
+
+    fn reset_spans(
+        &self,
+        input: CoeffContextReset,
+    ) -> Result<(usize, Range<usize>, Range<usize>), TileCoeffStateError> {
         let plane = validate_plane(input.plane)?;
         validate_subsampling("x", input.sub_x)?;
         validate_subsampling("y", input.sub_y)?;
@@ -560,10 +583,7 @@ impl TileCoeffContextState {
             left_end,
             self.plane_rows[plane],
         )?;
-
-        zero_context_span(&mut self.above[plane], above)?;
-        zero_context_span(&mut self.left[plane], left)?;
-        Ok(())
+        Ok((plane, above, left))
     }
 }
 

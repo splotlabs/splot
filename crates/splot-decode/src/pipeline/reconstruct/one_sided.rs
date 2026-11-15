@@ -348,72 +348,48 @@ pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
     bit_depth: BitDepth,
     prediction: &mut [T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let width = block_size.width();
-    let height = block_size.height();
-    match direction {
-        IntraCardinalDirection::Vertical if availability.above => {
-            let above_row = y
-                .checked_sub(1)
-                .and_then(|row| row.checked_sub(above_mrl_index))
-                .ok_or_else(invalid_directional_edge_state)?;
-            let max_x = workspace
-                .plane(PlaneId::Y)?
-                .storage_size()
-                .width()
-                .checked_sub(1)
-                .ok_or_else(invalid_directional_edge_state)?;
-            for column in 0..width {
-                let sample_x = x.saturating_add(column).min(max_x);
-                let sample = workspace.reconstructed_sample(PlaneId::Y, sample_x, above_row)?;
-                for row in 0..height {
-                    prediction[row * width + column] = sample;
-                }
-            }
+    let mut edge = [T::default(); 64];
+    let storage = workspace.plane(PlaneId::Y)?.storage_size();
+    let (above_row, left_col) = (
+        y.checked_sub(1 + above_mrl_index),
+        x.checked_sub(1 + mrl_index),
+    );
+    let vertical = matches!(direction, IntraCardinalDirection::Vertical);
+    let len = if vertical {
+        block_size.width()
+    } else {
+        block_size.height()
+    };
+    let edge = &mut edge[..len];
+    let row = || above_row.ok_or_else(invalid_directional_edge_state);
+    let col = || left_col.ok_or_else(invalid_directional_edge_state);
+    match (vertical, availability.above, availability.left) {
+        (true, true, _) => {
+            let limit = storage.width().saturating_sub(1);
+            gather_row_clamped(workspace, PlaneId::Y, (x, row()?), limit, edge)?;
         }
-        IntraCardinalDirection::Vertical => {
-            let sample = if availability.left {
-                let left_col = x
-                    .checked_sub(1)
-                    .and_then(|col| col.checked_sub(mrl_index))
-                    .ok_or_else(invalid_directional_edge_state)?;
-                workspace.reconstructed_sample(PlaneId::Y, left_col, y)?
-            } else {
-                noneighbour_above::<T>(bit_depth)
-            };
-            prediction.fill(sample);
+        (false, _, true) => {
+            let limit = storage.height().saturating_sub(1);
+            gather_column_clamped(workspace, PlaneId::Y, (col()?, y), limit, edge)?;
         }
-        IntraCardinalDirection::Horizontal if availability.left => {
-            let left_col = x
-                .checked_sub(1)
-                .and_then(|col| col.checked_sub(mrl_index))
-                .ok_or_else(invalid_directional_edge_state)?;
-            let max_y = workspace
-                .plane(PlaneId::Y)?
-                .storage_size()
-                .height()
-                .checked_sub(1)
-                .ok_or_else(invalid_directional_edge_state)?;
-            for row in 0..height {
-                let sample_y = y.saturating_add(row).min(max_y);
-                let sample = workspace.reconstructed_sample(PlaneId::Y, left_col, sample_y)?;
-                for column in 0..width {
-                    prediction[row * width + column] = sample;
-                }
-            }
-        }
-        IntraCardinalDirection::Horizontal => {
-            let sample = if availability.above {
-                let above_row = y
-                    .checked_sub(1)
-                    .and_then(|row| row.checked_sub(above_mrl_index))
-                    .ok_or_else(invalid_directional_edge_state)?;
-                workspace.reconstructed_sample(PlaneId::Y, x, above_row)?
-            } else {
-                noneighbour_left::<T>(bit_depth)
-            };
-            prediction.fill(sample);
-        }
+        (true, false, true) => edge.fill(workspace.reconstructed_sample(PlaneId::Y, col()?, y)?),
+        (false, true, false) => edge.fill(workspace.reconstructed_sample(PlaneId::Y, x, row()?)?),
+        (true, false, false) => edge.fill(noneighbour_above::<T>(bit_depth)),
+        (false, false, false) => edge.fill(noneighbour_left::<T>(bit_depth)),
     }
+    let edges = if vertical {
+        IntraDirectionalAngleEdges::above(edge)
+    } else {
+        IntraDirectionalAngleEdges::left(edge)
+    };
+    splot_recon::predict_intra_cardinal_directional_rect_into(
+        bit_depth,
+        block_size,
+        direction,
+        edges,
+        prediction,
+        block_size.width(),
+    )?;
     Ok(())
 }
 

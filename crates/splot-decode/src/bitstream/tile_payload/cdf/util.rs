@@ -3,6 +3,8 @@
 
 //! CDF selection-bounds validation and row lifecycle helpers.
 
+use splot_core::symbol::CDF_COUNT_SHIFT;
+
 use super::{
     CDF_PROB_SCALE, DO_SPLIT_PLANE_CONTEXTS, DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS, TileCdfArray,
     TileCdfError,
@@ -59,14 +61,20 @@ pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_row<const N: usize>(
         for value in &mut cdf[..N - 2] {
             *value = CDF_PROB_SCALE as u16;
         }
-        cdf[N - 2] = tile_cdf[N - 2];
-        cdf[N - 1] = 0;
+        cdf[N - 2] = tile_cdf[N - 2] % COUNT_STEP;
     }
     let shift = u32::from(num_log2);
     for i in 0..N - 2 {
         cdf[i] -= ((CDF_PROB_SCALE - u32::from(tile_cdf[i])) >> shift) as u16;
     }
-    cdf[N - 1] += tile_cdf[N - 1] >> shift;
+    cdf[N - 2] += (tile_cdf[N - 2] >> CDF_COUNT_SHIFT >> shift) * COUNT_STEP;
+}
+
+const COUNT_STEP: u16 = 1 << CDF_COUNT_SHIFT;
+
+/// Sets the use count of a row's adaptation state.
+fn set_count<const N: usize>(cdf: &mut [u16; N], count: u16) {
+    cdf[N - 2] = cdf[N - 2] % COUNT_STEP + count * COUNT_STEP;
 }
 
 pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_row<const N: usize>(
@@ -80,11 +88,12 @@ pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_row<const N: usize>(
             - (((CDF_PROB_SCALE - saved) + 7 * (CDF_PROB_SCALE - current) + 4) >> 3))
             as u16;
     }
-    cdf[N - 1] = ((u32::from(saved_cdf[N - 1]) + 7 * u32::from(cdf[N - 1]) + 4) >> 3) as u16;
+    let count = |row: &[u16; N]| u32::from(row[N - 2] >> CDF_COUNT_SHIFT);
+    set_count(cdf, ((count(saved_cdf) + 7 * count(cdf) + 4) >> 3) as u16);
 }
 
 pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_count<const N: usize>(cdf: &mut [u16; N]) {
-    cdf[N - 1] = cdf[N - 1].saturating_mul(3) >> 2;
+    set_count(cdf, ((cdf[N - 2] >> CDF_COUNT_SHIFT) * 3) >> 2);
 }
 
 pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_rows<const N: usize>(
@@ -113,6 +122,23 @@ pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_rows<const N: usize>(
     for row in rows {
         scale_cdf_count(row);
     }
+}
+
+/// Whether every row holds non-decreasing probabilities up to
+/// `CDF_PROB_SCALE` and a use count up to 32: the § 8.2.6 invariants the
+/// trusted symbol reads rely on.
+#[cfg(any(debug_assertions, fuzzing, test))]
+pub(in crate::bitstream::tile_payload::cdf) fn cdf_rows_valid<const N: usize>(
+    rows: &[[u16; N]],
+) -> bool {
+    rows.iter().all(|row| {
+        let probabilities = &row[..N - 2];
+        probabilities.is_sorted()
+            && probabilities
+                .last()
+                .is_none_or(|&last| u32::from(last) <= CDF_PROB_SCALE)
+            && row[N - 2] >> CDF_COUNT_SHIFT <= 32
+    })
 }
 
 pub(crate) const fn floor_log2(value: u32) -> u32 {

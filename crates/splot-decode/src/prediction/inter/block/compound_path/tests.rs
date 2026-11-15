@@ -9,8 +9,33 @@ use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 
 use super::*;
 use crate::bitstream::tile_payload::FrameCdfSubset;
+use crate::prediction::inter::compound::CompoundBlockSyntax;
 
 const TILE_OFFSET: ByteOffset = ByteOffset::new(0);
+
+fn facts(
+    reference: &InterReferenceState<u8>,
+    ref_frame_idx: &[u32],
+    current_order_hint: u32,
+    num_total_refs: usize,
+) -> FrameRefFacts {
+    FrameRefFacts::from_parts(
+        Some((64, 64)),
+        false,
+        current_order_hint,
+        reference,
+        ref_frame_idx,
+        num_total_refs,
+    )
+}
+
+fn reference_size(
+    reference: &InterReferenceState<u8>,
+    ref_frame_idx: &[u32],
+    index: i8,
+) -> crate::Result<(CompoundOrderHint, u32, u32)> {
+    facts(reference, ref_frame_idx, 0, 0).size(index)
+}
 
 #[test]
 fn refinemv_deblock_subpu_geometry_preserves_rectangular_blocks() {
@@ -131,34 +156,6 @@ fn compound_motion_contexts() -> (
 }
 
 #[test]
-fn compound_ref_contexts_cover_every_valid_reference_count() {
-    let (_, block) = compound_motion_grid_and_block(Mv::ZERO, Mv::ZERO);
-    let grid = NeighbourMvGrid::new(16, 16).unwrap();
-    let neighbour_ctx = block_neighbour_ctx(&grid, &block);
-
-    for count in 0..=7 {
-        let contexts = compound_ref_contexts(&neighbour_ctx, count).unwrap();
-        assert_eq!(contexts[..count], [1; 7][..count]);
-        assert_eq!(contexts[count..], [0; 7][count..]);
-    }
-}
-
-#[test]
-fn compound_ref_contexts_keep_invalid_reference_count_fail_closed() {
-    let (_, block) = compound_motion_grid_and_block(Mv::ZERO, Mv::ZERO);
-    let grid = NeighbourMvGrid::new(16, 16).unwrap();
-    let neighbour_ctx = block_neighbour_ctx(&grid, &block);
-
-    let error = compound_ref_contexts(&neighbour_ctx, 8).unwrap_err();
-    assert!(matches!(
-        error,
-        crate::error::DecodeError::HeaderState {
-            source: crate::DecodeHeaderStateError::InvalidInterReferenceMap
-        }
-    ));
-}
-
-#[test]
 fn compound_ref_distance_signs_cover_every_valid_reference_count() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint = RefSlots::from_iter_checked([9, 11, 10, 10, 10, 10, 10]).unwrap();
@@ -166,10 +163,75 @@ fn compound_ref_distance_signs_cover_every_valid_reference_count() {
     let expected = [true, false, true, true, true, true, true];
 
     for count in 0..=7 {
-        let signs = compound_ref_distance_signs(&ref_frame_idx, &reference, 10, count).unwrap();
+        let signs = facts(&reference, &ref_frame_idx, 10, count)
+            .distance_signs()
+            .unwrap();
         assert_eq!(signs[..count], expected[..count]);
         assert_eq!(signs[count..], [true; 7][count..]);
     }
+}
+
+fn order_hints(hints: &[u32]) -> InterReferenceState<u8> {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = RefSlots::from_iter_checked(hints.iter().copied()).unwrap();
+    reference
+}
+
+#[test]
+fn joint_context_uses_the_selected_ranked_pair() {
+    let reference = order_hints(&[9, 10, 11]);
+    let ranked = facts(&reference, &[2, 0, 1], 10, 3);
+    assert_eq!(
+        ranked.is_joint_context((0, 1)).unwrap(),
+        0,
+        "equal distances"
+    );
+    assert_eq!(
+        ranked.is_joint_context((1, 2)).unwrap(),
+        1,
+        "unequal distances"
+    );
+    let restricted = order_hints(&[u32::MAX, 0]);
+    assert_eq!(
+        facts(&restricted, &[0, 1], 127, 2)
+            .is_joint_context((0, 1))
+            .unwrap(),
+        1,
+        "raw restricted order hints keep the restricted-reference term"
+    );
+}
+
+#[test]
+fn joint_context_keeps_reference_bounds_fail_closed() {
+    let reference = order_hints(&[9, 11]);
+    assert!(matches!(
+        facts(&reference, &[0, 1], 10, 2).is_joint_context((2, 0)),
+        Err(crate::error::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::ReferenceListIndexOutOfRange {
+                index: 2,
+                list_len: 2,
+            }
+        })
+    ));
+    assert!(matches!(
+        facts(&reference, &[2], 10, 1).is_joint_context((0, 0)),
+        Err(crate::error::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot: 2,
+                slot_count: 2,
+            }
+        })
+    ));
+}
+
+#[test]
+fn backward_references_preserve_wide_order_hints() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint =
+        RefSlots::from_iter_checked([0x7fff_fffe, 0x8000_0002, u32::MAX]).unwrap();
+
+    let backward = facts(&reference, &[0, 1, 2], 0x8000_0000, 3).backward()[..4].to_vec();
+    assert_eq!(backward, [false, true, false, false]);
 }
 
 #[test]
@@ -179,7 +241,9 @@ fn compound_ref_distance_signs_preserve_wide_order_hints() {
         RefSlots::from_iter_checked([0x7fff_fffe, 0x8000_0002, u32::MAX]).unwrap();
 
     assert_eq!(
-        compound_ref_distance_signs(&[0, 1, 2], &reference, 0x8000_0000, 3).unwrap(),
+        facts(&reference, &[0, 1, 2], 0x8000_0000, 3)
+            .distance_signs()
+            .unwrap(),
         [true, false, true, true, true, true, true]
     );
 }
@@ -187,7 +251,7 @@ fn compound_ref_distance_signs_preserve_wide_order_hints() {
 #[test]
 fn compound_ref_distance_signs_keep_invalid_reference_map_fail_closed() {
     let reference = InterReferenceState::<u8>::empty().unwrap();
-    let error = compound_ref_distance_signs(&[], &reference, 10, 1).unwrap_err();
+    let error = facts(&reference, &[], 10, 1).distance_signs().unwrap_err();
     assert!(matches!(
         error,
         crate::error::DecodeError::HeaderState {
@@ -199,7 +263,7 @@ fn compound_ref_distance_signs_keep_invalid_reference_map_fail_closed() {
 #[test]
 fn compound_ref_distance_signs_keep_missing_order_hint_fail_closed() {
     let reference = InterReferenceState::<u8>::empty().unwrap();
-    let error = compound_ref_distance_signs(&[0], &reference, 10, 1).unwrap_err();
+    let error = facts(&reference, &[0], 10, 1).distance_signs().unwrap_err();
 
     assert!(matches!(
         error,
@@ -229,7 +293,9 @@ fn compound_reference_tools_keep_missing_frame_size_typed() {
     };
     let reference = InterReferenceState::<u8>::empty().unwrap();
     core.frame_size = None;
-    let error = compound_sized_reference_facts(&core, &reference, &[], compound).unwrap_err();
+    let error = FrameRefFacts::new(&core, &reference, &[], 0)
+        .sized_pair(compound.ref_frame0, compound.ref_frame1)
+        .unwrap_err();
     assert!(matches!(
         error,
         crate::error::DecodeError::HeaderState {
@@ -239,7 +305,9 @@ fn compound_reference_tools_keep_missing_frame_size_typed() {
 
     core.frame_type = Some(FrameType::Switch);
     assert_eq!(
-        compound_sized_reference_facts(&core, &reference, &[], compound).unwrap(),
+        FrameRefFacts::new(&core, &reference, &[], 0)
+            .sized_pair(compound.ref_frame0, compound.ref_frame1)
+            .unwrap(),
         None
     );
 }
@@ -252,7 +320,9 @@ fn compound_reference_order_hint_covers_every_valid_reference_index() {
 
     for (ref_frame, expected) in reference.ref_order_hint.iter().copied().enumerate() {
         assert_eq!(
-            compound_reference_order_hint(&reference, &ref_frame_idx, ref_frame as i8).unwrap(),
+            facts(&reference, &ref_frame_idx, 0, 0)
+                .hint(ref_frame as i8)
+                .unwrap(),
             CompoundOrderHint::Value(i64::from(expected))
         );
     }
@@ -262,7 +332,7 @@ fn compound_reference_order_hint_covers_every_valid_reference_index() {
 fn compound_reference_order_hint_keeps_reference_list_bounds_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint = RefSlots::from_iter_checked([9]).unwrap();
-    let error = compound_reference_order_hint(&reference, &[0], 1).unwrap_err();
+    let error = facts(&reference, &[0], 0, 0).hint(1).unwrap_err();
 
     assert!(matches!(
         error,
@@ -308,7 +378,7 @@ fn skip_mode_reference_pair_rejects_out_of_range_state_as_malformed_syntax() {
 fn compound_reference_order_hint_keeps_negative_reference_index_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint = RefSlots::from_iter_checked([9]).unwrap();
-    let error = compound_reference_order_hint(&reference, &[0], -1).unwrap_err();
+    let error = facts(&reference, &[0], 0, 0).hint(-1).unwrap_err();
 
     assert!(matches!(
         error,
@@ -325,7 +395,7 @@ fn compound_reference_order_hint_keeps_negative_reference_index_fail_closed() {
 fn compound_reference_order_hint_keeps_slot_conversion_and_bounds_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint = RefSlots::from_iter_checked([9]).unwrap();
-    let error = compound_reference_order_hint(&reference, &[u32::MAX], 0).unwrap_err();
+    let error = facts(&reference, &[u32::MAX], 0, 0).hint(0).unwrap_err();
     let expected_slot = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
 
     assert!(matches!(
@@ -342,7 +412,7 @@ fn compound_reference_order_hint_keeps_slot_conversion_and_bounds_fail_closed() 
 #[test]
 fn compound_reference_facts_keep_reference_list_bounds_fail_closed() {
     let reference = InterReferenceState::<u8>::empty().unwrap();
-    let error = compound_reference_facts(&reference, &[], 0).unwrap_err();
+    let error = reference_size(&reference, &[], 0).unwrap_err();
 
     assert!(matches!(
         error,
@@ -358,7 +428,7 @@ fn compound_reference_facts_keep_reference_list_bounds_fail_closed() {
 #[test]
 fn compound_reference_facts_keep_negative_reference_index_fail_closed() {
     let reference = InterReferenceState::<u8>::empty().unwrap();
-    let error = compound_reference_facts(&reference, &[0], -1).unwrap_err();
+    let error = reference_size(&reference, &[0], -1).unwrap_err();
 
     assert!(matches!(
         error,
@@ -375,7 +445,7 @@ fn compound_reference_facts_keep_negative_reference_index_fail_closed() {
 fn compound_reference_facts_keep_slot_conversion_and_bounds_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint.push(9);
-    let error = compound_reference_facts(&reference, &[u32::MAX], 0).unwrap_err();
+    let error = reference_size(&reference, &[u32::MAX], 0).unwrap_err();
     let expected_slot = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
 
     assert!(matches!(
@@ -392,7 +462,7 @@ fn compound_reference_facts_keep_slot_conversion_and_bounds_fail_closed() {
 #[test]
 fn compound_reference_facts_keep_missing_order_hint_fail_closed() {
     let reference = InterReferenceState::<u8>::empty().unwrap();
-    let error = compound_reference_facts(&reference, &[0], 0).unwrap_err();
+    let error = reference_size(&reference, &[0], 0).unwrap_err();
 
     assert!(matches!(
         error,
@@ -409,7 +479,7 @@ fn compound_reference_facts_keep_missing_order_hint_fail_closed() {
 fn compound_reference_facts_keep_missing_width_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint.push(9);
-    let error = compound_reference_facts(&reference, &[0], 0).unwrap_err();
+    let error = reference_size(&reference, &[0], 0).unwrap_err();
 
     assert!(matches!(
         error,
@@ -427,7 +497,7 @@ fn compound_reference_facts_keep_missing_height_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint.push(9);
     reference.ref_frame_width.push(64);
-    let error = compound_reference_facts(&reference, &[0], 0).unwrap_err();
+    let error = reference_size(&reference, &[0], 0).unwrap_err();
 
     assert!(matches!(
         error,
@@ -449,15 +519,11 @@ fn compound_reference_facts_map_the_full_order_hint_domain() {
     reference.ref_frame_height = RefSlots::from_iter_checked([64, 64]).unwrap();
 
     assert_eq!(
-        compound_reference_facts(&reference, &[0, 1], 0)
-            .unwrap()
-            .order_hint,
+        reference_size(&reference, &[0, 1], 0).unwrap().0,
         CompoundOrderHint::Restricted
     );
     assert_eq!(
-        compound_reference_facts(&reference, &[0, 1], 1)
-            .unwrap()
-            .order_hint,
+        reference_size(&reference, &[0, 1], 1).unwrap().0,
         CompoundOrderHint::Value(i64::from(i32::MAX) + 1)
     );
 }
@@ -484,13 +550,16 @@ fn compound_sized_reference_facts_reject_restricted_references() {
     };
 
     assert!(
-        compound_sized_reference_facts(&core, &reference, &[0, 1], compound)
+        FrameRefFacts::new(&core, &reference, &[0, 1], 2)
+            .sized_pair(compound.ref_frame0, compound.ref_frame1)
             .unwrap()
             .is_some()
     );
     reference.ref_order_hint[0] = u32::MAX;
     assert_eq!(
-        compound_sized_reference_facts(&core, &reference, &[0, 1], compound).unwrap(),
+        FrameRefFacts::new(&core, &reference, &[0, 1], 2)
+            .sized_pair(compound.ref_frame0, compound.ref_frame1)
+            .unwrap(),
         None
     );
 }
@@ -502,11 +571,11 @@ fn compound_reference_order_hint_maps_the_full_relative_distance_domain() {
         RefSlots::from_iter_checked([u32::MAX, i32::MAX as u32 + 1]).unwrap();
 
     assert_eq!(
-        compound_reference_order_hint(&reference, &[0, 1], 0).unwrap(),
+        facts(&reference, &[0, 1], 0, 0).hint(0).unwrap(),
         CompoundOrderHint::Restricted
     );
     assert_eq!(
-        compound_reference_order_hint(&reference, &[0, 1], 1).unwrap(),
+        facts(&reference, &[0, 1], 0, 0).hint(1).unwrap(),
         CompoundOrderHint::Value(i64::from(i32::MAX) + 1)
     );
     assert_eq!(
@@ -526,7 +595,7 @@ fn compound_current_order_hint_preserves_the_full_domain() {
     core.order_hint = Some(u32::MAX);
 
     assert_eq!(
-        compound_current_order_hint(&core),
+        FrameRefFacts::new(&core, &InterReferenceState::<u8>::empty().unwrap(), &[], 0).current,
         CompoundOrderHint::Value(i64::from(u32::MAX))
     );
 }
@@ -537,7 +606,8 @@ fn compound_furthest_future_ref_excludes_restricted_references() {
     reference.ref_order_hint = RefSlots::from_iter_checked([u32::MAX, 15]).unwrap();
 
     assert_eq!(
-        compound_furthest_future_ref(&reference, &[0, 1], CompoundOrderHint::current(10), 2)
+        facts(&reference, &[0, 1], 10, 2)
+            .furthest_future_ref()
             .unwrap(),
         Some(1)
     );
@@ -550,13 +620,9 @@ fn compound_furthest_future_ref_ranks_by_raw_order_hint() {
         RefSlots::from_iter_checked([i32::MAX as u32 + 128, i32::MAX as u32 + 129]).unwrap();
 
     assert_eq!(
-        compound_furthest_future_ref(
-            &reference,
-            &[0, 1],
-            CompoundOrderHint::current(i32::MAX as u32),
-            2,
-        )
-        .unwrap(),
+        facts(&reference, &[0, 1], i32::MAX as u32, 2)
+            .furthest_future_ref()
+            .unwrap(),
         Some(1)
     );
 }
@@ -677,7 +743,6 @@ fn compound_optflow_forces_sharp_interp_without_symbols() {
         true,
         true,
         0,
-        TILE_OFFSET,
     )
     .unwrap();
 
@@ -710,14 +775,8 @@ fn compound_simple_motion_consumes_local_warp_gate() {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
-    let local_warp = read_compound_motion_mode_syntax(
-        &mut tile,
-        &mut symbols,
-        true,
-        &neighbour_ctx,
-        TILE_OFFSET,
-    )
-    .unwrap();
+    let local_warp =
+        read_compound_motion_mode_syntax(&mut tile, &mut symbols, true, &neighbour_ctx);
 
     assert!(!local_warp);
     symbols.exit_symbol().unwrap();
@@ -731,14 +790,8 @@ fn compound_local_warp_symbol_reports_localwarp_when_set() {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
-    let local_warp = read_compound_motion_mode_syntax(
-        &mut tile,
-        &mut symbols,
-        true,
-        &neighbour_ctx,
-        TILE_OFFSET,
-    )
-    .unwrap();
+    let local_warp =
+        read_compound_motion_mode_syntax(&mut tile, &mut symbols, true, &neighbour_ctx);
 
     assert!(local_warp);
     symbols.exit_symbol().unwrap();
@@ -755,10 +808,6 @@ fn compound_local_warp_derives_a_model_per_explicit_reference_list() {
         1,
         Mv { row: 24, col: -8 },
         Mv { row: -16, col: 40 },
-        block.mi_row,
-        block.mi_col,
-        block.bw4,
-        block.bh4,
     )
     .unwrap();
 
@@ -795,18 +844,8 @@ fn compound_local_warp_uses_translation_for_a_list_without_samples() {
         mi_rows: 16,
         mi_cols: 16,
     };
-    let models = compound_local_warp_models(
-        &grid,
-        &block,
-        1,
-        Mv { row: 24, col: -8 },
-        Mv::ZERO,
-        0,
-        2,
-        2,
-        2,
-    )
-    .unwrap();
+    let models =
+        compound_local_warp_models(&grid, &block, 1, Mv { row: 24, col: -8 }, Mv::ZERO).unwrap();
 
     assert!(models[0].is_some(), "list-0 warp model");
     assert_eq!(models[1], None, "list-1 translational fallback");
@@ -894,8 +933,8 @@ fn compound_optflow_suppresses_local_warp_gate() {
         2,
         false,
         REFINE_SWITCHABLE,
-        [true; 2],
         true,
+        || [true; 2],
     ));
 }
 
@@ -1182,9 +1221,7 @@ fn switchable_refinemv_reads_both_values_at_the_optflow_context() {
             &mut symbols,
             CompoundYMode::NearNew,
             true,
-            TILE_OFFSET,
-        )
-        .unwrap();
+        );
 
         assert_eq!(use_refinemv, enabled);
         symbols.exit_symbol().unwrap();
@@ -1197,14 +1234,8 @@ fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
-    let use_refinemv = read_compound_use_refinemv_syntax(
-        &mut tile,
-        &mut symbols,
-        CompoundYMode::NewNew,
-        true,
-        TILE_OFFSET,
-    )
-    .unwrap();
+    let use_refinemv =
+        read_compound_use_refinemv_syntax(&mut tile, &mut symbols, CompoundYMode::NewNew, true);
 
     assert!(use_refinemv);
     symbols.exit_symbol().unwrap();
@@ -1213,14 +1244,8 @@ fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
-    let use_refinemv = read_compound_use_refinemv_syntax(
-        &mut tile,
-        &mut symbols,
-        CompoundYMode::JointNew,
-        false,
-        TILE_OFFSET,
-    )
-    .unwrap();
+    let use_refinemv =
+        read_compound_use_refinemv_syntax(&mut tile, &mut symbols, CompoundYMode::JointNew, false);
 
     assert!(!use_refinemv);
     symbols.exit_symbol().unwrap();
@@ -1239,14 +1264,8 @@ fn compound_temporal_motion_merges_records_only_for_uniform_blocks() {
     };
     let records = |width, height, blend, warp_params| {
         let placed = PlacedInterBlock {
-            luma_x: 16,
-            luma_y: 24,
-            luma_w: width,
-            luma_h: height,
-            chroma_luma_x: 16,
-            chroma_luma_y: 24,
-            chroma_luma_w: width,
-            chroma_luma_h: height,
+            luma: [16, 24, width, height].map(|v| v as u32),
+            chroma_luma: [16, 24, width, height].map(|v| v as u32),
             predict_chroma: false,
             sub8x8_chroma: false,
             interintra_chroma: false,
@@ -1275,8 +1294,6 @@ fn compound_temporal_motion_merges_records_only_for_uniform_blocks() {
             compound,
             warp_params,
             None,
-            6,
-            4,
             64,
             64,
             9,
@@ -1310,4 +1327,41 @@ fn compound_temporal_motion_merges_records_only_for_uniform_blocks() {
         sign: false,
     };
     assert_eq!(records(16, 16, wedge, [None, None]).len(), 4);
+}
+
+/// Every 8x8 unit of every wedge block size, index and sign: the lane
+/// counts pick the lists the per-sample count of the mask rows picks.
+#[test]
+fn wedge_dominant_lists_match_the_sample_count() {
+    let sides = [8, 16, 32, 64];
+    let mut seen = [0usize; 3];
+    for (width, height) in sides.into_iter().flat_map(|w| sides.map(|h| (w, h))) {
+        for (index, sign) in (0..68u8).flat_map(|index| [(index, false), (index, true)]) {
+            for (x, y) in (0..height)
+                .step_by(8)
+                .flat_map(|y| (0..width).step_by(8).map(move |x| (x, y)))
+            {
+                let mut dominant = [0usize; 2];
+                let rows = splot_recon::wedge_mask_rows(width, height, usize::from(index), sign);
+                for row in rows.unwrap().skip(y).take(8) {
+                    for &mask in &row[x..x + 8] {
+                        dominant[0] += usize::from(mask > 60);
+                        dominant[1] += usize::from(mask < 4);
+                    }
+                }
+                let want = if dominant[0] >= 60 {
+                    [true, false]
+                } else if dominant[1] >= 60 {
+                    [false, true]
+                } else {
+                    [true; 2]
+                };
+                let got = wedge_dominant_lists(width, height, (index, sign), x, y).unwrap();
+                assert_eq!(got, want, "{width}x{height} {index} {sign} {x},{y}");
+                seen[usize::from(got[0]) + 2 * usize::from(got[1]) - 1] += 1;
+            }
+        }
+    }
+    assert!(seen.iter().all(|&count| count > 0), "{seen:?}");
+    assert!(wedge_dominant_lists(8, 8, (0, false), 8, 0).is_err());
 }

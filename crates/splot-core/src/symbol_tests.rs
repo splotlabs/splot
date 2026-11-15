@@ -19,11 +19,7 @@ fn adapt_default_row_to_equal_adjacent() -> ([i32; 8], usize) {
     let n = cdf.len() - 1;
     let mut steps = 0;
     while steps < 512 {
-        let shape = CdfShape {
-            n,
-            rate_index: cdf[n - 1] as usize,
-            count: cdf[n],
-        };
+        let shape = trusted_cdf_shape(&cdf).unwrap();
         update_cdf(&mut cdf, shape, 0);
         steps += 1;
         if (1..n - 1).any(|i| cdf[i] == cdf[i - 1]) {
@@ -279,7 +275,7 @@ fn read_symbol_decodes_binary_row_and_updates_cdf() {
     let symbol = decoder.read_symbol(&mut cdf).unwrap();
     assert_eq!(symbol.get(), 0);
     assert_eq!(decoder.symbol_count(), 1);
-    assert_eq!(cdf[2], 1);
+    assert_eq!(cdf[1], 1 << CDF_COUNT_SHIFT);
     assert!(cdf[0] > 16_384);
 }
 
@@ -289,7 +285,7 @@ fn read_symbol_updates_last_symbol_multiarity_vector() {
     let mut cdf = [8192, 16_384, 24_576, 0, 0];
     let symbol = decoder.read_symbol(&mut cdf).unwrap();
     assert_eq!(symbol.get(), 3);
-    assert_eq!(cdf, [7936, 15_872, 23_808, 0, 1]);
+    assert_eq!(cdf, [7936, 15_872, 23_808, 1 << CDF_COUNT_SHIFT, 0]);
 }
 
 #[test]
@@ -306,21 +302,21 @@ fn read_symbol_can_disable_cdf_update() {
 #[test]
 fn read_symbol_caps_cdf_count_at_thirty_two() {
     let mut decoder = SymbolDecoder::new(&[0x00, 0x80]).unwrap();
-    let mut cdf = [16_384, 0, 32];
+    let mut cdf = [16_384, 32 << CDF_COUNT_SHIFT, 0];
     let _ = decoder.read_symbol(&mut cdf).unwrap();
-    assert_eq!(cdf[2], 32);
+    assert_eq!(cdf[1], 32 << CDF_COUNT_SHIFT);
 }
 
 #[test]
 fn cdf_update_count_intervals_and_nonzero_rate_rows_are_exact() {
     let cases = [
-        (0, [7936, 16_896, 24_832, 6, 1]),
-        (16, [7936, 16_896, 24_832, 6, 17]),
-        (32, [8064, 16_640, 24_704, 6, 32]),
+        (0, [7936, 16_896, 24_832, 6 + (1 << 7), 0]),
+        (16, [7936, 16_896, 24_832, 6 + (17 << 7), 0]),
+        (32, [8064, 16_640, 24_704, 6 + (32 << 7), 0]),
     ];
 
     for (count, expected) in cases {
-        let mut cdf = [8192, 16_384, 24_576, 6, count];
+        let mut cdf = [8192, 16_384, 24_576, 6 + (count << 7), 0];
         update_cdf(
             &mut cdf,
             CdfShape {
@@ -360,9 +356,9 @@ fn invalid_cdf_rows_are_rejected_before_mutation() {
             },
         ),
         (
-            &[16_384, 0, 33],
+            &[16_384, 33 << 7, 0],
             SymbolCdfErrorKind::CountOutOfRange {
-                index: 2,
+                index: 1,
                 value: 33,
             },
         ),
@@ -457,6 +453,26 @@ fn read_symbol_accepts_and_decodes_equal_adjacent_cumulative_entries() {
 }
 
 #[test]
+fn rate_table_states_follow_the_spec_rate_and_count() {
+    for (index, rates) in PARA_ADJUSTMENT_LIST.iter().enumerate() {
+        for count in 0..=MAX_CDF_COUNT {
+            let state = (index as i32 | count << CDF_COUNT_SHIFT) as u16;
+            let time_interval = if count > 31 {
+                2
+            } else {
+                usize::from(count > 15)
+            };
+            let rate = 3 + time_interval as i32 + rates[time_interval];
+            let next = (index as i32 | (count + i32::from(count < 32)) << CDF_COUNT_SHIFT) as u16;
+            for (entry, n_term) in [(trusted_rate::<3>(state), 1), (trusted_rate::<4>(state), 2)] {
+                assert_eq!((entry & RATE_BITS) as i32, rate + n_term);
+                assert_eq!(counted(state, entry), next);
+            }
+        }
+    }
+}
+
+#[test]
 fn update_cdf_rate_extremes_are_exact() {
     let mut min_rate = [16_384, 50, 0];
     update_cdf(
@@ -468,7 +484,7 @@ fn update_cdf_rate_extremes_are_exact() {
         },
         1,
     );
-    assert_eq!(min_rate, [12_288, 50, 1]);
+    assert_eq!(min_rate, [12_288, 50 + (1 << 7), 0]);
 
     let mut low = [8192, 16_384, 24_576, 50, 0];
     update_cdf(
@@ -480,9 +496,9 @@ fn update_cdf_rate_extremes_are_exact() {
         },
         1,
     );
-    assert_eq!(low, [7168, 18_432, 25_600, 50, 1]);
+    assert_eq!(low, [7168, 18_432, 25_600, 50 + (1 << 7), 0]);
 
-    let mut high = [8192, 16_384, 24_576, 3, 32];
+    let mut high = [8192, 16_384, 24_576, 3 + (32 << 7), 0];
     update_cdf(
         &mut high,
         CdfShape {
@@ -492,7 +508,7 @@ fn update_cdf_rate_extremes_are_exact() {
         },
         1,
     );
-    assert_eq!(high, [8160, 16_448, 24_608, 3, 32]);
+    assert_eq!(high, [8160, 16_448, 24_608, 3 + (32 << 7), 0]);
 }
 
 #[test]

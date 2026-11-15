@@ -227,6 +227,9 @@ pub trait ReconSample:
     /// Reinterprets a sample slice as `u8` storage when this type is `u8`;
     /// `None` for wider storage types.
     fn u8_slice(samples: &[Self]) -> Option<&[u8]>;
+
+    /// This storage depth's buffer of a pair kept for both depths.
+    fn depth_vec<'a>(eight: &'a mut Vec<u8>, ten: &'a mut Vec<u16>) -> &'a mut Vec<Self>;
 }
 
 impl ReconSample for u8 {
@@ -272,6 +275,10 @@ impl ReconSample for u8 {
     fn u8_slice(samples: &[Self]) -> Option<&[u8]> {
         Some(samples)
     }
+
+    fn depth_vec<'a>(eight: &'a mut Vec<u8>, _ten: &'a mut Vec<u16>) -> &'a mut Vec<Self> {
+        eight
+    }
 }
 
 impl ReconSample for u16 {
@@ -312,6 +319,10 @@ impl ReconSample for u16 {
 
     fn u8_slice(_samples: &[Self]) -> Option<&[u8]> {
         None
+    }
+
+    fn depth_vec<'a>(_eight: &'a mut Vec<u8>, ten: &'a mut Vec<u16>) -> &'a mut Vec<Self> {
+        ten
     }
 }
 

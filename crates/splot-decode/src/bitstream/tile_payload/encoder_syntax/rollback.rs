@@ -354,7 +354,7 @@ impl IntraTileSyntax {
     ) -> Result<SyntaxSnapshot> {
         let (w, h) = node.dimensions()?;
         let (x, y) = (node.col4() * 4, node.row4() * 4);
-        let chroma = node.0.chroma_ref_geometry();
+        let chroma = node.chroma_ref();
         let size = chroma.size();
         let (n4w, n4h) = (
             size.num_4x4_wide().map_err(rule("block size"))?,

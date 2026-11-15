@@ -6,7 +6,7 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::{Mv, SPEC_MV, unsupported_at};
 use crate::Result;
-use crate::bitstream::tile_payload::{MvCdfSelector, TileCdfSelector, TileCdfSubset};
+use crate::bitstream::tile_payload::{MvCdfSelector, TileCdfSubset};
 
 const MAX_COL_TRUNCATED_UNARY_VAL: usize = 2;
 const NUM_CTX_COL_MV_INDEX: usize = 4;
@@ -91,8 +91,8 @@ impl MvSymbols for SymbolDecoder<'_> {
     }
 
     #[inline]
-    fn class2_bit(&mut self, _i: i32, tile_offset: ByteOffset) -> Result<u8> {
-        read_bypass_bit(self, tile_offset)
+    fn class2_bit(&mut self, _i: i32, _tile_offset: ByteOffset) -> Result<u8> {
+        Ok(u8::from(self.read_bool_trusted()))
     }
 
     #[inline]
@@ -101,8 +101,8 @@ impl MvSymbols for SymbolDecoder<'_> {
     }
 
     #[inline]
-    fn sign(&mut self, _vector: usize, _component: usize, tile_offset: ByteOffset) -> Result<u8> {
-        read_bypass_bit(self, tile_offset)
+    fn sign(&mut self, _vector: usize, _component: usize, _tile_offset: ByteOffset) -> Result<u8> {
+        Ok(u8::from(self.read_bool_trusted()))
     }
 }
 
@@ -514,9 +514,10 @@ fn read_symbol(
     selector: MvCdfSelector,
     tile_offset: ByteOffset,
 ) -> Result<u8> {
-    cdfs.read_block_symbol_trace(TileCdfSelector::ReadMv(selector), symbols)
-        .map(splot_core::symbol::Symbol::get)
-        .map_err(|_| mv_symbol_error(tile_offset))
+    cdfs.block_rows_mut()
+        .read_mv
+        .read(symbols, selector)
+        .ok_or_else(|| mv_symbol_error(tile_offset))
 }
 
 fn read_bypass_bit(symbols: &mut SymbolDecoder<'_>, tile_offset: ByteOffset) -> Result<u8> {

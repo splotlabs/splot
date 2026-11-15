@@ -1,605 +1,1243 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The eight-bit unscaled § 7.13.3.18 interpolation of [`super`] on 128-bit
-//! `i16` lanes, run on AArch64.
+//! The eight-bit unscaled § 7.13.3.18 interpolation of [`super`] in NEON
+//! lanes.
 //!
-//! The arithmetic is that of the AVX2 byte-lane kernels: with halved taps the
-//! sums of one pass over eight-bit samples stay in `i16`, and the vertical
-//! pass of a two-pass block weighs its rounded horizontal rows in `i32`. A
-//! vector holds eight outputs of one row; a 4-wide block uses its low four
-//! lanes. The horizontal rows of a two-pass block stay in registers, so the
-//! kernels read no stage. Only generic `fearless_simd` operations are used.
+//! With halved taps one pass over eight-bit samples sums exactly in `i16`,
+//! and the vertical pass of a two-pass block weighs its rounded horizontal
+//! rows into `i32`. A strip kernel runs 8 or 16 columns of a row per vector
+//! and a 4-column kernel two rows; the rows of a vertical pass stay in a
+//! register ring, so no pass stages through memory. A compound cell keeps
+//! both predictors of a 4x4 or 8x8 cell in registers for the average. Each
+//! entry takes the blocks [`super`] sends it.
 
-use super::super::block::{Block, Sink, Taps};
-use fearless_simd::{Simd, i16x8, i32x4, prelude::*, u8x16, u16x8, u32x4, u64x2};
+#![allow(
+    clippy::inline_always,
+    reason = "measured strip-kernel row and store helpers"
+)]
 
-/// Whether the kernels cover `block`: a width of 4 or a multiple of 8.
-pub(in crate::subpel_mc) const fn fits<T>(block: &Block<'_, T>) -> bool {
-    block.w == 4 || block.w.is_multiple_of(8)
+use super::super::block::{Block, Geometry, Sink, Taps, Window, is_cell};
+use super::super::cell::{Cell, Plane, Written};
+use super::super::rows::{Average, Out, Prep, Put, rows, rows_mut, span, store_pair};
+use super::super::{CellPlacement, ReferencePlaneView};
+use super::pairs;
+use core::arch::aarch64::*;
+use fearless_simd::{Bytes, Neon, Simd, SimdBase, SimdFrom, i8x16, i16x8, i32x4, u8x16, u64x2};
+
+/// Where a register cell reads window row `r`: `base + r * stride`, or
+/// when clamped row `top + r` clamped to `first..=last` from column `base`,
+/// window column `c` from column `clamp(start + c, low, high)` of the load.
+#[derive(Clone, Copy, Default)]
+pub(in crate::subpel_mc) struct Reads {
+    pub(in crate::subpel_mc) base: usize,
+    pub(in crate::subpel_mc) stride: usize,
+    pub(in crate::subpel_mc) top: i32,
+    pub(in crate::subpel_mc) first: i32,
+    pub(in crate::subpel_mc) last: i32,
+    pub(in crate::subpel_mc) columns: [i16; 3],
 }
 
-/// Where the eight final-pass values of a strip row go.
-enum Out<'a, 'b, S: Simd> {
-    Sink(&'a mut Sink<'b>),
-    /// The compound predictors of a first block, kept for [`Self::Second`].
-    First(&'a mut [i16x8<S>; 16]),
-    /// The COMPOUND_AVERAGE with the [`Self::First`] predictors into `u8`.
-    Second {
-        first: &'a [i16x8<S>; 16],
-        forward: i32,
-        output: &'a mut [u8],
-        stride: usize,
-    },
-}
-
-/// Predicts `block`, whose width [`fits`], into an eight-bit `sink`.
-#[inline]
-pub(in crate::subpel_mc) fn predict<S: Simd>(simd: S, block: &Block<'_, u8>, sink: &mut Sink<'_>) {
-    let put = sink.is_put();
-    passes(simd, block, put, &mut Out::Sink(sink));
-}
-
-/// Predicts both blocks of a compound cell of at most 64 samples (or of
-/// two full-sample blocks of any size), whose widths [`fits`], and stores
-/// their COMPOUND_AVERAGE into `output`.
-#[inline]
-pub(in crate::subpel_mc) fn compound<S: Simd>(
-    simd: S,
-    blocks: [&Block<'_, u8>; 2],
-    forward: i32,
-    output: &mut [u8],
-    stride: usize,
-) {
-    if blocks
-        .iter()
-        .all(|block| block.horizontal.is_none() && block.vertical.is_none())
-    {
-        fullpel_compound(simd, blocks, forward, output, stride);
-        return;
-    }
-    let mut first = [i16x8::splat(simd, 0); 16];
-    passes(simd, blocks[0], false, &mut Out::First(&mut first));
-    passes(
-        simd,
-        blocks[1],
-        false,
-        &mut Out::Second {
-            first: &first,
-            forward,
-            output,
-            stride,
-        },
-    );
-}
-
-/// [`compound`] of two full-sample blocks: the [`average`] of the `<< 4`
-/// samples reduced to `(a * f + b * (16 - f) + 8) >> 4`, with no taps or
-/// predictor groups.
-#[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
+/// The [`Reads`] of `window` in a plane of `geometry` within `bounds`, and
+/// whether they are clamped: in place when every read is inside the clip
+/// bounds, else the § 7.13.3.18 `Clip3` reads; `None` when the clip range
+/// is empty or a clamped row cannot load 16 samples.
 #[inline(always)]
-pub(in crate::subpel_mc) fn fullpel_compound<S: Simd>(
-    simd: S,
-    blocks: [&Block<'_, u8>; 2],
-    forward: i32,
-    output: &mut [u8],
-    stride: usize,
-) {
-    let [first, second] = blocks;
-    if first.remap.is_none() && second.remap.is_none() && (0..=16).contains(&forward) {
-        let weights = (
-            u8x16::splat(simd, forward as u8),
-            u8x16::splat(simd, (16 - forward) as u8),
-        );
-        let load = |block: &Block<'_, u8>, at: usize| {
-            block
-                .source
-                .get(at..)
-                .and_then(<[u8]>::first_chunk::<16>)
-                .map_or(u8x16::splat(simd, 0), |bytes| {
-                    u8x16::load_array_ref(simd, bytes)
-                })
+pub(in crate::subpel_mc) fn reads(
+    window: &Window,
+    geometry: Geometry,
+    bounds: [i32; 4],
+) -> Option<(Reads, bool)> {
+    let [stride, width, rows, len] = geometry;
+    if let Some(base) = window.origin(geometry, bounds) {
+        let reads = Reads {
+            base,
+            stride,
+            ..Reads::default()
         };
-        for row in 0..first.h {
-            let starts = [first.start(row), second.start(row)];
-            for col in (0..first.w).step_by(16) {
-                let (a, b) = (load(first, starts[0] + col), load(second, starts[1] + col));
-                let (low, high) = if forward == 8 {
-                    let (low, high) = simd.widening_add_u8x16(a, b);
-                    ((low + 1) >> 1, (high + 1) >> 1)
-                } else {
-                    let (a0, a1) = simd.widening_mul_u8x16(a, weights.0);
-                    let (b0, b1) = simd.widening_mul_u8x16(b, weights.1);
-                    ((a0 + b0 + 8) >> 4, (a1 + b1 + 8) >> 4)
-                };
-                let bytes = simd.narrow_u16x8(low, high);
-                let Some(slot) = output.get_mut(row * stride + col..) else {
-                    return;
-                };
-                match first.w - col {
-                    4 => {
-                        if let Some(slot) = slot.first_chunk_mut::<4>() {
-                            *slot = bytes.bitcast::<u32x4<S>>()[0].to_le_bytes();
-                        }
-                    }
-                    8 => {
-                        if let Some(slot) = slot.first_chunk_mut::<8>() {
-                            *slot = bytes.bitcast::<u64x2<S>>()[0].to_le_bytes();
-                        }
-                    }
-                    _ => {
-                        if let Some(slot) = slot.first_chunk_mut::<16>() {
-                            bytes.store_array(slot);
-                        }
-                    }
+        return Some((reads, false));
+    }
+    let bound = |value: i32, size: usize| value.max(0).min(size as i32 - 1);
+    let (first_x, last_x) = (bound(bounds[0], width), bound(bounds[2], width));
+    let (first, last) = (bound(bounds[1], rows), bound(bounds[3], rows));
+    if first_x > last_x || first > last || last_x > i32::from(i16::MAX) - 32 {
+        return None;
+    }
+    let column = window.column.max(first_x).min(last_x);
+    let end = (last as usize)
+        .checked_mul(stride)?
+        .checked_add(column as usize + 16)?;
+    if end > len {
+        return None;
+    }
+    let start = window.column.max(first_x - 16).min(last_x + 16) - column;
+    let reads = Reads {
+        base: column as usize,
+        stride,
+        top: window.row,
+        first,
+        last,
+        columns: [start, first_x - column, last_x - column].map(|value| value as i16),
+    };
+    Some((reads, true))
+}
+
+/// What a kernel stores from byte lanes: `N` outputs of a row at a time,
+/// `N` 8 or 16, or four of each of two rows, as `Clip1` samples
+/// ([`Self::bytes`]) or compound predictors ([`Self::preds`]).
+pub(in crate::subpel_mc) trait ByteOut: Out {
+    /// The `N` first predictors of `row`.
+    fn first<const N: usize>(t: Neon, _: &Self::Row<'_>) -> [int16x8_t; 2] {
+        [i16x8::splat(t, 0).into(); 2]
+    }
+    /// The four first predictors of each of rows `a` and `b`.
+    fn first_pair(t: Neon, _: &Self::Row<'_>, _: &Self::Row<'_>) -> int16x8_t {
+        i16x8::splat(t, 0).into()
+    }
+    /// Stores `N` samples.
+    fn bytes<const N: usize>(_: Neon, _: Self::Row<'_>, _: uint8x16_t) {}
+    /// Stores four samples into each of rows `a` (lanes `0..4`) and `b`
+    /// (lanes `4..8`).
+    fn bytes_pair(_: Neon, _: Self::Row<'_>, _: Self::Row<'_>, _: uint8x16_t) {}
+    /// Stores `N` compound predictors, the second eight in `values[1]`.
+    fn preds<const N: usize>(_: Neon, _: Self::Row<'_>, _: [int16x8_t; 2]) {}
+    /// Stores four compound predictors into each of rows `a` and `b`.
+    fn preds_pair(_: Neon, _: Self::Row<'_>, _: Self::Row<'_>, _: int16x8_t) {}
+}
+
+/// `N` bytes into `row`.
+#[inline(always)]
+fn store_row<const N: usize>(t: Neon, row: &mut [u8], values: uint8x16_t) {
+    let values = u8x16::<Neon>::simd_from(t, values);
+    if N == 16 {
+        if let Some(slot) = row.first_chunk_mut::<16>() {
+            values.store_array(slot);
+        }
+    } else if let Some(slot) = row.first_chunk_mut::<8>() {
+        *slot = values.bitcast::<u64x2<Neon>>()[0].to_le_bytes();
+    }
+}
+
+impl ByteOut for Put<'_, u8> {
+    #[inline(always)]
+    fn bytes<const N: usize>(t: Neon, row: &mut [u8], values: uint8x16_t) {
+        store_row::<N>(t, row, values);
+    }
+    #[inline(always)]
+    fn bytes_pair(t: Neon, a: &mut [u8], b: &mut [u8], values: uint8x16_t) {
+        store_pair(a, b, u8x16::<Neon>::simd_from(t, values).to_array());
+    }
+}
+
+impl ByteOut for Put<'_, u16> {
+    #[inline(always)]
+    fn bytes<const N: usize>(t: Neon, row: &mut [u16], values: uint8x16_t) {
+        let (low, high) = t.widen_u8x16(u8x16::simd_from(t, values));
+        for (at, lanes) in [low, high].into_iter().enumerate().take(N / 8) {
+            if let Some(slot) = row
+                .get_mut(8 * at..)
+                .and_then(<[u16]>::first_chunk_mut::<8>)
+            {
+                lanes.store_array(slot);
+            }
+        }
+    }
+    #[inline(always)]
+    fn bytes_pair(t: Neon, a: &mut [u16], b: &mut [u16], values: uint8x16_t) {
+        store_pair(
+            a,
+            b,
+            t.widen_u8x16(u8x16::simd_from(t, values)).0.to_array(),
+        );
+    }
+}
+
+/// A compound predictor sample: eight-bit predictors fit `i16`, 16-bit
+/// ones need `i32`.
+pub(in crate::subpel_mc) trait Pred: Copy {
+    /// Stores `N` predictors, 8 or 16.
+    fn store<const N: usize>(t: Neon, row: &mut [Self], values: [int16x8_t; 2]);
+    /// Loads `N` predictors, 8 or 16, zero past the slice.
+    fn load<const N: usize>(t: Neon, row: &[Self]) -> [int16x8_t; 2];
+    /// Stores lanes `0..4` into row `a` and `4..8` into row `b`.
+    fn store_pair(t: Neon, a: &mut [Self], b: &mut [Self], values: int16x8_t);
+    /// Loads four predictors of each of rows `a` and `b`, zero past them.
+    fn load_pair(t: Neon, a: &[Self], b: &[Self]) -> int16x8_t;
+}
+
+impl Pred for i16 {
+    #[inline(always)]
+    fn store<const N: usize>(t: Neon, row: &mut [i16], values: [int16x8_t; 2]) {
+        if let Some(slot) = row.first_chunk_mut::<8>() {
+            i16x8::<Neon>::simd_from(t, values[0]).store_array(slot);
+        }
+        if N == 16
+            && let Some(slot) = row.get_mut(8..).and_then(<[i16]>::first_chunk_mut::<8>)
+        {
+            i16x8::<Neon>::simd_from(t, values[1]).store_array(slot);
+        }
+    }
+    #[inline(always)]
+    fn load<const N: usize>(t: Neon, row: &[i16]) -> [int16x8_t; 2] {
+        let lanes = |at: usize| {
+            row.get(at..)
+                .and_then(<[i16]>::first_chunk::<8>)
+                .map_or(i16x8::splat(t, 0), |lanes| i16x8::load_array_ref(t, lanes))
+                .into()
+        };
+        [lanes(0), if N == 16 { lanes(8) } else { lanes(0) }]
+    }
+    #[inline(always)]
+    fn store_pair(t: Neon, a: &mut [i16], b: &mut [i16], values: int16x8_t) {
+        store_pair(a, b, i16x8::<Neon>::simd_from(t, values).to_array());
+    }
+    #[inline(always)]
+    fn load_pair(t: Neon, a: &[i16], b: &[i16]) -> int16x8_t {
+        let (a, b) = (a.first_chunk::<4>(), b.first_chunk::<4>());
+        let lanes: [i16; 8] = core::array::from_fn(|lane| {
+            let row = if lane < 4 { a } else { b };
+            row.map_or(0, |row| row[lane % 4])
+        });
+        i16x8::load_array(t, lanes).into()
+    }
+}
+
+impl Pred for i32 {
+    #[inline(always)]
+    fn store<const N: usize>(t: Neon, row: &mut [i32], values: [int16x8_t; 2]) {
+        for (at, values) in values.into_iter().enumerate().take(N / 8) {
+            let (low, high) = t.widen_i16x8(i16x8::simd_from(t, values));
+            for (half, lanes) in [low, high].into_iter().enumerate() {
+                if let Some(slot) = row
+                    .get_mut(8 * at + 4 * half..)
+                    .and_then(<[i32]>::first_chunk_mut::<4>)
+                {
+                    lanes.store_array(slot);
                 }
             }
         }
-        return;
     }
-    let remaps = blocks.map(|block| block.remap.map(|remap| u8x16::load_array(simd, remap)));
-    let weights = (
-        i16x8::splat(simd, forward as i16),
-        i16x8::splat(simd, (16 - forward) as i16),
+    #[inline(always)]
+    fn load<const N: usize>(t: Neon, row: &[i32]) -> [int16x8_t; 2] {
+        let lanes = |at: usize| {
+            t.narrow_i32x4(load4(t, row, at), load4(t, row, at + 4))
+                .into()
+        };
+        [lanes(0), if N == 16 { lanes(8) } else { lanes(0) }]
+    }
+    #[inline(always)]
+    fn store_pair(t: Neon, a: &mut [i32], b: &mut [i32], values: int16x8_t) {
+        let (low, high) = t.widen_i16x8(i16x8::simd_from(t, values));
+        for (row, lanes) in [a, b].into_iter().zip([low, high]) {
+            if let Some(slot) = row.first_chunk_mut::<4>() {
+                lanes.store_array(slot);
+            }
+        }
+    }
+    #[inline(always)]
+    fn load_pair(t: Neon, a: &[i32], b: &[i32]) -> int16x8_t {
+        t.narrow_i32x4(load4(t, a, 0), load4(t, b, 0)).into()
+    }
+}
+
+/// Four `i32` values from `at`, zero past the slice.
+#[inline(always)]
+fn load4(t: Neon, values: &[i32], at: usize) -> i32x4<Neon> {
+    values
+        .get(at..)
+        .and_then(<[i32]>::first_chunk::<4>)
+        .map_or(i32x4::splat(t, 0), |lanes| i32x4::load_array_ref(t, lanes))
+}
+
+impl<P: Pred> ByteOut for Prep<'_, P> {
+    #[inline(always)]
+    fn preds<const N: usize>(t: Neon, row: &mut [P], values: [int16x8_t; 2]) {
+        P::store::<N>(t, row, values);
+    }
+    #[inline(always)]
+    fn preds_pair(t: Neon, a: &mut [P], b: &mut [P], values: int16x8_t) {
+        P::store_pair(t, a, b, values);
+    }
+}
+
+impl<P: Pred> ByteOut for Average<'_, P, u8> {
+    #[inline(always)]
+    fn first<const N: usize>(t: Neon, (pred0, _): &(&[P], &mut [u8])) -> [int16x8_t; 2] {
+        P::load::<N>(t, pred0)
+    }
+    #[inline(always)]
+    fn first_pair(t: Neon, (a, _): &(&[P], &mut [u8]), (b, _): &(&[P], &mut [u8])) -> int16x8_t {
+        P::load_pair(t, a, b)
+    }
+    #[inline(always)]
+    fn bytes<const N: usize>(t: Neon, (_, row): (&[P], &mut [u8]), values: uint8x16_t) {
+        store_row::<N>(t, row, values);
+    }
+    #[inline(always)]
+    fn bytes_pair(
+        t: Neon,
+        (_, a): (&[P], &mut [u8]),
+        (_, b): (&[P], &mut [u8]),
+        values: uint8x16_t,
+    ) {
+        store_pair(a, b, u8x16::<Neon>::simd_from(t, values).to_array());
+    }
+}
+
+/// Calls `$f::<H, V, N>` for the shape key `15 * (N / 16) + 5 * (H / 2) +
+/// V` of a strip kernel, `N` 8 or 16, `H` 0, 2 or 4 and `V` 0 to 4; a
+/// 16-column strip has one pass.
+macro_rules! strip_shapes {
+    ($key:expr, $f:ident::<$o:ident> $args:tt) => {
+        strip_shapes!(@ $key, $f $o $args, [
+            0 0 0 8, 1 0 1 8, 2 0 2 8, 3 0 3 8, 4 0 4 8, 5 2 0 8, 6 2 1 8, 7 2 2 8, 8 2 3 8,
+            9 2 4 8, 10 4 0 8, 11 4 1 8, 12 4 2 8, 13 4 3 8, 14 4 4 8, 15 0 0 16, 16 0 1 16,
+            17 0 2 16, 18 0 3 16, 19 0 4 16, 20 2 0 16, 25 4 0 16
+        ])
+    };
+    (@ $key:expr, $f:ident $o:ident $args:tt, [$($k:literal $hh:literal $vv:literal $n:literal),*]) => {
+        match $key {
+            $($k => $f::<$hh, $vv, $n, $o> $args,)*
+            _ => {}
+        }
+    };
+}
+
+/// Calls `$f::<H, V>` of a 4-column block for the shape key `5 * (H / 2) +
+/// V`, `H` 0 or 2 and `V` 0 to 4.
+macro_rules! pair_shapes {
+    ($key:expr, $f:ident::<$o:ident> $args:tt) => {
+        pair_shapes!(@ $key, $f $o $args,
+            [0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 5 2 0, 6 2 1, 7 2 2, 8 2 3, 9 2 4])
+    };
+    (@ $key:expr, $f:ident $o:ident $args:tt, [$($k:literal $hh:literal $vv:literal),*]) => {
+        match $key {
+            $($k => $f::<$hh, $vv, $o> $args,)*
+            _ => {}
+        }
+    };
+}
+
+/// [`cell_groups`] of the `W`-square cell whose passes have `$h` and `$v`
+/// tap pairs, which [`is_cell`] admits, read in place or with `$c` clamped;
+/// zero for any other shape.
+macro_rules! cells {
+    ($h:expr, $v:expr, $c:expr, $args:tt) => {
+        if W == 4 {
+            cells!(@ 3 * $h + $v, $c, $args, [0 0 0, 1 0 1, 2 0 2, 3 1 0, 4 1 1, 5 1 2, 6 2 0, 7 2 1, 8 2 2])
+        } else {
+            cells!(@ 5 * $h + $v, $c, $args, [
+                0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 5 1 0, 6 1 1, 7 1 2, 8 1 3, 9 1 4, 10 2 0,
+                11 2 1, 12 2 2, 13 2 3, 14 2 4, 15 3 0, 16 3 1, 17 3 2, 18 3 3, 19 3 4, 20 4 0,
+                21 4 1, 22 4 2, 23 4 3, 24 4 4
+            ])
+        }
+    };
+    (@ $key:expr, $c:expr, $args:tt, [$($k:literal $hh:literal $vv:literal),*]) => {
+        match ($key, $c) {
+            $(($k, false) => cell_groups::<W, $hh, $vv, false> $args,)*
+            $(($k, true) => cell_groups::<W, $hh, $vv, true> $args,)*
+            _ => [vdupq_n_s16(0); W],
+        }
+    };
+}
+
+/// A reference of a register cell: its [`Reads`], whether they are
+/// clamped, and the taps of both passes.
+type Placed = (Reads, bool, Option<&'static Taps>, Option<&'static Taps>);
+
+/// The [`Placed`] reads of the `W`-square register cell of `filter` at
+/// `placement` in a plane of `geometry`; `None` for a cell [`is_cell`] does
+/// not admit or an empty clip range.
+#[inline(always)]
+fn place<const W: usize>(
+    filter: usize,
+    (start, bounds): CellPlacement,
+    geometry: Geometry,
+) -> Option<Placed> {
+    place_reads::<W>(
+        &Window::of_filters([filter; 2], W, W, start),
+        geometry,
+        bounds,
+    )
+}
+
+/// [`place`] of the window of a `W`-square cell.
+#[inline(always)]
+fn place_reads<const W: usize>(
+    window: &Window,
+    geometry: Geometry,
+    bounds: [i32; 4],
+) -> Option<Placed> {
+    let (horizontal, vertical) = (window.horizontal, window.vertical);
+    if window.w != W || !is_cell(window.w, window.h, horizontal, vertical) {
+        return None;
+    }
+    let (reads, clamped) = reads(window, geometry, bounds)?;
+    Some((reads, clamped, horizontal, vertical))
+}
+
+/// Both references' samples, the output and its stride of one plane of a
+/// [`Program`].
+pub(in crate::subpel_mc) type ProgramPlane<'a, 'b> = ([&'b [u8]; 2], &'a mut [u8], usize);
+
+/// A program of compound cells of `subpel_mc::cell` for the kernels: each
+/// cell whose windows are read in place is stored into both `planes` (U and
+/// V share the geometry) and marked in the result.
+pub(in crate::subpel_mc) struct Program<'a, 'b> {
+    pub(in crate::subpel_mc) planes: [Option<ProgramPlane<'a, 'b>>; 2],
+    pub(in crate::subpel_mc) geometry: [Geometry; 2],
+    pub(in crate::subpel_mc) filter: usize,
+    pub(in crate::subpel_mc) cells: &'a [super::super::cell::Cell],
+    pub(in crate::subpel_mc) forward: i32,
+}
+
+/// The kernels of a block into its `O`.
+pub(in crate::subpel_mc) struct Strip<'a, 'b, O>(&'a Block<'b, u8>, &'a mut O);
+
+/// The [`Strip`]s of two blocks of one window.
+pub(in crate::subpel_mc) struct Strips<'a, 'b, O>([Strip<'a, 'b, O>; 2]);
+
+/// The kernels of `P` compound pairs of one window shape, each into its
+/// `u8` storage: with `CELL` 4x4 or 8x8 register cells, else the first
+/// predictor staged for the second.
+pub(in crate::subpel_mc) struct Compound<'a, 'b, const CELL: bool, const P: usize>(
+    [[&'a Block<'b, u8>; 2]; P],
+    i32,
+    [(&'a mut [u8], usize); P],
+);
+
+/// The kernels of a compound cell of two windows within their bounds, read
+/// from each reference's samples of its geometry, into `u8` storage.
+pub(in crate::subpel_mc) struct Windows<'a, 'b>(
+    [(&'b [u8], Geometry); 2],
+    [&'a Window; 2],
+    [[i32; 4]; 2],
+    i32,
+    &'a mut [u8],
+    usize,
+);
+
+/// The NEON token, which the AArch64 baseline always has.
+#[inline(always)]
+pub(in crate::subpel_mc) fn token() -> Option<Neon> {
+    fearless_simd::Level::baseline().as_neon()
+}
+
+/// Stores the COMPOUND_AVERAGE of the 4x4 or 8x8 cell of `windows` within
+/// `bounds` read from `views`, in place or by clamped rows and columns, or
+/// returns `false` without writing when a clamped row cannot load 16
+/// samples or the output cannot hold the cell.
+#[inline]
+pub(in crate::subpel_mc) fn compound_windows(
+    views: [&ReferencePlaneView<'_, u8>; 2],
+    windows: &[Window; 2],
+    bounds: [[i32; 4]; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    let references = views.map(|view| (view.samples, view.geometry()));
+    let windows = [&windows[0], &windows[1]];
+    let job = Windows(references, windows, bounds, forward, output, stride);
+    token().is_some_and(|t| dot::run(t, job))
+}
+
+/// The kernels of a [`Program`] of `size`-square cells.
+pub(in crate::subpel_mc) struct Programs<'a, 'b>(Program<'a, 'b>, usize, &'a mut Written);
+
+/// Runs the cells of a program of `size`-square cells, 4 or 8, whose
+/// windows are read in place or by clamped rows and columns into both
+/// `planes`, and returns their bits.
+#[inline]
+pub(in crate::subpel_mc) fn program(
+    planes: &mut [Option<Plane<'_, '_, u8>>; 2],
+    (filter, size): (usize, usize),
+    cells: &[Cell],
+    (forward, _): (i32, u16),
+) -> Written {
+    let mut written = [[0; 4]; 2];
+    let (Some(t), Some((views, ..))) = (token(), &planes[0]) else {
+        return written;
+    };
+    let geometry = views.each_ref().map(ReferencePlaneView::geometry);
+    let planes = planes.each_mut().map(|plane| {
+        let (views, output, stride) = plane.as_mut()?;
+        Some(([views[0].samples, views[1].samples], &mut **output, *stride))
+    });
+    let program = Program {
+        planes,
+        geometry,
+        filter,
+        cells,
+        forward,
+    };
+    dot::run(t, Programs(program, size, &mut written));
+    written
+}
+
+/// Predicts `block` into an eight-bit `sink`, as [`super::predict`] admits.
+#[inline]
+pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) {
+    let Some(t) = token() else { return };
+    let w = block.w;
+    match sink {
+        Sink::Put { output, stride } => {
+            dot::run(
+                t,
+                Strip(
+                    block,
+                    &mut Put {
+                        output,
+                        stride: *stride,
+                    },
+                ),
+            );
+        }
+        Sink::PutWide { output, stride, .. } => {
+            dot::run(
+                t,
+                Strip(
+                    block,
+                    &mut Put {
+                        output,
+                        stride: *stride,
+                    },
+                ),
+            );
+        }
+        Sink::Prep { output, stride } => {
+            dot::run(
+                t,
+                Strip(
+                    block,
+                    &mut Prep {
+                        output,
+                        stride: *stride,
+                    },
+                ),
+            );
+        }
+        Sink::PrepNarrow { output, stride } => {
+            dot::run(
+                t,
+                Strip(
+                    block,
+                    &mut Prep {
+                        output,
+                        stride: *stride,
+                    },
+                ),
+            );
+        }
+        Sink::Average {
+            pred0,
+            forward,
+            output,
+            stride,
+        } => {
+            let (forward, stride) = (*forward, *stride);
+            dot::run(
+                t,
+                Strip(
+                    block,
+                    &mut Average {
+                        pred0,
+                        w,
+                        forward,
+                        output,
+                        stride,
+                    },
+                ),
+            );
+        }
+        Sink::AverageNarrow {
+            pred0,
+            forward,
+            output,
+            stride,
+        } => {
+            let (forward, stride) = (*forward, *stride);
+            dot::run(
+                t,
+                Strip(
+                    block,
+                    &mut Average {
+                        pred0,
+                        w,
+                        forward,
+                        output,
+                        stride,
+                    },
+                ),
+            );
+        }
+        Sink::AverageWide { .. } => {}
+    }
+}
+
+/// Stores the `Clip1` single-reference prediction of `block`.
+#[inline]
+pub(in crate::subpel_mc) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
+    run(Strip(block, &mut Put { output, stride }));
+}
+
+/// Runs `job` in the kernel family [`dot::run`] picks.
+#[inline(always)]
+fn run<J: dot::Job<Output = ()>>(job: J) {
+    if let Some(t) = token() {
+        dot::run(t, job);
+    }
+}
+
+/// [`put`] of two blocks of one window into `outputs`.
+#[inline]
+pub(in crate::subpel_mc) fn put_pair(
+    blocks: [&Block<'_, u8>; 2],
+    [(first, first_stride), (second, second_stride)]: [(&mut [u8], usize); 2],
+) {
+    let first = &mut Put {
+        output: first,
+        stride: first_stride,
+    };
+    let second = &mut Put {
+        output: second,
+        stride: second_stride,
+    };
+    run(Strips([Strip(blocks[0], first), Strip(blocks[1], second)]));
+}
+
+/// The COMPOUND_AVERAGE of each of `P` 4x4 or 8x8 register cell pairs into
+/// its output.
+#[inline]
+pub(in crate::subpel_mc) fn compound_cell<const P: usize>(
+    pairs: [[&Block<'_, u8>; 2]; P],
+    forward: i32,
+    outputs: [(&mut [u8], usize); P],
+) {
+    run(Compound::<true, P>(pairs, forward, outputs));
+}
+
+/// The COMPOUND_AVERAGE of two full-sample blocks into `output`.
+#[inline]
+pub(in crate::subpel_mc) fn compound_fullpel(
+    blocks: [&Block<'_, u8>; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) {
+    if let Some(t) = token() {
+        fullpel_pair(t, blocks, forward, output, stride);
+    }
+}
+
+fearless_simd::kernel!(
+    /// [`fullpel`] entered through the NEON token.
+    #[inline]
+    fn fullpel_pair(
+        t: Neon,
+        blocks: [&Block<'_, u8>; 2],
+        forward: i32,
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        fullpel(t, blocks, forward, output, stride);
+    }
+);
+
+/// The COMPOUND_AVERAGE of each of `P` compound pairs into its output, the
+/// first predictor staged for the second.
+#[inline]
+pub(in crate::subpel_mc) fn compound_strips<const P: usize>(
+    pairs: [[&Block<'_, u8>; 2]; P],
+    forward: i32,
+    outputs: [(&mut [u8], usize); P],
+) {
+    run(Compound::<false, P>(pairs, forward, outputs));
+}
+
+fearless_simd::kernel!(
+    /// [`mla::strips`] entered through the NEON token.
+    #[inline]
+    fn mla_strips(t: Neon, block: &Block<'_, u8>, out: &mut impl ByteOut) {
+        mla::strips(t, block, out);
+    }
+);
+
+fearless_simd::kernel!(
+    /// [`mla::compound_cell`] or [`mla::compound_strips`] entered through
+    /// the NEON token.
+    #[inline]
+    fn mla_compound(
+        t: Neon,
+        cell: bool,
+        blocks: [&Block<'_, u8>; 2],
+        forward: i32,
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        if cell {
+            mla::compound_cell(t, blocks, forward, output, stride);
+        } else {
+            mla::compound_strips(t, blocks, forward, output, stride);
+        }
+    }
+);
+
+fearless_simd::kernel!(
+    /// [`mla::windows_cell`] entered through the NEON token.
+    #[inline]
+    fn mla_windows(t: Neon, job: Windows<'_, '_>) -> bool {
+        if job.1[0].w == 4 {
+            mla::windows_cell::<4>(t, job)
+        } else {
+            mla::windows_cell::<8>(t, job)
+        }
+    }
+);
+
+fearless_simd::kernel!(
+    /// [`mla::run_program`] entered through the NEON token.
+    #[inline]
+    fn mla_program(t: Neon, job: Programs<'_, '_>) {
+        *job.2 = if job.1 == 4 {
+            mla::run_program::<4>(t, job.0)
+        } else {
+            mla::run_program::<8>(t, job.0)
+        };
+    }
+);
+
+pub(in crate::subpel_mc) mod dot;
+mod kernels;
+
+/// The kernels whose horizontal sums multiply-accumulate halved taps.
+mod mla {
+    use super::*;
+    use super::{mla_line as hline, pair_sums as hpair, row_sums_of as hrow, weights as taps};
+
+    super::kernels::kernels!("neon");
+}
+
+/// The kernels whose horizontal sums are `usdot` dot products.
+mod usdot {
+    use super::*;
+    use super::{
+        dot_pair_sums as hpair, dot_taps as taps, usdot_line as hline, usdot_row_sums as hrow,
+    };
+
+    super::kernels::kernels!("neon,dotprod,i8mm");
+}
+
+/// The kernels whose horizontal sums are `sdot` dot products.
+mod sdot {
+    use super::*;
+    use super::{
+        dot_line as hline, dot_pair_sums as hpair, dot_row_sums as hrow, dot_taps as taps,
+    };
+
+    super::kernels::kernels!("neon,dotprod");
+}
+
+/// The halved taps of a horizontal pass as `i8`, taps `0..4` in word 0 and
+/// `4..8` in word 1, zero past its pairs.
+#[inline]
+#[target_feature(enable = "neon")]
+fn dot_taps(_: Neon, taps: Option<&Taps>) -> int8x16_t {
+    vcombine_s8(vcreate_s8(taps.map_or(0, |taps| taps.dot)), vdup_n_s8(0))
+}
+
+/// The clamping [`Reads`] of a cell read in place, which only a clamped
+/// cell kernel reads.
+static IN_PLACE: Reads = Reads {
+    base: 0,
+    stride: 0,
+    top: 0,
+    first: 0,
+    last: 0,
+    columns: [0; 3],
+};
+
+/// Byte lane indices `0..16`.
+const BYTE_LANES: [i8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+/// Byte indices of the four 4-byte windows of outputs `0..4` from byte
+/// `4 * k`, as two little-endian words, for `k` 0, 1 and 2.
+const DOT_WINDOWS: [[u64; 2]; 3] = {
+    let mut out = [[0; 2]; 3];
+    let mut k = 0;
+    while k < 3 {
+        let mut lane = 0;
+        while lane < 16 {
+            out[k][lane / 8] |= ((4 * k + lane / 4 + lane % 4) as u64) << (8 * (lane % 8));
+            lane += 1;
+        }
+        k += 1;
+    }
+    out
+};
+
+/// The `tbl` indices of [`DOT_WINDOWS`] `K`.
+#[inline]
+#[target_feature(enable = "neon")]
+fn dot_windows<const K: usize>() -> uint8x16_t {
+    vcombine_u8(vcreate_u8(DOT_WINDOWS[K][0]), vcreate_u8(DOT_WINDOWS[K][1]))
+}
+
+/// The halved-tap sums of eight outputs of `bytes`, as [`row_sums_of`]: the
+/// samples biased to `i8` weigh exactly in `sdot`, and the bias times the
+/// halved taps' sum, `128 * 64`, starts each sum.
+#[inline]
+#[target_feature(enable = "neon,dotprod")]
+fn dot_row_sums<const P: usize>(bytes: uint8x16_t, taps: int8x16_t) -> int16x8_t {
+    dot_line::<P, 8>(bytes, bytes, taps, 0)[0]
+}
+
+/// The halved-tap sums plus `bias` of `N` outputs, 8 or 16, of a window row
+/// whose columns `0..16` are `a` and `8..24` are `b`, as [`dot_row_sums`].
+#[inline]
+#[target_feature(enable = "neon,dotprod")]
+fn dot_line<const P: usize, const N: usize>(
+    a: uint8x16_t,
+    b: uint8x16_t,
+    taps: int8x16_t,
+    bias: i32,
+) -> [int16x8_t; 2] {
+    let flip = vdupq_n_u8(0x80);
+    let (a, b) = (
+        vreinterpretq_s8_u8(veorq_u8(a, flip)),
+        vreinterpretq_s8_u8(veorq_u8(b, flip)),
     );
-    for row in 0..first.h {
-        for col in (0..first.w).step_by(8) {
-            let (a, _) = samples(simd, first, remaps[0], row, col);
-            let (b, _) = samples(simd, second, remaps[1], row, col);
-            let values = if forward == 8 {
-                (a + b + 1) >> 1
-            } else {
-                (a * weights.0 + b * weights.1 + 8) >> 4
-            };
-            store_bytes(
-                simd,
-                output,
-                row * stride + col,
-                (first.w - col).min(8),
-                values,
+    let bias = vdupq_n_s32(128 * 64 + bias);
+    let windows = [dot_windows::<0>(), dot_windows::<1>(), dot_windows::<2>()];
+    let a = windows.map(|window| vqtbl1q_s8(a, window));
+    let sum = |first: int8x16_t, second: int8x16_t| {
+        let sum = vdotq_laneq_s32::<0>(bias, first, taps);
+        if P > 2 {
+            vdotq_laneq_s32::<1>(sum, second, taps)
+        } else {
+            sum
+        }
+    };
+    let pack = |low, high| vuzp1q_s16(vreinterpretq_s16_s32(low), vreinterpretq_s16_s32(high));
+    let low = pack(sum(a[0], a[1]), sum(a[1], a[2]));
+    if N == 8 {
+        return [low, low];
+    }
+    let (b1, b2) = (vqtbl1q_s8(b, windows[1]), vqtbl1q_s8(b, windows[2]));
+    [low, pack(sum(a[2], b1), sum(b1, b2))]
+}
+
+/// [`dot_line`] in multiply-accumulate lanes.
+#[inline]
+#[target_feature(enable = "neon")]
+fn mla_line<const P: usize, const N: usize>(
+    a: uint8x16_t,
+    b: uint8x16_t,
+    weights: int16x8_t,
+    bias: i32,
+) -> [int16x8_t; 2] {
+    let bias = vdupq_n_s16(bias as i16);
+    let low = vaddq_s16(row_sums_of::<P>(a, weights), bias);
+    if N == 8 {
+        return [low, low];
+    }
+    [low, vaddq_s16(row_sums_of::<P>(b, weights), bias)]
+}
+
+/// The halved-tap sums plus `bias` of four outputs of each of the window
+/// rows `a` and `b`, the first row in lanes `0..4`, as [`pair_sums`] of at
+/// most two tap pairs.
+#[inline]
+#[target_feature(enable = "neon,dotprod")]
+fn dot_pair_sums(a: uint8x8_t, b: uint8x8_t, taps: int8x16_t, bias: i32) -> int16x8_t {
+    let samples = vreinterpretq_s8_u8(veorq_u8(vcombine_u8(a, b), vdupq_n_u8(0x80)));
+    let bias = vdupq_n_s32(128 * 64 + bias);
+    let windows = [dot_windows::<0>(), dot_windows::<2>()];
+    let low = vdotq_laneq_s32::<0>(bias, vqtbl1q_s8(samples, windows[0]), taps);
+    let high = vdotq_laneq_s32::<0>(bias, vqtbl1q_s8(samples, windows[1]), taps);
+    vuzp1q_s16(vreinterpretq_s16_s32(low), vreinterpretq_s16_s32(high))
+}
+
+/// [`dot_row_sums`] in `usdot`, which weighs the unbiased samples.
+#[inline]
+#[target_feature(enable = "neon,i8mm")]
+fn usdot_row_sums<const P: usize>(bytes: uint8x16_t, taps: int8x16_t) -> int16x8_t {
+    usdot_line::<P, 8>(bytes, bytes, taps, 0)[0]
+}
+
+/// [`dot_line`] in `usdot`.
+#[inline]
+#[target_feature(enable = "neon,i8mm")]
+fn usdot_line<const P: usize, const N: usize>(
+    a: uint8x16_t,
+    b: uint8x16_t,
+    taps: int8x16_t,
+    bias: i32,
+) -> [int16x8_t; 2] {
+    let bias = vdupq_n_s32(bias);
+    let windows = [dot_windows::<0>(), dot_windows::<1>(), dot_windows::<2>()];
+    let a = windows.map(|window| vqtbl1q_u8(a, window));
+    let sum = |first: uint8x16_t, second: uint8x16_t| {
+        let sum = dot::usdot_lane::<0>(bias, first, taps);
+        if P > 2 {
+            dot::usdot_lane::<1>(sum, second, taps)
+        } else {
+            sum
+        }
+    };
+    let pack = |low, high| vuzp1q_s16(vreinterpretq_s16_s32(low), vreinterpretq_s16_s32(high));
+    let low = pack(sum(a[0], a[1]), sum(a[1], a[2]));
+    if N == 8 {
+        return [low, low];
+    }
+    let (b1, b2) = (vqtbl1q_u8(b, windows[1]), vqtbl1q_u8(b, windows[2]));
+    [low, pack(sum(a[2], b1), sum(b1, b2))]
+}
+
+/// Byte indices of window columns `k..k + 4` (lanes `0..4`) and `k + 1..k +
+/// 5` (lanes `8..12`) of a row in bytes `0..8`, and the same of a row in
+/// bytes `8..16` in lanes `4..8` and `12..16`, for `k` 0 and 2, as two
+/// little-endian words.
+const PAIR_TAPS: [[u64; 2]; 2] = {
+    let mut out = [[0; 2]; 2];
+    let mut pair = 0;
+    while pair < 2 {
+        let mut lane = 0;
+        while lane < 16 {
+            let byte = 2 * pair + lane / 8 + lane % 4 + lane / 4 % 2 * 8;
+            out[pair][lane / 8] |= (byte as u64) << (8 * (lane % 8));
+            lane += 1;
+        }
+        pair += 1;
+    }
+    out
+};
+
+/// The halved-tap horizontal sums plus `bias` of four outputs of each of
+/// the window rows `a` and `b`, the first row in lanes `0..4`.
+#[inline]
+#[target_feature(enable = "neon")]
+fn pair_sums(a: uint8x8_t, b: uint8x8_t, weights: int16x8_t, bias: i32) -> int16x8_t {
+    let bytes = vcombine_u8(a, b);
+    let zero = vdupq_n_u8(0);
+    let pair = |[low, high]: [u64; 2]| {
+        let lanes = vqtbl1q_u8(bytes, vcombine_u8(vcreate_u8(low), vcreate_u8(high)));
+        (
+            vreinterpretq_s16_u8(vzip1q_u8(lanes, zero)),
+            vreinterpretq_s16_u8(vzip2q_u8(lanes, zero)),
+        )
+    };
+    let (first, second) = (pair(PAIR_TAPS[0]), pair(PAIR_TAPS[1]));
+    let sums = sums16::<2>(weights, |k| match k {
+        0 => first.0,
+        1 => first.1,
+        2 => second.0,
+        _ => second.1,
+    });
+    vaddq_s16(sums, vdupq_n_s16(bias as i16))
+}
+
+/// The COMPOUND_AVERAGE of the groups of two `W`-square cells.
+#[inline]
+#[target_feature(enable = "neon")]
+fn store_cell<const W: usize>(
+    t: Neon,
+    first: [int16x8_t; W],
+    second: [int16x8_t; W],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) {
+    let averages: [uint8x8_t; W] = if forward == 8 {
+        core::array::from_fn(|group| vqrshrun_n_s16::<5>(vaddq_s16(first[group], second[group])))
+    } else {
+        core::array::from_fn(|group| vqmovun_s16(blend(first[group], second[group], forward)))
+    };
+    let at = |group: usize| {
+        if W == 4 {
+            2 * group * stride
+        } else {
+            group * stride
+        }
+    };
+    for (group, values) in averages.into_iter().enumerate().take(W * W / 8) {
+        let Some(row) = output.get_mut(at(group)..) else {
+            return;
+        };
+        if W == 8 {
+            if let Some(slot) = row.first_chunk_mut::<8>() {
+                *slot = vget_lane_u64::<0>(vreinterpret_u64_u8(values)).to_le_bytes();
+            }
+        } else if let Some((a, b)) = row.split_at_mut_checked(stride) {
+            store_pair(
+                a,
+                b,
+                u8x16::<Neon>::simd_from(t, vcombine_u8(values, values)).to_array(),
             );
         }
     }
 }
 
-/// Calls `$f::<_, H>` or `$f::<_, H, V>` for the tap-pair counts of a
-/// block's passes, zero for a skipped pass.
-macro_rules! by_pairs {
-    ($pairs:expr, $one:ident, $two:ident $args:tt) => {
-        by_pairs!(@ $pairs, $one, $two $args,
-            [0, 1, 2, 3, 4],
-            [0 1, 0 2, 0 3, 0 4, 1 1, 1 2, 1 3, 1 4, 2 1, 2 2, 2 3, 2 4,
-             3 1, 3 2, 3 3, 3 4, 4 1, 4 2, 4 3, 4 4])
-    };
-    (@ $pairs:expr, $one:ident, $two:ident $args:tt,
-        [$($h:literal),*], [$($hh:literal $v:literal),*]) => {
-        match $pairs {
-            $(($h, 0) => $one::<_, $h> $args,)*
-            $(($hh, $v) => $two::<_, $hh, $v> $args,)*
-            _ => {}
-        }
-    };
+/// Four bytes from `at` as a little-endian word, zero past the slice.
+#[inline]
+fn load_u32(samples: &[u8], at: usize) -> u32 {
+    samples
+        .get(at..)
+        .and_then(<[u8]>::first_chunk::<4>)
+        .map_or(0, |bytes| u32::from_le_bytes(*bytes))
 }
 
-#[allow(clippy::inline_always, reason = "sub-pel hot path")]
-#[inline(always)]
-fn passes<S: Simd>(simd: S, block: &Block<'_, u8>, put: bool, out: &mut Out<'_, '_, S>) {
-    let pairs = (
-        block.horizontal.map_or(0, |taps| taps.count),
-        block.vertical.map_or(0, |taps| taps.count),
-    );
-    if block.w == 4 && block.h.is_multiple_of(2) && block.remap.is_none() {
-        match pairs {
-            (0, 1) => return paired_passes::<_, 0, 1>(simd, block, put, out),
-            (0, 2) => return paired_passes::<_, 0, 2>(simd, block, put, out),
-            (0, 4) => return paired_passes::<_, 0, 4>(simd, block, put, out),
-            (1, 1) => return paired_passes::<_, 1, 1>(simd, block, put, out),
-            (1, 2) => return paired_passes::<_, 1, 2>(simd, block, put, out),
-            (1, 4) => return paired_passes::<_, 1, 4>(simd, block, put, out),
-            (2, 1) => return paired_passes::<_, 2, 1>(simd, block, put, out),
-            (2, 2) => return paired_passes::<_, 2, 2>(simd, block, put, out),
-            (2, 4) => return paired_passes::<_, 2, 4>(simd, block, put, out),
-            _ => {}
-        }
-    }
-    by_pairs!(pairs, one_pass, two_passes(simd, block, put, out));
-}
-
-/// Byte indices of the two-row pair of window columns `tap..tap + 4` and
-/// `tap + 1..tap + 5` of rows held in bytes `0..8` and `8..16`.
-const fn pair_taps(tap: usize) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    let mut lane = 0;
-    while lane < 16 {
-        out[lane] = (lane / 8 + tap + lane % 4 + lane / 4 % 2 * 8) as u8;
-        lane += 1;
-    }
-    out
-}
-
-const PAIR_TAPS: [[u8; 16]; 2] = [pair_taps(0), pair_taps(2)];
-
-/// [`two_passes`] of a 4-wide block of even height with unclamped columns,
-/// rows `2k` and `2k + 1` of each pass in the halves of one vector. A 4-wide
-/// block's horizontal filter has at most two tap pairs, so a pair's window
-/// rows fit eight bytes each.
+/// The compound pair of two full-sample blocks: the COMPOUND_AVERAGE of the
+/// `<< 4` samples is `(a * f + b * (16 - f) + 8) >> 4`, and for `f == 8` the
+/// rounded halving add, 16 samples per vector.
 #[inline(never)]
-fn paired_passes<S: Simd, const H: usize, const V: usize>(
-    simd: S,
-    block: &Block<'_, u8>,
-    put: bool,
-    out: &mut Out<'_, '_, S>,
-) {
-    let (h_weights, v_weights) = (halved(simd, block.horizontal), halved(simd, block.vertical));
-    let taps = PAIR_TAPS.map(|taps| u8x16::load_array(simd, taps));
-    let (bias, shift) = match (H > 0, put) {
-        (true, true) => (1 << 9, 10),
-        (true, false) | (false, true) => (1 << 5, 6),
-        (false, false) => (2, 2),
-    };
-    let word = |row: usize| {
-        block
-            .source
-            .get(block.start(row)..)
-            .and_then(<[u8]>::first_chunk::<8>)
-            .map_or(0, |bytes| u64::from_le_bytes(*bytes))
-    };
-    let pair = |row: usize| -> i16x8<S> {
-        let bytes = u64x2::from_slice(simd, &[word(row), word(row + 1)]).bitcast::<u8x16<S>>();
-        let columns = |pair: usize| {
-            let (low, high) = simd
-                .swizzle_dyn_within_blocks_u8x16(bytes, taps[pair])
-                .widen();
-            (low.bitcast::<i16x8<S>>(), high.bitcast::<i16x8<S>>())
-        };
-        let (first, second) = columns(0);
-        if H == 0 {
-            return first;
-        }
-        let mut sum = first * h_weights[0] + second * h_weights[1];
-        if H > 1 {
-            let (third, fourth) = columns(1);
-            sum += third * h_weights[2] + fourth * h_weights[3];
-        }
-        (sum + 2) >> 2
-    };
-    let mut ring = [i16x8::splat(simd, 0); 5];
-    for (index, slot) in ring.iter_mut().enumerate().take(V) {
-        *slot = pair(2 * index);
-    }
-    for row in (0..block.h).step_by(2) {
-        ring[V] = pair(row + 2 * V);
-        let tap = |k: usize| {
-            if k.is_multiple_of(2) {
-                ring[k / 2]
-            } else {
-                ring[k / 2].slide::<4>(ring[k / 2 + 1])
-            }
-        };
-        let values = if H > 0 {
-            let (mut low, mut high) = (i32x4::splat(simd, bias), i32x4::splat(simd, bias));
-            let mut add = |k: usize| {
-                let (l, h) = tap(k).widening_mul(v_weights[k]);
-                low += l;
-                high += h;
+#[target_feature(enable = "neon")]
+fn fullpel(t: Neon, blocks: [&Block<'_, u8>; 2], forward: i32, output: &mut [u8], stride: usize) {
+    let (front, back) = (vdupq_n_u8(forward as u8), vdupq_n_u8((16 - forward) as u8));
+    if forward == 8 {
+        fullpel_rows(t, blocks, output, stride, |p0, p1| vrhaddq_u8(p0, p1));
+    } else if (0..=16).contains(&forward) {
+        fullpel_rows(t, blocks, output, stride, |p0, p1| {
+            let low = vmull_u8(vget_low_u8(p0), vget_low_u8(front));
+            let low = vmlal_u8(low, vget_low_u8(p1), vget_low_u8(back));
+            let high = vmlal_high_u8(vmull_high_u8(p0, front), p1, back);
+            vrshrn_high_n_u16::<4>(vrshrn_n_u16::<4>(low), high)
+        });
+    } else {
+        fullpel_rows(t, blocks, output, stride, |p0, p1| {
+            let weigh = |p0: uint8x8_t, p1: uint8x8_t| {
+                let sum = vmulq_n_s16(widen(p0), forward as i16);
+                let sum = vmlaq_n_s16(sum, widen(p1), (16 - forward) as i16);
+                vqmovun_s16(vshrq_n_s16::<4>(vaddq_s16(sum, vdupq_n_s16(8))))
             };
-            add(0);
-            add(1);
-            if V > 1 {
-                add(2);
-                add(3);
-            }
-            if V > 2 {
-                add(4);
-                add(5);
-            }
-            if V > 3 {
-                add(6);
-                add(7);
-            }
-            (low >> shift).narrow(high >> shift)
-        } else {
-            let mut sum = i16x8::splat(simd, bias as i16) + tap(0) * v_weights[0];
-            sum += tap(1) * v_weights[1];
-            if V > 1 {
-                sum += tap(2) * v_weights[2] + tap(3) * v_weights[3];
-            }
-            if V > 2 {
-                sum += tap(4) * v_weights[4] + tap(5) * v_weights[5];
-            }
-            if V > 3 {
-                sum += tap(6) * v_weights[6] + tap(7) * v_weights[7];
-            }
-            sum >> shift
-        };
-        emit(simd, out, 4, row, 0, values);
-        emit(simd, out, 4, row + 1, 0, values.slide::<4>(values));
-        for index in 0..V {
-            ring[index] = ring[index + 1];
-        }
+            vcombine_u8(
+                weigh(vget_low_u8(p0), vget_low_u8(p1)),
+                weigh(vget_high_u8(p0), vget_high_u8(p1)),
+            )
+        });
     }
 }
 
-/// The halved taps of a pass, each broadcast from one vector of all eight so
-/// the multiplies read their tap by lane instead of from its own register.
-#[allow(clippy::inline_always, reason = "sub-pel hot path")]
-#[inline(always)]
-fn halved<S: Simd>(simd: S, taps: Option<&Taps>) -> [i16x8<S>; 8] {
-    let pair = |tap: usize| taps.map_or(0, |taps| taps.full[tap / 2]);
-    let all = core::array::from_fn::<i16, 8, _>(|tap| {
-        let full = if tap % 2 == 0 {
-            pair(tap) as i16
-        } else {
-            (pair(tap) >> 16) as i16
-        };
-        full / 2
-    });
-    let all = i16x8::simd_from(simd, all);
-    let half = |value, high| {
-        if high {
-            simd.zip_high_i16x8(value, value)
-        } else {
-            simd.zip_low_i16x8(value, value)
-        }
+/// The rows of [`fullpel`] averaged by `average`: 16-sample chunks of each
+/// row, the last one overlapping the one before it, or one 4- or 8-sample
+/// group of a narrower row.
+#[inline]
+#[target_feature(enable = "neon")]
+fn fullpel_rows<'a>(
+    t: Neon,
+    blocks: [&Block<'a, u8>; 2],
+    output: &mut [u8],
+    stride: usize,
+    average: impl Fn(uint8x16_t, uint8x16_t) -> uint8x16_t,
+) {
+    let [first, second] = blocks;
+    let (w, h) = (first.w, first.h);
+    let Some((targets, target)) = rows_mut(output, 0, stride, w, h) else {
+        return;
     };
-    core::array::from_fn(|tap| half(half(half(all, tap & 4 != 0), tap & 2 != 0), tap & 1 != 0))
-}
-
-/// The samples of window row `row` from column `col`, widened: columns
-/// `col..col + 8` and `col + 8..col + 16`, through the remap of a
-/// column-clamped window. Without a remap each half widens from its own
-/// eight-byte load, so the taps slide widened lanes.
-#[allow(clippy::inline_always, reason = "sub-pel hot path")]
-#[inline(always)]
-fn samples<S: Simd>(
-    simd: S,
-    block: &Block<'_, u8>,
-    remap: Option<u8x16<S>>,
-    row: usize,
-    col: usize,
-) -> (i16x8<S>, i16x8<S>) {
-    let source = block.source.get(block.start(row) + col..);
-    let Some(bytes) = source.and_then(<[u8]>::first_chunk::<16>) else {
-        return outside(simd);
-    };
-    let widen = |bytes: u8x16<S>| bytes.widen().0.bitcast();
-    let half = |half: &[u8; 8]| widen(u64x2::splat(simd, u64::from_le_bytes(*half)).bitcast());
-    match (remap, bytes.as_chunks::<8>().0) {
-        (Some(remap), _) => {
-            let bytes =
-                simd.swizzle_dyn_within_blocks_u8x16(u8x16::load_array_ref(simd, bytes), remap);
-            (widen(bytes), bytes.widen().1.bitcast())
+    if w < 16 {
+        for (row, out) in targets.chain([target]).enumerate() {
+            let bytes = average(
+                load16(t, first.source, first.start(row)),
+                load16(t, second.source, second.start(row)),
+            );
+            let bytes = u8x16::<Neon>::simd_from(t, bytes).to_array();
+            if w == 4 {
+                if let (Some(slot), Some(bytes)) = (out.first_chunk_mut::<4>(), bytes.first_chunk())
+                {
+                    *slot = *bytes;
+                }
+                continue;
+            }
+            let tail = w - 8;
+            if let (Some(slot), Some(bytes)) = (out.first_chunk_mut::<8>(), bytes.first_chunk()) {
+                *slot = *bytes;
+            }
+            if let (Some(slot), Some(bytes)) = (
+                out.get_mut(tail..).and_then(<[u8]>::first_chunk_mut::<8>),
+                bytes.get(tail..).and_then(<[u8]>::first_chunk::<8>),
+            ) {
+                *slot = *bytes;
+            }
         }
-        (None, [low, high]) => (half(low), half(high)),
-        _ => outside(simd),
+        return;
+    }
+    let line = |block: &Block<'a, u8>| rows(block.source, block.origin, span(block.stride, h)?, w);
+    let (Some((rows0, last0)), Some((rows1, last1))) = (line(first), line(second)) else {
+        return;
+    };
+    let load = |row: &[u8; 16]| -> uint8x16_t { u8x16::load_array_ref(t, row).into() };
+    let lines = rows0.chain([last0]).zip(rows1.chain([last1]));
+    for ((row0, row1), out) in lines.zip(targets.chain([target])) {
+        let (Some(row0), Some(row1), Some(out)) = (row0.get(..w), row1.get(..w), out.get_mut(..w))
+        else {
+            return;
+        };
+        let chunks = row0
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .zip(row1.as_chunks::<16>().0);
+        for (out, (p0, p1)) in out.as_chunks_mut::<16>().0.iter_mut().zip(chunks) {
+            u8x16::<Neon>::simd_from(t, average(load(p0), load(p1))).store_array(out);
+        }
+        if w % 16 != 0
+            && let (Some(p0), Some(p1), Some(out)) =
+                (row0.last_chunk(), row1.last_chunk(), out.last_chunk_mut())
+        {
+            u8x16::<Neon>::simd_from(t, average(load(p0), load(p1))).store_array(out);
+        }
     }
 }
 
-/// The samples of a row outside the source, which no validated block reads.
-#[cold]
-#[inline(never)]
-fn outside<S: Simd>(simd: S) -> (i16x8<S>, i16x8<S>) {
-    (i16x8::splat(simd, 0), i16x8::splat(simd, 0))
+/// Sixteen bytes from `at`, zero past the slice.
+#[inline]
+#[target_feature(enable = "neon")]
+fn load16(t: Neon, samples: &[u8], at: usize) -> uint8x16_t {
+    match samples.get(at..).and_then(<[u8]>::first_chunk::<16>) {
+        Some(bytes) => u8x16::load_array_ref(t, bytes).into(),
+        None => vdupq_n_u8(0),
+    }
 }
 
-/// The halved-tap sums of the `2 * H` taps of a horizontal pass over the
-/// columns `(a, b)`, or the samples `a` without a horizontal pass. The
-/// pairs are spelled out: a loop over `slide` arms stayed a runtime loop.
-#[allow(clippy::inline_always, reason = "sub-pel hot path")]
-#[inline(always)]
-fn horizontal<S: Simd, const H: usize>(
-    (a, b): (i16x8<S>, i16x8<S>),
-    weights: &[i16x8<S>; 8],
-) -> i16x8<S> {
-    if H == 0 {
-        return a;
+/// Eight bytes from `at`, zero past the slice.
+#[inline]
+#[target_feature(enable = "neon")]
+fn load8(samples: &[u8], at: usize) -> uint8x8_t {
+    let word = samples
+        .get(at..)
+        .and_then(<[u8]>::first_chunk::<8>)
+        .map_or(0, |bytes| u64::from_le_bytes(*bytes));
+    vcreate_u8(word)
+}
+
+/// Widens eight bytes to `i16` lanes.
+#[inline]
+#[target_feature(enable = "neon")]
+fn widen(bytes: uint8x8_t) -> int16x8_t {
+    vreinterpretq_s16_u16(vmovl_u8(bytes))
+}
+
+/// The halved taps of a pass in `i16` lanes, zero past its pairs.
+#[inline]
+#[target_feature(enable = "neon")]
+fn weights(t: Neon, taps: Option<&Taps>) -> int16x8_t {
+    taps.map_or(vdupq_n_s16(0), |taps| {
+        vreinterpretq_s16_s32(i32x4::load_array_ref(t, &taps.words).into())
+    })
+}
+
+#[inline]
+#[target_feature(enable = "neon")]
+fn mla<const L: i32>(sum: int16x8_t, x: int16x8_t, weights: int16x8_t) -> int16x8_t {
+    vmlaq_laneq_s16::<L>(sum, x, weights)
+}
+
+/// `Σ` over `2 * P` taps of `tap(k) * weights[k]` in `i16` lanes.
+#[inline]
+#[target_feature(enable = "neon")]
+fn sums16<const P: usize>(
+    weights: int16x8_t,
+    mut tap: impl FnMut(usize) -> int16x8_t,
+) -> int16x8_t {
+    let mut sum = vmulq_laneq_s16::<0>(tap(0), weights);
+    sum = mla::<1>(sum, tap(1), weights);
+    if P >= 2 {
+        sum = mla::<2>(sum, tap(2), weights);
+        sum = mla::<3>(sum, tap(3), weights);
     }
-    let mut sum = a * weights[0] + a.slide::<1>(b) * weights[1];
-    if H > 1 {
-        sum += a.slide::<2>(b) * weights[2] + a.slide::<3>(b) * weights[3];
+    if P >= 3 {
+        sum = mla::<4>(sum, tap(4), weights);
+        sum = mla::<5>(sum, tap(5), weights);
     }
-    if H > 2 {
-        sum += a.slide::<4>(b) * weights[4] + a.slide::<5>(b) * weights[5];
-    }
-    if H > 3 {
-        sum += a.slide::<6>(b) * weights[6] + a.slide::<7>(b) * weights[7];
+    if P >= 4 {
+        sum = mla::<6>(sum, tap(6), weights);
+        sum = mla::<7>(sum, tap(7), weights);
     }
     sum
 }
 
-/// A block whose vertical pass is skipped: the horizontal pass, or a copy.
-#[inline(never)]
-fn one_pass<S: Simd, const H: usize>(
-    simd: S,
-    block: &Block<'_, u8>,
-    put: bool,
-    out: &mut Out<'_, '_, S>,
-) {
-    let weights = halved(simd, block.horizontal);
-    let remap = block.remap.map(|remap| u8x16::load_array(simd, remap));
-    for col in (0..block.w).step_by(8) {
-        for row in 0..block.h {
-            let sums = horizontal::<S, H>(samples(simd, block, remap, row, col), &weights);
-            let values = match (H > 0, put) {
-                (false, true) => sums,
-                (false, false) => sums << 4,
-                (true, true) => (sums + 34) >> 6,
-                (true, false) => (sums + 2) >> 2,
-            };
-            emit(simd, out, block.w, row, col, values);
-        }
-    }
+/// The `i32` sums of a group: outputs `0..4` and `4..8`.
+pub(in crate::subpel_mc) type Sums = (int32x4_t, int32x4_t);
+
+#[inline]
+#[target_feature(enable = "neon")]
+fn mac<const L: i32>((low, high): Sums, x: int16x8_t, weights: int16x8_t) -> Sums {
+    (
+        vmlal_laneq_s16::<L>(low, vget_low_s16(x), weights),
+        vmlal_high_laneq_s16::<L>(high, x, weights),
+    )
 }
 
-/// A block with a vertical pass of `V` tap pairs over its window rows: the
-/// samples, or the `Round2(sum, InterRound0)` horizontal rows of a two-pass
-/// block, kept in a register ring.
-#[inline(never)]
-fn two_passes<S: Simd, const H: usize, const V: usize>(
-    simd: S,
-    block: &Block<'_, u8>,
-    put: bool,
-    out: &mut Out<'_, '_, S>,
-) {
-    let (h_weights, v_weights) = (halved(simd, block.horizontal), halved(simd, block.vertical));
-    let remap = block.remap.map(|remap| u8x16::load_array(simd, remap));
-    let (bias, shift) = match (H > 0, put) {
-        (true, true) => (1 << 9, 10),
-        (true, false) | (false, true) => (1 << 5, 6),
-        (false, false) => (2, 2),
-    };
-    for col in (0..block.w).step_by(8) {
-        let line = |row: usize| {
-            let sums = horizontal::<S, H>(samples(simd, block, remap, row, col), &h_weights);
-            if H > 0 { (sums + 2) >> 2 } else { sums }
-        };
-        let mut ring = [i16x8::splat(simd, 0); 8];
-        for (row, slot) in ring.iter_mut().enumerate().take(2 * V - 1) {
-            *slot = line(row);
-        }
-        for row in 0..block.h {
-            ring[2 * V - 1] = line(row + 2 * V - 1);
-            let values = if H > 0 {
-                let (mut low, mut high) = (i32x4::splat(simd, bias), i32x4::splat(simd, bias));
-                for (line, &weights) in ring.iter().zip(&v_weights).take(2 * V) {
-                    let (l, h) = line.widening_mul(weights);
-                    low += l;
-                    high += h;
-                }
-                (low >> shift).narrow(high >> shift)
-            } else {
-                let mut sum = i16x8::splat(simd, bias as i16);
-                for (line, &weights) in ring.iter().zip(&v_weights).take(2 * V) {
-                    sum += *line * weights;
-                }
-                sum >> shift
-            };
-            emit(simd, out, block.w, row, col, values);
-            for tap in 1..2 * V {
-                ring[tap - 1] = ring[tap];
-            }
-        }
+/// `Σ` over `2 * P` taps of `tap(k) * weights[k]` in `i32` lanes.
+#[inline]
+#[target_feature(enable = "neon")]
+pub(in crate::subpel_mc) fn sums32<const P: usize>(
+    weights: int16x8_t,
+    mut tap: impl FnMut(usize) -> int16x8_t,
+) -> Sums {
+    let x = tap(0);
+    let mut sums = (
+        vmull_laneq_s16::<0>(vget_low_s16(x), weights),
+        vmull_high_laneq_s16::<0>(x, weights),
+    );
+    sums = mac::<1>(sums, tap(1), weights);
+    if P >= 2 {
+        sums = mac::<2>(sums, tap(2), weights);
+        sums = mac::<3>(sums, tap(3), weights);
+    }
+    if P >= 3 {
+        sums = mac::<4>(sums, tap(4), weights);
+        sums = mac::<5>(sums, tap(5), weights);
+    }
+    if P >= 4 {
+        sums = mac::<6>(sums, tap(6), weights);
+        sums = mac::<7>(sums, tap(7), weights);
+    }
+    sums
+}
+
+/// The halved-tap horizontal sums of eight outputs of the window bytes
+/// `bytes`: zipped with zero bytes, its halves stay `i16` vectors that the
+/// taps slide, one `ext` each.
+#[inline]
+#[target_feature(enable = "neon")]
+fn row_sums_of<const P: usize>(bytes: uint8x16_t, weights: int16x8_t) -> int16x8_t {
+    let zero = vdupq_n_u8(0);
+    let (a, b) = (
+        vreinterpretq_s16_u8(vzip1q_u8(bytes, zero)),
+        vreinterpretq_s16_u8(vzip2q_u8(bytes, zero)),
+    );
+    sums16::<P>(weights, |k| slide(a, b, k))
+}
+
+/// Window columns `k..k + 8` of the 16 samples `(a, b)`.
+#[inline]
+#[target_feature(enable = "neon")]
+pub(in crate::subpel_mc) fn slide(a: int16x8_t, b: int16x8_t, k: usize) -> int16x8_t {
+    match k {
+        0 => a,
+        1 => vextq_s16::<1>(a, b),
+        2 => vextq_s16::<2>(a, b),
+        3 => vextq_s16::<3>(a, b),
+        4 => vextq_s16::<4>(a, b),
+        5 => vextq_s16::<5>(a, b),
+        6 => vextq_s16::<6>(a, b),
+        _ => vextq_s16::<7>(a, b),
     }
 }
 
 /// The COMPOUND_AVERAGE of two groups of compound predictors, before
 /// `Clip1`.
-#[allow(clippy::inline_always, reason = "sub-pel hot path")]
-#[inline(always)]
-fn average<S: Simd>(simd: S, first: i16x8<S>, second: i16x8<S>, forward: i32) -> i16x8<S> {
+#[inline]
+#[target_feature(enable = "neon")]
+fn blend(first: int16x8_t, second: int16x8_t, forward: i32) -> int16x8_t {
     if forward == 8 {
-        return (first + second + 16) >> 5;
+        return vrshrq_n_s16::<5>(vaddq_s16(first, second));
     }
-    let (f0, f1) = first.widening_mul(i16x8::splat(simd, forward as i16));
-    let (s0, s1) = second.widening_mul(i16x8::splat(simd, (16 - forward) as i16));
-    ((f0 + s0 + 128) >> 8).narrow((f1 + s1 + 128) >> 8)
-}
-
-/// Stores the values of output row `row`, columns `col..col + count`, of a
-/// `w`-wide block, `count` 8 or (for a 4-wide block) 4.
-#[allow(clippy::inline_always, reason = "sub-pel hot path")]
-#[inline(always)]
-fn emit<S: Simd>(
-    simd: S,
-    out: &mut Out<'_, '_, S>,
-    w: usize,
-    row: usize,
-    col: usize,
-    values: i16x8<S>,
-) {
-    let count = (w - col).min(8);
-    let group = row * w.div_ceil(8) + col / 8;
-    match out {
-        Out::Sink(sink) => match sink {
-            Sink::Put { output, stride } => {
-                store_bytes(simd, output, row * *stride + col, count, values);
-            }
-            Sink::PutWide { output, stride, .. } => {
-                let lanes = values.max(0).min(255).bitcast::<u16x8<S>>();
-                store(output, row * *stride + col, count, *lanes);
-            }
-            Sink::Prep { output, stride } => {
-                let (low, high) = values.widen();
-                let at = row * *stride + col;
-                store(output, at, count.min(4), *low);
-                if count > 4 {
-                    store(output, at + 4, 4, *high);
-                }
-            }
-            Sink::Average {
-                pred0,
-                forward,
-                output,
-                stride,
-            } => {
-                let at = row * w + col;
-                let load = |at: usize| {
-                    pred0
-                        .get(at..)
-                        .and_then(<[i32]>::first_chunk::<4>)
-                        .map_or(i32x4::splat(simd, 0), |lanes| {
-                            i32x4::load_array_ref(simd, lanes)
-                        })
-                };
-                let high = if count > 4 {
-                    load(at + 4)
-                } else {
-                    i32x4::splat(simd, 0)
-                };
-                let first = load(at).narrow(high);
-                let blended = average(simd, first, values, *forward);
-                store_bytes(simd, output, row * *stride + col, count, blended);
-            }
-            Sink::AverageWide { .. } => {}
-        },
-        Out::First(first) => {
-            if let Some(slot) = first.get_mut(group) {
-                *slot = values;
-            }
-        }
-        Out::Second {
-            first,
-            forward,
-            output,
-            stride,
-        } => {
-            if let Some(&first) = first.get(group) {
-                let blended = average(simd, first, values, *forward);
-                store_bytes(simd, output, row * *stride + col, count, blended);
-            }
-        }
-    }
-}
-
-/// `Clip1` of the first `count` values into `output` from `at`.
-#[allow(clippy::inline_always, reason = "sub-pel hot path")]
-#[inline(always)]
-fn store_bytes<S: Simd>(simd: S, output: &mut [u8], at: usize, count: usize, values: i16x8<S>) {
-    let unsigned = values.max(0).bitcast::<u16x8<S>>();
-    let bytes = simd.saturating_narrow_u16x8(unsigned, unsigned);
-    if count == 8 {
-        if let Some(slot) = output.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<8>) {
-            *slot = bytes.bitcast::<u64x2<S>>()[0].to_le_bytes();
-        }
-    } else if let Some(slot) = output.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<4>) {
-        *slot = bytes.bitcast::<u32x4<S>>()[0].to_le_bytes();
-    }
-}
-
-/// Stores the first `count` of `lanes`, 8 or 4, into `output` from `at`.
-#[allow(clippy::inline_always, reason = "sub-pel hot path")]
-#[inline(always)]
-fn store<T: Copy, const N: usize>(output: &mut [T], at: usize, count: usize, lanes: [T; N]) {
-    let Some(slot) = output.get_mut(at..) else {
-        return;
-    };
-    if count == 8
-        && let (Some(slot), Some(lanes)) = (slot.first_chunk_mut::<8>(), lanes.first_chunk::<8>())
-    {
-        *slot = *lanes;
-    } else if let (Some(slot), Some(lanes)) =
-        (slot.first_chunk_mut::<4>(), lanes.first_chunk::<4>())
-    {
-        *slot = *lanes;
-    }
+    let (f, b) = (forward as i16, (16 - forward) as i16);
+    let low = vmlal_n_s16(vmull_n_s16(vget_low_s16(first), f), vget_low_s16(second), b);
+    let high = vmlal_high_n_s16(vmull_high_n_s16(first, f), second, b);
+    vrshrn_high_n_s32::<8>(vrshrn_n_s32::<8>(low), high)
 }

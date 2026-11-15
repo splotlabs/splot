@@ -147,19 +147,6 @@ impl<'a> IvfFrameCursor<'a> {
         !self.finished && self.cursor < self.input.len()
     }
 
-    /// Returns whether the cursor currently points at a complete frame header.
-    #[must_use]
-    pub fn has_complete_frame_header(&self) -> bool {
-        self.has_remaining()
-            && self.input.len().saturating_sub(self.cursor) >= IVF_FRAME_HEADER_SIZE
-    }
-
-    /// Returns the zero-based frame index that the next frame record would use.
-    #[must_use]
-    pub const fn next_frame_index(&self) -> usize {
-        self.frame_index
-    }
-
     /// Parses the next IVF frame record, warning, or end marker.
     ///
     /// # Errors

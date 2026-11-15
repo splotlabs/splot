@@ -665,19 +665,6 @@ impl IntraTileSyntax {
         1 << MV_PRECISION_EIGHTH_PEL.saturating_sub(self.mv_precision())
     }
 
-    /// The motion vector the decoder derives for `modes` at `leaf`. A `NEWMV`
-    /// whose `mv` is off the step lattice of its candidate is an error.
-    ///
-    /// # Errors
-    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
-    pub fn inter_mv(&mut self, leaf: &LeafBlock, modes: InterModes) -> Result<MotionVector> {
-        let motion = self.single_motion(leaf, modes)?;
-        let tile = &mut self.inter_state()?.tile;
-        tile.motion_vector(&leaf.frontier, motion)
-            .map(MotionVector::from)
-            .map_err(rule("motion vector"))
-    }
-
     /// The `NEWMV` difference step of `modes` in `1/8` samples: the step of
     /// its block precision.
     #[must_use]

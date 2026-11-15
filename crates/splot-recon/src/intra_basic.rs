@@ -150,21 +150,10 @@ pub fn predict_intra_paeth_rect_into<T: ReconSample>(
         return Ok(());
     }
 
-    for row_index in 0..size.height() {
-        let row_start =
-            row_index
-                .checked_mul(stride_samples)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "PAETH intra prediction output row offset",
-                })?;
-        let left = edges.left[row_index];
-        for column in 0..size.width() {
-            output[row_start + column] =
-                predict_paeth_sample(left, edges.above[column], edges.top_left);
-        }
-    }
-
-    Ok(())
+    Err(ReconError::SampleTypeUnsupportedBitDepth {
+        sample_type: T::TYPE_NAME,
+        bit_depth,
+    })
 }
 
 /// Writes the § 7.13.2.2 PAETH prediction in 16 `i16` lanes: 16 columns of
@@ -242,7 +231,8 @@ fn paeth_lanes<S: Simd>(above: i16x16<S>, left: i16x16<S>, top_left: i16x16<S>) 
     take_left.select(left, take_top.select(above, top_left))
 }
 
-pub(crate) fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: T) -> T {
+#[cfg(test)]
+fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: T) -> T {
     let left_value = i32::from(left.to_u16());
     let above_value = i32::from(above.to_u16());
     let top_left_value = i32::from(top_left.to_u16());

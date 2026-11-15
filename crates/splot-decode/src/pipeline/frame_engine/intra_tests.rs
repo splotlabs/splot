@@ -74,7 +74,7 @@ fn decode_intra_fixture_with_core(
         panic!("an intra frame always owes its filter phase");
     };
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::pending(walked.info())?;
-    finish_walked_frame(walked, None, |frame| writer.complete(frame))?;
+    finish_walked_frame(walked, writer)?;
     Ok((slot.ready()?, walk.frame_cdfs, walk.ccso_grid))
 }
 

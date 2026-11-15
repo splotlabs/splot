@@ -20,6 +20,7 @@ use super::{
     ProjectedCenter, Shear, WARP_FILTER_CENTER, WARP_FILTER_TAPS, WARPED_FILTERS, WARPED_TAPS,
     WARPEDDIFF_PREC_BITS, WarpPredictBlockParams, two_tap_phase,
 };
+use crate::format::ReconSample;
 use crate::subpel_mc::ReferencePlaneView;
 
 /// One `Warped_Filters` row as bytes: taps in order (`natural`) and the even
@@ -114,35 +115,30 @@ impl<'a> Window<'a> {
 }
 
 /// The `Round2(sum, round1)` rows of the section whose source window starts
-/// at `(first_col, first_row)`, or `None` without AVX2 or NEON.
-pub(super) fn section(
-    reference: &ReferencePlaneView<'_, u8>,
+/// at `(first_col, first_row)`, or `None` without AVX2 or NEON or for
+/// 16-bit samples.
+pub(super) fn section<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
     shear: &Shear,
     projected: &ProjectedCenter,
     origin: (usize, usize),
     round1: u32,
 ) -> Option<[[i32; 8]; 8]> {
+    let shear = [shear.alpha, shear.beta, shear.gamma, shear.delta];
+    let phases = [projected.sx4, projected.sy4];
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
-        return Some(avx2::section(
-            token,
-            &Window::new(reference, origin)?,
-            [shear.alpha, shear.beta, shear.gamma, shear.delta],
-            [projected.sx4, projected.sy4],
-            round1,
-        ));
+        let reference = reference.as_u8()?;
+        let window = Window::new(&reference, origin)?;
+        return Some(avx2::section(token, &window, shear, phases, round1));
     }
     #[cfg(target_arch = "aarch64")]
     if let Some(token) = fearless_simd::Level::baseline().as_neon() {
-        return Some(neon::section(
-            token,
-            &Window::new(reference, origin)?,
-            [shear.alpha, shear.beta, shear.gamma, shear.delta],
-            [projected.sx4, projected.sy4],
-            round1,
-        ));
+        let reference = reference.as_u8()?;
+        let window = Window::new(&reference, origin)?;
+        return Some(neon::section(token, &window, shear, phases, round1));
     }
-    let _ = (reference, shear, projected, origin, round1);
+    let _ = (reference, shear, phases, origin, round1);
     None
 }
 
@@ -156,6 +152,7 @@ fn key(phase: i32) -> u32 {
 }
 
 /// The table row of a [`key`].
+#[cfg(target_arch = "aarch64")]
 #[inline]
 fn tap(table: &[[u8; 8]; 512], key: u32) -> i64 {
     i64::from_le_bytes(table[(key >> 23) as usize])
@@ -172,6 +169,29 @@ struct RowProjection {
     size: [i64; 2],
 }
 
+impl RowProjection {
+    /// The source window origin and the two phases of section `section`,
+    /// or `None` when its window leaves the bounds or the plane, or when a
+    /// zero shear (`two_tap`) gives it a two-tap horizontal phase.
+    #[inline]
+    fn place(&self, section: usize, two_tap: bool) -> Option<((usize, usize), [i32; 2])> {
+        let [first_x, first_y, last_x, last_y] = self.bounds;
+        let [width, height] = self.size;
+        let x4 = (self.first[0] + section as i64 * self.step[0]) >> self.sub[0];
+        let y4 = (self.first[1] + section as i64 * self.step[1]) >> self.sub[1];
+        let (col, row) = ((x4 >> 16) - 7, (y4 >> 16) - 7);
+        let phases = [(x4 & 0xffff) as i32, (y4 & 0xffff) as i32];
+        (col >= first_x
+            && col + 14 <= last_x
+            && col + 15 < width
+            && row >= first_y
+            && row + 14 <= last_y
+            && row + 14 < height
+            && !(two_tap && two_tap_phase(phases[0]).is_some()))
+        .then_some(((col as usize, row as usize), phases))
+    }
+}
+
 /// Stores the `Clip1` single-reference prediction of each full 8x8 section
 /// of one row of `sections` whose source window lies inside its bounds and
 /// the storage, into `output` rows `stride` apart from the row's top-left,
@@ -180,12 +200,12 @@ struct RowProjection {
 ///
 /// Sections start below `2^20`, where every projection is exact in `i64`
 /// and an interior source position fits `i32`.
-pub(super) fn put_row(
-    reference: &ReferencePlaneView<'_, u8>,
+pub(super) fn put_row<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     shear: &Shear,
     sections: usize,
-    output: &mut [u8],
+    output: &mut [T],
     stride: usize,
 ) -> u64 {
     const LIMIT: i32 = 1 << 20;
@@ -209,25 +229,24 @@ pub(super) fn put_row(
         bounds: params.bounds().map(i64::from),
         size: [reference.width() as i64, reference.height() as i64],
     };
+    let shear = [shear.alpha, shear.beta, shear.gamma, shear.delta];
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
-        return avx2::put_row(
-            token,
-            reference,
-            &projection,
-            [shear.alpha, shear.beta, shear.gamma, shear.delta],
-            sections,
-            output,
-            stride,
-        );
+        let placed = (&projection, shear, sections, stride);
+        if let (Some(reference), Some(output)) = (reference.as_u8(), T::u8_slice_mut(output)) {
+            return avx2::put_row(token, &reference, placed, output);
+        }
+        return 0;
     }
     #[cfg(target_arch = "aarch64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_neon() {
+    if let Some(token) = fearless_simd::Level::baseline().as_neon()
+        && let (Some(reference), Some(output)) = (reference.as_u8(), T::u8_slice_mut(output))
+    {
         return neon::put_row(
             token,
-            reference,
+            &reference,
             &projection,
-            [shear.alpha, shear.beta, shear.gamma, shear.delta],
+            shear,
             sections,
             output,
             stride,
@@ -239,9 +258,8 @@ pub(super) fn put_row(
 
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
-    use super::{
-        EVEN_ODD, NATURAL, RowProjection, WARPEDDIFF_PREC_BITS, Window, key, tap, two_tap_phase,
-    };
+    use super::{EVEN_ODD, NATURAL, RowProjection, WARPEDDIFF_PREC_BITS, Window, key};
+    use crate::gather::rows_u64;
     use crate::subpel_mc::ReferencePlaneView;
     use crate::warp_prediction::INTER_ROUND1_NON_COMPOUND;
     use core::arch::x86_64::*;
@@ -264,6 +282,9 @@ mod avx2 {
     const SHUFFLE_A: [u8; 32] = shuffle(0);
     const SHUFFLE_B: [u8; 32] = shuffle(2);
 
+    /// The row shape `(projection, shear, sections, stride)` of [`sections`].
+    type Placed<'a> = (&'a RowProjection, [i32; 4], usize, usize);
+
     fearless_simd::kernel!(
         #[inline]
         pub(super) fn section(
@@ -273,58 +294,36 @@ mod avx2 {
             phases: [i32; 2],
             round1: u32,
         ) -> [[i32; 8]; 8] {
-            let shift = _mm_cvtsi32_si128(round1 as i32 + 8);
-            let mut out = [[0i32; 8]; 8];
-            for (out, sum) in out.iter_mut().zip(sums(t, window, shear, phases, round1)) {
-                i32x8::<Avx2>::simd_from(t, _mm256_sra_epi32(sum, shift)).store_array(out);
-            }
-            out
+            let horizontal = horizontal(t, window, shear, phases[0]);
+            rounded(t, sums(&horizontal, shear, phases[1], round1), round1)
         }
     );
+
+    /// `Round2(sum, round1)` of the [`sums`] rows.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn rounded(t: Avx2, sums: [__m256i; 8], round1: u32) -> [[i32; 8]; 8] {
+        let shift = _mm_cvtsi32_si128(round1 as i32 + 8);
+        let mut out = [[0i32; 8]; 8];
+        for (out, sum) in out.iter_mut().zip(sums) {
+            i32x8::<Avx2>::simd_from(t, _mm256_sra_epi32(sum, shift)).store_array(out);
+        }
+        out
+    }
 
     fearless_simd::kernel!(
         #[inline]
         pub(super) fn put_row(
             t: Avx2,
             reference: &ReferencePlaneView<'_, u8>,
-            projection: &RowProjection,
-            shear: [i32; 4],
-            sections: usize,
+            placed: Placed<'_>,
             output: &mut [u8],
-            stride: usize,
         ) -> u64 {
             const ROUND1: i32 = INTER_ROUND1_NON_COMPOUND as i32;
-            let RowProjection {
-                first,
-                step,
-                sub,
-                bounds: [first_x, first_y, last_x, last_y],
-                size: [width, height],
-            } = *projection;
-            let two_tap = shear[0] == 0 && shear[1] == 0;
-            let mut written = 0;
-            for section in 0..sections {
-                let x4 = (first[0] + section as i64 * step[0]) >> sub[0];
-                let y4 = (first[1] + section as i64 * step[1]) >> sub[1];
-                let (col, row) = ((x4 >> 16) - 7, (y4 >> 16) - 7);
-                let phases = [(x4 & 0xffff) as i32, (y4 & 0xffff) as i32];
-                if col < first_x
-                    || col + 14 > last_x
-                    || col + 15 >= width
-                    || row < first_y
-                    || row + 14 > last_y
-                    || row + 14 >= height
-                    || (two_tap && two_tap_phase(phases[0]).is_some())
-                {
-                    continue;
-                }
-                let (Some(window), Some(target)) = (
-                    Window::new(reference, (col as usize, row as usize)),
-                    output.get_mut(8 * section..8 * section + 7 * stride + 8),
-                ) else {
-                    continue;
-                };
-                let rows = sums(t, &window, shear, phases, INTER_ROUND1_NON_COMPOUND);
+            let (_, shear, _, stride) = placed;
+            sections(reference, placed, output, |window, phases, target| {
+                let horizontal = horizontal(t, window, shear, phases[0]);
+                let rows = sums(&horizontal, shear, phases[1], INTER_ROUND1_NON_COMPOUND);
                 for (pair, rows) in rows.chunks_exact(2).enumerate() {
                     let words = _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_packs_epi32(
                         _mm256_srai_epi32::<{ ROUND1 + 8 }>(rows[0]),
@@ -344,41 +343,69 @@ mod avx2 {
                         }
                     }
                 }
-                written |= 1 << section;
-            }
-            written
+            })
         }
     );
 
+    /// Runs `section` on the window, phases and output of each section of a
+    /// row that [`RowProjection::place`] admits, returning the mask of them.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn sections(
+        reference: &ReferencePlaneView<'_, u8>,
+        (projection, shear, sections, stride): Placed<'_>,
+        output: &mut [u8],
+        mut section: impl FnMut(&Window<'_>, [i32; 2], &mut [u8]),
+    ) -> u64 {
+        let two_tap = shear[0] == 0 && shear[1] == 0;
+        let mut written = 0;
+        for index in 0..sections {
+            let Some((origin, phases)) = projection.place(index, two_tap) else {
+                continue;
+            };
+            let (Some(window), Some(target)) = (
+                Window::new(reference, origin),
+                output.get_mut(8 * index..8 * index + 7 * stride + 8),
+            ) else {
+                continue;
+            };
+            section(&window, phases, target);
+            written |= 1 << index;
+        }
+        written
+    }
+
     /// The filters of output columns `0, 1 | 4, 5` and `2, 3 | 6, 7` of a
     /// pass whose column-0 [`key`] is `first` and whose columns step by
-    /// `step`. The keys stay in general registers: a lane extract per
-    /// column costs more than the add and shift.
+    /// `step`: the column keys in one vector, their rows in two gathers.
+    /// Loading the rows one by one costs a general-register key, a load and
+    /// a lane insert per column, more uops than the gathers.
     #[inline]
     #[target_feature(enable = "avx2")]
     fn filters(table: &[[u8; 8]; 512], first: u32, step: u32) -> (__m256i, __m256i) {
-        let at = |column: u32| tap(table, first.wrapping_add(column.wrapping_mul(step)));
+        let columns = _mm256_mullo_epi32(
+            _mm256_set1_epi32(step as i32),
+            _mm256_setr_epi32(0, 1, 4, 5, 2, 3, 6, 7),
+        );
+        let rows =
+            _mm256_srli_epi32::<23>(_mm256_add_epi32(_mm256_set1_epi32(first as i32), columns));
         (
-            _mm256_set_epi64x(at(5), at(4), at(1), at(0)),
-            _mm256_set_epi64x(at(7), at(6), at(3), at(2)),
+            rows_u64(table, _mm256_castsi256_si128(rows)),
+            rows_u64(table, _mm256_extracti128_si256::<1>(rows)),
         )
     }
 
-    /// The vertical-pass sums of the eight output rows of a section, each
-    /// scaled by 256 with the `Round2(.., round1)` bias added.
-    ///
-    /// Each horizontal row keeps `Round2(sum, InterRound0)` in the high word
-    /// of its lanes (`(sum << 13) + (1 << 15)`), so one shift and blend
-    /// interleave two rows into the word pairs of a vertical tap pair.
+    /// The horizontal rows of a section, each holding
+    /// `Round2(sum, InterRound0)` in the high word of its column lanes:
+    /// `(sum << 13) + (1 << 15)`.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn sums(
+    fn horizontal(
         t: Avx2,
         window: &Window<'_>,
-        [alpha, beta, gamma, delta]: [i32; 4],
-        [sx4, sy4]: [i32; 2],
-        round1: u32,
-    ) -> [__m256i; 8] {
+        [alpha, beta, ..]: [i32; 4],
+        sx4: i32,
+    ) -> [__m256i; 15] {
         let shuffle_a: __m256i = u8x32::load_array(t, SHUFFLE_A).into();
         let shuffle_b: __m256i = u8x32::load_array(t, SHUFFLE_B).into();
         let (scale, bias) = (_mm256_set1_epi16(1 << 13), _mm256_set1_epi32(1 << 15));
@@ -386,13 +413,8 @@ mod avx2 {
         let mut first = key(sx4.wrapping_sub(7 * beta).wrapping_sub(4 * alpha));
         let (column_step, row_step) = (step(alpha), step(beta));
         let mut source_at = window.column;
-        let horizontal: [__m256i; 15] = core::array::from_fn(|_| {
-            let (taps_a, taps_b) = if alpha == 0 {
-                let taps = _mm256_set1_epi64x(tap(&EVEN_ODD, first));
-                (taps, taps)
-            } else {
-                filters(&EVEN_ODD, first, column_step)
-            };
+        core::array::from_fn(|_| {
+            let (taps_a, taps_b) = filters(&EVEN_ODD, first, column_step);
             first = first.wrapping_add(row_step);
             let source = window
                 .rows
@@ -406,7 +428,24 @@ mod avx2 {
             let a = _mm256_maddubs_epi16(_mm256_shuffle_epi8(source, shuffle_a), taps_a);
             let b = _mm256_maddubs_epi16(_mm256_shuffle_epi8(source, shuffle_b), taps_b);
             _mm256_add_epi32(_mm256_madd_epi16(_mm256_hadd_epi16(a, b), scale), bias)
-        });
+        })
+    }
+
+    /// The vertical-pass sums of the eight output rows of a section, each
+    /// scaled by 256 with the `Round2(.., round1)` bias added.
+    ///
+    /// Each horizontal row keeps `Round2(sum, InterRound0)` in the high word
+    /// of its lanes, so one shift and blend interleave two rows into the
+    /// word pairs of a vertical tap pair.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn sums(
+        horizontal: &[__m256i; 15],
+        [.., gamma, delta]: [i32; 4],
+        sy4: i32,
+        round1: u32,
+    ) -> [__m256i; 8] {
+        let step = |shear: i32| (shear << (23 - WARPEDDIFF_PREC_BITS)) as u32;
         let pairs: [__m256i; 14] = core::array::from_fn(|row| {
             _mm256_blend_epi16::<0xaa>(
                 _mm256_srli_epi32::<16>(horizontal[row]),
@@ -418,29 +457,18 @@ mod avx2 {
         let mut first = key(sy4.wrapping_sub(4 * delta).wrapping_sub(4 * gamma));
         let (column_step, row_step) = (step(gamma), step(delta));
         core::array::from_fn(|row| {
-            let weights: [__m256i; 4] = if gamma == 0 {
-                let taps = tap(&NATURAL, first);
-                let low = _mm256_unpacklo_epi8(zero, _mm256_set1_epi64x(taps));
-                [
-                    _mm256_shuffle_epi32::<0b00_00_00_00>(low),
-                    _mm256_shuffle_epi32::<0b01_01_01_01>(low),
-                    _mm256_shuffle_epi32::<0b10_10_10_10>(low),
-                    _mm256_shuffle_epi32::<0b11_11_11_11>(low),
-                ]
-            } else {
-                let (near, far) = filters(&NATURAL, first, column_step);
-                let low = _mm256_unpacklo_epi16(near, far);
-                let high = _mm256_unpackhi_epi16(near, far);
-                let near = _mm256_unpacklo_epi16(low, high);
-                let far = _mm256_unpackhi_epi16(low, high);
-                [
-                    _mm256_unpacklo_epi8(zero, near),
-                    _mm256_unpackhi_epi8(zero, near),
-                    _mm256_unpacklo_epi8(zero, far),
-                    _mm256_unpackhi_epi8(zero, far),
-                ]
-            };
+            let (near, far) = filters(&NATURAL, first, column_step);
             first = first.wrapping_add(row_step);
+            let low = _mm256_unpacklo_epi16(near, far);
+            let high = _mm256_unpackhi_epi16(near, far);
+            let near = _mm256_unpacklo_epi16(low, high);
+            let far = _mm256_unpackhi_epi16(low, high);
+            let weights = [
+                _mm256_unpacklo_epi8(zero, near),
+                _mm256_unpackhi_epi8(zero, near),
+                _mm256_unpacklo_epi8(zero, far),
+                _mm256_unpackhi_epi8(zero, far),
+            ];
             let mut sum = round;
             for (pair, &weights) in weights.iter().enumerate() {
                 sum = _mm256_add_epi32(sum, _mm256_madd_epi16(pairs[row + 2 * pair], weights));
@@ -452,9 +480,7 @@ mod avx2 {
 
 #[cfg(target_arch = "aarch64")]
 mod neon {
-    use super::{
-        EVEN_ODD, RowProjection, WARPED_TAPS, WARPEDDIFF_PREC_BITS, Window, key, tap, two_tap_phase,
-    };
+    use super::{EVEN_ODD, RowProjection, WARPED_TAPS, WARPEDDIFF_PREC_BITS, Window, key, tap};
     use crate::subpel_mc::ReferencePlaneView;
     use crate::warp_prediction::{INTER_ROUND0, INTER_ROUND1_NON_COMPOUND};
     use core::arch::aarch64::*;
@@ -512,32 +538,14 @@ mod neon {
             stride: usize,
         ) -> u64 {
             const ROUND1: i32 = INTER_ROUND1_NON_COMPOUND as i32;
-            let RowProjection {
-                first,
-                step,
-                sub,
-                bounds: [first_x, first_y, last_x, last_y],
-                size: [width, height],
-            } = *projection;
             let two_tap = shear[0] == 0 && shear[1] == 0;
             let mut written = 0;
             for section in 0..sections {
-                let x4 = (first[0] + section as i64 * step[0]) >> sub[0];
-                let y4 = (first[1] + section as i64 * step[1]) >> sub[1];
-                let (col, row) = ((x4 >> 16) - 7, (y4 >> 16) - 7);
-                let phases = [(x4 & 0xffff) as i32, (y4 & 0xffff) as i32];
-                if col < first_x
-                    || col + 14 > last_x
-                    || col + 15 >= width
-                    || row < first_y
-                    || row + 14 > last_y
-                    || row + 14 >= height
-                    || (two_tap && two_tap_phase(phases[0]).is_some())
-                {
+                let Some((origin, phases)) = projection.place(section, two_tap) else {
                     continue;
-                }
+                };
                 let (Some(window), Some(target)) = (
-                    Window::new(reference, (col as usize, row as usize)),
+                    Window::new(reference, origin),
                     output.get_mut(8 * section..8 * section + 7 * stride + 8),
                 ) else {
                     continue;

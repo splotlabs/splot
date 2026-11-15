@@ -242,9 +242,8 @@ impl BitWriter {
     }
 
     /// Writes raw little-endian bytes for an AV2 `le(n)` descriptor (AV2 v1.0.0
-    /// § 4.11.5, `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-5`), the inverse of
-    /// [`crate::bitio::BitReader::read_le`]. The `n` of the descriptor is the slice
-    /// length.
+    /// § 4.11.5, `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-5`). The `n` of the
+    /// descriptor is the slice length.
     ///
     /// # Errors
     /// Never fails for whole bytes; returns [`WriteResult`] for symmetry with the
@@ -261,8 +260,7 @@ impl BitWriter {
     }
 
     /// Writes an AV2 `le(n)` descriptor from a `u64` (AV2 v1.0.0 § 4.11.5,
-    /// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-5`), the inverse of
-    /// [`crate::bitio::BitReader::read_le_u64`].
+    /// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-5`).
     ///
     /// # Errors
     /// Returns [`WriteError::ByteWidthTooLarge`] if `n > 8`, or
@@ -837,14 +835,14 @@ mod proptests {
             prop_assert_eq!(read_back(&bytes).read_svlc().unwrap(), value);
         }
 
-        /// `le(n) -> u64`: round-trips every value that fits in `n` bytes.
+        /// `le(n) -> u64`: writes every value that fits in `n` bytes little-endian.
         #[test]
-        fn roundtrip_le_u64(raw in any::<u64>(), n in 0u32..=8) {
+        fn le_u64_writes_little_endian_bytes(raw in any::<u64>(), n in 0u32..=8) {
             let value = if n == 8 { raw } else { raw & ((1u64 << (8 * n)) - 1) };
             let mut writer = BitWriter::new();
             writer.write_le_u64(value, n).unwrap();
             let bytes = writer.into_bytes();
-            prop_assert_eq!(read_back(&bytes).read_le_u64(n).unwrap(), value);
+            prop_assert_eq!(bytes.as_slice(), &value.to_le_bytes()[..n as usize]);
         }
 
         /// `leb128()`: round-trips every `u32`.

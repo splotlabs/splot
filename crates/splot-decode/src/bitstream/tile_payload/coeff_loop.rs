@@ -10,12 +10,11 @@ use splot_core::tables::conversion::{
     TX_WIDTH_LOG2,
 };
 
-use super::cdf::block_read::BlockSymbolTraceReadError;
-use super::cdf::{EobPtSize, TileCdfSelector, TileCdfSubset};
+use super::cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
+use super::cdf::{EobPtSize, TileCdfSubset};
 use super::coeff_state::TileCoeffStateError;
 
 const EOB_MULTISIZE_OFFSET: usize = 4;
-const MIN_NONZERO_EOB_PT: usize = 1;
 const MAX_NONZERO_EOB_PT: usize = 11;
 const EOB_GROUP_START: [usize; MAX_NONZERO_EOB_PT + 1] =
     [0, 1, 2, 3, 5, 9, 17, 33, 65, 129, 257, 513];
@@ -152,38 +151,16 @@ pub(crate) fn classify_coeff_parse_error(
     CoeffParseErrorClass::CoefficientState
 }
 
-#[allow(clippy::struct_field_names)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NonZeroCoeffEobInput {
-    pub(crate) eob_pt: usize,
-    pub(crate) eob_extra: bool,
-    pub(crate) eob_extra_bits: usize,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEobSymbolInput {
     pub(crate) size: EobPtSize,
     pub(crate) eob_ctx: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NonZeroCoeffEob {
-    eob: usize,
-}
-
-impl NonZeroCoeffEob {
-    #[must_use]
-    pub(crate) const fn eob(self) -> usize {
-        self.eob
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffLoopContextError {
     #[error("coefficient context state error: {0}")]
     State(#[from] TileCoeffStateError),
-    #[error("coefficient EOB symbol read failed: {0}")]
-    EobSymbolRead(#[from] BlockSymbolTraceReadError),
     #[error("coefficient EOB literal read failed for {syntax}: {source}")]
     EobLiteralRead {
         syntax: &'static str,
@@ -192,22 +169,6 @@ pub(crate) enum CoeffLoopContextError {
     },
     #[error("coefficient EOB point {eob_pt} is outside the supported AV2 range 1..=11")]
     InvalidEobPoint { eob_pt: usize },
-    #[error(
-        "coefficient EOB point {eob_pt} cannot carry eob_extra={eob_extra} or eob_extra_bits={eob_extra_bits}"
-    )]
-    UnexpectedEobRefinement {
-        eob_pt: usize,
-        eob_extra: bool,
-        eob_extra_bits: usize,
-    },
-    #[error(
-        "coefficient EOB point {eob_pt} allows eob_extra_bits <= {max_eob_extra_bits}, got {eob_extra_bits}"
-    )]
-    EobExtraBitsOutOfRange {
-        eob_pt: usize,
-        eob_extra_bits: usize,
-        max_eob_extra_bits: usize,
-    },
     #[error("coefficient EOB Pt512 extra value {eob_pt_extra} is reserved by AV2")]
     InvalidPt512EobExtra { eob_pt_extra: u32 },
     #[error("coefficient scan walk requires nonzero EOB, got {eob}")]
@@ -220,79 +181,34 @@ pub(crate) enum CoeffLoopContextError {
     ScanWalkWidthNotPowerOfTwo { width: usize },
 }
 
-pub(crate) fn nonzero_coeff_eob(
-    input: NonZeroCoeffEobInput,
-) -> Result<NonZeroCoeffEob, CoeffLoopContextError> {
-    let eob_pt = input.eob_pt;
-    if !(MIN_NONZERO_EOB_PT..=MAX_NONZERO_EOB_PT).contains(&eob_pt) {
-        return Err(CoeffLoopContextError::InvalidEobPoint { eob_pt });
-    }
-    if eob_pt < 3 {
-        if input.eob_extra || input.eob_extra_bits != 0 {
-            return Err(CoeffLoopContextError::UnexpectedEobRefinement {
-                eob_pt,
-                eob_extra: input.eob_extra,
-                eob_extra_bits: input.eob_extra_bits,
-            });
-        }
-        return Ok(NonZeroCoeffEob { eob: eob_pt });
-    }
-
-    let extra_bits_width = eob_extra_bits_width(eob_pt)?;
-    let max_eob_extra_bits = (1usize << extra_bits_width) - 1;
-    if input.eob_extra_bits > max_eob_extra_bits {
-        return Err(CoeffLoopContextError::EobExtraBitsOutOfRange {
-            eob_pt,
-            eob_extra_bits: input.eob_extra_bits,
-            max_eob_extra_bits,
-        });
-    }
-
-    let base = EOB_GROUP_START[eob_pt];
-    let extra = if input.eob_extra {
-        1usize << extra_bits_width
-    } else {
-        0
-    };
-    Ok(NonZeroCoeffEob {
-        eob: base + extra + input.eob_extra_bits,
-    })
-}
-
 pub(crate) fn read_nonzero_coeff_eob(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: NonZeroCoeffEobSymbolInput,
-) -> Result<NonZeroCoeffEob, CoeffLoopContextError> {
-    let eob_pt_symbol = cdfs.read_trusted_symbol(
-        TileCdfSelector::EobPt {
-            size: input.size,
-            eob_ctx: input.eob_ctx,
-        },
-        symbols,
-    )?;
+) -> Result<usize, CoeffLoopContextError> {
+    let rows = cdfs.block_rows_mut();
+    let ctx = input.eob_ctx;
+    let eob_pt_symbol = match input.size {
+        EobPtSize::Pt16 => read_row(symbols, row_at(&mut rows.eob_pt_16, ctx)),
+        EobPtSize::Pt32 => read_row(symbols, row_at(&mut rows.eob_pt_32, ctx)),
+        EobPtSize::Pt64 => read_row(symbols, row_at(&mut rows.eob_pt_64, ctx)),
+        EobPtSize::Pt128 => read_row(symbols, row_at(&mut rows.eob_pt_128, ctx)),
+        EobPtSize::Pt256 => read_row(symbols, row_at(&mut rows.eob_pt_256, ctx)),
+        EobPtSize::Pt512 => read_row(symbols, row_at(&mut rows.eob_pt_512, ctx)),
+        EobPtSize::Pt1024 => read_row(symbols, row_at(&mut rows.eob_pt_1024, ctx)),
+    } as u8;
     let eob_pt_extra_width = eob_pt_extra_width(input.size, eob_pt_symbol);
     let eob_pt_extra = read_eob_literal(symbols, eob_pt_extra_width, "eob_pt_extra")?;
     let eob_pt =
         checked_resolved_eob_pt(input.size, eob_pt_symbol, eob_pt_extra_width, eob_pt_extra)?;
 
-    let (eob_extra, eob_extra_bits) = if eob_pt >= 3 {
-        let eob_extra = cdfs.read_trusted_symbol(TileCdfSelector::EobExtra {}, symbols)? != 0;
-        let width = eob_extra_bits_width(eob_pt)? as u32;
-        (
-            eob_extra,
-            read_eob_literal(symbols, width, "eob_extra_bit")?,
-        )
-    } else {
-        (false, 0)
-    };
-
-    let eob = nonzero_coeff_eob(NonZeroCoeffEobInput {
-        eob_pt,
-        eob_extra,
-        eob_extra_bits: eob_extra_bits as usize,
-    })?;
-    Ok(eob)
+    if eob_pt < 3 {
+        return Ok(eob_pt);
+    }
+    let eob_extra = read_row(symbols, &mut cdfs.block_rows_mut().eob_extra) != 0;
+    let width = eob_extra_bits_width(eob_pt)?;
+    let eob_extra_bits = read_eob_literal(symbols, width as u32, "eob_extra_bit")? as usize;
+    Ok(EOB_GROUP_START[eob_pt] + (usize::from(eob_extra) << width) + eob_extra_bits)
 }
 
 const fn eob_pt_size(eob_multisize: usize) -> EobPtSize {
@@ -350,7 +266,11 @@ fn eob_extra_bits_width(eob_pt: usize) -> Result<usize, CoeffLoopContextError> {
     Ok(width.saturating_sub(1))
 }
 
-#[inline]
+#[allow(
+    clippy::inline_always,
+    reason = "measured: once or twice per nonzero block"
+)]
+#[inline(always)]
 fn read_eob_literal(
     symbols: &mut SymbolDecoder<'_>,
     width: u32,
