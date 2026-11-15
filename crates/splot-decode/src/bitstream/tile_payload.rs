@@ -307,26 +307,13 @@ impl<'a> DecodeTilePayloadPlan<'a> {
 
     /// Work unit `index` and its payload bytes.
     pub(crate) fn tile_mut(&mut self, index: usize) -> Option<(&'a [u8], &mut DecodeTileWorkUnit)> {
-        let payload = self.payload;
-        let extra_payloads = &self.extra_payloads;
         let tile = self.work_units.get_mut(index)?;
-        let source = if tile.payload_index == 0 {
-            Some(payload)
-        } else {
-            extra_payloads.get(tile.payload_index - 1).copied()
-        };
-        let bytes = source?.get(tile.payload_range.clone())?;
-        Some((bytes, tile))
+        Some((tile.bytes(self.payload, &self.extra_payloads)?, tile))
     }
 
     #[cfg(test)]
     pub(crate) fn resolved_tile_bytes(&self, tile: &DecodeTileWorkUnit) -> Option<&'a [u8]> {
-        let source = if tile.payload_index == 0 {
-            Some(self.payload)
-        } else {
-            self.extra_payloads.get(tile.payload_index - 1).copied()
-        };
-        source?.get(tile.payload_range.clone())
+        tile.bytes(self.payload, &self.extra_payloads)
     }
 
     pub(crate) fn retire_into(mut self, scratch: &mut TilePayloadScratch) {
@@ -470,6 +457,14 @@ impl DecodeTileWorkUnit {
 
     pub(crate) fn payload_range(&self) -> core::ops::Range<usize> {
         self.payload_range.clone()
+    }
+
+    fn bytes<'a>(&self, payload: &'a [u8], extra_payloads: &[&'a [u8]]) -> Option<&'a [u8]> {
+        let source = match self.payload_index {
+            0 => Some(payload),
+            index => extra_payloads.get(index - 1).copied(),
+        };
+        source?.get(self.payload_range.clone())
     }
     #[must_use]
     pub(crate) const fn tile_num(&self) -> u32 {
