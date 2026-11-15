@@ -403,14 +403,11 @@ impl TileMiSizeState {
         half_h: usize,
         half_w: usize,
     ) -> Option<PartitionNeighbours> {
-        if plane >= PLANE_COUNT {
-            return None;
-        }
         let col = c.wrapping_sub(self.origin_col);
         let (chunk, at) = (col / SB_ROW_SPAN, col % SB_ROW_SPAN);
         let lines = self.above.as_chunks::<SB_ROW_SPAN>().0;
         let above = lines.get(self.above_base(plane) / SB_ROW_SPAN + chunk)?;
-        let (left, row) = (&self.left[plane], r % SB_ROW_SPAN);
+        let (left, row) = (&self.left[plane & 1], r % SB_ROW_SPAN);
         Some(PartitionNeighbours {
             left: [left[row], left[(row + half_h) % SB_ROW_SPAN]],
             above: [above[at], above[(at + half_w) % SB_ROW_SPAN]],

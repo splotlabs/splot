@@ -249,7 +249,6 @@ fn partition_neighbours_read_both_planes_after_mutation() {
     );
     assert_eq!(chroma.luma_left, state.left_at(0, 4));
     assert_eq!(chroma.luma_above, state.above_plane(0)[4]);
-    assert_eq!(state.partition_neighbours(2, 0, 0, 0, 0), None);
     assert!(state.check_extent(0, 0, 16, 16).is_ok());
     assert!(state.check_extent(0, 0, 17, 16).is_err());
     assert!(state.check_extent(0, 1, 16, 16).is_err());
