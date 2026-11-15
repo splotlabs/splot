@@ -735,16 +735,12 @@ impl<T: SplitSample> SplitFrames<T> {
             self.parse.push(Arc::default());
         }
         let slot = &mut self.slots[index];
-        rows.wait(|| Arc::strong_count(slot) == 1);
-        loop {
-            if let Some(frame) = Arc::get_mut(slot)
-                && frame.reset()
-            {
+        rows.wait(|| {
+            Arc::get_mut(slot).is_some_and(|frame| {
                 frame.options = options;
-                break;
-            }
-            std::thread::yield_now();
-        }
+                frame.reset()
+            })
+        });
         let (parse, buffers) = (&mut self.parse[index], &self.buffers);
         rows.wait(|| Arc::get_mut(parse).is_some_and(|parse| parse.reset(buffers)));
         (index, Arc::clone(parse))
