@@ -1302,11 +1302,7 @@ fn spec_mhccp<T: ReconSample>(
                 1 << (bits - 1),
             ];
             let t = (0..3).fold(0i32, |t, k| {
-                t + splot_recon::mhccp::mul_fixed32_adapt(
-                    params[k],
-                    v[k],
-                    splot_recon::mhccp::MHCCP_BITS,
-                )
+                t + splot_recon::mul_fixed32_adapt(params[k], v[k], splot_recon::MHCCP_BITS)
             });
             out.push(t.clamp(0, i32::from(block.bit_depth.max_sample())));
         }

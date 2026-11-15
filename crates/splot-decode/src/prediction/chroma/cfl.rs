@@ -17,10 +17,10 @@
 use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x8, i32x8, u16x8};
 
 use splot_recon::math::{approx_divide, resolve_division};
-use splot_recon::mhccp::{MhccpEdge, MhccpPredictor, derive_mhccp_params};
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, PixelFormat, PlaneId, ReconSample,
 };
+use splot_recon::{MhccpEdge, MhccpPredictor, PredictedSample, derive_mhccp_params};
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use super::cfl_luma::{
@@ -1868,12 +1868,9 @@ pub(super) fn gathered_q3(taps: &[[[u16; 8]; 3]; 3], weights: [[i32; 3]; 3]) -> 
 }
 
 /// A luma sample type the CfL lane forms load as `u16` lanes.
-trait CflLaneSample: Copy + Into<u16> {
+trait CflLaneSample: PredictedSample + Into<u16> {
     /// Loads `row[..16]` as two halves of eight.
     fn load_halves<S: Simd>(simd: S, row: &[Self]) -> (u16x8<S>, u16x8<S>);
-    /// Stores eight samples already clipped to the sample range.
-    fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>);
-    fn from_clipped(v: i32) -> Self;
     /// `samples` as bytes, for 8-bit planes.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn as_u8(samples: &[Self]) -> Option<&[u8]>;
@@ -1883,19 +1880,6 @@ impl CflLaneSample for u8 {
     #[inline]
     fn load_halves<S: Simd>(simd: S, row: &[Self]) -> (u16x8<S>, u16x8<S>) {
         simd.widen_u8x16(fearless_simd::u8x16::from_slice(simd, &row[..16]))
-    }
-
-    #[inline]
-    fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>) {
-        let (low, high) = simd.split_u32x8(v.bitcast());
-        let words = simd.relaxed_narrow_u32x4(low, high);
-        let bytes: [u8; 16] = simd.relaxed_narrow_u16x8(words, words).into();
-        out[..8].copy_from_slice(&bytes[..8]); // splot-copy-ok: publish eight CfL samples
-    }
-
-    #[inline]
-    fn from_clipped(v: i32) -> Self {
-        v as u8
     }
 
     #[inline]
@@ -1912,18 +1896,6 @@ impl CflLaneSample for u16 {
             u16x8::from_slice(simd, &row[..8]),
             u16x8::from_slice(simd, &row[8..16]),
         )
-    }
-
-    #[inline]
-    fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>) {
-        let (low, high) = simd.split_u32x8(v.bitcast());
-        simd.relaxed_narrow_u32x4(low, high)
-            .store_slice(&mut out[..8]);
-    }
-
-    #[inline]
-    fn from_clipped(v: i32) -> Self {
-        v as u16
     }
 
     #[inline]

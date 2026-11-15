@@ -7,9 +7,9 @@ use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x8, i32x8, u16x8
 
 use crate::{BitDepth, ReconSample};
 
-#[doc = "AV2 § 3 symbols and § 7.13.6 MHCCP process constants."]
+/// The AV2 § 7.13.6 MHCCP fixed-point precision, in bits.
 pub const MHCCP_BITS: u32 = 16;
-pub const MHCCP_PARAM_COUNT: usize = 3;
+pub(crate) const MHCCP_PARAM_COUNT: usize = 3;
 const DIV_PREC_BITS: u32 = 14;
 const DIV_PREC_BITS_POW2: u32 = 8;
 const DIV_SLOT_BITS: u32 = 3;
@@ -544,10 +544,11 @@ fn predict_rows<S: Simd, P: PredictedSample, const N: usize, const WIDE: bool>(
     }
 }
 
-/// A predicted sample type the MHCCP lanes store into.
-trait PredictedSample: Copy {
+/// A predicted sample type (`u8` or `u16`) that MHCCP and CfL lanes store into.
+pub trait PredictedSample: ReconSample {
     /// Stores eight samples already clipped to the sample range.
     fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>);
+    /// A value already clipped to the sample range.
     fn from_clipped(v: i32) -> Self;
 }
 
