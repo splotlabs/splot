@@ -254,10 +254,9 @@ impl ReferenceStateTracker {
     /// boundary, with the no-trailing-delimiter end-of-bitstream flush), AFTER the
     /// frame's facts are known and BEFORE any later frame's reference checks consult the
     /// buffer — matching § 7.23's "final step in decoding a frame" ordering.
-    #[allow(clippy::large_types_passed_by_value)]
-    pub(crate) fn apply(&mut self, xlayer: ExtendedLayerId, update: FrameRefUpdate) {
+    pub(crate) fn apply(&mut self, xlayer: ExtendedLayerId, update: &FrameRefUpdate) {
         let layer = self.layers.entry(xlayer).or_default();
-        match update {
+        match *update {
             FrameRefUpdate::ClkReset {
                 num_ref_frames,
                 refresh_frame_flags,
@@ -481,7 +480,7 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b101,
                 is_key_or_switch: false,
                 facts: facts(7),
@@ -498,7 +497,7 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b10_1010,
                 is_key_or_switch: true,
                 facts: facts(3),
@@ -515,7 +514,7 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b1111,
                 is_key_or_switch: false,
                 facts: facts(1),
@@ -523,7 +522,7 @@ mod tests {
         );
         tracker.apply(
             XL,
-            FrameRefUpdate::ClkReset {
+            &FrameRefUpdate::ClkReset {
                 num_ref_frames: 8,
                 refresh_frame_flags: 0b1,
                 facts: facts(9),
@@ -539,7 +538,7 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::ClkReset {
+            &FrameRefUpdate::ClkReset {
                 num_ref_frames: 8,
                 refresh_frame_flags: 0xFFFF,
                 facts: facts(0),
@@ -556,13 +555,13 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b1,
                 is_key_or_switch: false,
                 facts: facts(5),
             },
         );
-        tracker.apply(XL, FrameRefUpdate::SefNoUpdate);
+        tracker.apply(XL, &FrameRefUpdate::SefNoUpdate);
         assert_eq!(tracker.slot(XL, 0), SlotState::Valid(facts(5)));
     }
 
@@ -571,13 +570,13 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0xFFFF,
                 is_key_or_switch: false,
                 facts: facts(2),
             },
         );
-        tracker.apply(XL, FrameRefUpdate::PoisonAll);
+        tracker.apply(XL, &FrameRefUpdate::PoisonAll);
         for i in 0..NUM_REF_FRAMES {
             assert_eq!(tracker.slot(XL, i), SlotState::Unknown);
         }
@@ -589,7 +588,7 @@ mod tests {
         let xl1 = ExtendedLayerId::from_bits(1);
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b1,
                 is_key_or_switch: false,
                 facts: facts(4),
@@ -605,7 +604,7 @@ mod tests {
         let saved_params = [[1, 2, 65_536, 3, 4, 65_536]; REFS_PER_FRAME];
         tracker.apply(
             XL,
-            FrameRefUpdate::ClkReset {
+            &FrameRefUpdate::ClkReset {
                 num_ref_frames: 8,
                 refresh_frame_flags: 0b1,
                 facts: SlotFacts {
@@ -643,7 +642,7 @@ mod tests {
         let mut scratch = ReferenceStateScratch::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b1,
                 is_key_or_switch: false,
                 facts: facts(1),
@@ -652,18 +651,18 @@ mod tests {
         assert!(tracker.view_into(XL, &mut scratch).is_none());
         tracker.apply(
             XL,
-            FrameRefUpdate::ClkReset {
+            &FrameRefUpdate::ClkReset {
                 num_ref_frames: 8,
                 refresh_frame_flags: 0b1,
                 facts: facts(2),
             },
         );
         assert!(tracker.view_into(XL, &mut scratch).is_some());
-        tracker.apply(XL, FrameRefUpdate::PoisonAll);
+        tracker.apply(XL, &FrameRefUpdate::PoisonAll);
         assert!(tracker.view_into(XL, &mut scratch).is_none());
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b1111_1110,
                 is_key_or_switch: false,
                 facts: facts(3),
@@ -672,7 +671,7 @@ mod tests {
         assert!(tracker.view_into(XL, &mut scratch).is_none());
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b1,
                 is_key_or_switch: false,
                 facts: facts(4),
@@ -743,7 +742,7 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b1,
                 is_key_or_switch: false,
                 facts: lt_facts(7, 5),
@@ -751,7 +750,7 @@ mod tests {
         );
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b100,
                 is_key_or_switch: false,
                 facts: facts(8),
@@ -792,7 +791,7 @@ mod tests {
                 2 => FrameRefUpdate::SefNoUpdate,
                 _ => FrameRefUpdate::PoisonAll,
             };
-            tracker.apply(xl, update);
+            tracker.apply(xl, &update);
             for i in 0..(NUM_REF_FRAMES + 4) {
                 let _ = tracker.slot(xl, i);
             }
@@ -806,7 +805,7 @@ mod tests {
             let f = SlotFacts { width: 2, height: 3, ..facts(1) };
             tracker.apply(
                 XL,
-                FrameRefUpdate::Refresh {
+                &FrameRefUpdate::Refresh {
                     refresh_frame_flags: u32::from(mask),
                     is_key_or_switch: false,
                     facts: f,
@@ -828,13 +827,13 @@ mod tests {
             let mut tracker = ReferenceStateTracker::default();
             tracker.apply(
                 XL,
-                FrameRefUpdate::Refresh {
+                &FrameRefUpdate::Refresh {
                     refresh_frame_flags: mask,
                     is_key_or_switch: is_kos,
                     facts: SlotFacts { width: 9, height: 9, ..facts(9) },
                 },
             );
-            tracker.apply(XL, FrameRefUpdate::PoisonAll);
+            tracker.apply(XL, &FrameRefUpdate::PoisonAll);
             for i in 0..NUM_REF_FRAMES {
                 prop_assert_eq!(tracker.slot(XL, i), SlotState::Unknown);
             }

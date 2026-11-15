@@ -60,7 +60,7 @@ impl ValidatorContext {
     /// end-of-bitstream flush (the final frame has no following delimiter).
     pub(super) fn commit_pending_ref_update(&mut self) {
         if let Some((xlayer, update)) = self.pending_ref_update.take() {
-            self.reference_state.apply(xlayer, update);
+            self.reference_state.apply(xlayer, &update);
         }
     }
 
