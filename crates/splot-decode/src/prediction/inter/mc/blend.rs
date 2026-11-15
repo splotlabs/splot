@@ -65,7 +65,7 @@ pub(super) fn blend_compound_average<T: ReconSample>(
         w,
         h,
         scaling_templates,
-        Some(scaling_templates),
+        scaling_templates,
         (frame_w, frame_h),
     ) {
         return blend_rows(pred0, pred1, w, output, stride, |pred0, pred1, output| {

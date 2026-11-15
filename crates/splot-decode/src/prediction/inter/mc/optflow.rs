@@ -164,21 +164,6 @@ impl MotionCell {
     }
 }
 
-/// The TIP plane pass's cells, which it lends back to the caller's scratch.
-#[derive(Debug)]
-enum MotionCells {
-    Heap(Vec<MotionCell>),
-}
-
-/// The § 7.11.3 candidates of each TIP unit, whose refine-MV area clips it.
-#[derive(Debug)]
-enum RefinemvCandidates {
-    PerCell {
-        candidates: Vec<[Mv; 2]>,
-        unit_size: usize,
-    },
-}
-
 /// Largest motion-grid subblock (refine-MV unit): 16x16 samples.
 const MAX_MOTION_GRID_SUBBLOCK_SAMPLES: usize = 256;
 /// Horizontal-pass rows for an unscaled 16-sample-tall subblock: 16 + 7 taps.
@@ -202,41 +187,22 @@ impl Default for GridProgram {
     }
 }
 
-impl MotionCells {
-    fn as_slice(&self) -> &[MotionCell] {
-        match self {
-            Self::Heap(cells) => cells,
-        }
-    }
-}
-
 /// The units of one TIP block in raster order, as the TIP plane pass reads
 /// them.
 #[derive(Debug)]
 pub(crate) struct CompoundMotionGrid {
     unit_size: usize,
     columns: usize,
-    cells: MotionCells,
-    refinemv_candidates: RefinemvCandidates,
+    /// The TIP plane pass's cells, which it lends back to the caller's scratch.
+    cells: Vec<MotionCell>,
+    /// The § 7.11.3 candidates of each TIP unit, whose refine-MV area clips it.
+    refinemv_candidates: Vec<[Mv; 2]>,
     /// Whether some row holds two adjacent equal full-pel cells, the
     /// precondition of every merged run.
     fullpel_runs: bool,
 }
 
 impl CompoundMotionGrid {
-    /// Takes the per-cell candidate list back so the caller's context keeps it.
-    fn take_candidates(&mut self) -> Vec<[Mv; 2]> {
-        match &mut self.refinemv_candidates {
-            RefinemvCandidates::PerCell { candidates, .. } => core::mem::take(candidates),
-        }
-    }
-
-    fn take_cells(&mut self) -> Vec<MotionCell> {
-        match &mut self.cells {
-            MotionCells::Heap(cells) => core::mem::take(cells),
-        }
-    }
-
     pub(super) const fn unit_size(&self) -> usize {
         self.unit_size
     }
@@ -248,22 +214,11 @@ impl CompoundMotionGrid {
             .and_then(|row| row.checked_add(column))
             .filter(|_| column < self.columns);
         index
-            .and_then(|index| self.cells.as_slice().get(index))
+            .and_then(|index| self.cells.get(index))
             .map(|cell| cell.mvs)
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "compound motion-grid lookup",
             })
-    }
-
-    /// The refine-MV candidates as a slice that cell `index` reads at
-    /// `index * step`, and their unit size.
-    fn refinemv_candidate_slice(&self) -> (&[[Mv; 2]], usize, usize) {
-        match &self.refinemv_candidates {
-            RefinemvCandidates::PerCell {
-                candidates,
-                unit_size,
-            } => (candidates, 1, *unit_size),
-        }
     }
 }
 
@@ -325,11 +280,9 @@ pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: &CompoundMcBlock<'a, T>,
     (rect, mvs): (McBlockRect, [Mv; 2]),
-    unit_size: usize,
     luma: &mut [LumaReference<'a, T>; 2],
 ) -> Result<MotionCell> {
-    let (Some(distances), 8, 8, 8) = (block.optflow_distances, unit_size, rect.luma_w, rect.luma_h)
-    else {
+    let (Some(distances), 8, 8) = (block.optflow_distances, rect.luma_w, rect.luma_h) else {
         return Err(crate::DecodeHeaderStateError::InvalidInterTipPredictionState.into());
     };
     let mut predictions = [[0u16; 64]; 2];
@@ -447,14 +400,12 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
             .with_mv(rect.luma_x as i32, rect.luma_y as i32, mv.row, mv.col, 0, 0);
     let bounds = refinemv_area.map(|(candidate, width, height)| {
         if scaling.is_scaled() {
-            return super::refinemv::reference_area_bounds(
+            return super::refinemv::scaled_area_bounds(
                 rect.luma_x as i32,
                 rect.luma_y as i32,
                 width,
                 height,
                 candidate,
-                0,
-                0,
                 &scaling,
             );
         }
@@ -657,7 +608,7 @@ fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
 /// The placements of an unscaled cell whose refine-MV unit is the cell, and
 /// whether its weights are uniform: each start is its 1/16-sample position,
 /// and each refine-MV area starts at the candidate's integer sample (as in
-/// `reference_area_bounds`).
+/// `unscaled_area_bounds`).
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn unscaled_cell_placements<T: ReconSample>(

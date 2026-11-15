@@ -88,13 +88,7 @@ pub(crate) fn refine_tip_units<T: ReconSample>(
     }
     let fast = fullpel
         && super::super::refinemv::tip_fullpel_cells(
-            sink,
-            block,
-            &unit_at,
-            candidates,
-            (8, offset),
-            0,
-            cells,
+            sink, block, &unit_at, candidates, offset, cells,
         )?;
     let mut luma = LumaReference::pair(sink.info(), block, offset);
     let mut carries: [BilinearOverlapCarry<'_, T>; 2] = Default::default();
@@ -114,7 +108,7 @@ pub(crate) fn refine_tip_units<T: ReconSample>(
             *cell = refined;
             continue;
         }
-        *cell = tip_unit_motion_cell(sink, block, (rect, mvs), 8, &mut luma)?;
+        *cell = tip_unit_motion_cell(sink, block, (rect, mvs), &mut luma)?;
     }
     *fullpel_runs = fullpel && fullpel_run_pairs(cells, columns);
     Ok(())
@@ -161,17 +155,14 @@ pub(crate) fn predict_tip_units<T: ReconSample>(
     let mut motion = CompoundMotionGrid {
         unit_size,
         columns,
-        cells: MotionCells::Heap(core::mem::take(&mut units.cells)),
-        refinemv_candidates: RefinemvCandidates::PerCell {
-            candidates: core::mem::take(candidates),
-            unit_size,
-        },
+        cells: core::mem::take(&mut units.cells),
+        refinemv_candidates: core::mem::take(candidates),
         fullpel_runs: units.fullpel_runs,
     };
     let program = units.program.get_or_insert_default();
     let result = predict_grid(sink, block, &motion, program, offset);
-    units.cells = motion.take_cells();
-    *candidates = motion.take_candidates();
+    units.cells = core::mem::take(&mut motion.cells);
+    *candidates = core::mem::take(&mut motion.refinemv_candidates);
     result
 }
 
@@ -309,7 +300,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         let prediction =
             super::super::compound_subpel_plane(self.block, plane, sub.0, sub.1, self.offset)?;
         let cells = self.motion.cells.as_slice();
-        let (candidates, _, _) = self.motion.refinemv_candidate_slice();
+        let candidates = self.motion.refinemv_candidates.as_slice();
         let columns = self.motion.columns;
         if prediction.scalings.into_iter().any(PlaneScaling::is_scaled) {
             return Err(DecodeHeaderStateError::InvalidInterTipPredictionState.into());
@@ -365,12 +356,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                 (candidates, 1, self.motion.unit_size),
                 sub,
                 (grid.bit_depth, self.block.interp, None),
-                (
-                    !self.check_uniform,
-                    self.check_uniform,
-                    self.cwp_weight,
-                    frame,
-                ),
+                (self.check_uniform, self.cwp_weight, frame),
             )
         {
             let whole = |views: Option<&[ReferencePlaneView<'_, T>; 2]>,
@@ -439,12 +425,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                     [row, W, H],
                     sub,
                     (grid.bit_depth, self.block.interp, None),
-                    (
-                        !self.check_uniform,
-                        self.check_uniform,
-                        self.cwp_weight,
-                        frame,
-                    ),
+                    (self.check_uniform, self.cwp_weight, frame),
                     &mut first[row * *first_stride..],
                     *first_stride,
                     second,

@@ -560,8 +560,9 @@ fn motion_compensate_planes<T: ReconSample>(
     Ok(())
 }
 
-/// Predicts a compound block straight into `sink`. Only a plane that the
-/// frame edge clips goes through a temporary first.
+/// Predicts a compound block straight into `sink`; a block without warp
+/// goes to [`compound_mask::predict`]. Only a warp plane that the frame edge
+/// clips goes through a temporary first.
 pub(super) fn predict_compound_into<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
@@ -929,47 +930,7 @@ fn predict_compound_plane_output<T: ReconSample>(
     let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
     let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
     let blend = block.blend;
-    let has_warp = block.warp_params.iter().any(Option::is_some);
-    let translation = if has_warp {
-        None
-    } else {
-        Some(translational_compound_plane(
-            info, block, plane, sub_x, sub_y, offset,
-        )?)
-    };
-    if let (
-        Some(translation),
-        CompoundBlend::Average {
-            implicit_mask,
-            cwp_weight,
-        },
-        Some(output),
-    ) = (translation.as_ref(), blend, T::u16_slice_mut(samples))
-        && compound_average_weights_are_uniform(
-            implicit_mask,
-            cwp_weight,
-            translation.plane.block_w,
-            translation.plane.block_h,
-            translation.plane.scalings,
-            Some(translation.plane.scalings),
-            (frame_w, frame_h),
-        )
-    {
-        predict_compound_average_into(
-            &translation.plane,
-            &translation.params,
-            cwp_weight,
-            None,
-            None,
-            output,
-            stride,
-        )?;
-        return Ok(());
-    }
-    let prediction = match translation {
-        Some(translation) => compound_plane_prediction_from_translation(translation)?,
-        None => compound_warp_plane_prediction(info, block, plane, sub_x, sub_y, offset)?,
-    };
+    let prediction = compound_warp_plane_prediction(info, block, plane, sub_x, sub_y, offset)?;
     let (pred0, pred1) = prediction.predictions();
     if !matches!(blend, CompoundBlend::Average { .. }) {
         let [_, (_, chroma_x, chroma_y), _] = mc_planes(info.pixel_format());
@@ -1088,7 +1049,6 @@ struct CompoundPlanePrediction {
     block_h: usize,
     scaling0: PlaneScaling,
     scaling1: PlaneScaling,
-    recycle_buffers: bool,
 }
 
 pub(crate) struct McScratch {
@@ -1265,13 +1225,11 @@ impl CompoundPlanePrediction {
 
 impl Drop for CompoundPlanePrediction {
     fn drop(&mut self) {
-        if self.recycle_buffers {
-            let buffers = [
-                core::mem::take(&mut self.pred0),
-                core::mem::take(&mut self.pred1),
-            ];
-            COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(Some(buffers)));
-        }
+        let buffers = [
+            core::mem::take(&mut self.pred0),
+            core::mem::take(&mut self.pred1),
+        ];
+        COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(Some(buffers)));
     }
 }
 
@@ -1373,49 +1331,6 @@ fn translational_compound_plane<'a, T: ReconSample>(
     Ok(TranslationalCompoundPlane { plane, params })
 }
 
-fn compound_plane_prediction_from_translation<T: ReconSample>(
-    translation: TranslationalCompoundPlane<'_, T>,
-) -> Result<CompoundPlanePrediction> {
-    let TranslationalCompoundPlane { plane, params } = translation;
-    let CompoundSubpelPlane {
-        views,
-        block_w,
-        block_h,
-        scalings,
-        ..
-    } = plane;
-    let sample_count = block_w
-        .checked_mul(block_h)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "compound prediction sample count",
-        })?;
-    let [pred0, pred1] = take_compound_prediction_buffers(sample_count);
-    let mut prediction = CompoundPlanePrediction {
-        pred0,
-        pred1,
-        block_w,
-        block_h,
-        scaling0: scalings[0],
-        scaling1: scalings[1],
-        recycle_buffers: true,
-    };
-    subpel_predict_block_compound_intermediate_into(
-        &views[0],
-        &params[0],
-        None,
-        &mut prediction.pred0[..sample_count],
-        block_w,
-    )?;
-    subpel_predict_block_compound_intermediate_into(
-        &views[1],
-        &params[1],
-        None,
-        &mut prediction.pred1[..sample_count],
-        block_w,
-    )?;
-    Ok(prediction)
-}
-
 /// AV2 § 7.13.3.14 compound LOCALWARP plane prediction: warp each list with its
 /// own § 7.13.3.23 model (§ 7.13.3.19 block warp, § 7.13.3.20 extended warp for
 /// invalid shear / sub-8x8, or translational when the list has no samples), then
@@ -1468,7 +1383,6 @@ fn compound_warp_plane_prediction<T: ReconSample>(
         block_h,
         scaling0,
         scaling1,
-        recycle_buffers: true,
     })
 }
 
@@ -1657,7 +1571,7 @@ fn compound_average_weights_are_uniform(
     w: usize,
     h: usize,
     base_scalings: [PlaneScaling; 2],
-    uniform_scalings: Option<[PlaneScaling; 2]>,
+    uniform_scalings: [PlaneScaling; 2],
     frame_size: (usize, usize),
 ) -> bool {
     if !implicit_mask
@@ -1668,15 +1582,13 @@ fn compound_average_weights_are_uniform(
     }
     let last_x = frame_size.0 as i32 - 1;
     let last_y = frame_size.1 as i32 - 1;
-    uniform_scalings.is_some_and(|scaling| {
-        scaling.into_iter().all(|scaling| {
-            let end_x = scaling.start_x + scaling.step_x * w.saturating_sub(1) as i32;
-            let end_y = scaling.start_y + scaling.step_y * h.saturating_sub(1) as i32;
-            scaling.start_x >> 10 >= 0
-                && scaling.start_y >> 10 >= 0
-                && end_x >> 10 <= last_x
-                && end_y >> 10 <= last_y
-        })
+    uniform_scalings.into_iter().all(|scaling| {
+        let end_x = scaling.start_x + scaling.step_x * w.saturating_sub(1) as i32;
+        let end_y = scaling.start_y + scaling.step_y * h.saturating_sub(1) as i32;
+        scaling.start_x >> 10 >= 0
+            && scaling.start_y >> 10 >= 0
+            && end_x >> 10 <= last_x
+            && end_y >> 10 <= last_y
     })
 }
 

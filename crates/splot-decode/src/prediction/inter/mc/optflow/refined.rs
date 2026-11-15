@@ -478,12 +478,7 @@ impl<T: ReconSample> RefinedPass<'_, '_, T> {
             (false, Some((width, height))) => Some([width, height]),
             (false, None) => None,
         };
-        let weights = (
-            !self.check_uniform,
-            self.check_uniform,
-            self.cwp_weight,
-            frame,
-        );
+        let weights = (self.check_uniform, self.cwp_weight, frame);
         let fullpel = (bit_depth, block.interp, subblock_area);
         let views = [Some(&prediction.views), second.as_ref()];
         if self.fullpel_runs

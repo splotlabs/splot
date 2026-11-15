@@ -82,7 +82,7 @@ fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, 
     let block = unit_block(references, rect, mvs, case);
     let fast = TipFullpelViews::new(&sink, &block, (rect, mvs), offset)
         .expect("views")
-        .motion_cell(&sink, &block, (rect, mvs), 8)
+        .motion_cell(&sink, &block, (rect, mvs))
         .expect("fast cell");
     let mut luma = LumaReference::pair(sink.info(), &block, offset);
     let full = if block.search_refinemv && search_range_allowed(mvs) {
@@ -100,7 +100,6 @@ fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, 
             &sink,
             &block,
             (block.rect, [block.mv0, block.mv1]),
-            8,
             &mut luma,
         )
         .expect("unit cell")
@@ -323,7 +322,7 @@ fn tip_fullpel_cells_read_only_the_published_prefix() {
     let views =
         TipFullpelViews::new(&sink, &block, (first, still), ByteOffset::new(0)).expect("views");
     for mvs in [[mv(8, 0); 2], [mv(0, 0), mv(8, 0)]] {
-        let fast = views.motion_cell(&sink, &block, (past, mvs), 8);
+        let fast = views.motion_cell(&sink, &block, (past, mvs));
         assert_eq!(fast.expect("fast cell"), None, "{mvs:?}");
     }
 }

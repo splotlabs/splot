@@ -30,7 +30,7 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
         InterpolationFilter,
         Option<(usize, usize)>,
     ),
-    (uniform_everywhere, implicit_mask, cwp_weight, frame): (bool, bool, i16, (usize, usize)),
+    (implicit_mask, cwp_weight, frame): (bool, i16, (usize, usize)),
     output: &mut [O],
     output_stride: usize,
     mut second: Option<SecondPlane<'_, '_, T, O>>,
@@ -69,7 +69,7 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
                 [col, row, run * subblock_w, height],
                 (sub_x, sub_y),
                 (bit_depth, interp),
-                (uniform_everywhere, implicit_mask, cwp_weight, frame),
+                (implicit_mask, cwp_weight, frame),
             )
         {
             let run_cells = ((1 << run) - 1) << start;
@@ -154,7 +154,7 @@ fn fullpel_rect_params<T: ReconSample>(
     [col, row, width, height]: [usize; 4],
     (sub_x, sub_y): (u32, u32),
     (bit_depth, interp): (splot_recon::BitDepth, InterpolationFilter),
-    (uniform_everywhere, implicit_mask, cwp_weight, frame): (bool, bool, i16, (usize, usize)),
+    (implicit_mask, cwp_weight, frame): (bool, i16, (usize, usize)),
 ) -> Option<[SubpelPredictParams; 2]> {
     if !fullpel_motion(cell.mvs, sub_x, sub_y) {
         return None;
@@ -170,17 +170,15 @@ fn fullpel_rect_params<T: ReconSample>(
             sub_y,
         )
     });
-    if !(uniform_everywhere
-        || super::compound_average_weights_are_uniform(
-            implicit_mask,
-            cwp_weight,
-            width,
-            height,
-            prediction.scalings,
-            Some(scalings),
-            frame,
-        ))
-    {
+    if !super::compound_average_weights_are_uniform(
+        implicit_mask,
+        cwp_weight,
+        width,
+        height,
+        prediction.scalings,
+        scalings,
+        frame,
+    ) {
         return None;
     }
     let block = [prediction.block_w, prediction.block_h];
@@ -271,7 +269,7 @@ pub(super) fn uniform_fullpel_params<T: ReconSample>(
         InterpolationFilter,
         Option<(usize, usize)>,
     ),
-    weights: (bool, bool, i16, (usize, usize)),
+    weights: (bool, i16, (usize, usize)),
 ) -> Option<[SubpelPredictParams; 2]> {
     let cell = *cells.first()?;
     let candidates = refine.0.get(..cells.len() * refine.1)?;

@@ -131,7 +131,7 @@ fn predict_planes<T: ReconSample>(
                 w,
                 h,
                 geometry.scalings,
-                Some(geometry.scalings),
+                geometry.scalings,
                 layout.frame,
             )
         {

@@ -151,7 +151,7 @@ fn predict_planes<T: ReconSample>(
             translation.plane.block_w,
             translation.plane.block_h,
             translation.plane.scalings,
-            Some(translation.plane.scalings),
+            translation.plane.scalings,
             (frame_w, frame_h),
         ) {
             return Ok(false);
