@@ -437,6 +437,7 @@ impl<'payload> TileParser<'payload> {
             temporal,
             residual_planes,
             filter_records,
+            ops,
             ..
         } = buffers;
         self.residual_planes = residual_planes;
@@ -453,6 +454,7 @@ impl<'payload> TileParser<'payload> {
             temporal,
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             filter_records,
+            ops,
             motion_folded: false,
             failure: ReconRowFailure::None,
         };
@@ -676,6 +678,37 @@ impl TileResolveState {
         if grid.window_violated() {
             return Err(invalid_inter_tile_scheduling_state());
         }
+        let hints: [Option<u32>; 8] = core::array::from_fn(|list| {
+            context
+                .ref_frame_idx
+                .get(list)
+                .and_then(|&slot| context.reference.ref_order_hint.get(slot as usize))
+                .copied()
+        });
+        let frame = (
+            context.params.mi_rows,
+            context.params.mi_cols,
+            context.params.current_order_hint,
+        );
+        row.ops.clear();
+        row.ops
+            .resize(row.slots.len(), deferred_recon::SimpleOp::default());
+        for entry in &mut row.entries {
+            let Some(index) = entry.slot_index() else {
+                continue;
+            };
+            let Some(LeafSlot::Command(ReconCommand::Inter(command))) = row.slots.get_mut(index)
+            else {
+                continue;
+            };
+            let start = row.temporal.len();
+            if let Some(op) = command.simple_op_at_resolve(&hints, frame, &mut row.temporal)
+                && let Some(target) = row.ops.get_mut(index)
+            {
+                *target = op;
+                entry.set_temporal(start..row.temporal.len());
+            }
+        }
         Ok(())
     }
 }
@@ -742,6 +775,13 @@ impl ReconRowEntry {
     fn slot<'a>(&self, slots: &'a [LeafSlot]) -> Option<&'a LeafSlot> {
         match self.state {
             EntryState::Slot(index) => slots.get(index as usize),
+            EntryState::Intra { .. } | EntryState::Spent => None,
+        }
+    }
+
+    pub(super) const fn slot_index(&self) -> Option<usize> {
+        match self.state {
+            EntryState::Slot(index) => Some(index as usize),
             EntryState::Intra { .. } | EntryState::Spent => None,
         }
     }
@@ -904,6 +944,7 @@ pub(super) struct ReconRow {
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     /// The unit's deblock and tx-skip records, published by its resolve.
     pub(super) filter_records: TileFilterRecords,
+    pub(super) ops: Vec<deferred_recon::SimpleOp>,
     /// Whether the prepass derived this unit's motion records into `temporal`,
     /// which it does for a unit it reconstructed in full; the in-order commit
     /// folds them, so it is the band's one writer.
@@ -1017,6 +1058,7 @@ pub(crate) struct ReconRowBuffers {
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     pub(super) filter_records: TileFilterRecords,
+    pub(super) ops: Vec<deferred_recon::SimpleOp>,
     /// The large lists' lengths in the unit these buffers last held.
     pub(super) lengths: crate::support::decode_buffers::UnitLengths,
 }
@@ -1384,6 +1426,42 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                     ),
                 "a superblock's leaves write only inside it"
             );
+            let resolved_records = entry
+                .slot_index()
+                .and_then(|index| row.ops.get(index))
+                .is_some_and(|op| op.kind != 0);
+            if resolved_records {
+                // shortcut: prototype keeps leaf order by a second copy of the resolve record.
+                let records = entry.temporal();
+                let start = row.temporal.len();
+                if !safe {
+                    row.temporal.extend_from_within(records);
+                    entry.set_temporal(start..row.temporal.len());
+                    skipped_any = true;
+                    continue;
+                }
+                let result = match entry.command_mut(&mut row.slots) {
+                    Some(ReconCommandMut::Inter(command)) => scratch.reconstruct_logged(
+                        command,
+                        surface,
+                        block_decoded,
+                        &mut row.temporal,
+                        &row.residual_blocks,
+                        &row.residual_coeffs,
+                        &shared,
+                    ),
+                    _ => Ok(()),
+                };
+                entry.drop_command(&mut row.slots);
+                if let Err(error) = result {
+                    row.temporal.truncate(start);
+                    row.record_precompute_error(entry_start + offset, error);
+                    break 'superblocks;
+                }
+                row.temporal.extend_from_within(records);
+                entry.set_temporal(start..row.temporal.len());
+                continue;
+            }
             if !safe {
                 match entry.command_mut(&mut row.slots) {
                     Some(ReconCommandMut::Inter(command)) => {
@@ -1775,6 +1853,7 @@ impl ParseProgress {
             temporal,
             residual_planes,
             filter_records,
+            ops,
             ..
         } = row;
         if let Some(shared) = &self.buffers {
@@ -1787,6 +1866,7 @@ impl ParseProgress {
                 temporal,
                 residual_planes,
                 filter_records,
+                ops,
                 lengths: Default::default(),
             });
         }

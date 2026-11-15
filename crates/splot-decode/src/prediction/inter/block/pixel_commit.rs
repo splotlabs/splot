@@ -112,6 +112,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             mut temporal,
             mut residual_planes,
             mut filter_records,
+            ops,
             ..
         } = row;
         let shared = deferred_recon::ReconShared {
@@ -168,6 +169,32 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     && let Some((_, error)) = precompute_error.take()
                 {
                     return Err(error);
+                }
+                if let Some(op) = entry
+                    .slot_index()
+                    .and_then(|index| ops.get(index))
+                    .filter(|op| op.kind != 0)
+                    && deferred_recon::replay_simple_op(
+                        op,
+                        workspace,
+                        &residual_blocks,
+                        &residual_coeffs,
+                        &shared,
+                    )?
+                {
+                    if motion_owed {
+                        let records = temporal
+                            .get(entry.temporal())
+                            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+                        folded.extend_from_slice(records);
+                    }
+                    if superblock_needs_decoded {
+                        entry
+                            .publication
+                            .publish_block_decoded(block_decoded)
+                            .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
+                    }
+                    continue;
                 }
                 let temporal_clear = if motion_owed {
                     entry.temporal_clear_record(&slots, mi_rows, mi_cols, current_order_hint)
@@ -264,6 +291,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             temporal,
             residual_planes,
             filter_records,
+            ops,
             lengths,
         })
     })();

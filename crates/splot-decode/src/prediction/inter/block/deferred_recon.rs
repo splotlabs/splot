@@ -39,6 +39,22 @@ pub(super) struct InterReconCommand {
     pub(super) leaf: u32,
 }
 
+/// Prototype op of a simple inter block (single reference, translational, no
+/// TIP / refine / interintra / BAWP), written at resolve.
+#[derive(Clone, Copy, Default)]
+pub(super) struct SimpleOp {
+    pub(super) kind: u8,
+    pub(super) list: u8,
+    pub(super) chroma: bool,
+    pub(super) segment_id: u8,
+    pub(super) luma: [u16; 4],
+    pub(super) mv: super::super::Mv,
+    pub(super) qindex: u32,
+    pub(super) residual: [u32; 2],
+    pub(super) interp: Option<splot_recon::InterpolationFilter>,
+    pub(super) tile_offset: u64,
+}
+
 #[derive(Default)]
 #[repr(align(64))]
 pub(super) struct InterReconScratch<T: ReconSample> {
@@ -159,6 +175,59 @@ impl InterReconCommand {
         predict_by_translation_under_integer_mv(&self.syntax, state.core, &mut resolved);
         resolved.apply(&mut self.placed.block);
         Ok(())
+    }
+
+    /// Prototype: for a simple block, derives its § 7.22 record at resolve with
+    /// the per-list order hints hoisted, and returns its op.
+    pub(super) fn simple_op_at_resolve(
+        &mut self,
+        hints: &[Option<u32>; 8],
+        (mi_rows, mi_cols, current_order_hint): (usize, usize, u32),
+        temporal: &mut Vec<TemporalMotionBlock>,
+    ) -> Option<SimpleOp> {
+        let block = &self.placed.block;
+        if self.is_tip()
+            || !matches!(self.syntax.motion, InterMotionSyntax::Single(_))
+            || block.ref_frame1.is_some()
+            || block.warp_params[0].is_some()
+            || block.warp_params[1].is_some()
+            || block.interintra.is_some()
+            || block.bawp.enabled
+        {
+            return None;
+        }
+        let list = u8::try_from(block.ref_frame0).ok()?;
+        let hint = *hints.get(usize::from(list))?;
+        let placed = &self.placed;
+        temporal.push(TemporalMotionBlock::new(
+            placed.luma_y() / 4,
+            placed.luma_x() / 4,
+            placed.luma_w() / 4,
+            placed.luma_h() / 4,
+            mi_rows,
+            mi_cols,
+            current_order_hint,
+            [hint, None],
+            [block.mv, block.mv1],
+            [None, None],
+        ));
+        self.motion_derived = true;
+        let residual = block
+            .residual
+            .as_ref()
+            .map_or([0, 0], |r| [r.block_range.start, r.block_range.end]);
+        Some(SimpleOp {
+            kind: 1,
+            list,
+            chroma: placed.predict_chroma,
+            segment_id: self.segment_id,
+            luma: placed.luma.map(|v| v as u16),
+            mv: block.mv,
+            qindex: self.qindex,
+            residual,
+            interp: Some(block.interp),
+            tile_offset: self.tile_offset.get() as u64,
+        })
     }
 
     pub(super) fn reads_current_frame(&self) -> bool {
@@ -640,6 +709,48 @@ impl<T: ReconSample> InterReconScratch<T> {
             )
         })
     }
+}
+
+/// Prototype: replays a simple op with a direct call; `Ok(false)` when the
+/// row holds no borrow of its reference, for the generic path to take over.
+pub(super) fn replay_simple_op<T: ReconSample>(
+    op: &SimpleOp,
+    workspace: &mut CurrentFrameWorkspace<T>,
+    residual_blocks: &[InterResidualBlock],
+    residual_coeffs: &[i32],
+    shared: &ReconShared<'_, T>,
+) -> Result<bool> {
+    let Some(Some(reference)) = shared.held.get(usize::from(op.list)) else {
+        return Ok(false);
+    };
+    let [x, y, w, h] = op.luma.map(usize::from);
+    let offset = ByteOffset::new(op.tile_offset);
+    let mut sink = WorkspaceSink::Frame(workspace);
+    mc::motion_compensate_single_block_into(
+        &mut sink,
+        *reference,
+        mc::McBlockRect::from_luma_rect(x, y, w, h),
+        op.mv,
+        op.interp.unwrap_or(splot_recon::InterpolationFilter::EightTap),
+        op.chroma,
+        offset,
+    )?;
+    if op.residual[0] != op.residual[1] {
+        let _segment_scope = FrameQmSegmentScope::install(usize::from(op.segment_id));
+        super::super::add_inter_residual_to_workspace(
+            &mut sink,
+            &super::super::InterResidual {
+                block_range: op.residual[0]..op.residual[1],
+            },
+            residual_blocks,
+            residual_coeffs,
+            op.qindex,
+            shared.luma_use_tcq,
+            shared.residual_use_ddt,
+            shared.bit_depth,
+        )?;
+    }
+    Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]
