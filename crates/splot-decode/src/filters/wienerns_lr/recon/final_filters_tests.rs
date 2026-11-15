@@ -3,7 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use super::super::{OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
+use super::super::{FilledWindow, OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
 use super::*;
 use crate::filters::source::DeblockedWindow;
 use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
@@ -174,7 +174,7 @@ fn progress_of<T: splot_recon::ReconSample>(
 /// Copies every stripe's window out of the frame `setup` filters, in order.
 fn stripe_windows<T: splot_recon::ReconSample>(
     setup: &OwnedFilterSetup<T>,
-) -> Vec<Option<DeblockedWindow<T>>> {
+) -> Vec<Option<FilledWindow<T>>> {
     let mut rows = setup.sink.progress.frontier_rows().unwrap();
     assert!(rows.publish_final_rows(setup.luma_height));
     let mut carry = DeblockedWindow::default();

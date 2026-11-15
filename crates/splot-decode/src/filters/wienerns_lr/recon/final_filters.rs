@@ -1092,21 +1092,29 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 }
 
 impl StripeChain<'_> {
-    pub(crate) fn active_lr_planes(
+    /// Each plane's blocks near the luma rows `luma_start..luma_end`, and
+    /// whether one of them reaches into those rows.
+    pub(crate) fn lr_stripe_blocks<'b>(
         &self,
-        luma_start: usize,
-        luma_end: usize,
-        plane_blocks: [&[WienerNsLrSourceBlock]; 3],
-    ) -> [bool; 3] {
+        (luma_start, luma_end): (usize, usize),
+        plane_blocks: [&'b [WienerNsLrSourceBlock]; 3],
+    ) -> ([&'b [WienerNsLrSourceBlock]; 3], [bool; 3]) {
         let sub_y = usize::from(self.pixel_format.subsampling_y());
-        core::array::from_fn(|plane| {
+        let rows = |plane: usize| {
             let shift = usize::from(plane != PlaneId::Y.index()) * sub_y;
-            let start = luma_start >> shift;
-            let end = luma_end.div_ceil(1 << shift);
-            plane_blocks[plane]
+            (luma_start >> shift, luma_end.div_ceil(1 << shift))
+        };
+        let blocks: [_; 3] = core::array::from_fn(|plane| {
+            let (start, end) = rows(plane);
+            lr_blocks_near_rows(plane_blocks[plane], start, end)
+        });
+        let active = core::array::from_fn(|plane| {
+            let (start, end) = rows(plane);
+            blocks[plane]
                 .iter()
                 .any(|block| lr_block_in_rows(block, start, end).is_some())
-        })
+        });
+        (blocks, active)
     }
 
     pub(crate) fn apply_lr_stripe<'a, T: ReconSample>(
