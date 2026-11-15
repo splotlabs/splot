@@ -33,6 +33,7 @@ mod copy;
 mod eight_bit;
 mod fullpel_u8;
 mod portable;
+mod refinemv_window;
 #[cfg_attr(
     not(target_arch = "aarch64"),
     allow(
@@ -53,10 +54,8 @@ pub use copy::{
 pub use fullpel_u8::{
     UnscaledPut, subpel_compound_block, subpel_predict_block_strided_into_u8, subpel_put_block,
 };
-pub use search_window::{
-    REFINEMV_NEIGHBORS, refinemv_area_sad_u8, refinemv_search_u8, refinemv_search_u16,
-    subpel_predict_bilinear_search_window_u8, subpel_predict_bilinear_u8,
-};
+pub use refinemv_window::{REFINEMV_SEARCH_AREA, WindowSample, refinemv_search_windows};
+pub use search_window::{REFINEMV_NEIGHBORS, refinemv_area_sad_u8, subpel_predict_bilinear_u8};
 pub use tip_overlap::{BilinearOverlapCarry, subpel_predict_12x12_bilinear_overlap_into};
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
 /// reference coordinates (`startX` / `startY` / `stepX` / `stepY` units).

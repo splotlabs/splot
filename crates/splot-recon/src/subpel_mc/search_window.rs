@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! The § 7.13.3.6 refine-MV search: the eight-bit bilinear window of each
-//! reference as bytes, and the SADs between two byte or `u16` windows.
+//! unclamped reference as bytes, and the SADs between two byte or `u16`
+//! windows.
 
 use super::*;
 
@@ -12,7 +13,7 @@ use super::*;
 /// inner `w - 1` columns and `h - 1` rows, so the outer column and row read
 /// their inner neighbour twice.
 #[must_use]
-pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
+pub(super) fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u8],
@@ -60,7 +61,7 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
 }
 
 /// The horizontal and vertical filter phases of `params`.
-fn phases(params: &SubpelPredictParams) -> [u8; 2] {
+pub(super) fn phases(params: &SubpelPredictParams) -> [u8; 2] {
     [params.start_x, params.start_y].map(|start| ((start >> 6) & SUBPEL_MASK) as u8)
 }
 
@@ -129,67 +130,6 @@ pub const REFINEMV_NEIGHBORS: [(i32, i32); 24] = {
     out
 };
 
-/// The § 7.13.3.6 search offset `(dx, dy)` of two `stride`-wide eight-bit
-/// search windows: the biased centre SAD when `allow_center` keeps it, else
-/// the best of the 24 neighbours, each `Σ |w0 - w1|` over every other row of
-/// the `(stride - 4) x sad_h` areas at `(2 + dy, 2 + dx)` in the first window
-/// and at `(2 - dy, 2 - dx)` in the second. Returns `None` unless `stride` is
-/// 16 or 24, `sad_h` is 12 or 20 and each window holds its
-/// `stride x (sad_h + 4)` bytes.
-#[must_use]
-pub fn refinemv_search_u8(
-    windows: [&[u8]; 2],
-    stride: usize,
-    sad_h: usize,
-    allow_center: bool,
-) -> Option<(i32, i32)> {
-    if !matches!(stride, 16 | 24)
-        || !matches!(sad_h, 12 | 20)
-        || windows
-            .iter()
-            .any(|window| window.len() < stride * (sad_h + 4))
-    {
-        return None;
-    }
-    let geometry = [stride, sad_h];
-    #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        return Some(avx2::search(t, windows, geometry, allow_center));
-    }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
-        return Some(neon::search(t, windows, geometry, allow_center));
-    }
-    Some(baseline_simd!(simd => generic::search(simd, windows, geometry, allow_center)))
-}
-
-/// [`refinemv_search_u8`] of two `stride`-wide `u16` search windows of
-/// samples within `bit_depth`, each SAD shifted down by `bit_depth - 8`.
-#[must_use]
-pub fn refinemv_search_u16(
-    windows: [&[u16]; 2],
-    stride: usize,
-    sad_h: usize,
-    allow_center: bool,
-    bit_depth: BitDepth,
-) -> Option<(i32, i32)> {
-    if !matches!(stride, 16 | 24)
-        || !matches!(sad_h, 12 | 20)
-        || windows
-            .iter()
-            .any(|window| window.len() < stride * (sad_h + 4))
-    {
-        return None;
-    }
-    let shift = u32::from(bit_depth.bits().saturating_sub(8));
-    Some(baseline_simd!(simd => match [stride, sad_h] {
-        [16, 12] => generic::search_u16::<_, 16, 12, 256>(simd, windows, allow_center, shift),
-        [16, _] => generic::search_u16::<_, 16, 20, 384>(simd, windows, allow_center, shift),
-        [_, 12] => generic::search_u16::<_, 24, 12, 384>(simd, windows, allow_center, shift),
-        _ => generic::search_u16::<_, 24, 20, 576>(simd, windows, allow_center, shift),
-    }))
-}
-
 /// The § 7.13.3.6 SAD of the `w x h` areas (`w` 12 or 20, `h` even) at
 /// `[x, y]` `corners` of two eight-bit planes, over every other row: the
 /// centre SAD of full-sample search windows, read in place. `None` when an
@@ -250,21 +190,11 @@ fn best_offset(
 }
 
 #[cfg(target_arch = "x86_64")]
-mod avx2 {
+pub(super) mod avx2 {
     use core::arch::x86_64::*;
     use fearless_simd::{Avx2, SimdBase, SimdFrom, u8x16, u8x32, u16x16};
 
-    /// The `N` bytes of `source` from `at`: a `u32` start ends one compare
-    /// from the storage end.
-    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
-    #[inline(always)]
-    fn row_bytes<const N: usize>(source: &[u8], at: u32) -> Option<&[u8; N]> {
-        let at = at as usize;
-        if at + N > source.len() {
-            return None;
-        }
-        source.get(at..)?.first_chunk::<N>()
-    }
+    use crate::subpel_mc::refinemv_window::lanes_at;
 
     /// The `(left, right)` source index pairs of output columns `first..first
     /// + 16` of an `m`-sample row read from index `base`, both clamped to the
@@ -387,11 +317,11 @@ mod avx2 {
                 _mm256_broadcastsi128_si256(u8x16::load_array_ref(t, bytes).into())
             };
             if W != 24 {
-                let low = half(row_bytes::<16>(source, at)?);
+                let low = half(lanes_at::<_, 16>(source, at)?);
                 let low = _mm256_maddubs_epi16(_mm256_shuffle_epi8(low, low_pairs), weights);
                 return Some([low, low]);
             }
-            let bytes = row_bytes::<31>(source, at)?;
+            let bytes = lanes_at::<_, 31>(source, at)?;
             let (low, high) = (half(bytes.first_chunk()?), half(bytes.last_chunk()?));
             Some([
                 _mm256_maddubs_epi16(_mm256_shuffle_epi8(low, low_pairs), weights),
@@ -496,7 +426,7 @@ mod avx2 {
             let rows = |first: usize| {
                 let load = |row: usize| -> __m128i {
                     let at = origin + column as u32 + row.min(h) as u32 * source_stride;
-                    row_bytes::<16>(source, at).map_or(_mm_setzero_si128(), |bytes| {
+                    lanes_at::<_, 16>(source, at).map_or(_mm_setzero_si128(), |bytes| {
                         u8x16::load_array_ref(t, bytes).into()
                     })
                 };
@@ -529,7 +459,7 @@ mod avx2 {
 
     fearless_simd::kernel!(
         #[inline]
-        pub(super) fn search(
+        pub(in crate::subpel_mc) fn search(
             t: Avx2,
             windows: [&[u8]; 2],
             geometry: [usize; 2],
@@ -876,7 +806,7 @@ pub(super) mod generic {
         }
     }
 
-    /// The search of [`super::refinemv_search_u8`] of `[stride, sad_h]`:
+    /// The byte refine-MV search of `[stride, sad_h]`:
     /// each row's masked absolute differences widened and summed in `u16`
     /// lanes.
     #[inline(never)]
@@ -905,13 +835,13 @@ pub(super) mod generic {
         )
     }
 
-    /// [`super::refinemv_search_u16`] of `STRIDE`-wide windows of `AREA`
+    /// The 16-bit refine-MV search of `STRIDE`-wide windows of `AREA`
     /// samples: per row the full vectors from columns 0 and 8 and the last
     /// four samples of the vector ending at the row end, each column vector
     /// summed in its own `u16` lanes, which ten 12-bit rows keep below
     /// `2^16`.
     #[inline]
-    pub(super) fn search_u16<
+    pub(in crate::subpel_mc) fn search_u16<
         S: Simd,
         const STRIDE: usize,
         const SAD_H: usize,
@@ -1007,7 +937,7 @@ pub(super) mod generic {
 
 /// The windows and the SADs in NEON byte lanes.
 #[cfg(target_arch = "aarch64")]
-mod neon {
+pub(super) mod neon {
     use super::generic::load;
     use core::arch::aarch64::{
         uint8x16_t, uint16x8_t, vdupq_n_u8, vdupq_n_u16, vget_low_u8, vmlal_high_u8, vmlal_u8,
@@ -1148,7 +1078,7 @@ mod neon {
 
     fearless_simd::kernel!(
         #[inline]
-        pub(super) fn search(
+        pub(in crate::subpel_mc) fn search(
             t: Neon,
             windows: [&[u8]; 2],
             geometry: [usize; 2],
