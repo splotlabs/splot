@@ -316,41 +316,37 @@ pub(super) fn tip_optflow_motion_cell_strided(
     Ok(MotionCell::from_optflow(base_mvs, delta))
 }
 
-/// The motion cell of one 8x8 optical-flow TIP unit that the refine-MV
-/// optical-flow search did not take: an unsearched unit, or one whose
-/// § 7.13.3.6 search ends at once at its candidates (out of range). Its two
-/// initial predictions and § 7.13.3.9 delta stay on the stack.
+/// The motion cell of the 8x8 optical-flow unit `rect` of the TIP block
+/// `block`, from candidates `mvs`, that the refine-MV optical-flow search did
+/// not take: an unsearched unit, or one whose § 7.13.3.6 search ends at once
+/// at its candidates (out of range). Its two initial predictions and
+/// § 7.13.3.9 delta stay on the stack.
 pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    unit: &CompoundMcBlock<'a, T>,
+    block: &CompoundMcBlock<'a, T>,
+    (rect, mvs): (McBlockRect, [Mv; 2]),
     unit_size: usize,
-    _offset: ByteOffset,
     luma: &mut [LumaReference<'a, T>; 2],
 ) -> Result<MotionCell> {
-    let mvs = [unit.mv0, unit.mv1];
-    let (Some(distances), 8, 8, 8) = (
-        unit.optflow_distances,
-        unit_size,
-        unit.rect.luma_w,
-        unit.rect.luma_h,
-    ) else {
+    let (Some(distances), 8, 8, 8) = (block.optflow_distances, unit_size, rect.luma_w, rect.luma_h)
+    else {
         return Err(crate::DecodeHeaderStateError::InvalidInterTipPredictionState.into());
     };
     let mut predictions = [[0u16; 64]; 2];
     for (reference, (luma, prediction)) in luma.iter_mut().zip(&mut predictions).enumerate() {
         initial_luma_prediction::<_, 0>(
             luma,
-            unit.rect,
+            rect,
             mvs[reference],
             InterpolationFilter::Bilinear,
-            unit.use_refinemv.then_some((mvs[reference], 8, 8)),
+            block.use_refinemv.then_some((mvs[reference], 8, 8)),
             None,
             prediction,
         )?;
     }
     let [pred0, pred1] = &predictions;
     let bit_depth = sink.info().bit_depth();
-    if unit.optflow_sad_threshold.is_some_and(|threshold| {
+    if block.optflow_sad_threshold.is_some_and(|threshold| {
         let rows = pred0.chunks(8).zip(pred1.chunks(8));
         super::refinemv::sad_rows::<8>(rows, u16::MAX) >> bit_depth.bits().saturating_sub(8)
             < threshold

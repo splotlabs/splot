@@ -96,8 +96,14 @@ fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, 
         .expect("refined cell")
         .expect("searched unit")
     } else {
-        super::super::optflow::tip_unit_motion_cell(&sink, &block, 8, offset, &mut luma)
-            .expect("unit cell")
+        super::super::optflow::tip_unit_motion_cell(
+            &sink,
+            &block,
+            (block.rect, [block.mv0, block.mv1]),
+            8,
+            &mut luma,
+        )
+        .expect("unit cell")
     };
     assert_eq!(
         fast.is_some(),

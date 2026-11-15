@@ -294,29 +294,26 @@ pub(super) enum SearchArea {
 
 #[inline(never)]
 pub(super) fn search_refinemv<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
+    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
     block: &CompoundMcBlock<'_, T>,
-    rect: McBlockRect,
-    offset: ByteOffset,
+    (rect, candidates): (McBlockRect, [Mv; 2]),
 ) -> Result<[Mv; 2]> {
-    let candidates = [block.mv0, block.mv1];
     if !search_range_allowed(candidates) {
         return Ok(candidates);
     }
-    let mut luma = super::optflow::LumaReference::pair(sink.info(), block, offset);
     let prediction_rect = search_rect(rect);
     // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
     let allow_center = !block.refinemv_switchable;
     if T::u8_slice(&[]).is_some() {
         let mut windows = [[0u8; SEARCH_AREA]; 2];
         let search = (prediction_rect, candidates, allow_center);
-        if let Some(mvs) = search_bytes(&mut luma, search, &mut windows)?.0 {
+        if let Some(mvs) = search_bytes(luma, search, &mut windows)?.0 {
             return Ok(mvs);
         }
     }
     let (width, height) = (prediction_rect.luma_w, prediction_rect.luma_h);
     let (dx, dy) = super::with_initial_luma_predictions(width, height, |pred0, pred1| {
-        search_samples(&mut luma, rect, candidates, allow_center, [pred0, pred1])
+        search_samples(luma, rect, candidates, allow_center, [pred0, pred1])
     })?;
     Ok(refined_mvs(candidates, dx, dy))
 }

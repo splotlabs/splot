@@ -114,13 +114,7 @@ pub(crate) fn refine_tip_units<T: ReconSample>(
             *cell = refined;
             continue;
         }
-        let mut unit = *block;
-        unit.rect = rect;
-        unit.mv0 = mvs[0];
-        unit.mv1 = mvs[1];
-        unit.has_chroma = false;
-        unit.sub8x8_chroma = false;
-        *cell = tip_unit_motion_cell(sink, &unit, 8, offset, &mut luma)?;
+        *cell = tip_unit_motion_cell(sink, block, (rect, mvs), 8, &mut luma)?;
     }
     *fullpel_runs = fullpel && fullpel_run_pairs(cells, columns);
     Ok(())
@@ -137,6 +131,7 @@ fn search_tip_units<T: ReconSample>(
     (columns, unit_size): (usize, usize),
     offset: ByteOffset,
 ) -> Result<()> {
+    let mut luma = LumaReference::pair(sink.info(), block, offset);
     for (index, (cell, &mvs)) in cells.iter_mut().zip(candidates).enumerate() {
         let rect = McBlockRect::from_luma_rect(
             block.rect.luma_x + index % columns * unit_size,
@@ -144,10 +139,8 @@ fn search_tip_units<T: ReconSample>(
             unit_size,
             unit_size,
         );
-        let mut unit = *block;
-        (unit.rect, unit.mv0, unit.mv1) = (rect, mvs[0], mvs[1]);
         *cell = MotionCell::from_refinemv(if block.search_refinemv {
-            super::super::refinemv::search_refinemv(sink, &unit, rect, offset)?
+            super::super::refinemv::search_refinemv(&mut luma, block, (rect, mvs))?
         } else {
             mvs
         });

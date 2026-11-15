@@ -403,7 +403,15 @@ fn tip_grid_and_cells<T: ReconSample>(
             )
             .expect("refined cell")
             .map_or_else(
-                || tip_unit_motion_cell(&sink, &unit, 8, offset, &mut luma),
+                || {
+                    tip_unit_motion_cell(
+                        &sink,
+                        &unit,
+                        (unit.rect, [unit.mv0, unit.mv1]),
+                        8,
+                        &mut luma,
+                    )
+                },
                 Ok,
             )
             .expect("unit cell")
