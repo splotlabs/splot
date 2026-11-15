@@ -135,8 +135,6 @@ pub(crate) fn make_work_unit_at(
 ) -> DecodeTileWorkUnit {
     DecodeTileWorkUnit {
         tile_num: 0,
-        tile_row: 0,
-        tile_col: 0,
         mi_row_range,
         mi_col_range,
         payload_range: 0..payload.len(),

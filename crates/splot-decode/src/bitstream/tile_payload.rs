@@ -440,8 +440,6 @@ pub(crate) fn retire_work_units(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTileWorkUnit {
     tile_num: u32,
-    tile_row: u32,
-    tile_col: u32,
     mi_row_range: core::ops::Range<u32>,
     mi_col_range: core::ops::Range<u32>,
     payload_range: core::ops::Range<usize>,
@@ -476,18 +474,6 @@ impl DecodeTileWorkUnit {
     #[must_use]
     pub(crate) const fn tile_num(&self) -> u32 {
         self.tile_num
-    }
-
-    #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn tile_row(&self) -> u32 {
-        self.tile_row
-    }
-
-    #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn tile_col(&self) -> u32 {
-        self.tile_col
     }
 
     #[must_use]
@@ -743,8 +729,7 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
             actual: input.framing.tiles.len() as u64,
         })?;
     for tile in &input.framing.tiles {
-        let (tile_row, tile_col, mi_row_range, mi_col_range) =
-            grid_ranges(input.grid, tile.tile_num)?;
+        let (mi_row_range, mi_col_range) = grid_ranges(input.grid, tile.tile_num)?;
         let tile_bytes = tile_slice(
             input.payload,
             tile.tile_num,
@@ -784,8 +769,6 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
         )?;
         work_units.push(DecodeTileWorkUnit {
             tile_num: tile.tile_num,
-            tile_row,
-            tile_col,
             mi_row_range,
             mi_col_range,
             payload_range: payload_start..payload_end,
@@ -840,7 +823,7 @@ fn tile_slice(
 fn grid_ranges(
     grid: TileGridFacts<'_>,
     tile_num: u32,
-) -> Result<(u32, u32, core::ops::Range<u32>, core::ops::Range<u32>), TilePayloadBoundaryError> {
+) -> Result<(core::ops::Range<u32>, core::ops::Range<u32>), TilePayloadBoundaryError> {
     if grid.tile_cols == 0 || grid.tile_rows == 0 {
         return Err(invalid_grid(tile_num));
     }
@@ -856,10 +839,8 @@ fn grid_ranges(
     if tile_num >= tile_count {
         return Err(invalid_grid(tile_num));
     }
-    let tile_row = tile_num / grid.tile_cols;
-    let tile_col = tile_num % grid.tile_cols;
-    let row = tile_row as usize;
-    let col = tile_col as usize;
+    let row = (tile_num / grid.tile_cols) as usize;
+    let col = (tile_num % grid.tile_cols) as usize;
     let Some((&mi_row_start, &mi_row_end)) = grid
         .mi_row_starts
         .get(row)
@@ -877,12 +858,7 @@ fn grid_ranges(
     if mi_row_start >= mi_row_end || mi_col_start >= mi_col_end {
         return Err(invalid_grid(tile_num));
     }
-    Ok((
-        tile_row,
-        tile_col,
-        mi_row_start..mi_row_end,
-        mi_col_start..mi_col_end,
-    ))
+    Ok((mi_row_start..mi_row_end, mi_col_start..mi_col_end))
 }
 
 fn invalid_grid(tile_num: u32) -> TilePayloadBoundaryError {

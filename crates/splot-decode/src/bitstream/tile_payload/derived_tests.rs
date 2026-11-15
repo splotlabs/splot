@@ -319,8 +319,6 @@ fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
     assert_eq!(plan.work_units().len(), 2);
     let first = &plan.work_units()[0];
     assert_eq!(first.tile_num(), 0);
-    assert_eq!(first.tile_row(), 0);
-    assert_eq!(first.tile_col(), 0);
     assert_eq!(first.mi_row_range(), 0..8);
     assert_eq!(first.mi_col_range(), 0..16);
     assert_eq!(first.tile_byte_span(), ByteSpan::new(ByteOffset::new(5), 1));
@@ -328,8 +326,6 @@ fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
     assert!(first.cdf().save_policy().copy_cdf);
     let second = &plan.work_units()[1];
     assert_eq!(second.tile_num(), 1);
-    assert_eq!(second.tile_row(), 0);
-    assert_eq!(second.tile_col(), 1);
     assert_eq!(second.mi_row_range(), 0..8);
     assert_eq!(second.mi_col_range(), 16..32);
     assert_eq!(

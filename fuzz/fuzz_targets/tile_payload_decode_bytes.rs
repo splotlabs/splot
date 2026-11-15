@@ -10,8 +10,6 @@ fuzz_target!(|data: &[u8]| {
 
     if let Some(boundary) = outcome.boundary {
         assert_eq!(boundary.tile_num, 0);
-        assert_eq!(boundary.tile_row, 0);
-        assert_eq!(boundary.tile_col, 0);
         assert_eq!(boundary.tile_bytes_len as u64, boundary.tile_size);
     } else {
         assert!(outcome.typed_error);
