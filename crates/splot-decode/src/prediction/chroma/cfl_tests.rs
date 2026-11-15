@@ -52,8 +52,8 @@ fn seeded_cfl_scratch() -> crate::pipeline::general_intra::GeneralIntraReconScra
     let mut scratch = crate::pipeline::general_intra::GeneralIntraReconScratch::default();
     scratch.cfl_luma_ac.extend([11, 12]);
     scratch.cfl_prediction.extend([21, 22]);
-    scratch.mhccp_refs[0].extend([31, 32]);
-    scratch.mhccp_refs[1].extend([41, 42]);
+    scratch.mhccp_chroma[0].extend([31, 32]);
+    scratch.mhccp_chroma[1].extend([41, 42]);
     scratch
 }
 
@@ -186,7 +186,7 @@ fn invalid_cfl_filter_preserves_prediction_scratch() {
     let before = (
         scratch.cfl_luma_ac.clone(),
         scratch.cfl_prediction.clone(),
-        scratch.mhccp_refs.clone(),
+        scratch.mhccp_chroma.clone(),
     );
 
     let result = reconstruct_general_intra_chroma_cfl_block_into(
@@ -216,7 +216,7 @@ fn invalid_cfl_filter_preserves_prediction_scratch() {
         (
             scratch.cfl_luma_ac,
             scratch.cfl_prediction,
-            scratch.mhccp_refs
+            scratch.mhccp_chroma
         ),
         before
     );
@@ -229,7 +229,7 @@ fn invalid_mhccp_filter_preserves_prediction_scratch() {
     let before = (
         scratch.cfl_luma_ac.clone(),
         scratch.cfl_prediction.clone(),
-        scratch.mhccp_refs.clone(),
+        scratch.mhccp_chroma.clone(),
     );
 
     let result = reconstruct_general_intra_chroma_cfl_block_into(
@@ -261,7 +261,7 @@ fn invalid_mhccp_filter_preserves_prediction_scratch() {
         (
             scratch.cfl_luma_ac,
             scratch.cfl_prediction,
-            scratch.mhccp_refs
+            scratch.mhccp_chroma
         ),
         before
     );
@@ -507,8 +507,11 @@ fn mhccp_geometry<T: ReconSample>(
     neighbours: NeighbourAvailability,
 ) -> core::result::Result<(usize, usize, usize, usize), GeneralIntraResidualError> {
     let block = cfl_block(x, y, width, height, sb_mib, BitDepth::Eight);
-    MhccpGeometry::new(frame, PlaneId::U, block, neighbours)
-        .map(|refs| (refs.ref_width, refs.ref_height, refs.above, refs.left))
+    MhccpGeometry::new(frame, PlaneId::U, block, neighbours).map(|refs| {
+        let ref_width = refs.reference_width.max(refs.left + width);
+        let ref_height = refs.reference_height.max(refs.above + height);
+        (ref_width, ref_height, refs.above, refs.left)
+    })
 }
 
 #[test]
@@ -1055,4 +1058,204 @@ fn mhccp_420_u8_reference_luma_matches_q3_runs() {
         check_u8_reference_luma::<1>(&frame, &mut state);
         check_u8_reference_luma::<2>(&frame, &mut state);
     }
+}
+
+/// The § 7.13.6 MHCCP prediction of one plane sample by sample: `CflRef`
+/// from the per-sample [`q3`] and the frame, the § 7.13.7 edge samples in
+/// spec order for the shared solve, then the § 7.13.6 sample formula.
+#[allow(
+    clippy::many_single_char_names,
+    clippy::needless_range_loop,
+    reason = "the spec's names and loops"
+)]
+fn spec_mhccp<T: ReconSample>(
+    frame: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    block: CflBlock,
+    neighbours: NeighbourAvailability,
+    mh_dir: u8,
+    filter: u8,
+) -> Vec<i32> {
+    let g = MhccpGeometry::new(frame, plane_id, block, neighbours).unwrap();
+    let (w, h) = (block.width, block.height);
+    let (above, left, rw, rh) = (g.above, g.left, g.reference_width, g.reference_height);
+    let mut luma = vec![vec![0i32; rw.max(left + w)]; rh.max(above + h)];
+    let mut chroma = luma.clone();
+    let plane = PlaneSamples::of(frame, plane_id).unwrap();
+    for i in 0..rh {
+        for j in 0..rw {
+            let (x, y) = (block.x + j - left, block.y + i - above);
+            if i < above || j < left {
+                let row = plane
+                    .row_or_err(y.max(g.min_chroma_ref_y).min(plane.height - 1))
+                    .unwrap();
+                chroma[i][j] = i32::from(row[x.min(plane.width - 1)].to_u16());
+            }
+            if (i < above || j < left + w) && (i < above + h || j < left) {
+                luma[i][j] = q3(frame, filter, x, y, j == 0, i == 0, g.min_luma_ref_y) >> 3;
+            }
+        }
+    }
+    let v0 = |i: usize, j: usize| match mh_dir {
+        0 => luma[i][j],
+        1 => luma[i.saturating_sub(1)][j],
+        _ => luma[i][j.saturating_sub(1)],
+    };
+    let mut edges: [[Vec<i16>; 2]; 2] = Default::default();
+    let mut targets: [Vec<u16>; 2] = Default::default();
+    for i in 1..rh.saturating_sub(1) {
+        for j in 1..rw.saturating_sub(1) {
+            if i < above || j < left {
+                let e = usize::from(i >= above);
+                edges[e][0].push((8 * v0(i, j)) as i16);
+                edges[e][1].push((8 * luma[i][j]) as i16);
+                targets[e].push(chroma[i][j] as u16);
+            }
+        }
+    }
+    let edges = [0, 1].map(|e| MhccpEdge {
+        linear: &edges[e][0],
+        centre: &edges[e][1],
+    });
+    let [params] = derive_mhccp_params(edges, [[&targets[0], &targets[1]]], block.bit_depth);
+    let bits = u32::from(block.bit_depth.bits());
+    let mut out = Vec::new();
+    for i in above..above + h {
+        for j in left..left + w {
+            let a = luma[i][j];
+            let v = [
+                v0(i, j),
+                splot_recon::math::round2_i32(a * a, bits),
+                1 << (bits - 1),
+            ];
+            let t = (0..3).fold(0i32, |t, k| {
+                t + splot_recon::mhccp::mul_fixed32_adapt(
+                    params[k],
+                    v[k],
+                    splot_recon::mhccp::MHCCP_BITS,
+                )
+            });
+            out.push(t.clamp(0, i32::from(block.bit_depth.max_sample())));
+        }
+    }
+    out
+}
+
+fn check_mhccp_against_spec<T: ReconSample>(
+    frame: &mut CurrentFrameWorkspace<T>,
+    state: &mut u64,
+    bit_depth: BitDepth,
+) -> usize {
+    let size = frame.plane(PlaneId::U).unwrap().storage_size();
+    let mut scratch = crate::pipeline::general_intra::GeneralIntraReconScratch::default();
+    let mut checked = 0;
+    for _ in 0..120 {
+        let (log2_w, log2_h) = [
+            (2, 2),
+            (2, 3),
+            (3, 2),
+            (3, 3),
+            (4, 3),
+            (3, 4),
+            (4, 4),
+            (5, 4),
+            (5, 5),
+            (2, 4),
+        ][lcg(state) % 10];
+        let (w, h) = (1 << log2_w, 1 << log2_h);
+        let x = (4 * (lcg(state) % (size.width() / 4))) & !(w - 1);
+        let y = (4 * (lcg(state) % (size.height() / 4))) & !(h - 1);
+        let neighbours = NeighbourAvailability::new(
+            y > 0 && !lcg(state).is_multiple_of(5),
+            x > 0 && !lcg(state).is_multiple_of(5),
+            lcg(state) % 9,
+            lcg(state) % 9,
+        );
+        let (mh_dir, filter, sb_mib) = (
+            lcg(state) % 3,
+            (lcg(state) % 3) as u8,
+            [16, 32][lcg(state) % 2],
+        );
+        let direction = [
+            CflMultiDirection::Direct,
+            CflMultiDirection::Above,
+            CflMultiDirection::Left,
+        ][mh_dir];
+        let block = cfl_block(x, y, w, h, sb_mib, bit_depth);
+        let expected = MhccpGeometry::new(frame, PlaneId::U, block, neighbours)
+            .is_ok()
+            .then(|| spec_mhccp(frame, PlaneId::U, block, neighbours, mh_dir as u8, filter));
+        let result = reconstruct_general_intra_chroma_cfl_block_into(
+            &mut scratch,
+            frame,
+            zero_block().view(&[]),
+            PlaneId::U,
+            x,
+            y,
+            log2_w,
+            log2_h,
+            0,
+            CflParams::Multi { direction },
+            filter,
+            sb_mib,
+            neighbours,
+            bit_depth,
+        );
+        let Some(expected) = expected else {
+            assert!(result.is_err());
+            continue;
+        };
+        result.unwrap();
+        for (i, &expected) in expected.iter().enumerate() {
+            let (sx, sy) = (x + i % w, y + i / w);
+            if sx < size.width() && sy < size.height() {
+                let got = frame
+                    .reconstructed_sample(PlaneId::U, sx, sy)
+                    .unwrap()
+                    .to_u16();
+                assert_eq!(
+                    i32::from(got),
+                    expected,
+                    "{w}x{h} at ({x},{y}) dir {mh_dir} filter {filter} {neighbours:?} sample {i}"
+                );
+            }
+        }
+        checked += 1;
+    }
+    checked
+}
+
+fn randomise<T: ReconSample>(frame: &mut CurrentFrameWorkspace<T>, state: &mut u64, max: usize) {
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let size = frame.plane(plane).unwrap().storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                let smooth = (x * 3 + y * 5 + lcg(state) % 9) % (max + 1);
+                let sample = if lcg(state).is_multiple_of(4) {
+                    lcg(state) % (max + 1)
+                } else {
+                    smooth
+                };
+                let sample = T::try_from_u16(sample as u16).unwrap();
+                frame.set_reconstructed_sample(plane, x, y, sample).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn mhccp_blocks_match_spec_capture_derivation_and_prediction() {
+    let mut state = 41;
+    for (pixel_format, width, height) in [
+        (PixelFormat::Yuv420, 136, 100),
+        (PixelFormat::Yuv422, 104, 72),
+        (PixelFormat::Yuv444, 72, 68),
+    ] {
+        let mut frame = workspace_sized(pixel_format, width, height);
+        randomise(&mut frame, &mut state, 255);
+        assert!(check_mhccp_against_spec(&mut frame, &mut state, BitDepth::Eight) > 60);
+    }
+    let mut frame = workspace_10bit_420(136, 100);
+    randomise(&mut frame, &mut state, 1023);
+    assert!(check_mhccp_against_spec(&mut frame, &mut state, BitDepth::Ten) > 60);
 }

@@ -96,7 +96,7 @@ pub(crate) struct GeneralIntraReconScratch<T: ReconSample> {
     hot_vectors: HotIntraVectors,
     pub(crate) cfl_luma_ac: Vec<i16>,
     pub(crate) cfl_prediction: Vec<T>,
-    pub(crate) mhccp_refs: [Vec<u16>; 3],
+    pub(crate) mhccp_chroma: [Vec<u16>; 2],
     pub(crate) paeth_edges: [Vec<T>; 2],
 }
 
@@ -107,7 +107,7 @@ impl<T: ReconSample> Default for GeneralIntraReconScratch<T> {
             hot_vectors: HotIntraVectors::with_sample_capacity::<T>(MAX_INTRA_EDGE_SAMPLES),
             cfl_luma_ac: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
             cfl_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
-            mhccp_refs: core::array::from_fn(|_| Vec::with_capacity(MAX_INTRA_EDGE_SAMPLES)),
+            mhccp_chroma: core::array::from_fn(|_| Vec::with_capacity(MAX_INTRA_EDGE_SAMPLES)),
             paeth_edges: core::array::from_fn(|_| Vec::with_capacity(MAX_INTRA_EDGE_SAMPLES)),
         }
     }

@@ -17,7 +17,7 @@
 use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x8, i32x8, u16x16, u32x8};
 
 use splot_recon::math::{approx_divide, resolve_division, round2_signed_i32};
-use splot_recon::mhccp::{MhccpPredictor, MhccpRefs, derive_mhccp_params};
+use splot_recon::mhccp::{MhccpEdge, MhccpPredictor, derive_mhccp_params};
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, PixelFormat, PlaneId, ReconSample,
 };
@@ -50,9 +50,6 @@ const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
 const NUM_REF_SAM_CFL: usize = 8;
 /// The widest CfL block axis.
 const MAX_CFL_AXIS: usize = 64;
-/// Samples past the MHCCP luma references, so the last row of the block
-/// fills a whole 8-lane prediction group.
-const MHCCP_ROW_PADDING: usize = 7;
 /// [`CflLuma`] filter selector for weights only known at run time.
 const RUNTIME_WEIGHTS: usize = 3;
 
@@ -60,6 +57,11 @@ const RUNTIME_WEIGHTS: usize = 3;
 const CHROMA_EDGE_UNSTORED: GeneralIntraResidualError =
     GeneralIntraResidualError::InvalidReconstructionState {
         context: "CfL chroma edge",
+    };
+/// An MHCCP block whose luma references do not fit its prediction.
+const MHCCP_GEOMETRY: GeneralIntraResidualError =
+    GeneralIntraResidualError::InvalidReconstructionState {
+        context: "MHCCP reference geometry",
     };
 
 /// One chroma plane of a CfL block: its id, coefficients and neighbours.
@@ -203,7 +205,7 @@ fn reconstruct_cfl_planes<T: ReconSample>(
     let crate::pipeline::general_intra::GeneralIntraReconScratch {
         cfl_luma_ac,
         cfl_prediction,
-        mhccp_refs,
+        mhccp_chroma,
         ..
     } = scratch;
     let mut models = [None; 2];
@@ -212,7 +214,7 @@ fn reconstruct_cfl_planes<T: ReconSample>(
             context: "CfL plane count",
         });
     };
-    let mut mhccp_geometry = None;
+    let mut mhccp_layout = None;
     let mut edges = CflLumaEdges::default();
     let average_q3 = {
         let luma_plane = workspace.plane(PlaneId::Y)?;
@@ -231,9 +233,9 @@ fn reconstruct_cfl_planes<T: ReconSample>(
                     multi,
                     &mut edges,
                     cfl_luma_ac,
-                    mhccp_refs,
+                    mhccp_chroma,
                     models,
-                    &mut mhccp_geometry,
+                    &mut mhccp_layout,
                 )?
             };
             ($samples:expr) => {
@@ -279,6 +281,44 @@ fn reconstruct_cfl_planes<T: ReconSample>(
         }
         return Ok(());
     }
+    let Some(layout) = mhccp_layout else {
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "MHCCP references",
+        });
+    };
+    let ([linear, centre], _) = layout.views(cfl_luma_ac);
+    if let (&[u, v], &[Some(u_model), Some(v_model)]) = (planes, &*models)
+        && block.bit_depth == workspace.info().bit_depth()
+    {
+        let predicted =
+            workspace.with_intra_chroma_frames(block.x, block.y, block.size, |frames| {
+                let [u_frame, v_frame] = frames;
+                let outs = [u_frame.target(), v_frame.target()];
+                MhccpPredictor::predict_planes([&u_model, &v_model], linear, centre, width, outs)
+                    .then_some(())
+                    .ok_or(MHCCP_GEOMETRY)
+            })?;
+        if predicted.is_some() {
+            for (plane_id, coeffs, _) in [u, v] {
+                if coeffs.eob != 0 {
+                    add_general_intra_coeff_block_residual_in_place(
+                        workspace,
+                        coeffs,
+                        plane_id,
+                        block.x,
+                        block.y,
+                        block.size,
+                        block.qindex,
+                        false,
+                        None,
+                        None,
+                        block.bit_depth,
+                    )?;
+                }
+            }
+            return Ok(());
+        }
+    }
     for (&(plane_id, coeffs, _), &model) in planes.iter().zip(models.iter()) {
         let Some(predictor) = model else {
             return Err(GeneralIntraResidualError::InvalidReconstructionState {
@@ -286,19 +326,10 @@ fn reconstruct_cfl_planes<T: ReconSample>(
             });
         };
         let predict = |out: &mut [T], stride: usize| {
-            let Some((geometry, direction)) = mhccp_geometry else {
-                return Err(GeneralIntraResidualError::InvalidReconstructionState {
-                    context: "MHCCP references",
-                });
-            };
-            let refs = geometry.refs(&mhccp_refs[0]);
-            if predictor.predict_block(&refs, direction, width, height, out, stride) {
-                Ok(())
-            } else {
-                Err(GeneralIntraResidualError::InvalidReconstructionState {
-                    context: "MHCCP reference geometry",
-                })
-            }
+            predictor
+                .predict_block(linear, centre, width, out, stride)
+                .then_some(())
+                .ok_or(MHCCP_GEOMETRY)
         };
         if predict_intra_in_frame(
             workspace,
@@ -515,7 +546,7 @@ impl LinearCfl<'_> {
 
 /// Builds the shared luma side of a block: the luma edges, `L` and
 /// `lumaAvg` (CfL, returned with where `L` starts in `luma_ac`) or the luma
-/// references and every plane's predictor (MHCCP).
+/// references in `luma_ac` and every plane's predictor (MHCCP).
 #[allow(clippy::too_many_arguments)]
 fn analyse_cfl_block<T: ReconSample, P: CflLaneSample, const F: usize>(
     workspace: &CurrentFrameWorkspace<T>,
@@ -525,9 +556,9 @@ fn analyse_cfl_block<T: ReconSample, P: CflLaneSample, const F: usize>(
     multi: Option<CflMultiDirection>,
     edges: &mut CflLumaEdges,
     luma_ac: &mut Vec<i16>,
-    mhccp_refs: &mut [Vec<u16>; 3],
+    mhccp_chroma: &mut [Vec<u16>; 2],
     models: &mut [Option<MhccpPredictor>],
-    mhccp_geometry: &mut Option<(MhccpGeometry, u8)>,
+    mhccp_layout: &mut Option<MhccpLayout>,
 ) -> core::result::Result<Option<(i32, usize)>, GeneralIntraResidualError> {
     let Some(&(_, _, neighbours)) = planes.first() else {
         return Ok(None);
@@ -538,25 +569,26 @@ fn analyse_cfl_block<T: ReconSample, P: CflLaneSample, const F: usize>(
             Ok(Some((edges.average_q3(block, neighbours)?, start)))
         });
     };
-    let mh_dir = direction.value();
     let geometry = MhccpGeometry::new(workspace, planes[0].0, block, neighbours)?;
-    let [luma_refs, chroma_refs @ ..] = mhccp_refs;
-    baseline_simd!(simd => geometry.gather_luma(simd, luma, block, mh_dir, luma_refs, luma_ac))?;
-    for (&(plane_id, _, _), refs) in planes.iter().zip(chroma_refs.iter_mut()) {
-        geometry.gather_chroma(workspace, plane_id, block, refs)?;
+    let layout = geometry.layout(block, direction.value());
+    baseline_simd!(simd => geometry.gather_luma(simd, luma, block, &layout, luma_ac))?;
+    for (&(plane_id, _, _), refs) in planes.iter().zip(mhccp_chroma.iter_mut()) {
+        geometry.gather_chroma(workspace, plane_id, block, &layout, refs)?;
     }
-    let refs = geometry.refs(luma_refs);
-    let [u, v] = &*chroma_refs;
+    let (_, edges) = layout.views(luma_ac);
+    let [u, v] = mhccp_chroma
+        .each_ref()
+        .map(|refs| refs.split_at(layout.above_len.min(refs.len())));
     let multi = |params| Some(MhccpPredictor::new(params, block.bit_depth));
     if let [u_model, v_model] = models {
         let [u_params, v_params] =
-            derive_mhccp_params(&refs, [u.as_slice(), v.as_slice()], mh_dir, block.bit_depth);
+            derive_mhccp_params(edges, [[u.0, u.1], [v.0, v.1]], block.bit_depth);
         (*u_model, *v_model) = (multi(u_params), multi(v_params));
     } else {
-        let [params] = derive_mhccp_params(&refs, [u.as_slice()], mh_dir, block.bit_depth);
+        let [params] = derive_mhccp_params(edges, [[u.0, u.1]], block.bit_depth);
         models.fill(multi(params));
     }
-    *mhccp_geometry = Some((geometry, mh_dir));
+    *mhccp_layout = Some(layout);
     Ok(None)
 }
 
@@ -966,8 +998,6 @@ fn cfl_above_min_luma_ref_y(
 /// planes of a block with the same neighbours share it.
 #[derive(Clone, Copy)]
 struct MhccpGeometry {
-    ref_width: usize,
-    ref_height: usize,
     reference_width: usize,
     reference_height: usize,
     above: usize,
@@ -1037,8 +1067,6 @@ impl MhccpGeometry {
             .min(128 >> sub_y)
             .min(above + frame_bottom);
         Ok(Self {
-            ref_width: reference_width.max(left + width),
-            ref_height: reference_height.max(above + height),
             reference_width,
             reference_height,
             above,
@@ -1050,149 +1078,282 @@ impl MhccpGeometry {
         })
     }
 
-    fn refs<'a>(&self, luma: &'a [u16]) -> MhccpRefs<'a> {
-        MhccpRefs {
-            width: self.ref_width,
-            height: self.ref_height,
-            reference_width: self.reference_width,
-            reference_height: self.reference_height,
-            above: self.above,
-            left: self.left,
-            luma,
+    /// Where [`Self::gather_luma`] puts the luma references of `block` for
+    /// direction `mh_dir`.
+    fn layout(&self, block: CflBlock, mh_dir: u8) -> MhccpLayout {
+        let (w, h) = (block.width, block.height);
+        let (above, left) = (self.above, self.left);
+        let strip_width = match (left, mh_dir) {
+            (0, _) => 0,
+            (_, 2) => left,
+            _ => 1,
+        };
+        let strip_rows = h.max(self.reference_height.saturating_sub(above));
+        let above_len = if above >= 2 {
+            self.reference_width.saturating_sub(2)
+        } else {
+            0
+        };
+        let first_left_row = above.max(1);
+        let left_len = if left >= 2 && self.reference_width >= 3 {
+            (self.reference_height - 1).saturating_sub(first_left_row)
+        } else {
+            0
+        };
+        let first_col = usize::from(left > 0 && mh_dir != 2);
+        let top_stride = self.reference_width.saturating_sub(first_col).max(1);
+        let top = (2 * h + 1) * w;
+        let strip = top + 2 * top_stride;
+        let deinterleaved = strip + 1 + strip_rows * strip_width;
+        MhccpLayout {
+            mh_dir,
+            width: w,
+            height: h,
+            top,
+            top_stride,
+            first_col,
+            strip,
+            strip_width,
+            strip_rows,
+            deinterleaved,
+            above,
+            above_len,
+            first_left_row,
+            left_len,
+            len: deinterleaved + 2 * left_len,
         }
     }
 
-    /// Captures the § 7.13.6 luma `CflRef[0]`. § 7.13.7 reads neither row 0
-    /// nor column 0 of the edge as a centre: luma only as `v[0]` of
-    /// direction 1 (row 0) or 2 (column 0), or as block samples when the
-    /// edge is absent. The rows below the block, which read only its left
-    /// columns, share the block's pass when their taps are stored.
+    /// Captures the § 7.13.6 luma `CflRef[0]` into `arena` in Q3, as
+    /// [`MhccpLayout`] places it. § 7.13.7 reads neither row 0 nor column 0
+    /// of the edge as a centre: luma only as `v[0]` of direction 1 (row 0)
+    /// or 2 (column 0), or as block samples when the edge is absent. The
+    /// block's own rows and the left columns of the rows beside and below
+    /// it each take one pass when their taps are stored.
     fn gather_luma<S: Simd, P: CflLaneSample, const F: usize>(
         &self,
         simd: S,
         luma_plane: &CflLuma<'_, P, F>,
         block: CflBlock,
-        mh_dir: u8,
-        luma: &mut Vec<u16>,
-        scratch: &mut Vec<i16>,
+        layout: &MhccpLayout,
+        arena: &mut Vec<i16>,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let (above, left, reference_width) = (self.above, self.left, self.reference_width);
-        luma.clear();
-        luma.resize(self.ref_width * self.ref_height + MHCCP_ROW_PADDING, 0);
-        let first_luma_row = usize::from(above > 0 && mh_dir != 1);
-        let first_luma_col = usize::from(left > 0 && mh_dir != 2);
-        let block_cols = left + block.width - first_luma_col;
-        let below = if left > first_luma_col {
-            self.reference_height.saturating_sub(above + block.height)
-        } else {
-            0
-        };
-        let mut covered = 0;
-        if above + block.height <= self.reference_height && left + block.width <= reference_width {
-            for rows in [block.height + below, block.height] {
-                scratch.clear();
-                scratch.resize(block_cols * rows, 0);
-                if luma_plane.block_luma_420(
-                    block.x - left + first_luma_col,
-                    block.y,
-                    block_cols,
-                    [false, above == 0, first_luma_col == 0],
-                    None,
-                    &mut None,
-                    scratch,
-                ) {
-                    covered = rows;
-                    break;
-                }
-                if below == 0 {
-                    break;
-                }
+        let MhccpLayout {
+            mh_dir,
+            width: w,
+            height: h,
+            top_stride: ts,
+            first_col,
+            strip_width: sw,
+            ..
+        } = *layout;
+        if arena.len() < layout.len {
+            arena.resize(layout.len, 0);
+        }
+        let (blocks, rest) = arena.split_at_mut(layout.top);
+        let (top, rest) = rest.split_at_mut(2 * ts);
+        let (strip, deinterleaved) = rest.split_at_mut(layout.deinterleaved - layout.strip);
+        let rows_in = h.min(self.reference_height.saturating_sub(above));
+        let row = |r: usize| luma_plane.row(block.y + r, above + r == 0, self.min_luma_ref_y);
+        if reference_width > first_col {
+            let first_row = usize::from(above > 0 && mh_dir != 1);
+            for (r, out) in top
+                .chunks_exact_mut(ts)
+                .enumerate()
+                .take(above)
+                .skip(first_row)
+            {
+                let taps = luma_plane.row(block.y + r - above, r == 0, self.min_luma_ref_y)?;
+                luma_plane.q3_run(simd, &taps, block.x - left + first_col, first_col == 0, out);
             }
         }
-        for (i, q3) in scratch.chunks_exact(block_cols).take(covered).enumerate() {
-            let cols = if i < block.height {
-                block_cols
-            } else {
-                left - first_luma_col
-            };
-            let start = (above + i) * self.ref_width + first_luma_col;
-            for (dst, &sample) in luma[start..start + cols].iter_mut().zip(q3) {
-                *dst = (sample >> 3) as u16;
+        let (head, shifted) = blocks.split_at_mut((h + 1) * w);
+        let (ext, body) = head.split_at_mut(w);
+        let cols_in = (left + w).min(reference_width) - left;
+        if !(rows_in == h
+            && cols_in == w
+            && luma_plane.block_luma_420(
+                block.x,
+                block.y,
+                w,
+                [false, above == 0, left == 0],
+                None,
+                &mut None,
+                body,
+            ))
+        {
+            body.fill(0);
+            for (r, out) in body.chunks_exact_mut(w).take(rows_in).enumerate() {
+                luma_plane.q3_run(simd, &row(r)?, block.x, left == 0, &mut out[..cols_in]);
             }
         }
-        let mut q3 = [0i16; 128];
-        for row in (first_luma_row..above).chain(above + covered..self.reference_height) {
-            let luma_cols = if row < above {
-                reference_width
-            } else if row < above + block.height {
-                (left + block.width).min(reference_width)
-            } else {
-                left.min(reference_width)
-            };
-            if luma_cols <= first_luma_col {
-                continue;
+        if mh_dir == 1 {
+            match above.checked_sub(1) {
+                Some(r) => {
+                    ext[..cols_in].copy_from_slice(&top[r * ts + left - first_col..][..cols_in]); // splot-copy-ok: v[0] of the block's first row
+                    ext[cols_in..].fill(0);
+                }
+                None => ext.copy_from_slice(&body[..w]), // splot-copy-ok: v[0] of the block's first row
             }
-            let rows = luma_plane.row(block.y + row - above, row == 0, self.min_luma_ref_y)?;
-            let q3 = &mut q3[first_luma_col..luma_cols];
-            luma_plane.q3_run(
-                simd,
-                &rows,
-                block.x - left + first_luma_col,
-                first_luma_col == 0,
-                q3,
-            );
-            let start = row * self.ref_width + first_luma_col;
-            for (dst, &sample) in luma[start..].iter_mut().zip(q3.iter()) {
-                *dst = (sample >> 3) as u16;
+        }
+        let (slot, columns) = strip.split_at_mut(1);
+        let columns = &mut columns[..layout.strip_rows * sw];
+        if sw > 0 {
+            let strip_in = self.reference_height.saturating_sub(above);
+            let x0 = block.x - sw;
+            let stored = &mut columns[..strip_in * sw];
+            if !luma_plane.block_luma_420(
+                x0,
+                block.y,
+                sw,
+                [false, above == 0, sw == left],
+                None,
+                &mut None,
+                stored,
+            ) {
+                for (r, out) in stored.chunks_exact_mut(sw).enumerate() {
+                    luma_plane.q3_run(simd, &row(r)?, x0, sw == left, out);
+                }
+            }
+            columns[strip_in * sw..].fill(0);
+            if let Some(r) = above.checked_sub(1).filter(|_| mh_dir == 1) {
+                slot[0] = top[r * ts + left - 1 - first_col];
+            }
+        }
+        if mh_dir == 2 {
+            for (r, (linear, centre)) in shifted
+                .chunks_exact_mut(w)
+                .zip(body.chunks_exact(w))
+                .enumerate()
+            {
+                linear[0] = if sw > 0 {
+                    columns[r * sw + sw - 1]
+                } else {
+                    centre[0]
+                };
+                linear[1..].copy_from_slice(&centre[..w - 1]); // splot-copy-ok: v[0] of a block row, one column left
+            }
+            let first = layout.first_left_row - above;
+            let (linear, centre) = deinterleaved.split_at_mut(layout.left_len);
+            let pairs = columns
+                .get(first * sw..)
+                .unwrap_or_default()
+                .chunks_exact(sw.max(1));
+            for ((linear, centre), pair) in linear.iter_mut().zip(centre).zip(pairs) {
+                (*linear, *centre) = (pair[0], pair[sw - 1]);
             }
         }
         Ok(())
     }
 
-    /// Captures the § 7.13.6 chroma `CflRef[1]` of `plane_id`: only the edge
-    /// samples § 7.13.7 reads, so the rest of `chroma` is left as it was.
+    /// Captures the § 7.13.6 chroma `CflRef[1]` of `plane_id` that § 7.13.7
+    /// reads into `chroma`: the above edge, then the left edge, each as
+    /// [`MhccpLayout`] counts them.
     fn gather_chroma<T: ReconSample>(
         &self,
         workspace: &CurrentFrameWorkspace<T>,
         plane_id: PlaneId,
         block: CflBlock,
+        layout: &MhccpLayout,
         chroma: &mut Vec<u16>,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
-        let samples = self.ref_width * self.ref_height;
-        if chroma.len() < samples {
-            chroma.resize(samples, 0);
+        let (above_len, left_len) = (layout.above_len, layout.left_len);
+        if chroma.len() < above_len + left_len {
+            chroma.resize(above_len + left_len, 0);
         }
+        let (above, left) = chroma.split_at_mut(above_len);
         let plane = PlaneSamples::of(workspace, plane_id)?;
         let last_y = plane.height - 1;
-        for row in 1..self.above.min(self.reference_height) {
-            if self.reference_width < 2 {
-                break;
-            }
-            let ref_chroma_y = (block.y + row - self.above).max(self.min_chroma_ref_y);
+        if above_len > 0 {
+            let ref_chroma_y = (block.y + 1 - self.above).max(self.min_chroma_ref_y);
             let source_row = plane.row_or_err(ref_chroma_y.min(last_y))?;
             let fill = source_row[source_row.len() - 1].to_u16();
-            let start = row * self.ref_width;
-            let run = &mut chroma[start + 1..start + self.reference_width];
             let source = source_row
                 .get(block.x + 1 - self.left..)
                 .unwrap_or_default();
-            let copied = source.len().min(run.len());
-            for (slot, sample) in run.iter_mut().zip(&source[..copied]) {
+            let copied = source.len().min(above_len);
+            for (slot, sample) in above.iter_mut().zip(&source[..copied]) {
                 *slot = sample.to_u16();
             }
-            run[copied..].fill(fill);
+            above[copied..].fill(fill);
         }
-        let first = self.above.max(1);
-        if self.left.min(self.reference_width) >= 2 && first < self.reference_height {
+        if left_len > 0 {
+            let first = layout.first_left_row;
             let start_y = (block.y + first - self.above).min(last_y);
-            let end_y = (block.y + self.reference_height - 1 - self.above).min(last_y);
+            let end_y = (block.y + first + left_len - 1 - self.above).min(last_y);
             let (column, stride, _) = plane.column(block.x - 1, start_y, end_y - start_y + 1)?;
-            for row in first..self.reference_height {
+            for (slot, row) in left[..left_len].iter_mut().zip(first..) {
                 let y = (block.y + row - self.above).min(last_y) - start_y;
-                chroma[row * self.ref_width + 1] = column[y * stride].to_u16();
+                *slot = column[y * stride].to_u16();
             }
         }
         Ok(())
+    }
+}
+
+/// Where the § 7.13.6 luma references of an MHCCP block sit in its arena,
+/// all in Q3: `(h + 1) * w` samples of the `v[0]` row of direction 1 above
+/// the `h` centre rows of the block, then `h * w` samples of direction 2's
+/// `v[0]` rows, the two edge rows `CflRef[0][0..2]`, one free sample and the
+/// `strip_rows` rows of the `strip_width` columns left of the block, and for
+/// direction 2 the left edge's `v[0]` and centres apart.
+#[derive(Clone, Copy)]
+struct MhccpLayout {
+    mh_dir: u8,
+    width: usize,
+    height: usize,
+    top: usize,
+    /// The edge rows hold columns `first_col..reference_width`.
+    top_stride: usize,
+    first_col: usize,
+    strip: usize,
+    strip_width: usize,
+    strip_rows: usize,
+    deinterleaved: usize,
+    /// `CflAbove`, and the § 7.13.7 samples of the above edge (row 1 from
+    /// column 1) and the left edge (column 1 from row `first_left_row`).
+    above: usize,
+    above_len: usize,
+    first_left_row: usize,
+    left_len: usize,
+    len: usize,
+}
+
+impl MhccpLayout {
+    /// The block's `v[0]` and centre luma, and the § 7.13.7 edges.
+    fn views<'a>(&self, arena: &'a [i16]) -> ([&'a [i16]; 2], [MhccpEdge<'a>; 2]) {
+        let (w, h, ts) = (self.width, self.height, self.top_stride);
+        let centre = &arena[w..(h + 1) * w];
+        let linear = match self.mh_dir {
+            0 => centre,
+            1 => &arena[..h * w],
+            _ => &arena[(h + 1) * w..(2 * h + 1) * w],
+        };
+        let top = &arena[self.top..self.top + 2 * ts];
+        let (n, fc) = (self.above_len, self.first_col);
+        let above = MhccpEdge {
+            centre: &top[ts + 1 - fc..][..n],
+            linear: match self.mh_dir {
+                0 => &top[ts + 1 - fc..][..n],
+                1 => &top[1 - fc..][..n],
+                _ => &top[ts..][..n],
+            },
+        };
+        let first = self.first_left_row - self.above;
+        let left = match self.mh_dir {
+            _ if self.left_len == 0 => MhccpEdge::default(),
+            2 => {
+                let edge = &arena[self.deinterleaved..][..2 * self.left_len];
+                let (linear, centre) = edge.split_at(self.left_len);
+                MhccpEdge { linear, centre }
+            }
+            dir => MhccpEdge {
+                centre: &arena[self.strip + 1 + first..][..self.left_len],
+                linear: &arena[self.strip + first + usize::from(dir == 0)..][..self.left_len],
+            },
+        };
+        ([linear, centre], [above, left])
     }
 }
 
