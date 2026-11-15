@@ -15,7 +15,8 @@ env:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Runs on main finish, so main saves the caches that pull requests restore.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -32,16 +33,17 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Cache cargo registry, git, and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - id: cargo-cache
+        name: Restore cargo registry, git, and third-party target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-v2-
+            ${{ runner.os }}-cargo-v3-
 
       - name: Install typos and cargo-machete
         uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
@@ -84,6 +86,24 @@ jobs:
 
       - run: cargo xtask ci --exclude-tests splot-encode
 
+      # Checkout gives the sources new mtimes, so workspace crates compile again. Keep third-party artifacts only.
+      - name: Remove workspace artifacts before the cache save
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: |
+          rm -rf target/doc
+          find target \( -name '*splot*' -o -name '*xtask*' \) -prune -exec rm -rf {} +
+          find target -path '*/deps/*' -type f ! -name 'lib*' ! -name '*.d' -delete
+
+      - name: Save cargo cache (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
   # The splot-encode tests that `ci` leaves out, in two shards that together select every test once.
   # The wavefront_search test alone runs for about 4.6 minutes, so it has its own shard.
   test-encode:
@@ -102,16 +122,16 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Restore cargo registry, git, and target
+      - name: Restore cargo registry, git, and third-party target
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-v2-
+            ${{ runner.os }}-cargo-v3-
 
       - name: Test splot-encode
         env:
@@ -133,17 +153,7 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Cache cargo registry, git, and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-release-v1-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-v1-
-
+      # No cargo cache: third-party crates take about 12 s of a release build.
       - run: cargo test -p splot-decode --release --lib --locked
 
   dav2d-test-data:
@@ -375,17 +385,18 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      - name: Cache cargo registry and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - id: cargo-cache
+        name: Restore cargo registry, git, and third-party target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           # The toolchain is in the key: profiles from another LLVM do not merge.
-          key: ${{ runner.os }}-cargo-cov-v2-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-cov-v3-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-cov-v2-${{ hashFiles('rust-toolchain.toml') }}-
+            ${{ runner.os }}-cargo-cov-v3-${{ hashFiles('rust-toolchain.toml') }}-
 
       # The gate covers splot-validate and splot-tables; dropping splot-encode's
       # tests does not lower it (96.32% -> 96.33% gated lines when measured).
@@ -404,6 +415,24 @@ jobs:
           name: coverage-lcov
           path: lcov.info
           if-no-files-found: warn
+
+      - name: Remove workspace artifacts before the cache save
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: |
+          rm -rf target/doc
+          find target \( -name '*splot*' -o -name '*xtask*' \) -prune -exec rm -rf {} +
+          find target -path '*/deps/*' -type f ! -name 'lib*' ! -name '*.d' -delete
+          find target \( -name '*.profraw' -o -name '*.profdata' \) -delete
+
+      - name: Save cargo cache (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   perf:
     runs-on: ubuntu-latest
