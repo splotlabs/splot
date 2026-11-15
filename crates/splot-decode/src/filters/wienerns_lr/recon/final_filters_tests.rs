@@ -697,16 +697,12 @@ fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() 
     records.cdef_grid_values.reserve(32);
     records.cdef_strengths.reserve(1);
     records.tx_skip_grid_values.reserve(128);
-    for lut in &mut records.ccso_offset_luts {
-        lut.reserve(16);
-    }
     let enabled = finish(enabled_core(), records);
     let strengths = enabled.cdef_strengths.as_ptr();
     let capacities = (
         enabled.cdef_grid_values.capacity(),
         enabled.cdef_strengths.capacity(),
         enabled.tx_skip_grid_values.capacity(),
-        enabled.ccso_offset_luts.each_ref().map(Vec::capacity),
     );
 
     let mut disabled_core = switchable_core();
@@ -723,7 +719,6 @@ fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() 
             enabled.cdef_grid_values.capacity(),
             enabled.cdef_strengths.capacity(),
             enabled.tx_skip_grid_values.capacity(),
-            enabled.ccso_offset_luts.each_ref().map(Vec::capacity),
         ),
         capacities
     );

@@ -146,16 +146,19 @@ struct CcsoPlaneConfig {
     sample_offsets: [(isize, isize); 2],
     max_sample: i32,
     band_shift: u8,
-    offset_lut: Vec<i32>,
-    offset_lut_bytes: [u8; 256],
+    offset_lut: [u8; CCSO_LUT_LEN],
+    lut_blocks: usize,
 }
+
+/// Offset table entries a CCSO index reaches: § 5.18.7.12 codes at most
+/// 3 x 3 edge classes x 8 bands, or 64 bands alone.
+const CCSO_LUT_LEN: usize = 80;
 
 pub(crate) fn prepare_ccso(
     core: &FrameHeaderCore,
     grid: &CcsoUnitGrid,
     bit_depth: BitDepth,
     subsampling: (usize, usize),
-    offset_luts: &mut [Vec<i32>; CCSO_PLANES],
 ) -> Result<CcsoFrameConfig, CcsoError> {
     let mut planes = std::array::from_fn(|_| None);
     if !grid.active() {
@@ -178,7 +181,6 @@ pub(crate) fn prepare_ccso(
             grid,
             bit_depth,
             subsampling,
-            core::mem::take(&mut offset_luts[plane]),
         )?);
     }
     Ok(CcsoFrameConfig { planes })
@@ -190,7 +192,6 @@ fn prepare_ccso_plane(
     grid: &CcsoUnitGrid,
     bit_depth: BitDepth,
     subsampling: (usize, usize),
-    offset_lut: Vec<i32>,
 ) -> Result<CcsoPlaneConfig, CcsoError> {
     let (sub_x, sub_y) = if plane_id(plane) == PlaneId::Y {
         (0, 0)
@@ -227,22 +228,10 @@ fn prepare_ccso_plane(
     if params.ccso_offset_idx.len() != expected_offsets {
         return Err(CcsoError::Params);
     }
-    let offset_lut =
-        ccso_offset_lut(params, expected_offsets, offset_lut).map_err(|error| match error {
-            CcsoError::Allocation(_) => CcsoError::Allocation(plane_id(plane)),
-            other => other,
-        })?;
     let band_shift = bit_depth
         .bits()
         .checked_sub(max_band_log2)
         .ok_or(CcsoError::Params)?;
-    let mut offset_lut_bytes = [0u8; 256];
-    if offset_lut.len() > 80 {
-        return Err(CcsoError::Params);
-    }
-    for (byte, &offset) in offset_lut_bytes.iter_mut().zip(&offset_lut) {
-        *byte = i8::try_from(offset).map_err(|_| CcsoError::Params)? as u8;
-    }
     Ok(CcsoPlaneConfig {
         sub_x,
         sub_y,
@@ -257,22 +246,14 @@ fn prepare_ccso_plane(
         sample_offsets: ccso_sample_offsets(ext_filter)?,
         max_sample: i32::from(bit_depth.max_sample()),
         band_shift,
-        offset_lut,
-        offset_lut_bytes,
+        offset_lut: ccso_offset_lut(params)?,
+        lut_blocks: expected_offsets.div_ceil(16),
     })
 }
 
 impl CcsoFrameConfig {
     pub(crate) fn filters_plane(&self, plane: PlaneId) -> bool {
         self.planes.get(plane.index()).is_some_and(Option::is_some)
-    }
-
-    pub(crate) fn return_offset_luts(self, offset_luts: &mut [Vec<i32>; CCSO_PLANES]) {
-        for (target, config) in offset_luts.iter_mut().zip(self.planes) {
-            if let Some(config) = config {
-                *target = config.offset_lut;
-            }
-        }
     }
 }
 
@@ -375,7 +356,7 @@ fn ccso_plane<T: ReconSample>(
         usize::from(pixel_format.subsampling_x()),
         usize::from(pixel_format.subsampling_y()),
     );
-    let prepared = prepare_ccso_plane(plane, params, grid, bit_depth, subsampling, Vec::new())?;
+    let prepared = prepare_ccso_plane(plane, params, grid, bit_depth, subsampling)?;
     let source = FramePlane::new(workspace, plane_id).ok_or(CcsoError::Workspace)?;
     let width = source.width();
     let height = source.frame_height();
@@ -757,9 +738,9 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
         return (first, first);
     };
     let tables: [u8x16<S>; 5] = core::array::from_fn(|block| {
-        u8x16::from_slice(simd, &config.offset_lut_bytes[16 * block..16 * block + 16])
+        u8x16::from_slice(simd, &config.offset_lut[16 * block..16 * block + 16])
     });
-    let blocks = config.offset_lut.len().div_ceil(16).clamp(1, tables.len());
+    let blocks = config.lut_blocks;
     let lookup = |index: u8x16<S>| {
         let low = index & 15;
         let signed = index.bitcast::<i8x16<S>>();
@@ -1160,21 +1141,20 @@ fn edge_taps<'a, S: Simd, L: ReconSample, const SUB_X: usize>(
     staged.get(..step)
 }
 
-fn ccso_offset_lut(
-    params: &CcsoPlaneParams,
-    expected_offsets: usize,
-    mut lut: Vec<i32>,
-) -> Result<Vec<i32>, CcsoError> {
+/// The § 5.18.7.12 `CcsoFilterOffset` table of a plane as `i8` bytes, in the
+/// order of `ccso_offset_idx`.
+fn ccso_offset_lut(params: &CcsoPlaneParams) -> Result<[u8; CCSO_LUT_LEN], CcsoError> {
     let scale = i32::from(params.ccso_scale_idx.ok_or(CcsoError::Params)?) + 1;
-    lut.clear();
-    lut.try_reserve_exact(expected_offsets)
-        .map_err(|_| CcsoError::Allocation(PlaneId::Y))?;
-    for &offset_idx in &params.ccso_offset_idx {
+    let mut lut = [0; CCSO_LUT_LEN];
+    if params.ccso_offset_idx.len() > CCSO_LUT_LEN {
+        return Err(CcsoError::Params);
+    }
+    for (byte, &offset_idx) in lut.iter_mut().zip(&params.ccso_offset_idx) {
         let base = CCSO_OFFSET
             .get(usize::from(offset_idx))
             .copied()
             .ok_or(CcsoError::Params)?;
-        lut.push(base * scale);
+        *byte = i8::try_from(base * scale).map_err(|_| CcsoError::Params)? as u8;
     }
     Ok(lut)
 }
