@@ -33,7 +33,7 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
     (implicit_mask, cwp_weight, frame): (bool, i16, (usize, usize)),
     output: &mut [O],
     output_stride: usize,
-    mut second: Option<SecondPlane<'_, '_, T, O>>,
+    mut second: Option<GridPlane<'_, '_, T, O>>,
 ) -> Result<[u64; 2]> {
     let columns = (prediction.block_w / subblock_w).min(64);
     let row_cells = cells

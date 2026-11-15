@@ -1089,30 +1089,18 @@ fn direct_compound_blend_preserves_sample_storage_width() {
     let pred0 = [20 * 16, 60 * 16, 255 * 16];
     let pred1 = [44 * 16, 120 * 16, 255 * 16];
     let mut eight = vec![0; pred0.len()];
-    blend_compound_average_weighted_samples::<u8>(
-        &pred0,
-        &pred1,
-        BitDepth::Eight,
-        CWP_EQUAL,
-        &mut eight,
-    )
-    .expect("eight-bit compound blend");
+    blend::weighted_row::<u8>(&pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut eight)
+        .expect("eight-bit compound blend");
     let mut wide = vec![0; pred0.len()];
-    blend_compound_average_weighted_samples::<u16>(
-        &pred0,
-        &pred1,
-        BitDepth::Eight,
-        CWP_EQUAL,
-        &mut wide,
-    )
-    .expect("wide eight-bit compound blend");
+    blend::weighted_row::<u16>(&pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut wide)
+        .expect("wide eight-bit compound blend");
     assert_eq!(
         eight.iter().copied().map(u16::from).collect::<Vec<_>>(),
         wide
     );
 
     let mut ten_bit = vec![0; 1];
-    blend_compound_average_weighted_samples::<u16>(
+    blend::weighted_row::<u16>(
         &[900 * 16],
         &[1000 * 16],
         BitDepth::Ten,
@@ -1133,14 +1121,8 @@ fn weighted_rows_match_the_per_sample_blend<T: ReconSample>(bit_depth: BitDepth)
             .collect();
         for cwp_weight in [2, 8, 12, 14] {
             let mut output = vec![T::default(); w];
-            blend_compound_average_weighted_samples(
-                &pred0,
-                &pred1,
-                bit_depth,
-                cwp_weight,
-                &mut output,
-            )
-            .expect("weighted row");
+            blend::weighted_row(&pred0, &pred1, bit_depth, cwp_weight, &mut output)
+                .expect("weighted row");
             for (col, sample) in output.iter().enumerate() {
                 let want = splot_recon::blend_compound_average_weighted_sample(
                     pred0[col], pred1[col], bit_depth, cwp_weight,
@@ -1184,14 +1166,8 @@ fn scaled_compound_references_disable_implicit_mask_blending() {
     )
     .expect("scaled compound blend");
     let mut expected = vec![0; pred0.len()];
-    blend_compound_average_weighted_samples::<u16>(
-        &pred0,
-        &pred1,
-        BitDepth::Eight,
-        CWP_EQUAL,
-        &mut expected,
-    )
-    .expect("weighted compound blend");
+    blend::weighted_row::<u16>(&pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut expected)
+        .expect("weighted compound blend");
 
     assert_eq!(got, expected);
 }

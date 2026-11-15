@@ -21,17 +21,30 @@ pub(super) trait CompoundAverageOutput: ReconSample {
         output_stride: usize,
     ) -> splot_recon::Result<()>;
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::inline_always,
+        reason = "per-cell grid hot path"
+    )]
+    #[inline(always)]
     fn predict_fast<T: ReconSample>(
-        _reference0: &ReferencePlaneView<'_, T>,
-        _params0: &SubpelPredictParams,
-        _reference1: &ReferencePlaneView<'_, T>,
-        _params1: &SubpelPredictParams,
-        _cwp_weight: i16,
-        _output: &mut [Self],
-        _output_stride: usize,
+        reference0: &ReferencePlaneView<'_, T>,
+        params0: &SubpelPredictParams,
+        reference1: &ReferencePlaneView<'_, T>,
+        params1: &SubpelPredictParams,
+        cwp_weight: i16,
+        output: &mut [Self],
+        output_stride: usize,
     ) -> splot_recon::Result<bool> {
-        Ok(false)
+        subpel_predict_block_compound_average_fast_validated_strided_into(
+            reference0,
+            params0,
+            reference1,
+            params1,
+            cwp_weight,
+            output,
+            output_stride,
+        )
     }
 }
 
@@ -55,28 +68,6 @@ impl CompoundAverageOutput for u16 {
             output_stride,
         )
     }
-
-    #[allow(clippy::inline_always, reason = "per-cell grid hot path")]
-    #[inline(always)]
-    fn predict_fast<T: ReconSample>(
-        reference0: &ReferencePlaneView<'_, T>,
-        params0: &SubpelPredictParams,
-        reference1: &ReferencePlaneView<'_, T>,
-        params1: &SubpelPredictParams,
-        cwp_weight: i16,
-        output: &mut [Self],
-        output_stride: usize,
-    ) -> splot_recon::Result<bool> {
-        subpel_predict_block_compound_average_fast_validated_strided_into(
-            reference0,
-            params0,
-            reference1,
-            params1,
-            cwp_weight,
-            output,
-            output_stride,
-        )
-    }
 }
 
 impl CompoundAverageOutput for u8 {
@@ -95,28 +86,6 @@ impl CompoundAverageOutput for u8 {
             pred0,
             cwp_weight,
             scratch,
-            output,
-            output_stride,
-        )
-    }
-
-    #[allow(clippy::inline_always, reason = "per-cell grid hot path")]
-    #[inline(always)]
-    fn predict_fast<T: ReconSample>(
-        reference0: &ReferencePlaneView<'_, T>,
-        params0: &SubpelPredictParams,
-        reference1: &ReferencePlaneView<'_, T>,
-        params1: &SubpelPredictParams,
-        cwp_weight: i16,
-        output: &mut [Self],
-        output_stride: usize,
-    ) -> splot_recon::Result<bool> {
-        subpel_predict_block_compound_average_fast_validated_strided_into(
-            reference0,
-            params0,
-            reference1,
-            params1,
-            cwp_weight,
             output,
             output_stride,
         )
@@ -810,10 +779,6 @@ fn fullpel_motion(mvs: [[i32; 2]; 2], sub_x: u32, sub_y: u32) -> bool {
     mvs.iter()
         .all(|mv| fullpel_phase(mv[0], sub_y) | fullpel_phase(mv[1], sub_x) == 0)
 }
-
-/// The reference views, packed output and output stride of the V plane that
-/// a shared U pass predicts too.
-type SecondPlane<'a, 'b, T, O> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [O], usize);
 
 mod fullpel_runs;
 mod refined;

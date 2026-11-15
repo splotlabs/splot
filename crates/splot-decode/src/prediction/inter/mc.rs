@@ -1554,16 +1554,6 @@ fn write_compound_section(
     Ok(())
 }
 
-fn blend_compound_average_weighted_samples<T: ReconSample>(
-    pred0: &[i32],
-    pred1: &[i32],
-    bit_depth: splot_recon::BitDepth,
-    cwp_weight: i16,
-    output: &mut [T],
-) -> splot_recon::Result<()> {
-    blend::weighted_row(pred0, pred1, bit_depth, cwp_weight, output)
-}
-
 #[inline]
 fn compound_average_weights_are_uniform(
     implicit_mask: bool,
@@ -1592,9 +1582,7 @@ fn compound_average_weights_are_uniform(
     })
 }
 
-const fn compound_inter_post_round() -> u32 {
-    4
-}
+const INTER_POST_ROUND: u32 = 4;
 
 #[allow(clippy::too_many_arguments)]
 fn ext_warp_unit_bounds(
