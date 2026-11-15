@@ -66,6 +66,7 @@ const QUANT_TABLE_BITS: u32 = 3;
 /// AV2 § 7.20.4 `PC_WIENER_LEAD`.
 const PC_WIENER_LEAD: isize = 1;
 /// AV2 § 7.20.4 `PC_WIENER_LAG`.
+#[cfg(test)]
 const PC_WIENER_LAG: isize = 4;
 /// AV2 § 7.20.4 `Pc_Wiener_Normalizer`.
 const PC_WIENER_NORMALIZER: [i32; PC_WIENER_NUM_FEATURES + 1] = [0, 3739, 3273, 3074, 7];
@@ -185,7 +186,6 @@ pub struct PcWienerClassifyScratch {
     /// The two most recent subclass tables, each composed with
     /// `Pc_Wiener_Lut_To_Class`; a frame uses at most two.
     luts: [SubclassLut; 2],
-    classifications: Vec<PcWienerClassification>,
 }
 
 impl Default for PcWienerClassifyScratch {
@@ -196,12 +196,11 @@ impl Default for PcWienerClassifyScratch {
             qval_cache_key: None,
             qval_offsets: [[0; PC_WIENER_NUM_FEATURES]; QVAL_CACHE_LEN],
             luts: [(None, [0; PC_WIENER_LUT_INPUTS]); 2],
-            classifications: Vec::new(),
         }
     }
 }
 
-/// § 7.20.2-pre-resolved source samples for [`pc_wiener_classify_grid_padded_into`].
+/// § 7.20.2-pre-resolved source samples for [`pc_wiener_classify_grid_padded_classes_into`].
 ///
 /// Padded rows covering the classified block extended on every side, whose
 /// first sample is current-plane luma coordinate `(origin_x, origin_y)`.
@@ -257,23 +256,8 @@ pub struct PcWienerFilter<'a> {
     pub subclasses: &'a [u8],
 }
 
-/// Derives an AV2 § 7.20.4 pixel-classified Wiener skip-filter class.
-///
-/// `source_sample(x, y)` is called with current-plane luma source coordinates
-/// after the § 7.20.4 `x = Min(BlockEndX + 2, x)` adjustment performed inside
-/// `get_features`. The callback must implement the caller's selected
-/// § 7.20.2 source-sample behavior, including frame selection and clipping.
-/// `tx_skip(lookup)` is called with a fully clipped `LrTxSkip` grid lookup.
-///
-/// # Errors
-///
-/// Returns typed [`ReconError`] values for unsupported sample storage, invalid
-/// caller-resolved bounds, caller source-sample or `LrTxSkip` lookup failures,
-/// source samples outside the active bit-depth range, `LrTxSkip` values outside
-/// `0..=1`, and arithmetic overflow in coordinate or LUT derivation. The
-/// function mutates no caller-owned output or grid state.
-#[inline]
-pub fn pc_wiener_classify<T, FS, FT>(
+#[cfg(test)]
+fn pc_wiener_classify<T, FS, FT>(
     params: &PcWienerClassifyParams,
     mut source_sample: FS,
     mut tx_skip: FT,
@@ -335,8 +319,9 @@ where
 ///
 /// # Errors
 ///
-/// Returns the same typed failures as [`pc_wiener_classify`], plus geometry or
-/// allocation-size overflow for an unrepresentable grid.
+/// Returns typed [`ReconError`] values for unsupported sample storage, invalid
+/// bounds, callback failures, out-of-range samples or `LrTxSkip` values, and
+/// arithmetic or allocation-size overflow.
 #[inline]
 pub fn pc_wiener_classify_grid<T, FS, FT>(
     params: &PcWienerClassifyParams,
@@ -406,27 +391,15 @@ where
     Ok(classifications)
 }
 
-/// Row-major grid of four-sample-spaced PC-Wiener cells from a padded
-/// pre-resolved source, into reusable buffers.
-///
-/// Identical classification math and output as [`pc_wiener_classify_grid`]; the
-/// § 7.20.2 source-sample process is resolved by the caller into `source`
-/// instead of a per-sample callback. The `tx_skip` grid lookup stays a callback.
-/// `scratch` retains its allocations between calls. The returned slice contains
-/// exactly `cell_cols * cell_rows` row-major classifications. Its internal
-/// output is cleared before validation and remains empty on error.
-///
-/// # Errors
-/// Returns the same typed failures as [`pc_wiener_classify_grid`], plus a typed
-/// [`ReconError`] when the padded source cannot cover the classification region.
-#[inline]
-pub fn pc_wiener_classify_grid_padded_into<'a, T, FT>(
+#[cfg(test)]
+fn pc_wiener_classify_grid_padded_into<'a, T, FT>(
     params: &PcWienerClassifyParams,
     cell_cols: usize,
     cell_rows: usize,
     source: &PcWienerClassifyPaddedSource<'_, T>,
     tx_skip: FT,
-    scratch: &'a mut PcWienerClassifyScratch,
+    scratch: &mut PcWienerClassifyScratch,
+    output: &'a mut Vec<PcWienerClassification>,
 ) -> Result<&'a [PcWienerClassification]>
 where
     T: ReconSample,
@@ -443,13 +416,15 @@ where
         &mut scratch.qval_cache_key,
         &mut scratch.qval_offsets,
         &PC_WIENER_LUT_TO_CLASS,
-        &mut scratch.classifications,
+        output,
         false,
     )
 }
 
-/// Compact runtime form of [`pc_wiener_classify_grid_padded_into`] that writes
-/// only `subclasses[cls]` for each cell's class `cls` into `output`.
+/// Classifies a row-major grid of four-sample-spaced PC-Wiener cells from a
+/// padded pre-resolved source and writes only `subclasses[cls]` for each
+/// cell's class `cls` into `output`, which is cleared first and stays empty
+/// on error. `scratch` retains its allocations between calls.
 ///
 /// `tx_skip(run)` answers a whole [`PcWienerTxSkipRun`] instead of one lookup
 /// at a time: it returns `LrTxSkip` row `run.row` from column `run.col`, at
@@ -461,8 +436,10 @@ where
 /// `params.block_start_x` the first cell's `BlockStartX`; then only the last
 /// block can reach its `get_features` clip, so one feature grid serves all.
 /// # Errors
-/// Returns the same errors as [`pc_wiener_classify_grid_padded_into`], and
-/// [`ReconError::PcWienerInvalidBounds`] for a span that breaks these rules.
+/// Returns the same errors as [`pc_wiener_classify_grid`], a typed
+/// [`ReconError`] when the padded source cannot cover the classification
+/// region, and [`ReconError::PcWienerInvalidBounds`] for a span that breaks
+/// these rules.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn pc_wiener_classify_grid_padded_classes_into<'a, 'g, T, FT>(
@@ -1280,8 +1257,7 @@ fn prepare_qval_offsets_cache(
     Ok(())
 }
 
-#[allow(clippy::inline_always)]
-#[inline(always)]
+#[cfg(test)]
 fn finish_pc_wiener_classification(
     raw_features: [i32; PC_WIENER_NUM_FEATURES],
     raw_tx_skip_sum: i32,
@@ -1626,7 +1602,6 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
 }
 
 struct PcWienerPaddedFilterSetup {
-    sample_count: usize,
     filters: &'static [[i32; 13]; PC_WIENER_FULL_CLASSES],
     classes: &'static [LaneClass; PC_WIENER_FULL_CLASSES],
     max_sample: u16,
@@ -1641,7 +1616,7 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
     source: &PcWienerPaddedSource<'_, T>,
 ) -> Result<PcWienerPaddedFilterSetup> {
     validate_sample_type::<T>(params.bit_depth)?;
-    let (sample_count, filters) = validate_pc_wiener_filter(output_len, params)?;
+    let (_, filters) = validate_pc_wiener_filter(output_len, params)?;
     let classes = PC_WIENER_CLASSES.get(params.filter_set_index).ok_or(
         ReconError::PcWienerInvalidBounds {
             field: "PC-Wiener filter set index",
@@ -1661,7 +1636,6 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
                     .is_some_and(|samples| !crate::workspace::samples_exceed(samples, max_sample))
             }));
     Ok(PcWienerPaddedFilterSetup {
-        sample_count,
         filters,
         classes,
         max_sample,
@@ -1700,43 +1674,6 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
         bit_depth: params.bit_depth,
     })?;
     filter_pc_wiener_padded(destination, params, source.rows, T::u8_slice, &setup)
-}
-
-/// [`pc_wiener_filter_block_padded`] into an 8-bit `output` from any source
-/// sample type.
-///
-/// # Errors
-/// As [`pc_wiener_filter_block_padded`], plus a non-8-bit `params.bit_depth`.
-#[inline(never)]
-pub fn pc_wiener_filter_block_padded_u8_into<T: ReconSample>(
-    output: &mut [u8],
-    params: &PcWienerFilter<'_>,
-    source: &PcWienerPaddedSource<'_, T>,
-) -> Result<()> {
-    validate_sample_type::<u8>(params.bit_depth)?;
-    let setup = prepare_pc_wiener_padded_filter(output.len(), params, source)?;
-    if !setup.lanes {
-        let mut filtered = vec![T::default(); setup.sample_count];
-        let packed = PcWienerFilter {
-            output_stride: params.width,
-            ..*params
-        };
-        pc_wiener_filter_block(&mut filtered, &packed, |x, y| {
-            source.sample(x, y, params.width)
-        })?;
-        let rows = output.chunks_mut(params.output_stride);
-        for (output, filtered) in rows.zip(filtered.chunks(params.width)) {
-            for (output, sample) in output.iter_mut().zip(filtered) {
-                *output = sample.to_u16() as u8;
-            }
-        }
-        return Ok(());
-    }
-    if T::u8_slice(&[]).is_some() {
-        filter_pc_wiener_padded(output, params, source.rows, T::u8_slice, &setup)
-    } else {
-        filter_pc_wiener_padded(output, params, source.rows, T::u16_slice, &setup)
-    }
 }
 
 /// Filters a cell row in column groups of up to four 4x4 cells, each lane with
@@ -2022,13 +1959,13 @@ const fn pc_wiener_subclass_target_index(num_classes: usize) -> Option<usize> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
 struct PcWienerFeatureValues {
     x: isize,
     values: [i32; PC_WIENER_NUM_FEATURES],
 }
 
-#[inline]
+#[cfg(test)]
 fn pc_wiener_features<T, F>(
     params: &PcWienerClassifyParams,
     x: isize,
@@ -2130,7 +2067,7 @@ where
     Ok(value)
 }
 
-#[inline]
+#[cfg(test)]
 fn tx_skip_lookup(
     params: &PcWienerClassifyParams,
     x: isize,
@@ -2172,7 +2109,7 @@ fn qval_tx_skip_offsets(
     Ok(offsets)
 }
 
-#[inline]
+#[cfg(test)]
 fn pc_wiener_lut_input(
     features: [i32; PC_WIENER_NUM_FEATURES],
     qval_offsets: &[i32; PC_WIENER_NUM_FEATURES],
@@ -2267,7 +2204,7 @@ fn validate_params(params: &PcWienerClassifyParams) -> Result<()> {
     Ok(())
 }
 
-#[inline]
+#[cfg(test)]
 fn clip_isize_to_usize_range(
     value: isize,
     low: usize,

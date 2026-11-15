@@ -11,8 +11,17 @@ fn classify_padded<T: ReconSample>(
     tx_skip: impl FnMut(PcWienerTxSkipLookup) -> Result<i32>,
 ) -> Result<Vec<PcWienerClassification>> {
     let mut scratch = PcWienerClassifyScratch::default();
-    pc_wiener_classify_grid_padded_into(params, cell_cols, cell_rows, source, tx_skip, &mut scratch)
-        .map(<[_]>::to_vec)
+    let mut output = Vec::new();
+    pc_wiener_classify_grid_padded_into(
+        params,
+        cell_cols,
+        cell_rows,
+        source,
+        tx_skip,
+        &mut scratch,
+        &mut output,
+    )
+    .map(<[_]>::to_vec)
 }
 
 #[test]
@@ -503,17 +512,6 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
                         actual, reference,
                         "random {bit_depth:?} {width}x{height} set {filter_set_index}"
                     );
-                    if bit_depth == BitDepth::Eight {
-                        let mut narrow = vec![0u8; width * height];
-                        pc_wiener_filter_block_padded_u8_into(&mut narrow, &params, &source)
-                            .unwrap();
-                        assert!(
-                            narrow
-                                .iter()
-                                .zip(&reference)
-                                .all(|(&a, &b)| u16::from(a) == b)
-                        );
-                    }
                 }
             }
         }
@@ -1246,6 +1244,7 @@ fn padded_into_reuses_capacity_from_large_to_small_grid() {
     )
     .unwrap();
     let mut scratch = PcWienerClassifyScratch::default();
+    let mut output = Vec::new();
     let large_output_ptr = pc_wiener_classify_grid_padded_into::<u8, _>(
         &params,
         8,
@@ -1253,6 +1252,7 @@ fn padded_into_reuses_capacity_from_large_to_small_grid() {
         &source,
         alternating_tx_skip,
         &mut scratch,
+        &mut output,
     )
     .unwrap()
     .as_ptr();
@@ -1260,7 +1260,7 @@ fn padded_into_reuses_capacity_from_large_to_small_grid() {
     let capacities = (
         scratch.feature_rows.capacity(),
         scratch.skip_sums.capacity(),
-        scratch.classifications.capacity(),
+        output.capacity(),
     );
 
     let small_output_ptr = pc_wiener_classify_grid_padded_into::<u8, _>(
@@ -1270,6 +1270,7 @@ fn padded_into_reuses_capacity_from_large_to_small_grid() {
         &source,
         alternating_tx_skip,
         &mut scratch,
+        &mut output,
     )
     .unwrap()
     .as_ptr();
@@ -1280,7 +1281,7 @@ fn padded_into_reuses_capacity_from_large_to_small_grid() {
         (
             scratch.feature_rows.capacity(),
             scratch.skip_sums.capacity(),
-            scratch.classifications.capacity(),
+            output.capacity(),
         ),
         capacities
     );
@@ -1302,6 +1303,7 @@ fn padded_into_clears_output_after_error_and_empty_grid() {
     )
     .unwrap();
     let mut scratch = PcWienerClassifyScratch::default();
+    let mut output = Vec::new();
     pc_wiener_classify_grid_padded_into::<u16, _>(
         &params,
         3,
@@ -1309,6 +1311,7 @@ fn padded_into_clears_output_after_error_and_empty_grid() {
         &source,
         alternating_tx_skip,
         &mut scratch,
+        &mut output,
     )
     .unwrap();
 
@@ -1319,10 +1322,11 @@ fn padded_into_clears_output_after_error_and_empty_grid() {
         &source,
         |_| Ok(2),
         &mut scratch,
+        &mut output,
     )
     .unwrap_err();
     assert!(matches!(error, ReconError::PcWienerInvalidTxSkip { .. }));
-    assert!(scratch.classifications.is_empty());
+    assert!(output.is_empty());
 
     let recovered = pc_wiener_classify_grid_padded_into::<u16, _>(
         &params,
@@ -1331,10 +1335,11 @@ fn padded_into_clears_output_after_error_and_empty_grid() {
         &source,
         alternating_tx_skip,
         &mut scratch,
+        &mut output,
     )
     .unwrap();
     assert_eq!(recovered.len(), 1);
-    let capacity = scratch.classifications.capacity();
+    let capacity = output.capacity();
 
     let empty = pc_wiener_classify_grid_padded_into::<u16, _>(
         &params,
@@ -1343,11 +1348,12 @@ fn padded_into_clears_output_after_error_and_empty_grid() {
         &source,
         alternating_tx_skip,
         &mut scratch,
+        &mut output,
     )
     .unwrap();
 
     assert!(empty.is_empty());
-    assert_eq!(scratch.classifications.capacity(), capacity);
+    assert_eq!(output.capacity(), capacity);
 }
 
 #[test]

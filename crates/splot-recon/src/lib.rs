@@ -191,10 +191,9 @@ pub use pc_wiener::{
     PC_WIENER_FULL_CLASSES, PC_WIENER_LUT_CLASSES, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES,
     PcWienerClassification, PcWienerClassifyPaddedSource, PcWienerClassifyParams,
     PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PcWienerTxSkipLookup,
-    PcWienerTxSkipRun, pc_wiener_classify, pc_wiener_classify_grid,
-    pc_wiener_classify_grid_padded_classes_into, pc_wiener_classify_grid_padded_into,
-    pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_block_padded_u8_into,
-    pc_wiener_filter_set_index, pc_wiener_subclass_table,
+    PcWienerTxSkipRun, pc_wiener_classify_grid, pc_wiener_classify_grid_padded_classes_into,
+    pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_set_index,
+    pc_wiener_subclass_table,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
