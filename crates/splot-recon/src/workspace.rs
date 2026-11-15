@@ -235,25 +235,15 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
     ) -> Result<()> {
         let rect = clamp_rect_to_storage(self.plane, self.storage_size, rect)?;
         self.ensure_rect(rect)?;
-        validate_write_source(
+        write_rect_to_samples(
             self.plane,
-            rect,
-            samples,
-            row_stride_samples,
+            self.samples,
             self.stride(),
+            rect,
+            (rect.x(), rect.y() - self.rect.y()),
+            (samples, row_stride_samples),
             max_sample,
-        )?;
-        let stride = self.stride();
-        let base = self.offset_of(rect)?;
-        for row in 0..rect.height() {
-            let target_start = base + row * stride;
-            let source_start = row * row_stride_samples;
-            copy_row_samples(
-                &mut self.samples[target_start..target_start + rect.width()],
-                &samples[source_start..source_start + rect.width()],
-            );
-        }
-        Ok(())
+        )
     }
 
     fn ensure_rect(&self, rect: PlaneRect) -> Result<()> {
@@ -485,42 +475,39 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                 let target = workspace.plane_mut(plane)?;
                 let stride_samples = target.stride_samples();
                 let local_y = target.band_row(rect.y(), rect.height())?;
-                write_u16_rect_to_samples(
+                copy_into_rect(
                     &mut target.samples,
                     stride_samples,
+                    (rect.x(), local_y),
                     rect,
-                    rect.x(),
-                    local_y,
-                    samples,
-                    row_stride_samples,
+                    (samples, row_stride_samples),
+                    copy_u16_samples,
                 )
             }
             Self::Rect(surface) => {
                 let target = surface.plane_mut(plane)?;
                 target.ensure_rect(rect)?;
                 let stride = target.stride();
-                write_u16_rect_to_samples(
+                copy_into_rect(
                     target.samples,
                     stride,
+                    (rect.x(), rect.y() - target.rect.y()),
                     rect,
-                    rect.x(),
-                    rect.y() - target.rect.y(),
-                    samples,
-                    row_stride_samples,
+                    (samples, row_stride_samples),
+                    copy_u16_samples,
                 )
             }
             Self::OwnedRect(surface) => {
                 let mut target = surface.plane_mut(plane)?;
                 target.ensure_rect(rect)?;
                 let target_rect = target.rect();
-                write_u16_rect_to_samples(
+                copy_into_rect(
                     target.samples_mut(),
                     target_rect.width(),
+                    (rect.x() - target_rect.x(), rect.y() - target_rect.y()),
                     rect,
-                    rect.x() - target_rect.x(),
-                    rect.y() - target_rect.y(),
-                    samples,
-                    row_stride_samples,
+                    (samples, row_stride_samples),
+                    copy_u16_samples,
                 )
             }
         }
@@ -1611,10 +1598,8 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             &mut self.samples,
             stride_samples,
             rect,
-            rect.x(),
-            local_y,
-            samples,
-            row_stride_samples,
+            (rect.x(), local_y),
+            (samples, row_stride_samples),
             max_sample,
         )
     }
@@ -2005,16 +1990,13 @@ fn rect_is_within(rect: PlaneRect, bounds: PlaneRect) -> bool {
             .is_some_and(|bottom| bottom <= bounds.height())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn write_rect_to_samples<T: ReconSample>(
     plane: PlaneId,
     target: &mut [T],
     target_stride_samples: usize,
     rect: PlaneRect,
-    local_x: usize,
-    local_y: usize,
-    samples: &[T],
-    row_stride_samples: usize,
+    local: (usize, usize),
+    (samples, row_stride_samples): (&[T], usize),
     max_sample: u16,
 ) -> Result<()> {
     validate_write_source(
@@ -2025,104 +2007,35 @@ fn write_rect_to_samples<T: ReconSample>(
         target_stride_samples,
         max_sample,
     )?;
-
-    let target_base = local_y
-        .checked_mul(target_stride_samples)
-        .and_then(|start| start.checked_add(local_x))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "current-frame workspace target row offset",
-        })?;
-    let last_row_offset = (rect.height() - 1)
-        .checked_mul(target_stride_samples)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "current-frame workspace target row span",
-        })?;
-    let last_target_end = target_base
-        .checked_add(last_row_offset)
-        .and_then(|start| start.checked_add(rect.width()))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "current-frame workspace target sample span",
-        })?;
-    if last_target_end > target.len() {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: last_target_end,
-            actual: target.len(),
-        });
-    }
-
-    copy_rect_rows(
+    let source = (samples, row_stride_samples);
+    copy_into_rect(
         target,
         target_stride_samples,
-        target_base,
+        local,
         rect,
-        samples,
-        row_stride_samples,
-        |target, source| {
-            copy_row_samples(target, source);
-            Ok(())
-        },
+        source,
+        copy_row_samples,
     )
 }
 
-fn write_u16_rect_to_samples<T: ReconSample>(
-    target: &mut [T],
-    target_stride_samples: usize,
-    rect: PlaneRect,
-    local_x: usize,
-    local_y: usize,
-    samples: &[u16],
-    row_stride_samples: usize,
-) -> Result<()> {
-    let target_base = local_y
-        .checked_mul(target_stride_samples)
-        .and_then(|start| start.checked_add(local_x))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "current-frame u16 target row offset",
-        })?;
-    let last_target_end = (rect.height() - 1)
-        .checked_mul(target_stride_samples)
-        .and_then(|offset| target_base.checked_add(offset))
-        .and_then(|start| start.checked_add(rect.width()))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "current-frame u16 target sample span",
-        })?;
-    if last_target_end > target.len() {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: last_target_end,
-            actual: target.len(),
-        });
-    }
-    copy_rect_rows(
-        target,
-        target_stride_samples,
-        target_base,
-        rect,
-        samples,
-        row_stride_samples,
-        |target, samples| {
-            copy_u16_samples(target, samples);
-            Ok(())
-        },
-    )
-}
-
+/// Copies the `rect`-sized rows of `samples`, `row_stride_samples` apart,
+/// into `target` from `(local_x, local_y)`, `stride` apart, with `copy_row`.
 #[inline]
-fn copy_rect_rows<T, S>(
+fn copy_into_rect<T, S>(
     target: &mut [T],
-    target_stride_samples: usize,
-    target_base: usize,
+    stride: usize,
+    (local_x, local_y): (usize, usize),
     rect: PlaneRect,
-    samples: &[S],
-    row_stride_samples: usize,
-    mut copy_row: impl FnMut(&mut [T], &[S]) -> Result<()>,
+    (samples, row_stride_samples): (&[S], usize),
+    mut copy_row: impl FnMut(&mut [T], &[S]),
 ) -> Result<()> {
+    let (target, _) = contiguous_span(target, stride, local_x, local_y, rect)?;
     for row in 0..rect.height() {
-        let source_start = row * row_stride_samples;
-        let target_start = target_base + row * target_stride_samples;
+        let (source_start, target_start) = (row * row_stride_samples, row * stride);
         copy_row(
             &mut target[target_start..target_start + rect.width()],
             &samples[source_start..source_start + rect.width()],
-        )?;
+        );
     }
     Ok(())
 }
