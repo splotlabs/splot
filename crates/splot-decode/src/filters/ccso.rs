@@ -618,29 +618,19 @@ fn store_lanes<S: Simd, D: ReconSample>(lanes: u16x16<S>, samples: &mut [D]) {
     }
 }
 
-/// Loads lanes of 8-bit luma from the start of `row`; with `SUB_X == 1` it
+/// Loads a vector of luma from the start of `row`; with `SUB_X == 1` it
 /// keeps the even columns, the luma a 2:1 chroma row samples.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn luma_u8<S: Simd, const SUB_X: usize>(simd: S, row: &[u8]) -> Option<u8x16<S>> {
-    let low = u8x16::from_slice(simd, row.get(..CCSO_LANES)?);
+fn ccso_luma<S: Simd, V: SimdBase<S>, const SUB_X: usize>(
+    simd: S,
+    row: &[V::Element],
+) -> Option<V> {
+    let low = V::from_slice(simd, row.get(..V::LEN)?);
     if SUB_X == 0 {
         return Some(low);
     }
-    let high = u8x16::from_slice(simd, row.get(CCSO_LANES..2 * CCSO_LANES)?);
-    Some(simd.unzip_low_u8x16(low, high))
-}
-
-/// [`luma_u8`] for 16-bit luma.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn luma_u16<S: Simd, const SUB_X: usize>(simd: S, row: &[u16]) -> Option<u16x16<S>> {
-    let low = u16x16::from_slice(simd, row.get(..CCSO_LANES)?);
-    if SUB_X == 0 {
-        return Some(low);
-    }
-    let high = u16x16::from_slice(simd, row.get(CCSO_LANES..2 * CCSO_LANES)?);
-    Some(simd.unzip_low_u16x16(low, high))
+    Some(low.unzip_low(V::from_slice(simd, row.get(V::LEN..2 * V::LEN)?)))
 }
 
 /// Vectorises one CCSO row and returns the column span it filtered;
@@ -760,7 +750,8 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
                 .select(weight, zero)
     };
     let index_u16 = |rows: [&[L]; 3]| -> Option<u8x16<S>> {
-        let [centers, row0, row1] = rows.map(|row| luma_u16::<S, SUB_X>(simd, L::u16_slice(row)?));
+        let [centers, row0, row1] =
+            rows.map(|row| ccso_luma::<S, u16x16<S>, SUB_X>(simd, L::u16_slice(row)?));
         let centers = centers?;
         let mut index = centers >> u32::from(config.band_shift);
         if offset_rows.is_some() {
@@ -787,7 +778,8 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
                 .select(weight, zero)
     };
     let index_u8 = |rows: [&[L]; 3]| -> Option<u8x16<S>> {
-        let [centers, row0, row1] = rows.map(|row| luma_u8::<S, SUB_X>(simd, L::u8_slice(row)?));
+        let [centers, row0, row1] =
+            rows.map(|row| ccso_luma::<S, u8x16<S>, SUB_X>(simd, L::u8_slice(row)?));
         let centers = centers?;
         let mut index = match config.band_shift {
             shift @ 0..8 => centers >> u32::from(shift),
@@ -834,15 +826,7 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
                     .simd_gt(centers.saturating_add(quant_step))
                     .select(weight, zero)
         };
-        let luma = |row: &[L]| -> Option<u8x32<S>> {
-            let row = L::u8_slice(row)?;
-            let low = u8x32::from_slice(simd, row.get(..2 * CCSO_LANES)?);
-            if SUB_X == 0 {
-                return Some(low);
-            }
-            let high = u8x32::from_slice(simd, row.get(2 * CCSO_LANES..4 * CCSO_LANES)?);
-            Some(simd.unzip_low_u8x32(low, high))
-        };
+        let luma = |row: &[L]| ccso_luma::<S, u8x32<S>, SUB_X>(simd, L::u8_slice(row)?);
         let wide_index = |centers: &[L], taps0: &[L], taps1: &[L]| -> Option<u8x32<S>> {
             if L::u8_slice(centers).is_none() {
                 let half =
