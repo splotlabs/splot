@@ -528,8 +528,7 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
     /// records it reads.
     ///
     /// # Errors
-    /// Returns the deblock preparation's own diagnostic, or the state error
-    /// of a frame whose frontier is already claimed.
+    /// Returns the state error of a frame whose frontier is already claimed.
     pub(crate) fn start(
         mut setup: OwnedFilterSetup<T>,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
@@ -551,8 +550,7 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
                 setup.disable_loopfilters_across_tiles,
                 deblock_quant_deltas,
                 setup.subsampling,
-            )
-            .map_err(|error| deblock_prepare_error(&error))?,
+            ),
             None => None,
         };
         if deblock.is_none() && !rows.publish_final_rows(setup.luma_height) {

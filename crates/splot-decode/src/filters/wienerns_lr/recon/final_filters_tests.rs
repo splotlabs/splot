@@ -226,7 +226,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         (1, 1),
         &mut crate::filters::deblock::DeblockGridStorage::default(),
     )
-    .unwrap()
     .unwrap();
     deblock
         .advance_source(&mut source, 8, BitDepth::Eight)
