@@ -927,8 +927,18 @@ fn unit_rows<const N: usize>(
 fn unit_lane_sums<S: Simd, const N: usize>(simd: S, planes: [[&[i16; N]; N]; 3]) -> [i32; 5] {
     let mut sums = [i32x8::splat(simd, 0); 5];
     for first_row in (0..N).step_by(16 / N) {
-        let [u, v, w] =
-            planes.map(|rows| i16x16::from_fn(simd, |lane| rows[first_row + lane / N][lane % N]));
+        let [u, v, w] = planes.map(|rows| {
+            let mut lanes = [0; 16];
+            for (lanes, row) in lanes
+                .as_chunks_mut::<N>()
+                .0
+                .iter_mut()
+                .zip(&rows[first_row..])
+            {
+                *lanes = **row;
+            }
+            i16x16::load_array(simd, lanes)
+        });
         accumulate_unit_sums(&mut sums, u, v, w);
     }
     unit_sums(sums.map(SimdBase::reduce_sum), (N * N) as i32)

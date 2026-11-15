@@ -150,11 +150,16 @@ fn unclamped_8x8<T: ReconSample>(
     ) else {
         return false;
     };
+    let (spans, pad) = (spans.map(<[T]>::first_chunk::<9>), [T::default(); 9]);
+    if spans.iter().any(Option::is_none) {
+        return false;
+    }
+    let spans = spans.map(|span| span.unwrap_or(&pad));
     let h = ((params.start_x >> 6) & 15) as u16;
     let v = ((params.start_y >> 6) & 15) as u16;
     let max_sample = params.bit_depth.max_sample();
     baseline_simd!(simd => {
-        let horizontal = |span: &[T]| {
+        let horizontal = |span: &[T; 9]| {
             let lanes = |at: usize| sample_lanes(simd, span, at);
             lanes(0) * (16 - h) + lanes(1) * h
         };
