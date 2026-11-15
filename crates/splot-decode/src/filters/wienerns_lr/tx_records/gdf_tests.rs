@@ -46,10 +46,7 @@ fn unvisited_gdf_unit_fails_closed() {
         block_size: 64,
         sb_size4: 16,
         sb_per_gdf: 1,
-        row_start: 0,
-        col_start: 0,
-        grid_rows: 1,
-        grid_cols: 1,
+        window: UnitWindow::frame(1, 1),
         values: vec![2],
     };
 
@@ -63,10 +60,7 @@ fn gdf_tile_merge_copies_only_the_owned_region() {
         block_size: 64,
         sb_size4: 16,
         sb_per_gdf: 1,
-        row_start: 0,
-        col_start: 0,
-        grid_rows: 1,
-        grid_cols: 2,
+        window: UnitWindow::frame(1, 2),
         values: vec![2; 2],
     };
     let mut left = frame.for_tile(0..16, 0..16, None).unwrap();

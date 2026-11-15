@@ -15,15 +15,13 @@ use crate::bitstream::byte_stream::UnitSource;
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::output::film_grain;
 use crate::pipeline::PipelineDecodedFrame;
-use parking_lot::Mutex;
 
 pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
-    writer: W,
+    mut writer: W,
 ) -> Result<()> {
-    let writer = Mutex::new(writer);
     crate::pipeline::emit_frames(
         source,
         options,
@@ -31,7 +29,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
         |_| Ok(()),
         |output| {
             let frame = output.ready_frame()?;
-            write_display_frame(&frame, output.display_grain.as_ref(), &writer)
+            write_display_frame(&frame, output.display_grain.as_ref(), &mut writer)
         },
     )?;
     Ok(())
@@ -42,19 +40,16 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
 fn write_display_frame(
     frame: &PipelineDecodedFrame,
     display_grain: Option<&crate::pipeline::ActiveFilmGrain>,
-    writer: &Mutex<impl Write>,
+    writer: &mut impl Write,
 ) -> Result<()> {
-    catch_unwind(AssertUnwindSafe(|| {
-        let writer = &mut *writer.lock();
-        match frame {
-            PipelineDecodedFrame::Eight(frame) => {
-                let display = film_grain::frame_for_output(frame.get(), display_grain)?;
-                write_raw_frame(display.as_ref(), writer)
-            }
-            PipelineDecodedFrame::Ten(frame) => {
-                let display = film_grain::frame_for_output(frame.get(), display_grain)?;
-                write_raw_frame(display.as_ref(), writer)
-            }
+    catch_unwind(AssertUnwindSafe(|| match frame {
+        PipelineDecodedFrame::Eight(frame) => {
+            let display = film_grain::frame_for_output(frame.get(), display_grain)?;
+            write_raw_frame(display.as_ref(), writer)
+        }
+        PipelineDecodedFrame::Ten(frame) => {
+            let display = film_grain::frame_for_output(frame.get(), display_grain)?;
+            write_raw_frame(display.as_ref(), writer)
         }
     }))
     .unwrap_or_else(|_| Err(raw_output_task_error("raw output task panicked")))
