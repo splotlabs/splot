@@ -21,9 +21,9 @@ use crate::support::reusable_scratch::with_reusable_scratch;
 #[path = "gdf_simd.rs"]
 mod simd;
 
-use simd::{ClassScratch, GdfSymParams, TAP_REACH, source_rows, sym_rows_narrow};
+use simd::{ClassScratch, TAP_REACH};
 #[cfg(test)]
-use simd::{sym_rows, window_at};
+use simd::{GdfSymParams, source_rows, sym_rows, sym_rows_narrow, window_at};
 
 const MI_SIZE: usize = 4;
 const GDF_TEST_STRIPE_OFF: usize = 8;
@@ -113,8 +113,8 @@ pub(crate) fn stripe_ranges_into(
 #[derive(Default)]
 struct GdfScratch {
     source: Vec<u16>,
-    classes: Vec<GdfClass>,
     class_scratch: ClassScratch,
+    lossless: (Vec<u8>, Vec<u16>),
 }
 
 std::thread_local! {
@@ -427,7 +427,6 @@ fn apply_stripe_config<T: ReconSample>(
                     height,
                     frame_width: width,
                     frame_height,
-                    base_origin_y: y,
                     base_stride: stride,
                     bit_depth,
                     qp_idx: config.qp_idx,
@@ -436,84 +435,15 @@ fn apply_stripe_config<T: ReconSample>(
                     max_sample: config.max_sample,
                 };
                 let bounds = source_bounds(core, &run_block, disable_loopfilters_across_tiles)?;
-                if lossless_grid.is_none() {
-                    let sources = (deblocked_luma, separate_cdef_luma, cdef_overlap);
-                    filter_run_tiles(sources, &bounds, &run_block, post_lr_luma, scratch)?;
-                    continue;
+                let sources = (deblocked_luma, separate_cdef_luma, cdef_overlap);
+                if let Some(grid) = lossless_grid {
+                    let samples = post_lr_luma.samples_mut();
+                    keep_lossless_spans(grid, &run_block, samples, &mut scratch.lossless, false)?;
                 }
-                let cdef_luma = separate_cdef_luma.unwrap_or(&*post_lr_luma);
-                let source = GdfSource::materialize_stripe(
-                    &mut scratch.source,
-                    deblocked_luma,
-                    cdef_luma,
-                    cdef_overlap,
-                    &bounds,
-                    &run_block,
-                )?;
-                let band_origin = source
-                    .relative_position(run.start, y)
-                    .ok_or_else(gdf_state_error)?;
-                band_classes_from_source(
-                    &source,
-                    band_origin,
-                    &run_block,
-                    &mut scratch.classes,
-                    &mut scratch.class_scratch,
-                )?;
-                let class_cols = run.len() >> 1;
-                let params = GdfSymParams::new(&run_block);
-                for local_y in (0..height).step_by(MI_SIZE) {
-                    let block_y = y + local_y;
-                    let block_height = MI_SIZE.min(height - local_y);
-                    let class_start = (local_y >> 1)
-                        .checked_mul(class_cols)
-                        .ok_or_else(gdf_state_error)?;
-                    let classes = scratch
-                        .classes
-                        .get(class_start..)
-                        .ok_or_else(gdf_state_error)?;
-                    for x in run.clone().step_by(MI_SIZE) {
-                        let block_width = MI_SIZE.min(run.end - x);
-                        if block_width < 2
-                            || block_height < 2
-                            || !block_width.is_multiple_of(2)
-                            || !block_height.is_multiple_of(2)
-                        {
-                            return Err(gdf_state_error());
-                        }
-                        let block = GdfBlock {
-                            x,
-                            y: block_y,
-                            width: block_width,
-                            height: block_height,
-                            ..run_block
-                        };
-                        let mut output = compute_block::<T>(
-                            &source,
-                            post_lr_luma.samples(),
-                            classes,
-                            class_cols,
-                            block,
-                            &params,
-                        )?;
-                        preserve_lossless_luma_samples(
-                            lossless_grid,
-                            post_lr_luma.samples(),
-                            stride,
-                            y,
-                            x,
-                            block_y,
-                            block_width,
-                            block_height,
-                            &mut output,
-                        )?;
-                        for row in 0..block_height {
-                            let src = &output[row * block_width..(row + 1) * block_width];
-                            let start = (local_y + row) * stride + x;
-                            post_lr_luma.samples_mut()[start..start + block_width]
-                                .copy_from_slice(src);
-                        }
-                    }
+                filter_run_tiles(sources, &bounds, &run_block, post_lr_luma, scratch)?;
+                if let Some(grid) = lossless_grid {
+                    let samples = post_lr_luma.samples_mut();
+                    keep_lossless_spans(grid, &run_block, samples, &mut scratch.lossless, true)?;
                 }
             }
         }
@@ -589,6 +519,69 @@ fn filter_run_tiles<T: ReconSample>(
     Ok(())
 }
 
+/// Saves, or with `restore` writes back, the row spans of the lossless luma
+/// 4x4 cells of `run` in `samples`; § 7.20.1 GDF leaves them unchanged.
+#[cold]
+fn keep_lossless_spans<T: ReconSample>(
+    grid: &crate::filters::lossless::LosslessBlockGrid,
+    run: &GdfBlock,
+    samples: &mut [T],
+    (eight, ten): &mut (Vec<u8>, Vec<u16>),
+    restore: bool,
+) -> Result<()> {
+    let saved = T::depth_vec(eight, ten);
+    if !restore {
+        saved.clear();
+    }
+    let mut next = 0;
+    lossless_spans(grid, run, |start, len| {
+        let row = samples
+            .get_mut(start..start + len)
+            .ok_or_else(gdf_state_error)?;
+        if restore {
+            row.copy_from_slice(saved.get(next..next + len).ok_or_else(gdf_state_error)?);
+            next += len;
+        } else {
+            saved.try_reserve(len).map_err(|_| gdf_allocation_error())?;
+            saved.extend_from_slice(row);
+        }
+        Ok(())
+    })
+}
+
+/// Calls `span` with the local start and length of every row span of the
+/// lossless luma 4x4 cells of `run`.
+fn lossless_spans(
+    grid: &crate::filters::lossless::LosslessBlockGrid,
+    run: &GdfBlock,
+    mut span: impl FnMut(usize, usize) -> Result<()>,
+) -> Result<()> {
+    let run_end = run.x + run.width;
+    let mut row = 0;
+    while row < run.height {
+        let y = run.y + row;
+        let rows_end = ((y / MI_SIZE + 1) * MI_SIZE - run.y).min(run.height);
+        let mut x = run.x;
+        while x < run_end {
+            let cell_end = ((x / MI_SIZE + 1) * MI_SIZE).min(run_end);
+            if !grid.plane_sample_lossless(PlaneId::Y, x, y, 0, 0) {
+                x = cell_end;
+                continue;
+            }
+            let mut end = cell_end;
+            while end < run_end && grid.plane_sample_lossless(PlaneId::Y, end, y, 0, 0) {
+                end = (end + MI_SIZE).min(run_end);
+            }
+            for local_y in row..rows_end {
+                span(local_y * run.base_stride + x, end - x)?;
+            }
+            x = end;
+        }
+        row = rows_end;
+    }
+    Ok(())
+}
+
 pub(crate) fn gdf_stripe_row(
     core: &FrameHeaderCore,
     y: usize,
@@ -618,28 +611,12 @@ struct GdfBlock {
     height: usize,
     frame_width: usize,
     frame_height: usize,
-    base_origin_y: usize,
     base_stride: usize,
     bit_depth: BitDepth,
     qp_idx: usize,
     ref_dst_idx: usize,
     pix_scale: i32,
     max_sample: i32,
-}
-
-/// Reads the `W` base samples at `start` and in the next frame row.
-fn base_row_pair<const W: usize, T: ReconSample>(
-    base_luma: &[T],
-    start: usize,
-    stride: usize,
-) -> Result<[[u16; W]; 2]> {
-    let row = |start: usize| {
-        exact_slice(base_luma, start, W)
-            .and_then(|samples| <&[T; W]>::try_from(samples).ok())
-            .map(|samples| samples.map(ReconSample::to_u16))
-            .ok_or_else(gdf_state_error)
-    };
-    Ok([row(start)?, row(start + stride)?])
 }
 
 /// The `W` samples from column `x` of both output rows.
@@ -653,56 +630,6 @@ fn output_pair<'a, const W: usize>(
         top.get_mut(x..)?.first_chunk_mut()?,
         bottom.get_mut(x..)?.first_chunk_mut()?,
     ])
-}
-
-fn compute_block<T: ReconSample>(
-    source: &GdfSource<'_>,
-    base_luma: &[T],
-    classes: &[GdfClass],
-    class_cols: usize,
-    block: GdfBlock,
-    params: &GdfSymParams,
-) -> Result<[T; MI_SIZE * MI_SIZE]> {
-    let source_origin = source
-        .relative_position(block.x, block.y)
-        .ok_or_else(gdf_state_error)?;
-    if block.width > MI_SIZE || source_origin.0 < TAP_REACH {
-        return Err(gdf_state_error());
-    }
-    let class_col_base = (source_origin.0 - TAP_REACH) >> 1;
-    let mut output = [T::default(); MI_SIZE * MI_SIZE];
-    for row in (0..block.height).step_by(2) {
-        let class_base = (row >> 1) * class_cols + class_col_base;
-        let classes = classes.get(class_base..).ok_or_else(gdf_state_error)?;
-        let base_start = block
-            .y
-            .checked_add(row)
-            .and_then(|y| y.checked_sub(block.base_origin_y))
-            .and_then(|y| y.checked_mul(block.base_stride))
-            .and_then(|index| index.checked_add(block.x))
-            .ok_or_else(gdf_state_error)?;
-        let mut rows = base_row_pair::<MI_SIZE, T>(base_luma, base_start, block.base_stride)?;
-        let origin = (source_origin.0, source_origin.1 + row);
-        let window_rows = source_rows(source, origin, block.width + 2 * TAP_REACH)?;
-        let [top, bottom] = &mut rows;
-        sym_rows_narrow(
-            &window_rows,
-            0,
-            block.width,
-            [top, bottom],
-            classes,
-            &block,
-            params,
-        )
-        .ok_or_else(gdf_state_error)?;
-        for (row_offset, samples) in rows.into_iter().enumerate() {
-            for (col, sample) in samples.into_iter().take(block.width).enumerate() {
-                output[(row + row_offset) * block.width + col] =
-                    T::try_from_u16(sample).map_err(|_| gdf_state_error())?;
-            }
-        }
-    }
-    Ok(output)
 }
 
 #[cfg(test)]
@@ -758,45 +685,6 @@ fn compute_enabled_segment(
                     .ok_or_else(geometry_error)?;
             }
             x += width;
-        }
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn preserve_lossless_luma_samples<T: ReconSample>(
-    lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
-    base_luma: &[T],
-    luma_stride: usize,
-    origin_y: usize,
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    output: &mut [T],
-) -> Result<()> {
-    let Some(lossless_grid) = lossless_grid else {
-        return Ok(());
-    };
-    for row in 0..height {
-        for col in 0..width {
-            let sample_x = x + col;
-            let sample_y = y + row;
-            if !lossless_grid.plane_sample_lossless(PlaneId::Y, sample_x, sample_y, 0, 0) {
-                continue;
-            }
-            let src = sample_y
-                .checked_sub(origin_y)
-                .and_then(|row| row.checked_mul(luma_stride))
-                .and_then(|start| start.checked_add(sample_x))
-                .and_then(|index| base_luma.get(index).copied())
-                .ok_or_else(gdf_state_error)?;
-            let dst = row
-                .checked_mul(width)
-                .and_then(|start| start.checked_add(col))
-                .and_then(|index| output.get_mut(index))
-                .ok_or_else(gdf_state_error)?;
-            *dst = src;
         }
     }
     Ok(())
@@ -1024,22 +912,7 @@ impl<'a> GdfSource<'a> {
         })
     }
 
-    fn materialize_stripe<T: ReconSample>(
-        samples: &'a mut Vec<u16>,
-        deblocked_luma: FramePlane<'_, T>,
-        cdef_luma: &StripePlane<T>,
-        cdef_overlap: &[StripePlane<T>],
-        bounds: &LoopRestorationPlaneBounds,
-        block: &GdfBlock,
-    ) -> Result<Self> {
-        Self::materialize_rows::<T, T>(
-            samples,
-            bounds,
-            block,
-            stripe_rows(deblocked_luma, cdef_luma, cdef_overlap),
-        )
-    }
-
+    #[cfg(test)]
     fn materialize_rows<'b, S: ReconSample, T: ReconSample>(
         samples: &'a mut Vec<u16>,
         bounds: &LoopRestorationPlaneBounds,
@@ -1073,6 +946,7 @@ impl<'a> GdfSource<'a> {
     /// rows `stride` apart, and returns its top-left frame position. Each row
     /// is the § 7.20.2 source row; a row that § 7.20.2 clips to the row above
     /// copies that row, and the columns it clips repeat the row's edge sample.
+    #[inline(never)]
     fn fill_tile<'b, S: ReconSample, T: ReconSample>(
         samples: &mut [u16],
         (stride, tile_cols, tile): (usize, usize, usize),
@@ -1282,6 +1156,7 @@ fn band_classes(
     Ok(())
 }
 
+#[cfg(test)]
 fn band_classes_from_source(
     source: &GdfSource<'_>,
     source_origin: (usize, usize),
@@ -1378,7 +1253,6 @@ fn gdf_sample(
     let base = block
         .y
         .checked_add(row)
-        .and_then(|y| y.checked_sub(block.base_origin_y))
         .and_then(|y| y.checked_mul(block.base_stride))
         .and_then(|index| index.checked_add(block.x + col))
         .and_then(|index| base_luma.get(index))
@@ -1526,10 +1400,10 @@ mod tests {
     use super::{
         ClassScratch, GDF_COORDS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
         GdfReferenceContext, GdfSource, GdfSourceRow, LoopRestorationSource, RESTRICTED_ORDER_HINT,
-        TAP_REACH, band_classes, band_classes_from_source, band_gradients, compute_block,
+        TAP_REACH, band_classes, band_classes_from_source, band_gradients, compute_enabled_segment,
         gdf_band_segment, gdf_band_segments, gdf_inter_ref_dst_idx,
         gdf_inter_ref_dst_idx_from_max_dist, gdf_stripe_end_for_tile, gdf_stripe_row_for_tile_end,
-        grad_sum, preserve_lossless_luma_samples, resize_overwrite_scratch, simd, tile_axis_bounds,
+        grad_sum, lossless_spans, resize_overwrite_scratch, simd, tile_axis_bounds,
     };
     use crate::error::{DecodeError, DecodeHeaderStateError};
     use crate::filters::deblock::DeblockBlock;
@@ -1729,7 +1603,6 @@ mod tests {
             height: 56,
             frame_width,
             frame_height,
-            base_origin_y: 0,
             base_stride: frame_width,
             bit_depth: BitDepth::Ten,
             qp_idx: 0,
@@ -1802,7 +1675,6 @@ mod tests {
                 height,
                 frame_width,
                 frame_height,
-                base_origin_y: y,
                 base_stride: frame_width,
                 bit_depth,
                 qp_idx: 0,
@@ -1931,42 +1803,51 @@ mod tests {
     }
 
     #[test]
-    fn preserve_lossless_luma_samples_keeps_only_lossless_cells() {
-        let lossless = [DeblockBlock {
-            r: 1,
-            c: 1,
+    fn lossless_spans_cover_only_lossless_cells_of_the_run() {
+        let cell = |r, c, n4w| DeblockBlock {
+            r,
+            c,
             prediction: crate::filters::deblock::DeblockPredictionUnit {
-                base_r: 1,
-                base_c: 1,
+                base_r: r,
+                base_c: c,
                 default_sub_pu_tx: 0,
             },
-            n4w: 1,
+            n4w,
             n4h: 1,
             tx: 0,
             sub_pu_size: None,
             qindex: 0,
             skip: false,
             lossless: true,
-        }];
+        };
+        let lossless = [cell(1, 1, 2), cell(2, 3, 1)];
         let grid = LosslessBlockGrid::from_deblock_blocks(4, 4, &lossless, &[]);
         let grid = grid.expect("valid grid");
-        let base: Vec<u8> = (0..64).collect();
-        let mut output = vec![200_u8; 32];
-
-        let result =
-            preserve_lossless_luma_samples(Some(&grid), &base, 8, 0, 4, 4, 8, 4, &mut output);
+        let run = GdfBlock {
+            x: 2,
+            y: 2,
+            width: 12,
+            height: 8,
+            frame_width: 16,
+            frame_height: 16,
+            base_stride: 16,
+            bit_depth: BitDepth::Eight,
+            qp_idx: 0,
+            ref_dst_idx: 0,
+            pix_scale: 1,
+            max_sample: 255,
+        };
+        let mut spans = Vec::new();
+        let result = lossless_spans(&grid, &run, |start, len| {
+            spans.push((start, len));
+            Ok(())
+        });
         assert!(result.is_ok());
-
-        for row in 0..4 {
-            for col in 0..8 {
-                let expected = if col < 4 {
-                    base[(4 + row) * 8 + 4 + col]
-                } else {
-                    200
-                };
-                assert_eq!(output[row * 8 + col], expected, "row {row} col {col}");
-            }
-        }
+        let expected: Vec<_> = (2..6)
+            .map(|row| (row * 16 + 4, 8))
+            .chain((6..8).map(|row| (row * 16 + 12, 2)))
+            .collect();
+        assert_eq!(spans, expected);
     }
 
     #[test]
@@ -1993,7 +1874,6 @@ mod tests {
             height: 4,
             frame_width,
             frame_height,
-            base_origin_y: 0,
             base_stride: frame_width,
             bit_depth: BitDepth::Ten,
             qp_idx: 0,
@@ -2033,10 +1913,13 @@ mod tests {
         );
         assert!(fused_result.is_ok());
         assert_eq!(fused_classes, classes);
-        let params = super::GdfSymParams::new(&block);
-        let filtered =
-            compute_block::<u16>(&source, &curr, &classes, block.width >> 1, block, &params);
-        let filtered = filtered.expect("valid filtered");
+        let filter = |source: &GdfSource<'_>, classes: &[GdfClass]| {
+            let mut base = curr[block.y * frame_width..].to_vec();
+            compute_enabled_segment(source, &mut base, classes, &block, origin, 0..block.width)
+                .expect("valid filtered");
+            base
+        };
+        let filtered = filter(&source, &classes);
         assert!(filtered.iter().all(|&sample| sample <= 1023));
 
         let mut reused_source_samples = vec![u16::MAX; source.samples.len() + 8];
@@ -2064,15 +1947,7 @@ mod tests {
         );
         assert!(reused_result.is_ok());
         assert_eq!(reused_classes, classes);
-        let reused_filtered = compute_block::<u16>(
-            &reused_source,
-            &curr,
-            &reused_classes,
-            block.width >> 1,
-            block,
-            &params,
-        );
-        let reused_filtered = reused_filtered.expect("valid reused filtered");
+        let reused_filtered = filter(&reused_source, &reused_classes);
         assert_eq!(reused_filtered, filtered);
     }
 
