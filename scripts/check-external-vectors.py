@@ -14,7 +14,14 @@ import tomllib
 import urllib.request
 
 
-def check(corpus, root, splot, thread_override=None):
+def verify_input(source, expected):
+    with source.open("rb") as file:
+        actual = hashlib.file_digest(file, "sha256").hexdigest()
+    if actual != expected:
+        raise SystemExit(f"{source.name}: input SHA-256 differs: {actual}.")
+
+
+def check(corpus, root, splot, thread_override=None, fetch=None):
     if corpus == "dav2d":
         entries = [
             (name, f"{suite.parent.name}/{path}", digest)
@@ -43,6 +50,11 @@ def check(corpus, root, splot, thread_override=None):
                 raise SystemExit(f"The sample revision differs: expected {manifest['revision']}, got {revision}.")
         if (root / "samples").is_dir():
             root = root / "samples"
+        if fetch:
+            by_path = {s["path"]: s for s in manifest["stream"] if "release" in s}
+            if unknown := sorted(set(fetch) - by_path.keys()):
+                raise SystemExit(f"No release stream in the manifest for {unknown}.")
+            manifest["stream"] = [by_path[path] for path in fetch]
         missing_releases = [
             (f"{manifest['source']}/releases/download/{s['release']}/{s['path']}", root / s["path"])
             for s in manifest["stream"]
@@ -51,6 +63,11 @@ def check(corpus, root, splot, thread_override=None):
         if missing_releases:
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
                 list(pool.map(lambda item: urllib.request.urlretrieve(*item), missing_releases))
+        if fetch:
+            for stream in manifest["stream"]:
+                verify_input(root / stream["path"], stream["input_sha256"])
+            print(f"Verified {len(fetch)} fetched streams.")
+            return
         streams = [dict(path=stream["path"], digest=stream["avm_raw_sha256"],
                         input_sha256=stream["input_sha256"], raw_bytes=stream["raw_bytes"])
                    for stream in manifest["stream"]]
@@ -73,10 +90,7 @@ def check(corpus, root, splot, thread_override=None):
         for stream in sorted(streams, key=lambda stream: stream["path"]):
             source = root / stream["path"]
             if "input_sha256" in stream:
-                with source.open("rb") as file:
-                    actual = hashlib.file_digest(file, "sha256").hexdigest()
-                if actual != stream["input_sha256"]:
-                    raise SystemExit(f"{source.name}: input SHA-256 differs: {actual}.")
+                verify_input(source, stream["input_sha256"])
             for width in threads:
                 output.unlink(missing_ok=True)
                 subprocess.run(
@@ -103,5 +117,7 @@ if __name__ == "__main__":
     parser.add_argument("root", type=pathlib.Path)
     parser.add_argument("--splot", type=pathlib.Path, default=pathlib.Path("target/release/splot"))
     parser.add_argument("--threads", type=int, default=None)
+    parser.add_argument("--fetch", action="append", metavar="PATH",
+                        help="download and verify only this release stream; no decode")
     args = parser.parse_args()
-    check(args.corpus, args.root, args.splot.resolve(), args.threads)
+    check(args.corpus, args.root, args.splot.resolve(), args.threads, args.fetch)
