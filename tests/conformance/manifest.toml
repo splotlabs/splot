@@ -2463,3 +2463,33 @@ expect = "clean"
 path = "vectors/valid/syn-tip-edge-422-10bit-152x120-q170.ivf"
 description = "AVM-encoded 9-frame 152x120 10-bit 4:2:2 stream of a project-generated texture that rotates, zooms and shears as a whole, with two textured rectangles that move across it and rotate (avmenc --profile=2 --bit-depth=10 --cpu-used=2 --end-usage=q --qp=170 --lag-in-frames=8 --enable-tip=2 --enable-tip-refinemv=0): the 152x120 storage is not a multiple of 16, so TIP_FRAME_AS_REF inter frames have 22 compound TIP blocks with 16x16 prediction units whose units cross the storage edge (17 units at the bottom edge only, 21 at the right edge only, 3 at both) and 4 single-reference TIP blocks with 16x16 units that cross it (4 bottom, 4 right, 0 both). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 e15a6020f6cbfee7fce3c818753a6c9adaf59ae22ab2766fb548636de5beb8da; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-cfl-mhccp-lossless-intra-66x50.ivf"
+description = "AVM-encoded lossless 1-frame 66x50 8-bit 4:2:0 intra stream of a project-generated picture whose chroma follows its luma (avmenc --profile=0 --lossless=1 --cpu-used=1): 46 CfL and 64 MHCCP chroma blocks, all 4x4 as lossless allows (§ 5.20.5.6), some on the top, left, right and bottom frame edges (§ 7.13.5, § 7.13.6). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 ed8e9ddfef6bd169d3b355f1df9ab41b5bcd8f7cce9d50e08c05f8fb96f6478d; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-cfl-mhccp-lossless-intra-10bit-66x50.ivf"
+description = "AVM-encoded lossless 1-frame 66x50 10-bit 4:2:0 intra stream of a project-generated picture whose chroma follows its luma (avmenc --profile=0 --lossless=1 --cpu-used=1): 40 CfL and 46 MHCCP chroma blocks, all 4x4 as lossless allows (§ 5.20.5.6), some on the top, left, right and bottom frame edges (§ 7.13.5, § 7.13.6). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 d57a99d341305b2db75500b544d0de7bd44c6319f4a17391e5d0d8e02f70b050; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-cfl-mhccp-frame-edge-422-100x76-q90.ivf"
+description = "AVM-encoded 4-frame 100x76 8-bit 4:2:2 stream of a project-generated picture whose chroma follows its luma (avmenc --profile=2 --cpu-used=2 --end-usage=q --qp=90 --lag-in-frames=0): 30 CfL and 36 MHCCP chroma blocks in the intra and the inter frames; 10 of them end on the right or bottom frame edge and 0 hang over the storage edge, so the frame edge cuts the § 7.13.6 CflRef extent. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 fe11ea2e4b72e60dd56c8e7bdbbcdbb13972d3a37ecb7319d9cb61df0117a795; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-cfl-mhccp-frame-edge-422-10bit-100x76-q90.ivf"
+description = "AVM-encoded 4-frame 100x76 10-bit 4:2:2 stream of a project-generated picture whose chroma follows its luma (avmenc --profile=2 --cpu-used=2 --end-usage=q --qp=90 --lag-in-frames=0): 19 CfL and 57 MHCCP chroma blocks in the intra and the inter frames; 10 of them end on the right or bottom frame edge and 9 hang over the storage edge, so the frame edge cuts the § 7.13.6 CflRef extent. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 0703295368fff51a34b4f8e5916bcfa0443dc18d6d85df69bcbaa7145229a334; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-cfl-mhccp-frame-edge-444-100x76-q90.ivf"
+description = "AVM-encoded 4-frame 100x76 8-bit 4:4:4 stream of a project-generated picture whose chroma follows its luma (avmenc --profile=1 --cpu-used=2 --end-usage=q --qp=90 --lag-in-frames=0): 39 CfL and 52 MHCCP chroma blocks in the intra and the inter frames; 11 of them end on the right or bottom frame edge and 0 hang over the storage edge, so the frame edge cuts the § 7.13.6 CflRef extent. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 02176ab97ae0edb49f098e0e8bbefa868e62097a067a691b1fbabec5b5315c41; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-cfl-mhccp-frame-edge-444-10bit-100x76-q90.ivf"
+description = "AVM-encoded 4-frame 100x76 10-bit 4:4:4 stream of a project-generated picture whose chroma follows its luma (avmenc --profile=1 --cpu-used=2 --end-usage=q --qp=90 --lag-in-frames=0): 32 CfL and 62 MHCCP chroma blocks in the intra and the inter frames; 14 of them end on the right or bottom frame edge and 9 hang over the storage edge, so the frame edge cuts the § 7.13.6 CflRef extent. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 f5473e7d565c41de7985362aced9e20ea0b35a11c6873896fcb48fadcdd506fc; validates clean."
+expect = "clean"
