@@ -187,7 +187,7 @@ impl<T: ReconSample> Default for IntraPredictionScratch<T> {
 /// A band spans whole plane rows, so it is one contiguous run of the plane's
 /// samples and needs no per-row slice list to keep adjacent bands disjoint.
 #[derive(Debug)]
-pub struct CurrentFramePlaneRect<'a, T: ReconSample> {
+pub(crate) struct CurrentFramePlaneRect<'a, T: ReconSample> {
     plane: PlaneId,
     storage_size: PlaneSize,
     rect: PlaneRect,
@@ -199,11 +199,6 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
     /// Returns the complete frame-plane storage size.
     pub const fn storage_size(&self) -> PlaneSize {
         self.storage_size
-    }
-
-    /// Returns this surface's rectangle in global plane coordinates.
-    pub const fn rect(&self) -> PlaneRect {
-        self.rect
     }
 
     const fn stride(&self) -> usize {
@@ -265,28 +260,6 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
 
     fn ensure_rect(&self, rect: PlaneRect) -> Result<()> {
         ensure_surface_rect(self.plane, self.rect, rect)
-    }
-
-    fn publish_into(&self, target: &mut CurrentFramePlane<T>) -> Result<()> {
-        if target.storage_size != self.storage_size {
-            return Err(ReconError::WorkspaceRectOutOfBounds {
-                plane: self.plane,
-                storage: target.storage_size,
-                rect: self.rect,
-            });
-        }
-        target.ensure_rect(self.rect)?;
-        let start = target.band_row(self.rect.y(), self.rect.height())? * target.stride_samples();
-        let output = target
-            .samples
-            .get_mut(start..start + self.samples.len())
-            .ok_or(ReconError::WorkspaceRectOutOfBounds {
-                plane: self.plane,
-                storage: target.storage_size,
-                rect: self.rect,
-            })?;
-        copy_row_samples(output, self.samples);
-        Ok(())
     }
 }
 
@@ -354,35 +327,6 @@ impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
 
     fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlaneRect<'storage, T>> {
         select_plane_mut(plane, &mut self.y, self.u.as_mut(), self.v.as_mut())
-    }
-
-    /// Publishes this completed rectangle into its matching current-frame workspace.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] when plane geometry differs.
-    pub fn publish_into(&self, workspace: &mut CurrentFrameWorkspace<T>) -> Result<()> {
-        self.y.publish_into(&mut workspace.y)?;
-        match (&self.u, &mut workspace.u) {
-            (Some(source), Some(target)) => source.publish_into(target)?,
-            (None, None) => {}
-            (Some(_), None) => {
-                return Err(ReconError::UnexpectedChromaPlane { plane: PlaneId::U });
-            }
-            (None, Some(_)) => {
-                return Err(ReconError::MissingChromaPlane { plane: PlaneId::U });
-            }
-        }
-        match (&self.v, &mut workspace.v) {
-            (Some(source), Some(target)) => source.publish_into(target)?,
-            (None, None) => {}
-            (Some(_), None) => {
-                return Err(ReconError::UnexpectedChromaPlane { plane: PlaneId::V });
-            }
-            (None, Some(_)) => {
-                return Err(ReconError::MissingChromaPlane { plane: PlaneId::V });
-            }
-        }
-        Ok(())
     }
 }
 
@@ -900,68 +844,6 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     }
 }
 
-/// Hands out the successive full-width bands of one plane's storage.
-struct PlaneBandSplit<'a, T: ReconSample> {
-    plane: PlaneId,
-    storage_size: PlaneSize,
-    stride: usize,
-    rest: &'a mut [T],
-    settled_rows: usize,
-}
-
-impl<'a, T: ReconSample> PlaneBandSplit<'a, T> {
-    fn new(plane: &'a mut CurrentFramePlane<T>) -> Self {
-        Self {
-            plane: plane.plane,
-            storage_size: plane.storage_size,
-            stride: plane.stride,
-            rest: &mut plane.samples,
-            settled_rows: plane.origin_y,
-        }
-    }
-
-    /// Splits `rect` off the storage this split has not handed out yet.
-    ///
-    /// Bands run down the plane, so a rectangle that is not full width or that
-    /// reaches back above one already handed out cannot be carved out here.
-    fn take(&mut self, rect: PlaneRect) -> Result<CurrentFramePlaneRect<'a, T>> {
-        ensure_rect_in_storage(self.plane, self.storage_size, rect)?;
-        let stride = self.stride;
-        if rect.x() != 0
-            || rect.width() != self.storage_size.width()
-            || rect.y() < self.settled_rows
-        {
-            return Err(ReconError::WorkspaceRectSurfaceNotABand {
-                plane: self.plane,
-                storage: self.storage_size,
-                rect,
-                settled_rows: self.settled_rows,
-            });
-        }
-        let skip = (rect.y() - self.settled_rows) * stride;
-        let span = rect.height() * stride;
-        if skip.saturating_add(span) > self.rest.len() {
-            return Err(ReconError::WorkspaceRectOutOfBounds {
-                plane: self.plane,
-                storage: self.storage_size,
-                rect,
-            });
-        }
-        let rest = core::mem::take(&mut self.rest);
-        let (_, below) = rest.split_at_mut(skip);
-        let (band, tail) = below.split_at_mut(span);
-        self.rest = tail;
-        self.settled_rows = rect.y() + rect.height();
-        Ok(CurrentFramePlaneRect {
-            plane: self.plane,
-            storage_size: self.storage_size,
-            rect,
-            stride,
-            samples: band,
-        })
-    }
-}
-
 /// The chroma rectangle covering one luma rectangle.
 ///
 /// The rectangle form exists because callers that want a single rectangle
@@ -1123,77 +1005,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                 .map(CurrentFramePlane::as_plane_mut)
                 .transpose()?,
         ))
-    }
-
-    /// Partitions the frame into exclusive Y/U/V surfaces over full-width bands.
-    ///
-    /// Each band is a contiguous run of every plane's storage, so bands handed
-    /// to different workers cannot alias. Chroma bounds are derived from the
-    /// frame subsampling and clipped to coded storage.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] when a rectangle exceeds luma storage, is not a
-    /// full-width band below the previous one, geometry overflows, or the
-    /// surface list cannot be allocated.
-    pub fn rect_surfaces(
-        &mut self,
-        luma_rects: &[PlaneRect],
-    ) -> Result<Vec<CurrentFrameRect<'_, T>>> {
-        let mut output = Vec::new();
-        output.try_reserve_exact(luma_rects.len()).map_err(|_| {
-            ReconError::WorkspaceAllocationFailed {
-                plane: PlaneId::Y,
-                context: "rectangle surfaces",
-            }
-        })?;
-        self.for_each_rect_surface(luma_rects, |surface| {
-            output.push(surface);
-            Ok::<(), ReconError>(())
-        })?;
-        Ok(output)
-    }
-
-    /// Hands each band of [`Self::rect_surfaces`] to `each` in order, without
-    /// collecting them, for a caller that fills the bands one after another.
-    ///
-    /// # Errors
-    /// Returns the first error of `each`, or the [`ReconError`]s of
-    /// [`Self::rect_surfaces`].
-    pub fn for_each_rect_surface<'a, E: From<ReconError>>(
-        &'a mut self,
-        luma_rects: &[PlaneRect],
-        mut each: impl FnMut(CurrentFrameRect<'a, T>) -> core::result::Result<(), E>,
-    ) -> core::result::Result<(), E> {
-        let info = self.info;
-        let pixel_format = info.pixel_format();
-        let Self { y, u, v, .. } = self;
-        let mut y_split = PlaneBandSplit::new(y);
-        let mut u_split = u.as_mut().map(PlaneBandSplit::new);
-        let mut v_split = v.as_mut().map(PlaneBandSplit::new);
-        for &rect in luma_rects {
-            let chroma = match u_split.as_ref() {
-                Some(split) => Some(subsampled_rect(
-                    rect,
-                    pixel_format.subsampling_x(),
-                    pixel_format.subsampling_y(),
-                    split.storage_size,
-                )?),
-                None => None,
-            };
-            each(CurrentFrameRect {
-                info,
-                y: y_split.take(rect)?,
-                u: match (u_split.as_mut(), chroma) {
-                    (Some(split), Some(chroma)) => Some(split.take(chroma)?),
-                    _ => None,
-                },
-                v: match (v_split.as_mut(), chroma) {
-                    (Some(split), Some(chroma)) => Some(split.take(chroma)?),
-                    _ => None,
-                },
-            })?;
-        }
-        Ok(())
     }
 
     /// Hands this workspace's sample buffers to the next frame that needs them.

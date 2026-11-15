@@ -69,6 +69,29 @@ fn rect(x: usize, y: usize, width: usize, height: usize) -> PlaneRect {
     PlaneRect::new(x, y, width, height).unwrap()
 }
 
+/// The surface over the full-width bands of `workspace` that `luma` covers.
+fn band_rect<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    luma: PlaneRect,
+) -> CurrentFrameRect<'_, T> {
+    fn band<T: ReconSample>(
+        plane: &mut CurrentFramePlane<T>,
+        (top, bottom): (usize, usize),
+        shift: u8,
+    ) -> (&mut [T], usize) {
+        let stride = plane.stride;
+        let rows = (top >> shift) * stride..bottom.div_ceil(1 << shift) * stride;
+        (&mut plane.samples[rows], stride)
+    }
+    let rows = (luma.y(), luma.y() + luma.height());
+    let CurrentFrameWorkspace { info, y, u, v, .. } = workspace;
+    let shift = info.pixel_format().subsampling_y();
+    let (u, v) = (u.as_mut(), v.as_mut());
+    let chroma = [u, v].map(|plane| plane.map(|c| band(c, rows, shift)));
+    let [u, v] = chroma;
+    CurrentFrameRect::from_bands(*info, luma, [Some(band(y, rows, 0)), u, v]).unwrap()
+}
+
 fn rect_block(log2_width: u8, log2_height: u8) -> IntraRectBlockSize {
     IntraRectBlockSize::new(log2_width, log2_height).unwrap()
 }
@@ -217,13 +240,9 @@ fn a_filled_workspace_overwrites_a_recycled_buffer_whole() {
 #[test]
 fn rectangular_surfaces_write_stacked_row_bands_independently() {
     let mut workspace = CurrentFrameWorkspace::<u8>::new(yuv420_info(8, 8), 3).unwrap();
-    let surfaces = workspace
-        .rect_surfaces(&[rect(0, 0, 8, 4), rect(0, 4, 8, 4)])
-        .unwrap();
-
-    for (index, mut band) in surfaces.into_iter().enumerate() {
+    for (index, luma) in [rect(0, 0, 8, 4), rect(0, 4, 8, 4)].into_iter().enumerate() {
         let value = 7 + index as u8;
-        let luma = band.luma_rect();
+        let mut band = band_rect(&mut workspace, luma);
         let mut surface = CurrentFrameSurface::Rect(&mut band);
         surface
             .write_rect(PlaneId::Y, luma, &[value; 32], 8)
@@ -297,8 +316,8 @@ fn contiguous_u8_rect_writer_matches_u16_geometry_and_storage_rules() {
             .all(|&sample| sample == 7)
     );
 
-    let mut split = workspace.rect_surfaces(&[rect(0, 0, 5, 4)]).unwrap();
-    let written = CurrentFrameSurface::Rect(&mut split[0])
+    let mut split = band_rect(&mut workspace, rect(0, 0, 5, 4));
+    let written = CurrentFrameSurface::Rect(&mut split)
         .with_contiguous_u8_rect_mut(PlaneId::Y, target, |samples, stride| {
             samples[0] = 30;
             samples[stride] = 40;
@@ -310,52 +329,6 @@ fn contiguous_u8_rect_writer_matches_u16_geometry_and_storage_rules() {
     let samples = packed(&workspace, PlaneId::Y);
     assert_eq!(samples[6], 30);
     assert_eq!(samples[11], 40);
-}
-
-#[test]
-fn rectangular_surface_publishes_only_its_owned_region() {
-    let info = yuv420_info(8, 8);
-    let mut shadow = CurrentFrameWorkspace::<u8>::new(info, 0).unwrap();
-    let mut output = CurrentFrameWorkspace::<u8>::new(info, 3).unwrap();
-    let mut surfaces = shadow
-        .rect_surfaces(&[rect(0, 0, 8, 4), rect(0, 4, 8, 4)])
-        .unwrap();
-    {
-        let mut source = CurrentFrameSurface::Rect(&mut surfaces[1]);
-        source
-            .write_rect(PlaneId::Y, rect(0, 4, 8, 4), &[9; 32], 8)
-            .unwrap();
-        source
-            .write_rect(PlaneId::U, rect(0, 2, 4, 2), &[7; 8], 4)
-            .unwrap();
-        source
-            .write_rect(PlaneId::V, rect(0, 2, 4, 2), &[8; 8], 4)
-            .unwrap();
-    }
-
-    surfaces[1].publish_into(&mut output).unwrap();
-
-    for (y, row) in output
-        .rect_rows(PlaneId::Y, rect(0, 0, 8, 8))
-        .unwrap()
-        .enumerate()
-    {
-        assert_eq!(row, &[if y < 4 { 3 } else { 9 }; 8][..]);
-    }
-    for (y, row) in output
-        .rect_rows(PlaneId::U, rect(0, 0, 4, 4))
-        .unwrap()
-        .enumerate()
-    {
-        assert_eq!(row, &[if y < 2 { 3 } else { 7 }; 4][..]);
-    }
-    for (y, row) in output
-        .rect_rows(PlaneId::V, rect(0, 0, 4, 4))
-        .unwrap()
-        .enumerate()
-    {
-        assert_eq!(row, &[if y < 2 { 3 } else { 8 }; 4][..]);
-    }
 }
 
 #[test]
@@ -392,8 +365,8 @@ fn owned_rectangular_surface_round_trips_without_borrowing_the_frame() {
 fn rectangular_surface_reports_plane_global_sample_index() {
     let mut workspace =
         CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 8, 4), 3).unwrap();
-    let mut surfaces = workspace.rect_surfaces(&[rect(0, 1, 8, 2)]).unwrap();
-    let mut surface = CurrentFrameSurface::Rect(&mut surfaces[0]);
+    let mut band = band_rect(&mut workspace, rect(0, 1, 8, 2));
+    let mut surface = CurrentFrameSurface::Rect(&mut band);
 
     assert!(matches!(
         surface.write_rect(PlaneId::Y, rect(4, 1, 2, 2), &[1, 2, 3, 300], 2),
@@ -408,7 +381,7 @@ fn rectangular_surface_reports_plane_global_sample_index() {
         surface.write_rect(PlaneId::Y, rect(0, 2, 1, 2), &[9; 2], 1),
         Err(ReconError::WorkspaceRowBandRectOutOfBounds { .. })
     ));
-    drop(surfaces);
+    drop(band);
     assert!(
         workspace
             .samples(PlaneId::Y)
@@ -419,17 +392,16 @@ fn rectangular_surface_reports_plane_global_sample_index() {
 }
 
 #[test]
-fn rectangular_surface_partition_rejects_overlap() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 4), 0).unwrap();
-    assert!(matches!(
-        workspace.rect_surfaces(&[rect(0, 0, 4, 4)]),
-        Err(ReconError::WorkspaceRectSurfaceNotABand { .. })
-    ));
-    assert!(matches!(
-        workspace.rect_surfaces(&[rect(0, 0, 8, 3), rect(0, 2, 8, 2)]),
-        Err(ReconError::WorkspaceRectSurfaceNotABand { .. })
-    ));
+fn rectangular_surface_rejects_bands_that_are_not_its_rows() {
+    let info = monochrome_info(BitDepth::Eight, 8, 4);
+    let mut samples = vec![0u8; 64 * 4];
+    for (luma, rows) in [(rect(0, 0, 4, 4), 4), (rect(0, 0, 8, 3), 2)] {
+        let band = Some((&mut samples[..64 * rows], 64));
+        assert!(matches!(
+            CurrentFrameRect::from_bands(info, luma, [band, None, None]),
+            Err(ReconError::WorkspaceRectSurfaceNotABand { .. })
+        ));
+    }
 }
 
 fn assert_surface_add_residual_matches_reference<T>(bit_depth: BitDepth)

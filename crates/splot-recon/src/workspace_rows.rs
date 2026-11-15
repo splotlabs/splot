@@ -198,8 +198,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
 impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
     /// The rectangle over full-width plane bands `(samples, stride)` the
-    /// caller holds exclusively, as [`CurrentFrameWorkspace::rect_surfaces`]
-    /// would split them off.
+    /// caller holds exclusively: each band holds exactly the plane rows of
+    /// `luma_rect` or of its chroma rectangle.
     ///
     /// # Errors
     /// Returns [`ReconError`] when a band does not span exactly the rows of

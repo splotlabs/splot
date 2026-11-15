@@ -560,13 +560,10 @@ fn single_reference_u8_frame_and_band_surfaces_match_across_chroma_formats_and_e
             )
             .expect("surface rectangle");
             {
-                let mut surfaces = staged
-                    .rect_surfaces(&[luma_rect])
-                    .expect("rectangle surface");
-                let surface = surfaces.first_mut().expect("one rectangle surface");
+                let mut surface = band_surface(&mut staged, luma_rect);
                 for mut sink in [
                     WorkspaceSink::Frame(&mut direct),
-                    WorkspaceSink::Rect(surface),
+                    WorkspaceSink::Rect(&mut surface),
                 ] {
                     motion_compensate_inter_block_into(&mut sink, block, ByteOffset::new(0))
                         .expect("u8 single-reference prediction");
@@ -1507,6 +1504,31 @@ fn plane<T: ReconSample>(
     samples: Vec<T>,
 ) -> Plane<T> {
     Plane::from_vec(size, stride, visible, samples).expect("plane")
+}
+
+/// The surface over the full-width bands of `workspace` that `luma` covers.
+fn band_surface(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    luma: PlaneRect,
+) -> splot_recon::CurrentFrameRect<'_, u8> {
+    fn band(
+        plane: splot_recon::PlaneMut<'_, u8>,
+        (top, bottom): (usize, usize),
+        shift: u8,
+    ) -> (&mut [u8], usize) {
+        let stride = plane.stride_samples();
+        let rows = (top >> shift) * stride..bottom.div_ceil(1 << shift) * stride;
+        (&mut plane.into_samples()[rows], stride)
+    }
+    let (info, rows) = (workspace.info(), (luma.y(), luma.y() + luma.height()));
+    let shift = info.pixel_format().subsampling_y();
+    let (y, u, v) = workspace.as_frame_mut().expect("frame").into_planes();
+    let planes = [
+        Some(band(y, rows, 0)),
+        u.map(|u| band(u, rows, shift)),
+        v.map(|v| band(v, rows, shift)),
+    ];
+    splot_recon::CurrentFrameRect::from_bands(info, luma, planes).expect("band surface")
 }
 
 fn visible_samples<T: ReconSample>(frame: &DecodedFrame<T>, plane: PlaneId) -> Vec<T> {
