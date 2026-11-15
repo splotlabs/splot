@@ -406,37 +406,15 @@ fn luma_chunk_loop_stops_at_the_mode_info_grid() {
 
 /// § 5.20.7.24 `maxX = (MiCols * MI_SIZE) >> subX`: with `MiCols` 18 and
 /// `MiRows` 14 a plane ends at 4x4 column 18 (luma, 4:4:4) or 9 (4:2:0,
-/// 4:2:2), and at row 14 or 7 (4:2:0).
+/// 4:2:2), and at row 14 or 7 (4:2:0). An odd `MiCols` 17 leaves a 2-sample
+/// column at 4:2:0 that still starts a transform block.
 #[test]
 fn transform_units_at_or_past_the_plane_edge_are_not_coded() {
-    let grid = (14, 18);
-    for (subsampling, (cols, rows)) in [
-        ((false, false), (18, 14)),
-        ((true, true), (9, 7)),
-        ((true, false), (9, 14)),
-    ] {
-        assert!(transform_unit_starts_in_frame((0, 0), grid, subsampling));
-        assert!(transform_unit_starts_in_frame(
-            (cols - 1, rows - 1),
-            grid,
-            subsampling
-        ));
-        assert!(!transform_unit_starts_in_frame(
-            (cols, 0),
-            grid,
-            subsampling
-        ));
-        assert!(!transform_unit_starts_in_frame(
-            (0, rows),
-            grid,
-            subsampling
-        ));
-        assert!(!transform_unit_starts_in_frame(
-            (cols + 1, rows + 1),
-            grid,
-            subsampling
-        ));
-    }
+    assert_eq!(plane_end4(18, false), 18);
+    assert_eq!(plane_end4(18, true), 9);
+    assert_eq!(plane_end4(14, false), 14);
+    assert_eq!(plane_end4(14, true), 7);
+    assert_eq!(plane_end4(17, true), 9);
 }
 
 fn read_edge_chroma_group(payload: &[u8]) -> Result<Vec<InterResidualBlock>> {
@@ -466,7 +444,7 @@ fn read_edge_chroma_group(payload: &[u8]) -> Result<Vec<InterResidualBlock>> {
         true,
         0,
         0,
-        (14, 18),
+        Some((14, 18)),
         Some(TX_4X4),
         false,
         TransformToolResidualPolicy::default(),
