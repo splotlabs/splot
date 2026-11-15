@@ -1086,7 +1086,18 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             .write_rect(rect, samples, row_stride_samples, max)
     }
 
-    /// Copies an already reconstructed source rectangle within one workspace plane.
+    #[cfg(test)]
+    fn copy_rect_within_plane(
+        &mut self,
+        plane: PlaneId,
+        source: PlaneRect,
+        target: PlaneRect,
+    ) -> Result<()> {
+        self.copy_rect_within_plane_into(plane, source, target, &mut Vec::new())
+    }
+
+    /// Copies an already reconstructed source rectangle within one workspace
+    /// plane, through caller-owned reusable `scratch`.
     ///
     /// The source rectangle is snapped into scratch storage before target writes,
     /// so overlapping copies read the original samples. Fractional IntrABC
@@ -1096,19 +1107,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Returns [`ReconError`] when the plane is absent, either rectangle is out of
     /// bounds, source and target shapes differ, geometry arithmetic overflows, or
     /// scratch allocation fails.
-    pub fn copy_rect_within_plane(
-        &mut self,
-        plane: PlaneId,
-        source: PlaneRect,
-        target: PlaneRect,
-    ) -> Result<()> {
-        self.copy_rect_within_plane_into(plane, source, target, &mut Vec::new())
-    }
-
-    /// Copies a workspace rectangle using caller-owned reusable scratch storage.
-    ///
-    /// # Errors
-    /// Returns the same errors as [`Self::copy_rect_within_plane`].
     pub fn copy_rect_within_plane_into(
         &mut self,
         plane: PlaneId,
@@ -1145,8 +1143,19 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             // splot-copy-ok: IntrABC copy snapshots the bounded source rectangle before overlapping target writes.
             scratch.extend_from_slice(row);
         }
-
-        self.write_rect(plane, target, scratch, source.width())
+        let target_plane = self.plane_mut(plane)?;
+        let local_y = target_plane.band_row(target.y(), target.height())?;
+        let stride = target_plane.stride_samples();
+        let source = (&scratch[..], source.width());
+        let samples = &mut target_plane.samples;
+        copy_into_rect(
+            samples,
+            stride,
+            (target.x(), local_y),
+            target,
+            source,
+            copy_row_samples,
+        )
     }
 
     /// Writes a contiguous rectangular prediction block into `plane`.
@@ -1205,20 +1214,13 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Returns [`ReconError`] if the existing immutable plane/frame validators
     /// reject the workspace storage.
     pub fn freeze(mut self) -> Result<DecodedFrame<T>> {
-        self.freeze_in_place()
-    }
-
-    /// [`Self::freeze`] that moves each plane's sample buffer without copying
-    /// or reallocating it, and on error leaves every buffer in this workspace.
-    ///
-    /// # Errors
-    /// As [`Self::freeze`].
-    pub fn freeze_in_place(&mut self) -> Result<DecodedFrame<T>> {
         self.freeze_planes(true)
     }
 
-    /// [`Self::freeze_in_place`] without the sample-range scan, for a decoder
+    /// [`Self::freeze`] without the sample-range scan, for a decoder
     /// workspace: every AV2 writer ends in `Clip1` or copies in-range samples.
+    /// It moves each plane's sample buffer without copying or reallocating it,
+    /// and on error leaves every buffer in this workspace.
     ///
     /// # Errors
     /// As [`Self::freeze`], except [`ReconError::SampleOutOfRange`].

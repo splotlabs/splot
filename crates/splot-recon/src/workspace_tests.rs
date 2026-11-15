@@ -1349,7 +1349,7 @@ fn a_rejected_freeze_in_place_keeps_every_buffer_where_it_was() {
         .samples_mut()[0] = 300;
 
     assert!(matches!(
-        workspace.freeze_in_place(),
+        workspace.freeze_planes(true),
         Err(ReconError::SampleOutOfRange {
             plane: PlaneId::V,
             ..
@@ -1364,7 +1364,7 @@ fn a_rejected_freeze_in_place_keeps_every_buffer_where_it_was() {
         .plane_mut(PlaneId::V)
         .unwrap()
         .samples_mut()[0] = 8;
-    let frame = workspace.freeze_in_place().unwrap();
+    let frame = workspace.freeze_planes(true).unwrap();
     assert_eq!(
         [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| frame
             .plane(plane)
