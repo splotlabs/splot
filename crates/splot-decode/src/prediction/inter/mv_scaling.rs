@@ -52,6 +52,19 @@ impl PlaneScaling {
         .with_reference_storage(reference.storage_luma_size(), sub_x, sub_y)
     }
 
+    /// [`Self::of_reference`] of the luma and the chroma plane class of
+    /// `reference` against a current frame of coded luma size `frame`: the
+    /// § 7.13.3.18 `xScale`, `yScale`, unscaled steps and `useRefArea = 0`
+    /// clip region that stay constant for a whole frame.
+    pub(crate) fn of_reference_planes(reference: DecodedFrameInfo, frame: PlaneSize) -> [Self; 2] {
+        let format = reference.pixel_format();
+        let (sub_x, sub_y) = (format.subsampling_x() as u32, format.subsampling_y() as u32);
+        [
+            Self::of_reference(reference, frame, 0, 0),
+            Self::of_reference(reference, frame, sub_x, sub_y),
+        ]
+    }
+
     pub(crate) fn with_reference_storage(
         mut self,
         luma_size: PlaneSize,

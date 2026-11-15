@@ -399,7 +399,7 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
     ) -> Self {
         Self {
             samples,
-            scaling: PlaneScaling::of_reference(samples.info(), info.coded_luma_size(), 0, 0),
+            scaling: *samples.scaling(PlaneId::Y),
             view: None,
             bit_depth: info.bit_depth(),
             offset,

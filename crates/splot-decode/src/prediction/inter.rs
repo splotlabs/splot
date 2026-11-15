@@ -304,7 +304,7 @@ fn decode_bridge_frame<T: ReconSample>(
     let frame_cdfs =
         resolve_initial_frame_cdfs(&core, sequence, reference, Some(candidate), offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
-    let frame = bridge::reconstruct(source.samples()?, frame_size, visible, 0, offset)?;
+    let frame = bridge::reconstruct(&source, frame_size, visible, 0, offset)?;
     products.frame_cdfs()?.reset_output_from(&frame_cdfs);
     let frame_cdfs = products.cdf_output()?;
     let (mi_rows, mi_cols) = segment_id_map_dimensions(&core)?;
@@ -655,6 +655,8 @@ pub(in crate::prediction::inter) struct HeldInterBlockReferences<'a, T: ReconSam
     reference0: reference::HeldFrameSamples<'a, T>,
     /// The second list's borrow, absent when it names the first list's slot.
     reference1: Option<reference::HeldFrameSamples<'a, T>>,
+    /// The per-frame scalings of both lists' references.
+    scalings: [&'a [mv_scaling::PlaneScaling; 2]; 2],
     compound: bool,
 }
 
@@ -665,10 +667,10 @@ pub(in crate::prediction::inter) struct HeldInterBlockReferences<'a, T: ReconSam
 /// # Errors
 ///
 /// Returns a typed reference-state diagnostic when a named slot has no readable
-/// frame samples.
+/// frame samples or `facts` no scalings for it.
 #[inline]
 pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSample>(
-    ref_frame_idx: &[u32],
+    (ref_frame_idx, facts): (&[u32], &'a block::FrameRefFacts),
     reference: &'a InterReferenceState<T>,
     placed: &PlacedInterBlock,
 ) -> Result<HeldInterBlockReferences<'a, T>> {
@@ -679,9 +681,22 @@ pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSamp
         .map(|ref_frame1| block_reference_slot(ref_frame_idx, ref_frame1))
         .transpose()?;
     let (reference0, reference1) = hold_reference_pair(reference, slot0, slot1)?;
+    let scalings = |ref_frame: i8, slot: u32| {
+        facts
+            .scalings(ref_frame)
+            .ok_or(DecodeReferenceStateError::ReferenceSamplesUnavailable {
+                slot: slot as usize,
+            })
+    };
+    let scaling0 = scalings(placed.block.ref_frame0, slot0)?;
+    let scaling1 = match (placed.block.ref_frame1, slot1) {
+        (Some(ref_frame1), Some(slot1)) => scalings(ref_frame1, slot1)?,
+        _ => scaling0,
+    };
     Ok(HeldInterBlockReferences {
         reference0,
         reference1,
+        scalings: [scaling0, scaling1],
         compound: slot1.is_some(),
     })
 }
@@ -690,7 +705,7 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
     pub(in crate::prediction::inter) fn reference0_samples(
         &self,
     ) -> Result<reference::ReferenceSamples<'_, T>> {
-        self.reference0.samples()
+        self.reference0.samples(self.scalings[0])
     }
 
     /// Predicts the held block, which does not refine its motion, into
@@ -709,7 +724,7 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
         if !self.compound && placed.block.warp_params[0].is_none() {
             return mc::motion_compensate_single_block_into(
                 sink,
-                self.reference0.samples()?,
+                self.reference0.samples(self.scalings[0])?,
                 rect,
                 placed.block.mv,
                 placed.block.interp,
@@ -730,12 +745,12 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
         placed: &PlacedInterBlock,
         rect: mc::McBlockRect,
     ) -> Result<mc::InterBlockParams<'_, T>> {
-        let ref_frame0 = self.reference0.samples()?;
+        let ref_frame0 = self.reference0.samples(self.scalings[0])?;
         Ok(if self.compound {
             let ref_frame1 = self.reference1.as_ref().unwrap_or(&self.reference0);
             mc::InterBlockParams::compound_average(
                 ref_frame0,
-                ref_frame1.samples()?,
+                ref_frame1.samples(self.scalings[1])?,
                 rect,
                 placed.block.mv,
                 placed.block.mv1,

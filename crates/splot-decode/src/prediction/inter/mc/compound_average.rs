@@ -7,7 +7,6 @@ use splot_recon::{
     subpel_predict_block_compound_average_unscaled_strided_into,
 };
 
-use super::super::mv_scaling::reference_is_scaled;
 use super::{
     CWP_EQUAL, CompoundAverageOutput, CompoundBlend, CompoundMcBlock, TranslationalCompoundPlane,
     WorkspaceSink, ceil_shift, compound_average_weights_are_uniform, luma_view, mc_planes,
@@ -38,18 +37,9 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
     if block.sub8x8_chroma || block.warp_params.iter().any(Option::is_some) {
         return Ok(false);
     }
-    let frame = sink.info().coded_luma_size();
     let scaled = [block.reference0, block.reference1]
         .iter()
-        .any(|reference| {
-            let size = reference.info().coded_luma_size();
-            reference_is_scaled(
-                size.width() as i32,
-                size.height() as i32,
-                frame.width() as i32,
-                frame.height() as i32,
-            )
-        });
+        .any(|reference| reference.scaling(PlaneId::Y).is_scaled());
     let done = if scaled {
         [false; 2]
     } else {
@@ -76,12 +66,11 @@ fn predict_unscaled<T: ReconSample>(
 ) -> Result<Option<[bool; 2]>> {
     let info = sink.info();
     let references = [block.reference0, block.reference1];
-    let storages = references.map(|reference| reference.info().storage_luma_size());
     let frame = info.storage_luma_size();
     let puts = |plane: PlaneId, sub: (u32, u32)| -> Option<[UnscaledPut; 2]> {
         Some([
-            unscaled_put(block.rect, plane, sub, block.mv0, storages[0])?,
-            unscaled_put(block.rect, plane, sub, block.mv1, storages[1])?,
+            unscaled_put(block.rect, plane, sub, block.mv0, references[0])?,
+            unscaled_put(block.rect, plane, sub, block.mv1, references[1])?,
         ])
     };
     let uniform = |puts: &[UnscaledPut; 2], (sub_x, sub_y): (u32, u32)| {

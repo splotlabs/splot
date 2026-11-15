@@ -2184,6 +2184,7 @@ fn sequence_enables_ibp(sequence: &SequenceHeader) -> bool {
 
 mod bru;
 mod compound_path;
+pub(super) use compound_path::FrameRefFacts;
 mod deferred_recon;
 pub(super) mod encoder_leaf;
 mod filter_records;

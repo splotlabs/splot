@@ -9,11 +9,13 @@ use super::super::compound::{
     CompoundParseInput, CompoundYMode, read_compound_mode_syntax, read_compound_reference_pair,
 };
 use super::super::find_mv_stack::TemporalMotionBlock;
+use super::super::mv_scaling::PlaneScaling;
 use super::super::read_mv::apply_inter_mvd_sign_pair;
 use super::temporal::temporal_motion_block;
 use super::warp::mvd_sign_derivation_block_scope_allowed;
 use super::*;
 use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset, read_row, row_at};
+use splot_recon::PlaneSize;
 
 const REFINE_SWITCHABLE: u32 = 1;
 const REFINE_ALL: u32 = 2;
@@ -51,6 +53,9 @@ struct RefFact {
     abs_dist: i32,
     /// Whether the reference is scaled, `None` without frame or reference size.
     scaled: Option<bool>,
+    /// The luma and chroma § 7.13.3.18 scalings of the reference frame,
+    /// `None` without frame size or reference frame.
+    scalings: Option<[PlaneScaling; 2]>,
 }
 
 /// The frame-constant reference facts every block derived per block before:
@@ -58,7 +63,7 @@ struct RefFact {
 /// once per frame. A block that names a reference whose lookup failed gets
 /// the error the per-block derivation returned.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct FrameRefFacts {
+pub(in crate::prediction::inter) struct FrameRefFacts {
     current_order_hint: u32,
     current: CompoundOrderHint,
     frame_size: Option<(u32, u32)>,
@@ -107,6 +112,7 @@ impl FrameRefFacts {
                 slot_count: values.len(),
             })
         };
+        let frame = frame_size.and_then(|(w, h)| PlaneSize::new(w as usize, h as usize).ok());
         let fact = |index: usize| {
             let slot = ref_frame_idx.get(index).map(|&slot| slot as usize);
             let hint = slot
@@ -141,6 +147,10 @@ impl FrameRefFacts {
                 dims,
                 temporal_hint: slot.and_then(raw_hint),
                 bawp_hint: raw_hint(slot.unwrap_or(0)).unwrap_or(0),
+                scalings: slot
+                    .and_then(|slot| reference.slot(slot as u32))
+                    .zip(frame)
+                    .map(|(slot, frame)| PlaneScaling::of_reference_planes(slot.info(), frame)),
             }
         };
         let refs = core::array::from_fn(fact);
@@ -229,6 +239,15 @@ impl FrameRefFacts {
             (None, Err(error)) if self.frame_size.is_some() => Err(self.error(ref_frame, error)),
             (None, _) => Err(DecodeHeaderStateError::MissingFrameSize.into()),
         }
+    }
+
+    /// The per-frame § 7.13.3.18 scalings of `ref_frame`, `None` when the
+    /// frame has no size or the reference no frame.
+    pub(in crate::prediction::inter) fn scalings(
+        &self,
+        ref_frame: i8,
+    ) -> Option<&[PlaneScaling; 2]> {
+        self.fact(ref_frame).scalings.as_ref()
     }
 
     /// Whether `ref_frame` lies within the temporal-first distance.

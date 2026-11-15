@@ -217,15 +217,9 @@ fn uniform_grids_match_per_cell<T: ReconSample + CompoundAverageOutput + Send>(
             )
             .into_compound()
             .expect("compound block");
-            let prediction = super::super::compound_subpel_plane(
-                info,
-                &block,
-                PlaneId::Y,
-                0,
-                0,
-                ByteOffset::new(0),
-            )
-            .expect("plane");
+            let prediction =
+                super::super::compound_subpel_plane(&block, PlaneId::Y, 0, 0, ByteOffset::new(0))
+                    .expect("plane");
             let area = (unit_size == 8).then_some((8, 8));
             let refine_slice = if refine {
                 (core::slice::from_ref(&candidate), 0, 16)

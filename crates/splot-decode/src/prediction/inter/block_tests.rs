@@ -179,12 +179,16 @@ use crate::prediction::inter::{
 
 #[test]
 fn inter_block_reference_hold_rejects_every_invalid_bawp_list_index() -> TestResult {
+    let fixture =
+        include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
+    let (_, core, _) = super::super::tests::parse_inter_core_for_validation(fixture)?;
     let reference = InterReferenceState::<u8>::empty()?;
+    let facts = super::compound_path::FrameRefFacts::new(&core, &reference, &[0], 1);
     for index in [-1, 1] {
         let mut placed = placed_luma_block(0, 0, 4, 4, InterIntraMode::Dc);
         placed.block.ref_frame0 = index;
         placed.block.bawp.enabled = true;
-        let Err(error) = hold_inter_block_references(&[0], &reference, &placed) else {
+        let Err(error) = hold_inter_block_references((&[0], &facts), &reference, &placed) else {
             return Err(format!("reference list index {index} must fail before BAWP").into());
         };
         assert!(matches!(

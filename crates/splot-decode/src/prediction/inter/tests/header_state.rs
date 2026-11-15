@@ -611,9 +611,13 @@ fn admitted_reference_samples_survive_a_later_slot_failure() {
 
     let (reference0, reference1) =
         super::super::hold_reference_pair(&reference, 0, None).expect("published samples");
+    let info = frame.info();
+    let scalings =
+        super::super::mv_scaling::PlaneScaling::of_reference_planes(info, info.coded_luma_size());
     let held = super::super::HeldInterBlockReferences {
         reference0,
         reference1,
+        scalings: [&scalings; 2],
         compound: false,
     };
     drop(writer);

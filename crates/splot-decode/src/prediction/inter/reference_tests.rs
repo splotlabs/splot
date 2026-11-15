@@ -20,7 +20,7 @@ use splot_recon::{
     OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
 };
 
-use super::{ALL_ROWS, HeldFrameSamples, ReferenceSamples, set_forced_banded_reads};
+use super::{ALL_ROWS, HeldFrameSamples, PlaneScaling, ReferenceSamples, set_forced_banded_reads};
 use crate::pipeline::frame_progress::PublishedFrame;
 use crate::pipeline::inflight::{FrameSlotWriter, RefFrameSlot};
 use crate::prediction::inter::Mv;
@@ -190,7 +190,8 @@ fn a_banded_read_inside_the_watermark_returns_the_settled_samples() {
     let settled = settled_frame();
     let (slot, _writer) = published_progress(64);
     let held = HeldFrameSamples::Filtering(PublishedFrame::of_slot(&slot).expect("a prefix"));
-    let banded = held.samples().expect("banded samples");
+    let scalings = own_scalings(&held);
+    let banded = held.samples(&scalings).expect("banded samples");
 
     let settled_view = ReferenceSamples::settled(&settled)
         .plane_view(PlaneId::Y, 63, OFFSET)
@@ -219,7 +220,8 @@ fn a_banded_read_inside_the_watermark_returns_the_settled_samples() {
 fn a_banded_read_past_the_watermark_is_refused() {
     let (slot, _writer) = published_progress(64);
     let held = HeldFrameSamples::Filtering(PublishedFrame::of_slot(&slot).expect("a prefix"));
-    let banded = held.samples().expect("banded samples");
+    let scalings = own_scalings(&held);
+    let banded = held.samples(&scalings).expect("banded samples");
 
     let error = banded
         .plane_view(PlaneId::Y, 64, OFFSET)
@@ -238,7 +240,8 @@ fn a_banded_read_past_the_watermark_is_refused() {
 fn a_refused_banded_read_propagates_out_of_motion_compensation() {
     let (slot, _writer) = published_progress(64);
     let held = HeldFrameSamples::Filtering(PublishedFrame::of_slot(&slot).expect("a prefix"));
-    let banded = held.samples().expect("banded samples");
+    let scalings = own_scalings(&held);
+    let banded = held.samples(&scalings).expect("banded samples");
     let mut output = CurrentFrameWorkspace::new(info(WIDTH, HEIGHT), 0u8).expect("workspace");
 
     motion_compensate_inter_block_into(
@@ -352,4 +355,9 @@ fn forced_banded_reads_decode_every_inter_fixture_byte_identically() {
             .unwrap_or_else(|error| panic!("banded decode of {name} failed: {error}"));
         assert_eq!(&actual, expected, "{name} diverged under banded reads");
     }
+}
+
+fn own_scalings(held: &HeldFrameSamples<'_, u8>) -> [PlaneScaling; 2] {
+    let info = held.info();
+    PlaneScaling::of_reference_planes(info, info.coded_luma_size())
 }

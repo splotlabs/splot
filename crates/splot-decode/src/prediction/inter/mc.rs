@@ -467,33 +467,24 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<()> {
     let info = sink.info();
-    let reference_info = reference.info();
-    let (reference_size, frame_size) = (reference_info.coded_luma_size(), info.coded_luma_size());
-    let scaled = super::mv_scaling::reference_is_scaled(
-        reference_size.width() as i32,
-        reference_size.height() as i32,
-        frame_size.width() as i32,
-        frame_size.height() as i32,
-    );
-    if scaled {
+    if reference.scaling(PlaneId::Y).is_scaled() {
         return motion_compensate_planes(sink, has_chroma, |sink, plane, sub_x, sub_y| {
             predict_plane(
                 sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
             )
         });
     }
-    let storage = reference_info.storage_luma_size();
     let [_, (_, sub_x, sub_y), _] = mc_planes(info.pixel_format());
     let chroma = has_chroma
         .then(|| {
             let views = reference.settled_plane_view(PlaneId::U)?;
             Some((
                 (views, reference.settled_plane_view(PlaneId::V)?),
-                unscaled_put(rect, PlaneId::U, (sub_x, sub_y), mv, storage)?,
+                unscaled_put(rect, PlaneId::U, (sub_x, sub_y), mv, reference)?,
             ))
         })
         .flatten();
-    let [luma_put, chroma_put] = match unscaled_put(rect, PlaneId::Y, (0, 0), mv, storage) {
+    let [luma_put, chroma_put] = match unscaled_put(rect, PlaneId::Y, (0, 0), mv, reference) {
         Some(luma) => {
             let view = luma_view(reference, luma, offset)?;
             subpel_put_block(
@@ -519,26 +510,24 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
 }
 
 /// The unscaled § 7.13.3.17 window of `plane` of `rect` moved by `mv`, read
-/// from a reference of luma storage `storage`, or `None` for an empty
-/// rectangle.
+/// from `reference` within its per-frame § 7.13.3.18 clip region, or `None`
+/// for an empty rectangle.
 #[inline]
-pub(super) fn unscaled_put(
+pub(super) fn unscaled_put<T: ReconSample>(
     rect: McBlockRect,
     plane: PlaneId,
     (sub_x, sub_y): (u32, u32),
     mv: Mv,
-    storage: splot_recon::PlaneSize,
+    reference: ReferenceSamples<'_, T>,
 ) -> Option<UnscaledPut> {
     let (x, y, w, h) = rect.plane_rect(plane, sub_x, sub_y);
     let start =
         |pos: usize, mv: i32, sub: u32| ((((pos as i32) << 4) + ((2 * mv) >> sub)) << 6) + 32;
+    let scaling = reference.scaling(plane);
     Some(UnscaledPut {
         rect: PlaneRect::new(x, y, w, h).ok()?,
         start: [start(x, mv.col, sub_x), start(y, mv.row, sub_y)],
-        last: [
-            (ceil_shift(storage.width(), sub_x) - 1) as i32,
-            (ceil_shift(storage.height(), sub_y) - 1) as i32,
-        ],
+        last: [scaling.last_x, scaling.last_y],
     })
 }
 
@@ -734,13 +723,14 @@ pub(crate) fn plane_prediction<T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<(ReferencePlaneView<'_, T>, PlaneRect, SubpelPredictParams)> {
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
-    let scaling = PlaneScaling::of_reference(
-        reference.info(),
-        info.coded_luma_size(),
+    let scaling = reference.scaling(plane).with_mv(
+        plane_x as i32,
+        plane_y as i32,
+        mv.row,
+        mv.col,
         sub_x,
         sub_y,
-    )
-    .with_mv(plane_x as i32, plane_y as i32, mv.row, mv.col, sub_x, sub_y);
+    );
 
     let params = SubpelPredictParams {
         interp,
@@ -778,13 +768,10 @@ fn predict_warp_plane<T: ReconSample>(
 
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = sink.info().bit_depth();
-    let scaling = PlaneScaling::of_reference(
-        reference.info(),
-        sink.info().coded_luma_size(),
-        sub_x,
-        sub_y,
-    )
-    .with_mv(plane_x as i32, plane_y as i32, 0, 0, sub_x, sub_y);
+    let scaling =
+        reference
+            .scaling(plane)
+            .with_mv(plane_x as i32, plane_y as i32, 0, 0, sub_x, sub_y);
     let last_row = warp_plane_last_row(
         warp_params,
         (plane_x, plane_y, block_w, block_h),
@@ -1305,7 +1292,6 @@ struct TranslationalCompoundPlane<'a, T: ReconSample> {
 #[allow(clippy::inline_always, reason = "per-plane result copy")]
 #[inline(always)]
 fn compound_subpel_plane<'a, T: ReconSample>(
-    info: DecodedFrameInfo,
     block: &CompoundMcBlock<'a, T>,
     plane: PlaneId,
     sub_x: u32,
@@ -1313,12 +1299,17 @@ fn compound_subpel_plane<'a, T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<CompoundSubpelPlane<'a, T>> {
     let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
-    let frame_size = info.coded_luma_size();
     let (x, y) = (plane_x as i32, plane_y as i32);
-    let scaling0 = PlaneScaling::of_reference(block.reference0.info(), frame_size, sub_x, sub_y)
-        .with_mv(x, y, block.mv0.row, block.mv0.col, sub_x, sub_y);
-    let scaling1 = PlaneScaling::of_reference(block.reference1.info(), frame_size, sub_x, sub_y)
-        .with_mv(x, y, block.mv1.row, block.mv1.col, sub_x, sub_y);
+    let scaling0 =
+        block
+            .reference0
+            .scaling(plane)
+            .with_mv(x, y, block.mv0.row, block.mv0.col, sub_x, sub_y);
+    let scaling1 =
+        block
+            .reference1
+            .scaling(plane)
+            .with_mv(x, y, block.mv1.row, block.mv1.col, sub_x, sub_y);
     Ok(CompoundSubpelPlane {
         views: compound_plane_views(block, plane, [scaling0, scaling1], block_h, offset)?,
         plane_x,
@@ -1364,7 +1355,7 @@ fn translational_compound_plane<'a, T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<TranslationalCompoundPlane<'a, T>> {
-    let plane = compound_subpel_plane(info, block, plane, sub_x, sub_y, offset)?;
+    let plane = compound_subpel_plane(block, plane, sub_x, sub_y, offset)?;
     let params = plane.scalings.map(|scaling| SubpelPredictParams {
         interp: block.interp,
         w: plane.block_w,
@@ -1497,13 +1488,14 @@ fn compound_ref_intermediate<T: ReconSample>(
 ) -> Result<PlaneScaling> {
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = info.bit_depth();
-    let scaling = PlaneScaling::of_reference(
-        reference.info(),
-        info.coded_luma_size(),
+    let scaling = reference.scaling(plane).with_mv(
+        plane_x as i32,
+        plane_y as i32,
+        mv.row,
+        mv.col,
         sub_x,
         sub_y,
-    )
-    .with_mv(plane_x as i32, plane_y as i32, mv.row, mv.col, sub_x, sub_y);
+    );
     let last_row = warp_params.map_or_else(
         || compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
         |warp_params| {

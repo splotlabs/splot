@@ -15,7 +15,7 @@ use super::super::find_mv_stack::{MvBlockContext, NeighbourFlagSyntax};
 use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
 use super::super::mc::{self, WorkspaceSink};
 use super::super::{InterReferenceState, InterResidual, InterResidualBlock, PlacedInterBlock};
-use super::compound_path::append_compound_temporal_motion;
+use super::compound_path::{FrameRefFacts, append_compound_temporal_motion};
 use super::resolve::{
     InterBlockSyntax, InterMotionSyntax, MvResolutionState, SingleMotionSyntax,
     predict_by_translation_under_integer_mv, resolve_inter_block,
@@ -55,6 +55,7 @@ pub(super) struct InterReconScratch<T: ReconSample> {
 pub(super) struct ReconShared<'a, T: ReconSample> {
     pub(super) reference: &'a InterReferenceState<T>,
     pub(super) ref_frame_idx: &'a [u32],
+    pub(super) ref_facts: &'a FrameRefFacts,
     pub(super) temporal_context: &'a TemporalMvContext,
     pub(super) sequence: &'a SequenceHeader,
     pub(super) core: &'a FrameHeaderCore,
@@ -309,7 +310,7 @@ impl InterReconCommand {
                 refined,
                 &self.placed,
                 flags,
-                (shared.ref_frame_idx, shared.reference),
+                ((shared.ref_frame_idx, shared.ref_facts), shared.reference),
                 false,
                 self.tile_offset,
                 |units| self.compound_records(temporal_records, shared, Some(units)),
@@ -347,7 +348,7 @@ impl InterReconCommand {
                 residual_blocks,
                 residual_coeffs,
                 block_decoded,
-                shared.ref_frame_idx,
+                (shared.ref_frame_idx, shared.ref_facts),
                 shared.reference,
                 self.qindex,
                 shared.luma_use_tcq,
@@ -362,7 +363,7 @@ impl InterReconCommand {
                     &self.placed,
                     residual_blocks,
                     residual_coeffs,
-                    shared.ref_frame_idx,
+                    (shared.ref_frame_idx, shared.ref_facts),
                     shared.reference,
                     self.qindex,
                     shared.luma_use_tcq,
@@ -393,7 +394,7 @@ impl InterReconCommand {
                 refined,
                 &self.placed,
                 flags,
-                (shared.ref_frame_idx, shared.reference),
+                ((shared.ref_frame_idx, shared.ref_facts), shared.reference),
                 true,
                 self.tile_offset,
                 |units| {

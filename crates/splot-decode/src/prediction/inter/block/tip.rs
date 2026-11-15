@@ -6,6 +6,7 @@ use crate::DecodeHeaderStateError;
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_recon::{CurrentFrameWorkspace, DecodedFrame, ReconError};
 
+use super::super::mv_scaling::PlaneScaling;
 use super::super::reference::{HeldFrameSamples, ReferenceSamples};
 
 use super::super::find_mv_stack::TemporalMotionBlock;
@@ -124,18 +125,23 @@ impl TipReferencePlan {
 }
 
 impl<T: ReconSample> TipHeldReferences<'_, T> {
-    /// Resolves the borrow into the samples the block's units read.
-    fn prediction(&self, plan: &TipReferencePlan) -> Result<TipPrediction<'_, T>> {
+    /// Resolves the borrow into the samples the block's units read, with the
+    /// per-frame `scalings` of the past and the future reference.
+    fn prediction<'s>(
+        &'s self,
+        plan: &TipReferencePlan,
+        scalings: &'s [[PlaneScaling; 2]; 2],
+    ) -> Result<TipPrediction<'s, T>> {
         let compound_reference = match self.future.as_ref() {
             Some(future) => future,
             None => &self.past,
         };
         Ok(TipPrediction {
-            reference0: self.past.samples()?,
+            reference0: self.past.samples(&scalings[0])?,
             reference1: plan
                 .future
                 .is_some()
-                .then(|| compound_reference.samples())
+                .then(|| compound_reference.samples(&scalings[1]))
                 .transpose()?,
             interpolation_filter: plan.interpolation_filter,
             blend: plan.blend,
@@ -415,6 +421,8 @@ pub(super) struct TipFramePlan {
     frame_size: splot_recon::PlaneSize,
     current_order_hint: u32,
     ref_order_hints: [Option<u32>; 2],
+    /// The § 7.13.3.18 scalings of the past and the future reference.
+    scalings: [[PlaneScaling; 2]; 2],
 }
 
 /// The § 7.13.3.2 settings one TIP block derives from.
@@ -544,6 +552,12 @@ impl TipFramePlan {
             .then(|| super::super::block_reference_slot(ref_frame_idx, references.future_ref))
             .transpose()?;
         let order_hint = |slot: u32| reference.ref_order_hint.get(slot as usize).copied();
+        let scalings = |slot: u32| {
+            let reference = reference
+                .slot(slot)
+                .map_or(info, crate::pipeline::inflight::RefFrameSlot::info);
+            PlaneScaling::of_reference_planes(reference, info.coded_luma_size())
+        };
         Ok(Self {
             plan: TipReferencePlan {
                 past,
@@ -563,6 +577,7 @@ impl TipFramePlan {
                 .display_order_hint()
                 .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?,
             ref_order_hints: [order_hint(past), future.and_then(order_hint)],
+            scalings: [scalings(past), scalings(future.unwrap_or(past))],
         })
     }
 
@@ -697,7 +712,7 @@ pub(super) fn predict_block<T: ReconSample>(
     let first = *scratch.unit_mvs.first().ok_or(ReconError::ZeroDimension {
         field: "TIP compound batch",
     })?;
-    let prediction = held.prediction(&plan.plan)?;
+    let prediction = held.prediction(&plan.plan, &frame.scalings)?;
     let grid = (plan.columns(), plan.unit_size);
     let Some(block) = prediction
         .block_params(&plan.batch_unit(first))
@@ -1341,6 +1356,7 @@ pub(crate) fn deblock_output<T: ReconSample>(
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::mv_scaling::PlaneScaling;
     use super::{
         TipHeldReferences, TipReferencePlan, output_interpolation_filter,
         output_prediction_unit_size, prediction_unit_size, tip_optflow_offsets_allowed,
@@ -1468,7 +1484,9 @@ mod tests {
             optflow_sad_threshold: None,
         };
 
-        assert!(held.prediction(&plan)?.reference1.is_some());
+        let info = reference.info();
+        let scalings = [PlaneScaling::of_reference_planes(info, info.coded_luma_size()); 2];
+        assert!(held.prediction(&plan, &scalings)?.reference1.is_some());
         Ok(())
     }
 
@@ -1505,8 +1523,10 @@ mod tests {
             mvs: zero,
         };
         let held = plan.hold(&reference)?;
+        let info = tip_workspace()?.info();
+        let scalings = [PlaneScaling::of_reference_planes(info, info.coded_luma_size()); 2];
         let block = held
-            .prediction(&plan)?
+            .prediction(&plan, &scalings)?
             .block_params(&unit)
             .into_compound()
             .ok_or("compound TIP block")?;

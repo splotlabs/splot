@@ -563,10 +563,10 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         };
         let views = [view(0)?, view(1)?];
         let last = core::array::from_fn(|reference| {
-            let storage = references[reference].info().storage_luma_size();
+            let scaling = references[reference].scaling(PlaneId::Y);
             (
-                storage.width().min(views[reference].width()) as i32 - 1,
-                storage.height() as i32 - 1,
+                scaling.last_x.min(views[reference].width() as i32 - 1),
+                scaling.last_y,
             )
         });
         let bit_depth = sink.info().bit_depth();

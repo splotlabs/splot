@@ -313,14 +313,8 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
     ) -> Result<()> {
         let unit = if WIDE { 16 } else { 8 };
         let sub = (u32::from(W < unit), u32::from(H < unit));
-        let prediction = super::super::compound_subpel_plane(
-            self.info,
-            self.block,
-            plane,
-            sub.0,
-            sub.1,
-            self.offset,
-        )?;
+        let prediction =
+            super::super::compound_subpel_plane(self.block, plane, sub.0, sub.1, self.offset)?;
         let cells = self.motion.cells.as_slice();
         let (candidates, _, _) = self.motion.refinemv_candidate_slice();
         let columns = self.motion.columns;

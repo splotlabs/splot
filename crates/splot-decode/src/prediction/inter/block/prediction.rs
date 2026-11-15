@@ -92,7 +92,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
     block_decoded: &TileBlockDecodedState,
-    ref_frame_idx: &[u32],
+    lists: (&[u32], &FrameRefFacts),
     reference: &InterReferenceState<T>,
     qindex: u32,
     luma_use_tcq: bool,
@@ -113,7 +113,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             bit_depth,
         )?;
     }
-    let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
+    let held = super::super::hold_inter_block_references(lists, reference, placed)?;
     held.predict_into(
         &mut mc::WorkspaceSink::Frame(workspace),
         placed,
@@ -184,7 +184,7 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
-    ref_frame_idx: &[u32],
+    lists: (&[u32], &FrameRefFacts),
     reference: &InterReferenceState<T>,
     qindex: u32,
     luma_use_tcq: bool,
@@ -192,7 +192,7 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
+    let held = super::super::hold_inter_block_references(lists, reference, placed)?;
     held.predict_into(sink, placed, placed.motion_compensation_rect(), tile_offset)?;
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
@@ -220,12 +220,12 @@ pub(super) fn predict_refined_inter_block<T: ReconSample>(
     units: &mut mc::RefinedUnits,
     placed: &PlacedInterBlock,
     (use_refinemv, refinemv_switchable): (bool, bool),
-    (ref_frame_idx, reference): (&[u32], &InterReferenceState<T>),
+    (lists, reference): ((&[u32], &FrameRefFacts), &InterReferenceState<T>),
     predict: bool,
     tile_offset: ByteOffset,
     records: impl FnOnce(&mc::RefinedUnits) -> Result<()>,
 ) -> Result<()> {
-    let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
+    let held = super::super::hold_inter_block_references(lists, reference, placed)?;
     let block = held
         .block_params(placed, placed.motion_compensation_rect())?
         .with_refinemv(use_refinemv)

@@ -54,11 +54,32 @@ const WARP_ROW_REACH: i64 = 7;
 /// vector; see [`compound_last_row`] for the derivation.
 const COMPOUND_REFINE_REACH: i32 = 8;
 
-/// How far down a partially published frame its samples are final.
+/// How far down a partially published frame its samples are final, in
+/// `u32` so that [`ReferenceSamples`] stays five words.
 #[derive(Clone, Copy, Debug)]
 struct PublishedRows {
-    luma: usize,
-    chroma: usize,
+    luma: u32,
+    chroma: u32,
+}
+
+impl PublishedRows {
+    /// Saturates at `u32::MAX`, past every AV2 plane height.
+    fn new(luma: usize, chroma: usize) -> Self {
+        let rows = |rows: usize| u32::try_from(rows).unwrap_or(u32::MAX);
+        Self {
+            luma: rows(luma),
+            chroma: rows(chroma),
+        }
+    }
+
+    /// The published rows of `plane`.
+    const fn of(self, plane: PlaneId) -> usize {
+        (if matches!(plane, PlaneId::Y) {
+            self.luma
+        } else {
+            self.chroma
+        }) as usize
+    }
 }
 
 /// Which storage a reference frame's samples currently live in.
@@ -74,11 +95,13 @@ enum SampleSource<'a, T: ReconSample> {
 pub(crate) struct ReferenceSamples<'a, T: ReconSample> {
     source: SampleSource<'a, T>,
     published: Option<PublishedRows>,
+    /// The per-frame [`PlaneScaling::of_reference_planes`] of this reference.
+    scalings: &'a [PlaneScaling; 2],
 }
 
 impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     /// Reads a settled reference frame, every row of which is final.
-    pub(crate) fn settled(frame: &'a DecodedFrame<T>) -> Self {
+    fn settled_with(frame: &'a DecodedFrame<T>, scalings: &'a [PlaneScaling; 2]) -> Self {
         #[cfg(test)]
         let published = forced_band(frame);
         #[cfg(not(test))]
@@ -86,18 +109,45 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         Self {
             source: SampleSource::Frozen(frame),
             published,
+            scalings,
         }
     }
 
+    /// Reads a settled reference frame against a current frame of its own
+    /// coded size.
+    #[cfg(test)]
+    pub(crate) fn settled(frame: &'a DecodedFrame<T>) -> Self {
+        let info = frame.info();
+        let scalings = PlaneScaling::of_reference_planes(info, info.coded_luma_size());
+        Self::settled_with(frame, Box::leak(Box::new(scalings)))
+    }
+
     /// Reads the published prefix of a still-filtering reference frame.
-    pub(crate) fn publishing(published: &PublishedFrame<'a, T>) -> Self {
+    fn publishing_with(published: &PublishedFrame<'a, T>, scalings: &'a [PlaneScaling; 2]) -> Self {
         Self {
             source: SampleSource::Publishing(published.storage()),
-            published: Some(PublishedRows {
-                luma: published.luma_rows(),
-                chroma: published.chroma_rows(),
-            }),
+            published: Some(PublishedRows::new(
+                published.luma_rows(),
+                published.chroma_rows(),
+            )),
+            scalings,
         }
+    }
+
+    /// Reads a still-filtering reference frame against a current frame of its
+    /// own coded size.
+    #[cfg(test)]
+    pub(crate) fn publishing(published: &PublishedFrame<'a, T>) -> Self {
+        let info = published.storage().info();
+        let scalings = PlaneScaling::of_reference_planes(info, info.coded_luma_size());
+        Self::publishing_with(published, Box::leak(Box::new(scalings)))
+    }
+
+    /// The frame-constant § 7.13.3.18 scaling of `plane` against the current
+    /// frame, before a block position and motion vector apply.
+    #[inline]
+    pub(crate) fn scaling(self, plane: PlaneId) -> &'a PlaneScaling {
+        &self.scalings[usize::from(plane != PlaneId::Y)]
     }
 
     /// Returns the reference frame's decoded geometry.
@@ -179,11 +229,7 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         let Some(published) = self.published else {
             return Ok(());
         };
-        let published = if plane == PlaneId::Y {
-            published.luma
-        } else {
-            published.chroma
-        };
+        let published = published.of(plane);
         let needed = (last_row.max(0) as usize)
             .saturating_add(1)
             .min(size.height());
@@ -205,13 +251,7 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
                 )
             }),
             SampleSource::Publishing(storage) => {
-                let rows = self.published.map(|rows| {
-                    if plane == PlaneId::Y {
-                        rows.luma
-                    } else {
-                        rows.chroma
-                    }
-                })?;
+                let rows = self.published.map(|rows| rows.of(plane))?;
                 storage.plane(plane, rows).map(|plane| {
                     (
                         plane.samples,
@@ -344,7 +384,8 @@ pub(crate) enum HeldFrameSamples<'a, T: ReconSample> {
 }
 
 impl<T: ReconSample> HeldFrameSamples<'_, T> {
-    /// Resolves the held borrow into the samples one block reads.
+    /// Resolves the held borrow into the samples one block reads, with the
+    /// reference's per-frame `scalings`.
     ///
     /// # Errors
     ///
@@ -353,11 +394,22 @@ impl<T: ReconSample> HeldFrameSamples<'_, T> {
         clippy::unnecessary_wraps,
         reason = "the block walk, outside this change, propagates it as fallible"
     )]
-    pub(crate) fn samples(&self) -> Result<ReferenceSamples<'_, T>> {
+    pub(crate) fn samples<'s>(
+        &'s self,
+        scalings: &'s [PlaneScaling; 2],
+    ) -> Result<ReferenceSamples<'s, T>> {
         Ok(match self {
-            Self::Settled(frame) => ReferenceSamples::settled(frame),
-            Self::Filtering(published) => ReferenceSamples::publishing(published),
+            Self::Settled(frame) => ReferenceSamples::settled_with(frame, scalings),
+            Self::Filtering(published) => ReferenceSamples::publishing_with(published, scalings),
         })
+    }
+
+    /// The held frame's decoded geometry.
+    pub(crate) fn info(&self) -> DecodedFrameInfo {
+        match self {
+            Self::Settled(frame) => frame.info(),
+            Self::Filtering(published) => published.storage().info(),
+        }
     }
 }
 
@@ -408,12 +460,12 @@ fn forced_band<T: ReconSample>(frame: &DecodedFrame<T>) -> Option<PublishedRows>
         return None;
     }
     let luma = frame.y().storage_size().height();
-    Some(PublishedRows {
+    Some(PublishedRows::new(
         luma,
-        chroma: frame
+        frame
             .plane(PlaneId::U)
             .map_or(luma, |plane| plane.storage_size().height()),
-    })
+    ))
 }
 
 #[cfg(test)]

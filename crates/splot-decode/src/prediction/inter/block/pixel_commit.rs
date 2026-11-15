@@ -79,7 +79,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     motion: &MotionFieldUnits,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
+    lists: (&[u32], &super::FrameRefFacts),
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     mi_rows: usize,
@@ -116,7 +116,8 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         } = row;
         let shared = deferred_recon::ReconShared {
             reference,
-            ref_frame_idx,
+            ref_frame_idx: lists.0,
+            ref_facts: lists.1,
             temporal_context,
             sequence,
             core,

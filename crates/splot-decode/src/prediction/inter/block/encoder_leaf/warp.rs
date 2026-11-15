@@ -341,7 +341,7 @@ impl EncoderInterTile {
             &placed,
             &[],
             &[],
-            &self.ref_frame_idx,
+            (&self.ref_frame_idx, &self.ref_facts),
             &self.reference,
             self.qindex,
             false,

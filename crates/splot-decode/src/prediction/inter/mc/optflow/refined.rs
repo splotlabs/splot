@@ -438,14 +438,8 @@ impl<T: ReconSample> RefinedPass<'_, '_, T> {
             (sub_x, sub_y)
         };
         let block = self.block;
-        let prediction = super::super::compound_subpel_plane(
-            self.info,
-            block,
-            plane,
-            sub.0,
-            sub.1,
-            self.offset,
-        )?;
+        let prediction =
+            super::super::compound_subpel_plane(block, plane, sub.0, sub.1, self.offset)?;
         let (block_w, block_h) = (prediction.block_w, prediction.block_h);
         if !block_w.is_multiple_of(W) || !block_h.is_multiple_of(H) {
             return Err(DecodeHeaderStateError::InvalidBlockGeometry.into());
