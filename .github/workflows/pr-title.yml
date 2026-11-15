@@ -6,7 +6,7 @@ name: PR title
 # A title edit runs only this check, not the full CI workflow.
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
