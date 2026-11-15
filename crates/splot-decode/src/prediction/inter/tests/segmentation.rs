@@ -79,6 +79,7 @@ fn inherited_inter_segmentation_map_decodes_expected_frames() {
         |frame| Ok(frame.segment_ids.product().map(|map| (**map).clone())),
     )
     .expect("decode");
+    assert!(segment_ids[1].is_some(), "the MI map is published at emit");
     assert_eq!(
         segment_ids[1], segment_ids[2],
         "segmentation_update_map == 0 preserves the previous MI map"
