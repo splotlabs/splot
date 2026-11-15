@@ -373,26 +373,29 @@ impl MhccpPredictor {
         {
             return false;
         }
-        if predictors.iter().any(|predictor| !predictor.narrow) {
-            for (predictor, (out, stride)) in predictors.into_iter().zip(outs) {
-                predictor.predict_wide(linear, centre, width, out, stride);
-            }
-            return true;
-        }
+        let wide = predictors.iter().any(|predictor| !predictor.narrow);
         let strides = outs.each_ref().map(|out| out.1);
         let bits = predictors.first().map_or(8, |predictor| predictor.bits);
         if T::u16_slice(&[T::default()]).is_some() {
             let outs = outs.map(|out| T::u16_slice_mut(out.0).unwrap_or_default());
-            baseline_simd!(simd => predict_rows(simd, bits, predictors, linear, centre, width, outs, strides));
+            if wide {
+                baseline_simd!(simd => predict_rows::<_, _, N, true>(simd, bits, predictors, linear, centre, width, outs, strides));
+            } else {
+                baseline_simd!(simd => predict_rows::<_, _, N, false>(simd, bits, predictors, linear, centre, width, outs, strides));
+            }
         } else {
             let outs = outs.map(|out| T::u8_slice_mut(out.0).unwrap_or_default());
-            baseline_simd!(simd => predict_rows(simd, bits, predictors, linear, centre, width, outs, strides));
+            if wide {
+                baseline_simd!(simd => predict_rows::<_, _, N, true>(simd, bits, predictors, linear, centre, width, outs, strides));
+            } else {
+                baseline_simd!(simd => predict_rows::<_, _, N, false>(simd, bits, predictors, linear, centre, width, outs, strides));
+            }
         }
         true
     }
 
-    /// [`Self::predict_block`] for parameters whose products need the
-    /// adaptive down-shift of `mul_fixed32_adapt`.
+    /// [`Self::predict_block`] sample by sample: the oracle of the lanes.
+    #[cfg(test)]
     fn predict_wide<T: ReconSample>(
         &self,
         linear: &[i16],
@@ -415,10 +418,13 @@ impl MhccpPredictor {
     }
 }
 
-/// The parameter lanes of one [`MhccpPredictor::narrow`] plane.
+/// The parameter lanes of one plane.
 #[derive(Clone, Copy)]
 struct PlaneLanes<S: Simd> {
     params: [i32x8<S>; 2],
+    /// `GetMsb(Abs(param)) + 1` of each data parameter, when one of them is
+    /// wide enough that `mul_fixed32_adapt` may down-shift.
+    wide: Option<[i32; 2]>,
     offset: i32x8<S>,
     max: i32x8<S>,
 }
@@ -430,18 +436,58 @@ impl<S: Simd> PlaneLanes<S> {
         reason = "keeps the parameter lanes in registers"
     )]
     #[inline(always)]
-    fn store8<P: PredictedSample>(self, simd: S, out: &mut [P], [linear, square]: [i32x8<S>; 2]) {
-        let round = |x: i32x8<S>| (x + (1i32 << (MHCCP_BITS - 1)) + (x >> 31)) >> MHCCP_BITS;
-        let t = round(linear * self.params[0]) + round(square * self.params[1]) + self.offset;
-        P::store8(simd, out, t.max(i32x8::splat(simd, 0)).min(self.max));
+    fn store8<P: PredictedSample, const WIDE: bool>(
+        self,
+        simd: S,
+        out: &mut [P],
+        [linear, square]: [i32x8<S>; 2],
+    ) {
+        let t = match self.wide.filter(|_| WIDE) {
+            None => {
+                let round =
+                    |x: i32x8<S>| (x + (1i32 << (MHCCP_BITS - 1)) + (x >> 31)) >> MHCCP_BITS;
+                round(linear * self.params[0]) + round(square * self.params[1])
+            }
+            Some([bits0, bits1]) => {
+                adapt_lanes(simd, self.params[0], bits0, linear)
+                    + adapt_lanes(simd, self.params[1], bits1, square)
+            }
+        };
+        P::store8(
+            simd,
+            out,
+            (t + self.offset).max(i32x8::splat(simd, 0)).min(self.max),
+        );
     }
+}
+
+/// `mul_fixed32_adapt(param, v, MHCCP_BITS)` of each lane `v` in
+/// `0..1 << 10`, with `bits` the bit width of `param`: the bit width of `v`
+/// is the exponent of `v` as `f32`, exact below `2^24`. Each term then has
+/// at most 29 bits, so every product and the sum of the three § 7.13.6
+/// terms fit in `i32`.
+#[inline]
+fn adapt_lanes<S: Simd>(simd: S, param: i32x8<S>, bits: i32, v: i32x8<S>) -> i32x8<S> {
+    let zero = i32x8::splat(simd, 0);
+    let exponent = simd
+        .cvt_f32_i32x8(v.max(i32x8::splat(simd, 1)))
+        .bitcast::<i32x8<S>>()
+        >> 23;
+    let need = (exponent + (bits - 126 - 29)).max(zero);
+    let s1 = need >> 1;
+    let product = simd.shrv_i32x8(param, s1) * simd.shrv_i32x8(v, need - s1);
+    let adjust = i32x8::splat(simd, MHCCP_BITS as i32) - need;
+    let half = simd.shlv_i32x8(i32x8::splat(simd, 1), (adjust - 1).max(zero));
+    let rounded = simd.shrv_i32x8(product.abs() + half, adjust.max(zero));
+    let rounded = product.simd_lt(zero).select(zero - rounded, rounded);
+    adjust.simd_gt(zero).select(rounded, product)
 }
 
 /// [`MhccpPredictor::predict_planes`] in 8-lane groups, two rows each for
 /// a 4-wide block: each group's `vec[0]` and `vec[1]` serve every plane.
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn predict_rows<S: Simd, P: PredictedSample, const N: usize>(
+fn predict_rows<S: Simd, P: PredictedSample, const N: usize, const WIDE: bool>(
     simd: S,
     bits: u32,
     predictors: [&MhccpPredictor; N],
@@ -458,6 +504,8 @@ fn predict_rows<S: Simd, P: PredictedSample, const N: usize>(
     };
     let lanes = predictors.map(|predictor| PlaneLanes {
         params: [0, 1].map(|k| i32x8::splat(simd, predictor.params[k])),
+        wide: (!predictor.narrow)
+            .then(|| [0, 1].map(|k| bit_width_abs(predictor.params[k]) as i32)),
         offset: i32x8::splat(simd, predictor.offset),
         max: i32x8::splat(simd, predictor.max),
     });
@@ -471,7 +519,7 @@ fn predict_rows<S: Simd, P: PredictedSample, const N: usize>(
             let terms = terms(linear, centre);
             for ((lanes, out), stride) in lanes.iter().zip(&mut outs).zip(strides) {
                 let mut rows = [P::from_clipped(0); 8];
-                lanes.store8(simd, &mut rows, terms);
+                lanes.store8::<P, WIDE>(simd, &mut rows, terms);
                 let start = 2 * pair * stride;
                 out[start..start + 4].copy_from_slice(&rows[..4]); // splot-copy-ok: publish a 4-wide MHCCP row
                 out[start + stride..start + stride + 4].copy_from_slice(&rows[4..]); // splot-copy-ok: publish a 4-wide MHCCP row
@@ -490,7 +538,7 @@ fn predict_rows<S: Simd, P: PredictedSample, const N: usize>(
             let terms = terms(linear, centre);
             for ((lanes, out), stride) in lanes.iter().zip(&mut outs).zip(strides) {
                 let at = row * stride + 8 * group;
-                lanes.store8(simd, &mut out[at..at + 8], terms);
+                lanes.store8::<P, WIDE>(simd, &mut out[at..at + 8], terms);
             }
         }
     }
@@ -828,6 +876,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn wide_parameter_lanes_match_the_per_sample_oracle() {
+        let mut state = 0x31de;
+        let mut wide = 0;
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            let max = u32::from(bit_depth.max_sample());
+            for round in 0..300 {
+                let param =
+                    |state: &mut u64| {
+                        let magnitude = lcg(state) >> (lcg(state) % 31);
+                        let value = (magnitude as i32)
+                            .wrapping_mul(if lcg(state).is_multiple_of(2) { 1 } else { -1 });
+                        if round % 7 == 0 {
+                            [i32::MIN, i32::MAX, 1 << 21, -(1 << 23)][lcg(state) as usize % 4]
+                        } else {
+                            value
+                        }
+                    };
+                let predictor = MhccpPredictor::new(
+                    [param(&mut state), param(&mut state), param(&mut state)],
+                    bit_depth,
+                );
+                wide += usize::from(!predictor.narrow);
+                for (width, height) in [
+                    (4, 4),
+                    (4, 8),
+                    (8, 4),
+                    (4, 16),
+                    (16, 4),
+                    (8, 8),
+                    (16, 16),
+                    (32, 8),
+                    (8, 32),
+                    (32, 32),
+                ] {
+                    let len = width * height;
+                    let sample = |state: &mut u64| match round % 3 {
+                        0 => q3(max * (lcg(state) % 2), state),
+                        _ => q3(lcg(state) % (max + 1), state),
+                    };
+                    let linear: Vec<i16> = (0..len).map(|_| sample(&mut state)).collect();
+                    let centre: Vec<i16> = (0..len).map(|_| sample(&mut state)).collect();
+                    let stride = width + 5;
+                    let mut lanes = vec![0u16; (height - 1) * stride + width];
+                    let mut expected = lanes.clone();
+                    assert!(predictor.predict_block(&linear, &centre, width, &mut lanes, stride));
+                    predictor.predict_wide(&linear, &centre, width, &mut expected, stride);
+                    assert_eq!(lanes, expected, "{:?} {width}x{height}", predictor.params);
+                    if bit_depth == BitDepth::Eight {
+                        let mut bytes = vec![0u8; lanes.len()];
+                        assert!(
+                            predictor.predict_block(&linear, &centre, width, &mut bytes, stride)
+                        );
+                        assert!(
+                            bytes
+                                .iter()
+                                .zip(&expected)
+                                .all(|(&b, &e)| u16::from(b) == e)
+                        );
+                    }
+                }
+            }
+        }
+        assert!(wide > 300, "{wide}");
     }
 
     #[test]
