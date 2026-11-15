@@ -436,6 +436,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
@@ -471,8 +472,31 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP/dynamorio" --strip-components=1
           echo "DYNAMORIO_HOME=$RUNNER_TEMP/dynamorio" >> "$GITHUB_ENV"
 
-      - name: Decode instruction-count regression gate
-        run: cargo xtask perf
+      - name: Resolve the perf base commit
+        id: perf-base
+        run: echo "sha=$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the base splot binary
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/perf-bin/splot
+          key: perf-splot-${{ steps.perf-base.outputs.sha }}
+
+      - name: Decode instruction counts, head against base
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then set -- --report-only; fi
+          cargo xtask perf --base HEAD^1 --base-bin ~/perf-bin/splot "$@"
+
+      - name: Keep the head binary as the next base
+        if: github.event_name == 'push'
+        run: mkdir -p ~/perf-bin && rm -f ~/perf-bin/splot && cp target/release/splot ~/perf-bin/splot
+
+      - name: Save the head binary
+        if: github.event_name == 'push'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/perf-bin/splot
+          key: perf-splot-${{ github.sha }}
 
       - name: Encode instruction-count regression gate
         run: cargo xtask encode-perf --runs 1

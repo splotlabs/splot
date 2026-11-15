@@ -227,14 +227,22 @@ enum Task {
     Conformance,
     /// Generate a local HTML coverage report (requires `cargo-llvm-cov`).
     Coverage,
-    /// Decode instruction-count (DynamoRIO) regression gate over
-    /// curated conformance fixtures (requires `DYNAMORIO_HOME` and CMake). Heavy; not
-    /// part of `ci`.
+    /// Decode instruction-count (DynamoRIO) gate: head against `--base` on
+    /// EwoutH sample streams (requires Linux, `DYNAMORIO_HOME` and CMake). Heavy;
+    /// not part of `ci`.
     Perf {
-        /// Re-run every fixture and rewrite `tests/perf/baseline.toml` instead
-        /// of comparing against it.
+        /// Base revision, for example `HEAD^1` or `origin/main`.
         #[arg(long)]
-        bless: bool,
+        base: String,
+        /// Base `splot` binary; used when the file exists, else the base is built.
+        #[arg(long)]
+        base_bin: Option<PathBuf>,
+        /// Directory of the sample streams; missing streams are downloaded.
+        #[arg(long, default_value = "target/perf-streams")]
+        streams: PathBuf,
+        /// Print the table but never fail.
+        #[arg(long)]
+        report_only: bool,
     },
     /// Encoder speed harness over synthetic clips at presets 0/6/10: fps,
     /// IVF sha256 and instruction counts (DynamoRIO gate on Linux).
@@ -400,7 +408,20 @@ fn main() -> Result<()> {
         Task::GenExplain { check } => explain_registry::run_gen_explain(&workspace_root()?, check),
         Task::Conformance => conformance::run_conformance(&workspace_root()?),
         Task::Coverage => run_coverage(),
-        Task::Perf { bless } => perf::run_perf(&workspace_root()?, bless),
+        Task::Perf {
+            base,
+            base_bin,
+            streams,
+            report_only,
+        } => perf::run_perf(
+            &workspace_root()?,
+            &perf::PerfOptions {
+                base,
+                base_bin,
+                streams,
+                report_only,
+            },
+        ),
         Task::EncodePerf {
             bless,
             coverage,

@@ -52,19 +52,15 @@ struct RmbCandBounds {
 }
 
 const MAX_PR_NUM: u32 = 16;
+/// AV2 § 3 `MAX_REF_MV_STACK_SIZE` (`docs/spec/av2/1.0.0/03-symbols.md:514`).
+const MAX_REF_MV_STACK_SIZE: usize = 6;
 
 /// Capacity of one § 7.12.2.6 / § 7.12.2.5 spatial IntrABC scan.
 ///
-/// AV2 bounds the stack this scan feeds: § 7.12.2.12 Search stack process
-/// appends only while `NumMvFound < MAX_REF_MV_STACK_SIZE`
-/// (`docs/spec/av2/1.0.0/07-decoding-process.md:4085`), and § 7.12.2.6 Scan
-/// point process terminates once `NumMvFound` reaches it (`:3784`), with
-/// `MAX_REF_MV_STACK_SIZE` equal to 6 (`docs/spec/av2/1.0.0/03-symbols.md:514`).
-/// This scan does not apply that cap yet (tracked separately), so the container
-/// keeps headroom above six. The looser in-code bound is that
-/// `spatial_intrabc_scan_with_base_col` reaches `merge_or_push_weighted` from
-/// seven scan-point calls and two scan-col calls, each appending at most one
-/// candidate.
+/// The parse-time capture records every coded probe: seven scan-point calls
+/// and two scan-col calls, each appending at most one entry.
+/// `SpatialIntrabcProbes::resolve` applies the § 7.12.2.6 stop at
+/// `MAX_REF_MV_STACK_SIZE`.
 const MAX_SPATIAL_INTRABC_CANDIDATES: usize = 12;
 
 pub(crate) type SpatialBvStack = FixedStack<WeightedBv, MAX_SPATIAL_INTRABC_CANDIDATES>;
@@ -187,6 +183,9 @@ impl SpatialIntrabcProbes {
         for (index, probe) in self.probes.iter().enumerate() {
             if index == self.nearest_len {
                 nearest_len = candidates.len();
+            }
+            if candidates.len() >= MAX_REF_MV_STACK_SIZE {
+                continue;
             }
             let Some(mv) = decode_probe_position(probe.mv).and_then(|(row, col)| lookup(row, col))
             else {

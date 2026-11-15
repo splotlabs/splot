@@ -165,9 +165,9 @@ void splot_drain(struct SplotDecoder *decoder);
 // `*out` is zeroed.
 //
 // # Safety
-// `decoder` is null or came from [`splot_open`]; `out` is null or writable.
-// `out` can be uninitialized, so this call overwrites it without reading it:
-// a picture in `out` that was not released with [`splot_picture_unref`] leaks.
+// `decoder` is null or came from [`splot_open`]. `out` is null or points to a
+// zeroed or released picture: this call overwrites `*out`, so a picture in
+// `*out` that was not released with [`splot_picture_unref`] leaks.
 int splot_get_picture(struct SplotDecoder *decoder, struct SplotPicture *out);
 
 // Releases a picture from [`splot_get_picture`] and zeroes it.

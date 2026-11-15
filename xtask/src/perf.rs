@@ -1,90 +1,84 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The decode instruction-count regression gate (`cargo xtask perf`).
+//! The decode instruction-count gate (`cargo xtask perf --base <rev>`).
 //!
-//! Decodes a curated subset of committed conformance vectors under DynamoRIO
-//! and compares the executed-instruction count of each against a checked-in
-//! baseline (`tests/perf/baseline.toml`). DynamoRIO decodes every instruction
-//! the release build emits (AVX2 included), and the count is a stable proxy
-//! for decode CPU work, unlike wall-clock time. The counting client
-//! (`xtask/perf-client`, built with CMake against the release) counts only the
-//! `splot` binary, because glibc picks its string functions per CPU, and adds
-//! each block's count with one atomic 64-bit add, so threads cannot lose
-//! updates. The decode discards its output, because the frame hash dispatches
-//! on CPU features. It runs pinned to one CPU (`taskset`), so the idle pool
-//! worker does not spin on a second CPU while the main thread works; spins
-//! only add to the count, and each fixture keeps the smallest of [`RUNS`].
+//! Builds the `splot` binary of the working tree (head) and of the base
+//! revision (in a git worktree), decodes the pinned EwoutH sample [`STREAMS`]
+//! with both under DynamoRIO, and compares the executed-instruction counts.
+//! Both counts come from the same job, tool and CPU, so no baseline is
+//! checked in. DynamoRIO decodes every instruction the release build emits
+//! (AVX2 included), and the count is a stable proxy for decode CPU work,
+//! unlike wall-clock time. The counting client (`xtask/perf-client`, built
+//! with CMake against the release) counts only the `splot` binary, because
+//! glibc picks its string functions per CPU, and adds each block's count with
+//! one atomic 64-bit add, so threads cannot lose updates. The decode discards
+//! its output, because the frame hash dispatches on CPU features. It runs
+//! single-threaded with one frame in flight, pinned to one CPU (`taskset`), so
+//! the idle pool worker does not spin on a second CPU while the main thread
+//! works; spins only add to the count, and each binary keeps the smallest of
+//! [`RUNS`]. The spread of the base runs is the A/A noise of the job.
 //!
-//! This is a heavy gate and is **not** part of `cargo xtask ci`; it runs as its
-//! own CI job and on demand. `--bless` re-runs every fixture and rewrites the
-//! baseline (the only write it performs). When `DYNAMORIO_HOME` does not name a
-//! DynamoRIO release it skips with a hint rather than failing, mirroring the
-//! run-if-present style of the fuzz/coverage tooling, so a fresh checkout can
-//! still run the rest of `xtask` — CI installs a pinned release and therefore
-//! enforces.
+//! A commit trailer `Perf-Accept: <stream|all> +X% <reason>` in `<base>..HEAD`
+//! raises the limit of that stream to X% (see [`parse_accept`]).
 //!
-//! `xtask` depends on no `splot-*` crate, so it shells out to the built `splot`
-//! binary's `decode` command, exactly as `xtask conformance` shells out to
-//! `validate`.
+//! The command needs Linux with DynamoRIO (`DYNAMORIO_HOME`) and CMake, and
+//! fails without them. It is not part of `cargo xtask ci`; the `perf` CI job
+//! installs a pinned DynamoRIO release.
 
+use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use serde::{Deserialize, Serialize};
 
-/// Baseline file, relative to the workspace root.
-const BASELINE_REL: &str = "tests/perf/baseline.toml";
-/// Comment header prepended on `--bless` (TOML serialization drops comments).
-const BASELINE_HEADER: &str = "\
-# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-#
-# Decode instruction-count baselines (DynamoRIO inscount) for the
-# `cargo xtask perf` regression gate. Each fixture is decoded single-threaded
-# and keeps the smallest count of three runs. Counts are only comparable within
-# one binary/toolchain: a compiler or RUSTFLAGS bump shifts every count
-# wholesale and requires a re-bless (`cargo xtask perf --bless`), not a
-# regression. The counts cover only the `splot` binary (the atomic counter in
-# xtask/perf-client) and a decode with null output, so the runner's CPU does
-# not change them. The
-# `perf` CI job and its DynamoRIO release are the enforced check; after a
-# toolchain or DynamoRIO bump, re-bless on-runner.
-# Generated file: edit fixtures here, but let `--bless` set the numbers.
-";
-/// Fail the gate when a fixture's count rises more than this percentage above
-/// its baseline. This budget only absorbs incidental codegen drift within one
-/// pinned toolchain; a real regression moves far past it.
-const TOLERANCE_PCT: f64 = 0.5;
-/// Runs per fixture; the smallest count is kept.
+use crate::git_util::run_git;
+
+/// Release streams of `tests/conformance/ewouth-av2.toml`: name, file, frames.
+const STREAMS: [(&str, &str, u32); 5] = [
+    ("DOTA2", "DOTA2_1920x1080_60_8bit_420_qp135_130f.ivf", 20),
+    (
+        "RitualDance",
+        "RitualDance_1920x1080_60fps_10bit_420_qp135_600f.ivf",
+        16,
+    ),
+    (
+        "Slides1",
+        "Slides1_1920x1080_30fps_8bit_420_screen_qp135_130f.ivf",
+        16,
+    ),
+    (
+        "Noise_Ocean",
+        "Noise_Ocean_1920x1080_60fps_qp135_130f.ivf",
+        16,
+    ),
+    (
+        "old_town_cross",
+        "old_town_cross_1080p50_tiles4x2_qp135_500f.ivf",
+        10,
+    ),
+];
+/// Runs per binary and stream; the smallest count is kept.
 const RUNS: usize = 3;
+/// A stream fails above max([`STREAM_FAIL_PCT`], [`NOISE_FACTOR`] x A/A spread).
+const STREAM_FAIL_PCT: f64 = 0.25;
+const NOISE_FACTOR: f64 = 5.0;
+/// The total of all streams fails above this rise.
+const TOTAL_FAIL_PCT: f64 = 0.15;
+/// A stream or the total warns above this rise.
+const WARN_PCT: f64 = 0.1;
 
-/// The whole `tests/perf/baseline.toml` document. `deny_unknown_fields` turns a
-/// mistyped table (e.g. `[[fixtures]]`) into a load error instead of silently
-/// dropping every fixture and greening the gate over zero coverage.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Baseline {
-    meta: Meta,
-    fixture: Vec<FixtureRow>,
-}
-
-/// Free-form provenance for the recorded numbers.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Meta {
-    note: String,
-}
-
-/// One measured fixture: its path, the hot kernel(s) it exercises, and the
-/// recorded instruction-count baseline.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct FixtureRow {
-    path: String,
-    targets: String,
-    ir_stable: u64,
+/// Options of `cargo xtask perf`.
+pub(crate) struct PerfOptions {
+    /// Base revision.
+    pub(crate) base: String,
+    /// A `splot` binary of the base revision; used when the file exists.
+    pub(crate) base_bin: Option<PathBuf>,
+    /// Directory of the sample streams; missing streams are downloaded.
+    pub(crate) streams: PathBuf,
+    /// Print the table and never fail.
+    pub(crate) report_only: bool,
 }
 
 /// The DynamoRIO release that `DYNAMORIO_HOME` names and its `drrun`, when
@@ -126,51 +120,60 @@ pub(crate) fn build_client(root: &Path, home: &Path) -> Result<PathBuf> {
     Ok(build.join("libsplotinscount.so"))
 }
 
-/// Runs the perf gate. With `bless`, rewrites the baseline from the measured
-/// numbers instead of comparing against it.
+/// Runs the gate: head against `options.base`.
 ///
 /// # Errors
-/// Returns an error if the baseline is unreadable, a fixture is missing, a
-/// decode under DynamoRIO fails, or (without `bless`) any fixture regresses
-/// beyond [`TOLERANCE_PCT`].
-pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
-    let baseline_path = root.join(BASELINE_REL);
-    let mut baseline: Baseline = crate::util::load_toml(&baseline_path)?;
-    if baseline.fixture.is_empty() {
-        bail!("perf baseline {BASELINE_REL} lists no fixtures; the gate would cover nothing");
-    }
-    if !bless && let Some(row) = baseline.fixture.iter().find(|row| row.ir_stable == 0) {
-        bail!(
-            "perf baseline {BASELINE_REL}: fixture {} has ir_stable = 0 (unrecorded); run `cargo xtask perf --bless` to record it",
-            row.path
-        );
-    }
-
+/// Returns an error if DynamoRIO is missing, a trailer is malformed, a stream
+/// cannot be fetched or verified, a build or decode fails, or (without
+/// `report_only`) a stream or the total rises above its limit.
+pub(crate) fn run_perf(root: &Path, options: &PerfOptions) -> Result<()> {
     let Some((home, drrun)) = dynamorio() else {
-        if bless {
-            bail!(
-                "perf --bless requires DynamoRIO; set DYNAMORIO_HOME to a release to record the baseline"
-            );
-        }
-        eprintln!(
-            "perf: skipped (DYNAMORIO_HOME does not name a DynamoRIO release; set it to run the decode instruction gate)"
+        bail!(
+            "perf needs Linux with DynamoRIO: set DYNAMORIO_HOME to a DynamoRIO release (the `perf` CI job installs a pinned one)"
         );
-        return Ok(());
     };
+    let base_sha = run_git(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("{}^{{commit}}", options.base),
+        ],
+    )?
+    .trim()
+    .to_owned();
+    let log = run_git(
+        root,
+        &[
+            "log",
+            "--format=%(trailers:key=Perf-Accept,valueonly,unfold)",
+            &format!("{base_sha}..HEAD"),
+        ],
+    )?;
+    let accepts = log
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(parse_accept)
+        .collect::<Result<Vec<_>>>()?;
 
-    let splot = crate::conformance::build_splot_binary(root, true)?;
+    let streams = root.join(&options.streams);
+    fetch_streams(root, &streams)?;
+    let head = crate::conformance::build_splot_binary(root, true)?;
+    let base = match &options.base_bin {
+        Some(path) if path.is_file() => path.clone(),
+        _ => build_base(root, &base_sha)?,
+    };
+    if base == head {
+        bail!(
+            "head and base builds wrote the same binary {}; unset CARGO_TARGET_DIR",
+            head.display()
+        );
+    }
     let client = build_client(root, &home)?;
-    let mut regressions = Vec::new();
-    eprintln!(
-        "perf: {:>14}  {:>14}  {:>8}  target / fixture",
-        "baseline", "measured", "delta%"
-    );
-    for row in &mut baseline.fixture {
-        let fixture = root.join(&row.path);
-        if !fixture.exists() {
-            bail!("perf fixture missing: {}", row.path);
-        }
-        let mut args: Vec<std::ffi::OsString> = [
+
+    let mut rows = Vec::new();
+    for (name, file, frames) in STREAMS {
+        let mut args: Vec<OsString> = [
             "decode",
             "--quiet",
             "--threads",
@@ -179,54 +182,112 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
             "1",
             "--output-format",
             "null",
+            "--limit",
         ]
         .map(Into::into)
         .into();
-        args.push(fixture.into_os_string());
-        let measured = measure_instructions(&drrun, &client, &splot, &args)?;
-        let base = row.ir_stable;
-        let delta = if base == 0 {
-            0.0
-        } else {
-            (measured as f64 - base as f64) / base as f64 * 100.0
+        args.push(frames.to_string().into());
+        args.push(streams.join(file).into());
+        let base_runs = measure_runs(&drrun, &client, &base, &args)?;
+        let head_runs = measure_runs(&drrun, &client, &head, &args)?;
+        rows.push(Row {
+            name,
+            frames,
+            base: min(&base_runs)?,
+            head: min(&head_runs)?,
+            aa_pct: spread_pct(&base_runs)?,
+        });
+        eprintln!("perf: {name}: base {base_runs:?}, head {head_runs:?}");
+    }
+
+    let lines = judge(&rows, &accepts);
+    let mut summary = format!(
+        "### Decode instructions: head vs base `{}`\n\n| Stream | Frames | Base | Head | Change | A/A spread | Limit | Verdict |\n|---|---:|---:|---:|---:|---:|---:|---|\n",
+        &base_sha[..base_sha.len().min(12)]
+    );
+    for line in &lines {
+        let _ = writeln!(
+            summary,
+            "| {} | {} | {} | {} | {:+.3}% | {} | {:.2}% | {:?} |",
+            line.name,
+            line.frames.map_or(String::new(), |f| f.to_string()),
+            line.base,
+            line.head,
+            delta_pct(line.base, line.head),
+            line.aa_pct.map_or(String::new(), |a| format!("{a:.4}%")),
+            line.limit,
+            line.verdict
+        );
+        let annotation = match line.verdict {
+            Verdict::Fail => "error",
+            Verdict::Warn | Verdict::Accepted => "warning",
+            Verdict::Ok => continue,
         };
-        eprintln!(
-            "perf: {base:>14}  {measured:>14}  {delta:>+8.3}  {} / {}",
-            row.targets, row.path
+        println!(
+            "::{annotation}::perf {}: {:+.3}% instructions ({:?})",
+            line.name,
+            delta_pct(line.base, line.head),
+            line.verdict
         );
-        if bless {
-            row.ir_stable = measured;
-        } else if base != 0 && delta > TOLERANCE_PCT {
-            regressions.push((row.path.clone(), base, measured, delta));
-        }
     }
+    for accept in &accepts {
+        let _ = writeln!(
+            summary,
+            "\nPerf-Accept: {} +{}% {}",
+            accept.stream, accept.pct, accept.reason
+        );
+    }
+    println!("{summary}");
+    if let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+        std::fs::write(&path, &summary).context("failed to write GITHUB_STEP_SUMMARY")?;
+    }
+    if !options.report_only && lines.iter().any(|line| line.verdict == Verdict::Fail) {
+        bail!(
+            "decode instruction count rose above the limit; see the table, or add a `Perf-Accept:` trailer"
+        );
+    }
+    Ok(())
+}
 
-    if bless {
-        let body = toml::to_string(&baseline).context("failed to serialize perf baseline")?;
-        let rendered = format!("{BASELINE_HEADER}\n{body}");
-        std::fs::write(&baseline_path, rendered)
-            .with_context(|| format!("failed to write {}", baseline_path.display()))?;
-        eprintln!(
-            "perf: blessed {} fixture(s) into {BASELINE_REL}",
-            baseline.fixture.len()
-        );
-        return Ok(());
+/// Downloads missing [`STREAMS`] and verifies every input SHA-256 with
+/// `scripts/check-external-vectors.py`.
+fn fetch_streams(root: &Path, dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    let mut command = Command::new("python3");
+    command
+        .arg(root.join("scripts").join("check-external-vectors.py"))
+        .arg("ewouth-av2")
+        .arg(dir);
+    for (_, file, _) in STREAMS {
+        command.arg("--fetch").arg(file);
     }
+    let status = command
+        .status()
+        .context("failed to run python3 scripts/check-external-vectors.py")?;
+    if !status.success() {
+        bail!("fetching or verifying the perf streams failed ({status})");
+    }
+    Ok(())
+}
 
-    if regressions.is_empty() {
-        eprintln!(
-            "perf: ok ({} fixture(s) within {TOLERANCE_PCT}% of baseline)",
-            baseline.fixture.len()
-        );
-        return Ok(());
+/// Builds `splot` at `sha` in the git worktree `target/perf-base`.
+///
+/// shortcut: the nested cargo keeps the head toolchain, so a toolchain bump
+/// shows only when the base binary comes from the cache; build with the base
+/// `rust-toolchain.toml` if such a PR must be measured on a cache miss.
+fn build_base(root: &Path, sha: &str) -> Result<PathBuf> {
+    let tree = root.join("target").join("perf-base");
+    if tree.exists() {
+        run_git(&tree, &["checkout", "--quiet", "--force", "--detach", sha])?;
+    } else {
+        run_git(root, &["worktree", "prune"])?;
+        let tree_arg = tree.to_string_lossy();
+        run_git(
+            root,
+            &["worktree", "add", "--quiet", "--detach", &tree_arg, sha],
+        )?;
     }
-    for (path, base, measured, delta) in &regressions {
-        eprintln!("perf: REGRESSION {path}: {base} -> {measured} ({delta:+.3}%)");
-    }
-    bail!(
-        "{} fixture(s) regressed beyond {TOLERANCE_PCT}% (re-bless with `cargo xtask perf --bless` if intentional)",
-        regressions.len()
-    )
+    crate::conformance::build_splot_binary(&tree, true)
 }
 
 /// Runs `splot` with `args` under the counting client [`RUNS`] times and
@@ -235,9 +296,15 @@ pub(crate) fn measure_instructions(
     drrun: &Path,
     client: &Path,
     splot: &Path,
-    args: &[std::ffi::OsString],
+    args: &[OsString],
 ) -> Result<u64> {
-    let mut best = u64::MAX;
+    min(&measure_runs(drrun, client, splot, args)?)
+}
+
+/// Runs `splot` with `args` under the counting client [`RUNS`] times and
+/// returns every executed-instruction count.
+fn measure_runs(drrun: &Path, client: &Path, splot: &Path, args: &[OsString]) -> Result<Vec<u64>> {
+    let mut counts = Vec::with_capacity(RUNS);
     for _ in 0..RUNS {
         let output = Command::new("taskset")
             .args(["--cpu-list", "0"])
@@ -260,9 +327,31 @@ pub(crate) fn measure_instructions(
         }
         let count = parse_inscount(&String::from_utf8_lossy(&output.stdout))
             .with_context(|| format!("inscount output for {args:?}"))?;
-        best = best.min(count);
+        if count == 0 {
+            bail!("DynamoRIO counted 0 instructions for {args:?}");
+        }
+        counts.push(count);
     }
-    Ok(best)
+    Ok(counts)
+}
+
+fn min(counts: &[u64]) -> Result<u64> {
+    counts
+        .iter()
+        .copied()
+        .min()
+        .ok_or_else(|| anyhow!("no DynamoRIO runs"))
+}
+
+/// The spread of `counts` in percent of their minimum.
+fn spread_pct(counts: &[u64]) -> Result<f64> {
+    let low = min(counts)?;
+    let high = counts.iter().copied().max().unwrap_or(low);
+    Ok(delta_pct(low, high))
+}
+
+fn delta_pct(base: u64, head: u64) -> f64 {
+    (head as f64 - base as f64) / base as f64 * 100.0
 }
 
 /// Extracts the count from the counting client's
@@ -280,10 +369,138 @@ fn parse_inscount(text: &str) -> Result<u64> {
     bail!("no `Instrumentation results:` line in inscount output")
 }
 
+/// One `Perf-Accept: <stream|all> +X% <reason>` trailer value.
+#[derive(Debug, PartialEq)]
+struct Accept {
+    stream: String,
+    pct: f64,
+    reason: String,
+}
+
+/// Parses the value of a `Perf-Accept` trailer. The stream is a name of
+/// [`STREAMS`] or `all`; X is a positive percent; the reason is not empty.
+fn parse_accept(value: &str) -> Result<Accept> {
+    let malformed = || {
+        anyhow!(
+            "malformed `Perf-Accept: {value}`; expected `Perf-Accept: <stream|all> +X% <reason>`"
+        )
+    };
+    let mut words = value.split_whitespace();
+    let stream = words.next().ok_or_else(malformed)?;
+    let pct = words
+        .next()
+        .and_then(|word| {
+            word.strip_prefix('+')?
+                .strip_suffix('%')?
+                .parse::<f64>()
+                .ok()
+        })
+        .filter(|pct| pct.is_finite() && *pct > 0.0)
+        .ok_or_else(malformed)?;
+    let reason = words.collect::<Vec<_>>().join(" ");
+    if reason.is_empty() {
+        return Err(malformed());
+    }
+    if stream != "all" && !STREAMS.iter().any(|(name, ..)| *name == stream) {
+        bail!("`Perf-Accept` names the unknown stream {stream}; use `all` or one of {STREAMS:?}");
+    }
+    Ok(Accept {
+        stream: stream.to_owned(),
+        pct,
+        reason,
+    })
+}
+
+/// The measured counts of one stream.
+struct Row {
+    name: &'static str,
+    frames: u32,
+    base: u64,
+    head: u64,
+    aa_pct: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Verdict {
+    Ok,
+    Warn,
+    Accepted,
+    Fail,
+}
+
+/// One judged table line: a stream, or the total (no frames, no A/A spread).
+struct Line {
+    name: &'static str,
+    frames: Option<u32>,
+    base: u64,
+    head: u64,
+    aa_pct: Option<f64>,
+    limit: f64,
+    verdict: Verdict,
+}
+
+/// Fails above `effective`; a rise above `limit` that `effective` allows is
+/// accepted; a rise above [`WARN_PCT`] warns.
+fn verdict(delta: f64, limit: f64, effective: f64) -> Verdict {
+    if delta > effective {
+        Verdict::Fail
+    } else if delta > limit {
+        Verdict::Accepted
+    } else if delta > WARN_PCT {
+        Verdict::Warn
+    } else {
+        Verdict::Ok
+    }
+}
+
+/// Judges each stream and the total. An accepted stream may rise by its X%;
+/// the total limit grows by the accepted share of the total base count.
+fn judge(rows: &[Row], accepts: &[Accept]) -> Vec<Line> {
+    let accepted = |name: &str| {
+        accepts
+            .iter()
+            .filter(|accept| accept.stream == name || accept.stream == "all")
+            .map(|accept| accept.pct)
+            .reduce(f64::max)
+    };
+    let base_total: u64 = rows.iter().map(|row| row.base).sum();
+    let head_total: u64 = rows.iter().map(|row| row.head).sum();
+    let mut allowance = 0.0;
+    let mut lines: Vec<Line> = rows
+        .iter()
+        .map(|row| {
+            let limit = STREAM_FAIL_PCT.max(NOISE_FACTOR * row.aa_pct);
+            let accept = accepted(row.name);
+            allowance += accept.unwrap_or(0.0) * row.base as f64 / base_total as f64;
+            let effective = accept.map_or(limit, |pct| limit.max(pct));
+            Line {
+                name: row.name,
+                frames: Some(row.frames),
+                base: row.base,
+                head: row.head,
+                aa_pct: Some(row.aa_pct),
+                limit: effective,
+                verdict: verdict(delta_pct(row.base, row.head), limit, effective),
+            }
+        })
+        .collect();
+    let effective = TOTAL_FAIL_PCT + allowance;
+    lines.push(Line {
+        name: "Total",
+        frames: None,
+        base: base_total,
+        head: head_total,
+        aa_pct: None,
+        limit: effective,
+        verdict: verdict(delta_pct(base_total, head_total), TOTAL_FAIL_PCT, effective),
+    });
+    lines
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::parse_inscount;
+    use super::{Accept, Row, Verdict, judge, parse_accept, parse_inscount, spread_pct};
 
     #[test]
     fn parses_the_results_line_among_decode_output() {
@@ -299,5 +516,127 @@ mod tests {
     #[test]
     fn non_numeric_count_is_an_error() {
         assert!(parse_inscount("Instrumentation results: many instructions executed\n").is_err());
+    }
+
+    fn accept(stream: &str, pct: f64) -> Accept {
+        Accept {
+            stream: stream.to_owned(),
+            pct,
+            reason: "r".to_owned(),
+        }
+    }
+
+    #[test]
+    fn parses_stream_and_all_trailers() {
+        assert_eq!(
+            parse_accept("RitualDance +0.6% exact CDEF  rounding").unwrap(),
+            Accept {
+                stream: "RitualDance".to_owned(),
+                pct: 0.6,
+                reason: "exact CDEF rounding".to_owned()
+            }
+        );
+        assert_eq!(parse_accept(" all +2% toolchain bump").unwrap().pct, 2.0);
+    }
+
+    #[test]
+    fn rejects_malformed_trailers() {
+        for value in [
+            "",
+            "all",
+            "all +0.5%",
+            "all 0.5% no plus",
+            "all +0.5 no percent",
+            "all +0% zero",
+            "all +-1% negative",
+            "all +nan% not a number",
+            "all +inf% infinite",
+            "Unknown +0.5% not a stream",
+            "ritualdance +0.5% wrong case",
+        ] {
+            assert!(parse_accept(value).is_err(), "{value:?}");
+        }
+    }
+
+    fn row(name: &'static str, base: u64, head: u64, aa_pct: f64) -> Row {
+        Row {
+            name,
+            frames: 1,
+            base,
+            head,
+            aa_pct,
+        }
+    }
+
+    fn verdicts(rows: &[Row], accepts: &[Accept]) -> Vec<Verdict> {
+        judge(rows, accepts)
+            .iter()
+            .map(|line| line.verdict)
+            .collect()
+    }
+
+    #[test]
+    fn stream_limit_is_the_larger_of_floor_and_noise() {
+        use Verdict::{Fail, Ok, Warn};
+        let rows = [
+            row("DOTA2", 100_000, 100_005, 0.0),
+            row("Slides1", 1_000_000, 1_000_000, 0.0),
+        ];
+        assert_eq!(verdicts(&rows, &[]), [Ok, Ok, Ok]);
+        let rows = [
+            row("DOTA2", 100_000, 100_200, 0.0),
+            row("Slides1", 10_000_000, 10_000_000, 0.0),
+        ];
+        assert_eq!(verdicts(&rows, &[]), [Warn, Ok, Ok]);
+        let rows = [
+            row("DOTA2", 100_000, 100_300, 0.0),
+            row("Slides1", 10_000_000, 10_000_000, 0.0),
+        ];
+        assert_eq!(verdicts(&rows, &[]), [Fail, Ok, Ok]);
+        let rows = [
+            row("DOTA2", 100_000, 100_300, 0.1),
+            row("Slides1", 10_000_000, 10_000_000, 0.0),
+        ];
+        assert_eq!(verdicts(&rows, &[]), [Warn, Ok, Ok]);
+    }
+
+    #[test]
+    fn total_fails_when_streams_rise_together() {
+        let rows = [
+            row("DOTA2", 100_000, 100_200, 0.0),
+            row("Slides1", 100_000, 100_200, 0.0),
+        ];
+        assert_eq!(
+            verdicts(&rows, &[]),
+            [Verdict::Warn, Verdict::Warn, Verdict::Fail]
+        );
+    }
+
+    #[test]
+    fn accept_raises_only_its_stream_and_its_share_of_the_total() {
+        use Verdict::{Accepted, Fail, Ok};
+        let rows = [
+            row("DOTA2", 100_000, 100_500, 0.0),
+            row("Slides1", 100_000, 100_000, 0.0),
+        ];
+        assert_eq!(
+            verdicts(&rows, &[accept("DOTA2", 0.6)]),
+            [Accepted, Ok, Accepted]
+        );
+        assert_eq!(
+            verdicts(&rows, &[accept("DOTA2", 0.4)]),
+            [Fail, Ok, Accepted]
+        );
+        assert_eq!(verdicts(&rows, &[accept("Slides1", 0.6)])[0], Fail);
+        assert_eq!(
+            verdicts(&rows, &[accept("all", 0.6)]),
+            [Accepted, Ok, Accepted]
+        );
+    }
+
+    #[test]
+    fn spread_is_relative_to_the_minimum() {
+        assert!((spread_pct(&[1000, 1001, 1000]).unwrap() - 0.1).abs() < 1e-9);
+        assert!(spread_pct(&[]).is_err());
     }
 }

@@ -423,6 +423,38 @@ fn sort_nearest_moves_max_weight_to_slot0_strict() {
 }
 
 #[test]
+fn resolve_stops_the_scan_at_max_ref_mv_stack_size() {
+    let geometry = SpatialScanGeometry {
+        mi_row: 4,
+        mi_col: 4,
+        n4w: 2,
+        n4h: 2,
+        mi_rows: 16,
+        mi_cols: 16,
+        sb_size4: 16,
+    };
+    let probes = capture_spatial_intrabc_probes(geometry, |_, _| true, |_, col| Some(col));
+    assert_eq!(
+        probes.probes.len(),
+        9,
+        "seven scan points and two scan-col points"
+    );
+    let scan = probes.resolve(|row, col| {
+        Some(Mv {
+            row: -8 * row as i32,
+            col: -8 * col as i32 - 64,
+        })
+    });
+    assert_eq!(scan.candidates.len(), MAX_REF_MV_STACK_SIZE);
+    assert_eq!(scan.nearest_len, MAX_REF_MV_STACK_SIZE);
+    assert_eq!(
+        scan.comparisons,
+        1 + 2 + 3 + 4 + 5,
+        "§ 7.12.2.6 skips later probes before § 7.12.2.12 spends PruneCount"
+    );
+}
+
+#[test]
 fn spatial_stack_rejects_push_past_capacity() {
     let mut stack = SpatialBvStack::new();
     for index in 0..MAX_SPATIAL_INTRABC_CANDIDATES {
