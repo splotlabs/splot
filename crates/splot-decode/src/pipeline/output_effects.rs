@@ -28,7 +28,7 @@ use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuT
 use splot_core::write::metadata::type_matches_payload;
 use splot_recon::QmUserPlane;
 
-use super::{PipelineFrameRate, unsupported_feature_at};
+use super::{PipelineFrameRate, unsupported_feature_at, unsupported_with_spec};
 use crate::bitstream::stream_plan::DecodeSourceIssue;
 use crate::bitstream::tile_payload::{FrameUserQmLevel, FrameUserQmLevels};
 use crate::error::{DecodeError, DecodeHeaderStateError, Result};
@@ -78,9 +78,9 @@ impl FrameOutputEffects {
             .content_interpretation
             .is_some_and(|content| content.reserved_2bit != 0)
         {
-            return Err(unsupported_feature_at(
+            return Err(unsupported_with_spec(
                 "content_interpretation_reserved_bits",
-                ByteOffset::new(0),
+                None,
                 "content interpretation reserved bits must be zero",
                 "6.14",
             ));
@@ -90,9 +90,9 @@ impl FrameOutputEffects {
             .iter()
             .any(|unit| !type_matches_payload(unit.metadata_type, &unit.payload))
         {
-            return Err(unsupported_feature_at(
+            return Err(unsupported_with_spec(
                 "metadata_payload_type",
-                ByteOffset::new(0),
+                None,
                 "attached metadata payload does not match its metadata_type",
                 "6.16.1",
             ));

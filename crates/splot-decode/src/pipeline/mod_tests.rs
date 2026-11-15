@@ -104,10 +104,13 @@ fn every_output_adapter_rejects_invalid_frame_effects_in_the_shared_pipeline()
     ];
 
     for (adapter, result) in results {
+        let Err(DecodeError::UnsupportedFeature { unsupported }) = result else {
+            return Err(format!("{adapter} output bypassed the shared effect validation").into());
+        };
         assert_eq!(
-            unsupported_reason(result),
-            Some("content_interpretation_reserved_bits"),
-            "{adapter} output bypassed the shared effect validation"
+            (unsupported.reason(), unsupported.byte_offset()),
+            ("content_interpretation_reserved_bits", None),
+            "{adapter} output reported a wrong reason or a false offset"
         );
     }
     Ok(())
