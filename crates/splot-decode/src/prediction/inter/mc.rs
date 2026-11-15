@@ -440,7 +440,7 @@ pub(crate) fn predict_inter_block<T: ReconSample>(
         } => motion_compensate_single_warp_block_into(
             sink,
             reference,
-            *block,
+            block,
             mv,
             warp_params,
             offset,
@@ -613,7 +613,7 @@ pub(super) fn predict_compound_into<T: ReconSample>(
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
-    block: InterBlockParams<'_, T>,
+    block: &InterBlockParams<'_, T>,
     mv: Mv,
     warp_params: [i32; 6],
     offset: ByteOffset,
@@ -673,12 +673,10 @@ fn predict_plane<T: ReconSample>(
         sink.with_contiguous_u16_rect_mut(plane, target, |output, stride| {
             subpel_predict_block_strided_into(&view, &params, output, stride)
         })?
-    } else if T::u8_slice(&[]).is_some() {
+    } else {
         sink.with_contiguous_u8_rect_mut(plane, target, |output, stride| {
             subpel_predict_block_strided_into_u8(&view, &params, output, stride)
         })?
-    } else {
-        None
     };
     if direct.is_some() {
         return Ok(());

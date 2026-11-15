@@ -31,9 +31,6 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
     else {
         return Ok(false);
     };
-    if T::u16_slice(&[]).is_none() && T::u8_slice(&[]).is_none() {
-        return Ok(false);
-    }
     if block.sub8x8_chroma || block.warp_params.iter().any(Option::is_some) {
         return Ok(false);
     }
