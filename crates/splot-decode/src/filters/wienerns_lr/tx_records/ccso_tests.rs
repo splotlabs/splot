@@ -22,7 +22,7 @@ fn active_luma_ccso_state(mi_rows: usize, mi_cols: usize) -> CcsoState {
 fn ccso_state_reads_only_at_aligned_origins() {
     let state = active_luma_ccso_state(270, 480);
     assert_eq!(state.shift, 6);
-    assert_eq!((state.grid_rows, state.grid_cols), (5, 8));
+    assert_eq!((state.window.rows, state.window.cols), (5, 8));
     let unit_mask = (1usize << state.shift) - 1;
     let aligned = |mi: usize| mi & unit_mask == 0;
     assert!(aligned(0));
@@ -68,15 +68,15 @@ fn ccso_state_left_neighbour_context_matches_spec_8_3_2() {
 fn ccso_state_inactive_reads_nothing() {
     let state = CcsoState::inactive();
     assert!(!state.active);
-    assert_eq!(state.grid_rows, 0);
+    assert_eq!(state.window.rows, 0);
 }
 
 #[test]
 fn ccso_state_rejects_out_of_grid_access() {
     let mut state = active_luma_ccso_state(270, 480);
-    assert!(state.set_block_value(0, state.grid_rows, 0, 1).is_err());
-    assert!(state.set_block_value(0, 0, state.grid_cols, 1).is_err());
-    assert_eq!(state.block_value(0, 0, state.grid_cols), 0);
+    assert!(state.set_block_value(0, state.window.rows, 0, 1).is_err());
+    assert!(state.set_block_value(0, 0, state.window.cols, 1).is_err());
+    assert_eq!(state.block_value(0, 0, state.window.cols), 0);
     assert_eq!(state.block_value(0, 99, 99), 0);
     assert_eq!(state.block_value(0, usize::MAX, 0), 0);
 }
