@@ -1706,7 +1706,7 @@ impl TemporalMvContext {
         if cell.flags.ref_frame0() != TIP_REF_FRAME || cell.flags.ref_frame1().is_some() {
             return None;
         }
-        let (row, col, _) = probe.stack_target(block);
+        let (row, col, _) = probe.adjusted_target(block);
         let (row, col) = (usize::try_from(row).ok()?, usize::try_from(col).ok()?);
         let shift = 1 + usize::from(cell.flags.tip_size_16x16());
         let base_r = usize::try_from(cell.motion.base_r).ok()?;
