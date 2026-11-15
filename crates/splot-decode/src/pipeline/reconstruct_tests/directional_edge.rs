@@ -39,7 +39,6 @@ fn one_sided_edge_state_failures_do_not_mutate_luma_plane() {
                 above: true,
                 left: false,
             },
-            BitDepth::Eight,
             OneSidedEdgeFilter::default(),
         ),
         Err(GeneralIntraResidualError::InvalidDirectionalEdgeState)
@@ -68,7 +67,6 @@ fn one_sided_edge_state_failures_do_not_mutate_luma_plane() {
                 above: false,
                 left: true,
             },
-            BitDepth::Eight,
             OneSidedEdgeFilter::default(),
         ),
         Err(GeneralIntraResidualError::InvalidDirectionalEdgeState)
@@ -113,7 +111,6 @@ fn chroma_mrl_edge_state_failure_does_not_mutate_plane() {
                 above: false,
                 left: false,
             },
-            BitDepth::Eight,
             OneSidedEdgeFilter::default(),
         ),
         Err(GeneralIntraResidualError::InvalidDirectionalEdgeState)
@@ -149,7 +146,6 @@ fn middle_edge_state_failure_does_not_mutate_luma_plane() {
             false,
             None,
             None,
-            BitDepth::Eight,
             IntraEdgeAvailability {
                 above: true,
                 left: false,
@@ -197,7 +193,6 @@ fn dip_edge_state_failure_does_not_mutate_luma_plane() {
                 above: true,
                 left: false,
             },
-            BitDepth::Eight,
         ),
         Err(GeneralIntraResidualError::InvalidDirectionalEdgeState)
     ));

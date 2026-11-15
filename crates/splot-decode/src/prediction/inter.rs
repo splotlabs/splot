@@ -986,7 +986,6 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
             qindex,
             use_tcq,
             use_ddt,
-            bit_depth,
         )
         .map_err(inter_residual_reconstruction_error)?;
     }

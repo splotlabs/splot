@@ -212,7 +212,8 @@ fn fullpel_cell_u16<S: Simd, const N: usize>(
 }
 
 /// The COMPOUND_AVERAGE of two full-sample eight-bit `size`-square cells,
-/// 4 or 8, from `origins` of `sources`, `forward` in `0..=16`.
+/// 4 or 8, from `origins` of `sources`; `false` without writing for a
+/// `forward` outside `0..=16`.
 pub(super) fn fullpel_u8(
     sources: [(&[u8], usize); 2],
     origins: [usize; 2],
@@ -220,13 +221,15 @@ pub(super) fn fullpel_u8(
     forward: i32,
     output: &mut [u8],
     stride: usize,
-) {
+) -> bool {
+    let 0..=16 = forward else { return false };
     baseline_simd!(simd => match (size, forward) {
         (4, 8) => fullpel_cell::<_, 4>(simd, sources, origins, 8, output, stride),
         (4, _) => fullpel_cell::<_, 4>(simd, sources, origins, forward, output, stride),
         (_, 8) => fullpel_cell::<_, 8>(simd, sources, origins, 8, output, stride),
         _ => fullpel_cell::<_, 8>(simd, sources, origins, forward, output, stride),
     });
+    true
 }
 
 /// [`fullpel_u8`] of 16-bit cells, clipped to `clip.1`.
@@ -237,14 +240,16 @@ pub(super) fn fullpel_u16(
     clip: (i32, u16),
     output: &mut [u16],
     stride: usize,
-) {
+) -> bool {
     let (forward, max) = clip;
+    let 0..=16 = forward else { return false };
     baseline_simd!(simd => match (size, forward) {
         (4, 8) => fullpel_cell_u16::<_, 4>(simd, sources, origins, (8, max), output, stride),
         (4, _) => fullpel_cell_u16::<_, 4>(simd, sources, origins, clip, output, stride),
         (_, 8) => fullpel_cell_u16::<_, 8>(simd, sources, origins, (8, max), output, stride),
         _ => fullpel_cell_u16::<_, 8>(simd, sources, origins, clip, output, stride),
     });
+    true
 }
 
 /// The most cells one [`CompoundCells`] program holds.

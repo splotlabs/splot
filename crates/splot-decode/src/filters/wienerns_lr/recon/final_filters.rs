@@ -896,17 +896,17 @@ impl<'a, T: ReconSample> LrSourceRows<'a, T> {
     }
 }
 
-/// The one value that the `width` columns from `col` of every row hold.
+/// The one value that the `width` columns from `col` of every row hold. A
+/// window narrower than one SIMD check is checked with the columns to its
+/// left that fill one, so it is not flat when they differ.
 fn flat_lr_window<T: ReconSample>(rows: &[&[T]], col: usize, width: usize) -> Option<u16> {
     let value = rows.first()?.get(col)?.to_u16();
+    let end = col.checked_add(width)?;
+    let start = col.min(end.saturating_sub(16));
     rows.iter()
         .all(|row| {
-            col.checked_add(width)
-                .and_then(|end| row.get(col..end))
-                .is_some_and(|row| {
-                    crate::filters::cdef::holds_value(row, value)
-                        .unwrap_or_else(|| row.iter().all(|sample| sample.to_u16() == value))
-                })
+            row.get(start..end)
+                .is_some_and(|row| crate::filters::cdef::holds_value(row, value) == Some(true))
         })
         .then_some(value)
 }

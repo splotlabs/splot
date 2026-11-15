@@ -38,7 +38,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     match mode {
-        SupportedChromaMode::Dc => reconstruct_general_intra_block_rect_with_availability_into(
+        SupportedChromaMode::Dc => reconstruct_general_intra_block_rect_into(
             workspace,
             block,
             plane_id,
@@ -51,7 +51,6 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             ibp_dc,
             None,
             availability,
-            bit_depth,
         ),
         SupportedChromaMode::Smooth
         | SupportedChromaMode::SmoothVertical
@@ -86,7 +85,6 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             qindex,
             false,
             availability,
-            bit_depth,
         ),
         SupportedChromaMode::D135Follow | SupportedChromaMode::D135 if x == 0 && y == 0 => {
             reconstruct_general_intra_chroma_directional_first_into(
@@ -113,7 +111,6 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 None,
-                bit_depth,
                 availability,
             )
         }
@@ -129,7 +126,6 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 None,
-                bit_depth,
                 availability,
             )
         }
@@ -158,7 +154,6 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 None,
-                bit_depth,
                 availability,
             )
         }
@@ -177,7 +172,6 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 None,
                 dpcm,
                 availability,
-                bit_depth,
             )
         }
         SupportedChromaMode::Horizontal if x == 0 && y == 0 => {
@@ -209,7 +203,6 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 None,
                 dpcm,
                 availability,
-                bit_depth,
             )
         }
         SupportedChromaMode::D45Follow
@@ -238,7 +231,6 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             None,
             dpcm,
             availability,
-            bit_depth,
             OneSidedEdgeFilter::default(),
         ),
         SupportedChromaMode::D203Follow | SupportedChromaMode::D203 => {
@@ -260,7 +252,6 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 None,
                 dpcm,
                 availability,
-                bit_depth,
                 OneSidedEdgeFilter::default(),
             )
         }
@@ -381,6 +372,5 @@ fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
         num4_below_left,
         false,
         None,
-        bit_depth,
     )
 }

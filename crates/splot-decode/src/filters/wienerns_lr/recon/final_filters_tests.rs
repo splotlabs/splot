@@ -697,16 +697,12 @@ fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() 
     records.cdef_grid_values.reserve(32);
     records.cdef_strengths.reserve(1);
     records.tx_skip_grid_values.reserve(128);
-    for lut in &mut records.ccso_offset_luts {
-        lut.reserve(16);
-    }
     let enabled = finish(enabled_core(), records);
     let strengths = enabled.cdef_strengths.as_ptr();
     let capacities = (
         enabled.cdef_grid_values.capacity(),
         enabled.cdef_strengths.capacity(),
         enabled.tx_skip_grid_values.capacity(),
-        enabled.ccso_offset_luts.each_ref().map(Vec::capacity),
     );
 
     let mut disabled_core = switchable_core();
@@ -723,7 +719,6 @@ fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() 
             enabled.cdef_grid_values.capacity(),
             enabled.cdef_strengths.capacity(),
             enabled.tx_skip_grid_values.capacity(),
-            enabled.ccso_offset_luts.each_ref().map(Vec::capacity),
         ),
         capacities
     );
@@ -1450,7 +1445,7 @@ fn flat_lr_strips_match_the_unsplit_block_for_both_initializations() {
 
 /// A strip is flat only when its whole tap reach holds one value no larger
 /// than the maximum sample; the last strip's reach is narrower than one
-/// SIMD check.
+/// SIMD check, so the columns to its left that fill one count too.
 #[test]
 fn a_differing_sample_in_a_strip_reach_breaks_only_that_strip() {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
@@ -1471,7 +1466,10 @@ fn a_differing_sample_in_a_strip_reach_breaks_only_that_strip() {
             samples[row][col] = 8;
             let expected: Vec<_> = (0..width)
                 .step_by(64)
-                .map(|x| (!(x..x + 64.min(width - x) + 2 * R).contains(&col)).then_some(7))
+                .map(|x| {
+                    let end = x + 64.min(width - x) + 2 * R;
+                    (!(x.min(end.saturating_sub(16))..end).contains(&col)).then_some(7)
+                })
                 .collect();
             assert_eq!(strips(&samples, 1023), expected, "row {row} col {col}");
         }

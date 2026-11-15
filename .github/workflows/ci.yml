@@ -7,7 +7,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, edited, ready_for_review]
+    # No `edited`: a title or body edit does not restart CI. pr-title.yml checks the title.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,7 +16,8 @@ env:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Runs on main finish, so main saves the caches that pull requests restore.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -32,16 +34,17 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Cache cargo registry, git, and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - id: cargo-cache
+        name: Restore cargo registry, git, and third-party target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-v2-
+            ${{ runner.os }}-cargo-v3-
 
       - name: Install typos and cargo-machete
         uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
@@ -67,12 +70,10 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_COMMIT_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_COMMIT_RANGE: ${{ github.event.before }}..${{ github.sha }}
         run: |
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            cargo xtask check-conventional-title "$PR_TITLE"
             cargo xtask check-conventional-commits "$PR_COMMIT_RANGE"
           else
             if [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
@@ -82,7 +83,64 @@ jobs:
             cargo xtask check-conventional-commits "$PUSH_COMMIT_RANGE"
           fi
 
-      - run: cargo xtask ci
+      - run: cargo xtask ci --exclude-tests splot-encode
+
+      # Checkout gives the sources new mtimes, so workspace crates compile again. Keep third-party artifacts only.
+      - name: Remove workspace artifacts before the cache save
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: |
+          rm -rf target/doc
+          find target \( -name '*splot*' -o -name '*xtask*' \) -prune -exec rm -rf {} +
+          find target -path '*/deps/*' -type f ! -name 'lib*' ! -name '*.d' -delete
+
+      - name: Save cargo cache (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  # The splot-encode tests that `ci` leaves out, in two shards that together select every test once.
+  # The wavefront_search test alone runs for about 4.6 minutes, so it has its own shard.
+  test-encode:
+    runs-on: ubuntu-latest
+    env:
+      FILTER: "intra_frame::tests::wavefront_search::"
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [wavefront-search, rest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Restore cargo registry, git, and third-party target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-v3-
+
+      - name: Test splot-encode
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          if [ "$SHARD" = wavefront-search ]; then
+            cargo test -p splot-encode --all-targets --locked -- "$FILTER"
+          else
+            cargo test -p splot-encode --all-targets --locked -- --skip "$FILTER"
+          fi
 
   decode-release:
     runs-on: ubuntu-latest
@@ -94,45 +152,8 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Cache cargo registry, git, and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-release-v1-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-v1-
-
+      # No cargo cache: third-party crates take about 12 s of a release build.
       - run: cargo test -p splot-decode --release --lib --locked
-
-  dav2d-test-data:
-    runs-on: ubuntu-latest
-    env:
-      DAV2D_TEST_DATA_REV: ca31004227c1f6eaad79c380edf33d1e509d7ff8
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install pinned Rust toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-
-      - name: Clone pinned dav2d test data
-        env:
-          TEST_DATA_DIR: ${{ runner.temp }}/dav2d-test-data
-        run: |
-          git clone --no-checkout https://code.videolan.org/videolan/dav2d-test-data.git "$TEST_DATA_DIR"
-          git -C "$TEST_DATA_DIR" checkout --detach "$DAV2D_TEST_DATA_REV"
-
-      - name: Build splot
-        run: cargo build --release -p splot-cli --locked
-
-      - name: Verify upstream AVM corpus hashes
-        env:
-          TEST_DATA_DIR: ${{ runner.temp }}/dav2d-test-data
-        run: python3 scripts/check-external-vectors.py dav2d "$TEST_DATA_DIR"
 
   ewouth-av2-samples:
     runs-on: ubuntu-latest
@@ -233,31 +254,39 @@ jobs:
   fuzz-list:
     runs-on: ubuntu-latest
     outputs:
-      targets: ${{ steps.list.outputs.targets }}
+      groups: ${{ steps.list.outputs.groups }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # One job per group of required features: it builds the splot crates once.
       - id: list
-        name: Enumerate registered fuzz targets
+        name: Group the fuzz targets by required features
         run: |
-          targets=$(python3 -c '
-          import json, tomllib
+          groups=$(python3 -c '
+          import json, sys, tomllib
+          group_of = {("core",): "core,validate", ("validate",): "core,validate", ("recon",): "recon", ("decode",): "decode,encode", ("encode",): "decode,encode"}
           with open("fuzz/Cargo.toml", "rb") as f:
-              manifest = tomllib.load(f)
-          print(json.dumps([b["name"] for b in manifest.get("bin", [])]))
+              bins = tomllib.load(f)["bin"]
+          groups = {}
+          for b in bins:
+              key = tuple(sorted(b.get("required-features", [])))
+              if key not in group_of:
+                  sys.exit("fuzz target %s: no CI group for required-features %s" % (b["name"], list(key)))
+              groups.setdefault(group_of[key], []).append(b["name"])
+          print(json.dumps([{"features": g, "targets": " ".join(t)} for g, t in groups.items()]))
           ')
-          test -n "$targets" && test "$targets" != "[]"
-          echo "targets=$targets" >> "$GITHUB_OUTPUT"
-          echo "Fuzz targets: $targets"
+          echo "groups=$groups" >> "$GITHUB_OUTPUT"
+          echo "Fuzz groups: $groups"
 
   fuzz:
+    name: fuzz (${{ matrix.features }})
     needs: fuzz-list
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.fuzz-list.outputs.targets) }}
+        include: ${{ fromJSON(needs.fuzz-list.outputs.groups) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -275,28 +304,37 @@ jobs:
         with:
           tool: cargo-fuzz
 
-      - name: Cache fuzz build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: fuzz/target
-          key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-fuzz-
-
       - name: Seed every target's corpus from curated fixtures
         run: cargo xtask seed-fuzz-corpus
 
       # Force GNU: AddressSanitizer cannot link the static musl default.
-      - name: Fuzz this target (per-target smoke)
+      # Build and run use the same flags, else `fuzz run` builds again.
+      - name: Build the targets of this group
         env:
-          FUZZ_TARGET: ${{ matrix.target }}
+          FEATURES: ${{ matrix.features }}
+        run: cargo +nightly fuzz build --no-default-features --features "$FEATURES" --target x86_64-unknown-linux-gnu
+
+      # Every target runs, so that one crash does not hide another.
+      - name: Fuzz each target of this group (per-target smoke)
+        env:
+          FEATURES: ${{ matrix.features }}
+          TARGETS: ${{ matrix.targets }}
         run: |
-          cargo +nightly fuzz run "$FUZZ_TARGET" --target x86_64-unknown-linux-gnu -- -max_total_time=45 -timeout=10 -rss_limit_mb=2048
+          failed=""
+          for target in $TARGETS; do
+            echo "=== fuzz $target ==="
+            cargo +nightly fuzz run "$target" --no-default-features --features "$FEATURES" --target x86_64-unknown-linux-gnu -- -max_total_time=45 -timeout=10 -rss_limit_mb=2048 || failed="$failed $target"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::Fuzz targets failed:$failed"
+            exit 1
+          fi
 
       - name: Upload crash artifacts on failure
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: fuzz-artifacts-${{ matrix.target }}
+          name: fuzz-artifacts-${{ matrix.features }}
           path: fuzz/artifacts/**
           if-no-files-found: ignore
 
@@ -336,17 +374,18 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      - name: Cache cargo registry and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - id: cargo-cache
+        name: Restore cargo registry, git, and third-party target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           # The toolchain is in the key: profiles from another LLVM do not merge.
-          key: ${{ runner.os }}-cargo-cov-v2-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-cov-v3-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-cov-v2-${{ hashFiles('rust-toolchain.toml') }}-
+            ${{ runner.os }}-cargo-cov-v3-${{ hashFiles('rust-toolchain.toml') }}-
 
       # The gate covers splot-validate and splot-tables; dropping splot-encode's
       # tests does not lower it (96.32% -> 96.33% gated lines when measured).
@@ -366,6 +405,24 @@ jobs:
           path: lcov.info
           if-no-files-found: warn
 
+      - name: Remove workspace artifacts before the cache save
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: |
+          rm -rf target/doc
+          find target \( -name '*splot*' -o -name '*xtask*' \) -prune -exec rm -rf {} +
+          find target -path '*/deps/*' -type f ! -name 'lib*' ! -name '*.d' -delete
+          find target \( -name '*.profraw' -o -name '*.profdata' \) -delete
+
+      - name: Save cargo cache (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
   perf:
     runs-on: ubuntu-latest
     env:
@@ -380,6 +437,19 @@ jobs:
 
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
+
+      # The gates below reuse this release build of splot.
+      - name: Build splot
+        run: cargo build --release -p splot-cli --locked
+
+      - name: Verify upstream AVM corpus hashes (dav2d test data)
+        env:
+          DAV2D_TEST_DATA_REV: ca31004227c1f6eaad79c380edf33d1e509d7ff8
+          TEST_DATA_DIR: ${{ runner.temp }}/dav2d-test-data
+        run: |
+          git clone --no-checkout https://code.videolan.org/videolan/dav2d-test-data.git "$TEST_DATA_DIR"
+          git -C "$TEST_DATA_DIR" checkout --detach "$DAV2D_TEST_DATA_REV"
+          python3 scripts/check-external-vectors.py dav2d "$TEST_DATA_DIR"
 
       - name: Cache DynamoRIO release
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

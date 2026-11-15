@@ -376,9 +376,6 @@ fn harvesting_recycles_filter_records_into_the_matching_scratch() {
     records.cdef_grid_values.reserve(32);
     records.cdef_strengths.reserve(8);
     records.tx_skip_grid_values.reserve(128);
-    for lut in &mut records.ccso_offset_luts {
-        lut.reserve(16);
-    }
     report.outcome.records = Some(records);
     writer.complete(decoded_frame(4, 4));
     assert!(
@@ -402,11 +399,10 @@ fn harvesting_recycles_filter_records_into_the_matching_scratch() {
 
     let eight = &u8::pools(&mut pools).scratch;
     assert!(eight.frame_filter_records_capacity() >= 64);
-    let (cdef_grid, cdef_strengths, tx_skip, ccso) = eight.derived_filter_record_capacities();
+    let (cdef_grid, cdef_strengths, tx_skip) = eight.derived_filter_record_capacities();
     assert!(cdef_grid >= 32);
     assert!(cdef_strengths >= 8);
     assert!(tx_skip >= 128);
-    assert!(ccso.into_iter().all(|capacity| capacity >= 16));
     assert_eq!(
         u16::pools(&mut pools)
             .scratch

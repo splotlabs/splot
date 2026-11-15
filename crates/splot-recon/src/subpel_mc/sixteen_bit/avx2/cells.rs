@@ -7,7 +7,7 @@
 //! program kernel that runs a grid of cells from their placements.
 
 use super::super::super::block::{Block, Geometry, Taps, Window};
-use super::super::super::cell::{Cell as ProgramCell, Plane, Written};
+use super::super::super::cell::{Cell as ProgramCell, Plane, Written, fullpel_u16};
 use super::super::super::rows;
 use super::super::super::{CellPlacement, ReferencePlaneView};
 use super::{
@@ -276,11 +276,12 @@ fn store_cell<const W: usize>(
         return false;
     }
     let still = |placed: &Placed| !placed.1 && placed.2.is_none() && placed.3.is_none();
-    if still(a) && still(b) && (0..=16).contains(&forward) {
+    if still(a) && still(b) {
         let sources = [(sources[0], a.0.stride), (sources[1], b.0.stride)];
         let origins = [a.0.base, b.0.base];
-        super::super::super::cell::fullpel_u16(sources, origins, W, (forward, max), output, stride);
-        return true;
+        if fullpel_u16(sources, origins, W, (forward, max), output, stride) {
+            return true;
+        }
     }
     let (Some(first), Some(second)) = (
         cell_of::<W>(t, sources[0], a),

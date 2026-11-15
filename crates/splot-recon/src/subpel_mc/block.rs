@@ -869,7 +869,7 @@ fn compound_blocks<T: Sample, O: ReconSample>(
     let still = blocks
         .iter()
         .all(|block| block.horizontal.is_none() && block.vertical.is_none());
-    if still && w == h && (w == 4 || w == 8) && (0..=16).contains(&forward) {
+    if still && w == h && (w == 4 || w == 8) {
         let origins = blocks.map(|block| block.origin);
         if let (Some(first), Some(second), Some(output)) = (
             T::u8_slice(blocks[0].source),
@@ -877,8 +877,9 @@ fn compound_blocks<T: Sample, O: ReconSample>(
             O::u8_slice_mut(&mut *output),
         ) {
             let sources = [(first, blocks[0].stride), (second, blocks[1].stride)];
-            super::cell::fullpel_u8(sources, origins, w, forward, output, stride);
-            return true;
+            if super::cell::fullpel_u8(sources, origins, w, forward, output, stride) {
+                return true;
+            }
         }
         if let (Some(first), Some(second), Some(output)) = (
             T::u16_slice(blocks[0].source),
@@ -886,8 +887,9 @@ fn compound_blocks<T: Sample, O: ReconSample>(
             O::u16_slice_mut(&mut *output),
         ) {
             let sources = [(first, blocks[0].stride), (second, blocks[1].stride)];
-            super::cell::fullpel_u16(sources, origins, w, (forward, max), output, stride);
-            return true;
+            if super::cell::fullpel_u16(sources, origins, w, (forward, max), output, stride) {
+                return true;
+            }
         }
     }
     if let (Some(first), Some(second), Some(output)) = (
