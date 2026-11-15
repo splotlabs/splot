@@ -10,7 +10,7 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Level;
-use fearless_simd::{Bytes, Simd, SimdBase, i16x8, i16x16, u16x8, u16x16, u64x4};
+use fearless_simd::{Bytes, Simd, SimdBase, i16x8, i16x16, u8x16, u16x8, u16x16, u64x4};
 use splot_core::tables::conversion::{Q_FIRST, Q_THRESH_MULTS, W_MULT};
 
 use crate::intra_dc_math::validate_sample_type;
@@ -374,8 +374,22 @@ fn too_short(boundary: usize, len: usize) -> ReconError {
 trait EdgeSample: Copy + Default {
     fn load16<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x16<S>;
     fn store16<S: Simd>(simd: S, samples: &mut [Self], at: usize, values: i16x16<S>);
-    fn load8<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x8<S>;
-    fn store8<S: Simd>(simd: S, samples: &mut [Self], at: usize, values: i16x8<S>);
+    /// `s[-4..4]` of each of `lines` across a vertical edge, one vector per
+    /// `j` with one lane per line.
+    fn load_columns<S: Simd>(
+        simd: S,
+        samples: &[Self],
+        stride: usize,
+        lines: &[usize; 8],
+    ) -> [i16x8<S>; 8];
+    /// Stores `columns` back as [`EdgeSample::load_columns`] loaded them.
+    fn store_columns<S: Simd>(
+        simd: S,
+        samples: &mut [Self],
+        stride: usize,
+        lines: &[usize; 8],
+        columns: [i16x8<S>; 8],
+    );
 }
 
 impl EdgeSample for u8 {
@@ -395,23 +409,74 @@ impl EdgeSample for u8 {
             .store_slice(&mut samples[at..at + LANES]);
     }
 
-    fn load8<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x8<S> {
-        let mut bytes = [0; LANES];
-        for (byte, &sample) in bytes.iter_mut().zip(&samples[at..at + 8]) {
-            *byte = sample;
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn load_columns<S: Simd>(
+        simd: S,
+        samples: &[Self],
+        stride: usize,
+        lines: &[usize; 8],
+    ) -> [i16x8<S>; 8] {
+        let columns = portable::transpose_bytes(
+            simd,
+            [
+                line_pair(simd, samples, stride, [lines[0], lines[2]]),
+                line_pair(simd, samples, stride, [lines[1], lines[3]]),
+                line_pair(simd, samples, stride, [lines[4], lines[6]]),
+                line_pair(simd, samples, stride, [lines[5], lines[7]]),
+            ],
+        );
+        let mut out = [i16x8::splat(simd, 0); 8];
+        for (k, bytes) in columns.into_iter().enumerate() {
+            let (low, high) = simd.widen_u8x16(bytes);
+            (out[2 * k], out[2 * k + 1]) = (low.bitcast(), high.bitcast());
         }
-        simd.widen_u8x16(fearless_simd::u8x16::from_slice(simd, &bytes))
-            .0
-            .bitcast()
+        out
     }
 
-    fn store8<S: Simd>(simd: S, samples: &mut [Self], at: usize, values: i16x8<S>) {
-        let values = values.bitcast();
-        let bytes = simd.narrow_u16x8(values, values).to_array();
-        for (sample, byte) in samples[at..at + 8].iter_mut().zip(bytes) {
-            *sample = byte;
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn store_columns<S: Simd>(
+        simd: S,
+        samples: &mut [Self],
+        stride: usize,
+        lines: &[usize; 8],
+        columns: [i16x8<S>; 8],
+    ) {
+        let narrow = |a: i16x8<S>, b: i16x8<S>| simd.narrow_u16x8(a.bitcast(), b.bitcast());
+        let [c0, c1, c2, c3, c4, c5, c6, c7] = columns;
+        let rows = portable::transpose_bytes(
+            simd,
+            [
+                narrow(c0, c2),
+                narrow(c1, c3),
+                narrow(c4, c6),
+                narrow(c5, c7),
+            ],
+        );
+        for (k, bytes) in rows.into_iter().enumerate() {
+            let bytes = bytes.to_array();
+            let (a, b) = (
+                lines[2 * k] * stride + REACH / 2,
+                lines[2 * k + 1] * stride + REACH / 2,
+            );
+            samples[a..a + 8].copy_from_slice(&bytes[..8]); // splot-copy-ok: a vector half into one line
+            samples[b..b + 8].copy_from_slice(&bytes[8..]); // splot-copy-ok: a vector half into one line
         }
     }
+}
+
+/// `s[-4..4]` of lines `pair[0]` and `pair[1]` across a vertical edge as one
+/// vector.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn line_pair<S: Simd>(simd: S, samples: &[u8], stride: usize, pair: [usize; 2]) -> u8x16<S> {
+    let mut bytes = [0; LANES];
+    for (half, line) in bytes.chunks_exact_mut(8).zip(pair) {
+        let at = line * stride + REACH / 2;
+        half.copy_from_slice(&samples[at..at + 8]); // splot-copy-ok: one line into a vector half
+    }
+    u8x16::from_slice(simd, &bytes)
 }
 
 impl EdgeSample for u16 {
@@ -431,16 +496,35 @@ impl EdgeSample for u16 {
 
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
-    fn load8<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x8<S> {
-        u16x8::from_slice(simd, &samples[at..at + 8]).bitcast()
+    fn load_columns<S: Simd>(
+        simd: S,
+        samples: &[Self],
+        stride: usize,
+        lines: &[usize; 8],
+    ) -> [i16x8<S>; 8] {
+        let mut rows = [i16x8::splat(simd, 0); 8];
+        for (row, &line) in rows.iter_mut().zip(lines) {
+            let at = line * stride + REACH / 2;
+            *row = u16x8::from_slice(simd, &samples[at..at + 8]).bitcast();
+        }
+        portable::transpose8(simd, rows)
     }
 
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
-    fn store8<S: Simd>(_simd: S, samples: &mut [Self], at: usize, values: i16x8<S>) {
-        values
-            .bitcast::<u16x8<S>>()
-            .store_slice(&mut samples[at..at + 8]);
+    fn store_columns<S: Simd>(
+        simd: S,
+        samples: &mut [Self],
+        stride: usize,
+        lines: &[usize; 8],
+        columns: [i16x8<S>; 8],
+    ) {
+        for (values, &line) in portable::transpose8(simd, columns).into_iter().zip(lines) {
+            let at = line * stride + REACH / 2;
+            values
+                .bitcast::<u16x8<S>>()
+                .store_slice(&mut samples[at..at + 8]);
+        }
     }
 }
 
@@ -709,7 +793,7 @@ fn portable_class<S: Simd, E: EdgeSample, const VERTICAL: bool, const WIDEST: us
 }
 
 mod portable {
-    use fearless_simd::{Bytes, Simd, SimdBase, i16x8, i32x4, i64x2, u8x16, u16x8, u64x2};
+    use fearless_simd::{Bytes, Simd, SimdBase, i16x8, i32x4, i64x2, u8x16, u16x8, u32x4, u64x2};
 
     use super::{
         CLAMP, DeblockEdge, EdgeSample, LINES, Q_FIRST, REACH, ROWS, SEGMENTS, W_MULT, WIDTHS,
@@ -811,7 +895,7 @@ mod portable {
         reason = "keeps the portable lanes in registers"
     )]
     #[inline(always)]
-    fn transpose8<S: Simd>(simd: S, x: [i16x8<S>; 8]) -> [i16x8<S>; 8] {
+    pub(super) fn transpose8<S: Simd>(simd: S, x: [i16x8<S>; 8]) -> [i16x8<S>; 8] {
         let a = [
             simd.zip_low_i16x8(x[0], x[1]).bitcast::<i32x4<S>>(),
             simd.zip_high_i16x8(x[0], x[1]).bitcast::<i32x4<S>>(),
@@ -844,6 +928,31 @@ mod portable {
         ]
     }
 
+    /// The 8x8 byte transpose of lines packed `[l0 | l2]`, `[l1 | l3]`,
+    /// `[l4 | l6]`, `[l5 | l7]`, as columns packed `[c0 | c1]` .. `[c6 | c7]`.
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
+    #[inline(always)]
+    pub(super) fn transpose_bytes<S: Simd>(simd: S, [a, b, c, d]: [u8x16<S>; 4]) -> [u8x16<S>; 4] {
+        let quads = |x: u8x16<S>, y: u8x16<S>| {
+            let (low, high) = (simd.zip_low_u8x16(x, y), simd.zip_high_u8x16(x, y));
+            let (low, high) = (low.bitcast::<u16x8<S>>(), high.bitcast::<u16x8<S>>());
+            (
+                simd.zip_low_u16x8(low, high).bitcast::<u32x4<S>>(),
+                simd.zip_high_u16x8(low, high).bitcast::<u32x4<S>>(),
+            )
+        };
+        let ((ab_low, ab_high), (cd_low, cd_high)) = (quads(a, b), quads(c, d));
+        [
+            simd.zip_low_u32x4(ab_low, cd_low).bitcast(),
+            simd.zip_high_u32x4(ab_low, cd_low).bitcast(),
+            simd.zip_low_u32x4(ab_high, cd_high).bitcast(),
+            simd.zip_high_u32x4(ab_high, cd_high).bitcast(),
+        ]
+    }
+
     /// Loads `lines` across a vertical edge into `rows`: row `REACH + j`
     /// holds `s[j]` of each line, over `s[-8..8]` when `wide`, else over
     /// `s[-4..4]` (the other rows are left as they were).
@@ -871,10 +980,10 @@ mod portable {
                 (rows[j], rows[REACH + j]) = (low, high);
             }
         } else {
-            for (k, &line) in lines.iter().enumerate() {
-                low[k] = E::load8(simd, samples, line * stride + REACH / 2);
-            }
-            for (row, values) in rows[REACH / 2..].iter_mut().zip(transpose8(simd, low)) {
+            for (row, values) in rows[REACH / 2..]
+                .iter_mut()
+                .zip(E::load_columns(simd, samples, stride, lines))
+            {
                 *row = values;
             }
         }
@@ -906,9 +1015,7 @@ mod portable {
                 );
             }
         } else {
-            for (k, values) in transpose8(simd, block(REACH / 2)).into_iter().enumerate() {
-                E::store8(simd, samples, lines[k] * stride + REACH / 2, values);
-            }
+            E::store_columns(simd, samples, stride, lines, block(REACH / 2));
         }
     }
 
