@@ -707,26 +707,8 @@ fn downsample_luma_unclipped<T: ReconSample>(
     }
     for (row, output) in output.chunks_exact_mut(output_stride).enumerate() {
         let top = &source[scale_y * row * source_stride..];
-        let Some(filter_index) = filter_420 else {
-            for (col, slot) in output.iter_mut().enumerate() {
-                *slot = top[scale_x * col].to_u16();
-            }
-            continue;
-        };
-        let bottom = &source[(scale_y * row + 1) * source_stride..];
         for (col, slot) in output.iter_mut().enumerate() {
-            let x = scale_x * col;
-            if filter_index == PICK_420 {
-                *slot = top[x].to_u16();
-                continue;
-            }
-            let left = u32::from(top[x].to_u16()) + u32::from(bottom[x].to_u16());
-            let sum = if filter_index == 1 {
-                left * 2
-            } else {
-                left + u32::from(top[x + 1].to_u16()) + u32::from(bottom[x + 1].to_u16())
-            };
-            *slot = (sum >> 2) as u16;
+            *slot = top[scale_x * col].to_u16();
         }
     }
 }

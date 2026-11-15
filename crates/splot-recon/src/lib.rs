@@ -164,7 +164,7 @@ pub use intra_directional_angle::{
     predict_intra_middle_directional_angle_rect_idif_mrl_into,
     predict_intra_middle_directional_angle_rect_into,
 };
-pub use intra_ibp_angular::{apply_ibp_dr_blend_rect, ibp_blend_fires};
+pub use intra_ibp_angular::apply_ibp_dr_blend_rect;
 pub use intra_ibp_dc::predict_intra_ibp_dc_rect_into;
 pub use intra_smooth::{
     IntraSmoothEdge, IntraSmoothEdges, IntraSmoothFrameRequest, IntraSmoothMode,
