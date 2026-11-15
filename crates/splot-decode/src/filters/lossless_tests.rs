@@ -33,4 +33,14 @@ fn grid_marks_luma_and_subsampled_chroma_cells() {
     assert!(grid.plane_sample_lossless(PlaneId::U, 12, 8, 1, 1));
     assert!(grid.plane_sample_lossless(PlaneId::V, 12, 8, 1, 1));
     assert!(!grid.plane_sample_lossless(PlaneId::V, 4, 4, 1, 1));
+    assert!(grid.cdef_chroma_lossless(4, 6));
+    assert!(!grid.cdef_chroma_lossless(4, 4));
+
+    let cells = grid.into_cells();
+    let retained = cells.each_ref().map(Vec::as_ptr);
+    let reused =
+        LosslessBlockGrid::from_deblock_blocks_reusing((8, 8), &chroma, &luma, cells).unwrap();
+    assert!(reused.cdef_luma_lossless(4, 6) && reused.cdef_chroma_lossless(0, 2));
+    let reused = reused.into_cells();
+    assert_eq!(reused.each_ref().map(Vec::as_ptr), retained);
 }

@@ -107,95 +107,73 @@ impl CdefUnitGrid {
     }
 }
 
+/// Whether each 8x8 block of a `rows` by `cols` MI frame, clipped to the
+/// frame, is all skipped.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CdefSkipGrid {
     rows: usize,
     cols: usize,
-    values: Vec<bool>,
-    /// Whether each 8x8 block, clipped to the grid, is all skipped.
-    skipped_8x8: Vec<bool>,
+    skipped_8x8: Vec<u8>,
 }
 
 impl CdefSkipGrid {
-    pub(crate) fn new(rows: usize, cols: usize, values: Vec<bool>) -> Result<Self, CdefError> {
+    /// Reduces the MI cells `values` (1 for skipped) in place. Each block
+    /// lands at or before its own first cell, so no unread cell is lost.
+    pub(crate) fn new(rows: usize, cols: usize, mut values: Vec<u8>) -> Result<Self, CdefError> {
         validate_grid_len(rows, cols, values.len())?;
-        let mut skipped_8x8 = Vec::with_capacity(rows.div_ceil(STEP4) * cols.div_ceil(STEP4));
+        let blocks = cols.div_ceil(STEP4);
         for row in (0..rows).step_by(STEP4) {
+            let lines = [row * cols, (row + 1).min(rows - 1) * cols];
             for col in (0..cols).step_by(STEP4) {
-                let row_end = row.saturating_add(STEP4).min(rows);
-                let col_end = col.saturating_add(STEP4).min(cols);
-                skipped_8x8.push(
-                    (row..row_end).all(|row| (col..col_end).all(|col| values[row * cols + col])),
-                );
+                let end = (col + STEP4).min(cols);
+                let skipped = lines.iter().all(|&line| {
+                    values
+                        .get(line + col..line + end)
+                        .is_some_and(|cells| cells.iter().all(|&cell| cell == 1))
+                });
+                if let Some(block) = values.get_mut(row / STEP4 * blocks + col / STEP4) {
+                    *block = u8::from(skipped);
+                }
             }
         }
+        values.truncate(rows.div_ceil(STEP4) * blocks);
         Ok(Self {
             rows,
             cols,
-            values,
-            skipped_8x8,
+            skipped_8x8: values,
         })
+    }
+
+    pub(crate) fn into_values(self) -> Vec<u8> {
+        self.skipped_8x8
     }
 
     /// [`CdefSkipGrid::all_skipped_8x8`] of the `CDEF_SEGMENT_BLOCKS` blocks
     /// from `(mi_row, mi_col)` on, or `None` unless they all lie inside the
-    /// grid of a frame `mi_rows` by `mi_cols`.
-    fn segment_skipped(
-        &self,
-        mi_row: usize,
-        mi_col: usize,
-        mi_rows: usize,
-        mi_cols: usize,
-    ) -> Option<[bool; CDEF_SEGMENT_BLOCKS]> {
-        if (mi_rows, mi_cols) != (self.rows, self.cols)
-            || !mi_row.is_multiple_of(STEP4)
-            || !mi_col.is_multiple_of(STEP4)
-            || mi_col + SEGMENT_MI > mi_cols
-        {
+    /// frame.
+    fn segment_skipped(&self, mi_row: usize, mi_col: usize) -> Option<[bool; CDEF_SEGMENT_BLOCKS]> {
+        if mi_col + SEGMENT_MI > self.cols {
             return None;
         }
-        let start = mi_row / STEP4 * mi_cols.div_ceil(STEP4) + mi_col / STEP4;
-        self.skipped_8x8.get(start..)?.first_chunk().copied()
+        let start = mi_row / STEP4 * self.cols.div_ceil(STEP4) + mi_col / STEP4;
+        let blocks = self
+            .skipped_8x8
+            .get(start..)?
+            .first_chunk::<CDEF_SEGMENT_BLOCKS>()?;
+        Some(blocks.map(|skipped| skipped != 0))
     }
 
-    fn all_skipped_8x8(
-        &self,
-        mi_row: usize,
-        mi_col: usize,
-        mi_rows: usize,
-        mi_cols: usize,
-    ) -> Result<bool, CdefError> {
-        if (mi_rows, mi_cols) == (self.rows, self.cols)
-            && mi_row.is_multiple_of(STEP4)
-            && mi_col.is_multiple_of(STEP4)
-            && mi_col < mi_cols
-            && let Some(&skipped) = self
-                .skipped_8x8
-                .get(mi_row / STEP4 * mi_cols.div_ceil(STEP4) + mi_col / STEP4)
-        {
-            return Ok(skipped);
-        }
-        let row_end = mi_row.saturating_add(STEP4).min(mi_rows);
-        let col_end = mi_col.saturating_add(STEP4).min(mi_cols);
-        if row_end <= mi_row || col_end <= mi_col {
-            return Ok(false);
-        }
-        for row in mi_row..row_end {
-            for col in mi_col..col_end {
-                if row >= self.rows || col >= self.cols {
-                    return Err(CdefError::Geometry);
-                }
-                let skipped = self
-                    .values
-                    .get(row * self.cols + col)
-                    .copied()
-                    .ok_or(CdefError::Geometry)?;
-                if !skipped {
-                    return Ok(false);
-                }
-            }
-        }
-        Ok(true)
+    /// Whether the 8x8 block at the even MI position `(mi_row, mi_col)` is all
+    /// skipped.
+    fn all_skipped_8x8(&self, mi_row: usize, mi_col: usize) -> Result<bool, CdefError> {
+        self.skipped_8x8
+            .get(mi_row / STEP4 * self.cols.div_ceil(STEP4) + mi_col / STEP4)
+            .map(|&skipped| skipped != 0)
+            .ok_or(CdefError::Geometry)
+    }
+
+    fn fits(&self, mi_size: (usize, usize)) -> bool {
+        (self.rows, self.cols) == mi_size
     }
 }
 
@@ -300,14 +278,16 @@ pub(crate) fn cdef_stripe_identity(
         };
         for r in (r0.max(r_start)..(r0 + CDEF_UNIT_MI).min(r_end)).step_by(STEP4) {
             for c in (c0..(c0 + CDEF_UNIT_MI).min(mi_cols)).step_by(STEP4) {
-                if !skip_grid.all_skipped_8x8(r, c, mi_rows, mi_cols)? {
+                if !skip_grid.all_skipped_8x8(r, c)? {
                     return Ok(zero);
                 }
             }
         }
         Ok([true; 2])
     };
-    if !r_start.is_multiple_of(STEP4) {
+    if !r_start.is_multiple_of(STEP4)
+        || skip_grid.is_some_and(|grid| !grid.fits((mi_rows, mi_cols)))
+    {
         return [false; 2];
     }
     let mut identity = [true; 2];
@@ -371,17 +351,16 @@ impl CdefBlockLookup<'_> {
     #[inline(always)]
     fn block_planes(&self, r: usize, c: usize) -> Result<Option<CdefSegmentBlock>, CdefError> {
         if let Some(skip_grid) = self.skip_grid
-            && skip_grid.all_skipped_8x8(r, c, self.mi_rows, self.mi_cols)?
+            && skip_grid.all_skipped_8x8(r, c)?
         {
             return Ok(None);
         }
         let luma_lossless = self
             .lossless_grid
             .is_some_and(|grid| grid.cdef_luma_lossless(r, c));
-        let chroma_lossless = self.lossless_grid.is_some_and(|grid| {
-            grid.cdef_chroma_lossless(PlaneId::U, r, c)
-                && grid.cdef_chroma_lossless(PlaneId::V, r, c)
-        });
+        let chroma_lossless = self
+            .lossless_grid
+            .is_some_and(|grid| grid.cdef_chroma_lossless(r, c));
         if luma_lossless && (!self.has_chroma || chroma_lossless) {
             return Ok(None);
         }
@@ -406,7 +385,7 @@ impl CdefBlockLookup<'_> {
         if self.lossless_grid.is_none() {
             let skipped = match self.skip_grid {
                 None => Some([false; CDEF_SEGMENT_BLOCKS]),
-                Some(grid) => grid.segment_skipped(r, c, self.mi_rows, self.mi_cols),
+                Some(grid) => grid.segment_skipped(r, c),
             };
             if let Some(skipped) = skipped {
                 return Ok(skipped.map(|skipped| {
@@ -469,11 +448,7 @@ fn cdef_initializations(
     geometry: [Option<CdefPlaneGeometry>; 3],
     luma_rows: (usize, usize),
 ) -> [StripeInitialization; 3] {
-    let Some(lookup) = lookup.filter(|lookup| {
-        lookup
-            .skip_grid
-            .is_none_or(|grid| (grid.rows, grid.cols) == (lookup.mi_rows, lookup.mi_cols))
-    }) else {
+    let Some(lookup) = lookup else {
         return [StripeInitialization::CopyAll; 3];
     };
     let r_start = luma_rows.0 / MI_SIZE;
@@ -511,7 +486,7 @@ fn copy_unfiltered_blocks<T: ReconSample>(
     } else {
         (lookup.sub_x, lookup.sub_y)
     };
-    let (mi_rows, mi_cols) = (lookup.mi_rows, lookup.mi_cols);
+    let mi_cols = lookup.mi_cols;
     let (width, end_y) = (output.width(), output.end_y().ok_or(CdefError::Geometry)?);
     let per_block = lookup.skip_grid.is_some() || lookup.lossless_grid.is_some();
     let mut r = r_start;
@@ -559,10 +534,10 @@ fn copy_unfiltered_blocks<T: ReconSample>(
             while c < unit_end {
                 let lossless = lookup.lossless_grid.is_some_and(|grid| match plane {
                     PlaneId::Y => grid.cdef_luma_lossless(r, c),
-                    PlaneId::U | PlaneId::V => grid.cdef_chroma_lossless(plane, r, c),
+                    PlaneId::U | PlaneId::V => grid.cdef_chroma_lossless(r, c),
                 });
                 let skipped = match lookup.skip_grid {
-                    Some(grid) => grid.all_skipped_8x8(r, c, mi_rows, mi_cols)?,
+                    Some(grid) => grid.all_skipped_8x8(r, c)?,
                     None => false,
                 };
                 mark(skipped || lossless, c)?;
@@ -630,7 +605,10 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
     luma_output: bool,
 ) -> Result<CdefFrame<'a, T>, CdefError> {
     let (mi_rows, mi_cols) = mi_size;
-    if luma_start >= luma_end || !luma_start.is_multiple_of(STEP4 * MI_SIZE) {
+    if luma_start >= luma_end
+        || !luma_start.is_multiple_of(STEP4 * MI_SIZE)
+        || skip_grid.is_some_and(|grid| !grid.fits(mi_size))
+    {
         return Err(CdefError::Geometry);
     }
     let coeff_shift = u32::from(bit_depth.bits()) - 8;
@@ -800,9 +778,6 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         }
         let mut pad = [0u16; CDEF_PADDED_AREA];
         let mut segment = CdefSegmentScratch::default();
-        let skip_grid_fits = lookup
-            .skip_grid
-            .is_none_or(|grid| (grid.rows, grid.cols) == (mi_rows, mi_cols));
         while r < r_end {
             let y = r * MI_SIZE;
             let reach = |plane: FramePlane<'a, T>, sub: usize| {
@@ -822,7 +797,6 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
                 };
                 let params = lookup.strengths.get(strength_index).copied();
                 if let Some(params) = params
-                    && skip_grid_fits
                     && unit_end <= mi_cols
                     && let Some(values) =
                         flat_segment(lookup, params, (r, c), row_span, whole_y, whole_u, whole_v)
