@@ -312,7 +312,7 @@ jobs:
       - name: Build the targets of this group
         env:
           FEATURES: ${{ matrix.features }}
-        run: cargo +nightly fuzz build --no-default-features --features "$FEATURES" --target x86_64-unknown-linux-gnu
+        run: cargo +nightly fuzz build --no-default-features --features "$FEATURES" --codegen-units 16 --target x86_64-unknown-linux-gnu
 
       # Every target runs, so that one crash does not hide another.
       - name: Fuzz each target of this group (per-target smoke)
@@ -323,7 +323,7 @@ jobs:
           failed=""
           for target in $TARGETS; do
             echo "=== fuzz $target ==="
-            cargo +nightly fuzz run "$target" --no-default-features --features "$FEATURES" --target x86_64-unknown-linux-gnu -- -max_total_time=45 -timeout=10 -rss_limit_mb=2048 || failed="$failed $target"
+            cargo +nightly fuzz run "$target" --no-default-features --features "$FEATURES" --codegen-units 16 --target x86_64-unknown-linux-gnu -- -max_total_time=45 -timeout=10 -rss_limit_mb=2048 || failed="$failed $target"
           done
           if [ -n "$failed" ]; then
             echo "::error::Fuzz targets failed:$failed"
