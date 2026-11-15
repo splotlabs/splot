@@ -77,7 +77,7 @@ pub(crate) const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
 pub(crate) fn decode_frame_from_plan(
     bytes: &[u8],
     options: &DecodeOptions,
-) -> Result<PipelineFrame> {
+) -> Result<PipelineDecodedFrame> {
     let mut frames = decode_frames_from_plan(bytes, options)?;
     if frames.is_empty() {
         return Err(unsupported(
@@ -92,7 +92,7 @@ pub(crate) fn decode_frame_from_plan(
 pub(crate) fn decode_frames_from_plan(
     bytes: &[u8],
     options: &DecodeOptions,
-) -> Result<Vec<PipelineFrame>> {
+) -> Result<Vec<PipelineDecodedFrame>> {
     decode_frames_from_plan_on_threads(bytes, options, 1)
 }
 
@@ -103,13 +103,36 @@ pub(crate) fn decode_frames_from_plan_on_threads(
     bytes: &[u8],
     options: &DecodeOptions,
     threads: usize,
-) -> Result<Vec<PipelineFrame>> {
+) -> Result<Vec<PipelineDecodedFrame>> {
+    collect_frames_from_plan(bytes, options, threads, PipelineFrame::ready_frame)
+}
+
+/// Decodes `bytes` through [`emit_frames`] and keeps `collect` of each emitted
+/// frame. The session detaches held frames, as the streaming decoder does.
+#[cfg(test)]
+pub(crate) fn collect_frames_from_plan<R: Send>(
+    bytes: &[u8],
+    options: &DecodeOptions,
+    threads: usize,
+    mut collect: impl FnMut(&PipelineFrame) -> Result<R> + Send,
+) -> Result<Vec<R>> {
     let threads = NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN);
-    let session = DecodeSession::new(NonZeroUsize::MIN, row_scheduler(threads)?);
+    let session = DecodeSession::detaching_held(NonZeroUsize::MIN, row_scheduler(threads)?);
+    let mut collected = Vec::new();
     splot_parallel::run_on_thread("splot-driver", || {
         let mut source = crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
-        decode_frames_from_plan_impl(&mut source, options, &session, |_| Ok(()), true, |_| Ok(()))
-    })?
+        emit_frames(
+            &mut source,
+            options,
+            &session,
+            |_| Ok(()),
+            |frame| {
+                collected.push(collect(frame)?);
+                Ok(())
+            },
+        )
+    })??;
+    Ok(collected)
 }
 
 /// Decodes every temporal unit of `source` and passes each displayed frame
@@ -121,7 +144,21 @@ pub(crate) fn emit_frames(
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
     emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
 ) -> Result<()> {
-    decode_frames_from_plan_impl(source, options, session, preflight, false, emit).map(drop)
+    let pipeline_capacity = session
+        .frame_delay()
+        .min(NonZeroUsize::new(session.threads()).unwrap_or(NonZeroUsize::MIN));
+    let mut retained = session.take(pipeline_capacity);
+    retained.begin();
+    let decoded = drive_frames(
+        source,
+        options,
+        &mut retained,
+        session.rows(),
+        preflight,
+        emit,
+    );
+    session.keep(retained);
+    decoded
 }
 
 /// Retires unowned frames into their physical entries and returns their planes.
@@ -200,12 +237,11 @@ fn admit_within_reference_store(
     emission: &mut output_schedule::EmissionQueue,
     emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
     retained_frame_bytes: &mut u64,
-    retain_decoded_frames: bool,
 ) -> Result<()> {
     let mut drained = false;
     loop {
         match check(*retained_frame_bytes) {
-            Err(crate::DecodeError::Limit { .. }) if !retain_decoded_frames && !drained => {}
+            Err(crate::DecodeError::Limit { .. }) if !drained => {}
             outcome => return outcome,
         }
         if !ring.harvest_oldest(pools) {
@@ -436,7 +472,7 @@ pub(crate) fn decode_key_frame(
     let buffers = crate::support::decode_buffers::DecodeBuffers::new();
     let mut pools = frame_tasks::RowPools::new(1, 1, &buffers);
     let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN, buffers, 1);
-    let mut frames = FrameStore::new(false, ring.capacity());
+    let mut frames = FrameStore::new(ring.capacity());
     let decoded = decode_key_frame_with_effects(
         None,
         &mut pools,
@@ -592,36 +628,6 @@ fn decode_key_frame_with_effects(
     })
 }
 
-/// Runs the frame loop over the retained decode state. The resolved frame
-/// delay bounds in-flight storage at every worker count.
-#[allow(clippy::too_many_arguments)]
-fn decode_frames_from_plan_impl(
-    source: &mut dyn UnitSource,
-    options: &DecodeOptions,
-    session: &DecodeSession,
-    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
-    retain_decoded_frames: bool,
-    emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
-) -> Result<Vec<PipelineFrame>> {
-    let pipeline_capacity = session
-        .frame_delay()
-        .min(NonZeroUsize::new(session.threads()).unwrap_or(NonZeroUsize::MIN));
-    let mut retained = session.take(pipeline_capacity);
-    retained.begin(retain_decoded_frames);
-    let decoded = drive_frames(
-        source,
-        options,
-        &mut retained,
-        session.rows(),
-        preflight,
-        retain_decoded_frames,
-        emit,
-    );
-    session.keep(retained);
-    let decoded = decoded?;
-    Ok(decoded)
-}
-
 /// Starts the row scheduler of a context with more than one worker thread.
 ///
 /// # Errors
@@ -648,9 +654,8 @@ fn drive_frames(
     retained: &mut frame_store::RetainedDecode,
     rows: Option<&splot_parallel::RowScheduler>,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
-    retain_decoded_frames: bool,
     emit: impl FnMut(&PipelineFrame) -> Result<()>,
-) -> Result<Vec<PipelineFrame>> {
+) -> Result<()> {
     let frame_store::RetainedDecode {
         ring,
         pools,
@@ -662,7 +667,6 @@ fn drive_frames(
         source,
         options,
         preflight,
-        retain_decoded_frames,
         emit,
         rows,
         ring,
@@ -766,21 +770,20 @@ fn decode_frames_in_order(
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
-    retain_decoded_frames: bool,
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
     rows: Option<&splot_parallel::RowScheduler>,
     ring: &mut inflight::InflightRing,
     pools: &mut frame_tasks::RowPools,
     frames: &mut FrameStore,
     input_scratch: &mut InputScratch,
-) -> Result<Vec<PipelineFrame>> {
+) -> Result<()> {
     let InputScratch {
         records,
         obus: obu_storage,
     } = input_scratch;
     let mut stream = RuntimeStream::new(source, records, options.limits());
     let Some(leading_unit) = stream.first_unit()? else {
-        return Ok(Vec::new());
+        return Ok(());
     };
     let key_candidate = stream.first_candidate()?;
     let mut leading_buffer = recycle(core::mem::take(obu_storage));
@@ -1038,23 +1041,16 @@ fn decode_frames_in_order(
             &mut emit,
         )?;
     }
-    if !retain_decoded_frames {
-        reclaim_unowned_frames(
-            frames,
-            &reference,
-            &mut scheduler,
-            &emission_queue,
-            ring,
-            &mut retained_frame_bytes,
-        )?;
-    }
+    reclaim_unowned_frames(
+        frames,
+        &reference,
+        &mut scheduler,
+        &emission_queue,
+        ring,
+        &mut retained_frame_bytes,
+    )?;
     if output_frame_limit_reached(options, scheduler.emitted_count) {
-        emission_queue.flush(frames, &mut emit)?;
-        return if retain_decoded_frames {
-            select_output_frames(frames, scheduler.emitted)
-        } else {
-            Ok(Vec::new())
-        };
+        return emission_queue.flush(frames, &mut emit);
     }
 
     *obu_storage = recycle(leading_buffer);
@@ -1223,16 +1219,14 @@ fn decode_frames_in_order(
                     scheduler.newly(),
                     &mut emit,
                 )?;
-                if !retain_decoded_frames {
-                    reclaim_unowned_frames(
-                        frames,
-                        &reference,
-                        &mut scheduler,
-                        &emission_queue,
-                        ring,
-                        &mut retained_frame_bytes,
-                    )?;
-                }
+                reclaim_unowned_frames(
+                    frames,
+                    &reference,
+                    &mut scheduler,
+                    &emission_queue,
+                    ring,
+                    &mut retained_frame_bytes,
+                )?;
                 *obu_storage = recycle(obu_buffer);
                 if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
@@ -1362,7 +1356,6 @@ fn decode_frames_in_order(
                         &mut emission_queue,
                         &mut emit,
                         &mut retained_frame_bytes,
-                        retain_decoded_frames,
                     )?;
                     let split = rows.filter(|_| {
                         inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
@@ -1549,16 +1542,14 @@ fn decode_frames_in_order(
                         &mut emit,
                     )?;
                 }
-                if !retain_decoded_frames {
-                    reclaim_unowned_frames(
-                        frames,
-                        &reference,
-                        &mut scheduler,
-                        &emission_queue,
-                        ring,
-                        &mut retained_frame_bytes,
-                    )?;
-                }
+                reclaim_unowned_frames(
+                    frames,
+                    &reference,
+                    &mut scheduler,
+                    &emission_queue,
+                    ring,
+                    &mut retained_frame_bytes,
+                )?;
                 *obu_storage = recycle(obu_buffer);
                 if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
@@ -1680,16 +1671,14 @@ fn decode_frames_in_order(
                         &mut emit,
                     )?;
                     reference = key_reference;
-                    if !retain_decoded_frames {
-                        reclaim_unowned_frames(
-                            frames,
-                            &reference,
-                            &mut scheduler,
-                            &emission_queue,
-                            ring,
-                            &mut retained_frame_bytes,
-                        )?;
-                    }
+                    reclaim_unowned_frames(
+                        frames,
+                        &reference,
+                        &mut scheduler,
+                        &emission_queue,
+                        ring,
+                        &mut retained_frame_bytes,
+                    )?;
                     if output_frame_limit_reached(options, scheduler.emitted_count) {
                         break;
                     }
@@ -1720,7 +1709,6 @@ fn decode_frames_in_order(
                     &mut emission_queue,
                     &mut emit,
                     &mut retained_frame_bytes,
-                    retain_decoded_frames,
                 )?;
                 let frame_index = frames.len();
                 let key_frame = decode_key_frame_with_effects(
@@ -1798,16 +1786,14 @@ fn decode_frames_in_order(
                         &mut emit,
                     )?;
                 }
-                if !retain_decoded_frames {
-                    reclaim_unowned_frames(
-                        frames,
-                        &reference,
-                        &mut scheduler,
-                        &emission_queue,
-                        ring,
-                        &mut retained_frame_bytes,
-                    )?;
-                }
+                reclaim_unowned_frames(
+                    frames,
+                    &reference,
+                    &mut scheduler,
+                    &emission_queue,
+                    ring,
+                    &mut retained_frame_bytes,
+                )?;
                 *obu_storage = recycle(obu_buffer);
                 if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
@@ -1834,32 +1820,19 @@ fn decode_frames_in_order(
             &mut emit,
         )?;
         emission_queue.flush(frames, &mut emit)?;
-        if !retain_decoded_frames {
-            ring.harvest_all(pools);
-            reclaim_unowned_frames(
-                frames,
-                &reference,
-                &mut scheduler,
-                &emission_queue,
-                ring,
-                &mut retained_frame_bytes,
-            )?;
-        }
+        ring.harvest_all(pools);
+        reclaim_unowned_frames(
+            frames,
+            &reference,
+            &mut scheduler,
+            &emission_queue,
+            ring,
+            &mut retained_frame_bytes,
+        )?;
     } else {
         emission_queue.flush(frames, &mut emit)?;
     }
-    if !retain_decoded_frames {
-        return Ok(Vec::new());
-    }
-    let emitted = std::mem::take(&mut scheduler.emitted);
-    let limited = match options.output_frame_limit() {
-        Some(limit) => {
-            let limit = usize::try_from(limit.get()).unwrap_or(usize::MAX);
-            emitted.into_iter().take(limit).collect()
-        }
-        None => emitted,
-    };
-    select_output_frames(frames, limited)
+    Ok(())
 }
 
 pub(crate) mod frame_engine;
