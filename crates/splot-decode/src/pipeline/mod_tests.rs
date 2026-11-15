@@ -334,7 +334,10 @@ fn leading_frame_unit_allows_ops_before_sequence()
     assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
     assert_eq!(frame_unit_len, 4);
     assert_eq!(leading_record_inter_frame_unit_start(0, 4, &obus), Some(4));
-    assert!(require_leading_ivf_obu_order(&obus).is_ok());
+    assert!(
+        require_inter_frame_units(&obus, frame_unit_len, "unexpected_leading_obu_after_key")
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -382,7 +385,10 @@ fn leading_frame_unit_allows_film_grain_before_key_and_inter()
     assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
     assert_eq!(frame_unit_len, 5);
     assert_eq!(leading_record_inter_frame_unit_start(0, 6, &obus), Some(5));
-    assert!(require_leading_ivf_obu_order(&obus).is_ok());
+    assert!(
+        require_inter_frame_units(&obus, frame_unit_len, "unexpected_leading_obu_after_key")
+            .is_ok()
+    );
     Ok(())
 }
 

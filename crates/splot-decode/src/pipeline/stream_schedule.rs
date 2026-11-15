@@ -274,18 +274,12 @@ pub(super) fn leading_record_inter_frame_unit_start(
     None
 }
 
-#[cfg(test)]
-pub(super) fn require_leading_ivf_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
-    let (_, frame_unit_len) = require_leading_frame_unit(obus)?;
-    require_inter_frame_units(obus, frame_unit_len, "unexpected_leading_obu_after_key")
-}
-
 fn require_key_ivf_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
     let (_, indices) = require_key_frame_unit(obus)?;
     require_inter_frame_units(obus, indices.suffix_end, "unexpected_leading_obu_after_key")
 }
 
-fn require_inter_frame_units(
+pub(super) fn require_inter_frame_units(
     obus: &[ObuEnvelope<'_>],
     mut index: usize,
     reason: &'static str,
