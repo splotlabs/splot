@@ -437,6 +437,7 @@ impl<'payload> TileParser<'payload> {
             temporal,
             residual_planes,
             filter_records,
+            ops,
             ..
         } = buffers;
         self.residual_planes = residual_planes;
@@ -453,6 +454,7 @@ impl<'payload> TileParser<'payload> {
             temporal,
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             filter_records,
+            ops,
             motion_folded: false,
             failure: ReconRowFailure::None,
         };
@@ -676,6 +678,24 @@ impl TileResolveState {
         if grid.window_violated() {
             return Err(invalid_inter_tile_scheduling_state());
         }
+        let sub = super::block_chroma_subsampling(context.sequence.general.chroma_format_idc);
+        row.ops.clear();
+        row.ops
+            .resize(row.slots.len(), deferred_recon::SimpleOp::default());
+        for entry in &mut row.entries {
+            let Some(index) = entry.slot_index() else {
+                continue;
+            };
+            let Some(LeafSlot::Command(ReconCommand::Inter(command))) = row.slots.get_mut(index)
+            else {
+                continue;
+            };
+            if let Some(op) = command.simple_op_at_resolve(sub)
+                && let Some(target) = row.ops.get_mut(index)
+            {
+                *target = op;
+            }
+        }
         Ok(())
     }
 }
@@ -742,6 +762,13 @@ impl ReconRowEntry {
     fn slot<'a>(&self, slots: &'a [LeafSlot]) -> Option<&'a LeafSlot> {
         match self.state {
             EntryState::Slot(index) => slots.get(index as usize),
+            EntryState::Intra { .. } | EntryState::Spent => None,
+        }
+    }
+
+    pub(super) const fn slot_index(&self) -> Option<usize> {
+        match self.state {
+            EntryState::Slot(index) => Some(index as usize),
             EntryState::Intra { .. } | EntryState::Spent => None,
         }
     }
@@ -904,6 +931,7 @@ pub(super) struct ReconRow {
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     /// The unit's deblock and tx-skip records, published by its resolve.
     pub(super) filter_records: TileFilterRecords,
+    pub(super) ops: Vec<deferred_recon::SimpleOp>,
     /// Whether the prepass derived this unit's motion records into `temporal`,
     /// which it does for a unit it reconstructed in full; the in-order commit
     /// folds them, so it is the band's one writer.
@@ -1017,6 +1045,7 @@ pub(crate) struct ReconRowBuffers {
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     pub(super) filter_records: TileFilterRecords,
+    pub(super) ops: Vec<deferred_recon::SimpleOp>,
     /// The large lists' lengths in the unit these buffers last held.
     pub(super) lengths: crate::support::decode_buffers::UnitLengths,
 }
@@ -1775,6 +1804,7 @@ impl ParseProgress {
             temporal,
             residual_planes,
             filter_records,
+            ops,
             ..
         } = row;
         if let Some(shared) = &self.buffers {
@@ -1787,6 +1817,7 @@ impl ParseProgress {
                 temporal,
                 residual_planes,
                 filter_records,
+                ops,
                 lengths: Default::default(),
             });
         }

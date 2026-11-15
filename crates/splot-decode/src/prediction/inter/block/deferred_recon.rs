@@ -39,6 +39,56 @@ pub(super) struct InterReconCommand {
     pub(super) leaf: u32,
 }
 
+/// Prototype op of a simple inter block (single reference, translational, no
+/// TIP / refine / interintra / BAWP), written at resolve.
+#[derive(Clone, Copy, Default)]
+pub(super) struct SimpleOp {
+    pub(super) kind: u8,
+    pub(super) list: u8,
+    pub(super) chroma: bool,
+    pub(super) segment_id: u8,
+    pub(super) luma: [u16; 4],
+    pub(super) mv: super::super::Mv,
+    pub(super) mv1: super::super::Mv,
+    pub(super) qindex: u32,
+    pub(super) residual: [u32; 2],
+    pub(super) interp: Option<splot_recon::InterpolationFilter>,
+    pub(super) tile_offset: u64,
+    pub(super) luma_start: [i32; 2],
+    pub(super) chroma_rect: [u16; 4],
+    pub(super) chroma_start: [i32; 2],
+}
+
+/// Prototype: one reference list's unscaled views and clip bounds, built once
+/// per row.
+#[derive(Clone, Copy)]
+pub(super) struct RowView<'a, T: ReconSample> {
+    y: splot_recon::ReferencePlaneView<'a, T>,
+    uv: Option<[splot_recon::ReferencePlaneView<'a, T>; 2]>,
+    last: [[i32; 2]; 2],
+}
+
+pub(super) fn row_views<'a, T: ReconSample>(
+    held: &super::super::RowReferences<'a, T>,
+) -> [Option<RowView<'a, T>>; 8] {
+    core::array::from_fn(|list| {
+        let reference = (*held.get(list)?)?;
+        let luma = reference.scaling(PlaneId::Y);
+        if luma.is_scaled() {
+            return None;
+        }
+        let chroma = reference.scaling(PlaneId::U);
+        Some(RowView {
+            y: reference.settled_plane_view(PlaneId::Y)?,
+            uv: reference
+                .settled_plane_view(PlaneId::U)
+                .zip(reference.settled_plane_view(PlaneId::V))
+                .map(|(u, v)| [u, v]),
+            last: [[luma.last_x, luma.last_y], [chroma.last_x, chroma.last_y]],
+        })
+    })
+}
+
 #[derive(Default)]
 #[repr(align(64))]
 pub(super) struct InterReconScratch<T: ReconSample> {
@@ -159,6 +209,54 @@ impl InterReconCommand {
         predict_by_translation_under_integer_mv(&self.syntax, state.core, &mut resolved);
         resolved.apply(&mut self.placed.block);
         Ok(())
+    }
+
+    /// Prototype: the op of a simple block, built at resolve.
+    pub(super) fn simple_op_at_resolve(
+        &mut self,
+        (sub_x, sub_y): (u32, u32),
+    ) -> Option<SimpleOp> {
+        let block = &self.placed.block;
+        if self.is_tip()
+            || !matches!(self.syntax.motion, InterMotionSyntax::Single(_))
+            || block.ref_frame1.is_some()
+            || block.warp_params[0].is_some()
+            || block.warp_params[1].is_some()
+            || block.interintra.is_some()
+            || block.bawp.enabled
+        {
+            return None;
+        }
+        let list = u8::try_from(block.ref_frame0).ok()?;
+        let placed = &self.placed;
+        let residual = block
+            .residual
+            .as_ref()
+            .map_or([0, 0], |r| [r.block_range.start, r.block_range.end]);
+        let rect = placed.motion_compensation_rect();
+        let start = |pos: usize, mv: i32, sub: u32| {
+            ((((pos as i32) << 4) + ((2 * mv) >> sub)) << 6) + 32
+        };
+        let (cx, cy, cw, ch) = rect.plane_rect(PlaneId::U, sub_x, sub_y);
+        Some(SimpleOp {
+            kind: 1,
+            list,
+            chroma: placed.predict_chroma,
+            segment_id: self.segment_id,
+            luma: placed.luma.map(|v| v as u16),
+            mv: block.mv,
+            mv1: block.mv1,
+            qindex: self.qindex,
+            residual,
+            interp: Some(block.interp),
+            tile_offset: self.tile_offset.get() as u64,
+            luma_start: [
+                start(placed.luma_x(), block.mv.col, 0),
+                start(placed.luma_y(), block.mv.row, 0),
+            ],
+            chroma_rect: [cx, cy, cw, ch].map(|v| v as u16),
+            chroma_start: [start(cx, block.mv.col, sub_x), start(cy, block.mv.row, sub_y)],
+        })
     }
 
     pub(super) fn reads_current_frame(&self) -> bool {
@@ -640,6 +738,76 @@ impl<T: ReconSample> InterReconScratch<T> {
             )
         })
     }
+}
+
+/// Prototype: replays a simple op with a direct call; `Ok(false)` when the
+/// row holds no borrow of its reference, for the generic path to take over.
+pub(super) fn replay_simple_op<T: ReconSample>(
+    op: &SimpleOp,
+    workspace: &mut CurrentFrameWorkspace<T>,
+    residual_blocks: &[InterResidualBlock],
+    residual_coeffs: &[i32],
+    shared: &ReconShared<'_, T>,
+    views: &[Option<RowView<'_, T>>; 8],
+) -> Result<bool> {
+    let Some(Some(reference)) = shared.held.get(usize::from(op.list)) else {
+        return Ok(false);
+    };
+    let [x, y, w, h] = op.luma.map(usize::from);
+    let interp = op.interp.unwrap_or(splot_recon::InterpolationFilter::EightTap);
+    let mut sink = WorkspaceSink::Frame(workspace);
+    let direct = views.get(usize::from(op.list)).copied().flatten().is_some_and(|view| {
+        let Ok(rect) = splot_recon::PlaneRect::new(x, y, w, h) else {
+            return false;
+        };
+        let luma = splot_recon::UnscaledPut {
+            rect,
+            start: op.luma_start,
+            last: view.last[0],
+        };
+        if !op.chroma {
+            return splot_recon::subpel_put_block(&mut sink, interp, (&view.y, luma), None)[0];
+        }
+        let [cx, cy, cw, ch] = op.chroma_rect.map(usize::from);
+        let (Some([u, v]), Ok(rect)) = (view.uv, splot_recon::PlaneRect::new(cx, cy, cw, ch))
+        else {
+            return false;
+        };
+        let chroma = splot_recon::UnscaledPut {
+            rect,
+            start: op.chroma_start,
+            last: view.last[1],
+        };
+        splot_recon::subpel_put_block(&mut sink, interp, (&view.y, luma), Some(([&u, &v], chroma)))
+            == [true, true]
+    });
+    if !direct {
+        mc::motion_compensate_single_block_into(
+            &mut sink,
+            *reference,
+            mc::McBlockRect::from_luma_rect(x, y, w, h),
+            op.mv,
+            interp,
+            op.chroma,
+            ByteOffset::new(op.tile_offset),
+        )?;
+    }
+    if op.residual[0] != op.residual[1] {
+        let _segment_scope = FrameQmSegmentScope::install(usize::from(op.segment_id));
+        super::super::add_inter_residual_to_workspace(
+            &mut sink,
+            &super::super::InterResidual {
+                block_range: op.residual[0]..op.residual[1],
+            },
+            residual_blocks,
+            residual_coeffs,
+            op.qindex,
+            shared.luma_use_tcq,
+            shared.residual_use_ddt,
+            shared.bit_depth,
+        )?;
+    }
+    Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]
