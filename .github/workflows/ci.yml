@@ -7,7 +7,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, edited, ready_for_review]
+    # No `edited`: a title or body edit does not restart CI. pr-title.yml checks the title.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 env:
   CARGO_TERM_COLOR: always
@@ -69,12 +70,10 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_COMMIT_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_COMMIT_RANGE: ${{ github.event.before }}..${{ github.sha }}
         run: |
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            cargo xtask check-conventional-title "$PR_TITLE"
             cargo xtask check-conventional-commits "$PR_COMMIT_RANGE"
           else
             if [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
