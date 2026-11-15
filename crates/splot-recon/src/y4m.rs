@@ -52,12 +52,6 @@ pub enum Y4mError {
         /// Format derived from the frame being appended.
         actual: Y4mFrameFormat,
     },
-    /// Checked arithmetic overflowed while deriving output byte sizes.
-    #[error("arithmetic overflow while deriving {context}")]
-    ArithmeticOverflow {
-        /// Short description of the overflowed derivation.
-        context: &'static str,
-    },
     /// The caller-provided writer returned an I/O error.
     #[error("Y4M writer I/O error: {source}")]
     Io {

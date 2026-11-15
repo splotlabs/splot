@@ -123,11 +123,6 @@ fn all_variants() -> Vec<ReconError> {
             value: 500,
             max: 255,
         },
-        ReconError::IntraPredictionOutputSampleOutOfRange {
-            sample_index: 5,
-            value: 600,
-            max: 255,
-        },
         ReconError::IntraPaethEdgeLengthMismatch {
             edge: IntraPaethEdge::TopLeft,
             expected: 4,
@@ -381,10 +376,6 @@ fn all_variants() -> Vec<ReconError> {
             step_x: -3,
             step_y: -5,
         },
-        ReconError::SubpelIntermediateOutOfRange {
-            base: 9,
-            intermediate_height: 8,
-        },
         ReconError::CompoundBlendLengthMismatch {
             left_len: 16,
             right_len: 17,
@@ -394,7 +385,7 @@ fn all_variants() -> Vec<ReconError> {
 
 /// Golden `Display` rendering of each [`all_variants`] entry, in the same order,
 /// captured from the pre-`thiserror` hand-written `Display` impl.
-const EXPECTED: [&str; 89] = [
+const EXPECTED: [&str; 87] = [
     "unsupported AV2 bit_depth_idc 7; expected 0 or 1",
     "unsupported AV2 chroma_format_idc 9; expected 0 through 3",
     "plane width must be greater than zero",
@@ -420,7 +411,6 @@ const EXPECTED: [&str; 89] = [
     "unsupported rectangular intra block log2 size 7x8; expected each dimension 2 through 6",
     "intra prediction above edge length mismatch: expected 8 samples, got 9",
     "intra prediction left edge sample 3 value 500 exceeds maximum 255",
-    "intra prediction output sample 5 value 600 exceeds maximum 255",
     "PAETH intra prediction top-left edge length mismatch: expected 4 samples, got 5",
     "PAETH intra prediction above edge sample 2 value 700 exceeds maximum 255",
     "unsupported one-sided directional intra prediction pAngle 99; expected 45, 67, or 203",
@@ -482,7 +472,6 @@ const EXPECTED: [&str; 89] = [
     "subpel reference plane buffer mismatch: expected 64 samples, got 60",
     "unsupported subpel block dimension 130x140; each side must be at most 256",
     "subpel motion-compensation step must be non-negative: step_x -3, step_y -5",
-    "subpel vertical-pass base row 9 exceeds intermediate height 8",
     "compound blend predictor length mismatch: left 16 samples, right 17 samples",
 ];
 
