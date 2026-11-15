@@ -152,8 +152,6 @@ pub(crate) struct OwnedFilterSetup<T: ReconSample> {
     filter_records: super::FrameFilterRecords,
     sink: FilteredFrameSink<T>,
     stripe_state: Mutex<Vec<StripeLifecycle>>,
-    /// Each stripe's filter outcome, borrowed from the records with the rest.
-    stripe_outcomes: Vec<Option<crate::Result<()>>>,
     deblock_records: Mutex<Option<crate::filters::deblock::OwnedDeblockRecords>>,
     /// Spent stripe windows of a frame that has no decode-wide pool.
     windows: Mutex<Vec<splot_recon::RetiredFramePlanes>>,
@@ -488,7 +486,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 stripe_lifecycles.resize(stripe_count, StripeLifecycle::Pending);
                 stripe_lifecycles
             }),
-            stripe_outcomes: core::mem::take(&mut stripes.outcomes),
             deblock_records: Mutex::new(None),
             windows,
         };
@@ -1213,7 +1210,6 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         self.filter_records.lr_unit_filters = self.lr_unit_filters;
         self.filter_records.stripes.ranges = core::mem::take(&mut self.ranges);
         self.filter_records.stripes.lifecycles = core::mem::take(self.stripe_state.get_mut());
-        self.filter_records.stripes.outcomes = core::mem::take(&mut self.stripe_outcomes);
         self.filter_records.filter_windows = core::mem::take(self.windows.get_mut());
         let has_restored_deblock = self.deblock_records.get_mut().is_some();
         if has_restored_deblock
