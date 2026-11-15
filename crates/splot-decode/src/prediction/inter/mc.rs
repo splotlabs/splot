@@ -23,14 +23,16 @@ use super::reference::{
 };
 use crate::Result;
 use splot_core::span::ByteOffset;
-use splot_recon::math::{clip3, round2_i32};
+use splot_recon::math::clip3;
+#[cfg(test)]
+use splot_recon::math::round2_i32;
 
 mod blend;
 mod compound_average;
 mod compound_mask;
 mod optflow;
 mod refinemv;
-use blend::{blend_compound_average, store_clamped_samples};
+use blend::{blend_compound_average, clip_samples_into};
 use optflow::{CompoundAverageOutput, CompoundMotionGrid, MotionCell};
 pub(crate) use optflow::{
     RefinedUnits, TipUnits, predict_refined_block, predict_tip_units, refine_block_units,
@@ -53,16 +55,14 @@ pub(crate) const MAX_MC_BLOCK_DIM: usize = 128;
 const MAX_MC_BLOCK_SAMPLES: usize = MAX_MC_BLOCK_DIM * MAX_MC_BLOCK_DIM;
 const MAX_REFINEMV_PREDICTION_DIM: usize = MAX_MC_BLOCK_DIM + 8;
 
+/// The warp samples clipped to `0..=max_sample`; `N` is 16 or 64.
 fn clip_and_pack_warp_samples<T: ReconSample, const N: usize>(
     samples: &[i32; N],
     max_sample: i32,
-) -> splot_recon::Result<[T; N]> {
+) -> [T; N] {
     let mut packed = [T::default(); N];
-    for (dst, &sample) in packed.iter_mut().zip(samples) {
-        let clipped = sample.clamp(0, max_sample) as u16;
-        *dst = T::try_from_u16(clipped)?;
-    }
-    Ok(packed)
+    clip_samples_into(samples, max_sample, &mut packed);
+    packed
 }
 
 pub(super) const fn optflow_unit_size(luma_w: usize, luma_h: usize) -> usize {
@@ -849,13 +849,19 @@ fn predict_warp_plane<T: ReconSample>(
         let max_sample = i32::from(bit_depth.max_sample());
         let block_rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
         let direct = sink.with_contiguous_rect_mut(plane, block_rect, |output, stride| {
+            let actual = output.len();
             for i4 in 0..block_h.div_euclid(4) {
                 for j4 in 0..block_w.div_euclid(4) {
-                    let predicted = unit(i4, j4)?;
-                    for (row, predicted) in predicted.as_chunks::<4>().0.iter().enumerate() {
+                    let packed: [T; 16] = clip_and_pack_warp_samples(&unit(i4, j4)?, max_sample);
+                    for (row, packed) in packed.as_chunks::<4>().0.iter().enumerate() {
                         let start = (i4 * 4 + row) * stride + j4 * 4;
-                        let samples = predicted.iter().copied();
-                        store_clamped_samples(&mut output[start..start + 4], max_sample, samples)?;
+                        *output
+                            .get_mut(start..)
+                            .and_then(<[T]>::first_chunk_mut::<4>)
+                            .ok_or(ReconError::BufferLengthMismatch {
+                                expected: start + 4,
+                                actual,
+                            })? = *packed;
                     }
                 }
             }
@@ -871,7 +877,7 @@ fn predict_warp_plane<T: ReconSample>(
                 if write_x >= destination_width || write_y >= destination_height {
                     continue;
                 }
-                let packed = clip_and_pack_warp_samples(&unit(i4, j4)?, max_sample)?;
+                let packed: [T; 16] = clip_and_pack_warp_samples(&unit(i4, j4)?, max_sample);
                 let rect = PlaneRect::new(write_x, write_y, 4, 4)?;
                 sink.write_rect(plane, rect, &packed, 4)?;
             }
@@ -912,7 +918,8 @@ fn predict_warp_plane<T: ReconSample>(
             )?;
             let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
             let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
-            let packed = clip_and_pack_warp_samples(&predicted, i32::from(bit_depth.max_sample()))?;
+            let packed: [T; 64] =
+                clip_and_pack_warp_samples(&predicted, i32::from(bit_depth.max_sample()));
             let rect = PlaneRect::new(write_x, write_y, write_w, write_h)?;
             sink.write_rect(plane, rect, &packed, WARPED_BLOCK_SIZE)?;
         }
@@ -1572,7 +1579,7 @@ fn compound_ref_intermediate<T: ReconSample>(
                     WARPED_BLOCK_SIZE,
                     write_w,
                     write_h,
-                );
+                )?;
             }
         }
     } else {
@@ -1606,7 +1613,7 @@ fn compound_ref_intermediate<T: ReconSample>(
                     bit_depth,
                 };
                 let predicted = ext_warp_predict_unit(&view, &params, i4, j4, true)?;
-                write_compound_section(samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4);
+                write_compound_section(samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4)?;
             }
         }
     }
@@ -1623,24 +1630,22 @@ fn write_compound_section(
     src_stride: usize,
     w: usize,
     h: usize,
-) {
+) -> splot_recon::Result<()> {
     for row in 0..h {
         let start = (y + row) * dst_w + x;
-        if let (Some(src), Some(dst)) = (
+        let actual = dst.len();
+        let (Some(src), Some(dst)) = (
             src.get(row * src_stride..).and_then(|src| src.get(..w)),
             dst.get_mut(start..).and_then(|dst| dst.get_mut(..w)),
-        ) {
-            dst.copy_from_slice(src); // splot-copy-ok: publish one predicted section row into the compound intermediate
-            continue;
-        }
-        for col in 0..w {
-            if let (Some(&value), Some(slot)) =
-                (src.get(row * src_stride + col), dst.get_mut(start + col))
-            {
-                *slot = value;
-            }
-        }
+        ) else {
+            return Err(ReconError::BufferLengthMismatch {
+                expected: start + w,
+                actual,
+            });
+        };
+        dst.copy_from_slice(src); // splot-copy-ok: publish one predicted section row into the compound intermediate
     }
+    Ok(())
 }
 
 fn blend_compound_average_weighted_samples<T: ReconSample>(

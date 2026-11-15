@@ -230,6 +230,35 @@ fn blend_mask_row<T: ReconSample>(
     store_clamped_samples(output, max_sample, blended)
 }
 
+/// Clips each of `samples` to `0..=max_sample` (at most 1023) into the
+/// matching sample of `output`, eight at a time; a tail under eight samples
+/// is not written.
+pub(super) fn clip_samples_into<T: ReconSample>(
+    samples: &[i32],
+    max_sample: i32,
+    output: &mut [T],
+) {
+    baseline_simd!(simd => {
+        let clip = |samples: &[i32; 8]| {
+            let half = |lanes: &[i32]| i32x4::from_slice(simd, lanes).clamp(0, max_sample).bitcast::<u32x4<_>>();
+            half(&samples[..4]).narrow(half(&samples[4..]))
+        };
+        let samples = samples.as_chunks::<8>().0.iter();
+        if let Some(output) = T::u8_slice_mut(output) {
+            for (output, samples) in output.as_chunks_mut::<8>().0.iter_mut().zip(samples) {
+                let values = clip(samples);
+                let bytes = values.narrow(values).to_array();
+                *output = core::array::from_fn(|lane| bytes[lane]);
+            }
+        } else if let Some(output) = T::u16_slice_mut(output) {
+            for (output, samples) in output.as_chunks_mut::<8>().0.iter_mut().zip(samples) {
+                *output = clip(samples).to_array();
+            }
+        }
+    });
+}
+
+#[cfg(test)]
 /// Clamps each sample to `0..=max_sample` and stores it. When `max_sample`
 /// fits the storage type, the store is a plain `u8` or `u16` write, so the
 /// caller's loop vectorizes.
@@ -395,6 +424,47 @@ fn diff_weighted_luma_mask_scales(
 }
 
 #[cfg(test)]
+fn check_clipped_samples<T: ReconSample>(max_sample: i32) {
+    let values = [
+        i32::MIN,
+        -70_000,
+        -1,
+        0,
+        1,
+        254,
+        255,
+        256,
+        1023,
+        1024,
+        70_000,
+        i32::MAX,
+    ];
+    let samples: Vec<i32> = (0..64)
+        .map(|i| values[i % values.len()] + (i as i32 % 3) * i32::from(i > 60))
+        .collect();
+    for len in [16, 64] {
+        let mut output = vec![T::default(); len];
+        clip_samples_into(&samples[..len], max_sample, &mut output);
+        for (got, &sample) in output.iter().zip(&samples) {
+            assert_eq!(
+                i32::from(got.to_u16()),
+                sample.clamp(0, max_sample),
+                "{len} {sample}"
+            );
+        }
+    }
+}
+
+/// Warp sample stores clip to the bit depth like the per-sample `Clip1`.
+#[cfg(test)]
+#[test]
+fn clipped_samples_match_the_sample_clip() {
+    check_clipped_samples::<u8>(255);
+    check_clipped_samples::<u16>(255);
+    check_clipped_samples::<u16>(1023);
+}
+
+#[cfg(test)]
 #[test]
 fn difference_weight_matches_the_rounded_spec_formula_at_the_extremes() {
     let values = [
@@ -474,11 +544,7 @@ impl ImplicitMaskBlend {
         }
     }
 
-    #[allow(
-        clippy::inline_always,
-        reason = "per-sample blend; must inline in every crate's copy of the decoder"
-    )]
-    #[inline(always)]
+    #[cfg(test)]
     pub(super) fn sample<T: ReconSample>(
         self,
         left: i32,
@@ -623,9 +689,10 @@ fn masked_row<S: Simd, T: ReconSample>(
 
 /// Blends the `[x, y, width, height]` region of a motion-grid plane, whose
 /// predictions and output are region-local with their own row strides, with
-/// each sample's implicit mask taken from its own motion-grid cell. With
-/// unscaled references a start is the sample position plus one per-cell
-/// offset, so only scaled references derive it per sample.
+/// each sample's implicit mask taken from its own motion-grid cell. Its only
+/// decoder caller is the TIP grid, which rejects scaled references, so each
+/// start is the sample position plus one per-cell offset; a scaled
+/// reference is an error.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn blend_implicit_mask_region<T: ReconSample>(
     preds: [&[i32]; 2],
@@ -641,7 +708,11 @@ pub(super) fn blend_implicit_mask_region<T: ReconSample>(
 ) -> splot_recon::Result<()> {
     let unit_width = (motion.unit_size() >> sub_x).max(4);
     let unit_height = (motion.unit_size() >> sub_y).max(4);
-    let unscaled = !scaling_templates.iter().any(|scaling| scaling.is_scaled());
+    if scaling_templates.iter().any(|scaling| scaling.is_scaled()) {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "motion-grid implicit mask of a scaled reference",
+        });
+    }
     for cell_y in (y..y + height).step_by(unit_height) {
         for cell_x in (x..x + width).step_by(unit_width) {
             let mvs = motion.at_luma_offset(cell_x << sub_x, cell_y << sub_y)?;
@@ -667,27 +738,18 @@ pub(super) fn blend_implicit_mask_region<T: ReconSample>(
             for row in cell_y..(cell_y + unit_height).min(y + height) {
                 let source = (row - y) * pred_stride;
                 let destination = (row - y) * output_stride;
-                if unscaled {
-                    let starts = offsets.map(|(offset_x, offset_y)| {
-                        (
-                            (plane_x + x + cols.start) as i32 + offset_x,
-                            (plane_y + row) as i32 + offset_y,
-                        )
-                    });
-                    blend.row(
-                        &preds[0][source + cols.start..source + cols.end],
-                        &preds[1][source + cols.start..source + cols.end],
-                        starts,
-                        &mut output[destination + cols.start..destination + cols.end],
-                    )?;
-                    continue;
-                }
-                for col in cols.clone() {
-                    let starts =
-                        core::array::from_fn(|reference| start_at(reference, x + col, row));
-                    output[destination + col] =
-                        blend.sample(preds[0][source + col], preds[1][source + col], starts)?;
-                }
+                let starts = offsets.map(|(offset_x, offset_y)| {
+                    (
+                        (plane_x + x + cols.start) as i32 + offset_x,
+                        (plane_y + row) as i32 + offset_y,
+                    )
+                });
+                blend.row(
+                    &preds[0][source + cols.start..source + cols.end],
+                    &preds[1][source + cols.start..source + cols.end],
+                    starts,
+                    &mut output[destination + cols.start..destination + cols.end],
+                )?;
             }
         }
     }
