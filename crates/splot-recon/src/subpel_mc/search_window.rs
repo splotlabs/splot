@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! The § 7.13.3.6 refine-MV search: the eight-bit bilinear window of each
-//! reference as bytes, and the SADs between two byte or `u16` windows.
+//! unclamped reference as bytes, and the SADs between two byte or `u16`
+//! windows.
 
 use super::*;
 
@@ -12,7 +13,7 @@ use super::*;
 /// inner `w - 1` columns and `h - 1` rows, so the outer column and row read
 /// their inner neighbour twice.
 #[must_use]
-pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
+pub(super) fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u8],
@@ -128,67 +129,6 @@ pub const REFINEMV_NEIGHBORS: [(i32, i32); 24] = {
     }
     out
 };
-
-/// The § 7.13.3.6 search offset `(dx, dy)` of two `stride`-wide eight-bit
-/// search windows: the biased centre SAD when `allow_center` keeps it, else
-/// the best of the 24 neighbours, each `Σ |w0 - w1|` over every other row of
-/// the `(stride - 4) x sad_h` areas at `(2 + dy, 2 + dx)` in the first window
-/// and at `(2 - dy, 2 - dx)` in the second. Returns `None` unless `stride` is
-/// 16 or 24, `sad_h` is 12 or 20 and each window holds its
-/// `stride x (sad_h + 4)` bytes.
-#[must_use]
-pub fn refinemv_search_u8(
-    windows: [&[u8]; 2],
-    stride: usize,
-    sad_h: usize,
-    allow_center: bool,
-) -> Option<(i32, i32)> {
-    if !matches!(stride, 16 | 24)
-        || !matches!(sad_h, 12 | 20)
-        || windows
-            .iter()
-            .any(|window| window.len() < stride * (sad_h + 4))
-    {
-        return None;
-    }
-    let geometry = [stride, sad_h];
-    #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        return Some(avx2::search(t, windows, geometry, allow_center));
-    }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
-        return Some(neon::search(t, windows, geometry, allow_center));
-    }
-    Some(baseline_simd!(simd => generic::search(simd, windows, geometry, allow_center)))
-}
-
-/// [`refinemv_search_u8`] of two `stride`-wide `u16` search windows of
-/// samples within `bit_depth`, each SAD shifted down by `bit_depth - 8`.
-#[must_use]
-pub fn refinemv_search_u16(
-    windows: [&[u16]; 2],
-    stride: usize,
-    sad_h: usize,
-    allow_center: bool,
-    bit_depth: BitDepth,
-) -> Option<(i32, i32)> {
-    if !matches!(stride, 16 | 24)
-        || !matches!(sad_h, 12 | 20)
-        || windows
-            .iter()
-            .any(|window| window.len() < stride * (sad_h + 4))
-    {
-        return None;
-    }
-    let shift = u32::from(bit_depth.bits().saturating_sub(8));
-    Some(baseline_simd!(simd => match [stride, sad_h] {
-        [16, 12] => generic::search_u16::<_, 16, 12, 256>(simd, windows, allow_center, shift),
-        [16, _] => generic::search_u16::<_, 16, 20, 384>(simd, windows, allow_center, shift),
-        [_, 12] => generic::search_u16::<_, 24, 12, 384>(simd, windows, allow_center, shift),
-        _ => generic::search_u16::<_, 24, 20, 576>(simd, windows, allow_center, shift),
-    }))
-}
 
 /// The § 7.13.3.6 SAD of the `w x h` areas (`w` 12 or 20, `h` even) at
 /// `[x, y]` `corners` of two eight-bit planes, over every other row: the
@@ -962,7 +902,7 @@ pub(super) mod generic {
     /// differences widened and summed in `u16` lanes.
     #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
     #[inline(always)]
-    pub(in crate::subpel_mc) fn area_sad<S: Simd>(
+    pub(super) fn area_sad<S: Simd>(
         simd: S,
         planes: [&[u8]; 2],
         starts: [usize; 2],

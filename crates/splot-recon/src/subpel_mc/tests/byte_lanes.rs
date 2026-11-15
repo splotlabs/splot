@@ -168,7 +168,7 @@ fn byte_search_window_and_sads_match_the_general_path() {
                 let mut expected = vec![0u16; w * h];
                 subpel_predict_block_strided_into(&view, &params, &mut expected, w).unwrap();
                 let mut actual = vec![0u8; w * h];
-                assert!(subpel_predict_bilinear_search_window_u8(
+                assert!(search_window::subpel_predict_bilinear_search_window_u8(
                     &view,
                     &params,
                     &mut actual
@@ -246,8 +246,8 @@ fn byte_search_window_and_sads_match_the_general_path() {
                 }
                 let pair = [&windows[0][..], &windows[1][..]];
                 assert_eq!(
-                    refinemv_search_u8(pair, stride, sad_h, allow_center),
-                    Some(best),
+                    refinemv_window::search_bytes(pair, [stride, sad_h], allow_center),
+                    best,
                     "{sad_w}x{sad_h} seed {seed} centre {allow_center}"
                 );
                 let generic = baseline_simd!(simd => search_window::generic::search(
@@ -260,10 +260,6 @@ fn byte_search_window_and_sads_match_the_general_path() {
             }
         }
     }
-    assert_eq!(
-        refinemv_search_u8([&[0; 576], &[0; 575]], 24, 20, true),
-        None
-    );
     for [w, h] in [[12, 12], [12, 20], [20, 12], [20, 20]] {
         for corners in [[[0, 0], [3, 7]], [[ref_w - w, ref_h - h], [9, 1]]] {
             let scalar: u32 = (0..h)
@@ -327,19 +323,16 @@ fn word_search_matches_a_scalar_search() {
                         }
                     }
                     let pair = [&windows[0][..stride * (sad_h + 4)], &windows[1][..]];
+                    let shift = u32::from(bit_depth.bits() - 8);
                     assert_eq!(
-                        refinemv_search_u16(pair, stride, sad_h, allow_center, bit_depth),
-                        Some(best),
+                        refinemv_window::search_words(pair, [stride, sad_h], allow_center, shift),
+                        best,
                         "{sad_w}x{sad_h} seed {seed} {bit_depth:?} centre {allow_center}"
                     );
                 }
             }
         }
     }
-    assert_eq!(
-        refinemv_search_u16([&[0; 576], &[0; 575]], 24, 20, true, BitDepth::Ten),
-        None
-    );
 }
 
 /// The byte bilinear kernel against the general prediction for every phase
