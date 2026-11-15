@@ -30,7 +30,12 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
         |_| Ok(()),
         |output| {
             let frame = output.ready_frame()?;
-            write_display_frame(&frame, output.display_grain.as_ref(), &mut spare, &mut writer)
+            write_display_frame(
+                &frame,
+                output.display_grain.as_ref(),
+                &mut spare,
+                &mut writer,
+            )
         },
     )?;
     Ok(())
