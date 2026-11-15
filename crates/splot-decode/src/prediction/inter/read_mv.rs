@@ -24,7 +24,6 @@ pub(crate) const MV_PRECISION_EIGHTH_PEL: u8 = 6;
 
 pub(crate) const MV_INTRABC_CONTEXT: usize = 1;
 const INTER_MV_CONTEXT: usize = 0;
-const MV_CONTEXTS: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MvReadConfig {
@@ -472,9 +471,6 @@ fn read_col_split<S: MvSymbols + ?Sized>(
 }
 
 fn validate_config(config: MvReadConfig, tile_offset: ByteOffset) -> Result<()> {
-    if config.mv_ctx >= MV_CONTEXTS {
-        return Err(mv_overflow(tile_offset));
-    }
     match config.precision {
         MV_PRECISION_EIGHT_PEL
         | MV_PRECISION_FOUR_PEL

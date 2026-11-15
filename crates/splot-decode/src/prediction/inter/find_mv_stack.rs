@@ -154,23 +154,7 @@ impl RelativeProbe {
         }
     }
 
-    #[allow(
-        clippy::inline_always,
-        reason = "measured: keeps the probed cell in registers"
-    )]
-    #[inline(always)]
-    fn stack_cell(
-        self,
-        grid: &NeighbourMvGrid,
-        block: &MvBlockContext,
-    ) -> Option<(NeighbourCell, u32, i32)> {
-        let (row, col, delta_col) = self.stack_target(block);
-        let zero_weight = (self.delta_row == -1 && delta_col == -1) || delta_col < -1;
-        let weight = u32::from(!zero_weight);
-        grid.get(row, col).map(|cell| (cell, weight, delta_col))
-    }
-
-    /// [`Self::stack_target`] of a probe whose column is already adjusted.
+    /// The grid row, column and column offset of a probe whose column is final.
     fn adjusted_target(self, block: &MvBlockContext) -> (i32, i32, i32) {
         (
             block.mi_row as i32 + self.delta_row,
@@ -178,23 +162,10 @@ impl RelativeProbe {
             self.delta_col,
         )
     }
-
-    fn stack_target(self, block: &MvBlockContext) -> (i32, i32, i32) {
-        let row = block.mi_row as i32 + self.delta_row;
-        let mut col = block.mi_col as i32 + self.delta_col;
-        let mut delta_col = self.delta_col;
-
-        if self.delta_row < 0 && block.is_sb_border() {
-            col = (col >> 1) << 1;
-            delta_col = col - block.mi_col as i32;
-        }
-
-        (row, col, delta_col)
-    }
 }
 
-/// The § 7.12.2.6 spatial probes with [`RelativeProbe::stack_target`]'s
-/// column adjustment applied, so [`RelativeProbe::adjusted_target`] reads them.
+/// The § 7.12.2.6 spatial probes with the superblock-border column adjustment
+/// applied, so [`RelativeProbe::adjusted_target`] reads them.
 fn mv_stack_spatial_probes(block: &MvBlockContext) -> [Option<RelativeProbe>; 7] {
     let bw4 = block.bw4 as i32;
     let bh4 = block.bh4 as i32;
@@ -1884,7 +1855,8 @@ fn scan_tip_spatial_probe(
     derived: &mut DerivedMvState<'_>,
     weight: u32,
 ) {
-    let Some((cell, _, adjusted_delta_col)) = probe.stack_cell(grid, block) else {
+    let (row, col, adjusted_delta_col) = probe.adjusted_target(block);
+    let Some(cell) = grid.get(row, col) else {
         return;
     };
     let offsets = (probe.delta_row, adjusted_delta_col);

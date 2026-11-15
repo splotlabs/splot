@@ -2138,7 +2138,9 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         mi_rows: MI_DIM,
         mi_cols: MI_DIM,
     };
+    let frame_size = (MI_DIM * 4, MI_DIM * 4);
     let mut source = TemporalMotionField::new(MI_DIM, MI_DIM).unwrap();
+    source.set_reference_metadata(true, frame_size, &[Some(0)]);
     source.record_block(TemporalMotionBlock::new(
         4,
         4,
@@ -2151,8 +2153,6 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         [temporal_mv, Mv::ZERO],
         [None, None],
     ));
-    let frame_size = (MI_DIM * 4, MI_DIM * 4);
-    source.set_reference_metadata(true, frame_size, &[Some(0)]);
     let mut other = TemporalMotionField::new(MI_DIM, MI_DIM).unwrap();
     other.set_reference_metadata(true, frame_size, &[]);
     let temporal = TemporalMvContext::from_references(

@@ -158,7 +158,7 @@ impl TemporalMotionBand {
         let mut memo = None;
         for &block in blocks {
             let refs = BlockRefs::reuse(&mut memo, &block, &self.metadata.ref_order_hints);
-            visit_temporal_block_cells(block, refs, width8, row_end8, |y8, x8, cell, _| {
+            visit_temporal_block_cells(block, refs, width8, row_end8, |y8, x8, cell| {
                 let Some(row) = y8.checked_sub(row_base8) else {
                     return;
                 };
