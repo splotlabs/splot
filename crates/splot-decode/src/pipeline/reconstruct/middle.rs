@@ -26,11 +26,11 @@ use super::sink::{
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
 };
-use crate::pipeline::general_intra::RecycledIntraSamples;
 
 const TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY: usize = 128 + 3 + 4;
 
 type TwoSidedMiddleIdifEdge<T> = super::one_sided::IdifEdge<T, TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY>;
+type MiddleEdge<T> = super::one_sided::IdifEdge<T, 65>;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TwoSidedMiddleEdgeFilters {
@@ -728,10 +728,7 @@ fn build_directional_middle_edges<T: ReconSample>(
     have_above: bool,
     side: usize,
     bit_depth: BitDepth,
-) -> core::result::Result<
-    (RecycledIntraSamples<T>, RecycledIntraSamples<T>),
-    GeneralIntraResidualError,
-> {
+) -> core::result::Result<(MiddleEdge<T>, MiddleEdge<T>), GeneralIntraResidualError> {
     build_directional_middle_rect_edges(
         left_neighbour,
         above_neighbour,
@@ -754,12 +751,9 @@ fn build_directional_middle_rect_edges<T: ReconSample>(
     width: usize,
     height: usize,
     bit_depth: BitDepth,
-) -> core::result::Result<
-    (RecycledIntraSamples<T>, RecycledIntraSamples<T>),
-    GeneralIntraResidualError,
-> {
-    let mut left = RecycledIntraSamples::with_capacity(height + 1);
-    let mut above = RecycledIntraSamples::with_capacity(width + 1);
+) -> core::result::Result<(MiddleEdge<T>, MiddleEdge<T>), GeneralIntraResidualError> {
+    let mut left = MiddleEdge::new(height + 1)?;
+    let mut above = MiddleEdge::new(width + 1)?;
     match (have_left, have_above) {
         (true, true) => {
             let Some(corner) = above_corner else {
@@ -767,21 +761,13 @@ fn build_directional_middle_rect_edges<T: ReconSample>(
             };
             let left_samples = left_neighbour.unwrap_or(&[]);
             let above_samples = above_neighbour.unwrap_or(&[]);
-            left.push(corner);
-            above.push(corner);
+            left[0] = corner;
+            above[0] = corner;
             for i in 0..height {
-                left.push(sample_or_last(
-                    left_samples,
-                    i,
-                    noneighbour_left::<T>(bit_depth),
-                ));
+                left[1 + i] = sample_or_last(left_samples, i, noneighbour_left::<T>(bit_depth));
             }
             for i in 0..width {
-                above.push(sample_or_last(
-                    above_samples,
-                    i,
-                    noneighbour_above::<T>(bit_depth),
-                ));
+                above[1 + i] = sample_or_last(above_samples, i, noneighbour_above::<T>(bit_depth));
             }
         }
         (false, true) => {
@@ -790,17 +776,10 @@ fn build_directional_middle_rect_edges<T: ReconSample>(
                 .first()
                 .copied()
                 .unwrap_or(noneighbour_above::<T>(bit_depth));
-            left.push(seed);
-            above.push(seed);
-            for _ in 0..height {
-                left.push(seed);
-            }
+            left.fill(seed);
+            above[0] = seed;
             for i in 0..width {
-                above.push(sample_or_last(
-                    above_samples,
-                    i,
-                    noneighbour_above::<T>(bit_depth),
-                ));
+                above[1 + i] = sample_or_last(above_samples, i, noneighbour_above::<T>(bit_depth));
             }
         }
         (true, false) => {
@@ -809,28 +788,17 @@ fn build_directional_middle_rect_edges<T: ReconSample>(
                 .first()
                 .copied()
                 .unwrap_or(noneighbour_left::<T>(bit_depth));
-            left.push(seed);
-            above.push(seed);
+            left[0] = seed;
+            above.fill(seed);
             for i in 0..height {
-                left.push(sample_or_last(
-                    left_samples,
-                    i,
-                    noneighbour_left::<T>(bit_depth),
-                ));
-            }
-            for _ in 0..width {
-                above.push(seed);
+                left[1 + i] = sample_or_last(left_samples, i, noneighbour_left::<T>(bit_depth));
             }
         }
         (false, false) => {
-            left.push(noneighbour_corner::<T>(bit_depth));
-            above.push(noneighbour_corner::<T>(bit_depth));
-            for _ in 0..height {
-                left.push(noneighbour_left::<T>(bit_depth));
-            }
-            for _ in 0..width {
-                above.push(noneighbour_above::<T>(bit_depth));
-            }
+            left.fill(noneighbour_left::<T>(bit_depth));
+            above.fill(noneighbour_above::<T>(bit_depth));
+            left[0] = noneighbour_corner::<T>(bit_depth);
+            above[0] = noneighbour_corner::<T>(bit_depth);
         }
     }
     Ok((left, above))
