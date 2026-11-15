@@ -731,20 +731,7 @@ pub(crate) fn plane_prediction<T: ReconSample>(
         sub_y,
     );
 
-    let params = SubpelPredictParams {
-        interp,
-        w: block_w,
-        h: block_h,
-        start_x: scaling.start_x,
-        start_y: scaling.start_y,
-        step_x: scaling.step_x,
-        step_y: scaling.step_y,
-        first_x: scaling.first_x,
-        first_y: scaling.first_y,
-        last_x: scaling.last_x,
-        last_y: scaling.last_y,
-        bit_depth: info.bit_depth(),
-    };
+    let params = scaling.subpel_params(interp, block_w, block_h, info.bit_depth());
     let view = reference.plane_view(plane, subpel_last_reference_row(&params), offset)?;
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
     Ok((view, rect, params))
@@ -817,18 +804,11 @@ fn predict_warp_plane<T: ReconSample>(
                 scaling,
             );
             let params = WarpPredictBlockParams {
-                warp_params,
-                block_x: plane_x as i32,
-                block_y: plane_y as i32,
-                subsampling_x: sub_x as u8,
-                subsampling_y: sub_y as u8,
-                reference_scale_x: scaling.scale_x,
-                reference_scale_y: scaling.scale_y,
                 first_x,
                 first_y,
                 last_x,
                 last_y,
-                bit_depth,
+                ..params
             };
             ext_warp_predict_unit(&view, &params, i4, j4, false)
         };
@@ -1312,19 +1292,8 @@ fn translational_compound_plane<'a, T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<TranslationalCompoundPlane<'a, T>> {
     let plane = compound_subpel_plane(block, plane, sub_x, sub_y, offset)?;
-    let params = plane.scalings.map(|scaling| SubpelPredictParams {
-        interp: block.interp,
-        w: plane.block_w,
-        h: plane.block_h,
-        start_x: scaling.start_x,
-        start_y: scaling.start_y,
-        step_x: scaling.step_x,
-        step_y: scaling.step_y,
-        first_x: scaling.first_x,
-        first_y: scaling.first_y,
-        last_x: scaling.last_x,
-        last_y: scaling.last_y,
-        bit_depth: info.bit_depth(),
+    let params = plane.scalings.map(|scaling| {
+        scaling.subpel_params(block.interp, plane.block_w, plane.block_h, info.bit_depth())
     });
     Ok(TranslationalCompoundPlane { plane, params })
 }
@@ -1422,20 +1391,7 @@ fn compound_ref_intermediate<T: ReconSample>(
     );
     let view = reference.plane_view(plane, last_row, offset)?;
     let Some(warp_params) = warp_params else {
-        let params = SubpelPredictParams {
-            interp,
-            w: block_w,
-            h: block_h,
-            start_x: scaling.start_x,
-            start_y: scaling.start_y,
-            step_x: scaling.step_x,
-            step_y: scaling.step_y,
-            first_x: scaling.first_x,
-            first_y: scaling.first_y,
-            last_x: scaling.last_x,
-            last_y: scaling.last_y,
-            bit_depth,
-        };
+        let params = scaling.subpel_params(interp, block_w, block_h, bit_depth);
         subpel_predict_block_compound_intermediate_into(&view, &params, None, samples, block_w)?;
         return Ok(scaling);
     };
@@ -1503,18 +1459,11 @@ fn compound_ref_intermediate<T: ReconSample>(
                     scaling,
                 );
                 let params = WarpPredictBlockParams {
-                    warp_params,
-                    block_x: plane_x as i32,
-                    block_y: plane_y as i32,
-                    subsampling_x: sub_x as u8,
-                    subsampling_y: sub_y as u8,
-                    reference_scale_x: scaling.scale_x,
-                    reference_scale_y: scaling.scale_y,
                     first_x,
                     first_y,
                     last_x,
                     last_y,
-                    bit_depth,
+                    ..params
                 };
                 let predicted = ext_warp_predict_unit(&view, &params, i4, j4, true)?;
                 write_compound_section(samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4)?;
