@@ -323,7 +323,11 @@ fn build_smooth_edges<T: ReconSample>(
     let above_len = (width + 1).min(SMOOTH_EDGE_CAPACITY);
     match (have_left, left_neighbour) {
         (true, Some(samples)) => {
-            fill_edge_from_neighbour(samples, &mut left[..left_len], bit_depth);
+            fill_edge_from_neighbour(
+                samples,
+                &mut left[..left_len],
+                noneighbour_left::<T>(bit_depth),
+            );
         }
         _ if have_above => left.fill(
             above_neighbour
@@ -334,7 +338,11 @@ fn build_smooth_edges<T: ReconSample>(
     }
     match (have_above, above_neighbour) {
         (true, Some(samples)) => {
-            fill_edge_from_neighbour(samples, &mut above[..above_len], bit_depth);
+            fill_edge_from_neighbour(
+                samples,
+                &mut above[..above_len],
+                noneighbour_left::<T>(bit_depth),
+            );
         }
         _ if have_left => above.fill(
             left_neighbour
@@ -419,14 +427,9 @@ fn resolve_smooth_sentinel<T: ReconSample>(
     }
 }
 
-fn fill_edge_from_neighbour<T: ReconSample>(samples: &[T], edge: &mut [T], bit_depth: BitDepth) {
+pub(super) fn fill_edge_from_neighbour<T: ReconSample>(samples: &[T], edge: &mut [T], fallback: T) {
     let copied = samples.len().min(edge.len());
     let (head, tail) = edge.split_at_mut(copied);
-    head.copy_from_slice(&samples[..copied]); // splot-copy-ok: smooth edge from its neighbour
-    tail.fill(
-        samples
-            .last()
-            .copied()
-            .unwrap_or(noneighbour_left::<T>(bit_depth)),
-    );
+    head.copy_from_slice(&samples[..copied]); // splot-copy-ok: intra edge from its neighbour
+    tail.fill(samples.last().copied().unwrap_or(fallback));
 }
