@@ -335,33 +335,40 @@ pub(crate) fn narrow_row<T: crate::ReconSample>(staged: &mut [u8], row: &[T]) ->
         .is_some_and(|row| crate::lr_madd::lr_simd!(simd => narrow_row_lanes(simd, staged, row)))
 }
 
+/// Narrows `row` into `staged` 32 lanes at a time: whole chunks, an
+/// overlapping last chunk, and a row under 32 samples through a zero-padded
+/// chunk. Returns whether every sample is at most 255.
 #[inline]
 fn narrow_row_lanes<S: fearless_simd::Simd>(simd: S, staged: &mut [u8], row: &[u16]) -> bool {
     use fearless_simd::{prelude::*, u16x16};
     let len = staged.len().min(row.len());
     let (staged, row) = (&mut staged[..len], &row[..len]);
+    let narrow = |lanes: &[u16; 32], out: &mut [u8; 32]| {
+        let (low, high) = lanes.split_at(16);
+        let (low, high) = (
+            u16x16::from_slice(simd, low),
+            u16x16::from_slice(simd, high),
+        );
+        low.narrow(high).store_array(out);
+        low.max(high)
+    };
     let Some(last) = len.checked_sub(32) else {
-        return row.iter().zip(staged).all(|(&sample, staged)| {
-            *staged = sample as u8;
-            sample <= 255
-        });
+        let (mut lanes, mut bytes) = ([0; 32], [0; 32]);
+        lanes[..len].copy_from_slice(row); // splot-copy-ok: zero-padded chunk of a row under 32 samples
+        let peak = narrow(&lanes, &mut bytes);
+        staged.copy_from_slice(&bytes[..len]); // splot-copy-ok: narrowed chunk into the staged row
+        return peak.reduce_max() <= 255;
     };
     let mut peak = u16x16::splat(simd, 0);
     for chunk in 0..len.div_ceil(32) {
         let at = (32 * chunk).min(last);
-        let (Some(low), Some(high), Some(staged)) = (
-            row.get(at..).and_then(<[u16]>::first_chunk::<16>),
-            row.get(at + 16..).and_then(<[u16]>::first_chunk::<16>),
+        let (Some(lanes), Some(out)) = (
+            row.get(at..).and_then(<[u16]>::first_chunk::<32>),
             staged.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<32>),
         ) else {
             return false;
         };
-        let (low, high) = (
-            u16x16::load_array_ref(simd, low),
-            u16x16::load_array_ref(simd, high),
-        );
-        peak = peak.max(low.max(high));
-        low.narrow(high).store_array(staged);
+        peak = peak.max(narrow(lanes, out));
     }
     peak.reduce_max() <= 255
 }
@@ -395,6 +402,31 @@ impl ByteLaneOutput for u16 {
 mod tests {
     use super::super::WIENER_NS_CONFIG_Y_PAIRS;
     use super::*;
+
+    /// Rows of every width 1..=64, in range and with one sample above 255
+    /// at each position, narrow like the per-sample `as u8` oracle.
+    #[test]
+    fn narrow_row_matches_the_sample_oracle() {
+        for len in 1..=64 {
+            let row: Vec<u16> = (0..len)
+                .map(|i| [255, 0, (i * 37 % 256) as u16][i % 3])
+                .collect();
+            for spike in [None].into_iter().chain((0..len).map(Some)) {
+                let mut row = row.clone();
+                if let Some(at) = spike {
+                    row[at] = 256 + at as u16;
+                }
+                let mut staged = vec![7u8; len + 1];
+                let fits = narrow_row(&mut staged[..len], &row);
+                assert_eq!(fits, spike.is_none(), "{len} {spike:?}");
+                if spike.is_none() {
+                    let want: Vec<u8> = row.iter().map(|&sample| sample as u8).collect();
+                    assert_eq!(&staged[..len], &want[..], "{len}");
+                }
+                assert_eq!(staged[len], 7, "{len}");
+            }
+        }
+    }
 
     /// Every vector the kernel fills holds the § 7.20.3 sum of its class,
     /// for random and extreme classes, cell maps, samples, and widths. On
