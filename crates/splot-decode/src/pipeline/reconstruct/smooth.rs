@@ -35,8 +35,8 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_with_availability
     num4_below_left: usize,
     luma_context: Option<LumaTransformTypeContext>,
     availability: IntraEdgeAvailability,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let smooth_mode = match mode {
         SupportedNonDcLumaMode::Smooth => IntraSmoothMode::Smooth,
         SupportedNonDcLumaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
@@ -83,7 +83,6 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_with_availability
         num4_below_left,
         use_tcq,
         luma_context,
-        bit_depth,
     )
 }
 
@@ -103,9 +102,7 @@ pub(crate) fn reconstruct_smooth_in_frame<T: ReconSample>(
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
 ) -> core::result::Result<bool, GeneralIntraResidualError> {
-    if request.bit_depth != workspace.info().bit_depth()
-        || !workspace.predict_intra_smooth_in_frame(plane_id, x, y, request)?
-    {
+    if !workspace.predict_intra_smooth_in_frame(plane_id, x, y, request)? {
         return Ok(false);
     }
     if block.eob != 0 {
@@ -143,8 +140,8 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
     num4_below_left: usize,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;

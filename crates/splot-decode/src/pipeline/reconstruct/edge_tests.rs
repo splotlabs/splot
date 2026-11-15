@@ -77,7 +77,6 @@ fn middle_directional_clamps_right_edge_columns() {
                         false,
                         None,
                         availability,
-                        BitDepth::Eight,
                     )
                     .unwrap();
                 } else {
@@ -94,7 +93,6 @@ fn middle_directional_clamps_right_edge_columns() {
                         false,
                         None,
                         None,
-                        BitDepth::Eight,
                         availability,
                         TwoSidedMiddleEdgeFilters {
                             above: OneSidedEdgeFilter::default(),
@@ -165,7 +163,6 @@ fn middle_directional_mrl_top_row_clamps_bottom_edge_rows() {
                 above: false,
                 left: true,
             },
-            BitDepth::Eight,
         )
         .unwrap();
         let mut output = Vec::new();
@@ -286,7 +283,6 @@ fn chroma_d135_top_row_filters_available_left_edge() {
         false,
         None,
         None,
-        BitDepth::Ten,
         IntraEdgeAvailability {
             above: false,
             left: true,

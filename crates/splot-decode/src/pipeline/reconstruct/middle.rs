@@ -51,9 +51,9 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     qindex: u32,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
-    bit_depth: BitDepth,
     availability: IntraEdgeAvailability,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
@@ -146,10 +146,10 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
-    bit_depth: BitDepth,
     availability: IntraEdgeAvailability,
     filters: TwoSidedMiddleEdgeFilters,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
@@ -272,8 +272,8 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
     availability: IntraEdgeAvailability,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
@@ -657,8 +657,8 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
     availability: IntraEdgeAvailability,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);

@@ -4,7 +4,7 @@
 //! One-sided IBP dual-direction blend entry.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraDirectionalAngle, IntraDirectionalAngleIdifEdges,
+    CurrentFrameWorkspace, IntraDirectionalAngle, IntraDirectionalAngleIdifEdges,
     IntraPredictionScratchBuffer, IntraRectBlockSize, PlaneId, ReconSample,
     apply_ibp_dr_blend_rect, predict_intra_directional_angle_rect_one_sided_idif_into,
 };
@@ -41,8 +41,8 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
     availability: IntraEdgeAvailability,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
