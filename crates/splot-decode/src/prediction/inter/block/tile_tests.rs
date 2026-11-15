@@ -197,14 +197,14 @@ fn decode_hashes(bytes: &[u8], threads: usize) -> Vec<String> {
     crate::pipeline::decode_frames_from_plan_on_threads(bytes, &options, threads)
         .expect("decode")
         .iter()
-        .map(|output| match output.ready_frame().expect("ready") {
+        .map(|output| match output {
             crate::pipeline::PipelineDecodedFrame::Eight(frame) => {
-                splot_recon::DecodedFrameHashInput::new(&frame)
+                splot_recon::DecodedFrameHashInput::new(frame)
                     .compute_hash()
                     .to_hex()
             }
             crate::pipeline::PipelineDecodedFrame::Ten(frame) => {
-                splot_recon::DecodedFrameHashInput::new(&frame)
+                splot_recon::DecodedFrameHashInput::new(frame)
                     .compute_hash()
                     .to_hex()
             }

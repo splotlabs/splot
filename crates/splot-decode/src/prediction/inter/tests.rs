@@ -33,7 +33,7 @@ use crate::bitstream::tile_payload::{
 };
 use crate::error::{DecodeError, DecodeHeaderStateError, Result};
 use crate::pipeline::frame_engine::finish::finish_walked_frame;
-use crate::pipeline::{PipelineDecodedFrame, PipelineFrame, decode_frames_from_plan};
+use crate::pipeline::{PipelineDecodedFrame, decode_frames_from_plan};
 use crate::{
     DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
     DecodeStreamPlan,
@@ -176,11 +176,11 @@ fn plan_fixture(bytes: &[u8], options: &DecodeOptions) -> DecodeStreamPlan {
     DecodeContext::plan_bytes(bytes, *options).expect("plan")
 }
 
-pub(super) fn decode_fixture(bytes: &[u8]) -> Vec<PipelineFrame> {
+pub(super) fn decode_fixture(bytes: &[u8]) -> Vec<PipelineDecodedFrame> {
     decode_fixture_on_threads(bytes, 1)
 }
 
-fn decode_fixture_on_threads(bytes: &[u8], threads: usize) -> Vec<PipelineFrame> {
+fn decode_fixture_on_threads(bytes: &[u8], threads: usize) -> Vec<PipelineDecodedFrame> {
     let options = DecodeOptions::default();
     decode_fixture_with_options(bytes, &options, threads).expect("decode")
 }
@@ -189,18 +189,18 @@ fn decode_fixture_with_options(
     bytes: &[u8],
     options: &DecodeOptions,
     threads: usize,
-) -> Result<Vec<PipelineFrame>> {
+) -> Result<Vec<PipelineDecodedFrame>> {
     crate::pipeline::decode_frames_from_plan_on_threads(bytes, options, threads)
 }
 
 fn decode_frames_from_plan_on_pool(
     bytes: &[u8],
     options: &DecodeOptions,
-) -> Result<Vec<PipelineFrame>> {
+) -> Result<Vec<PipelineDecodedFrame>> {
     decode_frames_from_plan(bytes, options)
 }
 
-fn decode_frames() -> Vec<PipelineFrame> {
+fn decode_frames() -> Vec<PipelineDecodedFrame> {
     decode_fixture(TWO_FRAME_INTER_FIXTURE)
 }
 
@@ -214,10 +214,10 @@ fn fixture_sequence_and_quantization(bytes: &[u8]) -> (SequenceHeader, Quantizat
     )
 }
 
-fn assert_yuv420_8bit_frames(frames: &[PipelineFrame], width: usize, height: usize) {
+fn assert_yuv420_8bit_frames(frames: &[PipelineDecodedFrame], width: usize, height: usize) {
     let visible_size = PlaneSize::new(width, height).expect("valid visible size");
     for (index, output) in frames.iter().enumerate() {
-        let PipelineDecodedFrame::Eight(frame) = output.ready_frame().expect("ready") else {
+        let PipelineDecodedFrame::Eight(frame) = output else {
             panic!("frame {index} decoded as 10-bit");
         };
         assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
@@ -226,14 +226,14 @@ fn assert_yuv420_8bit_frames(frames: &[PipelineFrame], width: usize, height: usi
     }
 }
 
-pub(super) fn frame_hashes(frames: &[PipelineFrame]) -> Vec<String> {
+pub(super) fn frame_hashes(frames: &[PipelineDecodedFrame]) -> Vec<String> {
     frames
         .iter()
         .map(|output| {
-            let PipelineDecodedFrame::Eight(frame) = output.ready_frame().expect("ready") else {
+            let PipelineDecodedFrame::Eight(frame) = output else {
                 panic!("frame decoded as 10-bit");
             };
-            DecodedFrameHashInput::new(&frame).compute_hash().to_hex()
+            DecodedFrameHashInput::new(frame).compute_hash().to_hex()
         })
         .collect()
 }
@@ -805,14 +805,14 @@ fn ten_bit_flex_mvres_inter_fixture_decodes_avm_bit_exact() {
     );
 }
 
-fn ten_bit_frame_hashes(frames: &[PipelineFrame]) -> Vec<String> {
+fn ten_bit_frame_hashes(frames: &[PipelineDecodedFrame]) -> Vec<String> {
     frames
         .iter()
         .map(|output| {
-            let PipelineDecodedFrame::Ten(frame) = output.ready_frame().expect("ready") else {
+            let PipelineDecodedFrame::Ten(frame) = output else {
                 panic!("frame decoded as 8-bit");
             };
-            DecodedFrameHashInput::new(&frame).compute_hash().to_hex()
+            DecodedFrameHashInput::new(frame).compute_hash().to_hex()
         })
         .collect()
 }

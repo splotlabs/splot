@@ -189,13 +189,12 @@ fn poisoned_u16_targets_are_fully_written_for_all_plane_formats_and_odd_dimensio
             block_sets[1].as_slice(),
             block_sets[2].as_slice(),
         ];
-        let core = lr_core([FrameRestorationType::WienerNonsep; 3]);
-        let initializations = lr_initializations(&core, active, block_slices, &target);
+        let initializations = lr_initializations(active, &target);
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
             if active[plane.index()] {
                 assert_eq!(
                     initializations[plane.index()],
-                    StripeInitialization::FullyOverwritten,
+                    StripeInitialization::Partial,
                     "{format:?} {plane:?}"
                 );
             }
@@ -246,13 +245,7 @@ fn a_coverage_hole_selects_partial_and_fills_only_the_hole_with_cdef() {
     let target = lease.take_target().unwrap();
     let mut blocks = blocks_for_target(target.get(PlaneId::Y).unwrap(), PlaneId::Y);
     let hole = blocks.remove(1);
-    let core = lr_core([
-        FrameRestorationType::WienerNonsep,
-        FrameRestorationType::None,
-        FrameRestorationType::None,
-    ]);
-    let initializations =
-        lr_initializations(&core, [true, false, false], [&blocks, &[], &[]], &target);
+    let initializations = lr_initializations([true, false, false], &target);
     assert_eq!(initializations[0], StripeInitialization::Partial);
     let mut frame = LrFrame::from_cdef(
         cdef_frame(&workspace),
@@ -363,15 +356,6 @@ fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
     let block = block(PlaneId::Y, LrUnitRestorationType::WienerNonsep, 0, 0, 8, 8);
-    assert!(lr_plane_fully_overwritten(
-        &[block],
-        PlaneId::Y,
-        FrameRestorationType::WienerNonsep,
-        8,
-        8,
-        0,
-        8,
-    ));
     let mut frame = LrFrame::from_cdef(
         cdef_frame(&workspace),
         [true, false, false],
@@ -531,32 +515,6 @@ fn direct_u8_poison_oracle_exposes_one_suppressed_lr_block_write() {
             .iter()
             .all(|&sample| sample != 0xde),
         "omitted direct-u8 LR block write escaped poison oracle"
-    );
-}
-
-#[test]
-fn gdf_active_luma_keeps_the_full_overwrite_initialization() {
-    let workspace = workspace(PixelFormat::Monochrome, 8, 8);
-    let mut core = lr_core([
-        FrameRestorationType::WienerNonsep,
-        FrameRestorationType::None,
-        FrameRestorationType::None,
-    ]);
-    let gdf = core.gdf_params.as_mut().unwrap();
-    gdf.gdf_frame_enable = true;
-    gdf.gdf_per_block = Some(false);
-    gdf.gdf_pic_qc_idx = Some(0);
-    gdf.gdf_pic_scale_idx = Some(0);
-    let progress = Arc::new(
-        crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
-    );
-    progress.begin(&[(0, 8)]).unwrap();
-    let mut lease = progress.direct_stripe(0).unwrap();
-    let target = lease.take_target().unwrap();
-    let blocks = blocks_for_target(target.get(PlaneId::Y).unwrap(), PlaneId::Y);
-    assert_eq!(
-        lr_initializations(&core, [true, false, false], [&blocks, &[], &[]], &target)[0],
-        StripeInitialization::FullyOverwritten
     );
 }
 

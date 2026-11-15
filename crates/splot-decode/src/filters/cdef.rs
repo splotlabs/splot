@@ -233,7 +233,7 @@ struct CdefBlockLookup<'a> {
     /// block must still be written.
     fill_flat: [bool; 3],
     /// The filters of each of the first strength sets.
-    units: [Option<CdefUnitFilters>; 8],
+    units: &'a [Option<CdefUnitFilters>; 8],
 }
 
 #[derive(Clone, Copy)]
@@ -447,7 +447,7 @@ fn cdef_strengths(
 }
 
 /// The [`CdefUnitFilters`] of the first strength sets of `strengths`.
-fn cdef_units(
+pub(crate) fn cdef_units(
     strengths: &[CdefFrameParams],
     coeff_shift: u32,
     subsampling: (usize, usize),
@@ -593,6 +593,11 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
     cdef_stripe_into(
         deblocked,
         strengths,
+        &cdef_units(
+            strengths.unwrap_or_default(),
+            u32::from(bit_depth.bits()) - 8,
+            subsampling,
+        ),
         grid,
         skip_grid,
         lossless_grid,
@@ -611,6 +616,7 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
 pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
     deblocked: DeblockedPlanes<'a, T>,
     strengths: Option<&[CdefFrameParams]>,
+    units: &[Option<CdefUnitFilters>; 8],
     grid: Option<&CdefUnitGrid>,
     skip_grid: Option<&CdefSkipGrid>,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
@@ -656,7 +662,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
             has_chroma,
             coeff_shift,
             fill_flat: [true; 3],
-            units: cdef_units(strengths, coeff_shift, (sub_x, sub_y)),
+            units,
         })
     } else {
         None

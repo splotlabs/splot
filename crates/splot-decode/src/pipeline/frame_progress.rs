@@ -49,8 +49,7 @@ struct StripeProgress {
     landed: bool,
     leased: bool,
     /// Live holders of the stripe's direct lease: the lease itself plus one per
-    /// plane target. The lease is released when this reaches zero, which is
-    /// what a per-lease reference count used to track.
+    /// plane target. The lease is released when this reaches zero.
     holds: u32,
 }
 
@@ -524,10 +523,8 @@ impl<T: ReconSample> FrameProgress<T> {
         })
     }
 
-    /// The rows of `plane` below the watermark published now: none after a
-    /// failed phase, every row after the freeze.
-    fn readable_rows(&self, plane: PlaneId) -> usize {
-        let rows = self.published_luma_rows();
+    /// The rows of `plane` below a watermark of `rows` luma rows.
+    fn readable_rows(&self, plane: PlaneId, rows: usize) -> usize {
         if plane == PlaneId::Y {
             rows
         } else if rows == self.luma_height {
@@ -550,7 +547,8 @@ impl<T: ReconSample> FrameProgress<T> {
     /// on error or unwind it neither frees nor recycles.
     fn published_plane(&self, plane: PlaneId, rows: usize) -> Option<PublishedPlane<'_, T>> {
         let storage = self.planes[plane.index()]?;
-        let rows = rows.min(self.readable_rows(plane)).min(storage.height);
+        let readable = self.readable_rows(plane, self.published_luma_rows());
+        let rows = rows.min(readable).min(storage.height);
         let len = rows.checked_mul(storage.stride)?.min(storage.len);
         let samples = unsafe {
             // SAFETY: rows below W of a slot-bounded allocation; see the doc above.
@@ -1001,24 +999,15 @@ impl<T: ReconSample> FrontierRows<T> {
 }
 
 fn complete_stripe(layout: &mut ProgressLayout, stripe: usize) -> usize {
-    let Some(landed) = layout
-        .stripes
-        .get_mut(stripe)
-        .map(|stripe| &mut stripe.landed)
-    else {
-        return layout
-            .prefix
-            .checked_sub(1)
-            .and_then(|last| layout.stripes.get(last).map(|stripe| stripe.end))
-            .unwrap_or_default();
-    };
-    *landed = true;
-    while layout
-        .stripes
-        .get(layout.prefix)
-        .is_some_and(|stripe| stripe.landed)
-    {
-        layout.prefix += 1;
+    if let Some(stripe) = layout.stripes.get_mut(stripe) {
+        stripe.landed = true;
+        while layout
+            .stripes
+            .get(layout.prefix)
+            .is_some_and(|stripe| stripe.landed)
+        {
+            layout.prefix += 1;
+        }
     }
     layout
         .prefix
@@ -1059,11 +1048,7 @@ impl<'a, T: ReconSample> PublishedFrame<'a, T> {
         }
         let luma_rows = NonZeroUsize::new(rows.min(progress.luma_height))?;
         progress.layout.get()?;
-        let chroma_rows = if luma_rows.get() == progress.luma_height {
-            luma_rows.get().div_ceil(1 << progress.subsampling_y)
-        } else {
-            luma_rows.get() >> progress.subsampling_y
-        };
+        let chroma_rows = progress.readable_rows(PlaneId::U, luma_rows.get());
         Some(Self {
             progress,
             luma_rows,
