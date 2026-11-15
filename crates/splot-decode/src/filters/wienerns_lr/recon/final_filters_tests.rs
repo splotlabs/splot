@@ -3,7 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use super::super::{OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
+use super::super::{FilledWindow, OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
 use super::*;
 use crate::filters::source::DeblockedWindow;
 use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
@@ -174,8 +174,8 @@ fn progress_of<T: splot_recon::ReconSample>(
 /// Copies every stripe's window out of the frame `setup` filters, in order.
 fn stripe_windows<T: splot_recon::ReconSample>(
     setup: &OwnedFilterSetup<T>,
-) -> Vec<Option<DeblockedWindow<T>>> {
-    let mut rows = setup.sink.progress.frontier_rows().unwrap();
+) -> Vec<Option<FilledWindow<T>>> {
+    let mut rows = setup.progress.frontier_rows().unwrap();
     assert!(rows.publish_final_rows(setup.luma_height));
     let mut carry = DeblockedWindow::default();
     (0..setup.stripe_ranges().len())
@@ -226,7 +226,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         (1, 1),
         &mut crate::filters::deblock::DeblockGridStorage::default(),
     )
-    .unwrap()
     .unwrap();
     deblock
         .advance_source(&mut source, 8, BitDepth::Eight)
@@ -1821,6 +1820,28 @@ fn stripe_traversal_streams_ranges_and_stops_after_error() {
     assert!(invalid.next().unwrap().is_err());
     assert!(invalid.next().is_none());
     assert!(invalid.next().is_none());
+}
+
+fn lr_plane_fully_overwritten(
+    blocks: &[WienerNsLrSourceBlock],
+    plane: PlaneId,
+    frame_type: FrameRestorationType,
+    width: usize,
+    frame_height: usize,
+    start_y: usize,
+    end_y: usize,
+) -> bool {
+    let rows = (start_y, end_y);
+    for_each_lr_gap(
+        blocks,
+        plane,
+        frame_type,
+        width,
+        frame_height,
+        rows,
+        |_, _| None,
+    )
+    .is_some()
 }
 
 fn luma_wiener_covers(

@@ -1028,7 +1028,7 @@ fn run_reference_case<T: ReconSample>(case: &ReferenceCase<'_>, bit_depth: BitDe
         has_chroma: !case.format.is_monochrome(),
         coeff_shift,
         fill_flat: [true; 3],
-        units: cdef_units(case.strengths, coeff_shift, subsampling),
+        units: &cdef_units(case.strengths, coeff_shift, subsampling),
     };
     let want = reference_cdef(&ws, case, &lookup, coeff_shift);
     let input = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
