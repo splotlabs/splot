@@ -8,9 +8,9 @@ use splot_core::types::ObuType;
 
 use super::{
     ActiveFilmGrain, GrainDestination, GrainGeometry, SCALING_LUT_LEN, Stripe, apply_film_grain,
-    fill_stripe, generate_grain, init_scaling_lut, output_ranges, plane_axis_lengths,
-    plane_from_visible, round2, scale_lut, scaling_points_for_plane, stripe_count,
-    stripe_row_slice,
+    apply_film_grain_into, fill_stripe, generate_grain, init_scaling_lut, output_ranges,
+    plane_axis_lengths, plane_from_visible, round2, scale_lut, scaling_points_for_plane,
+    stripe_count, stripe_row_slice,
 };
 use crate::{
     BitDepth, DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane,
@@ -151,6 +151,26 @@ impl TestRng {
             .wrapping_add(1_442_695_040_888_963_407);
         (self.0 >> 32) as u32
     }
+}
+
+#[test]
+fn grain_into_a_retired_frame_reuses_its_storage_and_matches_a_new_buffer() {
+    let model = film_grain_model();
+    let samples = |step: usize| {
+        (0..sample_count(40, 24, PixelFormat::Yuv420))
+            .map(|index| (index * step) as u8)
+            .collect::<Vec<_>>()
+    };
+    let first = frame::<u8>(40, 24, PixelFormat::Yuv420, &samples(37));
+    let second = frame::<u8>(40, 24, PixelFormat::Yuv420, &samples(11));
+    let retired = apply_film_grain(&first, &model, 0x1234).unwrap();
+    let luma = retired.y().samples().as_ptr();
+
+    let reused =
+        apply_film_grain_into(&second, &model, 0x4321, retired.into_plane_samples()).unwrap();
+
+    assert_eq!(reused.y().samples().as_ptr(), luma);
+    assert_eq!(reused, apply_film_grain(&second, &model, 0x4321).unwrap());
 }
 
 #[test]
