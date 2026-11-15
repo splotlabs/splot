@@ -6,15 +6,14 @@
 //! samples at eight bits, `i32` predictors into `u8` or `u16` samples at
 //! either bit depth.
 //!
-//! Each blend has a checked entry with strided inputs and a `_packed` entry,
-//! the decoder's, whose predictors and mask are packed (`w` elements per
-//! row) and whose caller validates the shapes. The packed entries do not
-//! panic and write only inside their output buffers for any input; for
-//! inputs outside their contract the written values are unspecified.
+//! The predictors and the mask are packed (`w` elements per row) and the
+//! caller validates the shapes. The entries do not panic and write only
+//! inside their output buffers for any input; for inputs outside their
+//! contract the written values are unspecified.
 
 use fearless_simd::{Simd, i16x8, i32x4, prelude::*, u8x16, u16x8};
 
-use crate::{BitDepth, ReconError, ReconSample, Result};
+use crate::{BitDepth, ReconSample};
 
 const LANES: usize = 8;
 
@@ -35,65 +34,17 @@ type Chunk<'a, P, O> = ((&'a [P; LANES], &'a [P; LANES]), &'a mut [O; LANES]);
 /// the map `32 * get_mask` (`0`, `32` or `64`), because
 /// `Round2(m * p0 + (2 - m) * p1, 5) == Round2(32m * p0 + (64 - 32m) * p1, 10)`.
 ///
-/// Contract (the generic body and every arch-specific body give the same bytes):
+/// Contract (the caller validates it; an arch-specific body keeps this
+/// signature and gives the same bytes):
 /// - `preds` are § 7.13.3.18 compound predictors of an eight-bit reference
 ///   (`InterRound0 = 3`, compound `InterRound1 = 7`), stored as `i16` with no
 ///   offset: each value lies in `-5132..=9212`, the range that
 ///   `subpel_predict_block_compound_intermediate_into::<_, i16>` writes.
-///   `mask` values lie in `0..=64`. For values outside these ranges the
-///   output bytes are unspecified, but the call does not panic.
+///   `mask` values lie in `0..=64`.
 /// - The products are exact in `i32`; the rounding is `(v + 512) >> 10`,
 ///   then the result is clipped to `0..=255`.
 /// - `w` and `h` are in samples; `w` is 1, 2, 4 or at least 8 (AV2 plane
-///   blocks are powers of two). Strides are in
-///   elements and at least `w`. Row `y` of each buffer starts at
-///   `y * stride`; each buffer holds at least `(h - 1) * stride + w`
-///   elements. No alignment is required. Only the `w` leading samples of
-///   each output row are written. `output` does not alias the inputs.
-///
-/// # Errors
-///
-/// Returns [`ReconError::StrideTooSmall`] when a stride is less than `w`,
-/// [`ReconError::BufferLengthMismatch`] when a buffer is too short, and
-/// [`ReconError::ArithmeticOverflow`] when `w` is 3, 5, 6 or 7. Nothing is
-/// written then.
-pub fn blend_mask_u8(
-    output: &mut [u8],
-    output_stride: usize,
-    preds: [&[i16]; 2],
-    pred_stride: usize,
-    (w, h): (usize, usize),
-    mask: &[u8],
-    mask_stride: usize,
-) -> Result<()> {
-    check_mask_args(
-        (output.len(), output_stride),
-        preds.map(<[i16]>::len),
-        pred_stride,
-        (w, h),
-        (mask.len(), mask_stride),
-    )?;
-    let packed = pred_stride == w && mask_stride == w;
-    row_groups(packed, h, 1, |y, rows| {
-        let output = rest_mut(output, y * output_stride);
-        let preds = preds.map(|pred| rest(pred, y * pred_stride));
-        blend_mask_u8_packed(
-            output,
-            output_stride,
-            preds,
-            rest(mask, y * mask_stride),
-            (w, rows),
-        );
-    });
-    Ok(())
-}
-
-/// [`blend_mask_u8`] of packed predictors and mask, without checks: the
-/// decoder's entry.
-///
-/// Contract (the caller validates it; an arch-specific body keeps this
-/// signature and gives the same bytes):
-/// - value ranges, arithmetic and `w` as [`blend_mask_u8`];
+///   blocks are powers of two).
 /// - `preds[0]`, `preds[1]` and `mask` are packed: row `y` starts at
 ///   `y * w`, and each holds at least `w * h` elements;
 /// - `output_stride >= w`, row `y` of `output` starts at
@@ -101,7 +52,7 @@ pub fn blend_mask_u8(
 ///   `(h - 1) * output_stride + w` elements, and only the `w` leading
 ///   samples of each row are written;
 /// - no alignment; `output` does not alias the inputs (`&mut`).
-pub fn blend_mask_u8_packed(
+pub fn blend_mask_u8(
     output: &mut [u8],
     output_stride: usize,
     preds: [&[i16]; 2],
@@ -125,56 +76,17 @@ pub fn blend_mask_u8_packed(
 /// `(0, 0)`, `Round2(m[y][2x] + m[y][2x + 1], 1)` for `(1, 0)` and the
 /// `Round2` of the 2x2 sum by 2 for `(1, 1)`.
 ///
-/// Contract: as [`blend_mask_u8`] for `preds`, `output` and the strides, and:
+/// Contract (the caller validates it; an arch-specific body keeps this
+/// signature and gives the same bytes): as [`blend_mask_u8`] for the value
+/// ranges, the packed `preds` and `output`, and:
 /// - `w` is a multiple of 8 (a masked compound block has `Min(w, h) >= 8`,
 ///   `is_comp_ref_allowed` and `is_thin_4xn_nx4_block` in § 5.20.5),
 ///   `h >= 1`, and `h` is even when `sub_y == 1`;
 /// - `(sub_x, sub_y)` is `(0, 0)`, `(1, 0)` or `(1, 1)`;
-/// - the chroma mask holds at least `((h >> sub_y) - 1) * mask_stride +
-///   (w >> sub_x)` bytes, `mask_stride >= w >> sub_x`, every value is in
-///   `0..=64`, and it does not alias the other buffers.
-///
-/// # Errors
-///
-/// Returns [`ReconError::StrideTooSmall`] or
-/// [`ReconError::BufferLengthMismatch`] as [`blend_mask_u8`], and
-/// [`ReconError::ArithmeticOverflow`] when `w`, `h` or the subsampling break
-/// the contract. Nothing is written then.
+/// - row `y` of the chroma mask starts at `y * mask_stride`, it holds at
+///   least `((h >> sub_y) - 1) * mask_stride + (w >> sub_x)` bytes,
+///   `mask_stride >= w >> sub_x`, and it does not alias the other buffers.
 pub fn blend_diff_weighted_u8(
-    output: &mut [u8],
-    output_stride: usize,
-    preds: [&[i16]; 2],
-    pred_stride: usize,
-    (w, h): (usize, usize),
-    inverse: bool,
-    chroma_mask: Option<(&mut [u8], usize, (u32, u32))>,
-) -> Result<()> {
-    let mut chroma = check_diff_args(
-        (output.len(), output_stride),
-        preds.map(<[i16]>::len),
-        pred_stride,
-        (w, h),
-        chroma_mask,
-    )?;
-    let group = chroma.as_ref().map_or(1, |&(_, _, (_, sub_y))| 1 << sub_y);
-    row_groups(pred_stride == w, h, group, |y, rows| {
-        let output = rest_mut(output, y * output_stride);
-        let preds = preds.map(|pred| rest(pred, y * pred_stride));
-        let chroma = chroma_rows(&mut chroma, y);
-        blend_diff_weighted_u8_packed(output, output_stride, preds, (w, rows), inverse, chroma);
-    });
-    Ok(())
-}
-
-/// [`blend_diff_weighted_u8`] of packed predictors, without checks: the
-/// decoder's entry.
-///
-/// Contract (the caller validates it; an arch-specific body keeps this
-/// signature and gives the same bytes): as [`blend_diff_weighted_u8`] for
-/// the value ranges, `w`, `h`, the subsampling and the chroma mask (whose
-/// rows start at `y * mask_stride`), and as [`blend_mask_u8_packed`] for the
-/// packed `preds` and for `output`.
-pub fn blend_diff_weighted_u8_packed(
     output: &mut [u8],
     output_stride: usize,
     preds: [&[i16]; 2],
@@ -199,47 +111,8 @@ pub fn blend_diff_weighted_u8_packed(
 /// kernels): `-5132..=9212` at eight bits and `-20588..=36956` at ten bits
 /// (horizontal pass `Round2(-56 * 1023, 3)..=Round2(184 * 1023, 3)`, then the
 /// vertical pass of the same taps with `Round2(.., 7)`), which `i16` cannot
-/// hold. `O` is `u8` only at eight bits.
-///
-/// # Errors
-///
-/// As [`blend_mask_u8`], and [`ReconError::SampleTypeUnsupportedBitDepth`]
-/// when `O` cannot hold `bit_depth` samples.
+/// hold. `O` is `u8` only at eight bits (another `O` writes nothing).
 pub fn blend_mask_wide<O: ReconSample>(
-    output: &mut [O],
-    output_stride: usize,
-    preds: [&[i32]; 2],
-    pred_stride: usize,
-    (w, h): (usize, usize),
-    (mask, mask_stride): (&[u8], usize),
-    bit_depth: BitDepth,
-) -> Result<()> {
-    check_mask_args(
-        (output.len(), output_stride),
-        preds.map(<[i32]>::len),
-        pred_stride,
-        (w, h),
-        (mask.len(), mask_stride),
-    )?;
-    check_wide_output::<O>(bit_depth)?;
-    let packed = pred_stride == w && mask_stride == w;
-    row_groups(packed, h, 1, |y, rows| {
-        let output = rest_mut(output, y * output_stride);
-        let preds = preds.map(|pred| rest(pred, y * pred_stride));
-        let mask = rest(mask, y * mask_stride);
-        blend_mask_wide_packed(output, output_stride, preds, mask, (w, rows), bit_depth);
-    });
-    Ok(())
-}
-
-/// [`blend_mask_wide`] of packed predictors and mask, without checks: the
-/// decoder's entry.
-///
-/// Contract (the caller validates it; an arch-specific body keeps this
-/// signature and gives the same bytes): as [`blend_mask_wide`] for the value
-/// ranges and `O` (`u8` only at eight bits; another `O` writes nothing), and
-/// as [`blend_mask_u8_packed`] for the shapes.
-pub fn blend_mask_wide_packed<O: ReconSample>(
     output: &mut [O],
     output_stride: usize,
     preds: [&[i32]; 2],
@@ -269,44 +142,7 @@ pub fn blend_mask_wide_packed<O: ReconSample>(
 ///
 /// Contract: as [`blend_diff_weighted_u8`] for the shapes and the chroma mask,
 /// and as [`blend_mask_wide`] for `preds` and `O`.
-///
-/// # Errors
-///
-/// As [`blend_diff_weighted_u8`] and [`blend_mask_wide`].
 pub fn blend_diff_weighted_wide<O: ReconSample>(
-    output: &mut [O],
-    output_stride: usize,
-    preds: [&[i32]; 2],
-    pred_stride: usize,
-    (w, h): (usize, usize),
-    (inverse, bit_depth): (bool, BitDepth),
-    chroma_mask: Option<(&mut [u8], usize, (u32, u32))>,
-) -> Result<()> {
-    let mut chroma = check_diff_args(
-        (output.len(), output_stride),
-        preds.map(<[i32]>::len),
-        pred_stride,
-        (w, h),
-        chroma_mask,
-    )?;
-    check_wide_output::<O>(bit_depth)?;
-    let group = chroma.as_ref().map_or(1, |&(_, _, (_, sub_y))| 1 << sub_y);
-    row_groups(pred_stride == w, h, group, |y, rows| {
-        let output = rest_mut(output, y * output_stride);
-        let preds = preds.map(|pred| rest(pred, y * pred_stride));
-        let (shape, chroma) = ((inverse, bit_depth), chroma_rows(&mut chroma, y));
-        blend_diff_weighted_wide_packed(output, output_stride, preds, (w, rows), shape, chroma);
-    });
-    Ok(())
-}
-
-/// [`blend_diff_weighted_wide`] of packed predictors, without checks: the
-/// decoder's entry.
-///
-/// Contract (the caller validates it; an arch-specific body keeps this
-/// signature and gives the same bytes): as [`blend_diff_weighted_u8_packed`]
-/// for the shapes and as [`blend_mask_wide_packed`] for `preds` and `O`.
-pub fn blend_diff_weighted_wide_packed<O: ReconSample>(
     output: &mut [O],
     output_stride: usize,
     preds: [&[i32]; 2],
@@ -336,112 +172,8 @@ pub fn blend_diff_weighted_wide_packed<O: ReconSample>(
     }
 }
 
-fn check_mask_args(
-    output: (usize, usize),
-    preds: [usize; 2],
-    pred_stride: usize,
-    (w, h): (usize, usize),
-    mask: (usize, usize),
-) -> Result<()> {
-    check_rect(output.0, output.1, w, h)?;
-    check_rect(preds[0], pred_stride, w, h)?;
-    check_rect(preds[1], pred_stride, w, h)?;
-    check_rect(mask.0, mask.1, w, h)?;
-    if w < LANES && !matches!(w, 0 | 1 | 2 | 4) {
-        return Err(ReconError::ArithmeticOverflow {
-            context: "mask blend width",
-        });
-    }
-    Ok(())
-}
-
-/// Checks the shapes of a difference-weight blend; returns the chroma mask.
-fn check_diff_args(
-    output: (usize, usize),
-    preds: [usize; 2],
-    pred_stride: usize,
-    (w, h): (usize, usize),
-    chroma_mask: ChromaMask<'_>,
-) -> Result<ChromaMask<'_>> {
-    check_rect(output.0, output.1, w, h)?;
-    check_rect(preds[0], pred_stride, w, h)?;
-    check_rect(preds[1], pred_stride, w, h)?;
-    let shape_error = |context| Err(ReconError::ArithmeticOverflow { context });
-    if w % LANES != 0 {
-        return shape_error("diff-weighted blend width");
-    }
-    let Some((mask, stride, sub @ (sub_x, sub_y))) = chroma_mask else {
-        return Ok(None);
-    };
-    if sub_x > 1 || sub_y > sub_x {
-        return shape_error("diff-weighted chroma mask subsampling");
-    }
-    if sub_y == 1 && h % 2 != 0 {
-        return shape_error("diff-weighted chroma mask height");
-    }
-    check_rect(mask.len(), stride, w >> sub_x, h >> sub_y)?;
-    Ok(Some((mask, stride, sub)))
-}
-
-fn check_rect(len: usize, stride: usize, w: usize, h: usize) -> Result<()> {
-    if w == 0 || h == 0 {
-        return Ok(());
-    }
-    if stride < w {
-        return Err(ReconError::StrideTooSmall {
-            stride_samples: stride,
-            storage_width: w,
-        });
-    }
-    let expected = (h - 1)
-        .checked_mul(stride)
-        .and_then(|rows| rows.checked_add(w))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "mask blend rectangle",
-        })?;
-    if len < expected {
-        return Err(ReconError::BufferLengthMismatch {
-            expected,
-            actual: len,
-        });
-    }
-    Ok(())
-}
-
-fn check_wide_output<O: ReconSample>(bit_depth: BitDepth) -> Result<()> {
-    let eight = O::u8_slice(&[]).is_some();
-    if (eight && bit_depth != BitDepth::Eight) || (!eight && O::u16_slice(&[]).is_none()) {
-        return Err(ReconError::SampleTypeUnsupportedBitDepth {
-            sample_type: O::TYPE_NAME,
-            bit_depth,
-        });
-    }
-    Ok(())
-}
-
-/// Runs `blend(y, rows)` on the whole block when `packed`, else on each
-/// group of `group` rows from row `y`.
-fn row_groups(packed: bool, h: usize, group: usize, mut blend: impl FnMut(usize, usize)) {
-    if packed {
-        return blend(0, h);
-    }
-    for y in (0..h).step_by(group) {
-        blend(y, group.min(h - y));
-    }
-}
-
 fn rest<V>(buffer: &[V], start: usize) -> &[V] {
     buffer.get(start..).unwrap_or_default()
-}
-
-fn rest_mut<V>(buffer: &mut [V], start: usize) -> &mut [V] {
-    buffer.get_mut(start..).unwrap_or_default()
-}
-
-/// The chroma mask from the row of luma row `y`.
-fn chroma_rows<'a>(chroma: &'a mut ChromaMask<'_>, y: usize) -> ChromaMask<'a> {
-    let (mask, stride, sub) = chroma.as_mut()?;
-    Some((rest_mut(mask, (y >> sub.1) * *stride), *stride, *sub))
 }
 
 /// `Clip1(Round2(64 * p1 + m * (p0 - p1), 10))` of eight lanes, `diff = p0 - p1`.
@@ -814,8 +546,6 @@ fn store_quarter<S: Simd>(values: i32x4<S>, output: &mut [u8; LANES / 2]) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
-
     use super::*;
 
     fn spec_blend(p0: i16, p1: i16, m: i32) -> u8 {
@@ -840,37 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn mask_blend_matches_the_spec_formula_at_every_width() {
-        for w in [1, 2, 4].into_iter().chain(8..=20).chain([31, 32, 40]) {
-            for h in [1, 2, 3, 5, 8] {
-                let (stride, len) = (w + 2, (h - 1) * (w + 2) + w);
-                let preds = [samples(len, w), samples(len, h + 3)];
-                let mask: Vec<u8> = (0..len).map(|i| ((i * 13 + w) % 65) as u8).collect();
-                let mut output = vec![0x5a; len + 2];
-                let preds_ref = [preds[0].as_slice(), preds[1].as_slice()];
-                blend_mask_u8(
-                    &mut output,
-                    stride,
-                    preds_ref,
-                    stride,
-                    (w, h),
-                    &mask,
-                    stride,
-                )
-                .expect("blend");
-                for (i, &got) in output.iter().enumerate() {
-                    let want = if i < len && i % stride < w {
-                        spec_blend(preds[0][i], preds[1][i], i32::from(mask[i]))
-                    } else {
-                        0x5a
-                    };
-                    assert_eq!(got, want, "{w}x{h} sample {i}");
-                }
-            }
-        }
-    }
-
-    #[test]
     fn diff_weighted_blend_matches_the_spec_formula() {
         for (w, h) in [(8, 2), (8, 8), (16, 6), (24, 4), (64, 2)] {
             for inverse in [false, true] {
@@ -881,8 +580,7 @@ mod tests {
                     let mut chroma = vec![0; (w >> sub_x) * (h >> sub_y)];
                     let preds_ref = [preds[0].as_slice(), preds[1].as_slice()];
                     let mask = Some((chroma.as_mut_slice(), w >> sub_x, sub));
-                    blend_diff_weighted_u8(&mut output, w, preds_ref, w, (w, h), inverse, mask)
-                        .expect("blend");
+                    blend_diff_weighted_u8(&mut output, w, preds_ref, (w, h), inverse, mask);
                     for (i, &got) in output.iter().enumerate() {
                         assert_eq!(got, spec_blend(preds[0][i], preds[1][i], m(i)));
                     }
@@ -930,7 +628,7 @@ mod tests {
             let refs = [preds[0].as_slice(), preds[1].as_slice()];
             let mask: Vec<u8> = (0..w * h).map(|i| ((i * 13 + w) % 65) as u8).collect();
             let mut output = vec![O::default(); w * h];
-            blend_mask_wide(&mut output, w, refs, w, (w, h), (&mask, w), bit_depth).expect("blend");
+            blend_mask_wide(&mut output, w, refs, &mask, (w, h), bit_depth);
             for (i, got) in output.iter().enumerate() {
                 let want = spec_wide(preds[0][i], preds[1][i], i32::from(mask[i]), bit_depth);
                 assert_eq!(got.to_u16(), want, "mask {bit_depth:?} {w}x{h} {i}");
@@ -951,8 +649,7 @@ mod tests {
                     let mut chroma = vec![0; cw * (h >> sub_y)];
                     let mask = Some((chroma.as_mut_slice(), cw, sub));
                     let shape = (inverse, bit_depth);
-                    blend_diff_weighted_wide(&mut output, w, refs, w, (w, h), shape, mask)
-                        .expect("diff-weighted blend");
+                    blend_diff_weighted_wide(&mut output, w, refs, (w, h), shape, mask);
                     for (i, got) in output.iter().enumerate() {
                         let want = spec_wide(preds[0][i], preds[1][i], m(i), bit_depth);
                         assert_eq!(got.to_u16(), want, "diff {bit_depth:?} {w}x{h} {i}");
@@ -976,38 +673,21 @@ mod tests {
         wide_case::<u8>(BitDepth::Eight);
         wide_case::<u16>(BitDepth::Eight);
         wide_case::<u16>(BitDepth::Ten);
-        let mut output = [0u8; 8];
-        let preds = [[0i32; 8].as_slice(), [0; 8].as_slice()];
-        let ten = blend_mask_wide(
-            &mut output,
-            8,
-            preds,
-            8,
-            (8, 1),
-            (&[0; 8], 8),
-            BitDepth::Ten,
-        );
-        assert!(ten.is_err());
     }
 
     #[test]
-    fn packed_mask_blend_matches_the_spec_formula_and_never_panics() {
-        let shapes = [
-            (1, 8),
-            (2, 4),
-            (4, 3),
-            (4, 4),
-            (4, 16),
-            (8, 8),
-            (12, 3),
-            (16, 4),
-        ];
-        for (w, h) in shapes.into_iter().chain([(32, 8), (64, 2), (128, 2)]) {
+    fn mask_blend_matches_the_spec_formula_and_never_panics() {
+        let widths = [1, 2, 4]
+            .into_iter()
+            .chain(8..=20)
+            .chain([31, 32, 40, 64, 128]);
+        let shapes = widths.flat_map(|w| [1, 2, 3, 5, 8, 16].map(|h| (w, h)));
+        for (w, h) in shapes {
             let stride = w + 5;
             let preds = [samples(w * h, w), samples(w * h, h + 1)];
             let mask: Vec<u8> = (0..w * h).map(|i| ((i * 29 + h) % 65) as u8).collect();
             let mut output = vec![0x5a; h * stride + 3];
-            blend_mask_u8_packed(&mut output, stride, [&preds[0], &preds[1]], &mask, (w, h));
+            blend_mask_u8(&mut output, stride, [&preds[0], &preds[1]], &mask, (w, h));
             for (i, &got) in output.iter().enumerate() {
                 let (y, x) = (i / stride, i % stride);
                 let at = y * w + x;
@@ -1029,8 +709,8 @@ mod tests {
                 .into_iter()
                 .chain([(4, 64, 64, (8, 8)), (8, 9, 64, (8, 8)), (8, 64, 64, (8, 9))])
         {
-            blend_mask_u8_packed(&mut output[..len], stride, preds, &[0; 64][..mask], size);
-            blend_mask_wide_packed(
+            blend_mask_u8(&mut output[..len], stride, preds, &[0; 64][..mask], size);
+            blend_mask_wide(
                 &mut output[..len],
                 stride,
                 wide,
@@ -1041,24 +721,10 @@ mod tests {
             for sub in [(0, 0), (1, 0), (1, 1), (0, 1), (2, 2)] {
                 for mask_stride in [0, 2, 4, 8] {
                     let chroma = Some((&mut [0; 16][..], mask_stride, sub));
-                    blend_diff_weighted_u8_packed(
-                        &mut output[..len],
-                        stride,
-                        preds,
-                        size,
-                        false,
-                        chroma,
-                    );
+                    blend_diff_weighted_u8(&mut output[..len], stride, preds, size, false, chroma);
                     let chroma = Some((&mut [0; 16][..], mask_stride, sub));
                     let shape = (true, BitDepth::Eight);
-                    blend_diff_weighted_wide_packed(
-                        &mut output[..len],
-                        stride,
-                        wide,
-                        size,
-                        shape,
-                        chroma,
-                    );
+                    blend_diff_weighted_wide(&mut output[..len], stride, wide, size, shape, chroma);
                 }
             }
         }

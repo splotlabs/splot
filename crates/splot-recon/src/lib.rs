@@ -95,9 +95,7 @@ mod workspace;
 mod y4m;
 
 pub use blend_mask::{
-    blend_diff_weighted_u8, blend_diff_weighted_u8_packed, blend_diff_weighted_wide,
-    blend_diff_weighted_wide_packed, blend_mask_u8, blend_mask_u8_packed, blend_mask_wide,
-    blend_mask_wide_packed,
+    blend_diff_weighted_u8, blend_diff_weighted_wide, blend_mask_u8, blend_mask_wide,
 };
 pub use cdef_filter::{
     CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT,

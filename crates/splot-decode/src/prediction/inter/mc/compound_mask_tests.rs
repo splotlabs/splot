@@ -173,35 +173,17 @@ fn kernel_mask(
             let narrow = narrow(preds);
             let mut output = vec![0u8; len];
             let refs = [narrow[0].as_slice(), narrow[1].as_slice()];
-            blend_mask_u8(&mut output, stride, refs, w, (w, h), mask, w).expect("mask blend");
+            blend_mask_u8(&mut output, stride, refs, mask, (w, h));
             output.into_iter().map(u16::from).collect()
         }
         Depth::WideEight => {
             let mut output = vec![0u8; len];
-            blend_mask_wide(
-                &mut output,
-                stride,
-                refs,
-                w,
-                (w, h),
-                (mask, w),
-                BitDepth::Eight,
-            )
-            .expect("wide mask blend");
+            blend_mask_wide(&mut output, stride, refs, mask, (w, h), BitDepth::Eight);
             output.into_iter().map(u16::from).collect()
         }
         Depth::WideTen => {
             let mut output = vec![0u16; len];
-            blend_mask_wide(
-                &mut output,
-                stride,
-                refs,
-                w,
-                (w, h),
-                (mask, w),
-                BitDepth::Ten,
-            )
-            .expect("wide mask blend");
+            blend_mask_wide(&mut output, stride, refs, mask, (w, h), BitDepth::Ten);
             output
         }
     }
@@ -224,20 +206,17 @@ fn kernel_diff(
             let narrow = narrow(preds);
             let mut output = vec![0u8; len];
             let refs = [narrow[0].as_slice(), narrow[1].as_slice()];
-            blend_diff_weighted_u8(&mut output, stride, refs, w, (w, h), inverse, Some(chroma))
-                .expect("diff-weighted blend");
+            blend_diff_weighted_u8(&mut output, stride, refs, (w, h), inverse, Some(chroma));
             output.into_iter().map(u16::from).collect()
         }
         Depth::WideEight => {
             let mut output = vec![0u8; len];
-            blend_diff_weighted_wide(&mut output, stride, refs, w, (w, h), shape, Some(chroma))
-                .expect("wide diff-weighted blend");
+            blend_diff_weighted_wide(&mut output, stride, refs, (w, h), shape, Some(chroma));
             output.into_iter().map(u16::from).collect()
         }
         Depth::WideTen => {
             let mut output = vec![0u16; len];
-            blend_diff_weighted_wide(&mut output, stride, refs, w, (w, h), shape, Some(chroma))
-                .expect("wide diff-weighted blend");
+            blend_diff_weighted_wide(&mut output, stride, refs, (w, h), shape, Some(chroma));
             output
         }
     }
@@ -401,23 +380,6 @@ fn implicit_mask_blend_matches_the_scalar_blend() {
         edge_masks > seed / 2,
         "{edge_masks} of {seed} masks are not uniform"
     );
-}
-
-#[test]
-fn mask_kernels_reject_short_buffers_and_bad_shapes() {
-    let preds = [vec![0i16; 64], vec![0i16; 64]];
-    let refs = [preds[0].as_slice(), preds[1].as_slice()];
-    let mut output = vec![0u8; 64];
-    assert!(blend_mask_u8(&mut output, 8, refs, 8, (8, 8), &[0; 63], 8).is_err());
-    assert!(blend_mask_u8(&mut output, 7, refs, 8, (8, 8), &[0; 64], 8).is_err());
-    assert!(blend_mask_u8(&mut output, 8, refs, 8, (3, 8), &[0; 64], 8).is_err());
-    assert!(blend_diff_weighted_u8(&mut output, 8, refs, 4, (4, 8), false, None).is_err());
-    let mut mask = vec![0u8; 16];
-    let chroma = Some((mask.as_mut_slice(), 4, (0, 1)));
-    assert!(blend_diff_weighted_u8(&mut output, 8, refs, 8, (8, 8), false, chroma).is_err());
-    let chroma = Some((mask.as_mut_slice(), 4, (1, 1)));
-    assert!(blend_diff_weighted_u8(&mut output, 8, refs, 8, (8, 7), false, chroma).is_err());
-    assert_eq!(output, vec![0u8; 64]);
 }
 
 /// The sample-by-sample § 7.13.3.14 implicit mask times 32, the oracle of

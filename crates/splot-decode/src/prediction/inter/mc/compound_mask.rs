@@ -12,14 +12,9 @@ use std::cell::Cell;
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    BitDepth, PlaneId, PlaneRect, ReconError, ReconSample, blend_diff_weighted_u8_packed,
-    blend_diff_weighted_wide_packed, blend_mask_u8_packed, blend_mask_wide_packed,
+    BitDepth, PlaneId, PlaneRect, ReconError, ReconSample, blend_diff_weighted_u8,
+    blend_diff_weighted_wide, blend_mask_u8, blend_mask_wide,
     subpel_predict_block_compound_intermediate_into, wedge_mask_into,
-};
-
-#[cfg(test)]
-use splot_recon::{
-    blend_diff_weighted_u8, blend_diff_weighted_wide, blend_mask_u8, blend_mask_wide,
 };
 
 use super::super::mv_scaling::PlaneScaling;
@@ -228,12 +223,12 @@ fn blend_plane<T: ReconSample>(
         return match preds {
             Preds::Narrow(preds) => {
                 let output = T::u8_slice_mut(output).ok_or(unsupported::<T>(bit_depth))?;
-                blend_diff_weighted_u8_packed(output, stride, preds, (w, h), inverse, chroma_mask);
+                blend_diff_weighted_u8(output, stride, preds, (w, h), inverse, chroma_mask);
                 Ok(())
             }
             Preds::Wide(preds) => {
                 let shape = (inverse, bit_depth);
-                blend_diff_weighted_wide_packed(output, stride, preds, (w, h), shape, chroma_mask);
+                blend_diff_weighted_wide(output, stride, preds, (w, h), shape, chroma_mask);
                 Ok(())
             }
         };
@@ -245,10 +240,10 @@ fn blend_plane<T: ReconSample>(
     match preds {
         Preds::Narrow(preds) => {
             let output = T::u8_slice_mut(output).ok_or(unsupported::<T>(bit_depth))?;
-            blend_mask_u8_packed(output, stride, preds, mask, (w, h));
+            blend_mask_u8(output, stride, preds, mask, (w, h));
         }
         Preds::Wide(preds) => {
-            blend_mask_wide_packed(output, stride, preds, mask, (w, h), bit_depth);
+            blend_mask_wide(output, stride, preds, mask, (w, h), bit_depth);
         }
     }
     Ok(())
