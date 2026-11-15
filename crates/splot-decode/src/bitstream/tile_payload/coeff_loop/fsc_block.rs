@@ -92,7 +92,7 @@ pub(crate) fn decode_fsc_transform_block(
             levels[grid(entry)] = 0;
         }
     }
-    symbols.restore(owned);
+    *symbols = owned;
     let (quant_end, summary) = result?;
     state.commit_block(lines, summary.cul_level(), summary.dc_category());
     Ok(quant_end)
@@ -143,7 +143,7 @@ impl Block<'_> {
         ),
         quant: &mut [i32],
     ) -> Decoded<'a> {
-        let mut symbols = symbols.snapshot();
+        let mut symbols = symbols.clone();
         let mut nonzero_len = 0;
         let result = self.decode_levels::<UPD>(
             cdfs,

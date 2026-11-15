@@ -733,7 +733,7 @@ const DIF_BUFFER_BITS: i32 = 48;
 ///
 /// `range_hi` holds `SymbolRange << 16`, so renormalization shifts by its
 /// leading zeros directly and boundaries compare against `dif` unshifted.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SymbolDecoder<'a> {
     data: &'a [u8],
     base: ByteOffset,
@@ -854,30 +854,6 @@ impl<'a> SymbolDecoder<'a> {
         if cfg!(any(debug_assertions, feature = "symbol-count")) {
             self.frame_symbol_count = self.frame_symbol_count.wrapping_add(n);
         }
-    }
-
-    /// Copies the decoder state by value, for hot loops that keep the
-    /// arithmetic registers (`dif`, range, buffered bits) in machine
-    /// registers instead of behind a pointer. [`Self::restore`] writes the
-    /// state back.
-    #[must_use]
-    pub const fn snapshot(&self) -> Self {
-        Self {
-            data: self.data,
-            base: self.base,
-            dif: self.dif,
-            buffered: self.buffered,
-            fed_bits: self.fed_bits,
-            range_hi: self.range_hi,
-            payload_bits: self.payload_bits,
-            frame_symbol_count: self.frame_symbol_count,
-            config: self.config,
-        }
-    }
-
-    /// Replaces the decoder state with [`Self::snapshot`] output.
-    pub const fn restore(&mut self, snapshot: Self) {
-        *self = snapshot;
     }
 
     /// Returns the current relative bit position in the tile payload.

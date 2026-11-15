@@ -487,7 +487,7 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
     let eob_ctx = coeff_base_eob_ctx(eob_index, config.tx_width_log2, config.tx_height);
     let eob_level = read_eob_base::<LUMA, UPD>(symbols, &mut rows, eob_ctx, eob_index < lf_end) + 1;
     let mut pass = LevelPass::<UPD> {
-        symbols: symbols.snapshot(),
+        symbols: symbols.clone(),
         levels: &mut *levels,
         width_log2: config.tx_width_log2,
         plane: config.plane,
@@ -507,7 +507,7 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
     };
     let result =
         sign_pass::<CLASS, LUMA, TCQ>(cdfs, &mut owned, levels, quant, &block, facts, nonzero);
-    symbols.restore(owned);
+    *symbols = owned;
     if result.is_err() {
         levels.fill(0);
     }
