@@ -60,7 +60,7 @@ pub(crate) fn new_general_intra_workspace<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,

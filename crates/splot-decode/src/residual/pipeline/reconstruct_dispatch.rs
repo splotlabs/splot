@@ -229,7 +229,7 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::Luma(RectLumaPlan::Smooth { mode, use_tcq }) => {
                 let neighbours = self.luma_corner_neighbours(frame, block_decoded);
                 let edges = self.luma_edges(frame);
-                crate::pipeline::reconstruct::reconstruct_general_intra_luma_smooth_rect_block_with_availability_into(
+                crate::pipeline::reconstruct::reconstruct_general_intra_luma_smooth_rect_block_into(
                     workspace,
                     coeffs,
                     mode,
@@ -800,7 +800,7 @@ impl ResidualPlanePlan {
                 let ibp_dc = intra_edge.enable_ibp
                     && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2);
                 let neighbours = self.plane_neighbours(frame, block_decoded);
-                crate::pipeline::reconstruct::reconstruct_general_intra_block_rect_with_availability_into(
+                crate::pipeline::reconstruct::reconstruct_general_intra_block_rect_into(
                     workspace,
                     coeffs,
                     self.plane_id,

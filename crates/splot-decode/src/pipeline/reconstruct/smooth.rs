@@ -19,9 +19,7 @@ use crate::bitstream::tile_payload::{
 const SMOOTH_EDGE_CAPACITY: usize = 65;
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_with_availability_into<
-    T: ReconSample,
->(
+pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     mode: SupportedNonDcLumaMode,

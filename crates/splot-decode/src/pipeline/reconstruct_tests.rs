@@ -406,7 +406,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         BitDepth::Eight,
     )
     .unwrap();
-    reconstruct_general_intra_block_rect_with_availability_into(
+    reconstruct_general_intra_block_rect_into(
         &mut via_rect,
         block.view(&[]),
         PlaneId::U,

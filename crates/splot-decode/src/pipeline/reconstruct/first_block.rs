@@ -315,7 +315,6 @@ fn collect_available_dip_edge<T: ReconSample>(
     else {
         return Err(invalid_directional_edge_state());
     };
-    out.fill(T::default());
     match direction {
         DipEdge::Above => gather_row_clamped(workspace, PlaneId::Y, (start, fixed), limit, out),
         DipEdge::Left => gather_column_clamped(workspace, PlaneId::Y, (fixed, start), limit, out),
@@ -514,7 +513,7 @@ mod tests {
                         DipEdge::Left => ws.reconstructed_sample(PlaneId::Y, 2, at).unwrap(),
                     })
                     .collect();
-                let mut out = vec![0u16; edge_len];
+                let mut out = vec![u16::MAX; edge_len];
                 let gathered = collect_available_dip_edge(
                     &ws,
                     direction,

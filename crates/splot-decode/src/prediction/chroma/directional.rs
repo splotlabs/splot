@@ -38,7 +38,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     match mode {
-        SupportedChromaMode::Dc => reconstruct_general_intra_block_rect_with_availability_into(
+        SupportedChromaMode::Dc => reconstruct_general_intra_block_rect_into(
             workspace,
             block,
             plane_id,
