@@ -332,32 +332,8 @@ fn run_interior_workspace_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_de
     if let Ok(edges) = workspace.intra_dc_edges_for_rect(PlaneId::Y, 1, 1, size) {
         let _ = predict_intra_dc_rect_value(bit_depth, size, edges.as_dc_edges());
     }
-    let _ = workspace.predict_intra_dc_rect(PlaneId::Y, 1, 1, size);
-    let _ = workspace.predict_intra_dc_subsampled_rect(PlaneId::Y, 1, 1, size);
-    let _ = workspace.predict_intra_ibp_dc_rect(PlaneId::Y, 1, 1, size);
-    let _ = workspace.predict_intra_paeth_rect(PlaneId::Y, 1, 1, size);
-    let _ = workspace.predict_intra_smooth_rect(PlaneId::Y, 1, 1, size, smooth_mode(input.byte()));
-    let _ = workspace.predict_intra_cardinal_directional_rect(
-        PlaneId::Y,
-        1,
-        1,
-        size,
-        cardinal_direction(input.byte()),
-    );
-    let _ = workspace.predict_intra_directional_angle_rect(
-        PlaneId::U,
-        1,
-        1,
-        size,
-        directional_angle(input.byte()),
-    );
-    let _ = workspace.predict_intra_middle_directional_angle_rect(
-        PlaneId::U,
-        1,
-        1,
-        size,
-        middle_directional_angle(input.byte()),
-    );
+    predict_workspace_dc(&mut workspace, PlaneId::Y, (1, 1), size, bit_depth);
+    predict_workspace_dc(&mut workspace, PlaneId::U, (1, 1), size, bit_depth);
     let _ = workspace.freeze();
 }
 
@@ -391,38 +367,44 @@ fn run_random_workspace_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_dept
     };
     let _ = workspace.write_rect(plane, rect, &source, source_stride);
 
-    let _ = workspace.intra_dc_edges_for_rect(plane, x, y, size);
-    let _ = workspace.predict_intra_dc_rect(plane, x, y, size);
-    let _ = workspace.predict_intra_dc_subsampled_rect(plane, x, y, size);
-    let _ = workspace.predict_intra_ibp_dc_rect(plane, x, y, size);
-    let _ = workspace.predict_intra_paeth_rect(plane, x, y, size);
-    let _ = workspace.predict_intra_smooth_rect(plane, x, y, size, smooth_mode(input.byte()));
-    let _ = workspace.predict_intra_cardinal_directional_rect(
-        plane,
-        x,
-        y,
-        size,
-        cardinal_direction(input.byte()),
-    );
-    let _ = workspace.predict_intra_directional_angle_rect(
-        plane,
-        x,
-        y,
-        size,
-        directional_angle(input.byte()),
-    );
-    let _ = workspace.predict_intra_middle_directional_angle_rect(
-        plane,
-        x,
-        y,
-        size,
-        middle_directional_angle(input.byte()),
-    );
+    predict_workspace_dc(&mut workspace, plane, (x, y), size, bit_depth);
     let _ = workspace.rect_rows(plane, rect).map(|rows| {
         let _: usize = rows.map(<[T]>::len).sum();
     });
     let _ = workspace.samples(plane).map(<[T]>::len);
     let _ = workspace.freeze();
+}
+
+type DcKernel<T> = fn(
+    BitDepth,
+    IntraRectBlockSize,
+    IntraDcEdges<'_, T>,
+    &mut [T],
+    usize,
+) -> splot_recon::Result<()>;
+
+/// The decoder's DC-family path: the workspace edges of the block, each DC
+/// kernel into scratch, then the block write.
+fn predict_workspace_dc<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    plane: PlaneId,
+    (x, y): (usize, usize),
+    size: IntraRectBlockSize,
+    bit_depth: BitDepth,
+) {
+    let Ok(edges) = workspace.intra_dc_edges_for_rect(plane, x, y, size) else {
+        return;
+    };
+    let mut out = vec![T::default(); size.sample_count()];
+    for kernel in [
+        predict_intra_dc_rect_into as DcKernel<T>,
+        predict_intra_dc_subsampled_rect_into,
+        predict_intra_ibp_dc_rect_into,
+    ] {
+        if kernel(bit_depth, size, edges.as_dc_edges(), &mut out, size.width()).is_ok() {
+            let _ = workspace.write_rect_block(plane, x, y, size, &out);
+        }
+    }
 }
 
 fn workspace_from_dimensions<T: ReconSample>(

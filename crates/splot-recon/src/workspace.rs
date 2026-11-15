@@ -15,15 +15,11 @@ use core::mem;
 use core::ops::Range;
 use std::sync::Arc;
 
-use crate::intra_basic::predict_paeth_sample;
 use crate::intra_dc_math::validate_sample_type;
-use crate::intra_directional::predict_intra_cardinal_directional_rect_into;
-use crate::intra_smooth::{SmoothSampleEdges, SmoothSamplePosition, predict_smooth_sample_values};
 use crate::{
-    BitDepth, DecodedFrame, DecodedFrameInfo, FrameMut, FramePlaneSamples, FramePlanes, FrameRef,
-    IntraCardinalDirection, IntraDirectionalAngleEdge, IntraPaethEdge, IntraRectBlockSize,
-    IntraSmoothEdge, IntraSmoothMode, PixelFormat, Plane, PlaneId, PlaneMut, PlaneRect, PlaneRef,
-    PlaneSize, ReconError, ReconSample, Result,
+    DecodedFrame, DecodedFrameInfo, FrameMut, FramePlaneSamples, FramePlanes, FrameRef,
+    IntraRectBlockSize, PixelFormat, Plane, PlaneId, PlaneMut, PlaneRect, PlaneRef, PlaneSize,
+    ReconError, ReconSample, Result,
 };
 
 mod owned_rect;
@@ -33,8 +29,6 @@ mod workspace_edges;
 mod workspace_interintra;
 #[path = "workspace_intra_dc.rs"]
 mod workspace_intra_dc;
-#[path = "workspace_intra_directional_angle.rs"]
-mod workspace_intra_directional_angle;
 #[path = "workspace_rows.rs"]
 mod workspace_rows;
 use crate::plane_buf::PlaneSamples;
@@ -1174,65 +1168,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         self.write_rect(plane, rect, samples, size.width())
     }
 
-    /// Predicts rectangular basic/PAETH intra samples into the workspace.
-    ///
-    /// Uses adjacent in-storage samples as the prepared AV2 §7.13.2.2 edges.
-    /// Edge synthesis and availability remain caller-owned.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] for invalid target geometry, absent planes, or
-    /// missing in-storage top/left neighbors.
-    pub fn predict_intra_paeth_rect(
-        &mut self,
-        plane: PlaneId,
-        x: usize,
-        y: usize,
-        size: IntraRectBlockSize,
-    ) -> Result<()> {
-        let rect = block_rect(x, y, size)?;
-        self.plane_mut(plane)?.predict_intra_paeth_rect(rect)
-    }
-
-    /// Predicts rectangular smooth intra samples into the workspace.
-    ///
-    /// Uses adjacent in-storage samples as the prepared AV2 §7.13.2.13 edges.
-    /// Edge synthesis and availability remain caller-owned.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] for invalid target geometry, absent planes, or
-    /// missing in-storage prepared edges.
-    pub fn predict_intra_smooth_rect(
-        &mut self,
-        plane: PlaneId,
-        x: usize,
-        y: usize,
-        size: IntraRectBlockSize,
-        mode: IntraSmoothMode,
-    ) -> Result<()> {
-        let (target, rect, bit_depth) = self.intra_rect_target(plane, x, y, size)?;
-        target.predict_intra_smooth_rect(rect, size, mode, bit_depth)
-    }
-
-    /// Predicts rectangular cardinal directional intra samples into the workspace.
-    ///
-    /// Uses the in-storage above edge for vertical prediction and the in-storage
-    /// left edge for horizontal prediction. Edge synthesis remains caller-owned.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] for invalid target geometry, absent planes, or
-    /// missing in-storage prepared edges.
-    pub fn predict_intra_cardinal_directional_rect(
-        &mut self,
-        plane: PlaneId,
-        x: usize,
-        y: usize,
-        size: IntraRectBlockSize,
-        direction: IntraCardinalDirection,
-    ) -> Result<()> {
-        let (target, rect, bit_depth) = self.intra_rect_target(plane, x, y, size)?;
-        target.predict_intra_cardinal_directional_rect(rect, size, direction, bit_depth)
-    }
-
     /// Takes a reusable, initialized intra-prediction buffer from this workspace.
     ///
     /// The two named slots let dual-prediction modes hold both inputs at once.
@@ -1324,20 +1259,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
     fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlane<T>> {
         select_plane_mut(plane, &mut self.y, self.u.as_mut(), self.v.as_mut())
-    }
-
-    /// Resolves the writable plane, block rectangle, and active bit depth shared
-    /// by the rectangular intra prediction entry points.
-    fn intra_rect_target(
-        &mut self,
-        plane: PlaneId,
-        x: usize,
-        y: usize,
-        size: IntraRectBlockSize,
-    ) -> Result<(&mut CurrentFramePlane<T>, PlaneRect, BitDepth)> {
-        let rect = block_rect(x, y, size)?;
-        let bit_depth = self.info.bit_depth();
-        Ok((self.plane_mut(plane)?, rect, bit_depth))
     }
 }
 
@@ -1602,154 +1523,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         )
     }
 
-    fn predict_intra_paeth_rect(&mut self, rect: PlaneRect) -> Result<()> {
-        self.ensure_rect(rect)?;
-        if rect.x() == 0 {
-            return Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
-                plane: self.plane,
-                edge: IntraPaethEdge::Left,
-                rect,
-            });
-        }
-        if rect.y() == 0 {
-            return Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
-                plane: self.plane,
-                edge: IntraPaethEdge::Above,
-                rect,
-            });
-        }
-
-        let top_left = self.samples[self.sample_index(rect.x() - 1, rect.y() - 1)?];
-        let above_range = self.row_range(rect.y() - 1, rect.x(), rect.width())?;
-        for row_index in 0..rect.height() {
-            let row = rect.y() + row_index;
-            let left = self.samples[self.sample_index(rect.x() - 1, row)?];
-            let target_range = self.row_range(row, rect.x(), rect.width())?;
-            for column in 0..rect.width() {
-                let above = self.samples[above_range.start + column];
-                self.samples[target_range.start + column] =
-                    predict_paeth_sample(left, above, top_left);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn predict_intra_smooth_rect(
-        &mut self,
-        rect: PlaneRect,
-        size: IntraRectBlockSize,
-        mode: IntraSmoothMode,
-        bit_depth: crate::BitDepth,
-    ) -> Result<()> {
-        self.ensure_rect(rect)?;
-        if rect.x() == 0 {
-            return Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
-                plane: self.plane,
-                edge: IntraSmoothEdge::Left,
-                rect,
-            });
-        }
-        if rect.y() == 0 {
-            return Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
-                plane: self.plane,
-                edge: IntraSmoothEdge::Above,
-                rect,
-            });
-        }
-        let bottom_left_y =
-            rect.y()
-                .checked_add(rect.height())
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "smooth intra prediction bottom-left row",
-                })?;
-        if bottom_left_y >= self.storage_size.height() {
-            return Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
-                plane: self.plane,
-                edge: IntraSmoothEdge::BottomLeft,
-                rect,
-            });
-        }
-        let top_right_x =
-            rect.x()
-                .checked_add(rect.width())
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "smooth intra prediction top-right column",
-                })?;
-        if top_right_x >= self.storage_size.width() {
-            return Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
-                plane: self.plane,
-                edge: IntraSmoothEdge::TopRight,
-                rect,
-            });
-        }
-
-        let above_range = self.row_range(rect.y() - 1, rect.x(), rect.width() + 1)?;
-        let bottom_left = self.samples[self.sample_index(rect.x() - 1, bottom_left_y)?];
-        let top_right = self.samples[above_range.start + rect.width()];
-
-        for row_index in 0..rect.height() {
-            let row = rect.y() + row_index;
-            let left = self.samples[self.sample_index(rect.x() - 1, row)?];
-            let target_range = self.row_range(row, rect.x(), rect.width())?;
-            for column in 0..rect.width() {
-                let top = self.samples[above_range.start + column];
-                let sample = predict_smooth_sample_values(
-                    bit_depth,
-                    size,
-                    mode,
-                    SmoothSampleEdges {
-                        left,
-                        top,
-                        bottom_left,
-                        top_right,
-                    },
-                    SmoothSamplePosition {
-                        row: row_index,
-                        column,
-                    },
-                )?;
-                self.samples[target_range.start + column] = sample;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn predict_intra_cardinal_directional_rect(
-        &mut self,
-        rect: PlaneRect,
-        size: IntraRectBlockSize,
-        direction: IntraCardinalDirection,
-        bit_depth: crate::BitDepth,
-    ) -> Result<()> {
-        self.ensure_rect(rect)?;
-
-        let output_start = self.sample_index(rect.x(), rect.y())?;
-        let edge_kind = direction.required_edge();
-        let edge_len = match edge_kind {
-            IntraDirectionalAngleEdge::Above => rect.width(),
-            IntraDirectionalAngleEdge::Left => rect.height(),
-        };
-        let edge = self.directional_angle_edge_samples(
-            rect,
-            edge_kind,
-            edge_len,
-            direction.p_angle(),
-            cardinal_edge_context(edge_kind),
-        )?;
-        let edges = workspace_edges::directional_angle_edges(edge_kind, &edge);
-        let stride_samples = self.stride_samples();
-        predict_intra_cardinal_directional_rect_into(
-            bit_depth,
-            size,
-            direction,
-            edges,
-            &mut self.samples[output_start..],
-            stride_samples,
-        )
-    }
-
     fn check_freeze(&self) -> Result<()> {
         Plane::<T>::check_buf(
             self.storage_size,
@@ -1847,13 +1620,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 rect: PlaneRect::new(x, row, width, 1)?,
             })
         }
-    }
-}
-
-const fn cardinal_edge_context(edge: IntraDirectionalAngleEdge) -> &'static str {
-    match edge {
-        IntraDirectionalAngleEdge::Above => "cardinal directional above edge",
-        IntraDirectionalAngleEdge::Left => "cardinal directional left edge",
     }
 }
 

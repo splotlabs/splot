@@ -492,38 +492,6 @@ pub enum ReconError {
         /// Actual output slice length.
         actual: usize,
     },
-    /// A workspace intra prediction helper could not read a required edge.
-    #[error("current-frame workspace {} intra prediction requires {} edge for rectangle x={} y={} width={} height={}", .plane.name(), .edge.name(), .rect.x(), .rect.y(), .rect.width(), .rect.height())]
-    WorkspaceIntraPredictionEdgeUnavailable {
-        /// Plane whose workspace storage was checked.
-        plane: PlaneId,
-        /// Required edge that was outside workspace storage.
-        edge: IntraPaethEdge,
-        /// Prediction rectangle needing the edge.
-        rect: PlaneRect,
-    },
-    /// A workspace smooth intra helper could not read a required prepared edge.
-    #[error("current-frame workspace {} smooth intra prediction requires {} edge for rectangle x={} y={} width={} height={}", .plane.name(), .edge.name(), .rect.x(), .rect.y(), .rect.width(), .rect.height())]
-    WorkspaceSmoothIntraPredictionEdgeUnavailable {
-        /// Plane whose workspace storage was checked.
-        plane: PlaneId,
-        /// Required edge that was outside workspace storage.
-        edge: IntraSmoothEdge,
-        /// Prediction rectangle needing the edge.
-        rect: PlaneRect,
-    },
-    /// A workspace directional-angle helper could not read a required edge.
-    #[error("current-frame workspace {} directional intra prediction pAngle {} requires {} edge for rectangle x={} y={} width={} height={}", .plane.name(), .p_angle, .edge.name(), .rect.x(), .rect.y(), .rect.width(), .rect.height())]
-    WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
-        /// Plane whose workspace storage was checked.
-        plane: PlaneId,
-        /// Directional pAngle being computed.
-        p_angle: u16,
-        /// Required edge that was outside workspace storage.
-        edge: IntraDirectionalAngleEdge,
-        /// Prediction rectangle needing the edge.
-        rect: PlaneRect,
-    },
     /// A reference frame store capacity was outside the supported slot range.
     #[error("reference frame store capacity {capacity} is outside 1..={max_slots}")]
     InvalidReferenceStoreCapacity {

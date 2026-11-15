@@ -10,6 +10,7 @@ use fearless_simd::u8x16;
 use fearless_simd::{Level, Simd, SimdBase, dispatch, u8x32, u16x8, u16x16};
 
 use crate::intra_dc_math::{IntraLaneSample, validate_output_shape, validate_sample_type};
+#[cfg(test)]
 use crate::math::round2_i32;
 use crate::{
     BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result,
@@ -757,6 +758,7 @@ pub(crate) fn predict_smooth_sample<T: ReconSample>(
     )
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SmoothSampleEdges<T: ReconSample> {
     pub(crate) left: T,
@@ -765,12 +767,14 @@ pub(crate) struct SmoothSampleEdges<T: ReconSample> {
     pub(crate) top_right: T,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SmoothSamplePosition {
     pub(crate) row: usize,
     pub(crate) column: usize,
 }
 
+#[cfg(test)]
 pub(crate) fn predict_smooth_sample_values<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,

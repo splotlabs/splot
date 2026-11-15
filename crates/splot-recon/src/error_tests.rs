@@ -195,22 +195,6 @@ fn all_variants() -> Vec<ReconError> {
             expected: 64,
             actual: 60,
         },
-        ReconError::WorkspaceIntraPredictionEdgeUnavailable {
-            plane: PlaneId::U,
-            edge: IntraPaethEdge::TopLeft,
-            rect: rc(1, 2, 3, 4),
-        },
-        ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
-            plane: PlaneId::V,
-            edge: IntraSmoothEdge::BottomLeft,
-            rect: rc(2, 3, 4, 5),
-        },
-        ReconError::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
-            plane: PlaneId::V,
-            p_angle: 67,
-            edge: IntraDirectionalAngleEdge::Above,
-            rect: rc(4, 5, 6, 7),
-        },
         ReconError::InvalidReferenceStoreCapacity {
             capacity: 20,
             max_slots: 16,
@@ -377,7 +361,7 @@ fn all_variants() -> Vec<ReconError> {
 
 /// Golden `Display` rendering of each [`all_variants`] entry, in the same order,
 /// captured from the pre-`thiserror` hand-written `Display` impl.
-const EXPECTED: [&str; 85] = [
+const EXPECTED: [&str; 82] = [
     "unsupported AV2 bit_depth_idc 7; expected 0 or 1",
     "unsupported AV2 chroma_format_idc 9; expected 0 through 3",
     "plane width must be greater than zero",
@@ -419,9 +403,6 @@ const EXPECTED: [&str; 85] = [
     "failed to allocate prediction block",
     "intra prediction output stride 3 samples is smaller than prediction width 8",
     "intra prediction output buffer is too small: expected at least 64 samples, got 60",
-    "current-frame workspace U intra prediction requires top-left edge for rectangle x=1 y=2 width=3 height=4",
-    "current-frame workspace V smooth intra prediction requires bottom-left edge for rectangle x=2 y=3 width=4 height=5",
-    "current-frame workspace V directional intra prediction pAngle 67 requires above edge for rectangle x=4 y=5 width=6 height=7",
     "reference frame store capacity 20 is outside 1..=16",
     "reference slot index 18 is outside 0..16",
     "reference slot 5 is outside store capacity 4",

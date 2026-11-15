@@ -9,8 +9,9 @@ use crate::{
     BitDepth, DecodedFrameHash, DecodedFrameHashInput, DpcmDirection, IntraDcEdge, IntraDcEdges,
     InverseTransform1dType, InverseTransform2dDim, InverseTransform2dOuter, OutputIndex,
     PixelFormat, ReferenceFrameStore, ReferenceSlot, Y4mFrameRate, Y4mWriter,
-    inverse_transform_2d_outer, inverse_transform_2d_outer_adjusted,
-    predict_intra_ibp_dc_rect_into, reconstruct_add_residual,
+    inverse_transform_2d_outer, inverse_transform_2d_outer_adjusted, predict_intra_dc_rect_into,
+    predict_intra_dc_subsampled_rect_into, predict_intra_ibp_dc_rect_into,
+    reconstruct_add_residual,
 };
 
 #[test]
@@ -92,55 +93,35 @@ fn band_rect<T: ReconSample>(
     CurrentFrameRect::from_bands(*info, luma, [Some(band(y, rows, 0)), u, v]).unwrap()
 }
 
+/// Predicts a DC-family block as the decoder does: the workspace edges, the
+/// kernel into scratch, then the block write.
+fn predict_dc_with<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    (x, y): (usize, usize),
+    block: IntraRectBlockSize,
+    kernel: impl FnOnce(
+        BitDepth,
+        IntraRectBlockSize,
+        IntraDcEdges<'_, T>,
+        &mut [T],
+        usize,
+    ) -> Result<()>,
+) -> Result<()> {
+    let edges = workspace.intra_dc_edges_for_rect(PlaneId::Y, x, y, block)?;
+    let mut out = vec![T::default(); block.sample_count()];
+    let bit_depth = workspace.info().bit_depth();
+    kernel(
+        bit_depth,
+        block,
+        edges.as_dc_edges(),
+        &mut out,
+        block.width(),
+    )?;
+    workspace.write_rect_block(PlaneId::Y, x, y, block, &out)
+}
+
 fn rect_block(log2_width: u8, log2_height: u8) -> IntraRectBlockSize {
     IntraRectBlockSize::new(log2_width, log2_height).unwrap()
-}
-
-fn assert_paeth_edge_unavailable(
-    result: &Result<()>,
-    edge: IntraPaethEdge,
-    expected_rect: PlaneRect,
-) {
-    assert!(matches!(
-        result,
-        Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: actual_edge,
-            rect
-        }) if *actual_edge == edge && *rect == expected_rect
-    ));
-}
-
-fn assert_directional_edge_unavailable(
-    result: &Result<()>,
-    p_angle: u16,
-    edge: IntraDirectionalAngleEdge,
-    expected_rect: PlaneRect,
-) {
-    assert!(matches!(
-        result,
-        Err(ReconError::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            p_angle: actual_p_angle,
-            edge: actual_edge,
-            rect
-        }) if *actual_p_angle == p_angle && *actual_edge == edge && *rect == expected_rect
-    ));
-}
-
-fn assert_smooth_edge_unavailable(
-    result: &Result<()>,
-    edge: IntraSmoothEdge,
-    expected_rect: PlaneRect,
-) {
-    assert!(matches!(
-        result,
-        Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: actual_edge,
-            rect
-        }) if *actual_edge == edge && *rect == expected_rect
-    ));
 }
 
 fn info(
@@ -1072,9 +1053,7 @@ fn workspace_extracts_edges_and_predicts_rectangular_dc() {
     assert_eq!(edges.left_samples(), Some(&[0, 1, 2, 3, 4, 5, 6, 7][..]));
     assert_eq!(edges.above_samples(), Some(&[8, 9, 10, 11][..]));
 
-    workspace
-        .predict_intra_dc_rect(PlaneId::Y, 2, 1, block)
-        .unwrap();
+    predict_dc_with(&mut workspace, (2, 1), block, predict_intra_dc_rect_into).unwrap();
     let rows: Vec<&[u8]> = workspace
         .rect_rows(PlaneId::Y, rect(2, 1, 4, 8))
         .unwrap()
@@ -1124,9 +1103,13 @@ fn workspace_predicts_subsampled_dc_from_in_storage_edges() {
     workspace
         .write_rect(PlaneId::Y, rect(1, 0, 64, 1), &above, 64)
         .unwrap();
-    workspace
-        .predict_intra_dc_subsampled_rect(PlaneId::Y, 1, 1, block)
-        .unwrap();
+    predict_dc_with(
+        &mut workspace,
+        (1, 1),
+        block,
+        predict_intra_dc_subsampled_rect_into,
+    )
+    .unwrap();
 
     let rows: Vec<&[u8]> = workspace
         .rect_rows(PlaneId::Y, rect(1, 1, 64, 64))
@@ -1143,9 +1126,14 @@ fn workspace_subsampled_dc_top_left_uses_midpoint_without_edges() {
     let mut workspace =
         CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Ten, 4, 4), 0).unwrap();
 
-    workspace
-        .predict_intra_dc_subsampled_rect(PlaneId::Y, 0, 0, rect_block(2, 2))
-        .unwrap();
+    let block = rect_block(2, 2);
+    predict_dc_with(
+        &mut workspace,
+        (0, 0),
+        block,
+        predict_intra_dc_subsampled_rect_into,
+    )
+    .unwrap();
 
     assert_eq!(packed(&workspace, PlaneId::Y), &[512; 16]);
 }
@@ -1158,33 +1146,20 @@ fn workspace_subsampled_dc_uses_available_edge_without_synthesizing_missing_edge
     workspace
         .write_rect(PlaneId::Y, rect(0, 0, 4, 1), &[40, 40, 40, 40], 4)
         .unwrap();
-    workspace
-        .predict_intra_dc_subsampled_rect(PlaneId::Y, 0, 1, rect_block(2, 2))
-        .unwrap();
+    let block = rect_block(2, 2);
+    predict_dc_with(
+        &mut workspace,
+        (0, 1),
+        block,
+        predict_intra_dc_subsampled_rect_into,
+    )
+    .unwrap();
 
     let rows: Vec<&[u8]> = workspace
         .rect_rows(PlaneId::Y, rect(0, 1, 4, 4))
         .unwrap()
         .collect();
     assert_eq!(rows, vec![&[40, 40, 40, 40][..]; 4]);
-}
-
-#[test]
-fn workspace_subsampled_dc_rejects_missing_plane_and_out_of_bounds_target() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
-
-    assert!(matches!(
-        workspace.predict_intra_dc_subsampled_rect(PlaneId::U, 0, 0, rect_block(2, 2)),
-        Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
-    ));
-    assert!(matches!(
-        workspace.predict_intra_dc_subsampled_rect(PlaneId::Y, 5, 1, rect_block(2, 3)),
-        Err(ReconError::WorkspaceRectOutOfBounds {
-            plane: PlaneId::Y,
-            ..
-        })
-    ));
 }
 
 #[test]
@@ -1201,9 +1176,13 @@ fn workspace_predicts_ibp_dc_from_in_storage_edges() {
     workspace
         .write_rect(PlaneId::Y, rect(1, 0, 8, 1), &above, 8)
         .unwrap();
-    workspace
-        .predict_intra_ibp_dc_rect(PlaneId::Y, 1, 1, block)
-        .unwrap();
+    predict_dc_with(
+        &mut workspace,
+        (1, 1),
+        block,
+        predict_intra_ibp_dc_rect_into,
+    )
+    .unwrap();
 
     let mut expected = [0u8; 64];
     predict_intra_ibp_dc_rect_into(
@@ -1226,35 +1205,24 @@ fn workspace_predicts_ibp_dc_from_in_storage_edges() {
 
 #[test]
 fn workspace_rectangular_and_ibp_dc_top_left_use_midpoint_without_edges() {
-    for predict in [
-        CurrentFrameWorkspace::<u8>::predict_intra_dc_rect,
-        CurrentFrameWorkspace::<u8>::predict_intra_ibp_dc_rect,
-    ] {
+    for ibp in [false, true] {
         let mut workspace =
             CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 4), 0).unwrap();
-
-        predict(&mut workspace, PlaneId::Y, 0, 0, rect_block(2, 2)).unwrap();
+        let block = rect_block(2, 2);
+        if ibp {
+            predict_dc_with(
+                &mut workspace,
+                (0, 0),
+                block,
+                predict_intra_ibp_dc_rect_into,
+            )
+            .unwrap();
+        } else {
+            predict_dc_with(&mut workspace, (0, 0), block, predict_intra_dc_rect_into).unwrap();
+        }
 
         assert_eq!(packed(&workspace, PlaneId::Y), &[128; 16]);
     }
-}
-
-#[test]
-fn workspace_ibp_dc_rejects_missing_plane_and_out_of_bounds_target() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
-
-    assert!(matches!(
-        workspace.predict_intra_ibp_dc_rect(PlaneId::U, 0, 0, rect_block(2, 2)),
-        Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
-    ));
-    assert!(matches!(
-        workspace.predict_intra_ibp_dc_rect(PlaneId::Y, 5, 1, rect_block(2, 3)),
-        Err(ReconError::WorkspaceRectOutOfBounds {
-            plane: PlaneId::Y,
-            ..
-        })
-    ));
 }
 
 #[test]
@@ -1268,7 +1236,12 @@ fn workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target() {
     }
 
     assert!(matches!(
-        workspace.predict_intra_ibp_dc_rect(PlaneId::Y, 1, 1, rect_block(2, 2)),
+        predict_dc_with(
+            &mut workspace,
+            (1, 1),
+            rect_block(2, 2),
+            predict_intra_ibp_dc_rect_into
+        ),
         Err(ReconError::IntraPredictionSampleOutOfRange {
             edge: IntraDcEdge::Above,
             sample_index: 0,
@@ -1281,174 +1254,6 @@ fn workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target() {
         .unwrap()
         .collect();
     assert_eq!(rows, vec![&[7, 7, 7, 7][..]; 4]);
-}
-
-#[test]
-fn workspace_predicts_rectangular_paeth_from_in_storage_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 6, 6), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    workspace
-        .write_rect(PlaneId::Y, rect(0, 0, 1, 1), &[10], 1)
-        .unwrap();
-    workspace
-        .write_rect(PlaneId::Y, rect(0, 1, 1, 4), &[30, 30, 30, 30], 1)
-        .unwrap();
-    workspace
-        .write_rect(PlaneId::Y, rect(1, 0, 4, 1), &[12, 12, 12, 12], 4)
-        .unwrap();
-
-    workspace
-        .predict_intra_paeth_rect(PlaneId::Y, 1, 1, block)
-        .unwrap();
-
-    let rows: Vec<&[u8]> = workspace
-        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
-        .unwrap()
-        .collect();
-    assert_eq!(rows, vec![&[30, 30, 30, 30][..]; block.height()]);
-}
-
-#[test]
-fn workspace_paeth_rejects_missing_prepared_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    for (x, y, edge) in [(0, 1, IntraPaethEdge::Left), (1, 0, IntraPaethEdge::Above)] {
-        let result = workspace.predict_intra_paeth_rect(PlaneId::Y, x, y, block);
-        assert_paeth_edge_unavailable(&result, edge, rect(x, y, 4, 4));
-    }
-}
-
-#[test]
-fn workspace_predicts_cardinal_directional_from_in_storage_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 6, 6), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    workspace
-        .write_rect(PlaneId::Y, rect(1, 0, 4, 1), &[10, 20, 30, 40], 4)
-        .unwrap();
-    workspace
-        .predict_intra_cardinal_directional_rect(
-            PlaneId::Y,
-            1,
-            1,
-            block,
-            IntraCardinalDirection::Vertical,
-        )
-        .unwrap();
-
-    let vertical_rows: Vec<&[u8]> = workspace
-        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
-        .unwrap()
-        .collect();
-    assert_eq!(vertical_rows, vec![&[10, 20, 30, 40][..]; 4]);
-
-    workspace
-        .write_rect(PlaneId::Y, rect(0, 1, 1, 4), &[3, 5, 7, 9], 1)
-        .unwrap();
-    workspace
-        .predict_intra_cardinal_directional_rect(
-            PlaneId::Y,
-            1,
-            1,
-            block,
-            IntraCardinalDirection::Horizontal,
-        )
-        .unwrap();
-
-    let horizontal_rows: Vec<&[u8]> = workspace
-        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
-        .unwrap()
-        .collect();
-    assert_eq!(
-        horizontal_rows,
-        vec![
-            &[3, 3, 3, 3][..],
-            &[5, 5, 5, 5][..],
-            &[7, 7, 7, 7][..],
-            &[9, 9, 9, 9][..],
-        ]
-    );
-}
-
-#[test]
-fn workspace_cardinal_directional_rejects_missing_prepared_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    for (x, y, direction, edge) in [
-        (
-            1,
-            0,
-            IntraCardinalDirection::Vertical,
-            IntraDirectionalAngleEdge::Above,
-        ),
-        (
-            0,
-            1,
-            IntraCardinalDirection::Horizontal,
-            IntraDirectionalAngleEdge::Left,
-        ),
-    ] {
-        let result =
-            workspace.predict_intra_cardinal_directional_rect(PlaneId::Y, x, y, block, direction);
-        assert_directional_edge_unavailable(&result, direction.p_angle(), edge, rect(x, y, 4, 4));
-    }
-}
-
-#[test]
-fn workspace_predicts_rectangular_smooth_from_in_storage_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 6, 6), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    workspace
-        .write_rect(PlaneId::Y, rect(0, 1, 1, 5), &[20, 40, 60, 80, 100], 1)
-        .unwrap();
-    workspace
-        .write_rect(PlaneId::Y, rect(1, 0, 5, 1), &[10, 30, 50, 70, 90], 5)
-        .unwrap();
-
-    workspace
-        .predict_intra_smooth_rect(PlaneId::Y, 1, 1, block, IntraSmoothMode::Smooth)
-        .unwrap();
-
-    let rows: Vec<&[u8]> = workspace
-        .rect_rows(PlaneId::Y, rect(1, 1, 4, 4))
-        .unwrap()
-        .collect();
-    assert_eq!(
-        rows,
-        vec![
-            &[26, 45, 64, 82][..],
-            &[48, 62, 75, 87][..],
-            &[70, 77, 85, 91][..],
-            &[91, 92, 94, 95][..],
-        ]
-    );
-}
-
-#[test]
-fn workspace_smooth_rejects_missing_prepared_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
-    let block = rect_block(2, 2);
-
-    for (x, y, edge) in [
-        (0, 1, IntraSmoothEdge::Left),
-        (1, 0, IntraSmoothEdge::Above),
-        (1, 4, IntraSmoothEdge::BottomLeft),
-        (4, 1, IntraSmoothEdge::TopRight),
-    ] {
-        let result =
-            workspace.predict_intra_smooth_rect(PlaneId::Y, x, y, block, IntraSmoothMode::Smooth);
-        assert_smooth_edge_unavailable(&result, edge, rect(x, y, 4, 4));
-    }
 }
 
 #[test]
