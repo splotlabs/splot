@@ -73,7 +73,7 @@ impl RowPairs<Avx2> for InLane {
         classes: i32x8<Avx2>,
         (block, params): (&GdfBlock, &GdfSymParams),
     ) {
-        slot_rows_with(simd, self, window, sink, classes, block, params);
+        slot_rows_with(simd, window, sink, classes, block, params);
     }
 }
 
@@ -216,50 +216,27 @@ const _: () = {
     }
 };
 
-/// How a kernel pairs comb lanes for its `i16` multiply-adds. The sums of
-/// [`Lanes::accumulate`] and the halves of [`Lanes::spread`] hold the same
-/// samples, and [`Lanes::digits`] reads its sums in that order.
-trait Lanes<S: Simd>: Copy {
-    /// The combs `a` and `b` as [`Lanes::accumulate`] reads them.
-    fn pairs(self, simd: S, a: i16x16<S>, b: i16x16<S>) -> [i16x16<S>; 2];
-    /// The factor of the sums that [`Lanes::accumulate`] and
-    /// [`Lanes::digits`] use.
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn sum_scale(self, _params: &GdfSymParams) -> i32 {
-        1
+/// Subtracts from `sums` the combs `pair` of `COMB_PAIRS` slot `slot` times
+/// their weights in each `SYM_PAIRS` entry of the slot.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn accumulate(
+    simd: Avx2,
+    sums: &mut Sums,
+    (slot, pair): (usize, [i16x16<Avx2>; 2]),
+    params: &GdfSymParams,
+) {
+    macro_rules! add_pairs {
+        ($($pair:literal)*) => {$(if PAIR_SLOT[$pair] == slot {
+            const PAIR: usize = $pair;
+            let weights = i16x16::from_slice(simd, &params.slot.pair_weights[PAIR]);
+            let sum = &mut sums[SYM_PAIRS[PAIR].2];
+            for (sum, half) in sum.iter_mut().zip(pair) {
+                *sum -= simd.pairwise_dot_product_i16x16(half, weights);
+            }
+        })*};
     }
-    /// Subtracts from `sums` the combs `pair` of `COMB_PAIRS` slot `slot`
-    /// times their weights in each `SYM_PAIRS` entry of the slot.
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn accumulate(
-        self,
-        simd: S,
-        sums: &mut Sums<S>,
-        (slot, pair): (usize, [i16x16<S>; 2]),
-        params: &GdfSymParams,
-    ) {
-        macro_rules! add_pairs {
-            ($($pair:literal)*) => {$(if PAIR_SLOT[$pair] == slot {
-                const PAIR: usize = $pair;
-                let weights = i16x16::from_slice(simd, &params.slot.pair_weights[PAIR]);
-                let sum = &mut sums[SYM_PAIRS[PAIR].2];
-                for (sum, half) in sum.iter_mut().zip(pair) {
-                    *sum -= simd.pairwise_dot_product_i16x16(half, weights);
-                }
-            })*};
-        }
-        add_pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
-    }
-    /// Sums of the 8 two-sample class blocks, per sample in the order of
-    /// the sums of [`Lanes::accumulate`].
-    fn spread(self, simd: S, blocks: i32x8<S>) -> [i32x8<S>; 2];
-    /// The § 7.20.5 digit `Clip3(-scale, scale - 1, Round2Signed(sum * scale, 15))`
-    /// of every sample, in sample order, from the sums times
-    /// [`Lanes::sum_scale`].
-    fn digits(self, simd: S, sums: [i32x8<S>; 2], scale: i16) -> i16x16<S>;
-    fn range(self, simd: S, low: u16x16<S>, high: u16x16<S>) -> u16;
+    add_pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
 }
 
 /// Pairs by AVX2 in-lane unpacks: the first half holds samples `0..4` and
@@ -333,32 +310,6 @@ kernel!(
         ]
     }
 );
-
-impl Lanes<Avx2> for InLane {
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn pairs(self, simd: Avx2, a: i16x16<Avx2>, b: i16x16<Avx2>) -> [i16x16<Avx2>; 2] {
-        unpack_pairs(simd, a, b)
-    }
-
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn spread(self, simd: Avx2, blocks: i32x8<Avx2>) -> [i32x8<Avx2>; 2] {
-        unpack_blocks(simd, blocks)
-    }
-
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn digits(self, simd: Avx2, [low, high]: [i32x8<Avx2>; 2], scale: i16) -> i16x16<Avx2> {
-        packed_digits(simd, low, high, scale)
-    }
-
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn range(self, simd: Avx2, low: u16x16<Avx2>, high: u16x16<Avx2>) -> u16 {
-        lane_range(simd, low, high)
-    }
-}
 
 /// Offsets of the negated tap reads above and below a sample: each read
 /// `center - tap` is taken modulo 2^16 with its offset added, which keeps it
@@ -533,29 +484,24 @@ fn cycle_combs<
     ]
 }
 
-/// The three § 7.20.5 `gdfIdx` sums of a row, in the halves of [`Lanes`].
-type Sums<S> = [[i32x8<S>; 2]; 3];
+/// The three § 7.20.5 `gdfIdx` sums of a row, in the halves of [`unpack_blocks`].
+type Sums = [[i32x8<Avx2>; 2]; 3];
 
 /// The § 7.20.5 error index `pos` of the biased `gdfIdx` sums `sums`.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn error_index<S: Simd, L: Lanes<S>>(
-    simd: S,
-    lanes: L,
-    sums: Sums<S>,
-    params: &GdfSymParams,
-) -> [u16; 16] {
+fn error_index(simd: Avx2, sums: Sums, params: &GdfSymParams) -> [u16; 16] {
     let scale = params.scale;
-    let [first, second, third] = sums.map(|sums| lanes.digits(simd, sums, scale));
+    let [first, second, third] = sums.map(|[low, high]| packed_digits(simd, low, high, scale));
     let radix = 2 * scale;
     let offset = (scale * radix + scale) * radix + scale;
     ((first * radix + second) * radix + third + offset)
-        .bitcast::<u16x16<S>>()
+        .bitcast::<u16x16<Avx2>>()
         .to_array()
 }
 
 /// The § 7.20.5 error indices of row `ROW` of 16 samples of any class mix:
-/// each `COMB_PAIRS` slot's negated combs, paired by [`Lanes::pairs`], go
+/// each `COMB_PAIRS` slot's negated combs, paired by [`unpack_pairs`], go
 /// into the sums from `init` as soon as they exist. Taps are grouped so that
 /// each group's combs share their candidate samples and selects: a tap and
 /// its transpose read mirrored offsets, and taps `4`, `6`, `7`, `11` form a
@@ -563,12 +509,11 @@ fn error_index<S: Simd, L: Lanes<S>>(
 /// the combs instead of each diff. Out of line, so that the rows share no
 /// loads that would spill.
 #[inline(never)]
-fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize, const LINEAR: bool>(
-    simd: S,
-    lanes: L,
+fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool>(
+    simd: Avx2,
     window: &W,
-    masks: &Masks<S>,
-    init: &Sums<S>,
+    masks: &Masks<Avx2>,
+    init: &Sums,
     params: &GdfSymParams,
 ) -> [u16; 16] {
     let center = samples(simd, window.row(TAP_REACH + ROW), TAP_REACH);
@@ -579,19 +524,19 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize, const LINEAR
         ($k:literal, $t:literal, $select:expr) => {
             if LINEAR {
                 let (k, t) = swap(
-                    linear_comb::<S, W, $k, ROW>(simd, window, center2),
-                    linear_comb::<S, W, $t, ROW>(simd, window, center2),
+                    linear_comb::<Avx2, W, $k, ROW>(simd, window, center2),
+                    linear_comb::<Avx2, W, $t, ROW>(simd, window, center2),
                     $select,
                 );
                 [k.bitcast(), t.bitcast()]
             } else {
-                paired_combs::<S, W, $k, $t, ROW>(simd, window, centers, $select, params)
+                paired_combs::<Avx2, W, $k, $t, ROW>(simd, window, centers, $select, params)
             }
         };
     }
     let mut sums = *init;
-    let mut add = |slot: usize, a: i16x16<S>, b: i16x16<S>| {
-        lanes.accumulate(simd, &mut sums, (slot, lanes.pairs(simd, a, b)), params);
+    let mut add = |slot: usize, a: i16x16<Avx2>, b: i16x16<Avx2>| {
+        accumulate(simd, &mut sums, (slot, unpack_pairs(simd, a, b)), params);
     };
     let [tap0, tap12] = pair!(0, 12, transposed);
     let [tap1, tap13] = pair!(1, 13, transposed);
@@ -603,21 +548,21 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize, const LINEAR
     add(3, tap14, tap15);
     add(4, tap3, tap15);
     let [tap4, tap6, tap7, tap11] = if LINEAR {
-        let comb = |tap: u16x16<S>| tap.bitcast::<i16x16<S>>();
+        let comb = |tap: u16x16<Avx2>| tap.bitcast::<i16x16<Avx2>>();
         let (a, b) = swap(
-            linear_comb::<S, W, 4, ROW>(simd, window, center2),
-            linear_comb::<S, W, 6, ROW>(simd, window, center2),
+            linear_comb::<Avx2, W, 4, ROW>(simd, window, center2),
+            linear_comb::<Avx2, W, 6, ROW>(simd, window, center2),
             mirrored,
         );
         let (c, d) = swap(
-            linear_comb::<S, W, 7, ROW>(simd, window, center2),
-            linear_comb::<S, W, 11, ROW>(simd, window, center2),
+            linear_comb::<Avx2, W, 7, ROW>(simd, window, center2),
+            linear_comb::<Avx2, W, 11, ROW>(simd, window, center2),
             mirrored,
         );
         let ((first, third), (second, fourth)) = (swap(a, c, transposed), swap(b, d, transposed));
         [comb(first), comb(second), comb(third), comb(fourth)]
     } else {
-        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, *masks, params)
+        cycle_combs::<Avx2, W, 4, 6, 7, 11, ROW>(simd, window, centers, *masks, params)
     };
     add(5, tap4, tap6);
     add(6, tap7, tap11);
@@ -627,7 +572,7 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize, const LINEAR
     add(8, tap9, tap17);
     let [tap5, tap16] = pair!(5, 16, transposed);
     add(9, tap5, tap16);
-    error_index(simd, lanes, sums, params)
+    error_index(simd, sums, params)
 }
 
 /// Filters in place a row pair of 16 samples whose class changes every two
@@ -636,49 +581,47 @@ fn row_index<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize, const LINEAR
 /// stay at the bias.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn slot_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
-    simd: S,
-    lanes: L,
+fn slot_rows_with<W: WindowRows, R: RowSink>(
+    simd: Avx2,
     window: &W,
     mut sink: R,
-    classes: i32x8<S>,
+    classes: i32x8<Avx2>,
     block: &GdfBlock,
     params: &GdfSymParams,
 ) {
     let range = window_range(simd, window, params.slot.linear_bound, |low, high| {
-        lanes.range(simd, low, high)
+        lane_range(simd, low, high)
     });
     let flat = range == 0;
     if flat && params.keeps_flat && (classes >> 2).simd_eq(i32x8::splat(simd, 0)).all_true() {
         sink.keep(simd);
         return;
     }
-    let factor = lanes.sum_scale(params);
     let bias = if flat {
         &params.bias
     } else {
         &params.slot.tap_bias
     };
     let init = [
-        lanes.spread(simd, i32x8::splat(simd, bias[0] * factor)),
-        lanes.spread(simd, i32x8::splat(simd, bias[1] * factor)),
-        lanes.spread(simd, ((classes >> 2) + bias[2]) * factor),
+        unpack_blocks(simd, i32x8::splat(simd, bias[0])),
+        unpack_blocks(simd, i32x8::splat(simd, bias[1])),
+        unpack_blocks(simd, (classes >> 2) + bias[2]),
     ];
     if flat {
-        let pos = error_index(simd, lanes, init, params);
+        let pos = error_index(simd, init, params);
         sink.row(simd, 0, &pos, block);
         sink.row(simd, 1, &pos, block);
         return;
     }
     let class = classes & 3;
-    let class = (class | (class << 16)).bitcast::<u16x16<S>>();
+    let class = (class | (class << 16)).bitcast::<u16x16<Avx2>>();
     let zero = u16x16::splat(simd, 0);
     let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
     macro_rules! rows {
         ($linear:literal) => {{
-            let pos = row_index::<S, L, W, 0, $linear>(simd, lanes, window, &masks, &init, params);
+            let pos = row_index::<W, 0, $linear>(simd, window, &masks, &init, params);
             sink.row(simd, 0, &pos, block);
-            let pos = row_index::<S, L, W, 1, $linear>(simd, lanes, window, &masks, &init, params);
+            let pos = row_index::<W, 1, $linear>(simd, window, &masks, &init, params);
             sink.row(simd, 1, &pos, block);
         }};
     }
