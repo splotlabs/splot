@@ -498,9 +498,6 @@ pub struct IntraBlockFrame<'a, T: ReconSample> {
     stride: usize,
     /// Stored samples of the row above, from the block's first column.
     above_len: usize,
-    /// Plane rows of the column to the left from the block's first row, stored
-    /// or not; none in the plane's first column.
-    left_len: usize,
     /// Plane rows from the block's first row to the bottom storage edge.
     rows_below: usize,
 }
@@ -526,7 +523,7 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
     pub fn left_column(&self, out: &mut [T]) -> usize {
         let stride = self.stride.max(1);
         let rows = self.samples.get(self.row_start..).unwrap_or_default();
-        let len = out.len().min(self.left_len).min(rows.len() / stride);
+        let len = out.len().min(self.rows_below).min(rows.len() / stride);
         let column = (self.origin - self.row_start).wrapping_sub(1);
         if column >= stride {
             return 0;
@@ -547,7 +544,7 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
     /// The sample above and left of the block, when both edges are stored.
     #[inline]
     pub fn top_left(&self) -> Option<T> {
-        if self.above_len == 0 || self.left_len == 0 {
+        if self.above_len == 0 || self.origin == self.row_start {
             return None;
         }
         self.samples.get(self.origin - self.stride - 1).copied()
@@ -600,7 +597,9 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
             bit_depth,
             origin: self.origin,
             stride: self.stride,
-            left: left && self.left_len >= size.height() && rows >= size.height(),
+            left: left
+                && self.origin != self.row_start
+                && self.rows_below.min(rows) >= size.height(),
             above: above && self.above_len >= size.width(),
             ibp,
         };
@@ -695,7 +694,6 @@ impl<'a, T: ReconSample> IntraBlockFrame<'a, T> {
             row_start: local_y * stride,
             stride,
             above_len: if y > 0 { storage.width() - x } else { 0 },
-            left_len: if x > 0 { storage.height() - y } else { 0 },
             rows_below: storage.height() - y,
             samples: &mut target.samples,
         }))
