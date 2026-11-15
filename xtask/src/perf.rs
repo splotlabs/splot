@@ -62,12 +62,12 @@ const STREAMS: [(&str, &str, u32); 5] = [
 /// Runs per binary and stream; the smallest count is kept.
 const RUNS: usize = 3;
 /// A stream fails above max([`STREAM_FAIL_PCT`], [`NOISE_FACTOR`] x A/A spread).
-const STREAM_FAIL_PCT: f64 = 0.25;
+const STREAM_FAIL_PCT: f64 = 0.10;
 const NOISE_FACTOR: f64 = 5.0;
 /// The total of all streams fails above this rise.
-const TOTAL_FAIL_PCT: f64 = 0.15;
+const TOTAL_FAIL_PCT: f64 = 0.05;
 /// A stream or the total warns above this rise.
-const WARN_PCT: f64 = 0.1;
+const WARN_PCT: f64 = 0.03;
 
 /// Options of `cargo xtask perf`.
 pub(crate) struct PerfOptions {
@@ -584,17 +584,17 @@ mod tests {
         ];
         assert_eq!(verdicts(&rows, &[]), [Ok, Ok, Ok]);
         let rows = [
-            row("DOTA2", 100_000, 100_200, 0.0),
+            row("DOTA2", 100_000, 100_050, 0.0),
             row("Slides1", 10_000_000, 10_000_000, 0.0),
         ];
         assert_eq!(verdicts(&rows, &[]), [Warn, Ok, Ok]);
         let rows = [
-            row("DOTA2", 100_000, 100_300, 0.0),
+            row("DOTA2", 100_000, 100_150, 0.0),
             row("Slides1", 10_000_000, 10_000_000, 0.0),
         ];
         assert_eq!(verdicts(&rows, &[]), [Fail, Ok, Ok]);
         let rows = [
-            row("DOTA2", 100_000, 100_300, 0.1),
+            row("DOTA2", 100_000, 100_150, 0.1),
             row("Slides1", 10_000_000, 10_000_000, 0.0),
         ];
         assert_eq!(verdicts(&rows, &[]), [Warn, Ok, Ok]);
@@ -603,8 +603,8 @@ mod tests {
     #[test]
     fn total_fails_when_streams_rise_together() {
         let rows = [
-            row("DOTA2", 100_000, 100_200, 0.0),
-            row("Slides1", 100_000, 100_200, 0.0),
+            row("DOTA2", 100_000, 100_060, 0.0),
+            row("Slides1", 100_000, 100_060, 0.0),
         ];
         assert_eq!(
             verdicts(&rows, &[]),
