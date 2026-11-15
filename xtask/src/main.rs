@@ -1255,7 +1255,7 @@ fn check_dependency_direction(root: &Path) -> Result<()> {
 /// depend on. Single source of truth for both the allow-list and the set of names
 /// recognized as internal.
 const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
-    ("splot-core", &[]),
+    ("splot-core", &["splot-tables"]),
     ("splot-parallel", &[]),
     ("splot-tables", &[]),
     ("splot-recon", &["splot-core", "splot-tables"]),

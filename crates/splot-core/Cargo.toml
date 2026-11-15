@@ -22,6 +22,7 @@ symbol-count = []
 
 [dependencies]
 fearless_simd.workspace = true
+splot-tables.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 # Fixed-layout IVF container wire header parsing only (AV2-IVF-CONTAINER); see

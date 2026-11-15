@@ -15,8 +15,8 @@ splot-cli ───────┬──> splot-validate ───> splot-core
 
 Rules:
 
-- `splot-core`, `splot-parallel`, and `splot-tables` depend on no other
-  `splot-*` crate.
+- `splot-core` depends only on `splot-tables`; `splot-parallel` and
+  `splot-tables` depend on no other `splot-*` crate.
 - `splot-tables` has no external dependencies.
 - `splot-recon` depends only on `splot-core` and `splot-tables`.
 - `splot-decode` depends only on `splot-core`, `splot-parallel`, and

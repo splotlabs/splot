@@ -66,7 +66,7 @@ Toolchain: stable Rust 1.99.1, edition 2024, resolver 3. Fuzzing uses nightly.
 ## Crate Boundaries
 
 ```text
-crates/splot-core      AV2 bitstream model + parsers; no splot-* dependency
+crates/splot-core      AV2 bitstream model + parsers -> splot-tables
 crates/splot-parallel  Rayon worker pool; no splot-* dependency
 crates/splot-tables    dependency-free generated AV2 § 9 tables
 crates/splot-recon     reconstruction primitives -> splot-core, splot-tables

@@ -16,6 +16,6 @@ pub mod cdf;
 /// AV2 § 9.2 — Conversion tables.
 pub mod conversion;
 /// AV2 § 9.8 — Loop restoration tables.
-pub mod loop_restoration;
+pub use splot_tables::tables::loop_restoration;
 /// AV2 § 9.5 — Warp filter tables.
 pub mod warp_filter;
