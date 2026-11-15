@@ -1375,7 +1375,6 @@ fn compound_ref_intermediate<T: ReconSample>(
         return Ok(scaling);
     };
     let (ref_width, ref_height) = (view.width(), view.height());
-    samples.fill(0);
     let params = WarpPredictBlockParams {
         warp_params,
         block_x: plane_x as i32,
