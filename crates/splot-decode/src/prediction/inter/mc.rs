@@ -440,7 +440,7 @@ pub(crate) fn predict_inter_block<T: ReconSample>(
         } => motion_compensate_single_warp_block_into(
             sink,
             reference,
-            *block,
+            block,
             mv,
             warp_params,
             offset,
@@ -560,8 +560,9 @@ fn motion_compensate_planes<T: ReconSample>(
     Ok(())
 }
 
-/// Predicts a compound block straight into `sink`. Only a plane that the
-/// frame edge clips goes through a temporary first.
+/// Predicts a compound block straight into `sink`; a block without warp
+/// goes to [`compound_mask::predict`]. Only a warp plane that the frame edge
+/// clips goes through a temporary first.
 pub(super) fn predict_compound_into<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
@@ -612,7 +613,7 @@ pub(super) fn predict_compound_into<T: ReconSample>(
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
-    block: InterBlockParams<'_, T>,
+    block: &InterBlockParams<'_, T>,
     mv: Mv,
     warp_params: [i32; 6],
     offset: ByteOffset,
@@ -672,12 +673,10 @@ fn predict_plane<T: ReconSample>(
         sink.with_contiguous_u16_rect_mut(plane, target, |output, stride| {
             subpel_predict_block_strided_into(&view, &params, output, stride)
         })?
-    } else if T::u8_slice(&[]).is_some() {
+    } else {
         sink.with_contiguous_u8_rect_mut(plane, target, |output, stride| {
             subpel_predict_block_strided_into_u8(&view, &params, output, stride)
         })?
-    } else {
-        None
     };
     if direct.is_some() {
         return Ok(());
@@ -732,20 +731,7 @@ pub(crate) fn plane_prediction<T: ReconSample>(
         sub_y,
     );
 
-    let params = SubpelPredictParams {
-        interp,
-        w: block_w,
-        h: block_h,
-        start_x: scaling.start_x,
-        start_y: scaling.start_y,
-        step_x: scaling.step_x,
-        step_y: scaling.step_y,
-        first_x: scaling.first_x,
-        first_y: scaling.first_y,
-        last_x: scaling.last_x,
-        last_y: scaling.last_y,
-        bit_depth: info.bit_depth(),
-    };
+    let params = scaling.subpel_params(interp, block_w, block_h, info.bit_depth());
     let view = reference.plane_view(plane, subpel_last_reference_row(&params), offset)?;
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
     Ok((view, rect, params))
@@ -818,18 +804,11 @@ fn predict_warp_plane<T: ReconSample>(
                 scaling,
             );
             let params = WarpPredictBlockParams {
-                warp_params,
-                block_x: plane_x as i32,
-                block_y: plane_y as i32,
-                subsampling_x: sub_x as u8,
-                subsampling_y: sub_y as u8,
-                reference_scale_x: scaling.scale_x,
-                reference_scale_y: scaling.scale_y,
                 first_x,
                 first_y,
                 last_x,
                 last_y,
-                bit_depth,
+                ..params
             };
             ext_warp_predict_unit(&view, &params, i4, j4, false)
         };
@@ -929,47 +908,7 @@ fn predict_compound_plane_output<T: ReconSample>(
     let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
     let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
     let blend = block.blend;
-    let has_warp = block.warp_params.iter().any(Option::is_some);
-    let translation = if has_warp {
-        None
-    } else {
-        Some(translational_compound_plane(
-            info, block, plane, sub_x, sub_y, offset,
-        )?)
-    };
-    if let (
-        Some(translation),
-        CompoundBlend::Average {
-            implicit_mask,
-            cwp_weight,
-        },
-        Some(output),
-    ) = (translation.as_ref(), blend, T::u16_slice_mut(samples))
-        && compound_average_weights_are_uniform(
-            implicit_mask,
-            cwp_weight,
-            translation.plane.block_w,
-            translation.plane.block_h,
-            translation.plane.scalings,
-            Some(translation.plane.scalings),
-            (frame_w, frame_h),
-        )
-    {
-        predict_compound_average_into(
-            &translation.plane,
-            &translation.params,
-            cwp_weight,
-            None,
-            None,
-            output,
-            stride,
-        )?;
-        return Ok(());
-    }
-    let prediction = match translation {
-        Some(translation) => compound_plane_prediction_from_translation(translation)?,
-        None => compound_warp_plane_prediction(info, block, plane, sub_x, sub_y, offset)?,
-    };
+    let prediction = compound_warp_plane_prediction(info, block, plane, sub_x, sub_y, offset)?;
     let (pred0, pred1) = prediction.predictions();
     if !matches!(blend, CompoundBlend::Average { .. }) {
         let [_, (_, chroma_x, chroma_y), _] = mc_planes(info.pixel_format());
@@ -1088,7 +1027,6 @@ struct CompoundPlanePrediction {
     block_h: usize,
     scaling0: PlaneScaling,
     scaling1: PlaneScaling,
-    recycle_buffers: bool,
 }
 
 pub(crate) struct McScratch {
@@ -1265,13 +1203,11 @@ impl CompoundPlanePrediction {
 
 impl Drop for CompoundPlanePrediction {
     fn drop(&mut self) {
-        if self.recycle_buffers {
-            let buffers = [
-                core::mem::take(&mut self.pred0),
-                core::mem::take(&mut self.pred1),
-            ];
-            COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(Some(buffers)));
-        }
+        let buffers = [
+            core::mem::take(&mut self.pred0),
+            core::mem::take(&mut self.pred1),
+        ];
+        COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(Some(buffers)));
     }
 }
 
@@ -1356,64 +1292,10 @@ fn translational_compound_plane<'a, T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<TranslationalCompoundPlane<'a, T>> {
     let plane = compound_subpel_plane(block, plane, sub_x, sub_y, offset)?;
-    let params = plane.scalings.map(|scaling| SubpelPredictParams {
-        interp: block.interp,
-        w: plane.block_w,
-        h: plane.block_h,
-        start_x: scaling.start_x,
-        start_y: scaling.start_y,
-        step_x: scaling.step_x,
-        step_y: scaling.step_y,
-        first_x: scaling.first_x,
-        first_y: scaling.first_y,
-        last_x: scaling.last_x,
-        last_y: scaling.last_y,
-        bit_depth: info.bit_depth(),
+    let params = plane.scalings.map(|scaling| {
+        scaling.subpel_params(block.interp, plane.block_w, plane.block_h, info.bit_depth())
     });
     Ok(TranslationalCompoundPlane { plane, params })
-}
-
-fn compound_plane_prediction_from_translation<T: ReconSample>(
-    translation: TranslationalCompoundPlane<'_, T>,
-) -> Result<CompoundPlanePrediction> {
-    let TranslationalCompoundPlane { plane, params } = translation;
-    let CompoundSubpelPlane {
-        views,
-        block_w,
-        block_h,
-        scalings,
-        ..
-    } = plane;
-    let sample_count = block_w
-        .checked_mul(block_h)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "compound prediction sample count",
-        })?;
-    let [pred0, pred1] = take_compound_prediction_buffers(sample_count);
-    let mut prediction = CompoundPlanePrediction {
-        pred0,
-        pred1,
-        block_w,
-        block_h,
-        scaling0: scalings[0],
-        scaling1: scalings[1],
-        recycle_buffers: true,
-    };
-    subpel_predict_block_compound_intermediate_into(
-        &views[0],
-        &params[0],
-        None,
-        &mut prediction.pred0[..sample_count],
-        block_w,
-    )?;
-    subpel_predict_block_compound_intermediate_into(
-        &views[1],
-        &params[1],
-        None,
-        &mut prediction.pred1[..sample_count],
-        block_w,
-    )?;
-    Ok(prediction)
 }
 
 /// AV2 § 7.13.3.14 compound LOCALWARP plane prediction: warp each list with its
@@ -1468,7 +1350,6 @@ fn compound_warp_plane_prediction<T: ReconSample>(
         block_h,
         scaling0,
         scaling1,
-        recycle_buffers: true,
     })
 }
 
@@ -1510,20 +1391,7 @@ fn compound_ref_intermediate<T: ReconSample>(
     );
     let view = reference.plane_view(plane, last_row, offset)?;
     let Some(warp_params) = warp_params else {
-        let params = SubpelPredictParams {
-            interp,
-            w: block_w,
-            h: block_h,
-            start_x: scaling.start_x,
-            start_y: scaling.start_y,
-            step_x: scaling.step_x,
-            step_y: scaling.step_y,
-            first_x: scaling.first_x,
-            first_y: scaling.first_y,
-            last_x: scaling.last_x,
-            last_y: scaling.last_y,
-            bit_depth,
-        };
+        let params = scaling.subpel_params(interp, block_w, block_h, bit_depth);
         subpel_predict_block_compound_intermediate_into(&view, &params, None, samples, block_w)?;
         return Ok(scaling);
     };
@@ -1591,18 +1459,11 @@ fn compound_ref_intermediate<T: ReconSample>(
                     scaling,
                 );
                 let params = WarpPredictBlockParams {
-                    warp_params,
-                    block_x: plane_x as i32,
-                    block_y: plane_y as i32,
-                    subsampling_x: sub_x as u8,
-                    subsampling_y: sub_y as u8,
-                    reference_scale_x: scaling.scale_x,
-                    reference_scale_y: scaling.scale_y,
                     first_x,
                     first_y,
                     last_x,
                     last_y,
-                    bit_depth,
+                    ..params
                 };
                 let predicted = ext_warp_predict_unit(&view, &params, i4, j4, true)?;
                 write_compound_section(samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4)?;
@@ -1640,16 +1501,6 @@ fn write_compound_section(
     Ok(())
 }
 
-fn blend_compound_average_weighted_samples<T: ReconSample>(
-    pred0: &[i32],
-    pred1: &[i32],
-    bit_depth: splot_recon::BitDepth,
-    cwp_weight: i16,
-    output: &mut [T],
-) -> splot_recon::Result<()> {
-    blend::weighted_row(pred0, pred1, bit_depth, cwp_weight, output)
-}
-
 #[inline]
 fn compound_average_weights_are_uniform(
     implicit_mask: bool,
@@ -1657,7 +1508,7 @@ fn compound_average_weights_are_uniform(
     w: usize,
     h: usize,
     base_scalings: [PlaneScaling; 2],
-    uniform_scalings: Option<[PlaneScaling; 2]>,
+    uniform_scalings: [PlaneScaling; 2],
     frame_size: (usize, usize),
 ) -> bool {
     if !implicit_mask
@@ -1668,21 +1519,17 @@ fn compound_average_weights_are_uniform(
     }
     let last_x = frame_size.0 as i32 - 1;
     let last_y = frame_size.1 as i32 - 1;
-    uniform_scalings.is_some_and(|scaling| {
-        scaling.into_iter().all(|scaling| {
-            let end_x = scaling.start_x + scaling.step_x * w.saturating_sub(1) as i32;
-            let end_y = scaling.start_y + scaling.step_y * h.saturating_sub(1) as i32;
-            scaling.start_x >> 10 >= 0
-                && scaling.start_y >> 10 >= 0
-                && end_x >> 10 <= last_x
-                && end_y >> 10 <= last_y
-        })
+    uniform_scalings.into_iter().all(|scaling| {
+        let end_x = scaling.start_x + scaling.step_x * w.saturating_sub(1) as i32;
+        let end_y = scaling.start_y + scaling.step_y * h.saturating_sub(1) as i32;
+        scaling.start_x >> 10 >= 0
+            && scaling.start_y >> 10 >= 0
+            && end_x >> 10 <= last_x
+            && end_y >> 10 <= last_y
     })
 }
 
-const fn compound_inter_post_round() -> u32 {
-    4
-}
+const INTER_POST_ROUND: u32 = 4;
 
 #[allow(clippy::too_many_arguments)]
 fn ext_warp_unit_bounds(

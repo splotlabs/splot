@@ -121,7 +121,6 @@ pub(super) struct IntrabcReconCommand {
     segment_id: u8,
     qindex: u32,
     luma_use_tcq: bool,
-    residual_use_ddt: bool,
     bit_depth: BitDepth,
 }
 
@@ -132,7 +131,6 @@ impl IntrabcReconCommand {
         segment_id: u8,
         qindex: u32,
         luma_use_tcq: bool,
-        residual_use_ddt: bool,
         bit_depth: BitDepth,
     ) -> Self {
         Self {
@@ -141,7 +139,6 @@ impl IntrabcReconCommand {
             segment_id,
             qindex,
             luma_use_tcq,
-            residual_use_ddt,
             bit_depth,
         }
     }
@@ -195,8 +192,7 @@ impl IntrabcReconCommand {
                 residual_coeffs,
                 self.qindex,
                 self.luma_use_tcq,
-                self.residual_use_ddt,
-                true,
+                false,
                 self.bit_depth,
             )?;
         }

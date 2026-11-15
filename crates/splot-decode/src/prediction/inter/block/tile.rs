@@ -803,7 +803,7 @@ impl ReconRowEntry {
         }
     }
 
-    /// Marks the command consumed, as [`Self::take_command`] would.
+    /// Marks the command consumed.
     pub(super) fn drop_command(&mut self, slots: &mut [LeafSlot]) {
         if let Some(slot) = self.slot_mut(slots) {
             *slot = LeafSlot::Spent;

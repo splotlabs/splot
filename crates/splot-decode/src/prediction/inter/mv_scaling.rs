@@ -2,7 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_recon::math::{round2_signed, round2_signed_i32};
-use splot_recon::{DecodedFrameInfo, PlaneSize};
+use splot_recon::{
+    BitDepth, DecodedFrameInfo, InterpolationFilter, PlaneSize, SubpelPredictParams,
+};
 
 const REF_SCALE_SHIFT: u32 = 14;
 const SUBPEL_BITS: u32 = 4;
@@ -23,6 +25,30 @@ pub(crate) struct PlaneScaling {
 }
 
 impl PlaneScaling {
+    /// The subpel prediction of a `w` x `h` block at this scaling.
+    pub(crate) const fn subpel_params(
+        self,
+        interp: InterpolationFilter,
+        w: usize,
+        h: usize,
+        bit_depth: BitDepth,
+    ) -> SubpelPredictParams {
+        SubpelPredictParams {
+            interp,
+            w,
+            h,
+            start_x: self.start_x,
+            start_y: self.start_y,
+            step_x: self.step_x,
+            step_y: self.step_y,
+            first_x: self.first_x,
+            first_y: self.first_y,
+            last_x: self.last_x,
+            last_y: self.last_y,
+            bit_depth,
+        }
+    }
+
     pub(crate) const fn is_scaled(self) -> bool {
         self.scale_x != 1 << REF_SCALE_SHIFT || self.scale_y != 1 << REF_SCALE_SHIFT
     }

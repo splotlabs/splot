@@ -143,6 +143,7 @@ pub(crate) fn read_inter_residual(
     tile_offset: ByteOffset,
 ) -> Result<InterResidual> {
     let block_start = blocks.len();
+    let arena_start = arena.len();
     let result = (|| -> Result<()> {
         let (subsampling_x, subsampling_y) = chroma_subsampling(sequence.general.chroma_format_idc);
         let width_chunks = (n4w >> 4).max(1);
@@ -153,6 +154,8 @@ pub(crate) fn read_inter_residual(
         } else {
             frontier.b_size
         };
+        let frame_edge = (frontier.c + n4w > mi_cols || frontier.r + n4h > mi_rows)
+            .then_some((mi_rows, mi_cols));
         let luma_tx_size =
             inter_residual_tx_size(work_unit, symbols, frontier.b_size, lossless, tile_offset)?;
         let selectable_luma_tx = inter_luma_tx_records_are_selectable(
@@ -231,7 +234,7 @@ pub(crate) fn read_inter_residual(
                                 subsampling_y,
                                 chroma_chunk_x,
                                 chroma_chunk_y,
-                                (mi_rows, mi_cols),
+                                frame_edge,
                                 lossless.then_some(luma_tx_size),
                                 core.frame_is_intra == Some(true),
                                 residual_tool_policy,
@@ -247,6 +250,7 @@ pub(crate) fn read_inter_residual(
     })();
     if let Err(error) = result {
         blocks.truncate(block_start);
+        arena.truncate(arena_start);
         return Err(error);
     }
     Ok(InterResidual::new(block_start..blocks.len()))
@@ -278,34 +282,23 @@ fn chroma_parse_group_start(
     at_start.then_some((chunk_x, chunk_y))
 }
 
-fn inter_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
-    core.inter_tail
-        .as_ref()
-        .is_some_and(|tail| tail.tx_mode == TxMode::Select)
+fn residual_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
+    let tx_mode_select = match &core.inter_tail {
+        Some(tail) => tail.tx_mode == TxMode::Select,
+        None => core
+            .intra_tail
+            .as_ref()
+            .is_some_and(|tail| tail.tx_mode == TxMode::Select),
+    };
+    tx_mode_select
         && core
             .lossless_info
             .as_ref()
             .is_some_and(|lossless| !lossless.lossless_array[0])
-}
-
-fn residual_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
-    inter_uses_selectable_tx_partitions(core) || intra_frame_needs_selectable_tx_partitions(core)
 }
 
 fn inter_luma_tx_records_are_selectable(selectable_tx_partitions: bool, lossless: bool) -> bool {
     selectable_tx_partitions && !lossless
-}
-
-fn intra_frame_needs_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
-    core.inter_tail.is_none()
-        && core
-            .intra_tail
-            .as_ref()
-            .is_some_and(|tail| tail.tx_mode == TxMode::Select)
-        && core
-            .lossless_info
-            .as_ref()
-            .is_some_and(|lossless| !lossless.lossless_array[0])
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -465,20 +458,23 @@ fn read_inter_residual_chroma_group(
     subsampling_y: bool,
     chunk_x: usize,
     chunk_y: usize,
-    frame_mi: (usize, usize),
+    frame_edge: Option<(usize, usize)>,
     lossless_luma_tx_size: Option<usize>,
     frame_is_intra: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let lossless = lossless_luma_tx_size.is_some();
-    let group = InterChromaGroup::new(
+    let mut group = InterChromaGroup::new(
         frontier,
         mi_size_chunk,
         (subsampling_x, subsampling_y),
         (chunk_x, chunk_y),
         lossless,
     )?;
+    if let Some(frame_mi) = frame_edge {
+        group.clip_to_frame(frame_mi, (subsampling_x, subsampling_y));
+    }
     let (tx_size, cctx_allowed) = (group.tx_size, group.cctx_allowed);
     let (base_x4, base_y4) = group.base;
     let chroma_ref = frontier.chroma_ref_geometry();
@@ -487,14 +483,7 @@ fn read_inter_residual_chroma_group(
         && (frame_is_intra || frontier.r != chroma_ref.row() || frontier.c != chroma_ref.col());
     let segment_lossless = current_segment_lossless(work_unit);
     chroma_reads.clear();
-    let in_frame = |&(x4, y4): &(usize, usize)| {
-        transform_unit_starts_in_frame(
-            (base_x4 + x4, base_y4 + y4),
-            frame_mi,
-            (subsampling_x, subsampling_y),
-        )
-    };
-    for (x4, y4) in group.units().filter(in_frame) {
+    for (x4, y4) in group.units() {
         let start_x = (base_x4 + x4) * MI_SIZE;
         let start_y = (base_y4 + y4) * MI_SIZE;
         let chroma_inter_tx_type = if lossless_luma_idtx {
@@ -596,15 +585,10 @@ fn luma_chunk_end(block_end4: usize, chunk_start4: usize, mi_limit: usize) -> us
 }
 
 /// § 5.20.7.24 `transform_block` codes nothing for a transform block that
-/// starts at or past `maxX` / `maxY`, the plane extent of the `MiCols` x
-/// `MiRows` grid; position and grid are in 4x4 units of the plane and of luma.
-fn transform_unit_starts_in_frame(
-    (x4, y4): (usize, usize),
-    (mi_rows, mi_cols): (usize, usize),
-    (subsampling_x, subsampling_y): (bool, bool),
-) -> bool {
-    x4 * MI_SIZE < (mi_cols * MI_SIZE) >> usize::from(subsampling_x)
-        && y4 * MI_SIZE < (mi_rows * MI_SIZE) >> usize::from(subsampling_y)
+/// starts at or past `maxX = (MiCols * MI_SIZE) >> subX` (and `maxY`): the
+/// first plane 4x4 column (or row) past the plane of `mi_limit` luma 4x4 units.
+fn plane_end4(mi_limit: usize, subsampling: bool) -> usize {
+    ((mi_limit * MI_SIZE) >> usize::from(subsampling)).div_ceil(MI_SIZE)
 }
 
 /// The § 5.20.7.23 geometry of the chroma group that starts at luma chunk
@@ -679,6 +663,19 @@ impl InterChromaGroup {
             extent: (num4x4_w, num4x4_h),
             step: (tx_w4.max(1), tx_h4.max(1)),
         })
+    }
+
+    /// Drops the transform blocks that start at or past the plane edge of a
+    /// `(MiRows, MiCols)` frame.
+    fn clip_to_frame(
+        &mut self,
+        (mi_rows, mi_cols): (usize, usize),
+        (subsampling_x, subsampling_y): (bool, bool),
+    ) {
+        let end_x4 = plane_end4(mi_cols, subsampling_x).saturating_sub(self.base.0);
+        let end_y4 = plane_end4(mi_rows, subsampling_y).saturating_sub(self.base.1);
+        self.extent.0 = self.extent.0.min(end_x4.saturating_sub(self.start.0));
+        self.extent.1 = self.extent.1.min(end_y4.saturating_sub(self.start.1));
     }
 
     /// The 4x4 offsets `(x4, y4)` from `base` of the group's transform

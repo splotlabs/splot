@@ -65,11 +65,11 @@ pub(super) fn blend_compound_average<T: ReconSample>(
         w,
         h,
         scaling_templates,
-        Some(scaling_templates),
+        scaling_templates,
         (frame_w, frame_h),
     ) {
         return blend_rows(pred0, pred1, w, output, stride, |pred0, pred1, output| {
-            blend_compound_average_weighted_samples(pred0, pred1, bit_depth, cwp_weight, output)
+            weighted_row(pred0, pred1, bit_depth, cwp_weight, output)
         });
     }
 
@@ -128,7 +128,7 @@ pub(super) fn blend_compound_diff_weighted<T: ReconSample>(
     }
     let CompoundBlend::DiffWeighted { inverse } = blend else {
         return blend_rows(pred0, pred1, w, output, stride, |pred0, pred1, output| {
-            blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL, output)
+            weighted_row(pred0, pred1, bit_depth, CWP_EQUAL, output)
         });
     };
     if pred0.len() != pred1.len() {
@@ -150,7 +150,7 @@ pub(super) fn blend_compound_diff_weighted<T: ReconSample>(
         .map(|mask| diff_weighted_luma_mask_scales(mask, w, h, sub_x, sub_y))
         .transpose()?;
     let max_sample = i32::from(bit_depth.max_sample().min(T::MAX_VALUE));
-    let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + compound_inter_post_round();
+    let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + INTER_POST_ROUND;
     let mut mask_row = [0i32; MAX_MC_LUMA_DIM];
     let mask_row = mask_row
         .get_mut(..w)
@@ -219,7 +219,7 @@ fn blend_mask_row<T: ReconSample>(
     pred1: &[i32],
     max_sample: i32,
 ) -> splot_recon::Result<()> {
-    let shift = 6 + compound_inter_post_round();
+    let shift = 6 + INTER_POST_ROUND;
     let blended = masks
         .zip(pred0.iter().zip(pred1))
         .map(|(mask, (&left, &right))| {
@@ -318,7 +318,7 @@ fn blend_compound_wedge<T: ReconSample>(
     stride: usize,
 ) -> splot_recon::Result<()> {
     let max_sample = i32::from(bit_depth.max_sample());
-    let shift = 6 + compound_inter_post_round();
+    let shift = 6 + INTER_POST_ROUND;
     let mut masks = vec![0; w * h];
     let wedge = (usize::from(wedge_index), sign);
     splot_recon::wedge_mask_into(&mut masks, (w, h), (luma_w, luma_h), wedge, (sub_x, sub_y))?;
@@ -361,7 +361,7 @@ pub(super) fn diff_weighted_mask_into(
             actual: pred0.len(),
         });
     }
-    let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + compound_inter_post_round();
+    let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + INTER_POST_ROUND;
     mask.clear();
     mask.extend(
         pred0[..sample_count]
@@ -550,15 +550,13 @@ impl ImplicitMaskBlend {
             [false, true] => 0,
             _ => 1,
         };
-        let sample = round2_i32(
-            mask * left + (2 - mask) * right,
-            1 + compound_inter_post_round(),
-        );
+        let sample = round2_i32(mask * left + (2 - mask) * right, 1 + INTER_POST_ROUND);
         T::try_from_u16(sample.clamp(0, self.max_sample) as u16)
     }
 
-    /// [`Self::sample`] over one row whose first sample reads the reference
-    /// positions `starts` and whose later samples step one column right.
+    /// The implicit-mask blend of one row whose first sample reads the
+    /// reference positions `starts` and whose later samples step one column
+    /// right.
     fn row<T: ReconSample>(
         self,
         left: &[i32],
@@ -637,7 +635,7 @@ fn masked_row<S: Simd, T: ReconSample>(
             actual: left.len().min(right.len()),
         });
     };
-    let shift = 6 + compound_inter_post_round();
+    let shift = 6 + INTER_POST_ROUND;
     let blend = |col: usize, left: &[i32], right: &[i32]| {
         let (mask, l, r) = (
             masks(col),
@@ -652,29 +650,25 @@ fn masked_row<S: Simd, T: ReconSample>(
             output.copy_from_slice(&values.narrow(values).to_array()[..output.len()]);
         } else if let Some(output) = T::u16_slice_mut(output) {
             output.copy_from_slice(&values.to_array()[..output.len()]);
-        } else {
-            for (slot, value) in output.iter_mut().zip(values.to_array()) {
-                *slot = T::try_from_u16(value)?;
-            }
         }
-        Ok(())
     };
     if width < 4 {
         let pad = |samples: &[i32]| -> [i32; 4] {
             core::array::from_fn(|col| samples.get(col).copied().unwrap_or(0))
         };
         let value = blend(0, &pad(left), &pad(right));
-        return store(value.narrow(value), output);
+        store(value.narrow(value), output);
+        return Ok(());
     }
     let mut start = 0;
     while start + 8 <= width {
         let values = blend(start, left, right).narrow(blend(start + 4, left, right));
-        store(values, &mut output[start..start + 8])?;
+        store(values, &mut output[start..start + 8]);
         start += 8;
     }
     for col in (start..width).step_by(4).map(|col| col.min(width - 4)) {
         let value = blend(col, left, right);
-        store(value.narrow(value), &mut output[col..col + 4])?;
+        store(value.narrow(value), &mut output[col..col + 4]);
     }
     Ok(())
 }

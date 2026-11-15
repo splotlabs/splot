@@ -39,30 +39,19 @@ pub(super) struct ReferenceAreaBounds {
     pub(super) last_y: i32,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The refine-MV reference area of a luma unit on a scaled reference.
 #[inline]
-pub(super) fn reference_area_bounds(
+pub(super) fn scaled_area_bounds(
     plane_x: i32,
     plane_y: i32,
     width: usize,
     height: usize,
     candidate: Mv,
-    sub_x: u32,
-    sub_y: u32,
     scaling: &PlaneScaling,
 ) -> ReferenceAreaBounds {
-    if !scaling.is_scaled() {
-        return unscaled_area_bounds(
-            [plane_x << 4, plane_y << 4],
-            [width, height],
-            candidate,
-            [sub_x, sub_y],
-            scaling,
-        );
-    }
     let x_padding = if width == 4 { (1, 2) } else { (3, 4) };
     let y_padding = if height == 4 { (1, 2) } else { (3, 4) };
-    let scaling = scaling.with_mv(plane_x, plane_y, candidate.row, candidate.col, sub_x, sub_y);
+    let scaling = scaling.with_mv(plane_x, plane_y, candidate.row, candidate.col, 0, 0);
     let last_x = scaling.start_x + scaling.step_x * width.saturating_sub(1) as i32;
     let last_y = scaling.start_y + scaling.step_y * height.saturating_sub(1) as i32;
     ReferenceAreaBounds {
@@ -73,7 +62,7 @@ pub(super) fn reference_area_bounds(
     }
 }
 
-/// [`reference_area_bounds`] of an unscaled reference, from the area's
+/// [`scaled_area_bounds`] of an unscaled reference, from the area's
 /// 1/16-sample origin: the unscaled start is `((pos << 4) + mv_offset) << 6
 /// | 32`, so its integer sample is the 1/16 position shifted down by four.
 #[allow(clippy::inline_always, reason = "called per unit and grid cell")]
@@ -463,8 +452,8 @@ fn refined_mvs(candidates: [Mv; 2], dx: i32, dy: i32) -> [Mv; 2] {
     ]
 }
 
-/// Writes the cell of every full-pel TIP unit from unit `first` on whose
-/// SADs on the references decide it, and returns whether it wrote any. The
+/// Writes the cell of every full-pel TIP unit whose SADs on the references
+/// decide it, and returns whether it wrote any. The
 /// other cells keep their uninitialized value for the full path.
 #[inline(never)]
 pub(super) fn tip_fullpel_cells<T: ReconSample>(
@@ -472,27 +461,22 @@ pub(super) fn tip_fullpel_cells<T: ReconSample>(
     batch: &CompoundMcBlock<'_, T>,
     unit_at: &impl Fn(usize) -> (McBlockRect, [Mv; 2]),
     candidates: &[[Mv; 2]],
-    (unit_size, offset): (usize, ByteOffset),
-    first: usize,
+    offset: ByteOffset,
     cells: &mut [MotionCell],
 ) -> Result<bool> {
     let mut views = None;
     let mut wrote = false;
-    if batch.optflow_distances.is_none() {
-        return Ok(wrote);
-    }
-    let candidates = candidates.get(first..).unwrap_or_default();
     for (index, (cell, &mvs)) in cells.iter_mut().zip(candidates).enumerate() {
         if !fullpel_candidates(mvs) {
             continue;
         }
-        let unit = (unit_at(first + index).0, mvs);
+        let unit = (unit_at(index).0, mvs);
         let Some(views) =
             views.get_or_insert_with(|| TipFullpelViews::new(sink, batch, unit, offset))
         else {
             break;
         };
-        if let Some(fast) = views.motion_cell(sink, batch, unit, unit_size)? {
+        if let Some(fast) = views.motion_cell(sink, batch, unit)? {
             *cell = fast;
             wrote = true;
         }
@@ -539,10 +523,9 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     ) -> Option<Self> {
         let frame_size = sink.info().coded_luma_size();
         let references = [batch.reference0, batch.reference1];
-        if batch.optflow_distances.is_none()
-            || references
-                .iter()
-                .any(|reference| reference.info().coded_luma_size() != frame_size)
+        if references
+            .iter()
+            .any(|reference| reference.info().coded_luma_size() != frame_size)
         {
             return None;
         }
@@ -582,12 +565,11 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         sink: &WorkspaceSink<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         (rect, mvs): (McBlockRect, [Mv; 2]),
-        unit_size: usize,
     ) -> Result<Option<MotionCell>> {
         let Some(distances) = batch.optflow_distances else {
             return Ok(None);
         };
-        if (unit_size, rect.luma_w, rect.luma_h) != (8, 8, 8) || !fullpel_candidates(mvs) {
+        if (rect.luma_w, rect.luma_h) != (8, 8) || !fullpel_candidates(mvs) {
             return Ok(None);
         }
         if batch.search_refinemv && search_range_allowed(mvs) {
@@ -1155,7 +1137,7 @@ mod tests {
             16, 16, 0, 0, 0, 0, 64, 64, 64, 64,
         );
         assert_eq!(
-            reference_area_bounds(16, 16, 16, 16, Mv::ZERO, 0, 0, &scaling),
+            unscaled_area_bounds([16 << 4, 16 << 4], [16, 16], Mv::ZERO, [0, 0], &scaling),
             ReferenceAreaBounds {
                 first_x: 13,
                 first_y: 13,

@@ -81,7 +81,6 @@ pub(super) struct PendingIntrabcBlock {
     pub(super) segment_id: u8,
     pub(super) qindex: u32,
     pub(super) luma_use_tcq: bool,
-    pub(super) residual_use_ddt: bool,
     pub(super) bit_depth: BitDepth,
     pub(super) subsampling: (u32, u32),
     /// § 7.13.3.25 `AvailU` / `AvailL`, which `is_inside` scopes to the current tile.
@@ -177,7 +176,6 @@ fn resolve_pending_intrabc(
         segment_id,
         qindex,
         luma_use_tcq,
-        residual_use_ddt,
         bit_depth,
         subsampling,
         avail_up,
@@ -245,7 +243,6 @@ fn resolve_pending_intrabc(
         segment_id,
         qindex,
         luma_use_tcq,
-        residual_use_ddt,
         bit_depth,
     );
     state.grid.record_motion(
@@ -753,13 +750,9 @@ pub(super) fn warp_motion(
             } else {
                 MV_PRECISION_EIGHTH_PEL
             };
-            let base_mv = warp_predicted_mv(
-                stack.warp_candidate(usize::from(warp.ref_warp_idx)),
-                block,
-                base_precision,
-            );
-            let mv = warp.mvd.map_or(base_mv, |mvd| add_mv_clamped(base_mv, mvd));
             let mut params = stack.warp_candidate(usize::from(warp.ref_warp_idx));
+            let base_mv = warp_predicted_mv(params, block, base_precision);
+            let mv = warp.mvd.map_or(base_mv, |mvd| add_mv_clamped(base_mv, mvd));
             reduce_warp_model(&mut params);
             set_warp_translation(
                 &mut params,
@@ -921,17 +914,7 @@ pub(super) fn compound_motion(
         compound_mvs(syntax, compound, &paired, &independent)
     };
     let warp_params = if compound.local_warp {
-        compound_local_warp_models(
-            state.grid,
-            block,
-            compound.ref_frame1,
-            mv[0],
-            mv[1],
-            block.mi_row,
-            block.mi_col,
-            block.bw4,
-            block.bh4,
-        )?
+        compound_local_warp_models(state.grid, block, compound.ref_frame1, mv[0], mv[1])?
     } else if compound.is_global() {
         let force_integer_mv = effective_force_integer_mv(state.core);
         [block.ref_frame0, compound.ref_frame1].map(|ref_frame| {

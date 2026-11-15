@@ -14,7 +14,7 @@ use splot_recon::{
 };
 
 use super::interintra::InterIntraScratch;
-use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
+use super::prediction::sub8x8_chroma_disables_compound;
 use super::resolve::effective_intrabc_sb_h4;
 use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_allowed};
 use super::{
@@ -670,13 +670,6 @@ fn segment_id_validation_reports_values_above_the_active_range_as_malformed() {
             if issue.spec_section() == Some("6.19.5.8")
                 && issue.offset() == Some(ByteOffset::new(11))
     ));
-}
-
-#[test]
-fn shared_inter_leaves_predict_chroma_before_the_offset_owner() {
-    assert!(leaf_predicts_chroma(true, false));
-    assert!(!leaf_predicts_chroma(true, true));
-    assert!(!leaf_predicts_chroma(false, false));
 }
 
 #[test]

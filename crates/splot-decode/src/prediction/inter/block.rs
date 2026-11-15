@@ -277,11 +277,6 @@ enum ReconCommandMut<'a> {
     Inter(&'a mut deferred_recon::InterReconCommand),
 }
 
-/// The frame-level facts one inter walk derives from its header and tile plan
-/// before any tile syntax is read.
-///
-/// Both the fused walk and the split parse pass derive exactly this, so the two
-/// enter their tile phases from the same frame state.
 impl InterBlockSetup {
     /// The § 7.9 motion metadata the pre-parse derivation already settles.
     pub(crate) fn motion_field_metadata(
@@ -320,6 +315,11 @@ pub(crate) struct InterParseSetup {
     pub(crate) initial_frame_cdfs: Arc<FrameCdfSubset>,
 }
 
+/// The frame-level facts one inter walk derives from its header and tile plan
+/// before any tile syntax is read.
+///
+/// Both the fused walk and the split parse pass derive exactly this, so the two
+/// enter their tile phases from the same frame state.
 pub(crate) struct InterBlockSetup {
     params: tile::TileWalkParams,
     prelude: TemporalPrelude,
@@ -1527,7 +1527,6 @@ fn decode_block<T: ReconSample>(
                         segment_id,
                         qindex: block_qindex,
                         luma_use_tcq: params.luma_use_tcq,
-                        residual_use_ddt: params.residual_use_ddt,
                         bit_depth: params.bit_depth,
                         subsampling: (u32::from(sub_x), u32::from(sub_y)),
                         avail_up,

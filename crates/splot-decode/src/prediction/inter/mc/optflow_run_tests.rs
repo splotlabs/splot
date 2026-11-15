@@ -232,7 +232,7 @@ fn uniform_grids_match_per_cell<T: ReconSample + CompoundAverageOutput + Send>(
                 refine_slice,
                 (0, 0),
                 (info.bit_depth(), InterpolationFilter::EightTap, area),
-                (true, false, CWP_EQUAL, (WIDTH, HEIGHT)),
+                (false, CWP_EQUAL, (WIDTH, HEIGHT)),
             );
             if candidate == candidates[0] && rect.luma_y == 8 && rect.luma_w == 32 {
                 let clipped = delta[1] == 96 && (refine || unit_size == 8);
@@ -403,15 +403,7 @@ fn tip_grid_and_cells<T: ReconSample>(
             )
             .expect("refined cell")
             .map_or_else(
-                || {
-                    tip_unit_motion_cell(
-                        &sink,
-                        &unit,
-                        (unit.rect, [unit.mv0, unit.mv1]),
-                        8,
-                        &mut luma,
-                    )
-                },
+                || tip_unit_motion_cell(&sink, &unit, (unit.rect, [unit.mv0, unit.mv1]), &mut luma),
                 Ok,
             )
             .expect("unit cell")
@@ -519,12 +511,9 @@ fn chroma_implicit_mask_reads_one_motion_cell_per_four_by_four_subblock() {
     let motion = CompoundMotionGrid {
         unit_size: 4,
         columns: 2,
-        cells: MotionCells::Heap(vec![onscreen, onscreen, ref1_offscreen, onscreen]),
+        cells: vec![onscreen, onscreen, ref1_offscreen, onscreen],
         fullpel_runs: false,
-        refinemv_candidates: RefinemvCandidates::PerCell {
-            candidates: Vec::new(),
-            unit_size: 4,
-        },
+        refinemv_candidates: Vec::new(),
     };
     let scaling =
         crate::prediction::inter::mv_scaling::derive_plane_scaling(0, 0, 0, 0, 1, 1, 8, 8, 8, 8);

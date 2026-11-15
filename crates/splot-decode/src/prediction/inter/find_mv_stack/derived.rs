@@ -198,7 +198,6 @@ impl CompoundDerivedMvState {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn fill(
         &mut self,
         block: &MvBlockContext,

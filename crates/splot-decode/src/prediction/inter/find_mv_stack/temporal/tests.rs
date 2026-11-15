@@ -1261,7 +1261,7 @@ fn tip_step_one_hole_fill_stays_within_64_pixel_tmvp_units() {
     context.field.set(0, 7, Mv { row: 8, col: -16 }, 4, true);
 
     let references = context.tip_reference_pair().unwrap();
-    assert!(context.prepare_tip(references, 1, 16, true).is_ok());
+    assert!(context.prepare_tip(references, 1, 8, true).is_ok());
     assert_eq!(context.tip_candidate(0, 8, Mv::ZERO), Some([Mv::ZERO; 2]));
 }
 

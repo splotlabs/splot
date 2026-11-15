@@ -57,13 +57,6 @@ pub(super) fn temporal_motion_block<T: ReconSample>(
     )
 }
 
-pub(super) fn commit_temporal_motion_blocks(
-    motion_field: &mut TemporalMotionField,
-    blocks: &[TemporalMotionBlock],
-) {
-    motion_field.record_blocks(blocks);
-}
-
 /// One frame's AV2 § 7.9 motion field while its parse units are still landing.
 ///
 /// A unit writes cells no other unit touches — units are superblock or tile
@@ -175,7 +168,7 @@ impl MotionFieldUnits {
             return;
         }
         if let Some(field) = self.locked().as_mut() {
-            commit_temporal_motion_blocks(field, records);
+            field.record_blocks(records);
         }
     }
 
@@ -326,12 +319,12 @@ mod tests {
 
         let mut logged = TemporalMotionField::new(2, 2).expect("logged field");
         logged.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
-        commit_temporal_motion_blocks(&mut logged, &[first, second]);
+        logged.record_blocks(&[first, second]);
         assert_eq!(logged, direct);
 
         let mut reversed = TemporalMotionField::new(2, 2).expect("reversed field");
         reversed.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
-        commit_temporal_motion_blocks(&mut reversed, &[second, first]);
+        reversed.record_blocks(&[second, first]);
         assert_ne!(reversed, direct);
     }
 

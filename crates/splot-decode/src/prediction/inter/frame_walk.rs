@@ -7,7 +7,7 @@
 //! reads from its header before any tile syntax: the tile plan, the
 //! reconstruction workspace, the § 7.2 filter-sink facts and the frame's
 //! quantizer state. The fused walk goes straight on to its tile phase from
-//! there; [`parse_inter_frame`] instead runs only the entropy pass and returns
+//! there; [`PendingInterWalk`] instead runs only the entropy pass and returns
 //! a [`DeferredInterWalk`], which owns everything the reconstruction still
 //! needs so the driver can run it after it has moved on.
 
