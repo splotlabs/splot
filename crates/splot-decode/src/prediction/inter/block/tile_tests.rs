@@ -525,4 +525,8 @@ fn resolved_record_publication_keeps_the_unit_capacity() {
 #[test]
 fn row_slots_clear_without_an_element_walk() {
     assert!(!core::mem::needs_drop::<LeafSlot>());
+    assert!(
+        size_of::<PendingIntrabcBlock>() <= size_of::<ReconCommand>(),
+        "an inline IntraBC block must not grow the row slot"
+    );
 }
