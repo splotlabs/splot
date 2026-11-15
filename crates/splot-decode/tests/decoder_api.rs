@@ -32,6 +32,8 @@ const TEN_BIT_INTER: &[u8] = include_bytes!(
 );
 const CROP: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-crop-intra-64x64-q80.ivf");
+const FILM_GRAIN: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf");
 
 const FIXTURES: &[&[u8]] = &[
     MULTIREF,
@@ -41,6 +43,7 @@ const FIXTURES: &[&[u8]] = &[
     BRIDGE,
     TEN_BIT_INTER,
     CROP,
+    FILM_GRAIN,
 ];
 
 /// The payload of each non-empty IVF frame record: one temporal unit each.
