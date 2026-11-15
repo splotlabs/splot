@@ -401,6 +401,7 @@ fn ccso_apply<D: ReconSample, L: ReconSample>(
         || curr_luma.stride() < curr_luma.width()
         || curr_luma.row(curr_luma.origin_y()).is_none()
         || curr_luma.row(curr_luma.end_y() - 1).is_none()
+        || (D::MAX_VALUE == u16::from(u8::MAX) && config.max_sample != i32::from(u8::MAX))
     {
         return Err(CcsoError::Geometry);
     }
@@ -863,12 +864,10 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
             .chunks_exact(2 * step)
             .zip(taps0.chunks_exact(2 * step))
             .zip(taps1.chunks_exact(2 * step))
-            .zip(outputs.chunks_exact_mut(2 * CCSO_LANES));
-        let add = |offset: u8x32<S>, output: &mut [D]| {
+            .zip(outputs.as_chunks_mut::<{ 2 * CCSO_LANES }>().0);
+        let add = |offset: u8x32<S>, output: &mut [D; 2 * CCSO_LANES]| {
             let offset = offset.bitcast::<i8x32<S>>();
-            if let Some(bytes) = D::u8_slice_mut(&mut *output)
-                && config.max_sample == i32::from(u8::MAX)
-            {
+            if let Some(bytes) = D::u8_slice_mut(output) {
                 let zero = i8x32::splat(simd, 0);
                 let (up, down) = (offset.max(zero), (zero - offset).max(zero));
                 u8x32::from_slice(simd, bytes)
@@ -878,7 +877,8 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
                 return;
             }
             let (low, high) = simd.widen_i8x32(offset);
-            for (output, offset) in output.chunks_exact_mut(CCSO_LANES).zip([low, high]) {
+            let (outputs, _) = output.as_chunks_mut::<CCSO_LANES>();
+            for (output, offset) in outputs.iter_mut().zip([low, high]) {
                 let Some(lanes) = load_lanes(simd, output) else {
                     break;
                 };
@@ -1011,11 +1011,11 @@ fn ccso_lookup<S: Simd, V: SimdInt<S, Element = u8, ByteVector = V>>(
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn ccso_wide_chunks<'a, S: Simd, D: ReconSample, L: ReconSample, const BLOCKS: usize>(
-    chunks: impl Iterator<Item = (((&'a [L], &'a [L]), &'a [L]), &'a mut [D])>,
+    chunks: impl Iterator<Item = (((&'a [L], &'a [L]), &'a [L]), &'a mut [D; 2 * CCSO_LANES])>,
     (tables, index, add): (
         &[u8x32<S>; CCSO_LUT_LEN / 16],
         impl Fn(&[L], &[L], &[L]) -> Option<u8x32<S>>,
-        impl Fn(u8x32<S>, &mut [D]),
+        impl Fn(u8x32<S>, &mut [D; 2 * CCSO_LANES]),
     ),
 ) -> usize {
     let mut done = 0;
