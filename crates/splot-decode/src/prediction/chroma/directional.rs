@@ -218,10 +218,13 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         | SupportedChromaMode::D67 => reconstruct_general_intra_one_sided_neighbour_block_into(
             workspace,
             block,
-            match mode {
-                SupportedChromaMode::D45Follow | SupportedChromaMode::D45 => 45,
-                SupportedChromaMode::D67Follow | SupportedChromaMode::D67 => 67,
-                _ => unreachable!(),
+            if matches!(
+                mode,
+                SupportedChromaMode::D45Follow | SupportedChromaMode::D45
+            ) {
+                45
+            } else {
+                67
             },
             plane_id,
             x,
