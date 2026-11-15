@@ -1750,6 +1750,212 @@ mod tests {
         }
     }
 
+    /// § 7.18.3 of the `w`x`h` block at `(x, y)` of `plane` (`stride` wide),
+    /// every tap available, one sample at a time.
+    fn reference_block(
+        plane: &[u16],
+        stride: usize,
+        (x, y): (usize, usize),
+        (w, h): (usize, usize),
+        filter: &CdefBlockFilter,
+    ) -> Vec<u16> {
+        let at = |x: isize, y: isize| CdefTap {
+            value: i32::from(plane[y as usize * stride + x as usize]),
+            available: true,
+        };
+        let mut out = Vec::new();
+        for i in 0..h {
+            for j in 0..w {
+                let (px, py) = ((x + j) as isize, (y + i) as isize);
+                let fetch = |dir: usize, k: usize, sign: isize| {
+                    let [dy, dx] = CDEF_DIRECTIONS[dir & 7][k];
+                    at(px + sign * dx as isize, py + sign * dy as isize)
+                };
+                let mut taps = CdefSampleTaps {
+                    center: at(px, py).value,
+                    primary: [[at(px, py); 2]; 2],
+                    secondary: [[[at(px, py); 2]; 2]; 2],
+                };
+                for k in 0..2 {
+                    for (sign_index, sign) in [-1isize, 1].into_iter().enumerate() {
+                        taps.primary[k][sign_index] = fetch(filter.dir, k, sign);
+                        for (off, dir_off) in [6usize, 2].into_iter().enumerate() {
+                            taps.secondary[k][sign_index][off] =
+                                fetch(filter.dir + dir_off, k, sign);
+                        }
+                    }
+                }
+                let value = cdef_filter_sample(
+                    &taps,
+                    filter.pri_str,
+                    filter.sec_str,
+                    filter.damping,
+                    filter.coeff_shift,
+                );
+                out.push(value as u16);
+            }
+        }
+        out
+    }
+
+    /// The segment filter matches § 7.18 one sample at a time for every
+    /// strength set, damping and block pattern, on noise of every spread
+    /// (flat, linear, clamped and general windows), at both bit depths.
+    #[test]
+    fn segment_filter_matches_the_per_sample_filter() {
+        let (width, stride) = (44, 48);
+        let sets = [
+            (4, 2, 3, 1, 4),
+            (15, 4, 15, 4, 6),
+            (0, 1, 0, 0, 3),
+            (7, 0, 0, 2, 5),
+            (1, 1, 2, 4, 3),
+            (0, 0, 5, 0, 4),
+            (9, 2, 0, 1, 6),
+        ];
+        let patterns = [
+            [(true, true); 4],
+            [(true, false), (false, true), (false, false), (true, true)],
+            [(false, false); 4],
+        ];
+        for (seed, (coeff_shift, spread)) in [
+            (0, 1),
+            (0, 4),
+            (0, 40),
+            (0, 255),
+            (2, 3),
+            (2, 60),
+            (2, 1023),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let max = (256u32 << coeff_shift) - 1;
+            let value = |state: u32| {
+                let base = (max / 2).saturating_sub(spread / 2);
+                ((base + (state >> 8) % (spread + 1)).min(max)) as u16
+            };
+            let mut luma = noise(stride * 14, 0x1234 + seed as u32, value);
+            let flat = luma[stride + 26];
+            for row in 1..13 {
+                luma[row * stride + 26..row * stride + 38].fill(flat);
+            }
+            let u = noise(24 * 10, 0x5678 + seed as u32, value);
+            let v = noise(24 * 10, 0x9abc + seed as u32, value);
+            let (mut segment, mut pair) = (CdefLumaSegment::default(), CdefPairSegment::default());
+            let bytes = |plane: &[u16]| plane.iter().map(|&s| s as u8).collect::<Vec<u8>>();
+            let (luma8, u8_, v8) = (bytes(&luma), bytes(&u), bytes(&v));
+            for (y_pri, y_sec, uv_pri, uv_sec, damping) in sets {
+                for uv_dir in [CDEF_UV_DIR[1][1], CDEF_UV_DIR[0][1]] {
+                    let strengths = CdefStrengths {
+                        y_pri,
+                        y_sec,
+                        uv_pri,
+                        uv_sec,
+                        damping,
+                        coeff_shift,
+                        uv_dir,
+                    };
+                    let unit = CdefUnitFilters::new(&strengths);
+                    for pattern in patterns {
+                        let blocks =
+                            pattern.map(|(luma, chroma)| CdefSegmentBlock { luma, chroma });
+                        let mut want = ([7u16; 40 * 8], [7u16; 20 * 4], [7u16; 20 * 4]);
+                        for (block, flags) in blocks.into_iter().enumerate() {
+                            let input = core::array::from_fn(|i| {
+                                core::array::from_fn(|j| {
+                                    let sample = luma[(3 + i) * stride + 4 + 8 * block + j];
+                                    i32::from(sample >> coeff_shift) - 128
+                                })
+                            });
+                            let (y_dir, var) = if y_pri == 0 && uv_pri == 0 {
+                                (0, 0)
+                            } else {
+                                cdef_direction(&input)
+                            };
+                            let [y_filter, uv_filter] = strengths.filters(y_dir, var);
+                            let write =
+                                |out: &mut [u16],
+                                 out_stride: usize,
+                                 w: usize,
+                                 samples: Vec<u16>| {
+                                    for (row, lanes) in samples.chunks(w).enumerate() {
+                                        for (dst, &src) in
+                                            out[row * out_stride..][..w].iter_mut().zip(lanes)
+                                        {
+                                            *dst = src;
+                                        }
+                                    }
+                                };
+                            if flags.luma && (y_filter.pri_str != 0 || y_filter.sec_str != 0) {
+                                let samples = reference_block(
+                                    &luma,
+                                    stride,
+                                    (4 + 8 * block, 3),
+                                    (8, 8),
+                                    &y_filter,
+                                );
+                                write(&mut want.0[8 * block..], 40, 8, samples);
+                            }
+                            if flags.chroma && (uv_pri != 0 || uv_sec != 0) {
+                                for (plane, out) in [(&u, &mut want.1), (&v, &mut want.2)] {
+                                    let samples = reference_block(
+                                        plane,
+                                        24,
+                                        (3 + 4 * block, 3),
+                                        (4, 4),
+                                        &uv_filter,
+                                    );
+                                    write(&mut out[4 * block..], 20, 4, samples);
+                                }
+                            }
+                        }
+                        let (mut out, mut out_u, mut out_v) =
+                            ([7u16; 40 * 8], [7u16; 20 * 4], [7u16; 20 * 4]);
+                        assert!(segment.gather(&luma, width, stride, (4, 3)));
+                        assert!(pair.gather(&u, &v, 22, 24, (3, 3)));
+                        assert!(cdef_filter_segment(
+                            &segment,
+                            &unit,
+                            blocks,
+                            [true; 3],
+                            (
+                                (&mut out, 40),
+                                Some((&pair, [(&mut out_u, 20), (&mut out_v, 20)]))
+                            ),
+                        ));
+                        let context = format!("{strengths:?} {pattern:?} spread {spread}");
+                        assert_eq!((out, out_u, out_v), want, "{context}");
+                        if coeff_shift > 0 {
+                            continue;
+                        }
+                        let (mut out8, mut u8_out, mut v8_out) =
+                            ([7u8; 40 * 8], [7u8; 20 * 4], [7u8; 20 * 4]);
+                        assert!(segment.gather(&luma8, width, stride, (4, 3)));
+                        assert!(pair.gather(&u8_, &v8, 22, 24, (3, 3)));
+                        assert!(cdef_filter_segment(
+                            &segment,
+                            &unit,
+                            blocks,
+                            [true; 3],
+                            (
+                                (&mut out8, 40),
+                                Some((&pair, [(&mut u8_out, 20), (&mut v8_out, 20)]))
+                            ),
+                        ));
+                        let wide =
+                            |bytes: &[u8]| bytes.iter().map(|&b| u16::from(b)).collect::<Vec<_>>();
+                        assert_eq!(
+                            (wide(&out8), wide(&u8_out), wide(&v8_out)),
+                            (Vec::from(want.0), Vec::from(want.1), Vec::from(want.2)),
+                            "8-bit {context}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// The segment filter writes what its per-block parts write, for
     /// skipped, lossless, flat and filtered blocks.
     #[test]
