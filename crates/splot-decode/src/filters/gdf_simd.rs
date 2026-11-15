@@ -1218,6 +1218,7 @@ fn filter_run_with<S: Simd, P: RowPairs<S>, O: GdfSample>(
 
 /// The § 7.20.5 `gdfCls` and gradient bias of every 2x2 class block of
 /// `block`, whose top-left sample sits at `origin` in `source`.
+#[cfg(test)]
 pub(super) fn band_classes(
     source: &GdfSource<'_>,
     origin: (usize, usize),
@@ -1228,6 +1229,7 @@ pub(super) fn band_classes(
     baseline_simd!(simd => band_classes_with(simd, source, origin, block, classes, scratch))
 }
 
+#[cfg(test)]
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn band_classes_with<S: Simd>(
