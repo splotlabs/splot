@@ -14,7 +14,7 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::span::ByteOffset;
-use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
+use splot_core::tables::conversion::TX_WIDTH_LOG2;
 use splot_core::types::ObuType;
 use splot_recon::{
     BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
@@ -1082,9 +1082,6 @@ fn inter_residual_log2(
 ) -> core::result::Result<(u32, u32), &'static str> {
     if block.tx_size >= TX_WIDTH_LOG2.len() {
         return Err("Tx_Width_Log2");
-    }
-    if block.tx_size >= TX_HEIGHT_LOG2.len() {
-        return Err("Tx_Height_Log2");
     }
     Ok((u32::from(block.log2_width), u32::from(block.log2_height)))
 }

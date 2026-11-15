@@ -14,7 +14,7 @@ use super::super::compound::CompoundBlockSyntax;
 use super::super::find_mv_stack::{MvBlockContext, NeighbourFlagSyntax};
 use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
 use super::super::mc::{self, WorkspaceSink};
-use super::super::{InterReferenceState, InterResidual, InterResidualBlock, PlacedInterBlock};
+use super::super::{InterReferenceState, InterResidualBlock, PlacedInterBlock};
 use super::compound_path::{FrameRefFacts, append_compound_temporal_motion};
 use super::resolve::{
     InterBlockSyntax, InterMotionSyntax, MvResolutionState, SingleMotionSyntax,
@@ -85,10 +85,6 @@ impl<T: ReconSample> ReconShared<'_, T> {
         )?;
         Ok(self.tip.get_or_init(|| plan))
     }
-}
-
-pub(super) const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
-    bawp || interintra
 }
 
 impl InterReconCommand {
@@ -166,10 +162,7 @@ impl InterReconCommand {
     }
 
     pub(super) fn reads_current_frame(&self) -> bool {
-        reads_current_frame(
-            self.placed.block.bawp.enabled,
-            self.placed.block.interintra.is_some(),
-        )
+        self.placed.block.bawp.enabled || self.placed.block.interintra.is_some()
     }
 
     pub(super) fn prepass_write_is_contained(
@@ -179,27 +172,92 @@ impl InterReconCommand {
         info: DecodedFrameInfo,
         residual_blocks: &[InterResidualBlock],
     ) -> bool {
-        prepass_write_is_contained(
-            [
-                self.placed.luma_x(),
-                self.placed.luma_y(),
-                self.placed.luma_w(),
-                self.placed.luma_h(),
-            ],
-            [
-                self.placed.chroma_luma_x(),
-                self.placed.chroma_luma_y(),
-                self.placed.chroma_luma_w(),
-                self.placed.chroma_luma_h(),
-            ],
-            self.placed.predict_chroma,
-            self.reads_current_frame(),
-            self.placed.block.residual.as_ref(),
-            superblock_origin,
-            sb_h4,
-            info,
-            residual_blocks,
-        )
+        if self.reads_current_frame() {
+            return false;
+        }
+        let placed = &self.placed;
+        let Some(origin_y) = superblock_origin[0].checked_mul(4) else {
+            return false;
+        };
+        let Some(origin_x) = superblock_origin[1].checked_mul(4) else {
+            return false;
+        };
+        let Some(side) = sb_h4.checked_mul(4) else {
+            return false;
+        };
+        let luma = info.storage_luma_size();
+        if !clipped_rect_is_inside_band(
+            placed.luma_x(),
+            placed.luma_y(),
+            placed.luma_w(),
+            placed.luma_h(),
+            origin_x,
+            origin_y,
+            side,
+            side,
+            luma.width(),
+            luma.height(),
+        ) {
+            return false;
+        }
+        if placed.predict_chroma
+            && !clipped_rect_is_inside_band(
+                placed.chroma_luma_x(),
+                placed.chroma_luma_y(),
+                placed.chroma_luma_w(),
+                placed.chroma_luma_h(),
+                origin_x,
+                origin_y,
+                side,
+                side,
+                luma.width(),
+                luma.height(),
+            )
+        {
+            return false;
+        }
+        placed.block.residual.as_ref().is_none_or(|residual| {
+            residual.blocks(residual_blocks).is_some_and(|blocks| {
+                blocks.iter().all(|block| {
+                    let (sub_x, sub_y, storage) = match block.plane {
+                        PlaneId::Y => (0, 0, Some(luma)),
+                        PlaneId::U | PlaneId::V => {
+                            let format = info.pixel_format();
+                            (
+                                usize::from(format.subsampling_x()),
+                                usize::from(format.subsampling_y()),
+                                format.chroma_size(luma).ok().flatten(),
+                            )
+                        }
+                    };
+                    let Some(storage) = storage else {
+                        return false;
+                    };
+                    let Ok((log2_width, log2_height)) = super::super::inter_residual_log2(block)
+                    else {
+                        return false;
+                    };
+                    let Some(width) = 1usize.checked_shl(log2_width) else {
+                        return false;
+                    };
+                    let Some(height) = 1usize.checked_shl(log2_height) else {
+                        return false;
+                    };
+                    clipped_rect_is_inside_band(
+                        block.x,
+                        block.y,
+                        width,
+                        height,
+                        origin_x >> sub_x,
+                        origin_y >> sub_y,
+                        side >> sub_x,
+                        side >> sub_y,
+                        storage.width(),
+                        storage.height(),
+                    )
+                })
+            })
+        })
     }
 
     fn single_temporal_record<T: ReconSample>(
@@ -555,106 +613,6 @@ impl<T: ReconSample> InterReconScratch<T> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn prepass_write_is_contained(
-    luma_rect: [usize; 4],
-    chroma_luma_rect: [usize; 4],
-    predict_chroma: bool,
-    reads_current_frame: bool,
-    residual: Option<&InterResidual>,
-    superblock_origin: [usize; 2],
-    sb_h4: usize,
-    info: DecodedFrameInfo,
-    residual_blocks: &[InterResidualBlock],
-) -> bool {
-    if reads_current_frame {
-        return false;
-    }
-    let [luma_x, luma_y, luma_w, luma_h] = luma_rect;
-    let [chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h] = chroma_luma_rect;
-    let Some(origin_y) = superblock_origin[0].checked_mul(4) else {
-        return false;
-    };
-    let Some(origin_x) = superblock_origin[1].checked_mul(4) else {
-        return false;
-    };
-    let Some(side) = sb_h4.checked_mul(4) else {
-        return false;
-    };
-    let luma = info.storage_luma_size();
-    if !clipped_rect_is_inside_band(
-        luma_x,
-        luma_y,
-        luma_w,
-        luma_h,
-        origin_x,
-        origin_y,
-        side,
-        side,
-        luma.width(),
-        luma.height(),
-    ) {
-        return false;
-    }
-    if predict_chroma
-        && !clipped_rect_is_inside_band(
-            chroma_luma_x,
-            chroma_luma_y,
-            chroma_luma_w,
-            chroma_luma_h,
-            origin_x,
-            origin_y,
-            side,
-            side,
-            luma.width(),
-            luma.height(),
-        )
-    {
-        return false;
-    }
-    residual.is_none_or(|residual| {
-        residual.blocks(residual_blocks).is_some_and(|blocks| {
-            blocks.iter().all(|block| {
-                let (sub_x, sub_y, storage) = match block.plane {
-                    PlaneId::Y => (0, 0, Some(luma)),
-                    PlaneId::U | PlaneId::V => {
-                        let format = info.pixel_format();
-                        (
-                            usize::from(format.subsampling_x()),
-                            usize::from(format.subsampling_y()),
-                            format.chroma_size(luma).ok().flatten(),
-                        )
-                    }
-                };
-                let Some(storage) = storage else {
-                    return false;
-                };
-                let Ok((log2_width, log2_height)) = super::super::inter_residual_log2(block) else {
-                    return false;
-                };
-                let Some(width) = 1usize.checked_shl(log2_width) else {
-                    return false;
-                };
-                let Some(height) = 1usize.checked_shl(log2_height) else {
-                    return false;
-                };
-                clipped_rect_is_inside_band(
-                    block.x,
-                    block.y,
-                    width,
-                    height,
-                    origin_x >> sub_x,
-                    origin_y >> sub_y,
-                    side >> sub_x,
-                    side >> sub_y,
-                    storage.width(),
-                    storage.height(),
-                )
-            })
-        })
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
 fn clipped_rect_is_inside_band(
     x: usize,
     y: usize,
@@ -722,14 +680,6 @@ mod tests {
     #[test]
     fn worker_reconstruction_scratch_is_cache_aligned() {
         assert_eq!(core::mem::align_of::<InterReconScratch<u8>>(), 64);
-    }
-
-    #[test]
-    fn current_frame_dependency_is_limited_to_bawp_and_interintra() {
-        assert!(!super::reads_current_frame(false, false));
-        assert!(super::reads_current_frame(true, false));
-        assert!(super::reads_current_frame(false, true));
-        assert!(super::reads_current_frame(true, true));
     }
 
     fn info(width: usize, height: usize, format: PixelFormat) -> DecodedFrameInfo {

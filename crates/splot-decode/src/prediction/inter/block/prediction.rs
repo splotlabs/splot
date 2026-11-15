@@ -4,10 +4,6 @@
 use super::*;
 use crate::pipeline::reconstruct::IntraEdgeAvailability;
 
-pub(super) const fn leaf_predicts_chroma(chroma_planes: bool, luma_part: bool) -> bool {
-    chroma_planes && !luma_part
-}
-
 /// § 7.11.3.1 disables compound chroma prediction in two cases: the § 5.20.4
 /// `sub8x8Inter` mismatch between the block and its chroma reference, and any
 /// thin 4xN / Nx4 block. TIP is excluded by its own caller.
@@ -64,7 +60,7 @@ pub(super) fn placed_inter_block_at(
         && !frontier.is_chroma_part()
         && frontier.is_mixed_region()
         && frontier.chroma_offset;
-    let predict_chroma = leaf_predicts_chroma(chroma_planes, frontier.is_luma_part());
+    let predict_chroma = chroma_planes && !frontier.is_luma_part();
     let interintra_edges = [
         IntraEdgeAvailability::new(frontier.r > tile_row_start, frontier.c > tile_col_start),
         IntraEdgeAvailability::new(
