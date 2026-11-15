@@ -748,12 +748,21 @@ impl<T: SplitSample> SplitFrames<T> {
 
     /// Loads one frame into the slot [`Self::reserve`] freed and hands it to
     /// the scheduler.
-    pub(crate) fn push(&mut self, rows: &RowScheduler, index: usize, inputs: SplitFrameInputs<T>) {
-        let slot = &mut self.slots[index];
-        if let Some(frame) = Arc::get_mut(slot) {
-            frame.arm(inputs);
-        }
+    pub(crate) fn push(
+        &mut self,
+        rows: &RowScheduler,
+        index: usize,
+        inputs: SplitFrameInputs<T>,
+    ) -> Result<()> {
+        let slot = self
+            .slots
+            .get_mut(index)
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+        Arc::get_mut(slot)
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?
+            .arm(inputs);
         rows.push(Arc::clone(slot) as Arc<dyn FrameWork>);
+        Ok(())
     }
 
     /// Waits for every slot's frame to finish.

@@ -757,7 +757,7 @@ fn push_split_inter<T: SplitSample>(
             motion_deps,
             finish,
         },
-    );
+    )?;
     Ok((slot, core, publications, motion))
 }
 
