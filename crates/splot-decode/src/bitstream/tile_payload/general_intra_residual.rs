@@ -1976,12 +1976,10 @@ fn tx_size_dimensions(tx_size: usize) -> Result<(usize, usize), GeneralIntraResi
 }
 
 fn tx_size_from_dimensions(width: usize, height: usize) -> Option<usize> {
-    TX_WIDTH
-        .iter()
-        .zip(TX_HEIGHT.iter())
-        .position(|(&tx_width, &tx_height)| {
-            usize::try_from(tx_width) == Ok(width) && usize::try_from(tx_height) == Ok(height)
-        })
+    if !width.is_power_of_two() || !height.is_power_of_two() {
+        return None;
+    }
+    splot_recon::tx_size_index(width.trailing_zeros(), height.trailing_zeros()).ok()
 }
 
 fn require_luma_context(
