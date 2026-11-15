@@ -224,7 +224,6 @@ fn activation_only_frame_header_core() -> FrameHeaderCore {
 }
 
 fn assert_first_work_unit_cdf_update(plan: &DecodeTilePayloadPlan<'_>, expected: CdfUpdateMode) {
-    assert_eq!(plan.work_units()[0].symbol().cdf_update_mode(), expected);
     assert_eq!(plan.work_units()[0].cdf().update_mode(), expected);
 }
 

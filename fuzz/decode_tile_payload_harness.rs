@@ -47,12 +47,6 @@ pub struct TilePayloadBoundaryFuzzOutcome {
     pub tile_bytes_len: usize,
     /// Planned `tileSize`.
     pub tile_size: u64,
-    /// Bits consumed by §8.2.2 `init_symbol(tileSize)`.
-    pub symbol_consumed_bits: u64,
-    /// Signed `SymbolMaxBits` after `init_symbol(tileSize)`.
-    pub symbol_max_bits: i64,
-    /// Whether the symbol decoder boundary enables CDF updates.
-    pub symbol_cdf_update_enabled: bool,
     /// Whether the attached tile CDF boundary enables CDF updates.
     pub cdf_update_enabled: bool,
 }
@@ -174,9 +168,6 @@ fn boundary_outcome(
         tile_col: unit.tile_col(),
         tile_bytes_len: unit.payload_range().len(),
         tile_size: unit.tile_size(),
-        symbol_consumed_bits: unit.symbol().consumed_bits(),
-        symbol_max_bits: unit.symbol().symbol_max_bits(),
-        symbol_cdf_update_enabled: unit.symbol().cdf_update_mode() == CdfUpdateMode::Enabled,
         cdf_update_enabled: unit.cdf().update_mode() == CdfUpdateMode::Enabled,
     })
 }

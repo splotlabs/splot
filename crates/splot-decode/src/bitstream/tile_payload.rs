@@ -31,7 +31,7 @@ use cdf::{TileCdfError, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_sa
 use splot_core::headers::tile_group::{TileFramingDefect, TileGroupFraming};
 use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::{ByteOffset, ByteSpan};
-use splot_core::symbol::{CdfUpdateMode, CdfValidationMode, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::CdfUpdateMode;
 use splot_core::types::ObuType;
 
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
@@ -500,7 +500,6 @@ pub(crate) struct DecodeTileWorkUnit {
     tile_byte_span: ByteSpan,
     tile_size: u64,
     coeff_frame_facts: TileCoeffFrameFacts,
-    symbol: SymbolInitBoundary,
     cdf: TileCdfWorkUnitBoundary,
     /// § 5.19 `BruTileActives[ tileRow ][ tileCol ]` of a `use_bru == 1` frame; `None`
     /// when `use_bru == 0`.
@@ -566,12 +565,6 @@ impl DecodeTileWorkUnit {
     }
 
     #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn symbol(&self) -> SymbolInitBoundary {
-        self.symbol
-    }
-
-    #[must_use]
     pub(crate) const fn cdf(&self) -> &TileCdfWorkUnitBoundary {
         &self.cdf
     }
@@ -582,33 +575,6 @@ impl DecodeTileWorkUnit {
 
     pub(crate) fn frame_cdfs(&self) -> Arc<FrameCdfSubset> {
         self.cdf.frame_cdfs_shared()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SymbolInitBoundary {
-    consumed_bits: u64,
-    symbol_max_bits: i64,
-    cdf_update_mode: CdfUpdateMode,
-}
-
-impl SymbolInitBoundary {
-    #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn consumed_bits(self) -> u64 {
-        self.consumed_bits
-    }
-
-    #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn symbol_max_bits(self) -> i64 {
-        self.symbol_max_bits
-    }
-
-    #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn cdf_update_mode(self) -> CdfUpdateMode {
-        self.cdf_update_mode
     }
 }
 
@@ -844,15 +810,6 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
             tile.tile_size,
             DecodeLimitName::MaxTilePayloadBytes,
         )?;
-        let config = SymbolDecoderConfig::new()
-            .with_cdf_update_mode(cdf_update_mode)
-            .with_cdf_validation_mode(CdfValidationMode::Trusted);
-        let symbol = SymbolDecoder::with_base_and_config(tile_bytes, absolute_tile_offset, config)?;
-        let symbol = SymbolInitBoundary {
-            consumed_bits: symbol.consumed_bits().get(),
-            symbol_max_bits: symbol.symbol_max_bits(),
-            cdf_update_mode,
-        };
         let save_policy = tile_cdf_save_policy(cdf_policy, tile.tile_num)?;
         let cdf = TileCdfWorkUnitBoundary::with_storage(
             cdf_update_mode,
@@ -887,7 +844,6 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
             tile_byte_span,
             tile_size: tile.tile_size,
             coeff_frame_facts: input.frame.coeff_frame_facts,
-            symbol,
             cdf,
             bru_tile_active: None,
         });

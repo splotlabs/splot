@@ -108,9 +108,6 @@ fn single_tile_payload_yields_deterministic_work_unit() {
         ByteSpan::new(ByteOffset::new(256), 2)
     );
     assert_eq!(unit.tile_size(), 2);
-    assert_eq!(unit.symbol().consumed_bits(), 15);
-    assert_eq!(unit.symbol().symbol_max_bits(), 1);
-    assert_eq!(unit.symbol().cdf_update_mode(), CdfUpdateMode::Enabled);
     assert_eq!(unit.cdf().update_mode(), CdfUpdateMode::Enabled);
     assert!(unit.cdf().save_policy().copy_cdf);
     assert!(!unit.cdf().save_policy().avg_cdf);
@@ -164,14 +161,9 @@ fn cdf_update_disable_is_recorded_without_symbol_finish() {
     let plan = plan_tile_payload_boundary(&input).unwrap();
 
     assert_eq!(
-        plan.work_units()[0].symbol().cdf_update_mode(),
-        CdfUpdateMode::Disabled
-    );
-    assert_eq!(
         plan.work_units()[0].cdf().update_mode(),
         CdfUpdateMode::Disabled
     );
-    assert_eq!(plan.work_units()[0].symbol().symbol_max_bits(), -7);
 }
 
 #[test]
