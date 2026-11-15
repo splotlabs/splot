@@ -1001,9 +1001,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         &self,
         storage: crate::filters::deblock::OwnedDeblockRecords,
         quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
-    ) -> Result<()> {
+    ) {
         let Some(filter) = self.recon.core.deblocking_filter_params else {
-            return Ok(());
+            return;
         };
         let mut deblock = crate::filters::deblock::FrameDeblock::prepare_owned(
             storage,
@@ -1022,13 +1022,11 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 );
                 (usize::from(x), usize::from(y))
             },
-        )
-        .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))?;
+        );
         if let Some(deblock) = deblock.as_mut() {
             self.parse_progress.take_deblock_records(deblock);
         }
         self.frontier.lock().deblock = deblock;
-        Ok(())
     }
 
     /// Hands the frontier every deblock record of the finished parse.

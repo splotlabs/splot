@@ -8,6 +8,8 @@ use splot_recon::{BitDepth, PlaneId, ReconSample};
 
 const MI_SIZE: usize = 4;
 #[cfg(test)]
+use super::source::{StripeCopyError, StripeInitialization::CopyAll};
+#[cfg(test)]
 use splot_recon::{CurrentFrameWorkspace, PlaneRect};
 
 use super::{
@@ -360,10 +362,12 @@ fn ccso_plane<T: ReconSample>(
     let source = FramePlane::new(workspace, plane_id).ok_or(CcsoError::Workspace)?;
     let width = source.width();
     let height = source.frame_height();
-    let mut filtered = StripePlane::copy_from(source, 0, height).map_err(|error| match error {
-        crate::filters::source::StripeCopyError::Allocation(plane) => CcsoError::Allocation(plane),
-        crate::filters::source::StripeCopyError::Geometry => CcsoError::Workspace,
-    })?;
+    let mut filtered = StripePlane::copy_from_into(source, 0, height, None, CopyAll).map_err(
+        |error| match error {
+            StripeCopyError::Allocation(plane) => CcsoError::Allocation(plane),
+            StripeCopyError::Geometry => CcsoError::Workspace,
+        },
+    )?;
     ccso_apply(
         &mut filtered,
         FramePlane::window(curr_luma, luma_width, luma_height, 0, luma_height)

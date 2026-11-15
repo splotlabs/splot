@@ -105,7 +105,7 @@ fn direct_cdef_10bit(
         has_chroma: true,
         coeff_shift: 2,
         fill_flat: [true; 3],
-        units: cdef_units(params, 2, subsampling),
+        units: &cdef_units(params, 2, subsampling),
     };
     let geometry = [
         Some(CdefPlaneGeometry {
@@ -140,6 +140,7 @@ fn direct_cdef_10bit(
     let frame = cdef_stripe_into(
         DeblockedPlanes::frame(workspace).unwrap(),
         Some(params),
+        &cdef_units(params, 2, subsampling),
         Some(grid),
         skip_grid,
         lossless_grid,
@@ -300,9 +301,9 @@ fn partial_skip_and_lossless_cdef_keep_poison_out_of_direct_output() {
     let workspace = patterned_10bit_workspace(PixelFormat::Yuv420, 20, 18);
     let params = active_params();
     let grid = constant_cdef_grid(5, 5, 0).unwrap();
-    let mut skipped = vec![false; 25];
+    let mut skipped = vec![0; 25];
     for index in [0, 1, 5, 6] {
-        skipped[index] = true;
+        skipped[index] = 1;
     }
     let skip_grid = CdefSkipGrid::new(5, 5, skipped).unwrap();
     assert_eq!(
@@ -352,6 +353,7 @@ fn disabled_cdef_initializes_u8_direct_target_from_source() {
     let mut frame = cdef_stripe_into(
         DeblockedPlanes::frame(&workspace).unwrap(),
         None,
+        &[None; 8],
         None,
         None,
         None,
@@ -415,6 +417,7 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
         cdef_stripe_into(
             DeblockedPlanes::frame(&workspace).unwrap(),
             Some(&params),
+            &cdef_units(&params, 2, (1, 1)),
             Some(&grid),
             None,
             None,
@@ -620,6 +623,7 @@ fn flat_blocks_keep_a_deblocked_direct_target() {
         let frame = cdef_stripe_into(
             DeblockedPlanes::frame(&workspace).unwrap(),
             Some(&params),
+            &cdef_units(&params, 2, (1, 1)),
             Some(&grid),
             None,
             None,
@@ -695,7 +699,7 @@ fn run_segment(
         has_chroma: true,
         coeff_shift: 2,
         fill_flat: [true; 3],
-        units: cdef_units(&[params], 2, (1, 1)),
+        units: &cdef_units(&[params], 2, (1, 1)),
     };
     if segment {
         let mut scratch = CdefSegmentScratch::default();
@@ -788,7 +792,7 @@ fn edge_segment_falls_back_to_the_per_block_path() {
         has_chroma: true,
         coeff_shift: 2,
         fill_flat: [true; 3],
-        units: cdef_units(&active_params(), 2, (1, 1)),
+        units: &cdef_units(&active_params(), 2, (1, 1)),
     };
     let mut frame = cdef_stripe(
         DeblockedPlanes::frame(&workspace).unwrap(),
