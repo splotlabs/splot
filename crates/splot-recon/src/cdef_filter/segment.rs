@@ -703,6 +703,9 @@ trait QuadLanes<S: SimdToken>: Copy {
     /// The block rows, from the first of four, that the lanes hold in
     /// order, eight each.
     const ROWS: [usize; 4];
+    /// Whether one vector holds the four rows, so that
+    /// [`cdef_filter_rows_u8_quad`] is the wider kernel.
+    const QUAD: bool;
     /// The row pairs saturated to `i8`.
     fn narrow(self, simd: S, pairs: [i16x16<S>; 2]) -> i8x32<S>;
     /// The row pairs, every lane below 256, as `u8`.
@@ -720,6 +723,7 @@ struct Ordered;
 
 impl<S: SimdToken> QuadLanes<S> for Ordered {
     const ROWS: [usize; 4] = [0, 1, 2, 3];
+    const QUAD: bool = false;
 
     #[allow(clippy::inline_always)]
     #[inline(always)]
@@ -808,6 +812,7 @@ fearless_simd::kernel!(
 #[cfg(target_arch = "x86_64")]
 impl QuadLanes<Avx2> for InLane {
     const ROWS: [usize; 4] = [0, 2, 1, 3];
+    const QUAD: bool = true;
 
     #[allow(clippy::inline_always)]
     #[inline(always)]
@@ -876,14 +881,6 @@ impl<S: SimdToken> CdefConstrainWide<S> {
             .min(center.saturating_add(clip));
         (clipped - center).bitcast()
     }
-}
-
-/// Whether [`cdef_filter_rows_u8_quad`] computes `filter` exactly: besides
-/// [`cdef_u8_lanes_fit`], a secondary family of four taps, at most
-/// `4 * sec_str`, fits `i8`.
-#[inline]
-fn cdef_u8_quad_fits(filter: &CdefBlockFilter) -> bool {
-    cdef_u8_lanes_fit(filter) && filter.sec_str < 32
 }
 
 /// [`cdef_filter_rows_8bit`] for a segment's 8x8 luma block, four rows per
@@ -1194,6 +1191,14 @@ fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
         .is_some();
     }
     if range <= 255 && plan.u8_lanes {
+        if !Q::QUAD || filter.sec_str >= 32 {
+            return cdef_by_families!(
+                filter,
+                cdef_filter_rows_8bit::<S, _, 8, STRIDE, 2, 8, SPAN, AREA>(simd, args, base),
+                copy!()
+            )
+            .is_some();
+        }
         return cdef_by_families!(
             filter,
             cdef_filter_rows_u8_quad::<S, Q, _, STRIDE, 8, SPAN, AREA>(
@@ -1345,7 +1350,7 @@ impl CdefFilterPlan {
             linear_max,
             clamped_max,
             wide8: cdef_wide8_fits(&filter),
-            u8_lanes: cdef_u8_quad_fits(&filter),
+            u8_lanes: cdef_u8_lanes_fit(&filter),
         }
     }
 
@@ -2022,7 +2027,10 @@ mod tests {
                             dir,
                             coeff_shift: *coeff_shift,
                         };
-                        if !cdef_u8_quad_fits(&filter) || (pri_str == 0 && sec_str == 0) {
+                        if !cdef_u8_lanes_fit(&filter)
+                            || sec_str >= 32
+                            || (pri_str == 0 && sec_str == 0)
+                        {
                             continue;
                         }
                         let plan = CdefFilterPlan::new(filter);
