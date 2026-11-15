@@ -877,6 +877,14 @@ fn repeats<const PASS: usize>(
             ))
 }
 
+/// Whether any of `new` differs from `old`, sample by sample.
+fn differs<T: ReconSample>(new: &[T], old: impl IntoIterator<Item = T>) -> bool {
+    new.iter()
+        .zip(old)
+        .fold(0, |diff, (new, old)| diff | (new.to_u16() ^ old.to_u16()))
+        != 0
+}
+
 /// Edges one [`LoneRun`] window holds.
 pub(super) const LONE_RUN: usize = 8;
 
@@ -899,7 +907,8 @@ impl LoneRun<'_> {
     /// samples past the plane or band repeat the last ones inside, across
     /// the edges and along them, as the per-line path gathers them, then
     /// writes back the samples inside. A changed sample outside the plane or
-    /// band is the error the per-line path gives.
+    /// band is the error the per-line path gives; it is checked against the
+    /// plane only when the widest `maxWidthPos` of the run reaches outside.
     pub(super) fn filter<T: ReconSample, const PASS: usize>(
         self,
         ctx: &mut PlaneCtx<'_, '_, T>,
@@ -954,33 +963,38 @@ impl LoneRun<'_> {
                 past.fill(inside[real - 1]);
             }
         }
-        let mut original = [T::default(); WINDOW];
-        let original = &mut original[..lines * line];
-        original.copy_from_slice(window); // splot-copy-ok: keep the gathered window to check
+        let reach = self
+            .edges
+            .iter()
+            .fold(0, |reach, edge| reach.max(edge.max_width_pos()));
         let filtered = if PASS == 0 {
             deblock_vertical_edges(window, line, GATHER_HALF, self.edges, bit_depth)
         } else {
             deblock_horizontal_edges(window, lines, GATHER_HALF * lines, self.edges, bit_depth)
         };
         filtered.map_err(|_| DeblockError::SampleFilter)?;
-        let changed = |range: core::ops::Range<usize>| {
-            let (new, old) = (window.get(range.clone()), original.get(range));
-            new.zip(old).is_some_and(|(new, old)| {
-                new.iter()
-                    .zip(old)
-                    .any(|(new, old)| new.to_u16() != old.to_u16())
-            })
-        };
-        let changed_outside = if PASS == 0 {
-            (0..real).any(|lane| {
-                changed(lane * line..lane * line + first)
-                    || changed(lane * line + end..(lane + 1) * line)
-            })
-        } else {
-            (0..first)
-                .chain(end..line)
-                .any(|i| changed(i * lines..i * lines + real))
-        };
+        let reaches_out = first + reach > GATHER_HALF || GATHER_HALF + reach > end;
+        let changed_outside = reaches_out
+            && if PASS == 0 {
+                let start = base + first - GATHER_HALF;
+                (0..real).any(|lane| {
+                    let new = &window[lane * line..(lane + 1) * line];
+                    let row = ctx.rows.row(y + lane - ctx.y_origin);
+                    row.and_then(|row| row.get(start..start + end - first))
+                        .is_none_or(|old| {
+                            differs(&new[..first], core::iter::repeat(old[0]))
+                                || differs(&new[end..], core::iter::repeat(old[old.len() - 1]))
+                        })
+                })
+            } else {
+                (0..first).chain(end..line).any(|i| {
+                    let row = base + i.clamp(first, end - 1) - GATHER_HALF - ctx.y_origin;
+                    let old = ctx.rows.row(row).and_then(|row| row.get(x..x + real));
+                    old.is_none_or(|old| {
+                        differs(&window[i * lines..i * lines + real], old.iter().copied())
+                    })
+                })
+            };
         if changed_outside {
             return Err(DeblockError::Workspace);
         }

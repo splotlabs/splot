@@ -32,14 +32,10 @@ pub(crate) fn write_y4m_stream_to_writer<W: Write + Send>(
         session,
         |header| preflight_y4m_source(header, frame_rate_override),
         |output| {
-            let frame_rate = match frame_rate_override {
-                Some(frame_rate) => frame_rate,
-                None => {
-                    Y4mFrameRate::new(output.frame_rate_numerator, output.frame_rate_denominator)
-                        .map_err(|source| {
-                            DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
-                        })?
-                }
+            let (numerator, denominator) =
+                (output.frame_rate_numerator, output.frame_rate_denominator);
+            let frame_rate = || {
+                frame_rate_override.map_or_else(|| Y4mFrameRate::new(numerator, denominator), Ok)
             };
             match &output.ready_frame()? {
                 PipelineDecodedFrame::Eight(frame) => {
@@ -86,7 +82,7 @@ fn write_y4m_frame<T: ReconSample, W: Write>(
     writer: &mut Option<Y4mWriter<W>>,
     output: &mut Option<W>,
     frame: &DecodedFrame<T>,
-    frame_rate: Y4mFrameRate,
+    frame_rate: impl FnOnce() -> std::result::Result<Y4mFrameRate, Y4mError>,
 ) -> Result<()> {
     let mut active = if let Some(active) = writer.take() {
         active
@@ -97,6 +93,7 @@ fn write_y4m_frame<T: ReconSample, W: Write>(
                 "runtime Y4M output writer is unavailable",
             )
         })?;
+        let frame_rate = frame_rate().map_err(map_y4m_writer_error)?;
         Y4mWriter::from_frame(output, frame, frame_rate).map_err(map_y4m_writer_error)?
     };
     active.write_frame(frame).map_err(map_y4m_writer_error)?;

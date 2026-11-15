@@ -142,9 +142,8 @@ fn large_chroma_smooth_corner_cap_fixture_decodes_to_oracle() {
     use splot_recon::DecodedFrameHashInput;
 
     let options = crate::DecodeOptions::default();
-    let decoded = crate::pipeline::decode_frame_from_plan(CHROMA_CORNER_CAP_FIXTURE, &options)
+    let ready = crate::pipeline::decode_frame_from_plan(CHROMA_CORNER_CAP_FIXTURE, &options)
         .expect("decode fixture");
-    let ready = decoded.ready_frame().expect("ready frame");
     assert!(
         matches!(&ready, crate::pipeline::PipelineDecodedFrame::Eight(_)),
         "fixture decoded at the wrong bit depth"

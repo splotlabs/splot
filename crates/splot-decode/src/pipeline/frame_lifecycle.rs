@@ -136,14 +136,15 @@ impl PipelineFrame {
     pub(crate) fn wait_settled(&self) -> Result<()> {
         self.frame.wait_settled()
     }
-    #[cfg(test)]
+}
+
+#[cfg(test)]
+impl PipelineDecodedFrame {
     #[allow(clippy::panic)]
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
-        match &self.frame {
-            PipelineFrameSlot::Eight(slot) => slot
-                .try_frozen()
-                .unwrap_or_else(|| panic!("frame() called before the samples landed")),
-            PipelineFrameSlot::Ten(_) => panic!("frame() called on a 10-bit PipelineFrame"),
+        match self {
+            Self::Eight(frame) => frame,
+            Self::Ten(_) => panic!("frame() called on a 10-bit frame"),
         }
     }
 }

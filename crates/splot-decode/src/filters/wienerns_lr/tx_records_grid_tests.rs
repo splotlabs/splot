@@ -712,7 +712,7 @@ fn set_tx_size_drops_bottom_edge_cells_past_frame_extent() {
         vec![(256, 0, 16, 16, TX_64X64), (256, 16, 16, 16, TX_64X64)]
     );
     assert_eq!(
-        grid.index(270, 0).unwrap_err(),
+        grid.check_bounds(270, 0).unwrap_err(),
         SelectableTransformRecordError::OutOfBounds {
             row: 270,
             col: 0,
@@ -773,7 +773,7 @@ fn set_tx_size_drops_right_edge_cells_past_frame_extent() {
         vec![(0, 16, TX_64X64), (16, 16, TX_64X64)]
     );
     assert_eq!(
-        grid.index(0, 30).unwrap_err(),
+        grid.check_bounds(0, 30).unwrap_err(),
         SelectableTransformRecordError::OutOfBounds {
             row: 0,
             col: 30,
