@@ -1028,11 +1028,11 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
             CoeffMaxLevelConfig {
                 plane,
                 tx_class,
-                is_hidden: facts.is_hidden,
+                is_hidden: true,
             },
         );
         let sign = read_preflighted_nonzero_coeff_sign(cdfs, symbols, sign_input)?;
-        if facts.is_hidden && facts.sum_abs1 > 0 && sign.symbol() == CoeffSignReadSymbol::None {
+        if facts.sum_abs1 > 0 && sign.symbol() == CoeffSignReadSymbol::None {
             return Err(CoeffQuantPassError::HiddenParityMissingSign { index, entry }.into());
         }
         let read = read_quant
