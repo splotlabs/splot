@@ -254,31 +254,39 @@ jobs:
   fuzz-list:
     runs-on: ubuntu-latest
     outputs:
-      targets: ${{ steps.list.outputs.targets }}
+      groups: ${{ steps.list.outputs.groups }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # One job per group of required features: it builds the splot crates once.
       - id: list
-        name: Enumerate registered fuzz targets
+        name: Group the fuzz targets by required features
         run: |
-          targets=$(python3 -c '
-          import json, tomllib
+          groups=$(python3 -c '
+          import json, sys, tomllib
+          group_of = {("core",): "core,validate", ("validate",): "core,validate", ("recon",): "recon", ("decode",): "decode,encode", ("encode",): "decode,encode"}
           with open("fuzz/Cargo.toml", "rb") as f:
-              manifest = tomllib.load(f)
-          print(json.dumps([b["name"] for b in manifest.get("bin", [])]))
+              bins = tomllib.load(f)["bin"]
+          groups = {}
+          for b in bins:
+              key = tuple(sorted(b.get("required-features", [])))
+              if key not in group_of:
+                  sys.exit("fuzz target %s: no CI group for required-features %s" % (b["name"], list(key)))
+              groups.setdefault(group_of[key], []).append(b["name"])
+          print(json.dumps([{"features": g, "targets": " ".join(t)} for g, t in groups.items()]))
           ')
-          test -n "$targets" && test "$targets" != "[]"
-          echo "targets=$targets" >> "$GITHUB_OUTPUT"
-          echo "Fuzz targets: $targets"
+          echo "groups=$groups" >> "$GITHUB_OUTPUT"
+          echo "Fuzz groups: $groups"
 
   fuzz:
+    name: fuzz (${{ matrix.features }})
     needs: fuzz-list
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.fuzz-list.outputs.targets) }}
+        include: ${{ fromJSON(needs.fuzz-list.outputs.groups) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -291,53 +299,42 @@ jobs:
       - name: Install nightly toolchain
         run: rustup toolchain install nightly --profile minimal
 
-      # Artifacts of another nightly do not match, so the key names the nightly.
-      - id: nightly
-        name: Hash the nightly version
-        run: echo "hash=$(rustc +nightly -vV | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
-
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-fuzz
 
-      - id: fuzz-cache
-        name: Restore third-party fuzz build
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: fuzz/target
-          key: ${{ runner.os }}-fuzz-${{ steps.nightly.outputs.hash }}-${{ hashFiles('fuzz/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-fuzz-${{ steps.nightly.outputs.hash }}-
-
       - name: Seed every target's corpus from curated fixtures
         run: cargo xtask seed-fuzz-corpus
 
       # Force GNU: AddressSanitizer cannot link the static musl default.
-      - name: Fuzz this target (per-target smoke)
+      # Build and run use the same flags, else `fuzz run` builds again.
+      - name: Build the targets of this group
         env:
-          FUZZ_TARGET: ${{ matrix.target }}
+          FEATURES: ${{ matrix.features }}
+        run: cargo +nightly fuzz build --no-default-features --features "$FEATURES" --target x86_64-unknown-linux-gnu
+
+      # Every target runs, so that one crash does not hide another.
+      - name: Fuzz each target of this group (per-target smoke)
+        env:
+          FEATURES: ${{ matrix.features }}
+          TARGETS: ${{ matrix.targets }}
         run: |
-          cargo +nightly fuzz run "$FUZZ_TARGET" --target x86_64-unknown-linux-gnu -- -max_total_time=45 -timeout=10 -rss_limit_mb=2048
-
-      # One job saves on main: the build of every target has the same third-party crates.
-      - name: Remove workspace artifacts before the cache save
-        if: github.ref == 'refs/heads/main' && steps.fuzz-cache.outputs.cache-hit != 'true' && matrix.target == fromJSON(needs.fuzz-list.outputs.targets)[0]
-        env:
-          FUZZ_TARGET: ${{ matrix.target }}
-        run: find fuzz/target \( -name '*splot*' -o -name "$FUZZ_TARGET*" \) -prune -exec rm -rf {} +
-
-      - name: Save third-party fuzz build (main only)
-        if: github.ref == 'refs/heads/main' && steps.fuzz-cache.outputs.cache-hit != 'true' && matrix.target == fromJSON(needs.fuzz-list.outputs.targets)[0]
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: fuzz/target
-          key: ${{ steps.fuzz-cache.outputs.cache-primary-key }}
+          failed=""
+          for target in $TARGETS; do
+            echo "=== fuzz $target ==="
+            cargo +nightly fuzz run "$target" --no-default-features --features "$FEATURES" --target x86_64-unknown-linux-gnu -- -max_total_time=45 -timeout=10 -rss_limit_mb=2048 || failed="$failed $target"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::Fuzz targets failed:$failed"
+            exit 1
+          fi
 
       - name: Upload crash artifacts on failure
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: fuzz-artifacts-${{ matrix.target }}
+          name: fuzz-artifacts-${{ matrix.features }}
           path: fuzz/artifacts/**
           if-no-files-found: ignore
 
