@@ -245,9 +245,7 @@ pub use wienerns_chroma_filter::{
 pub use wienerns_filter::{
     WIENER_NS_CONFIG_Y_PAIRS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
     WIENER_NS_LUMA_TAPS, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
-    wiener_ns_filter_luma_block_padded_cells_into,
-    wiener_ns_filter_luma_block_padded_cells_u8_into, wiener_ns_filter_luma_block_padded_into,
-    wiener_ns_filter_luma_block_padded_u8_into,
+    wiener_ns_filter_luma_block_padded_cells_into, wiener_ns_filter_luma_block_padded_into,
 };
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameRect, CurrentFrameRectRowsMut,

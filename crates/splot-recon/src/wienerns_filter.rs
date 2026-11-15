@@ -339,16 +339,8 @@ pub fn wiener_ns_filter_luma_block_padded_cells_into<T: ReconSample>(
     )
 }
 
-/// Applies padded luma Wiener NS filtering directly into strided `u8` storage.
-///
-/// Output geometry, source geometry, subclass selection, and every fallible
-/// allocation are validated before the first destination write.
-///
-/// # Errors
-/// Returns the same parameter, source-range, output-shape, subclass, and
-/// allocation errors as [`wiener_ns_filter_luma_block_padded_into`].
-#[inline]
-pub fn wiener_ns_filter_luma_block_padded_u8_into<T: ReconSample>(
+#[cfg(test)]
+fn wiener_ns_filter_luma_block_padded_u8_into<T: ReconSample>(
     output: &mut [u8],
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
@@ -360,14 +352,8 @@ pub fn wiener_ns_filter_luma_block_padded_u8_into<T: ReconSample>(
     wiener_ns_filter_luma_block_padded_layout_u8_into(output, params, source, subclasses, scratch)
 }
 
-/// Applies padded luma Wiener NS filtering with one subclass per 4x4 cell
-/// directly into strided `u8` storage.
-///
-/// # Errors
-/// Returns the same errors as
-/// [`wiener_ns_filter_luma_block_padded_cells_into`].
-#[inline]
-pub fn wiener_ns_filter_luma_block_padded_cells_u8_into<T: ReconSample>(
+#[cfg(test)]
+fn wiener_ns_filter_luma_block_padded_cells_u8_into<T: ReconSample>(
     output: &mut [u8],
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
@@ -483,6 +469,7 @@ fn prepare_luma_padded<T: ReconSample>(
     })
 }
 
+#[cfg(test)]
 fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(
     output: &mut [u8],
     params: &WienerNsLumaFilter<'_>,
