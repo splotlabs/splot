@@ -1151,7 +1151,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         [
             block.tx_fills_block,
             block.eob_u_nonzero,
-            block.fsc_mode && work_unit.coeff_frame_facts().enable_fsc(),
+            block.fsc_mode && work_unit.coeff_frame_facts().enable_fsc,
         ],
     );
     let rows = work_unit.cdf_mut().tile_cdfs_mut().block_rows_mut();
@@ -1281,7 +1281,7 @@ fn decode_nonzero_plane_coeffs(
             luma_transform_type_context: block.policy.luma,
         },
     )?;
-    let use_fsc = frame_facts.enable_fsc()
+    let use_fsc = frame_facts.enable_fsc
         && metadata.luma_tx_type == IDTX
         && plane == 0
         && (block.fsc_mode || block.is_inter);
@@ -1365,16 +1365,16 @@ fn staged_transform_tool_lossless_base_config(
 ) -> CoeffOrdinaryBranchTxSetBaseConfig {
     let luma_tx_class = CoeffTransformClass::from_plane_tx_type(metadata.luma_tx_type);
     let luma_transform_block = plane == 0;
-    let parity_hiding = frame_facts.allow_parity_hiding()
+    let parity_hiding = frame_facts.allow_parity_hiding
         && !lossless
         && luma_transform_block
         && metadata.luma_tx_type != IDTX;
-    let use_tcq = frame_facts.allow_tcq()
+    let use_tcq = frame_facts.allow_tcq
         && !lossless
         && luma_transform_block
         && luma_tx_class == CoeffTransformClass::TwoD;
     CoeffOrdinaryBranchTxSetBaseConfig {
-        enable_chroma_dctonly: frame_facts.enable_chroma_dctonly(),
+        enable_chroma_dctonly: frame_facts.enable_chroma_dctonly,
         uv_mode,
         angle_delta_uv,
         luma_tx_type: metadata.luma_tx_type,
@@ -1460,7 +1460,7 @@ fn ensure_transform_tool_residual_handoff(
         ..TransformToolResidualMetadata::default()
     };
     if plane == 1
-        && frame_facts.enable_cctx()
+        && frame_facts.enable_cctx
         && !lossless
         && input.cctx_allowed
         && (is_inter || eob != 1)
@@ -1481,8 +1481,8 @@ fn ensure_transform_tool_residual_handoff(
         is_inter,
         plane,
         eob,
-        frame_facts.enable_chroma_dctonly(),
-        frame_facts.reduced_tx_set(),
+        frame_facts.enable_chroma_dctonly,
+        frame_facts.reduced_tx_set,
         tx_set,
     );
     if !is_inter && plane == 0 && input.fsc_mode {
@@ -1506,7 +1506,7 @@ fn ensure_transform_tool_residual_handoff(
     if is_inter
         && plane == 0
         && !lossless
-        && frame_facts.enable_inter_ist()
+        && frame_facts.enable_inter_ist
         && eob > 3
         && metadata.luma_tx_type == DCT_DCT
         && inter_ist_can_read_sec_tx(tx_size, eob)?
@@ -1522,7 +1522,7 @@ fn ensure_transform_tool_residual_handoff(
     if !is_inter
         && plane == 0
         && !lossless
-        && frame_facts.enable_intra_ist()
+        && frame_facts.enable_intra_ist
         && eob != 1
         && intra_ist_can_read_sec_tx_type(metadata.luma_tx_type)
         && eob <= ist_eob_limit(tx_size, metadata.luma_tx_type)?
@@ -1887,8 +1887,8 @@ fn transform_set(
     is_inter: bool,
 ) -> Result<usize, GeneralIntraResidualError> {
     transform_set_from_flags(
-        frame_facts.reduced_tx_set(),
-        frame_facts.enable_chroma_dctonly(),
+        frame_facts.reduced_tx_set,
+        frame_facts.enable_chroma_dctonly,
         plane,
         tx_size,
         is_inter,

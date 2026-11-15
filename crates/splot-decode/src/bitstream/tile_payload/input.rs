@@ -530,7 +530,7 @@ pub(crate) fn plan_derived_tile_payload_boundary_with_scratch<'payload>(
         input.facts.obu_type,
         input.facts.frame_is_intra,
         input.position.is_last_tile_group,
-        input.facts.coeff_frame_facts.base_q_idx(),
+        input.facts.coeff_frame_facts.base_q_idx,
         input.facts.disable_cdf_update,
     )
     .with_coeff_frame_facts(input.facts.coeff_frame_facts)

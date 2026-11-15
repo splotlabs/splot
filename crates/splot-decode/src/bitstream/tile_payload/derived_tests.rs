@@ -408,23 +408,17 @@ fn derived_boundary_threads_parser_coeff_frame_facts() {
     let tail = fixture.core.intra_tail.unwrap();
     let quant = fixture.core.quantization_params.unwrap();
 
-    assert_eq!(coeff_facts.enable_fsc(), tq.enable_fsc);
-    assert_eq!(coeff_facts.enable_intra_ist(), tq.enable_intra_ist);
-    assert_eq!(coeff_facts.enable_inter_ist(), tq.enable_inter_ist);
-    assert_eq!(
-        coeff_facts.enable_chroma_dctonly(),
-        tq.enable_chroma_dctonly
-    );
-    assert_eq!(coeff_facts.enable_cctx(), tq.enable_cctx);
+    assert_eq!(coeff_facts.enable_fsc, tq.enable_fsc);
+    assert_eq!(coeff_facts.enable_intra_ist, tq.enable_intra_ist);
+    assert_eq!(coeff_facts.enable_inter_ist, tq.enable_inter_ist);
+    assert_eq!(coeff_facts.enable_chroma_dctonly, tq.enable_chroma_dctonly);
+    assert_eq!(coeff_facts.enable_cctx, tq.enable_cctx);
     assert_eq!(coeff_facts.reduced_tx_part_set(), tq.reduced_tx_part_set);
+    assert_eq!(coeff_facts.reduced_tx_set, usize::from(tail.reduced_tx_set));
+    assert_eq!(coeff_facts.base_q_idx, quant.base_q_idx);
+    assert_eq!(coeff_facts.allow_tcq, lossless.allow_tcq);
     assert_eq!(
-        coeff_facts.reduced_tx_set(),
-        usize::from(tail.reduced_tx_set)
-    );
-    assert_eq!(coeff_facts.base_q_idx(), quant.base_q_idx);
-    assert_eq!(coeff_facts.allow_tcq(), lossless.allow_tcq);
-    assert_eq!(
-        coeff_facts.allow_parity_hiding(),
+        coeff_facts.allow_parity_hiding,
         lossless.allow_parity_hiding
     );
     assert_eq!(

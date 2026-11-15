@@ -263,62 +263,13 @@ impl TileCoeffFrameFacts {
     }
 
     #[must_use]
-    pub(crate) const fn enable_fsc(self) -> bool {
-        self.enable_fsc
-    }
-
-    #[must_use]
-    pub(crate) const fn enable_intra_ist(self) -> bool {
-        self.enable_intra_ist
-    }
-
-    #[must_use]
-    pub(crate) const fn enable_inter_ist(self) -> bool {
-        self.enable_inter_ist
-    }
-
-    #[must_use]
-    pub(crate) const fn enable_chroma_dctonly(self) -> bool {
-        self.enable_chroma_dctonly
-    }
-
-    #[must_use]
-    pub(crate) const fn enable_cctx(self) -> bool {
-        self.enable_cctx
-    }
-
-    #[must_use]
-    pub(crate) const fn reduced_tx_set(self) -> usize {
-        self.reduced_tx_set
-    }
-
-    #[must_use]
     pub(crate) const fn reduced_tx_part_set(self) -> bool {
         self.reduced_tx_part_set
     }
 
     #[must_use]
-    pub(crate) const fn base_q_idx(self) -> u32 {
-        self.base_q_idx
-    }
-
-    #[must_use]
-    pub(crate) const fn allow_tcq(self) -> bool {
-        self.allow_tcq
-    }
-
-    #[must_use]
-    pub(crate) const fn allow_parity_hiding(self) -> bool {
-        self.allow_parity_hiding
-    }
-
-    #[must_use]
-    pub(crate) const fn lossless_for_segment(&self, segment_id: usize) -> Option<bool> {
-        if segment_id < self.lossless_array.len() {
-            Some(self.lossless_array[segment_id])
-        } else {
-            None
-        }
+    pub(crate) fn lossless_for_segment(&self, segment_id: usize) -> Option<bool> {
+        self.lossless_array.get(segment_id).copied()
     }
 }
 
@@ -776,7 +727,7 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
     let frame_cdfs = match &input.frame.initial_cdfs {
         Some(cdfs) => Arc::clone(cdfs),
         None => Arc::new(FrameCdfSubset::default_for_base_q(
-            input.frame.coeff_frame_facts.base_q_idx(),
+            input.frame.coeff_frame_facts.base_q_idx,
         )),
     };
     let cdf_policy = input
