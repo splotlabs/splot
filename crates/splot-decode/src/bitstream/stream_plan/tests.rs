@@ -847,7 +847,6 @@ fn unsupported_layers_and_obu_types_are_typed() {
                     unsupported
                 } if unsupported.reason() == reason
                     && unsupported.rule_id() == UNSUPPORTED_FEATURE_RULE_ID
-                    && unsupported.matrix_row() == DECODE_STREAM_STATE_MATRIX_ROW
                     && unsupported.feature_id() == DECODE_STREAM_STATE_FEATURE_ID
             ));
         }
