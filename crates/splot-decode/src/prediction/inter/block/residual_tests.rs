@@ -392,3 +392,116 @@ fn block_chroma_subsampling_follows_the_chroma_format() {
         assert_eq!(block_chroma_subsampling(format), expected, "{format:?}");
     }
 }
+
+/// § 5.20.7.23 stops each luma chunk loop at `MiCols` / `MiRows`: a 66x50
+/// frame has `MiCols` 18 and `MiRows` 14.
+#[test]
+fn luma_chunk_loop_stops_at_the_mode_info_grid() {
+    assert_eq!(luma_chunk_end(8, 0, 18), 8);
+    assert_eq!(luma_chunk_end(32, 0, 64), 16);
+    assert_eq!(luma_chunk_end(16, 0, 14), 14);
+    assert_eq!(luma_chunk_end(32, 16, 18), 18);
+    assert_eq!(luma_chunk_end(32, 16, 16), 16);
+}
+
+/// § 5.20.7.24 `maxX = (MiCols * MI_SIZE) >> subX`: with `MiCols` 18 and
+/// `MiRows` 14 a plane ends at 4x4 column 18 (luma, 4:4:4) or 9 (4:2:0,
+/// 4:2:2), and at row 14 or 7 (4:2:0).
+#[test]
+fn transform_units_at_or_past_the_plane_edge_are_not_coded() {
+    let grid = (14, 18);
+    for (subsampling, (cols, rows)) in [
+        ((false, false), (18, 14)),
+        ((true, true), (9, 7)),
+        ((true, false), (9, 14)),
+    ] {
+        assert!(transform_unit_starts_in_frame((0, 0), grid, subsampling));
+        assert!(transform_unit_starts_in_frame(
+            (cols - 1, rows - 1),
+            grid,
+            subsampling
+        ));
+        assert!(!transform_unit_starts_in_frame(
+            (cols, 0),
+            grid,
+            subsampling
+        ));
+        assert!(!transform_unit_starts_in_frame(
+            (0, rows),
+            grid,
+            subsampling
+        ));
+        assert!(!transform_unit_starts_in_frame(
+            (cols + 1, rows + 1),
+            grid,
+            subsampling
+        ));
+    }
+}
+
+fn read_edge_chroma_group(payload: &[u8]) -> Result<Vec<InterResidualBlock>> {
+    const BLOCK_16X16: usize = 6;
+    let frontier = DecodeBlockFrontier::shared_leaf(12, 16, BlockSize::new(BLOCK_16X16).unwrap());
+    let mut work_unit = make_test_work_unit(payload, CdfUpdateMode::Disabled);
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        payload,
+        ByteOffset::new(0),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    )
+    .unwrap();
+    let mut coeff_ctx =
+        TileCoeffContextState::new_for_tile_chroma(0..14, 0..18, ChromaFormatIdc::Yuv420).unwrap();
+    let mut blocks = Vec::new();
+    read_inter_residual_chroma_group(
+        &mut work_unit,
+        &mut symbols,
+        &mut coeff_ctx,
+        &mut blocks,
+        &mut Vec::new(),
+        &InterLumaTxTypeMap::new(12, 16, 4, 4).unwrap(),
+        &mut Vec::new(),
+        &frontier,
+        frontier.b_size,
+        true,
+        true,
+        0,
+        0,
+        (14, 18),
+        Some(TX_4X4),
+        false,
+        TransformToolResidualPolicy::default(),
+        ByteOffset::new(0),
+    )?;
+    Ok(blocks)
+}
+
+/// A lossless 16x16 4:2:0 block at mi (12, 16) of a 66x50 frame has four
+/// 4x4 chroma units per plane; only the one at chroma (8, 6) starts before
+/// `maxX` 36 and `maxY` 28, so U and V read one `all_zero` each.
+#[test]
+fn lossless_chroma_group_reads_only_units_inside_the_plane() {
+    let blocks = read_edge_chroma_group(&[0xff; 16]).unwrap();
+    let units: Vec<_> = blocks
+        .iter()
+        .map(|block| (block.plane, block.x, block.y, block.coeffs.eob))
+        .collect();
+    assert_eq!(
+        units,
+        [(ReconPlaneId::U, 32, 24, 0), (ReconPlaneId::V, 32, 24, 0)]
+    );
+}
+
+/// Past the payload end the § 8.2 decoder reads padding, and the group
+/// still reads only the units inside the plane.
+#[test]
+fn lossless_chroma_group_at_payload_end_reads_only_units_inside_the_plane() {
+    let blocks = read_edge_chroma_group(&[]).unwrap();
+    let units: Vec<_> = blocks
+        .iter()
+        .map(|block| (block.plane, block.x, block.y))
+        .collect();
+    assert_eq!(
+        units,
+        [(ReconPlaneId::U, 32, 24), (ReconPlaneId::V, 32, 24)]
+    );
+}

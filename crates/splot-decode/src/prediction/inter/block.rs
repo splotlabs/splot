@@ -1491,7 +1491,6 @@ fn decode_block<T: ReconSample>(
                     params.mi_rows,
                     params.mi_cols,
                     lossless,
-                    InterResidualLumaTxSizeMode::Intrabc,
                     params.residual_tool_policy,
                     tile_offset,
                 )?)
@@ -2080,7 +2079,6 @@ fn finish_inter_leaf(
             params.mi_rows,
             params.mi_cols,
             lossless,
-            InterResidualLumaTxSizeMode::Inter,
             params.residual_tool_policy,
             tile_offset,
         )?)
@@ -2239,8 +2237,7 @@ use self::warp::{
 };
 
 use self::residual::{
-    InterResidualLumaTxSizeMode, InterResidualParseScratch, read_inter_residual,
-    reset_inter_skip_coeff_contexts,
+    InterResidualParseScratch, read_inter_residual, reset_inter_skip_coeff_contexts,
 };
 
 fn read_inter_intra_syntax(

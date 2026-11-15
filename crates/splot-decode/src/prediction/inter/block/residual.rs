@@ -13,6 +13,7 @@ use super::*;
 
 const INTER_UV_MODE_DC: usize = 0;
 const DCT_DCT: usize = 0;
+const IDTX: usize = 9;
 const TX_4X4: usize = 0;
 const SPEC_RESIDUAL: &str = "5.20.7.23";
 const SPEC_TX_SIZE: &str = "5.20.6.1";
@@ -49,12 +50,6 @@ pub(crate) struct InterResidualParseScratch {
     luma_tx_types: InterLumaTxTypeMap,
     luma_tx_records: Vec<SelectableLumaTxRecord>,
     chroma_reads: Vec<InterChromaURead>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum InterResidualLumaTxSizeMode {
-    Inter,
-    Intrabc,
 }
 
 impl InterLumaTxTypeMap {
@@ -144,7 +139,6 @@ pub(crate) fn read_inter_residual(
     mi_rows: usize,
     mi_cols: usize,
     lossless: bool,
-    luma_tx_size_mode: InterResidualLumaTxSizeMode,
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<InterResidual> {
@@ -207,6 +201,7 @@ pub(crate) fn read_inter_residual(
                             luma_chunk_y,
                             n4w,
                             n4h,
+                            (mi_rows, mi_cols),
                             residual_tool_policy,
                             tile_offset,
                         )?;
@@ -236,8 +231,9 @@ pub(crate) fn read_inter_residual(
                                 subsampling_y,
                                 chroma_chunk_x,
                                 chroma_chunk_y,
-                                lossless,
-                                luma_tx_size_mode == InterResidualLumaTxSizeMode::Inter,
+                                (mi_rows, mi_cols),
+                                lossless.then_some(luma_tx_size),
+                                core.frame_is_intra == Some(true),
                                 residual_tool_policy,
                                 tile_offset,
                             )?;
@@ -327,11 +323,13 @@ fn read_inter_residual_luma_chunk(
     luma_chunk_y4: usize,
     block_n4w: usize,
     block_n4h: usize,
+    frame_mi: (usize, usize),
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    let chunk_end_x4 = (frontier.c + block_n4w).min(luma_chunk_x4 + CHUNK_64_N4);
-    let chunk_end_y4 = (frontier.r + block_n4h).min(luma_chunk_y4 + CHUNK_64_N4);
+    let (mi_rows, mi_cols) = frame_mi;
+    let chunk_end_x4 = luma_chunk_end(frontier.c + block_n4w, luma_chunk_x4, mi_cols);
+    let chunk_end_y4 = luma_chunk_end(frontier.r + block_n4h, luma_chunk_y4, mi_rows);
     if let Some(luma_tx_records) = luma_tx_records {
         return read_inter_residual_luma_records_for_chunk(
             work_unit,
@@ -467,11 +465,13 @@ fn read_inter_residual_chroma_group(
     subsampling_y: bool,
     chunk_x: usize,
     chunk_y: usize,
-    lossless: bool,
-    is_inter: bool,
+    frame_mi: (usize, usize),
+    lossless_luma_tx_size: Option<usize>,
+    frame_is_intra: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
+    let lossless = lossless_luma_tx_size.is_some();
     let group = InterChromaGroup::new(
         frontier,
         mi_size_chunk,
@@ -482,21 +482,33 @@ fn read_inter_residual_chroma_group(
     let (tx_size, cctx_allowed) = (group.tx_size, group.cctx_allowed);
     let (base_x4, base_y4) = group.base;
     let chroma_ref = frontier.chroma_ref_geometry();
-    let lossless_uses_current_block =
-        lossless && is_inter && (frontier.r != chroma_ref.row() || frontier.c != chroma_ref.col());
+    let lossless_luma_idtx = lossless_luma_tx_size.is_some_and(|tx_size| tx_size != TX_4X4);
+    let lossless_uses_current_block = lossless
+        && (frame_is_intra || frontier.r != chroma_ref.row() || frontier.c != chroma_ref.col());
     let segment_lossless = current_segment_lossless(work_unit);
     chroma_reads.clear();
-    for (x4, y4) in group.units() {
+    let in_frame = |&(x4, y4): &(usize, usize)| {
+        transform_unit_starts_in_frame(
+            (base_x4 + x4, base_y4 + y4),
+            frame_mi,
+            (subsampling_x, subsampling_y),
+        )
+    };
+    for (x4, y4) in group.units().filter(in_frame) {
         let start_x = (base_x4 + x4) * MI_SIZE;
         let start_y = (base_y4 + y4) * MI_SIZE;
-        let chroma_inter_tx_type = luma_tx_types.chroma_inter_tx_type(
-            frontier.r,
-            frontier.c,
-            base_y4 + y4,
-            base_x4 + x4,
-            (subsampling_x, subsampling_y),
-            lossless_uses_current_block,
-        );
+        let chroma_inter_tx_type = if lossless_luma_idtx {
+            IDTX
+        } else {
+            luma_tx_types.chroma_inter_tx_type(
+                frontier.r,
+                frontier.c,
+                base_y4 + y4,
+                base_x4 + x4,
+                (subsampling_x, subsampling_y),
+                lossless_uses_current_block,
+            )
+        };
         let unit = InterChromaUnit {
             x4,
             y4,
@@ -534,13 +546,16 @@ fn read_inter_residual_chroma_group(
         chroma_reads.push(InterChromaURead { unit, block_index });
     }
 
+    let last_u_nonzero = chroma_reads
+        .last()
+        .and_then(|read| blocks.get(read.block_index))
+        .is_some_and(|u| u.coeffs.eob != 0);
     for read in chroma_reads.iter().copied() {
         let start_x = (base_x4 + read.unit.x4) * MI_SIZE;
         let start_y = (base_y4 + read.unit.y4) * MI_SIZE;
         let u = blocks
             .get(read.block_index)
             .ok_or_else(residual_geometry_error)?;
-        let u_nonzero = u.coeffs.eob != 0;
         let uses_cctx = u.coeffs.cctx_type.unwrap_or(0) != 0;
         let v = read_inter_residual_plane(
             work_unit,
@@ -553,7 +568,7 @@ fn read_inter_residual_chroma_group(
             start_y,
             read.unit.tx_fills_block,
             read.unit.chroma_inter_tx_type,
-            u_nonzero,
+            last_u_nonzero,
             cctx_allowed,
             residual_tool_policy,
             segment_lossless,
@@ -572,6 +587,24 @@ fn read_inter_residual_chroma_group(
         }
     }
     Ok(())
+}
+
+/// The end of the luma 4x4 loop of one 64x64 chunk: § 5.20.7.23 stops the
+/// loop at `MiRows` / `MiCols`.
+fn luma_chunk_end(block_end4: usize, chunk_start4: usize, mi_limit: usize) -> usize {
+    block_end4.min(chunk_start4 + CHUNK_64_N4).min(mi_limit)
+}
+
+/// § 5.20.7.24 `transform_block` codes nothing for a transform block that
+/// starts at or past `maxX` / `maxY`, the plane extent of the `MiCols` x
+/// `MiRows` grid; position and grid are in 4x4 units of the plane and of luma.
+fn transform_unit_starts_in_frame(
+    (x4, y4): (usize, usize),
+    (mi_rows, mi_cols): (usize, usize),
+    (subsampling_x, subsampling_y): (bool, bool),
+) -> bool {
+    x4 * MI_SIZE < (mi_cols * MI_SIZE) >> usize::from(subsampling_x)
+        && y4 * MI_SIZE < (mi_rows * MI_SIZE) >> usize::from(subsampling_y)
 }
 
 /// The § 5.20.7.23 geometry of the chroma group that starts at luma chunk
