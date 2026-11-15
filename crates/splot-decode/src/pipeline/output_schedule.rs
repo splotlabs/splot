@@ -141,7 +141,7 @@ pub(super) fn frame_is_output(core: &FrameHeaderCore) -> bool {
 
 pub(super) struct OutputScheduler {
     pub(super) pending: Vec<Option<(usize, u32)>>,
-    pub(super) emitted: Vec<usize>,
+    emitted: Vec<usize>,
     /// The frames the last `refresh` or `on_immediate` released, kept so the
     /// per-frame calls reuse one list.
     newly: Vec<usize>,
@@ -358,18 +358,6 @@ const fn is_regular_frame_obu(obu_type: ObuType) -> bool {
             | ObuType::RasFrame
             | ObuType::BridgeFrame
     )
-}
-
-pub(super) fn select_output_frames(
-    frames: &mut FrameStore,
-    output_frame_indices: Vec<usize>,
-) -> Result<Vec<PipelineFrame>> {
-    let mut outputs = Vec::with_capacity(output_frame_indices.len());
-    for index in output_frame_indices {
-        let output = frames.take(index).ok_or_else(missing_display_frame)?;
-        outputs.push(output);
-    }
-    Ok(outputs)
 }
 
 pub(super) fn ensure_output_frame_count_limit(
@@ -591,7 +579,7 @@ mod tests {
 
     #[test]
     fn reference_reservation_inserts_into_the_claimed_physical_slot() {
-        let mut frames = FrameStore::new(false, 1);
+        let mut frames = FrameStore::new(1);
         let layout = MotionFieldLayout::new(4, 4, 16).unwrap();
         assert_eq!(frames.reserve().unwrap(), 0);
         assert_eq!(frames.reserve().unwrap(), 0);
@@ -600,7 +588,7 @@ mod tests {
         let mut frame = settled_frame(8, FrameOutputEffects::empty()).unwrap();
         frame.motion_field = first.clone();
         frames.push(frame).unwrap();
-        drop(frames.take(0));
+        frames.entries[0].frame = None;
         assert_eq!(frames.reserve().unwrap(), 1);
         let second = frames.reserve_motion(layout).unwrap();
         let mut frame = settled_frame(16, FrameOutputEffects::empty()).unwrap();
@@ -615,7 +603,7 @@ mod tests {
 
     #[test]
     fn streaming_slots_reuse_storage_without_reusing_frame_identity_or_output_count() {
-        let mut frames = FrameStore::new(false, 12);
+        let mut frames = FrameStore::new(12);
         let slots = frames.entries.len();
         let storage = frames.entries.as_ptr();
         let mut scheduler = OutputScheduler::new(1);
@@ -628,7 +616,12 @@ mod tests {
         }
         assert!(!frames.has_space());
         for retired in 0..1024 {
-            assert!(frames.take(retired).is_some());
+            assert!(
+                frames
+                    .entries
+                    .iter_mut()
+                    .any(|entry| entry.index == retired && entry.frame.take().is_some())
+            );
             scheduler.forget(retired);
             let next = frames.len();
             let reserved = frames.reserve().unwrap();

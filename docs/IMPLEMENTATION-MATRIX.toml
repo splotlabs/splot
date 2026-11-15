@@ -21641,7 +21641,7 @@ module = "xtask/src/perf.rs"
 change_id = "perf-regression-gate"
 owner = "automation"
 risk = "low"
-notes = "cargo xtask perf --base REV builds the head and base splot binaries and compares their single-threaded executed-instruction counts (DynamoRIO with the atomic xtask/perf-client counter, null output, smallest of 3 runs) on 5 pinned EwoutH release streams fetched and SHA-256-checked by scripts/check-external-vectors.py. It fails when a stream rises above max(0.25%, 5 x the A/A spread of the base runs) or the total above 0.15%, and warns above 0.1%. A Perf-Accept: <stream|all> +X% <reason> commit trailer raises that limit. The CI perf job measures the PR merge commit against its first parent, restores the base binary from a cache that only main pushes save, and only reports on main. Without DYNAMORIO_HOME the command fails."
+notes = "cargo xtask perf --base REV builds the head and base splot binaries and compares their single-threaded executed-instruction counts (DynamoRIO with the atomic xtask/perf-client counter, null output, smallest of 3 runs) on 5 pinned EwoutH release streams fetched and SHA-256-checked by scripts/check-external-vectors.py. It fails when a stream rises above max(0.10%, 5 x the A/A spread of the base runs) or the total above 0.05%, and warns above 0.03%. A Perf-Accept: <stream|all> +X% <reason> commit trailer raises that limit. The CI perf job measures the PR merge commit against its first parent, restores the base binary from a cache that only main pushes save, and only reports on main. Without DYNAMORIO_HOME the command fails."
 replaces = []
 
 [feature.status]

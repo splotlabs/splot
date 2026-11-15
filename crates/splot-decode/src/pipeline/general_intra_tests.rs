@@ -178,10 +178,7 @@ const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 fn decode_fixture(fixture: &[u8]) -> PipelineDecodedFrame {
     let options = DecodeOptions::default();
-    decode_frame_from_plan(fixture, &options)
-        .expect("decode")
-        .ready_frame()
-        .expect("ready")
+    decode_frame_from_plan(fixture, &options).expect("decode")
 }
 
 pub(super) fn decode_eight(fixture: &[u8]) -> SharedFrame<u8> {
