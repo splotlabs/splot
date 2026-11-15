@@ -140,7 +140,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                 return Err(ReconError::MissingChromaPlane { plane });
             };
             let samples: crate::LentRows<T> = samples;
-            let stride = crate::plane_stride::<T>(storage_size.width()).ok_or(
+            let stride = crate::plane_buf::plane_stride::<T>(storage_size.width()).ok_or(
                 ReconError::ArithmeticOverflow {
                     context: "lent band stride",
                 },
@@ -285,7 +285,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         rows: usize,
         mut samples: crate::PlaneBuf<T>,
     ) -> Result<Self> {
-        let stride = crate::plane_stride::<T>(storage_size.width()).ok_or(
+        let stride = crate::plane_buf::plane_stride::<T>(storage_size.width()).ok_or(
             ReconError::ArithmeticOverflow {
                 context: "current-frame band stride",
             },

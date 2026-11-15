@@ -79,7 +79,7 @@ mod plane_pool;
 pub use mhccp::{
     MHCCP_BITS, MhccpEdge, MhccpPredictor, PredictedSample, derive_mhccp_params, mul_fixed32_adapt,
 };
-pub use plane_buf::{LentRows, PLANE_ALIGNMENT, PlaneBuf, plane_buf, plane_buf_from, plane_stride};
+pub use plane_buf::{LentRows, PLANE_ALIGNMENT, PlaneBuf, plane_buf};
 pub use plane_pool::PlanePool;
 mod reconstruct;
 mod reconstruct_block;

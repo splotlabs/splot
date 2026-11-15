@@ -56,7 +56,7 @@ impl<T: ReconSample> Plane<T> {
             storage_size,
             stride_samples,
             visible_rect,
-            crate::plane_buf_from(&samples),
+            crate::plane_buf::plane_buf_from(&samples),
         )
     }
 

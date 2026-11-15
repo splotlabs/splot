@@ -135,7 +135,7 @@ struct GrainDestination<T: ReconSample> {
 
 impl<T: ReconSample> GrainDestination<T> {
     fn with_rows(width: usize, height: usize) -> Self {
-        let stride = crate::plane_stride::<T>(width).unwrap_or(width);
+        let stride = crate::plane_buf::plane_stride::<T>(width).unwrap_or(width);
         let mut samples = crate::plane_buf();
         samples.reserve_exact(stride * height);
         Self { samples, stride }

@@ -23,7 +23,7 @@ pub const PLANE_ALIGNMENT: usize = 64;
 /// rounded up to a whole number of [`PLANE_ALIGNMENT`]-byte blocks, or `None`
 /// when that overflows.
 #[must_use]
-pub const fn plane_stride<T>(width: usize) -> Option<usize> {
+pub(crate) const fn plane_stride<T>(width: usize) -> Option<usize> {
     width.checked_next_multiple_of(PLANE_ALIGNMENT / size_of::<T>())
 }
 
@@ -106,12 +106,6 @@ impl<T: ReconSample> PlaneBuf<T> {
         self.len = self.len.min(len);
     }
 
-    /// Drops capacity beyond the held samples.
-    pub fn shrink_to_fit(&mut self) {
-        self.blocks.truncate(Self::blocks_for(self.len));
-        self.blocks.shrink_to_fit();
-    }
-
     /// Resizes to `len` samples, filling new ones with `value`.
     pub fn resize(&mut self, len: usize, value: T) {
         let old = self.len;
@@ -186,7 +180,7 @@ pub const fn plane_buf<T>() -> PlaneBuf<T> {
 
 /// A plane buffer holding a copy of `samples`.
 #[must_use]
-pub fn plane_buf_from<T: ReconSample>(samples: &[T]) -> PlaneBuf<T> {
+pub(crate) fn plane_buf_from<T: ReconSample>(samples: &[T]) -> PlaneBuf<T> {
     let mut buffer = plane_buf();
     buffer.append_samples(samples);
     buffer
@@ -320,9 +314,6 @@ mod tests {
             ten.resize(len, 0);
             ten.resize(len * 3, 0);
             assert_eq!(eight.as_ptr() as usize % PLANE_ALIGNMENT, 0);
-            assert_eq!(ten.as_ptr() as usize % PLANE_ALIGNMENT, 0);
-            ten.truncate(1);
-            ten.shrink_to_fit();
             assert_eq!(ten.as_ptr() as usize % PLANE_ALIGNMENT, 0);
         }
         assert_eq!(plane_buf_from(&[1u8, 2, 3]).as_slice(), &[1, 2, 3]);

@@ -1350,7 +1350,7 @@ pub struct CurrentFramePlane<T: ReconSample> {
     visible_rect: PlaneRect,
     /// The first plane row `samples` holds; a band stores no row above it.
     origin_y: usize,
-    /// Samples from one row to the next; see [`crate::plane_stride`].
+    /// Samples from one row to the next; see [`crate::plane_buf::plane_stride`].
     stride: usize,
     samples: PlaneSamples<T>,
     pool: Option<Arc<crate::PlanePool>>,
@@ -1401,7 +1401,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             }
         })?;
 
-        let stride_samples = crate::plane_stride::<T>(storage_size.width()).ok_or(
+        let stride_samples = crate::plane_buf::plane_stride::<T>(storage_size.width()).ok_or(
             ReconError::ArithmeticOverflow {
                 context: "current-frame workspace plane stride",
             },
