@@ -18,10 +18,10 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
 
 use super::super::InterReferenceState;
 use super::super::find_mv_stack::TemporalMvContext;
+use super::ReconCommandMut;
 use super::deferred_recon;
 use super::temporal::MotionFieldUnits;
 use super::tile::{ReconRow, ReconRowBuffers, TileFilterRecords};
-use super::{ReconCommandMut, ReconCommandRef};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQuantizerSnapshot, TileBlockDecodedState};
 
@@ -130,9 +130,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             current_order_hint,
             tip: core::cell::OnceCell::new(),
         };
-        has_intra = entries
-            .iter()
-            .any(|entry| matches!(entry.command(&slots), Some(ReconCommandRef::GeneralIntra)));
+        has_intra = superblocks.iter().any(|superblock| superblock.has_intra);
         if has_intra {
             crate::pipeline::general_intra::swap_general_intra_scratch(
                 scratch.general_intra_mut(),
@@ -148,14 +146,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     .iter()
                     .all(|entry| entry.publication.superblock_origin() == superblock.origin)
             );
-            let superblock_needs_decoded =
-                superblock_entries
-                    .iter()
-                    .any(|entry| match entry.command(&slots) {
-                        Some(ReconCommandRef::GeneralIntra) => true,
-                        Some(ReconCommandRef::Inter(c)) => c.reads_current_frame(),
-                        Some(ReconCommandRef::Intrabc) | None => false,
-                    });
+            let superblock_needs_decoded = superblock.needs_decoded;
             for (offset, entry) in superblock_entries.iter_mut().enumerate() {
                 if superblock_needs_decoded {
                     entry
@@ -169,16 +160,21 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                 {
                     return Err(error);
                 }
-                let temporal_clear = if motion_owed {
-                    entry.temporal_clear_record(&slots, mi_rows, mi_cols, current_order_hint)
-                } else {
-                    None
-                };
-                if let Some(clear) = temporal_clear {
+                let publication = entry.publication;
+                let temporal_records = entry.temporal();
+                let command = entry.command_mut(&mut slots);
+                if motion_owed
+                    && let Some(clear) = super::tile::temporal_clear_record(
+                        command.as_ref(),
+                        &publication,
+                        mi_rows,
+                        mi_cols,
+                        current_order_hint,
+                    )
+                {
                     folded.push(clear);
                 }
-                let temporal_records = entry.temporal();
-                let prederived_motion = match entry.command_mut(&mut slots) {
+                let prederived_motion = match command {
                     Some(command) => {
                         let prederived = matches!(
                             &command,

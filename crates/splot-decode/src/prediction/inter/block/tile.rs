@@ -652,6 +652,7 @@ impl TileResolveState {
         tile_offset: ByteOffset,
     ) -> Result<()> {
         resolve_parsed_leaves(
+            &mut row.superblocks,
             &mut row.entries,
             &mut row.slots,
             &mut MvResolutionState {
@@ -763,6 +764,10 @@ impl ReconRowEntry {
         }
     }
 
+    pub(super) const fn is_general_intra(&self) -> bool {
+        matches!(self.state, EntryState::Intra { .. })
+    }
+
     pub(super) fn take_reset(&mut self) -> LeafReset {
         if !core::mem::take(&mut self.reset_pending) {
             return LeafReset::None;
@@ -810,45 +815,51 @@ impl ReconRowEntry {
         }
         self.state = EntryState::Spent;
     }
+}
 
-    /// The § 7.22 record a non-inter luma-tree leaf stores: every covered 8x8
-    /// cell is reset to "no reference", clearing earlier inter writes there;
-    /// a leaf on whole cells has none to clear in a field that starts empty.
-    pub(super) fn temporal_clear_record(
-        &self,
-        slots: &[LeafSlot],
-        mi_rows: usize,
-        mi_cols: usize,
-        current_order_hint: u32,
-    ) -> Option<TemporalMotionBlock> {
-        if !matches!(
-            self.command(slots),
-            Some(ReconCommandRef::GeneralIntra | ReconCommandRef::Intrabc)
-        ) {
-            return None;
-        }
-        let (mi_row, mi_col, n4w, n4h) = self.publication.luma_tree_block()?;
-        if (mi_row | mi_col | n4w | n4h) & 1 == 0 {
-            return None;
-        }
-        Some(TemporalMotionBlock::new(
-            mi_row,
-            mi_col,
-            n4w,
-            n4h,
-            mi_rows,
-            mi_cols,
-            current_order_hint,
-            [None, None],
-            [Mv::ZERO; 2],
-            [None, None],
-        ))
+/// The § 7.22 record of a general-intra or IntraBC leaf `publication`: every
+/// covered 8x8 cell is reset to "no reference", clearing earlier inter writes
+/// there; a leaf on whole cells has none to clear in a field that starts empty.
+pub(super) fn temporal_clear_record(
+    command: Option<&ReconCommandMut<'_>>,
+    publication: &DecodedLeafPublication,
+    mi_rows: usize,
+    mi_cols: usize,
+    current_order_hint: u32,
+) -> Option<TemporalMotionBlock> {
+    if !matches!(
+        command,
+        Some(ReconCommandMut::GeneralIntra(_) | ReconCommandMut::Intrabc(_))
+    ) {
+        return None;
     }
+    let (mi_row, mi_col, n4w, n4h) = publication.luma_tree_block()?;
+    if (mi_row | mi_col | n4w | n4h) & 1 == 0 {
+        return None;
+    }
+    Some(TemporalMotionBlock::new(
+        mi_row,
+        mi_col,
+        n4w,
+        n4h,
+        mi_rows,
+        mi_cols,
+        current_order_hint,
+        [None, None],
+        [Mv::ZERO; 2],
+        [None, None],
+    ))
 }
 
 pub(super) struct ReconSuperblock {
     pub(super) origin: [usize; 2],
     pub(super) entries: Range<usize>,
+    /// Whether a leaf is general intra; set by the resolve pass.
+    pub(super) has_intra: bool,
+    /// Whether a leaf reads the block-decoded state: general intra, or an
+    /// inter leaf with BAWP or interintra. The resolve pass sets it; it
+    /// writes only the motion of a command.
+    pub(super) needs_decoded: bool,
 }
 
 pub(super) fn push_leaf_entry(
@@ -885,6 +896,8 @@ fn push_recon_entry<Entry>(
         superblocks.push(ReconSuperblock {
             origin,
             entries: entry_index..entries.len(),
+            has_intra: false,
+            needs_decoded: false,
         });
     }
 }
@@ -1352,9 +1365,9 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         };
         let mut skipped_any = false;
         for (offset, entry) in entries.iter_mut().enumerate() {
-            let safe = matches!(
-                entry.command(&row.slots),
-                Some(ReconCommandRef::Inter(command))
+            let publication = entry.publication;
+            let command = match entry.command_mut(&mut row.slots) {
+                Some(ReconCommandMut::Inter(command))
                     if !command.reads_current_frame()
                         && (!skipped_any
                             || (command.placed().luma_w() >= 8
@@ -1369,62 +1382,52 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                                     command.placed().luma_y(),
                                     command.placed().luma_w(),
                                     command.placed().luma_h(),
-                                ]))
-            );
-            debug_assert!(
-                !safe
-                    || matches!(
-                        entry.command(&row.slots),
-                        Some(ReconCommandRef::Inter(command)) if command.prepass_write_is_contained(
-                            superblock.origin,
-                            sb_h4,
-                            info,
-                            &row.residual_blocks,
-                        )
-                    ),
-                "a superblock's leaves write only inside it"
-            );
-            if !safe {
-                match entry.command_mut(&mut row.slots) {
-                    Some(ReconCommandMut::Inter(command)) => {
-                        let start = row.temporal.len();
-                        let result = scratch.derive_motion_logged(
-                            command,
-                            surface,
-                            &mut row.temporal,
-                            &shared,
-                        );
-                        match result {
-                            Ok(()) => {
-                                entry.set_temporal(start..row.temporal.len());
-                            }
-                            Err(error) => {
-                                row.temporal.truncate(start);
-                                row.record_precompute_error(entry_start + offset, error);
-                                break 'superblocks;
-                            }
-                        }
-                    }
-                    _ => {
-                        if let Some(clear) = entry.temporal_clear_record(
-                            &row.slots,
-                            mi_rows,
-                            mi_cols,
-                            current_order_hint,
-                        ) {
-                            let start = row.temporal.len();
-                            row.temporal.push(clear);
+                                ])) =>
+                {
+                    command
+                }
+                Some(ReconCommandMut::Inter(command)) => {
+                    let start = row.temporal.len();
+                    let result =
+                        scratch.derive_motion_logged(command, surface, &mut row.temporal, &shared);
+                    match result {
+                        Ok(()) => {
                             entry.set_temporal(start..row.temporal.len());
                         }
+                        Err(error) => {
+                            row.temporal.truncate(start);
+                            row.record_precompute_error(entry_start + offset, error);
+                            break 'superblocks;
+                        }
                     }
+                    skipped_any = true;
+                    continue;
                 }
-                skipped_any = true;
-                continue;
-            }
-            let Some(ReconCommandMut::Inter(command)) = entry.command_mut(&mut row.slots) else {
-                skipped_any = true;
-                continue;
+                command => {
+                    if let Some(clear) = temporal_clear_record(
+                        command.as_ref(),
+                        &publication,
+                        mi_rows,
+                        mi_cols,
+                        current_order_hint,
+                    ) {
+                        let start = row.temporal.len();
+                        row.temporal.push(clear);
+                        entry.set_temporal(start..row.temporal.len());
+                    }
+                    skipped_any = true;
+                    continue;
+                }
             };
+            debug_assert!(
+                command.prepass_write_is_contained(
+                    superblock.origin,
+                    sb_h4,
+                    info,
+                    &row.residual_blocks,
+                ),
+                "a superblock's leaves write only inside it"
+            );
             let start = row.temporal.len();
             let result = {
                 scratch.reconstruct_logged(

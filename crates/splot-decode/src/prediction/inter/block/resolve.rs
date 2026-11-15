@@ -25,7 +25,7 @@ use super::compound_path::{
     add_mv_clamped, compound_local_warp_models, project_joint_mvd, scale_joint_projected_mvd,
     select_near_near_candidates,
 };
-use super::tile::{EntryState, LeafSlot, ReconRowEntry};
+use super::tile::{EntryState, LeafSlot, ReconRowEntry, ReconSuperblock};
 use super::warp::{
     ExtendWarpContext, apply_warp_delta, extend_warp_estimation, set_warp_translation,
 };
@@ -100,52 +100,65 @@ pub(super) fn pending_intrabc_leaf(
 /// Each entry owns its resolve record, so record and command pairing cannot
 /// skew while a row is parsed, admitted, resolved, or recycled.
 pub(super) fn resolve_parsed_leaves(
+    superblocks: &mut [ReconSuperblock],
     entries: &mut [ReconRowEntry],
     slots: &mut [LeafSlot],
     state: &mut MvResolutionState<'_>,
 ) -> Result<()> {
     let sb_h4 = state.sb_h4;
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, state.core.frame_is_intra == Some(true));
-    for entry in entries {
-        let reset = entry.take_reset();
-        if reset == LeafReset::None {
-            continue;
-        }
-        let [mi_row, mi_col] = entry.publication.block_origin();
-        if let Some(bank) = state.ref_mv_bank.as_mut() {
-            bank.reset_for_leaf(
-                state.grid,
-                mi_row,
-                mi_col,
-                intrabc_sb_h4,
-                state.core.frame_is_intra != Some(true),
-            );
-        }
-        state
-            .warp_param_bank
-            .reset_for_leaf(state.grid, mi_row, mi_col, sb_h4);
-        if let LeafReset::NonInter { n4w, n4h } = reset {
-            state.grid.record_zero_motion(mi_row, mi_col, n4w, n4h);
+    for superblock in superblocks {
+        let entries = entries
+            .get_mut(superblock.entries.clone())
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+        for entry in entries {
+            let reset = entry.take_reset();
+            if reset == LeafReset::None {
+                continue;
+            }
+            let [mi_row, mi_col] = entry.publication.block_origin();
             if let Some(bank) = state.ref_mv_bank.as_mut() {
-                bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
-            }
-        }
-        if reset != LeafReset::Slot {
-            continue;
-        }
-        match entry.slot_mut(slots) {
-            Some(LeafSlot::Command(ReconCommand::Inter(command))) => command.resolve(state)?,
-            Some(slot @ LeafSlot::Intrabc(_)) => {
-                let LeafSlot::Intrabc(block) = core::mem::replace(slot, LeafSlot::Spent) else {
-                    return Err(invalid_inter_tile_scheduling_state());
-                };
-                *slot = LeafSlot::Command(ReconCommand::Intrabc(resolve_pending_intrabc(
-                    *block,
-                    state,
+                bank.reset_for_leaf(
+                    state.grid,
+                    mi_row,
+                    mi_col,
                     intrabc_sb_h4,
-                )?));
+                    state.core.frame_is_intra != Some(true),
+                );
             }
-            Some(LeafSlot::Command(ReconCommand::Intrabc(_)) | LeafSlot::Spent) | None => {}
+            state
+                .warp_param_bank
+                .reset_for_leaf(state.grid, mi_row, mi_col, sb_h4);
+            if entry.is_general_intra() {
+                superblock.has_intra = true;
+                superblock.needs_decoded = true;
+            }
+            if let LeafReset::NonInter { n4w, n4h } = reset {
+                state.grid.record_zero_motion(mi_row, mi_col, n4w, n4h);
+                if let Some(bank) = state.ref_mv_bank.as_mut() {
+                    bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
+                }
+            }
+            if reset != LeafReset::Slot {
+                continue;
+            }
+            match entry.slot_mut(slots) {
+                Some(LeafSlot::Command(ReconCommand::Inter(command))) => {
+                    superblock.needs_decoded |= command.reads_current_frame();
+                    command.resolve(state)?;
+                }
+                Some(slot @ LeafSlot::Intrabc(_)) => {
+                    let LeafSlot::Intrabc(block) = core::mem::replace(slot, LeafSlot::Spent) else {
+                        return Err(invalid_inter_tile_scheduling_state());
+                    };
+                    *slot = LeafSlot::Command(ReconCommand::Intrabc(resolve_pending_intrabc(
+                        *block,
+                        state,
+                        intrabc_sb_h4,
+                    )?));
+                }
+                Some(LeafSlot::Command(ReconCommand::Intrabc(_)) | LeafSlot::Spent) | None => {}
+            }
         }
     }
     Ok(())
