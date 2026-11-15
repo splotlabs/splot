@@ -20,75 +20,6 @@ use parking_lot::Mutex;
 
 const MI_SIZE: usize = 4;
 
-/// Where one frame's filtered stripes are published.
-///
-/// A pipelined frame publishes into the [`FrameProgress`] its slot already
-/// shares, so a consumer can read the published prefix before the freeze. An
-/// inline frame wraps its reconstructed workspace in the same sink privately,
-/// keeping one in-place filter path.
-///
-/// [`FrameProgress`]: crate::pipeline::frame_progress::FrameProgress
-struct FilteredFrameSink<T: ReconSample> {
-    progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
-}
-
-impl<T: ReconSample> FilteredFrameSink<T> {
-    fn open(
-        progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        workspace: Option<CurrentFrameWorkspace<T>>,
-        ranges: &[(usize, usize)],
-    ) -> Result<Self> {
-        let progress = match (progress, workspace) {
-            (Some(progress), None) => progress,
-            (None, Some(workspace)) => Arc::new(
-                crate::pipeline::frame_progress::FrameProgress::from_workspace(workspace, None)?,
-            ),
-            _ => return Err(lr_pipeline_state_error()),
-        };
-        progress.begin(ranges)?;
-        Ok(Self { progress })
-    }
-
-    /// Lends one stripe's exact output region.
-    fn direct_stripe(
-        &self,
-        stripe: usize,
-    ) -> Result<crate::pipeline::frame_progress::DirectStripeLease<T>> {
-        self.progress
-            .direct_stripe(stripe)
-            .ok_or_else(lr_pipeline_state_error)
-    }
-
-    fn publish_stripe(
-        samples: final_filters::FilteredStripe<T>,
-        direct: crate::pipeline::frame_progress::DirectStripeLease<T>,
-    ) -> Result<()> {
-        if !samples.y.is_direct()
-            || samples.u.as_ref().is_some_and(|plane| !plane.is_direct())
-            || samples.v.as_ref().is_some_and(|plane| !plane.is_direct())
-        {
-            return Err(lr_pipeline_state_error());
-        }
-        drop(samples);
-        if !direct.submit() {
-            return Err(lr_pipeline_state_error());
-        }
-        Ok(())
-    }
-
-    /// Freezes the filtered output into the paired slot `writer` settles, or
-    /// returns the frozen frame of a private sink.
-    fn freeze(mut self, writer: Option<FrameSlotWriter<T>>) -> Result<Option<DecodedFrame<T>>> {
-        match writer {
-            Some(writer) => self.progress.freeze_workspace(writer).map(|()| None),
-            None => Arc::get_mut(&mut self.progress)
-                .ok_or_else(lr_pipeline_state_error)?
-                .freeze()
-                .map(Some),
-        }
-    }
-}
-
 pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     workspace: Option<CurrentFrameWorkspace<T>>,
     info: splot_recon::DecodedFrameInfo,
@@ -150,7 +81,10 @@ pub(crate) struct OwnedFilterSetup<T: ReconSample> {
     lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     ranges: Vec<(usize, usize)>,
     filter_records: super::FrameFilterRecords,
-    sink: FilteredFrameSink<T>,
+    /// Where the filtered stripes are published: the progress a pipelined
+    /// frame's slot already shares, or a private one over an inline frame's
+    /// workspace, so both keep one in-place filter path.
+    progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
     stripe_state: Mutex<Vec<StripeLifecycle>>,
     deblock_records: Mutex<Option<crate::filters::deblock::OwnedDeblockRecords>>,
     /// Spent stripe windows of a frame that has no decode-wide pool.
@@ -429,7 +363,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             u32::from(self.bit_depth.bits()) - 8,
             subsampling,
         );
-        let sink = FilteredFrameSink::open(progress, self.workspace.take(), &ranges)?;
+        let progress = match (progress, self.workspace.take()) {
+            (Some(progress), None) => progress,
+            (None, Some(workspace)) => Arc::new(
+                crate::pipeline::frame_progress::FrameProgress::from_workspace(workspace, None)?,
+            ),
+            _ => return Err(lr_pipeline_state_error()),
+        };
+        progress.begin(&ranges)?;
         let stripe_count = ranges.len();
         let plane_sizes = self.plane_sizes;
 
@@ -480,7 +421,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             lr_unit_filters,
             ranges,
             filter_records,
-            sink,
+            progress,
             stripe_state: Mutex::new({
                 stripe_lifecycles.clear();
                 stripe_lifecycles.resize(stripe_count, StripeLifecycle::Pending);
@@ -535,7 +476,6 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
         shell: Option<OwnedFilterShell<T>>,
     ) -> Result<Self> {
         let mut rows = setup
-            .sink
             .progress
             .frontier_rows()
             .ok_or_else(lr_pipeline_state_error)?;
@@ -862,7 +802,10 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         deblocked: &WindowPlanes<'_, T>,
         plan: [[bool; 3]; 2],
     ) -> Result<OwnedFilteredStripe<T>> {
-        let mut direct = self.sink.direct_stripe(stripe)?;
+        let mut direct = self
+            .progress
+            .direct_stripe(stripe)
+            .ok_or_else(lr_pipeline_state_error)?;
         let target = direct.take_target().ok_or_else(lr_pipeline_state_error)?;
         Ok(OwnedFilteredStripe {
             stripe,
@@ -891,7 +834,18 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             }
             *lifecycle = StripeLifecycle::Submitted;
         }
-        FilteredFrameSink::<T>::publish_stripe(stripe.frame, stripe.direct)
+        let OwnedFilteredStripe { frame, direct, .. } = stripe;
+        if !frame.y.is_direct()
+            || frame.u.as_ref().is_some_and(|plane| !plane.is_direct())
+            || frame.v.as_ref().is_some_and(|plane| !plane.is_direct())
+        {
+            return Err(lr_pipeline_state_error());
+        }
+        drop(frame);
+        direct
+            .submit()
+            .then_some(())
+            .ok_or_else(lr_pipeline_state_error)
     }
 
     fn claim(&self, stripe: usize) -> Result<&(usize, usize)> {
@@ -944,7 +898,11 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             target,
             luma_output,
         )
-        .map_err(|error| cdef_filter_error(&error))?;
+        .map_err(|error| match error {
+            crate::filters::cdef::CdefError::Allocation(plane) => Some(plane),
+            _ => None,
+        })
+        .map_err(|plane| filter_error(plane, "CDEF stripe output"))?;
         if let Some((grid, config)) = chain.ccso_grid.zip(self.ccso_config.as_ref()) {
             crate::filters::ccso::ccso_stripe(
                 &mut cdef,
@@ -1230,7 +1188,13 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         if let Some(grid) = self.tx_skip_grid.take() {
             self.filter_records.tx_skip_grid_values = grid.into_values();
         }
-        let frame = self.sink.freeze(writer)?;
+        let frame = match writer {
+            Some(writer) => self.progress.freeze_workspace(writer).map(|()| None),
+            None => Arc::get_mut(&mut self.progress)
+                .ok_or_else(lr_pipeline_state_error)?
+                .freeze()
+                .map(Some),
+        }?;
         Ok((frame, self.filter_records))
     }
 }
@@ -1384,30 +1348,19 @@ pub(crate) fn deblock_prepare_error(
     }
 }
 
-fn cdef_filter_error(error: &crate::filters::cdef::CdefError) -> crate::error::DecodeError {
-    match error {
-        crate::filters::cdef::CdefError::Allocation(plane) => {
-            splot_recon::ReconError::WorkspaceAllocationFailed {
-                plane: *plane,
-                context: "CDEF stripe output",
-            }
-            .into()
-        }
-        _ => lr_pipeline_state_error(),
-    }
+/// The allocation failure of `plane` in `context`, or the state error.
+fn filter_error(plane: Option<PlaneId>, context: &'static str) -> crate::error::DecodeError {
+    plane.map_or_else(lr_pipeline_state_error, |plane| {
+        splot_recon::ReconError::WorkspaceAllocationFailed { plane, context }.into()
+    })
 }
 
 fn ccso_filter_error(error: &crate::filters::ccso::CcsoError) -> crate::error::DecodeError {
-    match error {
-        crate::filters::ccso::CcsoError::Allocation(plane) => {
-            splot_recon::ReconError::WorkspaceAllocationFailed {
-                plane: *plane,
-                context: "CCSO lookup table",
-            }
-            .into()
-        }
-        _ => lr_pipeline_state_error(),
-    }
+    let plane = match error {
+        crate::filters::ccso::CcsoError::Allocation(plane) => Some(*plane),
+        _ => None,
+    };
+    filter_error(plane, "CCSO lookup table")
 }
 
 pub(crate) fn lr_pipeline_state_error() -> crate::error::DecodeError {

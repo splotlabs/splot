@@ -175,7 +175,7 @@ fn progress_of<T: splot_recon::ReconSample>(
 fn stripe_windows<T: splot_recon::ReconSample>(
     setup: &OwnedFilterSetup<T>,
 ) -> Vec<Option<FilledWindow<T>>> {
-    let mut rows = setup.sink.progress.frontier_rows().unwrap();
+    let mut rows = setup.progress.frontier_rows().unwrap();
     assert!(rows.publish_final_rows(setup.luma_height));
     let mut carry = DeblockedWindow::default();
     (0..setup.stripe_ranges().len())
