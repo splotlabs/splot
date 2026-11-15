@@ -17,8 +17,7 @@ use super::{
     ADST_ADST, CoeffBlock, D67_PRED, D157_PRED, DCT_DCT, GeneralIntraResidualError, H_PRED,
     IST_4X4_HEIGHT, IST_8X8_HEIGHT, IST_8X8_HEIGHT_RED, LumaTransformTypeContext, SMOOTH_H_PRED,
     block_qm_level, current_quantizers, intra_secondary_transform_kernel,
-    intra_secondary_transform_mode, invalid_reconstruction_state,
-    invalid_reconstruction_state_error, resolve_block_qm,
+    intra_secondary_transform_mode, invalid_reconstruction_state_error, resolve_block_qm,
 };
 
 pub(super) struct ReconstructBlockSetup {
@@ -101,7 +100,7 @@ pub(crate) fn resolve_secondary_inverse_transform(
             || tx_height < 16
             || ist.most_probable_stx_set.is_some()
         {
-            return invalid_reconstruction_state("inter IST context");
+            return Err(invalid_reconstruction_state_error("inter IST context"));
         }
         (0, false)
     };
@@ -704,7 +703,9 @@ fn dct_dc_residual(
 
 fn transform_dimension(log2_dim: u32) -> Result<usize, GeneralIntraResidualError> {
     if !(2..=6).contains(&log2_dim) {
-        return invalid_reconstruction_state("intra IST transform shape");
+        return Err(invalid_reconstruction_state_error(
+            "intra IST transform shape",
+        ));
     }
     Ok(1usize << log2_dim)
 }

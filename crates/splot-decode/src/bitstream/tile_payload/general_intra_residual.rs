@@ -1995,10 +1995,6 @@ const fn invalid_reconstruction_state_error(context: &'static str) -> GeneralInt
     GeneralIntraResidualError::InvalidReconstructionState { context }
 }
 
-fn invalid_reconstruction_state<T>(context: &'static str) -> Result<T, GeneralIntraResidualError> {
-    Err(invalid_reconstruction_state_error(context))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     block: CoeffBlock<'_>,
@@ -2115,7 +2111,7 @@ fn intra_secondary_transform_kernel(
     tx_height: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
     if mode >= INV_MOST_PROBABLE_STX_MAPPING.len() {
-        return invalid_reconstruction_state("intra IST mode");
+        return Err(invalid_reconstruction_state_error("intra IST mode"));
     }
     let base = if plane_tx_type == ADST_ADST && tx_width >= 8 && tx_height >= 8 {
         INV_MOST_PROBABLE_STX_MAPPING_ADST[mode]
