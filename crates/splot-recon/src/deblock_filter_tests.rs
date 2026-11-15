@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::math::round2;
+use splot_core::tables::conversion::Q_FIRST;
 
 #[allow(clippy::too_many_arguments)]
 fn params(
@@ -340,9 +341,6 @@ fn adaptive_filter_strength_matches_spec() {
         assert_eq!(deblock_adaptive_filter_strength(lvl, 0, bd).0, expected);
     }
 }
-
-/// The § 9.2 `Q_First` array (`docs/spec/.../03-symbols.md`, DBL_REG_DECIS_LEN).
-const Q_FIRST: [i32; DBL_REG_DECIS_LEN] = [45, 43, 40, 35, 32, 32, 32, 32, 32];
 
 fn choice(
     boundary: usize,
