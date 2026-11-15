@@ -60,7 +60,7 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
 }
 
 /// The horizontal and vertical filter phases of `params`.
-fn phases(params: &SubpelPredictParams) -> [u8; 2] {
+pub(super) fn phases(params: &SubpelPredictParams) -> [u8; 2] {
     [params.start_x, params.start_y].map(|start| ((start >> 6) & SUBPEL_MASK) as u8)
 }
 
@@ -250,21 +250,11 @@ fn best_offset(
 }
 
 #[cfg(target_arch = "x86_64")]
-mod avx2 {
+pub(super) mod avx2 {
     use core::arch::x86_64::*;
     use fearless_simd::{Avx2, SimdBase, SimdFrom, u8x16, u8x32, u16x16};
 
-    /// The `N` bytes of `source` from `at`: a `u32` start ends one compare
-    /// from the storage end.
-    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
-    #[inline(always)]
-    fn row_bytes<const N: usize>(source: &[u8], at: u32) -> Option<&[u8; N]> {
-        let at = at as usize;
-        if at + N > source.len() {
-            return None;
-        }
-        source.get(at..)?.first_chunk::<N>()
-    }
+    use crate::subpel_mc::refinemv_window::lanes_at;
 
     /// The `(left, right)` source index pairs of output columns `first..first
     /// + 16` of an `m`-sample row read from index `base`, both clamped to the
@@ -387,11 +377,11 @@ mod avx2 {
                 _mm256_broadcastsi128_si256(u8x16::load_array_ref(t, bytes).into())
             };
             if W != 24 {
-                let low = half(row_bytes::<16>(source, at)?);
+                let low = half(lanes_at::<_, 16>(source, at)?);
                 let low = _mm256_maddubs_epi16(_mm256_shuffle_epi8(low, low_pairs), weights);
                 return Some([low, low]);
             }
-            let bytes = row_bytes::<31>(source, at)?;
+            let bytes = lanes_at::<_, 31>(source, at)?;
             let (low, high) = (half(bytes.first_chunk()?), half(bytes.last_chunk()?));
             Some([
                 _mm256_maddubs_epi16(_mm256_shuffle_epi8(low, low_pairs), weights),
@@ -496,7 +486,7 @@ mod avx2 {
             let rows = |first: usize| {
                 let load = |row: usize| -> __m128i {
                     let at = origin + column as u32 + row.min(h) as u32 * source_stride;
-                    row_bytes::<16>(source, at).map_or(_mm_setzero_si128(), |bytes| {
+                    lanes_at::<_, 16>(source, at).map_or(_mm_setzero_si128(), |bytes| {
                         u8x16::load_array_ref(t, bytes).into()
                     })
                 };
@@ -529,7 +519,7 @@ mod avx2 {
 
     fearless_simd::kernel!(
         #[inline]
-        pub(super) fn search(
+        pub(in crate::subpel_mc) fn search(
             t: Avx2,
             windows: [&[u8]; 2],
             geometry: [usize; 2],
@@ -911,7 +901,7 @@ pub(super) mod generic {
     /// summed in its own `u16` lanes, which ten 12-bit rows keep below
     /// `2^16`.
     #[inline]
-    pub(super) fn search_u16<
+    pub(in crate::subpel_mc) fn search_u16<
         S: Simd,
         const STRIDE: usize,
         const SAD_H: usize,
@@ -972,7 +962,7 @@ pub(super) mod generic {
     /// differences widened and summed in `u16` lanes.
     #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
     #[inline(always)]
-    pub(super) fn area_sad<S: Simd>(
+    pub(in crate::subpel_mc) fn area_sad<S: Simd>(
         simd: S,
         planes: [&[u8]; 2],
         starts: [usize; 2],
@@ -1007,7 +997,7 @@ pub(super) mod generic {
 
 /// The windows and the SADs in NEON byte lanes.
 #[cfg(target_arch = "aarch64")]
-mod neon {
+pub(super) mod neon {
     use super::generic::load;
     use core::arch::aarch64::{
         uint8x16_t, uint16x8_t, vdupq_n_u8, vdupq_n_u16, vget_low_u8, vmlal_high_u8, vmlal_u8,
@@ -1148,7 +1138,7 @@ mod neon {
 
     fearless_simd::kernel!(
         #[inline]
-        pub(super) fn search(
+        pub(in crate::subpel_mc) fn search(
             t: Neon,
             windows: [&[u8]; 2],
             geometry: [usize; 2],
