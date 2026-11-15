@@ -1011,11 +1011,11 @@ fn dc_only_transform<S: Simd, O: Output + ?Sized>(
     let kc = first_kernel_row(col, t.h);
     let row0 = |c: usize| {
         let k = kr.as_chunks::<8>().0.get(c).map_or([0; 8], |k| *k);
-        clip_row(i32x8::from_slice(simd, &k) * dc, row_shift, row_bound)
+        clip_round(i32x8::from_slice(simd, &k) * dc, row_shift, row_bound)
     };
     let dct = |dim| dim == InverseTransform2dDim::Kernel(InverseTransform1dType::Dct);
     if dct(t.row) && dct(t.col) {
-        let value: [i32; 8] = clip_col(row0(0) * kc[0], col_shift, col_bound).into();
+        let value: [i32; 8] = clip_round(row0(0) * kc[0], col_shift, col_bound).into();
         let value = i32x8::splat(simd, value[0]);
         for index in 0..t.w * t.h / 8 {
             residual.put(simd, index, value);
@@ -1027,7 +1027,7 @@ fn dc_only_transform<S: Simd, O: Output + ?Sized>(
         let row0 = simd.combine_i32x4(row0, row0);
         for (index, &[a, b]) in kc.as_chunks::<2>().0.iter().take(t.h / 2).enumerate() {
             let k = i32x8::from_slice(simd, &[a, a, a, a, b, b, b, b]);
-            residual.put(simd, index, clip_col(row0 * k, col_shift, col_bound));
+            residual.put(simd, index, clip_round(row0 * k, col_shift, col_bound));
         }
         return;
     }
@@ -1041,7 +1041,7 @@ fn dc_only_transform<S: Simd, O: Output + ?Sized>(
             residual.put(
                 simd,
                 r * chunks + c,
-                clip_col(row0 * k, col_shift, col_bound),
+                clip_round(row0 * k, col_shift, col_bound),
             );
         }
     }
@@ -1065,15 +1065,9 @@ fn row_input<S: Simd>(v: i32x8<S>, rescale: bool, bound: i32) -> i32x8<S> {
         .min(i32x8::splat(v.simd, bound - 1))
 }
 
-/// The row `Clip3` to `±bound` of `Round2(sum, shift)`.
+/// The `Clip3` to `±bound` of `Round2(sum, shift)`.
 #[inline]
-fn clip_row<S: Simd>(sum: i32x8<S>, shift: u32, bound: i32) -> i32x8<S> {
-    clip_lanes(sum.simd, sum, shift, bound, true)
-}
-
-/// The column `Clip3` to `±bound` of `Round2(sum, shift)`.
-#[inline]
-fn clip_col<S: Simd>(sum: i32x8<S>, shift: u32, bound: i32) -> i32x8<S> {
+fn clip_round<S: Simd>(sum: i32x8<S>, shift: u32, bound: i32) -> i32x8<S> {
     clip_lanes(sum.simd, sum, shift, bound, true)
 }
 
@@ -1194,7 +1188,7 @@ fn row_pass<S: Simd, O: Output + ?Sized, const N: usize, const SPLIT: bool, cons
                 };
             }
             for (j, y) in y.as_chunks::<2>().0.iter().take(N / 8).enumerate() {
-                let v = clip_row(simd.combine_i32x4(y[0], y[1]), rows.shift, rows.bound);
+                let v = clip_round(simd.combine_i32x4(y[0], y[1]), rows.shift, rows.bound);
                 out.put(simd, r * N / 8 + j, v);
             }
         }
@@ -1213,7 +1207,7 @@ fn row_pass_4<S: Simd, O: Output + ?Sized>(
     for q in 0..rows.coded.div_ceil(2) {
         let (a, b) = simd.split_i32x8(rows.inputs(simd, rows.input, q, q == 0));
         let sum = simd.combine_i32x4(transform(a), transform(b));
-        out.put(simd, q, clip_row(sum, rows.shift, rows.bound));
+        out.put(simd, q, clip_round(sum, rows.shift, rows.bound));
     }
 }
 
@@ -1221,7 +1215,7 @@ fn row_pass_4<S: Simd, O: Output + ?Sized>(
 /// its own clamped input times the identity scale, in the row `Clip3`.
 fn row_pass_identity<S: Simd, O: Output + ?Sized>(simd: S, w: usize, rows: Rows<'_>, out: &mut O) {
     let scale = identity_scale(w);
-    let scaled = |v: i32x8<S>| clip_row(v * scale, rows.shift, rows.bound);
+    let scaled = |v: i32x8<S>| clip_round(v * scale, rows.shift, rows.bound);
     if rows.in_w == w {
         for k in 0..(rows.coded * w).div_ceil(8) {
             out.put(simd, k, scaled(rows.inputs(simd, rows.input, k, k == 0)));

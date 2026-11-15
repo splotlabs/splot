@@ -1605,13 +1605,10 @@ fn paired_column_taps<S: Simd>(
     simd: S,
     columns: [i16x8<S>; WARPED_BLOCK_SIZE],
 ) -> [i16x16<S>; WARP_FILTER_TAPS / 2] {
-    #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = Level::baseline().as_avx2() {
         let pairs = avx2_paired_column_taps(avx2, columns.map(SimdBase::to_array));
         return pairs.map(|pair| i16x16::load_array(simd, pair));
     }
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = simd;
     let half = |first: usize| {
         let words = |col: usize| columns[first + col].bitcast::<i32x4<S>>();
         let pairs = |a: i32x4<S>, b: i32x4<S>| {

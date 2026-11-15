@@ -122,29 +122,18 @@ pub fn secondary_transform_layout(
         n,
         kernel,
         sec_tx_type,
-        primary_scan_class,
         transpose,
-        bit_depth,
+        ..
     } = *params;
-    if !is_valid_side(w) || !is_valid_side(h) {
-        return Err(ReconError::SecondaryTransformInvalidShape { w, h });
-    }
+    let (scan, bound) = validated(params, w.wrapping_mul(h), 0)?;
     let large = w >= 8 && h >= 8;
-    let (set_size, kernel_height, width) = if large {
-        (IST_SET_SIZE_8X8, IST_8X8_HEIGHT, IST_8X8_WIDTH)
-    } else {
-        (IST_SET_SIZE_4X4, IST_4X4_HEIGHT, IST_4X4_WIDTH)
-    };
+    let width = if large { IST_8X8_WIDTH } else { IST_4X4_WIDTH };
     let invalid = || ReconError::SecondaryTransformInvalidParams {
         n,
         kernel,
         sec_tx_type,
     };
-    if n == 0 || n > kernel_height || kernel >= set_size || !(1..STX_TYPES).contains(&sec_tx_type) {
-        return Err(invalid());
-    }
     let stx = sec_tx_type - 1;
-    let scan = crate::coefficient_scan_slice(w, h, primary_scan_class)?;
     let mut inputs = [0u16; IST_8X8_HEIGHT];
     for (slot, &pos) in inputs[..n].iter_mut().zip(scan.iter()) {
         *slot = pos;
@@ -177,7 +166,7 @@ pub fn secondary_transform_layout(
         width,
         outputs,
         kernel,
-        bound: 1i32 << (u32::from(bit_depth.bits()) + 7),
+        bound,
     })
 }
 
