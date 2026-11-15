@@ -320,6 +320,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             (mi_rows, mi_cols),
             &self.filter_records.deblock_blocks,
             &self.filter_records.chroma_deblock_blocks,
+            &mut self.filter_records.lossless_cells,
         )?;
         if self.needs_lr_tx_skip_grid(&core) {
             self.ensure_tx_skip_grid(mi_rows, mi_cols)?;
@@ -778,8 +779,16 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         blocks: &[crate::filters::deblock::DeblockBlock],
         chroma: &crate::filters::deblock::ChromaDeblockRecords,
     ) -> Result<()> {
-        self.lossless_grid =
-            lossless_grid(&self.core, (self.mi_rows, self.mi_cols), blocks, chroma)?;
+        if let Some(grid) = self.lossless_grid.take() {
+            self.filter_records.lossless_cells = grid.into_cells();
+        }
+        self.lossless_grid = lossless_grid(
+            &self.core,
+            (self.mi_rows, self.mi_cols),
+            blocks,
+            chroma,
+            &mut self.filter_records.lossless_cells,
+        )?;
         Ok(())
     }
 
@@ -1188,6 +1197,12 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         if let Some(grid) = self.tx_skip_grid.take() {
             self.filter_records.tx_skip_grid_values = grid.into_values();
         }
+        if let Some(grid) = self.cdef_skip_grid.take() {
+            self.filter_records.cdef_skip_grid_values = grid.into_values();
+        }
+        if let Some(grid) = self.lossless_grid.take() {
+            self.filter_records.lossless_cells = grid.into_cells();
+        }
         let frame = match writer {
             Some(writer) => self.progress.freeze_workspace(writer).map(|()| None),
             None => Arc::get_mut(&mut self.progress)
@@ -1269,6 +1284,7 @@ fn lossless_grid(
     (mi_rows, mi_cols): (usize, usize),
     blocks: &[crate::filters::deblock::DeblockBlock],
     chroma: &crate::filters::deblock::ChromaDeblockRecords,
+    cells: &mut [Vec<bool>; 2],
 ) -> Result<Option<crate::filters::lossless::LosslessBlockGrid>> {
     if !core
         .lossless_info
@@ -1277,8 +1293,11 @@ fn lossless_grid(
     {
         return Ok(None);
     }
-    crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        mi_rows, mi_cols, blocks, chroma,
+    crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks_reusing(
+        (mi_rows, mi_cols),
+        blocks,
+        chroma,
+        core::mem::take(cells),
     )
     .map(Some)
     .map_err(|error| match error {

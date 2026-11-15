@@ -8,6 +8,8 @@ use splot_recon::PlaneId;
 use crate::filters::deblock::DeblockBlock;
 
 const MI_SIZE: usize = 4;
+/// The MI side of a CDEF 8x8 block.
+const CDEF_BLOCK_MI: usize = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LosslessBlockGrid {
@@ -19,39 +21,49 @@ pub(crate) struct LosslessBlockGrid {
 }
 
 impl LosslessBlockGrid {
+    #[cfg(test)]
     pub(crate) fn from_deblock_blocks(
         mi_rows: usize,
         mi_cols: usize,
         luma_blocks: &[DeblockBlock],
         chroma_blocks: &[DeblockBlock],
     ) -> Result<Self, LosslessGridError> {
+        Self::from_deblock_blocks_reusing(
+            (mi_rows, mi_cols),
+            luma_blocks,
+            chroma_blocks,
+            Default::default(),
+        )
+    }
+
+    /// The grid of `luma_blocks` and `chroma_blocks`, laid out in the
+    /// storage of `[luma, chroma]`.
+    pub(crate) fn from_deblock_blocks_reusing(
+        (mi_rows, mi_cols): (usize, usize),
+        luma_blocks: &[DeblockBlock],
+        chroma_blocks: &[DeblockBlock],
+        [luma, chroma]: [Vec<bool>; 2],
+    ) -> Result<Self, LosslessGridError> {
         Ok(Self {
             mi_rows,
             mi_cols,
-            luma: lossless_cells(mi_rows, mi_cols, luma_blocks.iter())?,
-            chroma: lossless_cells(mi_rows, mi_cols, chroma_blocks.iter())?,
+            luma: lossless_cells(mi_rows, mi_cols, luma_blocks, luma)?,
+            chroma: lossless_cells(mi_rows, mi_cols, chroma_blocks, chroma)?,
         })
     }
 
-    pub(crate) fn cdef_luma_lossless(&self, mi_row: usize, mi_col: usize) -> bool {
-        any_cells(&self.luma, self.mi_rows, self.mi_cols, mi_row, mi_col, 2, 2)
+    pub(crate) fn into_cells(self) -> [Vec<bool>; 2] {
+        [self.luma, self.chroma]
     }
 
-    pub(crate) fn cdef_chroma_lossless(
-        &self,
-        plane_id: PlaneId,
-        mi_row: usize,
-        mi_col: usize,
-    ) -> bool {
-        any_cells(
-            self.cells(plane_id),
-            self.mi_rows,
-            self.mi_cols,
-            mi_row,
-            mi_col,
-            2,
-            2,
-        )
+    pub(crate) fn cdef_luma_lossless(&self, mi_row: usize, mi_col: usize) -> bool {
+        any_cells(&self.luma, self.mi_rows, self.mi_cols, mi_row, mi_col)
+    }
+
+    /// Whether the 8x8 block at `(mi_row, mi_col)` has a lossless chroma
+    /// cell, in U and V alike, whose records are one list.
+    pub(crate) fn cdef_chroma_lossless(&self, mi_row: usize, mi_col: usize) -> bool {
+        any_cells(&self.chroma, self.mi_rows, self.mi_cols, mi_row, mi_col)
     }
 
     pub(crate) fn plane_sample_lossless(
@@ -84,15 +96,16 @@ impl LosslessBlockGrid {
     }
 }
 
-fn lossless_cells<'a>(
+fn lossless_cells(
     mi_rows: usize,
     mi_cols: usize,
-    blocks: impl IntoIterator<Item = &'a DeblockBlock>,
+    blocks: &[DeblockBlock],
+    mut cells: Vec<bool>,
 ) -> Result<Vec<bool>, LosslessGridError> {
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(LosslessGridError::Geometry)?;
-    let mut cells = Vec::new();
+    cells.clear();
     cells
         .try_reserve_exact(count)
         .map_err(|_| LosslessGridError::Allocation(splot_recon::PlaneId::Y))?;
@@ -120,17 +133,11 @@ fn lossless_cells<'a>(
     Ok(cells)
 }
 
-fn any_cells(
-    cells: &[bool],
-    mi_rows: usize,
-    mi_cols: usize,
-    row: usize,
-    col: usize,
-    rows: usize,
-    cols: usize,
-) -> bool {
-    let row_end = row.saturating_add(rows).min(mi_rows);
-    let col_end = col.saturating_add(cols).min(mi_cols);
+/// Whether any cell of the 8x8 block at `(row, col)`, clipped to the grid,
+/// is lossless.
+fn any_cells(cells: &[bool], mi_rows: usize, mi_cols: usize, row: usize, col: usize) -> bool {
+    let row_end = row.saturating_add(CDEF_BLOCK_MI).min(mi_rows);
+    let col_end = col.saturating_add(CDEF_BLOCK_MI).min(mi_cols);
     for rr in row..row_end {
         for cc in col..col_end {
             if cell(cells, mi_rows, mi_cols, rr, cc) {

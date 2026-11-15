@@ -44,6 +44,8 @@ pub(crate) struct FrameFilterRecords {
     pub(crate) cdef_grid_values: Vec<Option<usize>>,
     pub(crate) cdef_strengths: Vec<crate::filters::cdef::CdefFrameParams>,
     pub(crate) tx_skip_grid_values: Vec<u8>,
+    pub(crate) cdef_skip_grid_values: Vec<u8>,
+    pub(crate) lossless_cells: [Vec<bool>; 2],
     /// Spent stripe input windows, for the next filter phase to fill.
     pub(crate) filter_windows: Vec<splot_recon::RetiredFramePlanes>,
     /// The frame's `BruModes`, `None` when `use_bru == 0`.
@@ -237,67 +239,14 @@ pub(crate) fn derive_cdef_skip_grid(
     rows: usize,
     cols: usize,
     records: &[WienerNsLrTxSkipTransformRecord],
+    values: Vec<u8>,
 ) -> ReconResult<crate::filters::cdef::CdefSkipGrid> {
-    let expected = wienerns_lr_tx_skip_grid_len(rows, cols)?;
-    let mut values = vec![false; expected];
-    let mut written = vec![false; expected];
-    let mut populated = 0usize;
-    for record in records {
-        write_cdef_skip_record(
-            rows,
-            cols,
-            record,
-            &mut values,
-            &mut written,
-            &mut populated,
-        )?;
-    }
-    if populated != expected {
-        return Err(ReconError::BufferLengthMismatch {
-            expected,
-            actual: populated,
-        });
-    }
-    crate::filters::cdef::CdefSkipGrid::new(rows, cols, values).map_err(|_| {
+    let cells =
+        derive_wienerns_lr_skip_grid(rows, cols, records, values, |record| record.skip_flag)?;
+    crate::filters::cdef::CdefSkipGrid::new(rows, cols, cells.into_values()).map_err(|_| {
         ReconError::PcWienerInvalidBounds {
             field: "CDEF skip grid dimensions",
         }
-    })
-}
-
-fn write_cdef_skip_record(
-    rows: usize,
-    cols: usize,
-    record: &WienerNsLrTxSkipTransformRecord,
-    values: &mut [bool],
-    written: &mut [bool],
-    populated: &mut usize,
-) -> ReconResult<()> {
-    for_each_wienerns_lr_tx_skip_record_row(rows, cols, record, |cells| {
-        for index in cells {
-            let actual = values.len().min(written.len());
-            let Some((value, was_written)) = values.get_mut(index).zip(written.get_mut(index))
-            else {
-                return Err(ReconError::BufferLengthMismatch {
-                    expected: index.saturating_add(1),
-                    actual,
-                });
-            };
-            if !*was_written {
-                *value = record.skip_flag;
-                *was_written = true;
-                *populated = populated
-                    .checked_add(1)
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "CDEF skip populated sample count",
-                    })?;
-            } else if *value != record.skip_flag {
-                return Err(ReconError::PcWienerInvalidBounds {
-                    field: "LrTxSkip conflicting transform records",
-                });
-            }
-        }
-        Ok(())
     })
 }
 
@@ -351,6 +300,8 @@ fn derive_wienerns_lr_skip_grid(
     WienerNsLrTxSkipGrid::new(rows, cols, values)
 }
 
+#[allow(clippy::inline_always, reason = "one call per transform record")]
+#[inline(always)]
 fn write_wienerns_lr_tx_skip_record(
     rows: usize,
     cols: usize,
@@ -413,6 +364,8 @@ fn write_tx_skip_rows<const N: usize>(
 
 /// Writes `value` over the unwritten `slots`, failing on a slot another
 /// record wrote differently.
+#[allow(clippy::inline_always, reason = "one call per transform record row")]
+#[inline(always)]
 fn write_tx_skip_slots(slots: &mut [u8], value: u8, populated: &mut usize) -> ReconResult<()> {
     if mi_run_is(slots, WIENERNS_LR_TX_SKIP_UNWRITTEN) {
         crate::support::fill_mi_run(slots, value);

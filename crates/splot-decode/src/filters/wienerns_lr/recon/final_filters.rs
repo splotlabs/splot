@@ -1023,7 +1023,7 @@ fn mi_to_luma_end_recon(mi_end: usize, context: &'static str) -> ReconResult<usi
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     pub(crate) fn cdef_skip_grid(
-        &self,
+        &mut self,
         core: &FrameHeaderCore,
         mi_rows: usize,
         mi_cols: usize,
@@ -1038,6 +1038,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             mi_rows,
             mi_cols,
             &self.filter_records.tx_skip_records,
+            core::mem::take(&mut self.filter_records.cdef_skip_grid_values),
         )
         .map_err(|_| super::lr_pipeline_state_error())?;
         Ok(Some(skip_grid))
