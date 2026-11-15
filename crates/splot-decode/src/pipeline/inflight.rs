@@ -721,7 +721,6 @@ pub(super) fn settle_walk_stage<T: super::frame_tasks::SplitSample>(
 /// reconstruction never ran stops the driver blocking on it.
 pub(crate) struct PendingFinish<T: ReconSample> {
     writer: FrameSlotWriter<T>,
-    progress: Arc<FrameProgress<T>>,
     report: FinishReportWriter,
 }
 
@@ -764,7 +763,6 @@ fn reserve_slot<T: SpareFramePlanes>(
         Some(slot) => slot.reuse_pending(workspace, &buffers)?,
         None => RefFrameSlot::pending_recycled(workspace, Some(&buffers))?,
     };
-    let progress = Arc::clone(&writer.progress);
     ring.push(InflightEntry {
         frame_index,
         slot: erase(slot.share()),
@@ -774,7 +772,6 @@ fn reserve_slot<T: SpareFramePlanes>(
         erase(slot),
         PendingFinish {
             writer,
-            progress,
             report: FinishReportWriter {
                 cell: report,
                 outcome: FinishOutcome::default(),
@@ -786,7 +783,7 @@ fn reserve_slot<T: SpareFramePlanes>(
 impl<T: ReconSample + Send + 'static> PendingFinish<T> {
     /// Shares the progressive output owner with scheduled filter-stripe tasks.
     pub(crate) fn progress_handle(&self) -> Arc<FrameProgress<T>> {
-        Arc::clone(&self.progress)
+        self.writer.progress_handle()
     }
 
     /// Runs `pass` over a frame written whole into its workspace, then
@@ -795,11 +792,8 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
         self,
         pass: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<()>,
     ) -> Result<()> {
-        let Self {
-            writer,
-            progress,
-            report,
-        } = self;
+        let Self { writer, report } = self;
+        let progress = writer.progress_handle();
         progress.with_unpublished_workspace(pass)??;
         progress.freeze_workspace(writer)?;
         drop(report);
@@ -811,11 +805,7 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
         self,
         filter: crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>,
     ) -> crate::filters::wienerns_lr::recon::OwnedFilterShell<T> {
-        let Self {
-            writer,
-            progress: _,
-            mut report,
-        } = self;
+        let Self { writer, mut report } = self;
         let (outcome, shell) = filter.finish(Some(writer));
         match outcome {
             Ok((_, records)) => {
