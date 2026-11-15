@@ -134,7 +134,7 @@ fn direct_cdef_10bit(
         }),
     ];
     assert_eq!(
-        cdef_initializations(Some(&lookup), Some(&target), geometry, (0, size.height())).unwrap(),
+        cdef_initializations(Some(&lookup), geometry, (0, size.height())),
         [expected_initialization; 3]
     );
     let frame = cdef_stripe_into(
@@ -226,7 +226,7 @@ fn complete_direct_u16_cdef_matches_owned_on_odd_edges() {
             &grid,
             None,
             None,
-            StripeInitialization::FullyOverwritten
+            StripeInitialization::Partial
         ),
         owned_cdef_10bit(&workspace, &params, &grid, None, None)
     );
@@ -245,7 +245,7 @@ fn complete_direct_u16_cdef_matches_owned_for_chroma_subsampling() {
                 &grid,
                 None,
                 None,
-                StripeInitialization::FullyOverwritten
+                StripeInitialization::Partial
             ),
             owned_cdef_10bit(&workspace, &params, &grid, None, None),
             "{pixel_format:?}"
@@ -254,7 +254,7 @@ fn complete_direct_u16_cdef_matches_owned_for_chroma_subsampling() {
 }
 
 #[test]
-fn one_disabled_cdef_unit_keeps_copy_initialization() {
+fn one_disabled_cdef_unit_copies_its_blocks() {
     let workspace = patterned_10bit_workspace(PixelFormat::Yuv420, 68, 18);
     let params = active_params();
     let grid = CdefUnitGrid::new(1, 2, vec![Some(0), None]).unwrap();
@@ -265,7 +265,7 @@ fn one_disabled_cdef_unit_keeps_copy_initialization() {
             &grid,
             None,
             None,
-            StripeInitialization::CopyAll
+            StripeInitialization::Partial
         ),
         owned_cdef_10bit(&workspace, &params, &grid, None, None)
     );
@@ -283,7 +283,7 @@ fn poison_oracle_rejects_one_omitted_block_write() {
         &grid,
         None,
         None,
-        StripeInitialization::FullyOverwritten,
+        StripeInitialization::Partial,
     );
     for row in 0..8 {
         mutated[PlaneId::Y.index()][row * 16..row * 16 + 8].fill(0xdead);
@@ -312,7 +312,7 @@ fn partial_skip_and_lossless_cdef_keep_poison_out_of_direct_output() {
             &grid,
             Some(&skip_grid),
             None,
-            StripeInitialization::CopyAll
+            StripeInitialization::Partial
         ),
         owned_cdef_10bit(&workspace, &params, &grid, Some(&skip_grid), None)
     );
@@ -328,7 +328,7 @@ fn partial_skip_and_lossless_cdef_keep_poison_out_of_direct_output() {
             &grid,
             None,
             Some(&lossless),
-            StripeInitialization::CopyAll
+            StripeInitialization::Partial
         ),
         owned_cdef_10bit(&workspace, &params, &grid, None, Some(&lossless))
     );
@@ -498,7 +498,7 @@ fn flat_segment_fills_fully_overwritten_direct_output() {
             &grid,
             None,
             None,
-            StripeInitialization::FullyOverwritten
+            StripeInitialization::Partial
         ),
         owned
     );
@@ -564,7 +564,7 @@ fn flat_blocks_fill_fully_overwritten_direct_output() {
             &grid,
             None,
             None,
-            StripeInitialization::FullyOverwritten
+            StripeInitialization::Partial
         ),
         owned
     );
@@ -598,7 +598,7 @@ fn flat_blocks_keep_a_deblocked_direct_target() {
             &grid,
             None,
             None,
-            StripeInitialization::FullyOverwritten,
+            StripeInitialization::Partial,
         );
         let block_rows = |plane: usize| {
             let shift = usize::from(plane != 0);

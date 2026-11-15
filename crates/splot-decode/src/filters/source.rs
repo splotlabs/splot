@@ -623,6 +623,9 @@ pub(crate) enum StripeInitialization {
     /// The caller proves every destination sample is written, or already holds
     /// its source sample, before publication.
     FullyOverwritten,
+    /// The caller copies from the source every destination sample that its
+    /// filter may not write, before publication.
+    Partial,
 }
 
 impl<T: ReconSample> StripePlane<T> {
@@ -845,6 +848,26 @@ impl<T: ReconSample> StripePlane<T> {
             .checked_add(start)?
             .checked_add(rect.width())?;
         Some((self.samples_mut().get_mut(start..end)?, stride))
+    }
+
+    /// Copies columns `x0..x1` of rows `y0..y1` from `source`.
+    pub(crate) fn copy_columns_from(
+        &mut self,
+        source: FramePlane<'_, T>,
+        (y0, y1): (usize, usize),
+        (x0, x1): (usize, usize),
+    ) -> Option<()> {
+        let source = source.covering(y0, y1);
+        if (x0, x1) == (0, self.width) {
+            let start = y0.checked_sub(self.origin_y)?.checked_mul(self.stride)?;
+            let stride = self.stride;
+            return source.copy_rows(y0, y1, self.samples_mut().get_mut(start..)?, stride);
+        }
+        for y in y0..y1 {
+            let row = source.row(y)?.get(x0..x1)?;
+            self.row_mut(y)?.get_mut(x0..x1)?.copy_from_slice(row);
+        }
+        Some(())
     }
 
     pub(crate) const fn is_direct(&self) -> bool {
