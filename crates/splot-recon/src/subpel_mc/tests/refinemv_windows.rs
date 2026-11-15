@@ -89,9 +89,9 @@ fn scalar_search(
 }
 
 /// Runs the one-call search on two planes and checks the offset against the
-/// scalar search and the windows against the general prediction: whole, or
-/// for `u16` windows the centre `(w - 4) x (h - 4)` at `(2, 2)` after a
-/// centre exit.
+/// scalar search and the windows against the general prediction: but for
+/// the last row, which the scalar search cannot read, or for `u16` windows
+/// the centre `(w - 4) x (h - 4)` at `(2, 2)` after a centre exit.
 fn check<T: ReconSample, P: WindowSample + Into<u16>>(
     planes: [&[T]; 2],
     [width, height, stride]: [usize; 3],
@@ -105,6 +105,7 @@ fn check<T: ReconSample, P: WindowSample + Into<u16>>(
     let expected: [Vec<u16>; 2] = [0, 1].map(|i| {
         let mut window = vec![0u16; size[0] * size[1]];
         subpel_predict_block_strided_into(&views[i], &params[i], &mut window, size[0]).unwrap();
+        window.truncate(size[0] * (size[1] - 1));
         window
     });
     let shift = u32::from(bit_depth.bits() - 8);

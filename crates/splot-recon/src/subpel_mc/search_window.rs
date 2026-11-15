@@ -8,8 +8,9 @@
 use super::*;
 
 /// Predicts the `w x h` bilinear refine-MV search window of `params` (`w`
-/// and `h` each 16 or 24) into `output` at stride `w` as bytes, or returns
-/// `false` without writing for any other block. Its clip bounds are its
+/// and `h` each 16 or 24) but its last row, which no search reads, into
+/// `output` at stride `w` as bytes, or returns `false` without writing for
+/// any other block. Its clip bounds are its
 /// inner `w - 1` columns and `h - 1` rows, so the outer column and row read
 /// their inner neighbour twice.
 #[must_use]
@@ -366,7 +367,6 @@ pub(super) mod avx2 {
             write(row, top, bottom);
             top = bottom;
         }
-        write(H - 1, top, top);
         Some(())
     }
 
@@ -725,7 +725,7 @@ pub(super) mod generic {
         );
         let tables = TAPS.map(|pair| pair.map(|taps| u8x16::load_array(simd, taps)));
         if [h_phase, v_phase] == [0, 0] {
-            for row in 0..height {
+            for row in 0..height - 1 {
                 let at = origin + (row.max(1) - 1) * stride;
                 let Some(line) = output.get_mut(row * width..(row + 1) * width) else {
                     return;
@@ -785,7 +785,6 @@ pub(super) mod generic {
             write(row, top, bottom);
             top = bottom;
         }
-        write(height - 1, top, top);
     }
 
     /// The bilinear `w x h` block, `w` a multiple of 8, of the rows of
@@ -1026,7 +1025,7 @@ pub(super) mod neon {
             Some(())
         };
         if [h_phase, v_phase] == [0, 0] {
-            for row in 0..H {
+            for row in 0..H - 1 {
                 let bytes = bytes(row.max(1) - 1)?;
                 store(row, 0, vqtbl1q_u8(lanes(bytes, 0)?, taps[0]))?;
                 if W == 24 {
@@ -1087,7 +1086,7 @@ pub(super) mod neon {
             write(row + 1, middle, lower)?;
             upper = lower;
         }
-        write(H - 1, upper, upper)
+        Some(())
     }
 
     fearless_simd::kernel!(
