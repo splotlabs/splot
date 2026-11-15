@@ -12,7 +12,8 @@ use crate::span::{BitOffset, ByteOffset};
 
 /// Returns the eight bytes at `byte_index` as a big-endian window, reading
 /// bytes past the end of `data` as zero padding.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
 pub(crate) fn be_window(data: &[u8], byte_index: usize) -> u64 {
     if let Some(bytes) = byte_index
         .checked_add(8)

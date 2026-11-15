@@ -811,7 +811,7 @@ impl<'a> SymbolDecoder<'a> {
             .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok());
         let raw = match bytes {
             Some(bytes) => u64::from_be_bytes(bytes),
-            None => tail_window(self.data, byte_index),
+            None => be_window(self.data, byte_index),
         };
         let window = !(raw << bit_offset);
         let buffered = self.buffered.max(0) as u32;
@@ -1489,14 +1489,6 @@ impl<'a> SymbolDecoder<'a> {
     fn state_error_at_bit(&self, bit_position: u64, kind: SymbolDecoderErrorKind) -> Error {
         state_error_at(self.base, bit_position, kind)
     }
-}
-
-/// The payload tail, zero-padded. Inlined: a call in a hot loop forces the
-/// loop's decoder state out of caller-saved registers.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-#[inline(always)]
-fn tail_window(data: &[u8], byte_index: usize) -> u64 {
-    be_window(data, byte_index)
 }
 
 /// Error constructors are cold and take the position by value, so an inlined
