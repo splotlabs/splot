@@ -737,34 +737,10 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
     ) else {
         return (first, first);
     };
-    let tables: [u8x16<S>; 5] = core::array::from_fn(|block| {
+    let tables: [u8x16<S>; CCSO_LUT_LEN / 16] = core::array::from_fn(|block| {
         u8x16::from_slice(simd, &config.offset_lut[16 * block..16 * block + 16])
     });
     let blocks = config.lut_blocks;
-    let lookup = |index: u8x16<S>| {
-        let low = index & 15;
-        let signed = index.bitcast::<i8x16<S>>();
-        let block = |offset: u8x16<S>, block: usize| {
-            let entries = simd.swizzle_dyn_within_blocks_u8x16(tables[block], low);
-            signed
-                .simd_gt(i8x16::splat(simd, 16 * block as i8 - 1))
-                .select(entries, offset)
-        };
-        let mut offset = simd.swizzle_dyn_within_blocks_u8x16(tables[0], low);
-        if blocks > 1 {
-            offset = block(offset, 1);
-            if blocks > 2 {
-                offset = block(offset, 2);
-                if blocks > 3 {
-                    offset = block(offset, 3);
-                    if blocks > 4 {
-                        offset = block(offset, 4);
-                    }
-                }
-            }
-        }
-        offset
-    };
     let (class_weight0, class_weight1) =
         (config.max_edge_interval * config.max_band, config.max_band);
     let quant_step = u16x16::splat(simd, config.quant_step as u16);
@@ -830,7 +806,7 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
         } else {
             index_u16(rows)
         }?;
-        let offset = lookup(index).bitcast::<i8x16<S>>();
+        let offset = ccso_lookup(&tables, blocks, index).bitcast::<i8x16<S>>();
         let offset = simd.widen_i8x32(simd.combine_i8x16(offset, offset)).0;
         Some(
             (load_lanes(simd, output)?.bitcast::<i16x16<S>>() + offset)
@@ -892,27 +868,7 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
             let Some(index) = wide_index(centers, taps0, taps1) else {
                 break;
             };
-            let (low, signed) = (index & 15, index.bitcast::<i8x32<S>>());
-            let block = |offset: u8x32<S>, block: usize| {
-                let entries = simd.swizzle_dyn_within_blocks_u8x32(tables[block], low);
-                signed
-                    .simd_gt(i8x32::splat(simd, 16 * block as i8 - 1))
-                    .select(entries, offset)
-            };
-            let mut offset = simd.swizzle_dyn_within_blocks_u8x32(tables[0], low);
-            if blocks > 1 {
-                offset = block(offset, 1);
-                if blocks > 2 {
-                    offset = block(offset, 2);
-                    if blocks > 3 {
-                        offset = block(offset, 3);
-                        if blocks > 4 {
-                            offset = block(offset, 4);
-                        }
-                    }
-                }
-            }
-            let offset = offset.bitcast::<i8x32<S>>();
+            let offset = ccso_lookup(&tables, blocks, index).bitcast::<i8x32<S>>();
             if let Some(bytes) = D::u8_slice_mut(&mut *output)
                 && config.max_sample == i32::from(u8::MAX)
             {
@@ -1023,6 +979,27 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
         span.0 = x_start;
     }
     span
+}
+
+/// The offsets that `index` picks from the first `blocks` 16-entry blocks
+/// of `tables`; an index below 80 compares the same signed or unsigned.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn ccso_lookup<S: Simd, V: SimdInt<S, Element = u8, ByteVector = V>>(
+    tables: &[V; CCSO_LUT_LEN / 16],
+    blocks: usize,
+    index: V,
+) -> V {
+    let low = index & 15;
+    let mut offset = tables[0].swizzle_dyn_within_blocks(low);
+    for (block, &table) in (1u8..).zip(&tables[1..]) {
+        if usize::from(block) >= blocks {
+            break;
+        }
+        let entries = table.swizzle_dyn_within_blocks(low);
+        offset = index.simd_gt(16 * block - 1).select(entries, offset);
+    }
+    offset
 }
 
 /// The lane numbers of a CCSO chunk.
