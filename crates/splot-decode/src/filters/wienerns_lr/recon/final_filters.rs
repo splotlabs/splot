@@ -88,7 +88,7 @@ pub(crate) struct FilteredStripe<T: ReconSample> {
     pub(crate) v: Option<StripePlane<T>>,
 }
 
-pub(crate) struct LrStripeOutput<T> {
+pub(crate) struct LrStripeOutput<T: ReconSample> {
     pub(crate) active_planes: [bool; 3],
     pub(crate) initializations: [StripeInitialization; 3],
     pub(crate) target: crate::pipeline::frame_progress::DirectStripeTarget<T>,
@@ -131,7 +131,7 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
         let mut copy = |plane_id: PlaneId, plane: &mut StripePlane<T>| {
             let end_y = plane.end_y().ok_or(StripeCopyError::Geometry)?;
             let Some(target) = target.take(plane_id) else {
-                let cdef = plane.copy_rows_into_mode(
+                let cdef = plane.copy_rows_into(
                     plane.origin_y(),
                     end_y,
                     None,
@@ -139,7 +139,7 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
                 )?;
                 return Ok(core::mem::replace(plane, cdef));
             };
-            plane.copy_rows_into_mode(
+            plane.copy_rows_into(
                 plane.origin_y(),
                 end_y,
                 Some(target),
@@ -542,7 +542,7 @@ fn copy_lr_gaps<T: ReconSample>(
     .ok_or_else(super::lr_pipeline_state_error)
 }
 
-pub(crate) fn lr_initializations<T>(
+pub(crate) fn lr_initializations<T: ReconSample>(
     core: &FrameHeaderCore,
     active_planes: [bool; 3],
     plane_blocks: [&[WienerNsLrSourceBlock]; 3],

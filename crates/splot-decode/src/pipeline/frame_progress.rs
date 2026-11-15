@@ -119,17 +119,17 @@ struct DirectPlaneRegion<T> {
     origin_y: usize,
 }
 
-pub(crate) struct DirectPlaneTarget<T> {
+/// SAFETY: moving this unique disjoint-band capability transfers ownership.
+unsafe impl<T: Send> Send for DirectPlaneRegion<T> {}
+
+pub(crate) struct DirectPlaneTarget<T: ReconSample> {
     region: DirectPlaneRegion<T>,
-    progress: Arc<dyn DirectLeaseRelease>,
+    progress: Arc<FrameProgress<T>>,
     stripe: usize,
     deblocked: bool,
 }
 
-/// SAFETY: moving this unique disjoint-band capability transfers ownership.
-unsafe impl<T: Send> Send for DirectPlaneTarget<T> {}
-
-impl<T> DirectPlaneTarget<T> {
+impl<T: ReconSample> DirectPlaneTarget<T> {
     pub(crate) const fn width(&self) -> usize {
         self.region.width
     }
@@ -164,9 +164,7 @@ impl<T> DirectPlaneTarget<T> {
         // SAFETY: disjoint checked stripes are lent once each; the whole workspace only with none leased.
         unsafe { slice::from_raw_parts_mut(self.region.samples.as_ptr(), self.region.len) }
     }
-}
 
-impl<T: ReconSample> DirectPlaneTarget<T> {
     /// The region's rows as they are, viewed while no `samples_mut` borrow lives.
     pub(crate) fn rows(&self) -> Option<crate::filters::source::FramePlane<'_, T>> {
         let (start, len) = (self.region.samples.as_ptr(), self.region.len);
@@ -191,16 +189,16 @@ impl<T: ReconSample> DirectPlaneTarget<T> {
     }
 }
 
-impl<T> Drop for DirectPlaneTarget<T> {
+impl<T: ReconSample> Drop for DirectPlaneTarget<T> {
     fn drop(&mut self) {
-        self.progress.release_hold(self.stripe);
+        self.progress.release_direct_hold(self.stripe);
     }
 }
 
-impl<T> DirectPlaneRegion<T> {
+impl<T: ReconSample> DirectPlaneRegion<T> {
     fn into_target(
         self,
-        progress: Arc<dyn DirectLeaseRelease>,
+        progress: Arc<FrameProgress<T>>,
         stripe: usize,
         deblocked: bool,
     ) -> DirectPlaneTarget<T> {
@@ -213,11 +211,11 @@ impl<T> DirectPlaneRegion<T> {
     }
 }
 
-pub(crate) struct DirectStripeTarget<T> {
+pub(crate) struct DirectStripeTarget<T: ReconSample> {
     planes: [Option<DirectPlaneTarget<T>>; 3],
 }
 
-impl<T> DirectStripeTarget<T> {
+impl<T: ReconSample> DirectStripeTarget<T> {
     pub(crate) fn get(&self, plane: PlaneId) -> Option<&DirectPlaneTarget<T>> {
         self.planes[plane.index()].as_ref()
     }
@@ -282,10 +280,6 @@ impl<T: ReconSample> DirectStripeLease<T> {
     }
 }
 
-trait DirectLeaseRelease: Send + Sync {
-    fn release_hold(&self, stripe: usize);
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PublishedPlane<'a, T> {
     pub(crate) samples: &'a [T],
@@ -324,12 +318,6 @@ const RELEASED: usize = usize::MAX - 1;
 /// It satisfies every row threshold like the frame height, but tells a
 /// reader to read the slot instead of the plane table.
 const FROZEN: usize = WatermarkCell::FAILED - 1;
-
-impl<T: ReconSample> DirectLeaseRelease for FrameProgress<T> {
-    fn release_hold(&self, stripe: usize) {
-        self.release_direct_hold(stripe);
-    }
-}
 
 impl<T: ReconSample> FrameProgress<T> {
     /// The decode's reusable storage, which every frame reads back from its
@@ -498,10 +486,9 @@ impl<T: ReconSample> FrameProgress<T> {
             *slot = holds;
         }
         drop(layout);
-        let progress: Arc<dyn DirectLeaseRelease> = self.clone();
-        let y = y.into_target(Arc::clone(&progress), stripe, deblocked);
-        let u = u.map(|region| region.into_target(Arc::clone(&progress), stripe, deblocked));
-        let v = v.map(|region| region.into_target(progress, stripe, deblocked));
+        let y = y.into_target(Arc::clone(self), stripe, deblocked);
+        let u = u.map(|region| region.into_target(Arc::clone(self), stripe, deblocked));
+        let v = v.map(|region| region.into_target(Arc::clone(self), stripe, deblocked));
         Some(DirectStripeLease {
             progress: Arc::clone(self),
             stripe,

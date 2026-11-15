@@ -6,6 +6,7 @@
 use super::super::{OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
 use super::*;
 use crate::filters::source::DeblockedWindow;
+use crate::filters::source::StripeInitialization::CopyAll;
 use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
 use crate::pipeline::frame_progress::{FrameProgress, FrontierRows};
 use splot_recon::{BitDepth, CurrentFrameWorkspace};
@@ -1574,8 +1575,8 @@ fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
             .unwrap();
     }
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let band = StripePlane::copy_from(cdef_source, 0, 4).unwrap();
-    let overlap = [StripePlane::copy_from(cdef_source, 4, 8).unwrap()];
+    let band = StripePlane::copy_from_into(cdef_source, 0, 4, None, CopyAll).unwrap();
+    let overlap = [StripePlane::copy_from_into(cdef_source, 4, 8, None, CopyAll).unwrap()];
     let mut storage = Vec::new();
 
     assert!(
@@ -1638,7 +1639,7 @@ fn lr_source_rows_match_the_materialized_window() {
     }
     let curr = FramePlane::new(&curr_workspace, PlaneId::Y).unwrap();
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let band = StripePlane::copy_from(cdef_source, 2, 14).unwrap();
+    let band = StripePlane::copy_from_into(cdef_source, 2, 14, None, CopyAll).unwrap();
     for (block_x, block_y) in [(0, 4), (6, 6), (11, 8), (5, 4)] {
         let (mut window_storage, mut row_storage) = (Vec::new(), Vec::new());
         let window = LrSourceWindow::materialize(
@@ -1696,8 +1697,8 @@ fn lr_source_window_reuses_storage_after_an_error() {
             .unwrap();
     }
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let cdef = StripePlane::copy_from(cdef_source, 0, 8).unwrap();
-    let short_cdef = StripePlane::copy_from(cdef_source, 0, 1).unwrap();
+    let cdef = StripePlane::copy_from_into(cdef_source, 0, 8, None, CopyAll).unwrap();
+    let short_cdef = StripePlane::copy_from_into(cdef_source, 0, 1, None, CopyAll).unwrap();
     let mut storage = Vec::new();
 
     let window = LrSourceWindow::materialize(

@@ -5,6 +5,7 @@
 
 #![allow(clippy::expect_used)]
 
+use super::StripeInitialization::CopyAll;
 use super::{DeblockedWindow, FramePlane, StripePlane, take_stripe_sample_buffer, window_bounds};
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
@@ -374,7 +375,8 @@ fn stripe_copy_preserves_u8_source_samples() {
     let source = [1_u8, 2, 3, 4, 5, 6, 7, 8];
     let plane = FramePlane::window(&source, 4, 2, 0, 2).expect("a valid source plane");
 
-    let stripe = StripePlane::copy_from(plane, 0, 2).expect("a valid stripe copy");
+    let stripe =
+        StripePlane::copy_from_into(plane, 0, 2, None, CopyAll).expect("a valid stripe copy");
 
     assert_eq!(stripe.samples(), [1, 2, 3, 4, 5, 6, 7, 8]);
 }
@@ -413,8 +415,8 @@ fn u8_direct_stripe_initializes_strided_u8_rows() {
     };
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");
-    let mut output =
-        StripePlane::copy_from_into(source, 0, 2, target.take(PlaneId::Y)).expect("direct stripe");
+    let mut output = StripePlane::copy_from_into(source, 0, 2, target.take(PlaneId::Y), CopyAll)
+        .expect("direct stripe");
 
     assert!(output.is_direct());
     output.row_mut(1).expect("second row")[3] = 201;
@@ -447,7 +449,14 @@ fn failed_direct_copies_leave_the_lease_reusable() {
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");
     assert!(
-        StripePlane::copy_from_into(malformed_source, 0, height, target.take(PlaneId::Y)).is_err()
+        StripePlane::copy_from_into(
+            malformed_source,
+            0,
+            height,
+            target.take(PlaneId::Y),
+            CopyAll
+        )
+        .is_err()
     );
     drop((target, lease));
     assert!(progress.direct_stripe(0).is_some(), "the lease is reusable");
@@ -459,7 +468,7 @@ fn failed_direct_copies_leave_the_lease_reusable() {
     target.shorten_for_test(PlaneId::Y);
     assert!(
         source
-            .copy_rows_into(0, height, target.take(PlaneId::Y))
+            .copy_rows_into(0, height, target.take(PlaneId::Y), CopyAll)
             .is_err()
     );
     drop((target, lease));
