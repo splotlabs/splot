@@ -3,32 +3,36 @@
 
 //! AV2 § 7.21.7 display film-grain output adapter.
 
-use splot_recon::{DecodedFrame, ReconSample};
+use splot_recon::{DecodedFrame, FramePlaneSamples, ReconSample};
 
 use crate::Result;
 use crate::pipeline::ActiveFilmGrain;
 
-pub(crate) enum DisplayFrame<'a, T: ReconSample> {
-    Borrowed(&'a DecodedFrame<T>),
-    Owned(Box<DecodedFrame<T>>),
+/// The grained planes of the last displayed frame, kept for the next one.
+#[derive(Default)]
+pub(crate) struct GrainPlanes {
+    pub(crate) eight: FramePlaneSamples<u8>,
+    pub(crate) ten: FramePlaneSamples<u16>,
 }
 
-impl<T: ReconSample> DisplayFrame<'_, T> {
-    pub(crate) fn as_ref(&self) -> &DecodedFrame<T> {
-        match self {
-            Self::Borrowed(frame) => frame,
-            Self::Owned(frame) => frame.as_ref(),
-        }
-    }
-}
-
-pub(crate) fn frame_for_output<'a, T: ReconSample>(
-    frame: &'a DecodedFrame<T>,
+/// Gives `write` the displayed form of `frame`: the frame itself, or a grained
+/// copy in the `spare` planes, which keep its storage for the next frame.
+pub(crate) fn write_display<T: ReconSample>(
+    frame: &DecodedFrame<T>,
     grain: Option<&ActiveFilmGrain>,
-) -> Result<DisplayFrame<'a, T>> {
+    spare: &mut FramePlaneSamples<T>,
+    write: impl FnOnce(&DecodedFrame<T>) -> Result<()>,
+) -> Result<()> {
     let Some(grain) = grain else {
-        return Ok(DisplayFrame::Borrowed(frame));
+        return write(frame);
     };
-    let frame = splot_recon::apply_film_grain(frame, &grain.model, grain.grain_seed)?;
-    Ok(DisplayFrame::Owned(Box::new(frame)))
+    let grained = splot_recon::apply_film_grain_into(
+        frame,
+        &grain.model,
+        grain.grain_seed,
+        core::mem::take(spare),
+    )?;
+    let written = write(&grained);
+    *spare = grained.into_plane_samples();
+    written
 }

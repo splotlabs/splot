@@ -7,9 +7,9 @@
 //! reconstruction, and leaves a [`WalkedFrame`]: an owned, `Send` capture of
 //! everything the shared § 7.2 in-loop filter chain and the frame freeze still
 //! need, so the finish phase depends on no borrow of the driver's scratch or
-//! reference state. [`finish_walked_frame`] consumes it and returns the filter
-//! records for recycling. TIP output and bridge frames have no filter phase, so
-//! they leave the walk already final, as [`WalkStage::Complete`].
+//! reference state. [`WalkedFrame::into_frontier`] opens its filter frontier.
+//! TIP output and bridge frames have no filter phase, so they leave the walk
+//! already final, as [`WalkStage::Complete`].
 //!
 //! The frame header is shared as an [`Arc`] between the walk output the driver
 //! reads and the walked frame the filter phase consumes, so a deferred filter
@@ -50,18 +50,13 @@ pub(crate) struct FrameWalk<T: ReconSample> {
 /// Held inline: the stage moves once per frame, which costs less than boxing it.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum WalkStage<T: ReconSample> {
-    /// The filter stages are still owed; [`finish_walked_frame`] runs them.
+    /// The filter stages are still owed; [`WalkedFrame::into_frontier`] starts them.
     Pending(WalkedFrame<T>),
     /// The frame has no filter phase and left the walk final.
     Complete(DecodedFrame<T>),
 }
 
 impl<T: ReconSample> WalkStage<T> {
-    /// Records that a frame still owes its filter phase.
-    pub(crate) fn pending(walked: WalkedFrame<T>) -> Self {
-        Self::Pending(walked)
-    }
-
     /// Records that a frame left the walk without owing a filter phase.
     pub(crate) fn complete(frame: DecodedFrame<T>) -> Self {
         Self::Complete(frame)
@@ -182,7 +177,7 @@ impl FilterSinkSetup {
             TemporalMotionField::empty()
         };
         FrameWalk {
-            stage: WalkStage::pending(self.walked_frame(
+            stage: WalkStage::Pending(self.walked_frame(
                 workspace,
                 filter_inputs,
                 Arc::clone(&core),

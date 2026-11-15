@@ -548,9 +548,6 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
             return None;
         }
         let claim = |stage: usize, row: usize| Claim { stage, row };
-        if let Some(parse) = self.claim_critical() {
-            return Some(parse);
-        }
         if let Some(row) = self.stages[PREPARE].claim(|_| {
             self.early_ready.load(Ordering::Acquire)
                 && self.motion_deps.get().is_none_or(|deps| {

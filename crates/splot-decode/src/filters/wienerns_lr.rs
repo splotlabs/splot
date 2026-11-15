@@ -61,7 +61,6 @@ pub(crate) struct FrameFilterRecords {
 pub(crate) struct FilterStripeLists {
     pub(crate) ranges: Vec<(usize, usize)>,
     pub(crate) lifecycles: Vec<recon::StripeLifecycle>,
-    pub(crate) outcomes: Vec<Option<crate::Result<()>>>,
 }
 
 /// The capacities one tile's spent frame-sized record lists reached.

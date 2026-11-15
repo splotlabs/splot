@@ -14,6 +14,7 @@ use crate::error::Result;
 use crate::filters::gdf::GdfBlockGrid;
 
 use super::super::selectable_symbol_read_error;
+use super::UnitWindow;
 use crate::bitstream::tile_payload::BlockSymbolTraceReadError;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -22,10 +23,7 @@ pub(crate) struct GdfState {
     block_size: usize,
     sb_size4: usize,
     sb_per_gdf: usize,
-    row_start: usize,
-    col_start: usize,
-    grid_rows: usize,
-    grid_cols: usize,
+    window: UnitWindow,
     values: Vec<u8>,
 }
 
@@ -44,16 +42,8 @@ impl GdfState {
             inactive.values.clear();
             return Ok(inactive);
         }
-        let unit_mi = self.block_size / 4;
-        let row_start = mi_rows.start / unit_mi;
-        let col_start = mi_cols.start / unit_mi;
-        let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
-        let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
-        let grid_rows = row_end.saturating_sub(row_start);
-        let grid_cols = col_end.saturating_sub(col_start);
-        let len = grid_rows
-            .checked_mul(grid_cols)
-            .ok_or_else(gdf_state_error)?;
+        let window = self.window.tile(&mi_rows, &mi_cols, self.block_size / 4);
+        let len = window.len().ok_or_else(gdf_state_error)?;
         let mut values = spare.map(|spare| spare.values).unwrap_or_default();
         values.clear();
         values
@@ -65,10 +55,7 @@ impl GdfState {
             block_size: self.block_size,
             sb_size4: self.sb_size4,
             sb_per_gdf: self.sb_per_gdf,
-            row_start,
-            col_start,
-            grid_rows,
-            grid_cols,
+            window,
             values,
         })
     }
@@ -105,7 +92,7 @@ impl GdfState {
         };
         let block_size = usize::try_from(gdf_block_size(filter.gdf_unit_matches_sb_size, geometry))
             .map_err(|_| gdf_state_error())?;
-        let sb_size4 = sb_size4(sb_size);
+        let sb_size4 = crate::tile::frame_superblock_h4(partition.seq_sb_size(), frame_is_intra);
         let sb_width = sb_size4.checked_mul(4).ok_or_else(gdf_state_error)?;
         let sb_per_gdf = block_size
             .checked_div(sb_width)
@@ -115,20 +102,14 @@ impl GdfState {
             .checked_div(4)
             .filter(|&value| value != 0)
             .ok_or_else(gdf_state_error)?;
-        let grid_rows = mi_rows.div_ceil(unit_mi);
-        let grid_cols = mi_cols.div_ceil(unit_mi);
-        let cells = grid_rows
-            .checked_mul(grid_cols)
-            .ok_or_else(gdf_state_error)?;
+        let window = UnitWindow::frame(mi_rows.div_ceil(unit_mi), mi_cols.div_ceil(unit_mi));
+        let cells = window.len().ok_or_else(gdf_state_error)?;
         Ok(Self {
             active: true,
             block_size,
             sb_size4,
             sb_per_gdf,
-            row_start: 0,
-            col_start: 0,
-            grid_rows,
-            grid_cols,
+            window,
             values: vec![2; cells],
         })
     }
@@ -139,10 +120,7 @@ impl GdfState {
             block_size: 0,
             sb_size4: 0,
             sb_per_gdf: 0,
-            row_start: 0,
-            col_start: 0,
-            grid_rows: 0,
-            grid_cols: 0,
+            window: UnitWindow::default(),
             values: Vec::new(),
         }
     }
@@ -170,7 +148,10 @@ impl GdfState {
         (unit_row, unit_col): (usize, usize),
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        let index = self.index(unit_row, unit_col).ok_or_else(gdf_state_error)?;
+        let index = self
+            .window
+            .index(unit_row, unit_col)
+            .ok_or_else(gdf_state_error)?;
         self.values[index] =
             read_use_gdf(work_unit.cdf_mut().tile_cdfs_mut(), symbols, tile_offset)?;
         Ok(())
@@ -193,26 +174,13 @@ impl GdfState {
     }
 
     /// The units of this tile state in raster order, which is their coding order.
-    pub(crate) fn units(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        (self.row_start..self.row_start + self.grid_rows).flat_map(move |row| {
-            (self.col_start..self.col_start + self.grid_cols).map(move |col| (row, col))
-        })
+    pub(crate) fn units(&self) -> impl Iterator<Item = (usize, usize)> {
+        self.window.units()
     }
 
     /// `GdfBlkSize`, `0` when no block codes `use_gdf`.
     pub(crate) const fn block_size(&self) -> usize {
         self.block_size
-    }
-
-    fn index(&self, row: usize, col: usize) -> Option<usize> {
-        crate::tile::local_grid_index(
-            row,
-            col,
-            self.row_start,
-            self.col_start,
-            self.grid_rows,
-            self.grid_cols,
-        )
     }
 
     pub(crate) fn merge_tile(
@@ -225,46 +193,36 @@ impl GdfState {
             || self.block_size != tile.block_size
             || self.sb_size4 != tile.sb_size4
             || self.sb_per_gdf != tile.sb_per_gdf
-            || self.row_start != 0
-            || self.col_start != 0
+            || !self.window.is_frame()
         {
             return Err(gdf_state_error());
         }
         if !self.active {
             return Ok(());
         }
-        let unit_mi = self.block_size / 4;
-        let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
-        let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
-        let expected_row_start = mi_rows.start / unit_mi;
-        let expected_col_start = mi_cols.start / unit_mi;
-        if tile.row_start != expected_row_start
-            || tile.col_start != expected_col_start
-            || tile.grid_rows != row_end.saturating_sub(expected_row_start)
-            || tile.grid_cols != col_end.saturating_sub(expected_col_start)
-        {
+        if tile.window != self.window.tile(&mi_rows, &mi_cols, self.block_size / 4) {
             return Err(gdf_state_error());
         }
-        for row in mi_rows.start / unit_mi..row_end {
-            for col in mi_cols.start / unit_mi..col_end {
-                let index = self.index(row, col).ok_or_else(gdf_state_error)?;
-                let tile_index = tile.index(row, col).ok_or_else(gdf_state_error)?;
-                self.values[index] = tile.values[tile_index];
-            }
-        }
-        Ok(())
+        self.window
+            .merge(tile.window, &tile.values, &mut self.values)
+            .ok_or_else(gdf_state_error)
     }
 
     pub(crate) fn into_grid(self) -> Result<Option<GdfBlockGrid>> {
         if !self.active {
             return Ok(None);
         }
-        if self.row_start != 0 || self.col_start != 0 {
+        if !self.window.is_frame() {
             return Err(gdf_state_error());
         }
-        GdfBlockGrid::new(self.block_size, self.grid_rows, self.grid_cols, self.values)
-            .map(Some)
-            .map_err(|()| gdf_state_error())
+        GdfBlockGrid::new(
+            self.block_size,
+            self.window.rows,
+            self.window.cols,
+            self.values,
+        )
+        .map(Some)
+        .map_err(|()| gdf_state_error())
     }
 }
 
@@ -286,14 +244,6 @@ fn read_use_gdf(
         return Err(gdf_state_error());
     }
     Ok(value)
-}
-
-const fn sb_size4(sb_size: SuperblockSize) -> usize {
-    match sb_size {
-        SuperblockSize::Block64x64 => 16,
-        SuperblockSize::Block128x128 => 32,
-        SuperblockSize::Block256x256 => 64,
-    }
 }
 
 fn gdf_state_error() -> crate::error::DecodeError {

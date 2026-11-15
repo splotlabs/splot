@@ -131,7 +131,7 @@ fn odd_origin_warp_block_stores_round2_cells_sampled_at_its_own_rows() {
         swap: false,
     };
     let mut cells = Vec::new();
-    visit_temporal_block_cells(block, refs, 16, 16, |y8, x8, cell, _| {
+    visit_temporal_block_cells(block, refs, 16, 16, |y8, x8, cell| {
         cells.extend(x8.map(|x8| (y8, x8, cell.mvs[0])));
     });
     let expected: Vec<_> = [(1, 2, 3, 5), (1, 3, 3, 7), (2, 2, 5, 5), (2, 3, 5, 7)]
@@ -576,7 +576,7 @@ fn reference_order_hints_exclude_invalid_and_restricted_slots() {
 }
 
 #[test]
-fn metadata_constructor_matches_delayed_reference_resolution() {
+fn metadata_constructor_resolves_block_references() {
     let ref_order_hints = [Some(1), None, Some(3)];
     for (block_hints, expected) in [
         ([Some(3), Some(1)], [2, 0]),
@@ -594,23 +594,18 @@ fn metadata_constructor_matches_delayed_reference_resolution() {
             [Mv { row: 8, col: 16 }, Mv { row: 24, col: 32 }],
             [None; 2],
         );
-        let mut delayed = TemporalMotionField::new(2, 2).unwrap();
-        delayed.record_block(block);
-        delayed.set_reference_metadata(true, (8, 8), &ref_order_hints);
-
-        let mut immediate =
+        let mut field =
             TemporalMotionField::new_with_metadata(2, 2, true, (8, 8), &ref_order_hints).unwrap();
-        immediate.record_block(block);
+        field.record_block(block);
 
-        assert_eq!(immediate, delayed);
-        assert_eq!(immediate.cell(0, 0).unwrap().ref_indices, expected);
+        assert_eq!(field.cell(0, 0).unwrap().ref_indices, expected);
     }
 }
 
 /// Field hints are ref_valid-gated and repeat hint 1; block hints are raw, so
 /// hints 5 and 2 name no field slot.
 #[test]
-fn carried_slots_match_delayed_resolution_for_every_reference_pair() {
+fn carried_slots_match_per_block_resolution_for_every_reference_pair() {
     let field_hints = [Some(1), None, Some(3), Some(1), Some(6), None, Some(9)];
     let raw_hints = [1, 5, 3, 1, 6, 2, 9];
     let lists = || (0..raw_hints.len()).map(Some).chain([None]);
@@ -647,17 +642,17 @@ fn carried_slots_match_delayed_resolution_for_every_reference_pair() {
         .collect();
     let frame_size = (mi_cols * 4, 8);
 
-    let mut delayed = TemporalMotionField::new(2, mi_cols).unwrap();
+    let field = || {
+        TemporalMotionField::new_with_metadata(2, mi_cols, true, frame_size, &field_hints).unwrap()
+    };
+    let mut per_block = field();
     for &block in &blocks {
-        delayed.record_block(block);
+        per_block.record_block(block);
     }
-    delayed.set_reference_metadata(true, frame_size, &field_hints);
+    let mut carried = field();
+    carried.record_blocks(&blocks);
 
-    let mut immediate =
-        TemporalMotionField::new_with_metadata(2, mi_cols, true, frame_size, &field_hints).unwrap();
-    immediate.record_blocks(&blocks);
-
-    assert_eq!(immediate, delayed);
+    assert_eq!(carried, per_block);
 }
 
 #[test]

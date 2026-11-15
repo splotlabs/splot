@@ -72,9 +72,16 @@ fn inherited_inter_segmentation_map_decodes_expected_frames() {
         ],
         "frame hashes pinned from avmdec's byte-identical raw output"
     );
+    let segment_ids = crate::pipeline::collect_frames_from_plan(
+        SEGMENTATION_INHERIT_FIXTURE,
+        &crate::DecodeOptions::default(),
+        1,
+        |frame| Ok(frame.segment_ids.product().map(|map| (**map).clone())),
+    )
+    .expect("decode");
+    assert!(segment_ids[1].is_some(), "the MI map is published at emit");
     assert_eq!(
-        frames[1].segment_ids.product(),
-        frames[2].segment_ids.product(),
+        segment_ids[1], segment_ids[2],
         "segmentation_update_map == 0 preserves the previous MI map"
     );
 }

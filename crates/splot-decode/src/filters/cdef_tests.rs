@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::filters::source::DeblockedWindow;
+use crate::filters::source::StripeInitialization::CopyAll;
 use crate::test_support::yuv420_workspace as workspace_8bit;
 use splot_recon::{
     CDEF_DIRECTIONS, CdefSampleTaps, CdefTap, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex,
@@ -509,7 +510,7 @@ fn assert_cdef_block_matches_per_sample_reference(
                 coeff_shift: 0,
             };
             let mut pad = [0u16; CDEF_PADDED_AREA];
-            let mut filtered = StripePlane::copy_from(snap, 0, 64).unwrap();
+            let mut filtered = StripePlane::copy_from_into(snap, 0, 64, None, CopyAll).unwrap();
             compute_cdef_filter_plane::<u8>(snap, &ctx, false, &filter, &mut pad, &mut filtered)
                 .unwrap();
             let offsets = CdefTapOffsets::for_direction(filter.dir);
@@ -826,4 +827,332 @@ fn stripe_identity_follows_strengths_and_skipped_blocks() {
         identity(Some(&strengths), Some(&one), (64, 128)),
         [true, false]
     );
+}
+
+/// One scenario of the § 7.18 frame reference.
+struct ReferenceCase<'a> {
+    format: PixelFormat,
+    size: (usize, usize),
+    strengths: &'a [CdefFrameParams],
+    unit_index: fn(usize) -> Option<usize>,
+    skip: Option<fn(usize, usize) -> bool>,
+    lossless: &'a [(usize, usize, bool)],
+    tile_starts: Option<(&'a [u32], &'a [u32])>,
+}
+
+/// § 7.18 over the whole frame, one sample at a time, from `cdef_direction`
+/// and `cdef_filter_sample`; each plane as packed rows.
+fn reference_cdef<T: ReconSample>(
+    ws: &CurrentFrameWorkspace<T>,
+    case: &ReferenceCase<'_>,
+    lookup: &CdefBlockLookup<'_>,
+    coeff_shift: u32,
+) -> [Vec<u16>; 3] {
+    let planes = [PlaneId::Y, PlaneId::U, PlaneId::V];
+    let snaps = planes.map(|plane| FramePlane::new(ws, plane));
+    let mut out = snaps.map(|snap| {
+        snap.map_or_else(Vec::new, |snap| {
+            (0..snap.frame_height())
+                .flat_map(|y| snap.row(y).unwrap().iter().map(|s| s.to_u16()))
+                .collect()
+        })
+    });
+    let (mi_rows, mi_cols) = (lookup.mi_rows, lookup.mi_cols);
+    let luma = snaps[0].unwrap();
+    for r in (0..mi_rows).step_by(2) {
+        for c in (0..mi_cols).step_by(2) {
+            let Some(index) = lookup.grid.strength_for_mi(r, c).unwrap() else {
+                continue;
+            };
+            let Some(blocks) = lookup.block_planes(r, c).unwrap() else {
+                continue;
+            };
+            let params = case.strengths[index];
+            let (x0, y0) = (c * MI_SIZE, r * MI_SIZE);
+            let (bw, bh) = (
+                8.min(luma.width().saturating_sub(x0)),
+                8.min(luma.frame_height().saturating_sub(y0)),
+            );
+            if bw == 0 || bh == 0 {
+                continue;
+            }
+            let (y_dir, var) = if params.y_pri == 0 && params.uv_pri == 0 {
+                (0, 0)
+            } else {
+                let block = core::array::from_fn(|i| {
+                    core::array::from_fn(|j| {
+                        let row = luma.row(y0 + i.min(bh - 1)).unwrap();
+                        i32::from(row[x0 + j.min(bw - 1)].to_u16() >> coeff_shift) - 128
+                    })
+                });
+                cdef_direction(&block)
+            };
+            let [y_filter, uv_filter] =
+                cdef_strengths(params, coeff_shift, (lookup.sub_x, lookup.sub_y))
+                    .filters(y_dir, var);
+            let rows = tile_span(lookup.tile_row_starts, r, mi_rows);
+            let cols = tile_span(lookup.tile_col_starts, c, mi_cols);
+            for (index, snap) in snaps.iter().enumerate() {
+                let Some(snap) = *snap else { continue };
+                let (filter, filtered) = if index == 0 {
+                    (y_filter, blocks.luma)
+                } else {
+                    (uv_filter, blocks.chroma)
+                };
+                if !filtered || (filter.pri_str == 0 && filter.sec_str == 0) {
+                    continue;
+                }
+                let (sx, sy) = if index == 0 {
+                    (0, 0)
+                } else {
+                    (lookup.sub_x, lookup.sub_y)
+                };
+                let start = ((cols.0 * MI_SIZE) >> sx, (rows.0 * MI_SIZE) >> sy);
+                let end = (
+                    ((cols.1 * MI_SIZE) >> sx).min(snap.width()),
+                    ((rows.1 * MI_SIZE) >> sy).min(snap.frame_height()),
+                );
+                let offsets = CdefTapOffsets::for_direction(filter.dir);
+                let (px, py) = (x0 >> sx, y0 >> sy);
+                for y in py..(py + (8 >> sy)).min(snap.frame_height()) {
+                    for x in px..(px + (8 >> sx)).min(snap.width()) {
+                        let center = i32::from(snap.row(y).unwrap()[x].to_u16());
+                        let taps = gather_taps(
+                            snap, &offsets, x, y, start.0, start.1, end.0, end.1, center,
+                        );
+                        out[index][y * snap.width() + x] = cdef_filter_sample(
+                            &taps,
+                            filter.pri_str,
+                            filter.sec_str,
+                            filter.damping,
+                            filter.coeff_shift,
+                        ) as u16;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Fills `ws` with noise of a spread that changes per 16x16 tile, flat tiles
+/// included, so each kernel mode and the flat paths run.
+fn seed_reference_noise<T: ReconSample>(ws: &mut CurrentFrameWorkspace<T>, max: u16, seed: u32) {
+    let mut state = seed;
+    let spreads = [0u16, 1, 3, 9, 40, max];
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let Ok(size) = ws
+            .plane(plane)
+            .map(splot_recon::CurrentFramePlane::storage_size)
+        else {
+            continue;
+        };
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let spread = spreads[(x / 16 * 7 + y / 16 * 3 + plane.index()) % spreads.len()];
+                let base = (max / 2).saturating_sub(spread / 2);
+                let noise = if spread == 0 {
+                    0
+                } else {
+                    (state >> 16) as u16 % (spread + 1)
+                };
+                let value = T::try_from_u16((base + noise).min(max)).ok().unwrap();
+                ws.set_reconstructed_sample(plane, x, y, value).unwrap();
+            }
+        }
+    }
+}
+
+fn run_reference_case<T: ReconSample>(case: &ReferenceCase<'_>, bit_depth: BitDepth, seed: u32) {
+    let (width, height) = case.size;
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        bit_depth,
+        case.format,
+        PlaneSize::new(width, height).unwrap(),
+        PlaneRect::new(0, 0, width, height).unwrap(),
+    )
+    .unwrap();
+    let mut ws = CurrentFrameWorkspace::<T>::new(info, T::default()).unwrap();
+    let max = ((1u32 << bit_depth.bits()) - 1) as u16;
+    seed_reference_noise(&mut ws, max, seed);
+    let (mi_rows, mi_cols) = (height.div_ceil(8) * 2, width.div_ceil(8) * 2);
+    let units = (
+        mi_rows.div_ceil(CDEF_UNIT_MI),
+        mi_cols.div_ceil(CDEF_UNIT_MI),
+    );
+    let grid = CdefUnitGrid::new(
+        units.0,
+        units.1,
+        (0..units.0 * units.1).map(case.unit_index).collect(),
+    )
+    .unwrap();
+    let skip = case.skip.map(|skip| {
+        let values = (0..mi_rows * mi_cols)
+            .map(|cell| u8::from(skip(cell / mi_cols, cell % mi_cols)))
+            .collect();
+        CdefSkipGrid::new(mi_rows, mi_cols, values).unwrap()
+    });
+    let blocks = |luma: bool| {
+        case.lossless
+            .iter()
+            .filter(|block| block.2 == luma)
+            .map(|&(r, c, _)| deblock_block(r, c, 2, 2, true))
+            .collect::<Vec<_>>()
+    };
+    let lossless = (!case.lossless.is_empty()).then(|| {
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
+            mi_rows,
+            mi_cols,
+            &blocks(true),
+            &blocks(false),
+        )
+        .unwrap()
+    });
+    let subsampling = (
+        usize::from(case.format.subsampling_x()),
+        usize::from(case.format.subsampling_y()),
+    );
+    let coeff_shift = u32::from(bit_depth.bits()) - 8;
+    let lookup = CdefBlockLookup {
+        strengths: case.strengths,
+        grid: &grid,
+        tile_row_starts: case.tile_starts.map(|(rows, _)| rows),
+        tile_col_starts: case.tile_starts.map(|(_, cols)| cols),
+        skip_grid: skip.as_ref(),
+        lossless_grid: lossless.as_ref(),
+        mi_rows,
+        mi_cols,
+        sub_x: subsampling.0,
+        sub_y: subsampling.1,
+        has_chroma: !case.format.is_monochrome(),
+        coeff_shift,
+        fill_flat: [true; 3],
+        units: &cdef_units(case.strengths, coeff_shift, subsampling),
+    };
+    let want = reference_cdef(&ws, case, &lookup, coeff_shift);
+    let input = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
+        ws.plane(plane).map_or_else(
+            |_| Vec::new(),
+            |_| {
+                crate::test_support::workspace_rows(&ws, plane)
+                    .into_iter()
+                    .map(ReconSample::to_u16)
+                    .collect()
+            },
+        )
+    });
+    assert!(
+        (0..3).all(|plane| want[plane].is_empty() || want[plane] != input[plane]),
+        "the reference filters every plane"
+    );
+    let storage = ws.plane(PlaneId::Y).unwrap().storage_size().height();
+    let frame = cdef_stripe(
+        DeblockedPlanes::frame(&ws).unwrap(),
+        Some(case.strengths),
+        Some(&grid),
+        skip.as_ref(),
+        lossless.as_ref(),
+        (mi_rows, mi_cols),
+        subsampling,
+        bit_depth,
+        case.tile_starts,
+        0,
+        storage,
+    )
+    .unwrap();
+    let got = [
+        Some(&frame.filtered_y),
+        frame.filtered_u.as_ref(),
+        frame.filtered_v.as_ref(),
+    ]
+    .map(|plane| {
+        plane.map_or_else(Vec::new, |plane| {
+            crate::test_support::stripe_rows(plane)
+                .into_iter()
+                .map(ReconSample::to_u16)
+                .collect()
+        })
+    });
+    for plane in 0..3 {
+        assert!(
+            got[plane] == want[plane],
+            "plane {plane} {:?} {:?} {bit_depth:?} seed {seed}: first diff at {:?}",
+            case.format,
+            case.size,
+            got[plane]
+                .iter()
+                .zip(&want[plane])
+                .position(|(got, want)| got != want)
+        );
+    }
+}
+
+/// The stripe filter matches § 7.18 sample by sample at every segment
+/// position class: frame edges and corners, partial blocks past the frame,
+/// tile edges, skipped, lossless and flat blocks, every subsampling and both
+/// bit depths.
+#[test]
+fn stripe_filter_matches_the_spec_reference() {
+    let set = |y_pri, y_sec, uv_pri, uv_sec, damping| CdefFrameParams {
+        y_pri,
+        y_sec,
+        uv_pri,
+        uv_sec,
+        damping,
+    };
+    let strengths = [
+        set(4, 2, 3, 1, 4),
+        set(15, 4, 15, 4, 6),
+        set(0, 1, 0, 0, 3),
+        set(7, 0, 0, 2, 5),
+        set(1, 1, 2, 4, 3),
+        set(0, 0, 5, 0, 4),
+    ];
+    let lossless = [(2, 4, true), (6, 10, false), (8, 2, true), (8, 2, false)];
+    let formats = [
+        PixelFormat::Yuv420,
+        PixelFormat::Yuv422,
+        PixelFormat::Yuv444,
+        PixelFormat::Monochrome,
+    ];
+    for (case_index, format) in formats.into_iter().enumerate() {
+        for size in [(144, 72), (70, 38), (132, 18)] {
+            let cases = [
+                ReferenceCase {
+                    format,
+                    size,
+                    strengths: &strengths,
+                    unit_index: |unit| Some(unit % 6),
+                    skip: None,
+                    lossless: &[],
+                    tile_starts: None,
+                },
+                ReferenceCase {
+                    format,
+                    size,
+                    strengths: &strengths,
+                    unit_index: |unit| (unit % 7 != 3).then_some((unit + 1) % 6),
+                    skip: Some(|r, c| (r / 2 + c / 2) % 3 == 0 || (r == 5 && c == 9)),
+                    lossless: &lossless,
+                    tile_starts: None,
+                },
+                ReferenceCase {
+                    format,
+                    size,
+                    strengths: &strengths[..2],
+                    unit_index: |unit| Some(unit % 2),
+                    skip: Some(|_, c| c / 2 % 2 == 1),
+                    lossless: &[],
+                    tile_starts: Some((&[0, 4, 1000], &[0, 16, 24, 1000])),
+                },
+            ];
+            for (index, case) in cases.iter().enumerate() {
+                let seed = (case_index * 10 + index) as u32;
+                run_reference_case::<u8>(case, BitDepth::Eight, seed);
+                run_reference_case::<u16>(case, BitDepth::Ten, seed);
+            }
+        }
+    }
 }

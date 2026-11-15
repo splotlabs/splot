@@ -433,7 +433,7 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         Arc::clone(parse_progress),
     )?;
     if let Some(deblock) = deblock {
-        tile.arm_deblock(deblock, filter_sink_setup.deblock_quant_deltas)?;
+        tile.arm_deblock(deblock, filter_sink_setup.deblock_quant_deltas);
     }
     Ok((
         tile,

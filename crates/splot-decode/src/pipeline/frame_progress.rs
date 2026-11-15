@@ -49,8 +49,7 @@ struct StripeProgress {
     landed: bool,
     leased: bool,
     /// Live holders of the stripe's direct lease: the lease itself plus one per
-    /// plane target. The lease is released when this reaches zero, which is
-    /// what a per-lease reference count used to track.
+    /// plane target. The lease is released when this reaches zero.
     holds: u32,
 }
 
@@ -119,17 +118,17 @@ struct DirectPlaneRegion<T> {
     origin_y: usize,
 }
 
-pub(crate) struct DirectPlaneTarget<T> {
+/// SAFETY: moving this unique disjoint-band capability transfers ownership.
+unsafe impl<T: Send> Send for DirectPlaneRegion<T> {}
+
+pub(crate) struct DirectPlaneTarget<T: ReconSample> {
     region: DirectPlaneRegion<T>,
-    progress: Arc<dyn DirectLeaseRelease>,
+    progress: Arc<FrameProgress<T>>,
     stripe: usize,
     deblocked: bool,
 }
 
-/// SAFETY: moving this unique disjoint-band capability transfers ownership.
-unsafe impl<T: Send> Send for DirectPlaneTarget<T> {}
-
-impl<T> DirectPlaneTarget<T> {
+impl<T: ReconSample> DirectPlaneTarget<T> {
     pub(crate) const fn width(&self) -> usize {
         self.region.width
     }
@@ -164,9 +163,7 @@ impl<T> DirectPlaneTarget<T> {
         // SAFETY: disjoint checked stripes are lent once each; the whole workspace only with none leased.
         unsafe { slice::from_raw_parts_mut(self.region.samples.as_ptr(), self.region.len) }
     }
-}
 
-impl<T: ReconSample> DirectPlaneTarget<T> {
     /// The region's rows as they are, viewed while no `samples_mut` borrow lives.
     pub(crate) fn rows(&self) -> Option<crate::filters::source::FramePlane<'_, T>> {
         let (start, len) = (self.region.samples.as_ptr(), self.region.len);
@@ -191,16 +188,16 @@ impl<T: ReconSample> DirectPlaneTarget<T> {
     }
 }
 
-impl<T> Drop for DirectPlaneTarget<T> {
+impl<T: ReconSample> Drop for DirectPlaneTarget<T> {
     fn drop(&mut self) {
-        self.progress.release_hold(self.stripe);
+        self.progress.release_direct_hold(self.stripe);
     }
 }
 
-impl<T> DirectPlaneRegion<T> {
+impl<T: ReconSample> DirectPlaneRegion<T> {
     fn into_target(
         self,
-        progress: Arc<dyn DirectLeaseRelease>,
+        progress: Arc<FrameProgress<T>>,
         stripe: usize,
         deblocked: bool,
     ) -> DirectPlaneTarget<T> {
@@ -213,11 +210,11 @@ impl<T> DirectPlaneRegion<T> {
     }
 }
 
-pub(crate) struct DirectStripeTarget<T> {
+pub(crate) struct DirectStripeTarget<T: ReconSample> {
     planes: [Option<DirectPlaneTarget<T>>; 3],
 }
 
-impl<T> DirectStripeTarget<T> {
+impl<T: ReconSample> DirectStripeTarget<T> {
     pub(crate) fn get(&self, plane: PlaneId) -> Option<&DirectPlaneTarget<T>> {
         self.planes[plane.index()].as_ref()
     }
@@ -282,10 +279,6 @@ impl<T: ReconSample> DirectStripeLease<T> {
     }
 }
 
-trait DirectLeaseRelease: Send + Sync {
-    fn release_hold(&self, stripe: usize);
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PublishedPlane<'a, T> {
     pub(crate) samples: &'a [T],
@@ -324,12 +317,6 @@ const RELEASED: usize = usize::MAX - 1;
 /// It satisfies every row threshold like the frame height, but tells a
 /// reader to read the slot instead of the plane table.
 const FROZEN: usize = WatermarkCell::FAILED - 1;
-
-impl<T: ReconSample> DirectLeaseRelease for FrameProgress<T> {
-    fn release_hold(&self, stripe: usize) {
-        self.release_direct_hold(stripe);
-    }
-}
 
 impl<T: ReconSample> FrameProgress<T> {
     /// The decode's reusable storage, which every frame reads back from its
@@ -498,10 +485,9 @@ impl<T: ReconSample> FrameProgress<T> {
             *slot = holds;
         }
         drop(layout);
-        let progress: Arc<dyn DirectLeaseRelease> = self.clone();
-        let y = y.into_target(Arc::clone(&progress), stripe, deblocked);
-        let u = u.map(|region| region.into_target(Arc::clone(&progress), stripe, deblocked));
-        let v = v.map(|region| region.into_target(progress, stripe, deblocked));
+        let y = y.into_target(Arc::clone(self), stripe, deblocked);
+        let u = u.map(|region| region.into_target(Arc::clone(self), stripe, deblocked));
+        let v = v.map(|region| region.into_target(Arc::clone(self), stripe, deblocked));
         Some(DirectStripeLease {
             progress: Arc::clone(self),
             stripe,
@@ -537,10 +523,8 @@ impl<T: ReconSample> FrameProgress<T> {
         })
     }
 
-    /// The rows of `plane` below the watermark published now: none after a
-    /// failed phase, every row after the freeze.
-    fn readable_rows(&self, plane: PlaneId) -> usize {
-        let rows = self.published_luma_rows();
+    /// The rows of `plane` below a watermark of `rows` luma rows.
+    fn readable_rows(&self, plane: PlaneId, rows: usize) -> usize {
         if plane == PlaneId::Y {
             rows
         } else if rows == self.luma_height {
@@ -563,7 +547,8 @@ impl<T: ReconSample> FrameProgress<T> {
     /// on error or unwind it neither frees nor recycles.
     fn published_plane(&self, plane: PlaneId, rows: usize) -> Option<PublishedPlane<'_, T>> {
         let storage = self.planes[plane.index()]?;
-        let rows = rows.min(self.readable_rows(plane)).min(storage.height);
+        let readable = self.readable_rows(plane, self.published_luma_rows());
+        let rows = rows.min(readable).min(storage.height);
         let len = rows.checked_mul(storage.stride)?.min(storage.len);
         let samples = unsafe {
             // SAFETY: rows below W of a slot-bounded allocation; see the doc above.
@@ -1014,24 +999,15 @@ impl<T: ReconSample> FrontierRows<T> {
 }
 
 fn complete_stripe(layout: &mut ProgressLayout, stripe: usize) -> usize {
-    let Some(landed) = layout
-        .stripes
-        .get_mut(stripe)
-        .map(|stripe| &mut stripe.landed)
-    else {
-        return layout
-            .prefix
-            .checked_sub(1)
-            .and_then(|last| layout.stripes.get(last).map(|stripe| stripe.end))
-            .unwrap_or_default();
-    };
-    *landed = true;
-    while layout
-        .stripes
-        .get(layout.prefix)
-        .is_some_and(|stripe| stripe.landed)
-    {
-        layout.prefix += 1;
+    if let Some(stripe) = layout.stripes.get_mut(stripe) {
+        stripe.landed = true;
+        while layout
+            .stripes
+            .get(layout.prefix)
+            .is_some_and(|stripe| stripe.landed)
+        {
+            layout.prefix += 1;
+        }
     }
     layout
         .prefix
@@ -1072,11 +1048,7 @@ impl<'a, T: ReconSample> PublishedFrame<'a, T> {
         }
         let luma_rows = NonZeroUsize::new(rows.min(progress.luma_height))?;
         progress.layout.get()?;
-        let chroma_rows = if luma_rows.get() == progress.luma_height {
-            luma_rows.get().div_ceil(1 << progress.subsampling_y)
-        } else {
-            luma_rows.get() >> progress.subsampling_y
-        };
+        let chroma_rows = progress.readable_rows(PlaneId::U, luma_rows.get());
         Some(Self {
             progress,
             luma_rows,
