@@ -102,6 +102,7 @@ pub(super) fn pending_intrabc_leaf(
 pub(super) fn resolve_parsed_leaves(
     entries: &mut [ReconRowEntry],
     slots: &mut [LeafSlot],
+    on_inter: &mut impl FnMut(&mut ReconRowEntry, &mut deferred_recon::InterReconCommand),
     state: &mut MvResolutionState<'_>,
 ) -> Result<()> {
     let sb_h4 = state.sb_h4;
@@ -134,7 +135,10 @@ pub(super) fn resolve_parsed_leaves(
             continue;
         }
         match entry.slot_mut(slots) {
-            Some(LeafSlot::Command(ReconCommand::Inter(command))) => command.resolve(state)?,
+            Some(LeafSlot::Command(ReconCommand::Inter(command))) => {
+                command.resolve(state)?;
+                on_inter(entry, command);
+            }
             Some(slot @ LeafSlot::Intrabc(_)) => {
                 let LeafSlot::Intrabc(block) = core::mem::replace(slot, LeafSlot::Spent) else {
                     return Err(invalid_inter_tile_scheduling_state());

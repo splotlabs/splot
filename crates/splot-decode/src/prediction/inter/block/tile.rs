@@ -653,9 +653,36 @@ impl TileResolveState {
         row: &mut ReconRow,
         tile_offset: ByteOffset,
     ) -> Result<()> {
+        let hints: [Option<u32>; 8] = core::array::from_fn(|list| {
+            context
+                .ref_frame_idx
+                .get(list)
+                .and_then(|&slot| context.reference.ref_order_hint.get(slot as usize))
+                .copied()
+        });
+        let frame = (
+            context.params.mi_rows,
+            context.params.mi_cols,
+            context.params.current_order_hint,
+        );
+        let sub = super::block_chroma_subsampling(context.sequence.general.chroma_format_idc);
+        row.ops.clear();
+        row.ops
+            .resize(row.slots.len(), deferred_recon::SimpleOp::default());
+        let (ops, temporal) = (&mut row.ops, &mut row.temporal);
         resolve_parsed_leaves(
             &mut row.entries,
             &mut row.slots,
+            &mut |entry: &mut ReconRowEntry, command: &mut deferred_recon::InterReconCommand| {
+                let start = temporal.len();
+                if let Some(index) = entry.slot_index()
+                    && let Some(op) = command.simple_op_at_resolve(sub, &hints, frame, temporal)
+                    && let Some(target) = ops.get_mut(index)
+                {
+                    *target = op;
+                    entry.set_temporal(start..temporal.len());
+                }
+            },
             &mut MvResolutionState {
                 grid,
                 ref_mv_bank: &mut self.ref_mv_bank,
@@ -677,42 +704,6 @@ impl TileResolveState {
         )?;
         if grid.window_violated() {
             return Err(invalid_inter_tile_scheduling_state());
-        }
-        let hints: [Option<u32>; 8] = core::array::from_fn(|list| {
-            context
-                .ref_frame_idx
-                .get(list)
-                .and_then(|&slot| context.reference.ref_order_hint.get(slot as usize))
-                .copied()
-        });
-        let frame = (
-            context.params.mi_rows,
-            context.params.mi_cols,
-            context.params.current_order_hint,
-        );
-        row.ops.clear();
-        row.ops
-            .resize(row.slots.len(), deferred_recon::SimpleOp::default());
-        for entry in &mut row.entries {
-            let Some(index) = entry.slot_index() else {
-                continue;
-            };
-            let Some(LeafSlot::Command(ReconCommand::Inter(command))) = row.slots.get_mut(index)
-            else {
-                continue;
-            };
-            let start = row.temporal.len();
-            if let Some(op) = command.simple_op_at_resolve(
-                super::block_chroma_subsampling(context.sequence.general.chroma_format_idc),
-                &hints,
-                frame,
-                &mut row.temporal,
-            )
-                && let Some(target) = row.ops.get_mut(index)
-            {
-                *target = op;
-                entry.set_temporal(start..row.temporal.len());
-            }
         }
         Ok(())
     }
