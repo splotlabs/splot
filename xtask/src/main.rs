@@ -103,6 +103,9 @@ enum Task {
         /// Only fmt, clippy and the in-process repo checks; GitHub CI runs the rest.
         #[arg(long)]
         fast: bool,
+        /// Leave this package out of the `--all-targets` test run; GitHub CI tests it in its own job.
+        #[arg(long, value_name = "PACKAGE")]
+        exclude_tests: Option<String>,
     },
     /// Verify commit subjects follow Conventional Commits.
     CheckConventionalCommits {
@@ -224,14 +227,22 @@ enum Task {
     Conformance,
     /// Generate a local HTML coverage report (requires `cargo-llvm-cov`).
     Coverage,
-    /// Decode instruction-count (DynamoRIO) regression gate over
-    /// curated conformance fixtures (requires `DYNAMORIO_HOME` and CMake). Heavy; not
-    /// part of `ci`.
+    /// Decode instruction-count (DynamoRIO) gate: head against `--base` on
+    /// EwoutH sample streams (requires Linux, `DYNAMORIO_HOME` and CMake). Heavy;
+    /// not part of `ci`.
     Perf {
-        /// Re-run every fixture and rewrite `tests/perf/baseline.toml` instead
-        /// of comparing against it.
+        /// Base revision, for example `HEAD^1` or `origin/main`.
         #[arg(long)]
-        bless: bool,
+        base: String,
+        /// Base `splot` binary; used when the file exists, else the base is built.
+        #[arg(long)]
+        base_bin: Option<PathBuf>,
+        /// Directory of the sample streams; missing streams are downloaded.
+        #[arg(long, default_value = "target/perf-streams")]
+        streams: PathBuf,
+        /// Print the table but never fail.
+        #[arg(long)]
+        report_only: bool,
     },
     /// Encoder speed harness over synthetic clips at presets 0/6/10: fps,
     /// IVF sha256 and instruction counts (DynamoRIO gate on Linux).
@@ -322,7 +333,10 @@ enum DecoderFixturesCmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Task::Ci { fast } => run_ci(fast),
+        Task::Ci {
+            fast,
+            exclude_tests,
+        } => run_ci(fast, exclude_tests.as_deref()),
         Task::CheckConventionalCommits { rev_range } => {
             check_conventional_commits(&workspace_root()?, rev_range.as_deref())
         }
@@ -394,7 +408,20 @@ fn main() -> Result<()> {
         Task::GenExplain { check } => explain_registry::run_gen_explain(&workspace_root()?, check),
         Task::Conformance => conformance::run_conformance(&workspace_root()?),
         Task::Coverage => run_coverage(),
-        Task::Perf { bless } => perf::run_perf(&workspace_root()?, bless),
+        Task::Perf {
+            base,
+            base_bin,
+            streams,
+            report_only,
+        } => perf::run_perf(
+            &workspace_root()?,
+            &perf::PerfOptions {
+                base,
+                base_bin,
+                streams,
+                report_only,
+            },
+        ),
         Task::EncodePerf {
             bless,
             coverage,
@@ -450,7 +477,8 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_ci(fast: bool) -> Result<()> {
+fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
+    let exclude = exclude_tests.map_or_else(Vec::new, |package| vec!["--exclude", package]);
     run_cargo(&["fmt", "--all", "--", "--check"])?;
     run_cargo(&[
         "clippy",
@@ -463,7 +491,13 @@ fn run_ci(fast: bool) -> Result<()> {
         "warnings",
     ])?;
     if !fast {
-        run_cargo(&["test", "--workspace", "--all-targets", "--locked"])?;
+        run_cargo(
+            &[
+                &["test", "--workspace", "--all-targets", "--locked"][..],
+                &exclude,
+            ]
+            .concat(),
+        )?;
         run_cargo(&["test", "--doc", "--workspace", "--locked"])?;
         run_cargo_with_env(
             &[("RUSTDOCFLAGS", "-D warnings")],
@@ -500,16 +534,24 @@ fn run_ci(fast: bool) -> Result<()> {
         eprintln!("ci --fast: passed; tests, rustdoc, external tools and the C ABI run in full CI");
         return Ok(());
     }
-    check_capi_example(&root)?;
+    check_capi_example(&root, &exclude)?;
 
     eprintln!("ci: all checks passed");
     Ok(())
 }
 
 /// Builds the C ABI example against the shared library and checks that it
-/// decodes a conformance vector to the committed AVM raw output.
-fn check_capi_example(root: &Path) -> Result<()> {
-    run_cargo(&["build", "-p", "splot-capi", "--locked"])?;
+/// decodes a conformance vector to the committed AVM raw output. The build
+/// selects the packages and test targets of the test run, so Cargo resolves
+/// the same features and reuses its artifacts instead of a second compile.
+fn check_capi_example(root: &Path, exclude: &[&str]) -> Result<()> {
+    run_cargo(
+        &[
+            &["build", "--workspace", "--lib", "--tests", "--locked"][..],
+            exclude,
+        ]
+        .concat(),
+    )?;
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map_or_else(|| root.join("target"), PathBuf::from)
         .join("debug");

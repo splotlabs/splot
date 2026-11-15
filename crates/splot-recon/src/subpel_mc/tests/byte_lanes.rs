@@ -870,6 +870,143 @@ fn full_sample_cells_match_the_materialized_average() {
     }
 }
 
+/// The full-sample cells store the § 7.13.3.14 COMPOUND_AVERAGE
+/// `Clip1(Round2(w * a + (16 - w) * b, 4))` for a weight `w` in `0..=16`, and
+/// refuse any other weight with `false` and the output untouched.
+#[test]
+fn fullpel_cells_refuse_weights_outside_7_13_3_14_range() {
+    let (step, stride) = (12usize, 11usize);
+    let texture = |seed: usize, max: u16| -> Vec<u16> {
+        (0..step * 10)
+            .map(|i| match (i * 7 + seed) % 5 {
+                0 => 0,
+                1 => max,
+                _ => ((i * 37 + seed * 101) % (usize::from(max) + 1)) as u16,
+            })
+            .collect()
+    };
+    for (depth, max) in [(BitDepth::Eight, 255u16), (BitDepth::Ten, 1023)] {
+        let textures = [texture(1, max), texture(4, max)];
+        let bytes = textures
+            .each_ref()
+            .map(|t| t.iter().map(|&v| v as u8).collect::<Vec<_>>());
+        for size in [4usize, 8] {
+            let origins = [step + 1, 2 * step];
+            for weight in [-5, -1, 0, 8, 16, 17, 40] {
+                let sources = [(&textures[0][..], step), (&textures[1][..], step)];
+                let mut got = vec![0xabcd_u16; stride * size];
+                let stored = super::super::cell::fullpel_u16(
+                    sources,
+                    origins,
+                    size,
+                    (weight, max),
+                    &mut got,
+                    stride,
+                );
+                let mut narrow = vec![0xa5_u8; stride * size];
+                let narrow_stored = depth == BitDepth::Eight
+                    && super::super::cell::fullpel_u8(
+                        [(&bytes[0][..], step), (&bytes[1][..], step)],
+                        origins,
+                        size,
+                        weight,
+                        &mut narrow,
+                        stride,
+                    );
+                let valid = (0..=16).contains(&weight);
+                assert_eq!(stored, valid, "{depth:?} {size} {weight}");
+                assert_eq!(narrow_stored, valid && depth == BitDepth::Eight);
+                for (at, &v) in got.iter().enumerate() {
+                    let (row, col) = (at / stride, at % stride);
+                    let want = if valid && col < size {
+                        let [a, b] = [0, 1]
+                            .map(|r| i32::from(textures[r][origins[r] + row * step + col]) << 4);
+                        blend_compound_average_weighted_sample(a, b, depth, weight as i16)
+                    } else {
+                        0xabcd
+                    };
+                    assert_eq!(v, want, "{depth:?} {size} {weight} {row},{col}");
+                    if depth == BitDepth::Eight {
+                        assert_eq!(
+                            narrow[at],
+                            if valid && col < size {
+                                want as u8
+                            } else {
+                                0xa5
+                            }
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A full-sample 16-bit compound cell and program with a weight outside
+/// `0..=16`, as a TIP block of two past references derives, take the general
+/// path and store the § 7.13.3.14 COMPOUND_AVERAGE.
+#[test]
+fn sixteen_bit_full_sample_cells_with_extrapolated_weights_match_the_oracle() {
+    let (ref_w, ref_h) = (24usize, 20usize);
+    let texture: Vec<u16> = (0..ref_w * ref_h)
+        .map(|i| {
+            if i % 5 == 0 {
+                1023
+            } else {
+                ((i * 73) % 1024) as u16
+            }
+        })
+        .collect();
+    let view = ReferencePlaneView::new(&texture, ref_w, ref_h).unwrap();
+    let interp = InterpolationFilter::EightTap;
+    for size in [4usize, 8] {
+        let starts = [[3, 5], [ref_w - size, ref_h - size]];
+        let placements: [CellPlacement; 2] = starts.map(|[x, y]| {
+            (
+                [(x as i32) << 10, (y as i32) << 10],
+                [0, 0, ref_w as i32 - 1, ref_h as i32 - 1],
+            )
+        });
+        for weight in [20i16, -4] {
+            let stride = size + 3;
+            let want: Vec<u16> = (0..stride * size)
+                .map(|at| {
+                    let (row, col) = (at / stride, at % stride);
+                    if col >= size {
+                        return 0;
+                    }
+                    let [a, b] =
+                        starts.map(|[x, y]| i32::from(texture[(y + row) * ref_w + x + col]) << 4);
+                    blend_compound_average_weighted_sample(a, b, BitDepth::Ten, weight)
+                })
+                .collect();
+            let mut got = vec![0u16; stride * size];
+            assert!(subpel_compound_cell(
+                [&view; 2],
+                interp,
+                size,
+                placements,
+                (weight, BitDepth::Ten),
+                &mut got,
+                stride,
+            ));
+            assert_eq!(got, want, "cell {size} {weight}");
+            let mut program = CompoundCells::default();
+            assert!(program.push([0, 0], placements));
+            let mut got = vec![0u16; stride * size];
+            let written = subpel_compound_cells(
+                [Some((&[view, view], &mut got[..], stride)), None],
+                interp,
+                size,
+                &mut program,
+                (weight, BitDepth::Ten),
+            );
+            assert_eq!(written[0][0], 1, "program {size} {weight}");
+            assert_eq!(got, want, "program {size} {weight}");
+        }
+    }
+}
+
 /// The byte-lane kernels against the portable kernels on the same blocks:
 /// every filter, both passes at phases of each tap-pair count, 4- to
 /// 48-wide blocks of one or more 4-, 8- and 16-column strips with clamped

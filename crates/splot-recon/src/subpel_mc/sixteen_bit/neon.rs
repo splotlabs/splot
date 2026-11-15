@@ -16,7 +16,7 @@
 )]
 
 use super::super::block::{Block, Geometry, Sink, Taps, Window};
-use super::super::cell::{Cell, Plane, Written};
+use super::super::cell::{Cell, Plane, Written, fullpel_u16};
 use super::super::eight_bit::neon::{Reads, Sums, reads, slide, sums32, token};
 use super::super::rows::{self, Average, Out, Prep, Put, rows_mut, store_pair};
 use super::super::{CellPlacement, ReferencePlaneView};
@@ -314,20 +314,15 @@ fn store_placed<const W: usize>(
 ) {
     let still = |placed: &Placed| !placed.1 && placed.2.is_none() && placed.3.is_none();
     let [a, b] = placed;
-    if still(a) && still(b) && (0..=16).contains(&forward) {
+    if still(a) && still(b) {
         let sources = [(sources[0], a.0.stride), (sources[1], b.0.stride)];
         let clip = (forward, vgetq_lane_u16::<0>(max));
-        super::super::cell::fullpel_u16(sources, [a.0.base, b.0.base], W, clip, output, stride);
-    } else {
-        store_cell::<W>(
-            t,
-            [(sources[0], a), (sources[1], b)],
-            forward,
-            max,
-            output,
-            stride,
-        );
+        if fullpel_u16(sources, [a.0.base, b.0.base], W, clip, output, stride) {
+            return;
+        }
     }
+    let cells = [(sources[0], a), (sources[1], b)];
+    store_cell::<W>(t, cells, forward, max, output, stride);
 }
 
 /// [`program`] of `W`-square cells: each reference's window derived once
