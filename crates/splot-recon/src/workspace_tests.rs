@@ -1778,3 +1778,34 @@ fn bawp_rect_scales_every_width_like_the_scalar_formula() {
         }
     }
 }
+
+/// `u16` rows narrowed into eight-bit storage at every width up to 40 and at
+/// the storage edge equal the per-sample `as u8` oracle.
+#[test]
+fn u16_rect_writes_into_eight_bit_storage_narrow_exactly() {
+    for (width, x) in (1..=40).map(|width| (width, (44 - width - width % 4).min(41))) {
+        let frame = info(
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            size(42, 3),
+            rect(0, 0, 42, 3),
+        );
+        let mut workspace = CurrentFrameWorkspace::<u8>::new(frame, 7).unwrap();
+        let samples: Vec<u16> = (0..2 * width)
+            .map(|i| [255, 0, (i * 37 % 256) as u16][i % 3])
+            .collect();
+        CurrentFrameSurface::Frame(&mut workspace)
+            .write_u16_rect(PlaneId::Y, rect(x, 1, width, 2), &samples, width)
+            .unwrap();
+        for (y, x_at) in (0..3).flat_map(|y| (0..42).map(move |x_at| (y, x_at))) {
+            let stored = workspace.reconstructed_sample(PlaneId::Y, x_at, y).unwrap();
+            let inside = y >= 1 && x_at >= x && x_at < x + width;
+            let want = if inside {
+                samples[(y - 1) * width + x_at - x] as u8
+            } else {
+                7
+            };
+            assert_eq!(stored, want, "{width} {x} at {x_at},{y}");
+        }
+    }
+}

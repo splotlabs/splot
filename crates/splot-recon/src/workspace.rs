@@ -2290,7 +2290,10 @@ fn write_u16_rect_to_samples<T: ReconSample>(
         rect,
         samples,
         row_stride_samples,
-        copy_u16_samples,
+        |target, samples| {
+            copy_u16_samples(target, samples);
+            Ok(())
+        },
     )
 }
 
@@ -2378,17 +2381,32 @@ fn copy_fixed_chunk<const N: usize, T: ReconSample>(dst: &mut [T], src: &[T], at
     dst[at..at + N].copy_from_slice(&src[at..at + N]);
 }
 
-fn copy_u16_samples<T: ReconSample>(target: &mut [T], samples: &[u16]) -> Result<()> {
+/// Copies a validated `u16` row into `target`; into `u8` storage, whose bit
+/// depth caps every sample at 255, sixteen narrowed lanes at a time.
+fn copy_u16_samples<T: ReconSample>(target: &mut [T], samples: &[u16]) {
     if let Some(target) = T::u16_slice_mut(target) {
-        for (target, &sample) in target.iter_mut().zip(samples) {
-            *target = sample;
-        }
-        return Ok(());
+        copy_row_samples(target, samples);
+    } else if let Some(target) = T::u8_slice_mut(target) {
+        use fearless_simd::{prelude::*, u16x8};
+        let len = target.len().min(samples.len());
+        let (target, samples) = (&mut target[..len], &samples[..len]);
+        let (chunks, tail) = target.as_chunks_mut::<16>();
+        let (sources, source_tail) = samples.as_chunks::<16>();
+        baseline_simd!(simd => {
+            let narrow = |lanes: &[u16; 16]| {
+                let (low, high) = lanes.split_at(8);
+                u16x8::from_slice(simd, low).narrow(u16x8::from_slice(simd, high)).to_array()
+            };
+            for (target, source) in chunks.iter_mut().zip(sources) {
+                *target = narrow(source);
+            }
+            if !tail.is_empty() {
+                let mut padded = [0; 16];
+                padded[..tail.len()].copy_from_slice(source_tail); // splot-copy-ok: zero-padded last chunk of a narrowed row
+                tail.copy_from_slice(&narrow(&padded)[..tail.len()]); // splot-copy-ok: narrowed last chunk into the frame row
+            }
+        });
     }
-    for (target, &sample) in target.iter_mut().zip(samples) {
-        *target = T::try_from_u16(sample)?;
-    }
-    Ok(())
 }
 
 fn validate_write_source<T: ReconSample>(

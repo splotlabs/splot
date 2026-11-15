@@ -1773,6 +1773,20 @@ pub(crate) fn intrabc_copy_plane_into<T: ReconSample>(
         .map_err(Into::into)
 }
 
+/// Rows `first_row..first_row + rows` of an IntraBC source plane as a reference view.
+fn rows_view<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane: PlaneId,
+    (first_row, rows, width): (usize, usize, usize),
+) -> Result<ReferencePlaneView<'_, T>> {
+    let source = workspace.plane(plane)?;
+    let samples = source.rows(first_row, first_row + rows)?;
+    let stride = source.stride_samples();
+    Ok(ReferencePlaneView::from_strided(
+        samples, stride, width, rows,
+    )?)
+}
+
 pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
@@ -1803,20 +1817,26 @@ pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "IntrABC prediction sample count",
             })?;
+    let window = (first_row, rows, storage.width());
+    if T::u8_slice(&[]).is_some() {
+        let mut staged = RecycledMcSamples::<T>::take();
+        staged.resize(prediction_len, T::default());
+        if let Some(output) = T::u8_slice_mut(&mut staged) {
+            let view = rows_view(workspace, plane, window)?;
+            subpel_predict_block_strided_into_u8(&view, &params, output, target.width())?;
+            let mut surface = CurrentFrameSurface::Frame(workspace);
+            return Ok(surface.write_rect(plane, target, &staged, target.width())?);
+        }
+    }
     SUBPEL_PREDICTION_BUFFER.with(|slot| {
         let mut predicted = slot.take().unwrap_or_default();
         predicted.resize(prediction_len, 0);
         let result: Result<()> = (|| {
-            {
-                let source = workspace.plane(plane)?;
-                let view = ReferencePlaneView::from_strided(
-                    source.rows(first_row, first_row + rows)?,
-                    source.stride_samples(),
-                    storage.width(),
-                    rows,
-                )?;
-                subpel_predict_block_into(&view, &params, &mut predicted)?;
-            }
+            subpel_predict_block_into(
+                &rows_view(workspace, plane, window)?,
+                &params,
+                &mut predicted,
+            )?;
             CurrentFrameSurface::Frame(workspace).write_u16_rect(
                 plane,
                 target,
