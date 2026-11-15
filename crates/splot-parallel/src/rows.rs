@@ -8,11 +8,11 @@
 //! Workers scan a snapshot of the frames oldest first, without a shared
 //! lock, and ask each frame to [`claim`](FrameWork::claim) a row whose
 //! inputs are published; a claim is an atomic exchange on the stage, so two
-//! scanners never run the same row. Readiness is read from [`RowProgress`]
-//! counters, so nothing registers a waiter and a worker never blocks inside a
-//! row. A frame depends only on older frames, and older frames are claimed
-//! first, so the oldest frame always has a row that can run or is running:
-//! the pipeline cannot stall.
+//! scanners never run the same row. Readiness is read from published atomics
+//! such as a [`WatermarkCell`](crate::WatermarkCell), so nothing registers a
+//! waiter and a worker never blocks inside a row. A frame depends only on
+//! older frames, and older frames are claimed first, so the oldest frame
+//! always has a row that can run or is running: the pipeline cannot stall.
 //!
 //! A wake is sent only for a row that exists: a worker that publishes
 //! progress claims the row first and queues it, and whichever worker is free
@@ -63,46 +63,6 @@ pub trait FrameWork: Send + Sync {
     fn run(&self, claim: Claim, worker: usize);
     /// Whether every stage has finished, including after a failure.
     fn done(&self) -> bool;
-}
-
-/// A monotone row counter other frames read to decide readiness.
-///
-/// Publishing wakes the scheduler's workers and its waiting driver.
-#[derive(Clone, Debug)]
-pub struct RowProgress {
-    value: Arc<AtomicUsize>,
-    core: Arc<Core>,
-}
-
-impl RowProgress {
-    /// The terminal value a failed producer publishes, which satisfies every
-    /// threshold so dependents run and observe the failure.
-    pub const FAILED: usize = usize::MAX;
-
-    /// The highest published row count.
-    #[must_use]
-    pub fn current(&self) -> usize {
-        self.value.load(Ordering::Acquire)
-    }
-
-    /// Raises the counter to `rows` and hands a row it released to an idle
-    /// worker.
-    pub fn publish(&self, rows: usize) {
-        if self.value.fetch_max(rows, Ordering::AcqRel) < rows {
-            self.core.dispatch_here();
-        }
-    }
-
-    /// Publishes [`Self::FAILED`].
-    pub fn fail(&self) {
-        self.publish(Self::FAILED);
-    }
-
-    /// Whether the producer failed.
-    #[must_use]
-    pub fn failed(&self) -> bool {
-        self.current() == Self::FAILED
-    }
 }
 
 /// The ordered row cursor of one stage: at most one row runs at a time.
@@ -451,7 +411,7 @@ fn bind(core: &Arc<Core>, slot: Option<usize>) {
     });
 }
 
-/// A handle that makes [`RowProgress`] counters for one scheduler.
+/// A handle that wakes one scheduler's workers and its driver.
 #[derive(Clone, Debug)]
 pub struct RowWake(Arc<Core>);
 
@@ -460,15 +420,6 @@ impl RowWake {
     #[must_use]
     pub fn detached() -> Self {
         Self(Arc::new(Core::new(0)))
-    }
-
-    /// A row counter whose publications wake this scheduler.
-    #[must_use]
-    pub fn progress(&self) -> RowProgress {
-        RowProgress {
-            value: Arc::new(AtomicUsize::new(0)),
-            core: Arc::clone(&self.0),
-        }
     }
 
     /// Hands a row to an idle worker after a frame advanced a counter of
@@ -819,13 +770,7 @@ impl RowScheduler {
         Ok(Self { core, workers })
     }
 
-    /// A row counter whose publications wake this scheduler.
-    #[must_use]
-    pub fn progress(&self) -> RowProgress {
-        self.wake().progress()
-    }
-
-    /// The handle frames use to make counters bound to this scheduler.
+    /// The handle frames use to wake this scheduler.
     #[must_use]
     pub fn wake(&self) -> RowWake {
         RowWake(Arc::clone(&self.core))
@@ -844,9 +789,9 @@ impl RowScheduler {
         self.wake().parked_workers()
     }
 
-    /// Frames pushed and not yet done.
-    #[must_use]
-    pub fn in_flight(&self) -> usize {
+    /// Frames pushed and not yet done, for tests.
+    #[cfg(test)]
+    pub(crate) fn in_flight(&self) -> usize {
         self.core.frames.0.lock().live.len()
     }
 
@@ -892,6 +837,7 @@ impl Drop for RowScheduler {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    use crate::WatermarkCell;
     use core::num::NonZeroUsize;
     use parking_lot::Mutex;
     use std::sync::Arc;
@@ -907,9 +853,9 @@ mod tests {
     struct Chain {
         id: usize,
         stage: Stage,
-        gate: Option<RowProgress>,
+        gate: Option<Arc<WatermarkCell>>,
         need: fn(usize) -> usize,
-        done_rows: RowProgress,
+        done_rows: Arc<WatermarkCell>,
         log: Arc<Mutex<Vec<(usize, usize)>>>,
         fail_at: Option<usize>,
         /// Holds an unfinished `done` answer, which widens the gap between a
@@ -931,7 +877,7 @@ mod tests {
         fn run(&self, claim: Claim, _worker: usize) {
             self.log.lock().push((self.id, claim.row));
             if self.fail_at == Some(claim.row) {
-                self.done_rows.fail();
+                self.done_rows.publish(WatermarkCell::FAILED);
             } else {
                 self.done_rows.publish(claim.row + 1);
             }
@@ -948,10 +894,9 @@ mod tests {
     }
 
     fn chain(
-        scheduler: &RowScheduler,
         id: usize,
         rows: usize,
-        gate: Option<RowProgress>,
+        gate: Option<Arc<WatermarkCell>>,
         need: fn(usize) -> usize,
         log: &Arc<Mutex<Vec<(usize, usize)>>>,
     ) -> Arc<Chain> {
@@ -960,7 +905,7 @@ mod tests {
             stage: Stage::new(rows),
             gate,
             need,
-            done_rows: scheduler.progress(),
+            done_rows: Arc::new(WatermarkCell::new()),
             log: Arc::clone(log),
             fail_at: None,
             slow_done: false,
@@ -1216,10 +1161,10 @@ mod tests {
         let short = Hold::new(false, Some(Arc::clone(&long)));
         scheduler.push(Arc::clone(&short) as Arc<dyn FrameWork>);
         scheduler.push(Arc::clone(&long) as Arc<dyn FrameWork>);
-        let rescue = scheduler.progress();
+        let rescue = scheduler.wake();
         let _watchdog = spawn_thread("watchdog", move || {
             std::thread::sleep(Duration::from_secs(3));
-            rescue.publish(1);
+            rescue.notify();
         })
         .unwrap();
         let started = Instant::now();
@@ -1346,10 +1291,10 @@ mod tests {
             for dispatcher in dispatchers {
                 dispatcher.join().unwrap();
             }
-            let rescue = scheduler.progress();
+            let rescue = scheduler.wake();
             let _watchdog = spawn_thread("watchdog", move || {
                 std::thread::sleep(Duration::from_secs(10));
-                rescue.publish(1);
+                rescue.notify();
             })
             .unwrap();
             let started = Instant::now();
@@ -1402,8 +1347,8 @@ mod tests {
     fn a_publication_between_scan_and_park_is_not_lost() {
         let scheduler = RowScheduler::new(threads(1)).unwrap();
         let log = Arc::new(Mutex::new(Vec::new()));
-        let gate = scheduler.progress();
-        let frame = chain(&scheduler, 0, 1, Some(gate.clone()), |_| 1, &log);
+        let gate = Arc::new(WatermarkCell::new());
+        let frame = chain(0, 1, Some(Arc::clone(&gate)), |_| 1, &log);
         scheduler.push(Arc::clone(&frame) as Arc<dyn FrameWork>);
         for _ in 0..200 {
             gate.publish(1);
@@ -1423,13 +1368,13 @@ mod tests {
         for _ in 0..50 {
             let frame = Arc::new(Chain {
                 slow_done: true,
-                ..Arc::into_inner(chain(&scheduler, 0, 8, None, |_| 0, &log)).unwrap()
+                ..Arc::into_inner(chain(0, 8, None, |_| 0, &log)).unwrap()
             });
             scheduler.push(Arc::clone(&frame) as Arc<dyn FrameWork>);
-            let rescue = scheduler.progress();
+            let rescue = scheduler.wake();
             let watchdog = spawn_thread("watchdog", move || {
                 std::thread::sleep(Duration::from_secs(3));
-                rescue.publish(1);
+                rescue.notify();
             })
             .unwrap();
             let started = Instant::now();
@@ -1447,12 +1392,11 @@ mod tests {
     fn dependent_frame_rows_run_after_the_rows_they_need() {
         let scheduler = RowScheduler::new(threads(2)).unwrap();
         let log = Arc::new(Mutex::new(Vec::new()));
-        let first = chain(&scheduler, 0, 4, None, |_| 0, &log);
+        let first = chain(0, 4, None, |_| 0, &log);
         let second = chain(
-            &scheduler,
             1,
             4,
-            Some(first.done_rows.clone()),
+            Some(Arc::clone(&first.done_rows)),
             |row| row + 1,
             &log,
         );
@@ -1484,8 +1428,8 @@ mod tests {
     fn external_publication_wakes_a_parked_worker() {
         let scheduler = RowScheduler::new(threads(1)).unwrap();
         let log = Arc::new(Mutex::new(Vec::new()));
-        let gate = scheduler.progress();
-        let frame = chain(&scheduler, 0, 1, Some(gate.clone()), |_| 1, &log);
+        let gate = Arc::new(WatermarkCell::new());
+        let frame = chain(0, 1, Some(Arc::clone(&gate)), |_| 1, &log);
         scheduler.push(Arc::clone(&frame) as Arc<dyn FrameWork>);
         std::thread::sleep(Duration::from_millis(20));
         assert!(!frame.done());
@@ -1495,7 +1439,7 @@ mod tests {
 
     /// A one-row frame gated on a watermark that holds no [`RowWake`].
     struct OnCell {
-        cell: Arc<crate::WatermarkCell>,
+        cell: Arc<WatermarkCell>,
         stage: Stage,
     }
 
@@ -1518,10 +1462,10 @@ mod tests {
     /// Waits for `frame`, failing when only a watchdog's wake after three
     /// seconds would end the wait.
     fn wait_without_rescue(scheduler: &RowScheduler, frame: &OnCell, what: &str) {
-        let rescue = scheduler.progress();
+        let rescue = scheduler.wake();
         let _watchdog = spawn_thread("watchdog", move || {
             std::thread::sleep(Duration::from_secs(3));
-            rescue.publish(1);
+            rescue.notify();
         })
         .unwrap();
         let started = Instant::now();
@@ -1534,7 +1478,7 @@ mod tests {
 
     /// Publishes `gate` once the other worker parked, then holds its worker
     /// until `waiter` ran, so only the publication can wake it.
-    struct Publish(Arc<OnCell>, Arc<crate::WatermarkCell>, Stage, RowWake);
+    struct Publish(Arc<OnCell>, Arc<WatermarkCell>, Stage, RowWake);
 
     impl FrameWork for Publish {
         fn claim(&self) -> Option<Claim> {
@@ -1564,7 +1508,7 @@ mod tests {
     #[test]
     fn a_cell_published_on_the_driver_or_a_worker_wakes_its_scheduler() {
         let scheduler = RowScheduler::new(threads(2)).unwrap();
-        let cell = Arc::new(crate::WatermarkCell::new());
+        let cell = Arc::new(WatermarkCell::new());
         let waiter = Arc::new(OnCell {
             cell: Arc::clone(&cell),
             stage: Stage::new(1),
@@ -1573,7 +1517,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(20));
         cell.publish(1);
         wait_without_rescue(&scheduler, &waiter, "driver");
-        let gate = Arc::new(crate::WatermarkCell::new());
+        let gate = Arc::new(WatermarkCell::new());
         let waiter = Arc::new(OnCell {
             cell: Arc::clone(&gate),
             stage: Stage::new(1),
@@ -1597,7 +1541,7 @@ mod tests {
             stage: Stage::new(3),
             gate: None,
             need: |_| 0,
-            done_rows: scheduler.progress(),
+            done_rows: Arc::new(WatermarkCell::new()),
             log: Arc::clone(&log),
             fail_at: Some(1),
             slow_done: false,
@@ -1605,17 +1549,16 @@ mod tests {
         first.fail_at = Some(1);
         let first = Arc::new(first);
         let second = chain(
-            &scheduler,
             1,
             3,
-            Some(first.done_rows.clone()),
+            Some(Arc::clone(&first.done_rows)),
             |row| row + 1,
             &log,
         );
         scheduler.push(Arc::clone(&first) as Arc<dyn FrameWork>);
         scheduler.push(Arc::clone(&second) as Arc<dyn FrameWork>);
         wait_done(&scheduler, &[first.clone(), second.clone()]);
-        assert_eq!(first.done_rows.current(), RowProgress::FAILED);
+        assert_eq!(first.done_rows.current(), WatermarkCell::FAILED);
         assert_eq!(
             log.lock().iter().filter(|(f, _)| *f == 1).count(),
             3,
@@ -1627,8 +1570,8 @@ mod tests {
     fn drop_stops_workers_that_wait_on_rows_nobody_publishes() {
         let scheduler = RowScheduler::new(threads(3)).unwrap();
         let log = Arc::new(Mutex::new(Vec::new()));
-        let never = scheduler.progress();
-        let frame = chain(&scheduler, 0, 2, Some(never), |_| 1, &log);
+        let never = Arc::new(WatermarkCell::new());
+        let frame = chain(0, 2, Some(never), |_| 1, &log);
         scheduler.push(Arc::clone(&frame) as Arc<dyn FrameWork>);
         std::thread::sleep(Duration::from_millis(10));
         let started = Instant::now();
@@ -1645,8 +1588,10 @@ mod tests {
         let log = Arc::new(Mutex::new(Vec::new()));
         let mut frames: Vec<Arc<Chain>> = Vec::new();
         for id in 0..FRAMES {
-            let gate = frames.last().map(|previous| previous.done_rows.clone());
-            let frame = chain(&scheduler, id, ROWS, gate, |row| (row + 2).min(ROWS), &log);
+            let gate = frames
+                .last()
+                .map(|previous| Arc::clone(&previous.done_rows));
+            let frame = chain(id, ROWS, gate, |row| (row + 2).min(ROWS), &log);
             scheduler.push(Arc::clone(&frame) as Arc<dyn FrameWork>);
             frames.push(frame);
         }
