@@ -35,7 +35,7 @@ static int write_picture(FILE *out, const SplotPicture *picture) {
 
 static int drain_pictures(SplotDecoder *decoder, FILE *out, int *pictures) {
     for (;;) {
-        SplotPicture picture;
+        SplotPicture picture = {0};
         int result = splot_get_picture(decoder, &picture);
         if (result == SPLOT_EAGAIN || result == SPLOT_EOF)
             return 0;
