@@ -254,7 +254,7 @@ pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
     let (Some(distances), 8, 8) = (block.optflow_distances, rect.luma_w, rect.luma_h) else {
         return Err(crate::DecodeHeaderStateError::InvalidInterTipPredictionState.into());
     };
-    let mut predictions = [[0u16; 64]; 2];
+    let mut predictions = [[[0u16; 8]; 8]; 2];
     for (reference, (luma, prediction)) in luma.iter_mut().zip(&mut predictions).enumerate() {
         initial_luma_prediction::<_, 0>(
             luma,
@@ -263,21 +263,16 @@ pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
             InterpolationFilter::Bilinear,
             block.use_refinemv.then_some((mvs[reference], 8, 8)),
             None,
-            prediction,
+            prediction.as_flattened_mut(),
         )?;
     }
-    let [pred0, pred1] = &predictions;
     let bit_depth = sink.info().bit_depth();
-    if block.optflow_sad_threshold.is_some_and(|threshold| {
-        let rows = pred0.chunks(8).zip(pred1.chunks(8));
-        super::refinemv::sad_rows::<8>(rows, u16::MAX) >> bit_depth.bits().saturating_sub(8)
-            < threshold
-    }) {
-        return Ok(MotionCell::from_refinemv(mvs));
-    }
-    let delta =
-        derive_optflow_mv_delta_8x8_strided_into(pred0, 0, pred1, 0, 8, bit_depth, distances)?;
-    Ok(MotionCell::from_optflow(mvs, delta))
+    let threshold = block.optflow_sad_threshold;
+    let delta = splot_recon::optflow_unit_8x8_u16(predictions, bit_depth, distances, threshold)?;
+    Ok(delta.map_or_else(
+        || MotionCell::from_refinemv(mvs),
+        |delta| MotionCell::from_optflow(mvs, delta),
+    ))
 }
 
 /// Whether some row holds two adjacent equal cells, or every cell is equal,
