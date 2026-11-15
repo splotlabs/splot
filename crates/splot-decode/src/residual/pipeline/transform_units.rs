@@ -37,21 +37,14 @@ impl GeneralIntraResidualPlan {
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         luma_context: LumaTransformTypeContext,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
-        let plane = self.unit(index)?;
-        let nonzero = quant
-            .iter()
-            .rposition(|&q| q != 0)
-            .map_or(0, |last| last + 1);
-        let mut coeffs = LumaCoeffBlock {
-            eob: eob as u16,
-            quant_start: 0,
-            quant_len: nonzero as u16,
-            zero_tail: (quant.len() - nonzero) as u16,
-            use_tcq,
-            intra_ist,
-            ..LumaCoeffBlock::empty(plane_tx_type, false)
-        };
-        plane.apply_reconstruction_tx_type(&mut coeffs);
+        let (plane, coeffs) = self.unit_coeffs(
+            (index, quant, eob),
+            LumaCoeffBlock {
+                intra_ist,
+                use_tcq,
+                ..LumaCoeffBlock::empty(plane_tx_type, false)
+            },
+        )?;
         plane.reconstruct(
             self.frame,
             scratch,
@@ -80,22 +73,14 @@ impl GeneralIntraResidualPlan {
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         luma_context: LumaTransformTypeContext,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
-        let block = |(index, quant, eob): (usize, &[i32], usize), cctx_type| {
-            let plane = self.unit(index)?;
-            let nonzero = quant
-                .iter()
-                .rposition(|&q| q != 0)
-                .map_or(0, |last| last + 1);
-            let mut coeffs = LumaCoeffBlock {
-                eob: eob as u16,
-                quant_start: 0,
-                quant_len: nonzero as u16,
-                zero_tail: (quant.len() - nonzero) as u16,
-                cctx_type,
-                ..LumaCoeffBlock::empty(plane_tx_type, false)
-            };
-            plane.apply_reconstruction_tx_type(&mut coeffs);
-            Ok::<_, GeneralIntraResidualError>((plane, coeffs))
+        let block = |unit, cctx_type| {
+            self.unit_coeffs(
+                unit,
+                LumaCoeffBlock {
+                    cctx_type,
+                    ..LumaCoeffBlock::empty(plane_tx_type, false)
+                },
+            )
         };
         let (u_plane, u_coeffs) = block(u, Some(cctx_type as u8))?;
         let (v_plane, v_coeffs) = block(v, None)?;
@@ -188,6 +173,25 @@ impl GeneralIntraResidualPlan {
                 context: "planned transform block index",
             },
         )
+    }
+
+    /// Plan `index` and `coeffs` with the coefficient span of its adjusted `quant` and `eob`.
+    fn unit_coeffs(
+        &self,
+        (index, quant, eob): (usize, &[i32], usize),
+        mut coeffs: LumaCoeffBlock,
+    ) -> core::result::Result<(ResidualPlanePlan, LumaCoeffBlock), GeneralIntraResidualError> {
+        let plane = self.unit(index)?;
+        let nonzero = quant
+            .iter()
+            .rposition(|&q| q != 0)
+            .map_or(0, |last| last + 1);
+        coeffs.eob = eob as u16;
+        coeffs.quant_start = 0;
+        coeffs.quant_len = nonzero as u16;
+        coeffs.zero_tail = (quant.len() - nonzero) as u16;
+        plane.apply_reconstruction_tx_type(&mut coeffs);
+        Ok((plane, coeffs))
     }
 }
 
