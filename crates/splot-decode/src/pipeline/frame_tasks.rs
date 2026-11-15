@@ -697,25 +697,33 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
 /// The `D` reusable slots one decode runs its split inter frames through.
 pub(crate) struct SplitFrames<T: SplitSample> {
     slots: Vec<Arc<SplitFrame<T>>>,
+    parse: Vec<Arc<inter::ParseProgress>>,
     next: usize,
     depth: usize,
     workers: Arc<inter::InterReconScratchPool<T>>,
+    buffers: Arc<DecodeBuffers>,
 }
 
 impl<T: SplitSample> SplitFrames<T> {
-    pub(crate) fn new(depth: usize, threads: usize) -> Self {
+    pub(crate) fn new(depth: usize, threads: usize, buffers: &Arc<DecodeBuffers>) -> Self {
         let workers = Arc::new(inter::InterReconScratchPool::new(threads));
         Self {
             slots: Vec::new(),
+            parse: Vec::new(),
             next: 0,
             depth: depth.max(1),
             workers,
+            buffers: Arc::clone(buffers),
         }
     }
 
-    /// Frees the next slot, waiting for its previous frame to finish and
-    /// release the storage other frames borrowed from it.
-    pub(crate) fn reserve(&mut self, rows: &RowScheduler, options: DecodeOptions) -> usize {
+    /// Frees the next slot and its parse progress, waiting for its previous
+    /// frame to finish and release the storage other frames borrowed from it.
+    pub(crate) fn reserve(
+        &mut self,
+        rows: &RowScheduler,
+        options: DecodeOptions,
+    ) -> (usize, Arc<inter::ParseProgress>) {
         let index = self.next;
         self.next = (index + 1) % self.depth;
         if index == self.slots.len() {
@@ -724,6 +732,7 @@ impl<T: SplitSample> SplitFrames<T> {
                 options,
                 Arc::clone(&self.workers),
             )));
+            self.parse.push(Arc::default());
         }
         let slot = &mut self.slots[index];
         rows.wait(|| Arc::strong_count(slot) == 1);
@@ -732,10 +741,13 @@ impl<T: SplitSample> SplitFrames<T> {
                 && frame.reset()
             {
                 frame.options = options;
-                return index;
+                break;
             }
             std::thread::yield_now();
         }
+        let (parse, buffers) = (&mut self.parse[index], &self.buffers);
+        rows.wait(|| Arc::get_mut(parse).is_some_and(|parse| parse.reset(buffers)));
+        (index, Arc::clone(parse))
     }
 
     /// Loads one frame into the slot [`Self::reserve`] freed and hands it to
@@ -1440,7 +1452,7 @@ impl<T: SplitSample> SamplePools<T> {
         scratch.set_decode_buffers(buffers);
         Self {
             scratch,
-            split: SplitFrames::new(depth, threads),
+            split: SplitFrames::new(depth, threads, buffers),
             tip: WorkPool::default(),
             tip_spares: Arc::default(),
             finish: WorkPool::default(),
@@ -1615,6 +1627,40 @@ mod tests {
         pools.retire_idle();
 
         assert!(pinned.is_sole_handle());
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn each_sample_type_resets_its_own_parse_progress_after_readers_release() {
+        let rows = RowScheduler::new(core::num::NonZeroUsize::MIN).expect("rows");
+        let mut pools = RowPools::new(2, 1, &DecodeBuffers::new());
+        let options = DecodeOptions::default();
+        let (index, first) = pools.eight.split.reserve(&rows, options);
+        assert_eq!(index, 0);
+        first.cell().publish(1);
+        let (_, second) = pools.eight.split.reserve(&rows, options);
+        let (_, ten) = pools.ten.split.reserve(&rows, options);
+        assert!(!Arc::ptr_eq(&ten, &first), "the sample types share no slot");
+        drop(ten);
+        let (pointer, wake) = (Arc::as_ptr(&first) as usize, rows.wake());
+        let reader = splot_parallel::spawn_thread("reader", move || {
+            for _ in 0..1024 {
+                assert_eq!(first.cell().current(), 1);
+                std::thread::yield_now();
+            }
+            drop(first);
+            wake.notify();
+        })
+        .expect("reader thread");
+        let (index, reused) = pools.eight.split.reserve(&rows, options);
+        assert_eq!((index, Arc::as_ptr(&reused) as usize), (0, pointer));
+        assert_eq!(reused.cell().current(), 0);
+        reader.join().expect("reader joins");
+        drop((reused, second));
+        for _ in 0..128 {
+            drop(pools.eight.split.reserve(&rows, options));
+        }
+        assert_eq!(pools.eight.split.parse.len(), 2);
     }
 
     #[test]

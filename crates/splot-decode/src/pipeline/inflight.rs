@@ -38,7 +38,6 @@ use super::frame_tasks::RowPools;
 use super::{PipelineDecodedFrame, unsupported};
 use crate::error::{DecodeError, Result};
 use crate::filters::wienerns_lr::FrameFilterRecords;
-use crate::prediction::inter::ParseProgress;
 use crate::prediction::inter::reference::HeldFrameSamples;
 use parking_lot::Mutex;
 
@@ -520,8 +519,6 @@ pub(crate) struct InflightRing {
     entries: VecDeque<InflightEntry>,
     reports: Vec<FinishReport>,
     failure: Option<(usize, DecodeError)>,
-    parse_slots: Vec<Arc<ParseProgress>>,
-    next_parse_slot: usize,
     buffers: Arc<crate::support::decode_buffers::DecodeBuffers>,
 }
 
@@ -563,8 +560,6 @@ impl InflightRing {
                 .map(|_| Arc::new(CompletionCell::new()))
                 .collect(),
             failure: None,
-            parse_slots: Vec::new(),
-            next_parse_slot: 0,
         }
     }
 
@@ -576,23 +571,6 @@ impl InflightRing {
                 Some(Arc::clone(cell))
             })
             .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
-    }
-
-    /// Claims a parse slot after the ring has harvested its preceding frame.
-    pub(crate) fn claim_parse_slot(&mut self) -> Arc<ParseProgress> {
-        let index = self.next_parse_slot;
-        self.next_parse_slot = (index + 1) % self.capacity;
-        if index == self.parse_slots.len() {
-            self.parse_slots.push(Arc::new(ParseProgress::default()));
-        }
-        loop {
-            if let Some(slot) = Arc::get_mut(&mut self.parse_slots[index])
-                && slot.reset(&self.buffers)
-            {
-                return Arc::clone(&self.parse_slots[index]);
-            }
-            std::thread::yield_now();
-        }
     }
 
     /// Hands a retired frame's sample buffers to the decode's pool, which the
