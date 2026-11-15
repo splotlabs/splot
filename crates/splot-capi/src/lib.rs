@@ -264,6 +264,8 @@ pub unsafe extern "C" fn splot_drain(decoder: *mut SplotDecoder) {
 ///
 /// # Safety
 /// `decoder` is null or came from [`splot_open`]; `out` is null or writable.
+/// `out` can be uninitialized, so this call overwrites it without reading it:
+/// a picture in `out` that was not released with [`splot_picture_unref`] leaks.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn splot_get_picture(
     decoder: *mut SplotDecoder,
