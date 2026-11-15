@@ -1257,7 +1257,7 @@ fn decode_nonzero_plane_coeffs(
         block.is_inter,
     )
     .map_err(|source| GeneralIntraResidualError::NonZeroStart { source })?;
-    let eob = start.eob_read().eob();
+    let eob = start.eob_read();
     let lossless = segment_lossless
         .ok_or_else(|| invalid_reconstruction_state_error("residual segment id"))?;
     let tx_set = if lossless {
@@ -1795,7 +1795,7 @@ const fn invalid_inter_tx_type() -> GeneralIntraResidualError {
 
 /// § 8.3.2 `InterTxTypeLong` context from the last coefficient position.
 ///
-/// `eob` is the non-zero-block end of block, which `nonzero_coeff_eob` builds
+/// `eob` is the non-zero-block end of block, which `read_nonzero_coeff_eob` builds
 /// from an `eob_pt` of 1..=11: below 3 it is the point itself, and above it
 /// starts at `EOB_GROUP_START[3]` = 3. It is never 0, so the last-position
 /// conversion is total.

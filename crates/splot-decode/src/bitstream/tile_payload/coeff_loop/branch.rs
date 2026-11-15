@@ -7,7 +7,7 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::TileCdfSubset;
 use super::{
-    CoeffLoopContextError, NonZeroCoeffEob, NonZeroCoeffEobSymbolInput, TxGeometry, eob_context,
+    CoeffLoopContextError, NonZeroCoeffEobSymbolInput, TxGeometry, eob_context,
     read_nonzero_coeff_eob,
 };
 
@@ -15,13 +15,13 @@ use super::{
 /// is created by the pass that fills it, so this stays small.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffBlockStart {
-    eob_read: NonZeroCoeffEob,
+    eob_read: usize,
     tx: &'static TxGeometry,
 }
 
 impl NonZeroCoeffBlockStart {
     #[must_use]
-    pub(crate) const fn eob_read(&self) -> NonZeroCoeffEob {
+    pub(crate) const fn eob_read(&self) -> usize {
         self.eob_read
     }
 

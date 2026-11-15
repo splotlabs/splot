@@ -46,74 +46,6 @@ fn encode_refined_eob() -> (Vec<u8>, TileCdfSubset) {
 }
 
 #[test]
-fn nonzero_eob_covers_direct_refined_and_max_values() {
-    for (input, expected) in [
-        (
-            NonZeroCoeffEobInput {
-                eob_pt: 1,
-                eob_extra: false,
-                eob_extra_bits: 0,
-            },
-            1,
-        ),
-        (
-            NonZeroCoeffEobInput {
-                eob_pt: 6,
-                eob_extra: true,
-                eob_extra_bits: 0b110,
-            },
-            31,
-        ),
-        (
-            NonZeroCoeffEobInput {
-                eob_pt: 11,
-                eob_extra: true,
-                eob_extra_bits: 0xff,
-            },
-            1024,
-        ),
-    ] {
-        assert_eq!(nonzero_coeff_eob(input).unwrap().eob(), expected);
-    }
-}
-
-#[test]
-fn nonzero_eob_rejects_invalid_points_and_refinements() {
-    assert!(matches!(
-        nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 0,
-            eob_extra: false,
-            eob_extra_bits: 0,
-        }),
-        Err(CoeffLoopContextError::InvalidEobPoint { eob_pt: 0 })
-    ));
-    assert!(matches!(
-        nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 1,
-            eob_extra: true,
-            eob_extra_bits: 0,
-        }),
-        Err(CoeffLoopContextError::UnexpectedEobRefinement {
-            eob_pt: 1,
-            eob_extra: true,
-            eob_extra_bits: 0,
-        })
-    ));
-    assert!(matches!(
-        nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 4,
-            eob_extra: false,
-            eob_extra_bits: 0b10,
-        }),
-        Err(CoeffLoopContextError::EobExtraBitsOutOfRange {
-            eob_pt: 4,
-            eob_extra_bits: 2,
-            max_eob_extra_bits: 1,
-        })
-    ));
-}
-
-#[test]
 fn live_eob_read_uses_selected_cdfs_and_literal_refinement() {
     let (payload, expected_tile) = encode_refined_eob();
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
@@ -129,7 +61,7 @@ fn live_eob_read_uses_selected_cdfs_and_literal_refinement() {
     )
     .unwrap();
 
-    assert_eq!(read.eob(), 8);
+    assert_eq!(read, 8);
     assert_eq!(symbols.symbol_count(), 3);
     assert_eq!(tile, expected_tile);
     assert!(symbols.finish().is_ok());
@@ -152,7 +84,7 @@ fn live_eob_read_honors_disabled_cdf_updates() {
     )
     .unwrap();
 
-    assert_eq!(read.eob(), 8);
+    assert_eq!(read, 8);
     assert_eq!(symbols.symbol_count(), 3);
     assert_eq!(tile, before);
 }

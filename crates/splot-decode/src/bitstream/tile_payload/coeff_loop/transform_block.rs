@@ -456,7 +456,7 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
         CoeffTransformClass::Horizontal,
         CoeffTransformClass::Vertical,
     ][CLASS];
-    let eob = input.start.eob_read().eob();
+    let eob = input.start.eob_read();
     let scan = grid_scan(tx_class, config.tx_width, config.tx_height, eob)?;
     let lines = input.lines;
     let (above_dc, left_dc, levels, nonzero) = state.dc_lines_and_levels(config.plane)?;

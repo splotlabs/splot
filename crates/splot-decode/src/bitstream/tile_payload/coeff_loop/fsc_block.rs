@@ -65,7 +65,7 @@ pub(crate) fn decode_fsc_transform_block(
         usize::from(tx.height),
         seg_eob,
     )?;
-    let eob = start.eob_read().eob();
+    let eob = start.eob_read();
     let bob = seg_eob.checked_sub(eob).ok_or_else(|| {
         CoeffOrdinaryPassError::from(super::CoeffLoopContextError::FscScanWalkEobOutOfRange {
             eob,
