@@ -34,15 +34,8 @@ fn wedge_masks(width: usize, height: usize) -> Option<&'static [u8]> {
         .get_or_init(|| {
             let mut masks = Vec::with_capacity(WEDGE_TYPES * width * height);
             for index in 0..WEDGE_TYPES {
-                for y in 0..height {
-                    for x in 0..width {
-                        let m = splot_recon::wedge_mask_plane_sample(
-                            width, height, index, false, 0, 0, x, y,
-                        )
-                        .ok()?;
-                        masks.push(u8::try_from(m).ok()?);
-                    }
-                }
+                let rows = splot_recon::wedge_mask_rows(width, height, index, false).ok()?;
+                masks.extend(rows.flatten());
             }
             Some(masks.into_boxed_slice())
         })
@@ -215,22 +208,9 @@ mod tests {
         let preds = (&p0[..], &p1[..]);
         let masks = wedge_masks(width, height).unwrap();
         for (index, mask) in masks.chunks_exact(s.len()).enumerate() {
-            for (i, &m) in mask.iter().enumerate() {
-                let decoder = |sign| {
-                    splot_recon::wedge_mask_plane_sample(
-                        width,
-                        height,
-                        index,
-                        sign,
-                        0,
-                        0,
-                        i % width,
-                        i / width,
-                    )
-                    .unwrap()
-                };
-                assert_eq!(u16::from(m), decoder(false));
-                assert_eq!(64 - u16::from(m), decoder(true));
+            let inverse = splot_recon::wedge_mask_rows(width, height, index, true).unwrap();
+            for (&m, &inverse) in mask.iter().zip(inverse.flatten()) {
+                assert_eq!(64 - m, inverse);
             }
             let moments = kernels().mask_moments(mask, &de, &ee);
             let plain = explicit(&s, preds, |i| i64::from(mask[i]));

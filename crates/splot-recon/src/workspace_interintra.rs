@@ -6,7 +6,6 @@
 use super::{CurrentFramePlane, CurrentFrameWorkspace, checked_sample_block_rect};
 #[cfg(target_arch = "x86_64")]
 use crate::intra_smooth::publish_rows;
-use crate::math::round2_i32;
 use crate::{IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result};
 use fearless_simd::{Simd, i32x4, i32x8, i32x16, prelude::*, u8x16, u16x8};
 use std::sync::OnceLock;
@@ -189,36 +188,6 @@ fn master_weight(boundary: usize, direction: usize, m: usize, n: usize) -> u16 {
     weight << 2
 }
 
-fn wedge_mask_luma_sample(
-    luma_width: usize,
-    luma_height: usize,
-    wedge_index: usize,
-    sign: bool,
-    x: usize,
-    y: usize,
-) -> Result<u16> {
-    let overflow = |context| ReconError::ArithmeticOverflow { context };
-    let &(direction, x_offset, y_offset) = WEDGE_CODEBOOK
-        .get(wedge_index)
-        .ok_or(overflow("interintra wedge index"))?;
-    let master = |offset: usize, size: usize, at: usize| {
-        (MASK_MASTER_SIZE / 2 + at)
-            .checked_sub((offset * size) >> 3)
-            .ok_or(overflow("interintra wedge mask coordinate"))
-    };
-    let (m, n) = (
-        master(x_offset, luma_width, x)?,
-        master(y_offset, luma_height, y)?,
-    );
-    let base = master_weight(
-        wedge_boundary_index(luma_width, luma_height),
-        direction,
-        m,
-        n,
-    );
-    Ok(if sign { 64 - base } else { base })
-}
-
 /// The § 7.13.3.27 `MasterMask` of each boundary and angle, 16 KiB each,
 /// built at first use.
 static MASTER_MASKS: [OnceLock<Box<[u8]>>; 2 * WEDGE_ANGLES] =
@@ -342,80 +311,6 @@ pub fn wedge_mask_into(
     }
     crate::blend_mask::subsample_mask(window, MASK_MASTER_SIZE, mask, w, sub_y);
     Ok(())
-}
-
-/// Returns one AV2 wedge-mask weight for a luma or chroma plane sample.
-///
-/// `sign` selects the inverse interinter wedge mask; interintra uses the base
-/// mask with `sign == false`.
-///
-/// # Errors
-/// Returns [`ReconError`] when the luma block size or wedge index does not
-/// select a valid AV2 wedge mask.
-#[allow(clippy::too_many_arguments)]
-pub fn wedge_mask_plane_sample(
-    luma_width: usize,
-    luma_height: usize,
-    wedge_index: usize,
-    sign: bool,
-    sub_x: u32,
-    sub_y: u32,
-    x: usize,
-    y: usize,
-) -> Result<u16> {
-    if sub_x == 0 {
-        return wedge_mask_luma_sample(luma_width, luma_height, wedge_index, sign, x, y);
-    }
-    let x0 = x << sub_x;
-    let y0 = y << sub_y;
-    if sub_y == 0 {
-        let sum = i32::from(wedge_mask_luma_sample(
-            luma_width,
-            luma_height,
-            wedge_index,
-            sign,
-            x0,
-            y0,
-        )?) + i32::from(wedge_mask_luma_sample(
-            luma_width,
-            luma_height,
-            wedge_index,
-            sign,
-            x0 + 1,
-            y0,
-        )?);
-        return Ok(round2_i32(sum, 1) as u16);
-    }
-    let sum = i32::from(wedge_mask_luma_sample(
-        luma_width,
-        luma_height,
-        wedge_index,
-        sign,
-        x0,
-        y0,
-    )?) + i32::from(wedge_mask_luma_sample(
-        luma_width,
-        luma_height,
-        wedge_index,
-        sign,
-        x0 + 1,
-        y0,
-    )?) + i32::from(wedge_mask_luma_sample(
-        luma_width,
-        luma_height,
-        wedge_index,
-        sign,
-        x0,
-        y0 + 1,
-    )?) + i32::from(wedge_mask_luma_sample(
-        luma_width,
-        luma_height,
-        wedge_index,
-        sign,
-        x0 + 1,
-        y0 + 1,
-    )?);
-    Ok(round2_i32(sum, 2) as u16)
 }
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
@@ -888,6 +783,60 @@ fn bawp_scale<S: Simd, const N: usize>(
 mod tests {
     use super::*;
     use crate::{BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
+
+    fn wedge_mask_luma_sample(
+        luma_width: usize,
+        luma_height: usize,
+        wedge_index: usize,
+        sign: bool,
+        x: usize,
+        y: usize,
+    ) -> Result<u16> {
+        let overflow = |context| ReconError::ArithmeticOverflow { context };
+        let &(direction, x_offset, y_offset) = WEDGE_CODEBOOK
+            .get(wedge_index)
+            .ok_or(overflow("interintra wedge index"))?;
+        let master = |offset: usize, size: usize, at: usize| {
+            (MASK_MASTER_SIZE / 2 + at)
+                .checked_sub((offset * size) >> 3)
+                .ok_or(overflow("interintra wedge mask coordinate"))
+        };
+        let (m, n) = (
+            master(x_offset, luma_width, x)?,
+            master(y_offset, luma_height, y)?,
+        );
+        let base = master_weight(
+            wedge_boundary_index(luma_width, luma_height),
+            direction,
+            m,
+            n,
+        );
+        Ok(if sign { 64 - base } else { base })
+    }
+
+    /// One § 7.13.3.27 wedge weight of a luma plane sample, or of a chroma
+    /// sample as § 7.13.3.30 subsamples it by `(sub_x, sub_y)`, sample by sample.
+    #[allow(clippy::too_many_arguments)]
+    fn wedge_mask_plane_sample(
+        lw: usize,
+        lh: usize,
+        index: usize,
+        sign: bool,
+        sub_x: u32,
+        sub_y: u32,
+        x: usize,
+        y: usize,
+    ) -> Result<u16> {
+        let sub_y = sub_y.min(sub_x);
+        let mut sum = 0;
+        for (dx, dy) in
+            (0..=sub_y as usize).flat_map(|dy| (0..=sub_x as usize).map(move |dx| (dx, dy)))
+        {
+            let (x, y) = ((x << sub_x) + dx, (y << sub_y) + dy);
+            sum += i32::from(wedge_mask_luma_sample(lw, lh, index, sign, x, y)?);
+        }
+        Ok(crate::math::round2_i32(sum, sub_x + sub_y) as u16)
+    }
 
     #[test]
     fn ii_weights_table_matches_the_spec_end_points() {

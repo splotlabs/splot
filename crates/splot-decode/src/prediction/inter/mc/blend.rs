@@ -5,8 +5,6 @@ use super::*;
 use fearless_simd::{
     Bytes as _, Select as _, Simd, SimdBase as _, SimdNarrow as _, i32x4, u16x8, u32x4,
 };
-#[cfg(test)]
-use splot_recon::wedge_mask_plane_sample;
 
 #[cfg(test)]
 /// The widest luma motion-compensated block: a 256x256 superblock side.
@@ -321,19 +319,13 @@ fn blend_compound_wedge<T: ReconSample>(
 ) -> splot_recon::Result<()> {
     let max_sample = i32::from(bit_depth.max_sample());
     let shift = 6 + compound_inter_post_round();
+    let mut masks = vec![0; w * h];
+    let wedge = (usize::from(wedge_index), sign);
+    splot_recon::wedge_mask_into(&mut masks, (w, h), (luma_w, luma_h), wedge, (sub_x, sub_y))?;
     for y in 0..h {
         for x in 0..w {
             let idx = y * w + x;
-            let mask = wedge_mask_plane_sample(
-                luma_w,
-                luma_h,
-                usize::from(wedge_index),
-                sign,
-                sub_x,
-                sub_y,
-                x,
-                y,
-            )?;
+            let mask = u16::from(masks[idx]);
             let blended = round2_i32(
                 i32::from(mask) * pred0[idx] + i32::from(64 - mask) * pred1[idx],
                 shift,
