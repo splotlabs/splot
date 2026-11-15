@@ -2543,3 +2543,53 @@ expect = "clean"
 path = "vectors/valid/syn-lossless-segments-inter-edge-166x102-q180.ivf"
 description = "AVM-encoded 6-frame 166x102 8-bit 4:2:0 stream of a project-generated moving texture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame and the inter frame shown last code lossless segments in every superblock, and in the inter frames 96 luma and 24 chroma 4x4 transform units of lossless blocks start at or past MiCols / MiRows (§ 5.20.7.23, § 5.20.7.24). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 0c0f7299970d50ac75dd89046e3bd4b9f2cfb7260691ae12795c19647fd1d865; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-segments-morph-edge-114x84-q180.ivf"
+description = "AVM-encoded 1-frame 114x84 8-bit 4:2:0 stream of a project-generated picture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): every block of the key frame is in a lossless segment, and the right frame edge (MiCols * MI_SIZE = 120) cuts the 32x4 morph-predicted IntraBC block at x 96, y 16 to 24x4; § 7.13.3.25 takes bw / bh = Min(MiCols * MI_SIZE - x, w) / Min(MiRows * MI_SIZE - y, h) only for the template counts and adapts every sample of the block (§ 7.13.3.26). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 ec089db9161bf5a13c31bfd03c0a1a0cb88a8e3b018bbd70b12366442ed982c7; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-segments-morph-edge-422-114x84-q180.ivf"
+description = "AVM-encoded 1-frame 114x84 8-bit 4:2:2 stream of a project-generated picture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=2 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): every block of the key frame is in a lossless segment, and the right frame edge (MiCols * MI_SIZE = 120) cuts the 32x4 morph-predicted IntraBC block at x 96, y 16 to 24x4; § 7.13.3.25 takes bw / bh = Min(MiCols * MI_SIZE - x, w) / Min(MiRows * MI_SIZE - y, h) only for the template counts and adapts every sample of the block (§ 7.13.3.26). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 2ba89feef0facdc5aac39ee956c66d662c55f90d037c599553a80985366b37c1; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-segments-morph-edge-210x150-q180.ivf"
+description = "AVM-encoded 2-frame 210x150 8-bit 4:2:0 stream of a project-generated picture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame codes lossless segments in the left three 64x64 superblock columns next to lossy segment 0 at x >= 192 (38 luma and 38 chroma filtered vertical deblock edge segments between lossless and lossy blocks, 1 skipped lossless IntraBC block larger than 4x4 next to a lossy block), and the right frame edge (MiCols * MI_SIZE = 216) cuts the 32x16 morph-predicted IntraBC block at x 192, y 32 to 24x16; § 7.13.3.25 takes bw / bh = Min(MiCols * MI_SIZE - x, w) / Min(MiRows * MI_SIZE - y, h) only for the template counts and adapts every sample of the block (§ 7.13.3.26). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 69d0f4b5736f4368def3773d8668e0268aa90f7efa75bdfb526073bdea012c5e; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-segments-skip-morph-150x210-q180.ivf"
+description = "AVM-encoded 2-frame 150x210 8-bit 4:2:0 stream of a project-generated picture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame codes lossless segments in the top three 64x64 superblock rows next to lossy segment 0 at y >= 192 (38 luma and 19 chroma filtered horizontal deblock edge segments between lossless and lossy blocks); 4 skipped lossless IntraBC blocks larger than 4x4 lie above the lossy row: § 5.20.6.1 read_tx_size gives a skipped lossless IntraBC or inter block TxSize = TX_4X4, so DeblockingTxSizes is TX_4X4 and the § 7.17.4 filter size of its edge with a lossy block is 4; the bottom frame edge (MiRows * MI_SIZE = 216) cuts the 16x32 morph-predicted IntraBC block at x 48, y 192 to 16x24: § 7.13.3.25 takes bw / bh = Min(MiCols * MI_SIZE - x, w) / Min(MiRows * MI_SIZE - y, h) only for the template counts and adapts every sample of the block (§ 7.13.3.26). avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 206ed0e4fce65807b66eccac6f9aea88647032bb1dc8c1a12060b5819d9ef89a; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-segments-skip-64x196-q180.ivf"
+description = "AVM-encoded 1-frame 64x196 8-bit 4:2:0 stream of a project-generated picture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame codes lossless segments in the top three superblocks next to lossy segment 0 at y >= 192 (16 luma filtered horizontal deblock edge segments between lossless and lossy blocks); 2 skipped lossless IntraBC blocks larger than 4x4 lie above the lossy superblock: § 5.20.6.1 read_tx_size gives a skipped lossless IntraBC or inter block TxSize = TX_4X4, so DeblockingTxSizes is TX_4X4 and the § 7.17.4 filter size of its edge with a lossy block is 4. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 350512b75774e99dbd9fc6509fe8592e1f171dfa8931fb235dd75e51cdbf5acb; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-segments-skip-422-64x196-q180.ivf"
+description = "AVM-encoded 1-frame 64x196 8-bit 4:2:2 stream of a project-generated picture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=2 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame codes lossless segments in the top three superblocks next to lossy segment 0 at y >= 192 (16 luma filtered horizontal deblock edge segments between lossless and lossy blocks); 2 skipped lossless IntraBC blocks larger than 4x4 lie above the lossy superblock: § 5.20.6.1 read_tx_size gives a skipped lossless IntraBC or inter block TxSize = TX_4X4, so DeblockingTxSizes is TX_4X4 and the § 7.17.4 filter size of its edge with a lossy block is 4. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 008d98c1569bcb0aca0d3ec9982259ef8375fc76aa278720ef06b418fa6849ca; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-segments-skip-444-64x196-q180.ivf"
+description = "AVM-encoded 1-frame 64x196 8-bit 4:4:4 stream of a project-generated picture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=1 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame codes lossless segments in the top three superblocks next to lossy segment 0 at y >= 192 (16 luma and 32 chroma filtered horizontal deblock edge segments between lossless and lossy blocks); 2 skipped lossless IntraBC blocks larger than 4x4 lie above the lossy superblock: § 5.20.6.1 read_tx_size gives a skipped lossless IntraBC or inter block TxSize = TX_4X4, so DeblockingTxSizes is TX_4X4 and the § 7.17.4 filter size of its edge with a lossy block is 4. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 197f2d92ccab43ec697de9cdada3aa80061cf41597be1eaf76fe5d3709c0db11; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-segments-skip-10bit-64x196-q180.ivf"
+description = "AVM-encoded 1-frame 64x196 10-bit 4:2:0 stream of a project-generated picture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --bit-depth=10 --input-bit-depth=10 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame codes lossless segments in the top three superblocks next to lossy segment 0 at y >= 192 (16 luma and 8 chroma filtered horizontal deblock edge segments between lossless and lossy blocks); 4 skipped lossless IntraBC blocks larger than 4x4 lie above the lossy superblock: § 5.20.6.1 read_tx_size gives a skipped lossless IntraBC or inter block TxSize = TX_4X4, so DeblockingTxSizes is TX_4X4 and the § 7.17.4 filter size of its edge with a lossy block is 4. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 77d3e1cbe58746d7e321e59790888f36f73b87eb4733a22405f361bd9d02967d; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-segments-skip-196x100-q180.ivf"
+description = "AVM-encoded 1-frame 196x100 8-bit 4:2:0 stream of a project-generated picture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame codes lossless segments in the left three superblock columns next to lossy segment 0 at x >= 192 (26 luma filtered vertical deblock edge segments between lossless and lossy blocks); 8 skipped lossless IntraBC blocks larger than 4x4 lie left of the lossy column: § 5.20.6.1 read_tx_size gives a skipped lossless IntraBC or inter block TxSize = TX_4X4, so DeblockingTxSizes is TX_4X4 and the § 7.17.4 filter size of its edge with a lossy block is 4. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 bc39ae243ffaf3b038db678eaf11f009e5b1ef7a4b9d7b729a6c0c9c013e640a; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-segments-skip-inter-64x196-q180.ivf"
+description = "AVM-encoded 4-frame 64x196 8-bit 4:2:0 stream of a project-generated picture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame and one inter frame code lossless segments in the top three superblocks next to lossy segment 0 at y >= 192 (32 luma and 8 chroma filtered horizontal deblock edge segments between lossless and lossy blocks, 3 skipped lossless IntraBC or inter blocks larger than 4x4 above the lossy superblock); the first output that differs without the rule is the inter frame shown third: § 5.20.6.1 read_tx_size gives a skipped lossless IntraBC or inter block TxSize = TX_4X4, so DeblockingTxSizes is TX_4X4 and the § 7.17.4 filter size of its edge with a lossy block is 4. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 9239440f9df3434165a92d57a028091df836c74dd829dad75e4290e871787db9; validates clean."
+expect = "clean"
