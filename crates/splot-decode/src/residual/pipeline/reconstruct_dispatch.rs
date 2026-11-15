@@ -275,9 +275,10 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::Luma(RectLumaPlan::Middle { p_angle, use_tcq }) => {
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
+                let luma = self.luma_edges(frame);
                 let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: self.luma_edges(frame).has_above(),
-                    left: self.luma_edges(frame).has_left(),
+                    above: luma.has_above(),
+                    left: luma.has_left(),
                 };
                 let edge_filters = crate::prediction::intra_edge::unit_middle_edge_filters(
                     intra_edge,
@@ -394,9 +395,10 @@ impl ResidualPlanePlan {
                 let neighbours = self.luma_corner_neighbours(frame, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
+                let luma = self.luma_edges(frame);
                 let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: self.luma_edges(frame).has_above(),
-                    left: self.luma_edges(frame).has_left(),
+                    above: luma.has_above(),
+                    left: luma.has_left(),
                 };
                 let edge_filter = crate::prediction::intra_edge::unit_edge_filter(
                     intra_edge,
@@ -488,7 +490,7 @@ impl ResidualPlanePlan {
                         self.tx.height_log2(),
                         qindex,
                         neighbours.num_below_left(),
-                        self.luma_edges(frame).has_above(),
+                        edges.has_above(),
                         mrl_index,
                         above_mrl_index,
                         use_tcq,
@@ -508,7 +510,7 @@ impl ResidualPlanePlan {
                         self.tx.height_log2(),
                         qindex,
                         neighbours.num_below_left(),
-                        self.luma_edges(frame).has_above(),
+                        edges.has_above(),
                         mrl_index,
                         above_mrl_index,
                         use_tcq,
@@ -550,9 +552,10 @@ impl ResidualPlanePlan {
                 let neighbours = self.luma_corner_neighbours(frame, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
+                let luma = self.luma_edges(frame);
                 let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: self.luma_edges(frame).has_above(),
-                    left: self.luma_edges(frame).has_left(),
+                    above: luma.has_above(),
+                    left: luma.has_left(),
                 };
                 let edge_filter = crate::prediction::intra_edge::unit_edge_filter(
                     intra_edge,
@@ -612,7 +615,7 @@ impl ResidualPlanePlan {
                         self.tx.height_log2(),
                         qindex,
                         neighbours.num_below_left(),
-                        self.luma_edges(frame).has_above(),
+                        edges.above,
                         0,
                         0,
                         use_tcq,
