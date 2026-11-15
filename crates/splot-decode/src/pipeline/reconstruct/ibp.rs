@@ -55,7 +55,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
         IntraPredictionScratchBuffer::Primary,
         plane_id,
         width * height,
-        T::default(),
     )?;
     if zone1 {
         let above_idif = build_one_sided_above_idif_edge(
@@ -135,7 +134,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
         IntraPredictionScratchBuffer::Secondary,
         plane_id,
         width * height,
-        T::default(),
     )?;
     let second_angle = IntraDirectionalAngle::try_from_p_angle(secondary.second_angle)?;
     if zone1 {

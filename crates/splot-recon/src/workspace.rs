@@ -128,7 +128,9 @@ impl<T: ReconSample> IntraPredictionScratch<T> {
         }
     }
 
-    /// Takes one initialized prediction buffer from this scratch owner.
+    /// Takes one prediction buffer of `sample_count` samples from this
+    /// scratch owner. The samples are initialized but hold stale values: the
+    /// caller writes each sample before it reads it.
     ///
     /// # Errors
     /// Returns [`ReconError`] if `sample_count` exceeds the largest AV2 intra
@@ -138,7 +140,6 @@ impl<T: ReconSample> IntraPredictionScratch<T> {
         slot: IntraPredictionScratchBuffer,
         plane: PlaneId,
         sample_count: usize,
-        fill: T,
     ) -> Result<Vec<T>> {
         if sample_count > MAX_INTRA_PREDICTION_SAMPLES {
             return Err(ReconError::WorkspaceIntraPredictionScratchTooLarge {
@@ -147,22 +148,20 @@ impl<T: ReconSample> IntraPredictionScratch<T> {
             });
         }
         let mut buffer = mem::take(self.buffer_mut(slot));
-        buffer.clear();
         if buffer.capacity() < sample_count {
-            buffer.try_reserve_exact(sample_count).map_err(|_| {
-                ReconError::WorkspaceAllocationFailed {
+            buffer
+                .try_reserve_exact(sample_count - buffer.len())
+                .map_err(|_| ReconError::WorkspaceAllocationFailed {
                     plane,
                     context: "intra prediction scratch",
-                }
-            })?;
+                })?;
         }
-        buffer.resize(sample_count, fill);
+        buffer.resize(sample_count, T::default());
         Ok(buffer)
     }
 
     /// Returns a prediction buffer to this scratch owner for reuse.
-    pub fn recycle_buffer(&mut self, slot: IntraPredictionScratchBuffer, mut buffer: Vec<T>) {
-        buffer.clear();
+    pub fn recycle_buffer(&mut self, slot: IntraPredictionScratchBuffer, buffer: Vec<T>) {
         *self.buffer_mut(slot) = buffer;
     }
 
@@ -1247,10 +1246,9 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         slot: IntraPredictionScratchBuffer,
         plane: PlaneId,
         sample_count: usize,
-        fill: T,
     ) -> Result<Vec<T>> {
         self.intra_prediction_scratch
-            .take_buffer(slot, plane, sample_count, fill)
+            .take_buffer(slot, plane, sample_count)
     }
 
     /// Returns an intra-prediction buffer to its reusable workspace slot.

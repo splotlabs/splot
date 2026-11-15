@@ -283,7 +283,6 @@ fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
         IntraPredictionScratchBuffer::Primary,
         plane_id,
         side * side,
-        T::default(),
     )?;
     predict_directional_noneighbour_into(mode, block_size, side, bit_depth, &mut prediction)?;
     write_intra_prediction_block(
@@ -315,7 +314,6 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
         IntraPredictionScratchBuffer::Primary,
         plane_id,
         width * height,
-        T::default(),
     )?;
     predict_intra_cardinal_directional_rect_into(
         bit_depth,

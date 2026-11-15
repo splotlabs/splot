@@ -171,7 +171,6 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
         IntraPredictionScratchBuffer::Primary,
         PlaneId::Y,
         block_size.sample_count(),
-        T::default(),
     )?;
     let fill_result =
         splot_recon::predict_intra_palette_into(&palette.colors(), color_map, &mut prediction)
@@ -279,7 +278,6 @@ pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
         IntraPredictionScratchBuffer::Primary,
         PlaneId::Y,
         block_size.sample_count(),
-        T::default(),
     )?;
     predict(workspace, false, &mut prediction)?;
     if blend_secondary && (block_size.width() != 4 || block_size.height() != 4) {
@@ -287,7 +285,6 @@ pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
             IntraPredictionScratchBuffer::Secondary,
             PlaneId::Y,
             block_size.sample_count(),
-            T::default(),
         )?;
         let result = predict(workspace, true, &mut secondary).and_then(|()| {
             splot_recon::average_intra_predictions(&mut prediction, &secondary).map_err(Into::into)
@@ -417,7 +414,6 @@ pub(crate) fn predict_intra_block<T: ReconSample>(
         IntraPredictionScratchBuffer::Primary,
         plane_id,
         block_size.sample_count(),
-        T::default(),
     )?;
     predict(&mut prediction, block_size.width())?;
     write_intra_prediction_block(
@@ -482,7 +478,6 @@ pub(crate) fn commit_intra_prediction<T: ReconSample>(
         IntraPredictionScratchBuffer::Secondary,
         plane_id,
         block_size.sample_count(),
-        T::default(),
     )?;
     let result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
         block,

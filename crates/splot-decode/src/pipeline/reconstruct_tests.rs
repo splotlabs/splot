@@ -284,7 +284,6 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
             splot_recon::IntraPredictionScratchBuffer::Primary,
             PlaneId::Y,
             16,
-            100,
         )
         .unwrap();
     let prediction_allocation = prediction.as_ptr();
@@ -337,7 +336,6 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
             splot_recon::IntraPredictionScratchBuffer::Primary,
             PlaneId::Y,
             16,
-            7,
         )
         .unwrap();
     assert_eq!(prediction.as_ptr(), prediction_allocation);

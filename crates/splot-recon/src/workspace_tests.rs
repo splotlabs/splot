@@ -181,23 +181,24 @@ fn yuv420_info(width: usize, height: usize) -> DecodedFrameInfo {
 fn intra_prediction_scratch_is_task_local_and_reusable() {
     let mut first = IntraPredictionScratch::<u8>::new();
     let mut second = IntraPredictionScratch::<u8>::new();
-    let first_buffer = first
-        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64, 7)
+    let mut first_buffer = first
+        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64)
         .unwrap();
+    first_buffer.fill(7);
     let first_pointer = first_buffer.as_ptr();
     first.recycle_buffer(IntraPredictionScratchBuffer::Primary, first_buffer);
 
     let second_buffer = second
-        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64, 9)
+        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64)
         .unwrap();
     assert_ne!(second_buffer.as_ptr(), first_pointer);
-    assert_eq!(second_buffer, vec![9; 64]);
+    assert_eq!(second_buffer, vec![0; 64]);
 
     let first_buffer = first
-        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 16, 11)
+        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 16)
         .unwrap();
     assert_eq!(first_buffer.as_ptr(), first_pointer);
-    assert_eq!(first_buffer, vec![11; 16]);
+    assert_eq!(first_buffer, vec![7; 16], "the stale samples stay");
 }
 
 #[test]
@@ -1455,37 +1456,26 @@ fn workspace_reuses_two_intra_prediction_buffers() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
     let primary = workspace
-        .take_intra_prediction_buffer(
-            IntraPredictionScratchBuffer::Primary,
-            PlaneId::Y,
-            64 * 64,
-            7,
-        )
+        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64 * 64)
         .unwrap();
     let primary_ptr = primary.as_ptr();
     let secondary = workspace
-        .take_intra_prediction_buffer(
-            IntraPredictionScratchBuffer::Secondary,
-            PlaneId::Y,
-            64 * 64,
-            9,
-        )
+        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, PlaneId::Y, 64 * 64)
         .unwrap();
     let secondary_ptr = secondary.as_ptr();
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, primary);
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, secondary);
 
     let primary = workspace
-        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 16, 11)
+        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 16)
         .unwrap();
     let secondary = workspace
-        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, PlaneId::Y, 16, 13)
+        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, PlaneId::Y, 16)
         .unwrap();
 
     assert_eq!(primary.as_ptr(), primary_ptr);
     assert_eq!(secondary.as_ptr(), secondary_ptr);
-    assert_eq!(primary, vec![11; 16]);
-    assert_eq!(secondary, vec![13; 16]);
+    assert_eq!((primary.len(), secondary.len()), (16, 16));
 }
 
 #[test]
@@ -1498,7 +1488,6 @@ fn workspace_rejects_oversized_intra_prediction_scratch() {
             IntraPredictionScratchBuffer::Primary,
             PlaneId::Y,
             64 * 64 + 1,
-            0,
         ),
         Err(ReconError::WorkspaceIntraPredictionScratchTooLarge {
             sample_count: 4097,
