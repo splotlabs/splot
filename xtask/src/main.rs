@@ -457,6 +457,7 @@ fn main() -> Result<()> {
 }
 
 fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
+    let exclude = exclude_tests.map_or_else(Vec::new, |package| vec!["--exclude", package]);
     run_cargo(&["fmt", "--all", "--", "--check"])?;
     run_cargo(&[
         "clippy",
@@ -469,11 +470,13 @@ fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
         "warnings",
     ])?;
     if !fast {
-        let mut test = vec!["test", "--workspace", "--all-targets", "--locked"];
-        if let Some(package) = exclude_tests {
-            test.extend(["--exclude", package]);
-        }
-        run_cargo(&test)?;
+        run_cargo(
+            &[
+                &["test", "--workspace", "--all-targets", "--locked"][..],
+                &exclude,
+            ]
+            .concat(),
+        )?;
         run_cargo(&["test", "--doc", "--workspace", "--locked"])?;
         run_cargo_with_env(
             &[("RUSTDOCFLAGS", "-D warnings")],
@@ -510,16 +513,24 @@ fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
         eprintln!("ci --fast: passed; tests, rustdoc, external tools and the C ABI run in full CI");
         return Ok(());
     }
-    check_capi_example(&root)?;
+    check_capi_example(&root, &exclude)?;
 
     eprintln!("ci: all checks passed");
     Ok(())
 }
 
 /// Builds the C ABI example against the shared library and checks that it
-/// decodes a conformance vector to the committed AVM raw output.
-fn check_capi_example(root: &Path) -> Result<()> {
-    run_cargo(&["build", "-p", "splot-capi", "--locked"])?;
+/// decodes a conformance vector to the committed AVM raw output. The build
+/// selects the packages and test targets of the test run, so Cargo resolves
+/// the same features and reuses its artifacts instead of a second compile.
+fn check_capi_example(root: &Path, exclude: &[&str]) -> Result<()> {
+    run_cargo(
+        &[
+            &["build", "--workspace", "--lib", "--tests", "--locked"][..],
+            exclude,
+        ]
+        .concat(),
+    )?;
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map_or_else(|| root.join("target"), PathBuf::from)
         .join("debug");
