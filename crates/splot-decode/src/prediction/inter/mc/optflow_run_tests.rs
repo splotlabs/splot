@@ -282,15 +282,15 @@ fn fullpel_center_sad_matches_the_search_windows() {
                 let mut luma = LumaReference::pair(info, &block, ByteOffset::new(0));
                 let ends = fullpel_center_ends_search(&mut luma, rect, candidates).expect("centre");
                 let mut windows = [[0u8; 24 * 24]; 2];
-                let built =
-                    search_windows_u8(&mut luma, rect, candidates, &mut windows).expect("windows");
+                search_windows(&mut luma, rect, candidates, true, windows.each_mut())
+                    .expect("windows");
                 if candidates.iter().any(|mv| (mv.row | mv.col) & 7 != 0) {
                     assert_eq!(ends, None, "{candidates:?}");
                     continue;
                 }
-                if !built {
+                let Some(ends) = ends else {
                     continue;
-                }
+                };
                 let (stride, sad_h) = (unit + 8, unit + 4);
                 let at = |row: usize, col: usize| (2 + row) * stride + 2 + col;
                 let sad: u32 = (0..sad_h)
@@ -299,7 +299,7 @@ fn fullpel_center_sad_matches_the_search_windows() {
                     .map(|i| u32::from(windows[0][i].abs_diff(windows[1][i])))
                     .sum();
                 let expected = sad - (sad >> 3) < (2 * (stride - 4) * sad_h) as u32;
-                assert_eq!(ends, Some(expected), "{unit} {x},{y} {candidates:?}");
+                assert_eq!(ends, expected, "{unit} {x},{y} {candidates:?}");
                 decisions[usize::from(expected)] += 1;
             }
         }

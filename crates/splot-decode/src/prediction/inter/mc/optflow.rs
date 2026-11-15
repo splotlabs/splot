@@ -3,8 +3,8 @@
 
 use splot_recon::math::round2_signed_i32;
 use splot_recon::{
-    BilinearOverlapCarry, CompoundCells, OptflowScratch, derive_optflow_mv_delta_8x8_strided_into,
-    derive_optflow_mv_deltas_into,
+    BilinearOverlapCarry, CompoundCells, OptflowScratch, REFINEMV_SEARCH_AREA, WindowSample,
+    derive_optflow_mv_delta_8x8_strided_into, derive_optflow_mv_deltas_into,
 };
 
 use super::blend::{ImplicitMaskBlend, blend_implicit_mask_region};
@@ -422,7 +422,7 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
 /// Whether the § 7.13.3.6 search of the eight-bit refine-MV unit `rect` ends
 /// at its biased centre SAD, read straight from the references when both
 /// candidates are full-pel: the centre area of a full-sample window
-/// [`search_windows_u8`] builds holds the reference samples unclipped.
+/// [`search_windows`] builds holds the reference samples unclipped.
 /// `None` when a candidate is not full-pel or the byte kernel would not take
 /// its window.
 pub(super) fn fullpel_center_ends_search<T: ReconSample>(
@@ -479,27 +479,27 @@ pub(super) fn fullpel_center_ends_search<T: ReconSample>(
     Ok(Some(sad - (sad >> 3) < (2 * sad_w * sad_h) as u32))
 }
 
-/// Predicts the eight-bit bilinear § 7.13.3.6 search windows `rect` of the
-/// refine-MV unit four samples in from each edge, around `candidates`, into
-/// `windows` as bytes, or returns `false` when the byte kernel does not
-/// cover one: a scaled reference, or a unit whose § 7.13.3.5 reference area
-/// the plane clamps.
-pub(super) fn search_windows_u8<T: ReconSample, const N: usize>(
+/// The § 7.13.3.6 search of the refine-MV unit whose search area `rect` is
+/// four samples wider on each side, around `candidates`: both bilinear
+/// windows into `windows` and the search offset. References are unscaled
+/// for every searching block (§ 5.20.7.17 `is_refinemv_allowed_reference`,
+/// TIP `search_refinemv`), so a scaled one or a window the kernel rejects
+/// is a state error.
+pub(super) fn search_windows<T: ReconSample, P: WindowSample>(
     luma: &mut [LumaReference<'_, T>; 2],
     rect: McBlockRect,
     candidates: [Mv; 2],
-    windows: &mut [[u8; N]; 2],
-) -> Result<bool> {
+    allow_center: bool,
+    windows: [&mut [P; REFINEMV_SEARCH_AREA]; 2],
+) -> Result<(i32, i32)> {
     let unit = [rect.luma_w.saturating_sub(8), rect.luma_h.saturating_sub(8)];
-    if !matches!(unit, [8 | 16, 8 | 16]) {
-        return Ok(false);
-    }
     let origin = [(rect.luma_x as i32) << 4, (rect.luma_y as i32) << 4];
     let padding = super::refinemv::SEARCH_PADDING;
-    for ((luma, candidate), window) in luma.iter_mut().zip(candidates).zip(windows) {
+    let mut found = [None; 2];
+    for ((luma, candidate), found) in luma.iter_mut().zip(candidates).zip(&mut found) {
         let scaling = luma.scaling;
         if scaling.is_scaled() {
-            return Ok(false);
+            return Err(crate::DecodeHeaderStateError::InvalidInterBlockModeState.into());
         }
         let bounds =
             super::refinemv::unscaled_area_bounds(origin, unit, candidate, [0, 0], &scaling);
@@ -512,12 +512,19 @@ pub(super) fn search_windows_u8<T: ReconSample, const N: usize>(
             [rect.luma_w, rect.luma_h],
             (luma.bit_depth, InterpolationFilter::Bilinear),
         );
-        let view = luma.view(params.last_y)?;
-        if !splot_recon::subpel_predict_bilinear_search_window_u8(&view, &params, window) {
-            return Ok(false);
-        }
+        *found = Some((luma.view(params.last_y)?, params));
     }
-    Ok(true)
+    let [Some((first, first_params)), Some((second, second_params))] = found else {
+        return Err(crate::DecodeHeaderStateError::InvalidBlockGeometry.into());
+    };
+    splot_recon::refinemv_search_windows(
+        [&first, &second],
+        [&first_params, &second_params],
+        allow_center,
+        luma[0].bit_depth,
+        windows,
+    )
+    .ok_or_else(|| crate::DecodeHeaderStateError::InvalidBlockGeometry.into())
 }
 
 type GridPlane<'a, 'b, T, O> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [O], usize);

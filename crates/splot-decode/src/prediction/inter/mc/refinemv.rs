@@ -17,14 +17,14 @@ pub(super) const TIP_PREDICTION_AREA: usize = TIP_PREDICTION_SIZE * TIP_PREDICTI
 #[derive(Debug)]
 pub(crate) struct TipSearchScratch {
     predictions: [[u16; TIP_PREDICTION_AREA]; 2],
-    windows: [[u8; TIP_PREDICTION_AREA]; 2],
+    windows: SearchBytes,
 }
 
 impl Default for TipSearchScratch {
     fn default() -> Self {
         Self {
             predictions: [[0; TIP_PREDICTION_AREA]; 2],
-            windows: [[0; TIP_PREDICTION_AREA]; 2],
+            windows: [[0; SEARCH_AREA]; 2],
         }
     }
 }
@@ -290,19 +290,17 @@ pub(super) fn search_refinemv<T: ReconSample>(
     if !search_range_allowed(candidates) {
         return Ok(candidates);
     }
-    let prediction_rect = search_rect(rect);
-    // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
-    let allow_center = !block.refinemv_switchable;
+    let search = (search_rect(rect), candidates, !block.refinemv_switchable);
     if T::u8_slice(&[]).is_some() {
         let mut windows = [[0u8; SEARCH_AREA]; 2];
-        let search = (prediction_rect, candidates, allow_center);
-        if let Some(mvs) = search_bytes(luma, search, &mut windows)?.0 {
-            return Ok(mvs);
-        }
+        return Ok(search_bytes(luma, search, &mut windows)?.0);
     }
-    let (width, height) = (prediction_rect.luma_w, prediction_rect.luma_h);
-    let (dx, dy) = super::with_initial_luma_predictions(width, height, |pred0, pred1| {
-        search_samples(luma, rect, candidates, allow_center, [pred0, pred1])
+    let (dx, dy) = super::with_initial_luma_predictions(SEARCH_AREA, 1, |first, second| {
+        let (Some(first), Some(second)) = (first.first_chunk_mut(), second.first_chunk_mut())
+        else {
+            return Err(crate::DecodeHeaderStateError::InvalidBlockGeometry.into());
+        };
+        super::optflow::search_windows(luma, search.0, candidates, search.2, [first, second])
     })?;
     Ok(refined_mvs(candidates, dx, dy))
 }
@@ -320,22 +318,16 @@ pub(super) fn search_unit<T: ReconSample>(
         return Ok((candidates, SearchArea::None));
     }
     let prediction_rect = search_rect(rect);
-    if T::u8_slice(&[]).is_some()
-        && let (Some(mvs), area) =
-            search_bytes(luma, (prediction_rect, candidates, allow_center), bytes)?
-    {
-        return Ok((mvs, area));
+    if T::u8_slice(&[]).is_some() {
+        return search_bytes(luma, (prediction_rect, candidates, allow_center), bytes);
     }
-    let len = prediction_rect.luma_w * prediction_rect.luma_h;
-    let [first, second] = samples;
-    let (Some(pred0), Some(pred1)) = (first.get_mut(..len), second.get_mut(..len)) else {
-        return Err(ReconError::SubpelBlockDimensionUnsupported {
-            w: rect.luma_w,
-            h: rect.luma_h,
-        }
-        .into());
-    };
-    let (dx, dy) = search_samples(luma, rect, candidates, allow_center, [pred0, pred1])?;
+    let (dx, dy) = super::optflow::search_windows(
+        luma,
+        prediction_rect,
+        candidates,
+        allow_center,
+        samples.each_mut(),
+    )?;
     Ok((refined_mvs(candidates, dx, dy), SearchArea::Samples))
 }
 
@@ -349,92 +341,26 @@ const fn search_rect(rect: McBlockRect) -> McBlockRect {
 
 /// The eight-bit search: the candidates when both are full-pel and the
 /// centre SAD read from the references keeps them, else the search of the
-/// byte windows; `None` when the byte kernels do not cover the unit.
+/// byte windows.
 fn search_bytes<T: ReconSample>(
     luma: &mut [super::optflow::LumaReference<'_, T>; 2],
     (prediction_rect, candidates, allow_center): (McBlockRect, [Mv; 2], bool),
     windows: &mut SearchBytes,
-) -> Result<(Option<[Mv; 2]>, SearchArea)> {
+) -> Result<([Mv; 2], SearchArea)> {
     if allow_center
         && super::optflow::fullpel_center_ends_search(luma, prediction_rect, candidates)?
             == Some(true)
     {
-        return Ok((Some(candidates), SearchArea::None));
+        return Ok((candidates, SearchArea::None));
     }
-    if super::optflow::search_windows_u8(luma, prediction_rect, candidates, windows)?
-        && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
-            [&windows[0], &windows[1]],
-            prediction_rect.luma_w,
-            prediction_rect.luma_h - 4,
-            allow_center,
-        )
-    {
-        return Ok((Some(refined_mvs(candidates, dx, dy)), SearchArea::Bytes));
-    }
-    Ok((None, SearchArea::None))
-}
-
-/// The search offset from sample predictions of the search area: the centre
-/// alone first when it may keep the candidates, else the whole area.
-fn search_samples<T: ReconSample>(
-    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
-    rect: McBlockRect,
-    candidates: [Mv; 2],
-    allow_center: bool,
-    [pred0, pred1]: [&mut [u16]; 2],
-) -> Result<(i32, i32)> {
-    let prediction_rect = search_rect(rect);
-    let bit_depth = luma[0].bit_depth();
-    let mut predict = |center_only: bool, pred0: &mut [u16], pred1: &mut [u16]| {
-        for ((luma, candidate), prediction) in luma.iter_mut().zip(candidates).zip([pred0, pred1]) {
-            let search_mv = Mv {
-                row: candidate.row - SEARCH_PADDING,
-                col: candidate.col - SEARCH_PADDING,
-            };
-            let area = Some((candidate, rect.luma_w, rect.luma_h));
-            let filter = InterpolationFilter::Bilinear;
-            if center_only {
-                super::optflow::initial_luma_prediction::<_, 2>(
-                    luma,
-                    prediction_rect,
-                    search_mv,
-                    filter,
-                    area,
-                    None,
-                    prediction,
-                )?;
-            } else {
-                super::optflow::initial_luma_prediction::<_, 0>(
-                    luma,
-                    prediction_rect,
-                    search_mv,
-                    filter,
-                    area,
-                    None,
-                    prediction,
-                )?;
-            }
-        }
-        Ok::<_, crate::error::DecodeError>(())
-    };
-    let stride = prediction_rect.luma_w;
-    if allow_center {
-        predict(true, pred0, pred1)?;
-        if refinemv_center_sad(pred0, pred1, stride, rect.luma_w, rect.luma_h, bit_depth)?.is_none()
-        {
-            return Ok((0, 0));
-        }
-    }
-    predict(false, pred0, pred1)?;
-    let sad_h = prediction_rect.luma_h - 4;
-    splot_recon::refinemv_search_u16([pred0, pred1], stride, sad_h, allow_center, bit_depth)
-        .ok_or_else(|| {
-            ReconError::SubpelBlockDimensionUnsupported {
-                w: rect.luma_w + 4,
-                h: rect.luma_h + 4,
-            }
-            .into()
-        })
+    let (dx, dy) = super::optflow::search_windows(
+        luma,
+        prediction_rect,
+        candidates,
+        allow_center,
+        windows.each_mut(),
+    )?;
+    Ok((refined_mvs(candidates, dx, dy), SearchArea::Bytes))
 }
 
 /// The candidates moved by the full-sample search offset `(dx, dy)`, in
@@ -783,11 +709,14 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
     let mut prediction_rect = rect;
     prediction_rect.luma_w = PREDICTION_SIZE;
     prediction_rect.luma_h = PREDICTION_SIZE;
-    if T::u8_slice(&[]).is_some()
-        && super::optflow::search_windows_u8(luma, prediction_rect, candidates, windows)?
-        && let Some((dx, dy)) =
-            splot_recon::refinemv_search_u8([&windows[0], &windows[1]], PREDICTION_SIZE, 12, true)
-    {
+    if T::u8_slice(&[]).is_some() {
+        let (dx, dy) = super::optflow::search_windows(
+            luma,
+            prediction_rect,
+            candidates,
+            true,
+            windows.each_mut(),
+        )?;
         let base_mvs = refined_mvs(candidates, dx, dy);
         let starts = [unit_start(dx, dy), unit_start(-dx, -dy)];
         let rows = [0, 1].map(|reference| {
@@ -953,63 +882,6 @@ fn search_range_allowed(candidates: [Mv; 2]) -> bool {
     })
 }
 
-/// The `(width + 4) x (height + 4)` area each § 7.13.3.6 SAD compares.
-fn sad_extent(width: usize, height: usize) -> splot_recon::Result<(usize, usize)> {
-    let sad_width = width.checked_add(4).ok_or(ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD width",
-    })?;
-    let sad_height = height
-        .checked_add(4)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "refine-MV SAD height",
-        })?;
-    Ok((sad_width, sad_height))
-}
-
-/// The biased § 7.13.3.6 centre SAD, or `None` when it keeps the
-/// candidates. It reads only the predictions' centre area, two samples in
-/// from each edge.
-fn refinemv_center_sad<'a>(
-    pred0: &'a [u16],
-    pred1: &'a [u16],
-    stride: usize,
-    width: usize,
-    height: usize,
-    bit_depth: splot_recon::BitDepth,
-) -> splot_recon::Result<Option<u32>> {
-    let (sad_width, sad_height) = sad_extent(width, height)?;
-    let threshold = sad_width
-        .checked_mul(sad_height)
-        .and_then(|area| area.checked_mul(2))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "refine-MV SAD threshold",
-        })? as u32;
-    let span = |pred: &'a [u16]| {
-        let start = stride.checked_mul(2)?.checked_add(2)?;
-        let last_row = sad_height.saturating_sub(1) & !1;
-        let len = last_row.checked_mul(stride)?.checked_add(sad_width)?;
-        pred.get(start..start.checked_add(len)?)
-    };
-    let (Some(left), Some(right)) = (span(pred0), span(pred1)) else {
-        return Err(ReconError::ArithmeticOverflow {
-            context: "refine-MV SAD lookup",
-        });
-    };
-    let rows = left.chunks(2 * stride).zip(right.chunks(2 * stride));
-    let center = match sad_width {
-        12 => sad_rows::<12>(rows, u16::MAX),
-        20 => sad_rows::<20>(rows, u16::MAX),
-        _ => {
-            return Err(ReconError::SubpelBlockDimensionUnsupported {
-                w: sad_width,
-                h: sad_height,
-            });
-        }
-    } >> bit_depth.bits().saturating_sub(8);
-    let biased_center = center - (center >> 3);
-    Ok((biased_center >= threshold).then_some(biased_center))
-}
-
 /// Lanes 4..8 of a `u16x8`: the last four of the final eight samples of a
 /// row, past the samples of the full vectors.
 const HIGH_HALF: [u16; 8] = [0, 0, 0, 0, u16::MAX, u16::MAX, u16::MAX, u16::MAX];
@@ -1076,60 +948,6 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
-
-    #[test]
-    fn default_search_keeps_a_low_sad_centre() {
-        let prediction = vec![80u16; 24 * 24];
-        assert_eq!(
-            splot_recon::refinemv_search_u16(
-                [&prediction[..], &prediction[..]],
-                24,
-                20,
-                true,
-                splot_recon::BitDepth::Eight,
-            )
-            .expect("centre search"),
-            (0, 0)
-        );
-    }
-
-    #[test]
-    fn default_search_selects_opposing_full_pixel_offsets() {
-        let sample = |y: i32, x: i32| ((y * 37 + x * 19 + y * x * 3).rem_euclid(256)) as u16;
-        let pred0: Vec<u16> = (0..24)
-            .flat_map(|y| (0..24).map(move |x| sample(y, x)))
-            .collect();
-        let pred1: Vec<u16> = (0..24)
-            .flat_map(|y| (0..24).map(move |x| sample(y - 2, x + 2)))
-            .collect();
-        assert_eq!(
-            splot_recon::refinemv_search_u16(
-                [&pred0[..], &pred1[..]],
-                24,
-                20,
-                true,
-                splot_recon::BitDepth::Eight,
-            )
-            .expect("offset search"),
-            (1, -1)
-        );
-    }
-
-    #[test]
-    fn switchable_search_rejects_low_sad_center_and_starts_with_first_neighbor() {
-        let prediction = vec![80u16; 24 * 24];
-        assert_eq!(
-            splot_recon::refinemv_search_u16(
-                [&prediction[..], &prediction[..]],
-                24,
-                20,
-                false,
-                splot_recon::BitDepth::Eight,
-            )
-            .expect("center-disabled search"),
-            (-2, -2)
-        );
-    }
 
     #[test]
     fn reference_area_uses_the_refinemv_extension() {
