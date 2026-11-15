@@ -290,16 +290,12 @@ pub(super) fn grid_scan(
     eob: usize,
 ) -> Result<&'static [u32], CoeffOrdinaryPassError> {
     let dim = |extent: usize| {
-        (4..=32)
-            .contains(&extent)
+        (extent.is_power_of_two() && (4..=32).contains(&extent))
             .then(|| extent.trailing_zeros() as usize - 2)
     };
     let (Some(wi), Some(hi)) = (dim(width), dim(height)) else {
         return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width }.into());
     };
-    if !width.is_power_of_two() || !height.is_power_of_two() {
-        return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width }.into());
-    }
     let len = width * height;
     if eob == 0 {
         return Err(CoeffLoopContextError::InvalidScanWalkEob { eob }.into());
