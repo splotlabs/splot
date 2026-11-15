@@ -145,7 +145,6 @@ pub(crate) struct TemporalMotionField {
     height8: usize,
     band_rows8: usize,
     storage: TemporalMotionStorage,
-    pending_ref_hints: Option<Vec<[u32; 2]>>,
     is_inter: bool,
     frame_size: Option<(usize, usize)>,
     ref_order_hints: RefOrderHints,
@@ -171,9 +170,6 @@ impl Drop for TemporalMotionField {
     fn drop(&mut self) {
         if let TemporalMotionStorage::Contiguous(cells) = core::mem::take(&mut self.storage) {
             crate::support::reusable_scratch::recycle_pooled_vec(cells);
-        }
-        if let Some(pending) = self.pending_ref_hints.take() {
-            crate::support::reusable_scratch::recycle_pooled_vec(pending);
         }
     }
 }
@@ -235,7 +231,6 @@ impl TemporalMotionField {
             height8: 0,
             band_rows8: 8,
             storage: TemporalMotionStorage::Contiguous(Vec::new()),
-            pending_ref_hints: None,
             is_inter: false,
             frame_size: None,
             ref_order_hints: empty_ref_order_hints(),
@@ -247,13 +242,11 @@ impl TemporalMotionField {
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let (width8, height8, cells) =
             allocate_temporal_grid(mi_rows, mi_cols, TemporalMotionCell::STORED_EMPTY)?;
-        let pending_ref_hints = vec![[u32::MAX; 2]; cells.len()];
         Some(Self {
             width8,
             height8,
             band_rows8: 8,
             storage: TemporalMotionStorage::Contiguous(cells),
-            pending_ref_hints: Some(pending_ref_hints),
             is_inter: false,
             frame_size: None,
             ref_order_hints: empty_ref_order_hints(),
@@ -277,7 +270,6 @@ impl TemporalMotionField {
             height8,
             band_rows8: 8,
             storage: TemporalMotionStorage::Contiguous(cells),
-            pending_ref_hints: None,
             is_inter,
             frame_size: Some(frame_size),
             ref_order_hints: owned_ref_order_hints,
@@ -297,23 +289,6 @@ impl TemporalMotionField {
         self.ref_order_hints = RefOrderHints::default();
         self.ref_order_hints
             .extend_within(ref_order_hints.iter().copied());
-        if let Some(pending) = self.pending_ref_hints.take()
-            && let TemporalMotionStorage::Contiguous(cells) = &mut self.storage
-        {
-            for (cell, hints) in cells.iter_mut().zip(pending) {
-                for (list, hint) in hints.into_iter().enumerate() {
-                    if hint == u32::MAX {
-                        continue;
-                    }
-                    cell[3 * list] = self
-                        .ref_order_hints
-                        .iter()
-                        .position(|&candidate| candidate == Some(hint))
-                        .and_then(|index| u8::try_from(index).ok())
-                        .unwrap_or(INVALID_TEMPORAL_REF);
-                }
-            }
-        }
     }
 
     pub(crate) fn set_band_rows8(&mut self, band_rows8: usize) {
@@ -479,7 +454,6 @@ impl TemporalMotionField {
                     .map(TemporalMotionBand::into_shared)
                     .collect(),
             ),
-            pending_ref_hints: None,
             is_inter: metadata.is_inter,
             frame_size: metadata.frame_size,
             ref_order_hints: metadata.ref_order_hints,
@@ -493,7 +467,6 @@ impl TemporalMotionField {
 
     pub(crate) fn record_blocks(&mut self, blocks: &[TemporalMotionBlock]) {
         let (width8, height8) = (self.width8, self.height8);
-        let mut pending = self.pending_ref_hints.as_deref_mut();
         let cells = match &mut self.storage {
             TemporalMotionStorage::Contiguous(cells) => cells.as_mut_slice(),
             TemporalMotionStorage::Bands(_) => &mut [],
@@ -501,46 +474,29 @@ impl TemporalMotionField {
         let mut refs = None;
         for &block in blocks {
             let resolved = BlockRefs::reuse(&mut refs, &block, &self.ref_order_hints);
-            if pending.is_none()
-                && let Some((rows8, cols8)) = temporal_block_cells8(&block, width8, height8)
-            {
-                let first = rows8.start * width8 + cols8.start;
-                let end = (rows8.end - 1) * width8 + cols8.end;
-                let Some(region) = cells.get_mut(first..end) else {
-                    continue;
-                };
-                let rows = region
-                    .chunks_mut(width8)
-                    .filter_map(|run| run.get_mut(..cols8.len()));
-                if let TemporalBlockMotion::Mvs(mvs) = block.motion {
-                    let stored = temporal_cell_from_mvs(&block, resolved, mvs).0.store();
-                    rows.for_each(|run| crate::support::fill_mi_run(run, stored));
-                    continue;
-                }
-                for (i8, run) in rows.enumerate() {
-                    let mut walks = block.motion.cell_walks(block.mi_row, block.mi_col, i8);
-                    for slot in run {
-                        let mvs = walks.each_mut().map(CellMvWalk::next);
-                        *slot = temporal_cell_from_mvs(&block, resolved, mvs).0.store();
-                    }
-                }
+            let Some((rows8, cols8)) = temporal_block_cells8(&block, width8, height8) else {
+                continue;
+            };
+            let first = rows8.start * width8 + cols8.start;
+            let end = (rows8.end - 1) * width8 + cols8.end;
+            let Some(region) = cells.get_mut(first..end) else {
+                continue;
+            };
+            let rows = region
+                .chunks_mut(width8)
+                .filter_map(|run| run.get_mut(..cols8.len()));
+            if let TemporalBlockMotion::Mvs(mvs) = block.motion {
+                let stored = temporal_cell_from_mvs(&block, resolved, mvs).store();
+                rows.for_each(|run| crate::support::fill_mi_run(run, stored));
                 continue;
             }
-            visit_temporal_block_cells(block, resolved, width8, height8, |y8, x8, cell, hints| {
-                let run = y8 * width8 + x8.start..y8 * width8 + x8.end;
-                if let Some(pending) = pending
-                    .as_mut()
-                    .and_then(|pending| pending.get_mut(run.clone()))
-                {
-                    crate::support::fill_mi_run(
-                        pending,
-                        hints.map(|hint| hint.unwrap_or(u32::MAX)),
-                    );
+            for (i8, run) in rows.enumerate() {
+                let mut walks = block.motion.cell_walks(block.mi_row, block.mi_col, i8);
+                for slot in run {
+                    let mvs = walks.each_mut().map(CellMvWalk::next);
+                    *slot = temporal_cell_from_mvs(&block, resolved, mvs).store();
                 }
-                if let Some(target) = cells.get_mut(run) {
-                    crate::support::fill_mi_run(target, cell.store());
-                }
-            });
+            }
         }
     }
 
@@ -567,7 +523,7 @@ fn visit_temporal_block_cells(
     refs: BlockRefs,
     width8: usize,
     height8: usize,
-    mut visit: impl FnMut(usize, Range<usize>, TemporalMotionCell, [Option<u32>; 2]),
+    mut visit: impl FnMut(usize, Range<usize>, TemporalMotionCell),
 ) {
     let Some((rows8, cols8)) = temporal_block_cells8(&block, width8, height8) else {
         return;
@@ -575,9 +531,9 @@ fn visit_temporal_block_cells(
     let (row8_start, row8_end) = (rows8.start, rows8.end);
     let (col8_start, col8_end) = (cols8.start, cols8.end);
     if let TemporalBlockMotion::Mvs(mvs) = block.motion {
-        let (cell, hints) = temporal_cell_from_mvs(&block, refs, mvs);
+        let cell = temporal_cell_from_mvs(&block, refs, mvs);
         for y8 in row8_start..row8_end {
-            visit(y8, col8_start..col8_end, cell, hints);
+            visit(y8, col8_start..col8_end, cell);
         }
         return;
     }
@@ -587,8 +543,8 @@ fn visit_temporal_block_cells(
             .cell_walks(block.mi_row, block.mi_col, y8 - row8_start);
         for x8 in col8_start..col8_end {
             let mvs = walks.each_mut().map(CellMvWalk::next);
-            let (cell, hints) = temporal_cell_from_mvs(&block, refs, mvs);
-            visit(y8, x8..x8 + 1, cell, hints);
+            let cell = temporal_cell_from_mvs(&block, refs, mvs);
+            visit(y8, x8..x8 + 1, cell);
         }
     }
 }
@@ -636,35 +592,32 @@ fn temporal_cell_from_mvs(
     block: &TemporalMotionBlock,
     refs: BlockRefs,
     mvs: [Mv; 2],
-) -> (TemporalMotionCell, [Option<u32>; 2]) {
-    let mut hints = [None; 2];
+) -> TemporalMotionCell {
+    let mut stored = [false; 2];
     let mut cell = TemporalMotionCell::default();
     for list in [0, 1] {
-        let Some(order_hint) = block.ref_order_hints[list] else {
-            continue;
-        };
         let mv = mvs[list];
-        if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
+        if block.ref_order_hints[list].is_none()
+            || mv.row.abs() > REFMVS_LIMIT
+            || mv.col.abs() > REFMVS_LIMIT
+        {
             continue;
         }
-        hints[list] = Some(order_hint);
+        stored[list] = true;
         cell.mvs[list] = compress_tmvp_mv(mv);
         cell.ref_indices[list] = refs.slots[list];
     }
-    if hints[0].is_some() && hints[1].is_none() {
-        hints[1] = hints[0];
+    if stored == [true, false] {
         cell.mvs[1] = cell.mvs[0];
         cell.ref_indices[1] = cell.ref_indices[0];
-    } else if hints[1].is_some() && hints[0].is_none() {
-        hints[0] = hints[1];
+    } else if stored == [false, true] {
         cell.mvs[0] = cell.mvs[1];
         cell.ref_indices[0] = cell.ref_indices[1];
-    } else if refs.swap && hints[0].is_some() && hints[1].is_some() {
-        hints.swap(0, 1);
+    } else if refs.swap && stored == [true; 2] {
         cell.mvs.swap(0, 1);
         cell.ref_indices.swap(0, 1);
     }
-    (cell, hints)
+    cell
 }
 
 /// AV2 § 7.9 list ordering for a block whose two references both survive.
