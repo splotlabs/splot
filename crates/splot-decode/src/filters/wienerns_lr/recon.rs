@@ -398,13 +398,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .ccso_grid
             .as_ref()
             .map(|grid| {
-                crate::filters::ccso::prepare_ccso(
-                    &core,
-                    grid,
-                    self.bit_depth,
-                    subsampling,
-                    &mut self.filter_records.ccso_offset_luts,
-                )
+                crate::filters::ccso::prepare_ccso(&core, grid, self.bit_depth, subsampling)
             })
             .transpose()
             .map_err(|error| ccso_filter_error(&error))?;
@@ -1235,9 +1229,6 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         }
         if let Some(grid) = self.tx_skip_grid.take() {
             self.filter_records.tx_skip_grid_values = grid.into_values();
-        }
-        if let Some(config) = self.ccso_config.take() {
-            config.return_offset_luts(&mut self.filter_records.ccso_offset_luts);
         }
         let frame = self.sink.freeze(writer)?;
         Ok((frame, self.filter_records))
