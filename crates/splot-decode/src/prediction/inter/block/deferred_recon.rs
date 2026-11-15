@@ -329,8 +329,6 @@ impl InterReconCommand {
             syntax,
             block.warp_params,
             motion,
-            self.placed.luma_y() / 4,
-            self.placed.luma_x() / 4,
             shared.mi_rows,
             shared.mi_cols,
             shared.current_order_hint,

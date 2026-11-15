@@ -747,8 +747,6 @@ impl EncoderInterTile {
             },
             resolved.warp_params,
             motion,
-            block.mi_row,
-            block.mi_col,
             self.mi_rows,
             self.mi_cols,
             self.current_order_hint,

@@ -698,51 +698,37 @@ pub(super) fn compound_local_warp_signal_allowed(
 /// § 5.20.7.14 `WarpSampleFound` scan is wider than the § 7.12.3.1 gathering.
 /// AVM marks that list's warp model invalid, which selects the translational
 /// prediction equivalent to the spec's det==0 identity model.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn compound_local_warp_models(
     mv_grid: &NeighbourMvGrid,
     block_ctx: &MvBlockContext,
     ref_frame1: i8,
     mv0: Mv,
     mv1: Mv,
-    mi_row: usize,
-    mi_col: usize,
-    n4w: usize,
-    n4h: usize,
 ) -> Result<[Option<[i32; 6]>; 2]> {
-    let model0 = compound_ref_warp_model(
-        mv_grid,
-        block_ctx,
-        block_ctx.ref_frame0,
-        mv0,
-        mi_row,
-        mi_col,
-        n4w,
-        n4h,
-    )?;
-    let model1 = compound_ref_warp_model(
-        mv_grid, block_ctx, ref_frame1, mv1, mi_row, mi_col, n4w, n4h,
-    )?;
+    let model0 = compound_ref_warp_model(mv_grid, block_ctx, block_ctx.ref_frame0, mv0)?;
+    let model1 = compound_ref_warp_model(mv_grid, block_ctx, ref_frame1, mv1)?;
     Ok([model0, model1])
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compound_ref_warp_model(
     mv_grid: &NeighbourMvGrid,
     block_ctx: &MvBlockContext,
     target_ref: i8,
     mv: Mv,
-    mi_row: usize,
-    mi_col: usize,
-    n4w: usize,
-    n4h: usize,
 ) -> Result<Option<[i32; 6]>> {
     let samples = super::super::find_mv_stack::find_warp_samples(mv_grid, block_ctx, target_ref);
     if samples.is_empty() {
         return Ok(None);
     }
+    let MvBlockContext {
+        mi_row,
+        mi_col,
+        bw4,
+        bh4,
+        ..
+    } = *block_ctx;
     Ok(Some(local_warp_estimation(
-        &samples, mv, mi_row, mi_col, n4w, n4h,
+        &samples, mv, mi_row, mi_col, bw4, bh4,
     )?))
 }
 
@@ -895,12 +881,11 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
     compound: super::super::compound::CompoundBlockSyntax,
     warp_params: [Option<[i32; 6]>; 2],
     motion: Option<&mc::RefinedUnits>,
-    mi_row: usize,
-    mi_col: usize,
     mi_rows: usize,
     mi_cols: usize,
     current_order_hint: u32,
 ) -> Result<()> {
+    let (mi_row, mi_col) = (placed.luma_y() / 4, placed.luma_x() / 4);
     let uniform = motion.is_none()
         && warp_params == [None, None]
         && !matches!(placed.block.compound_blend, mc::CompoundBlend::Wedge { .. });

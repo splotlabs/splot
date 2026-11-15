@@ -918,17 +918,7 @@ pub(super) fn compound_motion(
         compound_mvs(syntax, compound, &paired, &independent)
     };
     let warp_params = if compound.local_warp {
-        compound_local_warp_models(
-            state.grid,
-            block,
-            compound.ref_frame1,
-            mv[0],
-            mv[1],
-            block.mi_row,
-            block.mi_col,
-            block.bw4,
-            block.bh4,
-        )?
+        compound_local_warp_models(state.grid, block, compound.ref_frame1, mv[0], mv[1])?
     } else if compound.is_global() {
         let force_integer_mv = effective_force_integer_mv(state.core);
         [block.ref_frame0, compound.ref_frame1].map(|ref_frame| {

@@ -808,10 +808,6 @@ fn compound_local_warp_derives_a_model_per_explicit_reference_list() {
         1,
         Mv { row: 24, col: -8 },
         Mv { row: -16, col: 40 },
-        block.mi_row,
-        block.mi_col,
-        block.bw4,
-        block.bh4,
     )
     .unwrap();
 
@@ -848,18 +844,8 @@ fn compound_local_warp_uses_translation_for_a_list_without_samples() {
         mi_rows: 16,
         mi_cols: 16,
     };
-    let models = compound_local_warp_models(
-        &grid,
-        &block,
-        1,
-        Mv { row: 24, col: -8 },
-        Mv::ZERO,
-        0,
-        2,
-        2,
-        2,
-    )
-    .unwrap();
+    let models =
+        compound_local_warp_models(&grid, &block, 1, Mv { row: 24, col: -8 }, Mv::ZERO).unwrap();
 
     assert!(models[0].is_some(), "list-0 warp model");
     assert_eq!(models[1], None, "list-1 translational fallback");
@@ -1308,8 +1294,6 @@ fn compound_temporal_motion_merges_records_only_for_uniform_blocks() {
             compound,
             warp_params,
             None,
-            6,
-            4,
             64,
             64,
             9,

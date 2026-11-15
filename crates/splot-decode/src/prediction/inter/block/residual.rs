@@ -282,34 +282,20 @@ fn chroma_parse_group_start(
     at_start.then_some((chunk_x, chunk_y))
 }
 
-fn inter_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
-    core.inter_tail
-        .as_ref()
-        .is_some_and(|tail| tail.tx_mode == TxMode::Select)
+fn residual_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
+    let tx_mode = match (&core.inter_tail, &core.intra_tail) {
+        (Some(tail), _) => Some(tail.tx_mode),
+        (None, tail) => tail.as_ref().map(|tail| tail.tx_mode),
+    };
+    tx_mode == Some(TxMode::Select)
         && core
             .lossless_info
             .as_ref()
             .is_some_and(|lossless| !lossless.lossless_array[0])
-}
-
-fn residual_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
-    inter_uses_selectable_tx_partitions(core) || intra_frame_needs_selectable_tx_partitions(core)
 }
 
 fn inter_luma_tx_records_are_selectable(selectable_tx_partitions: bool, lossless: bool) -> bool {
     selectable_tx_partitions && !lossless
-}
-
-fn intra_frame_needs_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
-    core.inter_tail.is_none()
-        && core
-            .intra_tail
-            .as_ref()
-            .is_some_and(|tail| tail.tx_mode == TxMode::Select)
-        && core
-            .lossless_info
-            .as_ref()
-            .is_some_and(|lossless| !lossless.lossless_array[0])
 }
 
 #[allow(clippy::too_many_arguments)]
