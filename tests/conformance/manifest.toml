@@ -2593,3 +2593,13 @@ expect = "clean"
 path = "vectors/valid/syn-lossless-segments-skip-inter-64x196-q180.ivf"
 description = "AVM-encoded 4-frame 64x196 8-bit 4:2:0 stream of a project-generated picture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180): the key frame and one inter frame code lossless segments in the top three superblocks next to lossy segment 0 at y >= 192 (32 luma and 8 chroma filtered horizontal deblock edge segments between lossless and lossy blocks, 3 skipped lossless IntraBC or inter blocks larger than 4x4 above the lossy superblock); the first output that differs without the rule is the inter frame shown third: § 5.20.6.1 read_tx_size gives a skipped lossless IntraBC or inter block TxSize = TX_4X4, so DeblockingTxSizes is TX_4X4 and the § 7.17.4 filter size of its edge with a lossy block is 4. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 9239440f9df3434165a92d57a028091df836c74dd829dad75e4290e871787db9; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-cfl-deferred-422-10bit-256x192-q200.ivf"
+description = "AVM-encoded 1-frame 256x192 10-bit 4:2:2 intra stream of a project-generated smooth picture whose chroma follows its luma (avmenc --profile=2 --cpu-used=1 --end-usage=q --qp=200 --sb-size=128 --enable-mhccp=0): 6 CfL chroma blocks of 64x64 (5 derived-alpha, 1 explicit-alpha) in 128-wide luma blocks, so their chroma waits for the whole block's luma (§ 5.20.7.23), 4 of them on the right or bottom frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 4b3ef000e301602dcff80570537e22425472bfa312a19b80ff29f8ee84986d8f; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-cfl-deferred-422-256x192-q220.ivf"
+description = "AVM-encoded 1-frame 256x192 8-bit 4:2:2 intra stream of a project-generated picture whose chroma follows its luma (avmenc --profile=2 --cpu-used=1 --end-usage=q --qp=220 --sb-size=128 --enable-mhccp=0): 1 derived-alpha 64x64 CfL chroma block in a 128-wide luma block, so its chroma waits for the whole block's luma (§ 5.20.7.23), and 6 CfL chroma blocks of 32x64 that do not wait; 5 of them on the right or bottom frame edge. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 c73ef79a261b766015d0f331283d6846ca3a41af4b26c2f2de7e4e06d7db3fd0; validates clean."
+expect = "clean"
