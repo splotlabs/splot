@@ -935,6 +935,12 @@ pub(crate) trait LumaSimdSource: Copy + Default {
 
     fn scalar(samples: &[Self], index: usize) -> u16;
 
+    /// The row table as `u16` rows when the samples are `u16`.
+    fn u16_table<'a>(rows: &'a [&'a [Self]]) -> Option<&'a [&'a [u16]]>;
+
+    /// The row table as `u8` rows when the samples are `u8`.
+    fn u8_table<'a>(rows: &'a [&'a [Self]]) -> Option<&'a [&'a [u8]]>;
+
     /// The rows of the AArch64 run kernel.
     #[cfg(target_arch = "aarch64")]
     fn lane_rows<'a>(window: &'a [&'a [Self]]) -> lr_madd::by_lane::Rows<'a>;
@@ -974,6 +980,16 @@ impl LumaSimdSource for u16 {
     #[inline]
     fn scalar(samples: &[Self], index: usize) -> u16 {
         samples[index]
+    }
+
+    #[inline]
+    fn u16_table<'a>(rows: &'a [&'a [Self]]) -> Option<&'a [&'a [u16]]> {
+        Some(rows)
+    }
+
+    #[inline]
+    fn u8_table<'a>(_rows: &'a [&'a [Self]]) -> Option<&'a [&'a [u8]]> {
+        None
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -1032,6 +1048,16 @@ impl LumaSimdSource for u8 {
     #[inline]
     fn scalar(samples: &[Self], index: usize) -> u16 {
         u16::from(samples[index])
+    }
+
+    #[inline]
+    fn u16_table<'a>(_rows: &'a [&'a [Self]]) -> Option<&'a [&'a [u16]]> {
+        None
+    }
+
+    #[inline]
+    fn u8_table<'a>(rows: &'a [&'a [Self]]) -> Option<&'a [&'a [u8]]> {
+        Some(rows)
     }
 
     #[cfg(target_arch = "aarch64")]

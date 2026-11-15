@@ -5,6 +5,10 @@ use super::*;
 
 const ZERO_CHROMA: [i16; WIENER_NS_CHROMA_COEFFS] = [0; WIENER_NS_CHROMA_COEFFS];
 
+fn rows<T>(samples: &[T], stride: usize) -> Vec<&[T]> {
+    samples.chunks(stride).collect()
+}
+
 #[test]
 fn chroma_tap_radius_covers_config_table() {
     let max_offset = WIENER_NS_CONFIG_UV
@@ -75,14 +79,18 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
             let params = chroma_params(width, height, width, bit_depth, coeffs);
             let mut lanes = vec![0u16; width * height];
             let mut scalar = vec![0u16; width * height];
-            filter_chroma_padded_simd(&mut lanes, &params, &chroma, stride, &luma_ds, stride, max);
+            filter_chroma_padded_simd(
+                &mut lanes,
+                &params,
+                &rows(&chroma, stride),
+                &rows(&luma_ds, stride),
+                max,
+            );
             filter_chroma_padded_u16_scalar(
                 &mut scalar,
                 &params,
-                &chroma,
-                stride,
-                &luma_ds,
-                stride,
+                &rows(&chroma, stride),
+                &rows(&luma_ds, stride),
                 max,
             );
             assert_eq!(lanes, scalar, "{bit_depth:?} width {width}");
@@ -92,10 +100,8 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
                 filter_chroma_padded_simd(
                     &mut from_bytes,
                     &params,
-                    &bytes,
-                    stride,
-                    &luma_ds,
-                    stride,
+                    &rows(&bytes, stride),
+                    &rows(&luma_ds, stride),
                     max,
                 );
                 assert_eq!(from_bytes, scalar, "u8 chroma width {width}");
@@ -103,10 +109,8 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
                 filter_chroma_padded_simd(
                     &mut into_bytes,
                     &params,
-                    &bytes,
-                    stride,
-                    &luma_ds,
-                    stride,
+                    &rows(&bytes, stride),
+                    &rows(&luma_ds, stride),
                     max,
                 );
                 let widened: Vec<u16> = into_bytes.iter().map(|&s| u16::from(s)).collect();
@@ -115,10 +119,8 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
                 filter_chroma_padded_simd(
                     &mut words_into_bytes,
                     &params,
-                    &chroma,
-                    stride,
-                    &luma_ds,
-                    stride,
+                    &rows(&chroma, stride),
+                    &rows(&luma_ds, stride),
                     max,
                 );
                 let widened: Vec<u16> = words_into_bytes.iter().map(|&s| u16::from(s)).collect();
@@ -314,8 +316,7 @@ fn block_filtering_matches_per_sample_blocks_bit_exactly() {
 /// unclipped downsample paths, and every `cfl_ds_filter_index`.
 #[test]
 fn padded_filter_matches_callback_path() {
-    let height = 5;
-    for width in [9, 21] {
+    for (width, height) in [(9, 5), (21, 5), (21, 70)] {
         let mut coeffs = ZERO_CHROMA;
         for (index, coeff) in coeffs.iter_mut().enumerate() {
             *coeff = (index as i16 * 7 % 23) - 11;
@@ -361,11 +362,11 @@ fn padded_filter_matches_callback_path() {
                     })
                     .collect();
                 let geometry = (width, height, (sub_x, sub_y));
-                let sources = [WienerNsChromaPaddedSource::new(
-                    &chroma,
-                    chroma_stride,
-                    &luma,
-                    luma_stride,
+                let (chroma_lines, luma_lines) =
+                    (rows(&chroma, chroma_stride), rows(&luma, luma_stride));
+                let sources = [WienerNsChromaPaddedSource::from_rows(
+                    (&chroma_lines, 0),
+                    (&luma_lines, 0),
                     geometry.0,
                     geometry.1,
                     geometry.2,
@@ -373,11 +374,11 @@ fn padded_filter_matches_callback_path() {
                 .unwrap()];
                 let chroma8: Vec<u8> = chroma.iter().map(|&value| value as u8).collect();
                 let luma8: Vec<u8> = luma.iter().map(|&value| value as u8).collect();
-                let source8 = WienerNsChromaPaddedSource::new(
-                    &chroma8,
-                    chroma_stride,
-                    &luma8,
-                    luma_stride,
+                let (chroma8_lines, luma8_lines) =
+                    (rows(&chroma8, chroma_stride), rows(&luma8, luma_stride));
+                let source8 = WienerNsChromaPaddedSource::from_rows(
+                    (&chroma8_lines, 0),
+                    (&luma8_lines, 0),
                     geometry.0,
                     geometry.1,
                     geometry.2,
@@ -443,11 +444,10 @@ fn padded_u16_filter_writes_strided_output() {
     let luma: Vec<u16> = (0..source_stride * source_rows)
         .map(|index| (index * 53 % 1024) as u16)
         .collect();
-    let source = WienerNsChromaPaddedSource::new(
-        &chroma,
-        source_stride,
-        &luma,
-        source_stride,
+    let (chroma_lines, luma_lines) = (rows(&chroma, source_stride), rows(&luma, source_stride));
+    let source = WienerNsChromaPaddedSource::from_rows(
+        (&chroma_lines, 0),
+        (&luma_lines, 0),
         width,
         height,
         (0, 0),
@@ -511,11 +511,10 @@ fn packed_and_u16_strided_match<T: ReconSample>(
     };
     let chroma = samples(chroma_stride * chroma_rows, 37);
     let luma = samples(luma_stride * luma_rows, 53);
-    let source = WienerNsChromaPaddedSource::new(
-        &chroma,
-        chroma_stride,
-        &luma,
-        luma_stride,
+    let (chroma_lines, luma_lines) = (rows(&chroma, chroma_stride), rows(&luma, luma_stride));
+    let source = WienerNsChromaPaddedSource::from_rows(
+        (&chroma_lines, 0),
+        (&luma_lines, 0),
         width,
         height,
         (sub_x, sub_y),
@@ -536,6 +535,39 @@ fn packed_and_u16_strided_match<T: ReconSample>(
         &mut WienerNsChromaScratch::default(),
     )
     .unwrap();
+
+    let junk = T::try_from_u16(max as u16).unwrap();
+    let scatter = |lines: &[&[T]]| -> Vec<Vec<T>> {
+        lines
+            .iter()
+            .map(|line| [&[junk; 3][..], line, &[junk; 5][..]].concat())
+            .collect()
+    };
+    let (chroma_scattered, luma_scattered) = (scatter(&chroma_lines), scatter(&luma_lines));
+    let chroma_borrowed: Vec<&[T]> = chroma_scattered.iter().map(Vec::as_slice).collect();
+    let luma_borrowed: Vec<&[T]> = luma_scattered.iter().map(Vec::as_slice).collect();
+    let borrowed = WienerNsChromaPaddedSource::from_rows(
+        (&chroma_borrowed, 3),
+        (&luma_borrowed, 3),
+        width,
+        height,
+        (sub_x, sub_y),
+    )
+    .unwrap();
+    let mut from_borrowed = vec![0u16; width * height];
+    wiener_ns_filter_chroma_block_padded_into(
+        &mut from_borrowed,
+        &packed_params,
+        &borrowed,
+        &mut WienerNsChromaScratch::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        from_borrowed,
+        packed,
+        "borrowed rows {} {width}x{height} sub=({sub_x},{sub_y}) filter={filter_index}",
+        T::TYPE_NAME,
+    );
 
     let stride = width + 11;
     let mut strided_params = packed_params;
@@ -595,7 +627,15 @@ fn packed_and_u16_strided_chroma_outputs_match_all_runtime_shapes() {
     let maxs = [
         39, 39, 17, 17, 15, 15, 15, 15, 15, 15, 7, 7, 7, 7, 7, 7, 7, 7,
     ];
-    let shapes = [(32, 4), (64, 8), (128, 28), (256, 56), (19, 3)];
+    let shapes = [
+        (32, 4),
+        (64, 8),
+        (128, 28),
+        (256, 56),
+        (19, 3),
+        (4, 70),
+        (12, 66),
+    ];
     for (case, &(width, height)) in shapes.iter().enumerate() {
         for (sub_x, sub_y) in [(1, 1), (1, 0), (0, 0)] {
             for filter_index in 0..=3 {
@@ -634,11 +674,10 @@ fn u8_source_direct_simd_u16_output_has_a_mutation_sensitive_oracle() {
     let mut chroma = vec![100u8; source_stride * source_rows];
     chroma[3 * source_stride + 2] = 120;
     let luma = vec![0u8; source_stride * source_rows];
-    let source = WienerNsChromaPaddedSource::new(
-        &chroma,
-        source_stride,
-        &luma,
-        source_stride,
+    let (chroma_lines, luma_lines) = (rows(&chroma, source_stride), rows(&luma, source_stride));
+    let source = WienerNsChromaPaddedSource::from_rows(
+        (&chroma_lines, 0),
+        (&luma_lines, 0),
         width,
         height,
         (0, 0),
@@ -666,11 +705,10 @@ fn u8_source_direct_u16_output_validates_the_full_destination_first() {
     let source_rows = height + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
     let chroma = vec![0u8; source_stride * source_rows];
     let luma = vec![0u8; source_stride * source_rows];
-    let source = WienerNsChromaPaddedSource::new(
-        &chroma,
-        source_stride,
-        &luma,
-        source_stride,
+    let (chroma_lines, luma_lines) = (rows(&chroma, source_stride), rows(&luma, source_stride));
+    let source = WienerNsChromaPaddedSource::from_rows(
+        (&chroma_lines, 0),
+        (&luma_lines, 0),
         width,
         height,
         (0, 0),
@@ -706,11 +744,10 @@ fn padded_u16_filter_validates_every_source_before_direct_output() {
     let mut chroma = vec![0u16; source_stride * source_rows];
     *chroma.last_mut().unwrap() = 1024;
     let luma = vec![0u16; source_stride * source_rows];
-    let source = WienerNsChromaPaddedSource::new(
-        &chroma,
-        source_stride,
-        &luma,
-        source_stride,
+    let (chroma_lines, luma_lines) = (rows(&chroma, source_stride), rows(&luma, source_stride));
+    let source = WienerNsChromaPaddedSource::from_rows(
+        (&chroma_lines, 0),
+        (&luma_lines, 0),
         width,
         height,
         (0, 0),
@@ -754,7 +791,9 @@ fn chroma_only_source_filters_without_luma_taps_and_rejects_luma_taps() {
         |_x, _y| 0,
     )
     .unwrap();
-    let source = WienerNsChromaPaddedSource::chroma_only(&chroma, stride, width, height).unwrap();
+    let chroma_lines = rows(&chroma, stride);
+    let source =
+        WienerNsChromaPaddedSource::chroma_from_rows(&chroma_lines, 0, width, height).unwrap();
     let mut simd = vec![0u8; width * height];
     wiener_ns_filter_chroma_block_padded_into(
         &mut simd,
@@ -777,10 +816,7 @@ fn chroma_only_source_filters_without_luma_taps_and_rejects_luma_taps() {
     .unwrap_err();
     assert!(matches!(
         error,
-        ReconError::WienerNsFilterOutputStrideTooSmall {
-            stride_samples: 0,
-            ..
-        }
+        ReconError::WienerNsFilterOutputTooSmall { actual: 0, .. }
     ));
     assert_eq!(output, vec![77; width * height]);
 }
