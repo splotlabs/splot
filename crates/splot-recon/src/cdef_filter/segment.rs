@@ -705,6 +705,8 @@ trait QuadLanes<S: SimdToken>: Copy {
     const ROWS: [usize; 4];
     /// The row pairs saturated to `i8`.
     fn narrow(self, simd: S, pairs: [i16x16<S>; 2]) -> i8x32<S>;
+    /// The row pairs, every lane below 256, as `u8`.
+    fn pack(self, simd: S, pairs: [u16x16<S>; 2]) -> u8x32<S>;
     /// The inverse of [`QuadLanes::narrow`] for lanes that fit `i8`.
     fn widen(self, simd: S, lanes: i8x32<S>) -> [i16x16<S>; 2];
     /// `diff`, whose absolute value is `magnitude`, clamped to `-clip..=clip`
@@ -723,6 +725,12 @@ impl<S: SimdToken> QuadLanes<S> for Ordered {
     #[inline(always)]
     fn narrow(self, simd: S, [low, high]: [i16x16<S>; 2]) -> i8x32<S> {
         simd.saturating_narrow_i16x16(low, high)
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn pack(self, simd: S, [low, high]: [u16x16<S>; 2]) -> u8x32<S> {
+        simd.narrow_u16x16(low, high)
     }
 
     #[allow(clippy::inline_always)]
@@ -752,6 +760,15 @@ fearless_simd::kernel!(
     #[inline(always)]
     fn pack_quad(t: Avx2, low: i16x16<Avx2>, high: i16x16<Avx2>) -> i8x32<Avx2> {
         core::arch::x86_64::_mm256_packs_epi16(low.into(), high.into()).simd_into(t)
+    }
+);
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn pack_unsigned_quad(t: Avx2, low: u16x16<Avx2>, high: u16x16<Avx2>) -> u8x32<Avx2> {
+        core::arch::x86_64::_mm256_packus_epi16(low.into(), high.into()).simd_into(t)
     }
 );
 
@@ -800,6 +817,12 @@ impl QuadLanes<Avx2> for InLane {
 
     #[allow(clippy::inline_always)]
     #[inline(always)]
+    fn pack(self, simd: Avx2, [low, high]: [u16x16<Avx2>; 2]) -> u8x32<Avx2> {
+        pack_unsigned_quad(simd, low, high)
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
     fn widen(self, simd: Avx2, lanes: i8x32<Avx2>) -> [i16x16<Avx2>; 2] {
         unpack_quad(simd, lanes)
     }
@@ -839,6 +862,119 @@ impl<S: SimdToken> CdefConstrainWide<S> {
         let clip = self.threshold.saturating_sub(magnitude >> self.shift);
         quads.clamp(simd, diff, magnitude, clip)
     }
+
+    /// `constrain(tap - center)` on `u8` samples as the tap clipped to
+    /// `center -/+ clip` minus the centre: the clip is below 128, so the
+    /// wrapping difference is exact.
+    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[inline(always)]
+    fn apply(self, tap: u8x32<S>, center: u8x32<S>) -> i8x32<S> {
+        let magnitude = tap.saturating_sub(center) | center.saturating_sub(tap);
+        let clip = self.threshold.saturating_sub(magnitude >> self.shift);
+        let clipped = tap
+            .max(center.saturating_sub(clip))
+            .min(center.saturating_add(clip));
+        (clipped - center).bitcast()
+    }
+}
+
+/// Whether [`cdef_filter_rows_u8_quad`] computes `filter` exactly: besides
+/// [`cdef_u8_lanes_fit`], a secondary family of four taps, at most
+/// `4 * sec_str`, fits `i8`.
+#[inline]
+fn cdef_u8_quad_fits(filter: &CdefBlockFilter) -> bool {
+    cdef_u8_lanes_fit(filter) && filter.sec_str < 32
+}
+
+/// [`cdef_filter_rows_8bit`] for a segment's 8x8 luma block, four rows per
+/// 32-lane vector: the window samples minus `base`, which fit `u8`, pack
+/// into one vector per tap view. A primary pair, at most `2 * pri_str`, and a
+/// secondary family, at most `4 * sec_str`, sum in `i8`; the rounded offset,
+/// below 72 in magnitude, is clamped to the tap range in `i8` and added to
+/// the centre samples.
+#[inline(never)]
+fn cdef_filter_rows_u8_quad<
+    S: SimdToken,
+    Q: QuadLanes<S>,
+    T: crate::ReconSample,
+    const STRIDE: usize,
+    const ROWS: usize,
+    const SPAN: usize,
+    const AREA: usize,
+    const PRI: bool,
+    const SEC: bool,
+>(
+    simd: S,
+    quads: Q,
+    (pad, plan, base): (&[u16; AREA], &CdefFilterPlan, u16),
+    (out, out_stride): (&mut [T], usize),
+) -> Option<()> {
+    let filter = &plan.filter;
+    let (center_view, pri_views, sec_views) = cdef_tap_views::<_, STRIDE, 2, SPAN, AREA, PRI, SEC>(
+        pad,
+        filter.dir,
+        &CDEF_SEGMENT_TAP_STARTS,
+    )?;
+    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
+    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
+    let pri = CdefConstrainWide::new(simd, filter.pri_str, plan.adj[0]);
+    let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
+    let base = u16x16::splat(simd, base);
+    for_each_row_pair!([0, 4], ROWS, ROWS, |first| {
+        let pairs = |view: &[u16; SPAN]| -> Option<[u16x16<S>; 2]> {
+            Some([
+                cdef_row_pair::<S, STRIDE, SPAN>(simd, view, first)?,
+                cdef_row_pair::<S, STRIDE, SPAN>(simd, view, first + 2)?,
+            ])
+        };
+        let quad = |view: &[u16; SPAN]| -> Option<u8x32<S>> {
+            Some(quads.pack(simd, pairs(view)?.map(|pair| pair - base)))
+        };
+        let centers = pairs(center_view)?;
+        let center = quads.pack(simd, centers.map(|pair| pair - base));
+        let (mut min, mut max) = (center, center);
+        macro_rules! tap {
+            ($view:expr, $constrain:expr) => {{
+                let tap = quad($view)?;
+                if PRI && SEC {
+                    min = min.min(tap);
+                    max = max.max(tap);
+                }
+                $constrain.apply(tap, center)
+            }};
+        }
+        let mut sum = [i16x16::splat(simd, 0); 2];
+        if PRI {
+            let pair0 = quads.widen(simd, tap!(pri_views[0], pri) + tap!(pri_views[1], pri));
+            let pair1 = quads.widen(simd, tap!(pri_views[2], pri) + tap!(pri_views[3], pri));
+            sum = [0, 1].map(|half| pair0[half] * pri_taps[0] + pair1[half] * pri_taps[1]);
+        }
+        if SEC {
+            let view = |k: usize| sec_views[k];
+            let family0 =
+                tap!(view(0), sec) + tap!(view(1), sec) + tap!(view(2), sec) + tap!(view(3), sec);
+            let family1 =
+                tap!(view(4), sec) + tap!(view(5), sec) + tap!(view(6), sec) + tap!(view(7), sec);
+            let (family0, family1) = (quads.widen(simd, family0), quads.widen(simd, family1));
+            sum = [0, 1].map(|half| sum[half] + family0[half] + family0[half] + family1[half]);
+        }
+        let mut offset = sum.map(cdef_round);
+        if PRI && SEC {
+            let below = (center - min)
+                .min(u8x32::splat(simd, 127))
+                .bitcast::<i8x32<S>>();
+            let above = (max - center)
+                .min(u8x32::splat(simd, 127))
+                .bitcast::<i8x32<S>>();
+            offset = quads.widen(simd, quads.narrow(simd, offset).max(-below).min(above));
+        }
+        for half in 0..2 {
+            let filtered = (centers[half].bitcast::<i16x16<S>>() + offset[half]).bitcast();
+            cdef_store_row_pair::<S, 8, _>(filtered, out, out_stride, first + 2 * half, ROWS)?;
+        }
+        Some(())
+    });
+    Some(())
 }
 
 /// [`cdef_filter_rows_diff8`] over the byte scratch of a segment's
@@ -1060,7 +1196,12 @@ fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     if range <= 255 && plan.u8_lanes {
         return cdef_by_families!(
             filter,
-            cdef_filter_rows_8bit::<S, _, 8, STRIDE, 2, 8, SPAN, AREA>(simd, args, base),
+            cdef_filter_rows_u8_quad::<S, Q, _, STRIDE, 8, SPAN, AREA>(
+                simd,
+                quads,
+                (pad, plan, base),
+                (out, out_stride)
+            ),
             copy!()
         )
         .is_some();
@@ -1204,7 +1345,7 @@ impl CdefFilterPlan {
             linear_max,
             clamped_max,
             wide8: cdef_wide8_fits(&filter),
-            u8_lanes: cdef_u8_lanes_fit(&filter),
+            u8_lanes: cdef_u8_quad_fits(&filter),
         }
     }
 
@@ -1796,6 +1937,120 @@ mod tests {
             }
         }
         out
+    }
+
+    /// [`cdef_filter_rows_u8_quad`] of block `block` of `segment` in the
+    /// lane order `quads`, into 8-bit and 16-bit rows.
+    fn u8_quad<S: SimdToken, Q: QuadLanes<S>>(
+        simd: S,
+        quads: Q,
+        segment: &CdefLumaSegment,
+        block: usize,
+        plan: &CdefFilterPlan,
+    ) -> ([u16; 64], [u8; 64]) {
+        const STRIDE: usize = CDEF_SEGMENT_STRIDE;
+        const SPAN: usize = 7 * STRIDE + 8;
+        let (Some(pad), Some([base, _])) = (segment.block(block), segment.range(block)) else {
+            unreachable!("blocks below CDEF_SEGMENT_BLOCKS exist");
+        };
+        let (mut wide, mut narrow) = ([0u16; 64], [0u8; 64]);
+        let inputs = (pad, plan, base);
+        assert!(
+            cdef_by_families!(
+                plan.filter,
+                cdef_filter_rows_u8_quad::<S, Q, u16, STRIDE, 8, SPAN, CDEF_SEGMENT_BLOCK_AREA>(
+                    simd,
+                    quads,
+                    inputs,
+                    (&mut wide, 8)
+                ),
+                Some(())
+            )
+            .is_some()
+        );
+        if wide.iter().all(|&sample| sample <= 255) {
+            assert!(
+                cdef_by_families!(
+                    plan.filter,
+                    cdef_filter_rows_u8_quad::<S, Q, u8, STRIDE, 8, SPAN, CDEF_SEGMENT_BLOCK_AREA>(
+                        simd,
+                        quads,
+                        inputs,
+                        (&mut narrow, 8)
+                    ),
+                    Some(())
+                )
+                .is_some()
+            );
+        }
+        (wide, narrow)
+    }
+
+    /// The 32-lane `u8` kernel matches § 7.18 one sample at a time in both
+    /// lane orders, for every strength and damping it admits, on windows
+    /// spanning up to 255 above their least sample: random, flat at the
+    /// greatest 10-bit sample, and alternating between the window bounds.
+    #[test]
+    fn u8_quad_matches_the_per_sample_filter() {
+        type Value = Box<dyn Fn(u32, usize) -> u16>;
+        let inputs: [(u32, Value); 5] = [
+            (0, Box::new(|state, _| (state >> 24) as u16)),
+            (2, Box::new(|state, _| 300 + (state >> 24) as u16)),
+            (2, Box::new(|state, _| 1023 - (state >> 29) as u16)),
+            (2, Box::new(|_, parity| 1023 - 255 * parity as u16)),
+            (0, Box::new(|_, parity| 255 * parity as u16)),
+        ];
+        let mut checked = 0;
+        for (seed, (coeff_shift, value)) in inputs.iter().enumerate() {
+            let luma = noise(48 * 14, 0x7f4a_7c15 ^ seed as u32, |state| {
+                (state >> 16) as u16
+            })
+            .into_iter()
+            .enumerate()
+            .map(|(at, state)| value(u32::from(state) << 16, (at % 48 / 3 + at / 48) & 1))
+            .collect::<Vec<u16>>();
+            let mut segment = CdefLumaSegment::default();
+            assert!(segment.gather(&luma, 44, 48, (4, 3)));
+            for pri_str in 0..64 {
+                for sec_str in [0, 1, 2, 4, 8, 16, 31] {
+                    for damping in 2..=8 {
+                        let dir = (pri_str + sec_str + damping) as usize % 8;
+                        let filter = CdefBlockFilter {
+                            pri_str,
+                            sec_str,
+                            damping,
+                            dir,
+                            coeff_shift: *coeff_shift,
+                        };
+                        if !cdef_u8_quad_fits(&filter) || (pri_str == 0 && sec_str == 0) {
+                            continue;
+                        }
+                        let plan = CdefFilterPlan::new(filter);
+                        for block in 0..CDEF_SEGMENT_BLOCKS {
+                            let want =
+                                reference_block(&luma, 48, (4 + 8 * block, 3), (8, 8), &filter);
+                            let mut results = Vec::new();
+                            #[cfg(target_arch = "x86_64")]
+                            if let Some(avx2) = Level::baseline().as_avx2() {
+                                results.push(u8_quad(avx2, InLane, &segment, block, &plan));
+                                results.push(u8_quad(avx2, Ordered, &segment, block, &plan));
+                            }
+                            fearless_simd::dispatch!(fearless_simd::Level::baseline(), simd => results
+                                .push(u8_quad(simd, Ordered, &segment, block, &plan)));
+                            for (wide, narrow) in results {
+                                assert_eq!(wide[..], want[..], "{filter:?} block {block}");
+                                if want.iter().all(|&sample| sample <= 255) {
+                                    let narrow = narrow.map(u16::from);
+                                    assert_eq!(narrow[..], want[..], "u8 {filter:?}");
+                                }
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 10_000);
     }
 
     /// The segment filter matches § 7.18 one sample at a time for every
