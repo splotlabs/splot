@@ -1333,6 +1333,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         reference,
         ref_frame_idx: lists.0,
         ref_facts: lists.1,
+        held: super::super::hold_row_references(reference, lists),
         temporal_context,
         sequence,
         core,

@@ -191,7 +191,7 @@ fn a_banded_read_inside_the_watermark_returns_the_settled_samples() {
     let (slot, _writer) = published_progress(64);
     let held = HeldFrameSamples::Filtering(PublishedFrame::of_slot(&slot).expect("a prefix"));
     let scalings = own_scalings(&held);
-    let banded = held.samples(&scalings).expect("banded samples");
+    let banded = held.samples(&scalings);
 
     let settled_view = ReferenceSamples::settled(&settled)
         .plane_view(PlaneId::Y, 63, OFFSET)
@@ -221,7 +221,7 @@ fn a_banded_read_past_the_watermark_is_refused() {
     let (slot, _writer) = published_progress(64);
     let held = HeldFrameSamples::Filtering(PublishedFrame::of_slot(&slot).expect("a prefix"));
     let scalings = own_scalings(&held);
-    let banded = held.samples(&scalings).expect("banded samples");
+    let banded = held.samples(&scalings);
 
     let error = banded
         .plane_view(PlaneId::Y, 64, OFFSET)
@@ -241,7 +241,7 @@ fn a_refused_banded_read_propagates_out_of_motion_compensation() {
     let (slot, _writer) = published_progress(64);
     let held = HeldFrameSamples::Filtering(PublishedFrame::of_slot(&slot).expect("a prefix"));
     let scalings = own_scalings(&held);
-    let banded = held.samples(&scalings).expect("banded samples");
+    let banded = held.samples(&scalings);
     let mut output = CurrentFrameWorkspace::new(info(WIDTH, HEIGHT), 0u8).expect("workspace");
 
     motion_compensate_inter_block_into(

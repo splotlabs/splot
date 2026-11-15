@@ -143,6 +143,11 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         Self::publishing_with(published, Box::leak(Box::new(scalings)))
     }
 
+    /// The same samples read through other per-frame `scalings`.
+    pub(crate) const fn with_scalings(self, scalings: &'a [PlaneScaling; 2]) -> Self {
+        Self { scalings, ..self }
+    }
+
     /// The frame-constant § 7.13.3.18 scaling of `plane` against the current
     /// frame, before a block position and motion vector apply.
     #[inline]
@@ -376,6 +381,7 @@ pub(crate) fn warp_plane_last_row(
 /// A still-filtering frame lends the rows below the watermark it published
 /// when the borrow was taken; the borrow takes no lock, so it may live across
 /// that frame's later stripes and its freeze.
+#[derive(Clone, Copy)]
 pub(crate) enum HeldFrameSamples<'a, T: ReconSample> {
     /// The slot has settled; every row is final.
     Settled(&'a DecodedFrame<T>),
@@ -383,25 +389,14 @@ pub(crate) enum HeldFrameSamples<'a, T: ReconSample> {
     Filtering(PublishedFrame<'a, T>),
 }
 
-impl<T: ReconSample> HeldFrameSamples<'_, T> {
-    /// Resolves the held borrow into the samples one block reads, with the
+impl<'a, T: ReconSample> HeldFrameSamples<'a, T> {
+    /// Resolves the held borrow into the samples blocks read, with the
     /// reference's per-frame `scalings`.
-    ///
-    /// # Errors
-    ///
-    /// None at present; the block walk propagates the result.
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "the block walk, outside this change, propagates it as fallible"
-    )]
-    pub(crate) fn samples<'s>(
-        &'s self,
-        scalings: &'s [PlaneScaling; 2],
-    ) -> Result<ReferenceSamples<'s, T>> {
-        Ok(match self {
+    pub(crate) fn samples(self, scalings: &'a [PlaneScaling; 2]) -> ReferenceSamples<'a, T> {
+        match self {
             Self::Settled(frame) => ReferenceSamples::settled_with(frame, scalings),
-            Self::Filtering(published) => ReferenceSamples::publishing_with(published, scalings),
-        })
+            Self::Filtering(published) => ReferenceSamples::publishing_with(&published, scalings),
+        }
     }
 
     /// The held frame's decoded geometry.

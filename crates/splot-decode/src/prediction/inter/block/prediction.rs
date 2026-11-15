@@ -92,7 +92,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
     block_decoded: &TileBlockDecodedState,
-    lists: (&[u32], &FrameRefFacts),
+    lists: super::super::BlockLists<'_, T>,
     reference: &InterReferenceState<T>,
     qindex: u32,
     luma_use_tcq: bool,
@@ -123,7 +123,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     if placed.block.bawp.enabled {
         super::super::bawp::apply_bawp(
             workspace,
-            held.reference0_samples()?,
+            held.reference0_samples(),
             placed,
             placed.block.bawp,
             placed.block.mv,
@@ -184,7 +184,7 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
-    lists: (&[u32], &FrameRefFacts),
+    lists: super::super::BlockLists<'_, T>,
     reference: &InterReferenceState<T>,
     qindex: u32,
     luma_use_tcq: bool,
@@ -220,14 +220,14 @@ pub(super) fn predict_refined_inter_block<T: ReconSample>(
     units: &mut mc::RefinedUnits,
     placed: &PlacedInterBlock,
     (use_refinemv, refinemv_switchable): (bool, bool),
-    (lists, reference): ((&[u32], &FrameRefFacts), &InterReferenceState<T>),
+    (lists, reference): (super::super::BlockLists<'_, T>, &InterReferenceState<T>),
     predict: bool,
     tile_offset: ByteOffset,
     records: impl FnOnce(&mc::RefinedUnits) -> Result<()>,
 ) -> Result<()> {
     let held = super::super::hold_inter_block_references(lists, reference, placed)?;
     let block = held
-        .block_params(placed, placed.motion_compensation_rect())?
+        .block_params(placed, placed.motion_compensation_rect())
         .with_refinemv(use_refinemv)
         .with_switchable_refinemv(refinemv_switchable)
         .into_compound()

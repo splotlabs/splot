@@ -56,6 +56,8 @@ pub(super) struct ReconShared<'a, T: ReconSample> {
     pub(super) reference: &'a InterReferenceState<T>,
     pub(super) ref_frame_idx: &'a [u32],
     pub(super) ref_facts: &'a FrameRefFacts,
+    /// The row's reference borrows, taken after its reference admission.
+    pub(super) held: super::super::RowReferences<'a, T>,
     pub(super) temporal_context: &'a TemporalMvContext,
     pub(super) sequence: &'a SequenceHeader,
     pub(super) core: &'a FrameHeaderCore,
@@ -299,7 +301,7 @@ impl InterReconCommand {
                 &self.placed,
                 frame,
                 shared.temporal_context,
-                shared.reference,
+                (shared.reference, &shared.held),
                 self.tile_offset,
             )?;
             return Ok(());
@@ -310,7 +312,10 @@ impl InterReconCommand {
                 refined,
                 &self.placed,
                 flags,
-                ((shared.ref_frame_idx, shared.ref_facts), shared.reference),
+                (
+                    (shared.ref_frame_idx, shared.ref_facts, &shared.held),
+                    shared.reference,
+                ),
                 false,
                 self.tile_offset,
                 |units| self.compound_records(temporal_records, shared, Some(units)),
@@ -348,7 +353,7 @@ impl InterReconCommand {
                 residual_blocks,
                 residual_coeffs,
                 block_decoded,
-                (shared.ref_frame_idx, shared.ref_facts),
+                (shared.ref_frame_idx, shared.ref_facts, &shared.held),
                 shared.reference,
                 self.qindex,
                 shared.luma_use_tcq,
@@ -363,7 +368,7 @@ impl InterReconCommand {
                     &self.placed,
                     residual_blocks,
                     residual_coeffs,
-                    (shared.ref_frame_idx, shared.ref_facts),
+                    (shared.ref_frame_idx, shared.ref_facts, &shared.held),
                     shared.reference,
                     self.qindex,
                     shared.luma_use_tcq,
@@ -394,7 +399,10 @@ impl InterReconCommand {
                 refined,
                 &self.placed,
                 flags,
-                ((shared.ref_frame_idx, shared.ref_facts), shared.reference),
+                (
+                    (shared.ref_frame_idx, shared.ref_facts, &shared.held),
+                    shared.reference,
+                ),
                 true,
                 self.tile_offset,
                 |units| {
@@ -413,7 +421,7 @@ impl InterReconCommand {
                 &self.placed,
                 frame,
                 shared.temporal_context,
-                shared.reference,
+                (shared.reference, &shared.held),
                 self.tile_offset,
             )?;
         }

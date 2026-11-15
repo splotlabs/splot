@@ -57,7 +57,7 @@ pub(crate) fn reconstruct<T: ReconSample>(
     visible.ensure_within(luma_size)?;
     let reference_info = held.info();
     let scalings = PlaneScaling::of_reference_planes(reference_info, luma_size);
-    let reference = held.samples(&scalings)?;
+    let reference = held.samples(&scalings);
     let info = DecodedFrameInfo::new(
         OutputIndex::new(output_index),
         reference_info.bit_depth(),

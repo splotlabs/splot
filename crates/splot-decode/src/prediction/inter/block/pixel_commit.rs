@@ -118,6 +118,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             reference,
             ref_frame_idx: lists.0,
             ref_facts: lists.1,
+            held: super::super::hold_row_references(reference, lists),
             temporal_context,
             sequence,
             core,

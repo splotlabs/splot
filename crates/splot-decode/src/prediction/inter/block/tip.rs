@@ -7,7 +7,7 @@ use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_recon::{CurrentFrameWorkspace, DecodedFrame, ReconError};
 
 use super::super::mv_scaling::PlaneScaling;
-use super::super::reference::{HeldFrameSamples, ReferenceSamples};
+use super::super::reference::ReferenceSamples;
 
 use super::super::find_mv_stack::TemporalMotionBlock;
 
@@ -98,6 +98,8 @@ impl<'a, T: ReconSample> TipPrediction<'a, T> {
 struct TipReferencePlan {
     past: u32,
     future: Option<u32>,
+    /// The reference lists that name `past` and `future`.
+    lists: [i8; 2],
     interpolation_filter: ReconInterpolationFilter,
     blend: mc::CompoundBlend,
     optflow_distances: Option<[i32; 2]>,
@@ -108,48 +110,61 @@ struct TipReferencePlan {
 
 /// One TIP block's borrow of its reference pair.
 struct TipHeldReferences<'a, T: ReconSample> {
-    past: HeldFrameSamples<'a, T>,
-    /// The future reference's borrow, absent when it names the past slot.
-    future: Option<HeldFrameSamples<'a, T>>,
+    past: ReferenceSamples<'a, T>,
+    /// The future reference's samples, absent when it names the past slot.
+    future: Option<ReferenceSamples<'a, T>>,
 }
 
 impl TipReferencePlan {
-    /// Borrows the reference pair for one block's prediction units.
+    /// Borrows the reference pair for one block's prediction units, from the
+    /// row borrows of `row` when the lists have them.
     fn hold<'a, T: ReconSample>(
         &self,
         reference: &'a InterReferenceState<T>,
+        row: &super::super::RowReferences<'a, T>,
+        scalings: &'a [[PlaneScaling; 2]; 2],
     ) -> Result<TipHeldReferences<'a, T>> {
+        let past = super::super::row_reference(row, self.lists[0]);
+        let future = self
+            .future
+            .filter(|future| *future != self.past)
+            .map(|_| super::super::row_reference(row, self.lists[1]));
+        if let (Some(past), None | Some(Some(_))) = (past, future) {
+            return Ok(TipHeldReferences {
+                past,
+                future: future.flatten(),
+            });
+        }
         let (past, future) = super::super::hold_reference_pair(reference, self.past, self.future)?;
-        Ok(TipHeldReferences { past, future })
+        Ok(TipHeldReferences {
+            past: past.samples(&scalings[0]),
+            future: future.map(|future| future.samples(&scalings[1])),
+        })
     }
 }
 
-impl<T: ReconSample> TipHeldReferences<'_, T> {
-    /// Resolves the borrow into the samples the block's units read, with the
-    /// per-frame `scalings` of the past and the future reference.
-    fn prediction<'s>(
-        &'s self,
+impl<'a, T: ReconSample> TipHeldReferences<'a, T> {
+    /// The samples the block's units read, with the per-frame `scalings` of
+    /// the past and the future reference.
+    fn prediction(
+        &self,
         plan: &TipReferencePlan,
-        scalings: &'s [[PlaneScaling; 2]; 2],
-    ) -> Result<TipPrediction<'s, T>> {
-        let compound_reference = match self.future.as_ref() {
-            Some(future) => future,
-            None => &self.past,
-        };
-        Ok(TipPrediction {
-            reference0: self.past.samples(&scalings[0])?,
+        scalings: &'a [[PlaneScaling; 2]; 2],
+    ) -> TipPrediction<'a, T> {
+        let compound_reference = self.future.unwrap_or(self.past);
+        TipPrediction {
+            reference0: self.past.with_scalings(&scalings[0]),
             reference1: plan
                 .future
                 .is_some()
-                .then(|| compound_reference.samples(&scalings[1]))
-                .transpose()?,
+                .then(|| compound_reference.with_scalings(&scalings[1])),
             interpolation_filter: plan.interpolation_filter,
             blend: plan.blend,
             optflow_distances: plan.optflow_distances,
             use_refinemv: plan.use_refinemv,
             search_refinemv: plan.search_refinemv,
             optflow_sad_threshold: plan.optflow_sad_threshold,
-        })
+        }
     }
 }
 
@@ -463,14 +478,6 @@ impl TipBlockPlan {
         }
     }
 
-    /// Borrows the block's reference pair.
-    fn hold<'a, T: ReconSample>(
-        &self,
-        reference: &'a InterReferenceState<T>,
-    ) -> Result<TipHeldReferences<'a, T>> {
-        self.plan.hold(reference)
-    }
-
     /// The § 7.22 temporal motion record of the luma rectangle `rect`.
     fn temporal_record(
         &self,
@@ -562,6 +569,7 @@ impl TipFramePlan {
             plan: TipReferencePlan {
                 past,
                 future,
+                lists: [references.past_ref, references.future_ref],
                 interpolation_filter,
                 blend,
                 optflow_distances: Some([past_offset, future_offset]),
@@ -698,7 +706,7 @@ pub(super) fn predict_block<T: ReconSample>(
     placed: &PlacedInterBlock,
     frame: &TipFramePlan,
     temporal: &TemporalMvContext,
-    reference: &InterReferenceState<T>,
+    (reference, row): (&InterReferenceState<T>, &super::super::RowReferences<'_, T>),
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let plan = frame.block(placed)?;
@@ -708,11 +716,11 @@ pub(super) fn predict_block<T: ReconSample>(
             .map_err(|_| inter_allocation!("TIP temporal records"))?;
     }
     batch_candidates(&mut scratch.unit_mvs, &plan, placed, temporal)?;
-    let held = plan.hold(reference)?;
+    let held = plan.plan.hold(reference, row, &frame.scalings)?;
     let first = *scratch.unit_mvs.first().ok_or(ReconError::ZeroDimension {
         field: "TIP compound batch",
     })?;
-    let prediction = held.prediction(&plan.plan, &frame.scalings)?;
+    let prediction = held.prediction(&plan.plan, &frame.scalings);
     let grid = (plan.columns(), plan.unit_size);
     let Some(block) = prediction
         .block_params(&plan.batch_unit(first))
@@ -1279,7 +1287,7 @@ impl<T: ReconSample> TipOutputStages<T> {
                 &placed,
                 &frame,
                 &self.temporal,
-                reference,
+                (reference, &[None; 8]),
                 self.offset,
             )?;
         }
@@ -1365,7 +1373,7 @@ mod tests {
         tip_uses_two_references, tmvp_unit_size8,
     };
     use crate::prediction::inter::mc;
-    use crate::prediction::inter::reference::HeldFrameSamples;
+    use crate::prediction::inter::reference::ReferenceSamples;
     use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
     use splot_core::headers::frame::{
         FrameSize, FrameType, InterControl, InterpolationFilter as FrameInterpolationFilter,
@@ -1470,12 +1478,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let reference = tip_workspace()?.freeze()?;
         let held = TipHeldReferences {
-            past: HeldFrameSamples::Settled(&reference),
+            past: ReferenceSamples::settled(&reference),
             future: None,
         };
         let plan = TipReferencePlan {
             past: 0,
             future: Some(0),
+            lists: [0, 0],
             interpolation_filter: InterpolationFilter::EightTapSharp,
             blend: mc::CompoundBlend::default(),
             optflow_distances: None,
@@ -1486,7 +1495,7 @@ mod tests {
 
         let info = reference.info();
         let scalings = [PlaneScaling::of_reference_planes(info, info.coded_luma_size()); 2];
-        assert!(held.prediction(&plan, &scalings)?.reference1.is_some());
+        assert!(held.prediction(&plan, &scalings).reference1.is_some());
         Ok(())
     }
 
@@ -1509,6 +1518,7 @@ mod tests {
         let plan = TipReferencePlan {
             past: 0,
             future: Some(1),
+            lists: [0, 1],
             interpolation_filter: InterpolationFilter::EightTapSharp,
             blend: mc::CompoundBlend::default(),
             optflow_distances: Some([1, -1]),
@@ -1522,11 +1532,11 @@ mod tests {
             has_chroma: false,
             mvs: zero,
         };
-        let held = plan.hold(&reference)?;
         let info = tip_workspace()?.info();
         let scalings = [PlaneScaling::of_reference_planes(info, info.coded_luma_size()); 2];
+        let held = plan.hold(&reference, &[None; 8], &scalings)?;
         let block = held
-            .prediction(&plan, &scalings)?
+            .prediction(&plan, &scalings)
             .block_params(&unit)
             .into_compound()
             .ok_or("compound TIP block")?;

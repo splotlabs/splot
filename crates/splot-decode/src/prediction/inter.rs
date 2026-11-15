@@ -650,19 +650,61 @@ const fn cdf_blending_enabled(enable_avg_cdf: bool, tip_frame_mode: Option<TipFr
     enable_avg_cdf && !matches!(tip_frame_mode, Some(TipFrameMode::AsOutput))
 }
 
-/// The reference frames one inter block reads, borrowed for the block only.
+/// Reference lists a frame header can name: `REFS_PER_FRAME` (AV2 § 3) plus
+/// the bridge slot.
+const ROW_LISTS: usize = 8;
+
+/// Each reference list's samples with its per-frame scalings, borrowed once
+/// for a row of blocks, or `None` where the list's slot lent no samples then.
+///
+/// [`hold_row_references`] runs when the row's reconstruction starts, after
+/// its reference admission: the row gate has seen every list the row reads
+/// publish the rows its blocks reach, or settle. A published row is final and
+/// the watermark only grows, so the borrowed prefix covers every block of the
+/// row however far the reference publishes or freezes meanwhile; each read
+/// still checks it.
+pub(in crate::prediction::inter) type RowReferences<'a, T> =
+    [Option<reference::ReferenceSamples<'a, T>>; ROW_LISTS];
+
+/// A block's reference lists: the slots they name, their per-frame facts and
+/// the row borrows of their samples.
+pub(in crate::prediction::inter) type BlockLists<'a, T> = (
+    &'a [u32],
+    &'a block::FrameRefFacts,
+    &'a RowReferences<'a, T>,
+);
+
+/// Borrows the slot of each list of `ref_frame_idx` for one row of blocks.
+pub(in crate::prediction::inter) fn hold_row_references<'a, T: ReconSample>(
+    reference: &'a InterReferenceState<T>,
+    (ref_frame_idx, facts): (&[u32], &'a block::FrameRefFacts),
+) -> RowReferences<'a, T> {
+    core::array::from_fn(|list| {
+        let scalings = facts.scalings(i8::try_from(list).ok()?)?;
+        let held = reference.slot(*ref_frame_idx.get(list)?)?.hold_samples()?;
+        Some(held.samples(scalings))
+    })
+}
+
+/// The row borrow of list `ref_frame`, when it has one.
+#[inline]
+fn row_reference<'a, T: ReconSample>(
+    row: &RowReferences<'a, T>,
+    ref_frame: i8,
+) -> Option<reference::ReferenceSamples<'a, T>> {
+    *row.get(usize::try_from(ref_frame).ok()?)?
+}
+
+/// The reference samples one inter block reads.
 pub(in crate::prediction::inter) struct HeldInterBlockReferences<'a, T: ReconSample> {
-    reference0: reference::HeldFrameSamples<'a, T>,
-    /// The second list's borrow, absent when it names the first list's slot.
-    reference1: Option<reference::HeldFrameSamples<'a, T>>,
-    /// The per-frame scalings of both lists' references.
-    scalings: [&'a [mv_scaling::PlaneScaling; 2]; 2],
+    reference0: reference::ReferenceSamples<'a, T>,
+    /// The second list's samples; `reference0` for a single-reference block.
+    reference1: reference::ReferenceSamples<'a, T>,
     compound: bool,
 }
 
-/// Borrows the reference frames one placed inter block names.
-///
-/// Two lists that name the same slot share one borrow.
+/// Borrows the reference frames one placed inter block names, from the row
+/// borrows of `row` when both lists have one.
 ///
 /// # Errors
 ///
@@ -670,17 +712,29 @@ pub(in crate::prediction::inter) struct HeldInterBlockReferences<'a, T: ReconSam
 /// frame samples or `facts` no scalings for it.
 #[inline]
 pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSample>(
-    (ref_frame_idx, facts): (&[u32], &'a block::FrameRefFacts),
+    (ref_frame_idx, facts, row): BlockLists<'a, T>,
     reference: &'a InterReferenceState<T>,
     placed: &PlacedInterBlock,
 ) -> Result<HeldInterBlockReferences<'a, T>> {
-    let slot0 = block_reference_slot(ref_frame_idx, placed.block.ref_frame0)?;
-    let slot1 = placed
-        .block
-        .ref_frame1
+    let (ref_frame0, ref_frame1) = (placed.block.ref_frame0, placed.block.ref_frame1);
+    if let Some(reference0) = row_reference(row, ref_frame0) {
+        let reference1 = match ref_frame1 {
+            None => Some(reference0),
+            Some(ref_frame1) => row_reference(row, ref_frame1),
+        };
+        if let Some(reference1) = reference1 {
+            return Ok(HeldInterBlockReferences {
+                reference0,
+                reference1,
+                compound: ref_frame1.is_some(),
+            });
+        }
+    }
+    let slot0 = block_reference_slot(ref_frame_idx, ref_frame0)?;
+    let slot1 = ref_frame1
         .map(|ref_frame1| block_reference_slot(ref_frame_idx, ref_frame1))
         .transpose()?;
-    let (reference0, reference1) = hold_reference_pair(reference, slot0, slot1)?;
+    let (held0, held1) = hold_reference_pair(reference, slot0, slot1)?;
     let scalings = |ref_frame: i8, slot: u32| {
         facts
             .scalings(ref_frame)
@@ -688,24 +742,23 @@ pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSamp
                 slot: slot as usize,
             })
     };
-    let scaling0 = scalings(placed.block.ref_frame0, slot0)?;
-    let scaling1 = match (placed.block.ref_frame1, slot1) {
+    let scaling0 = scalings(ref_frame0, slot0)?;
+    let scaling1 = match (ref_frame1, slot1) {
         (Some(ref_frame1), Some(slot1)) => scalings(ref_frame1, slot1)?,
         _ => scaling0,
     };
     Ok(HeldInterBlockReferences {
-        reference0,
-        reference1,
-        scalings: [scaling0, scaling1],
+        reference0: held0.samples(scaling0),
+        reference1: held1.unwrap_or(held0).samples(scaling1),
         compound: slot1.is_some(),
     })
 }
 
-impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
-    pub(in crate::prediction::inter) fn reference0_samples(
+impl<'a, T: ReconSample> HeldInterBlockReferences<'a, T> {
+    pub(in crate::prediction::inter) const fn reference0_samples(
         &self,
-    ) -> Result<reference::ReferenceSamples<'_, T>> {
-        self.reference0.samples(self.scalings[0])
+    ) -> reference::ReferenceSamples<'a, T> {
+        self.reference0
     }
 
     /// Predicts the held block, which does not refine its motion, into
@@ -713,7 +766,8 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
     ///
     /// # Errors
     ///
-    /// As [`Self::block_params`] and [`mc::predict_inter_block`].
+    /// As [`mc::motion_compensate_single_block_into`] and
+    /// [`mc::predict_inter_block`].
     pub(in crate::prediction::inter) fn predict_into(
         &self,
         sink: &mut mc::WorkspaceSink<'_, '_, T>,
@@ -724,7 +778,7 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
         if !self.compound && placed.block.warp_params[0].is_none() {
             return mc::motion_compensate_single_block_into(
                 sink,
-                self.reference0.samples(self.scalings[0])?,
+                self.reference0,
                 rect,
                 placed.block.mv,
                 placed.block.interp,
@@ -732,25 +786,20 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
                 offset,
             );
         }
-        mc::predict_inter_block(sink, &self.block_params(placed, rect)?, offset)
+        mc::predict_inter_block(sink, &self.block_params(placed, rect), offset)
     }
 
     /// Builds the § 7.13.3 prediction parameters for the held block.
-    ///
-    /// # Errors
-    ///
-    /// Returns an internal diagnostic when a held reference's samples are gone.
     pub(in crate::prediction::inter) fn block_params(
         &self,
         placed: &PlacedInterBlock,
         rect: mc::McBlockRect,
-    ) -> Result<mc::InterBlockParams<'_, T>> {
-        let ref_frame0 = self.reference0.samples(self.scalings[0])?;
-        Ok(if self.compound {
-            let ref_frame1 = self.reference1.as_ref().unwrap_or(&self.reference0);
+    ) -> mc::InterBlockParams<'a, T> {
+        let ref_frame0 = self.reference0;
+        if self.compound {
             mc::InterBlockParams::compound_average(
                 ref_frame0,
-                ref_frame1.samples(self.scalings[1])?,
+                self.reference1,
                 rect,
                 placed.block.mv,
                 placed.block.mv1,
@@ -774,7 +823,7 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
         } else {
             mc::InterBlockParams::single(ref_frame0, rect, placed.block.mv, placed.block.interp)
                 .with_chroma(placed.predict_chroma)
-        })
+        }
     }
 }
 

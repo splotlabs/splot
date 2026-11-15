@@ -595,7 +595,7 @@ impl EncoderInterTile {
                 &[],
                 &[],
                 block_decoded,
-                (&self.ref_frame_idx, &self.ref_facts),
+                (&self.ref_frame_idx, &self.ref_facts, &[None; 8]),
                 &self.reference,
                 self.qindex,
                 false,
@@ -618,7 +618,7 @@ impl EncoderInterTile {
             &placed,
             &[],
             &[],
-            (&self.ref_frame_idx, &self.ref_facts),
+            (&self.ref_frame_idx, &self.ref_facts, &[None; 8]),
             &self.reference,
             self.qindex,
             false,
@@ -779,7 +779,10 @@ impl EncoderInterTile {
             units,
             placed,
             (use_refinemv, switchable),
-            ((&self.ref_frame_idx, &self.ref_facts), &self.reference),
+            (
+                (&self.ref_frame_idx, &self.ref_facts, &[None; 8]),
+                &self.reference,
+            ),
             predict,
             ByteOffset::new(0),
             |_| Ok(()),
@@ -817,7 +820,7 @@ impl EncoderInterTile {
             placed,
             &frame,
             &temporal,
-            &self.reference,
+            (&self.reference, &[None; 8]),
             ByteOffset::new(0),
         )
     }
@@ -1068,7 +1071,7 @@ impl EncoderInterTile {
             .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
         let (view, _, params) = mc::plane_prediction(
             self.frame_info()?,
-            held.samples(scalings)?,
+            held.samples(scalings),
             ReconPlaneId::Y,
             mc::McBlockRect::from_luma_rect(rect.0, rect.1, rect.2, rect.3),
             mv,

@@ -615,9 +615,8 @@ fn admitted_reference_samples_survive_a_later_slot_failure() {
     let scalings =
         super::super::mv_scaling::PlaneScaling::of_reference_planes(info, info.coded_luma_size());
     let held = super::super::HeldInterBlockReferences {
-        reference0,
-        reference1,
-        scalings: [&scalings; 2],
+        reference0: reference0.samples(&scalings),
+        reference1: reference1.unwrap_or(reference0).samples(&scalings),
         compound: false,
     };
     drop(writer);
@@ -628,7 +627,7 @@ fn admitted_reference_samples_survive_a_later_slot_failure() {
             .and_then(crate::pipeline::inflight::RefFrameSlot::hold_samples)
             .is_none()
     );
-    assert!(held.reference0_samples().is_ok());
+    assert_eq!(held.reference0_samples().info(), info);
 }
 
 #[test]

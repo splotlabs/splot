@@ -188,7 +188,9 @@ fn inter_block_reference_hold_rejects_every_invalid_bawp_list_index() -> TestRes
         let mut placed = placed_luma_block(0, 0, 4, 4, InterIntraMode::Dc);
         placed.block.ref_frame0 = index;
         placed.block.bawp.enabled = true;
-        let Err(error) = hold_inter_block_references((&[0], &facts), &reference, &placed) else {
+        let Err(error) =
+            hold_inter_block_references((&[0], &facts, &[None; 8]), &reference, &placed)
+        else {
             return Err(format!("reference list index {index} must fail before BAWP").into());
         };
         assert!(matches!(
