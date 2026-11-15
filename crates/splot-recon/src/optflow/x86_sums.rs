@@ -6,9 +6,9 @@
 //! in the high block, so that one 256-bit operation and one `pmaddwd` serve
 //! two rows and the sums need no recombination.
 
-use fearless_simd::{i16x8, i16x16, i32x8, mask16x16, prelude::*, u8x32, u16x16, u64x4};
+use fearless_simd::{i16x8, i16x16, i32x8, prelude::*, u8x32, u64x4};
 
-use super::{GradientTile, accumulate_unit_sums, gradient_row, solve_sums, unit_sums, whole_8x8};
+use super::{edge_round, gradient_16, solve_sums, whole_8x8};
 use crate::Result;
 
 /// Byte indices that reverse the eight `i16` lanes of each 128-bit block.
@@ -45,31 +45,6 @@ pub(super) fn unit_8x8<S: Simd>(
     let [near, far] = distances.map(|distance| distance as i16);
     let weighted = core::array::from_fn(|pair| first[pair] * near - second[pair] * far);
     solve_sums(whole_8x8(sums(simd, weighted, difference)), distances).map(Some)
-}
-
-/// [`super::unit_16x16_sums`] with whole 16-lane rows: the left unit's
-/// products fill the low 128-bit block and the right unit's the high one.
-#[inline]
-pub(super) fn unit_16x16_lane_sums<S: Simd>(
-    simd: S,
-    rows: &GradientTile<'_>,
-    difference: &GradientTile<'_>,
-) -> [[i32; 5]; 4] {
-    let half = |first: usize| {
-        let mut sums = [i32x8::splat(simd, 0); 5];
-        for (row, difference) in difference.iter().enumerate().skip(first).take(8) {
-            let (u, v) = gradient_row(simd, rows, row);
-            let w = i16x16::load_array_ref(simd, difference);
-            accumulate_unit_sums(&mut sums, u, v, w);
-        }
-        let blocks = sums.map(|lanes| {
-            let (left, right) = lanes.split();
-            [left.reduce_sum(), right.reduce_sum()]
-        });
-        [0, 1].map(|unit| unit_sums(blocks.map(|sums| sums[unit]), 64))
-    };
-    let ([top_left, top_right], [bottom_left, bottom_right]) = (half(0), half(8));
-    [top_left, top_right, bottom_left, bottom_right]
 }
 
 /// The lane sums of the top and bottom halves of an 8x8 unit of rows in
@@ -123,7 +98,7 @@ fn sums<S: Simd>(
         let reversed = rows.swizzle_dyn_within_blocks(reverse);
         let next = rows.slide_within_blocks::<1>(reversed);
         let prev = reversed.slide_within_blocks::<7>(rows);
-        let u = gradient(
+        let u = gradient_16(
             [next, prev],
             [
                 next.slide_within_blocks::<1>(reversed),
@@ -132,9 +107,9 @@ fn sums<S: Simd>(
             |magnitude| edge_round(magnitude, 0x8181),
         );
         let v = match pair {
-            0 => gradient(near[0], far[0], |magnitude| edge_round(magnitude, 0x00ff)),
-            3 => gradient(near[3], far[3], |magnitude| edge_round(magnitude, 0xff00)),
-            _ => gradient(near[pair], far[pair], |magnitude| (magnitude + 64) >> 7),
+            0 => gradient_16(near[0], far[0], |magnitude| edge_round(magnitude, 0x00ff)),
+            3 => gradient_16(near[3], far[3], |magnitude| edge_round(magnitude, 0xff00)),
+            _ => gradient_16(near[pair], far[pair], |magnitude| (magnitude + 64) >> 7),
         };
         let w = difference[pair];
         let sums = &mut halves[pair / 2];
@@ -158,28 +133,4 @@ fn byte_rows<S: Simd>(simd: S, rows: &[u64; 8]) -> [i16x16<S>; 4] {
             .widen()
     });
     [first, second, third, fourth].map(fearless_simd::Bytes::bitcast)
-}
-
-/// `(magnitude + 64) >> 7` with the `edges` lanes, whose taps are doubled,
-/// rounded by 6 bits instead.
-#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
-#[inline(always)]
-fn edge_round<S: Simd>(magnitude: u16x16<S>, edges: u64) -> u16x16<S> {
-    mask16x16::from_bitmask(magnitude.simd, edges)
-        .select((magnitude + 32) >> 6, (magnitude + 64) >> 7)
-}
-
-/// [`super::gradient_i16`] of sixteen lanes.
-#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
-#[inline(always)]
-fn gradient<S: Simd>(
-    near: [i16x16<S>; 2],
-    far: [i16x16<S>; 2],
-    round: impl FnOnce(u16x16<S>) -> u16x16<S>,
-) -> i16x16<S> {
-    let near = (near[0] - near[1]) * 42;
-    let far = (far[0] - far[1]) * 5;
-    let magnitude: i16x16<S> = round((near.max(far) - near.min(far)).bitcast()).bitcast();
-    let sign = far.simd_gt(near).to_vector();
-    (magnitude ^ sign) - sign
 }
