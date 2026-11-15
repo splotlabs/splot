@@ -2623,3 +2623,13 @@ expect = "clean"
 path = "vectors/valid/syn-gdf-lossless-segments-inter-10bit-384x256-q180.ivf"
 description = "AVM-encoded 3-frame 384x256 10-bit 4:2:0 stream of a project-generated moving texture (avmenc built with CONFIG_MIXED_LOSSLESS_ENCODE=1, --profile=0 --bit-depth=10 --sb-size=64 --aq-mode=1 --deltaq-mode=0 --cpu-used=6 --end-usage=q --qp=180 --enable-tip=0): the frames code lossless segments (qindex 0) next to lossy segment 0, and GDF filters luma stripes that hold lossless blocks, which § 7.20.1 leaves at their LrFrame samples, without loop restoration on luma, so GDF writes the CDEF output it reads. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 11f3fef8e49447cc3d6aa91f19932d543c356a6251488bc7af77f7ee09489502; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-extrapolate-10bit-256x192-q160.ivf"
+description = "AVM-encoded 3-frame 256x192 10-bit 4:2:0 low-delay stream (avmenc --qp=160 --cpu-used=6 --lag-in-frames=0): the third frame has 5 TIP blocks of 8x8 compound units whose two references are both in the past, so the § 7.13.3.14 cwpWeight Tip_Weighting_Factor[ tip_global_wtd_index ] is outside 0..16; some units have full-sample motion vectors. The 16-bit compound cell program must not use the full-sample average, which is correct only for weights 0..16. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 6e7d74ee30a579686bd7eb2a65fb02c27efa29dcbe36c698cc22d013e4cdaa1d; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-extrapolate-norefinemv-10bit-256x192-q160.ivf"
+description = "AVM-encoded 3-frame 256x192 10-bit 4:2:0 low-delay stream of the same picture (avmenc --qp=160 --cpu-used=6 --lag-in-frames=0 --enable-refinemv=0): the third frame has 48 TIP blocks (36 with 16x16 units, 12 with 8x8 units) whose two references are both in the past, so the § 7.13.3.14 cwpWeight is outside 0..16; the 8x8 units with full-sample motion vectors go through the 16-bit compound cell program. avmdec (CONFIG_INSPECTION=0) produces raw SHA-256 bf36216fd4a36d6a0eff8b0d0e380e18690b8f979dcdd8da61d12c70c3f06bbf; validates clean."
+expect = "clean"

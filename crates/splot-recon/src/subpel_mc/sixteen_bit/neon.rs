@@ -314,7 +314,7 @@ fn store_placed<const W: usize>(
 ) {
     let still = |placed: &Placed| !placed.1 && placed.2.is_none() && placed.3.is_none();
     let [a, b] = placed;
-    if still(a) && still(b) {
+    if still(a) && still(b) && (0..=16).contains(&forward) {
         let sources = [(sources[0], a.0.stride), (sources[1], b.0.stride)];
         let clip = (forward, vgetq_lane_u16::<0>(max));
         super::super::cell::fullpel_u16(sources, [a.0.base, b.0.base], W, clip, output, stride);
