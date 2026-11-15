@@ -155,33 +155,6 @@ jobs:
       # No cargo cache: third-party crates take about 12 s of a release build.
       - run: cargo test -p splot-decode --release --lib --locked
 
-  dav2d-test-data:
-    runs-on: ubuntu-latest
-    env:
-      DAV2D_TEST_DATA_REV: ca31004227c1f6eaad79c380edf33d1e509d7ff8
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install pinned Rust toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-
-      - name: Clone pinned dav2d test data
-        env:
-          TEST_DATA_DIR: ${{ runner.temp }}/dav2d-test-data
-        run: |
-          git clone --no-checkout https://code.videolan.org/videolan/dav2d-test-data.git "$TEST_DATA_DIR"
-          git -C "$TEST_DATA_DIR" checkout --detach "$DAV2D_TEST_DATA_REV"
-
-      - name: Build splot
-        run: cargo build --release -p splot-cli --locked
-
-      - name: Verify upstream AVM corpus hashes
-        env:
-          TEST_DATA_DIR: ${{ runner.temp }}/dav2d-test-data
-        run: python3 scripts/check-external-vectors.py dav2d "$TEST_DATA_DIR"
-
   ewouth-av2-samples:
     runs-on: ubuntu-latest
     strategy:
@@ -466,6 +439,19 @@ jobs:
 
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
+
+      # The gates below reuse this release build of splot.
+      - name: Build splot
+        run: cargo build --release -p splot-cli --locked
+
+      - name: Verify upstream AVM corpus hashes (dav2d test data)
+        env:
+          DAV2D_TEST_DATA_REV: ca31004227c1f6eaad79c380edf33d1e509d7ff8
+          TEST_DATA_DIR: ${{ runner.temp }}/dav2d-test-data
+        run: |
+          git clone --no-checkout https://code.videolan.org/videolan/dav2d-test-data.git "$TEST_DATA_DIR"
+          git -C "$TEST_DATA_DIR" checkout --detach "$DAV2D_TEST_DATA_REV"
+          python3 scripts/check-external-vectors.py dav2d "$TEST_DATA_DIR"
 
       - name: Cache DynamoRIO release
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
