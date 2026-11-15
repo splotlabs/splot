@@ -978,15 +978,6 @@ impl IntraTileSyntax {
         self.tile_row(TileCdfSelector::YModeIndex { ctx })
     }
 
-    /// The `y_mode_offset` CDF row of `leaf`.
-    ///
-    /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for an invalid geometry.
-    pub fn y_mode_offset_cdf(&mut self, leaf: &LeafBlock) -> Result<&mut [u16]> {
-        let ctx = self.y_mode_ctx(leaf)?;
-        self.tile_row(TileCdfSelector::YModeOffset { ctx })
-    }
-
     /// The `uv_mode` CDF row (CFL not allowed) for a luma mode that is or is not directional.
     ///
     /// # Errors
