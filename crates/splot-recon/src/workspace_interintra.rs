@@ -7,7 +7,7 @@ use super::{CurrentFramePlane, CurrentFrameWorkspace, checked_sample_block_rect}
 #[cfg(target_arch = "x86_64")]
 use crate::intra_smooth::publish_rows;
 use crate::{IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result};
-use fearless_simd::{Simd, i32x4, i32x8, i32x16, prelude::*, u8x16, u16x8};
+use fearless_simd::{Simd, i16x16, i32x4, i32x8, i32x16, prelude::*, u8x16, u16x8, u16x16};
 use std::sync::OnceLock;
 
 /// AV2 § 7.13.3.29 `Ii_Weights_1d[128]` smooth-interintra blending weights.
@@ -564,7 +564,90 @@ fn blend_interintra_u16<S: Simd>(
     *row = blended.to_array();
 }
 
+/// The above-arm lanes a § 7.13.3.25 template keeps, by `log2(width) - 2`
+/// and `upStep - 1`: lanes `upStep >> 1, upStep + (upStep >> 1), ...` below
+/// `width`.
+const UP_LANES: [[[u16; 16]; 2]; 3] = {
+    let mut masks = [[[0; 16]; 2]; 3];
+    let mut size = 0;
+    while size < 3 {
+        let mut step = 1;
+        while step <= 2 {
+            let mut lane = step >> 1;
+            while lane < 4 << size {
+                masks[size][step - 1][lane] = u16::MAX;
+                lane += step;
+            }
+            step += 1;
+        }
+        size += 1;
+    }
+    masks
+};
+
+/// One frame's side of a § 7.13.3.25 template: the row above it from its
+/// first column, the column left of it from its first row (`stride` apart),
+/// and its last stored `(column, row)`, past which reads repeat the last
+/// stored sample like the DC edges.
+struct TemplateSource<'a, T> {
+    above: &'a [T],
+    left: &'a [T],
+    stride: usize,
+    last: (usize, usize),
+}
+
+/// The `((width, numUp), (height, numLeft))` arms of a § 7.13.3.25 template.
+type TemplateArms = ((usize, usize), (usize, usize));
+
+/// `(alpha, beta, max)` of a § 7.13.3.25 scale.
+type BawpScale = (i16, i32, i16);
+
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
+    /// AV2 § 7.13.3.25 for one plane: sums the template of the block at
+    /// `block` against the reference template at `at` — in `reference`, or
+    /// in this plane for morphological prediction when `None` — lets `fit`
+    /// turn `[sumX, sumY, sumXX, sumXY]` into `(alpha, beta)`, and scales the
+    /// `size` block at `block` like [`Self::apply_bawp_rect`]. `arms` are
+    /// `((width, numUp), (height, numLeft))` with sides of 4, 8 or 16 and
+    /// power-of-two counts that divide them; `sumXX` and `sumXY` stay zero
+    /// unless `products`. Returns the alpha, or `None` with nothing scaled
+    /// when an arm the template uses lies outside the frame or the
+    /// reference.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the plane is absent, its template or
+    /// block rows are not stored, or the storage-clamped block width is not
+    /// a multiple of 4.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_bawp_template(
+        &mut self,
+        plane: PlaneId,
+        reference: Option<&crate::ReferencePlaneView<'_, T>>,
+        (block, at): ((usize, usize), (usize, usize)),
+        arms: TemplateArms,
+        products: bool,
+        size: (usize, usize),
+        fit: impl FnOnce([i32; 4]) -> (i16, i32),
+    ) -> Result<Option<i16>> {
+        let max = self.info().bit_depth().max_sample() as i16;
+        let target = self.plane_mut(plane)?;
+        let Some(current) = target.bawp_template(block, arms)? else {
+            return Ok(None);
+        };
+        let reference = match reference {
+            Some(view) => view_template(view, at, arms),
+            None => target.bawp_template(at, arms).ok().flatten(),
+        };
+        let Some(sums) = reference.and_then(|reference| {
+            baseline_simd!(simd => template_sums(simd, [&reference, &current], arms, products))
+        }) else {
+            return Ok(None);
+        };
+        let (alpha, beta) = fit(sums);
+        target.apply_bawp_rect(block, size, (alpha, beta, max))?;
+        Ok(Some(alpha))
+    }
+
     /// AV2 § 7.13.3.25 block adaptive weighted prediction application:
     /// `CurrFrame = Clip1((orig * alpha + beta) >> 8)` in place over the
     /// rect, dropping frame-edge overhang like the reconstruction writes. A
@@ -583,42 +666,90 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         alpha: i16,
         beta: i32,
     ) -> Result<()> {
-        let max_sample = i32::from(self.info().bit_depth().max_sample());
-        let plane = self.plane_mut(plane)?;
-        let storage = plane.storage_size();
-        if rect.x() >= storage.width() || rect.y() >= storage.height() {
-            return Ok(());
-        }
-        plane.apply_bawp_rect(rect, alpha, beta, max_sample)
+        let max = self.info().bit_depth().max_sample() as i16;
+        self.plane_mut(plane)?.apply_bawp_rect(
+            (rect.x(), rect.y()),
+            (rect.width(), rect.height()),
+            (alpha, beta, max),
+        )
     }
 }
 
 impl<T: ReconSample> CurrentFramePlane<T> {
-    /// Scales the clamped-to-storage rectangle in place: motion compensation
-    /// drops frame-edge overhang on write, so the BAWP scale covers the same
-    /// clamped samples.
+    /// The current-frame side of a template at `(x, y)`; `None` when an arm
+    /// the template uses lies outside the frame.
+    #[inline]
+    fn bawp_template(
+        &self,
+        (x, y): (usize, usize),
+        ((width, num_up), (height, num_left)): TemplateArms,
+    ) -> Result<Option<TemplateSource<'_, T>>> {
+        let storage = self.storage_size();
+        let up = usize::from(num_up > 0);
+        let (Some(top), Some(cols), Some(rows)) = (
+            y.checked_sub(up),
+            storage.width().checked_sub(x),
+            storage.height().checked_sub(y),
+        ) else {
+            return Ok(None);
+        };
+        let (Some(last_col), Some(last_row)) = (
+            width.min(cols).checked_sub(1),
+            height.min(rows).checked_sub(1),
+        ) else {
+            return Ok(None);
+        };
+        if num_left > 0 && x == 0 {
+            return Ok(None);
+        }
+        let stride = self.stride_samples();
+        let first = self.band_row(top, up + last_row + 1)? * stride;
+        let rows = self.samples.get(first..).unwrap_or_default();
+        Ok(Some(TemplateSource {
+            above: rows.get(x..).unwrap_or_default(),
+            left: rows
+                .get((up * stride + x).saturating_sub(1)..)
+                .unwrap_or_default(),
+            stride,
+            last: (last_col, last_row),
+        }))
+    }
+
+    /// Scales the `(width, height)` rectangle at `(x, y)` clamped to storage
+    /// in place: motion compensation drops frame-edge overhang on write, so
+    /// the BAWP scale covers the same clamped samples.
+    #[inline]
     fn apply_bawp_rect(
         &mut self,
-        rect: crate::PlaneRect,
-        alpha: i16,
-        beta: i32,
-        max_sample: i32,
+        (x, y): (usize, usize),
+        (width, height): (usize, usize),
+        scale: BawpScale,
     ) -> Result<()> {
-        let rect = self.clamp_rect_to_storage(rect)?;
-        let (stride, width, height) = (self.stride_samples(), rect.width(), rect.height());
-        let short = || ReconError::ArithmeticOverflow {
-            context: "bawp rectangle rows",
+        let storage = self.storage_size();
+        let (Some(cols), Some(rows)) = (
+            storage.width().checked_sub(x).filter(|&cols| cols > 0),
+            storage.height().checked_sub(y).filter(|&rows| rows > 0),
+        ) else {
+            return Ok(());
         };
+        let (width, height) = (width.min(cols), height.min(rows));
         if !width.is_multiple_of(4) {
             return Err(ReconError::ArithmeticOverflow {
                 context: "bawp rectangle width",
             });
         }
-        let first = self.band_row(rect.y(), height)? * stride + rect.x();
+        let Some(last) = height.checked_sub(1) else {
+            return Ok(());
+        };
+        let stride = self.stride_samples();
+        let first = self.band_row(y, height)? * stride + x;
         let rows = self
             .samples
-            .get_mut(first..first + (height - 1) * stride + width)
-            .ok_or_else(short)?;
+            .get_mut(first..first + last * stride + width)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "bawp rectangle rows",
+            })?;
+        let (alpha, beta, max_sample) = (scale.0, scale.1, i32::from(scale.2));
         macro_rules! scale_lanes {
             ($lanes:expr) => {{
                 let lanes = $lanes;
@@ -663,6 +794,182 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         }
         Ok(())
     }
+}
+
+/// The reference side of a template at `(x, y)` of `view`, every sample of
+/// it inside the view's width and readable rows; `None` otherwise.
+#[inline]
+fn view_template<'a, T: ReconSample>(
+    view: &crate::ReferencePlaneView<'a, T>,
+    (x, y): (usize, usize),
+    ((width, _), (height, _)): TemplateArms,
+) -> Option<TemplateSource<'a, T>> {
+    let [stride, view_width, readable_rows, _] = view.geometry();
+    if x == 0 || y == 0 || x + width > view_width || y + height > readable_rows {
+        return None;
+    }
+    let (rows, _) = view.rows_from(y - 1)?;
+    Some(TemplateSource {
+        above: rows.get(x..)?,
+        left: rows.get(stride + x - 1..)?,
+        stride,
+        last: (width.saturating_sub(1), height.saturating_sub(1)),
+    })
+}
+
+/// `samples` widened to `u16` lanes.
+#[allow(clippy::inline_always, reason = "measured BAWP hot path")]
+#[inline(always)]
+fn sample_lanes<S: Simd, T: ReconSample>(simd: S, samples: &[T; 16]) -> u16x16<S> {
+    if let Some(bytes) = T::u8_slice(samples).and_then(<[u8]>::first_chunk::<16>) {
+        widen_u8(simd, u8x16::load_array_ref(simd, bytes))
+    } else if let Some(words) = T::u16_slice(samples).and_then(<[u16]>::first_chunk::<16>) {
+        u16x16::load_array_ref(simd, words)
+    } else {
+        u16x16::splat(simd, 0)
+    }
+}
+
+#[allow(clippy::inline_always, reason = "measured BAWP hot path")]
+#[inline(always)]
+fn widen_u8<S: Simd>(simd: S, lanes: u8x16<S>) -> u16x16<S> {
+    simd.widen_u8x32(simd.combine_u8x16(lanes, lanes)).0
+}
+
+/// The above arm of `source`: one 16-lane load of the row, padded from a
+/// copy only where storage ends within it, lanes past the last stored
+/// column repeating it.
+#[allow(clippy::inline_always, reason = "measured BAWP hot path")]
+#[inline(always)]
+fn above_lanes<S: Simd, T: ReconSample>(
+    simd: S,
+    source: &TemplateSource<'_, T>,
+    width: usize,
+) -> Option<u16x16<S>> {
+    let stored = width.min(source.last.0 + 1);
+    let row = source.above.get(..stored)?;
+    let lanes = if let Some(samples) = source.above.first_chunk::<16>() {
+        sample_lanes(simd, samples)
+    } else {
+        let mut padded = [T::default(); 16];
+        padded.get_mut(..stored)?.copy_from_slice(row); // splot-copy-ok: template row padded where storage ends
+        sample_lanes(simd, &padded)
+    };
+    if stored == width {
+        return Some(lanes);
+    }
+    let lane = u16x16::load_array(simd, LANES);
+    let last = u16x16::splat(simd, row.last()?.to_u16());
+    Some(lane.simd_lt(stored as u16).select(lanes, last))
+}
+
+/// Lane indices of a 16-lane template vector.
+const LANES: [u16; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+/// The `N` samples `pitch` apart from the start of `column`, after one
+/// bounds check.
+#[allow(clippy::inline_always, reason = "measured BAWP hot path")]
+#[inline(always)]
+fn gather<T: Copy + Default, const N: usize>(column: &[T], pitch: usize) -> Option<[T; 16]> {
+    let column = column.get(..=(N - 1) * pitch)?;
+    let mut lanes = [T::default(); 16];
+    for (k, lane) in lanes.iter_mut().take(N).enumerate() {
+        *lane = *column.get(k * pitch)?;
+    }
+    Some(lanes)
+}
+
+/// The left arm of `source`: `num` samples at step `height / num` from row
+/// `step >> 1`, gathered after one bounds check; at a storage edge the rows
+/// past the last stored one repeat it.
+#[allow(clippy::inline_always, reason = "measured BAWP hot path")]
+#[inline(always)]
+fn left_lanes<S: Simd, T: ReconSample>(
+    simd: S,
+    source: &TemplateSource<'_, T>,
+    (height, num): (usize, usize),
+) -> Option<u16x16<S>> {
+    let step = height >> num.trailing_zeros();
+    let (first, last_row) = (step >> 1, source.last.1);
+    let pitch = source.stride * step;
+    let column = source.left.get(first * source.stride..).unwrap_or_default();
+    if step > 0 && first + (num - 1) * step <= last_row {
+        let lanes = match num {
+            4 => gather::<T, 4>(column, pitch)?,
+            8 => gather::<T, 8>(column, pitch)?,
+            16 => gather::<T, 16>(column, pitch)?,
+            _ => return None,
+        };
+        return Some(sample_lanes(simd, &lanes));
+    }
+    let stored = if step == 0 || first > last_row {
+        0
+    } else {
+        ((last_row - first) / step + 1).min(num)
+    };
+    let mut lanes = [T::default(); 16];
+    for (slot, &sample) in lanes
+        .iter_mut()
+        .zip(column.iter().step_by(pitch.max(1)))
+        .take(stored)
+    {
+        *slot = sample;
+    }
+    let lane = u16x16::load_array(simd, LANES);
+    let last = source.left.get(last_row * source.stride)?.to_u16();
+    let tail = lane
+        .simd_lt(num as u16)
+        .select(u16x16::splat(simd, last), u16x16::splat(simd, 0));
+    Some(
+        lane.simd_lt(stored as u16)
+            .select(sample_lanes(simd, &lanes), tail),
+    )
+}
+
+/// The § 7.13.3.25 sums over the `[reference, current]` templates, summed
+/// in registers as the arms load. Samples are at most 1023 and there are at
+/// most 32 pairs, so `sumX` and `sumY` fit `u16` lanes and the products'
+/// pair sums `i32` lanes.
+#[allow(clippy::inline_always, reason = "measured BAWP hot path")]
+#[inline(always)]
+fn template_sums<S: Simd, T: ReconSample>(
+    simd: S,
+    sources: [&TemplateSource<'_, T>; 2],
+    ((width, num_up), left): TemplateArms,
+    products: bool,
+) -> Option<[i32; 4]> {
+    let zero = u16x16::splat(simd, 0);
+    let mut arms = [[zero; 2]; 2];
+    if num_up > 0 {
+        let step = width >> num_up.trailing_zeros();
+        let keep = UP_LANES
+            .get((width.trailing_zeros() as usize).wrapping_sub(2))?
+            .get(step.wrapping_sub(1))?;
+        let keep = u16x16::load_array_ref(simd, keep);
+        for (slot, source) in arms[0].iter_mut().zip(sources) {
+            *slot = above_lanes(simd, source, width)? & keep;
+        }
+    }
+    if left.1 > 0 {
+        for (slot, source) in arms[1].iter_mut().zip(sources) {
+            *slot = left_lanes(simd, source, left)?;
+        }
+    }
+    let [[x_up, y_up], [x_left, y_left]] = arms;
+    let sum = |lanes: u16x16<S>| i32::from(lanes.reduce_sum());
+    let pairs = |a: u16x16<S>, b: u16x16<S>| {
+        a.bitcast::<i16x16<S>>()
+            .pairwise_dot_product(b.bitcast::<i16x16<S>>())
+    };
+    let (xx, xy) = if products {
+        (
+            (pairs(x_up, x_up) + pairs(x_left, x_left)).reduce_sum(),
+            (pairs(x_up, y_up) + pairs(x_left, y_left)).reduce_sum(),
+        )
+    } else {
+        (0, 0)
+    };
+    Some([sum(x_up + x_left), sum(y_up + y_left), xx, xy])
 }
 
 #[cfg(target_arch = "x86_64")]

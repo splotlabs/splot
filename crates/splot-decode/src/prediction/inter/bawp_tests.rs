@@ -4,10 +4,11 @@
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, FramePlanes,
     InterpolationFilter, OutputIndex, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize,
+    ReconSample, ReferencePlaneView,
 };
 
 use super::{
-    ReferenceSamples, TemplatePairs, TemplateStats, apply_bawp, apply_intrabc_morph_pred,
+    ReferenceSamples, TemplateStats, apply_bawp, apply_intrabc_morph_pred,
     bawp_reference_luma_rows, bawp_template_counts,
 };
 use crate::pipeline::frame_progress::PublishedFrame;
@@ -40,111 +41,237 @@ fn template_counts_follow_the_clamped_size_table() {
     }
 }
 
-/// The § 7.13.3.25 sums of the oracle: every `(reference, current)` pair of
-/// both arms added one at a time.
-fn oracle_stats(
-    arms: [(usize, usize); 2],
-    pair: impl Fn(usize, usize) -> (u16, u16),
-) -> TemplateStats {
-    let mut stats = TemplateStats::default();
-    for (arm, (len, num)) in arms.into_iter().enumerate() {
-        if num == 0 {
-            continue;
+/// A § 7.13.3.25 sample pattern: noise, all-max, or 0 / max alternation.
+fn pattern(kind: usize, max: u16, seed: usize) -> impl Fn(usize, usize) -> u16 {
+    move |x: usize, y: usize| {
+        let k = (x * 131 + y * 7919 + seed).wrapping_mul(2_654_435_761) >> 7;
+        match kind {
+            0 => (k % (usize::from(max) + 1)) as u16,
+            1 => max,
+            _ => [0, max][(x + y + seed) % 2],
         }
-        let step = len / num;
-        let mut i = step >> 1;
-        while i < len {
-            let (x, y) = pair(arm, i);
-            let (x, y) = (i32::from(x), i32::from(y));
-            stats.sum_x += x;
-            stats.sum_y += y;
-            stats.sum_xy += x * y;
-            stats.sum_xx += x * x;
-            i += step;
-        }
-        stats.count += num as i32;
     }
-    stats
 }
 
-/// Every template shape [`bawp_template_counts`] yields, at both bit
-/// depths, with extreme and asymmetric samples: the lane sums equal the
-/// per-pair oracle.
+/// The spec loops of § 7.13.3.25 over `cur(x, y)` and `reference(x, y)`
+/// sample readers: `[sumX, sumY, sumXX, sumXY]`.
+fn spec_sums(
+    ((width, num_up), (height, num_left)): ((usize, usize), (usize, usize)),
+    cur: impl Fn(usize, usize) -> i32,
+    reference: impl Fn(usize, usize) -> i32,
+    ((x, y), (ref_x, ref_y)): ((usize, usize), (usize, usize)),
+) -> [i32; 4] {
+    let mut sums = [0; 4];
+    let mut add = |recon: i32, sample: i32| {
+        sums[0] += sample;
+        sums[1] += recon;
+        sums[2] += sample * sample;
+        sums[3] += sample * recon;
+    };
+    if let Some(step) = width.checked_div(num_up) {
+        let mut i = step >> 1;
+        while i < width {
+            add(cur(x + i, y - 1), reference(ref_x + i, ref_y - 1));
+            i += step;
+        }
+    }
+    if let Some(step) = height.checked_div(num_left) {
+        let mut i = step >> 1;
+        while i < height {
+            add(cur(x - 1, y + i), reference(ref_x - 1, ref_y + i));
+            i += step;
+        }
+    }
+    sums
+}
+
+/// Every template shape [`bawp_template_counts`] admits, at both bit depths,
+/// above only / left only / both, inside the frame and cut by its right and
+/// bottom storage edge (reads past it repeat the last stored sample), with
+/// noise, all-max and 0 / max samples: the in-register sums equal the spec
+/// loops, and a template whose arm leaves the frame or the reference is
+/// `None`.
 #[test]
-fn template_lane_sums_match_the_pair_oracle() {
+fn template_sums_match_the_spec_loops() -> TestResult {
+    check_template_sums::<u8>(BitDepth::Eight)?;
+    check_template_sums::<u16>(BitDepth::Ten)
+}
+
+/// The sums [`CurrentFrameWorkspace::apply_bawp_template`] fits, through an
+/// empty block that scales nothing.
+fn template_sums<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    reference: Option<&ReferencePlaneView<'_, T>>,
+    at: ((usize, usize), (usize, usize)),
+    arms: ((usize, usize), (usize, usize)),
+    products: bool,
+) -> TestResult<Option<[i32; 4]>> {
+    let mut sums = None;
+    workspace.apply_bawp_template(PlaneId::Y, reference, at, arms, products, (0, 0), |fit| {
+        sums = Some(fit);
+        (256, 0)
+    })?;
+    Ok(sums)
+}
+
+fn check_template_sums<T: ReconSample>(bit_depth: BitDepth) -> TestResult {
+    let (frame_w, frame_h) = (44, 36);
+    let max = bit_depth.max_sample();
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        bit_depth,
+        PixelFormat::Monochrome,
+        PlaneSize::new(frame_w, frame_h)?,
+        PlaneRect::new(0, 0, frame_w, frame_h)?,
+    )?;
     let sides = [4, 8, 12, 16, 32, 64];
-    for (bw, bh, luma, up, left) in sides.into_iter().flat_map(|bw| {
-        sides.into_iter().flat_map(move |bh| {
-            [(true, true, true), (false, true, true), (true, true, false)]
+    for kind in 0..3 {
+        let (cur, refs) = (pattern(kind, max, 1), pattern(kind, max, 5));
+        let mut workspace = CurrentFrameWorkspace::<T>::new(info, T::default())?;
+        let samples: Vec<T> = (0..frame_w * frame_h)
+            .map(|i| T::try_from_u16(cur(i % frame_w, i / frame_w)))
+            .collect::<std::result::Result<_, _>>()?;
+        let whole = PlaneRect::new(0, 0, frame_w, frame_h)?;
+        workspace.write_rect(PlaneId::Y, whole, &samples, frame_w)?;
+        let reference: Vec<T> = (0..frame_w * frame_h)
+            .map(|i| T::try_from_u16(refs(i % frame_w, i / frame_w)))
+            .collect::<std::result::Result<_, _>>()?;
+        let view = ReferencePlaneView::new(&reference, frame_w, frame_h)?;
+        let shapes = sides.into_iter().flat_map(|bw| {
+            sides
                 .into_iter()
-                .chain([(true, false, true), (true, false, false)])
-                .map(move |(luma, up, left)| (bw, bh, luma, up, left))
-        })
-    }) {
-        let (width, height, num_up, num_left) = bawp_template_counts(bw, bh, luma, up, left);
-        for (max, seed) in [(255u16, 3usize), (1023, 7), (1023, 0)] {
-            let pair = |arm: usize, i: usize| {
-                let k = (arm * 16 + i) * 2_654_435_761 + seed;
-                let value = |k: usize| match k % 5 {
-                    0 => max,
-                    1 => 0,
-                    _ => (k >> 9) as u16 % (max + 1),
-                };
-                (value(k), value(k / 3 + 1))
-            };
-            let want = oracle_stats([(width, num_up), (height, num_left)], pair);
-            for row_len in [width, 16, 24] {
-                let rows: [Vec<u16>; 2] = core::array::from_fn(|side| {
-                    let sample = |i: usize| [pair(0, i).0, pair(0, i).1][side];
-                    (0..row_len)
-                        .map(|i| if i < width { sample(i) } else { max - 1 })
-                        .collect()
-                });
-                let bytes: [Vec<u8>; 2] = rows
-                    .clone()
-                    .map(|row| row.into_iter().map(|v| v as u8).collect());
-                let mut pairs = TemplatePairs::default();
-                let mut byte_pairs = TemplatePairs::default();
-                if num_up > 0 {
-                    let up = (width, num_up);
-                    assert!(pairs.add_above(up, [&rows[0][..], &rows[1]]).is_some());
-                    assert!(
-                        byte_pairs
-                            .add_above(up, [&bytes[0][..], &bytes[1]])
-                            .is_some()
+                .flat_map(move |bh| [(bw, bh, true), (bw, bh, false)])
+        });
+        for (bw, bh, luma) in shapes {
+            for (up, left) in [(true, true), (true, false), (false, true)] {
+                let (width, height, num_up, num_left) =
+                    bawp_template_counts(bw, bh, luma, up, left);
+                if !(matches!(width, 4 | 8 | 16) && matches!(height, 4 | 8 | 16)) {
+                    continue;
+                }
+                let arms = ((width, num_up), (height, num_left));
+                let at = (3, 2);
+                // Inside, cut by the right edge, by the bottom edge, by both.
+                for (x, y) in [
+                    (5, 3),
+                    (frame_w - width / 2, 9),
+                    (7, frame_h - height / 2),
+                    (frame_w - 3, frame_h - 1),
+                ] {
+                    let last_col = (x + width).min(frame_w) - x - 1;
+                    let last_row = (y + height).min(frame_h) - y - 1;
+                    let cur_at = |cx: usize, cy: usize| {
+                        i32::from(cur(cx.min(x + last_col), cy.min(y + last_row)))
+                    };
+                    let ref_at = |rx: usize, ry: usize| view.sample(ry, rx);
+                    let want = spec_sums(arms, cur_at, ref_at, ((x, y), at));
+                    for products in [true, false] {
+                        let got = template_sums(
+                            &mut workspace,
+                            Some(&view),
+                            ((x, y), at),
+                            arms,
+                            products,
+                        )?;
+                        let want = if products {
+                            want
+                        } else {
+                            [want[0], want[1], 0, 0]
+                        };
+                        assert_eq!(
+                            got,
+                            Some(want),
+                            "{bw}x{bh} {luma} {up} {left} at {x},{y} kind {kind} {bit_depth:?}"
+                        );
+                    }
+                    let own_at = |rx: usize, ry: usize| i32::from(cur(rx, ry));
+                    let own = spec_sums(arms, cur_at, own_at, ((x, y), at));
+                    assert_eq!(
+                        template_sums(&mut workspace, None, ((x, y), at), arms, true)?,
+                        Some(own),
+                        "own {bw}x{bh} {luma} {up} {left} at {x},{y}"
                     );
+                }
+                let mut sums = |block: (usize, usize), at: (usize, usize)| {
+                    template_sums(&mut workspace, Some(&view), (block, at), arms, true)
+                };
+                assert_eq!(sums((5, 3), (0, 2))?, None);
+                assert_eq!(sums((5, 3), (3, 0))?, None);
+                assert_eq!(sums((5, 3), (frame_w - width + 1, 2))?, None);
+                assert_eq!(sums((5, 3), (3, frame_h - height + 1))?, None);
+                if num_up > 0 {
+                    assert_eq!(sums((5, 0), at)?, None);
                 }
                 if num_left > 0 {
-                    let left = (height, num_left);
-                    assert!(pairs.add_left(left, |i| Some(pair(1, i))).is_some());
-                    assert!(byte_pairs.add_left(left, |i| Some(pair(1, i))).is_some());
-                }
-                assert_eq!(
-                    pairs.stats(),
-                    want,
-                    "{bw}x{bh} {luma} {up} {left} {max} {row_len}"
-                );
-                if max == 255 {
-                    assert_eq!(
-                        byte_pairs.stats(),
-                        want,
-                        "u8 {bw}x{bh} {up} {left} {row_len}"
-                    );
+                    assert_eq!(sums((0, 3), at)?, None);
                 }
             }
         }
     }
-    let mut pairs = TemplatePairs::default();
-    let full_rows = [&[1023u16; 16][..], &[1023; 16]];
-    assert!(pairs.add_above((16, 16), full_rows).is_some());
-    assert!(pairs.add_left((16, 16), |_| Some((1023, 1023))).is_some());
-    let full = oracle_stats([(16, 16); 2], |_, _| (1023, 1023));
-    assert_eq!((pairs.stats(), full.sum_xx), (full, 32 * 1023 * 1023));
-    assert!(
-        TemplatePairs::default()
-            .add_above((8, 8), [&[0u16; 7][..], &[0; 8]])
-            .is_none()
+    Ok(())
+}
+
+/// The shifts of [`TemplateStats`] against the spec's `/`, which truncates
+/// toward zero (§ 4), over negative and positive `beta` numerators, all-max
+/// and 0 / max templates and every power-of-two count.
+#[test]
+fn template_stats_shift_like_the_spec_division() {
+    let spec_alpha = |[x, y, xx, xy]: [i32; 4], count: i32| {
+        let nor = xy - x * y / count;
+        let der = xx - x * x / count;
+        if der != 0 && nor != 0 {
+            match splot_recon::math::resolve_division(nor, der, 8) {
+                0 => 256,
+                alpha => alpha,
+            }
+        } else {
+            256
+        }
+    };
+    let mut seed = 0x9e37_79b9u32;
+    let mut next = |bound: i32| {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed >> 8) as i32 % bound
+    };
+    for count in [4, 8, 16, 32] {
+        for case in 0..4000 {
+            let max = if case % 2 == 0 { 255 } else { 1023 };
+            let samples: Vec<(i32, i32)> = (0..count)
+                .map(|i| match case % 5 {
+                    0 => (max, max),
+                    1 => ((i % 2) * max, ((i + 1) % 2) * max),
+                    _ => (next(max + 1), next(max + 1)),
+                })
+                .collect();
+            let sums = samples.iter().fold([0; 4], |[sx, sy, sxx, sxy], &(x, y)| {
+                [sx + x, sy + y, sxx + x * x, sxy + x * y]
+            });
+            let stats = TemplateStats::new(sums, count as usize);
+            let alpha = stats.implicit_alpha();
+            assert_eq!(alpha, spec_alpha(sums, count), "{sums:?} {count}");
+            let random = next(1023) as i16 - 511;
+            for alpha in [alpha, -511, -48, 192, 320, 511, random] {
+                let numerator = (sums[1] << 8) - sums[0] * i32::from(alpha);
+                assert_eq!(
+                    stats.beta(alpha),
+                    numerator / count,
+                    "{sums:?} {count} {alpha}"
+                );
+            }
+        }
+    }
+    let empty = TemplateStats::new([0; 4], 0);
+    assert_eq!((empty.implicit_alpha(), empty.beta(300)), (256, -128));
+    let full = TemplateStats::new([4 * 1023, 0, 4 * 1023 * 1023, 0], 4);
+    assert_eq!(full.beta(511), -(1023 * 511), "exact negative");
+    let small = TemplateStats::new([1, 0, 1, 0], 4);
+    assert_eq!(
+        (small.beta(3), small.beta(-3)),
+        (0, 0),
+        "+-3 / 4 truncate to 0"
     );
+    let seven = TemplateStats::new([7, 0, 49, 0], 4);
+    assert_eq!(seven.beta(1), -1, "-7 / 4 truncates to -1");
 }
 
 #[test]
