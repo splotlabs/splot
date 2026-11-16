@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::{Bits, Lambda, RdCost};
 use crate::hme::FrameMotion;
 use crate::preset::{PresetContext, PresetParams};
-use crate::tile_writer::{LeafChoice, Partition, PartitionTree, TileWriterError};
+use crate::tile_writer::{LeafChoice, Partition, PartitionTree};
 
 /// What the partition search needs from a coder. Trials code into live state:
 /// [`Self::evaluate_leaf`] leaves its leaf coded, and the search rolls back
@@ -21,7 +21,7 @@ pub(crate) trait PartitionSearch {
     /// A saved coder state.
     type Saved;
     /// The coder's error.
-    type Error: From<TileWriterError>;
+    type Error;
 
     /// Whether `node` starts inside the frame; nodes outside code nothing.
     fn in_frame(&self, node: Self::Node) -> bool;
@@ -328,27 +328,25 @@ fn recode<S: PartitionSearch>(
     if !coder.in_frame(node) {
         return Ok(RdCost::default());
     }
-    let partition = match (tree, coder.sdp_roots(node)) {
-        (PartitionTree::Sdp { luma, chroma }, Some((luma_root, chroma_root))) => {
+    let (rate, mut cost) = match tree {
+        PartitionTree::Sdp { luma, chroma } => {
+            let Some((luma_root, chroma_root)) = coder.sdp_roots(node) else {
+                return Ok(RdCost::default());
+            };
             return Ok(recode(coder, luma_root, luma)? + recode(coder, chroma_root, chroma)?);
         }
-        (PartitionTree::Sdp { .. }, None) | (_, Some(_)) => {
-            return Err(TileWriterError::Shape("SDP tree at a shared node or none").into());
-        }
-        (PartitionTree::Leaf(_), None) => Partition::None,
-        (PartitionTree::Split { kind, .. }, None) => *kind,
-    };
-    let rate = coder.partition_rate(node, partition)?;
-    let mut cost = match tree {
+        PartitionTree::Leaf(choice) => (
+            coder.partition_rate(node, Partition::None)?,
+            coder.code_leaf(node, *choice)?,
+        ),
         PartitionTree::Split { kind, children } => {
+            let rate = coder.partition_rate(node, *kind)?;
             let mut cost = RdCost::default();
             for (child, tree) in coder.children(node, *kind)?.into_iter().zip(children) {
                 cost = cost + recode(coder, child, tree)?;
             }
-            cost
+            (rate, cost)
         }
-        PartitionTree::Leaf(choice) => coder.code_leaf(node, *choice)?,
-        PartitionTree::Sdp { .. } => RdCost::default(),
     };
     cost.rate += rate;
     Ok(cost)

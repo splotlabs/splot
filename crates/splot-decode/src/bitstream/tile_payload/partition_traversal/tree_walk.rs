@@ -320,6 +320,17 @@ impl<E> From<TilePartitionTraversalError> for WalkError<E> {
     }
 }
 
+impl GeneralIntraTreeWalkError {
+    #[cold]
+    #[inline(never)]
+    fn into_walk_error<E>(self) -> WalkError<E> {
+        Box::new(match self {
+            Self::Traversal(error) => GeneralIntraTreeWalkError::Traversal(error),
+            Self::MiSize(error) => GeneralIntraTreeWalkError::MiSize(error),
+        })
+    }
+}
+
 /// The § 5.20.3.1 `decode_partition` call `call`: its partition, then its
 /// children in syntax order or its leaf block. `ACTIVE` is whether the
 /// superblock's § 5.20.2.1 `bru_mode` is `BRU_ACTIVE`, a constant so that an
@@ -436,7 +447,7 @@ where
         &mut walker.intra_facts,
         hooks.mi_size_state,
     )
-    .map_err(Box::new)?;
+    .map_err(GeneralIntraTreeWalkError::into_walk_error)?;
     (hooks.on_published)(decoded_leaf, command);
     Ok(())
 }
@@ -536,7 +547,7 @@ impl TreeWalker<'_> {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum GeneralIntraTreeWalkError<E> {
+pub(crate) enum GeneralIntraTreeWalkError<E = !> {
     #[error("partition tree walk traversal failed: {0}")]
     Traversal(#[from] TilePartitionTraversalError),
     #[error("partition tree walk MI-size update failed: {0}")]
@@ -732,7 +743,7 @@ mod row_cursor_tests {
                     .decode_next_superblock_with_publication(
                         &mut work,
                         &mut states,
-                        &mut |_, _, _, _| Ok::<_, ()>((leaf_mode(), ())),
+                        &mut |_, _, _, _| Ok::<_, !>((leaf_mode(), ())),
                         &mut |_, ()| {},
                     )
                     .unwrap();
@@ -823,7 +834,7 @@ mod row_cursor_tests {
                             super::super::MrlSelection::Disabled,
                         )
                     };
-                    Ok::<_, ()>((leaf, ()))
+                    Ok::<_, !>((leaf, ()))
                 },
                 &mut |_, ()| published += 1,
             )
@@ -868,7 +879,7 @@ mod row_cursor_tests {
                     } else {
                         GeneralIntraLeafMode::no_luma_mode().mark_intrabc()
                     };
-                    Ok::<_, ()>((leaf, ()))
+                    Ok::<_, !>((leaf, ()))
                 },
                 &mut |_, ()| {},
             )

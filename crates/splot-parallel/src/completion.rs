@@ -101,15 +101,14 @@ impl<V> CompletionCell<V> {
         });
         fence(Ordering::SeqCst);
         let mut parked = wait.parked.lock();
-        while self.value.get().is_none() {
+        loop {
+            if let Some(value) = self.value.get() {
+                return value;
+            }
             *parked += 1;
             wait.cond.wait(&mut parked);
             *parked -= 1;
         }
-        drop(parked);
-        self.value
-            .get()
-            .unwrap_or_else(|| unreachable!("checked under the lock"))
     }
 }
 

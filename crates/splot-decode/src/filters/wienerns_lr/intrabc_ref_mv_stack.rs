@@ -110,14 +110,10 @@ fn check_rmb_cand(cand: Mv, stack: &[Mv], bounds: RmbCandBounds, comparisons: &m
     }
     let ref_x = bounds.mi_col * MI_SIZE + cand.col / 8;
     let ref_y = bounds.mi_row * MI_SIZE + cand.row / 8;
-    if ref_x <= -bounds.block_w
-        || ref_y <= -bounds.block_h
-        || ref_x >= bounds.frame_w
-        || ref_y >= bounds.frame_h
-    {
-        return false;
-    }
-    true
+    ref_x > -bounds.block_w
+        && ref_y > -bounds.block_h
+        && ref_x < bounds.frame_w
+        && ref_y < bounds.frame_h
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

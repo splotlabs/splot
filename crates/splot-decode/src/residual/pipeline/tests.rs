@@ -966,9 +966,8 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
     let partition =
         LumaTransformPartitionUnits::four([unit(32, 32), unit(64, 32), unit(32, 64), unit(64, 64)]);
     let original_count = partition.len();
-    let visible = partition
-        .try_filter_map::<_, ()>(|unit| Ok((unit.x < 64 && unit.y < 64).then_some(unit)))
-        .expect("infallible clipping predicate");
+    let Ok(visible) =
+        partition.try_filter_map::<_, !>(|unit| Ok((unit.x < 64 && unit.y < 64).then_some(unit)));
     assert_eq!(original_count, 4);
     assert_eq!(visible.len(), 1);
     let mut deblock_blocks = Vec::new();
