@@ -45,4 +45,5 @@ pub(crate) fn limits(flags: u8, input_len: usize) -> DecodeLimits {
         .with_max_tile_count(max(1 + scale))
         .with_max_tile_partition_steps(max(64 + scale * 32))
         .with_max_tile_payload_bytes(max(128 + scale * 64))
+        .with_max_loop_restoration_source_reads(max((64 + scale * 32) * 16))
 }
