@@ -167,7 +167,14 @@ pub(crate) fn refine_block_units<T: ReconSample>(
             )?;
         }
         let deltas = derive_optflow_mv_deltas_into(
-            pred0, pred1, width, height, size, bit_depth, distances, optflow,
+            [&*pred0, &*pred1],
+            [0; 2],
+            width,
+            [width, height],
+            size,
+            bit_depth,
+            distances,
+            optflow,
         )?;
         cells.clear();
         cells.extend(
@@ -220,34 +227,57 @@ pub(crate) fn refine_block_units<T: ReconSample>(
                 (mvs[0].col - candidates[0].col) / 8,
                 (mvs[0].row - candidates[0].row) / 8,
             ];
-            for (reference, prediction) in [&mut *pred0, &mut *pred1].into_iter().enumerate() {
-                let sign = if reference == 0 { 1 } else { -1 };
-                let start =
-                    (4 + sign * offsets[1]) as usize * stride + (4 + sign * offsets[0]) as usize;
-                let copied = match area {
-                    SearchArea::Bytes => {
-                        copy_area(&bytes[reference], start, stride, prediction, unit_w)
+            let starts = [1, -1].map(|sign| {
+                (4 + sign * offsets[1]) as usize * stride + (4 + sign * offsets[0]) as usize
+            });
+            let size = [unit_w, unit_h];
+            let deltas = match area {
+                SearchArea::Bytes => derive_optflow_mv_deltas_into(
+                    bytes.each_ref().map(|area| &area[..]),
+                    starts,
+                    stride,
+                    size,
+                    8,
+                    bit_depth,
+                    distances,
+                    optflow,
+                )?,
+                SearchArea::Samples => derive_optflow_mv_deltas_into(
+                    samples.each_ref().map(|area| &area[..]),
+                    starts,
+                    stride,
+                    size,
+                    8,
+                    bit_depth,
+                    distances,
+                    optflow,
+                )?,
+                SearchArea::None => {
+                    for (reference, prediction) in
+                        [&mut *pred0, &mut *pred1].into_iter().enumerate()
+                    {
+                        initial_luma_prediction::<_, 0>(
+                            &mut luma[reference],
+                            rect,
+                            mvs[reference],
+                            InterpolationFilter::Bilinear,
+                            Some((candidates[reference], unit_w, unit_h)),
+                            None,
+                            prediction,
+                        )?;
                     }
-                    SearchArea::Samples => {
-                        copy_area(&samples[reference], start, stride, prediction, unit_w)
-                    }
-                    SearchArea::None => false,
-                };
-                if !copied {
-                    initial_luma_prediction::<_, 0>(
-                        &mut luma[reference],
-                        rect,
-                        mvs[reference],
-                        InterpolationFilter::Bilinear,
-                        Some((candidates[reference], unit_w, unit_h)),
-                        None,
-                        prediction,
-                    )?;
+                    derive_optflow_mv_deltas_into(
+                        [&*pred0, &*pred1],
+                        [0; 2],
+                        unit_w,
+                        size,
+                        8,
+                        bit_depth,
+                        distances,
+                        optflow,
+                    )?
                 }
-            }
-            let deltas = derive_optflow_mv_deltas_into(
-                pred0, pred1, unit_w, unit_h, 8, bit_depth, distances, optflow,
-            )?;
+            };
             let unit_columns = unit_w / 8;
             for (index, &delta) in deltas.iter().enumerate() {
                 let at = (y / 8 + index / unit_columns) * *columns + x / 8 + index % unit_columns;
@@ -267,29 +297,6 @@ fn grown(buffer: &mut Vec<u16>, len: usize) -> &mut [u16] {
         buffer.resize(len, 0);
     }
     &mut buffer[..len]
-}
-
-/// Copies the `width`-wide rows of a search area from `start` at `stride`
-/// into the packed `output`, or returns `false` when the area is too short.
-fn copy_area<S: Copy + Into<u16>>(
-    area: &[S],
-    start: usize,
-    stride: usize,
-    output: &mut [u16],
-    width: usize,
-) -> bool {
-    for (row, output) in output.chunks_exact_mut(width).enumerate() {
-        let Some(source) = area
-            .get(start + row * stride..)
-            .and_then(|row| row.get(..width))
-        else {
-            return false;
-        };
-        for (sample, &source) in output.iter_mut().zip(source) {
-            *sample = source.into();
-        }
-    }
-    true
 }
 
 /// Predicts luma and both chroma planes of the refined `block` from the cells
