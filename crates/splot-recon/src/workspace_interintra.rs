@@ -4,10 +4,8 @@
 //! AV2 § 7.13.3.29 intra mode variant mask and § 7.13.3.30 interintra blend.
 
 use super::{CurrentFramePlane, CurrentFrameWorkspace, checked_sample_block_rect};
-#[cfg(target_arch = "x86_64")]
-use crate::intra_smooth::publish_rows;
 use crate::{IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result};
-use fearless_simd::{Simd, i16x16, i32x4, i32x8, i32x16, prelude::*, u8x16, u16x8, u16x16};
+use fearless_simd::{Simd, i16x16, i32x8, prelude::*, u8x16, u16x8, u16x16, u32x4, u64x2, u64x4};
 use std::sync::OnceLock;
 
 /// AV2 § 7.13.3.29 `Ii_Weights_1d[128]` smooth-interintra blending weights.
@@ -749,48 +747,10 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "bawp rectangle rows",
             })?;
-        let (alpha, beta, max_sample) = (scale.0, scale.1, i32::from(scale.2));
-        macro_rules! scale_lanes {
-            ($lanes:expr) => {{
-                let lanes = $lanes;
-                let orig = lanes.map(i32::from);
-                let scaled =
-                    baseline_simd!(simd => bawp_scale(simd, orig, alpha, beta, max_sample));
-                *lanes = scaled.map(|value| value as _);
-            }};
-        }
-        macro_rules! scale_rows {
-            ($rows:expr, $lanes:literal) => {
-                for row in $rows.chunks_mut(stride) {
-                    let row = row.get_mut(..width).unwrap_or_default();
-                    for lanes in row.as_chunks_mut::<$lanes>().0 {
-                        scale_lanes!(lanes);
-                    }
-                }
-            };
-        }
-        macro_rules! scale_by_width {
-            ($rows:expr) => {
-                match width % 16 {
-                    0 => scale_rows!($rows, 16),
-                    8 => scale_rows!($rows, 8),
-                    _ => scale_rows!($rows, 4),
-                }
-            };
-        }
         if let Some(rows) = T::u8_slice_mut(rows) {
-            #[cfg(target_arch = "x86_64")]
-            if let Some(token) = fearless_simd::Level::baseline().as_avx2()
-                && max_sample == 0xff
-                && (width.is_multiple_of(16)
-                    || matches!(width, 4 | 8) && height.is_multiple_of(16 / width))
-            {
-                bawp_u8_avx2(token, rows, stride, width, alpha, beta);
-                return Ok(());
-            }
-            scale_by_width!(rows);
+            baseline_simd!(simd => scale_u8_rows(simd, rows, stride, width, scale));
         } else if let Some(rows) = T::u16_slice_mut(rows) {
-            scale_by_width!(rows);
+            baseline_simd!(simd => scale_u16_rows(simd, rows, stride, width, scale));
         }
         Ok(())
     }
@@ -972,117 +932,199 @@ fn template_sums<S: Simd, T: ReconSample>(
     Some([sum(x_up + x_left), sum(y_up + y_left), xx, xy])
 }
 
+/// `Clip3(0, max, (orig * alpha + beta) >> 8)` of 16 samples up to ten
+/// bits: `|orig * alpha| <= 1023 * 511` and `beta` keep `i32` lanes exact.
+#[allow(clippy::inline_always, reason = "measured BAWP hot path")]
+#[inline(always)]
+fn scale_lanes<S: Simd>(simd: S, orig: u16x16<S>, (alpha, beta, max): BawpScale) -> u16x16<S> {
+    let (low, high) = orig.bitcast::<i16x16<S>>().widening_mul(alpha);
+    let shift = |lanes: i32x8<S>| (lanes + beta) >> 8;
+    shift(low)
+        .saturating_narrow(shift(high))
+        .max(i16x16::splat(simd, 0))
+        .min(i16x16::splat(simd, max))
+        .bitcast()
+}
+
+/// [`scale_lanes`] of 16 eight-bit samples. On x86_64 `madd` of the
+/// zero-extended samples with `(alpha, 0)` pairs is `orig * alpha` and the
+/// saturating `packs` / `packus` narrowing is the `Clip1`, which measured
+/// faster than the generic body; NEON and other targets run the generic
+/// body.
+#[allow(clippy::inline_always, reason = "measured BAWP hot path")]
+#[inline(always)]
+fn scale_u8<S: Simd>(simd: S, lanes: u8x16<S>, p: BawpScale) -> u8x16<S> {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
+        return u8x16::load_array(simd, scale_u8_avx2(token, lanes.to_array(), p));
+    }
+    let (low, high) = simd.split_u16x16(scale_lanes(simd, widen_u8(simd, lanes), p));
+    simd.narrow_u16x8(low, high)
+}
+
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
-    /// [`bawp_scale`] for 8-bit rows: `madd` of the zero-extended samples
-    /// with `(alpha, 0)` pairs is `orig * alpha`, and the saturating
-    /// `packs`/`packus` narrowing is the `Clip1`. Rows 4 and 8 wide scale
-    /// `16 / w` at a time, so `rows` holds whole groups of them.
+    /// The x86_64 [`scale_u8`].
     #[inline]
-    fn bawp_u8_avx2(
-        token: Avx2,
-        rows: &mut [u8],
-        stride: usize,
-        width: usize,
-        alpha: i16,
-        beta: i32,
-    ) {
+    fn scale_u8_avx2(token: Avx2, samples: [u8; 16], p: BawpScale) -> [u8; 16] {
         use core::arch::x86_64::{
-            __m128i, _mm_packus_epi16, _mm_set_epi64x, _mm_setr_epi32, _mm_srli_si128,
-            _mm256_add_epi32, _mm256_castsi256_si128, _mm256_cvtepu8_epi32,
-            _mm256_extracti128_si256, _mm256_madd_epi16, _mm256_packs_epi32,
+            __m128i, _mm_packus_epi16, _mm_srli_si128, _mm256_add_epi32, _mm256_castsi256_si128,
+            _mm256_cvtepu8_epi32, _mm256_extracti128_si256, _mm256_madd_epi16, _mm256_packs_epi32,
             _mm256_permute4x64_epi64, _mm256_set1_epi32, _mm256_srai_epi32,
         };
-        use fearless_simd::{SimdFrom, u8x16};
+        use fearless_simd::SimdFrom;
+        let (alpha, beta, _) = p;
         let alpha = _mm256_set1_epi32(i32::from(alpha as u16));
         let beta = _mm256_set1_epi32(beta);
-        let scale = |samples: __m128i| -> [u8; 16] {
-            let half = |samples: __m128i| {
-                let product = _mm256_madd_epi16(_mm256_cvtepu8_epi32(samples), alpha);
-                _mm256_srai_epi32::<8>(_mm256_add_epi32(product, beta))
-            };
-            let words = _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_packs_epi32(
-                half(samples),
-                half(_mm_srli_si128::<8>(samples)),
-            ));
-            u8x16::simd_from(
-                token,
-                _mm_packus_epi16(
-                    _mm256_castsi256_si128(words),
-                    _mm256_extracti128_si256::<1>(words),
-                ),
-            )
-            .into()
+        let samples: __m128i = u8x16::simd_from(token, samples).into();
+        let half = |samples: __m128i| {
+            let product = _mm256_madd_epi16(_mm256_cvtepu8_epi32(samples), alpha);
+            _mm256_srai_epi32::<8>(_mm256_add_epi32(product, beta))
         };
-        let mut rest = rows;
-        match width {
-            4 => {
-                while !rest.is_empty() {
-                    let lane = |k| {
-                        rest.get(k * stride..)
-                            .and_then(<[u8]>::first_chunk::<4>)
-                            .map_or(0, |&samples| i32::from_le_bytes(samples))
-                    };
-                    let lanes = scale(_mm_setr_epi32(lane(0), lane(1), lane(2), lane(3)));
-                    rest = publish_rows::<u8, 4>(&lanes, rest, stride);
-                }
-            }
-            8 => {
-                while !rest.is_empty() {
-                    let lane = |k| {
-                        rest.get(k * stride..)
-                            .and_then(<[u8]>::first_chunk::<8>)
-                            .map_or(0, |&samples| i64::from_le_bytes(samples))
-                    };
-                    let lanes = scale(_mm_set_epi64x(lane(1), lane(0)));
-                    rest = publish_rows::<u8, 8>(&lanes, rest, stride);
-                }
-            }
-            _ => {
-                for line in rest.chunks_mut(stride) {
-                    let line = line.get_mut(..width).unwrap_or_default();
-                    for lanes in line.as_chunks_mut::<16>().0 {
-                        *lanes = scale(u8x16::from_slice(token, lanes).into());
+        let words = _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_packs_epi32(
+            half(samples),
+            half(_mm_srli_si128::<8>(samples)),
+        ));
+        u8x16::simd_from(
+            token,
+            _mm_packus_epi16(
+                _mm256_castsi256_si128(words),
+                _mm256_extracti128_si256::<1>(words),
+            ),
+        )
+        .into()
+    }
+);
+
+/// [`scale_lanes`] over 8-bit rows `width` wide, a multiple of 4: rows 4 and
+/// 8 wide go four at a time, wider rows 16 samples at a time with a padded
+/// last group.
+#[allow(clippy::inline_always, reason = "measured BAWP hot path")]
+#[inline(always)]
+fn scale_u8_rows<S: Simd>(simd: S, rows: &mut [u8], stride: usize, width: usize, p: BawpScale) {
+    let scale = |lanes: u8x16<S>| scale_u8(simd, lanes, p);
+    let mut lines = rows.chunks_mut(stride);
+    match width {
+        4 => {
+            while let Some(top) = lines.next() {
+                let mut quad = [Some(top), lines.next(), lines.next(), lines.next()]
+                    .map(|row| row.and_then(<[u8]>::first_chunk_mut::<4>));
+                let row = |row: &Option<&mut [u8; 4]>| {
+                    row.as_ref().map_or(0, |row| u32::from_le_bytes(**row))
+                };
+                let lanes = u32x4::load_array(
+                    simd,
+                    [row(&quad[0]), row(&quad[1]), row(&quad[2]), row(&quad[3])],
+                );
+                let out = scale(lanes.bitcast()).bitcast::<u32x4<S>>().to_array();
+                for (row, out) in quad.iter_mut().zip(out) {
+                    if let Some(row) = row {
+                        **row = out.to_le_bytes();
                     }
                 }
             }
         }
+        8 => {
+            while let Some(top) = lines.next() {
+                let mut quad = [Some(top), lines.next(), lines.next(), lines.next()]
+                    .map(|row| row.and_then(<[u8]>::first_chunk_mut::<8>));
+                let row = |row: &Option<&mut [u8; 8]>| {
+                    row.as_ref().map_or(0, |row| u64::from_le_bytes(**row))
+                };
+                let low = scale(u64x2::load_array(simd, [row(&quad[0]), row(&quad[1])]).bitcast());
+                let high = scale(u64x2::load_array(simd, [row(&quad[2]), row(&quad[3])]).bitcast());
+                let [row0, row1] = low.bitcast::<u64x2<S>>().to_array();
+                let [row2, row3] = high.bitcast::<u64x2<S>>().to_array();
+                for (row, out) in quad.iter_mut().zip([row0, row1, row2, row3]) {
+                    if let Some(row) = row {
+                        **row = out.to_le_bytes();
+                    }
+                }
+            }
+        }
+        _ => {
+            for row in lines {
+                let (groups, rest) = row.get_mut(..width).unwrap_or_default().as_chunks_mut();
+                for group in groups {
+                    *group = scale(u8x16::load_array_ref(simd, group)).to_array();
+                }
+                if !rest.is_empty() {
+                    let mut padded = [0; 16];
+                    padded[..rest.len()].copy_from_slice(rest); // splot-copy-ok: padded last group of a row
+                    let out = scale(u8x16::load_array(simd, padded)).to_array();
+                    rest.copy_from_slice(&out[..rest.len()]); // splot-copy-ok: padded last group of a row
+                }
+            }
+        }
     }
-);
+}
 
-/// `Clip3(0, max, (orig * alpha + beta) >> 8)` lane-wise, the BAWP scale.
-#[inline]
-fn bawp_scale<S: Simd, const N: usize>(
-    simd: S,
-    orig: [i32; N],
-    alpha: i16,
-    beta: i32,
-    max: i32,
-) -> [i32; N] {
-    let scale8 = |orig: &[i32; 8]| {
-        let lanes = i32x8::load_array_ref(simd, orig);
-        ((lanes * i32::from(alpha) + beta) >> 8)
-            .max(0)
-            .min(max)
-            .to_array()
-    };
-    let mut out = [0; N];
-    if let (Some(orig), Some(slot)) = (orig.first_chunk::<16>(), out.first_chunk_mut::<16>()) {
-        let lanes = i32x16::load_array_ref(simd, orig);
-        *slot = ((lanes * i32::from(alpha) + beta) >> 8)
-            .max(0)
-            .min(max)
-            .to_array();
-    } else if let (Some(orig), Some(slot)) = (orig.first_chunk::<8>(), out.first_chunk_mut::<8>()) {
-        *slot = scale8(orig);
-    } else if let (Some(orig), Some(slot)) = (orig.first_chunk::<4>(), out.first_chunk_mut::<4>()) {
-        let lanes = i32x4::load_array_ref(simd, orig);
-        *slot = ((lanes * i32::from(alpha) + beta) >> 8)
-            .max(0)
-            .min(max)
-            .to_array();
+/// [`scale_u8_rows`] for 10-bit rows.
+#[allow(clippy::inline_always, reason = "measured BAWP hot path")]
+#[inline(always)]
+fn scale_u16_rows<S: Simd>(simd: S, rows: &mut [u16], stride: usize, width: usize, p: BawpScale) {
+    let mut lines = rows.chunks_mut(stride);
+    match width {
+        4 => {
+            while let Some(top) = lines.next() {
+                let mut quad = [Some(top), lines.next(), lines.next(), lines.next()]
+                    .map(|row| row.and_then(<[u16]>::first_chunk_mut::<4>));
+                let row = |row: &Option<&mut [u16; 4]>| {
+                    row.as_ref().map_or(0, |row| {
+                        row.iter()
+                            .rev()
+                            .fold(0, |word, &s| word << 16 | u64::from(s))
+                    })
+                };
+                let lanes = u64x4::load_array(
+                    simd,
+                    [row(&quad[0]), row(&quad[1]), row(&quad[2]), row(&quad[3])],
+                );
+                let out = scale_lanes(simd, lanes.bitcast(), p)
+                    .bitcast::<u64x4<S>>()
+                    .to_array();
+                for (row, out) in quad.iter_mut().zip(out) {
+                    if let Some(row) = row {
+                        **row = core::array::from_fn(|i| (out >> (16 * i)) as u16);
+                    }
+                }
+            }
+        }
+        8 => {
+            while let Some(top) = lines.next() {
+                let mut quad = [Some(top), lines.next(), lines.next(), lines.next()]
+                    .map(|row| row.and_then(<[u16]>::first_chunk_mut::<8>));
+                let row = |row: &Option<&mut [u16; 8]>| {
+                    row.as_ref().map_or(u16x8::splat(simd, 0), |row| {
+                        u16x8::load_array_ref(simd, row)
+                    })
+                };
+                let scaled =
+                    |a, b| simd.split_u16x16(scale_lanes(simd, simd.combine_u16x8(a, b), p));
+                let (row0, row1) = scaled(row(&quad[0]), row(&quad[1]));
+                let (row2, row3) = scaled(row(&quad[2]), row(&quad[3]));
+                for (row, out) in quad.iter_mut().zip([row0, row1, row2, row3]) {
+                    if let Some(row) = row {
+                        **row = out.to_array();
+                    }
+                }
+            }
+        }
+        _ => {
+            for row in lines {
+                let (groups, rest) = row.get_mut(..width).unwrap_or_default().as_chunks_mut();
+                for group in groups {
+                    *group = scale_lanes(simd, u16x16::load_array_ref(simd, group), p).to_array();
+                }
+                if !rest.is_empty() {
+                    let mut padded = [0; 16];
+                    padded[..rest.len()].copy_from_slice(rest); // splot-copy-ok: padded last group of a row
+                    let out = scale_lanes(simd, u16x16::load_array(simd, padded), p).to_array();
+                    rest.copy_from_slice(&out[..rest.len()]); // splot-copy-ok: padded last group of a row
+                }
+            }
+        }
     }
-    out
 }
 
 #[cfg(test)]
@@ -1432,17 +1474,21 @@ mod tests {
 
     fn check_bawp_scales<T: ReconSample>(bit_depth: BitDepth) {
         let max = i32::from(bit_depth.max_sample());
-        for (w, h) in [
-            (2, 4),
-            (4, 4),
-            (6, 8),
-            (8, 4),
-            (10, 2),
-            (16, 8),
-            (18, 3),
-            (32, 2),
-        ] {
-            for (alpha, beta) in [(256, -128), (320, -9000), (-48, 70_000), (511, 3)] {
+        let sizes = [(2, 4), (6, 8), (10, 2), (18, 3)].into_iter().chain(
+            [4, 8, 12, 16, 20, 32, 48, 64, 128]
+                .into_iter()
+                .flat_map(|w| [1, 2, 3, 4, 5, 7, 8].map(|h| (w, h))),
+        );
+        for (w, h) in sizes {
+            for (alpha, beta) in [
+                (256, -128),
+                (320, -9000),
+                (-48, 70_000),
+                (511, 3),
+                (-511, 784_641),
+                (511, -784_641),
+                (192, 0),
+            ] {
                 let frame = (w + 3, h + 1);
                 let (mut workspace, mut want) = noisy_workspace::<T>(bit_depth, frame, w as u32);
                 let rect = PlaneRect::new(3, 1, w + 4, h).unwrap();
@@ -1468,8 +1514,10 @@ mod tests {
     }
 
     /// § 7.13.3.25 scales of rects clipped at the storage edge, against the
-    /// per-sample `Clip1`; a clamped width that is not a multiple of 4 is an
-    /// error and writes nothing.
+    /// per-sample `Clip1`, at every width the kernel packs or groups, row
+    /// counts that leave a partial group of four, and extreme `alpha` /
+    /// `beta`; a clamped width that is not a multiple of 4 is an error and
+    /// writes nothing.
     #[test]
     fn bawp_scale_of_clipped_rects_matches_the_sample_oracle() {
         check_bawp_scales::<u8>(BitDepth::Eight);
