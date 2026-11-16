@@ -15,8 +15,8 @@ use super::{
 const R: usize = WIENER_NS_CHROMA_TAP_RADIUS;
 const REACH: usize = 16 + 2 * R;
 
-/// One plane's samples and stride.
-type Plane<'a, S> = (&'a [S], usize);
+/// One plane's padded rows.
+type Plane<'a, S> = &'a [&'a [S]];
 
 /// The padded rows of one 16-sample group: row `R + dy` from column
 /// `R + dx` holds the taps at offset `(dy, dx)`.
@@ -25,11 +25,10 @@ pub(super) type Window<'a, S> = [&'a [S; REACH]; 2 * R + 1];
 /// The `2 * R + 1` rows of `plane` from row `r`, each `width + 2 * R`
 /// long, so one length check covers a group in all of them.
 #[inline]
-fn rows<S>((samples, stride): Plane<'_, S>, r: usize, width: usize) -> Option<[&[S]; 5]> {
+fn rows<'a, S>(plane: &[&'a [S]], r: usize, width: usize) -> Option<[&'a [S]; 5]> {
     let mut rows = [&[][..]; 2 * R + 1];
     for (k, row) in rows.iter_mut().enumerate() {
-        let start = (r + k) * stride;
-        *row = samples.get(start..start + width + 2 * R)?;
+        *row = plane.get(r + k)?.get(..width + 2 * R)?;
     }
     Some(rows)
 }
@@ -189,18 +188,10 @@ const HALF_REACH: usize = 8 + 2 * R;
 /// The luma [`HalfWindow`] of a filter without luma taps.
 pub(super) const NO_HALF_LUMA: HalfWindow<'static, u16> = [&[0; HALF_REACH]; 2 * R + 1];
 
-/// The [`HalfWindow`] whose first sample is `samples[base]`.
+/// The [`HalfWindow`] from column `c` of `rows`.
 #[inline]
-pub(super) fn half_window<S>(
-    samples: &[S],
-    base: usize,
-    stride: usize,
-) -> Option<HalfWindow<'_, S>> {
-    let row = |dy: usize| {
-        samples
-            .get(base + dy * stride..)?
-            .first_chunk::<HALF_REACH>()
-    };
+pub(super) fn half_window<'a, S>(rows: &[&'a [S]], c: usize) -> Option<HalfWindow<'a, S>> {
+    let row = |dy: usize| rows.get(dy)?.get(c..)?.first_chunk::<HALF_REACH>();
     Some([row(0)?, row(1)?, row(2)?, row(3)?, row(4)?])
 }
 

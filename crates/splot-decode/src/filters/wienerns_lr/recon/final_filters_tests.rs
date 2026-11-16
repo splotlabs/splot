@@ -1304,6 +1304,7 @@ fn unsplit_luma_lr(
     let (mut storage, mut cells) = (Vec::new(), Vec::new());
     let window = LrSourceRows::resolve(
         &mut storage,
+        PlaneId::Y,
         cdef.deblocked_y,
         &cdef.filtered_y,
         &[],
@@ -1312,7 +1313,7 @@ fn unsplit_luma_lr(
         0,
         block.width,
         block.height,
-        WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS),
+        [WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS); 2].into(),
     )
     .unwrap();
     let (width, height) = (block.width, block.height);
@@ -1397,6 +1398,7 @@ fn flat_lr_strips_match_the_unsplit_block_for_both_initializations() {
     let mut storage = Vec::new();
     let window = LrSourceRows::resolve(
         &mut storage,
+        PlaneId::Y,
         cdef.deblocked_y,
         &cdef.filtered_y,
         &[],
@@ -1405,7 +1407,7 @@ fn flat_lr_strips_match_the_unsplit_block_for_both_initializations() {
         0,
         200,
         16,
-        WIENER_NS_LUMA_TAP_RADIUS,
+        [WIENER_NS_LUMA_TAP_RADIUS; 2].into(),
     )
     .unwrap();
     let (rows, col) = window.tail(WIENER_NS_LUMA_TAP_RADIUS).unwrap();
@@ -1547,19 +1549,34 @@ fn checked_extent_boundaries_and_other_domains_do_not_merge() {
     }
 }
 
-#[test]
-fn wiener_ns_luma_worker_scratch_retention_is_bounded() {
-    WIENER_NS_LUMA_SCRATCH.with(|slot| slot.set(None));
-
-    with_wiener_ns_luma_scratch::<u16, _>(MAX_RETAINED_WIENER_NS_LUMA_SAMPLES + 1, |_| ());
-    WIENER_NS_LUMA_SCRATCH.with(|slot| assert!(slot.take().is_none()));
-
-    with_wiener_ns_luma_scratch::<u16, _>(MAX_RETAINED_WIENER_NS_LUMA_SAMPLES, |_| ());
-    WIENER_NS_LUMA_SCRATCH.with(|slot| assert!(slot.take().is_some()));
+/// Resolves the `width` x `height` block at `(x, y)` with radius `(1, 1)`.
+#[allow(clippy::too_many_arguments)]
+fn resolve_rows<'a>(
+    storage: &'a mut Vec<u8>,
+    curr: FramePlane<'a, u8>,
+    cdef: &'a StripePlane<u8>,
+    overlap: &'a [StripePlane<u8>],
+    bounds: &LoopRestorationSourceBounds,
+    (x, y): (isize, isize),
+    (width, height): (usize, usize),
+) -> ReconResult<LrSourceRows<'a, u8>> {
+    LrSourceRows::resolve(
+        storage,
+        PlaneId::Y,
+        curr,
+        cdef,
+        overlap,
+        bounds,
+        x,
+        y,
+        width,
+        height,
+        (1, 1),
+    )
 }
 
 #[test]
-fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
+fn lr_source_rows_resolve_in_stripe_rows_from_overlap_planes() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,
         luma_end_x: 7,
@@ -1583,43 +1600,16 @@ fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
     let overlap = [StripePlane::copy_from_into(cdef_source, 4, 8, None, CopyAll).unwrap()];
     let mut storage = Vec::new();
 
-    assert!(
-        LrSourceWindow::materialize(
-            &mut storage,
-            PlaneId::Y,
-            curr,
-            &band,
-            &[],
-            &bounds,
-            2,
-            2,
-            4,
-            4,
-            (1, 1),
-        )
-        .is_err()
-    );
-    let window = LrSourceWindow::materialize(
-        &mut storage,
-        PlaneId::Y,
-        curr,
-        &band,
-        &overlap,
-        &bounds,
-        2,
-        2,
-        4,
-        4,
-        (1, 1),
-    )
-    .unwrap();
-    assert_eq!(window.get_abs(3, 3), 27);
-    assert_eq!(window.get_abs(3, 5), 43);
-    assert_eq!(window.get_abs(4, 6), 52);
+    assert!(resolve_rows(&mut storage, curr, &band, &[], &bounds, (2, 2), (4, 4)).is_err());
+    let window =
+        resolve_rows(&mut storage, curr, &band, &overlap, &bounds, (2, 2), (4, 4)).unwrap();
+    assert_eq!(window.rows[2][2], 27);
+    assert_eq!(window.rows[4][2], 43);
+    assert_eq!(window.rows[5][3], 52);
 }
 
 #[test]
-fn lr_source_rows_match_the_materialized_window() {
+fn lr_source_rows_match_the_source_sample_process() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,
         luma_end_x: 15,
@@ -1630,24 +1620,27 @@ fn lr_source_rows_match_the_materialized_window() {
         subsampling_x: 0,
         subsampling_y: 0,
     };
+    let curr_sample = |x: usize, y: usize| ((16 * y + x) % 97) as u8;
+    let cdef_sample = |x: usize, y: usize| (100 + (16 * y + x) % 101) as u8;
     let mut curr_workspace = crate::test_support::yuv420_workspace(16, 16, 0);
     let mut cdef_workspace = crate::test_support::yuv420_workspace(16, 16, 0);
     for sample in 0..256 {
         let (x, y) = (sample % 16, sample / 16);
         curr_workspace
-            .set_reconstructed_sample(PlaneId::Y, x, y, (sample % 97) as u8)
+            .set_reconstructed_sample(PlaneId::Y, x, y, curr_sample(x, y))
             .unwrap();
         cdef_workspace
-            .set_reconstructed_sample(PlaneId::Y, x, y, (100 + sample % 101) as u8)
+            .set_reconstructed_sample(PlaneId::Y, x, y, cdef_sample(x, y))
             .unwrap();
     }
     let curr = FramePlane::new(&curr_workspace, PlaneId::Y).unwrap();
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
     let band = StripePlane::copy_from_into(cdef_source, 2, 14, None, CopyAll).unwrap();
+    let resolved = LoopRestorationPlaneBounds::new(PlaneId::Y, &bounds).unwrap();
     for (block_x, block_y) in [(0, 4), (6, 6), (11, 8), (5, 4)] {
-        let (mut window_storage, mut row_storage) = (Vec::new(), Vec::new());
-        let window = LrSourceWindow::materialize(
-            &mut window_storage,
+        let mut storage = Vec::new();
+        let rows = LrSourceRows::resolve(
+            &mut storage,
             PlaneId::Y,
             curr,
             &band,
@@ -1660,28 +1653,25 @@ fn lr_source_rows_match_the_materialized_window() {
             (2, 2),
         )
         .unwrap();
-        let rows = LrSourceRows::resolve(
-            &mut row_storage,
-            curr,
-            &band,
-            &[],
-            &bounds,
-            block_x,
-            block_y,
-            5,
-            4,
-            2,
-        )
-        .unwrap();
         assert_eq!(rows.len, 8);
-        for (row, expected) in rows.rows[..rows.len].iter().zip(window.samples.chunks(9)) {
+        for (row_index, row) in rows.rows[..rows.len].iter().enumerate() {
+            let expected: Vec<u8> = (0..9)
+                .map(|col| {
+                    let sample =
+                        resolved.sample(block_x - 2 + col, block_y - 2 + row_index as isize);
+                    match sample.source {
+                        LoopRestorationSource::CurrFrame => curr_sample(sample.x, sample.y),
+                        LoopRestorationSource::CdefFrame => cdef_sample(sample.x, sample.y),
+                    }
+                })
+                .collect();
             assert_eq!(*row, expected, "block ({block_x}, {block_y})");
         }
     }
 }
 
 #[test]
-fn lr_source_window_reuses_storage_after_an_error() {
+fn lr_source_rows_reuse_storage_after_an_error() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,
         luma_end_x: 7,
@@ -1705,55 +1695,25 @@ fn lr_source_window_reuses_storage_after_an_error() {
     let short_cdef = StripePlane::copy_from_into(cdef_source, 0, 1, None, CopyAll).unwrap();
     let mut storage = Vec::new();
 
-    let window = LrSourceWindow::materialize(
-        &mut storage,
-        PlaneId::Y,
-        curr,
-        &cdef,
-        &[],
-        &bounds,
-        2,
-        2,
-        4,
-        4,
-        (1, 1),
-    )
-    .unwrap();
-    assert_eq!(window.get_abs(2, 2), 18);
-    let allocation = window.samples.as_ptr();
+    let window = resolve_rows(&mut storage, curr, &cdef, &[], &bounds, (2, 2), (4, 4)).unwrap();
+    assert_eq!(window.rows[1][1], 18);
+    let allocation = storage.as_ptr();
 
     assert!(
-        LrSourceWindow::materialize(
+        resolve_rows(
             &mut storage,
-            PlaneId::Y,
             curr,
             &short_cdef,
             &[],
             &bounds,
-            2,
-            2,
-            2,
-            2,
-            (1, 1),
+            (2, 2),
+            (2, 2)
         )
         .is_err()
     );
-    let window = LrSourceWindow::materialize(
-        &mut storage,
-        PlaneId::Y,
-        curr,
-        &cdef,
-        &[],
-        &bounds,
-        2,
-        2,
-        2,
-        2,
-        (1, 1),
-    )
-    .unwrap();
-    assert_eq!(window.samples.as_ptr(), allocation);
-    assert_eq!(window.get_abs(3, 3), 27);
+    let window = resolve_rows(&mut storage, curr, &cdef, &[], &bounds, (2, 2), (2, 2)).unwrap();
+    assert_eq!(window.rows[2][2], 27);
+    assert_eq!(storage.as_ptr(), allocation);
 }
 
 #[test]
