@@ -460,6 +460,14 @@ COVERAGE = [
      MASKED_INTER + ["--monochrome", "--input-bit-depth=10", "--bit-depth=10"], "3", "120",
      {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", MASKED_SOURCE, "-pix_fmt", "yuv420p10le",
                                        "-strict", "-1"]}),
+    ("syn-2frame-mfh-inter-64x64-q160", "testsrc2=size=64x64:rate=1:duration=2", "yuv420p", "--i420",
+     ["--limit=2", "--lag-in-frames=0", "--passes=1", "--kf-min-dist=9999", "--kf-max-dist=9999",
+      "--quiet", "--disable-warning-prompt", "--enable-mfh-obu-signaling=1"], "8", "160"),
+    ("syn-2frame-lcr-inter-64x64-q160", "testsrc2=size=64x64:rate=1:duration=2", "yuv420p", "--i420",
+     ["--limit=2", "--lag-in-frames=0", "--passes=1", "--kf-min-dist=9999", "--kf-max-dist=9999",
+      "--quiet", "--disable-warning-prompt", "--enable-lcr=1"], "8", "160"),
+    ("syn-level31-wide-intra-8320x64-q200", "color=c=gray:size=8320x64:rate=1:duration=1", "yuv420p", "--i420",
+     ["--limit=1", "--lag-in-frames=0", "--passes=1", "--quiet", "--disable-warning-prompt"], "9", "200"),
 ]
 
 PINNED_RECIPE_HASHES = {
