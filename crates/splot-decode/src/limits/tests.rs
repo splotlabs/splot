@@ -33,12 +33,12 @@ fn default_options_and_limits_are_finite_and_pinned() {
         (
             DecodeLimitName::MaxFrameWidth,
             limits.max_frame_width(),
-            4_096,
+            65_536,
         ),
         (
             DecodeLimitName::MaxFrameHeight,
             limits.max_frame_height(),
-            4_096,
+            65_536,
         ),
         (
             DecodeLimitName::MaxLumaSamplesPerFrame,

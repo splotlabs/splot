@@ -2636,15 +2636,15 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-2frame-mfh-inter-64x64-q160.ivf"
-description = "AVM-encoded 2-frame 64x64 8-bit 4:2:0 stream with --enable-mfh-obu-signaling=1 (reproducing dav2d MR !825 / Issue #67 enable-mfh-obu-signaling_1): carries an OBU_MULTI_FRAME_HEADER (cur_mfh_id = 1) followed by a closed-loop key frame and a § 5.18.2 inter frame with frame_size_override_flag = 0. avmdec decodes both frames cleanly to raw SHA-256 7fbe72df8cec847216fe4098e46374f505ae3b0a8bafacf6c610f25d89d8e76a; validates clean; currently fails in splot decode (AV2-5.18.2-FRAME-HEADER-INFO)."
+description = "AVM-encoded 2-frame 64x64 8-bit 4:2:0 stream with --enable-mfh-obu-signaling=1 (reproducing dav2d MR !825 / Issue #67 enable-mfh-obu-signaling_1): carries an OBU_MULTI_FRAME_HEADER (cur_mfh_id = 1) followed by a closed-loop key frame and a § 5.18.2 inter frame with frame_size_override_flag = 0. avmdec decodes both frames cleanly to raw SHA-256 7fbe72df8cec847216fe4098e46374f505ae3b0a8bafacf6c610f25d89d8e76a; validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-2frame-lcr-inter-64x64-q160.ivf"
-description = "AVM-encoded 2-frame 64x64 8-bit 4:2:0 stream with --enable-lcr=1 (reproducing dav2d MR !970 / Issue #67 / Issue #93 enable-lcr_1): prepends a local OBU_LAYER_CONFIGURATION_RECORD referencing lcr_global_id 1 without an in-band global LCR. avmdec decodes cleanly to raw SHA-256 7fbe72df8cec847216fe4098e46374f505ae3b0a8bafacf6c610f25d89d8e76a; standalone validator emits § 7.3.8.3 lcr/global-lcr-unavailable; currently fails in splot decode (multistream_selection)."
+description = "AVM-encoded 2-frame 64x64 8-bit 4:2:0 stream with --enable-lcr=1 (reproducing dav2d MR !970 / Issue #67 / Issue #93 enable-lcr_1): prepends a local OBU_LAYER_CONFIGURATION_RECORD referencing lcr_global_id 1 without an in-band global LCR. avmdec decodes cleanly to raw SHA-256 7fbe72df8cec847216fe4098e46374f505ae3b0a8bafacf6c610f25d89d8e76a; standalone validator emits § 7.3.8.3 lcr/global-lcr-unavailable."
 expect = { diagnostics = ["lcr/global-lcr-unavailable"] }
 
 [[vector]]
 path = "vectors/valid/syn-level31-wide-intra-8320x64-q200.ivf"
-description = "AVM-encoded 1-frame 8320x64 8-bit 4:2:0 single-tile intra stream at seq_level_idx = 31 (reproducing dav2d MR !1028 level31-wide-frame.obu). avmdec decodes cleanly to raw SHA-256 ec021532bcb679d371412925825a9c883856fb5f09315b5d22f78ec957e4980b; validates clean; currently fails in splot decode (decode/resource-limit max_frame_width 4096)."
+description = "AVM-encoded 1-frame 8320x64 8-bit 4:2:0 single-tile intra stream at seq_level_idx = 31 (reproducing dav2d MR !1028 level31-wide-frame.obu). avmdec decodes cleanly to raw SHA-256 ec021532bcb679d371412925825a9c883856fb5f09315b5d22f78ec957e4980b; validates clean."
 expect = "clean"
