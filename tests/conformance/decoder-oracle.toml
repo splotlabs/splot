@@ -2641,3 +2641,21 @@ id = "syn-tip-extrapolate-norefinemv-10bit-256x192-q160"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.tip", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "f524c2fbed1d8497520adf9be149bc230a757347574dc18d2802e31114def26e"
 avm_raw_sha256 = "bf36216fd4a36d6a0eff8b0d0e380e18690b8f979dcdd8da61d12c70c3f06bbf"
+
+[[fixture]]
+id = "syn-2frame-mfh-inter-64x64-q160"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "obu.frame_header", "obu.multi_frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "6bf6543e0cd05636a0b79791e9b2afa1f4e2c22c302be792c102650ccfbd738c"
+avm_raw_sha256 = "7fbe72df8cec847216fe4098e46374f505ae3b0a8bafacf6c610f25d89d8e76a"
+
+[[fixture]]
+id = "syn-2frame-lcr-inter-64x64-q160"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "f82df1555efc72a310cec96438024bd94764f8fb90aa9f4707eb077be561e95b"
+avm_raw_sha256 = "7fbe72df8cec847216fe4098e46374f505ae3b0a8bafacf6c610f25d89d8e76a"
+
+[[fixture]]
+id = "syn-level31-wide-intra-8320x64-q200"
+features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "01f429d0b3e7f0606f17c14aa445d47e6f8e878578056429b36840e477918ba8"
+avm_raw_sha256 = "ec021532bcb679d371412925825a9c883856fb5f09315b5d22f78ec957e4980b"

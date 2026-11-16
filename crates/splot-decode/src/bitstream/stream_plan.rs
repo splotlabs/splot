@@ -1000,11 +1000,14 @@ fn classify_obu(
         | ObuType::RegularTip
         | ObuType::BridgeFrame
         | ObuType::RasFrame => Ok(DecodePlannedObuRole::InterFrameCandidate),
-        ObuType::OperatingPointSet if header.extended_layer_id == GLOBAL_XLAYER_ID => {
+        ObuType::OperatingPointSet | ObuType::LayerConfigurationRecord
+            if header.extended_layer_id == GLOBAL_XLAYER_ID =>
+        {
             Ok(DecodePlannedObuRole::Global)
         }
         ObuType::SequenceHeader
         | ObuType::OperatingPointSet
+        | ObuType::LayerConfigurationRecord
         | ObuType::MultiFrameHeader
         | ObuType::MetadataShort
         | ObuType::MetadataGroup
@@ -1012,7 +1015,7 @@ fn classify_obu(
         | ObuType::QuantizationMatrix
         | ObuType::FilmGrain
         | ObuType::ContentInterpretation => Ok(DecodePlannedObuRole::SelectedLayerState),
-        ObuType::Msdo | ObuType::LayerConfigurationRecord | ObuType::AtlasSegment => unsupported(
+        ObuType::Msdo | ObuType::AtlasSegment => unsupported(
             DecodeUnsupportedReason::MultistreamSelection,
             envelope,
             "7.1",
