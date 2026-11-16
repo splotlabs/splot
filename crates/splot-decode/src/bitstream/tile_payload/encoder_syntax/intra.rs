@@ -950,7 +950,7 @@ impl IntraTileSyntax {
             .with_use_dip(modes.dip.is_some().into())
             .with_palette_y(palette)
             .with_uv(block_modes.uv_bits());
-        publish_intra_leaf_state(
+        publish_intra_leaf_state::<!>(
             &self.frame,
             &leaf.call,
             &leaf.frontier,

@@ -328,25 +328,27 @@ fn recode<S: PartitionSearch>(
     if !coder.in_frame(node) {
         return Ok(RdCost::default());
     }
-    let (rate, mut cost) = match tree {
+    let partition = match tree {
         PartitionTree::Sdp { luma, chroma } => {
             let Some((luma_root, chroma_root)) = coder.sdp_roots(node) else {
                 return Ok(RdCost::default());
             };
             return Ok(recode(coder, luma_root, luma)? + recode(coder, chroma_root, chroma)?);
         }
-        PartitionTree::Leaf(choice) => (
-            coder.partition_rate(node, Partition::None)?,
-            coder.code_leaf(node, *choice)?,
-        ),
+        PartitionTree::Leaf(_) => Partition::None,
+        PartitionTree::Split { kind, .. } => *kind,
+    };
+    let rate = coder.partition_rate(node, partition)?;
+    let mut cost = match tree {
         PartitionTree::Split { kind, children } => {
-            let rate = coder.partition_rate(node, *kind)?;
             let mut cost = RdCost::default();
             for (child, tree) in coder.children(node, *kind)?.into_iter().zip(children) {
                 cost = cost + recode(coder, child, tree)?;
             }
-            (rate, cost)
+            cost
         }
+        PartitionTree::Leaf(choice) => coder.code_leaf(node, *choice)?,
+        PartitionTree::Sdp { .. } => RdCost::default(),
     };
     cost.rate += rate;
     Ok(cost)

@@ -320,17 +320,6 @@ impl<E> From<TilePartitionTraversalError> for WalkError<E> {
     }
 }
 
-impl GeneralIntraTreeWalkError {
-    #[cold]
-    #[inline(never)]
-    fn into_walk_error<E>(self) -> WalkError<E> {
-        Box::new(match self {
-            Self::Traversal(error) => GeneralIntraTreeWalkError::Traversal(error),
-            Self::MiSize(error) => GeneralIntraTreeWalkError::MiSize(error),
-        })
-    }
-}
-
 /// The § 5.20.3.1 `decode_partition` call `call`: its partition, then its
 /// children in syntax order or its leaf block. `ACTIVE` is whether the
 /// superblock's § 5.20.2.1 `bru_mode` is `BRU_ACTIVE`, a constant so that an
@@ -447,7 +436,7 @@ where
         &mut walker.intra_facts,
         hooks.mi_size_state,
     )
-    .map_err(GeneralIntraTreeWalkError::into_walk_error)?;
+    .map_err(Box::new)?;
     (hooks.on_published)(decoded_leaf, command);
     Ok(())
 }

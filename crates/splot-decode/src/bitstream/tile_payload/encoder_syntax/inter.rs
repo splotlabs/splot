@@ -1464,7 +1464,7 @@ impl IntraTileSyntax {
         leaf: &LeafBlock,
         mode: GeneralIntraLeafMode,
     ) -> Result<()> {
-        super::super::partition_traversal::publish_intra_leaf_state(
+        super::super::partition_traversal::publish_intra_leaf_state::<!>(
             &self.frame,
             &leaf.call,
             &leaf.frontier,

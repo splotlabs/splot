@@ -123,7 +123,7 @@ impl DecodedLeafPublication {
     reason = "measured: one call per decoded leaf"
 )]
 #[inline(always)]
-pub(crate) fn publish_intra_leaf_state(
+pub(crate) fn publish_intra_leaf_state<E>(
     frame: &TilePartitionFrameFacts,
     call: &TilePartitionCall,
     frontier: &DecodeBlockFrontier,
@@ -131,7 +131,7 @@ pub(crate) fn publish_intra_leaf_state(
     sub_size: BlockSize,
     intra_facts: &mut TileIntraFactsState,
     mi_size_state: &mut TileMiSizeState,
-) -> Result<(), GeneralIntraTreeWalkError> {
+) -> Result<(), GeneralIntraTreeWalkError<E>> {
     let tree_type = frontier.tree_type();
     if tree_type != PartitionTreeType::ChromaPart {
         let facts = match leaf_mode.luma {
