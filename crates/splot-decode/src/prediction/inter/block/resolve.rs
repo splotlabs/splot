@@ -92,7 +92,7 @@ pub(super) fn pending_intrabc_leaf(
     slots: &mut Vec<LeafSlot>,
     pending: PendingIntrabcBlock,
 ) -> EntryState {
-    push_slot(slots, LeafSlot::Intrabc(Box::new(pending)))
+    push_slot(slots, LeafSlot::Intrabc(pending))
 }
 
 /// Replays one parse unit's queued § 7.12 work in leaf order.
@@ -140,7 +140,7 @@ pub(super) fn resolve_parsed_leaves(
                     return Err(invalid_inter_tile_scheduling_state());
                 };
                 *slot = LeafSlot::Command(ReconCommand::Intrabc(resolve_pending_intrabc(
-                    *block,
+                    block,
                     state,
                     intrabc_sb_h4,
                 )?));

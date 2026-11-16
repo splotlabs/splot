@@ -3,9 +3,10 @@
 
 #![allow(clippy::unwrap_used)]
 
-use super::super::{OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
+use super::super::{FilledWindow, OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
 use super::*;
 use crate::filters::source::DeblockedWindow;
+use crate::filters::source::StripeInitialization::CopyAll;
 use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
 use crate::pipeline::frame_progress::{FrameProgress, FrontierRows};
 use splot_recon::{BitDepth, CurrentFrameWorkspace};
@@ -102,12 +103,17 @@ fn cdef_only_builds_cdef_grid_without_retaining_lr_grid() {
     let mut sink =
         WienerNsLrReconSink::for_final_filtering(workspace, 16, 16, splot_recon::BitDepth::Eight);
     sink.filter_records.tx_skip_records = skip_grid_records(true, 0);
+    sink.filter_records.cdef_skip_grid_values = Vec::with_capacity(16);
+    let retained = sink.filter_records.cdef_skip_grid_values.as_ptr();
 
     assert!(!sink.needs_lr_tx_skip_grid(&core));
+    let grid = sink.cdef_skip_grid(&core, 4, 4).unwrap().unwrap();
     assert_eq!(
-        sink.cdef_skip_grid(&core, 4, 4).unwrap(),
-        Some(crate::filters::cdef::CdefSkipGrid::new(4, 4, vec![true; 16]).unwrap())
+        grid,
+        crate::filters::cdef::CdefSkipGrid::new(4, 4, vec![1; 16]).unwrap()
     );
+    let values = grid.into_values();
+    assert_eq!(values.as_ptr(), retained);
     assert!(sink.tx_skip_grid.is_none());
 }
 
@@ -174,8 +180,8 @@ fn progress_of<T: splot_recon::ReconSample>(
 /// Copies every stripe's window out of the frame `setup` filters, in order.
 fn stripe_windows<T: splot_recon::ReconSample>(
     setup: &OwnedFilterSetup<T>,
-) -> Vec<Option<DeblockedWindow<T>>> {
-    let mut rows = setup.sink.progress.frontier_rows().unwrap();
+) -> Vec<Option<FilledWindow<T>>> {
+    let mut rows = setup.progress.frontier_rows().unwrap();
     assert!(rows.publish_final_rows(setup.luma_height));
     let mut carry = DeblockedWindow::default();
     (0..setup.stripe_ranges().len())
@@ -226,7 +232,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         (1, 1),
         &mut crate::filters::deblock::DeblockGridStorage::default(),
     )
-    .unwrap()
     .unwrap();
     deblock
         .advance_source(&mut source, 8, BitDepth::Eight)
@@ -1574,8 +1579,8 @@ fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
             .unwrap();
     }
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let band = StripePlane::copy_from(cdef_source, 0, 4).unwrap();
-    let overlap = [StripePlane::copy_from(cdef_source, 4, 8).unwrap()];
+    let band = StripePlane::copy_from_into(cdef_source, 0, 4, None, CopyAll).unwrap();
+    let overlap = [StripePlane::copy_from_into(cdef_source, 4, 8, None, CopyAll).unwrap()];
     let mut storage = Vec::new();
 
     assert!(
@@ -1638,7 +1643,7 @@ fn lr_source_rows_match_the_materialized_window() {
     }
     let curr = FramePlane::new(&curr_workspace, PlaneId::Y).unwrap();
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let band = StripePlane::copy_from(cdef_source, 2, 14).unwrap();
+    let band = StripePlane::copy_from_into(cdef_source, 2, 14, None, CopyAll).unwrap();
     for (block_x, block_y) in [(0, 4), (6, 6), (11, 8), (5, 4)] {
         let (mut window_storage, mut row_storage) = (Vec::new(), Vec::new());
         let window = LrSourceWindow::materialize(
@@ -1696,8 +1701,8 @@ fn lr_source_window_reuses_storage_after_an_error() {
             .unwrap();
     }
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let cdef = StripePlane::copy_from(cdef_source, 0, 8).unwrap();
-    let short_cdef = StripePlane::copy_from(cdef_source, 0, 1).unwrap();
+    let cdef = StripePlane::copy_from_into(cdef_source, 0, 8, None, CopyAll).unwrap();
+    let short_cdef = StripePlane::copy_from_into(cdef_source, 0, 1, None, CopyAll).unwrap();
     let mut storage = Vec::new();
 
     let window = LrSourceWindow::materialize(
@@ -1821,6 +1826,28 @@ fn stripe_traversal_streams_ranges_and_stops_after_error() {
     assert!(invalid.next().unwrap().is_err());
     assert!(invalid.next().is_none());
     assert!(invalid.next().is_none());
+}
+
+fn lr_plane_fully_overwritten(
+    blocks: &[WienerNsLrSourceBlock],
+    plane: PlaneId,
+    frame_type: FrameRestorationType,
+    width: usize,
+    frame_height: usize,
+    start_y: usize,
+    end_y: usize,
+) -> bool {
+    let rows = (start_y, end_y);
+    for_each_lr_gap(
+        blocks,
+        plane,
+        frame_type,
+        width,
+        frame_height,
+        rows,
+        |_, _| None,
+    )
+    .is_some()
 }
 
 fn luma_wiener_covers(

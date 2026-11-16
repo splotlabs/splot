@@ -131,7 +131,7 @@ pub use dequant_process::{
     dequantize_block, qm_weighted_quantizer, quantization_matrix_weight,
 };
 pub use error::{ReconError, Result};
-pub use film_grain::apply_film_grain;
+pub use film_grain::{apply_film_grain, apply_film_grain_into};
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
 pub use frame::{
     DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, RetiredFramePlanes,

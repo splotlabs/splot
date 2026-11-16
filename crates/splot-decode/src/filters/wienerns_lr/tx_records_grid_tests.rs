@@ -486,10 +486,8 @@ fn cdef_skip_grid_writes_final_bit_grid_for_mixed_records() {
         },
     ];
 
-    let actual = derive_cdef_skip_grid(2, 3, &records).unwrap();
-    let expected =
-        crate::filters::cdef::CdefSkipGrid::new(2, 3, vec![true, true, false, false, false, false])
-            .unwrap();
+    let actual = derive_cdef_skip_grid(2, 3, &records, Vec::new()).unwrap();
+    let expected = crate::filters::cdef::CdefSkipGrid::new(2, 3, vec![1, 1, 0, 0, 0, 0]).unwrap();
 
     assert_eq!(actual, expected);
 }
@@ -515,10 +513,8 @@ fn cdef_skip_grid_clamps_boundary_overhang_without_changing_predicate() {
         },
     ];
 
-    let actual = derive_cdef_skip_grid(3, 2, &records).unwrap();
-    let expected =
-        crate::filters::cdef::CdefSkipGrid::new(3, 2, vec![true, true, true, true, false, false])
-            .unwrap();
+    let actual = derive_cdef_skip_grid(3, 2, &records, Vec::new()).unwrap();
+    let expected = crate::filters::cdef::CdefSkipGrid::new(3, 2, vec![1, 1, 1, 1, 0, 0]).unwrap();
 
     assert_eq!(actual, expected);
 }
@@ -534,12 +530,12 @@ fn cdef_and_lr_keep_distinct_empty_transform_predicates() {
         eob: 0,
     }];
 
-    let cdef = derive_cdef_skip_grid(1, 2, &records).unwrap();
+    let cdef = derive_cdef_skip_grid(1, 2, &records, Vec::new()).unwrap();
     let lr = derive_wienerns_lr_tx_skip_grid_retention(1, 2, &records).unwrap();
 
     assert_eq!(
         cdef,
-        crate::filters::cdef::CdefSkipGrid::new(1, 2, vec![false, false]).unwrap()
+        crate::filters::cdef::CdefSkipGrid::new(1, 2, vec![0, 0]).unwrap()
     );
     for col in 0..2 {
         assert_eq!(
@@ -553,7 +549,7 @@ fn cdef_and_lr_keep_distinct_empty_transform_predicates() {
 #[test]
 fn cdef_skip_grid_rejects_conflicting_overlapping_records() {
     assert!(matches!(
-        derive_cdef_skip_grid(1, 2, &CONFLICTING_TX_SKIP_RECORDS).unwrap_err(),
+        derive_cdef_skip_grid(1, 2, &CONFLICTING_TX_SKIP_RECORDS, Vec::new()).unwrap_err(),
         ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip conflicting transform records"
         }

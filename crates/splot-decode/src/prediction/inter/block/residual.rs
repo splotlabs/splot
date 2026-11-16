@@ -323,97 +323,18 @@ fn read_inter_residual_luma_chunk(
     let (mi_rows, mi_cols) = frame_mi;
     let chunk_end_x4 = luma_chunk_end(frontier.c + block_n4w, luma_chunk_x4, mi_cols);
     let chunk_end_y4 = luma_chunk_end(frontier.r + block_n4h, luma_chunk_y4, mi_rows);
-    if let Some(luma_tx_records) = luma_tx_records {
-        return read_inter_residual_luma_records_for_chunk(
-            work_unit,
-            symbols,
-            coeff_ctx,
-            blocks,
-            arena,
-            luma_tx_types,
-            luma_tx_records,
-            luma_chunk_x4,
-            luma_chunk_y4,
-            chunk_end_x4,
-            chunk_end_y4,
-            block_n4w,
-            block_n4h,
-            residual_tool_policy,
-            tile_offset,
-        );
-    }
-    let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
-    let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
     let segment_lossless = current_segment_lossless(work_unit);
-    let mut y4 = luma_chunk_y4;
-    while y4 < chunk_end_y4 {
-        let mut x4 = luma_chunk_x4;
-        while x4 < chunk_end_x4 {
-            let tx_fills_block = tx_w4 == block_n4w && tx_h4 == block_n4h;
-            let coeffs = read_inter_residual_plane(
-                work_unit,
-                symbols,
-                coeff_ctx,
-                arena,
-                0,
-                tx_size,
-                x4 * MI_SIZE,
-                y4 * MI_SIZE,
-                tx_fills_block,
-                DCT_DCT,
-                false,
-                false,
-                residual_tool_policy,
-                segment_lossless,
-                tile_offset,
-            )?;
-            luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type())?;
-            push_inter_residual_block(blocks, ReconPlaneId::Y, x4, y4, tx_size, coeffs)?;
-            x4 = x4.checked_add(tx_w4).ok_or_else(residual_geometry_error)?;
-        }
-        y4 = y4.checked_add(tx_h4).ok_or_else(residual_geometry_error)?;
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn read_inter_residual_luma_records_for_chunk(
-    work_unit: &mut DecodeTileWorkUnit,
-    symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    blocks: &mut Vec<InterResidualBlock>,
-    arena: &mut Vec<i32>,
-    luma_tx_types: &mut InterLumaTxTypeMap,
-    luma_tx_records: &[SelectableLumaTxRecord],
-    luma_chunk_x4: usize,
-    luma_chunk_y4: usize,
-    chunk_end_x4: usize,
-    chunk_end_y4: usize,
-    block_n4w: usize,
-    block_n4h: usize,
-    residual_tool_policy: TransformToolResidualPolicy,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let mut decoded_any = false;
-    let segment_lossless = current_segment_lossless(work_unit);
-    for record in luma_tx_records.iter().copied().filter(|record| {
-        record.row >= luma_chunk_y4
-            && record.col >= luma_chunk_x4
-            && record.row < chunk_end_y4
-            && record.col < chunk_end_x4
-    }) {
-        decoded_any = true;
-        let tx_fills_block = record.cols == block_n4w && record.rows == block_n4h;
+    let mut read = |row: usize, col: usize, tx_size: usize, fills_block: bool| -> Result<()> {
         let coeffs = read_inter_residual_plane(
             work_unit,
             symbols,
             coeff_ctx,
             arena,
             0,
-            record.tx_size,
-            record.col * MI_SIZE,
-            record.row * MI_SIZE,
-            tx_fills_block,
+            tx_size,
+            col * MI_SIZE,
+            row * MI_SIZE,
+            fills_block,
             DCT_DCT,
             false,
             false,
@@ -421,26 +342,38 @@ fn read_inter_residual_luma_records_for_chunk(
             segment_lossless,
             tile_offset,
         )?;
-        luma_tx_types.update(
-            record.row,
-            record.col,
-            record.tx_size,
-            coeffs.plane_tx_type(),
-        )?;
-        push_inter_residual_block(
-            blocks,
-            ReconPlaneId::Y,
-            record.col,
-            record.row,
-            record.tx_size,
-            coeffs,
-        )?;
+        luma_tx_types.update(row, col, tx_size, coeffs.plane_tx_type())?;
+        push_inter_residual_block(blocks, ReconPlaneId::Y, col, row, tx_size, coeffs).map(drop)
+    };
+    if let Some(luma_tx_records) = luma_tx_records {
+        let mut decoded_any = false;
+        for record in luma_tx_records.iter().filter(|record| {
+            (luma_chunk_y4..chunk_end_y4).contains(&record.row)
+                && (luma_chunk_x4..chunk_end_x4).contains(&record.col)
+        }) {
+            decoded_any = true;
+            let fills_block = record.cols == block_n4w && record.rows == block_n4h;
+            read(record.row, record.col, record.tx_size, fills_block)?;
+        }
+        return if decoded_any {
+            Ok(())
+        } else {
+            Err(residual_geometry_error())
+        };
     }
-    if decoded_any {
-        Ok(())
-    } else {
-        Err(residual_geometry_error())
+    let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
+    let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
+    let tx_fills_block = tx_w4 == block_n4w && tx_h4 == block_n4h;
+    let mut y4 = luma_chunk_y4;
+    while y4 < chunk_end_y4 {
+        let mut x4 = luma_chunk_x4;
+        while x4 < chunk_end_x4 {
+            read(y4, x4, tx_size, tx_fills_block)?;
+            x4 = x4.checked_add(tx_w4).ok_or_else(residual_geometry_error)?;
+        }
+        y4 = y4.checked_add(tx_h4).ok_or_else(residual_geometry_error)?;
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

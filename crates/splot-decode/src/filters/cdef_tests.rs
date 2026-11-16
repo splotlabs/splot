@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::filters::source::DeblockedWindow;
+use crate::filters::source::StripeInitialization::CopyAll;
 use crate::test_support::yuv420_workspace as workspace_8bit;
 use splot_recon::{
     CDEF_DIRECTIONS, CdefSampleTaps, CdefTap, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex,
@@ -341,19 +342,19 @@ fn monochrome_cdef_filters_luma_without_chroma_planes() {
 
 #[test]
 fn skip_grid_leaves_all_skipped_8x8_unfiltered() {
-    let (before, after) = run_skip_grid_ripple(vec![true; 16 * 16]);
+    let (before, after) = run_skip_grid_ripple(vec![1; 16 * 16]);
     assert_eq!(before, after, "all-skipped CDEF block bypasses filtering");
 }
 
 #[test]
 fn skip_grid_filters_mixed_8x8() {
-    let mut skip_values = vec![true; 16 * 16];
-    skip_values[0] = false;
+    let mut skip_values = vec![1; 16 * 16];
+    skip_values[0] = 0;
     let (before, after) = run_skip_grid_ripple(skip_values);
     assert_ne!(before, after, "mixed CDEF block still filters");
 }
 
-fn run_skip_grid_ripple(skip_values: Vec<bool>) -> (Vec<u8>, Vec<u8>) {
+fn run_skip_grid_ripple(skip_values: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
     let mut ws = workspace_8bit(64, 64, 100);
     seed_luma_ripple(&mut ws);
     let before = luma_8x8(&ws);
@@ -509,7 +510,7 @@ fn assert_cdef_block_matches_per_sample_reference(
                 coeff_shift: 0,
             };
             let mut pad = [0u16; CDEF_PADDED_AREA];
-            let mut filtered = StripePlane::copy_from(snap, 0, 64).unwrap();
+            let mut filtered = StripePlane::copy_from_into(snap, 0, 64, None, CopyAll).unwrap();
             compute_cdef_filter_plane::<u8>(snap, &ctx, false, &filter, &mut pad, &mut filtered)
                 .unwrap();
             let offsets = CdefTapOffsets::for_direction(filter.dir);
@@ -816,10 +817,10 @@ fn stripe_identity_follows_strengths_and_skipped_blocks() {
     assert_eq!(identity(Some(&strengths), None, (0, 64)), [false, true]);
     assert_eq!(identity(Some(&strengths), None, (64, 128)), [true, false]);
     assert_eq!(identity(Some(&strengths), None, (0, 128)), [false; 2]);
-    let mut skipped = vec![true; 32 * 16];
+    let mut skipped = vec![1; 32 * 16];
     let all = CdefSkipGrid::new(32, 16, skipped.clone()).unwrap();
     assert_eq!(identity(Some(&strengths), Some(&all), (0, 128)), [true; 2]);
-    skipped[20 * 16 + 5] = false;
+    skipped[20 * 16 + 5] = 0;
     let one = CdefSkipGrid::new(32, 16, skipped).unwrap();
     assert_eq!(identity(Some(&strengths), Some(&one), (0, 64)), [true; 2]);
     assert_eq!(
@@ -989,7 +990,7 @@ fn run_reference_case<T: ReconSample>(case: &ReferenceCase<'_>, bit_depth: BitDe
     .unwrap();
     let skip = case.skip.map(|skip| {
         let values = (0..mi_rows * mi_cols)
-            .map(|cell| skip(cell / mi_cols, cell % mi_cols))
+            .map(|cell| u8::from(skip(cell / mi_cols, cell % mi_cols)))
             .collect();
         CdefSkipGrid::new(mi_rows, mi_cols, values).unwrap()
     });
@@ -1028,7 +1029,7 @@ fn run_reference_case<T: ReconSample>(case: &ReferenceCase<'_>, bit_depth: BitDe
         has_chroma: !case.format.is_monochrome(),
         coeff_shift,
         fill_flat: [true; 3],
-        units: cdef_units(case.strengths, coeff_shift, subsampling),
+        units: &cdef_units(case.strengths, coeff_shift, subsampling),
     };
     let want = reference_cdef(&ws, case, &lookup, coeff_shift);
     let input = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {

@@ -88,7 +88,7 @@ pub(crate) struct FilteredStripe<T: ReconSample> {
     pub(crate) v: Option<StripePlane<T>>,
 }
 
-pub(crate) struct LrStripeOutput<T> {
+pub(crate) struct LrStripeOutput<T: ReconSample> {
     pub(crate) active_planes: [bool; 3],
     pub(crate) initializations: [StripeInitialization; 3],
     pub(crate) target: crate::pipeline::frame_progress::DirectStripeTarget<T>,
@@ -131,7 +131,7 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
         let mut copy = |plane_id: PlaneId, plane: &mut StripePlane<T>| {
             let end_y = plane.end_y().ok_or(StripeCopyError::Geometry)?;
             let Some(target) = target.take(plane_id) else {
-                let cdef = plane.copy_rows_into_mode(
+                let cdef = plane.copy_rows_into(
                     plane.origin_y(),
                     end_y,
                     None,
@@ -139,7 +139,7 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
                 )?;
                 return Ok(core::mem::replace(plane, cdef));
             };
-            plane.copy_rows_into_mode(
+            plane.copy_rows_into(
                 plane.origin_y(),
                 end_y,
                 Some(target),
@@ -493,28 +493,6 @@ fn for_each_lr_gap(
     Some(())
 }
 
-pub(crate) fn lr_plane_fully_overwritten(
-    blocks: &[WienerNsLrSourceBlock],
-    plane: PlaneId,
-    frame_type: FrameRestorationType,
-    width: usize,
-    frame_height: usize,
-    start_y: usize,
-    end_y: usize,
-) -> bool {
-    let rows = (start_y, end_y);
-    for_each_lr_gap(
-        blocks,
-        plane,
-        frame_type,
-        width,
-        frame_height,
-        rows,
-        |_, _| None,
-    )
-    .is_some()
-}
-
 /// Copies from `cdef` into `post_lr` the samples that no block of `blocks`
 /// writes whole, so that they hold the CDEF output after loop restoration.
 fn copy_lr_gaps<T: ReconSample>(
@@ -542,40 +520,15 @@ fn copy_lr_gaps<T: ReconSample>(
     .ok_or_else(super::lr_pipeline_state_error)
 }
 
-pub(crate) fn lr_initializations<T>(
-    core: &FrameHeaderCore,
+pub(crate) fn lr_initializations<T: ReconSample>(
     active_planes: [bool; 3],
-    plane_blocks: [&[WienerNsLrSourceBlock]; 3],
     target: &crate::pipeline::frame_progress::DirectStripeTarget<T>,
 ) -> [StripeInitialization; 3] {
-    core::array::from_fn(|index| {
-        let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
-        let Some(target) = target.get(plane) else {
-            return StripeInitialization::CopyAll;
-        };
-        if !active_planes[index] {
-            return StripeInitialization::CopyAll;
-        }
-        let covered = target.end_y().is_some_and(|end_y| {
-            core.lr_params
-                .as_ref()
-                .and_then(|params| params.planes.get(index))
-                .is_some_and(|params| {
-                    lr_plane_fully_overwritten(
-                        plane_blocks[index],
-                        plane,
-                        params.restoration_type,
-                        target.width(),
-                        target.frame_height(),
-                        target.origin_y(),
-                        end_y,
-                    )
-                })
-        });
-        if covered {
-            StripeInitialization::FullyOverwritten
-        } else {
+    [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
+        if active_planes[plane.index()] && target.get(plane).is_some() {
             StripeInitialization::Partial
+        } else {
+            StripeInitialization::CopyAll
         }
     })
 }
@@ -1070,7 +1023,7 @@ fn mi_to_luma_end_recon(mi_end: usize, context: &'static str) -> ReconResult<usi
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     pub(crate) fn cdef_skip_grid(
-        &self,
+        &mut self,
         core: &FrameHeaderCore,
         mi_rows: usize,
         mi_cols: usize,
@@ -1085,6 +1038,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             mi_rows,
             mi_cols,
             &self.filter_records.tx_skip_records,
+            core::mem::take(&mut self.filter_records.cdef_skip_grid_values),
         )
         .map_err(|_| super::lr_pipeline_state_error())?;
         Ok(Some(skip_grid))
@@ -1092,21 +1046,29 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 }
 
 impl StripeChain<'_> {
-    pub(crate) fn active_lr_planes(
+    /// Each plane's blocks near the luma rows `luma_start..luma_end`, and
+    /// whether one of them reaches into those rows.
+    pub(crate) fn lr_stripe_blocks<'b>(
         &self,
-        luma_start: usize,
-        luma_end: usize,
-        plane_blocks: [&[WienerNsLrSourceBlock]; 3],
-    ) -> [bool; 3] {
+        (luma_start, luma_end): (usize, usize),
+        plane_blocks: [&'b [WienerNsLrSourceBlock]; 3],
+    ) -> ([&'b [WienerNsLrSourceBlock]; 3], [bool; 3]) {
         let sub_y = usize::from(self.pixel_format.subsampling_y());
-        core::array::from_fn(|plane| {
+        let rows = |plane: usize| {
             let shift = usize::from(plane != PlaneId::Y.index()) * sub_y;
-            let start = luma_start >> shift;
-            let end = luma_end.div_ceil(1 << shift);
-            plane_blocks[plane]
+            (luma_start >> shift, luma_end.div_ceil(1 << shift))
+        };
+        let blocks: [_; 3] = core::array::from_fn(|plane| {
+            let (start, end) = rows(plane);
+            lr_blocks_near_rows(plane_blocks[plane], start, end)
+        });
+        let active = core::array::from_fn(|plane| {
+            let (start, end) = rows(plane);
+            blocks[plane]
                 .iter()
                 .any(|block| lr_block_in_rows(block, start, end).is_some())
-        })
+        });
+        (blocks, active)
     }
 
     pub(crate) fn apply_lr_stripe<'a, T: ReconSample>(
