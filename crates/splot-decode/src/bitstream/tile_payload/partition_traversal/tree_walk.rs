@@ -536,7 +536,7 @@ impl TreeWalker<'_> {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum GeneralIntraTreeWalkError<E> {
+pub(crate) enum GeneralIntraTreeWalkError<E = !> {
     #[error("partition tree walk traversal failed: {0}")]
     Traversal(#[from] TilePartitionTraversalError),
     #[error("partition tree walk MI-size update failed: {0}")]
@@ -732,7 +732,7 @@ mod row_cursor_tests {
                     .decode_next_superblock_with_publication(
                         &mut work,
                         &mut states,
-                        &mut |_, _, _, _| Ok::<_, ()>((leaf_mode(), ())),
+                        &mut |_, _, _, _| Ok::<_, !>((leaf_mode(), ())),
                         &mut |_, ()| {},
                     )
                     .unwrap();
@@ -823,7 +823,7 @@ mod row_cursor_tests {
                             super::super::MrlSelection::Disabled,
                         )
                     };
-                    Ok::<_, ()>((leaf, ()))
+                    Ok::<_, !>((leaf, ()))
                 },
                 &mut |_, ()| published += 1,
             )
@@ -868,7 +868,7 @@ mod row_cursor_tests {
                     } else {
                         GeneralIntraLeafMode::no_luma_mode().mark_intrabc()
                     };
-                    Ok::<_, ()>((leaf, ()))
+                    Ok::<_, !>((leaf, ()))
                 },
                 &mut |_, ()| {},
             )

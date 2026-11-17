@@ -175,10 +175,8 @@ fn run_first_superblock<'payload>(
     work_unit: &mut DecodeTileWorkUnit,
     frame: TilePartitionFrameFacts,
     limits: DecodeLimits,
-) -> Result<
-    (Vec<CapturedLeaf>, GeneralIntraPartitionTreeOutput<'payload>),
-    GeneralIntraTreeWalkError<()>,
-> {
+) -> Result<(Vec<CapturedLeaf>, GeneralIntraPartitionTreeOutput<'payload>), GeneralIntraTreeWalkError>
+{
     let tile_rows = work_unit.mi_row_range().start as usize
         ..(work_unit.mi_row_range().end as usize).min(frame.mi_rows);
     let tile_cols = work_unit.mi_col_range().start as usize
@@ -221,9 +219,7 @@ fn run_first_superblock<'payload>(
     Ok((frontiers, cursor.into_output()))
 }
 
-fn expect_tree_error<T>(
-    result: Result<T, GeneralIntraTreeWalkError<()>>,
-) -> GeneralIntraTreeWalkError<()> {
+fn expect_tree_error<T>(result: Result<T, GeneralIntraTreeWalkError>) -> GeneralIntraTreeWalkError {
     assert!(result.is_err(), "expected partition tree error");
     result.err().unwrap()
 }

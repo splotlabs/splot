@@ -30,9 +30,7 @@ use super::super::cdf::{
 use super::super::general_intra_residual::{
     inter_chroma_plane_tx_type, luma_transform_records_for_partition,
 };
-use super::super::partition_traversal::{
-    DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
-};
+use super::super::partition_traversal::{DecodedLeafPublication, GeneralIntraLeafMode};
 use super::compound::InterPrediction;
 use super::{
     EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, Result, TileEnd, TransformBlock,
@@ -1466,7 +1464,7 @@ impl IntraTileSyntax {
         leaf: &LeafBlock,
         mode: GeneralIntraLeafMode,
     ) -> Result<()> {
-        super::super::partition_traversal::publish_intra_leaf_state::<core::convert::Infallible>(
+        super::super::partition_traversal::publish_intra_leaf_state::<!>(
             &self.frame,
             &leaf.call,
             &leaf.frontier,
@@ -1475,11 +1473,7 @@ impl IntraTileSyntax {
             &mut self.intra_facts,
             &mut self.mi_sizes,
         )
-        .map_err(|error| match error {
-            GeneralIntraTreeWalkError::Traversal(source) => rule("leaf publication")(source),
-            GeneralIntraTreeWalkError::MiSize(source) => rule("leaf publication")(source),
-            GeneralIntraTreeWalkError::Leaf(never) => match never {},
-        })?;
+        .map_err(rule("leaf publication"))?;
         DecodedLeafPublication::new(leaf.call, leaf.call.b_size, self.sb_size4 - 1)
             .publish_block_decoded(&mut self.recon.block_decoded)
             .map_err(rule("BlockDecoded update"))
