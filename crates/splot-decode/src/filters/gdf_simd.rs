@@ -75,7 +75,7 @@ type Window<'a> = [&'a [u16; 28]; WINDOW_ROWS];
 /// The most columns of one column tile of a run, whose source rows sit
 /// [`TILE_STRIDE`] apart: the tile's rows of a row pair window stay in L1, and
 /// every window row is a constant offset from the window's first sample.
-pub(super) const TILE_COLS: usize = 1024;
+pub(super) const TILE_COLS: usize = 256;
 pub(super) const TILE_STRIDE: usize = TILE_COLS + 32;
 const TILE_SPAN: usize = (WINDOW_ROWS - 1) * TILE_STRIDE + 28;
 const _: () =
