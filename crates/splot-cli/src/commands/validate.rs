@@ -29,7 +29,7 @@ pub(crate) struct ValidateArgs {
     #[arg(long, value_name = "N")]
     max_diagnostics: Option<usize>,
     /// Print only the summary counts and the conformance line (no per-diagnostic
-    /// lines). Exit code is unchanged. Distinct from the global `--quiet` (logging).
+    /// lines). Exit code is unchanged.
     #[arg(long)]
     summary_only: bool,
 }

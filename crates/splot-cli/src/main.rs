@@ -3,7 +3,7 @@
 
 //! `splot` — a thin command-line interface over the `splot-*` library crates.
 //!
-//! This binary only parses arguments, initializes logging, reads/writes files,
+//! This binary only parses arguments, reads/writes files,
 //! and calls into the libraries. All codec and validation logic lives in the
 //! library crates.
 
@@ -23,12 +23,6 @@ mod commands;
     after_help = "Licensed for noncommercial use only under PolyForm Noncommercial 1.0.0.\nCommercial use of ANY component (validator, inspector, encoder, CLI) requires a\nseparate written commercial license from Bartosz Tomczyk: bartekplus@gmail.com."
 )]
 struct Cli {
-    /// Increase logging verbosity (repeatable: -v, -vv, -vvv).
-    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
-    verbose: u8,
-    /// Silence all logging except errors.
-    #[arg(long, global = true)]
-    quiet: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -54,7 +48,6 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    commands::init_tracing(cli.verbose, cli.quiet);
 
     // The decode driver recurses through the partition walk; the main thread's
     // stack is platform-sized, so the command runs on a worker-sized one.
@@ -73,7 +66,6 @@ fn main() -> ExitCode {
     match result {
         Ok(code) => code,
         Err(error) => {
-            tracing::error!("{error:#}");
             eprintln!("error: {error:#}");
             ExitCode::from(2)
         }
