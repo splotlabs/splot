@@ -74,27 +74,12 @@ fn edge(origin: usize, first: usize) -> Option<usize> {
         .flatten()
 }
 
-/// Whether the painted records share one qindex: while they do, the
-/// per-cell `qindex` plane is left stale and readers take
-/// [`PlaneFacts::uniform_qindex`] instead.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum QUniform {
-    /// No record painted yet.
-    #[default]
-    Undecided,
-    /// Every record so far carried this qindex.
-    Uniform(u16),
-    /// Records disagree; the plane is painted per cell.
-    Mixed,
-}
-
 #[derive(Default)]
 pub(crate) struct PlaneFacts {
     pub(super) stride: usize,
     pub(super) keys: Vec<u16>,
     pub(super) info: Vec<u16>,
     pub(super) qindex: Vec<u16>,
-    uniform: QUniform,
 }
 
 impl PlaneFacts {
@@ -110,16 +95,7 @@ impl PlaneFacts {
             .ok_or(DeblockError::Workspace)?;
         resize(&mut self.keys, len, 0, plane)?;
         reset(&mut self.info, len, 0, plane)?;
-        self.uniform = QUniform::Undecided;
         resize(&mut self.qindex, len, 0, plane)
-    }
-
-    /// The one qindex of every painted record, when there is one.
-    pub(super) fn uniform_qindex(&self) -> Option<u16> {
-        match self.uniform {
-            QUniform::Uniform(qindex) => Some(qindex),
-            QUniform::Undecided | QUniform::Mixed => None,
-        }
     }
 
     /// The keys, info and `qindex` of the `len` cells from column `from` of
@@ -164,19 +140,6 @@ impl PlaneFacts {
             let [rows, cols] = block_cells(block, extent, sub);
             if rows.is_empty() || cols.is_empty() {
                 continue;
-            }
-            match self.uniform {
-                QUniform::Undecided => self.uniform = QUniform::Uniform(block.qindex),
-                QUniform::Uniform(q) if q == block.qindex => {}
-                QUniform::Uniform(q) => {
-                    // One record disagreed: backfill everything painted so
-                    // far with the uniform value and paint per cell from
-                    // here on. Records cover every cell, so unpainted cells
-                    // are overwritten by their own records later.
-                    self.qindex.fill(q);
-                    self.uniform = QUniform::Mixed;
-                }
-                QUniform::Mixed => {}
             }
             let [x, y] = origin(block.prediction, sub);
             let rect = Rect {
@@ -227,16 +190,13 @@ impl PlaneFacts {
             return;
         };
         let mut at = rect.at;
-        let mixed = self.uniform == QUniform::Mixed;
         for _ in 0..rect.rows {
             if at > last {
                 break;
             }
             keys[at..at + N].copy_from_slice(&[key; N]);
             infos[at..at + N].copy_from_slice(&row_info);
-            if mixed {
-                qindexes[at..at + N].copy_from_slice(&[qindex; N]);
-            }
+            qindexes[at..at + N].copy_from_slice(&[qindex; N]);
             at += self.stride;
         }
         if let Some(row) = edge_row.filter(|&row| row < rect.rows)
@@ -253,7 +213,6 @@ impl PlaneFacts {
     fn fill_rect_any(&mut self, rect: Rect, width: usize) {
         let [key, info, qindex] = rect.values;
         let [edge_col, edge_row] = rect.edges;
-        let mixed = self.uniform == QUniform::Mixed;
         let mut at = rect.at;
         for row in 0..rect.rows {
             let (Some(keys), Some(infos), Some(qindexes)) = (
@@ -266,9 +225,7 @@ impl PlaneFacts {
             fill_mi_run(keys, key);
             let edge = if Some(row) == edge_row { EDGE_H } else { 0 };
             fill_mi_run(infos, info | edge);
-            if mixed {
-                fill_mi_run(qindexes, qindex);
-            }
+            fill_mi_run(qindexes, qindex);
             if let Some(cell) = edge_col.and_then(|col| infos.get_mut(col)) {
                 *cell |= EDGE_V;
             }
