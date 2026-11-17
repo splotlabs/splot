@@ -38,7 +38,7 @@ impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
 impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
     type Node = Rect;
     type Saved = Vec<Rect>;
-    type Error = !;
+    type Error = crate::tile_writer::TileWriterError;
 
     fn in_frame(&self, (x, y, ..): Rect) -> bool {
         x < self.size && y < self.size
@@ -177,8 +177,12 @@ fn leaves<F: Fn(Rect) -> RdCost>(
     match tree {
         PartitionTree::Leaf(_) => out.push(node),
         PartitionTree::Split { kind, children } => {
-            let Ok(split) = coder.children(node, *kind);
-            for (child, tree) in split.into_iter().zip(children) {
+            for (child, tree) in coder
+                .children(node, *kind)
+                .unwrap()
+                .into_iter()
+                .zip(children)
+            {
                 leaves(coder, child, tree, out);
             }
         }
@@ -209,8 +213,9 @@ fn optimum_in<F: Fn(Rect) -> RdCost>(
         }
         .cost(lambda)
     };
-    let Ok(partitions) = coder.partitions(node);
-    partitions
+    coder
+        .partitions(node)
+        .unwrap()
         .into_iter()
         .filter(|&partition| extended || !is_extended(partition))
         .map(|partition| {
@@ -218,8 +223,9 @@ fn optimum_in<F: Fn(Rect) -> RdCost>(
                 + if partition == Partition::None {
                     (coder.leaf_cost)(node).cost(lambda)
                 } else {
-                    let Ok(children) = coder.children(node, partition);
-                    children
+                    coder
+                        .children(node, partition)
+                        .unwrap()
                         .into_iter()
                         .map(|child| {
                             optimum_in(coder, child, lambda, extended && !is_extended(partition))
@@ -254,7 +260,7 @@ fn finds_a_known_optimum_tree_and_leaves_its_state() {
         rate: Bits::whole(10),
     });
     let root = (0, 0, 5, 5);
-    let Ok((tree, cost)) = search_partition(&mut coder, root, &full_search(), unit_lambda());
+    let (tree, cost) = search_partition(&mut coder, root, &full_search(), unit_lambda()).unwrap();
     let mut found = Vec::new();
     leaves(&coder, root, &tree, &mut found);
     let mut expected = target.to_vec();
@@ -277,7 +283,7 @@ fn frame_edge_children_are_not_coded() {
         rate: Bits::whole(1),
     });
     let root = (0, 0, 5, 5);
-    let Ok((tree, _)) = search_partition(&mut coder, root, &full_search(), unit_lambda());
+    let (tree, _) = search_partition(&mut coder, root, &full_search(), unit_lambda()).unwrap();
     let mut found = Vec::new();
     leaves(&coder, root, &tree, &mut found);
     assert_eq!(coder.coded, found);
@@ -301,7 +307,7 @@ fn block_limits_bound_the_searched_sizes() {
         ..full_search()
     };
     let mut coder = Synthetic::new(32, flat);
-    let Ok((tree, _)) = search_partition(&mut coder, (0, 0, 5, 5), &preset, unit_lambda());
+    let (tree, _) = search_partition(&mut coder, (0, 0, 5, 5), &preset, unit_lambda()).unwrap();
     let mut found = Vec::new();
     leaves(&coder, (0, 0, 5, 5), &tree, &mut found);
     assert!(found.iter().all(|&(.., w, h)| w.max(h) <= 3));
@@ -315,7 +321,7 @@ fn block_limits_bound_the_searched_sizes() {
         ..full_search()
     };
     let mut coder = Synthetic::new(32, busy);
-    let Ok((tree, _)) = search_partition(&mut coder, (0, 0, 5, 5), &preset, unit_lambda());
+    let (tree, _) = search_partition(&mut coder, (0, 0, 5, 5), &preset, unit_lambda()).unwrap();
     let mut found = Vec::new();
     leaves(&coder, (0, 0, 5, 5), &tree, &mut found);
     assert!(found.iter().all(|&(.., w, h)| w.min(h) >= 4));
@@ -330,13 +336,13 @@ fn early_exit_skips_rectangles_when_unsplit_is_close() {
     };
     let mut exhaustive = Synthetic::new(32, near_flat);
     let root = (0, 0, 5, 5);
-    let Ok((_, full)) = search_partition(&mut exhaustive, root, &full_search(), unit_lambda());
+    let (_, full) = search_partition(&mut exhaustive, root, &full_search(), unit_lambda()).unwrap();
     let preset = PresetParams {
         partition_early_exit: crate::preset::Levels::all(true),
         ..full_search()
     };
     let mut fast = Synthetic::new(32, near_flat);
-    let Ok((tree, cost)) = search_partition(&mut fast, root, &preset, unit_lambda());
+    let (tree, cost) = search_partition(&mut fast, root, &preset, unit_lambda()).unwrap();
     assert!(fast.leaf_evaluations < exhaustive.leaf_evaluations);
     assert!(cost.cost(unit_lambda()) >= full.cost(unit_lambda()));
     let mut found = Vec::new();
@@ -358,7 +364,7 @@ proptest! {
         };
         let mut coder = Synthetic::new(size, cost);
         let root = (0, 0, 5, 5);
-        let Ok((tree, found)) = search_partition(&mut coder, root, &full_search(), unit_lambda());
+        let (tree, found) = search_partition(&mut coder, root, &full_search(), unit_lambda()).unwrap();
         prop_assert_eq!(found.cost(unit_lambda()), optimum(&coder, root, unit_lambda()));
         let mut coded = Vec::new();
         leaves(&coder, root, &tree, &mut coded);
@@ -386,7 +392,7 @@ fn extended_margins_gate_the_three_and_four_way_trials() {
     };
     let root = (0, 0, 5, 5);
     let mut open = Synthetic::new(32, bands);
-    let Ok((tree, cost)) = search_partition(&mut open, root, &full_search(), unit_lambda());
+    let (tree, cost) = search_partition(&mut open, root, &full_search(), unit_lambda()).unwrap();
     assert!(
         matches!(
             tree,
@@ -407,7 +413,7 @@ fn extended_margins_gate_the_three_and_four_way_trials() {
         ..full_search()
     };
     let mut gated = Synthetic::new(32, bands);
-    let Ok((tree, _)) = search_partition(&mut gated, root, &closed, unit_lambda());
+    let (tree, _) = search_partition(&mut gated, root, &closed, unit_lambda()).unwrap();
     assert!(
         !matches!(
             tree,
@@ -436,7 +442,7 @@ fn early_exit_leaves_extended_shapes_to_the_margins() {
     };
     let mut coder = Synthetic::new(32, flat);
     let root = (0, 0, 5, 5);
-    let Ok((tree, _)) = search_partition(&mut coder, root, &preset, unit_lambda());
+    let (tree, _) = search_partition(&mut coder, root, &preset, unit_lambda()).unwrap();
     assert!(matches!(tree, PartitionTree::Leaf(_)));
     assert!(
         coder.evaluated.contains_key(&(0, 8, 4, 4)),
@@ -470,13 +476,14 @@ fn levels_limit_the_searched_blocks() {
     let evaluate = |window: Option<u8>| {
         let mut coder = Synthetic::new(32, cost);
         let levels = window.map(levels);
-        let Ok(_) = search_guided(
+        search_guided(
             &mut coder,
             root,
             &full_search(),
             unit_lambda(),
             levels.as_ref(),
-        );
+        )
+        .unwrap();
         let mut sizes: Vec<u32> = coder.evaluated.keys().map(|&(_, _, w, h)| w + h).collect();
         sizes.sort_unstable();
         sizes.dedup();
@@ -561,13 +568,14 @@ fn a_forced_partition_outside_the_window_still_codes() {
         window: 0,
     };
     let mut coder = Synthetic::new(24, cost);
-    let Ok((tree, _)) = search_guided(
+    let (tree, _) = search_guided(
         &mut coder,
         (0, 0, 5, 5),
         &full_search(),
         unit_lambda(),
         Some(&levels),
-    );
+    )
+    .unwrap();
     assert!(
         matches!(
             tree,
