@@ -20700,7 +20700,7 @@ module = "crates/splot-cli/src/commands/decode.rs"
 change_id = "decode-hash-output-cli-contract"
 owner = "cli"
 risk = "medium"
-notes = "--output-format hash emits deterministic decoded-frame hashes; null settles requested frames without hashing or serialization. Neither requires an output file. -o alone selects Y4M; raw and Y4M require a path. All modes use the supported decoder runtime."
+notes = "--output-format hash emits deterministic decoded-frame hashes; null decodes requested frames, film grain included, without hashing or serialization. Neither requires an output file. -o alone selects Y4M; raw and Y4M require a path. All modes use the supported decoder runtime."
 
 [feature.status]
 mapped = "done"
