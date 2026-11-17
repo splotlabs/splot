@@ -508,6 +508,7 @@ impl PassEdges {
         let span = cols.saturating_sub(offset).div_ceil(GROUP) * GROUP;
         baseline_simd!(simd => {
             let lane = u16x16::from_slice(simd, &LANE_INDEX);
+            let uniform = facts.uniform_qindex();
             for row_index in 0..rows {
                 let cell_row = self.first_row + row_index;
                 let r = first + row_index * plane_pass.row_step;
@@ -568,7 +569,10 @@ impl PassEdges {
                     let side = |[keys, info, qindex]: [&[u16]; 3]| Side {
                         keys: u16x16::from_slice(simd, &keys[lanes.clone()]),
                         info: u16x16::from_slice(simd, &info[lanes.clone()]),
-                        qindex: u16x16::from_slice(simd, &qindex[lanes.clone()]),
+                        qindex: match uniform {
+                            Some(q) => u16x16::splat(simd, q),
+                            None => u16x16::from_slice(simd, &qindex[lanes.clone()]),
+                        },
                     };
                     let sides = (side(curr), side(prev));
                     if let Some((above_curr, above_prev)) = above {
