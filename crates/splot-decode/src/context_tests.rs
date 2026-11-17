@@ -33,6 +33,11 @@ fn discard_output_decodes_supported_fixture() {
 
     ctx.decode_discard_bytes(MINIMAL_FIXTURE, DecodeOptions::default())
         .unwrap();
+    ctx.decode_discard_bytes(
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf"),
+        DecodeOptions::default(),
+    )
+    .unwrap();
 }
 
 #[test]
