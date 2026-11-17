@@ -87,7 +87,7 @@ pub(crate) fn run_bd_rate(root: &Path, options: &BdRateOptions) -> Result<()> {
             }
             let bytes = std::fs::metadata(&ivf)?.len();
             let decoded = Command::new(&splot)
-                .args(["decode", "--quiet", "--output-format", "raw", "-o", "-"])
+                .args(["decode", "--output-format", "raw", "-o", "-"])
                 .arg(&ivf)
                 .output()
                 .context("spawn splot decode")?;
@@ -123,7 +123,6 @@ fn encode_args(
             args.extend(
                 [
                     "encode",
-                    "--quiet",
                     "--threads",
                     "1",
                     "--limit",

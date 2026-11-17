@@ -93,10 +93,6 @@ Plane storage is `PlaneBuf`: the first sample is 64-byte aligned and the row
 stride (`plane_stride`) is a multiple of 64 bytes, so hosts can wrap decoded
 planes without a copy.
 
-`zerocopy` is allowed only for private fixed-layout wire views, such as IVF
-headers. It is not the media-buffer ownership model and must not parse AV2
-bit-level, entropy, or variable-length syntax.
-
 Gate: `cargo xtask check-zero-copy-policy`.
 
 ## Unsafe and Errors

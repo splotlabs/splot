@@ -46,7 +46,6 @@ as a deliberate legal/licensing event.
 | AVM reference software | Differential oracle for AV2 behavior | AOMedia repository notices | Test/compare behavior. Do not copy code/tables without review. |
 | rav1e | Rust AV1 encoder architecture reference | `https://github.com/xiph/rav1e/blob/master/LICENSE` and `PATENTS` | Read, link, summarize, learn Rust/RDO/API patterns. |
 | SVT-AV1 | Production AV1 encoder architecture reference | `https://gitlab.com/AOMediaCodec/SVT-AV1/-/raw/master/LICENSE.md` and `PATENTS.md` | Read, link, summarize, learn pipeline/ME/RC/filter/search architecture. |
-| zerocopy | Approved tool dependency for private fixed-layout byte/wire view structs (e.g. IVF container headers) | crates.io; `BSD-2-Clause OR Apache-2.0 OR MIT` (permissive; allowed by `deny.toml`) | Use only in `splot-core`/`splot-recon`, via the workspace dep, for fixed-layout wire views — never in public APIs or AV2 bit-level/entropy parsing. In use via the `splot-core` IVF container header (see §12 and [ARCHITECTURE.md](../ARCHITECTURE.md)). |
 
 ---
 
@@ -283,37 +282,10 @@ authorised by the maintainer.
 
 ---
 
-## 12. Approved tool dependency: `zerocopy` (fixed-layout wire views)
-
-`zerocopy` is a maintainer-approved, permissive crate dependency for **private
-fixed-layout byte/wire view structs** — for example the IVF container header. It
-is **not** the media-buffer ownership model (that is `splot-recon`'s view/share
-types plus `cargo xtask check-zero-copy-policy`; see
-[ARCHITECTURE.md](../ARCHITECTURE.md)) and it is a normal permissive Cargo dependency,
-not vendored or relicensed material.
+## 12. Approved tool dependency: `fearless_simd`
 
 - **Material:** the `fearless_simd` crate from crates.io (workspace dependency
   `fearless_simd = "1.2"`), used for portable SIMD vectors and token-gated
   `core::arch` intrinsics without `unsafe` in splot code.
 - **License:** `Apache-2.0 OR MIT` (permissive; on `deny.toml`'s allow list). Not
   vendored or relicensed.
-
-- **Material:** the `zerocopy` crate from crates.io, used via the workspace
-  dependency shape `zerocopy = { version = "0.8", default-features = false,
-  features = ["derive"] }`.
-- **License:** `BSD-2-Clause OR Apache-2.0 OR MIT` (permissive; on `deny.toml`'s
-  allow list). Not relicensed; governed like the other permissive Cargo
-  dependencies (`thiserror`, `clap`, `serde`, `sha2`, …).
-- **Allowed locations:** a direct dependency only of `splot-core` (and
-  `splot-recon` with a documented raw-sample view). Never
-  `splot-decode`/`splot-encode`/`splot-validate`/`splot-cli`/`splot-parallel`.
-  Enforced by `cargo xtask check-zero-copy-policy`.
-- **Allowed use:** private `#[repr(C)]`/`#[repr(C, packed)]` wire structs,
-  byteorder-aware wrappers, the layout derives, and borrowed `ref_from_*` views
-  converted immediately into validated domain types. **Never** in public APIs, and
-  **never** for AV2 bit-level/LEB128/entropy/variable-length syntax.
-- **Status:** in use. It is wired through the private `IvfFileHeaderWire` in
-  `crates/splot-core/src/ivf.rs` (borrowed via `ref_from_prefix`, validated into
-  the public `IvfHeader`, preserving existing behavior). The governing rule still
-  holds — it is added only for a real fixed-layout use site and never unused. See
-  the implementation matrix row `INFRA-ZERO-COPY-MEDIA-POLICY`.

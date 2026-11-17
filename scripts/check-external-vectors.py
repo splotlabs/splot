@@ -94,7 +94,7 @@ def check(corpus, root, splot, thread_override=None, fetch=None):
             for width in threads:
                 output.unlink(missing_ok=True)
                 subprocess.run(
-                    [str(splot), "decode", "--quiet", f"--threads={width}",
+                    [str(splot), "decode", f"--threads={width}",
                      "--output-format=raw", f"--output={output}", source],
                     check=True,
                     timeout=600,
