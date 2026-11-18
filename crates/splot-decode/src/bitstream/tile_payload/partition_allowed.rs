@@ -308,32 +308,35 @@ impl PartitionDecisionMemo {
             input.b_size,
             input.tree_type,
             flags,
-            [rows_left, cols_left],
+            Some([rows_left, cols_left]),
             || Ok(input),
         )
     }
 
     /// The facts of a `b_size` block of `tree_type` whose `flags` bits 0..4
-    /// are `chromaOffset`, `HasChroma`, intra region and has parent,
-    /// `[rows, cols]` 4x4 units from the bottom / right frame edge, deriving
-    /// them from `input` on a miss, so a hit never builds the input.
+    /// are `chromaOffset`, `HasChroma`, intra region and has parent.
+    /// Calls wholly inside the frame need no distances from its edges.
     #[inline]
     pub(crate) fn facts_at<E: From<PartitionAllowedError>>(
         &mut self,
         b_size: BlockSize,
         tree_type: PartitionTreeType,
         flags: usize,
-        [rows, cols]: [usize; 2],
+        edge_distance: Option<[usize; 2]>,
         input: impl FnOnce() -> Result<PartitionAllowedInput, E>,
     ) -> Result<PartitionDecisionFacts, E> {
         let slot = b_size.index() << 6 | (tree_type as usize) << 4 | flags & 15;
-        let [high, wide] = b_size.num_4x4();
-        let entry = if rows >= high && cols >= wide {
-            self.slots.get_mut(slot & (MEMO_SLOTS - 1))
-        } else if rows == 0 || cols == 0 {
-            None
+        let entry = if let Some([rows, cols]) = edge_distance
+            && let [high, wide] = b_size.num_4x4()
+            && (rows < high || cols < wide)
+        {
+            if rows == 0 || cols == 0 {
+                None
+            } else {
+                self.edge_slot((slot | rows.min(high) << 11 | cols.min(wide) << 18) as u32)
+            }
         } else {
-            self.edge_slot((slot | rows.min(high) << 11 | cols.min(wide) << 18) as u32)
+            self.slots.get_mut(slot & (MEMO_SLOTS - 1))
         };
         match entry {
             Some(entry) if *entry != 0 => Ok(PartitionDecisionFacts(*entry)),
