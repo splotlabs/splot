@@ -432,6 +432,7 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
     let frame_is_switch = core.frame_type == Some(FrameType::Switch);
 
     let params = tile::TileWalkParams {
+        filter_record_needs: crate::filters::wienerns_lr::FilterRecordNeeds::from_frame(core),
         limits: options.limits(),
         mi_rows,
         mi_cols,
@@ -1548,6 +1549,7 @@ fn decode_block(
                 work_unit,
                 symbols,
                 coeff_ctx,
+                filter_record_needs: filter_records.needs,
                 deblock_blocks: &mut filter_records.deblock_blocks,
                 chroma_deblock_blocks: &mut filter_records.chroma_deblock_blocks,
                 tx_skip_records: &mut filter_records.tx_skip_records,

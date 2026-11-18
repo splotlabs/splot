@@ -1472,22 +1472,12 @@ impl StripeChain<'_> {
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     fn needs_lr_tx_skip_grid(&self, core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
-        core.lr_params.as_ref().is_some_and(|lr| {
-            lr.planes.get(PlaneId::Y.index()).is_some_and(|plane| {
-                matches!(
-                    plane.restoration_type,
-                    splot_core::headers::frame::FrameRestorationType::PcWiener
-                        | splot_core::headers::frame::FrameRestorationType::Switchable
-                ) || (plane.restoration_type
-                    == splot_core::headers::frame::FrameRestorationType::WienerNonsep
-                    && plane.frame_filters_on
-                    && plane.num_filter_classes.unwrap_or(1) > 1)
-            })
-        }) && self
-            .filter_records
-            .lr_source_blocks
-            .iter()
-            .any(|block| block.plane == PlaneId::Y.index())
+        super::lr_uses_tx_skip(core)
+            && self
+                .filter_records
+                .lr_source_blocks
+                .iter()
+                .any(|block| block.plane == PlaneId::Y.index())
     }
 
     fn ensure_tx_skip_grid(&mut self, mi_rows: usize, mi_cols: usize) -> Result<()> {

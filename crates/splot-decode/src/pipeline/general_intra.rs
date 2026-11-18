@@ -157,6 +157,7 @@ pub(crate) struct GeneralIntraLeafParse<'a, 'p> {
     pub(crate) work_unit: &'a mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
     pub(crate) symbols: &'a mut SymbolDecoder<'p>,
     pub(crate) coeff_ctx: &'a mut crate::bitstream::tile_payload::TileCoeffContextState,
+    pub(crate) filter_record_needs: crate::filters::wienerns_lr::FilterRecordNeeds,
     pub(crate) deblock_blocks: &'a mut Vec<crate::filters::deblock::DeblockBlock>,
     pub(crate) chroma_deblock_blocks: &'a mut crate::filters::deblock::ChromaDeblockRecords,
     pub(crate) tx_skip_records:
@@ -653,6 +654,7 @@ fn parse_general_intra_residual_plan(
 ) -> Result<GeneralIntraReconCommand> {
     let block = facts.block_ctx.block();
     let mut deblock = crate::residual::pipeline::DeblockRecorder {
+        needs: leaf.filter_record_needs,
         blocks: leaf.deblock_blocks,
         chroma_blocks: leaf.chroma_deblock_blocks,
         tx_skip_records: leaf.tx_skip_records,

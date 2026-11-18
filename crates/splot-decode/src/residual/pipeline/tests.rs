@@ -126,6 +126,7 @@ fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
     let mut chroma_blocks = crate::filters::deblock::ChromaDeblockRecords::default();
     let mut tx_skip_records = Vec::new();
     let mut recorder = DeblockRecorder {
+        needs: crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
         blocks: &mut blocks,
         chroma_blocks: &mut chroma_blocks,
         tx_skip_records: &mut tx_skip_records,
@@ -967,6 +968,7 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
     let mut chroma_blocks = Vec::new();
     let mut tx_skip_records = Vec::new();
     let mut deblock = DeblockRecorder {
+        needs: crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
         blocks: &mut deblock_blocks,
         chroma_blocks: &mut chroma_blocks,
         tx_skip_records: &mut tx_skip_records,

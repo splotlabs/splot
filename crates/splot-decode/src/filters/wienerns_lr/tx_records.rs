@@ -40,6 +40,20 @@ pub(crate) struct WienerNsLrTxSkipTransformRecord {
 }
 
 impl WienerNsLrTxSkipTransformRecord {
+    pub(crate) const fn skipped_block(
+        frontier: &DecodeBlockFrontier,
+        (cols, rows): (usize, usize),
+    ) -> Self {
+        Self {
+            row: frontier.r as u16,
+            col: frontier.c as u16,
+            rows: rows as u8,
+            cols: cols as u8,
+            skip_flag: true,
+            empty: true,
+        }
+    }
+
     pub(crate) const fn from_luma(
         block: &crate::filters::deblock::DeblockBlock,
         eob: usize,

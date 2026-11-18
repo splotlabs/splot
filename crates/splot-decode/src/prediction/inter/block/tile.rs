@@ -94,6 +94,7 @@ fn append_lr_records(
 
 #[derive(Default)]
 pub(super) struct TileFilterRecords {
+    pub(super) needs: crate::filters::wienerns_lr::FilterRecordNeeds,
     pub(super) deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,
     pub(super) chroma_deblock_blocks: crate::filters::deblock::ChromaDeblockRecords,
     pub(super) tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
@@ -106,6 +107,7 @@ pub(super) struct TileFilterRecords {
 /// that runs after the driver moved on can rebuild its tile context.
 #[derive(Clone)]
 pub(crate) struct TileWalkParams {
+    pub(super) filter_record_needs: crate::filters::wienerns_lr::FilterRecordNeeds,
     pub(super) limits: crate::DecodeLimits,
     pub(super) mi_rows: usize,
     pub(super) mi_cols: usize,
@@ -466,6 +468,7 @@ impl<'payload> TileParser<'payload> {
         }
         self.parser_ordinal = self.parser_ordinal.saturating_add(1);
         recon_row.residual_planes.frame = self.frame;
+        recon_row.filter_records.needs = context.params.filter_record_needs;
         let span = if row_units {
             WalkSpan::Row
         } else {

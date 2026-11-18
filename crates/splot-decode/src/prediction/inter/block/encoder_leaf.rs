@@ -1118,6 +1118,7 @@ impl EncoderInterTile {
             deblock,
             chroma,
             tx_skip,
+            crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
             frontier,
             (n4w, n4h),
             self.chroma,

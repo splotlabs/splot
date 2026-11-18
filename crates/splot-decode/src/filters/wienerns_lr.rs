@@ -27,6 +27,79 @@ pub(crate) fn recon_final_filter_sink<T: splot_recon::ReconSample>(
 }
 pub(crate) use self::tx_records::WienerNsLrTxSkipTransformRecord;
 
+#[derive(Clone, Copy)]
+pub(crate) struct FilterRecordNeeds {
+    pub(crate) deblock: bool,
+    pub(crate) tx_skip: bool,
+}
+
+impl FilterRecordNeeds {
+    pub(crate) const ALL: Self = Self {
+        deblock: true,
+        tx_skip: true,
+    };
+
+    pub(crate) fn from_frame(core: &splot_core::headers::frame::FrameHeaderCore) -> Self {
+        Self {
+            deblock: core
+                .deblocking_filter_params
+                .as_ref()
+                .is_some_and(|filter| filter.apply_deblocking_filter != [false; 4])
+                || core
+                    .lossless_info
+                    .as_ref()
+                    .is_some_and(|info| info.has_lossless_segment),
+            tx_skip: cdef_uses_tx_skip(core) || lr_uses_tx_skip(core),
+        }
+    }
+
+    pub(crate) const fn any(self) -> bool {
+        self.deblock || self.tx_skip
+    }
+
+    pub(crate) fn record_luma(
+        self,
+        blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
+        skips: &mut Vec<WienerNsLrTxSkipTransformRecord>,
+        block: crate::filters::deblock::DeblockBlock,
+        eob: usize,
+    ) {
+        if self.tx_skip {
+            skips.push(WienerNsLrTxSkipTransformRecord::from_luma(&block, eob));
+        }
+        if self.deblock {
+            blocks.push(block);
+        }
+    }
+}
+
+impl Default for FilterRecordNeeds {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
+fn cdef_uses_tx_skip(core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
+    core.cdef_params
+        .as_ref()
+        .is_some_and(|cdef| cdef.cdef_on_skip_txfm_frame_enable == Some(false))
+}
+
+fn lr_uses_tx_skip(core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
+    use splot_core::headers::frame::FrameRestorationType;
+    core.lr_params
+        .as_ref()
+        .and_then(|lr| lr.planes.first())
+        .is_some_and(|plane| {
+            matches!(
+                plane.restoration_type,
+                FrameRestorationType::PcWiener | FrameRestorationType::Switchable
+            ) || (plane.restoration_type == FrameRestorationType::WienerNonsep
+                && plane.frame_filters_on
+                && plane.num_filter_classes.unwrap_or(1) > 1)
+        })
+}
+
 #[derive(Default)]
 pub(crate) struct FrameFilterRecords {
     pub(crate) deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,

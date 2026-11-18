@@ -9,6 +9,7 @@ use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
 use super::tile::TileFilterRecords;
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
 use crate::support::decode_buffers::fit_list;
 
 /// One inter leaf's deblock and tx-skip geometry, which the parse queues and
@@ -44,6 +45,17 @@ impl TileFilterRecords {
         qindex: u32,
         lossless: bool,
     ) {
+        if !self.needs.any() {
+            return;
+        }
+        if !self.needs.deblock && residual.is_none() {
+            self.tx_skip_records
+                .push(WienerNsLrTxSkipTransformRecord::skipped_block(
+                    frontier,
+                    (n4w, n4h),
+                ));
+            return;
+        }
         let marks = self.marks();
         self.inter_leaves.push(InterDeblockLeaf {
             frontier: *frontier,
@@ -89,6 +101,7 @@ impl TileFilterRecords {
                 deblock_blocks,
                 chroma_deblock_blocks,
                 tx_skip_records,
+                self.needs,
                 &leaf.frontier,
                 (
                     usize::from(leaf.block_size4.0),
@@ -162,6 +175,7 @@ pub(crate) fn record_inter_deblock_geometry(
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    needs: crate::filters::wienerns_lr::FilterRecordNeeds,
     frontier: &DecodeBlockFrontier,
     block_size4: (usize, usize),
     chroma_format: ChromaFormatIdc,
@@ -189,7 +203,7 @@ pub(crate) fn record_inter_deblock_geometry(
     let inherited_chroma = chroma_ref.row() != frontier.r
         || chroma_ref.col() != frontier.c
         || chroma_ref.size() != frontier.b_size;
-    let inherited_chroma_metadata = frontier.has_chroma && inherited_chroma;
+    let inherited_chroma_metadata = needs.deblock && frontier.has_chroma && inherited_chroma;
     if inherited_chroma_metadata {
         let chroma_plane_size = get_plane_residual_size(chroma_ref.size(), 1, sub_x, sub_y)
             .map_err(|_| super::residual::residual_geometry_error())?
@@ -219,6 +233,15 @@ pub(crate) fn record_inter_deblock_geometry(
         chroma_deblock_blocks.push(block);
     }
     let Some(residual) = residual else {
+        if needs.tx_skip {
+            tx_skip_records.push(WienerNsLrTxSkipTransformRecord::skipped_block(
+                frontier,
+                block_size4,
+            ));
+        }
+        if !needs.deblock {
+            return Ok(());
+        }
         let tx_size =
             super::residual::fixed_inter_residual_tx_size(frontier.b_size.index(), lossless)?;
         let tx_w4 = super::residual::tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
@@ -237,11 +260,6 @@ pub(crate) fn record_inter_deblock_geometry(
                     prediction: luma_prediction,
                     sub_pu_size,
                 };
-                tx_skip_records.push(
-                    crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord::from_luma(
-                        &luma, 0,
-                    ),
-                );
                 deblock_blocks.push(luma);
             }
         }
@@ -282,16 +300,9 @@ pub(crate) fn record_inter_deblock_geometry(
                     prediction: luma_prediction,
                     sub_pu_size,
                 };
-                tx_skip_records.push(
-                    crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord::from_luma(
-                        &luma,
-                        block.coeffs.eob(),
-                    ),
-                );
-                deblock_blocks.push(luma);
+                needs.record_luma(deblock_blocks, tx_skip_records, luma, block.coeffs.eob());
             }
-            ReconPlaneId::V => {}
-            ReconPlaneId::U => {
+            ReconPlaneId::U if needs.deblock => {
                 if let Some(mut record) =
                     crate::filters::wienerns_lr::chroma_transform_deblock_block(
                         block.x as usize,
@@ -308,6 +319,7 @@ pub(crate) fn record_inter_deblock_geometry(
                     chroma_deblock_blocks.push(record);
                 }
             }
+            ReconPlaneId::V | ReconPlaneId::U => {}
         }
     }
     Ok(())
@@ -413,10 +425,12 @@ mod tests {
                 let mut luma_records = Vec::new();
                 let mut chroma_records = crate::filters::deblock::ChromaDeblockRecords::new();
                 for (r, lossless) in [(row - 4, above), (row, below)] {
+                    let mut skips = Vec::new();
                     record_inter_deblock_geometry(
                         &mut luma_records,
                         &mut chroma_records,
-                        &mut Vec::new(),
+                        &mut skips,
+                        crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
                         &DecodeBlockFrontier::shared_leaf(r, 0, size),
                         (4, 4),
                         ChromaFormatIdc::Yuv420,
@@ -427,6 +441,13 @@ mod tests {
                         lossless,
                     )
                     .unwrap();
+                    assert_eq!(skips.len(), 1);
+                    let skip = skips[0];
+                    assert_eq!(
+                        (usize::from(skip.row), skip.col, skip.rows, skip.cols),
+                        (r, 0, 4, 4)
+                    );
+                    assert!(skip.skip_flag && skip.empty);
                 }
                 let size_at = |records: &[crate::filters::deblock::DeblockBlock], r: usize| {
                     let record = records
@@ -494,6 +515,7 @@ mod tests {
                     &mut expected.deblock_blocks,
                     &mut expected.chroma_deblock_blocks,
                     &mut expected.tx_skip_records,
+                    crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
                     leaf,
                     (2, 2),
                     chroma,

@@ -4,6 +4,7 @@
 //! Deblock metadata recording for residual reconstruction.
 
 pub(crate) struct DeblockRecorder<'a> {
+    pub(crate) needs: crate::filters::wienerns_lr::FilterRecordNeeds,
     pub(crate) blocks: &'a mut Vec<crate::filters::deblock::DeblockBlock>,
     pub(crate) chroma_blocks: &'a mut crate::filters::deblock::ChromaDeblockRecords,
     pub(crate) tx_skip_records:
@@ -27,7 +28,7 @@ impl DeblockRecorder<'_> {
         y: usize,
         tx_size: usize,
     ) {
-        if plane_id != splot_recon::PlaneId::U {
+        if !self.needs.deblock || plane_id != splot_recon::PlaneId::U {
             return;
         }
         if let Some(record) = crate::filters::wienerns_lr::chroma_transform_deblock_block(
@@ -52,6 +53,9 @@ impl DeblockRecorder<'_> {
         luma_tx: usize,
         eob: usize,
     ) {
+        if !self.needs.any() {
+            return;
+        }
         let luma = crate::filters::deblock::DeblockBlock {
             r: r as u16,
             c: c as u16,
@@ -68,9 +72,7 @@ impl DeblockRecorder<'_> {
             ),
             sub_pu_size: None,
         };
-        self.tx_skip_records.push(
-            crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord::from_luma(&luma, eob),
-        );
-        self.blocks.push(luma);
+        self.needs
+            .record_luma(self.blocks, self.tx_skip_records, luma, eob);
     }
 }
