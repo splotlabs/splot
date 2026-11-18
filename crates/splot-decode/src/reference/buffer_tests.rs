@@ -535,17 +535,15 @@ fn a_held_snapshot_keeps_its_frame_filter_taps_across_a_refresh() {
     let mut update = inter_update();
     update.lr_banks[0] = Some(&banks[0]);
     buf.update(1, &update, false);
-    let frames = || {
-        (0..4)
-            .map(|_| Some(pipeline_frame(64, 64)))
-            .collect::<Vec<_>>()
-            .into()
-    };
-    let held = buf.state::<u8>(&frames()).unwrap();
+    let frames = (0..=4)
+        .map(|_| Some(pipeline_frame(64, 64)))
+        .collect::<Vec<_>>()
+        .into();
+    let held = buf.state::<u8>(&frames).unwrap();
 
     update.lr_banks[0] = Some(&banks[1]);
     buf.update(2, &update, false);
-    let fresh = buf.state::<u8>(&frames()).unwrap();
+    let fresh = buf.state::<u8>(&frames).unwrap();
 
     let taps = |meta: &InterReferenceState<u8>, slot: usize| {
         meta.lr_frame_filter_taps.as_ref().unwrap()[slot]
@@ -557,14 +555,14 @@ fn a_held_snapshot_keeps_its_frame_filter_taps_across_a_refresh() {
     drop(held);
     update.lr_banks[0] = Some(&banks[2]);
     buf.update(3, &update, false);
-    let reused = buf.state::<u8>(&frames()).unwrap();
+    let reused = buf.state::<u8>(&frames).unwrap();
     assert_eq!(taps(&fresh, 1)[0][0], coeffs(9));
     assert_eq!(taps(&reused, 1)[0][0], coeffs(7));
     assert_eq!(buf.lr_frame_filter_spares.len(), 1);
 
     update.lr_banks[0] = None;
     buf.update(4, &update, false);
-    let cleared = buf.state::<u8>(&frames()).unwrap();
+    let cleared = buf.state::<u8>(&frames).unwrap();
     assert!(taps(&cleared, 1)[0].is_empty());
     assert_eq!(taps(&reused, 1)[0][0], coeffs(7));
 }
