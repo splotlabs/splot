@@ -466,6 +466,9 @@ fn filter_run_tiles<T: ReconSample>(
     post_lr_luma: &mut StripePlane<T>,
     scratch: &mut GdfScratch,
 ) -> Result<()> {
+    const SIMD_ALIGN: usize = 32;
+    const ALIGN_PADDING: usize = SIMD_ALIGN / size_of::<u16>() - 1;
+    const _: () = assert!((simd::TILE_STRIDE * size_of::<u16>()).is_multiple_of(SIMD_ALIGN));
     let tile = |index: usize| GdfBlock {
         x: run.x + index * simd::TILE_COLS,
         width: simd::TILE_COLS.min(run.width - index * simd::TILE_COLS),
@@ -478,7 +481,16 @@ fn filter_run_tiles<T: ReconSample>(
         .ok_or_else(gdf_state_error)?;
     let ahead = usize::from(separate_cdef_luma.is_none());
     let buffers = (1 + ahead).min(tiles);
-    grow_scratch(&mut scratch.source, buffers * area)?;
+    grow_scratch(&mut scratch.source, buffers * area + ALIGN_PADDING)?;
+    let offset = scratch
+        .source
+        .as_ptr()
+        .wrapping_add(TAP_REACH)
+        .align_offset(SIMD_ALIGN);
+    let source = scratch
+        .source
+        .get_mut(offset..)
+        .ok_or_else(gdf_state_error)?;
     let grads = 2 * ClassScratch::chunks(simd::TILE_COLS.min(run.width) >> 1);
     grow_scratch(&mut scratch.class_scratch.grads, grads)?;
     let errors = 2 * ClassScratch::error_row(simd::TILE_COLS.min(run.width));
@@ -490,16 +502,10 @@ fn filter_run_tiles<T: ReconSample>(
         for staged in first..=(index + ahead).min(tiles - 1) {
             let cdef_luma = separate_cdef_luma.unwrap_or(&*post_lr_luma);
             let rows = stripe_rows(deblocked_luma, cdef_luma, cdef_overlap);
-            let samples = scratch
-                .source
-                .get_mut(buffer(staged))
-                .ok_or_else(gdf_state_error)?;
+            let samples = source.get_mut(buffer(staged)).ok_or_else(gdf_state_error)?;
             fill_tile::<T, T>(samples, layout(staged), bounds, run, rows)?;
         }
-        let samples = scratch
-            .source
-            .get(buffer(index))
-            .ok_or_else(gdf_state_error)?;
+        let samples = source.get(buffer(index)).ok_or_else(gdf_state_error)?;
         let tile = tile(index);
         let scratch = &mut scratch.class_scratch;
         let output = post_lr_luma.samples_mut();

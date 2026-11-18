@@ -315,7 +315,7 @@ impl GdfSymParams {
             bias,
             scale,
             #[cfg(target_arch = "x86_64")]
-            slot: inlane::SlotParams::new(block),
+            slot: inlane::SlotParams::new(block, scale),
             keeps_flat: round2_signed_i32(i32::from(flat_error) * block.pix_scale, rounding) == 0,
         }
     }

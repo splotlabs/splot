@@ -15,26 +15,42 @@ use super::{
 };
 
 /// The class-0 clip bounds and weights of one GDF table for [`InLane`].
+#[repr(C, align(32))]
 pub(super) struct SlotParams {
     /// Each tap's clip bounds `[-alpha, alpha]` plus [`ABOVE_OFFSET`], then
     /// plus [`BELOW_OFFSET`], as whole vectors that the clamps read from memory.
     bounds: [[[u16; 16]; 4]; GDF_COORDS.len()],
+    /// The weights of each `SYM_PAIRS` entry in alternating lanes.
+    pair_weights: [[i16; 16]; SYM_PAIRS.len()],
     /// The widest `tap_range` at which every comb skips the clips: the
     /// smallest clip bound, at most [`LINEAR_RANGE`].
     linear_bound: u16,
-    /// The weights of each `SYM_PAIRS` entry in alternating lanes.
-    pair_weights: [[i16; 16]; SYM_PAIRS.len()],
     /// The bias less [`COMB_BIAS`] times the weights of each sum, which the
     /// biased combs add back.
     tap_bias: [i32; 3],
+    index_radix: i16,
+    index_radix_sq: i16,
+    index_offset: i16,
 }
 
+const _: () = {
+    use core::mem::{align_of, offset_of};
+    assert!(align_of::<GdfSymParams>() >= 32);
+    assert!(offset_of!(GdfSymParams, slot).is_multiple_of(32));
+    assert!(offset_of!(SlotParams, bounds).is_multiple_of(32));
+    assert!(offset_of!(SlotParams, pair_weights).is_multiple_of(32));
+};
+
 impl SlotParams {
-    pub(super) fn new(block: &GdfBlock) -> Self {
+    pub(super) fn new(block: &GdfBlock, scale: i16) -> Self {
         let alpha = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
         let table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
         let bias = GDF_BIAS[block.ref_dst_idx][block.qp_idx];
+        let radix = 2 * scale;
         Self {
+            index_radix: radix,
+            index_radix_sq: radix * radix,
+            index_offset: (scale * radix + scale) * radix + scale,
             bounds: core::array::from_fn(|k| {
                 let alpha = alpha[k][0];
                 [
@@ -257,21 +273,19 @@ kernel!(
 );
 
 kernel!(
-    /// The sums clamp to `[-32768, 0x7000]`: the pack saturates the lower
-    /// end, and past the positive cap every digit is `scale - 1`. `pmulhrsw`
-    /// then rounds `|v| * scale` by 15 bits; -32768 gives `-scale`.
+    /// Saturating the sums to i16 preserves every clipped, rounded digit.
     #[allow(clippy::inline_always)]
     #[inline(always)]
     fn packed_digits(t: Avx2, low: i32x8<Avx2>, high: i32x8<Avx2>, scale: i16) -> i16x16<Avx2> {
         use core::arch::x86_64::{
-            __m256i, _mm256_min_epi32, _mm256_mulhrs_epi16, _mm256_packs_epi32, _mm256_set1_epi16,
-            _mm256_set1_epi32, _mm256_sign_epi16,
+            _mm256_min_epi16, _mm256_mulhrs_epi16, _mm256_packs_epi32, _mm256_set1_epi16,
+            _mm256_sign_epi16,
         };
-        let clamp = |sums: __m256i| _mm256_min_epi32(sums, _mm256_set1_epi32(0x7000));
-        let value = _mm256_packs_epi32(clamp(low.into()), clamp(high.into()));
+        let value = _mm256_packs_epi32(low.into(), high.into());
         let signed_scale = _mm256_sign_epi16(_mm256_set1_epi16(scale), value);
         let magnitude = _mm256_mulhrs_epi16(signed_scale, value);
-        _mm256_sign_epi16(magnitude, value).simd_into(t)
+        let signed = _mm256_sign_epi16(magnitude, value);
+        _mm256_min_epi16(signed, _mm256_set1_epi16(scale - 1)).simd_into(t)
     }
 );
 
@@ -513,9 +527,8 @@ type Sums = [[i32x8<Avx2>; 2]; 3];
 fn error_index(simd: Avx2, sums: Sums, params: &GdfSymParams) -> [u16; 16] {
     let scale = params.scale;
     let [first, second, third] = sums.map(|[low, high]| packed_digits(simd, low, high, scale));
-    let radix = 2 * scale;
-    let offset = (scale * radix + scale) * radix + scale;
-    ((first * radix + second) * radix + third + offset)
+    let slot = &params.slot;
+    (first * slot.index_radix_sq + second * slot.index_radix + third + slot.index_offset)
         .bitcast::<u16x16<Avx2>>()
         .to_array()
 }
@@ -533,7 +546,7 @@ fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool, const SWAP_TRA
     simd: Avx2,
     window: &W,
     masks: &Masks<Avx2>,
-    init: &Sums,
+    gradient: &[i32x8<Avx2>; 2],
     params: &GdfSymParams,
 ) -> [u16; 16] {
     let center = samples(simd, window.row(TAP_REACH + ROW), TAP_REACH);
@@ -552,7 +565,12 @@ fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool, const SWAP_TRA
             }
         };
     }
-    let mut sums = *init;
+    let bias = &params.slot.tap_bias;
+    let mut sums = [
+        [i32x8::splat(simd, bias[0]); 2],
+        [i32x8::splat(simd, bias[1]); 2],
+        *gradient,
+    ];
     let mut add = |slot: usize, a: i16x16<Avx2>, b: i16x16<Avx2>| {
         accumulate(simd, &mut sums, (slot, unpack_pairs(simd, a, b)), params);
     };
@@ -617,33 +635,32 @@ fn slot_rows_with<W: WindowRows, R: RowSink>(
         sink.keep(simd);
         return;
     }
-    let bias = if flat {
-        &params.bias
-    } else {
-        &params.slot.tap_bias
-    };
-    let init = [
-        unpack_blocks(simd, i32x8::splat(simd, bias[0])),
-        unpack_blocks(simd, i32x8::splat(simd, bias[1])),
-        unpack_blocks(simd, (classes >> 2) + bias[2]),
-    ];
     if flat {
+        let bias = &params.bias;
+        let init = [
+            unpack_blocks(simd, i32x8::splat(simd, bias[0])),
+            unpack_blocks(simd, i32x8::splat(simd, bias[1])),
+            unpack_blocks(simd, (classes >> 2) + bias[2]),
+        ];
         let pos = error_index(simd, init, params);
         sink.row(simd, 0, &pos, block);
         sink.row(simd, 1, &pos, block);
         return;
     }
+    let gradient = unpack_blocks(simd, (classes >> 2) + params.slot.tap_bias[2]);
     let class = classes & 3;
     let class = (class | (class << 16)).bitcast::<u16x16<Avx2>>();
     let zero = u16x16::splat(simd, 0);
     let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
     macro_rules! rows {
         ($linear:literal, $swap_transpose:literal) => {{
-            let pos =
-                row_index::<W, 0, $linear, $swap_transpose>(simd, window, &masks, &init, params);
+            let pos = row_index::<W, 0, $linear, $swap_transpose>(
+                simd, window, &masks, &gradient, params,
+            );
             sink.row(simd, 0, &pos, block);
-            let pos =
-                row_index::<W, 1, $linear, $swap_transpose>(simd, window, &masks, &init, params);
+            let pos = row_index::<W, 1, $linear, $swap_transpose>(
+                simd, window, &masks, &gradient, params,
+            );
             sink.row(simd, 1, &pos, block);
         }};
     }
