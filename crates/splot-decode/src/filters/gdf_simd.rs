@@ -1184,7 +1184,7 @@ fn filter_run_with<S: Simd, P: RowPairs<S>, O: GdfSample>(
         O::add_residuals(simd, &bottom_errors[..full], bottom, block);
         if full != run {
             let classes = chunk_classes.last()?.map(GdfClass);
-            let rows = rows.each_ref().map(|row| row.as_slice());
+            let rows = rows.each_ref().map(<[u16; TILE_STRIDE]>::as_slice);
             sym_rows_narrow(
                 &rows,
                 full,
