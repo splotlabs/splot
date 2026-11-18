@@ -9,20 +9,6 @@ use core::{fmt, num::NonZeroU64};
 
 use splot_recon::Y4mFrameRate;
 
-const DEFAULT_MAX_OBUS: u64 = 16_384;
-const DEFAULT_MAX_IVF_FRAME_RECORDS: u64 = 4_096;
-const DEFAULT_MAX_FRAMES_TO_DECODE: u64 = 8_192;
-const DEFAULT_MAX_OUTPUT_FRAMES: u64 = 8_192;
-const DEFAULT_MAX_FRAME_WIDTH: u64 = 4_096;
-const DEFAULT_MAX_FRAME_HEIGHT: u64 = 4_096;
-const DEFAULT_MAX_LUMA_SAMPLES_PER_FRAME: u64 = DEFAULT_MAX_FRAME_WIDTH * DEFAULT_MAX_FRAME_HEIGHT;
-const DEFAULT_MAX_DECODED_FRAME_BYTES: u64 = 64 * 1024 * 1024;
-const DEFAULT_MAX_REFERENCE_SLOTS: u64 = 16;
-const DEFAULT_MAX_REFERENCE_STORE_BYTES: u64 = 256 * 1024 * 1024;
-const DEFAULT_MAX_TILE_COUNT: u64 = 4_096;
-const DEFAULT_MAX_TILE_PARTITION_STEPS: u64 = 1_048_576;
-const DEFAULT_MAX_TILE_PAYLOAD_BYTES: u64 = 16 * 1024 * 1024;
-const DEFAULT_MAX_LOOP_RESTORATION_SOURCE_READS: u64 = DEFAULT_MAX_TILE_PARTITION_STEPS * 16;
 const MAX_HOST_ALLOCATION_LEN: u64 = isize::MAX as u64;
 
 macro_rules! decode_limit_accessors {
@@ -54,7 +40,7 @@ pub struct DecodeOptions {
 }
 
 impl DecodeOptions {
-    /// Default decoder options with finite resource limits.
+    /// Default decoder options with unbounded resource limits.
     pub const DEFAULT: Self = Self {
         limits: DecodeLimits::DEFAULT,
         output_frame_limit: None,
@@ -132,26 +118,8 @@ pub struct DecodeLimits {
 }
 
 impl DecodeLimits {
-    /// Default finite resource policy for CI, fuzzing, and early decoder work.
-    pub const DEFAULT: Self = Self {
-        max_input_bytes: DecodeLimitThreshold::Unlimited,
-        max_obus: DecodeLimitThreshold::Max(DEFAULT_MAX_OBUS),
-        max_ivf_frame_records: DecodeLimitThreshold::Max(DEFAULT_MAX_IVF_FRAME_RECORDS),
-        max_frames_to_decode: DecodeLimitThreshold::Max(DEFAULT_MAX_FRAMES_TO_DECODE),
-        max_output_frames: DecodeLimitThreshold::Max(DEFAULT_MAX_OUTPUT_FRAMES),
-        max_frame_width: DecodeLimitThreshold::Max(DEFAULT_MAX_FRAME_WIDTH),
-        max_frame_height: DecodeLimitThreshold::Max(DEFAULT_MAX_FRAME_HEIGHT),
-        max_luma_samples_per_frame: DecodeLimitThreshold::Max(DEFAULT_MAX_LUMA_SAMPLES_PER_FRAME),
-        max_decoded_frame_bytes: DecodeLimitThreshold::Max(DEFAULT_MAX_DECODED_FRAME_BYTES),
-        max_reference_slots: DecodeLimitThreshold::Max(DEFAULT_MAX_REFERENCE_SLOTS),
-        max_reference_store_bytes: DecodeLimitThreshold::Max(DEFAULT_MAX_REFERENCE_STORE_BYTES),
-        max_tile_count: DecodeLimitThreshold::Max(DEFAULT_MAX_TILE_COUNT),
-        max_tile_partition_steps: DecodeLimitThreshold::Max(DEFAULT_MAX_TILE_PARTITION_STEPS),
-        max_tile_payload_bytes: DecodeLimitThreshold::Max(DEFAULT_MAX_TILE_PAYLOAD_BYTES),
-        max_loop_restoration_source_reads: DecodeLimitThreshold::Max(
-            DEFAULT_MAX_LOOP_RESTORATION_SOURCE_READS,
-        ),
-    };
+    /// Default unbounded resource policy (callers and fuzzers set explicit caps).
+    pub const DEFAULT: Self = Self::all(DecodeLimitThreshold::Unlimited);
 
     /// Returns an explicit policy with every limit set to zero.
     #[must_use]

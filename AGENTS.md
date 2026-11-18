@@ -61,7 +61,7 @@ trivial one-liners can rely on existing coverage.
 `splot` is a Rust AV2 toolkit. The first useful milestone is a safe AV2
 bitstream validator and inspector.
 
-Toolchain: stable Rust 1.99.1, edition 2024, resolver 3. Fuzzing uses nightly.
+Toolchain: stable Rust 1.100.0, edition 2024, resolver 3. Fuzzing uses nightly.
 
 ## Crate Boundaries
 

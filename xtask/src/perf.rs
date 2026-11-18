@@ -175,7 +175,6 @@ pub(crate) fn run_perf(root: &Path, options: &PerfOptions) -> Result<()> {
     for (name, file, frames) in STREAMS {
         let mut args: Vec<OsString> = [
             "decode",
-            "--quiet",
             "--threads",
             "1",
             "--frame-delay",

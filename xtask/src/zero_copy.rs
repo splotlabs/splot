@@ -10,10 +10,8 @@
 //! media-storage type, an unmarked sample copy (`.to_vec()` /
 //! `copy_from_slice` / `extend_from_slice` / `clone_from_slice` /
 //! `Vec::from(&…)`), a `.clone()` on a media-named binding, `Arc/Rc::make_mut`,
-//! an unmarked `read_from_bytes`, unaudited `unsafe` / `from_raw_parts`,
-//! `transmute`, an
-//! `include!` bypass — plus banned byte/transmute dependencies and a `zerocopy`
-//! dependency outside its approved crates. A flagged copy passes only with a
+//! unaudited `unsafe` / `from_raw_parts`, `transmute`, an `include!` bypass —
+//! plus banned byte/transmute dependencies. A flagged copy passes only with a
 //! nearby specific `splot-copy-ok: <reason>` marker. The policy and the
 //! deliberate scope of this gate are documented in
 //! [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
@@ -29,15 +27,10 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 
-/// Crates allowed to declare a direct `zerocopy` dependency: `splot-core` for
-/// fixed-layout container/wire headers and `splot-recon` only with a documented
-/// raw-sample view (see `docs/ARCHITECTURE.md`). Never the decoder/encoder/validator/
-/// CLI/parallel crates.
-const ZEROCOPY_APPROVED_CRATES: &[&str] = &["splot-core", "splot-recon"];
-
 /// Byte/transmute/zero-copy alternative crates that would bypass the splot view
-/// model or the single approved `zerocopy` wire surface. None may be added.
+/// model. None may be added.
 const BANNED_BYTE_CRATES: &[&str] = &[
+    "zerocopy",
     "bytes",
     "bytemuck",
     "safe-transmute",
@@ -124,21 +117,12 @@ const VAGUE_MARKER_REASONS: &[&str] = &["temporary", "fix", "needed", "convenien
 /// The `splot-copy-ok:` marker token.
 const MARKER_TOKEN: &str = "splot-copy-ok";
 
-/// One resolved direct dependency: its real crate name plus whether it is
-/// inherited from the workspace (`x.workspace = true`) rather than pinned locally.
-pub(crate) struct ZcDep {
-    /// Resolved real crate name (`package = "…"` renames resolved).
-    pub name: String,
-    /// `true` when the entry is `name.workspace = true` (workspace-inherited).
-    pub workspace_inherited: bool,
-}
-
 /// One workspace crate reduced to its name and resolved direct dependencies.
 pub(crate) struct ZcCrate {
     /// The crate's `[package].name`.
     pub name: String,
-    /// Direct dependencies (resolved names + workspace-inheritance).
-    pub deps: Vec<ZcDep>,
+    /// Resolved direct dependency names (`package = "…"` renames resolved).
+    pub deps: Vec<String>,
 }
 
 /// One scanned source line: display path (forward-slash normalized), 1-based line
@@ -181,17 +165,11 @@ fn is_media_crate_src(path: &str) -> bool {
     is_recon_src(path) || is_src_of(path, "splot-decode") || is_src_of(path, "splot-encode")
 }
 
-/// Crates scanned for `Clone`/`make_mut`/`unsafe`/`read_from_bytes` and the
+/// Crates scanned for `Clone`/`make_mut`/`unsafe` and the
 /// suspicious `.clone()` rule: the media crates plus `splot-core` (compressed
 /// payload/container code).
 fn is_clone_scan_src(path: &str) -> bool {
     is_media_crate_src(path) || is_src_of(path, "splot-core")
-}
-
-/// Crates where `zerocopy` may be used (`splot-core`/`splot-recon`), so wire-view
-/// types declared there are checked for the public-API ban.
-fn is_zerocopy_approved_src(path: &str) -> bool {
-    is_src_of(path, "splot-core") || is_src_of(path, "splot-recon")
 }
 
 /// Classifies the `splot-copy-ok` marker (if any) in `text`. The marker is only
@@ -278,17 +256,6 @@ fn collapse_space_before_parens(text: &str) -> String {
     out
 }
 
-/// `zerocopy` layout derives whose presence marks a type as a fixed-layout wire
-/// view. Such a type must stay private (never a public API).
-const ZEROCOPY_LAYOUT_DERIVES: &[&str] = &[
-    "FromBytes",
-    "TryFromBytes",
-    "IntoBytes",
-    "KnownLayout",
-    "Immutable",
-    "Unaligned",
-];
-
 /// Returns whether `block` (joined attribute text) contains a `derive(...)` listing
 /// any of the requested traits.
 fn derive_has(block: &str, traits: &[&str]) -> bool {
@@ -323,17 +290,6 @@ fn derive_has(block: &str, traits: &[&str]) -> bool {
         rest = after.get(end..).unwrap_or("");
     }
     false
-}
-
-/// Returns whether `text` declares a fully public type (`pub struct`/`enum`/`union`,
-/// not `pub(crate)`/`pub(super)`/private).
-fn is_fully_public_type_decl(text: &str) -> bool {
-    let trimmed = text.trim_start();
-    let Some(rest) = trimmed.strip_prefix("pub ") else {
-        return false;
-    };
-    let rest = rest.trim_start();
-    rest.starts_with("struct ") || rest.starts_with("enum ") || rest.starts_with("union ")
 }
 
 /// If `text` declares a type, returns its identifier.
@@ -414,23 +370,10 @@ pub(crate) fn evaluate_zero_copy_policy(
 
     for krate in crates {
         for dep in &krate.deps {
-            let approved = ZEROCOPY_APPROVED_CRATES.contains(&krate.name.as_str());
-            if dep.name == "zerocopy" && !approved {
+            if BANNED_BYTE_CRATES.contains(&dep.as_str()) {
                 violations.push(format!(
-                    "{}: `zerocopy` may only be a direct dependency of {} (private fixed-layout wire views only)",
-                    krate.name,
-                    ZEROCOPY_APPROVED_CRATES.join(" or ")
-                ));
-            } else if dep.name == "zerocopy" && !dep.workspace_inherited {
-                violations.push(format!(
-                    "{}: `zerocopy` must be inherited via the workspace dependency (`zerocopy.workspace = true`) with no local `features`/`default-features` override",
+                    "{}: banned byte/transmute crate `{dep}`; use splot views",
                     krate.name
-                ));
-            }
-            if BANNED_BYTE_CRATES.contains(&dep.name.as_str()) {
-                violations.push(format!(
-                    "{}: banned byte/transmute crate `{}`; use splot views or the approved `zerocopy` wire surface",
-                    krate.name, dep.name
                 ));
             }
         }
@@ -452,15 +395,6 @@ pub(crate) fn evaluate_zero_copy_policy(
             {
                 violations.push(format!(
                     "{where_at}: `Clone` derive on media-storage type `{name}`; remove it (borrow a view or share via `SharedFrame` instead)"
-                ));
-            }
-            if is_zerocopy_approved_src(&line.path)
-                && let Some(name) = declared_type_name(text)
-                && is_fully_public_type_decl(text)
-                && derive_has(&attribute_block_above(sources, i), ZEROCOPY_LAYOUT_DERIVES)
-            {
-                violations.push(format!(
-                    "{where_at}: public type `{name}` derives zerocopy layout traits; wire-view structs must be private (never a public API)"
                 ));
             }
             if let Some(name) = clone_impl_target(text)
@@ -502,14 +436,6 @@ pub(crate) fn evaluate_zero_copy_policy(
                 violations.push(format!(
                     "{where_at}: `from_raw_parts` is banned; build views from safe slices"
                 ));
-            }
-            if text.contains("read_from_bytes") {
-                check_marked_copy(
-                    sources,
-                    i,
-                    "`read_from_bytes` copy (prefer a `ref_from_*` borrow)",
-                    &mut violations,
-                );
             }
         }
 
@@ -639,72 +565,38 @@ fn collect_crate_deps(root: &Path) -> Result<Vec<ZcCrate>> {
     Ok(crates)
 }
 
-/// Resolved direct dependencies across the dependency tables (deduplicated), each
-/// tagged with whether it is workspace-inherited. A dependency is reported as
-/// workspace-inherited only if every occurrence is (so a single local pin is
-/// surfaced).
+/// Resolved direct dependency names across the dependency tables (deduplicated).
 fn direct_dependencies(
     manifest: &toml::Table,
     workspace_deps: &HashMap<String, String>,
-) -> Vec<ZcDep> {
-    let mut raw: Vec<(String, bool)> = Vec::new();
-    collect_dep_entries(manifest, workspace_deps, &mut raw);
+) -> Vec<String> {
+    let mut deps: Vec<String> = Vec::new();
+    collect_dep_entries(manifest, workspace_deps, &mut deps);
     if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
         for target in targets.values() {
             if let Some(table) = target.as_table() {
-                collect_dep_entries(table, workspace_deps, &mut raw);
+                collect_dep_entries(table, workspace_deps, &mut deps);
             }
         }
     }
-    raw.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut deps: Vec<ZcDep> = Vec::new();
-    for (name, workspace_inherited) in raw {
-        if let Some(last) = deps.last_mut()
-            && last.name == name
-        {
-            last.workspace_inherited = last.workspace_inherited && workspace_inherited;
-        } else {
-            deps.push(ZcDep {
-                name,
-                workspace_inherited,
-            });
-        }
-    }
+    deps.sort();
+    deps.dedup();
     deps
 }
 
-/// Appends `(resolved name, workspace_inherited)` for each entry in `parent`'s
-/// dependency tables.
+/// Appends the resolved name of each entry in `parent`'s dependency tables.
 fn collect_dep_entries(
     parent: &toml::Table,
     workspace_deps: &HashMap<String, String>,
-    out: &mut Vec<(String, bool)>,
+    out: &mut Vec<String>,
 ) {
     for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(table) = parent.get(table_name).and_then(toml::Value::as_table) {
             for (key, value) in table {
-                out.push((
-                    crate::resolved_dep_name(key, value, workspace_deps),
-                    is_workspace_inherited(value),
-                ));
+                out.push(crate::resolved_dep_name(key, value, workspace_deps));
             }
         }
     }
-}
-
-/// Returns whether a dependency entry is a *pure* workspace inheritance:
-/// `name.workspace = true` with no local surface override. Because Cargo features
-/// are additive, `{ workspace = true, features = [...] }` or a local
-/// `default-features` override would widen a centrally-pinned dependency, so those
-/// are not treated as pure inheritance.
-fn is_workspace_inherited(value: &toml::Value) -> bool {
-    let Some(table) = value.as_table() else {
-        return false;
-    };
-    if table.get("workspace").and_then(toml::Value::as_bool) != Some(true) {
-        return false;
-    }
-    !table.contains_key("features") && !table.contains_key("default-features")
 }
 
 /// Walks the scanned crate `src` trees and returns every line, sorted by
@@ -765,31 +657,10 @@ mod tests {
 
     use super::*;
 
-    /// Builds a crate whose deps are all workspace-inherited.
     fn krate(name: &str, deps: &[&str]) -> ZcCrate {
         ZcCrate {
             name: name.to_owned(),
-            deps: deps
-                .iter()
-                .map(|d| ZcDep {
-                    name: (*d).to_owned(),
-                    workspace_inherited: true,
-                })
-                .collect(),
-        }
-    }
-
-    /// Builds a crate with explicit `(name, workspace_inherited)` deps.
-    fn krate_deps(name: &str, deps: &[(&str, bool)]) -> ZcCrate {
-        ZcCrate {
-            name: name.to_owned(),
-            deps: deps
-                .iter()
-                .map(|(d, ws)| ZcDep {
-                    name: (*d).to_owned(),
-                    workspace_inherited: *ws,
-                })
-                .collect(),
+            deps: deps.iter().map(|d| (*d).to_owned()).collect(),
         }
     }
 
@@ -815,27 +686,8 @@ mod tests {
     const DECODE: &str = "crates/splot-decode/src/x.rs";
 
     #[test]
-    fn zerocopy_in_approved_crate_is_ok() {
-        assert!(
-            evaluate_zero_copy_policy(&[krate("splot-core", &["zerocopy", "thiserror"])], &[])
-                .is_empty()
-        );
-        assert!(evaluate_zero_copy_policy(&[krate("splot-recon", &["zerocopy"])], &[]).is_empty());
-    }
-
-    #[test]
-    fn zerocopy_in_disallowed_crate_is_a_violation() {
-        let v = evaluate_zero_copy_policy(&[krate("splot-decode", &["zerocopy"])], &[]);
-        assert!(
-            v.iter()
-                .any(|m| m.contains("zerocopy") && m.contains("splot-decode")),
-            "got {v:?}"
-        );
-    }
-
-    #[test]
     fn banned_byte_crate_is_a_violation() {
-        for dep in ["bytemuck", "bytes", "rkyv", "smallvec"] {
+        for dep in ["bytemuck", "bytes", "rkyv", "smallvec", "zerocopy"] {
             let v = evaluate_zero_copy_policy(&[krate("splot-core", &[dep])], &[]);
             assert!(
                 v.iter().any(|m| m.contains(dep)),
@@ -920,21 +772,6 @@ mod tests {
         assert!(
             !v.is_empty(),
             "`.to_owned()` bulk copy in recon must be flagged"
-        );
-    }
-
-    #[test]
-    fn zerocopy_locally_pinned_in_approved_crate_is_a_violation() {
-        let pinned = krate_deps("splot-core", &[("zerocopy", false)]);
-        let v = evaluate_zero_copy_policy(&[pinned], &[]);
-        assert!(
-            v.iter().any(|m| m.contains("workspace dependency")),
-            "locally-pinned zerocopy must be flagged, got {v:?}"
-        );
-        let inherited = krate_deps("splot-core", &[("zerocopy", true)]);
-        assert!(
-            evaluate_zero_copy_policy(&[inherited], &[]).is_empty(),
-            "workspace-inherited zerocopy must pass"
         );
     }
 
@@ -1125,26 +962,6 @@ mod tests {
     }
 
     #[test]
-    fn read_from_bytes_is_marker_suppressible() {
-        let unmarked = run_src(&file(CORE, &["    let h = Header::read_from_bytes(b)?;"]));
-        assert!(
-            !unmarked.is_empty(),
-            "unmarked read_from_bytes must be flagged"
-        );
-        let marked = run_src(&file(
-            CORE,
-            &[
-                "    // splot-copy-ok: tiny IVF wire-header copy",
-                "    let h = Header::read_from_bytes(b)?;",
-            ],
-        ));
-        assert!(
-            marked.is_empty(),
-            "a marked tiny wire-header copy must pass"
-        );
-    }
-
-    #[test]
     fn include_in_media_crate_is_a_violation_but_core_is_ok() {
         let recon = run_src(&file(RECON, &["include!(\"x_tests.rs\");"]));
         assert!(
@@ -1165,24 +982,6 @@ mod tests {
             run_src(&src).is_empty(),
             "comment prose must not be flagged"
         );
-    }
-
-    /// Parses a single dependency-entry TOML value (`{ … }` or `"x"`).
-    fn dep_value(spec: &str) -> toml::Value {
-        let table: toml::Table = toml::from_str(&format!("d = {spec}")).unwrap();
-        table.get("d").unwrap().clone()
-    }
-
-    #[test]
-    fn pure_workspace_inheritance_excludes_local_overrides() {
-        assert!(is_workspace_inherited(&dep_value("{ workspace = true }")));
-        assert!(!is_workspace_inherited(&dep_value(
-            "{ workspace = true, features = [\"alloc\"] }"
-        )));
-        assert!(!is_workspace_inherited(&dep_value(
-            "{ workspace = true, default-features = true }"
-        )));
-        assert!(!is_workspace_inherited(&dep_value("\"0.8\"")));
     }
 
     #[test]
@@ -1223,33 +1022,6 @@ mod tests {
                 "`{code}` must be flagged despite the space before `(`"
             );
         }
-    }
-
-    #[test]
-    fn public_zerocopy_wire_type_is_a_violation_but_private_is_ok() {
-        let public = file(
-            CORE,
-            &[
-                "#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]",
-                "pub struct IvfFileHeaderWire {",
-            ],
-        );
-        let v = run_src(&public);
-        assert!(
-            v.iter().any(|m| m.contains("wire-view")),
-            "a public zerocopy wire type must be flagged, got {v:?}"
-        );
-        let private = file(
-            CORE,
-            &[
-                "#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]",
-                "struct IvfFileHeaderWire {",
-            ],
-        );
-        assert!(
-            run_src(&private).is_empty(),
-            "a private wire struct must be allowed"
-        );
     }
 
     #[test]

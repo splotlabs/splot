@@ -13509,7 +13509,7 @@ module = "crates/splot-recon/src/lib.rs"
 change_id = "zero-copy-media-policy"
 owner = "decoder"
 risk = "medium"
-notes = "Media buffers use borrowed views, explicit shared ownership, and marked materialization boundaries. check-zero-copy-policy rejects forbidden media clones/copies and byte-layout bypasses; approved zerocopy use is limited to private fixed-layout wire views. The policy is enforced by the existing CI gate."
+notes = "Media buffers use borrowed views, explicit shared ownership, and marked materialization boundaries. check-zero-copy-policy rejects forbidden media clones/copies and byte-layout crates such as zerocopy. The policy is enforced by the existing CI gate."
 
 [feature.status]
 mapped = "done"
@@ -20700,7 +20700,7 @@ module = "crates/splot-cli/src/commands/decode.rs"
 change_id = "decode-hash-output-cli-contract"
 owner = "cli"
 risk = "medium"
-notes = "--output-format hash emits deterministic decoded-frame hashes; null settles requested frames without hashing or serialization. Neither requires an output file. -o alone selects Y4M; raw and Y4M require a path. All modes use the supported decoder runtime."
+notes = "--output-format hash emits deterministic decoded-frame hashes; null decodes requested frames, film grain included, without hashing or serialization. Neither requires an output file. -o alone selects Y4M; raw and Y4M require a path. All modes use the supported decoder runtime."
 
 [feature.status]
 mapped = "done"
@@ -21154,8 +21154,8 @@ tests = [
 commands = [
     "cargo test -p splot-recon wiener --locked",
     "cargo build --release --locked",
-    "./target/release/splot decode --quiet --output-format raw --limit=1 -o /tmp/splot-first-frame-1.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
-    "./target/release/splot decode --quiet --output-format hash --limit=1 $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --output-format raw --limit=1 -o /tmp/splot-first-frame-1.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --output-format hash --limit=1 $SPLOT_LOCAL_DECODER_MISSION_IVF",
 ]
 fixtures = []
 diagnostics = []
@@ -21213,7 +21213,7 @@ commands = [
     "cargo test -p splot-decode --locked",
     "cargo test -p splot-cli --test decoder_oracle sequence_sb256_intra --locked",
     "cargo build --release --locked",
-    "./target/release/splot decode --quiet --threads 10 --output-format raw --limit=1 -o /tmp/splot-t10.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --threads 10 --output-format raw --limit=1 -o /tmp/splot-t10.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
     "./target/release/splot decode --threads 1 --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
     "./target/release/splot decode --threads 10 --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
 ]

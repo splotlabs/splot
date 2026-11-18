@@ -43,15 +43,15 @@ Decode to Y4M on standard output and pipe it into any player that reads Y4M.
 No temporary files.
 
 ```bash
-splot decode --quiet -o - movie.ivf | ffplay -i -
+splot decode -o - movie.ivf | ffplay -i -
 ```
 
 The decoder uses every core by default. 10-bit, 4:2:2 and 4:4:4 streams play
 the same way. To send the video to a different tool, change the pipe:
 
 ```bash
-splot decode --quiet -o - movie.ivf | ffmpeg -i - movie.mp4
-splot decode --quiet -o - movie.ivf | mpv -
+splot decode -o - movie.ivf | ffmpeg -i - movie.mp4
+splot decode -o - movie.ivf | mpv -
 ```
 
 ## Encode. Beautifully.

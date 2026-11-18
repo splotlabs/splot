@@ -38,8 +38,7 @@ use super::super::general_intra_block::{
 use super::super::general_intra_residual::{LumaTransformTypeContext, intra_chroma_plane_tx_type};
 use super::super::intra_joint_modes::{IntraNeighbours, LumaPalette};
 use super::super::partition_traversal::{
-    DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
-    publish_intra_leaf_state,
+    DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode, publish_intra_leaf_state,
 };
 use super::super::tile_frontier::chroma_subsampling;
 use super::palette::{Palette, PlannedPalette, unit_map};
@@ -951,7 +950,7 @@ impl IntraTileSyntax {
             .with_use_dip(modes.dip.is_some().into())
             .with_palette_y(palette)
             .with_uv(block_modes.uv_bits());
-        publish_intra_leaf_state::<core::convert::Infallible>(
+        publish_intra_leaf_state::<!>(
             &self.frame,
             &leaf.call,
             &leaf.frontier,
@@ -960,11 +959,7 @@ impl IntraTileSyntax {
             &mut self.intra_facts,
             &mut self.mi_sizes,
         )
-        .map_err(|error| match error {
-            GeneralIntraTreeWalkError::Traversal(source) => rule("leaf publication")(source),
-            GeneralIntraTreeWalkError::MiSize(source) => rule("leaf publication")(source),
-            GeneralIntraTreeWalkError::Leaf(never) => match never {},
-        })?;
+        .map_err(rule("leaf publication"))?;
         DecodedLeafPublication::new(leaf.call, leaf.call.b_size, self.sb_size4 - 1)
             .publish_block_decoded(&mut self.recon.block_decoded)
             .map_err(rule("BlockDecoded update"))?;

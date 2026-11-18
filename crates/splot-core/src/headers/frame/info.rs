@@ -869,7 +869,11 @@ fn parse_inter_path(
             frame_type,
             is_bridge: false, // bridge frames take parse_bridge_inter_path, not this path
             bridge_frame_ref_idx: None,
-            cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
+            default_frame_size: if core.cur_mfh_id.is_zero() {
+                Some(FrameSize::new(seq.max_frame_width, seq.max_frame_height))
+            } else {
+                mfh.map(|view| FrameSize::new(view.default_dims.0, view.default_dims.1))
+            },
             order_hint: core.order_hint,
             ras_long_term_ref_mask,
         };
@@ -1068,8 +1072,6 @@ pub(crate) fn build_inter_seq_view(
         allow_frame_max_bvp_drl_bits: seq.allow_frame_max_bvp_drl_bits,
         frame_width_bits: seq.frame_width_bits,
         frame_height_bits: seq.frame_height_bits,
-        max_frame_width: seq.max_frame_width,
-        max_frame_height: seq.max_frame_height,
         sb_size: seq.tile.frame_sb_size(false),
     }
 }
@@ -1106,7 +1108,7 @@ fn parse_bridge_inter_path(
         frame_type: FrameType::Inter,
         is_bridge: true,
         bridge_frame_ref_idx: Some(bridge_frame_ref_idx),
-        cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
+        default_frame_size: None,
         order_hint: core.order_hint,
         ras_long_term_ref_mask: None,
     };

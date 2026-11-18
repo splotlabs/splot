@@ -653,11 +653,9 @@ fn sparse_partition_filter_keeps_record_order_and_original_count() {
     let records =
         luma_transform_records_for_partition(320, 64, TX_64X64, LumaTxPartition::Split).unwrap();
     let record_count = records.len();
-    let visible = records
-        .try_filter_map::<_, ()>(|record| {
-            Ok(luma_transform_record_starts_in_frame(&record, 352, 288).then_some(record))
-        })
-        .unwrap();
+    let Ok(visible) = records.try_filter_map::<_, !>(|record| {
+        Ok(luma_transform_record_starts_in_frame(&record, 352, 288).then_some(record))
+    });
 
     assert_eq!(record_count, 4);
     assert_eq!(visible.len(), 2);

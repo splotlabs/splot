@@ -321,6 +321,8 @@ fn is_frame_prefix_obu(envelope: &ObuEnvelope<'_>) -> bool {
     matches!(
         envelope.header.obu_type,
         ObuType::SequenceHeader
+            | ObuType::LayerConfigurationRecord
+            | ObuType::OperatingPointSet
             | ObuType::ContentInterpretation
             | ObuType::MultiFrameHeader
             | ObuType::BufferRemovalTiming
@@ -448,10 +450,12 @@ pub(super) fn leading_prefix_obus<'a>(
 
 fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUnitIndices> {
     let mut sequence = 1usize;
-    while obus
-        .get(sequence)
-        .is_some_and(|envelope| envelope.header.obu_type == ObuType::OperatingPointSet)
-    {
+    while obus.get(sequence).is_some_and(|envelope| {
+        matches!(
+            envelope.header.obu_type,
+            ObuType::LayerConfigurationRecord | ObuType::OperatingPointSet
+        )
+    }) {
         sequence += 1;
     }
     let frame = skip_frame_prefix_obus(obus, sequence + 1);
