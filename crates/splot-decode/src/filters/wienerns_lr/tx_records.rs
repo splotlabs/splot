@@ -41,12 +41,14 @@ pub(crate) struct WienerNsLrTxSkipTransformRecord {
 
 impl WienerNsLrTxSkipTransformRecord {
     pub(crate) const fn skipped_block(
-        frontier: &DecodeBlockFrontier,
-        (cols, rows): (usize, usize),
+        row: u16,
+        col: u16,
+        size: crate::bitstream::tile_payload::BlockSize,
     ) -> Self {
+        let [rows, cols] = size.num_4x4();
         Self {
-            row: frontier.r as u16,
-            col: frontier.c as u16,
+            row,
+            col,
             rows: rows as u8,
             cols: cols as u8,
             skip_flag: true,

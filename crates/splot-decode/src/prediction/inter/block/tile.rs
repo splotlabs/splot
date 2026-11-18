@@ -98,7 +98,7 @@ pub(super) struct TileFilterRecords {
     pub(super) deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,
     pub(super) chroma_deblock_blocks: crate::filters::deblock::ChromaDeblockRecords,
     pub(super) tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
-    pub(super) inter_leaves: Vec<super::filter_records::InterDeblockLeaf>,
+    pub(super) inter_leaves: Vec<([u32; 3], super::filter_records::InterDeblockLeaf)>,
     /// The list lengths the last publication moved out.
     pub(super) published: [usize; 4],
 }

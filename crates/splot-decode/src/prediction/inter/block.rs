@@ -1500,7 +1500,6 @@ fn decode_block(
             };
             filter_records.defer_inter_leaf(
                 frontier,
-                (n4w, n4h),
                 residual.as_ref(),
                 None,
                 block_qindex,
@@ -2084,7 +2083,6 @@ fn finish_inter_leaf(
     };
     filter_records.defer_inter_leaf(
         frontier,
-        (n4w, n4h),
         residual.as_ref(),
         sub_pu_size,
         block_qindex,

@@ -17,7 +17,7 @@ use super::super::find_mv_stack::{
 };
 use splot_core::headers::sequence::{SequencePartitionConfig, SuperblockSize};
 
-use super::filter_records::record_inter_deblock_geometry;
+use super::filter_records::InterDeblockLeaf;
 use super::residual::{InterLumaTxTypeMap, push_inter_residual_block};
 use super::resolve::{
     InterBlockSyntax, InterMotionSyntax, MvResolutionState, ResolvedInterBlock, compound_motion,
@@ -1114,20 +1114,15 @@ impl EncoderInterTile {
                 )
             }
         };
-        record_inter_deblock_geometry(
-            deblock,
-            chroma,
-            tx_skip,
-            crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
-            frontier,
-            (n4w, n4h),
-            self.chroma,
-            range.as_ref(),
-            blocks,
-            sub_pu_size,
-            self.qindex,
-            false,
-        )
+        InterDeblockLeaf::new(frontier, range.as_ref(), sub_pu_size, self.qindex, false)
+            .record_into(
+                deblock,
+                chroma,
+                tx_skip,
+                crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
+                self.chroma,
+                blocks,
+            )
     }
 
     /// Clears the coefficient contexts a skipped leaf covers (§ 5.20.4).
