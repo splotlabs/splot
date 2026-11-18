@@ -26,7 +26,7 @@ use super::read_quant::{
     CoeffReadQuantConfig, CoeffReadQuantError, CoeffReadQuantInput, CoeffReadQuantState,
 };
 use super::scan_walk::CoeffScanEntry;
-use super::transform_block::{LEVEL_WORD, entry_grid, grid_scan};
+use super::transform_block::{LEVEL_WORD, entry_grid, entry_pos, grid_scan};
 
 const FSC_MAX_LEVEL: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
 /// Grid-word fields counting the decoded positive and negative signs, above
@@ -237,7 +237,7 @@ impl Block<'_> {
                 };
             let sign = symbols.read_trusted::<3, UPD>(row_at(signs, ctx)) != 0;
             levels[at] = word | 1 << if sign { NEGATIVE_SHIFT } else { POSITIVE_SHIFT };
-            let pos = (entry >> 16) as usize;
+            let pos = entry_pos(entry);
             let value = if level < FSC_MAX_LEVEL {
                 level
             } else {

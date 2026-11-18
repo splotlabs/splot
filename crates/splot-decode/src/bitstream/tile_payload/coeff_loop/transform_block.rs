@@ -192,8 +192,10 @@ static SCAN_SHAPE_OFFSETS: [[usize; SCAN_DIMS]; SCAN_DIMS] = {
 };
 
 /// The § 5.20.7.30 scan of every block shape per transform class, each
-/// position as its level-grid index, its context class at
-/// [`CTX_CLASS_SHIFT`] and the position itself above bit 16.
+/// entry holds the grid index in bits 0..11, context class in 11..13,
+/// raster position divided by four in 13..21 and scan index in 22..32.
+/// Both the raster stride and `LEVEL_STRIDE` are multiples of four, so
+/// the two low raster bits already occur in the grid index.
 static GRID_SCANS: [[u32; GRID_SCAN_LEN]; 3] = {
     let classes = [
         TransformClass::TwoD,
@@ -215,7 +217,7 @@ static GRID_SCANS: [[u32; GRID_SCAN_LEN]; 3] = {
                     let (row, col) = (pos >> width_log2, pos & ((1 << width_log2) - 1));
                     let grid = row * LEVEL_STRIDE + col;
                     let context = ctx_class(row, col) << CTX_CLASS_SHIFT;
-                    out[class][base + c] = (grid | context | (pos << 16)) as u32;
+                    out[class][base + c] = (grid | context | ((pos >> 2) << 13) | (c << 22)) as u32;
                     c += 1;
                 }
                 hi += 1;
@@ -240,7 +242,7 @@ static GRID_EXTENTS: [[u16; GRID_SCAN_LEN]; 3] = {
                 let base = scan_shape_offset(wi, hi);
                 let (mut c, mut extent) = (0, 0);
                 while c < (4 << wi) * (4 << hi) {
-                    let pos = (GRID_SCANS[class][base + c] >> 16) as u16;
+                    let pos = entry_pos(GRID_SCANS[class][base + c]) as u16;
                     if pos >= extent {
                         extent = pos + 1;
                     }
@@ -547,6 +549,11 @@ pub(super) const fn entry_grid(entry: u32) -> usize {
     entry as usize & LEVEL_WORDS_MASK
 }
 
+#[inline]
+pub(super) const fn entry_pos(entry: u32) -> usize {
+    (((entry >> 11) & 0x3fc) | (entry & 3)) as usize
+}
+
 #[allow(clippy::inline_always, reason = "measured: per-coefficient index")]
 #[inline(always)]
 const fn ctx_class_of(entry: u32) -> usize {
@@ -568,7 +575,7 @@ struct LevelPass<'a, 'r, const UPD: bool> {
     tcq_q0: usize,
     /// Bit 0 the `sumAbs1` parity, the bits above the nonzero count.
     ph: u32,
-    /// The scan indices above 0 of the nonzero levels so far, in decode
+    /// The packed scan entries of the nonzero AC levels so far, in decode
     /// order, as its first `nonzero_len` entries.
     nonzero: &'r mut CoeffNonzeroList,
     nonzero_len: usize,
@@ -685,7 +692,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         rows: &mut CoeffLevelRows<'_>,
         entry: u32,
     ) -> u32 {
-        let (grid, pos) = (entry_grid(entry), (entry >> 16) as usize);
+        let (grid, pos) = (entry_grid(entry), entry_pos(entry));
         let mag = if CLASS == 0 {
             self.base_mag::<CLASS, LUMA, true, true>(grid)
         } else {
@@ -750,24 +757,19 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     /// Records a decoded level and advances the TCQ and parity state.
     #[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
     #[inline(always)]
-    fn finish<const TCQ: bool, const PH: bool>(
-        &mut self,
-        scan_index: usize,
-        grid: usize,
-        level: u32,
-    ) {
+    fn finish<const TCQ: bool, const PH: bool>(&mut self, entry: u32, level: u32, ac: bool) {
         let nonzero = level != 0;
         let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
-        self.levels[grid & LEVEL_WORDS_MASK] = LEVEL_WORD[(q0 << 4) | (level as usize & 15)];
-        if scan_index > 0 {
-            self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = scan_index as u32;
+        self.levels[entry_grid(entry)] = LEVEL_WORD[(q0 << 4) | (level as usize & 15)];
+        if ac {
+            self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = entry;
             self.nonzero_len += usize::from(nonzero);
         }
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;
             self.tcq = next_tcq_state(self.tcq, level);
         }
-        if PH && scan_index > 0 {
+        if PH && ac {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
             self.ph = (self.ph ^ (clipped & 1)) + (u32::from(level != 0) << 1);
         }
@@ -780,13 +782,12 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         &mut self,
         mut rows: CoeffLevelRows<'_>,
         hf: &[u32],
-        lf_end: usize,
     ) {
-        for (offset, &entry) in hf.iter().enumerate().rev() {
+        for &entry in hf.iter().rev() {
             let grid = entry_grid(entry);
             let level = self.read_hf_base::<CLASS, LUMA>(&mut rows, entry);
             let level = self.add_range::<CLASS, LUMA, false>(&mut rows, grid, false, level);
-            self.finish::<TCQ, PH>(lf_end + offset, grid, level);
+            self.finish::<TCQ, PH>(entry, level, true);
         }
     }
 
@@ -798,11 +799,11 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         mut rows: CoeffLevelRows<'_>,
         lf: &[u32],
     ) {
-        for (offset, &entry) in lf.iter().enumerate().rev() {
+        for &entry in lf.iter().rev() {
             let grid = entry_grid(entry);
             let level = self.read_lf_base::<CLASS, LUMA, false>(&mut rows, entry);
             let level = self.add_range::<CLASS, LUMA, true>(&mut rows, grid, false, level);
-            self.finish::<TCQ, PH>(1 + offset, grid, level);
+            self.finish::<TCQ, PH>(entry, level, true);
         }
     }
 
@@ -827,14 +828,13 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         } else {
             self.add_range::<CLASS, LUMA, false>(rows, eob_grid, false, eob_level)
         };
-        self.finish::<TCQ, PH>(eob_index, eob_grid, eob_level);
+        self.finish::<TCQ, PH>(eob_entry, eob_level, eob_index != 0);
         if eob_index == 0 {
             return;
         }
         self.hf_pass::<CLASS, LUMA, TCQ, PH>(
             rows.reborrow(),
             scan.get(lf_end..eob_index).unwrap_or_default(),
-            lf_end,
         );
         let lf = scan.get(1..lf_end.min(eob_index)).unwrap_or_default();
         self.lf_pass::<CLASS, LUMA, TCQ, PH>(rows.reborrow(), lf);
@@ -847,7 +847,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
             let level = self.read_lf_base::<CLASS, LUMA, true>(rows, scan[0]);
             self.add_range::<CLASS, LUMA, true>(rows, dc_grid, true, level)
         };
-        self.finish::<TCQ, PH>(0, dc_grid, level);
+        self.finish::<TCQ, PH>(scan[0], level, false);
     }
 }
 
@@ -909,16 +909,13 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     let mut run = symbols.bypass_run();
     let mut level_sum = 0u32;
     let lf_end = facts.lf_end.min(eob);
-    for &scan_index in nonzero {
-        let scan_index = scan_index as usize;
+    for &scan_entry in nonzero {
+        let scan_index = (scan_entry >> 22) as usize;
         let max_level = if scan_index < lf_end { max_lf } else { max_hf };
-        let Some(&scan_entry) = scan.get(scan_index) else {
-            continue;
-        };
         let grid = entry_grid(scan_entry);
         let word = levels[grid];
         levels[grid] = 0;
-        let pos = (scan_entry >> 16) as usize;
+        let pos = entry_pos(scan_entry);
         let (level, tcq_q0) = ((word >> 16) & 0xff, word >> Q0_BIT != 0);
         let entry = CoeffScanEntry::new(scan_index, pos, pos >> wl, pos & col_mask);
         let axis_cdf = LUMA
@@ -971,7 +968,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     symbols.end_bypass_run(run);
     let mut quant_state = quant_state.with_cul_level(level_sum);
 
-    let (pos, grid) = ((scan[0] >> 16) as usize, entry_grid(scan[0]));
+    let (pos, grid) = (entry_pos(scan[0]), entry_grid(scan[0]));
     let word = levels[grid];
     levels[grid] = 0;
     let level = (word >> 16) & 0xff;

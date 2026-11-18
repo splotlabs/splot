@@ -49,9 +49,10 @@ fn grid_scans_hold_each_shape_scan_with_its_grid_index() {
             for height in [4, 8, 16, 32] {
                 let scan = splot_recon::coefficient_scan_slice(width, height, recon_class).unwrap();
                 let grid = grid_scan(class, width, height, scan.len()).unwrap();
-                for (&pos, &entry) in scan.iter().zip(grid) {
+                for (i, (&pos, &entry)) in scan.iter().zip(grid).enumerate() {
                     let pos = usize::from(pos);
-                    assert_eq!(entry >> 16, pos as u32);
+                    assert_eq!(entry_pos(entry), pos);
+                    assert_eq!(entry >> 22, i as u32);
                     let expected = (pos / width) * LEVEL_STRIDE + pos % width;
                     assert_eq!(entry_grid(entry), expected);
                 }
@@ -106,7 +107,7 @@ fn scan_entry_context_classes_give_the_luma_2d_base_contexts() {
             let len = width * height;
             let scan = grid_scan(CoeffTransformClass::TwoD, width, height, len).unwrap();
             for (scan_index, &entry) in scan.iter().enumerate().skip(1) {
-                let pos = (entry >> 16) as usize;
+                let pos = entry_pos(entry);
                 let diagonal = pos / width + pos % width;
                 let class = ctx_class_of(entry);
                 let (hf, lf) = (&CTX_2D[0][class], &CTX_2D[1][class]);
