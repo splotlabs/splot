@@ -767,7 +767,7 @@ fn assert_missing_luma_context_is_atomic(
             frame_facts: &facts,
             plane: 0,
             tx_size,
-            tx_set: transform_set(facts, 0, tx_size, false).unwrap_or(0),
+            tx_set: transform_set(&facts, 0, tx_size, false).unwrap_or(0),
             is_inter: false,
             lossless: false,
             fsc_mode: false,
@@ -828,7 +828,7 @@ fn ensure_with_test_payload_fsc_and_policy(
             frame_facts: &facts,
             plane,
             tx_size,
-            tx_set: transform_set(facts, plane, tx_size, is_inter).unwrap_or(0),
+            tx_set: transform_set(&facts, plane, tx_size, is_inter).unwrap_or(0),
             is_inter,
             lossless: facts
                 .lossless_for_segment(current_frame_qm_segment_id())
@@ -1426,7 +1426,7 @@ fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
     let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
 
     let config = staged_transform_tool_lossless_base_config(
-        frame_facts(false, false, false),
+        &frame_facts(false, false, false),
         0,
         0,
         0,
@@ -1449,7 +1449,7 @@ fn lossless_fsc_staged_plane_tx_type_remains_idtx() {
         tx_size: TX_8X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(
-        lossless_frame_facts(),
+        &lossless_frame_facts(),
         0,
         0,
         0,
@@ -1474,7 +1474,7 @@ fn lossless_inter_staged_plane_tx_type_remains_idtx() {
         tx_size: TX_4X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(
-        lossless_frame_facts(),
+        &lossless_frame_facts(),
         0,
         0,
         0,
@@ -1499,7 +1499,7 @@ fn lossless_inter_chroma_staged_plane_tx_type_uses_colocated_luma_tx_type() {
         tx_size: TX_4X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(
-        lossless_frame_facts(),
+        &lossless_frame_facts(),
         1,
         0,
         0,
@@ -1522,7 +1522,7 @@ fn luma_txtype_residual_staged_base_config_derives_coeff_tool_flags() {
         (V_DCT, true, false),
     ] {
         let config = staged_transform_tool_lossless_base_config(
-            frame_facts_with_coeff_tools(true, true),
+            &frame_facts_with_coeff_tools(true, true),
             0,
             0,
             0,
@@ -1589,7 +1589,7 @@ fn chroma_transform_handoff_skips_cctx_read_when_geometry_disallows() {
                     frame_facts: &facts,
                     plane: 1,
                     tx_size: TX_32X32,
-                    tx_set: transform_set(facts, 1, TX_32X32, is_inter).unwrap_or(0),
+                    tx_set: transform_set(&facts, 1, TX_32X32, is_inter).unwrap_or(0),
                     is_inter,
                     lossless: false,
                     fsc_mode: false,

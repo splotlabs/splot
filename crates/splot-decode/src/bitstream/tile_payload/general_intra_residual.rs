@@ -1003,7 +1003,8 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             block.fsc_mode && work_unit.coeff_frame_facts().enable_fsc,
         ],
     );
-    let rows = work_unit.cdf_mut().tile_cdfs_mut().block_rows_mut();
+    let cdfs = work_unit.cdf.tile_cdfs_mut();
+    let rows = cdfs.block_rows_mut();
     let row = if block.plane == 2 {
         row_at(&mut rows.v_txb_skip, ctx)
     } else {
@@ -1022,7 +1023,8 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         });
     }
     decode_nonzero_plane_coeffs(
-        work_unit,
+        cdfs,
+        &work_unit.coeff_frame_facts,
         symbols,
         context,
         arena,
@@ -1083,7 +1085,8 @@ fn txb_skip_ctx(
 /// an `all_zero` block skips its frame.
 #[inline(never)]
 fn decode_nonzero_plane_coeffs(
-    work_unit: &mut DecodeTileWorkUnit,
+    cdfs: &mut TileCdfSubset,
+    frame_facts: &TileCoeffFrameFacts,
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
     arena: &mut Vec<i32>,
@@ -1095,17 +1098,10 @@ fn decode_nonzero_plane_coeffs(
         &CoeffBlockLines,
     ),
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
-    let frame_facts = *work_unit.coeff_frame_facts();
     let plane = block.plane;
     let geometry = CoeffOrdinaryTxSizeGeometryConfig { plane, tx_size };
-    let start = read_nonzero_coeff_block_start(
-        work_unit.cdf_mut().tile_cdfs_mut(),
-        symbols,
-        tx,
-        plane,
-        block.is_inter,
-    )
-    .map_err(|source| GeneralIntraResidualError::NonZeroStart { source })?;
+    let start = read_nonzero_coeff_block_start(cdfs, symbols, tx, plane, block.is_inter)
+        .map_err(|source| GeneralIntraResidualError::NonZeroStart { source })?;
     let eob = start.eob_read();
     let lossless = segment_lossless
         .ok_or_else(|| invalid_reconstruction_state_error("residual segment id"))?;
@@ -1115,10 +1111,10 @@ fn decode_nonzero_plane_coeffs(
         transform_set(frame_facts, plane, tx_size, block.is_inter)?
     };
     let metadata = ensure_transform_tool_residual_handoff(
-        work_unit.cdf_mut().tile_cdfs_mut(),
+        cdfs,
         symbols,
         TransformToolResidualInput {
-            frame_facts: &frame_facts,
+            frame_facts,
             plane,
             tx_size,
             tx_set,
@@ -1159,7 +1155,7 @@ fn decode_nonzero_plane_coeffs(
         arena.resize(start_idx + coeff_count, 0);
         let quant_end = decode_fsc_transform_block(
             context,
-            work_unit.cdf_mut().tile_cdfs_mut(),
+            cdfs,
             symbols,
             &start,
             lines,
@@ -1173,7 +1169,7 @@ fn decode_nonzero_plane_coeffs(
         arena.resize(start_idx + extent, 0);
         let quant_end = decode_ordinary_transform_block(
             context,
-            work_unit.cdf_mut().tile_cdfs_mut(),
+            cdfs,
             symbols,
             CoeffTransformBlockInput {
                 plane,
@@ -1201,7 +1197,7 @@ fn decode_nonzero_plane_coeffs(
 }
 
 fn staged_transform_tool_lossless_base_config(
-    frame_facts: TileCoeffFrameFacts,
+    frame_facts: &TileCoeffFrameFacts,
     plane: usize,
     uv_mode: usize,
     angle_delta_uv: i32,
@@ -1729,7 +1725,7 @@ const fn is_scaled(value: usize, base: usize, factor: usize) -> bool {
 }
 
 fn transform_set(
-    frame_facts: TileCoeffFrameFacts,
+    frame_facts: &TileCoeffFrameFacts,
     plane: usize,
     tx_size: usize,
     is_inter: bool,
