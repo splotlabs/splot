@@ -729,7 +729,7 @@ fn project<S: Simd>(component: Lanes<S>, factor: Lanes<S>) -> Lanes<S> {
 }
 
 /// [`project`] for one component.
-fn project_component(component: i32, factor: i32) -> i32 {
+pub(super) fn project_component(component: i32, factor: i32) -> i32 {
     let scaled = component * factor;
     (scaled + (scaled >> 31) + (1 << 13)) >> 14
 }

@@ -11,7 +11,7 @@ use super::{
 };
 use band::BandCells;
 pub(crate) use band::TemporalMotionBand;
-use scan::{ProjectionTarget, project_temporal_motion_field};
+use scan::{ProjectionTarget, project_component, project_temporal_motion_field};
 use selection::projection_queue;
 use tip_field::prepare_tip_field;
 #[cfg(test)]
@@ -1886,57 +1886,62 @@ fn fill_temporal_sampling_gaps(
     debug_assert!(tmvp_unit_size8.max(1).is_power_of_two());
     let unit_shift = tmvp_unit_size8.max(1).trailing_zeros();
     let (width8, height8) = (field.width8, field.height8);
-    let next_in_unit =
-        |a: usize, end: usize| a + 2 < end && (a + 2) >> unit_shift == a >> unit_shift;
+    let next_in_unit = |a: usize| (a + 2) >> unit_shift == a >> unit_shift;
     let Some(mut rest) = field.cells.get_mut(..width8 * height8) else {
         return;
     };
     for y8 in (0..height8).step_by(2) {
-        let down = next_in_unit(y8, height8);
         let split = (2 * width8).min(rest.len());
         let (pair, below) = core::mem::take(&mut rest).split_at_mut(split);
         let (row, next_row) = pair.split_at_mut(width8.min(pair.len()));
+        let down = if next_in_unit(y8) {
+            below.get(..width8).unwrap_or_default()
+        } else {
+            &[]
+        };
         for x8 in (0..width8).step_by(2) {
-            let Some(anchor) = row.get(x8).copied().filter(|cell| cell.valid) else {
+            let anchor = row[x8];
+            if !anchor.valid {
                 continue;
-            };
-            let right = next_in_unit(x8, width8);
+            }
+            let right = next_in_unit(x8);
             let projected = |source: Option<&ProjectedTemporalMotionCell>| {
-                let source = source.filter(|cell| cell.valid)?;
-                let mv = project_mv(source.mv(), anchor.ref_offset(), source.ref_offset());
-                Some(Mv {
-                    row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                    col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                })
+                let Some(source) = source.filter(|cell| cell.valid) else {
+                    return (0, 0, 0);
+                };
+                let factor = clamped_tmvp_factor(anchor.ref_offset(), source.ref_offset());
+                // Saved field components are at most 2048 in magnitude.
+                let scale = |value: i16| {
+                    project_component(i32::from(value), factor).clamp(-REFMVS_LIMIT, REFMVS_LIMIT)
+                };
+                (scale(source.mv[0]), scale(source.mv[1]), 1)
             };
-            let right_mv = projected(row.get(x8 + 2).filter(|_| right));
-            let down_mv = projected(below.get(x8).filter(|_| down));
-            let corner_mv = projected(below.get(x8 + 2).filter(|_| right && down));
-            let fill = |cell: Option<&mut ProjectedTemporalMotionCell>, sources: &[Option<Mv>]| {
-                let Some(cell) = cell else {
-                    return;
-                };
-                let (mut sum, mut count) = (anchor.mv(), 1);
-                for mv in sources.iter().flatten() {
-                    sum.row += mv.row;
-                    sum.col += mv.col;
-                    count += 1;
-                }
-                let average = |value: i32| match count {
-                    1 => value,
-                    2 => round2_signed_i32(value, 1),
-                    3 => round2_signed_i32(value * 85, 8),
-                    _ => round2_signed_i32(value, 2),
-                };
+            let (right_r, right_c, right_count) = projected(row.get(x8 + 2).filter(|_| right));
+            let (down_r, down_c, down_count) = projected(down.get(x8));
+            let (corner_r, corner_c, corner_count) = projected(down.get(x8 + 2).filter(|_| right));
+            let filled = |r, c, neighbours| {
+                let weight = [256, 128, 85, 64][neighbours];
+                let average =
+                    |base: i16, delta| round2_signed_i32((i32::from(base) + delta) * weight, 8);
                 let mv = Mv {
-                    row: average(sum.row),
-                    col: average(sum.col),
+                    row: average(anchor.mv[0], r),
+                    col: average(anchor.mv[1], c),
                 };
-                *cell = ProjectedTemporalMotionCell::new(true, mv, anchor.ref_offset());
+                ProjectedTemporalMotionCell::new(true, mv, anchor.ref_offset())
             };
-            fill(row.get_mut(x8 + 1), &[right_mv]);
-            fill(next_row.get_mut(x8), &[down_mv]);
-            fill(next_row.get_mut(x8 + 1), &[right_mv, down_mv, corner_mv]);
+            if let Some(cell) = row.get_mut(x8 + 1) {
+                *cell = filled(right_r, right_c, right_count);
+            }
+            if let Some(cell) = next_row.get_mut(x8) {
+                *cell = filled(down_r, down_c, down_count);
+            }
+            if let Some(cell) = next_row.get_mut(x8 + 1) {
+                *cell = filled(
+                    right_r + down_r + corner_r,
+                    right_c + down_c + corner_c,
+                    right_count + down_count + corner_count,
+                );
+            }
         }
         rest = below;
     }

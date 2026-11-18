@@ -1187,6 +1187,41 @@ fn sampling_gap_does_not_average_across_tmvp_units() {
 }
 
 #[test]
+fn sampling_gap_scales_and_averages_only_valid_neighbours() {
+    let mut context = tip_context(2, vec![Some(0)], 6, 10);
+    for (y8, x8, row, col, offset) in [
+        (0, 0, 32, -6, 4),
+        (0, 2, 9, 11, 2),
+        (2, 0, -33, 23, 8),
+        (2, 2, 12, -18, 4),
+        (0, 4, -2048, 2047, 0),
+    ] {
+        context.field.set(y8, x8, Mv { row, col }, offset, true);
+    }
+
+    context.fill_sampling_gaps(2, 8);
+
+    for (y8, x8, row, col, offset) in [
+        (0, 1, 25, 8, 4),
+        (1, 0, 8, 3, 4),
+        (1, 1, 11, 3, 4),
+        (0, 3, 5, 6, 2),
+        (1, 3, 5, 1, 2),
+        (1, 4, -2048, 2047, 0),
+    ] {
+        assert_eq!(
+            context.field.cell(y8, x8),
+            Some(ProjectedTemporalMotionCell::new(
+                true,
+                Mv { row, col },
+                offset
+            ))
+        );
+    }
+    assert!(!context.field.cell(2, 4).unwrap().valid);
+}
+
+#[test]
 fn temporal_projection_stays_within_the_vertical_tmvp_unit() {
     assert!(!tmvp_position_is_near(52, 107, 47, 107, 2, 16));
     assert!(tmvp_position_is_near(47, 107, 47, 107, 2, 16));
