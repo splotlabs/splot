@@ -1275,7 +1275,9 @@ impl NeighbourMvGrid {
             .saturating_add(sb_h4)
             .saturating_add(self.origin_row);
         self.readable = self.window.readable_rows();
-        if let Some(slide) = slide {
+        if let Some(slide) = slide
+            && !(self.edges_only && self.planes.leaves.is_empty())
+        {
             slide.apply(&mut self.planes.cells, self.mi_cols, None);
         }
         self.sb_above.clone_from(&self.above);
