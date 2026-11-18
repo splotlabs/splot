@@ -1910,7 +1910,6 @@ fn fill_temporal_sampling_gaps(
                     return (0, 0, 0);
                 };
                 let factor = clamped_tmvp_factor(anchor.ref_offset(), source.ref_offset());
-                // Saved field components are at most 2048 in magnitude.
                 let scale = |value: i16| {
                     project_component(i32::from(value), factor).clamp(-REFMVS_LIMIT, REFMVS_LIMIT)
                 };

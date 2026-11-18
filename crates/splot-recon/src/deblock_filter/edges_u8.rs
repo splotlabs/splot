@@ -37,6 +37,8 @@ const fn words(low: [u8; 8], high: [u8; 8]) -> [u8; 32] {
 const ZERO: u8 = 0x80;
 /// Adjacent words hold each segment's first and last lines so a multiply-add
 /// can sum their derivatives into the low word of the segment's dword.
+/// The unrounded sum exceeds twice the threshold exactly when its rounded
+/// mean exceeds the threshold.
 const SIDES: [u8; 32] = words([0, 3, 4, 7, 8, 11, 12, 15], [ZERO; 8]);
 /// A segment word over the lines of the low and high halves of a widened
 /// row: lines `0..8` and `8..16` of each lane's 16.
@@ -265,7 +267,6 @@ macro_rules! filter_chunk {
             sum_abs(sub(p, sub(em2, e(-3)))),
             sum_abs(sub(q_diff, sub(e1, e(2)))),
         );
-        // ceil(sum / 2) > threshold exactly when sum > 2 * threshold.
         let exceeds = |sum, threshold| gt(sum, _mm256_slli_epi16::<1>(threshold));
         let valid = gt(_mm256_min_epi16(q, side), zero);
         let one = _mm256_andnot_si256(exceeds(high_deriv, side), valid);
