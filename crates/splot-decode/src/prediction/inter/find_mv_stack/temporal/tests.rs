@@ -45,7 +45,7 @@ fn project_whole_temporal_motion_field(
             source,
             0..height8,
             (projection_step, tmvp_unit_size8),
-            band.as_mut(),
+            band.as_mut().map(|band| (band, true)),
             &mut rows,
         );
     }

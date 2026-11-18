@@ -1127,7 +1127,7 @@ impl TemporalBandPlan {
         } else {
             None
         };
-        for projection in self.projections.iter().flatten() {
+        for (pass, projection) in self.projections.iter().flatten().enumerate() {
             if index >= projection.source_layout.band_count() {
                 continue;
             }
@@ -1145,7 +1145,7 @@ impl TemporalBandPlan {
                 source,
                 rows.clone(),
                 (self.config.step, self.config.unit_size8),
-                trajectory.as_mut(),
+                trajectory.as_mut().map(|band| (band, pass != 0)),
                 &mut output,
             );
         }
@@ -1985,14 +1985,14 @@ fn run_band_projections(
             None => None,
         };
         let rows8 = band.row_base..band.row_base + band_rows;
-        for prepared in prepared.iter().flatten() {
+        for (pass, prepared) in prepared.iter().flatten().enumerate() {
             project_temporal_motion_field(
                 lanes.get_or_insert_default(),
                 &prepared.source,
                 prepared.field,
                 rows8.clone(),
                 (config.step, config.unit_size8),
-                rows.as_mut(),
+                rows.as_mut().map(|band| (band, pass != 0)),
                 &mut band,
             );
         }
