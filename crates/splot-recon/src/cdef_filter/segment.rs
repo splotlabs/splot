@@ -9,10 +9,13 @@
 //! samples that it describes. The filters select their kernel from that
 //! range.
 
+mod luma_bytes;
+
 use super::*;
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Avx2;
-use fearless_simd::{i8x16, i8x32, u8x32, u64x2};
+use fearless_simd::{i8x16, i8x32, u8x32, u64x2, u64x4};
+use luma_bytes::*;
 
 const TAP_REACH: usize = 2;
 const LUMA_SEGMENT_AREA: usize = 8 * (CDEF_SEGMENT_BLOCKS - 1) + CDEF_SEGMENT_BLOCK_AREA;
@@ -21,7 +24,6 @@ const PAIR_ROWS: usize = 4 + 2 * TAP_REACH;
 const PAIR_SPAN: usize = CDEF_PAIR_SEGMENT_STRIDE / 2;
 /// The byte scratch of an 8-bit segment, past which an 8-byte row read may
 /// load 16 bytes.
-const LUMA_BYTES_AREA: usize = LUMA_SEGMENT_AREA + 8;
 const LUMA_BLOCK_BYTES: usize = CDEF_SEGMENT_BLOCK_AREA + 8;
 const PAIR_BYTES_AREA: usize = PAIR_SEGMENT_AREA + 8;
 const PAIR_BLOCK_BYTES: usize = CDEF_PAIR_SEGMENT_BLOCK_AREA + 8;
@@ -31,7 +33,7 @@ const PAIR_BLOCK_BYTES: usize = CDEF_PAIR_SEGMENT_BLOCK_AREA + 8;
 /// greatest sample of each block's 12x12 window.
 pub struct CdefLumaSegment {
     pad: [u16; LUMA_SEGMENT_AREA],
-    /// The scratch of an 8-bit segment as bytes offset by 128, `has_bytes`.
+    /// Bytes offset by 128, row-major with `has_pad`, else 16-byte rows per block.
     bytes: [u8; LUMA_BYTES_AREA],
     has_bytes: bool,
     /// Whether `pad` holds the segment, which a bytes-only gather skips.
@@ -99,10 +101,18 @@ impl CdefLumaSegment {
     /// [`CdefLumaSegment::block`] as offset bytes, for an 8-bit segment.
     #[inline]
     fn block_bytes(&self, block: usize) -> Option<&[u8; LUMA_BLOCK_BYTES]> {
-        if !self.has_bytes || block >= CDEF_SEGMENT_BLOCKS {
+        if !self.has_pad || !self.has_bytes || block >= CDEF_SEGMENT_BLOCKS {
             return None;
         }
         self.bytes.get(8 * block..)?.first_chunk()
+    }
+
+    #[inline]
+    fn padded_block_bytes(&self, block: usize) -> Option<&[u8; LUMA_PADDED_BYTES]> {
+        if self.has_pad || !self.has_bytes || block >= CDEF_SEGMENT_BLOCKS {
+            return None;
+        }
+        self.bytes.get(LUMA_BYTE_BLOCK * block..)?.first_chunk()
     }
 
     /// The scratch from the first tap-reach lane of block `block` on, or
@@ -388,80 +398,6 @@ fn segment_bounds<S: SimdToken, R: LaneBounds<S>>(
     ]
 }
 
-/// [`gather_luma`] into the byte scratch alone.
-fn gather_luma_bytes(
-    samples: &[u8],
-    width: usize,
-    stride: usize,
-    bytes: &mut [u8; LUMA_BYTES_AREA],
-    origin: (usize, usize),
-) -> Option<[[u16; 2]; CDEF_SEGMENT_BLOCKS]> {
-    #[cfg(target_arch = "x86_64")]
-    if let Some(avx2) = Level::baseline().as_avx2() {
-        return gather_luma_bytes_with(avx2, MinPos, samples, width, stride, bytes, origin);
-    }
-    baseline_simd!(simd => gather_luma_bytes_with(simd, Reduced, samples, width, stride, bytes, origin))
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
-#[inline(always)]
-fn gather_luma_bytes_with<S: SimdToken, R: LaneBounds<S>>(
-    simd: S,
-    reduce: R,
-    samples: &[u8],
-    width: usize,
-    stride: usize,
-    bytes: &mut [u8; LUMA_BYTES_AREA],
-    origin: (usize, usize),
-) -> Option<[[u16; 2]; CDEF_SEGMENT_BLOCKS]> {
-    const { assert!(CDEF_SEGMENT_BLOCKS == 4 && CDEF_SEGMENT_STRIDE == 36) };
-    let rows = reach_rows(samples, width, stride, origin, (CDEF_SEGMENT_STRIDE, 12))?;
-    let bias = u8x32::splat(simd, 0x80);
-    let mut min = [u8x32::splat(simd, u8::MAX); 2];
-    let mut max = [u8x32::splat(simd, 0); 2];
-    for row in 0..12 {
-        let src = rows
-            .get(row * stride..)?
-            .first_chunk::<CDEF_SEGMENT_STRIDE>()?;
-        let row_bytes = bytes
-            .get_mut(row * CDEF_SEGMENT_STRIDE..)?
-            .first_chunk_mut::<CDEF_SEGMENT_STRIDE>()?;
-        let lanes = [
-            u8x32::from_slice(simd, &src[..32]),
-            u8x32::from_slice(simd, &src[4..36]),
-        ];
-        (lanes[0] ^ bias).store_slice(&mut row_bytes[..32]);
-        (lanes[1] ^ bias).store_slice(&mut row_bytes[4..]);
-        for half in 0..2 {
-            min[half] = min[half].min(lanes[half]);
-            max[half] = max[half].max(lanes[half]);
-        }
-    }
-    let chunks = |[head, tail]: [u8x32<S>; 2]| byte_eighths(simd, head, tail);
-    Some(segment_bounds(simd, reduce, chunks(min), chunks(max)))
-}
-
-/// [`cdef_direction_segment`] of a block of an 8-bit segment from its byte
-/// scratch, whose bytes are already the § 7.18.2 samples minus 128.
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
-#[inline(always)]
-fn direction_from_bytes(bytes: &[u8; LUMA_BLOCK_BYTES]) -> (usize, i32) {
-    #[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
-    #[inline(always)]
-    fn rows<S: SimdToken>(simd: S, bytes: &[u8; LUMA_BLOCK_BYTES]) -> [i16x8<S>; 8] {
-        core::array::from_fn(|i| {
-            let start = (i + 2) * CDEF_SEGMENT_STRIDE + 2;
-            let lanes = u8x16::from_slice(simd, &bytes[start..start + 16]).bitcast::<i8x16<S>>();
-            simd.widen_i8x16(lanes).0
-        })
-    }
-    #[cfg(target_arch = "x86_64")]
-    if let Some(avx2) = Level::baseline().as_avx2() {
-        return cdef_best_direction(cdef_direction_costs_avx2(avx2, rows(avx2, bytes)));
-    }
-    baseline_simd!(simd => cdef_direction_rows(simd, rows(simd, bytes)))
-}
-
 /// Interleaves the chroma segment's tap rows, `PAIR_SPAN` samples of each
 /// plane, into `pad` and returns for each block the larger of its two
 /// planes' window ranges. Block `b` covers plane columns `4b..4b + 8`: the
@@ -712,6 +648,12 @@ trait QuadLanes<S: SimdToken>: Copy {
     fn pack(self, simd: S, pairs: [u16x16<S>; 2]) -> u8x32<S>;
     /// The inverse of [`QuadLanes::narrow`] for lanes that fit `i8`.
     fn widen(self, simd: S, lanes: i8x32<S>) -> [i16x16<S>; 2];
+    /// Extracts the first eight bytes from each padded 16-byte row.
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn padded_rows(self, simd: S, a: u64x4<S>, b: u64x4<S>) -> i8x32<S> {
+        simd.unzip_low_u64x4(a, b).bitcast()
+    }
     /// `diff`, whose absolute value is `magnitude`, clamped to `-clip..=clip`
     /// for a `clip` below 128.
     fn clamp(self, simd: S, diff: i8x32<S>, magnitude: u8x32<S>, clip: u8x32<S>) -> i8x32<S>;
@@ -757,6 +699,15 @@ impl<S: SimdToken> QuadLanes<S> for Ordered {
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
 struct InLane;
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn unpack_padded_rows(t: Avx2, a: u64x4<Avx2>, b: u64x4<Avx2>) -> i8x32<Avx2> {
+        core::arch::x86_64::_mm256_unpacklo_epi64(a.into(), b.into()).simd_into(t)
+    }
+);
 
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
@@ -830,6 +781,12 @@ impl QuadLanes<Avx2> for InLane {
     #[inline(always)]
     fn widen(self, simd: Avx2, lanes: i8x32<Avx2>) -> [i16x16<Avx2>; 2] {
         unpack_quad(simd, lanes)
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn padded_rows(self, simd: Avx2, a: u64x4<Avx2>, b: u64x4<Avx2>) -> i8x32<Avx2> {
+        unpack_padded_rows(simd, a, b)
     }
 
     #[allow(clippy::inline_always)]
@@ -974,7 +931,7 @@ fn cdef_filter_rows_u8_quad<
     Some(())
 }
 
-/// [`cdef_filter_rows_diff8`] over the byte scratch of a segment's
+/// Filters the byte scratch of a segment's
 /// `ROWS`-row block, 8 lanes wide, four rows per 32-lane vector, for
 /// filters [`cdef_wide8_fits`] admits, with `constrain` in the
 /// [`cdef_window_mode`] `MODE`.
@@ -1014,6 +971,13 @@ fn cdef_filter_rows_wide8<
     let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
     for_each_row_pair!([0, 4], ROWS, ROWS, |first| {
         let byte_quad = |view: &[u8; SPAN8]| -> Option<i8x32<S>> {
+            if STRIDE == LUMA_BYTE_STRIDE {
+                let pair = |row: usize| {
+                    let at = row * STRIDE;
+                    Some(u8x32::from_slice(simd, view.get(at..at + 32)?).bitcast())
+                };
+                return Some(quads.padded_rows(simd, pair(first)?, pair(first + 2)?));
+            }
             let row = |index: usize| -> Option<u64x2<S>> {
                 let at = (first + Q::ROWS[index]) * STRIDE;
                 Some(u8x16::from_slice(simd, view.get(at..at + 16)?).bitcast())
@@ -1221,19 +1185,19 @@ fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
 fn luma_wide8_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     simd: S,
     quads: Q,
-    bytes: Option<&[u8; LUMA_BLOCK_BYTES]>,
+    bytes: Option<&[u8; LUMA_PADDED_BYTES]>,
     range: i32,
     plan: &CdefFilterPlan,
     out: (&mut [T], usize),
 ) -> bool {
-    const STRIDE: usize = CDEF_SEGMENT_STRIDE;
-    const SPAN8: usize = 7 * STRIDE + 16;
-    const AREA8: usize = LUMA_BLOCK_BYTES;
+    const STRIDE: usize = LUMA_BYTE_STRIDE;
+    const SPAN8: usize = LUMA_BYTE_SPAN;
+    const AREA8: usize = LUMA_PADDED_BYTES;
     let (Some(bytes), true) = (bytes, plan.wide8) else {
         return false;
     };
     let filter = &plan.filter;
-    let inputs = (bytes, plan, &CDEF_SEGMENT_TAP_STARTS);
+    let inputs = (bytes, plan, &LUMA_BYTE_STARTS);
     macro_rules! run {
         ($mode:ident) => {
             cdef_by_families!(
@@ -1505,14 +1469,14 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
         else {
             return false;
         };
-        let bytes = segment.block_bytes(block);
+        let packed = segment.padded_block_bytes(block);
         let use_range = filters.luma && unit.luma_active;
         let luma_flat = use_range && least == greatest;
         let (y_dir, var) = if !unit.directions || luma_flat {
             (0, 0)
         } else if segment.has_pad {
             cdef_direction_strided::<CDEF_SEGMENT_STRIDE, CDEF_SEGMENT_BLOCK_AREA>(luma, shift)
-        } else if let Some(bytes) = bytes {
+        } else if let Some(bytes) = packed {
             direction_from_bytes(bytes)
         } else {
             return false;
@@ -1528,14 +1492,14 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
                 luma_segment_with(
                     simd,
                     quads,
-                    (luma, bytes),
+                    (luma, segment.block_bytes(block)),
                     Some([least, greatest]),
                     &y_plan,
                     (out, luma_stride),
                 )
             } else {
                 let range = i32::from(greatest) - i32::from(least);
-                luma_wide8_with(simd, quads, bytes, range, &y_plan, (out, luma_stride))
+                luma_wide8_with(simd, quads, packed, range, &y_plan, (out, luma_stride))
             };
             if !written {
                 return false;

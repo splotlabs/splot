@@ -1117,6 +1117,10 @@ fn cdef_segment<S: ReconSample>(
     let Some(Some(unit)) = lookup.units.get(strength_index) else {
         return Ok(false);
     };
+    let blocks = lookup.segment_planes(r, c)?;
+    if blocks.iter().all(|block| !block.luma && !block.chroma) {
+        return Ok(true);
+    }
     let luma_bytes = unit.luma_bytes_suffice();
     if luma_used {
         let (width, stride) = (y_plane.width(), y_plane.stride());
@@ -1161,7 +1165,6 @@ fn cdef_segment<S: ReconSample>(
         (Some(_), _, _) => return Err(CdefError::Workspace),
         _ => None,
     };
-    let blocks = lookup.segment_planes(r, c)?;
     let chroma = chroma_rows.map(|planes| (&scratch.pair, planes));
     if !cdef_filter_segment(
         &scratch.luma,
