@@ -464,8 +464,9 @@ impl PassEdges {
     /// [`Self::build_specialized`] for a frame without sub-PU edges, where an
     /// edge filters only across a transform edge and its decision reads only
     /// the [`PlaneFacts`] of its two sides: sixteen edges at a time. Sixteen
-    /// vertical edges whose cells repeat the facts of the row above, but for
-    /// `EDGE_H`, repeat its decisions.
+    /// vertical edges reuse the row above's decisions when all 17 cells match
+    /// except for `EDGE_H`. The leftmost cell's match comes from the previous
+    /// group after the first.
     fn build_from_facts<const PLANE: usize, const PASS: usize>(
         &mut self,
         facts: &PlaneFacts,
@@ -550,9 +551,12 @@ impl PassEdges {
                 } else {
                     Some(&mut [][..])
                 };
-                let above = if PASS == 0 && row_index > 0 {
-                    let row = |from| facts.row(cell_row - 1, from, span);
-                    row(offset).zip(row(0))
+                let mut same_left = false;
+                let above = if PASS == 0 && row_index > 0 && span != 0 {
+                    let above = facts.row(cell_row - 1, 0, span + offset).ok_or_else(uncovered)?;
+                    let first = |[keys, info, qindex]: [&[u16]; 3]| (keys[0], info[0] & !EDGE_H, qindex[0]);
+                    same_left = first(above) == first(prev);
+                    Some(above.map(|words| words[offset..].as_chunks::<GROUP>().0))
                 } else {
                     None
                 };
@@ -563,26 +567,30 @@ impl PassEdges {
                 else {
                     return Err(DeblockError::Workspace);
                 };
-                for at in (0..span).step_by(GROUP) {
+                for (group, at) in (0..span).step_by(GROUP).enumerate() {
                     let lanes = at..at + GROUP;
                     let side = |[keys, info, qindex]: [&[u16]; 3]| Side {
                         keys: u16x16::from_slice(simd, &keys[lanes.clone()]),
                         info: u16x16::from_slice(simd, &info[lanes.clone()]),
                         qindex: u16x16::from_slice(simd, &qindex[lanes.clone()]),
                     };
-                    let sides = (side(curr), side(prev));
-                    if let Some((above_curr, above_prev)) = above {
-                        let differs = |a: Side<_>, b: Side<_>| {
-                            (a.keys ^ b.keys) | (a.info ^ b.info) & !EDGE_H | (a.qindex ^ b.qindex)
-                        };
-                        let diff = differs(side(above_curr), sides.0) | differs(side(above_prev), sides.1);
+                    let curr = side(curr);
+                    if let Some(above) = above {
+                        let [keys, info, qindex] = above.map(|words| {
+                            u16x16::from_slice(simd, &words[group])
+                        });
+                        let diff = (curr.keys ^ keys) | (curr.info ^ info) & !EDGE_H | (curr.qindex ^ qindex);
+                        let same = diff.bitcast::<u8x32<_>>().simd_eq(0).to_bitmask();
+                        let repeats = same_left && same == u64::from(u32::MAX);
+                        same_left = same >> 30 == 3;
                         if let Some(above) = above_edges.get(lanes.clone())
-                            && diff.simd_eq(u16x16::splat(simd, 0)).all_true()
+                            && repeats
                         {
                             edges[lanes].copy_from_slice(above);
                             continue;
                         }
                     }
+                    let sides = (curr, side(prev));
                     let left = (cols - offset - at).min(GROUP) as u16;
                     let valid = lane.simd_lt(u16x16::splat(simd, left));
                     let control = if PASS == 0 {
