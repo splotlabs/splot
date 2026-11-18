@@ -38,19 +38,19 @@ impl ChromaSampling {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockRect {
-    row4: u32,
-    col4: u32,
-    width4: u32,
-    height4: u32,
+    row4: u16,
+    col4: u16,
+    width4: u16,
+    height4: u16,
 }
 
 impl BlockRect {
     pub(crate) const fn new(row4: usize, col4: usize, width4: usize, height4: usize) -> Self {
         Self {
-            row4: row4 as u32,
-            col4: col4 as u32,
-            width4: width4 as u32,
-            height4: height4 as u32,
+            row4: row4 as u16,
+            col4: col4 as u16,
+            width4: width4 as u16,
+            height4: height4 as u16,
         }
     }
 
@@ -146,8 +146,8 @@ impl TxShape {
 pub(crate) struct PlaneBlock {
     x: u32,
     y: u32,
-    width4: u32,
-    height4: u32,
+    width4: u16,
+    height4: u16,
     tx: TxShape,
 }
 
@@ -240,11 +240,11 @@ pub(crate) const fn normalize_intra_corner_counts(
 /// The frame and tile facts shared by every block of one tile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameTileCtx {
-    frame_mi_cols: u32,
-    frame_mi_rows: u32,
-    tile_mi_col_start: u32,
-    tile_mi_col_end: u32,
-    tile_mi_row_start: u32,
+    frame_mi_cols: u16,
+    frame_mi_rows: u16,
+    tile_mi_col_start: u16,
+    tile_mi_col_end: u16,
+    tile_mi_row_start: u16,
     bit_depth: BitDepth,
     chroma: ChromaSampling,
 }
@@ -257,10 +257,10 @@ impl FrameTileCtx {
         chroma: ChromaSampling,
     ) -> Self {
         Self {
-            frame_mi_cols: frame_mi_cols as u32,
-            frame_mi_rows: frame_mi_rows as u32,
+            frame_mi_cols: frame_mi_cols as u16,
+            frame_mi_rows: frame_mi_rows as u16,
             tile_mi_col_start: 0,
-            tile_mi_col_end: frame_mi_cols as u32,
+            tile_mi_col_end: frame_mi_cols as u16,
             tile_mi_row_start: 0,
             bit_depth,
             chroma,
@@ -292,9 +292,9 @@ impl FrameTileCtx {
         let frame_mi_rows = self.frame_mi_rows();
         let frame_mi_cols = self.frame_mi_cols();
         let col_start = col_start.min(frame_mi_cols);
-        self.tile_mi_row_start = row_start.min(frame_mi_rows) as u32;
-        self.tile_mi_col_start = col_start as u32;
-        self.tile_mi_col_end = col_end.min(frame_mi_cols).max(col_start) as u32;
+        self.tile_mi_row_start = row_start.min(frame_mi_rows) as u16;
+        self.tile_mi_col_start = col_start as u16;
+        self.tile_mi_col_end = col_end.min(frame_mi_cols).max(col_start) as u16;
         self
     }
 
@@ -302,8 +302,8 @@ impl FrameTileCtx {
     pub(crate) fn plane_block(self, block: BlockRect, tx: TxShape, plane: PlaneId) -> PlaneBlock {
         let (sub_x, sub_y) = self.chroma.subsampling(plane);
         PlaneBlock {
-            x: (block.col4 * 4) >> sub_x,
-            y: (block.row4 * 4) >> sub_y,
+            x: (u32::from(block.col4) * 4) >> sub_x,
+            y: (u32::from(block.row4) * 4) >> sub_y,
             width4: (block.width4 >> sub_x).max(1),
             height4: (block.height4 >> sub_y).max(1),
             tx: tx.subsampled(sub_x, sub_y),

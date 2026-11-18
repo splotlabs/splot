@@ -22,6 +22,18 @@ fn ctx(row4: usize, col4: usize, width4: usize, height4: usize) -> BlockCtx {
 }
 
 #[test]
+fn plane_origin_at_the_maximum_av2_frame_edge() {
+    let side4 = 1 << 14;
+    let rect = BlockRect::new(side4 - 1, side4 - 1, 1, 1);
+    let shape = TxShape::from_luma_4x4(1, 1).expect("4x4 shape");
+    let frame = FrameTileCtx::new(side4, side4, BitDepth::Ten, ChromaSampling::Yuv422);
+    let y = frame.plane_block(rect, shape, PlaneId::Y);
+    let uv = frame.plane_block(rect, shape, PlaneId::U);
+    assert_eq!((y.x(), y.y()), (65532, 65532));
+    assert_eq!((uv.x(), uv.y()), (32766, 65532));
+}
+
+#[test]
 fn every_av2_block_size_has_a_transform_shape() {
     for index in 0..MI_WIDTH_LOG2.len() {
         let block_size = BlockSize::new(index).expect("valid AV2 block size");
