@@ -10,6 +10,7 @@ use splot_recon::{
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
     TileBlockDecodedState, add_cctx_pair_residual_in_place, is_cctx_geometry_allowed,
+    with_residual_scratch,
 };
 use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_pair_into;
 
@@ -231,16 +232,18 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
         log2(u_plane.tx.width_log2()),
         log2(u_plane.tx.height_log2()),
     )?;
-    add_cctx_pair_residual_in_place(
-        &mut CurrentFrameSurface::Frame(workspace),
-        [u_coeffs, v_coeffs],
-        (u_plane.x as usize, u_plane.y as usize, size),
-        qindex,
-        cctx_type,
-        false,
-        frame.bit_depth(),
-    )?;
-    Ok(())
+    with_residual_scratch(|scratch| {
+        add_cctx_pair_residual_in_place(
+            &mut CurrentFrameSurface::Frame(workspace),
+            scratch,
+            [u_coeffs, v_coeffs],
+            (u_plane.x as usize, u_plane.y as usize, size),
+            qindex,
+            cctx_type,
+            false,
+            frame.bit_depth(),
+        )
+    })
 }
 
 fn prediction_only_coeff_block(coeffs: CoeffBlock<'_>) -> LumaCoeffBlock {

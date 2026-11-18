@@ -75,14 +75,14 @@ pub(crate) use general_intra_residual::{
     FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope,
     GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext,
     LumaTransformTypeContext, LumaTxPartition, PlaneCoeffBlock, PositionedLumaCoeffBlock,
-    TransformToolResidualPolicy, add_cctx_pair_residual_in_place,
+    ResidualScratch, TransformToolResidualPolicy, add_cctx_pair_residual_in_place,
     add_general_intra_coeff_block_residual_in_place, current_segment_lossless,
     decode_general_intra_plane_coeffs, is_cctx_geometry_allowed, luma_partition_record_fills_block,
     luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
     read_luma_transform_partition_records, read_luma_tx_partition_type,
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
-    reconstruct_inter_coeff_block_residual_rect_into,
+    reconstruct_inter_coeff_block_residual_rect_into, with_residual_scratch,
 };
 #[cfg(test)]
 pub(crate) use input::plan_derived_tile_payload_boundary;

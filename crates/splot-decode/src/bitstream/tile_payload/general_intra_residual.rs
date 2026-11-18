@@ -1897,7 +1897,7 @@ const MAX_ADJUSTED_COEFFS: usize = 32 * 32;
 
 const MAX_ORIGINAL_SAMPLES: usize = 64 * 64;
 
-struct ResidualScratch {
+pub(crate) struct ResidualScratch {
     dequant: [i32; MAX_ADJUSTED_COEFFS],
     dequant_pair: [i32; MAX_ADJUSTED_COEFFS],
     residual: [i32; MAX_ORIGINAL_SAMPLES],
@@ -1909,7 +1909,7 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-fn with_residual_scratch<R>(f: impl FnOnce(&mut ResidualScratch) -> R) -> R {
+pub(crate) fn with_residual_scratch<R>(f: impl FnOnce(&mut ResidualScratch) -> R) -> R {
     RESIDUAL_SCRATCH.with(|cell| {
         let mut scratch = cell.take().unwrap_or_else(|| {
             Box::new(ResidualScratch {

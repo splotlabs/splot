@@ -16,14 +16,15 @@ use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
-    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
+    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter, IntraRectBlockSize,
     PlaneId as ReconPlaneId, QuantizerDeltas, ReconSample, ReferenceFrameStore, ReferenceSlot,
 };
 
 use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::tile_payload::{
-    FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap, GeneralIntraResidualError,
-    add_cctx_pair_residual_in_place,
+    CoeffBlock, FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap,
+    GeneralIntraResidualError, ResidualScratch, add_cctx_pair_residual_in_place,
+    reconstruct_inter_coeff_block_residual_rect_into, with_residual_scratch,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateError};
 use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
@@ -953,48 +954,58 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
     let blocks = residual
         .blocks(residual_blocks)
         .ok_or(DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
-    for (index, block) in blocks.iter().enumerate() {
-        if block.cctx_pair_delta < 0 {
-            continue;
-        }
-        let cctx_type = block.coeffs.cctx_type().unwrap_or(0);
-        if block.plane == ReconPlaneId::U && cctx_type != 0 {
-            let v_block = inter_residual_chroma_pair(blocks, index, block)
-                .ok_or(DecodeHeaderStateError::MissingInterResidualCctxPair)?;
-            reconstruct_inter_residual_chroma_cctx_pair(
+    if blocks.is_empty() {
+        return Ok(());
+    }
+    let sample_depth = sink.info().bit_depth();
+    with_residual_scratch(|scratch| {
+        for (index, block) in blocks.iter().enumerate() {
+            if block.cctx_pair_delta < 0 {
+                continue;
+            }
+            if block.plane == ReconPlaneId::U
+                && let Some(cctx_type) = block.coeffs.cctx_type().filter(|&kind| kind != 0)
+            {
+                let v_block = inter_residual_chroma_pair(blocks, index, block)
+                    .ok_or(DecodeHeaderStateError::MissingInterResidualCctxPair)?;
+                reconstruct_inter_residual_chroma_cctx_pair(
+                    sink,
+                    scratch,
+                    [block, v_block],
+                    residual_coeffs,
+                    qindex,
+                    cctx_type,
+                    use_ddt,
+                    bit_depth,
+                )
+                .map_err(inter_residual_reconstruction_error)?;
+                continue;
+            }
+            let (log2_width, log2_height) = inter_residual_log2(block)
+                .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
+            if block.coeffs.eob == 0 {
+                continue;
+            }
+            let coeffs = CoeffBlock::new(&block.coeffs, residual_coeffs)
+                .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
+            let block_size = IntraRectBlockSize::new(log2_width as u8, log2_height as u8)?;
+            reconstruct_inter_coeff_block_residual_rect_into(
                 sink,
-                [block, v_block],
-                residual_coeffs,
+                scratch,
+                coeffs,
+                block.plane,
+                block.x as usize,
+                block.y as usize,
+                block_size,
                 qindex,
-                cctx_type,
+                block.plane == ReconPlaneId::Y && luma_use_tcq,
                 use_ddt,
-                bit_depth,
+                sample_depth,
             )
             .map_err(inter_residual_reconstruction_error)?;
-            continue;
         }
-        let use_tcq = block.plane == ReconPlaneId::Y && luma_use_tcq;
-        let (log2_width, log2_height) = inter_residual_log2(block)
-            .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
-        if block.coeffs.eob == 0 {
-            continue;
-        }
-        crate::pipeline::reconstruct::reconstruct_inter_block_residual_rect_into(
-            sink,
-            crate::bitstream::tile_payload::CoeffBlock::new(&block.coeffs, residual_coeffs)
-                .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?,
-            block.plane,
-            block.x as usize,
-            block.y as usize,
-            log2_width,
-            log2_height,
-            qindex,
-            use_tcq,
-            use_ddt,
-        )
-        .map_err(inter_residual_reconstruction_error)?;
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn inter_residual_reconstruction_error(error: GeneralIntraResidualError) -> DecodeError {
@@ -1049,6 +1060,7 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 #[inline(never)]
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    scratch: &mut ResidualScratch,
     [u, v]: [&InterResidualBlock; 2],
     residual_coeffs: &[i32],
     qindex: u32,
@@ -1069,6 +1081,7 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     let coeffs = crate::bitstream::tile_payload::CoeffBlock::new;
     add_cctx_pair_residual_in_place(
         sink,
+        scratch,
         [
             coeffs(&u.coeffs, residual_coeffs)?,
             coeffs(&v.coeffs, residual_coeffs)?,

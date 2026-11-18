@@ -553,6 +553,7 @@ fn intra_residual<'s>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
+    scratch: &mut super::ResidualScratch,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
     x: usize,
@@ -581,38 +582,31 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
             sink.add_constant_residual_rect_block(plane_id, x, y, block_size, residual)?;
             return Ok(());
         }
-        let added = super::with_residual_scratch(|scratch| {
-            sink.residual_rect_mut(plane_id, x, y, block_size)
-                .map(|target| {
-                    target.is_some_and(|(dst, stride)| {
-                        fused.add(
-                            block.quant,
-                            (Some(flat), bit_depth),
-                            dst,
-                            stride,
-                            &mut scratch.dequant_pair,
-                        )
-                    })
-                })
-        })?;
+        let added = sink
+            .residual_rect_mut(plane_id, x, y, block_size)?
+            .is_some_and(|(dst, stride)| {
+                fused.add(
+                    block.quant,
+                    (Some(flat), bit_depth),
+                    dst,
+                    stride,
+                    &mut scratch.dequant_pair,
+                )
+            });
         if added {
             return Ok(());
         }
     }
     if has_secondary(block)
-        && super::with_residual_scratch(|scratch| {
-            match sink.residual_rect_mut(plane_id, x, y, block_size)? {
-                Some((dst, stride)) => add_secondary_fused::<T>(
-                    block,
-                    (block_size, plane_id, bit_depth),
-                    (qindex, use_block_tcq, use_ddt),
-                    None,
-                    (None, dst, stride),
-                    scratch,
-                ),
-                None => Ok(false),
-            }
-        })?
+        && let Some((dst, stride)) = sink.residual_rect_mut(plane_id, x, y, block_size)?
+        && add_secondary_fused::<T>(
+            block,
+            (block_size, plane_id, bit_depth),
+            (qindex, use_block_tcq, use_ddt),
+            None,
+            (None, dst, stride),
+            scratch,
+        )?
     {
         return Ok(());
     }
@@ -646,20 +640,17 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
         sink.add_constant_residual_rect_block(plane_id, x, y, block_size, residual)?;
         return Ok(());
     }
-    super::with_residual_scratch(|scratch| {
-        let dequant = &mut scratch.dequant[..setup.adjusted];
-        let coded =
-            dequantize_with_secondary(&setup.params, block.quant, secondary.as_ref(), dequant)?;
-        let residual = &mut scratch.residual[..setup.adjusted];
-        inverse_transform_2d_outer_adjusted(
-            &setup.transform()?,
-            &dequant[..coded],
-            residual,
-            &mut scratch.dequant_pair,
-        )?;
-        sink.add_adjusted_residual_rect_block(plane_id, x, y, block_size, residual)?;
-        Ok(())
-    })
+    let dequant = &mut scratch.dequant[..setup.adjusted];
+    let coded = dequantize_with_secondary(&setup.params, block.quant, secondary.as_ref(), dequant)?;
+    let residual = &mut scratch.residual[..setup.adjusted];
+    inverse_transform_2d_outer_adjusted(
+        &setup.transform()?,
+        &dequant[..coded],
+        residual,
+        &mut scratch.dequant_pair,
+    )?;
+    sink.add_adjusted_residual_rect_block(plane_id, x, y, block_size, residual)?;
+    Ok(())
 }
 
 fn check_dense_len(
