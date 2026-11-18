@@ -334,16 +334,18 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
     /// The luma view, published down to `last_row`: the last fetched view
     /// when its published rows reach that row, else a new one (with the same
     /// errors as fetching it per unit).
-    fn view(&mut self, last_row: i32) -> Result<ReferencePlaneView<'a, T>> {
-        if let Some(view) = self.view {
-            let row = (last_row.max(0) as usize).min(view.height() - 1);
-            if view.readable_row(row).is_some() {
-                return Ok(view);
+    fn view(&mut self, last_row: i32) -> Result<&ReferencePlaneView<'a, T>> {
+        let fetch = || self.samples.plane_view(PlaneId::Y, last_row, self.offset);
+        match &mut self.view {
+            Some(view) => {
+                let row = (last_row.max(0) as usize).min(view.height() - 1);
+                if row >= view.readable_rows() {
+                    *view = fetch()?;
+                }
+                Ok(view)
             }
+            slot @ None => Ok(slot.insert(fetch()?)),
         }
-        let view = self.samples.plane_view(PlaneId::Y, last_row, self.offset)?;
-        self.view = Some(view);
-        Ok(view)
     }
 }
 
@@ -404,14 +406,14 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
             actual: available,
         })?;
     if let Some(carry) = tip_centre
-        && subpel_predict_12x12_bilinear_overlap_into(&view, &params, output, rect.luma_w, carry)?
+        && subpel_predict_12x12_bilinear_overlap_into(view, &params, output, rect.luma_w, carry)?
     {
         return Ok(());
     }
-    if INSET == 0 && super::refinemv::bilinear_search_window(&view, &params, output) {
+    if INSET == 0 && super::refinemv::bilinear_search_window(view, &params, output) {
         return Ok(());
     }
-    subpel_predict_block_strided_into(&view, &params, output, rect.luma_w).map_err(Into::into)
+    subpel_predict_block_strided_into(view, &params, output, rect.luma_w).map_err(Into::into)
 }
 
 /// Whether the § 7.13.3.6 search of the eight-bit refine-MV unit `rect` ends
@@ -425,13 +427,13 @@ pub(super) fn fullpel_center_ends_search<T: ReconSample>(
     rect: McBlockRect,
     candidates: [Mv; 2],
 ) -> Result<Option<bool>> {
-    let unit = [rect.luma_w.saturating_sub(8), rect.luma_h.saturating_sub(8)];
-    if !matches!(unit, [8 | 16, 8 | 16]) {
+    let [width, height] = [rect.luma_w, rect.luma_h];
+    if !super::refinemv::fullpel_candidates(candidates)
+        || !matches!([width, height], [16 | 24, 16 | 24])
+    {
         return Ok(None);
     }
-    let [width, height] = [rect.luma_w, rect.luma_h];
-    let origin = [(rect.luma_x as i32) << 4, (rect.luma_y as i32) << 4];
-    let padding = super::refinemv::SEARCH_PADDING;
+    let padding = super::refinemv::SEARCH_PADDING / 8;
     let mut corners = [[0usize; 2]; 2];
     let mut views = [None; 2];
     for (((luma, candidate), corner), view) in luma
@@ -441,33 +443,25 @@ pub(super) fn fullpel_center_ends_search<T: ReconSample>(
         .zip(&mut views)
     {
         let scaling = luma.scaling;
-        let bounds =
-            super::refinemv::unscaled_area_bounds(origin, unit, candidate, [0, 0], &scaling);
-        let mv = [2 * (candidate.row - padding), 2 * (candidate.col - padding)];
-        let [x, y] = unscaled_cell_start(origin, mv, (0, 0));
-        let [x0, y0] = [x >> 10, y >> 10];
+        let x = rect.luma_x as i32 + (candidate.col >> 3) - padding;
+        let y = rect.luma_y as i32 + (candidate.row >> 3) - padding;
+        let (last_x, last_y) = (x + width as i32 - 1, y + height as i32 - 1);
         if scaling.is_scaled()
-            || ((x | y) >> 6) & 15 != 0
-            || [bounds.first_x, bounds.last_x, bounds.first_y, bounds.last_y]
-                != [
-                    x0 + 1,
-                    x0 + width as i32 - 1,
-                    y0 + 1,
-                    y0 + height as i32 - 1,
-                ]
-            || x0 + 1 < 0
-            || y0 + 1 < 0
+            || x + 1 < 0
+            || y + 1 < 0
+            || last_x > scaling.last_x
+            || last_y > scaling.last_y
         {
             return Ok(None);
         }
-        *corner = [(x0 + 2) as usize, (y0 + 2) as usize];
-        *view = Some(luma.view(bounds.last_y)?);
+        *corner = [(x + 2) as usize, (y + 2) as usize];
+        *view = Some(luma.view(last_y)?);
     }
     let [Some(first), Some(second)] = views else {
         return Ok(None);
     };
     let (sad_w, sad_h) = (width - 4, height - 4);
-    let Some(sad) = splot_recon::refinemv_area_sad_u8([&first, &second], corners, [sad_w, sad_h])
+    let Some(sad) = splot_recon::refinemv_area_sad_u8([first, second], corners, [sad_w, sad_h])
     else {
         return Ok(None);
     };
@@ -490,6 +484,7 @@ pub(super) fn search_windows<T: ReconSample, P: WindowSample>(
     let unit = [rect.luma_w.saturating_sub(8), rect.luma_h.saturating_sub(8)];
     let origin = [(rect.luma_x as i32) << 4, (rect.luma_y as i32) << 4];
     let padding = super::refinemv::SEARCH_PADDING;
+    let bit_depth = luma[0].bit_depth;
     let mut found = [None; 2];
     for ((luma, candidate), found) in luma.iter_mut().zip(candidates).zip(&mut found) {
         let scaling = luma.scaling;
@@ -513,10 +508,10 @@ pub(super) fn search_windows<T: ReconSample, P: WindowSample>(
         return Err(crate::DecodeHeaderStateError::InvalidBlockGeometry.into());
     };
     splot_recon::refinemv_search_windows(
-        [&first, &second],
+        [first, second],
         [&first_params, &second_params],
         allow_center,
-        luma[0].bit_depth,
+        bit_depth,
         windows,
     )
     .ok_or_else(|| crate::DecodeHeaderStateError::InvalidBlockGeometry.into())
