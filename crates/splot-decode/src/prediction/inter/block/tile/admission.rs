@@ -1518,8 +1518,13 @@ fn prepare_scheduled_motion(
         .map_err(|_| inter_allocation!("inter admission MV grids"))?;
     grids.resize_with(tiles.len(), NeighbourMvGrid::default);
     for (grid, tile) in grids.iter_mut().zip(tiles) {
-        grid.reset_for_tile(tile.mi_rows.clone(), tile.mi_cols.clone(), sb_h4)
-            .map_err(|error| inter_tile_grid_error(&error, "inter admission MV grid"))?;
+        grid.reset_for_tile(
+            tile.mi_rows.clone(),
+            tile.mi_cols.clone(),
+            sb_h4,
+            NeighbourGridMode::Motion,
+        )
+        .map_err(|error| inter_tile_grid_error(&error, "inter admission MV grid"))?;
     }
     let motion = if let Some(mut motion) = reusable.motion.take() {
         motion.reset_publishing(motion_field, units, units_per_row, motion_handle)?;

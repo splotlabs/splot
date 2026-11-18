@@ -330,6 +330,7 @@ fn inter_tile_grid_error(
 }
 
 impl<'payload> TileParser<'payload> {
+    #[allow(clippy::too_many_arguments)]
     fn new<T: ReconSample>(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
@@ -338,6 +339,7 @@ impl<'payload> TileParser<'payload> {
         gdf_state: GdfState,
         ccso_state: CcsoState,
         mut parse: TileParseState,
+        grid_mode: NeighbourGridMode,
     ) -> Result<Self> {
         let tile_offset = tile.tile_byte_span().start;
         let chroma = context.sequence.general.chroma_format_idc;
@@ -368,8 +370,12 @@ impl<'payload> TileParser<'payload> {
         };
         parse
             .mv_grid
-            .reset_for_tile(tile_rows.clone(), tile_cols.clone(), context.params.sb_h4)
-            .and_then(|()| parse.mv_grid.track_edges())
+            .reset_for_tile(
+                tile_rows.clone(),
+                tile_cols.clone(),
+                context.params.sb_h4,
+                grid_mode,
+            )
             .map_err(|error| inter_tile_grid_error(&error, "inter parser MV grid"))?;
         let walk = GeneralIntraMultiblockCursor::new(
             tile,
@@ -1855,9 +1861,15 @@ impl<'payload> TileParser<'payload> {
             .ok_or_else(invalid_inter_tile_scheduling_state)?
             .unit_count;
         let mut parser = Self::new(
-            tile, tile_bytes, context, cdef_state, gdf_state, ccso_state, parse,
+            tile,
+            tile_bytes,
+            context,
+            cdef_state,
+            gdf_state,
+            ccso_state,
+            parse,
+            NeighbourGridMode::Edges,
         )?;
-        parser.mv_grid.keep_edges_only();
         let sb_h4 = context.params.sb_h4;
         let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
         let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
@@ -2129,6 +2141,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             tile_gdf,
             tile_ccso,
             parse_state,
+            NeighbourGridMode::MotionAndEdges,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);
         let mut commit = TileCommit::direct(

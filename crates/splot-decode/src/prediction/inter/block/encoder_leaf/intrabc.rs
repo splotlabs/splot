@@ -51,8 +51,13 @@ impl EncoderInterTile {
         );
         let sb_h4 = frame_superblock_h4(sb_size, true);
         let mut grid = NeighbourMvGrid::default();
-        grid.reset_for_tile(rows.clone(), cols.clone(), sb_h4)
-            .map_err(|_| "neighbour grid size")?;
+        grid.reset_for_tile(
+            rows.clone(),
+            cols.clone(),
+            sb_h4,
+            crate::prediction::inter::find_mv_stack::NeighbourGridMode::Motion,
+        )
+        .map_err(|_| "neighbour grid size")?;
         let mut intrabc = TileIntrabcPreludeState::default();
         intrabc
             .reset_for_tile((mi_rows, mi_cols), rows, cols, sequence, true, true)

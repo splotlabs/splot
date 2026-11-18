@@ -99,7 +99,8 @@ use extra_search::{compound_extra_search, extra_search};
 use neighbour_grid::{ABSENT_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags, ProbedLeaf};
 pub(crate) use neighbour_grid::{
     BlockPrecisionRecord, GridCheckpoint, GridEdge, NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax,
-    NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES, compound_motion_mode,
+    NeighbourGridMode, NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES,
+    compound_motion_mode,
 };
 pub(crate) use temporal::{
     MotionFieldLayout, OrderHintMvContext, TemporalBandPlan, TemporalMotionBand,

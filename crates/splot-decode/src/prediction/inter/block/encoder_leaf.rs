@@ -270,7 +270,7 @@ impl EncoderInterTile {
             (size.width as usize).div_ceil(8) * 2,
         );
         let tile_start = (rows.start, cols.start);
-        grid.reset_for_tile(rows, cols, sb_h4)
+        grid.reset_for_tile(rows, cols, sb_h4, NeighbourGridMode::Motion)
             .map_err(|_| "neighbour grid size")?;
         let current_order_hint = core.display_order_hint().unwrap_or(0);
         let order_hints = reference_order_hints(
