@@ -538,8 +538,8 @@ mod tests {
         let mut taps: [SlotFrameFilterTaps; 3] = Default::default();
         for (slot, plane, sample) in [(0, 0, 1), (0, 1, 2), (0, 2, 3), (2, 2, 4)] {
             let mut class = super::super::restoration::WienerNsCoeffs::default();
-            class.push(sample).unwrap();
-            taps[slot][plane].push(class).unwrap();
+            assert!(class.push(sample).is_some());
+            assert!(taps[slot][plane].push(class).is_some());
         }
         let state = FrameReferenceStateView::from_slots_with_base_q_idx(
             &[true, false, true],

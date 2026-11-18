@@ -34,6 +34,7 @@ use crate::bitstream::byte_stream::UnitBytes;
 use crate::bitstream::tile_payload::FrameQuantizerSnapshot;
 use crate::error::DecodeError;
 use crate::filters::wienerns_lr::FrameFilterRecords;
+use crate::filters::wienerns_lr::recon::OwnedFilterFrontier;
 use crate::prediction::inter::{self, ScheduledTileRecon, ScheduledTileWorkspace};
 use crate::reference::buffer::RefSlots;
 use crate::support::decode_buffers::DecodeBuffers;
@@ -1216,7 +1217,7 @@ pub(crate) struct FinishFrame<T: SplitSample> {
         )>,
     >,
     finish: Mutex<Option<PendingFinish<T>>>,
-    frontier: Mutex<Option<crate::filters::wienerns_lr::recon::OwnedFilterFrontier<T>>>,
+    frontier: Mutex<Option<OwnedFilterFrontier<T>>>,
     filter_jobs: Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
     filter_error: Mutex<Option<DecodeError>>,
     /// The emptied setup shell of the last frame, reused by the next.
@@ -1554,7 +1555,7 @@ impl RowPools {
         let Some(rows) = rows else {
             let frontier =
                 walked.into_frontier(finish.progress_handle(), pools.inline_filter_shell.take());
-            match frontier.and_then(|frontier| frontier.run_inline()) {
+            match frontier.and_then(OwnedFilterFrontier::run_inline) {
                 Ok(filter) => pools.inline_filter_shell = Some(finish.run_owned_finish(filter)),
                 Err(error) => finish.fail(error),
             }

@@ -274,7 +274,7 @@ fn a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle() {
     let gate = RowReferenceGate {
         lists,
         settle: PixelReferenceGate {
-            slots: Default::default(),
+            slots: crate::reference::buffer::RefSlots::default(),
         },
         frame,
         temporal: &temporal,
