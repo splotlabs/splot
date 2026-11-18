@@ -77,19 +77,6 @@ impl<T> LumaTransformPartitionUnits<T> {
     pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
         self.entries.iter().flatten()
     }
-
-    pub(crate) fn try_filter_map<U, E>(
-        self,
-        mut map: impl FnMut(T) -> Result<Option<U>, E>,
-    ) -> Result<LumaTransformPartitionUnits<U>, E> {
-        let mut entries = core::array::from_fn(|_| None);
-        for (index, entry) in self.entries.into_iter().enumerate() {
-            if let Some(value) = entry {
-                entries[index] = map(value)?;
-            }
-        }
-        Ok(LumaTransformPartitionUnits { entries })
-    }
 }
 
 impl<T> IntoIterator for LumaTransformPartitionUnits<T> {

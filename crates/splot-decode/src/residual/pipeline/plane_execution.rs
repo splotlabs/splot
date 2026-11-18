@@ -12,10 +12,11 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
     CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
-    LumaTransformPartitionContext, LumaTransformPartitionUnits, LumaTransformTypeContext,
-    PlaneCoeffBlock, PositionedLumaCoeffBlock, TileBlockDecodedState, TileCoeffContextState,
-    TransformToolResidualPolicy, current_segment_lossless,
-    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
+    LumaTransformPartitionContext, LumaTransformTypeContext, PlaneCoeffBlock,
+    PositionedLumaCoeffBlock, TileBlockDecodedState, TileCoeffContextState,
+    TransformToolResidualPolicy, current_segment_lossless, decode_general_intra_plane_coeffs,
+    luma_partition_record_fills_block, luma_transform_record_starts_in_frame,
+    read_luma_transform_partition_records,
 };
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
@@ -332,9 +333,7 @@ impl ResidualPlanePlan {
                 symbols,
                 coeff_ctx,
                 tx_partition_context,
-                uv_mode,
-                angle_delta_uv,
-                policy,
+                &coeff_block,
                 palette_color_map.as_deref(),
                 deblock,
                 coeffs_arena,
@@ -458,78 +457,94 @@ impl ResidualPlanePlan {
         symbols: &mut SymbolDecoder<'_>,
         coeff_ctx: &mut TileCoeffContextState,
         tx_partition_context: LumaTransformPartitionContext,
-        uv_mode: usize,
-        angle_delta_uv: i32,
-        policy: TransformToolResidualPolicy,
+        coeff_block: &PlaneCoeffBlock,
         palette_color_map: Option<&[u8]>,
         deblock: &mut DeblockRecorder<'_>,
         coeffs_arena: &mut Vec<i32>,
         units: &mut Vec<Option<ParsedTransformUnit>>,
         palette_maps: &mut Vec<Vec<u8>>,
     ) -> core::result::Result<ParsedResidualPlaneKind, GeneralIntraResidualError> {
-        let blocks = decode_general_intra_luma_partition_coeffs(
+        let records = read_luma_transform_partition_records(
             work_unit,
             symbols,
-            coeff_ctx,
-            coeffs_arena,
-            self.x as usize,
-            self.y as usize,
-            frame.frame_mi_cols().saturating_mul(4),
-            frame.frame_mi_rows().saturating_mul(4),
-            self.tx_fills_residual_block(),
             tx_partition_context,
-            uv_mode,
-            angle_delta_uv,
+            coeff_block.x,
+            coeff_block.y,
             self.fsc_mode,
-            policy,
         )?;
-        self.retain_partitioned_luma(
-            frame,
-            blocks,
-            palette_color_map,
-            deblock,
-            units,
-            palette_maps,
-        )
-    }
-
-    pub(super) fn retain_partitioned_luma(
-        &self,
-        frame: FrameTileCtx,
-        blocks: LumaTransformPartitionUnits<PositionedLumaCoeffBlock>,
-        palette_color_map: Option<&[u8]>,
-        deblock: &mut DeblockRecorder<'_>,
-        units: &mut Vec<Option<ParsedTransformUnit>>,
-        palette_maps: &mut Vec<Vec<u8>>,
-    ) -> core::result::Result<ParsedResidualPlaneKind, GeneralIntraResidualError> {
+        let record_count = records.len();
         let start = units.len();
-        for block in blocks {
-            self.transform_unit_plan(frame, &block)?;
-            let unit_palette_color_map =
-                self.palette_color_map_for_unit(palette_color_map, &block)?;
-            let (log2_width, log2_height) = tx_size_log2(usize::from(block.tx_size))?;
-            let width4 = ((1usize << log2_width) >> 2).max(1);
-            let height4 = ((1usize << log2_height) >> 2).max(1);
-            deblock.record_luma_unit(
-                block.y as usize / 4,
-                block.x as usize / 4,
-                width4,
-                height4,
-                usize::from(block.tx_size),
-                block.coeffs.eob(),
-            );
-            units.push(Some(ParsedTransformUnit {
-                block,
-                palette_color_map: super::palette::store_palette_map(
-                    palette_maps,
-                    unit_palette_color_map,
-                ),
-            }));
+        let frame_width = frame.frame_mi_cols().saturating_mul(4);
+        let frame_height = frame.frame_mi_rows().saturating_mul(4);
+        for record in records {
+            if !luma_transform_record_starts_in_frame(&record, frame_width, frame_height) {
+                continue;
+            }
+            let coeffs = decode_general_intra_plane_coeffs(
+                work_unit,
+                symbols,
+                coeff_ctx,
+                coeffs_arena,
+                &PlaneCoeffBlock {
+                    tx_size: record.tx_size,
+                    x: record.x,
+                    y: record.y,
+                    tx_fills_block: luma_partition_record_fills_block(
+                        coeff_block.tx_fills_block,
+                        record_count,
+                        record,
+                        coeff_block.x,
+                        coeff_block.y,
+                    ),
+                    txb_skip_fsc_mode: self.fsc_mode,
+                    eob_u_nonzero: false,
+                    cctx_allowed: false,
+                    ..*coeff_block
+                },
+            )?;
+            let block = PositionedLumaCoeffBlock::new(
+                record.x,
+                record.y,
+                record.tx_size,
+                record.middle,
+                coeffs,
+            )?;
+            self.retain_luma_unit(block, palette_color_map, deblock, units, palette_maps)?;
         }
         Ok(ParsedResidualPlaneKind::PartitionedLuma(unit_range(
             start,
             units.len(),
         )?))
+    }
+
+    pub(super) fn retain_luma_unit(
+        &self,
+        block: PositionedLumaCoeffBlock,
+        palette_color_map: Option<&[u8]>,
+        deblock: &mut DeblockRecorder<'_>,
+        units: &mut Vec<Option<ParsedTransformUnit>>,
+        palette_maps: &mut Vec<Vec<u8>>,
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        let unit_palette_color_map = self.palette_color_map_for_unit(palette_color_map, &block)?;
+        let (log2_width, log2_height) = tx_size_log2(usize::from(block.tx_size))?;
+        let width4 = ((1usize << log2_width) >> 2).max(1);
+        let height4 = ((1usize << log2_height) >> 2).max(1);
+        deblock.record_luma_unit(
+            block.y as usize / 4,
+            block.x as usize / 4,
+            width4,
+            height4,
+            usize::from(block.tx_size),
+            block.coeffs.eob(),
+        );
+        units.push(Some(ParsedTransformUnit {
+            block,
+            palette_color_map: super::palette::store_palette_map(
+                palette_maps,
+                unit_palette_color_map,
+            ),
+        }));
+        Ok(())
     }
 }
 
@@ -733,14 +748,17 @@ impl ParsedResidualPlane {
                         luma_context,
                     )?;
                     super::palette::recycle_palette_map(palette_color_map);
-                    let (log2_width, log2_height) = tx_size_log2(usize::from(unit.block.tx_size))?;
-                    let width4 = (1usize << log2_width) >> 2;
-                    let height4 = (1usize << log2_height) >> 2;
                     let (sub_x, sub_y) = frame.chroma().subsampling(plan.plane_id);
                     let sb_mask = block_decoded.sb_size4().saturating_sub(1);
                     let row4 = ((unit.block.y as usize >> 2) << sub_y) & sb_mask;
                     let col4 = ((unit.block.x as usize >> 2) << sub_x) & sb_mask;
-                    block_decoded.set_block(plan.plane_id.index(), row4, col4, width4, height4);
+                    block_decoded.set_block(
+                        plan.plane_id.index(),
+                        row4,
+                        col4,
+                        plan.tx.width4(),
+                        plan.tx.height4(),
+                    );
                 }
                 Ok(())
             }

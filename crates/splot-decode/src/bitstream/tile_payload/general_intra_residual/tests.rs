@@ -649,25 +649,6 @@ fn writer_produced_narrow_four_and_five_way_partitions_are_nonconforming() {
 }
 
 #[test]
-fn sparse_partition_filter_keeps_record_order_and_original_count() {
-    let records =
-        luma_transform_records_for_partition(320, 64, TX_64X64, LumaTxPartition::Split).unwrap();
-    let record_count = records.len();
-    let Ok(visible) = records.try_filter_map::<_, !>(|record| {
-        Ok(luma_transform_record_starts_in_frame(&record, 352, 288).then_some(record))
-    });
-
-    assert_eq!(record_count, 4);
-    assert_eq!(visible.len(), 2);
-    assert!(
-        visible
-            .iter()
-            .map(|record| (record.x, record.y))
-            .eq([(320, 64), (320, 96),])
-    );
-}
-
-#[test]
 fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
     let records =
         luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Split).unwrap();
@@ -700,6 +681,7 @@ fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
 fn partitioned_luma_transform_records_skip_units_starting_outside_frame() {
     let records =
         luma_transform_records_for_partition(320, 64, TX_64X64, LumaTxPartition::Split).unwrap();
+    assert_eq!(records.len(), 4);
     let visible: Vec<(usize, usize)> = records
         .iter()
         .filter(|record| luma_transform_record_starts_in_frame(record, 352, 288))

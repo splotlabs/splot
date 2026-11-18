@@ -743,80 +743,6 @@ fn coeff_ctx_err(source: TileCoeffStateError) -> GeneralIntraResidualError {
     GeneralIntraResidualError::CoeffContextState { source }
 }
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-pub(crate) fn decode_general_intra_luma_partition_coeffs(
-    work_unit: &mut DecodeTileWorkUnit,
-    symbols: &mut SymbolDecoder<'_>,
-    context: &mut TileCoeffContextState,
-    arena: &mut Vec<i32>,
-    start_x: usize,
-    start_y: usize,
-    frame_width: usize,
-    frame_height: usize,
-    tx_fills_block: bool,
-    luma_tx_partition: LumaTransformPartitionContext,
-    uv_mode: usize,
-    angle_delta_uv: i32,
-    fsc_mode: bool,
-    transform_tool_residual_policy: TransformToolResidualPolicy,
-) -> Result<LumaTransformPartitionUnits<PositionedLumaCoeffBlock>, GeneralIntraResidualError> {
-    let reduced_tx_part_set = work_unit.coeff_frame_facts().reduced_tx_part_set();
-    let records = read_luma_transform_partition_records(
-        work_unit.cdf_mut().tile_cdfs_mut(),
-        symbols,
-        luma_tx_partition,
-        start_x,
-        start_y,
-        fsc_mode,
-        false,
-        reduced_tx_part_set,
-    )?;
-    let record_count = records.len();
-    let segment_lossless = current_segment_lossless(work_unit);
-    records.try_filter_map(|record| {
-        if !luma_transform_record_starts_in_frame(&record, frame_width, frame_height) {
-            return Ok(None);
-        }
-        let record_fills_block = luma_partition_record_fills_block(
-            tx_fills_block,
-            record_count,
-            record,
-            start_x,
-            start_y,
-        );
-        let coeffs = decode_general_intra_plane_coeffs(
-            work_unit,
-            symbols,
-            context,
-            arena,
-            &PlaneCoeffBlock {
-                plane: 0,
-                tx_size: record.tx_size,
-                x: record.x,
-                y: record.y,
-                tx_fills_block: record_fills_block,
-                eob_u_nonzero: false,
-                uv_mode,
-                angle_delta_uv,
-                chroma_inter_tx_type: DCT_DCT,
-                is_inter: false,
-                fsc_mode,
-                txb_skip_fsc_mode: fsc_mode,
-                cctx_allowed: false,
-                policy: transform_tool_residual_policy,
-                segment_lossless,
-            },
-        )?;
-        Ok(Some(PositionedLumaCoeffBlock::new(
-            record.x,
-            record.y,
-            record.tx_size,
-            record.middle,
-            coeffs,
-        )?))
-    })
-}
-
 pub(crate) fn luma_partition_record_fills_block(
     block_fills_residual: bool,
     record_count: usize,
@@ -843,16 +769,13 @@ pub(crate) struct LumaTransformPartitionRecord {
     pub(crate) middle: bool,
 }
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-fn read_luma_transform_partition_records(
-    cdfs: &mut TileCdfSubset,
+pub(crate) fn read_luma_transform_partition_records(
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     context: LumaTransformPartitionContext,
     start_x: usize,
     start_y: usize,
     fsc_mode: bool,
-    is_inter: bool,
-    reduced_tx_part_set: bool,
 ) -> Result<LumaTransformPartitionUnits<LumaTransformPartitionRecord>, GeneralIntraResidualError> {
     let mi_size = context.block_size().index();
     let tx_size = context.max_tx_size();
@@ -861,12 +784,13 @@ fn read_luma_transform_partition_records(
             start_x, start_y, tx_size,
         )));
     };
+    let reduced_tx_part_set = work_unit.coeff_frame_facts().reduced_tx_part_set();
     let tx_partition = read_luma_tx_partition_type(
-        cdfs,
+        work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
         mi_size,
         fsc_mode,
-        is_inter,
+        false,
         allow_horz,
         allow_vert,
         reduced_tx_part_set,
@@ -1001,9 +925,11 @@ pub(crate) fn luma_transform_records_for_partition(
     let col4 = start_x / MI_SIZE;
     let row4 = start_y / MI_SIZE;
     match tx_partition {
-        LumaTxPartition::None => Ok(LumaTransformPartitionUnits::one(
-            luma_transform_record_from_4x4(row4, col4, h4, w4, false)?,
-        )),
+        LumaTxPartition::None => Ok(LumaTransformPartitionUnits::one(luma_transform_record(
+            col4 * MI_SIZE,
+            row4 * MI_SIZE,
+            tx_size,
+        ))),
         LumaTxPartition::Horz => {
             h4 >>= 1;
             Ok(LumaTransformPartitionUnits::two([

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use crate::bitstream::tile_payload::{LumaTransformPartitionUnits, TileBlockDecodedState};
+use crate::bitstream::tile_payload::TileBlockDecodedState;
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
 use splot_core::symbol::Symbol;
 use splot_core::tables::conversion::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, TX_HEIGHT_LOG2};
@@ -963,13 +963,6 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
         middle: false,
         coeffs: empty_luma_coeffs(),
     };
-    let partition =
-        LumaTransformPartitionUnits::four([unit(32, 32), unit(64, 32), unit(32, 64), unit(64, 64)]);
-    let original_count = partition.len();
-    let Ok(visible) =
-        partition.try_filter_map::<_, !>(|unit| Ok((unit.x < 64 && unit.y < 64).then_some(unit)));
-    assert_eq!(original_count, 4);
-    assert_eq!(visible.len(), 1);
     let mut deblock_blocks = Vec::new();
     let mut chroma_blocks = Vec::new();
     let mut tx_skip_records = Vec::new();
@@ -985,18 +978,17 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
     };
 
     let mut units = Vec::new();
+    for block in [unit(32, 32), unit(64, 32), unit(32, 64), unit(64, 64)] {
+        if block.x < 64 && block.y < 64 {
+            plane
+                .retain_luma_unit(block, None, &mut deblock, &mut units, &mut Vec::new())
+                .expect("visible transform unit has valid geometry");
+        }
+    }
+    assert_eq!(units.len(), 1);
     let mut parsed = ParsedResidualPlane {
         plane,
-        kind: plane
-            .retain_partitioned_luma(
-                block_ctx.frame(),
-                visible,
-                None,
-                &mut deblock,
-                &mut units,
-                &mut Vec::new(),
-            )
-            .expect("visible transform unit has valid geometry"),
+        kind: ParsedResidualPlaneKind::PartitionedLuma(0..1),
         cctx_role: CctxRole::None,
     };
     assert_eq!(deblock_blocks.len(), 1);
