@@ -20,7 +20,10 @@ use splot_recon::{
     OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
 };
 
-use super::{ALL_ROWS, HeldFrameSamples, PlaneScaling, ReferenceSamples, set_forced_banded_reads};
+use super::{
+    ALL_ROWS, HeldFrameSamples, PlaneScaling, PublishedRows, ReferenceSamples, SampleSource,
+    set_forced_banded_reads,
+};
 use crate::pipeline::frame_progress::PublishedFrame;
 use crate::pipeline::inflight::{FrameSlotWriter, RefFrameSlot};
 use crate::prediction::inter::Mv;
@@ -56,13 +59,7 @@ fn reference_reads_mi_storage_outside_the_output_crop() {
         .unwrap();
     let frame = workspace.freeze().unwrap();
     let reference = ReferenceSamples::settled(&frame);
-    let view = reference
-        .plane_view_with(
-            PlaneId::Y,
-            || panic!("settled view needs no row bound"),
-            OFFSET,
-        )
-        .unwrap();
+    let view = reference.plane_view(PlaneId::Y, ALL_ROWS, OFFSET).unwrap();
     assert_eq!((view.width(), view.height()), (272, 272));
     assert_eq!(view.sample(0, 0), 31);
     assert_eq!(view.sample(271, 271), 201);
@@ -101,7 +98,7 @@ fn reference_waits_for_mi_padding_rows_to_be_published() {
         if stripe == 0 {
             assert!(
                 reference
-                    .plane_view_with(PlaneId::Y, || 270, OFFSET)
+                    .banded_plane_view(PlaneId::Y, 270, OFFSET)
                     .is_err()
             );
         } else {
@@ -267,6 +264,34 @@ fn a_refused_banded_read_propagates_out_of_motion_compensation() {
         OFFSET,
     )
     .expect("a block inside the watermark is predicted");
+}
+
+#[test]
+fn a_forced_frozen_band_keeps_readable_rows_and_checks_the_logical_limit() {
+    let frame = settled_frame();
+    let info = frame.info();
+    let scalings = PlaneScaling::of_reference_planes(info, info.coded_luma_size());
+    let reference = ReferenceSamples {
+        source: SampleSource::ForcedBand(&frame, PublishedRows::new(64, 0)),
+        scalings: &scalings,
+    };
+
+    assert!(reference.settled_plane_view(PlaneId::Y).is_none());
+    let view = reference.plane_view(PlaneId::Y, 63, OFFSET).unwrap();
+    assert_eq!(view.readable_rows(), HEIGHT);
+    assert_eq!(view.sample(HEIGHT - 1, 0), (HEIGHT - 1) as i32);
+
+    for (plane, reason) in [
+        (PlaneId::Y, "inter_reference_rows_unpublished"),
+        (PlaneId::U, "inter_reference_missing_plane"),
+    ] {
+        let Err(DecodeError::UnsupportedFeature { unsupported }) =
+            reference.plane_view(plane, 64, OFFSET)
+        else {
+            panic!("expected {reason}");
+        };
+        assert_eq!(unsupported.reason(), reason);
+    }
 }
 
 #[test]

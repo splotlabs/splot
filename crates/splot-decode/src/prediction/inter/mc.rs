@@ -744,16 +744,20 @@ fn predict_warp_plane<T: ReconSample>(
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = sink.info().bit_depth();
     let scaling = *reference.scaling(plane);
-    let last_row = || {
-        warp_plane_last_row(
-            warp_params,
-            (plane_x, plane_y, block_w, block_h),
-            sub_x,
-            sub_y,
-            scaling,
-        )
+    let view = match reference.settled_plane_view(plane) {
+        Some(view) => view,
+        None => reference.banded_plane_view(
+            plane,
+            warp_plane_last_row(
+                warp_params,
+                (plane_x, plane_y, block_w, block_h),
+                sub_x,
+                sub_y,
+                scaling,
+            ),
+            offset,
+        )?,
     };
-    let view = reference.plane_view_with(plane, last_row, offset)?;
     let (ref_width, ref_height) = (view.width(), view.height());
     let params = WarpPredictBlockParams {
         warp_params,
@@ -1347,21 +1351,22 @@ fn compound_ref_intermediate<T: ReconSample>(
         sub_x,
         sub_y,
     );
-    let last_row = || {
-        warp_params.map_or_else(
-            || compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
-            |warp_params| {
-                warp_plane_last_row(
-                    warp_params,
-                    (plane_x, plane_y, block_w, block_h),
-                    sub_x,
-                    sub_y,
-                    scaling,
-                )
-            },
-        )
+    let view = if let Some(view) = reference.settled_plane_view(plane) {
+        view
+    } else {
+        let last_row = if let Some(warp_params) = warp_params {
+            warp_plane_last_row(
+                warp_params,
+                (plane_x, plane_y, block_w, block_h),
+                sub_x,
+                sub_y,
+                scaling,
+            )
+        } else {
+            compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y)
+        };
+        reference.banded_plane_view(plane, last_row, offset)?
     };
-    let view = reference.plane_view_with(plane, last_row, offset)?;
     let Some(warp_params) = warp_params else {
         let params = scaling.subpel_params(interp, block_w, block_h, bit_depth);
         subpel_predict_block_compound_intermediate_into(&view, &params, None, samples, block_w)?;
