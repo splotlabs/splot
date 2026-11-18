@@ -72,23 +72,16 @@ fn gather_luma_bytes_with<S: SimdToken, R: LaneBounds<S>>(
     Some(segment_bounds(simd, reduce, chunks(min), chunks(max)))
 }
 
-/// [`cdef_direction_segment`] of a block of an 8-bit segment from its byte
-/// scratch, whose bytes are already the § 7.18.2 samples minus 128.
+/// The § 7.18.2 luma direction inputs from bytes already offset by 128.
 #[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
-pub(super) fn direction_from_bytes(bytes: &[u8; LUMA_PADDED_BYTES]) -> (usize, i32) {
-    #[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
-    #[inline(always)]
-    fn rows<S: SimdToken>(simd: S, bytes: &[u8; LUMA_PADDED_BYTES]) -> [i16x8<S>; 8] {
-        core::array::from_fn(|i| {
-            let start = (i + TAP_REACH) * LUMA_BYTE_STRIDE + TAP_REACH;
-            let lanes = u8x16::from_slice(simd, &bytes[start..start + 16]).bitcast::<i8x16<S>>();
-            simd.widen_i8x16(lanes).0
-        })
-    }
-    #[cfg(target_arch = "x86_64")]
-    if let Some(avx2) = Level::baseline().as_avx2() {
-        return cdef_best_direction(cdef_direction_costs_avx2(avx2, rows(avx2, bytes)));
-    }
-    baseline_simd!(simd => cdef_direction_rows(simd, rows(simd, bytes)))
+pub(super) fn direction_byte_rows<S: SimdToken>(
+    simd: S,
+    bytes: &[u8; LUMA_PADDED_BYTES],
+) -> [i16x8<S>; 8] {
+    core::array::from_fn(|i| {
+        let start = (i + TAP_REACH) * LUMA_BYTE_STRIDE + TAP_REACH;
+        let lanes = u8x16::from_slice(simd, &bytes[start..start + 16]).bitcast::<i8x16<S>>();
+        simd.widen_i8x16(lanes).0
+    })
 }

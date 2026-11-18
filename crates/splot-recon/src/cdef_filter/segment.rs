@@ -654,6 +654,12 @@ trait QuadLanes<S: SimdToken>: Copy {
     fn padded_rows(self, simd: S, a: u64x4<S>, b: u64x4<S>) -> i8x32<S> {
         simd.unzip_low_u64x4(a, b).bitcast()
     }
+    /// The direction and variance of a block's already centered luma rows.
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn direction(self, simd: S, rows: [i16x8<S>; 8]) -> (usize, i32) {
+        cdef_direction_rows(simd, rows)
+    }
     /// `diff`, whose absolute value is `magnitude`, clamped to `-clip..=clip`
     /// for a `clip` below 128.
     fn clamp(self, simd: S, diff: i8x32<S>, magnitude: u8x32<S>, clip: u8x32<S>) -> i8x32<S>;
@@ -787,6 +793,12 @@ impl QuadLanes<Avx2> for InLane {
     #[inline(always)]
     fn padded_rows(self, simd: Avx2, a: u64x4<Avx2>, b: u64x4<Avx2>) -> i8x32<Avx2> {
         unpack_padded_rows(simd, a, b)
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn direction(self, simd: Avx2, rows: [i16x8<Avx2>; 8]) -> (usize, i32) {
+        cdef_direction_avx2(simd, rows)
     }
 
     #[allow(clippy::inline_always)]
@@ -1475,9 +1487,12 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
         let (y_dir, var) = if !unit.directions || luma_flat {
             (0, 0)
         } else if segment.has_pad {
-            cdef_direction_strided::<CDEF_SEGMENT_STRIDE, CDEF_SEGMENT_BLOCK_AREA>(luma, shift)
+            quads.direction(
+                simd,
+                cdef_direction_input::<_, CDEF_SEGMENT_STRIDE, _>(simd, luma, shift),
+            )
         } else if let Some(bytes) = packed {
-            direction_from_bytes(bytes)
+            quads.direction(simd, direction_byte_rows(simd, bytes))
         } else {
             return false;
         };
