@@ -450,7 +450,14 @@ fn resolve_initial_frame_cdfs_reusing(
             ));
         }
         ResolvedCdfLoad::Default => None,
-        ResolvedCdfLoad::LoadSlot { primary, .. } => Some(reference.cdfs_for_slot(primary)?),
+        ResolvedCdfLoad::LoadSlot {
+            primary,
+            blend: None,
+        } => return reference.cdfs_for_slot(primary),
+        ResolvedCdfLoad::LoadSlot {
+            primary,
+            blend: Some(_),
+        } => Some(reference.cdfs_for_slot(primary)?),
     };
     if storage.is_none() {
         *storage = Some(Arc::new(FrameCdfSubset::from_defaults()));

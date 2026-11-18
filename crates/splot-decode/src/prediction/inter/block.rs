@@ -517,19 +517,26 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
 /// subset, which the entropy pass alone settles.
 fn finish_frame_cdfs(
     initial: &Arc<FrameCdfSubset>,
-    work_units: &[DecodeTileWorkUnit],
+    work_units: &mut [DecodeTileWorkUnit],
     products: &mut super::FrameProductWriters,
 ) -> Result<Arc<FrameCdfSubset>> {
-    products.frame_cdfs()?.fold_frame_end(
-        initial,
-        work_units.iter().map(|tile| {
-            (
-                tile.tile_num(),
-                tile.cdf().tile_cdfs(),
-                tile.cdf().save_policy(),
-            )
-        }),
-    );
+    let output = products.frame_cdfs()?;
+    if !work_units
+        .iter_mut()
+        .rev()
+        .any(|tile| output.transfer_saved_tile(tile.cdf_mut()))
+    {
+        output.fold_frame_end(
+            initial,
+            work_units.iter().map(|tile| {
+                (
+                    tile.tile_num(),
+                    tile.cdf().tile_cdfs(),
+                    tile.cdf().save_policy(),
+                )
+            }),
+        );
+    }
     products.cdf_output()
 }
 
