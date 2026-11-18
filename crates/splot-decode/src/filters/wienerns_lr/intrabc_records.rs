@@ -427,8 +427,8 @@ impl TileIntrabcPreludeState {
         } else {
             0
         };
+        self.values.clear();
         self.values.resize(values_len, IntrabcGridCell::default());
-        self.values.fill(IntrabcGridCell::default());
         self.enabled = enabled;
         self.mi_rows = mi_rows;
         self.mi_cols = mi_cols;

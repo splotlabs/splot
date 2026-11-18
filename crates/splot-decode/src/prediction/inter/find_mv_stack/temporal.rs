@@ -557,15 +557,10 @@ fn temporal_block_cells8(
     width8: usize,
     height8: usize,
 ) -> Option<(Range<usize>, Range<usize>)> {
-    let row_end = block.mi_row.checked_add(block.n4h)?.min(block.mi_rows);
-    let col_end = block.mi_col.checked_add(block.n4w)?.min(block.mi_cols);
-    if row_end <= block.mi_row || col_end <= block.mi_col {
-        return None;
-    }
     let row8_start = block.mi_row >> 1;
     let col8_start = block.mi_col >> 1;
-    let row8_end = (row8_start + (row_end - block.mi_row).div_ceil(2)).min(height8);
-    let col8_end = (col8_start + (col_end - block.mi_col).div_ceil(2)).min(width8);
+    let row8_end = block.row8_end.min(height8);
+    let col8_end = block.col8_end.min(width8);
     (row8_start < row8_end && col8_start < col8_end)
         .then_some((row8_start..row8_end, col8_start..col8_end))
 }
@@ -693,10 +688,8 @@ impl BlockRefs {
 pub(crate) struct TemporalMotionBlock {
     mi_row: usize,
     mi_col: usize,
-    n4w: usize,
-    n4h: usize,
-    mi_rows: usize,
-    mi_cols: usize,
+    col8_end: usize,
+    row8_end: usize,
     current_order_hint: u32,
     ref_order_hints: [Option<u32>; 2],
     motion: TemporalBlockMotion,
@@ -729,13 +722,12 @@ impl TemporalMotionBlock {
             && self.motion == next.motion
             && self.ref_order_hints == next.ref_order_hints
             && self.current_order_hint == next.current_order_hint
-            && (self.mi_row, self.n4h, self.mi_rows, self.mi_cols)
-                == (next.mi_row, next.n4h, next.mi_rows, next.mi_cols)
-            && self.mi_col.is_multiple_of(2)
-            && self.n4w.is_multiple_of(2)
-            && self.mi_col + self.n4w == next.mi_col;
+            && self.mi_row == next.mi_row
+            && self.row8_end == next.row8_end
+            && next.mi_col.is_multiple_of(2)
+            && self.col8_end == next.mi_col >> 1;
         if fits {
-            self.n4w += next.n4w;
+            self.col8_end = next.col8_end;
         }
         fits
     }
@@ -753,13 +745,17 @@ impl TemporalMotionBlock {
         mvs: [Mv; 2],
         warp_params: [Option<[i32; 6]>; 2],
     ) -> Self {
+        let cell_end = |start: usize, len: usize, limit: usize| {
+            let extent = start
+                .checked_add(len)
+                .map_or(0, |end| end.min(limit).saturating_sub(start));
+            (start >> 1) + extent.div_ceil(2)
+        };
         Self {
             mi_row,
             mi_col,
-            n4w,
-            n4h,
-            mi_rows,
-            mi_cols,
+            col8_end: cell_end(mi_col, n4w, mi_cols),
+            row8_end: cell_end(mi_row, n4h, mi_rows),
             current_order_hint,
             ref_order_hints,
             motion: TemporalBlockMotion::new(mvs, warp_params),
@@ -885,9 +881,9 @@ impl ProjectedTemporalMotionField {
                     context: "inter projected temporal motion field",
                 })
             })?;
+        self.cells.clear();
         self.cells
             .resize(cells, ProjectedTemporalMotionCell::default());
-        self.cells.fill(ProjectedTemporalMotionCell::default());
         Ok(())
     }
 

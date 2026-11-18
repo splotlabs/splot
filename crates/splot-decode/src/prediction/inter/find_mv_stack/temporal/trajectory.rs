@@ -215,8 +215,8 @@ impl TrajectoryState {
         let cell_count = width8.checked_mul(height8)?;
         let total = cell_count.checked_mul(reference_count)?;
         self.reference_count = reference_count;
+        self.cells.clear();
         self.cells.resize(total, PackedTrajectoryMv::INVALID);
-        self.cells.fill(PackedTrajectoryMv::INVALID);
         self.step = step.clamp(1, 2);
         self.unit_size8 = unit_size8.max(1);
         (self.width8, self.height8) = (width8, height8);

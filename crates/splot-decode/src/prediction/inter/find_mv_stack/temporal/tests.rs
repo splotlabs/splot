@@ -53,7 +53,7 @@ fn project_whole_temporal_motion_field(
 
 #[test]
 fn temporal_motion_block_stays_compact() {
-    assert_eq!(size_of::<TemporalMotionBlock>(), 120);
+    assert_eq!(size_of::<TemporalMotionBlock>(), 104);
     assert_eq!(size_of::<ProjectedTemporalMotionCell>(), 8);
 }
 
