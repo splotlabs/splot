@@ -721,7 +721,7 @@ pub(crate) fn plane_prediction<T: ReconSample>(
     );
 
     let params = scaling.subpel_params(interp, block_w, block_h, info.bit_depth());
-    let view = reference.plane_view_with(plane, || subpel_last_reference_row(&params), offset)?;
+    let view = reference.plane_view(plane, subpel_last_reference_row(&params), offset)?;
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
     Ok((view, rect, params))
 }
@@ -1234,10 +1234,16 @@ fn compound_plane_views<'a, T: ReconSample>(
     block_h: usize,
     offset: ByteOffset,
 ) -> Result<[ReferencePlaneView<'a, T>; 2]> {
+    if let (Some(view0), Some(view1)) = (
+        block.reference0.settled_plane_view(plane),
+        block.reference1.settled_plane_view(plane),
+    ) {
+        return Ok([view0, view1]);
+    }
     let view = |reference: ReferenceSamples<'a, T>, scaling: PlaneScaling| {
-        reference.plane_view_with(
+        reference.plane_view(
             plane,
-            || compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
+            compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
             offset,
         )
     };
