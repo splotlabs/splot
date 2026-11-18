@@ -528,7 +528,9 @@ fn write_projection(
 
 /// Reads the sampled cells of one chunk and computes, for each, its
 /// decompressed vector, its projection, its sampled position and its band
-/// cell; a `TRACKED` scan also places the § 7.9.8 trajectory end. The lane
+/// cell; a `TRACKED` scan also places the § 7.9.8 trajectory end. A group
+/// of sub-cell projection and end offsets keeps its scanned positions, so
+/// its output and trajectory indices share one row base per band. The lane
 /// window only needs the scanned list's `count * step` cells: a step-1 group
 /// spans one six-byte list per cell and a step-2 group skips every other
 /// cell, so lanes past that read stale bytes that the walk mask drops.
@@ -554,7 +556,16 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
     window[..copied].copy_from_slice(&stored[..copied]);
     let track = geometry.track;
     let lane_x = Lanes::from_fn(simd, |lane| (lane * geometry.step) as i32);
-    let y = Lanes::splat(simd, i32::try_from(y8).ok()?);
+    let row = i32::try_from(y8).ok()?;
+    let y = Lanes::splat(simd, row);
+    let row_index = |band: BandLanes| {
+        let row = row.wrapping_sub(band.row_base);
+        (row.wrapping_mul(band.width8), row >> 31)
+    };
+    let (out_base, out_pad) = row_index(geometry.output);
+    let (track_base, track_pad) = row_index(track.band);
+    let frame_row = simd.splat_mask32x16((row as u32) < geometry.height8);
+    let aligned = (x_base | y8) & geometry.step_mask as usize == 0;
     let y_unit = y & !geometry.unit_mask;
     let y_track_unit = y & !track.unit_mask;
     let row_inside = simd.splat_mask32x16(u32::try_from(y8).is_ok_and(|y8| y8 < track.height8));
@@ -571,15 +582,48 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
             deinterleave(simd, &lanes.window, group, geometry.step)?;
         lanes.refs[group] = refs.into();
         let (allow, factor) = tables.lookup(refs);
+        let motion = [saved_rows, saved_cols].map(|saved| decompress(widen_i8(simd, saved)));
+        let projection = motion.map(|mv| project(mv, factor));
+        for (axis, (mv, projected)) in motion.into_iter().zip(projection).enumerate() {
+            lanes.ints[MV + axis][group] = mv.into();
+            lanes.ints[PROJECTED + axis][group] = projected.into();
+        }
+        let same_cell = TRACKED
+            && aligned
+            && ((motion[0].abs() | motion[1].abs()) | (projection[0].abs() | projection[1].abs()))
+                .simd_lt(64)
+                .to_bitmask()
+                == u64::from(u16::MAX);
+        if same_cell {
+            lanes.ints[POSITION][group] = y.into();
+            lanes.ints[POSITION + 1][group] = x.into();
+            lanes.ints[OUTPUT_CELL][group] = ((x + out_base) | out_pad).into();
+            let end = (x + track_base) | track_pad;
+            let index = end.into();
+            lanes.ints[TRAJECTORY_CELL][group] = index;
+            lanes.ints[END_CELL][group] = index;
+
+            let source_x = x.bitcast::<u32x16<S>>();
+            let within = frame_row & source_x.simd_lt(geometry.width8);
+            let in_band = within & end.bitcast::<u32x16<S>>().simd_lt(track.cells);
+            let track_source = row_inside & source_x.simd_lt(track.width8);
+            let zero = Lanes::splat(simd, 0);
+            let bit =
+                |mask: mask32x16<S>, bit: u8| mask.select(Lanes::splat(simd, bit.into()), zero);
+            let bits = bit(within, PROJECT)
+                | bit(track_source, INTERSECT)
+                | bit(within & track_source, OBSERVE)
+                | bit(in_band, REVERSE | END_WRITE);
+            let bits = narrow_bytes(simd, bits) & allow;
+            lanes.bits[group] = bits.into();
+            walk |= (bits & walk_flags).simd_ne(0).to_bitmask() << (group * LANES);
+            continue;
+        }
         let (mut sampled, mut ended) = (simd.splat_mask32x16(true), simd.splat_mask32x16(true));
         let mut base = [Lanes::splat(simd, 0); 2];
         let mut position = [Lanes::splat(simd, 0); 2];
         let mut end = [Lanes::splat(simd, 0); 2];
-        for (component, saved) in [saved_rows, saved_cols].into_iter().enumerate() {
-            let mv = decompress(widen_i8(simd, saved));
-            lanes.ints[MV + component][group] = mv.into();
-            let projected = project(mv, factor);
-            lanes.ints[PROJECTED + component][group] = projected.into();
+        for (component, (mv, projected)) in motion.into_iter().zip(projection).enumerate() {
             let (origin, limit) = if component == 0 {
                 (y, geometry.height8)
             } else {
