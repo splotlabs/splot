@@ -114,17 +114,6 @@ impl MotionCell {
         }
     }
 
-    fn uninitialized(base_mvs: [Mv; 2]) -> Self {
-        Self {
-            base_mvs,
-            mvs: [[i32::MIN; 2]; 2],
-        }
-    }
-
-    pub(super) fn is_initialized(&self) -> bool {
-        self.mvs[0][0] != i32::MIN
-    }
-
     pub(super) fn from_refinemv(base_mvs: [Mv; 2]) -> Self {
         let mvs = core::array::from_fn(|reference| {
             [base_mvs[reference].row * 2, base_mvs[reference].col * 2]

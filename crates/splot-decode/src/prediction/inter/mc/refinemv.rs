@@ -378,43 +378,11 @@ fn refined_mvs(candidates: [Mv; 2], dx: i32, dy: i32) -> [Mv; 2] {
     ]
 }
 
-/// Writes the cell of every full-pel TIP unit whose SADs on the references
-/// decide it, and returns whether it wrote any. The
-/// other cells keep their uninitialized value for the full path.
-#[inline(never)]
-pub(super) fn tip_fullpel_cells<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
-    batch: &CompoundMcBlock<'_, T>,
-    unit_at: &impl Fn(usize) -> (McBlockRect, [Mv; 2]),
-    candidates: &[[Mv; 2]],
-    offset: ByteOffset,
-    cells: &mut [MotionCell],
-) -> Result<bool> {
-    let mut views = None;
-    let mut wrote = false;
-    for (index, (cell, &mvs)) in cells.iter_mut().zip(candidates).enumerate() {
-        if !fullpel_candidates(mvs) {
-            continue;
-        }
-        let unit = (unit_at(index).0, mvs);
-        let Some(views) =
-            views.get_or_insert_with(|| TipFullpelViews::new(sink, batch, unit, offset))
-        else {
-            break;
-        };
-        if let Some(fast) = views.motion_cell(sink, batch, unit)? {
-            *cell = fast;
-            wrote = true;
-        }
-    }
-    Ok(wrote)
-}
-
 /// Both luma reference views of one TIP batch, for units whose candidates
 /// are full-pel: their bilinear initial predictions are the clamped
 /// reference samples, so the § 7.13.3.6 and optical-flow SADs read the
 /// references in place.
-struct TipFullpelViews<'a, T: ReconSample> {
+pub(super) struct TipFullpelViews<'a, T: ReconSample> {
     views: [ReferencePlaneView<'a, T>; 2],
     /// The last column and storage row each reference's bounds clamp to.
     last: [(i32, i32); 2],
@@ -441,7 +409,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     /// its first full-pel unit (`rect`, `mvs`), or `None`. Each view is
     /// published down to the last row that unit's fast path reads; every
     /// later read is bounded by the published rows.
-    fn new(
+    pub(super) fn new(
         sink: &WorkspaceSink<'_, '_, T>,
         batch: &CompoundMcBlock<'a, T>,
         (rect, mvs): (McBlockRect, [Mv; 2]),
@@ -486,7 +454,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
 
     /// The motion cell of an 8x8 full-pel unit when the SADs on the
     /// references decide it, or `None` to build the initial predictions.
-    fn motion_cell(
+    pub(super) fn motion_cell(
         &self,
         sink: &WorkspaceSink<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,

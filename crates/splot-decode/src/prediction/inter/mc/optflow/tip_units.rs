@@ -6,6 +6,7 @@
 //! frame, with U and V sharing one pass of placements. A block of equal
 //! full-pel units is predicted as one block.
 
+use super::super::refinemv::{TipFullpelViews, fullpel_candidates};
 use super::*;
 use crate::DecodeHeaderStateError;
 
@@ -53,62 +54,58 @@ pub(crate) fn refine_tip_units<T: ReconSample>(
         }
         .into());
     }
-    let unit_at = |index: usize| {
-        let rect = McBlockRect::from_luma_rect(
-            block.rect.luma_x + index % columns * 8,
-            block.rect.luma_y + index / columns * 8,
-            8,
-            8,
-        );
-        (rect, candidates[index])
-    };
     let TipUnits {
         cells,
         fullpel_runs,
         search,
         ..
     } = units;
-    let fullpel = candidates
-        .iter()
-        .any(|&mvs| super::super::refinemv::fullpel_candidates(mvs));
     cells.clear();
     cells
         .try_reserve(candidates.len())
         .map_err(|_| ReconError::ArithmeticOverflow {
             context: "TIP compound motion grid",
         })?;
-    cells.resize(
-        candidates.len(),
-        MotionCell::uninitialized([block.mv0, block.mv1]),
-    );
     if block.optflow_distances.is_none() {
         search_tip_units(sink, block, candidates, cells, (columns, unit_size), offset)?;
-        *fullpel_runs = fullpel && fullpel_run_pairs(cells, columns);
+        *fullpel_runs =
+            candidates.iter().copied().any(fullpel_candidates) && fullpel_run_pairs(cells, columns);
         return Ok(());
     }
-    let fast = fullpel
-        && super::super::refinemv::tip_fullpel_cells(
-            sink, block, &unit_at, candidates, offset, cells,
-        )?;
+    let mut fullpel = false;
+    let mut fullpel_views = None;
     let mut luma = LumaReference::pair(sink.info(), block, offset);
     let mut carries: [BilinearOverlapCarry<'_, T>; 2] = Default::default();
-    for (index, cell) in cells.iter_mut().enumerate() {
-        if fast && cell.is_initialized() {
-            continue;
+    for (row, candidates) in candidates.chunks(columns).enumerate() {
+        for (col, &mvs) in candidates.iter().enumerate() {
+            let rect = McBlockRect::from_luma_rect(
+                block.rect.luma_x + col * 8,
+                block.rect.luma_y + row * 8,
+                8,
+                8,
+            );
+            if fullpel_candidates(mvs) {
+                fullpel = true;
+                if let Some(views) = fullpel_views
+                    .get_or_insert_with(|| TipFullpelViews::new(sink, block, (rect, mvs), offset))
+                    && let Some(cell) = views.motion_cell(sink, block, (rect, mvs))?
+                {
+                    cells.push(cell);
+                    continue;
+                }
+            }
+            let refined = super::super::refinemv::tip_refinemv_optflow_motion_cell(
+                block,
+                (rect, mvs),
+                search,
+                &mut luma,
+                &mut carries,
+            )?;
+            cells.push(match refined {
+                Some(cell) => cell,
+                None => tip_unit_motion_cell(sink, block, (rect, mvs), &mut luma)?,
+            });
         }
-        let (rect, mvs) = unit_at(index);
-        let refined = super::super::refinemv::tip_refinemv_optflow_motion_cell(
-            block,
-            (rect, mvs),
-            search,
-            &mut luma,
-            &mut carries,
-        )?;
-        if let Some(refined) = refined {
-            *cell = refined;
-            continue;
-        }
-        *cell = tip_unit_motion_cell(sink, block, (rect, mvs), &mut luma)?;
     }
     *fullpel_runs = fullpel && fullpel_run_pairs(cells, columns);
     Ok(())
@@ -121,23 +118,23 @@ fn search_tip_units<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     candidates: &[[Mv; 2]],
-    cells: &mut [MotionCell],
+    cells: &mut Vec<MotionCell>,
     (columns, unit_size): (usize, usize),
     offset: ByteOffset,
 ) -> Result<()> {
     let mut luma = LumaReference::pair(sink.info(), block, offset);
-    for (index, (cell, &mvs)) in cells.iter_mut().zip(candidates).enumerate() {
+    for (index, &mvs) in candidates.iter().enumerate() {
         let rect = McBlockRect::from_luma_rect(
             block.rect.luma_x + index % columns * unit_size,
             block.rect.luma_y + index / columns * unit_size,
             unit_size,
             unit_size,
         );
-        *cell = MotionCell::from_refinemv(if block.search_refinemv {
+        cells.push(MotionCell::from_refinemv(if block.search_refinemv {
             super::super::refinemv::search_refinemv(&mut luma, block, (rect, mvs))?
         } else {
             mvs
-        });
+        }));
     }
     Ok(())
 }
