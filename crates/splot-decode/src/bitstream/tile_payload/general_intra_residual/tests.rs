@@ -9,7 +9,7 @@ use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
-use splot_core::tables::conversion::MAX_TX_SIZE_RECT;
+use splot_core::tables::conversion::{MAX_TX_SIZE_RECT, TX_WIDTH_LOG2};
 
 use super::*;
 use crate::bitstream::tile_payload::TileCoeffFrameFacts;
@@ -1147,6 +1147,39 @@ fn inter_tx_set_ctx_for_frontier_block_is_zero() {
         inter_tx_type_long_ctx(INTER_SET_TX_SIZE, INTER_SET_EOB).unwrap(),
         0
     );
+}
+
+#[test]
+fn inter_transform_context_uses_adjusted_geometry() {
+    for ((tx_size, (width, height)), width_log2) in TX_WIDTH
+        .into_iter()
+        .zip(TX_HEIGHT)
+        .enumerate()
+        .zip(TX_WIDTH_LOG2)
+    {
+        let max_diag = (width.min(32) + height.min(32) - 4) as usize;
+        let width = width.min(32) as usize;
+        let height = height.min(32) as usize;
+        for eob in 1..=width * height {
+            let y = (eob - 1) >> width_log2.min(5);
+            let x = (eob - 1) % width;
+            let diag = x + y;
+            assert_eq!(
+                inter_tx_type_long_ctx(tx_size, eob).unwrap(),
+                if diag < 2 {
+                    1
+                } else if diag > max_diag {
+                    2
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                inter_ist_can_read_sec_tx(tx_size, eob).unwrap(),
+                width >= 16 && height >= 16 && eob <= ist_eob_limit(tx_size, DCT_DCT).unwrap()
+            );
+        }
+    }
 }
 
 #[test]

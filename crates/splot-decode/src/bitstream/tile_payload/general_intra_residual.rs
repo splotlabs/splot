@@ -11,7 +11,6 @@ use splot_core::tables::conversion::{
     MD_IDX_TO_TYPE, MODE_TO_ANGLE, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, SIZE_CLASS,
     SIZE_TO_TX_PART_GROUP_LOOKUP, SIZE_TO_TX_TYPE_GROUP_VERT_AND_HORZ,
     SIZE_TO_TX_TYPE_GROUP_VERT_OR_HORZ, TX_HEIGHT, TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_WIDTH,
-    TX_WIDTH_LOG2,
 };
 use splot_recon::{
     BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId, QM_OFFSET,
@@ -1618,8 +1617,10 @@ fn inter_ist_can_read_sec_tx(
     tx_size: usize,
     eob: usize,
 ) -> Result<bool, GeneralIntraResidualError> {
-    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
-    Ok(tx_width >= 16 && tx_height >= 16 && eob <= ist_eob_limit(tx_size, DCT_DCT)?)
+    let tx = TX_GEOMETRY
+        .get(tx_size)
+        .ok_or_else(|| invalid_reconstruction_state_error("transform size"))?;
+    Ok(tx.width >= 16 && tx.height >= 16 && eob <= IST_8X8_HEIGHT)
 }
 
 const fn intra_ist_can_read_sec_tx_type(luma_tx_type: usize) -> bool {
@@ -1827,13 +1828,13 @@ const fn invalid_inter_tx_type() -> GeneralIntraResidualError {
 /// conversion is total.
 fn inter_tx_type_long_ctx(tx_size: usize, eob: usize) -> Result<usize, GeneralIntraResidualError> {
     let eob = eob.saturating_sub(1);
-    let tx_width_log2 = tx_size_table_usize(&TX_WIDTH_LOG2, "Tx_Width_Log2", tx_size)?;
-    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
-    let bwl = tx_width_log2.min(5);
-    let eoby = eob >> bwl;
-    let eobx = eob - (eoby << bwl);
+    let tx = TX_GEOMETRY
+        .get(tx_size)
+        .ok_or_else(|| invalid_reconstruction_state_error("transform size"))?;
+    let eoby = eob >> tx.width_log2;
+    let eobx = eob - (eoby << tx.width_log2);
     let diag = eobx + eoby;
-    let max_diag = tx_width.min(32) + tx_height.min(32) - 4;
+    let max_diag = usize::from(tx.width) + usize::from(tx.height) - 4;
     Ok(if diag < 2 {
         1
     } else if diag > max_diag {
