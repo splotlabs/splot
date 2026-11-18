@@ -8,11 +8,6 @@ use crate::bitstream::tile_payload::general_intra_residual::wide_angle_mapping;
 
 use super::super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::super::cdf::{TileCdfSelector, TileCdfSubset};
-use super::super::super::coeff_state::{CoeffBlockLines, TileCoeffContextState};
-use super::super::base_level_pass::CoeffBaseDerivedLevelPassConfig;
-use super::super::branch::NonZeroCoeffBlockStart;
-use super::super::max_level::CoeffTransformClass;
-use super::super::transform_block::{CoeffTransformBlockInput, decode_ordinary_transform_block};
 use super::CoeffOrdinaryBranchError;
 
 const DCT_DCT: usize = 0;
@@ -44,19 +39,6 @@ const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
 ];
-
-#[derive(Clone, Copy)]
-pub(crate) struct CoeffOrdinaryStagedLosslessNonZeroInput<'l> {
-    pub(crate) plane: usize,
-    pub(crate) start: NonZeroCoeffBlockStart,
-    /// The block's context-line spans, checked by the caller.
-    pub(crate) lines: &'l CoeffBlockLines,
-    /// The block's `PlaneTxType`, derived by the caller.
-    pub(crate) plane_tx_type: usize,
-    pub(crate) parity_hiding: bool,
-    pub(crate) use_tcq: bool,
-    pub(crate) lossless: bool,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryBranchModeToTxfmBaseConfig {
@@ -103,36 +85,6 @@ pub(crate) fn read_lossless_inter_plane_tx_type(
 pub(crate) struct CoeffOrdinaryTxSizeGeometryConfig {
     pub(crate) plane: usize,
     pub(crate) tx_size: usize,
-}
-
-#[allow(clippy::inline_always, reason = "measured: once per nonzero block")]
-#[inline(always)]
-pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffOrdinaryStagedLosslessNonZeroInput<'_>,
-    quant: &mut [i32],
-) -> Result<usize, CoeffOrdinaryBranchError> {
-    let tx = input.start.tx();
-    let lossy = !input.lossless;
-    let block = CoeffTransformBlockInput {
-        start: input.start,
-        config: CoeffBaseDerivedLevelPassConfig {
-            tx_size_ctx: usize::from(tx.size_ctx),
-            tx_width_log2: u32::from(tx.width_log2),
-            tx_width: usize::from(tx.width),
-            tx_height: usize::from(tx.height),
-            plane: input.plane,
-            tx_class: CoeffTransformClass::from_plane_tx_type(input.plane_tx_type),
-            parity_hiding: lossy && input.parity_hiding,
-            use_tcq: lossy && input.use_tcq,
-        },
-        lines: input.lines,
-        lossless: input.lossless,
-    };
-    decode_ordinary_transform_block(state, cdfs, symbols, block, quant)
-        .map_err(CoeffOrdinaryBranchError::from)
 }
 
 pub(crate) fn lossless_plane_tx_type(

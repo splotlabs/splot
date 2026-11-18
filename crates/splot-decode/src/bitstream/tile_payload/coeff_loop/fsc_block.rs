@@ -59,12 +59,7 @@ pub(crate) fn decode_fsc_transform_block(
 ) -> Result<usize, CoeffFscBranchError> {
     let tx = start.tx();
     let seg_eob = start.coeff_count();
-    let scan = grid_scan(
-        CoeffTransformClass::TwoD,
-        usize::from(tx.width),
-        usize::from(tx.height),
-        seg_eob,
-    )?;
+    let scan = grid_scan(CoeffTransformClass::TwoD, tx, seg_eob)?;
     let eob = start.eob_read();
     let bob = seg_eob.checked_sub(eob).ok_or_else(|| {
         CoeffOrdinaryPassError::from(super::CoeffLoopContextError::FscScanWalkEobOutOfRange {

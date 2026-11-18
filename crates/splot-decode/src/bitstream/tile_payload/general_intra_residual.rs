@@ -29,11 +29,12 @@ use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::CoeffOrdinaryBranchError;
 use super::coeff_loop::ordinary_pass::geometry::{
     CoeffOrdinaryBranchModeToTxfmBaseConfig, CoeffOrdinaryBranchTxSetBaseConfig,
-    CoeffOrdinaryStagedLosslessNonZeroInput, CoeffOrdinaryTxSizeGeometryConfig,
-    apply_staged_nonzero_coeff_ordinary_branch_from_lossless, lossless_plane_tx_type,
-    read_lossless_inter_plane_tx_type, resolve_mode_to_txfm_plane_tx_type,
+    CoeffOrdinaryTxSizeGeometryConfig, lossless_plane_tx_type, read_lossless_inter_plane_tx_type,
+    resolve_mode_to_txfm_plane_tx_type,
 };
-use super::coeff_loop::transform_block::scan_extent;
+use super::coeff_loop::transform_block::{
+    CoeffTransformBlockInput, decode_ordinary_transform_block, scan_extent,
+};
 use super::coeff_loop::{
     CoeffLoopContextError, TX_GEOMETRY, TxGeometry, read_nonzero_coeff_block_start,
 };
@@ -1344,21 +1345,18 @@ fn decode_nonzero_plane_coeffs(
         arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
         quant_end.map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
     } else {
-        let extent = scan_extent(
-            CoeffTransformClass::from_plane_tx_type(plane_tx_type),
-            (usize::from(tx.width_log2), usize::from(tx.height_log2)),
-            eob,
-        );
+        let tx_class = CoeffTransformClass::from_plane_tx_type(plane_tx_type);
+        let extent = scan_extent(tx_class, tx, eob);
         arena.resize(start_idx + extent, 0);
-        let quant_end = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+        let quant_end = decode_ordinary_transform_block(
             context,
             work_unit.cdf_mut().tile_cdfs_mut(),
             symbols,
-            CoeffOrdinaryStagedLosslessNonZeroInput {
+            CoeffTransformBlockInput {
                 plane,
                 start,
                 lines,
-                plane_tx_type,
+                tx_class,
                 parity_hiding: base_config.parity_hiding,
                 use_tcq: base_config.use_tcq,
                 lossless,

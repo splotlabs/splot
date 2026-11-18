@@ -11,8 +11,6 @@ use super::scan_walk::CoeffScanEntry;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffQuantPassError {
-    #[error("coefficient quant pass enabled TCQ for a lossless block")]
-    InconsistentTcqConfig,
     #[error("coefficient quant pass input {index} skipped required hidden-parity sign")]
     HiddenParityMissingSign { index: usize, entry: CoeffScanEntry },
     #[error("coefficient quant pass read_quant failed: {0}")]
