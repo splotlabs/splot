@@ -14,7 +14,7 @@ use crate::bitstream::tile_payload::{
     CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
     LumaTransformPartitionContext, LumaTransformTypeContext, LumaTxPartition, PlaneCoeffBlock,
     PositionedLumaCoeffBlock, TileBlockDecodedState, TileCoeffContextState,
-    TransformToolResidualPolicy, current_segment_lossless, decode_general_intra_plane_coeffs,
+    TransformToolResidualPolicy, decode_general_intra_plane_coeffs,
     luma_partition_record_fills_block, luma_transform_record_starts_in_frame,
     luma_transform_records_for_partition, read_intra_luma_tx_partition,
 };
@@ -145,13 +145,13 @@ impl ResidualPlaneArena {
         luma_transform_type_context: LumaTransformTypeContext,
         luma_tx_partition_context: Option<LumaTransformPartitionContext>,
         transform_tool_residual_policy: TransformToolResidualPolicy,
+        segment_lossless: Option<bool>,
         deblock: &mut DeblockRecorder<'_>,
         coeffs_arena: &mut Vec<i32>,
     ) -> Result<ParsedGeneralIntraResidual, ResidualParseError> {
         let start = self.plane_count()?;
         let mut u_nonzero = false;
         let mut pending_u = false;
-        let segment_lossless = current_segment_lossless(work_unit);
         let Self {
             planes,
             units,

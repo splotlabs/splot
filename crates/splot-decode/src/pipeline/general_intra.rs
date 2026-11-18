@@ -176,7 +176,7 @@ pub(crate) struct GeneralIntraLeafParse<'a, 'p> {
 struct LeafResidualFacts<'a> {
     block_ctx: &'a BlockCtx,
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-    lossless: bool,
+    segment_lossless: Option<bool>,
     uv_mode: usize,
     luma_transform_type_context: LumaTransformTypeContext,
     luma_tx_partition_context: Option<LumaTransformPartitionContext>,
@@ -190,8 +190,6 @@ pub(crate) fn decode_one_general_intra_block(
     neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
 ) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
     let edges = neighbours.edges;
-    let _qm_segment_scope =
-        crate::bitstream::tile_payload::FrameQmSegmentScope::install(usize::from(leaf.segment_id));
     let (block_ctx, chroma_mode_geometry) = general_intra_block_ctx(frontier, leaf.arena.frame);
     let n4w = block_ctx.block().width4();
     let n4h = block_ctx.block().height4();
@@ -208,11 +206,11 @@ pub(crate) fn decode_one_general_intra_block(
         chroma_above_smooth,
         chroma_left_smooth,
     };
-    let lossless = leaf
+    let segment_lossless = leaf
         .work_unit
         .coeff_frame_facts()
-        .lossless_for_segment(usize::from(leaf.segment_id))
-        .unwrap_or(false);
+        .lossless_for_segment(usize::from(leaf.segment_id));
+    let lossless = segment_lossless.unwrap_or(false);
     let chroma_tools = tools.chroma_tools.with_lossless(lossless);
     let tile_offset = leaf.tile_offset;
 
@@ -253,7 +251,7 @@ pub(crate) fn decode_one_general_intra_block(
             &LeafResidualFacts {
                 block_ctx: &block_ctx,
                 intra_edge,
-                lossless,
+                segment_lossless,
                 uv_mode: chroma.coeff_uv_mode(),
                 luma_transform_type_context: LumaTransformTypeContext::new(y_mode, angle_delta_y),
                 luma_tx_partition_context: None,
@@ -307,7 +305,7 @@ pub(crate) fn decode_one_general_intra_block(
         &LeafResidualFacts {
             block_ctx: &block_ctx,
             intra_edge,
-            lossless,
+            segment_lossless,
             uv_mode: modes.coeff_uv_mode(),
             luma_transform_type_context: luma_transform_type_context(&modes),
             luma_tx_partition_context: luma_tx_partition_context(
@@ -657,7 +655,7 @@ fn parse_general_intra_residual_plan(
         block_c: block.col4(),
         chroma_subsampling: facts.block_ctx.chroma().subsampling(PlaneId::U),
         qindex: leaf.qindex as u16,
-        lossless: facts.lossless,
+        lossless: facts.segment_lossless.unwrap_or(false),
     };
     let residual = leaf
         .arena
@@ -671,6 +669,7 @@ fn parse_general_intra_residual_plan(
             facts.luma_transform_type_context,
             facts.luma_tx_partition_context,
             leaf.policy,
+            facts.segment_lossless,
             &mut deblock,
             leaf.coeffs_arena,
         )

@@ -127,10 +127,11 @@ pub(crate) fn read_inter_residual(
     n4h: usize,
     mi_rows: usize,
     mi_cols: usize,
-    lossless: bool,
+    segment_lossless: Option<bool>,
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<InterResidual> {
+    let lossless = segment_lossless.unwrap_or(false);
     let block_start = blocks.len();
     let arena_start = arena.len();
     let result = (|| -> Result<()> {
@@ -198,6 +199,7 @@ pub(crate) fn read_inter_residual(
                             n4w,
                             n4h,
                             (mi_rows, mi_cols),
+                            segment_lossless,
                             residual_tool_policy,
                             tile_offset,
                         )?;
@@ -227,7 +229,8 @@ pub(crate) fn read_inter_residual(
                                 chroma_chunk_x,
                                 chroma_chunk_y,
                                 frame_edge,
-                                lossless.then_some(luma_tx_size),
+                                luma_tx_size,
+                                segment_lossless,
                                 core.frame_is_intra == Some(true),
                                 residual_tool_policy,
                                 tile_offset,
@@ -309,13 +312,13 @@ fn read_inter_residual_luma_chunk(
     block_n4w: usize,
     block_n4h: usize,
     frame_mi: (usize, usize),
+    segment_lossless: Option<bool>,
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let (mi_rows, mi_cols) = frame_mi;
     let chunk_end_x4 = luma_chunk_end(frontier.c + block_n4w, luma_chunk_x4, mi_cols);
     let chunk_end_y4 = luma_chunk_end(frontier.r + block_n4h, luma_chunk_y4, mi_rows);
-    let segment_lossless = current_segment_lossless(work_unit);
     let mut read = |row: usize, col: usize, tx_size: usize, fills_block: bool| -> Result<()> {
         let coeffs = read_inter_residual_plane(
             work_unit,
@@ -383,12 +386,13 @@ fn read_inter_residual_chroma_group(
     chunk_x: usize,
     chunk_y: usize,
     frame_edge: Option<(usize, usize)>,
-    lossless_luma_tx_size: Option<usize>,
+    luma_tx_size: usize,
+    segment_lossless: Option<bool>,
     frame_is_intra: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    let lossless = lossless_luma_tx_size.is_some();
+    let lossless = segment_lossless.unwrap_or(false);
     let mut group = InterChromaGroup::new(
         frontier,
         mi_size_chunk,
@@ -402,10 +406,9 @@ fn read_inter_residual_chroma_group(
     let (tx_size, cctx_allowed) = (group.tx_size, group.cctx_allowed);
     let (base_x4, base_y4) = group.base;
     let chroma_ref = frontier.chroma_ref_geometry();
-    let lossless_luma_idtx = lossless_luma_tx_size.is_some_and(|tx_size| tx_size != TX_4X4);
+    let lossless_luma_idtx = lossless && luma_tx_size != TX_4X4;
     let lossless_uses_current_block = lossless
         && (frame_is_intra || frontier.r != chroma_ref.row() || frontier.c != chroma_ref.col());
-    let segment_lossless = current_segment_lossless(work_unit);
     let u_start = blocks.len();
     for plane in [ReconPlaneId::U, ReconPlaneId::V] {
         let is_v = plane == ReconPlaneId::V;

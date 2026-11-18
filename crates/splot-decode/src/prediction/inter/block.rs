@@ -45,15 +45,15 @@ use super::{
 };
 use crate::bitstream::tile_payload::{
     BlockSize, BlockSymbolTraceReadError, CoeffContextReset, DecodeBlockFrontier,
-    DecodeTileWorkUnit, DecodedLeafPublication, FrameCdfSubset, FrameQmSegmentScope,
-    FrameQuantizerSnapshot, FrameSegmentIdMap, GeneralIntraLeafMode, GeneralIntraMultiblockCursor,
+    DecodeTileWorkUnit, DecodedLeafPublication, FrameCdfSubset, FrameQuantizerSnapshot,
+    FrameSegmentIdMap, GeneralIntraLeafMode, GeneralIntraMultiblockCursor,
     GeneralIntraMultiblockError, GeneralIntraTreeWalkError, LumaCoeffBlock, PlaneCoeffBlock,
     TileBlockDecodedState, TileBlockDecodedStateError, TileCdfSelector, TileCdfSubset,
     TileCoeffContextState, TileCoeffStateError, TilePartitionFrontierError,
     TilePartitionTraversalError, TilePartitionTraversalUnsupported, TileSegmentIdState,
     TileSegmentIdStateError, TransformToolResidualPolicy, chroma_subsampling,
-    current_segment_lossless, decode_general_intra_plane_coeffs, get_plane_residual_size,
-    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size, read_row, row_at,
+    decode_general_intra_plane_coeffs, get_plane_residual_size, is_cctx_geometry_allowed,
+    neg_deinterleave, read_lossless_tx_size, read_row, row_at,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -1442,10 +1442,10 @@ fn decode_block(
                 usize::from(segment_id),
                 delta_q_state.qindex_u32(),
             );
-            let lossless = work_unit
+            let segment_lossless = work_unit
                 .coeff_frame_facts()
-                .lossless_for_segment(usize::from(segment_id))
-                .unwrap_or(false);
+                .lossless_for_segment(usize::from(segment_id));
+            let lossless = segment_lossless.unwrap_or(false);
             let residual = if prelude.skip_flag {
                 reset_inter_skip_coeff_contexts(
                     coeff_ctx,
@@ -1456,7 +1456,6 @@ fn decode_block(
                 )?;
                 None
             } else {
-                let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
                 Some(read_inter_residual(
                     work_unit,
                     symbols,
@@ -1471,7 +1470,7 @@ fn decode_block(
                     n4h,
                     params.mi_rows,
                     params.mi_cols,
-                    lossless,
+                    segment_lossless,
                     params.residual_tool_policy,
                     tile_offset,
                 )?)
@@ -1595,8 +1594,6 @@ fn decode_block(
     } else if !frontier.is_chroma_part() {
         segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
     }
-    let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
-
     gdf_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     cdef_state.read_for_block(
         work_unit,
@@ -2010,10 +2007,10 @@ fn finish_inter_leaf(
         ref mut filter_records,
         ref mut slots,
     } = *sink;
-    let lossless = work_unit
+    let segment_lossless = work_unit
         .coeff_frame_facts()
-        .lossless_for_segment(usize::from(segment_id))
-        .unwrap_or(false);
+        .lossless_for_segment(usize::from(segment_id));
+    let lossless = segment_lossless.unwrap_or(false);
     let residual = if skip == 0 {
         Some(read_inter_residual(
             work_unit,
@@ -2029,7 +2026,7 @@ fn finish_inter_leaf(
             n4h,
             params.mi_rows,
             params.mi_cols,
-            lossless,
+            segment_lossless,
             params.residual_tool_policy,
             tile_offset,
         )?)
