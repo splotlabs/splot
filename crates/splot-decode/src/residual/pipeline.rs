@@ -32,7 +32,7 @@ use plane_execution::{
     chroma_angle_delta_uv,
 };
 pub(crate) use plane_execution::{
-    ParsedGeneralIntraResidual, PlannedGeneralIntraResidual, ResidualPlaneArena,
+    ParsedGeneralIntraResidual, ResidualParseError, ResidualPlanInput, ResidualPlaneArena,
 };
 #[cfg(test)]
 use splot_core::tables::conversion::TX_WIDTH_LOG2;

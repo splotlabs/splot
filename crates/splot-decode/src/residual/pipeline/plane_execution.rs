@@ -91,8 +91,6 @@ pub(crate) struct ParsedResidualPlane {
 }
 
 pub(super) enum ParsedResidualPlaneKind {
-    /// Planned, its coefficients not read yet.
-    Unparsed,
     Single {
         coeffs: LumaCoeffBlock,
         palette_color_map: Option<NonZeroU32>,
@@ -122,71 +120,39 @@ pub(super) enum CctxRole {
     PairV,
 }
 
-/// A block's planned planes, a range of the row's arena.
-pub(crate) struct PlannedGeneralIntraResidual(core::ops::Range<u32>);
-
-impl ResidualPlaneArena {
-    fn plan_start(&self) -> Result<u32, ResidualPlanError> {
-        u32::try_from(self.planes.len()).map_err(|_| ResidualPlanError::InvalidGeometry)
-    }
-
-    fn push_unparsed(&mut self, plane: ResidualPlanePlan) {
-        self.planes.push(ParsedResidualPlane {
-            plane,
-            kind: ParsedResidualPlaneKind::Unparsed,
-            cctx_role: CctxRole::None,
-        });
-    }
-
-    fn planned_since(&self, start: u32) -> Result<PlannedGeneralIntraResidual, ResidualPlanError> {
-        Ok(PlannedGeneralIntraResidual(start..self.plan_start()?))
-    }
-
-    /// Plans [`super::GeneralIntraResidualPlan::rect`] into the arena.
-    pub(crate) fn plan_rect(
-        &mut self,
-        block_ctx: &BlockCtx,
+pub(crate) enum ResidualPlanInput {
+    Rect {
         luma_plan: RectLumaPlan,
         chroma_plan: Option<RectChromaPlan>,
         luma_fsc_mode: bool,
         luma_lossless_tx_size: Option<usize>,
         lossless: bool,
-    ) -> Result<PlannedGeneralIntraResidual, ResidualPlanError> {
-        let start = self.plan_start()?;
-        super::plan::plan_rect(
-            &mut |plane| self.push_unparsed(plane),
-            *block_ctx,
-            luma_plan,
-            chroma_plan,
-            luma_fsc_mode,
-            luma_lossless_tx_size,
-            lossless,
-        )?;
-        self.planned_since(start)
-    }
-
-    /// Plans [`super::GeneralIntraResidualPlan::chroma`] into the arena.
-    pub(crate) fn plan_chroma(
-        &mut self,
-        block_ctx: &BlockCtx,
+    },
+    Chroma {
         chroma_plan: RectChromaPlan,
         lossless_luma_fsc: bool,
-    ) -> Result<PlannedGeneralIntraResidual, ResidualPlanError> {
-        let start = self.plan_start()?;
-        super::plan::plan_chroma(
-            &mut |plane| self.push_unparsed(plane),
-            *block_ctx,
-            chroma_plan,
-            lossless_luma_fsc,
-        )?;
-        self.planned_since(start)
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ResidualParseError {
+    #[error(transparent)]
+    Plan(#[from] ResidualPlanError),
+    #[error(transparent)]
+    Plane(#[from] GeneralIntraResidualError),
+}
+
+impl ResidualPlaneArena {
+    fn plane_count(&self) -> Result<u32, ResidualPlanError> {
+        u32::try_from(self.planes.len()).map_err(|_| ResidualPlanError::InvalidGeometry)
     }
 
-    /// Reads the coefficients of the planned planes in syntax order.
+    /// Reads each planned plane into the arena in syntax order.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn parse(
         &mut self,
-        planned: PlannedGeneralIntraResidual,
+        block_ctx: BlockCtx,
+        input: ResidualPlanInput,
         work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
         coeff_ctx: &mut TileCoeffContextState,
@@ -196,7 +162,8 @@ impl ResidualPlaneArena {
         transform_tool_residual_policy: TransformToolResidualPolicy,
         deblock: &mut DeblockRecorder<'_>,
         coeffs_arena: &mut Vec<i32>,
-    ) -> core::result::Result<ParsedGeneralIntraResidual, GeneralIntraResidualError> {
+    ) -> Result<ParsedGeneralIntraResidual, ResidualParseError> {
+        let start = self.plane_count()?;
         let mut u_nonzero = false;
         let mut pending_u = false;
         let segment_lossless = current_segment_lossless(work_unit);
@@ -207,23 +174,17 @@ impl ResidualPlaneArena {
             frame,
         } = self;
         let frame = *frame;
-        let range = planned.0.start as usize..planned.0.end as usize;
-        for parsed in planes.get_mut(range).unwrap_or_default() {
-            let ParsedResidualPlane {
-                plane,
-                kind,
-                cctx_role,
-            } = parsed;
+        let mut parse = |mut plane: ResidualPlanePlan| -> Result<(), ResidualParseError> {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             let (role, pass_eob_u_nonzero) =
-                if chroma_pair::can_hold_for_cctx_pair(plane, segment_lossless) {
+                if chroma_pair::can_hold_for_cctx_pair(&plane, segment_lossless) {
                     (CctxRole::HoldU, false)
                 } else if plane.plane_id == PlaneId::V && !plane.defer_reconstruction && pending_u {
                     (CctxRole::PairV, eob_u_nonzero)
                 } else {
                     (CctxRole::None, eob_u_nonzero)
                 };
-            *kind = plane.parse(
+            let kind = plane.parse(
                 frame,
                 work_unit,
                 symbols,
@@ -239,8 +200,12 @@ impl ResidualPlaneArena {
                 units,
                 palette_maps,
             )?;
-            *cctx_role = role;
             plane.defer_reconstruction |= role != CctxRole::None;
+            let parsed = ParsedResidualPlane {
+                plane,
+                kind,
+                cctx_role: role,
+            };
             if plane.plane_id == PlaneId::U && role != CctxRole::PairV {
                 u_nonzero = parsed.u_nonzero(units);
             }
@@ -249,8 +214,33 @@ impl ResidualPlaneArena {
                 CctxRole::PairV => pending_u = false,
                 CctxRole::None => {}
             }
+            planes.push(parsed);
+            Ok(())
+        };
+        match input {
+            ResidualPlanInput::Rect {
+                luma_plan,
+                chroma_plan,
+                luma_fsc_mode,
+                luma_lossless_tx_size,
+                lossless,
+            } => super::plan::plan_rect(
+                &mut parse,
+                block_ctx,
+                luma_plan,
+                chroma_plan,
+                luma_fsc_mode,
+                luma_lossless_tx_size,
+                lossless,
+            )?,
+            ResidualPlanInput::Chroma {
+                chroma_plan,
+                lossless_luma_fsc,
+            } => super::plan::plan_chroma(&mut parse, block_ctx, chroma_plan, lossless_luma_fsc)?,
         }
-        Ok(ParsedGeneralIntraResidual { planes: planned.0 })
+        Ok(ParsedGeneralIntraResidual {
+            planes: start..self.plane_count()?,
+        })
     }
 }
 
@@ -664,7 +654,6 @@ impl ResidualPlanePlan {
 impl ParsedResidualPlane {
     pub(super) fn u_nonzero(&self, arena: &[ParsedTransformUnit]) -> bool {
         match &self.kind {
-            ParsedResidualPlaneKind::Unparsed => false,
             ParsedResidualPlaneKind::Single { coeffs, .. } => coeffs.eob != 0,
             ParsedResidualPlaneKind::Lossless(units) => arena
                 .get(units.start as usize..units.end as usize)
@@ -694,11 +683,6 @@ impl ParsedResidualPlane {
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let Self { plane, kind, .. } = self;
         match kind {
-            ParsedResidualPlaneKind::Unparsed => {
-                Err(GeneralIntraResidualError::InvalidReconstructionState {
-                    context: "unparsed residual plane",
-                })
-            }
             ParsedResidualPlaneKind::Single {
                 coeffs,
                 palette_color_map,

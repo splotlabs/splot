@@ -15,7 +15,8 @@ use crate::bitstream::tile_payload::{
     TransformToolResidualPolicy, classify_coeff_parse_error, read_lossless_luma_tx_size,
 };
 use crate::residual::pipeline::{
-    ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan, ResidualPlanError,
+    ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan, ResidualParseError,
+    ResidualPlanError, ResidualPlanInput,
 };
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, FrameTileCtx, TxShape};
 
@@ -243,13 +244,12 @@ pub(crate) fn decode_one_general_intra_block(
         );
         let lossless_luma_fsc =
             lossless && neighbours.collocated.uses_fsc_at(frontier.r, frontier.c);
-        let residual_plan = leaf
-            .arena
-            .plan_chroma(&block_ctx, chroma_plan, lossless_luma_fsc)
-            .map_err(general_intra_residual_plan_error)?;
         let command = parse_general_intra_residual_plan(
             leaf,
-            residual_plan,
+            ResidualPlanInput::Chroma {
+                chroma_plan,
+                lossless_luma_fsc,
+            },
             &LeafResidualFacts {
                 block_ctx: &block_ctx,
                 intra_edge,
@@ -295,20 +295,15 @@ pub(crate) fn decode_one_general_intra_block(
 
     let luma_plan = rect_luma_plan(&modes, &block_ctx, leaf.luma_use_tcq, tools.sb_mib)?;
     let chroma_plan = rect_chroma_plan(&modes, tools.cfl_ds_filter_index, tools.sb_mib);
-    let residual_plan = leaf
-        .arena
-        .plan_rect(
-            &block_ctx,
-            luma_plan,
-            chroma_plan,
-            modes.uses_active_fsc(),
-            luma_lossless_tx_size,
-            lossless,
-        )
-        .map_err(general_intra_residual_plan_error)?;
     let command = parse_general_intra_residual_plan(
         leaf,
-        residual_plan,
+        ResidualPlanInput::Rect {
+            luma_plan,
+            chroma_plan,
+            luma_fsc_mode: modes.uses_active_fsc(),
+            luma_lossless_tx_size,
+            lossless,
+        },
         &LeafResidualFacts {
             block_ctx: &block_ctx,
             intra_edge,
@@ -649,7 +644,7 @@ pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i3
 
 fn parse_general_intra_residual_plan(
     leaf: &mut GeneralIntraLeafParse<'_, '_>,
-    residual_plan: crate::residual::pipeline::PlannedGeneralIntraResidual,
+    residual_plan: ResidualPlanInput,
     facts: &LeafResidualFacts<'_>,
 ) -> Result<GeneralIntraReconCommand> {
     let block = facts.block_ctx.block();
@@ -667,6 +662,7 @@ fn parse_general_intra_residual_plan(
     let residual = leaf
         .arena
         .parse(
+            *facts.block_ctx,
             residual_plan,
             leaf.work_unit,
             leaf.symbols,
@@ -678,7 +674,12 @@ fn parse_general_intra_residual_plan(
             &mut deblock,
             leaf.coeffs_arena,
         )
-        .map_err(|error| general_intra_residual_error(error, leaf.tile_offset))?;
+        .map_err(|error| match error {
+            ResidualParseError::Plan(error) => general_intra_residual_plan_error(error),
+            ResidualParseError::Plane(error) => {
+                general_intra_residual_error(error, leaf.tile_offset)
+            }
+        })?;
     Ok(GeneralIntraReconCommand {
         residual,
         qindex: leaf.qindex,
