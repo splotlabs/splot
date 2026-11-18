@@ -209,6 +209,14 @@ pub(crate) fn current_frame_qm_segment_id() -> usize {
     FRAME_QM_SEGMENT_ID.with(core::cell::Cell::get)
 }
 
+/// The § 5.9.12 `LosslessArray` entry of the current block's segment, `None`
+/// for a segment outside it.
+pub(crate) fn current_segment_lossless(work_unit: &DecodeTileWorkUnit) -> Option<bool> {
+    work_unit
+        .coeff_frame_facts()
+        .lossless_for_segment(current_frame_qm_segment_id())
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct FrameQuantizerSnapshot {
     deltas: QuantizerDeltas,

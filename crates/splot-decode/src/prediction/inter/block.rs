@@ -45,15 +45,15 @@ use super::{
 };
 use crate::bitstream::tile_payload::{
     BlockSize, BlockSymbolTraceReadError, CoeffContextReset, DecodeBlockFrontier,
-    DecodeTileWorkUnit, DecodedLeafPublication, FrameCdfSubset, FrameQuantizerSnapshot,
-    FrameSegmentIdMap, GeneralIntraLeafMode, GeneralIntraMultiblockCursor,
+    DecodeTileWorkUnit, DecodedLeafPublication, FrameCdfSubset, FrameQmSegmentScope,
+    FrameQuantizerSnapshot, FrameSegmentIdMap, GeneralIntraLeafMode, GeneralIntraMultiblockCursor,
     GeneralIntraMultiblockError, GeneralIntraTreeWalkError, LumaCoeffBlock, PlaneCoeffBlock,
     TileBlockDecodedState, TileBlockDecodedStateError, TileCdfSelector, TileCdfSubset,
     TileCoeffContextState, TileCoeffStateError, TilePartitionFrontierError,
     TilePartitionTraversalError, TilePartitionTraversalUnsupported, TileSegmentIdState,
     TileSegmentIdStateError, TransformToolResidualPolicy, chroma_subsampling,
-    decode_general_intra_plane_coeffs, get_plane_residual_size, is_cctx_geometry_allowed,
-    neg_deinterleave, read_lossless_tx_size, read_row, row_at,
+    current_segment_lossless, decode_general_intra_plane_coeffs, get_plane_residual_size,
+    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size, read_row, row_at,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -1253,11 +1253,12 @@ fn decode_block(
         tile_offset,
         ..
     } = *sink;
-    let mut store = |state| {
+    let mut store = |leaf, state| {
         entries.push(tile::ReconRowEntry::new(
             DecodedLeafPublication::from_frontier(frontier, sb_mask),
             state,
         ));
+        leaf
     };
     let (avail_up, avail_left) = tile_neighbour_availability(
         frontier.r,
@@ -1442,10 +1443,10 @@ fn decode_block(
                 usize::from(segment_id),
                 delta_q_state.qindex_u32(),
             );
-            let segment_lossless = work_unit
+            let lossless = work_unit
                 .coeff_frame_facts()
-                .lossless_for_segment(usize::from(segment_id));
-            let lossless = segment_lossless.unwrap_or(false);
+                .lossless_for_segment(usize::from(segment_id))
+                .unwrap_or(false);
             let residual = if prelude.skip_flag {
                 reset_inter_skip_coeff_contexts(
                     coeff_ctx,
@@ -1456,6 +1457,7 @@ fn decode_block(
                 )?;
                 None
             } else {
+                let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
                 Some(read_inter_residual(
                     work_unit,
                     symbols,
@@ -1470,7 +1472,7 @@ fn decode_block(
                     n4h,
                     params.mi_rows,
                     params.mi_cols,
-                    segment_lossless,
+                    lossless,
                     params.residual_tool_policy,
                     tile_offset,
                 )?)
@@ -1491,26 +1493,28 @@ fn decode_block(
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
-            store(pending_intrabc_leaf(
-                slots,
-                PendingIntrabcBlock {
-                    frontier: *frontier,
-                    n4w,
-                    n4h,
-                    mi_rows: params.mi_rows,
-                    mi_cols: params.mi_cols,
-                    info,
-                    residual,
-                    segment_id,
-                    qindex: block_qindex,
-                    luma_use_tcq: params.luma_use_tcq,
-                    bit_depth: params.bit_depth,
-                    subsampling: (u32::from(sub_x), u32::from(sub_y)),
-                    avail_up,
-                    avail_left,
-                },
+            return Ok(store(
+                GeneralIntraLeafMode::no_luma_mode().mark_intrabc(),
+                pending_intrabc_leaf(
+                    slots,
+                    PendingIntrabcBlock {
+                        frontier: *frontier,
+                        n4w,
+                        n4h,
+                        mi_rows: params.mi_rows,
+                        mi_cols: params.mi_cols,
+                        info,
+                        residual,
+                        segment_id,
+                        qindex: block_qindex,
+                        luma_use_tcq: params.luma_use_tcq,
+                        bit_depth: params.bit_depth,
+                        subsampling: (u32::from(sub_x), u32::from(sub_y)),
+                        avail_up,
+                        avail_left,
+                    },
+                ),
             ));
-            return Ok(GeneralIntraLeafMode::no_luma_mode().mark_intrabc());
         }
         let block_qindex = segment_block_qindex(
             sequence,
@@ -1552,8 +1556,7 @@ fn decode_block(
                 intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             }
         }
-        store(EntryState::Intra(command));
-        return Ok(leaf);
+        return Ok(store(leaf, EntryState::Intra(command)));
     }
     let Some(neighbour_ctx) = neighbour_ctx else {
         return Err(crate::DecodeHeaderStateError::InvalidInterPartitionState.into());
@@ -1594,6 +1597,8 @@ fn decode_block(
     } else if !frontier.is_chroma_part() {
         segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
     }
+    let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
+
     gdf_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     cdef_state.read_for_block(
         work_unit,
@@ -1614,7 +1619,7 @@ fn decode_block(
         delta_q_state.qindex_u32(),
     );
     if skip_mode == 1 {
-        let index = compound_path::decode_skip_mode_inter_block(
+        return compound_path::decode_skip_mode_inter_block(
             work_unit,
             symbols,
             sink,
@@ -1622,9 +1627,13 @@ fn decode_block(
             &mut block_ctx,
             &neighbour_ctx,
             (skip, segment_id, block_qindex),
-        )?;
-        store(EntryState::Slot(index));
-        return Ok(GeneralIntraLeafMode::no_luma_mode());
+        )
+        .map(|index| {
+            store(
+                GeneralIntraLeafMode::no_luma_mode(),
+                EntryState::Slot(index),
+            )
+        });
     }
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let tip_frame_mode = params.tip_frame_mode;
@@ -1651,7 +1660,7 @@ fn decode_block(
         false
     };
     if uses_compound {
-        let index = compound_path::decode_compound_inter_block(
+        return compound_path::decode_compound_inter_block(
             work_unit,
             symbols,
             sink,
@@ -1661,9 +1670,13 @@ fn decode_block(
             (skip, segment_id, block_qindex),
             n4w,
             n4h,
-        )?;
-        store(EntryState::Slot(index));
-        return Ok(GeneralIntraLeafMode::no_luma_mode());
+        )
+        .map(|index| {
+            store(
+                GeneralIntraLeafMode::no_luma_mode(),
+                EntryState::Slot(index),
+            )
+        });
     }
 
     let ref_frame0: i8 = if segment_forces_globalmv {
@@ -1745,7 +1758,7 @@ fn decode_block(
         } else {
             None
         };
-        let index = finish_inter_leaf(
+        return finish_inter_leaf(
             work_unit,
             symbols,
             sink,
@@ -1775,9 +1788,13 @@ fn decode_block(
             None,
             (n4w, n4h),
             (skip, segment_id, block_qindex),
-        )?;
-        store(EntryState::Slot(index));
-        return Ok(GeneralIntraLeafMode::no_luma_mode());
+        )
+        .map(|index| {
+            store(
+                GeneralIntraLeafMode::no_luma_mode(),
+                EntryState::Slot(index),
+            )
+        });
     }
 
     let single_mode = if segment_forces_globalmv {
@@ -1912,7 +1929,7 @@ fn decode_block(
                 .as_ref()
                 .is_some_and(|tools| tools.enable_tip_refinemv),
         );
-    let index = finish_inter_leaf(
+    finish_inter_leaf(
         work_unit,
         symbols,
         sink,
@@ -1943,9 +1960,13 @@ fn decode_block(
         )),
         (n4w, n4h),
         (skip, segment_id, block_qindex),
-    )?;
-    store(EntryState::Slot(index));
-    Ok(GeneralIntraLeafMode::no_luma_mode())
+    )
+    .map(|index| {
+        store(
+            GeneralIntraLeafMode::no_luma_mode(),
+            EntryState::Slot(index),
+        )
+    })
 }
 
 /// An encoder candidate's block before § 7.12 resolution writes its motion.
@@ -2007,10 +2028,10 @@ fn finish_inter_leaf(
         ref mut filter_records,
         ref mut slots,
     } = *sink;
-    let segment_lossless = work_unit
+    let lossless = work_unit
         .coeff_frame_facts()
-        .lossless_for_segment(usize::from(segment_id));
-    let lossless = segment_lossless.unwrap_or(false);
+        .lossless_for_segment(usize::from(segment_id))
+        .unwrap_or(false);
     let residual = if skip == 0 {
         Some(read_inter_residual(
             work_unit,
@@ -2026,7 +2047,7 @@ fn finish_inter_leaf(
             n4h,
             params.mi_rows,
             params.mi_cols,
-            segment_lossless,
+            lossless,
             params.residual_tool_policy,
             tile_offset,
         )?)

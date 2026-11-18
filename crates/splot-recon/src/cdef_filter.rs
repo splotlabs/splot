@@ -564,10 +564,9 @@ const CDEF_RELATIVE_OFFSETS: CdefTapOffsets = cdef_tap_offsets(CDEF_PADDED_SIDE 
 /// Scratch index of each direction's twelve taps for the block's first
 /// sample, four primary taps (`[k][sign]`) then eight secondary
 /// (`[k][sign][dirOff]`).
-type CdefTapStartTable = [CdefTapStarts; 8];
-type CdefTapStarts = [u8; 12];
+type CdefTapStarts = [[u8; 12]; 8];
 
-const fn cdef_tap_starts(offsets: &CdefTapOffsets, center: usize) -> CdefTapStartTable {
+const fn cdef_tap_starts(offsets: &CdefTapOffsets, center: usize) -> CdefTapStarts {
     let mut starts = [[0; 12]; 8];
     let mut dir = 0;
     while dir < 8 {
@@ -594,10 +593,10 @@ const fn tap_start(start: isize) -> u8 {
     start as u8
 }
 
-const CDEF_TAP_STARTS: CdefTapStartTable =
+const CDEF_TAP_STARTS: CdefTapStarts =
     cdef_tap_starts(&CDEF_RELATIVE_OFFSETS, 2 * CDEF_PADDED_SIDE + 2);
 
-const CDEF_SEGMENT_TAP_STARTS: CdefTapStartTable = cdef_tap_starts(
+const CDEF_SEGMENT_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
     &cdef_tap_offsets(CDEF_SEGMENT_STRIDE as isize, 1),
     2 * CDEF_SEGMENT_STRIDE + 2,
 );
@@ -605,12 +604,12 @@ const CDEF_SEGMENT_TAP_STARTS: CdefTapStartTable = cdef_tap_starts(
 /// [`CDEF_TAP_STARTS`] for the interleaved chroma-pair layout: rows are
 /// `CDEF_PAIR_STRIDE` lanes apart and a column displacement moves two lanes
 /// because the two planes alternate.
-const CDEF_PAIR_TAP_STARTS: CdefTapStartTable = cdef_tap_starts(
+const CDEF_PAIR_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
     &cdef_tap_offsets(CDEF_PAIR_STRIDE as isize, 2),
     2 * CDEF_PAIR_STRIDE + 4,
 );
 
-const CDEF_PAIR_SEGMENT_TAP_STARTS: CdefTapStartTable = cdef_tap_starts(
+const CDEF_PAIR_SEGMENT_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
     &cdef_tap_offsets(CDEF_PAIR_SEGMENT_STRIDE as isize, 2),
     2 * CDEF_PAIR_SEGMENT_STRIDE + 4,
 );
@@ -782,9 +781,11 @@ fn cdef_tap_views<
     const SEC: bool,
 >(
     pad: &'a [E; AREA],
+    dir: usize,
     starts: &CdefTapStarts,
 ) -> Option<CdefTapViews<'a, E, SPAN>> {
     const { assert!(u8::MAX as usize + SPAN <= AREA) };
+    let starts = &starts[dir & 7];
     let view =
         |tap: usize| -> Option<&[E; SPAN]> { pad.get(usize::from(starts[tap])..)?.first_chunk() };
     let center_view = pad.get(2 * STRIDE + CENTER..)?.first_chunk()?;
@@ -848,7 +849,7 @@ fn cdef_filter_rows<
     (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA, T>,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, starts)?;
+        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
@@ -974,7 +975,7 @@ fn cdef_filter_rows_8bit<
     base: u16,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, starts)?;
+        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
@@ -1127,7 +1128,7 @@ fn cdef_filter_rows_diff8<
     (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA, T>,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, starts)?;
+        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
@@ -1237,7 +1238,7 @@ fn cdef_filter_rows_clamped<
     (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA, T>,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, starts)?;
+        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
@@ -1392,7 +1393,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool, T: Reco
         pad,
         h.min(8),
         filter,
-        &CDEF_TAP_STARTS[filter.dir & 7],
+        &CDEF_TAP_STARTS,
         &mut *out,
         out_stride,
     );
@@ -1468,8 +1469,7 @@ pub fn cdef_filter_block_chroma_pair(
     if h > 4 {
         return false;
     }
-    let starts = &CDEF_PAIR_TAP_STARTS[filter.dir & 7];
-    let args = (pad, h, filter, starts, &mut out[..], 8);
+    let args = (pad, h, filter, &CDEF_PAIR_TAP_STARTS, &mut out[..], 8);
     baseline_simd!(simd => cdef_filter_block_rows::<
         _,
         _,

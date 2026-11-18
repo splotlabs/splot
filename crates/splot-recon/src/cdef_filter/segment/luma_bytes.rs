@@ -11,7 +11,7 @@ pub(super) const LUMA_BYTE_SPAN: usize = 6 * LUMA_BYTE_STRIDE + 32;
 pub(super) const LUMA_PADDED_BYTES: usize = u8::MAX as usize + LUMA_BYTE_SPAN;
 pub(super) const LUMA_BYTES_AREA: usize =
     (CDEF_SEGMENT_BLOCKS - 1) * LUMA_BYTE_BLOCK + LUMA_PADDED_BYTES;
-pub(super) const LUMA_BYTE_STARTS: CdefTapStartTable = cdef_tap_starts(
+pub(super) const LUMA_BYTE_STARTS: CdefTapStarts = cdef_tap_starts(
     &cdef_tap_offsets(LUMA_BYTE_STRIDE as isize, 1),
     2 * LUMA_BYTE_STRIDE + TAP_REACH,
 );

@@ -446,8 +446,7 @@ fn read_edge_chroma_group(payload: &[u8]) -> Result<Vec<InterResidualBlock>> {
         0,
         0,
         Some((14, 18)),
-        TX_4X4,
-        Some(true),
+        Some(TX_4X4),
         false,
         TransformToolResidualPolicy::default(),
         ByteOffset::new(0),
@@ -524,7 +523,7 @@ fn failed_inter_residual_drops_its_blocks_and_coefficients() {
         4,
         16,
         16,
-        Some(false),
+        false,
         TransformToolResidualPolicy::default(),
         ByteOffset::new(0),
     );
