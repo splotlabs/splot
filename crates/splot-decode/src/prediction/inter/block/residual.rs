@@ -668,7 +668,7 @@ pub(super) fn push_inter_residual_block(
 ) -> Result<usize> {
     let coordinate = |v: usize| {
         v.checked_mul(MI_SIZE)
-            .and_then(|v| u32::try_from(v).ok())
+            .and_then(|v| u16::try_from(v).ok())
             .ok_or_else(residual_geometry_error)
     };
     let x = coordinate(x4)?;

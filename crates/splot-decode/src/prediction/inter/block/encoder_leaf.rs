@@ -1325,7 +1325,6 @@ impl EncoderInterResidual {
             .rposition(|&q| q != 0)
             .map_or(0, |last| last + 1);
         let start = self.coeffs.len();
-        self.coeffs.extend_from_slice(&levels[..nonzero]);
         let coeffs = LumaCoeffBlock {
             eob: eob as u16,
             quant_start: start as u32,
@@ -1342,8 +1341,9 @@ impl EncoderInterResidual {
             y / MI_SIZE,
             tx_size,
             coeffs,
-        )
-        .map(drop)
+        )?;
+        self.coeffs.extend_from_slice(&levels[..nonzero]);
+        Ok(())
     }
 
     fn range(&self) -> InterResidual {

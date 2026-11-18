@@ -15,6 +15,22 @@ use super::super::block_chroma_subsampling;
 const BLOCK_16X8: usize = 5;
 
 #[test]
+fn transform_origin_reaches_the_last_mi_of_a_65536_sample_plane() {
+    let last_mi = (1 << 14) - 1;
+    let mut blocks = Vec::new();
+    push_inter_residual_block(
+        &mut blocks,
+        ReconPlaneId::Y,
+        last_mi,
+        last_mi,
+        TX_4X4,
+        LumaCoeffBlock::empty(DCT_DCT, false),
+    )
+    .unwrap();
+    assert_eq!((blocks[0].x, blocks[0].y), (65532, 65532));
+}
+
+#[test]
 fn residual_block_allocation_failure_is_operational() {
     let error = residual_allocation_error();
 

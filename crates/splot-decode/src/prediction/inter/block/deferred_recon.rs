@@ -238,8 +238,8 @@ impl InterReconCommand {
                         return false;
                     };
                     clipped_rect_is_inside_band(
-                        block.x as usize,
-                        block.y as usize,
+                        usize::from(block.x),
+                        usize::from(block.y),
                         width,
                         height,
                         origin_x >> sub_x,
@@ -720,21 +720,11 @@ mod tests {
         let start = blocks.len();
         blocks.push(InterResidualBlock {
             plane,
-            x: x as u32,
-            y: y as u32,
+            x: u16::try_from(x).expect("test transform x"),
+            y: u16::try_from(y).expect("test transform y"),
             tx_size: tx_size as u8,
             cctx_pair_delta: 0,
-            coeffs: LumaCoeffBlock {
-                eob: 0,
-                quant_start: 0,
-                quant_len: 0,
-                zero_tail: 0,
-                intra_ist: None,
-                cctx_type: None,
-                plane_tx_type: 0,
-                use_tcq: false,
-                lossless: false,
-            },
+            coeffs: LumaCoeffBlock::empty(0, false),
         });
         InterResidual::new(start..blocks.len())
     }

@@ -289,8 +289,8 @@ impl InterDeblockLeaf {
                     let tx_w4 = (1usize << log2_width) / MI_SIZE;
                     let tx_h4 = (1usize << log2_height) / MI_SIZE;
                     let luma = crate::filters::deblock::DeblockBlock {
-                        r: (block.y as usize / MI_SIZE) as u16,
-                        c: (block.x as usize / MI_SIZE) as u16,
+                        r: block.y / MI_SIZE as u16,
+                        c: block.x / MI_SIZE as u16,
                         n4w: tx_w4 as u8,
                         n4h: tx_h4 as u8,
                         tx: block.tx_size,
@@ -305,8 +305,8 @@ impl InterDeblockLeaf {
                 ReconPlaneId::U if needs.deblock => {
                     if let Some(mut record) =
                         crate::filters::wienerns_lr::chroma_transform_deblock_block(
-                            block.x as usize,
-                            block.y as usize,
+                            usize::from(block.x),
+                            usize::from(block.y),
                             usize::from(block.tx_size),
                             Some((log2_width, log2_height)),
                             chroma_subsampling,
