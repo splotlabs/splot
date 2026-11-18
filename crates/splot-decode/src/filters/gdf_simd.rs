@@ -940,7 +940,7 @@ fn gradient_row<S: Simd>(simd: S, rows: &[&[u16]; 4], out: &mut [GradChunk]) -> 
         let start = 16 * chunk;
         let chunks = rows.map(|row| row.get(start..).and_then(<[u16]>::first_chunk::<18>));
         if let [Some(a), Some(b), Some(c), Some(d)] = chunks {
-            pair_gradients(simd, [a, b, c, d], out);
+            store_gradients(pair_gradients(simd, [a, b, c, d]), out);
         } else {
             padded_gradients(simd, rows, start, out)?;
         }
@@ -964,41 +964,82 @@ fn padded_gradients<S: Simd>(
         let tail = tail.get(..tail.len().min(18))?;
         padded.get_mut(..tail.len())?.copy_from_slice(tail);
     }
-    pair_gradients(simd, padded.each_ref(), out);
+    store_gradients(pair_gradients(simd, padded.each_ref()), out);
     Some(())
 }
 
 /// For the final gradient chunk only the lanes within the staged tap
 /// halo are used. The fixed stride leaves room to load the whole chunk.
-fn tiled_gradients<S: Simd>(simd: S, rows: &[[u16; TILE_STRIDE]; 4], out: &mut [GradChunk]) {
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn tiled_gradient_sources(rows: &[[u16; TILE_STRIDE]; 4]) -> impl Iterator<Item = [&[u16; 18]; 4]> {
     const START: usize = TAP_REACH - 2;
     const _: () = assert!(START + TILE_COLS + 18 <= TILE_STRIDE);
     let [a, b, c, d] = rows
         .each_ref()
         .map(|row| row[START..].array_windows::<18>().step_by(16));
-    for ((a, (b, (c, d))), out) in a.zip(b.zip(c.zip(d))).zip(out) {
-        pair_gradients(simd, [a, b, c, d], out);
-    }
+    a.zip(b.zip(c.zip(d))).map(|(a, (b, (c, d)))| [a, b, c, d])
 }
 
-/// The gradients of one chunk of a gradient row pair, summed over its rows.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn pair_gradients<S: Simd>(simd: S, chunks: [&[u16; 18]; 4], out: &mut GradChunk) {
-    let first = gradients(simd, [chunks[0], chunks[1], chunks[2]]);
-    let second = gradients(simd, [chunks[1], chunks[2], chunks[3]]);
-    for ((out, first), second) in out.iter_mut().zip(first).zip(second) {
-        (first + second).bitcast::<u16x16<S>>().store_array(out);
+fn pair_gradients<S: Simd>(simd: S, chunks: [&[u16; 18]; 4]) -> [i16x16<S>; 4] {
+    let [a, b, c, d] = chunks;
+    let first = gradients(simd, [a, b, c]);
+    let second = gradients(simd, [b, c, d]);
+    core::array::from_fn(|i| first[i] + second[i])
+}
+
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn store_gradients<S: Simd>(grad: [i16x16<S>; 4], out: &mut GradChunk) {
+    for (dir, out) in grad.into_iter().zip(out) {
+        dir.bitcast::<u16x16<S>>().store_array(out);
     }
 }
 
-/// The direction gradients of a chunk summed over two gradient row pairs.
+#[cfg(test)]
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn pair_sum<S: Simd>(simd: S, current: &GradChunk, previous: &GradChunk) -> [i16x16<S>; 4] {
     core::array::from_fn(|d| {
         (u16x16::from_slice(simd, &current[d]) + u16x16::from_slice(simd, &previous[d])).bitcast()
     })
+}
+
+#[inline(never)]
+fn classify_tiled_gradient_row<S: Simd>(
+    simd: S,
+    rows: &[[u16; TILE_STRIDE]; 4],
+    current: &mut [GradChunk],
+    previous: &[GradChunk],
+    classes: &mut [[i32; 8]],
+    tables: &[[i16; 16]; 4],
+) -> Option<()> {
+    let scan = |chunk: usize, out: &mut GradChunk, previous: &GradChunk| {
+        let start = TAP_REACH - 2 + 16 * chunk;
+        let rows = rows.each_ref().map(|row| {
+            row.get(start..)
+                .and_then(<[u16]>::first_chunk::<18>)
+                .unwrap_or(&[0; 18])
+        });
+        let grad = pair_gradients(simd, rows);
+        store_gradients(grad, out);
+        core::array::from_fn(|d| {
+            grad[d] + u16x16::from_slice(simd, &previous[d]).bitcast::<i16x16<S>>()
+        })
+    };
+    let (first, current) = current.split_first_mut()?;
+    let (prior, previous) = previous.split_first()?;
+    let mut sum = scan(0, first, prior);
+    for (i, ((classes, current), previous)) in
+        classes.iter_mut().zip(current).zip(previous).enumerate()
+    {
+        let next = scan(i + 1, current, previous);
+        *classes = classify_chunk(simd, sum, next, tables).to_array();
+        sum = next;
+    }
+    Some(())
 }
 
 /// The classes and gradient biases of the 8 class columns of a chunk from
@@ -1108,7 +1149,7 @@ fn filter_run_with<S: Simd, P: RowPairs<S>, O: GdfSample>(
     let source = source.get(..block.height.checked_add(2 * TAP_REACH)?)?;
     let chunks = ClassScratch::chunks(run >> 1);
     let (first, second) = scratch.grads.get_mut(..2 * chunks)?.split_at_mut(chunks);
-    let buffers = [first, second];
+    let mut buffers = [first, second];
     let error_row = ClassScratch::error_row(run);
     let (top_errors, bottom_errors) = scratch
         .errors
@@ -1136,27 +1177,28 @@ fn filter_run_with<S: Simd, P: RowPairs<S>, O: GdfSample>(
         scratch.table_key = Some(key);
     }
     let table = scratch.table.first_chunk()?;
-    tiled_gradients(
-        simd,
-        source.get(TAP_REACH - 2..)?.first_chunk()?,
-        buffers[0],
-    );
+    let rows = source.get(TAP_REACH - 2..)?.first_chunk()?;
+    for (source, out) in tiled_gradient_sources(rows).zip(&mut *buffers[0]) {
+        store_gradients(pair_gradients(simd, source), out);
+    }
     let mut chunk_classes = [[0; 8]; TILE_COLS / 16];
     let chunk_classes = chunk_classes.get_mut(..run.div_ceil(16))?;
     let full = run / 16 * 16;
     for (row_pair, rows) in source.array_windows::<WINDOW_ROWS>().step_by(2).enumerate() {
-        let (current, previous) = ((row_pair + 1) & 1, row_pair & 1);
-        tiled_gradients(simd, rows[TAP_REACH..].first_chunk()?, buffers[current]);
-        let (current, previous) = (&*buffers[current], &*buffers[previous]);
-        let mut next = pair_sum(simd, current.first()?, previous.first()?);
-        for (classes, (current, previous)) in chunk_classes
-            .iter_mut()
-            .zip(current[1..].iter().zip(&previous[1..]))
-        {
-            let sums = next;
-            next = pair_sum(simd, current, previous);
-            *classes = classify_chunk(simd, sums, next, &tables).to_array();
-        }
+        let [first, second] = &mut buffers;
+        let (current, previous) = if row_pair & 1 == 0 {
+            (second, first)
+        } else {
+            (first, second)
+        };
+        classify_tiled_gradient_row(
+            simd,
+            rows[TAP_REACH..].first_chunk()?,
+            current,
+            previous,
+            chunk_classes,
+            &tables,
+        )?;
         let windows = rows.as_flattened().array_windows::<TILE_SPAN>().step_by(16);
         let errors = top_errors[..full]
             .as_chunks_mut::<16>()

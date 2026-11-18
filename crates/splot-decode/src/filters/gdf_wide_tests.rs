@@ -331,6 +331,7 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
     for (width, height, bit_depth) in [
         (38, 4, BitDepth::Eight),
         (48, 4, BitDepth::Eight),
+        (simd::TILE_COLS, 2, BitDepth::Eight),
         (64, 6, BitDepth::Ten),
         (6, 2, BitDepth::Ten),
     ] {
