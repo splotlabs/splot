@@ -142,8 +142,7 @@ fn chroma_reconstruction(
 
 impl ResidualPlanePlan {
     #[allow(clippy::too_many_arguments)]
-    fn push(
-        sink: &mut impl FnMut(Self),
+    fn new(
         block_ctx: BlockCtx,
         plane_id: PlaneId,
         reconstruction: ResidualReconstructionPlan,
@@ -153,7 +152,7 @@ impl ResidualPlanePlan {
         txb_skip_fsc_mode: bool,
         tx_size_override: Option<usize>,
         defer_reconstruction: bool,
-    ) -> core::result::Result<(), ResidualPlanError> {
+    ) -> core::result::Result<Self, ResidualPlanError> {
         let (rect, rect_tx) = block_ctx.plane_geometry(plane_id);
         let block = block_ctx.frame().plane_block(rect, rect_tx, plane_id);
         let tx = block.tx();
@@ -162,7 +161,7 @@ impl ResidualPlanePlan {
             None => tx_size_index(tx.width_log2(), tx.height_log2())
                 .map_err(|_| ResidualPlanError::InvalidGeometry)?,
         };
-        sink(Self {
+        Ok(Self {
             plane_id,
             rect,
             tx_size: u8::try_from(tx_size).map_err(|_| ResidualPlanError::InvalidGeometry)?,
@@ -177,8 +176,7 @@ impl ResidualPlanePlan {
             defer_reconstruction,
             reconstruction_tx_type: None,
             reconstruction,
-        });
-        Ok(())
+        })
     }
 }
 
@@ -209,8 +207,7 @@ pub(super) fn plan_rect(
     let chroma_block = block_ctx.plane_block(PlaneId::U);
     if width_chunks == 1 && height_chunks == 1 {
         if block.row4() < block_ctx.frame_mi_rows() && block.col4() < block_ctx.frame_mi_cols() {
-            ResidualPlanePlan::push(
-                planes,
+            planes(ResidualPlanePlan::new(
                 block_ctx,
                 PlaneId::Y,
                 luma_reconstruction.for_luma_transform_row(true),
@@ -220,7 +217,7 @@ pub(super) fn plan_rect(
                 luma_fsc_mode,
                 luma_lossless_tx_size,
                 false,
-            )?;
+            )?);
             if let Some(reconstruction) = chroma_reconstruction {
                 push_chroma_plans(
                     planes,
@@ -247,8 +244,7 @@ pub(super) fn plan_rect(
                     }
                     let chunk_luma_reconstruction =
                         luma_reconstruction.for_luma_transform_row(chunk_y == 0);
-                    ResidualPlanePlan::push(
-                        planes,
+                    planes(ResidualPlanePlan::new(
                         residual_chunk_ctx(block_ctx, chunk_x, chunk_y, 1, 1)?,
                         PlaneId::Y,
                         chunk_luma_reconstruction,
@@ -258,7 +254,7 @@ pub(super) fn plan_rect(
                         luma_fsc_mode,
                         luma_lossless_tx_size,
                         false,
-                    )?;
+                    )?);
                     if let Some(reconstruction) = chroma_reconstruction
                         && (!double_chroma_w || chunk_x.is_multiple_of(2))
                         && (!double_chroma_h || chunk_y.is_multiple_of(2))
@@ -360,9 +356,7 @@ fn push_chroma_plans(
     txb_skip_fsc_mode: bool,
     defer_reconstruction: bool,
 ) -> core::result::Result<(), ResidualPlanError> {
-    let mut u = None;
-    ResidualPlanePlan::push(
-        &mut |plan| u = Some(plan),
+    let u = ResidualPlanePlan::new(
         block_ctx,
         PlaneId::U,
         reconstruction,
@@ -373,13 +367,11 @@ fn push_chroma_plans(
         None,
         defer_reconstruction,
     )?;
-    if let Some(u) = u {
-        planes(u);
-        planes(ResidualPlanePlan {
-            plane_id: PlaneId::V,
-            ..u
-        });
-    }
+    planes(u);
+    planes(ResidualPlanePlan {
+        plane_id: PlaneId::V,
+        ..u
+    });
     Ok(())
 }
 
