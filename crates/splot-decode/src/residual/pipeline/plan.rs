@@ -76,7 +76,7 @@ impl GeneralIntraResidualPlan {
     ) -> impl Iterator<Item = (usize, usize, usize, usize, bool)> + '_ {
         self.planes.iter().map(|plane| {
             (
-                usize::from(plane.coeff_plane),
+                plane.plane_id.index(),
                 plane.x as usize,
                 plane.y as usize,
                 usize::from(plane.tx_size),
@@ -103,7 +103,7 @@ pub(super) fn plan_chroma(
     push_chroma_plans(
         &mut sink,
         block_ctx,
-        chroma_reconstruction(chroma_plan),
+        chroma_reconstruction(chroma_plan)?,
         chroma_block.width4(),
         chroma_block.height4(),
         false,
@@ -111,8 +111,10 @@ pub(super) fn plan_chroma(
     )
 }
 
-fn chroma_reconstruction(plan: RectChromaPlan) -> ResidualReconstructionPlan {
-    match plan {
+fn chroma_reconstruction(
+    plan: RectChromaPlan,
+) -> Result<ResidualReconstructionPlan, ResidualPlanError> {
+    Ok(match plan {
         RectChromaPlan::Mode(SupportedChromaMode::Dc, None) => {
             ResidualReconstructionPlan::Rect { use_tcq: false }
         }
@@ -133,9 +135,9 @@ fn chroma_reconstruction(plan: RectChromaPlan) -> ResidualReconstructionPlan {
         } => ResidualReconstructionPlan::ChromaCfl {
             params,
             cfl_ds_filter_index,
-            sb_mib,
+            sb_mib: u8::try_from(sb_mib).map_err(|_| ResidualPlanError::InvalidGeometry)?,
         },
-    }
+    })
 }
 
 impl ResidualPlanePlan {
@@ -163,7 +165,6 @@ impl ResidualPlanePlan {
         sink(Self {
             plane_id,
             rect,
-            coeff_plane: coeff_plane(plane_id) as u8,
             tx_size: u8::try_from(tx_size).map_err(|_| ResidualPlanError::InvalidGeometry)?,
             x: block.x() as u32,
             y: block.y() as u32,
@@ -192,7 +193,7 @@ pub(super) fn plan_rect(
     lossless: bool,
 ) -> core::result::Result<(), ResidualPlanError> {
     let luma_reconstruction = ResidualReconstructionPlan::Luma(luma_plan);
-    let chroma_reconstruction = chroma_plan.map(chroma_reconstruction);
+    let chroma_reconstruction = chroma_plan.map(chroma_reconstruction).transpose()?;
     let block = block_ctx.block();
     let width_chunks = (block.width4() >> 4).max(1);
     let height_chunks = (block.height4() >> 4).max(1);
@@ -376,19 +377,10 @@ fn push_chroma_plans(
         planes(u);
         planes(ResidualPlanePlan {
             plane_id: PlaneId::V,
-            coeff_plane: coeff_plane(PlaneId::V) as u8,
             ..u
         });
     }
     Ok(())
-}
-
-pub(super) const fn coeff_plane(plane_id: PlaneId) -> usize {
-    match plane_id {
-        PlaneId::Y => 0,
-        PlaneId::U => 1,
-        PlaneId::V => 2,
-    }
 }
 
 #[cfg(test)]

@@ -5,6 +5,8 @@
 //!
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
 
+use core::{num::NonZeroU32, ops::Range};
+
 use splot_core::symbol::SymbolDecoder;
 use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, ReconSample};
 
@@ -92,15 +94,24 @@ pub(super) enum ParsedResidualPlaneKind {
     Unparsed,
     Single {
         coeffs: LumaCoeffBlock,
-        palette_color_map: Option<u32>,
+        palette_color_map: Option<NonZeroU32>,
     },
-    Lossless(core::ops::Range<usize>),
-    PartitionedLuma(core::ops::Range<usize>),
+    Lossless(Range<u32>),
+    PartitionedLuma(Range<u32>),
 }
 
 pub(super) struct ParsedTransformUnit {
     pub(super) block: PositionedLumaCoeffBlock,
-    pub(super) palette_color_map: Option<u32>,
+    pub(super) palette_color_map: Option<NonZeroU32>,
+}
+
+fn unit_range(start: usize, end: usize) -> Result<Range<u32>, GeneralIntraResidualError> {
+    let index = |index| {
+        u32::try_from(index).map_err(|_| GeneralIntraResidualError::InvalidReconstructionState {
+            context: "residual transform unit range",
+        })
+    };
+    Ok(index(start)?..index(end)?)
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -281,7 +292,7 @@ impl ResidualPlanePlan {
             chroma_angle_delta_uv(self.plane_id, uv_mode, luma_transform_type_context);
         let palette_color_map = self.read_palette_color_map(frame, work_unit, symbols)?;
         let coeff_block = PlaneCoeffBlock {
-            plane: usize::from(self.coeff_plane),
+            plane: self.plane_id.index(),
             tx_size: usize::from(self.tx_size),
             x: self.x as usize,
             y: self.y as usize,
@@ -405,29 +416,23 @@ impl ResidualPlanePlan {
                     },
                 )?;
                 self.apply_reconstruction_tx_type(&mut coeffs);
-                let block = PositionedLumaCoeffBlock {
-                    x,
-                    y,
-                    tx_size: unit_tx_size,
-                    middle: false,
-                    coeffs,
-                };
+                let block = PositionedLumaCoeffBlock::new(x, y, unit_tx_size, false, coeffs)?;
                 let unit = self.transform_unit_plan(frame, &block)?;
                 let unit_palette_color_map =
                     self.palette_color_map_for_unit(palette_color_map, &block)?;
                 if unit.plane_id == PlaneId::Y {
-                    let row4 = block.y / 4;
-                    let col4 = block.x / 4;
+                    let row4 = block.y as usize / 4;
+                    let col4 = block.x as usize / 4;
                     deblock.record_luma_unit(
                         row4,
                         col4,
                         unit_width4,
                         unit_height4,
-                        block.tx_size,
+                        usize::from(block.tx_size),
                         block.coeffs.eob(),
                     );
                 } else {
-                    deblock.record_chroma_unit(unit.plane_id, block.x, block.y, block.tx_size);
+                    deblock.record_chroma_unit(unit.plane_id, x, y, unit_tx_size);
                 }
                 units.push(Some(ParsedTransformUnit {
                     block,
@@ -438,7 +443,10 @@ impl ResidualPlanePlan {
                 }));
             }
         }
-        Ok(ParsedResidualPlaneKind::Lossless(start..units.len()))
+        Ok(ParsedResidualPlaneKind::Lossless(unit_range(
+            start,
+            units.len(),
+        )?))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -499,15 +507,15 @@ impl ResidualPlanePlan {
             self.transform_unit_plan(frame, &block)?;
             let unit_palette_color_map =
                 self.palette_color_map_for_unit(palette_color_map, &block)?;
-            let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
+            let (log2_width, log2_height) = tx_size_log2(usize::from(block.tx_size))?;
             let width4 = ((1usize << log2_width) >> 2).max(1);
             let height4 = ((1usize << log2_height) >> 2).max(1);
             deblock.record_luma_unit(
-                block.y / 4,
-                block.x / 4,
+                block.y as usize / 4,
+                block.x as usize / 4,
                 width4,
                 height4,
-                block.tx_size,
+                usize::from(block.tx_size),
                 block.coeffs.eob(),
             );
             units.push(Some(ParsedTransformUnit {
@@ -518,7 +526,10 @@ impl ResidualPlanePlan {
                 ),
             }));
         }
-        Ok(ParsedResidualPlaneKind::PartitionedLuma(start..units.len()))
+        Ok(ParsedResidualPlaneKind::PartitionedLuma(unit_range(
+            start,
+            units.len(),
+        )?))
     }
 }
 
@@ -643,12 +654,12 @@ impl ParsedResidualPlane {
             ParsedResidualPlaneKind::Unparsed => false,
             ParsedResidualPlaneKind::Single { coeffs, .. } => coeffs.eob != 0,
             ParsedResidualPlaneKind::Lossless(units) => arena
-                .get(units.clone())
+                .get(units.start as usize..units.end as usize)
                 .and_then(|units| units.last())
                 .and_then(Option::as_ref)
                 .is_some_and(|unit| unit.block.coeffs.eob != 0),
             ParsedResidualPlaneKind::PartitionedLuma(units) => arena
-                .get(units.clone())
+                .get(units.start as usize..units.end as usize)
                 .unwrap_or_default()
                 .iter()
                 .flatten()
@@ -699,7 +710,7 @@ impl ParsedResidualPlane {
                 Ok(())
             }
             ParsedResidualPlaneKind::Lossless(units) => {
-                let Some(units) = arena.get_mut(units.clone()) else {
+                let Some(units) = arena.get_mut(units.start as usize..units.end as usize) else {
                     return Err(GeneralIntraResidualError::InvalidReconstructionState {
                         context: "residual transform unit range",
                     });
@@ -722,19 +733,19 @@ impl ParsedResidualPlane {
                         luma_context,
                     )?;
                     super::palette::recycle_palette_map(palette_color_map);
-                    let (log2_width, log2_height) = tx_size_log2(unit.block.tx_size)?;
+                    let (log2_width, log2_height) = tx_size_log2(usize::from(unit.block.tx_size))?;
                     let width4 = (1usize << log2_width) >> 2;
                     let height4 = (1usize << log2_height) >> 2;
                     let (sub_x, sub_y) = frame.chroma().subsampling(plan.plane_id);
                     let sb_mask = block_decoded.sb_size4().saturating_sub(1);
-                    let row4 = ((unit.block.y >> 2) << sub_y) & sb_mask;
-                    let col4 = ((unit.block.x >> 2) << sub_x) & sb_mask;
+                    let row4 = ((unit.block.y as usize >> 2) << sub_y) & sb_mask;
+                    let col4 = ((unit.block.x as usize >> 2) << sub_x) & sb_mask;
                     block_decoded.set_block(plan.plane_id.index(), row4, col4, width4, height4);
                 }
                 Ok(())
             }
             ParsedResidualPlaneKind::PartitionedLuma(units) => {
-                let Some(units) = arena.get_mut(units.clone()) else {
+                let Some(units) = arena.get_mut(units.start as usize..units.end as usize) else {
                     return Err(GeneralIntraResidualError::InvalidReconstructionState {
                         context: "residual transform unit range",
                     });

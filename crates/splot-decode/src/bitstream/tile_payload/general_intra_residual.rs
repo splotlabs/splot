@@ -655,11 +655,37 @@ impl core::ops::Deref for CoeffBlock<'_> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PositionedLumaCoeffBlock {
-    pub(crate) x: usize,
-    pub(crate) y: usize,
-    pub(crate) tx_size: usize,
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) tx_size: u8,
     pub(crate) middle: bool,
     pub(crate) coeffs: LumaCoeffBlock,
+}
+
+impl PositionedLumaCoeffBlock {
+    pub(crate) fn new(
+        x: usize,
+        y: usize,
+        tx_size: usize,
+        middle: bool,
+        coeffs: LumaCoeffBlock,
+    ) -> Result<Self, GeneralIntraResidualError> {
+        let coordinate = |_| GeneralIntraResidualError::InvalidReconstructionState {
+            context: "transform unit coordinate",
+        };
+        Ok(Self {
+            x: u32::try_from(x).map_err(coordinate)?,
+            y: u32::try_from(y).map_err(coordinate)?,
+            tx_size: u8::try_from(tx_size).map_err(|_| {
+                GeneralIntraResidualError::TransformPartitionGeometry {
+                    table: "Tx_Width_Log2",
+                    index: tx_size,
+                }
+            })?,
+            middle,
+            coeffs,
+        })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -781,13 +807,13 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
                 segment_lossless,
             },
         )?;
-        Ok(Some(PositionedLumaCoeffBlock {
-            x: record.x,
-            y: record.y,
-            tx_size: record.tx_size,
-            middle: record.middle,
+        Ok(Some(PositionedLumaCoeffBlock::new(
+            record.x,
+            record.y,
+            record.tx_size,
+            record.middle,
             coeffs,
-        }))
+        )?))
     })
 }
 

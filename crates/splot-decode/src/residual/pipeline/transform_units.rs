@@ -125,13 +125,13 @@ impl GeneralIntraResidualPlan {
             }
             let unit = luma.transform_unit_plan(
                 self.frame,
-                &PositionedLumaCoeffBlock {
-                    x: record.x,
-                    y: record.y,
-                    tx_size: record.tx_size,
-                    middle: record.middle,
-                    coeffs: LumaCoeffBlock::empty(0, false),
-                },
+                &PositionedLumaCoeffBlock::new(
+                    record.x,
+                    record.y,
+                    record.tx_size,
+                    record.middle,
+                    LumaCoeffBlock::empty(0, false),
+                )?,
             )?;
             let fills = luma_partition_record_fills_block(
                 luma.tx_fills_residual_block(),
@@ -273,27 +273,22 @@ impl ResidualPlanePlan {
     ) -> core::result::Result<ResidualPlanePlan, GeneralIntraResidualError> {
         let reconstruction = self
             .reconstruction
-            .for_luma_transform_row(block.y == self.y as usize);
-        let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
+            .for_luma_transform_row(block.y == self.y);
+        let (log2_width, log2_height) = tx_size_log2(usize::from(block.tx_size))?;
         let width4 = (1usize << log2_width) >> 2;
         let height4 = (1usize << log2_height) >> 2;
         let Some(tx) = TxShape::from_luma_4x4(width4.max(1), height4.max(1)) else {
             return Err(GeneralIntraResidualError::TransformPartitionGeometry {
                 table: "Tx_Width_Log2",
-                index: block.tx_size,
+                index: usize::from(block.tx_size),
             });
         };
         let rect = self.transform_unit_rect(frame, block, width4.max(1), height4.max(1))?;
         Ok(ResidualPlanePlan {
             rect,
-            tx_size: u8::try_from(block.tx_size).map_err(|_| {
-                GeneralIntraResidualError::TransformPartitionGeometry {
-                    table: "Tx_Width_Log2",
-                    index: block.tx_size,
-                }
-            })?,
-            x: block.x as u32,
-            y: block.y as u32,
+            tx_size: block.tx_size,
+            x: block.x,
+            y: block.y,
             tx,
             residual_width4: width4.max(1) as u16,
             residual_height4: height4.max(1) as u16,
@@ -311,21 +306,26 @@ impl ResidualPlanePlan {
         height4: usize,
     ) -> core::result::Result<BlockRect, GeneralIntraResidualError> {
         if self.plane_id == PlaneId::Y {
-            return Ok(BlockRect::new(block.y >> 2, block.x >> 2, width4, height4));
+            return Ok(BlockRect::new(
+                block.y as usize >> 2,
+                block.x as usize >> 2,
+                width4,
+                height4,
+            ));
         }
         let (sub_x, sub_y) = frame.chroma().subsampling(self.plane_id);
         let scale_x = 1usize << sub_x;
         let scale_y = 1usize << sub_y;
         let chroma_ref = BlockRect::new(
-            (block.y >> 2) * scale_y,
-            (block.x >> 2) * scale_x,
+            (block.y as usize >> 2) * scale_y,
+            (block.x as usize >> 2) * scale_x,
             width4 * scale_x,
             height4 * scale_y,
         );
         if TxShape::from_luma_4x4(chroma_ref.width4(), chroma_ref.height4()).is_none() {
             return Err(GeneralIntraResidualError::TransformPartitionGeometry {
                 table: "Lossless_Chroma_Tx",
-                index: block.tx_size,
+                index: usize::from(block.tx_size),
             });
         }
         Ok(chroma_ref)

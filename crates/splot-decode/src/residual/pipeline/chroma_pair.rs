@@ -169,7 +169,7 @@ fn reconstruct_cfl_pair<T: ReconSample>(
         qindex,
         u_params,
         u_filter,
-        u_sb_mib,
+        usize::from(u_sb_mib),
         u_neighbours,
         v_neighbours,
         frame.bit_depth(),

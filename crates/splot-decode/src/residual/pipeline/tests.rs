@@ -331,9 +331,9 @@ fn cfl_chroma_keeps_read_order_and_defers_reconstruction() {
         .transform_unit_plan(
             plan.frame,
             &PositionedLumaCoeffBlock {
-                x: chroma.x as usize,
-                y: chroma.y as usize,
-                tx_size: TX_4X4,
+                x: chroma.x,
+                y: chroma.y,
+                tx_size: TX_4X4 as u8,
                 middle: false,
                 coeffs: empty_luma_coeffs(),
             },
@@ -674,9 +674,9 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
         }
         ParsedTransformUnit {
             block: PositionedLumaCoeffBlock {
-                x: plane.x as usize,
-                y: plane.y as usize,
-                tx_size: usize::from(plane.tx_size),
+                x: plane.x,
+                y: plane.y,
+                tx_size: plane.tx_size,
                 middle: false,
                 coeffs,
             },
@@ -824,9 +824,9 @@ fn palette_map_is_sliced_for_each_partitioned_transform_size() {
         let local_x = if width == parent_width { 0 } else { 4 };
         let local_y = if height == parent_height { 0 } else { 8 };
         let coeff = PositionedLumaCoeffBlock {
-            x: plane.x as usize + local_x,
-            y: plane.y as usize + local_y,
-            tx_size,
+            x: plane.x + local_x as u32,
+            y: plane.y + local_y as u32,
+            tx_size: tx_size as u8,
             middle: false,
             coeffs: empty_luma_coeffs(),
         };
@@ -880,8 +880,8 @@ fn invalid_palette_unit_geometry_is_reconstruction_state() {
         (px + parent_width, py, "palette transform extent"),
     ] {
         let block = PositionedLumaCoeffBlock {
-            x,
-            y,
+            x: x as u32,
+            y: y as u32,
             tx_size: 0,
             middle: false,
             coeffs: empty_luma_coeffs(),
@@ -916,7 +916,7 @@ fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
             &PositionedLumaCoeffBlock {
                 x: 0,
                 y: 0,
-                tx_size: TX_4X4,
+                tx_size: TX_4X4 as u8,
                 middle: false,
                 coeffs: empty_luma_coeffs(),
             },
@@ -959,7 +959,7 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
     let unit = |x, y| PositionedLumaCoeffBlock {
         x,
         y,
-        tx_size: tx_32x32,
+        tx_size: tx_32x32 as u8,
         middle: false,
         coeffs: empty_luma_coeffs(),
     };
@@ -1096,7 +1096,7 @@ fn first_partition_handoff_rejects_invalid_transform_geometry() {
     let invalid = PositionedLumaCoeffBlock {
         x: 4,
         y: 4,
-        tx_size: usize::MAX,
+        tx_size: u8::MAX,
         middle: false,
         coeffs: empty_luma_coeffs(),
     };
@@ -1105,8 +1105,8 @@ fn first_partition_handoff_rejects_invalid_transform_geometry() {
         plane.transform_unit_plan(plan.frame, &invalid),
         Err(GeneralIntraResidualError::TransformPartitionGeometry {
             table: "Tx_Width_Log2",
-            index: usize::MAX,
-        })
+            index,
+        }) if index == usize::from(u8::MAX)
     ));
 }
 
@@ -1142,9 +1142,9 @@ fn chroma_directional_plan_uses_transform_unit_wide_angle_mapping() {
         .transform_unit_plan(
             plan.frame,
             &PositionedLumaCoeffBlock {
-                x: plane.x as usize,
-                y: plane.y as usize,
-                tx_size: TX_4X4,
+                x: plane.x,
+                y: plane.y,
+                tx_size: TX_4X4 as u8,
                 middle: false,
                 coeffs: empty_luma_coeffs(),
             },
@@ -1258,7 +1258,7 @@ fn interior_middle_mrl_unit_uses_local_above_line() {
             &PositionedLumaCoeffBlock {
                 x: 0,
                 y: 16,
-                tx_size: splot_recon::tx_size_index(4, 4).expect("16x16 transform size"),
+                tx_size: splot_recon::tx_size_index(4, 4).expect("16x16 transform size") as u8,
                 middle: false,
                 coeffs: empty_luma_coeffs(),
             },
@@ -1325,12 +1325,6 @@ fn assert_case(case: Case) {
     assert_eq!(
         plane.tx.height_log2(),
         case.expected_tx_log2.1,
-        "{}",
-        case.label
-    );
-    assert_eq!(
-        usize::from(plane.coeff_plane),
-        coeff_plane(case.plane),
         "{}",
         case.label
     );

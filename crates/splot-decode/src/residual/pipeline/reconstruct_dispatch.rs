@@ -21,8 +21,8 @@ const MI_SIZE: usize = 4;
 
 #[derive(Clone, Copy)]
 struct UnitMrlReplan {
-    mrl_index: usize,
-    above_mrl_index: usize,
+    mrl_index: u8,
+    above_mrl_index: u8,
     is_sb_boundary: bool,
     secondary_mrl: bool,
 }
@@ -324,8 +324,8 @@ impl ResidualPlanePlan {
                     self.tx.width_log2(),
                     self.tx.height_log2(),
                     qindex,
-                    mrl_index,
-                    above_mrl_index,
+                    usize::from(mrl_index),
+                    usize::from(above_mrl_index),
                     is_sb_boundary,
                     secondary_mrl,
                     use_tcq,
@@ -344,8 +344,8 @@ impl ResidualPlanePlan {
                 let edges = self.luma_edges(frame);
                 let availability = EdgeAvail::new(edges.has_above(), edges.has_left());
                 let mrl = AboveMrl {
-                    mrl_index,
-                    above_mrl_index,
+                    mrl_index: usize::from(mrl_index),
+                    above_mrl_index: usize::from(above_mrl_index),
                 };
                 if secondary_mrl {
                     crate::pipeline::reconstruct::reconstruct_general_intra_mrl_secondary_above_block_into(
@@ -481,8 +481,8 @@ impl ResidualPlanePlan {
                         qindex,
                         neighbours.num_below_left(),
                         edges.has_above(),
-                        mrl_index,
-                        above_mrl_index,
+                        usize::from(mrl_index),
+                        usize::from(above_mrl_index),
                         use_tcq,
                         luma_context,
                         availability.left,
@@ -500,8 +500,8 @@ impl ResidualPlanePlan {
                         qindex,
                         neighbours.num_below_left(),
                         edges.has_above(),
-                        mrl_index,
-                        above_mrl_index,
+                        usize::from(mrl_index),
+                        usize::from(above_mrl_index),
                         use_tcq,
                         Some(luma_context),
                         None,
@@ -527,8 +527,8 @@ impl ResidualPlanePlan {
                     self.tx.width_log2(),
                     self.tx.height_log2(),
                     qindex,
-                    mrl_index,
-                    above_mrl_index,
+                    usize::from(mrl_index),
+                    usize::from(above_mrl_index),
                     secondary_mrl,
                     use_tcq,
                     luma_context,
@@ -790,7 +790,7 @@ impl ResidualPlanePlan {
                     qindex,
                     params,
                     cfl_ds_filter_index,
-                    sb_mib,
+                    usize::from(sb_mib),
                     neighbours,
                     frame.bit_depth(),
                 )

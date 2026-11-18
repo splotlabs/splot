@@ -527,8 +527,9 @@ fn rect_luma_mrl_plan_for_parts(
     if !mrl.is_active() {
         return Err(crate::DecodeHeaderStateError::InvalidGeneralIntraModeState);
     }
-    let mrl_index = mrl.index();
-    let mrl_delta = MRL_INDEX_TO_DELTA[mrl_index];
+    let mrl_index = u8::try_from(mrl.index())
+        .map_err(|_| crate::DecodeHeaderStateError::InvalidGeneralIntraModeState)?;
+    let mrl_delta = MRL_INDEX_TO_DELTA[usize::from(mrl_index)];
     let block = block_ctx.block();
     let width = block.width4().saturating_mul(MI_SIZE);
     let height = block.height4().saturating_mul(MI_SIZE);
