@@ -1142,6 +1142,9 @@ fn cdef_segment<S: ReconSample>(
             S::u8_slice(v),
         ) {
             (Some(u), Some(v), _, _) => scratch.pair.gather(u, v, width, stride, origin),
+            (_, _, Some(u), Some(v)) if unit.chroma_bytes_suffice() => {
+                scratch.pair.gather_bytes(u, v, width, stride, origin)
+            }
             (_, _, Some(u), Some(v)) => scratch.pair.gather(u, v, width, stride, origin),
             _ => false,
         };
