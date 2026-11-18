@@ -80,8 +80,8 @@ const LANE_SPAN: usize = (INT_ROWS - 1) * CHUNK + 1;
 
 /// The order-free values of up to [`CHUNK`] sampled cells of one source row,
 /// reused chunk after chunk; lanes past a chunk's end keep stale values.
-#[derive(Default)]
-struct ChunkLanes {
+#[derive(Debug, Default)]
+pub(super) struct ChunkLanes {
     window: Window,
     refs: Grid<u8>,
     /// One row per integer value, so one lane reads every value at a fixed
@@ -289,11 +289,11 @@ impl LaneGeometry {
 /// lane-parallel first, then only cells with an order-dependent effect are
 /// walked, in raster order.
 pub(super) fn project_temporal_motion_field(
+    lanes: &mut ChunkLanes,
     prepared: &TemporalProjectionSource,
     source: &impl TemporalMotionRows,
     rows: Range<usize>,
-    projection_step: usize,
-    tmvp_unit_size8: usize,
+    (projection_step, tmvp_unit_size8): (usize, usize),
     trajectories: Option<&mut TrajectoryBand<'_>>,
     output: &mut ProjectedFieldBand<'_>,
 ) {
@@ -311,7 +311,7 @@ pub(super) fn project_temporal_motion_field(
     if let Some(simd) = Level::baseline().as_avx2() {
         let tables = TargetTables::new(simd, prepared, refs);
         return project_rows(
-            &tables,
+            (&tables, lanes),
             prepared,
             source,
             rows,
@@ -322,13 +322,13 @@ pub(super) fn project_temporal_motion_field(
     }
     crate::baseline_simd!(simd => {
         let tables = TargetTables::new(simd, prepared, refs);
-        project_rows(&tables, prepared, source, rows, geometry, trajectories, output);
+        project_rows((&tables, lanes), prepared, source, rows, geometry, trajectories, output);
     });
 }
 
 /// [`project_temporal_motion_field`] with the SIMD token bound.
 fn project_rows<S: Simd>(
-    tables: &TargetTables<S>,
+    (tables, lanes): (&TargetTables<S>, &mut ChunkLanes),
     prepared: &TemporalProjectionSource,
     source: &impl TemporalMotionRows,
     rows: Range<usize>,
@@ -338,7 +338,6 @@ fn project_rows<S: Simd>(
 ) {
     let step = geometry.step;
     let side = prepared.side & 1;
-    let mut lanes = ChunkLanes::default();
     for y8 in rows.step_by(step) {
         let Some(row) = source.row(y8) else {
             continue;
@@ -347,22 +346,22 @@ fn project_rows<S: Simd>(
             let x_base = chunk_index * CHUNK * step;
             if let Some(trajectories) = trajectories.as_deref_mut() {
                 let Some(walk) =
-                    chunk_lanes::<S, true>(&mut lanes, chunk, side, tables, y8, x_base, geometry)
+                    chunk_lanes::<S, true>(lanes, chunk, side, tables, y8, x_base, geometry)
                 else {
                     return;
                 };
-                ChunkWalk::new(&lanes, walk, y8, x_base, step).project_tracked(
+                ChunkWalk::new(lanes, walk, y8, x_base, step).project_tracked(
                     prepared,
                     trajectories,
                     output,
                 );
             } else {
                 let Some(walk) =
-                    chunk_lanes::<S, false>(&mut lanes, chunk, side, tables, y8, x_base, geometry)
+                    chunk_lanes::<S, false>(lanes, chunk, side, tables, y8, x_base, geometry)
                 else {
                     return;
                 };
-                ChunkWalk::new(&lanes, walk, y8, x_base, step).project(prepared, output);
+                ChunkWalk::new(lanes, walk, y8, x_base, step).project(prepared, output);
             }
         }
     }
@@ -612,6 +611,7 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
 }
 
 /// A chunk's stored cells from the scanned list's first byte on.
+#[derive(Debug)]
 struct Window([u8; WINDOW]);
 
 impl Default for Window {

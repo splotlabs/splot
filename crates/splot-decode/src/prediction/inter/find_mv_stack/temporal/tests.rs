@@ -40,11 +40,11 @@ fn project_whole_temporal_motion_field(
     let mut band = trajectories.and_then(TrajectoryState::whole_band);
     if let Some(mut rows) = output.bands(height8.max(1)).next() {
         project_temporal_motion_field(
+            &mut ChunkLanes::default(),
             &prepared,
             source,
             0..height8,
-            projection_step,
-            tmvp_unit_size8,
+            (projection_step, tmvp_unit_size8),
             band.as_mut(),
             &mut rows,
         );

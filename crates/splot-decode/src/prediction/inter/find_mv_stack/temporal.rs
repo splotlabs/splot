@@ -11,7 +11,7 @@ use super::{
 };
 use band::BandCells;
 pub(crate) use band::TemporalMotionBand;
-use scan::{ProjectionTarget, project_component, project_temporal_motion_field};
+use scan::{ChunkLanes, ProjectionTarget, project_component, project_temporal_motion_field};
 use selection::projection_queue;
 use tip_field::prepare_tip_field;
 #[cfg(test)]
@@ -1144,11 +1144,11 @@ impl TemporalBandPlan {
             }
             let mut trajectory = trajectories.as_mut().map(OwnedTrajectoryBand::as_band);
             project_temporal_motion_field(
+                &mut scratch.lanes,
                 &projection.source,
                 source,
                 rows.clone(),
-                self.config.step,
-                self.config.unit_size8,
+                (self.config.step, self.config.unit_size8),
                 trajectory.as_mut(),
                 &mut output,
             );
@@ -1197,6 +1197,7 @@ impl TemporalBandPlan {
 #[derive(Debug, Default)]
 struct TemporalMvScratch {
     trajectory: OwnedTrajectoryScratch,
+    lanes: Box<ChunkLanes>,
 }
 
 #[derive(Clone, Copy)]
@@ -1976,15 +1977,16 @@ fn run_band_projections(
     field: &mut ProjectedTemporalMotionField,
 ) -> crate::Result<()> {
     let band_rows = projection_band_rows(field.height8, config);
-    let run = |band: &mut ProjectedFieldBand<'_>, mut rows: Option<&mut TrajectoryBand<'_>>| {
+    let mut lanes = None;
+    let mut run = |band: &mut ProjectedFieldBand<'_>, mut rows: Option<&mut TrajectoryBand<'_>>| {
         let rows8 = band.row_base..band.row_base + band_rows;
         for prepared in prepared.iter().flatten() {
             project_temporal_motion_field(
+                lanes.get_or_insert_default(),
                 &prepared.source,
                 prepared.field,
                 rows8.clone(),
-                config.step,
-                config.unit_size8,
+                (config.step, config.unit_size8),
                 rows.as_deref_mut(),
                 band,
             );
