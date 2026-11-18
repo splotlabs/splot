@@ -478,7 +478,7 @@ fn resolved_record_publication_keeps_the_unit_capacity() {
                 rows: 1,
                 cols: 1,
                 skip_flag: false,
-                eob: 1,
+                empty: false,
             },
         );
         progress.reserve(1).expect("parsed rows");

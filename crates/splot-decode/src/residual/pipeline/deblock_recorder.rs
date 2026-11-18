@@ -52,7 +52,7 @@ impl DeblockRecorder<'_> {
         luma_tx: usize,
         eob: usize,
     ) {
-        self.blocks.push(crate::filters::deblock::DeblockBlock {
+        let luma = crate::filters::deblock::DeblockBlock {
             r: r as u16,
             c: c as u16,
             n4w: n4w as u8,
@@ -67,16 +67,10 @@ impl DeblockRecorder<'_> {
                 luma_tx,
             ),
             sub_pu_size: None,
-        });
+        };
         self.tx_skip_records.push(
-            crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
-                row: r,
-                col: c,
-                rows: n4h,
-                cols: n4w,
-                skip_flag: false,
-                eob,
-            },
+            crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord::from_luma(&luma, eob),
         );
+        self.blocks.push(luma);
     }
 }

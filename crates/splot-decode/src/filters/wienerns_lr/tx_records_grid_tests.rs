@@ -24,7 +24,7 @@ const CONFLICTING_TX_SKIP_RECORDS: [WienerNsLrTxSkipTransformRecord; 2] = [
         rows: 1,
         cols: 2,
         skip_flag: true,
-        eob: 3,
+        empty: false,
     },
     WienerNsLrTxSkipTransformRecord {
         row: 0,
@@ -32,7 +32,7 @@ const CONFLICTING_TX_SKIP_RECORDS: [WienerNsLrTxSkipTransformRecord; 2] = [
         rows: 1,
         cols: 1,
         skip_flag: false,
-        eob: 3,
+        empty: false,
     },
 ];
 
@@ -44,7 +44,7 @@ fn tx_skip_grid_reuses_small_then_large_then_small_backing() {
         rows: 2,
         cols: 3,
         skip_flag: true,
-        eob: 0,
+        empty: true,
     };
     let values = vec![7];
     let large = derive_wienerns_lr_tx_skip_grid_reusing(2, 3, &[record], values).unwrap();
@@ -60,7 +60,7 @@ fn tx_skip_grid_reuses_small_then_large_then_small_backing() {
         rows: 1,
         cols: 1,
         skip_flag: false,
-        eob: 1,
+        empty: false,
         ..record
     };
     let small = derive_wienerns_lr_tx_skip_grid_reusing(1, 1, &[small_record], values).unwrap();
@@ -365,7 +365,7 @@ fn tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record() {
             rows: 1,
             cols: 1,
             skip_flag: true,
-            eob: 3,
+            empty: false,
         },
         WienerNsLrTxSkipTransformRecord {
             row: 0,
@@ -373,7 +373,7 @@ fn tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record() {
             rows: 1,
             cols: 1,
             skip_flag: false,
-            eob: 3,
+            empty: false,
         },
     ];
 
@@ -402,7 +402,7 @@ fn cdef_skip_grid_writes_final_bit_grid_for_mixed_records() {
             rows: 1,
             cols: 2,
             skip_flag: true,
-            eob: 5,
+            empty: false,
         },
         WienerNsLrTxSkipTransformRecord {
             row: 0,
@@ -410,7 +410,7 @@ fn cdef_skip_grid_writes_final_bit_grid_for_mixed_records() {
             rows: 1,
             cols: 1,
             skip_flag: false,
-            eob: 0,
+            empty: true,
         },
         WienerNsLrTxSkipTransformRecord {
             row: 1,
@@ -418,7 +418,7 @@ fn cdef_skip_grid_writes_final_bit_grid_for_mixed_records() {
             rows: 1,
             cols: 3,
             skip_flag: false,
-            eob: 0,
+            empty: true,
         },
     ];
 
@@ -437,7 +437,7 @@ fn cdef_skip_grid_clamps_boundary_overhang_without_changing_predicate() {
             rows: 2,
             cols: 2,
             skip_flag: true,
-            eob: 4,
+            empty: false,
         },
         WienerNsLrTxSkipTransformRecord {
             row: 2,
@@ -445,7 +445,7 @@ fn cdef_skip_grid_clamps_boundary_overhang_without_changing_predicate() {
             rows: 3,
             cols: 2,
             skip_flag: false,
-            eob: 0,
+            empty: true,
         },
     ];
 
@@ -463,7 +463,7 @@ fn cdef_and_lr_keep_distinct_empty_transform_predicates() {
         rows: 1,
         cols: 2,
         skip_flag: false,
-        eob: 0,
+        empty: true,
     }];
 
     let cdef = derive_cdef_skip_grid(1, 2, &records, Vec::new()).unwrap();
@@ -507,7 +507,7 @@ fn tx_skip_grid_retention_clamps_bottom_edge_overhang() {
             rows: 2,
             cols: 1,
             skip_flag: true,
-            eob: 0,
+            empty: true,
         },
         WienerNsLrTxSkipTransformRecord {
             row: 2,
@@ -515,7 +515,7 @@ fn tx_skip_grid_retention_clamps_bottom_edge_overhang() {
             rows: 4, // nominal extent overhangs the 4-row grid by 2 rows
             cols: 1,
             skip_flag: false,
-            eob: 5,
+            empty: false,
         },
     ];
 
@@ -541,7 +541,7 @@ fn tx_skip_grid_retention_clamps_right_edge_overhang() {
         rows: 1,
         cols: 4, // nominal width overhangs the 2-col grid by 2 cols
         skip_flag: true,
-        eob: 0,
+        empty: true,
     }];
 
     let tx_skip = derive_wienerns_lr_tx_skip_grid_retention(1, 2, &records).unwrap();
@@ -579,7 +579,7 @@ fn tx_skip_grid_retention_rejects_out_of_frame_origin() {
         rows: 1,
         cols: 1,
         skip_flag: true,
-        eob: 0,
+        empty: true,
     }];
 
     assert!(matches!(
@@ -606,12 +606,12 @@ fn selectable_tx_records_populate_live_tx_skip_grid() {
         .iter()
         .enumerate()
         .map(|(index, record)| WienerNsLrTxSkipTransformRecord {
-            row: record.row,
-            col: record.col,
-            rows: record.rows,
-            cols: record.cols,
+            row: record.row as u16,
+            col: record.col as u16,
+            rows: record.rows as u8,
+            cols: record.cols as u8,
             skip_flag: false,
-            eob: usize::from(index == 0),
+            empty: index != 0,
         })
         .collect::<Vec<_>>();
 

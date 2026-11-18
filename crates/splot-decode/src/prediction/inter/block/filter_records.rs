@@ -225,7 +225,7 @@ pub(crate) fn record_inter_deblock_geometry(
         let tx_h4 = super::residual::tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
         for row4 in crate::support::step_range(0..n4h, tx_h4) {
             for col4 in crate::support::step_range(0..n4w, tx_w4) {
-                deblock_blocks.push(crate::filters::deblock::DeblockBlock {
+                let luma = crate::filters::deblock::DeblockBlock {
                     r: (frontier.r + row4) as u16,
                     c: (frontier.c + col4) as u16,
                     n4w: tx_w4 as u8,
@@ -236,17 +236,13 @@ pub(crate) fn record_inter_deblock_geometry(
                     qindex,
                     prediction: luma_prediction,
                     sub_pu_size,
-                });
+                };
                 tx_skip_records.push(
-                    crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
-                        row: frontier.r + row4,
-                        col: frontier.c + col4,
-                        rows: tx_h4,
-                        cols: tx_w4,
-                        skip_flag: true,
-                        eob: 0,
-                    },
+                    crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord::from_luma(
+                        &luma, 0,
+                    ),
                 );
+                deblock_blocks.push(luma);
             }
         }
         if frontier.has_chroma {
@@ -274,7 +270,7 @@ pub(crate) fn record_inter_deblock_geometry(
             ReconPlaneId::Y => {
                 let tx_w4 = (1usize << log2_width) / MI_SIZE;
                 let tx_h4 = (1usize << log2_height) / MI_SIZE;
-                deblock_blocks.push(crate::filters::deblock::DeblockBlock {
+                let luma = crate::filters::deblock::DeblockBlock {
                     r: (block.y as usize / MI_SIZE) as u16,
                     c: (block.x as usize / MI_SIZE) as u16,
                     n4w: tx_w4 as u8,
@@ -285,17 +281,14 @@ pub(crate) fn record_inter_deblock_geometry(
                     qindex,
                     prediction: luma_prediction,
                     sub_pu_size,
-                });
+                };
                 tx_skip_records.push(
-                    crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
-                        row: block.y as usize / MI_SIZE,
-                        col: block.x as usize / MI_SIZE,
-                        rows: tx_h4,
-                        cols: tx_w4,
-                        skip_flag: false,
-                        eob: block.coeffs.eob(),
-                    },
+                    crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord::from_luma(
+                        &luma,
+                        block.coeffs.eob(),
+                    ),
                 );
+                deblock_blocks.push(luma);
             }
             ReconPlaneId::V => {}
             ReconPlaneId::U => {
@@ -481,12 +474,12 @@ mod tests {
             records.chroma_deblock_blocks.push(block);
             records.tx_skip_records.push(
                 crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
-                    row: r as usize,
+                    row: r,
                     col: 0,
                     rows: 1,
                     cols: 1,
                     skip_flag: false,
-                    eob: 1,
+                    empty: false,
                 },
             );
         };

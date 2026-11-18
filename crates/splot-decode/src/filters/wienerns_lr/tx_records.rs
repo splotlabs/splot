@@ -39,12 +39,28 @@ struct Block4x4Extent {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrTxSkipTransformRecord {
-    pub(crate) row: usize,
-    pub(crate) col: usize,
-    pub(crate) rows: usize,
-    pub(crate) cols: usize,
+    pub(crate) row: u16,
+    pub(crate) col: u16,
+    pub(crate) rows: u8,
+    pub(crate) cols: u8,
     pub(crate) skip_flag: bool,
-    pub(crate) eob: usize,
+    pub(crate) empty: bool,
+}
+
+impl WienerNsLrTxSkipTransformRecord {
+    pub(crate) const fn from_luma(
+        block: &crate::filters::deblock::DeblockBlock,
+        eob: usize,
+    ) -> Self {
+        Self {
+            row: block.r,
+            col: block.c,
+            rows: block.n4h,
+            cols: block.n4w,
+            skip_flag: block.skip,
+            empty: eob == 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

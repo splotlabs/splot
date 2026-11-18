@@ -87,7 +87,7 @@ fn skip_grid_records(skip_flag: bool, eob: usize) -> Vec<WienerNsLrTxSkipTransfo
         rows: 4,
         cols: 4,
         skip_flag,
-        eob,
+        empty: eob == 0,
     }]
 }
 
