@@ -64,15 +64,12 @@ pub(super) fn cdef_filter_rows_u8_quad<
 >(
     simd: S,
     quads: Q,
-    (pad, plan, base): (&[u16; AREA], &CdefFilterPlan, u16),
+    (pad, plan, starts, base): (&[u16; AREA], &CdefFilterPlan, &CdefTapStarts, u16),
     (out, out_stride): (&mut [T], usize),
 ) -> Option<()> {
     let filter = &plan.filter;
-    let (center_view, pri_views, sec_views) = cdef_tap_views::<_, STRIDE, 2, SPAN, AREA, PRI, SEC>(
-        pad,
-        filter.dir,
-        &CDEF_SEGMENT_TAP_STARTS,
-    )?;
+    let (center_view, pri_views, sec_views) =
+        cdef_tap_views::<_, STRIDE, 2, SPAN, AREA, PRI, SEC>(pad, starts)?;
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
     let pri = CdefConstrainWide::new(simd, filter.pri_str, plan.adj[0]);
@@ -171,7 +168,7 @@ pub(super) fn cdef_filter_rows_wide8<
 ) -> Option<()> {
     let filter = &plan.filter;
     let (center_bytes, pri_bytes, sec_bytes) =
-        cdef_tap_views::<_, STRIDE, CENTER, SPAN8, AREA8, PRI, SEC>(bytes, filter.dir, starts)?;
+        cdef_tap_views::<_, STRIDE, CENTER, SPAN8, AREA8, PRI, SEC>(bytes, starts)?;
     let packed_pair = STRIDE == LUMA_BYTE_STRIDE && ROWS == 4;
     let len = if packed_pair {
         CDEF_PAIR_OUTPUT

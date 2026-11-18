@@ -565,7 +565,7 @@ pub fn cdef_filter_block_chroma_pair_segment(
         return false;
     };
     let bytes = segment.block_bytes(block);
-    let plan = &CdefFilterPlan::new(*filter);
+    let plan = (&CdefFilterPlan::new(*filter), filter.dir);
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = Level::baseline().as_avx2() {
         return pair_segment_with(avx2, InLane, (pad, bytes), range, plan, out);
@@ -590,7 +590,7 @@ fn pair_segment_with<S: SimdToken, Q: QuadLanes<S>>(
         Option<&[u8; PAIR_BLOCK_BYTES]>,
     ),
     range: u16,
-    plan: &CdefFilterPlan,
+    (plan, dir): (&CdefFilterPlan, usize),
     out: &mut [u16; CDEF_PAIR_OUTPUT],
 ) -> bool {
     const SPAN: usize = 3 * CDEF_PAIR_SEGMENT_STRIDE + 8;
@@ -598,7 +598,7 @@ fn pair_segment_with<S: SimdToken, Q: QuadLanes<S>>(
     const SPAN8: usize = SPAN + 8;
     const AREA8: usize = PAIR_BLOCK_BYTES;
     const STRIDE: usize = CDEF_PAIR_SEGMENT_STRIDE;
-    let starts = &CDEF_PAIR_SEGMENT_TAP_STARTS;
+    let starts = &CDEF_PAIR_SEGMENT_TAP_STARTS[dir & 7];
     let filter = &plan.filter;
     let args = (pad, 4, filter, starts, &mut out[..], 8);
     macro_rules! copy {
@@ -871,7 +871,7 @@ pub fn cdef_filter_block_segment<T: crate::ReconSample>(
     }
     let range = use_range.then_some(range);
     let pad = (pad, segment.block_bytes(block));
-    let plan = &CdefFilterPlan::new(*filter);
+    let plan = (&CdefFilterPlan::new(*filter), filter.dir);
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = Level::baseline().as_avx2() {
         return luma_segment_with(avx2, InLane, pad, range, plan, (out, out_stride));
@@ -896,7 +896,7 @@ fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
         Option<&[u8; LUMA_BLOCK_BYTES]>,
     ),
     range: Option<[u16; 2]>,
-    plan: &CdefFilterPlan,
+    (plan, dir): (&CdefFilterPlan, usize),
     (out, out_stride): (&mut [T], usize),
 ) -> bool {
     const SPAN: usize = 7 * CDEF_SEGMENT_STRIDE + 8;
@@ -904,7 +904,7 @@ fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     const SPAN8: usize = SPAN + 8;
     const AREA8: usize = LUMA_BLOCK_BYTES;
     const STRIDE: usize = CDEF_SEGMENT_STRIDE;
-    let starts = &CDEF_SEGMENT_TAP_STARTS;
+    let starts = &CDEF_SEGMENT_TAP_STARTS[dir & 7];
     let filter = &plan.filter;
     let args = (pad, 8, filter, starts, &mut *out, out_stride);
     let Some([base, max]) = range else {
@@ -961,7 +961,7 @@ fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
                     cdef_filter_rows_u8_quad::<S, Q, _, STRIDE, 8, SPAN, AREA, $signed>(
                         simd,
                         quads,
-                        (pad, plan, base),
+                        (pad, plan, starts, base),
                         (out, out_stride)
                     ),
                     copy!()
@@ -987,7 +987,7 @@ fn luma_wide8_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     quads: Q,
     bytes: Option<&[u8; LUMA_PADDED_BYTES]>,
     range: i32,
-    plan: &CdefFilterPlan,
+    (plan, dir): (&CdefFilterPlan, usize),
     out: (&mut [T], usize),
 ) -> bool {
     const STRIDE: usize = LUMA_BYTE_STRIDE;
@@ -997,7 +997,7 @@ fn luma_wide8_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
         return false;
     };
     let filter = &plan.filter;
-    let inputs = (bytes, plan, &LUMA_BYTE_STARTS);
+    let inputs = (bytes, plan, &LUMA_BYTE_STARTS[dir & 7]);
     macro_rules! run {
         ($mode:ident) => {
             cdef_by_families!(
@@ -1138,7 +1138,7 @@ impl CdefFilterPlan {
 pub struct CdefUnitFilters {
     luma: [CdefFilterPlan; 14],
     chroma: CdefFilterPlan,
-    dirs: [[usize; 8]; 2],
+    dirs: [[u8; 2]; 8],
     luma_active: bool,
     directions: bool,
     luma_bytes: bool,
@@ -1151,8 +1151,11 @@ impl CdefUnitFilters {
         let luma = core::array::from_fn(|level| {
             CdefFilterPlan::new(strengths.filters(0, level_var(level))[0])
         });
-        let dirs =
-            [0, 1].map(|plane| core::array::from_fn(|dir| strengths.filters(dir, 64)[plane].dir));
+        let dirs = core::array::from_fn(|dir| {
+            strengths
+                .filters(dir, 64)
+                .map(|filter| (filter.dir & 7) as u8)
+        });
         let pri_base = strengths.y_pri << strengths.coeff_shift;
         Self {
             luma,
@@ -1175,16 +1178,17 @@ impl CdefUnitFilters {
     /// `y_dir` and variance `var`.
     #[allow(clippy::inline_always, reason = "measured CDEF per-block hot path")]
     #[inline(always)]
-    fn block(&self, y_dir: usize, var: i32) -> [CdefFilterPlan; 2] {
+    fn block(&self, y_dir: usize, var: i32) -> [(&CdefFilterPlan, usize); 2] {
         let level = if var == 0 {
             0
         } else {
             1 + (var >> 6).checked_ilog2().unwrap_or(0).min(12) as usize
         };
-        let (mut luma, mut chroma) = (self.luma[level.min(13)], self.chroma);
-        luma.filter.dir = self.dirs[0][y_dir & 7];
-        chroma.filter.dir = self.dirs[1][y_dir & 7];
-        [luma, chroma]
+        let [luma_dir, chroma_dir] = self.dirs[y_dir & 7];
+        [
+            (&self.luma[level.min(13)], usize::from(luma_dir)),
+            (&self.chroma, usize::from(chroma_dir)),
+        ]
     }
 }
 
@@ -1285,7 +1289,8 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
             return false;
         };
         let [y_plan, uv_plan] = unit.block(y_dir, var);
-        if filters.luma && (y_plan.filter.pri_str != 0 || y_plan.filter.sec_str != 0) {
+        let y_filter = &y_plan.0.filter;
+        if filters.luma && (y_filter.pri_str != 0 || y_filter.sec_str != 0) {
             let Some(out) = luma_out.get_mut(8 * block..) else {
                 return false;
             };
@@ -1297,12 +1302,12 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
                     quads,
                     (luma, segment.block_bytes(block)),
                     Some([least, greatest]),
-                    &y_plan,
+                    y_plan,
                     (out, luma_stride),
                 )
             } else {
                 let range = i32::from(greatest) - i32::from(least);
-                luma_wide8_with(simd, quads, packed, range, &y_plan, (out, luma_stride))
+                luma_wide8_with(simd, quads, packed, range, y_plan, (out, luma_stride))
             };
             if !written {
                 return false;
@@ -1311,7 +1316,8 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
         let Some((pair, planes)) = chroma_block else {
             continue;
         };
-        if uv_plan.filter.pri_str == 0 && uv_plan.filter.sec_str == 0 {
+        let uv_filter = &uv_plan.0.filter;
+        if uv_filter.pri_str == 0 && uv_filter.sec_str == 0 {
             continue;
         }
         let Some(range) = pair.range(block) else {
@@ -1327,7 +1333,7 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
                 quads,
                 bytes,
                 range,
-                &uv_plan,
+                uv_plan,
                 fill_flat,
                 [(u, *u_stride), (v, *v_stride)],
             )
@@ -1345,7 +1351,7 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
                     quads,
                     (pad, pair.block_bytes(block)),
                     range,
-                    &uv_plan,
+                    uv_plan,
                     &mut output,
                 ) && publish_pair(simd, &output, [(u, *u_stride), (v, *v_stride)]).is_some()
             }
@@ -1596,6 +1602,7 @@ mod tests {
                     coeff_shift: 0,
                 });
                 assert!(filter.wide8);
+                let plan = (&filter, dir);
                 for block in 0..CDEF_SEGMENT_BLOCKS {
                     let (Some(luma), Some(chroma)) = (segment.block(block), pair.block(block))
                     else {
@@ -1608,7 +1615,7 @@ mod tests {
                         Ordered,
                         (luma, None),
                         range,
-                        &filter,
+                        plan,
                         (&mut ordered, 8)
                     ));
                     assert!(luma_segment_with(
@@ -1616,7 +1623,7 @@ mod tests {
                         InLane,
                         (luma, None),
                         range,
-                        &filter,
+                        plan,
                         (&mut packed, 8)
                     ));
                     assert_eq!(ordered, packed, "luma block {block}, {filter:?}");
@@ -1626,7 +1633,7 @@ mod tests {
                         Ordered,
                         (chroma, None),
                         1000,
-                        &filter,
+                        plan,
                         &mut ordered
                     ));
                     assert!(pair_segment_with(
@@ -1634,7 +1641,7 @@ mod tests {
                         InLane,
                         (chroma, None),
                         1000,
-                        &filter,
+                        plan,
                         &mut packed
                     ));
                     assert_eq!(ordered, packed, "chroma block {block}, {filter:?}");
@@ -1652,16 +1659,9 @@ mod tests {
                         (false, luma_bytes),
                     ]) {
                         assert!(if quads {
-                            luma_segment_with(avx2, InLane, (luma, bytes), range, &filter, (out, 8))
+                            luma_segment_with(avx2, InLane, (luma, bytes), range, plan, (out, 8))
                         } else {
-                            luma_segment_with(
-                                avx2,
-                                Ordered,
-                                (luma, bytes),
-                                range,
-                                &filter,
-                                (out, 8),
-                            )
+                            luma_segment_with(avx2, Ordered, (luma, bytes), range, plan, (out, 8))
                         });
                     }
                     assert!(
@@ -1675,9 +1675,9 @@ mod tests {
                         (false, chroma_bytes),
                     ]) {
                         assert!(if quads {
-                            pair_segment_with(avx2, InLane, (chroma, bytes), 1000, &filter, out)
+                            pair_segment_with(avx2, InLane, (chroma, bytes), 1000, plan, out)
                         } else {
-                            pair_segment_with(avx2, Ordered, (chroma, bytes), 1000, &filter, out)
+                            pair_segment_with(avx2, Ordered, (chroma, bytes), 1000, plan, out)
                         });
                     }
                     assert!(
@@ -1753,7 +1753,8 @@ mod tests {
             unreachable!("blocks below CDEF_SEGMENT_BLOCKS exist");
         };
         let (mut wide, mut narrow) = ([0u16; 64], [0u8; 64]);
-        let inputs = (pad, plan, base);
+        let starts = &CDEF_SEGMENT_TAP_STARTS[plan.filter.dir & 7];
+        let inputs = (pad, plan, starts, base);
         macro_rules! quad {
             ($out:expr, $signed:literal) => {
                 assert!(

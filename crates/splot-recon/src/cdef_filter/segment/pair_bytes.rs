@@ -10,7 +10,7 @@ const PAIR_BYTE_SPAN: usize = 2 * LUMA_BYTE_STRIDE + 32;
 const PAIR_PADDED_BYTES: usize = u8::MAX as usize + PAIR_BYTE_SPAN;
 pub(super) const PAIR_BYTES_AREA: usize =
     (CDEF_SEGMENT_BLOCKS - 1) * PAIR_BYTE_BLOCK + PAIR_PADDED_BYTES;
-const PAIR_BYTE_STARTS: CdefTapStarts = cdef_tap_starts(
+const PAIR_BYTE_STARTS: CdefTapStartTable = cdef_tap_starts(
     &cdef_tap_offsets(LUMA_BYTE_STRIDE as isize, 2),
     2 * LUMA_BYTE_STRIDE + 2 * TAP_REACH,
 );
@@ -66,7 +66,7 @@ pub(super) fn filter_byte_pair<S: SimdToken, Q: QuadLanes<S>, T: ReconSample>(
     quads: Q,
     bytes: &[u8; PAIR_PADDED_BYTES],
     range: u16,
-    plan: &CdefFilterPlan,
+    (plan, dir): (&CdefFilterPlan, usize),
     fill_flat: [bool; 3],
     planes: [(&mut [T], usize); 2],
 ) -> bool {
@@ -83,7 +83,7 @@ pub(super) fn filter_byte_pair<S: SimdToken, Q: QuadLanes<S>, T: ReconSample>(
         return false;
     }
     let mut output = [0; CDEF_PAIR_OUTPUT];
-    let inputs = (bytes, plan, &PAIR_BYTE_STARTS);
+    let inputs = (bytes, plan, &PAIR_BYTE_STARTS[dir & 7]);
     macro_rules! run {
         ($mode:ident) => {
             cdef_by_families!(
