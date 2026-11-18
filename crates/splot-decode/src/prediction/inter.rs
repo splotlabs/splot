@@ -1350,7 +1350,7 @@ impl<T: ReconSample> InterReferenceState<T> {
 /// reads samples, and blocks on [`Self::wait`] when it is about to read them on
 /// the driver thread itself.
 pub(crate) struct PixelReferenceGate<'a, T: ReconSample> {
-    slots: [Option<&'a RefFrameSlot<T>>; ReferenceSlot::MAX_SLOTS],
+    slots: RefSlots<Option<&'a RefFrameSlot<T>>>,
 }
 
 /// The reference slots a parsed frame header names for pixel prediction.
@@ -1408,28 +1408,30 @@ impl<T: ReconSample> PixelReferenceGate<'_, T> {
     }
 }
 
+fn distinct_reference_slots(
+    named: impl IntoIterator<Item = u32>,
+) -> impl Iterator<Item = ReferenceSlot> {
+    let mut seen = 0u16;
+    named.into_iter().filter_map(move |slot| {
+        let bit = 1u16.checked_shl(slot)?;
+        if seen & bit != 0 {
+            return None;
+        }
+        seen |= bit;
+        ReferenceSlot::new(slot as usize).ok()
+    })
+}
+
 impl<T: ReconSample> InterReferenceState<T> {
     /// Shares each distinct motion-field product named by a reference map.
     pub(crate) fn motion_dependencies(
         &self,
         ref_frame_idx: &[u32],
     ) -> RefSlots<Option<MotionFieldHandle>> {
-        let mut seen = 0u16;
         let mut dependencies = RefSlots::default();
         dependencies.extend_within(
-            ref_frame_idx
-                .iter()
-                .filter_map(|&slot| {
-                    let index = usize::try_from(slot).ok()?;
-                    let dependency = self.ref_motion_fields.get(index)?;
-                    let slot = ReferenceSlot::new(index).ok()?;
-                    let bit = 1u16.checked_shl(u32::try_from(slot.index()).ok()?)?;
-                    if seen & bit != 0 {
-                        return None;
-                    }
-                    seen |= bit;
-                    dependency.as_ref()
-                })
+            distinct_reference_slots(ref_frame_idx.iter().copied())
+                .filter_map(|slot| self.ref_motion_fields.get(slot.index())?.as_ref())
                 .cloned()
                 .map(Some),
         );
@@ -1444,24 +1446,12 @@ impl<T: ReconSample> InterReferenceState<T> {
         &self,
         named: impl IntoIterator<Item = u32>,
     ) -> PixelReferenceGate<'_, T> {
-        let mut slots: [Option<&RefFrameSlot<T>>; ReferenceSlot::MAX_SLOTS] =
-            [None; ReferenceSlot::MAX_SLOTS];
-        for slot in named {
-            let Ok(index) = ReferenceSlot::new(slot as usize) else {
-                continue;
-            };
-            let Ok(Some(frame)) = self.store.get(index) else {
-                continue;
-            };
-            if !slots
-                .iter()
-                .flatten()
-                .any(|held| core::ptr::eq(*held, frame))
-                && let Some(entry) = slots.iter_mut().find(|entry| entry.is_none())
-            {
-                *entry = Some(frame);
-            }
-        }
+        let mut slots = RefSlots::default();
+        slots.extend_within(
+            distinct_reference_slots(named)
+                .filter_map(|slot| self.store.get(slot).ok().flatten())
+                .map(Some),
+        );
         PixelReferenceGate { slots }
     }
 
