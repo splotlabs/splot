@@ -193,13 +193,16 @@ fn encode_overlong_remainder() -> Vec<u8> {
 
 #[test]
 fn fsc_block_reads_bob_idtx_br_sign_quant_and_commits() {
+    assert_decodes_fsc_pair(&mut context());
+}
+
+fn assert_decodes_fsc_pair(state: &mut TileCoeffContextState) {
     let (payload, expected_tile) = encode_fsc_two_coefficients();
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
-    let mut state = context();
     let mut quant = [0; 16];
 
-    let end = decode(&mut state, &mut tile, &mut symbols, &mut quant).unwrap();
+    let end = decode(state, &mut tile, &mut symbols, &mut quant).unwrap();
 
     assert_eq!(end, 16);
     let mut expected = [0; 16];
@@ -212,7 +215,7 @@ fn fsc_block_reads_bob_idtx_br_sign_quant_and_commits() {
     assert_eq!(state.above_level(0).unwrap()[1], 4);
     assert_eq!(state.left_level(0).unwrap()[1], 4);
     assert_eq!(state.above_dc(0).unwrap()[1], 0);
-    assert!(levels_are_zero(&mut state));
+    assert!(levels_are_zero(state));
 }
 
 #[test]
@@ -232,8 +235,18 @@ fn fsc_block_overlong_remainder_fails_and_leaves_the_grid_and_context_clean() {
             CoeffReadQuantError::OverlongGolombPrefix { index: 0 }
         ))
     ));
-    assert_eq!(state, before);
+    for plane in 0..3 {
+        assert_eq!(
+            state.above_line(plane).unwrap(),
+            before.above_line(plane).unwrap()
+        );
+        assert_eq!(
+            state.left_line(plane).unwrap(),
+            before.left_line(plane).unwrap()
+        );
+    }
     assert!(levels_are_zero(&mut state));
+    assert_decodes_fsc_pair(&mut state);
 }
 
 #[test]
