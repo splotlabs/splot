@@ -14,10 +14,10 @@
 //! `c3` taps and the lower half. A group's difference sum lies in
 //! `±255 * max(P, N)` for its positive and negative coefficient sums, so with
 //! both at most 128 each group and every tap pair in it fit `i16`. The groups
-//! meet in a floor average with biases `32768 + 64` and `32768`, which gives
-//! `((S + 64) >> 1) + 32768` without overflow; `>> 6` then leaves
-//! `Round2(S, 7) + 512`, and adding the center widened with a `0xfe` high byte
-//! (`m - 512`) gives the filtered value, which `packuswb` clips to 8 bits.
+//! meet in a rounding unsigned average with biases `32768 + 64` and `32767`,
+//! which gives `((S + 64) >> 1) + 32768`. Flipping its sign bit subtracts
+//! 32768 before the signed shift by 6. Adding the widened center gives
+//! the filtered value, which `packuswb` clips to 8 bits.
 //! Classes outside these bounds, which the § 5.20.2.1 tap ranges allow, take
 //! the general kernel.
 //!
@@ -685,7 +685,7 @@ mod avx2 {
             );
             let odd = add(odd, madd(ld!(4, 5), w.pairs[9]));
             let lower = finish(
-                i16::MIN,
+                i16::MAX,
                 even,
                 odd,
                 &[
@@ -696,17 +696,18 @@ mod avx2 {
             );
 
             let center = ld!(4, 4);
-            let offset = _mm256_set1_epi8(0xfe_u8 as i8);
+            let zero = _mm256_setzero_si256();
+            let bias = _mm256_set1_epi16(i16::MIN);
             let value = |upper: __m256i, lower: __m256i, center: __m256i| {
-                let average = _mm256_add_epi16(
-                    _mm256_and_si256(upper, lower),
-                    _mm256_srli_epi16::<1>(_mm256_xor_si256(upper, lower)),
-                );
-                add(_mm256_srli_epi16::<6>(average), center)
+                let average = _mm256_avg_epu16(upper, lower);
+                add(
+                    _mm256_srai_epi16::<6>(_mm256_xor_si256(average, bias)),
+                    center,
+                )
             };
             _mm256_packus_epi16(
-                value(upper.0, lower.0, _mm256_unpacklo_epi8(center, offset)),
-                value(upper.1, lower.1, _mm256_unpackhi_epi8(center, offset)),
+                value(upper.0, lower.0, _mm256_unpacklo_epi8(center, zero)),
+                value(upper.1, lower.1, _mm256_unpackhi_epi8(center, zero)),
             )
         }
     );
