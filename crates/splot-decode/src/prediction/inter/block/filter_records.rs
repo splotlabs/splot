@@ -475,6 +475,49 @@ mod tests {
     }
 
     #[test]
+    fn skip_only_filter_preserves_order_across_coded_and_skipped_blocks() {
+        let size = BlockSize::new(BLOCK_8X8).unwrap();
+        let mut unit = TileFilterRecords::default();
+        unit.needs.deblock = false;
+        let block = InterResidualBlock {
+            plane: ReconPlaneId::Y,
+            x: 8,
+            y: 0,
+            tx_size: 0,
+            cctx_pair_delta: 0,
+            coeffs: crate::bitstream::tile_payload::LumaCoeffBlock::empty(0, false),
+        };
+        let coded = InterResidual::new(0..1);
+        for (col, size, residual) in [
+            (0, size, None),
+            (2, BlockSize::new(0).unwrap(), Some(&coded)),
+            (4, size, None),
+        ] {
+            let leaf = DecodeBlockFrontier::shared_leaf(0, col, size);
+            unit.defer_inter_leaf(&leaf, residual, None, 40, false);
+        }
+        let mut frame = TileFilterRecords::default();
+        unit.publish_into(
+            &mut frame.deblock_blocks,
+            &mut frame.chroma_deblock_blocks,
+            &mut frame.tx_skip_records,
+            &[block],
+            ChromaFormatIdc::Yuv420,
+        )
+        .unwrap();
+        let records: Vec<_> = frame
+            .tx_skip_records
+            .iter()
+            .map(|r| (r.col, r.cols, r.skip_flag, r.empty))
+            .collect();
+        assert_eq!(
+            records,
+            [(0, 2, true, true), (2, 1, false, true), (4, 2, true, true)]
+        );
+        assert!(frame.deblock_blocks.is_empty() && frame.chroma_deblock_blocks.is_empty());
+    }
+
+    #[test]
     fn deferred_inter_leaves_publish_in_leaf_order_between_parsed_records() {
         let chroma = ChromaFormatIdc::Yuv420;
         let size = BlockSize::new(BLOCK_8X8).unwrap();
