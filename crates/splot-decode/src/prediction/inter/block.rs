@@ -1237,7 +1237,7 @@ pub(super) struct InterLeafSink<'a> {
     pub(super) params: &'a tile::TileWalkParams,
     pub(super) tile_offset: ByteOffset,
     pub(super) coeff_ctx: &'a mut TileCoeffContextState,
-    pub(super) residual_scratch: &'a mut InterResidualParseScratch,
+    pub(super) luma_tx_types: &'a mut InterLumaTxTypeMap,
     pub(super) residual_blocks: &'a mut Vec<InterResidualBlock>,
     pub(super) residual_arena: &'a mut Vec<i32>,
     pub(super) intrabc_state: &'a mut TileIntrabcPreludeState,
@@ -1374,7 +1374,7 @@ fn decode_block(
     if is_inter == 0 {
         let InterLeafSink {
             ref mut coeff_ctx,
-            ref mut residual_scratch,
+            ref mut luma_tx_types,
             ref mut residual_blocks,
             ref mut residual_arena,
             ref mut intrabc_state,
@@ -1483,7 +1483,7 @@ fn decode_block(
                     work_unit,
                     symbols,
                     coeff_ctx,
-                    residual_scratch,
+                    luma_tx_types,
                     residual_blocks,
                     residual_arena,
                     sequence,
@@ -2041,7 +2041,7 @@ fn finish_inter_leaf(
         params,
         tile_offset,
         ref mut coeff_ctx,
-        ref mut residual_scratch,
+        ref mut luma_tx_types,
         ref mut residual_blocks,
         ref mut residual_arena,
         ref mut intrabc_state,
@@ -2058,7 +2058,7 @@ fn finish_inter_leaf(
             work_unit,
             symbols,
             coeff_ctx,
-            residual_scratch,
+            luma_tx_types,
             residual_blocks,
             residual_arena,
             sequence,
@@ -2226,9 +2226,7 @@ use self::warp::{
     read_warp_newmv_motion_mode_syntax, read_warpmv_delta_syntax, read_wedge_mode_syntax,
 };
 
-use self::residual::{
-    InterResidualParseScratch, read_inter_residual, reset_inter_skip_coeff_contexts,
-};
+use self::residual::{InterLumaTxTypeMap, read_inter_residual, reset_inter_skip_coeff_contexts};
 
 fn read_inter_intra_syntax(
     cdfs: &mut TileCdfSubset,

@@ -197,7 +197,7 @@ pub(super) enum WalkSpan {
 pub(super) struct TileParser<'payload> {
     walk: TileParserWalk<GeneralIntraMultiblockCursor<'payload>>,
     coeff_ctx: TileCoeffContextState,
-    residual_scratch: InterResidualParseScratch,
+    luma_tx_types: InterLumaTxTypeMap,
     delta_q_state: DeltaQState,
     intrabc_state: TileIntrabcPreludeState,
     mv_grid: NeighbourMvGrid,
@@ -388,7 +388,7 @@ impl<'payload> TileParser<'payload> {
         Ok(Self {
             walk: TileParserWalk::Active(walk),
             coeff_ctx: parse.coeff_ctx,
-            residual_scratch: parse.residual_scratch,
+            luma_tx_types: parse.luma_tx_types,
             delta_q_state,
             intrabc_state: parse.intrabc_state,
             mv_grid: parse.mv_grid,
@@ -505,7 +505,7 @@ impl<'payload> TileParser<'payload> {
                 params: context.params,
                 tile_offset,
                 coeff_ctx: &mut self.coeff_ctx,
-                residual_scratch: &mut self.residual_scratch,
+                luma_tx_types: &mut self.luma_tx_types,
                 residual_blocks: &mut row.residual_blocks,
                 residual_arena: &mut row.residual_coeffs,
                 intrabc_state: &mut self.intrabc_state,
@@ -596,7 +596,7 @@ impl<'payload> TileParser<'payload> {
             TileParseState {
                 mv_grid: self.mv_grid,
                 coeff_ctx: self.coeff_ctx,
-                residual_scratch: self.residual_scratch,
+                luma_tx_types: self.luma_tx_types,
                 intrabc_state: self.intrabc_state,
                 traversal: crate::bitstream::tile_payload::TileTraversalStorage::default(),
                 spent_filters: None,
@@ -1106,7 +1106,7 @@ impl<T: ReconSample> Default for InterReconScratchPool<T> {
 #[derive(Default)]
 pub(crate) struct TileParseState {
     intrabc_state: TileIntrabcPreludeState,
-    residual_scratch: InterResidualParseScratch,
+    luma_tx_types: InterLumaTxTypeMap,
     mv_grid: NeighbourMvGrid,
     coeff_ctx: TileCoeffContextState,
     /// The partition stack and loop-restoration record lists this tile fills.

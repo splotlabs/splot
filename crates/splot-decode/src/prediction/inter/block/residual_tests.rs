@@ -312,37 +312,23 @@ fn selectable_inter_luma_tx_records_skip_lossless_blocks() {
 }
 
 #[test]
-fn inter_residual_parse_scratch_reuses_tile_local_storage() {
-    let mut scratch = InterResidualParseScratch::default();
-    scratch.luma_tx_types.reset(0, 0, 8, 8).unwrap();
-    scratch.luma_tx_types.values[0] = V_DCT as u8;
-    scratch.chroma_reads.reserve(4);
-    scratch.chroma_reads.push(InterChromaURead {
-        unit: InterChromaUnit {
-            x4: 1,
-            y4: 2,
-            tx_fills_block: false,
-            chroma_inter_tx_type: DCT_DCT,
-        },
-        block_index: 0,
-    });
-    let luma_capacity = scratch.luma_tx_types.values.capacity();
-    let luma_pointer = scratch.luma_tx_types.values.as_ptr();
-    let chroma_capacity = scratch.chroma_reads.capacity();
-    let chroma_pointer = scratch.chroma_reads.as_ptr();
-
-    scratch.luma_tx_types.reset(4, 8, 4, 4).unwrap();
-    scratch.chroma_reads.clear();
-
-    assert_eq!(scratch.luma_tx_types.values, vec![DCT_DCT as u8; 16]);
-    assert_eq!(scratch.luma_tx_types.values.capacity(), luma_capacity);
-    assert!(core::ptr::eq(
-        scratch.luma_tx_types.values.as_ptr(),
-        luma_pointer
-    ));
-    assert!(scratch.chroma_reads.is_empty());
-    assert_eq!(scratch.chroma_reads.capacity(), chroma_capacity);
-    assert!(core::ptr::eq(scratch.chroma_reads.as_ptr(), chroma_pointer));
+fn luma_tx_type_map_reuses_tile_local_storage() {
+    let mut map = InterLumaTxTypeMap::new(0, 0, 8, 8).unwrap();
+    map.update(0, 0, TX_4X4, V_DCT).unwrap();
+    let capacity = map.values.capacity();
+    let storage = map.values.as_ptr();
+    map.reset(4, 8, 4, 4).unwrap();
+    assert_eq!(
+        map.chroma_inter_tx_type(4, 8, 4, 8, (false, false), false),
+        DCT_DCT
+    );
+    map.update(4, 8, TX_4X4, V_DCT).unwrap();
+    assert_eq!(
+        map.chroma_inter_tx_type(4, 8, 4, 8, (false, false), false),
+        V_DCT
+    );
+    assert_eq!(map.values.capacity(), capacity);
+    assert_eq!(map.values.as_ptr(), storage);
 }
 
 #[test]
@@ -437,7 +423,6 @@ fn read_edge_chroma_group(payload: &[u8]) -> Result<Vec<InterResidualBlock>> {
         &mut blocks,
         &mut Vec::new(),
         &InterLumaTxTypeMap::new(12, 16, 4, 4).unwrap(),
-        &mut Vec::new(),
         &frontier,
         frontier.b_size,
         true,
@@ -512,7 +497,7 @@ fn failed_inter_residual_drops_its_blocks_and_coefficients() {
         &mut work_unit,
         &mut symbols,
         &mut coeff_ctx,
-        &mut InterResidualParseScratch::default(),
+        &mut InterLumaTxTypeMap::default(),
         &mut blocks,
         &mut arena,
         &sequence,
