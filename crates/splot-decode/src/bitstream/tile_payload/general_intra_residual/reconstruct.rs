@@ -763,15 +763,14 @@ pub(super) fn reconstruct_block_setup(
     })
 }
 
-/// Dequantizes `block` into the whole `out`, returning the length of its
-/// whole-row prefix that may be nonzero.
+/// Dequantizes the whole-row prefix of `block`, returning the number of
+/// samples it wrote and leaving the rest of `out` untouched.
 pub(super) fn dequantize_coeff_block(
     block: CoeffBlock<'_>,
     params: &DequantBlockParams,
     out: &mut [i32],
 ) -> Result<usize, GeneralIntraResidualError> {
     if block.eob == 0 {
-        out.fill(0);
         return Ok(0);
     }
     if block.dense_len() != out.len() {
@@ -780,9 +779,7 @@ pub(super) fn dequantize_coeff_block(
             actual: block.dense_len(),
         });
     }
-    let coded = dequantize_block(params, block.quant, out)?;
-    out[coded..].fill(0);
-    Ok(coded)
+    dequantize_block(params, block.quant, out).map_err(Into::into)
 }
 
 #[cfg(test)]
