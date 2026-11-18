@@ -1270,7 +1270,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Option<Arc<[SlotFrameFilterTaps]>>,
     pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
-    pub(crate) ref_ccso_params: RefSlots<Option<Arc<splot_core::headers::frame::CcsoParams>>>,
+    pub(crate) ref_ccso_headers: RefSlots<Option<Arc<FrameHeaderCore>>>,
     pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
     pub(crate) ref_segment_ids: RefSlots<Option<SegmentIdMapHandle>>,
     pub(crate) ref_motion_fields: RefSlots<Option<MotionFieldHandle>>,
@@ -1281,7 +1281,7 @@ impl<T: ReconSample> InterReferenceState<T> {
         self.store.clear();
         self.lr_frame_filter_taps = None;
         self.ref_frame_cdfs = RefSlots::default();
-        self.ref_ccso_params = RefSlots::default();
+        self.ref_ccso_headers = RefSlots::default();
         self.ref_ccso_unit_grids = RefSlots::default();
         self.ref_segment_ids = RefSlots::default();
         self.ref_motion_fields = RefSlots::default();
@@ -1356,7 +1356,7 @@ impl<T: ReconSample> InterReferenceState<T> {
             lr_frame_filter_class_counts: RefSlots::default(),
             lr_frame_filter_taps: None,
             ref_frame_cdfs: RefSlots::default(),
-            ref_ccso_params: RefSlots::default(),
+            ref_ccso_headers: RefSlots::default(),
             ref_ccso_unit_grids: RefSlots::default(),
             ref_segment_ids: RefSlots::default(),
             ref_motion_fields: RefSlots::default(),
@@ -1493,9 +1493,10 @@ impl<T: ReconSample> InterReferenceState<T> {
 
     fn ccso_params_for_slot(&self, slot: u32) -> Result<&splot_core::headers::frame::CcsoParams> {
         let slot = usize::try_from(slot).unwrap_or(usize::MAX);
-        self.ref_ccso_params
+        self.ref_ccso_headers
             .get(slot)
             .and_then(Option::as_deref)
+            .and_then(|header| header.ccso_params.as_ref())
             .ok_or(DecodeReferenceStateError::MissingCcsoParams { slot }.into())
     }
 

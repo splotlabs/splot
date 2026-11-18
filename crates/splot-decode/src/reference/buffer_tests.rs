@@ -86,7 +86,7 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
             crate::prediction::inter::MotionFieldLayout::new(16, 16, 16)
                 .expect("valid motion-field layout"),
         ),
-        ccso_params: None,
+        ccso_header: None,
         ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
         segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
             crate::bitstream::tile_payload::FrameSegmentIdMap::new(
@@ -240,19 +240,13 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
     let frame_cdfs = Arc::new(crate::bitstream::tile_payload::FrameCdfSubset::from_defaults());
     frame.frame_cdfs = crate::prediction::inter::FrameCdfHandle::settled(Arc::clone(&frame_cdfs));
 
-    let mut reader = splot_core::bitio::BitReader::new(&[], splot_core::span::ByteOffset::new(0));
-    let ccso_params = splot_core::headers::frame::parse_ccso_params(
-        &mut reader,
-        false,
-        3,
-        &splot_core::headers::frame::CoreSeqCcsoView {
-            enable_ccso: false,
-            single_picture_header_flag: false,
-        },
-    )
-    .unwrap();
-    let ccso_params = Arc::new(ccso_params);
-    frame.ccso_params = Some(Arc::clone(&ccso_params));
+    let (_, header) =
+        crate::prediction::inter::test_support::fixture_sequence_and_key_core(include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"
+        ));
+    assert!(header.ccso_params.is_some());
+    let ccso_header = Arc::new(header);
+    frame.ccso_header = Some(Arc::clone(&ccso_header));
 
     let ccso_grid = Arc::new(
         crate::filters::ccso::CcsoUnitGrid::new(
@@ -286,8 +280,8 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
         .unwrap();
     assert!(Arc::ptr_eq(stored_cdfs, &frame_cdfs));
     assert!(Arc::ptr_eq(
-        metadata.ref_ccso_params[2].as_ref().unwrap(),
-        &ccso_params
+        metadata.ref_ccso_headers[2].as_ref().unwrap(),
+        &ccso_header
     ));
     let stored_grid = metadata.ref_ccso_unit_grids[2]
         .as_ref()
@@ -308,7 +302,7 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
         &motion_field
     ));
     assert!(metadata.ref_frame_cdfs[0].is_none());
-    assert!(metadata.ref_ccso_params[0].is_none());
+    assert!(metadata.ref_ccso_headers[0].is_none());
     assert!(metadata.ref_ccso_unit_grids[0].is_none());
     assert!(metadata.ref_segment_ids[0].is_none());
     assert!(metadata.ref_motion_fields[0].is_none());

@@ -503,8 +503,8 @@ impl<T: ReconSample> InterReferenceState<T> {
             .push(slot.lr_frame_filter_class_counts);
         self.ref_frame_cdfs
             .push(frame.map(|frame| frame.frame_cdfs.clone()));
-        self.ref_ccso_params
-            .push(frame.and_then(|frame| frame.ccso_params.clone()));
+        self.ref_ccso_headers
+            .push(frame.and_then(|frame| frame.ccso_header.clone()));
         self.ref_ccso_unit_grids
             .push(frame.map(|frame| frame.ccso_grid.clone()));
         self.ref_segment_ids

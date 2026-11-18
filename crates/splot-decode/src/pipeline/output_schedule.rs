@@ -515,7 +515,7 @@ mod tests {
             motion_field: MotionFieldHandle::pending_with_layout(
                 MotionFieldLayout::new(1, 1, 16).ok_or("valid motion-field layout")?,
             ),
-            ccso_params: None,
+            ccso_header: None,
             ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
             segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
                 crate::bitstream::tile_payload::FrameSegmentIdMap::new(1, width.div_ceil(4))

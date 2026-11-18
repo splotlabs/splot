@@ -640,7 +640,7 @@ fn missing_reference_cdf_context_is_a_typed_reference_state_error() {
 #[test]
 fn missing_reference_ccso_params_is_a_typed_reference_state_error() {
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_ccso_params = RefSlots::from_iter_checked([None]).expect("reference slots fit");
+    reference.ref_ccso_headers = RefSlots::from_iter_checked([None]).expect("reference slots fit");
 
     for slot in [0, 1] {
         let error = reference
@@ -697,8 +697,11 @@ fn missing_reference_ccso_plane_is_a_malformed_source_diagnostic() {
         let plane = &mut core.ccso_params.as_mut().expect("CCSO state").planes[0];
         plane.reuse_ccso = reuse_ccso;
         plane.sb_reuse_ccso = sb_reuse_ccso;
-        reference.ref_ccso_params = RefSlots::from_iter_checked([Some(std::sync::Arc::new(saved))])
-            .expect("reference slots fit");
+        let mut saved_header = core.clone();
+        saved_header.ccso_params = Some(saved);
+        reference.ref_ccso_headers =
+            RefSlots::from_iter_checked([Some(std::sync::Arc::new(saved_header))])
+                .expect("reference slots fit");
         let error =
             super::super::resolve_ccso_reference_reuse(&mut core, &reference, offset, Some(2))
                 .expect_err("missing or disabled saved CCSO plane");

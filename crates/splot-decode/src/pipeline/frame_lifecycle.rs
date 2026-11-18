@@ -74,7 +74,7 @@ pub(crate) struct PipelineFrame {
     pub(crate) output_effects: super::output_effects::FrameOutputEffects,
     pub(crate) frame_cdfs: inter::FrameCdfHandle,
     pub(crate) motion_field: inter::MotionFieldHandle,
-    pub(crate) ccso_params: Option<std::sync::Arc<splot_core::headers::frame::CcsoParams>>,
+    pub(crate) ccso_header: Option<std::sync::Arc<FrameHeaderCore>>,
     pub(crate) ccso_grid: inter::CcsoGridHandle,
     pub(crate) segment_ids: inter::SegmentIdMapHandle,
     pub(crate) frame_rate_numerator: u32,
