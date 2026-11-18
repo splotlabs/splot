@@ -464,6 +464,11 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         intra_tools: crate::pipeline::general_intra::GeneralIntraFrameTools::new(sequence, core),
         segment_skip: segment_feature_mask(core, SEG_LVL_SKIP),
         segment_globalmv: segment_feature_mask(core, SEG_LVL_GLOBALMV),
+        skip_segment_ref: skip_segment_reference(
+            current_order_hint,
+            ref_frame_idx,
+            &reference.ref_order_hint,
+        ),
         seg_pre_skip: core
             .segmentation_params
             .as_ref()
@@ -1211,10 +1216,9 @@ fn frame_temporal_first<T: ReconSample>(
 /// The tile parse state and frame facts every [`decode_block`] call of a
 /// superblock row reads or updates, borrowed once for the row so a leaf call
 /// passes one pointer instead of each piece.
-pub(super) struct BlockDecodeContext<'a, T: ReconSample> {
+pub(super) struct BlockDecodeContext<'a> {
     pub(super) sink: InterLeafSink<'a>,
-    pub(super) ref_frame_idx: &'a [u32],
-    pub(super) reference: &'a InterReferenceState<T>,
+    pub(super) previous_segment_ids: Option<&'a FrameSegmentIdMap>,
     pub(super) gdf_state: &'a mut GdfState,
     pub(super) cdef_state: &'a mut CdefState,
     pub(super) ccso_state: &'a mut CcsoState,
@@ -1245,17 +1249,16 @@ pub(super) struct InterLeafSink<'a> {
 
 /// Decodes one leaf and stores its record as the row's next entry.
 #[allow(clippy::too_many_arguments)]
-fn decode_block<T: ReconSample>(
+fn decode_block(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
-    context: &mut BlockDecodeContext<'_, T>,
+    context: &mut BlockDecodeContext<'_>,
     neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
 ) -> Result<GeneralIntraLeafMode> {
     let BlockDecodeContext {
         ref mut sink,
-        ref_frame_idx,
-        reference,
+        previous_segment_ids,
         ref mut gdf_state,
         ref mut cdef_state,
         ref mut ccso_state,
@@ -1318,9 +1321,6 @@ fn decode_block<T: ReconSample>(
     );
     let neighbour_ctx = (!general_intra).then(|| block_neighbour_ctx(sink.mv_grid, &block_ctx));
     let seg_pre_skip = params.seg_pre_skip;
-    let previous_segment_ids =
-        super::previous_segment_ids(core, reference, params.mi_rows, params.mi_cols)
-            .map(Arc::as_ref);
     let mut segment_id = if frontier.is_chroma_part() {
         segment_id_state.cell(frontier.r, frontier.c).unwrap_or(0)
     } else {
@@ -1714,11 +1714,7 @@ fn decode_block<T: ReconSample>(
     }
 
     let ref_frame0: i8 = if segment_forces_globalmv {
-        skip_segment_reference(
-            params.current_order_hint,
-            ref_frame_idx,
-            &reference.ref_order_hint,
-        )
+        params.skip_segment_ref
     } else if tip_ref {
         TIP_REF_FRAME
     } else if params.num_total_refs >= 2 {

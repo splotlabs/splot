@@ -5,7 +5,7 @@
 
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
-use splot_recon::{InterpolationFilter as ReconInterpolationFilter, ReconSample};
+use splot_recon::InterpolationFilter as ReconInterpolationFilter;
 
 use super::super::find_mv_stack::BlockPrecisionRecord;
 use super::super::read_mv::MV_PRECISION_ONE_PEL;
@@ -22,11 +22,11 @@ use crate::error::Result;
 /// `CurrentQIndex` to `base_q_idx`, and reads only `read_gdf()` and
 /// `read_ccso()`.
 #[inline(never)]
-pub(super) fn decode_bru_leaf<T: ReconSample>(
+pub(super) fn decode_bru_leaf(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
-    context: &mut BlockDecodeContext<'_, T>,
+    context: &mut BlockDecodeContext<'_>,
 ) -> Result<GeneralIntraLeafMode> {
     let (Ok(n4w), Ok(n4h)) = (
         frontier.b_size.num_4x4_wide(),

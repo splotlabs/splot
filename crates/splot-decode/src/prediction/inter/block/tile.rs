@@ -132,6 +132,7 @@ pub(crate) struct TileWalkParams {
     /// Bit `s`: segment `s` enables `SEG_LVL_SKIP`, then `SEG_LVL_GLOBALMV`.
     pub(super) segment_skip: u16,
     pub(super) segment_globalmv: u16,
+    pub(super) skip_segment_ref: i8,
     pub(super) seg_pre_skip: bool,
     pub(super) skip_mode_present: bool,
     pub(super) tip_frame_mode: TipFrameMode,
@@ -159,7 +160,7 @@ impl TileWalkParams {
     }
 
     pub(super) fn context<'a, T: ReconSample>(
-        &self,
+        &'a self,
         sequence: &'a SequenceHeader,
         core: &'a FrameHeaderCore,
         reference: &'a InterReferenceState<T>,
@@ -170,7 +171,7 @@ impl TileWalkParams {
             core,
             reference,
             ref_frame_idx,
-            params: self.clone(),
+            params: self,
         }
     }
 }
@@ -180,7 +181,7 @@ pub(super) struct TileDecodeContext<'a, T: ReconSample> {
     core: &'a FrameHeaderCore,
     reference: &'a InterReferenceState<T>,
     ref_frame_idx: &'a [u32],
-    params: TileWalkParams,
+    params: &'a TileWalkParams,
 }
 
 /// How far one [`TileParser::walk_leaves`] call parses.
@@ -519,7 +520,7 @@ impl<'payload> TileParser<'payload> {
             sink: super::InterLeafSink {
                 sequence: context.sequence,
                 core: context.core,
-                params: &context.params,
+                params: context.params,
                 tile_offset,
                 coeff_ctx: &mut self.coeff_ctx,
                 residual_scratch: &mut self.residual_scratch,
@@ -530,8 +531,13 @@ impl<'payload> TileParser<'payload> {
                 filter_records,
                 slots,
             },
-            ref_frame_idx: context.ref_frame_idx,
-            reference: context.reference,
+            previous_segment_ids: super::super::previous_segment_ids(
+                context.core,
+                context.reference,
+                context.params.mi_rows,
+                context.params.mi_cols,
+            )
+            .map(Arc::as_ref),
             gdf_state: &mut self.output.gdf_state,
             cdef_state: &mut self.output.cdef_state,
             ccso_state: &mut self.output.ccso_state,
@@ -2176,7 +2182,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         reset_tile_block_decoded(
             &mut parse_state.commit_block_decoded,
             context.sequence.general.chroma_format_idc,
-            &context.params,
+            context.params,
             tile.mi_col_range().end as usize,
             tile.mi_row_range().end as usize,
         )?;
