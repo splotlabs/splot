@@ -1558,9 +1558,6 @@ fn decode_block(
                 segment_id,
                 luma_use_tcq: params.luma_use_tcq,
                 policy: params.residual_tool_policy,
-                mi_cols: params.mi_cols,
-                mi_rows: params.mi_rows,
-                bit_depth: params.bit_depth,
                 tile_offset,
             },
             frontier,
@@ -1580,13 +1577,7 @@ fn decode_block(
                 intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             }
         }
-        return Ok(store(
-            leaf,
-            EntryState::Intra {
-                command,
-                size4: luma_tree.then_some([n4w as u8, n4h as u8]),
-            },
-        ));
+        return Ok(store(leaf, EntryState::Intra(command)));
     }
     let Some(neighbour_ctx) = neighbour_ctx else {
         return Err(crate::DecodeHeaderStateError::InvalidInterPartitionState.into());
@@ -2131,7 +2122,6 @@ fn finish_inter_leaf(
             syntax,
             segment_id,
             block_qindex,
-            tile_offset,
             leaf,
         )))
     }));
@@ -2215,8 +2205,8 @@ use self::interintra::predict_interintra_planes;
 use self::prediction::placed_inter_block_at;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
-    LeafReset, MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax, WarpDeltaSyntax,
-    WarpModelSource, WarpMotionSyntax, pending_intrabc_leaf, resolve_parsed_leaves,
+    MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax, WarpDeltaSyntax, WarpModelSource,
+    WarpMotionSyntax, pending_intrabc_leaf, resolve_parsed_leaves,
 };
 use self::syntax::{
     effective_force_integer_mv, interp_filter_symbol, lowered_pred_mv,

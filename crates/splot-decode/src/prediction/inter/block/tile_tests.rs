@@ -155,7 +155,8 @@ fn recon_entries_keep_contiguous_superblock_order() {
                 EntryState::Spent,
             ));
         }
-        superblocks.extend(ReconSuperblock::from_entries(&entries, first));
+        let col = columns.first().copied().unwrap_or_default();
+        superblocks.extend(ReconSuperblock::new([0, col & !15], first..entries.len()));
     }
 
     assert_eq!(

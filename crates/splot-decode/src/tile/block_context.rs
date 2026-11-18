@@ -2,7 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::sequence::ChromaFormatIdc;
-use splot_core::tables::conversion::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE};
+use splot_core::tables::conversion::{
+    MI_HEIGHT_LOG2, MI_WIDTH_LOG2, TX_HEIGHT_LOG2, TX_WIDTH_LOG2,
+};
 use splot_recon::{BitDepth, PlaneId};
 
 use crate::bitstream::tile_payload::BlockSize;
@@ -76,13 +78,32 @@ pub(crate) struct TxShape {
 }
 
 impl TxShape {
-    pub(crate) fn from_av2_block_size(block_size: BlockSize) -> Self {
-        let width4 = NUM_4X4_BLOCKS_WIDE[block_size.index()];
-        let height4 = NUM_4X4_BLOCKS_HIGH[block_size.index()];
-        Self {
-            width_log2: width4.trailing_zeros() as u8 + 2,
-            height_log2: height4.trailing_zeros() as u8 + 2,
+    const fn shapes<const N: usize>(width: &[i32; N], height: &[i32; N], offset: u8) -> [Self; N] {
+        let mut shapes = [Self {
+            width_log2: 0,
+            height_log2: 0,
+        }; N];
+        let mut i = 0;
+        while i < N {
+            shapes[i] = Self {
+                width_log2: width[i] as u8 + offset,
+                height_log2: height[i] as u8 + offset,
+            };
+            i += 1;
         }
+        shapes
+    }
+
+    pub(crate) const fn from_av2_block_size(block_size: BlockSize) -> Self {
+        const SHAPES: [TxShape; MI_WIDTH_LOG2.len()] =
+            TxShape::shapes(&MI_WIDTH_LOG2, &MI_HEIGHT_LOG2, 2);
+        SHAPES[block_size.index()]
+    }
+
+    pub(crate) fn from_tx_size(index: usize) -> Option<Self> {
+        const SHAPES: [TxShape; TX_WIDTH_LOG2.len()] =
+            TxShape::shapes(&TX_WIDTH_LOG2, &TX_HEIGHT_LOG2, 0);
+        SHAPES.get(index).copied()
     }
 
     pub(crate) fn from_luma_4x4(width4: usize, height4: usize) -> Option<Self> {
@@ -262,7 +283,12 @@ impl FrameTileCtx {
         self.chroma
     }
 
-    fn with_tile_bounds(mut self, row_start: usize, col_start: usize, col_end: usize) -> Self {
+    pub(crate) fn with_tile_bounds(
+        mut self,
+        row_start: usize,
+        col_start: usize,
+        col_end: usize,
+    ) -> Self {
         let frame_mi_rows = self.frame_mi_rows();
         let frame_mi_cols = self.frame_mi_cols();
         let col_start = col_start.min(frame_mi_cols);
@@ -351,6 +377,7 @@ pub(crate) struct BlockCtx {
 }
 
 impl BlockCtx {
+    #[cfg(test)]
     pub(crate) const fn new(
         block: BlockRect,
         tx: TxShape,
@@ -391,6 +418,7 @@ impl BlockCtx {
         self.frame.frame_mi_rows()
     }
 
+    #[cfg(test)]
     pub(crate) fn with_tile_bounds(
         mut self,
         row_start: usize,

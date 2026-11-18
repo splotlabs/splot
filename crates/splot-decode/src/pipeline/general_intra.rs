@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection, IntraPredictionScratch,
-    PlaneId, ReconSample,
+    CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection, IntraPredictionScratch, PlaneId,
+    ReconSample,
 };
 
 use super::*;
@@ -17,7 +17,7 @@ use crate::bitstream::tile_payload::{
 use crate::residual::pipeline::{
     ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan, ResidualPlanError,
 };
-use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
+use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, FrameTileCtx, TxShape};
 
 const MI_SIZE: usize = 4;
 const ANGLE_STEP: i32 = 3;
@@ -125,7 +125,6 @@ pub(crate) fn sequence_cfl_ds_filter_index(sequence: &SequenceHeader) -> u8 {
 #[derive(Clone, Copy)]
 pub(crate) struct GeneralIntraFrameTools {
     chroma_tools: GeneralIntraChromaToolConfig,
-    chroma_format: splot_core::headers::sequence::ChromaFormatIdc,
     frame_is_intra: bool,
     enable_ibp: bool,
     enable_intra_edge_filter: bool,
@@ -140,7 +139,6 @@ impl GeneralIntraFrameTools {
         let intra = sequence.intra.as_ref();
         Self {
             chroma_tools: general_intra_chroma_tools(sequence, core),
-            chroma_format: sequence.general.chroma_format_idc,
             frame_is_intra,
             enable_ibp: intra.is_some_and(|intra| intra.enable_ibp),
             enable_intra_edge_filter: intra.is_some_and(|intra| intra.enable_intra_edge_filter),
@@ -169,9 +167,6 @@ pub(crate) struct GeneralIntraLeafParse<'a, 'p> {
     pub(crate) segment_id: u8,
     pub(crate) luma_use_tcq: bool,
     pub(crate) policy: TransformToolResidualPolicy,
-    pub(crate) mi_cols: usize,
-    pub(crate) mi_rows: usize,
-    pub(crate) bit_depth: BitDepth,
     pub(crate) tile_offset: ByteOffset,
 }
 
@@ -195,18 +190,7 @@ pub(crate) fn decode_one_general_intra_block(
     let edges = neighbours.edges;
     let _qm_segment_scope =
         crate::bitstream::tile_payload::FrameQmSegmentScope::install(usize::from(leaf.segment_id));
-    let mi_row_range = leaf.work_unit.mi_row_range();
-    let mi_col_range = leaf.work_unit.mi_col_range();
-    let (block_ctx, chroma_mode_geometry) = general_intra_block_ctx(
-        frontier,
-        tools.chroma_format,
-        (
-            mi_row_range.start as usize,
-            mi_col_range.start as usize..mi_col_range.end as usize,
-        ),
-        (leaf.mi_rows, leaf.mi_cols),
-        leaf.bit_depth,
-    );
+    let (block_ctx, chroma_mode_geometry) = general_intra_block_ctx(frontier, leaf.arena.frame);
     let n4w = block_ctx.block().width4();
     let n4h = block_ctx.block().height4();
     let intra_neighbours = edges.intra_neighbours(frontier.r, frontier.c, n4w, n4h);
@@ -296,7 +280,7 @@ pub(crate) fn decode_one_general_intra_block(
         n4w,
         n4h,
         chroma_mode_geometry,
-        u32::from(leaf.bit_depth.bits()),
+        u32::from(block_ctx.frame().bit_depth().bits()),
     )
     .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
     let luma_lossless_tx_size = if lossless && modes.uses_active_fsc() {
@@ -354,13 +338,10 @@ pub(crate) fn decode_one_general_intra_block(
 #[inline]
 pub(crate) fn general_intra_block_ctx(
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
-    chroma_format: splot_core::headers::sequence::ChromaFormatIdc,
-    (tile_row_start, tile_cols): (usize, core::ops::Range<usize>),
-    (mi_rows, mi_cols): (usize, usize),
-    bit_depth: BitDepth,
+    frame: FrameTileCtx,
 ) -> (BlockCtx, Option<(usize, usize)>) {
     let block_tx_shape = TxShape::from_av2_block_size(frontier.b_size);
-    let mut block_ctx = BlockCtx::new(
+    let mut block_ctx = BlockCtx::from_frame(
         BlockRect::new(
             frontier.r,
             frontier.c,
@@ -368,12 +349,8 @@ pub(crate) fn general_intra_block_ctx(
             block_tx_shape.height4(),
         ),
         block_tx_shape,
-        mi_cols,
-        mi_rows,
-        bit_depth,
-        ChromaSampling::from_chroma_format_idc(chroma_format),
-    )
-    .with_tile_bounds(tile_row_start, tile_cols.start, tile_cols.end);
+        frame,
+    );
     if !frontier.has_chroma {
         return (block_ctx, None);
     }

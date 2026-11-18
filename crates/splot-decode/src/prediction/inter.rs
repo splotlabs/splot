@@ -14,7 +14,6 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::span::ByteOffset;
-use splot_core::tables::conversion::TX_WIDTH_LOG2;
 use splot_core::types::ObuType;
 use splot_recon::{
     BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
@@ -985,8 +984,8 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
             crate::bitstream::tile_payload::CoeffBlock::new(&block.coeffs, residual_coeffs)
                 .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?,
             block.plane,
-            block.x,
-            block.y,
+            block.x as usize,
+            block.y as usize,
             log2_width,
             log2_height,
             qindex,
@@ -1060,7 +1059,7 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     let (log2_width, log2_height) = inter_residual_log2(u).map_err(|table| {
         GeneralIntraResidualError::TransformPartitionGeometry {
             table,
-            index: u.tx_size,
+            index: usize::from(u.tx_size),
         }
     })?;
     let size = splot_recon::IntraRectBlockSize::new(
@@ -1074,7 +1073,7 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
             coeffs(&u.coeffs, residual_coeffs)?,
             coeffs(&v.coeffs, residual_coeffs)?,
         ],
-        (u.x, u.y, size),
+        (u.x as usize, u.y as usize, size),
         qindex,
         cctx_type,
         use_ddt,
@@ -1085,10 +1084,9 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
 fn inter_residual_log2(
     block: &InterResidualBlock,
 ) -> core::result::Result<(u32, u32), &'static str> {
-    if block.tx_size >= TX_WIDTH_LOG2.len() {
-        return Err("Tx_Width_Log2");
-    }
-    Ok((u32::from(block.log2_width), u32::from(block.log2_height)))
+    let shape = crate::tile::block_context::TxShape::from_tx_size(usize::from(block.tx_size))
+        .ok_or("Tx_Width_Log2")?;
+    Ok((shape.width_log2(), shape.height_log2()))
 }
 #[derive(Clone, Debug)]
 pub(crate) struct InterBlock {
@@ -1219,11 +1217,9 @@ impl InterResidual {
 #[derive(Clone, Debug)]
 pub(crate) struct InterResidualBlock {
     pub(crate) plane: ReconPlaneId,
-    pub(crate) x: usize,
-    pub(crate) y: usize,
-    pub(crate) tx_size: usize,
-    log2_width: u8,
-    log2_height: u8,
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) tx_size: u8,
     pub(crate) cctx_pair_delta: i16,
     pub(crate) coeffs: crate::bitstream::tile_payload::LumaCoeffBlock,
 }

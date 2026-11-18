@@ -34,7 +34,6 @@ pub(super) struct InterReconCommand {
     segment_id: u8,
     qindex: u32,
     motion_derived: bool,
-    tile_offset: ByteOffset,
     /// The leaf's record in the grid the resolve pass publishes into.
     pub(super) leaf: u32,
 }
@@ -53,6 +52,7 @@ pub(super) struct InterReconScratch<T: ReconSample> {
 /// The frame-level facts every inter reconstruction reads, gathered once so the
 /// motion and prediction halves take one argument instead of eight.
 pub(super) struct ReconShared<'a, T: ReconSample> {
+    pub(super) tile_offset: ByteOffset,
     pub(super) reference: &'a InterReferenceState<T>,
     pub(super) ref_frame_idx: &'a [u32],
     pub(super) ref_facts: &'a FrameRefFacts,
@@ -97,7 +97,6 @@ impl InterReconCommand {
         syntax: InterBlockSyntax,
         segment_id: u8,
         qindex: u32,
-        tile_offset: ByteOffset,
         leaf: u32,
     ) -> Self {
         Self {
@@ -106,7 +105,6 @@ impl InterReconCommand {
             segment_id,
             qindex,
             motion_derived: false,
-            tile_offset,
             leaf,
         }
     }
@@ -240,8 +238,8 @@ impl InterReconCommand {
                         return false;
                     };
                     clipped_rect_is_inside_band(
-                        block.x,
-                        block.y,
+                        block.x as usize,
+                        block.y as usize,
                         width,
                         height,
                         origin_x >> sub_x,
@@ -354,7 +352,7 @@ impl InterReconCommand {
                 frame,
                 shared.temporal_context,
                 (shared.reference, &shared.held),
-                self.tile_offset,
+                shared.tile_offset,
             )?;
             return Ok(());
         }
@@ -369,7 +367,7 @@ impl InterReconCommand {
                     shared.reference,
                 ),
                 false,
-                self.tile_offset,
+                shared.tile_offset,
                 |units| self.compound_records(temporal_records, shared, Some(units)),
             );
         }
@@ -412,7 +410,7 @@ impl InterReconCommand {
                 shared.residual_use_ddt,
                 shared.bit_depth,
                 super::sequence_enables_ibp(shared.sequence),
-                self.tile_offset,
+                shared.tile_offset,
             )?,
             sink @ (WorkspaceSink::Rect(_) | WorkspaceSink::OwnedRect(_)) => {
                 super::prediction::reconstruct_pure_inter_block(
@@ -426,7 +424,7 @@ impl InterReconCommand {
                     shared.luma_use_tcq,
                     shared.residual_use_ddt,
                     shared.bit_depth,
-                    self.tile_offset,
+                    shared.tile_offset,
                 )?;
             }
         }
@@ -456,7 +454,7 @@ impl InterReconCommand {
                     shared.reference,
                 ),
                 true,
-                self.tile_offset,
+                shared.tile_offset,
                 |units| {
                     records.map_or(Ok(()), |records| {
                         self.compound_records(records, shared, Some(units))
@@ -474,7 +472,7 @@ impl InterReconCommand {
                 frame,
                 shared.temporal_context,
                 (shared.reference, &shared.held),
-                self.tile_offset,
+                shared.tile_offset,
             )?;
         }
         let Some(block_residual) = self.placed.block.residual.as_ref() else {
@@ -551,7 +549,6 @@ impl<T: ReconSample> InterReconScratch<T> {
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
     ) -> Result<()> {
-        let _segment_scope = FrameQmSegmentScope::install(usize::from(command.segment_id));
         command.derive_motion(
             sink,
             temporal_records,
@@ -625,8 +622,7 @@ fn clipped_rect_is_inside_band(
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use splot_core::span::ByteOffset;
-    use splot_core::tables::conversion::{TX_HEIGHT, TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2};
+    use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
     use splot_recon::{
         BitDepth, DecodedFrameInfo, InterpolationFilter, OutputIndex, PixelFormat, PlaneId,
         PlaneRect, PlaneSize,
@@ -710,7 +706,6 @@ mod tests {
             },
             0,
             0,
-            ByteOffset::new(0),
             0,
         )
     }
@@ -723,23 +718,11 @@ mod tests {
         tx_size: usize,
     ) -> InterResidual {
         let start = blocks.len();
-        let log2_width = TX_WIDTH_LOG2
-            .get(tx_size)
-            .copied()
-            .and_then(|value| u8::try_from(value).ok())
-            .unwrap_or(0);
-        let log2_height = TX_HEIGHT_LOG2
-            .get(tx_size)
-            .copied()
-            .and_then(|value| u8::try_from(value).ok())
-            .unwrap_or(0);
         blocks.push(InterResidualBlock {
             plane,
-            x,
-            y,
-            tx_size,
-            log2_width,
-            log2_height,
+            x: x as u32,
+            y: y as u32,
+            tx_size: tx_size as u8,
             cctx_pair_delta: 0,
             coeffs: LumaCoeffBlock {
                 eob: 0,

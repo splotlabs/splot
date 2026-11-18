@@ -6,8 +6,6 @@
 //!
 //! Feature tracking: `DECODE-INTER-RESIDUAL-DCT`.
 
-use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
-
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -726,21 +724,25 @@ pub(super) fn push_inter_residual_block(
     tx_size: usize,
     coeffs: LumaCoeffBlock,
 ) -> Result<usize> {
-    let log2_width = tx_size_dimension(&TX_WIDTH_LOG2, tx_size)?;
-    let log2_height = tx_size_dimension(&TX_HEIGHT_LOG2, tx_size)?;
-    let log2_width = u8::try_from(log2_width).map_err(|_| residual_geometry_error())?;
-    let log2_height = u8::try_from(log2_height).map_err(|_| residual_geometry_error())?;
+    let coordinate = |v: usize| {
+        v.checked_mul(MI_SIZE)
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(residual_geometry_error)
+    };
+    let x = coordinate(x4)?;
+    let y = coordinate(y4)?;
+    if tx_size >= TX_WIDTH.len() {
+        return Err(residual_geometry_error());
+    }
     blocks
         .try_reserve(1)
         .map_err(|_| residual_allocation_error())?;
     let index = blocks.len();
     blocks.push(InterResidualBlock {
         plane,
-        x: x4 * MI_SIZE,
-        y: y4 * MI_SIZE,
-        tx_size,
-        log2_width,
-        log2_height,
+        x,
+        y,
+        tx_size: tx_size as u8,
         cctx_pair_delta: 0,
         coeffs,
     });

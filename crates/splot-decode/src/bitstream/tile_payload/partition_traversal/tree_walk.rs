@@ -165,7 +165,10 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         self.next_sb_col == self.walker.tile_bounds.mi_col_start
     }
 
-    /// The superblock mask the walk publishes its leaves under.
+    pub(crate) const fn next_origin(&self) -> [usize; 2] {
+        [self.next_sb_row, self.next_sb_col]
+    }
+
     /// The § 5.20.2.1 `bru_mode` of the last superblock the walk decoded.
     pub(crate) const fn bru_mode(&self) -> u8 {
         self.walker.bru_mode

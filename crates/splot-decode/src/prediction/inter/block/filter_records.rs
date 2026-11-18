@@ -275,11 +275,11 @@ pub(crate) fn record_inter_deblock_geometry(
                 let tx_w4 = (1usize << log2_width) / MI_SIZE;
                 let tx_h4 = (1usize << log2_height) / MI_SIZE;
                 deblock_blocks.push(crate::filters::deblock::DeblockBlock {
-                    r: (block.y / MI_SIZE) as u16,
-                    c: (block.x / MI_SIZE) as u16,
+                    r: (block.y as usize / MI_SIZE) as u16,
+                    c: (block.x as usize / MI_SIZE) as u16,
                     n4w: tx_w4 as u8,
                     n4h: tx_h4 as u8,
-                    tx: block.tx_size as u8,
+                    tx: block.tx_size,
                     skip: false,
                     lossless,
                     qindex,
@@ -288,8 +288,8 @@ pub(crate) fn record_inter_deblock_geometry(
                 });
                 tx_skip_records.push(
                     crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
-                        row: block.y / MI_SIZE,
-                        col: block.x / MI_SIZE,
+                        row: block.y as usize / MI_SIZE,
+                        col: block.x as usize / MI_SIZE,
                         rows: tx_h4,
                         cols: tx_w4,
                         skip_flag: false,
@@ -301,9 +301,9 @@ pub(crate) fn record_inter_deblock_geometry(
             ReconPlaneId::U => {
                 if let Some(mut record) =
                     crate::filters::wienerns_lr::chroma_transform_deblock_block(
-                        block.x,
-                        block.y,
-                        block.tx_size,
+                        block.x as usize,
+                        block.y as usize,
+                        usize::from(block.tx_size),
                         Some((log2_width, log2_height)),
                         chroma_subsampling,
                         qindex,

@@ -42,11 +42,11 @@ pub(crate) struct ParsedGeneralIntraResidual {
 /// facts of the row's tile.
 pub(crate) struct ResidualPlaneArena {
     planes: Vec<ParsedResidualPlane>,
-    units: Vec<Option<ParsedTransformUnit>>,
+    units: Vec<ParsedTransformUnit>,
     /// The palette color maps that `planes` and `units` index, kept apart so
     /// the two large lists clear without a walk over their elements.
     palette_maps: Vec<Vec<u8>>,
-    frame: FrameTileCtx,
+    pub(crate) frame: FrameTileCtx,
 }
 
 impl Default for ResidualPlaneArena {
@@ -153,7 +153,6 @@ impl ResidualPlaneArena {
         lossless: bool,
     ) -> Result<PlannedGeneralIntraResidual, ResidualPlanError> {
         let start = self.plan_start()?;
-        self.frame = block_ctx.frame();
         super::plan::plan_rect(
             &mut |plane| self.push_unparsed(plane),
             *block_ctx,
@@ -174,7 +173,6 @@ impl ResidualPlaneArena {
         lossless_luma_fsc: bool,
     ) -> Result<PlannedGeneralIntraResidual, ResidualPlanError> {
         let start = self.plan_start()?;
-        self.frame = block_ctx.frame();
         super::plan::plan_chroma(
             &mut |plane| self.push_unparsed(plane),
             *block_ctx,
@@ -278,7 +276,7 @@ impl ResidualPlanePlan {
         eob_u_nonzero: bool,
         deblock: &mut DeblockRecorder<'_>,
         coeffs_arena: &mut Vec<i32>,
-        units: &mut Vec<Option<ParsedTransformUnit>>,
+        units: &mut Vec<ParsedTransformUnit>,
         palette_maps: &mut Vec<Vec<u8>>,
     ) -> core::result::Result<ParsedResidualPlaneKind, GeneralIntraResidualError> {
         let tx_partition_context = (self.plane_id == PlaneId::Y)
@@ -387,7 +385,7 @@ impl ResidualPlanePlan {
         palette_color_map: Option<&[u8]>,
         deblock: &mut DeblockRecorder<'_>,
         coeffs_arena: &mut Vec<i32>,
-        units: &mut Vec<Option<ParsedTransformUnit>>,
+        units: &mut Vec<ParsedTransformUnit>,
         palette_maps: &mut Vec<Vec<u8>>,
     ) -> core::result::Result<ParsedResidualPlaneKind, GeneralIntraResidualError> {
         let (log2_width, log2_height) = tx_size_log2(unit_tx_size)?;
@@ -433,13 +431,13 @@ impl ResidualPlanePlan {
                 } else {
                     deblock.record_chroma_unit(unit.plane_id, x, y, unit_tx_size);
                 }
-                units.push(Some(ParsedTransformUnit {
+                units.push(ParsedTransformUnit {
                     block,
                     palette_color_map: super::palette::store_palette_map(
                         palette_maps,
                         unit_palette_color_map,
                     ),
-                }));
+                });
             }
         }
         Ok(ParsedResidualPlaneKind::Lossless(unit_range(
@@ -461,7 +459,7 @@ impl ResidualPlanePlan {
         palette_color_map: Option<&[u8]>,
         deblock: &mut DeblockRecorder<'_>,
         coeffs_arena: &mut Vec<i32>,
-        units: &mut Vec<Option<ParsedTransformUnit>>,
+        units: &mut Vec<ParsedTransformUnit>,
         palette_maps: &mut Vec<Vec<u8>>,
     ) -> core::result::Result<ParsedResidualPlaneKind, GeneralIntraResidualError> {
         let records = read_luma_transform_partition_records(
@@ -522,7 +520,7 @@ impl ResidualPlanePlan {
         block: PositionedLumaCoeffBlock,
         palette_color_map: Option<&[u8]>,
         deblock: &mut DeblockRecorder<'_>,
-        units: &mut Vec<Option<ParsedTransformUnit>>,
+        units: &mut Vec<ParsedTransformUnit>,
         palette_maps: &mut Vec<Vec<u8>>,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let unit_palette_color_map = self.palette_color_map_for_unit(palette_color_map, &block)?;
@@ -537,13 +535,13 @@ impl ResidualPlanePlan {
             usize::from(block.tx_size),
             block.coeffs.eob(),
         );
-        units.push(Some(ParsedTransformUnit {
+        units.push(ParsedTransformUnit {
             block,
             palette_color_map: super::palette::store_palette_map(
                 palette_maps,
                 unit_palette_color_map,
             ),
-        }));
+        });
         Ok(())
     }
 }
@@ -569,13 +567,13 @@ impl ParsedGeneralIntraResidual {
         } = arena;
         let frame = *frame;
         let range = self.planes.start as usize..self.planes.end as usize;
-        let planes = planes.get_mut(range).unwrap_or_default();
+        let planes = planes.get(range).unwrap_or_default();
         let mut pending_u = None;
         let mut deferred = false;
-        for plane in planes.iter_mut() {
+        for plane in planes {
             match plane.cctx_role {
                 CctxRole::HoldU => {
-                    pending_u = Some(&*plane);
+                    pending_u = Some(plane);
                     continue;
                 }
                 CctxRole::PairV => {
@@ -664,27 +662,25 @@ impl ResidualPlanePlan {
 }
 
 impl ParsedResidualPlane {
-    pub(super) fn u_nonzero(&self, arena: &[Option<ParsedTransformUnit>]) -> bool {
+    pub(super) fn u_nonzero(&self, arena: &[ParsedTransformUnit]) -> bool {
         match &self.kind {
             ParsedResidualPlaneKind::Unparsed => false,
             ParsedResidualPlaneKind::Single { coeffs, .. } => coeffs.eob != 0,
             ParsedResidualPlaneKind::Lossless(units) => arena
                 .get(units.start as usize..units.end as usize)
                 .and_then(|units| units.last())
-                .and_then(Option::as_ref)
                 .is_some_and(|unit| unit.block.coeffs.eob != 0),
             ParsedResidualPlaneKind::PartitionedLuma(units) => arena
                 .get(units.start as usize..units.end as usize)
                 .unwrap_or_default()
                 .iter()
-                .flatten()
                 .any(|unit| unit.block.coeffs.eob != 0),
         }
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct<T: ReconSample>(
-        &mut self,
+        &self,
         frame: FrameTileCtx,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -693,7 +689,7 @@ impl ParsedResidualPlane {
         qindex: u32,
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         luma_context: LumaTransformTypeContext,
-        arena: &mut [Option<ParsedTransformUnit>],
+        arena: &[ParsedTransformUnit],
         palette_maps: &mut [Vec<u8>],
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let Self { plane, kind, .. } = self;
@@ -724,13 +720,14 @@ impl ParsedResidualPlane {
                 plane.publish_luma_transform(block_decoded);
                 Ok(())
             }
-            ParsedResidualPlaneKind::Lossless(units) => {
-                let Some(units) = arena.get_mut(units.start as usize..units.end as usize) else {
+            ParsedResidualPlaneKind::Lossless(units)
+            | ParsedResidualPlaneKind::PartitionedLuma(units) => {
+                let Some(units) = arena.get(units.start as usize..units.end as usize) else {
                     return Err(GeneralIntraResidualError::InvalidReconstructionState {
                         context: "residual transform unit range",
                     });
                 };
-                for unit in units.iter_mut().filter_map(Option::take) {
+                for unit in units {
                     let plan = plane.transform_unit_plan(frame, &unit.block)?;
                     let palette_color_map = super::palette::take_stored_palette_map(
                         palette_maps,
@@ -759,34 +756,6 @@ impl ParsedResidualPlane {
                         plan.tx.width4(),
                         plan.tx.height4(),
                     );
-                }
-                Ok(())
-            }
-            ParsedResidualPlaneKind::PartitionedLuma(units) => {
-                let Some(units) = arena.get_mut(units.start as usize..units.end as usize) else {
-                    return Err(GeneralIntraResidualError::InvalidReconstructionState {
-                        context: "residual transform unit range",
-                    });
-                };
-                for unit in units.iter_mut().filter_map(Option::take) {
-                    let plan = plane.transform_unit_plan(frame, &unit.block)?;
-                    let palette_color_map = super::palette::take_stored_palette_map(
-                        palette_maps,
-                        unit.palette_color_map,
-                    )?;
-                    plan.reconstruct(
-                        frame,
-                        scratch,
-                        workspace,
-                        CoeffBlock::new(&unit.block.coeffs, coeffs_arena)?,
-                        block_decoded,
-                        palette_color_map.as_deref(),
-                        qindex,
-                        intra_edge,
-                        luma_context,
-                    )?;
-                    super::palette::recycle_palette_map(palette_color_map);
-                    plan.publish_luma_transform(block_decoded);
                 }
                 Ok(())
             }
@@ -849,21 +818,21 @@ fn reconstruct_deferred_planes<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &mut TileBlockDecodedState,
-    planes: &mut [ParsedResidualPlane],
+    planes: &[ParsedResidualPlane],
     qindex: u32,
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     luma_context: LumaTransformTypeContext,
     coeffs_arena: &[i32],
-    units: &mut [Option<ParsedTransformUnit>],
+    units: &[ParsedTransformUnit],
     palette_maps: &mut [Vec<u8>],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let mut pending_u = None;
     for plane in planes
-        .iter_mut()
+        .iter()
         .filter(|plane| plane.cctx_role == CctxRole::None && plane.plane.defer_reconstruction)
     {
         if plane.plane.plane_id == PlaneId::U {
-            pending_u = Some(&*plane);
+            pending_u = Some(plane);
             continue;
         }
         if plane.plane.plane_id == PlaneId::V

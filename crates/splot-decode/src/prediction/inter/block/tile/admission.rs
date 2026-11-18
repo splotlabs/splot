@@ -34,7 +34,6 @@ pub(super) struct TileCommit<T: ReconSample> {
     ordered: Box<deferred_recon::InterReconScratch<T>>,
     workspace: CurrentFrameWorkspace<T>,
     block_decoded: TileBlockDecodedState,
-    current_block_decoded_superblock: Option<[usize; 2]>,
     /// The tile `block_decoded` is laid out for, on the scheduled spine.
     block_decoded_tile: Option<usize>,
     decoded_any: bool,
@@ -60,7 +59,6 @@ impl<T: ReconSample> TileCommit<T> {
             ordered,
             workspace,
             block_decoded,
-            current_block_decoded_superblock: None,
             block_decoded_tile: None,
             decoded_any,
             frame_filter_records,
@@ -88,7 +86,6 @@ impl<T: ReconSample> TileCommit<T> {
                 scratch,
                 &mut self.workspace,
                 &mut self.block_decoded,
-                &mut self.current_block_decoded_superblock,
                 motion,
                 temporal,
                 context.reference,
@@ -657,7 +654,6 @@ impl<T: ReconSample> TileRecon<T> {
                     tile.mi_cols.end,
                     tile.mi_rows.end,
                 )?;
-                commit.current_block_decoded_superblock = None;
                 commit.block_decoded_tile = Some(ready.row.tile);
             }
             if let Some(surface) = ready.surface.take() {
@@ -692,7 +688,6 @@ impl<T: ReconSample> TileRecon<T> {
 
     fn finish_commit(&self, commit: TileCommit<T>) -> CurrentFrameWorkspace<T> {
         let mut scratch = TileDecodeScratch::from_scheduled(commit.ordered);
-        scratch.parse.commit_block_decoded = commit.block_decoded;
         scratch.scheduled_rows = self.slots.retire();
         scratch.buffers.clone_from(&self.buffers);
         *self.scratch.lock() = Some(scratch);
@@ -739,7 +734,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_resolved_unit(
                     &parser.mv_grid,
                 );
-                let records = &mut parser.filter_records;
+                let records = &mut commit.frame_filter_records;
                 row.filter_records.publish_into(
                     &mut records.deblock_blocks,
                     &mut records.chroma_deblock_blocks,
@@ -951,7 +946,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             ) else {
                 return Err(invalid_inter_tile_scheduling_state());
             };
-            row.replay_flags(grid, frame_mv_precision(context.core)?);
+            row.replay_flags(grid, frame_mv_precision(context.core)?)?;
             row.return_terminal_error()?;
             state.resolve_unit(
                 grid,
@@ -1589,11 +1584,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         geometry.mi_rows.end,
     )?;
     let prepass_block_decoded = core::mem::take(&mut reusable.prepass_block_decoded);
-    scratch
-        .parse
-        .commit_block_decoded
-        .clone_from(&prepass_block_decoded);
-    let block_decoded = core::mem::take(&mut scratch.parse.commit_block_decoded);
+    let block_decoded = prepass_block_decoded.clone();
     let mut batches = core::mem::take(&mut reusable.batches);
     superblock_row_batches_into(
         unit_count,
@@ -1673,7 +1664,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
                 ordered,
                 workspace,
                 block_decoded,
-                current_block_decoded_superblock: None,
                 block_decoded_tile: None,
                 decoded_any: false,
                 frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),

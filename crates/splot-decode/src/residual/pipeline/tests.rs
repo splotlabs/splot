@@ -689,8 +689,8 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
         cctx_role: CctxRole::None,
     };
 
-    assert!(!parsed(1..3).u_nonzero(&[None, Some(unit(false)), Some(unit(true))]));
-    assert!(parsed(1..3).u_nonzero(&[None, Some(unit(true)), Some(unit(false))]));
+    assert!(!parsed(1..3).u_nonzero(&[unit(true), unit(false), unit(true)]));
+    assert!(parsed(1..3).u_nonzero(&[unit(false), unit(true), unit(false)]));
 }
 
 #[test]
@@ -986,7 +986,7 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
         }
     }
     assert_eq!(units.len(), 1);
-    let mut parsed = ParsedResidualPlane {
+    let parsed = ParsedResidualPlane {
         plane,
         kind: ParsedResidualPlaneKind::PartitionedLuma(0..1),
         cctx_role: CctxRole::None,
@@ -1057,11 +1057,10 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
                 chroma_left_smooth: false,
             },
             LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::Dc, 0),
-            &mut units,
+            &units,
             &mut [],
         )
         .expect("visible transform unit reconstructs");
-    assert!(units.iter().all(Option::is_none));
 
     assert_eq!(block_decoded, expected_decoded);
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 32, 32), Ok(128));
@@ -1490,5 +1489,5 @@ fn residual_plane_record_fits_its_budget() {
 #[test]
 fn row_arena_lists_clear_without_an_element_walk() {
     assert!(!core::mem::needs_drop::<ParsedResidualPlane>());
-    assert!(!core::mem::needs_drop::<Option<ParsedTransformUnit>>());
+    assert!(!core::mem::needs_drop::<ParsedTransformUnit>());
 }
