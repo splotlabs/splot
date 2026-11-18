@@ -1067,14 +1067,17 @@ fn txb_skip_ctx(
     lines: &CoeffBlockLines,
     [tx_fills_block, eob_u_nonzero, fsc_active]: [bool; 3],
 ) -> usize {
+    if lines.plane == 0 && (tx_fills_block || fsc_active) {
+        return txb_skip_ctx_luma(0, 0, tx_fills_block, fsc_active);
+    }
     let [above_or, left_or] = context.line_or(lines);
     let (above_nz, left_nz) = (above_or != 0, left_or != 0);
     match lines.plane {
         0 => txb_skip_ctx_luma(
             u32::from(above_or & CUL_LEVEL_MASK),
             u32::from(left_or & CUL_LEVEL_MASK),
-            tx_fills_block,
-            fsc_active,
+            false,
+            false,
         ),
         2 => v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),
         _ => usize::from(above_nz) + usize::from(left_nz) + 6,
