@@ -820,7 +820,7 @@ pub(crate) fn luma_tx_partition_allows(
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-fn read_luma_tx_partition_type(
+pub(crate) fn read_luma_tx_partition_type(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     mi_size: usize,

@@ -6,8 +6,7 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{
-    MAX_TX_SIZE_RECT, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, SIZE_TO_TX_PART_GROUP_LOOKUP,
-    SIZE_TO_TX_TYPE_GROUP_VERT_AND_HORZ, SIZE_TO_TX_TYPE_GROUP_VERT_OR_HORZ, TX_HEIGHT, TX_WIDTH,
+    NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, TX_HEIGHT, TX_WIDTH,
 };
 use splot_recon::{BitDepth, max_quantizer_index};
 use std::ops::Range;
@@ -24,18 +23,11 @@ use super::{frame_sb_size4, selectable_missing_quantization_error, selectable_sy
 pub(crate) mod ccso;
 pub(crate) mod gdf;
 
-const BLOCK_4X4: usize = 0;
 const MI_SIZE: usize = 4;
 const CDEF_UNIT_MI: usize = 16;
 pub(crate) const DELTA_Q_SMALL: usize = 7;
 const DELTA_Q_REM_BITS_WIDTH: u32 = 3;
 const DELTA_Q_SIGN_BIT_WIDTH: u32 = 1;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Block4x4Extent {
-    cols: usize,
-    rows: usize,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrTxSkipTransformRecord {
@@ -198,23 +190,16 @@ pub(crate) enum SelectableTransformRecordError {
         index: usize,
         value: i32,
     },
-    #[error("selectable transform branch is outside the supported subset: {reason}")]
-    Unsupported { reason: &'static str },
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn selectable_transform_record_error(
-    error: SelectableTransformRecordError,
+    _error: SelectableTransformRecordError,
 ) -> crate::error::DecodeError {
-    match error {
-        SelectableTransformRecordError::Unsupported {
-            reason: "record-allocation",
-        } => selectable_allocation_error(),
-        _ => selectable_state_error(),
-    }
+    selectable_state_error()
 }
 
-fn selectable_transform_partition_error(
+pub(crate) fn selectable_transform_partition_error(
     error: SelectableTransformRecordError,
     tile_offset: ByteOffset,
 ) -> crate::error::DecodeError {
@@ -597,49 +582,13 @@ impl CdefState {
     }
 }
 
-pub(crate) fn derive_inter_luma_tx_records_for_block(
-    work_unit: &mut DecodeTileWorkUnit,
-    symbols: &mut SymbolDecoder<'_>,
-    frontier: &DecodeBlockFrontier,
-    grid_size: (usize, usize),
-    fsc_mode: u8,
-    tile_offset: ByteOffset,
-    records: &mut Vec<SelectableLumaTxRecord>,
-) -> Result<()> {
-    let origin = (frontier.r, frontier.c);
-    if origin.0 >= grid_size.0 || origin.1 >= grid_size.1 {
-        return Err(selectable_state_error());
-    }
-    let b_size = frontier.b_size.index();
-    let extent = frontier_4x4_extent(frontier)?;
-    let tx_size = table_usize("Max_Tx_Size_Rect", &MAX_TX_SIZE_RECT, b_size)
-        .map_err(selectable_transform_record_error)?;
-    let partition = if b_size == BLOCK_4X4 || extent.rows > 16 || extent.cols > 16 {
-        LumaTxPartition::None
-    } else {
-        let reduced = work_unit.coeff_frame_facts().reduced_tx_part_set();
-        read_tx_partition_symbols(
-            work_unit,
-            symbols,
-            tx_size,
-            b_size,
-            fsc_mode,
-            reduced,
-            tile_offset,
-        )?
-    };
-    inter_luma_tx_records(origin, extent, grid_size, tx_size, partition, records)
-        .map_err(|error| selectable_transform_partition_error(error, tile_offset))
-}
-
-fn inter_luma_tx_records(
+pub(crate) fn inter_luma_transforms(
     (row, col): (usize, usize),
-    extent: Block4x4Extent,
-    (frame_rows, frame_cols): (usize, usize),
+    (row_end, col_end): (usize, usize),
     tx_size: usize,
     partition: LumaTxPartition,
-    records: &mut Vec<SelectableLumaTxRecord>,
-) -> std::result::Result<(), SelectableTransformRecordError> {
+) -> std::result::Result<impl Iterator<Item = SelectableLumaTxRecord>, SelectableTransformRecordError>
+{
     let units = luma_transform_records_for_partition(0, 0, tx_size, partition).map_err(
         |error| match error {
             GeneralIntraResidualError::InvalidTransformPartitionDimensions { width, height }
@@ -661,59 +610,25 @@ fn inter_luma_tx_records(
     )?;
     let h4 = TX_HEIGHT[tx_size] as usize / MI_SIZE;
     let w4 = TX_WIDTH[tx_size] as usize / MI_SIZE;
-    let overflow = || SelectableTransformRecordError::Unsupported {
-        reason: "region-size-overflow",
-    };
-    let row_end = row
-        .checked_add(extent.rows)
-        .ok_or_else(overflow)?
-        .min(frame_rows);
-    let col_end = col
-        .checked_add(extent.cols)
-        .ok_or_else(overflow)?
-        .min(frame_cols);
-    records.clear();
-    for r in (row..row_end).step_by(h4) {
-        for c in (col..col_end).step_by(w4) {
-            records.try_reserve(units.len()).map_err(|_| {
-                SelectableTransformRecordError::Unsupported {
-                    reason: "record-allocation",
-                }
-            })?;
-            for unit in units.clone() {
+    Ok((row..row_end).step_by(h4).flat_map(move |r| {
+        let units = units.clone();
+        (col..col_end).step_by(w4).flat_map(move |c| {
+            units.clone().filter_map(move |unit| {
                 let (row, col) = (r + unit.y / MI_SIZE, c + unit.x / MI_SIZE);
-                if row < row_end && col < col_end {
-                    records.push(SelectableLumaTxRecord {
-                        row,
-                        col,
-                        rows: TX_HEIGHT[unit.tx_size] as usize / MI_SIZE,
-                        cols: TX_WIDTH[unit.tx_size] as usize / MI_SIZE,
-                        tx_size: unit.tx_size,
-                    });
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn frontier_4x4_extent(frontier: &DecodeBlockFrontier) -> Result<Block4x4Extent> {
-    let n4w = frontier
-        .b_size
-        .num_4x4_wide()
-        .map_err(|_| selectable_state_error())?;
-    let n4h = frontier
-        .b_size
-        .num_4x4_high()
-        .map_err(|_| selectable_state_error())?;
-    Ok(Block4x4Extent {
-        cols: n4w,
-        rows: n4h,
-    })
+                (row < row_end && col < col_end).then(|| SelectableLumaTxRecord {
+                    row,
+                    col,
+                    rows: TX_HEIGHT[unit.tx_size] as usize / MI_SIZE,
+                    cols: TX_WIDTH[unit.tx_size] as usize / MI_SIZE,
+                    tx_size: unit.tx_size,
+                })
+            })
+        })
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn read_tx_partition_symbols(
+pub(crate) fn read_tx_partition_symbols(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     tx_size: usize,
@@ -724,93 +639,22 @@ fn read_tx_partition_symbols(
 ) -> Result<LumaTxPartition> {
     let tx_width = tx_dimension("Tx_Width", &TX_WIDTH, tx_size)?;
     let tx_height = tx_dimension("Tx_Height", &TX_HEIGHT, tx_size)?;
-    let allow_horz = tx_height > MI_SIZE;
-    let allow_vert = tx_width > MI_SIZE;
-    let mut tx_partition = LumaTxPartition::None;
-
-    let tx_fsc_mode = usize::from(fsc_mode != 0);
-    let txfm_split_group = table_usize(
-        "Size_To_Tx_Part_Group_Lookup",
-        &SIZE_TO_TX_PART_GROUP_LOOKUP,
-        mi_size,
-    )
-    .map_err(selectable_transform_record_error)?;
-    let do_partition = read_tx_symbol(
-        work_unit,
+    crate::bitstream::tile_payload::read_luma_tx_partition_type(
+        work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
-        TileCdfSelector::TxDoPartition {
-            fsc_mode: tx_fsc_mode,
-            is_inter: 1,
-            txfm_split_group,
-        },
-        tile_offset,
-        "5.20.6.3",
-    )? != 0;
-    if do_partition {
-        if allow_horz && allow_vert {
-            let ctx = table_usize(
-                "Size_To_Tx_Type_Group_Vert_And_Horz",
-                &SIZE_TO_TX_TYPE_GROUP_VERT_AND_HORZ,
-                mi_size,
-            )
-            .map_err(selectable_transform_record_error)?;
-            let symbol = read_tx_symbol(
-                work_unit,
-                symbols,
-                TileCdfSelector::TxPartitionType {
-                    fsc_mode: tx_fsc_mode,
-                    is_inter: 1,
-                    ctx,
-                    reduced: reduced_tx_part_set,
-                },
-                tile_offset,
-                "5.20.6.3",
-            )?;
-            tx_partition = LumaTxPartition::from_partition_type_symbol(symbol as u8);
-        } else {
-            let vert_or_horz_group = table_usize(
-                "Size_To_Tx_Type_Group_Vert_Or_Horz",
-                &SIZE_TO_TX_TYPE_GROUP_VERT_OR_HORZ,
-                mi_size,
-            )
-            .map_err(selectable_transform_record_error)?;
-            if let Some(vert_or_horz_ctx) = vert_or_horz_group.checked_sub(1) {
-                let tx_2or3 = if reduced_tx_part_set {
-                    0
-                } else {
-                    read_tx_symbol(
-                        work_unit,
-                        symbols,
-                        TileCdfSelector::Tx2Or3PartitionType {
-                            fsc_mode: tx_fsc_mode,
-                            is_inter: 1,
-                            ctx: vert_or_horz_ctx,
-                        },
-                        tile_offset,
-                        "5.20.6.3",
-                    )?
-                };
-                tx_partition = if allow_horz {
-                    if tx_2or3 != 0 {
-                        LumaTxPartition::Horz4
-                    } else {
-                        LumaTxPartition::Horz
-                    }
-                } else if tx_2or3 != 0 {
-                    LumaTxPartition::Vert4
-                } else {
-                    LumaTxPartition::Vert
-                };
-            } else {
-                tx_partition = if allow_horz {
-                    LumaTxPartition::Horz
-                } else {
-                    LumaTxPartition::Vert
-                };
-            }
-        }
-    }
-    Ok(tx_partition)
+        mi_size,
+        fsc_mode != 0,
+        true,
+        tx_height > MI_SIZE,
+        tx_width > MI_SIZE,
+        reduced_tx_part_set,
+    )
+    .map_err(|error| match error {
+        GeneralIntraResidualError::TransformPartitionRead {
+            source: BlockSymbolTraceReadError::Symbol(_),
+        } => selectable_symbol_read_error(tile_offset, "5.20.6.3"),
+        _ => selectable_state_error(),
+    })
 }
 
 fn read_tx_symbol_cdef(

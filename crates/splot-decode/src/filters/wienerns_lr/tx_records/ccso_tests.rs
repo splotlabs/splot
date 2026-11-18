@@ -104,6 +104,7 @@ fn ccso_tile_merge_copies_only_the_owned_region() {
 
 #[test]
 fn first_sb_block_16x64_horz4_partition_matches_avm_tx_16x16() {
+    use super::super::grid_tests::{Block4x4Extent, collect_inter_luma_transforms};
     use super::super::{Block4x4Extent, MI_SIZE, inter_luma_tx_records, table_usize};
     use crate::bitstream::tile_payload::{LumaTxPartition, tx_size_from_dimensions};
     use splot_core::tables::conversion::MAX_TX_SIZE_RECT;
@@ -118,7 +119,7 @@ fn first_sb_block_16x64_horz4_partition_matches_avm_tx_16x16() {
     );
     let mut records = Vec::new();
     let extent = Block4x4Extent { rows: 16, cols: 4 };
-    inter_luma_tx_records(
+    collect_inter_luma_transforms(
         (0, 0),
         extent,
         (16, 4),
@@ -135,7 +136,7 @@ fn first_sb_block_16x64_horz4_partition_matches_avm_tx_16x16() {
             Some(TX_16X16)
         );
     }
-    inter_luma_tx_records(
+    collect_inter_luma_transforms(
         (0, 0),
         extent,
         (16, 4),

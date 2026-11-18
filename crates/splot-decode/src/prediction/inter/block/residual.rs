@@ -8,6 +8,10 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::bitstream::tile_payload::LumaTxPartition;
+use crate::filters::wienerns_lr::tx_records::{
+    inter_luma_transforms, read_tx_partition_symbols, selectable_transform_partition_error,
+};
 
 const INTER_UV_MODE_DC: usize = 0;
 const DCT_DCT: usize = 0;
@@ -46,7 +50,6 @@ struct InterChromaURead {
 #[derive(Default)]
 pub(crate) struct InterResidualParseScratch {
     luma_tx_types: InterLumaTxTypeMap,
-    luma_tx_records: Vec<SelectableLumaTxRecord>,
     chroma_reads: Vec<InterChromaURead>,
 }
 
@@ -160,19 +163,23 @@ pub(crate) fn read_inter_residual(
             residual_uses_selectable_tx_partitions(core),
             lossless,
         );
-        scratch.luma_tx_records.clear();
-        if selectable_luma_tx {
-            derive_inter_luma_tx_records_for_block(
+        if selectable_luma_tx && (frontier.r >= mi_rows || frontier.c >= mi_cols) {
+            return Err(DecodeHeaderStateError::InvalidSelectableTransformRecords.into());
+        }
+        let partition = if selectable_luma_tx && !multi_chunk && luma_tx_size != TX_4X4 {
+            let reduced = work_unit.coeff_frame_facts().reduced_tx_part_set();
+            read_tx_partition_symbols(
                 work_unit,
                 symbols,
-                frontier,
-                (mi_rows, mi_cols),
+                luma_tx_size,
+                frontier.b_size.index(),
                 0,
+                reduced,
                 tile_offset,
-                &mut scratch.luma_tx_records,
-            )?;
-        }
-        let luma_tx_records = selectable_luma_tx.then_some(scratch.luma_tx_records.as_slice());
+            )?
+        } else {
+            LumaTxPartition::None
+        };
         scratch
             .luma_tx_types
             .reset(frontier.r, frontier.c, n4h, n4w)?;
@@ -195,7 +202,7 @@ pub(crate) fn read_inter_residual(
                             blocks,
                             arena,
                             &mut scratch.luma_tx_types,
-                            luma_tx_records,
+                            partition,
                             luma_tx_size,
                             frontier,
                             luma_chunk_x,
@@ -307,7 +314,7 @@ fn read_inter_residual_luma_chunk(
     blocks: &mut Vec<InterResidualBlock>,
     arena: &mut Vec<i32>,
     luma_tx_types: &mut InterLumaTxTypeMap,
-    luma_tx_records: Option<&[SelectableLumaTxRecord]>,
+    partition: LumaTxPartition,
     tx_size: usize,
     frontier: &DecodeBlockFrontier,
     luma_chunk_x4: usize,
@@ -343,21 +350,19 @@ fn read_inter_residual_luma_chunk(
         luma_tx_types.update(row, col, tx_size, coeffs.plane_tx_type())?;
         push_inter_residual_block(blocks, ReconPlaneId::Y, col, row, tx_size, coeffs).map(drop)
     };
-    if let Some(luma_tx_records) = luma_tx_records {
-        let mut decoded_any = false;
-        for record in luma_tx_records.iter().filter(|record| {
-            (luma_chunk_y4..chunk_end_y4).contains(&record.row)
-                && (luma_chunk_x4..chunk_end_x4).contains(&record.col)
-        }) {
-            decoded_any = true;
+    if partition != LumaTxPartition::None {
+        let records = inter_luma_transforms(
+            (luma_chunk_y4, luma_chunk_x4),
+            (chunk_end_y4, chunk_end_x4),
+            tx_size,
+            partition,
+        )
+        .map_err(|error| selectable_transform_partition_error(error, tile_offset))?;
+        for record in records {
             let fills_block = record.cols == block_n4w && record.rows == block_n4h;
             read(record.row, record.col, record.tx_size, fills_block)?;
         }
-        return if decoded_any {
-            Ok(())
-        } else {
-            Err(residual_geometry_error())
-        };
+        return Ok(());
     }
     let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
     let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;

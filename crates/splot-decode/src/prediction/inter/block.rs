@@ -60,8 +60,7 @@ use crate::filters::wienerns_lr::intrabc_records::{
     read_intrabc_use_and_skip, read_pending_intrabc_info,
 };
 use crate::filters::wienerns_lr::tx_records::{
-    CdefState, DeltaQState, SelectableLumaTxRecord, ccso::CcsoState,
-    derive_inter_luma_tx_records_for_block, gdf::GdfState,
+    CdefState, DeltaQState, ccso::CcsoState, gdf::GdfState,
 };
 use crate::pipeline::effective_allow_screen_content_tools;
 use crate::{DecodeHeaderStateError, DecodeOptions, DecodeReferenceStateError, Result};

@@ -12,6 +12,26 @@ use super::super::{
 use super::*;
 use crate::bitstream::tile_payload::{encode_symbol_sequence, make_test_work_unit};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Block4x4Extent {
+    pub(super) cols: usize,
+    pub(super) rows: usize,
+}
+
+pub(super) fn collect_inter_luma_transforms(
+    (row, col): (usize, usize),
+    extent: Block4x4Extent,
+    (rows, cols): (usize, usize),
+    tx_size: usize,
+    partition: LumaTxPartition,
+    records: &mut Vec<SelectableLumaTxRecord>,
+) -> std::result::Result<(), SelectableTransformRecordError> {
+    let end = ((row + extent.rows).min(rows), (col + extent.cols).min(cols));
+    records.clear();
+    records.extend(inter_luma_transforms((row, col), end, tx_size, partition)?);
+    Ok(())
+}
+
 const TX_16X16: usize = 2;
 const TX_32X32: usize = 3;
 const TX_64X64: usize = 4;
@@ -223,7 +243,7 @@ fn writer_produced_inter_narrow_four_and_five_way_partitions_are_malformed() {
         .unwrap();
         symbols.exit_symbol().unwrap();
 
-        let geometry = inter_luma_tx_records(
+        let geometry = collect_inter_luma_transforms(
             (0, 0),
             Block4x4Extent { rows: 2, cols: 2 },
             (2, 2),
@@ -253,7 +273,7 @@ fn writer_produced_inter_narrow_four_and_five_way_partitions_are_malformed() {
 #[test]
 fn selectable_tx_grid_returns_vertical_five_partition_in_scan_order() {
     let mut records = Vec::new();
-    inter_luma_tx_records(
+    collect_inter_luma_transforms(
         (0, 0),
         Block4x4Extent { rows: 8, cols: 8 },
         (8, 8),
@@ -310,7 +330,7 @@ fn every_inter_layout_covers_each_visible_cell_once() {
             let valid = width >= min_width && height >= min_height;
             for rows in 1..=extent.rows {
                 for cols in 1..=extent.cols {
-                    if let Err(error) = inter_luma_tx_records(
+                    if let Err(error) = collect_inter_luma_transforms(
                         (8, 24),
                         extent,
                         (8 + rows, 24 + cols),
@@ -593,7 +613,7 @@ fn tx_skip_grid_retention_rejects_out_of_frame_origin() {
 #[test]
 fn selectable_tx_records_populate_live_tx_skip_grid() {
     let mut records = Vec::new();
-    inter_luma_tx_records(
+    collect_inter_luma_transforms(
         (0, 0),
         Block4x4Extent { rows: 8, cols: 8 },
         (8, 8),
@@ -629,7 +649,7 @@ fn selectable_tx_records_populate_live_tx_skip_grid() {
 #[test]
 fn unpartitioned_chunks_retain_their_full_size_at_the_frame_edges() {
     let mut records = Vec::new();
-    inter_luma_tx_records(
+    collect_inter_luma_transforms(
         (256, 16),
         Block4x4Extent { rows: 32, cols: 32 },
         (270, 46),
