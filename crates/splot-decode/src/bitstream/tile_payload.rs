@@ -104,6 +104,8 @@ pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;
 pub(crate) use partition_traversal::BRU_ACTIVE;
 pub(crate) use partition_traversal::LrUnitRestorationType;
+#[cfg(test)]
+pub(crate) use partition_traversal::TilePartitionCall;
 pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 #[cfg(test)]
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;

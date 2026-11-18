@@ -82,11 +82,9 @@ pub(super) fn decode_bru_leaf(
         (n4w, n4h),
         (1, 0, block_qindex),
     )?;
-    tile::push_leaf_entry(
-        context.superblocks,
-        context.entries,
+    context.entries.push(tile::ReconRowEntry::new(
         DecodedLeafPublication::from_frontier(frontier, context.sb_mask),
         tile::EntryState::Slot(index),
-    );
+    ));
     Ok(GeneralIntraLeafMode::no_luma_mode())
 }

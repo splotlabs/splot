@@ -142,10 +142,20 @@ fn no_decoded_block_error_is_typed_and_has_no_diagnostic() {
 
 #[test]
 fn recon_entries_keep_contiguous_superblock_order() {
+    use crate::bitstream::tile_payload::{BlockSize, TilePartitionCall};
+    let size = BlockSize::new(0).expect("4x4 block");
     let mut superblocks = Vec::new();
     let mut entries = Vec::new();
-    for (origin, entry) in [([0, 0], 0), ([0, 0], 1), ([0, 16], 2), ([0, 0], 3)] {
-        push_recon_entry(&mut superblocks, &mut entries, origin, entry);
+    for columns in [&[0, 1][..], &[16], &[], &[0]] {
+        let first = entries.len();
+        for &col in columns {
+            let call = TilePartitionCall::root(0, col, size, true);
+            entries.push(ReconRowEntry::new(
+                DecodedLeafPublication::new(call, size, 15),
+                EntryState::Spent,
+            ));
+        }
+        superblocks.extend(ReconSuperblock::from_entries(&entries, first));
     }
 
     assert_eq!(

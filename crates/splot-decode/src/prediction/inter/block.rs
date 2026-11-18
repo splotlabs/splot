@@ -1224,7 +1224,6 @@ pub(super) struct BlockDecodeContext<'a> {
     pub(super) ccso_state: &'a mut CcsoState,
     pub(super) delta_q_state: &'a mut DeltaQState,
     pub(super) segment_id_state: &'a mut TileSegmentIdState,
-    superblocks: &'a mut Vec<tile::ReconSuperblock>,
     entries: &'a mut Vec<tile::ReconRowEntry>,
     sb_mask: usize,
     pub(super) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
@@ -1264,7 +1263,6 @@ fn decode_block(
         ref mut ccso_state,
         ref mut delta_q_state,
         ref mut segment_id_state,
-        ref mut superblocks,
         ref mut entries,
         sb_mask,
         ref mut arena,
@@ -1277,12 +1275,10 @@ fn decode_block(
         ..
     } = *sink;
     let mut store = |leaf, state| {
-        tile::push_leaf_entry(
-            superblocks,
-            entries,
+        entries.push(tile::ReconRowEntry::new(
             DecodedLeafPublication::from_frontier(frontier, sb_mask),
             state,
-        );
+        ));
         leaf
     };
     let (avail_up, avail_left) = tile_neighbour_availability(

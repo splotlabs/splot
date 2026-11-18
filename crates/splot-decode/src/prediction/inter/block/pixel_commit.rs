@@ -70,6 +70,7 @@ pub(super) fn take_tile_filter_records(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn replay_recon_row<T: ReconSample>(
     mut row: ReconRow,
+    tile_offset: splot_core::span::ByteOffset,
     expected_ordinal: &mut usize,
     decoded_any: &mut bool,
     scratch: &mut deferred_recon::InterReconScratch<T>,
@@ -173,19 +174,28 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     folded.push(clear);
                 }
                 if let Some(command) = entry.command_mut(&mut slots) {
-                    reconstruct_command(
-                        command,
-                        scratch,
-                        workspace,
-                        block_decoded,
-                        &mut folded,
-                        &mut LeafResiduals {
-                            planes: &mut residual_planes,
-                            coefficients: &residual_coeffs,
-                            blocks: &residual_blocks,
-                        },
-                        &shared,
-                    )?;
+                    match command {
+                        ReconCommandMut::GeneralIntra(command) => command.reconstruct(
+                            &mut residual_planes,
+                            &residual_coeffs,
+                            scratch.general_intra_mut(),
+                            workspace,
+                            block_decoded,
+                            tile_offset,
+                        ),
+                        ReconCommandMut::Intrabc(command) => {
+                            command.reconstruct(&residual_blocks, &residual_coeffs, workspace)
+                        }
+                        ReconCommandMut::Inter(command) => scratch.reconstruct(
+                            command,
+                            &mut WorkspaceSink::Frame(workspace),
+                            block_decoded,
+                            &mut folded,
+                            &residual_blocks,
+                            &residual_coeffs,
+                            &shared,
+                        ),
+                    }?;
                 }
                 if superblock_needs_decoded {
                     entry
@@ -259,45 +269,4 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     folded.clear();
     scratch.temporal = folded;
     result
-}
-
-/// The residual storage one leaf's command indexes into.
-pub(super) struct LeafResiduals<'a> {
-    pub(super) planes: &'a mut crate::residual::pipeline::ResidualPlaneArena,
-    pub(super) coefficients: &'a [i32],
-    pub(super) blocks: &'a [super::InterResidualBlock],
-}
-
-/// Reconstructs one leaf's resolved command into the frame, in walk order, and
-/// appends its § 7.22 temporal records to `folded`.
-pub(super) fn reconstruct_command<T: ReconSample>(
-    command: ReconCommandMut<'_>,
-    scratch: &mut deferred_recon::InterReconScratch<T>,
-    workspace: &mut CurrentFrameWorkspace<T>,
-    block_decoded: &mut TileBlockDecodedState,
-    folded: &mut Vec<super::TemporalMotionBlock>,
-    residuals: &mut LeafResiduals<'_>,
-    shared: &deferred_recon::ReconShared<'_, T>,
-) -> Result<()> {
-    match command {
-        ReconCommandMut::GeneralIntra(command) => command.reconstruct(
-            residuals.planes,
-            residuals.coefficients,
-            scratch.general_intra_mut(),
-            workspace,
-            block_decoded,
-        ),
-        ReconCommandMut::Intrabc(command) => {
-            command.reconstruct(residuals.blocks, residuals.coefficients, workspace)
-        }
-        ReconCommandMut::Inter(command) => scratch.reconstruct(
-            command,
-            &mut WorkspaceSink::Frame(workspace),
-            block_decoded,
-            folded,
-            residuals.blocks,
-            residuals.coefficients,
-            shared,
-        ),
-    }
 }

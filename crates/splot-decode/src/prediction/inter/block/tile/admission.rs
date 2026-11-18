@@ -82,6 +82,7 @@ impl<T: ReconSample> TileCommit<T> {
         self.ordered.with_installed(|scratch| {
             pixel_commit::replay_recon_row(
                 ready.row,
+                ready.tile_offset,
                 &mut self.next,
                 &mut self.decoded_any,
                 scratch,
@@ -759,6 +760,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         for row in pending.drain(..) {
             let ready = ReadyReconRow {
                 row,
+                tile_offset,
                 surface: None,
                 bounds: super::row_gate::RowReferenceBounds::default(),
             };
@@ -964,6 +966,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 next,
                 ReadyReconRow {
                     row,
+                    tile_offset: tile.tile_offset,
                     surface,
                     bounds,
                 },

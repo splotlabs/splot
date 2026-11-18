@@ -52,7 +52,6 @@ pub(crate) struct GeneralIntraReconCommand {
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     luma_transform_type_context: LumaTransformTypeContext,
     segment_id: u8,
-    tile_offset: ByteOffset,
 }
 
 pub(crate) fn swap_general_intra_scratch<T: ReconSample>(
@@ -70,27 +69,11 @@ impl GeneralIntraReconCommand {
         scratch: &mut GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
+        tile_offset: ByteOffset,
     ) -> Result<()> {
         let _qm_segment_scope = crate::bitstream::tile_payload::FrameQmSegmentScope::install(
             usize::from(self.segment_id),
         );
-        self.reconstruct_with_installed_quantizer(
-            arena,
-            coeffs_arena,
-            scratch,
-            workspace,
-            block_decoded,
-        )
-    }
-
-    fn reconstruct_with_installed_quantizer<T: ReconSample>(
-        &self,
-        arena: &mut crate::residual::pipeline::ResidualPlaneArena,
-        coeffs_arena: &[i32],
-        scratch: &mut GeneralIntraReconScratch<T>,
-        workspace: &mut CurrentFrameWorkspace<T>,
-        block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
-    ) -> Result<()> {
         self.residual
             .reconstruct(
                 arena,
@@ -102,7 +85,7 @@ impl GeneralIntraReconCommand {
                 self.intra_edge,
                 self.luma_transform_type_context,
             )
-            .map_err(|error| general_intra_residual_error(error, self.tile_offset))
+            .map_err(|error| general_intra_residual_error(error, tile_offset))
     }
 }
 
@@ -723,7 +706,6 @@ fn parse_general_intra_residual_plan(
         intra_edge: facts.intra_edge,
         luma_transform_type_context: facts.luma_transform_type_context,
         segment_id: leaf.segment_id,
-        tile_offset: leaf.tile_offset,
     })
 }
 

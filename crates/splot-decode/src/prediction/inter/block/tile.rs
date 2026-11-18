@@ -543,16 +543,19 @@ impl<'payload> TileParser<'payload> {
             ccso_state: &mut self.output.ccso_state,
             delta_q_state: &mut self.delta_q_state,
             segment_id_state: &mut self.output.segment_id_state,
-            superblocks,
             entries,
             sb_mask,
             arena: &mut self.residual_planes,
         };
-        let mut decode_leaf =
-            |work_unit: &mut DecodeTileWorkUnit,
-             symbols: &mut SymbolDecoder<'_>,
-             frontier: &DecodeBlockFrontier,
-             neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>| {
+        let mut on_published = |_: DecodedLeafPublication, ()| {};
+        loop {
+            let first = block_context.entries.len();
+            let mut decode_leaf = |work_unit: &mut DecodeTileWorkUnit,
+                                   symbols: &mut SymbolDecoder<'_>,
+                                   frontier: &DecodeBlockFrontier,
+                                   neighbours: crate::bitstream::tile_payload::LeafNeighbours<
+                '_,
+            >| {
                 #[cfg(test)]
                 crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_leaf(
                     frontier,
@@ -568,9 +571,10 @@ impl<'payload> TileParser<'payload> {
                 }
                 .map(|leaf| (leaf, ()))
             };
-        let mut on_published = |_: DecodedLeafPublication, ()| {};
-        loop {
             let next = walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published);
+            if let Some(superblock) = ReconSuperblock::from_entries(block_context.entries, first) {
+                superblocks.push(superblock);
+            }
             if let (Ok(Some([sb_row, sb_col])), Some(modes)) = (&next, &context.params.bru_modes) {
                 modes.set(*sb_row, *sb_col, walk.bru_mode());
             }
@@ -741,6 +745,14 @@ pub(super) enum LeafSlot {
 }
 
 impl ReconRowEntry {
+    pub(super) fn new(publication: DecodedLeafPublication, state: EntryState) -> Self {
+        Self {
+            publication,
+            state,
+            reset_pending: true,
+        }
+    }
+
     fn slot<'a>(&self, slots: &'a [LeafSlot]) -> Option<&'a LeafSlot> {
         match self.state {
             EntryState::Slot(index) => slots.get(index as usize),
@@ -843,40 +855,12 @@ pub(super) struct ReconSuperblock {
     pub(super) entries: Range<usize>,
 }
 
-pub(super) fn push_leaf_entry(
-    superblocks: &mut Vec<ReconSuperblock>,
-    entries: &mut Vec<ReconRowEntry>,
-    publication: DecodedLeafPublication,
-    state: EntryState,
-) {
-    push_recon_entry(
-        superblocks,
-        entries,
-        publication.superblock_origin(),
-        ReconRowEntry {
-            publication,
-            state,
-            reset_pending: true,
-        },
-    );
-}
-
-#[inline]
-fn push_recon_entry<Entry>(
-    superblocks: &mut Vec<ReconSuperblock>,
-    entries: &mut Vec<Entry>,
-    origin: [usize; 2],
-    entry: Entry,
-) {
-    let entry_index = entries.len();
-    entries.push(entry);
-    if let Some(superblock) = superblocks.last_mut().filter(|sb| sb.origin == origin) {
-        superblock.entries.end = entries.len();
-    } else {
-        superblocks.push(ReconSuperblock {
-            origin,
-            entries: entry_index..entries.len(),
-        });
+impl ReconSuperblock {
+    fn from_entries(entries: &[ReconRowEntry], first: usize) -> Option<Self> {
+        Some(Self {
+            origin: entries.get(first)?.publication.superblock_origin(),
+            entries: first..entries.len(),
+        })
     }
 }
 
@@ -1086,6 +1070,7 @@ fn superblock_coefficient_capacity(sb_h4: usize, chroma: ChromaFormatIdc) -> Res
 
 struct ReadyReconRow<T: ReconSample> {
     row: ReconRow,
+    tile_offset: ByteOffset,
     surface: Option<splot_recon::OwnedFrameRect<T>>,
     bounds: row_gate::RowReferenceBounds,
 }
