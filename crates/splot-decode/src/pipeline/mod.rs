@@ -142,8 +142,13 @@ pub(crate) fn emit_frames(
     options: &DecodeOptions,
     session: &DecodeSession,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
-    emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
+    mut emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
 ) -> Result<()> {
+    let mut preflight = Some(preflight);
+    let mut preflight = |header| match preflight.take() {
+        Some(preflight) => preflight(header),
+        None => Ok(()),
+    };
     let pipeline_capacity = session
         .frame_delay()
         .min(NonZeroUsize::new(session.threads()).unwrap_or(NonZeroUsize::MIN));
@@ -154,8 +159,8 @@ pub(crate) fn emit_frames(
         options,
         &mut retained,
         session.rows(),
-        preflight,
-        emit,
+        &mut preflight,
+        &mut emit,
     );
     session.keep(retained);
     decoded
@@ -226,7 +231,7 @@ fn reclaim_unowned_frames(
 /// error stands once nothing is in flight and every pool work has finished.
 #[allow(clippy::too_many_arguments)]
 fn admit_within_reference_store(
-    mut check: impl FnMut(u64) -> Result<()>,
+    check: &mut dyn FnMut(u64) -> Result<()>,
     options: &DecodeOptions,
     rows: Option<&splot_parallel::RowScheduler>,
     pools: &mut frame_tasks::RowPools,
@@ -235,7 +240,7 @@ fn admit_within_reference_store(
     reference: &reference_buffer::RuntimeReferenceBuffer,
     scheduler: &mut OutputScheduler,
     emission: &mut output_schedule::EmissionQueue,
-    emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
+    emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
     retained_frame_bytes: &mut u64,
 ) -> Result<()> {
     let mut drained = false;
@@ -653,8 +658,8 @@ fn drive_frames(
     options: &DecodeOptions,
     retained: &mut frame_store::RetainedDecode,
     rows: Option<&splot_parallel::RowScheduler>,
-    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
-    emit: impl FnMut(&PipelineFrame) -> Result<()>,
+    preflight: &mut dyn FnMut(Option<IvfHeader>) -> Result<()>,
+    emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<()> {
     let frame_store::RetainedDecode {
         ring,
@@ -769,8 +774,8 @@ fn push_split_inter<T: SplitSample>(
 fn decode_frames_in_order(
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
-    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
-    mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
+    preflight: &mut dyn FnMut(Option<IvfHeader>) -> Result<()>,
+    emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
     rows: Option<&splot_parallel::RowScheduler>,
     ring: &mut inflight::InflightRing,
     pools: &mut frame_tasks::RowPools,
@@ -1013,7 +1018,7 @@ fn decode_frames_in_order(
         &scheduler,
         &mut emission_queue,
         scheduler.newly(),
-        &mut emit,
+        emit,
     )?;
     reference.update(0, &key_update, is_key_or_switch(&key_core));
     reference.note_frame(
@@ -1038,7 +1043,7 @@ fn decode_frames_in_order(
             &scheduler,
             &mut emission_queue,
             scheduler.newly(),
-            &mut emit,
+            emit,
         )?;
     }
     reclaim_unowned_frames(
@@ -1050,7 +1055,7 @@ fn decode_frames_in_order(
         &mut retained_frame_bytes,
     )?;
     if output_frame_limit_reached(options, scheduler.emitted_count) {
-        return emission_queue.flush(frames, &mut emit);
+        return emission_queue.flush(frames, emit);
     }
 
     *obu_storage = recycle(leading_buffer);
@@ -1058,7 +1063,7 @@ fn decode_frames_in_order(
     loop {
         if !frames.has_space() {
             ring.harvest_all(pools);
-            emission_queue.flush(frames, &mut emit)?;
+            emission_queue.flush(frames, emit)?;
             let mut reclaim = || {
                 pools.retire_idle();
                 reclaim_unowned_frames(
@@ -1116,7 +1121,7 @@ fn decode_frames_in_order(
                     &scheduler,
                     &mut emission_queue,
                     &flushed,
-                    &mut emit,
+                    emit,
                 )?;
                 if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
@@ -1217,7 +1222,7 @@ fn decode_frames_in_order(
                     &scheduler,
                     &mut emission_queue,
                     scheduler.newly(),
-                    &mut emit,
+                    emit,
                 )?;
                 reclaim_unowned_frames(
                     frames,
@@ -1261,7 +1266,7 @@ fn decode_frames_in_order(
                     &scheduler,
                     &mut emission_queue,
                     &flushed,
-                    &mut emit,
+                    emit,
                 )?;
                 if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
@@ -1302,7 +1307,7 @@ fn decode_frames_in_order(
                             &scheduler,
                             &mut emission_queue,
                             &emitted,
-                            &mut emit,
+                            emit,
                         )?;
                         if output_frame_limit_reached(options, scheduler.emitted_count) {
                             break;
@@ -1337,7 +1342,7 @@ fn decode_frames_in_order(
                         ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
                     }
                     admit_within_reference_store(
-                        |retained| {
+                        &mut |retained| {
                             ensure_retained_frame_byte_limits_for_core(
                                 options.limits(),
                                 retained,
@@ -1354,7 +1359,7 @@ fn decode_frames_in_order(
                         &reference,
                         &mut scheduler,
                         &mut emission_queue,
-                        &mut emit,
+                        emit,
                         &mut retained_frame_bytes,
                     )?;
                     let split = rows.filter(|_| {
@@ -1515,7 +1520,7 @@ fn decode_frames_in_order(
                     &scheduler,
                     &mut emission_queue,
                     scheduler.newly(),
-                    &mut emit,
+                    emit,
                 )?;
                 reference.update(frame_index, &inter_update, inter_key_or_switch);
                 reference.note_frame(
@@ -1539,7 +1544,7 @@ fn decode_frames_in_order(
                         &scheduler,
                         &mut emission_queue,
                         scheduler.newly(),
-                        &mut emit,
+                        emit,
                     )?;
                 }
                 reclaim_unowned_frames(
@@ -1617,7 +1622,7 @@ fn decode_frames_in_order(
                         &scheduler,
                         &mut emission_queue,
                         &flushed,
-                        &mut emit,
+                        emit,
                     )?;
                     if output_frame_limit_reached(options, scheduler.emitted_count) {
                         break;
@@ -1668,7 +1673,7 @@ fn decode_frames_in_order(
                         &scheduler,
                         &mut emission_queue,
                         &flushed,
-                        &mut emit,
+                        emit,
                     )?;
                     reference = key_reference;
                     reclaim_unowned_frames(
@@ -1690,7 +1695,7 @@ fn decode_frames_in_order(
                     .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
                 let key_output_effects = output_effect_state.finish_frame();
                 admit_within_reference_store(
-                    |retained| {
+                    &mut |retained| {
                         ensure_retained_frame_byte_limits_for_core(
                             options.limits(),
                             retained,
@@ -1707,7 +1712,7 @@ fn decode_frames_in_order(
                     &reference,
                     &mut scheduler,
                     &mut emission_queue,
-                    &mut emit,
+                    emit,
                     &mut retained_frame_bytes,
                 )?;
                 let frame_index = frames.len();
@@ -1758,7 +1763,7 @@ fn decode_frames_in_order(
                     &scheduler,
                     &mut emission_queue,
                     scheduler.newly(),
-                    &mut emit,
+                    emit,
                 )?;
                 reference.update(frame_index, &key_update, is_key_or_switch(&key_core));
                 reference.note_frame(
@@ -1783,7 +1788,7 @@ fn decode_frames_in_order(
                         &scheduler,
                         &mut emission_queue,
                         scheduler.newly(),
-                        &mut emit,
+                        emit,
                     )?;
                 }
                 reclaim_unowned_frames(
@@ -1817,9 +1822,9 @@ fn decode_frames_in_order(
             &scheduler,
             &mut emission_queue,
             &flushed,
-            &mut emit,
+            emit,
         )?;
-        emission_queue.flush(frames, &mut emit)?;
+        emission_queue.flush(frames, emit)?;
         ring.harvest_all(pools);
         reclaim_unowned_frames(
             frames,
@@ -1830,7 +1835,7 @@ fn decode_frames_in_order(
             &mut retained_frame_bytes,
         )?;
     } else {
-        emission_queue.flush(frames, &mut emit)?;
+        emission_queue.flush(frames, emit)?;
     }
     Ok(())
 }

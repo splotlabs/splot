@@ -20,7 +20,7 @@
 //! - Tables whose element values are all integer literals are **generated** as
 //!   nested fixed-size arrays (compact `u16` for CDFs and GDF alpha, `u8` for the
 //!   PC-Wiener class LUT, `i16` for GDF weights, `i8` for the bounded warped
-//!   filter, and `i32` otherwise; the array shape is inferred from the brace nesting and named
+//!   filter and IST kernels, and `i32` otherwise; the array shape is inferred from the brace nesting and named
 //!   dimension expressions are recorded as a doc comment only).
 //! - The four § 9.2 block-size tables with `BLOCK_*` element values, the
 //!   four § 9.2 transform-size tables with `TX_*` element values, and the
@@ -606,7 +606,7 @@ fn render_module(section: &Section, decls: &[GeneratedTable<'_>]) -> Result<Stri
             "GDF_ALPHA" => "u16",
             "GDF_WEIGHT" => "i16",
             "PC_WIENER_LUT_TO_CLASS" | "PC_WIENER_SUB_CLASSIFY" | "PC_WIENER_SUB_CLASSIFY2" => "u8",
-            "WARPED_FILTERS" => "i8",
+            "WARPED_FILTERS" | "IST_4X4_KERNEL" | "IST_8X8_KERNEL" => "i8",
             _ if section.module == "cdf" => "u16",
             _ => "i32",
         };

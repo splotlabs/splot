@@ -19,6 +19,11 @@ trait ReadSend: Read + Send {}
 
 impl<R: Read + Send + ?Sized> ReadSend for R {}
 
+/// A decode output sink.
+trait WriteSend: std::io::Write + Send {}
+
+impl<W: std::io::Write + Send + ?Sized> WriteSend for W {}
+
 /// A decode context.
 ///
 /// Owns the decode threads, plans bounded stream metadata from raw Annex
@@ -208,9 +213,18 @@ impl DecodeContext {
         &self,
         mut reader: R,
         options: DecodeOptions,
-        writer: W,
+        mut writer: W,
     ) -> Result<()> {
-        Self::run(&mut reader, &options, |source| {
+        self.decode_raw(&mut reader, options, &mut writer)
+    }
+
+    fn decode_raw(
+        &self,
+        reader: &mut dyn ReadSend,
+        options: DecodeOptions,
+        writer: &mut dyn WriteSend,
+    ) -> Result<()> {
+        Self::run(reader, &options, |source| {
             crate::output::raw::write_raw_stream_from_plan(source, &options, &self.session, writer)
         })
     }
@@ -243,11 +257,19 @@ impl DecodeContext {
         &self,
         mut reader: R,
         options: DecodeOptions,
-        writer: W,
+        mut writer: W,
     ) -> Result<()> {
-        Self::run(&mut reader, &options, |source| {
+        self.decode_y4m(&mut reader, options, &mut writer)
+    }
+
+    fn decode_y4m(
+        &self,
+        reader: &mut dyn ReadSend,
+        options: DecodeOptions,
+        writer: &mut dyn WriteSend,
+    ) -> Result<()> {
+        Self::run(reader, &options, |source| {
             crate::output::y4m::write_y4m_stream_to_writer(source, &options, &self.session, writer)
-                .map(drop)
         })
     }
 
