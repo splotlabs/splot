@@ -728,21 +728,7 @@ pub(super) fn warp_motion(
     warp: &WarpMotionSyntax,
     state: &MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
-    let global_mv = global_motion_mv(state.core, block.ref_frame0, block, state.frame_precision);
-    let stack = find_mv_stack_upto(
-        state.grid,
-        block,
-        global_mv,
-        global_motion_model(state.core, block.ref_frame0).gm_params,
-        state.bank(),
-        state.warp_param_bank,
-        warp.derive_wrl,
-        state.drl_reorder,
-        state.temporal,
-        Some(state.order_hints),
-        warp.use_temporal_first,
-        usize::from(warp.ref_mv_idx),
-    );
+    let global = global_motion_model(state.core, block.ref_frame0).gm_params;
     let (mv, params) = match &warp.source {
         WarpModelSource::Candidate => {
             let base_precision = if warp.mvd.is_some() {
@@ -750,7 +736,16 @@ pub(super) fn warp_motion(
             } else {
                 MV_PRECISION_EIGHTH_PEL
             };
-            let mut params = stack.warp_candidate(usize::from(warp.ref_warp_idx));
+            let mut params = if warp.derive_wrl {
+                state.warp_param_bank.find_candidate(
+                    state.grid,
+                    block,
+                    global,
+                    usize::from(warp.ref_warp_idx),
+                )
+            } else {
+                DEFAULT_WARP_PARAMS
+            };
             let base_mv = warp_predicted_mv(params, block, base_precision);
             let mv = warp.mvd.map_or(base_mv, |mvd| add_mv_clamped(base_mv, mvd));
             reduce_warp_model(&mut params);
@@ -765,6 +760,22 @@ pub(super) fn warp_motion(
             (mv, params)
         }
         source => {
+            let global_mv =
+                global_motion_mv(state.core, block.ref_frame0, block, state.frame_precision);
+            let stack = find_mv_stack_upto(
+                state.grid,
+                block,
+                global_mv,
+                global,
+                state.bank(),
+                state.warp_param_bank,
+                warp.derive_wrl && matches!(source, WarpModelSource::Delta(_)),
+                state.drl_reorder,
+                state.temporal,
+                Some(state.order_hints),
+                warp.use_temporal_first,
+                usize::from(warp.ref_mv_idx),
+            );
             let mv = warp_newmv(syntax, warp, &stack);
             let params = warp_newmv_model(source, warp, block, &stack, mv, state)?;
             (mv, params)

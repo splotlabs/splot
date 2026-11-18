@@ -669,6 +669,7 @@ impl MvStack {
 
     pub(crate) fn warp_candidate(&self, idx: usize) -> [i32; 6] {
         self.warp
+            .as_ref()
             .and_then(|warp| warp.slots.get(idx).copied())
             .unwrap_or(DEFAULT_WARP_PARAMS)
     }
@@ -1755,6 +1756,27 @@ fn scan_mv_stack_col(
     derived: &mut DerivedMvState<'_>,
     mut warp: Option<&mut WarpParamStack>,
 ) {
+    visit_mv_stack_column(grid, block, delta_col, |probe, leaf| {
+        scan_mv_stack_probe(
+            grid,
+            block,
+            probe,
+            leaf,
+            entries,
+            prune_count,
+            derived,
+            warp.as_deref_mut(),
+        );
+    });
+}
+
+#[inline]
+fn visit_mv_stack_column<'g>(
+    grid: &'g NeighbourMvGrid,
+    block: &MvBlockContext,
+    delta_col: i32,
+    mut visit: impl FnMut(RelativeProbe, ProbedLeaf<'g>),
+) {
     let delta_col = delta_col + i32::from(block.bw4 == 1 && block.mi_col & 1 == 1);
     let bh4 = block.bh4 as i32;
     for delta_row in [Some(bh4 - 1), (bh4 > 1).then_some(0)]
@@ -1772,16 +1794,7 @@ fn scan_mv_stack_col(
         if leaf.base_c() == left_base_c {
             continue;
         }
-        scan_mv_stack_probe(
-            grid,
-            block,
-            RelativeProbe::new(delta_row, delta_col),
-            leaf,
-            entries,
-            prune_count,
-            derived,
-            warp.as_deref_mut(),
-        );
+        visit(RelativeProbe::new(delta_row, delta_col), leaf);
     }
 }
 
@@ -1803,13 +1816,8 @@ fn scan_mv_stack_probe(
 ) {
     let adjusted_delta_col = probe.delta_col;
     let flags = leaf.flags();
-    if let Some(warp) = warp
-        && flags.is_inter()
-        && flags.is_warp()
-        && flags.ref_frame0() == block.ref_frame0
-        && let Some(params) = leaf.stored_warp()
-    {
-        warp.insert(params);
+    if let Some(warp) = warp {
+        warp.insert_neighbour(block.ref_frame0, leaf);
     }
 
     if entries.len() >= MAX_REF_MV_STACK_SIZE {
