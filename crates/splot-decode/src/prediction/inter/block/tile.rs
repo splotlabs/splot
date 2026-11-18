@@ -1196,9 +1196,6 @@ pub(crate) struct TileParseState {
 #[derive(Default)]
 pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     parse: TileParseState,
-    /// The surface source the tile's units draw their reconstruction
-    /// rectangles from, kept whole so its handle outlives the tile.
-    surface_source: Option<std::sync::Arc<admission::SurfaceSource<T>>>,
     ordered: Box<deferred_recon::InterReconScratch<T>>,
     workers: InterReconScratchPool<T>,
     /// The ordinary walk's parsed rows waiting for their replay.
@@ -1213,7 +1210,6 @@ impl<T: ReconSample> TileDecodeScratch<T> {
     fn from_scheduled(ordered: Box<deferred_recon::InterReconScratch<T>>) -> Self {
         Self {
             parse: TileParseState::default(),
-            surface_source: None,
             ordered,
             workers: InterReconScratchPool::default(),
             pending_rows: Vec::new(),
@@ -1247,7 +1243,6 @@ fn precompute_recon_row<T: ReconSample>(
     mut ready: ReadyReconRow<T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
-    quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
     lists: (&[u32], &super::FrameRefFacts),
@@ -1270,7 +1265,6 @@ fn precompute_recon_row<T: ReconSample>(
         &mut surface,
         scratch,
         block_decoded,
-        quantizer,
         temporal_context,
         reference,
         lists,
@@ -1301,7 +1295,6 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     surface: &mut super::super::mc::WorkspaceSink<'_, '_, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
-    quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
     lists: (&[u32], &super::FrameRefFacts),
@@ -1318,7 +1311,6 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     if row.has_terminal_error() {
         return row;
     }
-    let _quantizer_scopes = quantizer.install_frame();
     let info = surface.info();
     let shared = deferred_recon::ReconShared {
         reference,
@@ -1411,7 +1403,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
             };
             let start = row.temporal.len();
             let result = {
-                scratch.reconstruct_logged(
+                scratch.reconstruct(
                     command,
                     surface,
                     block_decoded,
@@ -2145,7 +2137,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
 )> {
     let TileDecodeScratch {
         parse: mut parse_state,
-        surface_source: mut spent_surface_source,
         mut ordered,
         workers,
         mut pending_rows,
@@ -2187,8 +2178,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
             tile.mi_row_range().end as usize,
         )?;
         let commit_block_decoded = core::mem::take(&mut parse_state.commit_block_decoded);
-        let reusable_surface_source = spent_surface_source.take();
-        let quantizer = FrameQuantizerSnapshot::capture();
         let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
         let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
         let unit_count = tile_unit_capacity(&rows, &cols, mi_rows, mi_cols, sb_h4);
@@ -2211,21 +2200,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
             parse_state,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);
-        let info = workspace.info();
-        let mut surface_source = reusable_surface_source
-            .filter(|source| std::sync::Arc::strong_count(source) == 1)
-            .unwrap_or_else(|| {
-                std::sync::Arc::new(admission::SurfaceSource::new(
-                    info,
-                    Vec::new(),
-                    workers.spare_surfaces(),
-                ))
-            });
-        let Some(source) = std::sync::Arc::get_mut(&mut surface_source) else {
-            return Err(invalid_inter_tile_scheduling_state());
-        };
-        let rects = source.reset(info, workers.spare_surfaces());
-        rects.clear();
         let mut commit = TileCommit::direct(
             ordered,
             workspace,
@@ -2241,7 +2215,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
             unit_count,
             &context,
             temporal_context,
-            &quantizer,
             &row_gate,
             &row_buffers,
             &motion,
@@ -2262,7 +2235,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
         );
         parse_state.commit_block_decoded = spent_block_decoded;
         parse_state.row_buffers = row_buffers;
-        spent_surface_source = Some(surface_source);
         merge_tile_filter_state(
             &mut cdef_state,
             &mut gdf_state,
@@ -2290,7 +2262,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
         TileDecodeScratch {
             buffers,
             parse: parse_state,
-            surface_source: spent_surface_source,
             ordered,
             workers,
             pending_rows,

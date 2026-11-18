@@ -8,7 +8,7 @@
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
-use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, ReconSample};
+use splot_recon::{BitDepth, DecodedFrameInfo, PlaneId, ReconSample};
 
 use super::super::compound::CompoundBlockSyntax;
 use super::super::find_mv_stack::{MvBlockContext, NeighbourFlagSyntax};
@@ -544,17 +544,6 @@ impl<T: ReconSample> InterReconScratch<T> {
         &mut self.general_intra
     }
 
-    pub(super) fn reconstruct_intrabc(
-        &mut self,
-        command: &super::intrabc::IntrabcReconCommand,
-        residual_blocks: &[InterResidualBlock],
-        residual_coeffs: &[i32],
-        workspace: &mut CurrentFrameWorkspace<T>,
-    ) -> Result<()> {
-        self.mc
-            .with_installed(|| command.reconstruct(residual_blocks, residual_coeffs, workspace))
-    }
-
     pub(super) fn derive_motion_logged(
         &mut self,
         command: &mut InterReconCommand,
@@ -562,19 +551,19 @@ impl<T: ReconSample> InterReconScratch<T> {
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
     ) -> Result<()> {
-        let Self {
-            tip, refined, mc, ..
-        } = self;
-        mc.with_installed(|| {
-            let _segment_scope = FrameQmSegmentScope::install(usize::from(command.segment_id));
-            command.derive_motion(sink, temporal_records, shared, (tip, refined))?;
-            command.motion_derived = true;
-            Ok(())
-        })
+        let _segment_scope = FrameQmSegmentScope::install(usize::from(command.segment_id));
+        command.derive_motion(
+            sink,
+            temporal_records,
+            shared,
+            (&mut self.tip, &mut self.refined),
+        )?;
+        command.motion_derived = true;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn reconstruct_logged(
+    pub(super) fn reconstruct(
         &mut self,
         command: &mut InterReconCommand,
         sink: &mut WorkspaceSink<'_, '_, T>,
@@ -584,57 +573,16 @@ impl<T: ReconSample> InterReconScratch<T> {
         residual_coeffs: &[i32],
         shared: &ReconShared<'_, T>,
     ) -> Result<()> {
-        let Self {
-            tip,
-            refined,
-            interintra,
-            mc,
-            ..
-        } = self;
-        mc.with_installed(|| {
-            command.reconstruct_ordered(
-                sink,
-                block_decoded,
-                temporal_records,
-                residual_blocks,
-                residual_coeffs,
-                shared,
-                (tip, refined),
-                interintra,
-            )
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn reconstruct(
-        &mut self,
-        command: &mut InterReconCommand,
-        workspace: &mut CurrentFrameWorkspace<T>,
-        block_decoded: &TileBlockDecodedState,
-        temporal: &mut Vec<TemporalMotionBlock>,
-        residual_blocks: &[InterResidualBlock],
-        residual_coeffs: &[i32],
-        shared: &ReconShared<'_, T>,
-    ) -> Result<()> {
-        let Self {
-            tip,
-            refined,
-            interintra,
-            mc,
-            ..
-        } = self;
-        mc.with_installed(|| {
-            command.reconstruct_ordered(
-                &mut WorkspaceSink::Frame(workspace),
-                block_decoded,
-                temporal,
-                residual_blocks,
-                residual_coeffs,
-                shared,
-                (tip, refined),
-                interintra,
-            )
-        })
+        command.reconstruct_ordered(
+            sink,
+            block_decoded,
+            temporal_records,
+            residual_blocks,
+            residual_coeffs,
+            shared,
+            (&mut self.tip, &mut self.refined),
+            &mut self.interintra,
+        )
     }
 }
 

@@ -18,12 +18,13 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
 
 use super::super::InterReferenceState;
 use super::super::find_mv_stack::TemporalMvContext;
+use super::super::mc::WorkspaceSink;
 use super::deferred_recon;
 use super::temporal::MotionFieldUnits;
 use super::tile::{ReconRow, ReconRowBuffers, TileFilterRecords};
 use super::{ReconCommandMut, ReconCommandRef};
 use crate::Result;
-use crate::bitstream::tile_payload::{FrameQuantizerSnapshot, TileBlockDecodedState};
+use crate::bitstream::tile_payload::TileBlockDecodedState;
 
 pub(super) fn append_row_filter_records(
     filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
@@ -71,7 +72,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     mut row: ReconRow,
     expected_ordinal: &mut usize,
     decoded_any: &mut bool,
-    quantizer: &FrameQuantizerSnapshot,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &mut TileBlockDecodedState,
@@ -93,16 +93,11 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     folded.clear();
     let mut has_intra = false;
     let result = (|| {
-        if row.ordinal != *expected_ordinal {
-            return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
-        }
-        row.return_terminal_error()?;
         let ordinal = row.ordinal;
         *expected_ordinal = expected_ordinal.saturating_add(1);
         let row_has_entries = !row.superblocks.is_empty();
         let motion_owed = !row.motion_folded;
         let mut precompute_error = row.take_precompute_error();
-        let _quantizer_scopes = quantizer.install_frame();
         let ReconRow {
             mut superblocks,
             mut residual_coeffs,
@@ -292,15 +287,12 @@ pub(super) fn reconstruct_command<T: ReconSample>(
             workspace,
             block_decoded,
         ),
-        ReconCommandMut::Intrabc(command) => scratch.reconstruct_intrabc(
-            command,
-            residuals.blocks,
-            residuals.coefficients,
-            workspace,
-        ),
+        ReconCommandMut::Intrabc(command) => {
+            command.reconstruct(residuals.blocks, residuals.coefficients, workspace)
+        }
         ReconCommandMut::Inter(command) => scratch.reconstruct(
             command,
-            workspace,
+            &mut WorkspaceSink::Frame(workspace),
             block_decoded,
             folded,
             residuals.blocks,
