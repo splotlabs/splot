@@ -56,7 +56,13 @@ fn reference_reads_mi_storage_outside_the_output_crop() {
         .unwrap();
     let frame = workspace.freeze().unwrap();
     let reference = ReferenceSamples::settled(&frame);
-    let view = reference.plane_view(PlaneId::Y, ALL_ROWS, OFFSET).unwrap();
+    let view = reference
+        .plane_view_with(
+            PlaneId::Y,
+            || panic!("settled view needs no row bound"),
+            OFFSET,
+        )
+        .unwrap();
     assert_eq!((view.width(), view.height()), (272, 272));
     assert_eq!(view.sample(0, 0), 31);
     assert_eq!(view.sample(271, 271), 201);
@@ -93,7 +99,11 @@ fn reference_waits_for_mi_padding_rows_to_be_published() {
         assert_eq!((view.width(), view.height()), (272, 272));
         assert_eq!(view.sample(269, 271), 11);
         if stripe == 0 {
-            assert!(reference.plane_view(PlaneId::Y, 270, OFFSET).is_err());
+            assert!(
+                reference
+                    .plane_view_with(PlaneId::Y, || 270, OFFSET)
+                    .is_err()
+            );
         } else {
             let view = reference.plane_view(PlaneId::Y, ALL_ROWS, OFFSET).unwrap();
             assert_eq!(view.sample(271, 271), 77);

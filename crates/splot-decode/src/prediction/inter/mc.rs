@@ -721,7 +721,7 @@ pub(crate) fn plane_prediction<T: ReconSample>(
     );
 
     let params = scaling.subpel_params(interp, block_w, block_h, info.bit_depth());
-    let view = reference.plane_view(plane, subpel_last_reference_row(&params), offset)?;
+    let view = reference.plane_view_with(plane, || subpel_last_reference_row(&params), offset)?;
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
     Ok((view, rect, params))
 }
@@ -743,18 +743,17 @@ fn predict_warp_plane<T: ReconSample>(
 
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = sink.info().bit_depth();
-    let scaling =
-        reference
-            .scaling(plane)
-            .with_mv(plane_x as i32, plane_y as i32, 0, 0, sub_x, sub_y);
-    let last_row = warp_plane_last_row(
-        warp_params,
-        (plane_x, plane_y, block_w, block_h),
-        sub_x,
-        sub_y,
-        scaling,
-    );
-    let view = reference.plane_view(plane, last_row, offset)?;
+    let scaling = *reference.scaling(plane);
+    let last_row = || {
+        warp_plane_last_row(
+            warp_params,
+            (plane_x, plane_y, block_w, block_h),
+            sub_x,
+            sub_y,
+            scaling,
+        )
+    };
+    let view = reference.plane_view_with(plane, last_row, offset)?;
     let (ref_width, ref_height) = (view.width(), view.height());
     let params = WarpPredictBlockParams {
         warp_params,
@@ -778,36 +777,21 @@ fn predict_warp_plane<T: ReconSample>(
         };
     let Some(prepared) = prepared else {
         let frame = sink.info().storage_luma_size();
-        let unit = |i4: usize, j4: usize| {
-            let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
-                rect,
-                plane,
-                warp_params,
-                (plane_x + (j4 & !1) * 4) as i32,
-                (plane_y + (i4 & !1) * 4) as i32,
-                block_w.min(8) as i32,
-                block_h.min(8) as i32,
-                sub_x,
-                sub_y,
-                frame,
-                scaling,
-            );
-            let params = WarpPredictBlockParams {
-                first_x,
-                first_y,
-                last_x,
-                last_y,
-                ..params
-            };
-            ext_warp_predict_unit(&view, &params, i4, j4, false)
-        };
         let max_sample = i32::from(bit_depth.max_sample());
         let block_rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
+        let shape = [block_w, block_h];
         let direct = sink.with_contiguous_rect_mut(plane, block_rect, |output, stride| {
             let actual = output.len();
-            for i4 in 0..block_h.div_euclid(4) {
-                for j4 in 0..block_w.div_euclid(4) {
-                    let packed: [T; 16] = clip_and_pack_warp_samples(&unit(i4, j4)?, max_sample);
+            ext_warp_units(
+                params,
+                rect,
+                plane,
+                shape,
+                frame,
+                scaling,
+                |params, i4, j4| {
+                    let predicted = ext_warp_predict_unit(&view, params, i4, j4, false)?;
+                    let packed: [T; 16] = clip_and_pack_warp_samples(&predicted, max_sample);
                     for (row, packed) in packed.as_chunks::<4>().0.iter().enumerate() {
                         let start = (i4 * 4 + row) * stride + j4 * 4;
                         *output
@@ -818,26 +802,33 @@ fn predict_warp_plane<T: ReconSample>(
                                 actual,
                             })? = *packed;
                     }
-                }
-            }
-            Ok(())
+                    Ok(())
+                },
+            )
         })?;
         if direct.is_some() {
             return Ok(());
         }
-        for i4 in 0..block_h.div_euclid(4) {
-            for j4 in 0..block_w.div_euclid(4) {
+        return ext_warp_units(
+            params,
+            rect,
+            plane,
+            shape,
+            frame,
+            scaling,
+            |params, i4, j4| {
                 let write_x = plane_x + j4 * 4;
                 let write_y = plane_y + i4 * 4;
                 if write_x >= destination_width || write_y >= destination_height {
-                    continue;
+                    return Ok(());
                 }
-                let packed: [T; 16] = clip_and_pack_warp_samples(&unit(i4, j4)?, max_sample);
+                let predicted = ext_warp_predict_unit(&view, params, i4, j4, false)?;
+                let packed: [T; 16] = clip_and_pack_warp_samples(&predicted, max_sample);
                 let rect = PlaneRect::new(write_x, write_y, 4, 4)?;
                 sink.write_rect(plane, rect, &packed, 4)?;
-            }
-        }
-        return Ok(());
+                Ok(())
+            },
+        );
     };
     let visible_w = block_w.min(destination_width.saturating_sub(plane_x));
     let visible_h = block_h.min(destination_height.saturating_sub(plane_y));
@@ -1243,16 +1234,10 @@ fn compound_plane_views<'a, T: ReconSample>(
     block_h: usize,
     offset: ByteOffset,
 ) -> Result<[ReferencePlaneView<'a, T>; 2]> {
-    if let (Some(view0), Some(view1)) = (
-        block.reference0.settled_plane_view(plane),
-        block.reference1.settled_plane_view(plane),
-    ) {
-        return Ok([view0, view1]);
-    }
     let view = |reference: ReferenceSamples<'a, T>, scaling: PlaneScaling| {
-        reference.plane_view(
+        reference.plane_view_with(
             plane,
-            compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
+            || compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
             offset,
         )
     };
@@ -1356,19 +1341,21 @@ fn compound_ref_intermediate<T: ReconSample>(
         sub_x,
         sub_y,
     );
-    let last_row = warp_params.map_or_else(
-        || compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
-        |warp_params| {
-            warp_plane_last_row(
-                warp_params,
-                (plane_x, plane_y, block_w, block_h),
-                sub_x,
-                sub_y,
-                scaling,
-            )
-        },
-    );
-    let view = reference.plane_view(plane, last_row, offset)?;
+    let last_row = || {
+        warp_params.map_or_else(
+            || compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
+            |warp_params| {
+                warp_plane_last_row(
+                    warp_params,
+                    (plane_x, plane_y, block_w, block_h),
+                    sub_x,
+                    sub_y,
+                    scaling,
+                )
+            },
+        )
+    };
+    let view = reference.plane_view_with(plane, last_row, offset)?;
     let Some(warp_params) = warp_params else {
         let params = scaling.subpel_params(interp, block_w, block_h, bit_depth);
         subpel_predict_block_compound_intermediate_into(&view, &params, None, samples, block_w)?;
@@ -1421,32 +1408,18 @@ fn compound_ref_intermediate<T: ReconSample>(
             }
         }
     } else {
-        for i4 in 0..block_h.div_euclid(4) {
-            for j4 in 0..block_w.div_euclid(4) {
-                let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
-                    rect,
-                    plane,
-                    warp_params,
-                    (plane_x + (j4 & !1) * 4) as i32,
-                    (plane_y + (i4 & !1) * 4) as i32,
-                    block_w.min(8) as i32,
-                    block_h.min(8) as i32,
-                    sub_x,
-                    sub_y,
-                    info.storage_luma_size(),
-                    scaling,
-                );
-                let params = WarpPredictBlockParams {
-                    first_x,
-                    first_y,
-                    last_x,
-                    last_y,
-                    ..params
-                };
-                let predicted = ext_warp_predict_unit(&view, &params, i4, j4, true)?;
-                write_compound_section(samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4)?;
-            }
-        }
+        ext_warp_units(
+            params,
+            rect,
+            plane,
+            [block_w, block_h],
+            info.storage_luma_size(),
+            scaling,
+            |params, i4, j4| {
+                let predicted = ext_warp_predict_unit(&view, params, i4, j4, true)?;
+                write_compound_section(samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4)
+            },
+        )?;
     }
     Ok(scaling)
 }
@@ -1508,6 +1481,49 @@ fn compound_average_weights_are_uniform(
 }
 
 const INTER_POST_ROUND: u32 = 4;
+
+/// Visits the 4x4 units of each § 7.13.3.20 reference bounding box.
+fn ext_warp_units<E>(
+    params: WarpPredictBlockParams,
+    rect: McBlockRect,
+    plane: PlaneId,
+    [width, height]: [usize; 2],
+    frame: splot_recon::PlaneSize,
+    scaling: PlaneScaling,
+    mut visit: impl FnMut(&WarpPredictBlockParams, usize, usize) -> core::result::Result<(), E>,
+) -> core::result::Result<(), E> {
+    let (columns, rows) = (width / 4, height / 4);
+    for top in (0..rows).step_by(2) {
+        for left in (0..columns).step_by(2) {
+            let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
+                rect,
+                plane,
+                params.warp_params,
+                params.block_x + (left * 4) as i32,
+                params.block_y + (top * 4) as i32,
+                width.min(8) as i32,
+                height.min(8) as i32,
+                u32::from(params.subsampling_x),
+                u32::from(params.subsampling_y),
+                frame,
+                scaling,
+            );
+            let bounded = WarpPredictBlockParams {
+                first_x,
+                first_y,
+                last_x,
+                last_y,
+                ..params
+            };
+            for i4 in top..(top + 2).min(rows) {
+                for j4 in left..(left + 2).min(columns) {
+                    visit(&bounded, i4, j4)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 #[allow(clippy::too_many_arguments)]
 fn ext_warp_unit_bounds(

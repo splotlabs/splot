@@ -180,9 +180,20 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         last_row: i32,
         offset: ByteOffset,
     ) -> Result<ReferencePlaneView<'a, T>> {
+        self.plane_view_with(plane, || last_row, offset)
+    }
+
+    /// Computes the read bound only when the settled view is unavailable.
+    #[inline]
+    pub(crate) fn plane_view_with(
+        self,
+        plane: PlaneId,
+        last_row: impl FnOnce() -> i32,
+        offset: ByteOffset,
+    ) -> Result<ReferencePlaneView<'a, T>> {
         match self.settled_plane_view(plane) {
             Some(view) => Ok(view),
-            None => self.banded_plane_view(plane, last_row, offset),
+            None => self.banded_plane_view(plane, last_row(), offset),
         }
     }
 
