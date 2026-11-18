@@ -12,11 +12,11 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
     CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
-    LumaTransformPartitionContext, LumaTransformTypeContext, PlaneCoeffBlock,
+    LumaTransformPartitionContext, LumaTransformTypeContext, LumaTxPartition, PlaneCoeffBlock,
     PositionedLumaCoeffBlock, TileBlockDecodedState, TileCoeffContextState,
     TransformToolResidualPolicy, current_segment_lossless, decode_general_intra_plane_coeffs,
     luma_partition_record_fills_block, luma_transform_record_starts_in_frame,
-    read_luma_transform_partition_records,
+    luma_transform_records_for_partition, read_intra_luma_tx_partition,
 };
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
@@ -279,22 +279,28 @@ impl ResidualPlanePlan {
             super::palette::recycle_palette_map(palette_color_map);
             return parsed;
         }
-        if let Some(tx_partition_context) = tx_partition_context {
-            let parsed = self.parse_partitioned_luma(
-                frame,
-                work_unit,
-                symbols,
-                coeff_ctx,
-                tx_partition_context,
-                &coeff_block,
-                palette_color_map.as_deref(),
-                deblock,
-                coeffs_arena,
-                units,
-                palette_maps,
-            );
-            super::palette::recycle_palette_map(palette_color_map);
-            return parsed;
+        if let Some(context) = tx_partition_context {
+            let partition =
+                read_intra_luma_tx_partition(work_unit, symbols, context, self.fsc_mode)?;
+            let max_tx_size = context.max_tx_size();
+            if partition != LumaTxPartition::None || max_tx_size != coeff_block.tx_size {
+                let parsed = self.parse_partitioned_luma(
+                    frame,
+                    work_unit,
+                    symbols,
+                    coeff_ctx,
+                    max_tx_size,
+                    partition,
+                    &coeff_block,
+                    palette_color_map.as_deref(),
+                    deblock,
+                    coeffs_arena,
+                    units,
+                    palette_maps,
+                );
+                super::palette::recycle_palette_map(palette_color_map);
+                return parsed;
+            }
         }
         let mut coeffs = decode_general_intra_plane_coeffs(
             work_unit,
@@ -409,7 +415,8 @@ impl ResidualPlanePlan {
         work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
         coeff_ctx: &mut TileCoeffContextState,
-        tx_partition_context: LumaTransformPartitionContext,
+        max_tx_size: usize,
+        partition: LumaTxPartition,
         coeff_block: &PlaneCoeffBlock,
         palette_color_map: Option<&[u8]>,
         deblock: &mut DeblockRecorder<'_>,
@@ -417,13 +424,11 @@ impl ResidualPlanePlan {
         units: &mut Vec<ParsedTransformUnit>,
         palette_maps: &mut Vec<Vec<u8>>,
     ) -> core::result::Result<ParsedResidualPlaneKind, GeneralIntraResidualError> {
-        let records = read_luma_transform_partition_records(
-            work_unit,
-            symbols,
-            tx_partition_context,
+        let records = luma_transform_records_for_partition(
             coeff_block.x,
             coeff_block.y,
-            self.fsc_mode,
+            max_tx_size,
+            partition,
         )?;
         let record_count = records.len();
         let start = units.len();

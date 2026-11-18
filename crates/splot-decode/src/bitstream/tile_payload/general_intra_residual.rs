@@ -769,31 +769,26 @@ pub(crate) struct LumaTransformPartitionRecord {
     pub(crate) middle: bool,
 }
 
-pub(crate) fn read_luma_transform_partition_records(
+pub(crate) fn read_intra_luma_tx_partition(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     context: LumaTransformPartitionContext,
-    start_x: usize,
-    start_y: usize,
     fsc_mode: bool,
-) -> Result<LumaTransformPartitionUnits, GeneralIntraResidualError> {
-    let mi_size = context.block_size().index();
-    let tx_size = context.max_tx_size();
+) -> Result<LumaTxPartition, GeneralIntraResidualError> {
     let Some((allow_horz, allow_vert)) = luma_tx_partition_allows(context)? else {
-        return LumaTransformPartitionUnits::new(start_x, start_y, tx_size, LumaTxPartition::None);
+        return Ok(LumaTxPartition::None);
     };
     let reduced_tx_part_set = work_unit.coeff_frame_facts().reduced_tx_part_set();
-    let tx_partition = read_luma_tx_partition_type(
+    read_luma_tx_partition_type(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
-        mi_size,
+        context.block_size().index(),
         fsc_mode,
         false,
         allow_horz,
         allow_vert,
         reduced_tx_part_set,
-    )?;
-    luma_transform_records_for_partition(start_x, start_y, tx_size, tx_partition)
+    )
 }
 
 /// The § 5.20.6.3 `(allowHorz, allowVert)` of a block that reads
