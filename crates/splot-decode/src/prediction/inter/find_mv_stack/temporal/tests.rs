@@ -1598,7 +1598,7 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     let field_ptr = context.field.cells.as_ptr();
     let trajectories = context.trajectories.as_ref().unwrap();
     let trajectory_ptr = trajectories.cells.as_ptr();
-    let positions_ptr = trajectories.scratch[0].positions.as_ptr();
+    let positions_ptr = trajectories.scratch.positions.as_ptr();
 
     let parked = TemporalProjectionConfig {
         enable_trajectory: false,
@@ -1622,7 +1622,7 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     let trajectories = context.trajectories.as_ref().unwrap();
     assert_eq!(context.field.cells.as_ptr(), field_ptr);
     assert_eq!(trajectories.cells.as_ptr(), trajectory_ptr);
-    assert_eq!(trajectories.scratch[0].positions.as_ptr(), positions_ptr);
+    assert_eq!(trajectories.scratch.positions.as_ptr(), positions_ptr);
 }
 
 #[test]

@@ -1964,8 +1964,7 @@ fn projection_band_rows(height8: usize, config: TemporalProjectionConfig) -> usi
 ///
 /// Bands partition the writes, and each band replays the queue in its original
 /// order, so the result matches the whole-field scan whatever order the bands
-/// run in. An installed pool runs the same band tasks at every worker count;
-/// direct callers outside the owned pool replay those bands in place.
+/// run in.
 fn run_band_projections(
     prepared: &[Option<PreparedTemporalProjection<'_>>],
     config: TemporalProjectionConfig,
@@ -1974,7 +1973,17 @@ fn run_band_projections(
 ) -> crate::Result<()> {
     let band_rows = projection_band_rows(field.height8, config);
     let mut lanes = None;
-    let mut run = |band: &mut ProjectedFieldBand<'_>, mut rows: Option<&mut TrajectoryBand<'_>>| {
+    let mut trajectory = trajectories.and_then(|state| state.grids(band_rows));
+    for mut band in field.bands(band_rows) {
+        let mut rows = match trajectory.as_mut() {
+            Some((grids, scratch)) => Some(grids.next_band(scratch).ok_or(
+                splot_recon::ReconError::WorkspaceAllocationFailed {
+                    plane: splot_recon::PlaneId::Y,
+                    context: "inter trajectory band scratch",
+                },
+            )?),
+            None => None,
+        };
         let rows8 = band.row_base..band.row_base + band_rows;
         for prepared in prepared.iter().flatten() {
             project_temporal_motion_field(
@@ -1983,54 +1992,13 @@ fn run_band_projections(
                 prepared.field,
                 rows8.clone(),
                 (config.step, config.unit_size8),
-                rows.as_deref_mut(),
-                band,
+                rows.as_mut(),
+                &mut band,
             );
         }
-    };
-    let width = 1;
-    let mut trajectory = trajectories.and_then(|state| state.grids(band_rows, width));
-    let mut field_bands = field.bands(band_rows);
-    loop {
-        let mut slots: [BandSlot<'_, '_>; BAND_FAN_OUT] = core::array::from_fn(|_| None);
-        let mut filled = 0;
-        let mut rounds = trajectory
-            .as_mut()
-            .map(|(grids, scratch)| (grids, scratch.iter_mut()));
-        for (slot, band) in slots.iter_mut().take(width).zip(&mut field_bands) {
-            let rows = match rounds.as_mut() {
-                Some((grids, scratch)) => Some(
-                    scratch
-                        .next()
-                        .and_then(|scratch| grids.next_band(scratch))
-                        .ok_or_else(|| {
-                            crate::DecodeError::from(
-                                splot_recon::ReconError::WorkspaceAllocationFailed {
-                                    plane: splot_recon::PlaneId::Y,
-                                    context: "inter trajectory band scratch",
-                                },
-                            )
-                        })?,
-                ),
-                None => None,
-            };
-            *slot = Some((band, rows));
-            filled += 1;
-        }
-        if filled == 0 {
-            return Ok(());
-        }
-        for (band, rows) in slots[..filled].iter_mut().flatten() {
-            run(band, rows.as_mut());
-        }
     }
+    Ok(())
 }
-
-/// Most bands fanned out per round; each round runs one band per pool worker,
-/// so the trajectory position scratch is sized by the pool, not the frame.
-const BAND_FAN_OUT: usize = 32;
-
-type BandSlot<'f, 't> = Option<(ProjectedFieldBand<'f>, Option<TrajectoryBand<'t>>)>;
 
 /// One unit-aligned row band of a projected motion field.
 struct ProjectedFieldBand<'a> {

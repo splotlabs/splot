@@ -143,8 +143,7 @@ pub(super) struct TrajectoryState {
     /// matched control, which is the cost this layout reclaims.
     pub(super) cells: Vec<PackedTrajectoryMv>,
     pub(super) reference_count: usize,
-    /// Position scratch for each band one projection round runs at once.
-    pub(super) scratch: Vec<OwnedTrajectoryScratch>,
+    pub(super) scratch: OwnedTrajectoryScratch,
     step: usize,
     unit_size8: usize,
     width8: usize,
@@ -161,7 +160,7 @@ impl TrajectoryState {
         let mut state = Self {
             cells: Vec::new(),
             reference_count,
-            scratch: Vec::new(),
+            scratch: OwnedTrajectoryScratch::default(),
             step,
             unit_size8,
             width8: 0,
@@ -239,7 +238,7 @@ impl TrajectoryState {
         Self {
             cells,
             reference_count,
-            scratch: Vec::new(),
+            scratch: OwnedTrajectoryScratch::default(),
             step: 1,
             unit_size8: 1,
             width8,
@@ -264,8 +263,7 @@ impl TrajectoryState {
             .collect()
     }
 
-    /// Splits the trajectory grid into `band_rows`-tall row bands, with
-    /// `slots` scratches for the bands one projection round runs at once.
+    /// Splits the trajectory grid into `band_rows`-tall row bands, which share position scratch.
     ///
     /// Bands are unit-aligned, and AV2 § 7.9.8 keeps each projected sample in
     /// the TMVP unit row of the position it was sampled from, so the bands
@@ -275,18 +273,13 @@ impl TrajectoryState {
     pub(super) fn grids(
         &mut self,
         band_rows: usize,
-        slots: usize,
-    ) -> Option<(TrajectoryGrids<'_>, &mut [OwnedTrajectoryScratch])> {
+    ) -> Option<(TrajectoryGrids<'_>, &mut OwnedTrajectoryScratch)> {
         let total = self.width8.checked_mul(self.height8)?;
         if band_rows == 0
             || self.reference_count > MAX_TRAJECTORY_REFERENCES
             || self.cells.len() != total.checked_mul(self.reference_count)?
         {
             return None;
-        }
-        if self.scratch.len() < slots {
-            self.scratch
-                .resize_with(slots, OwnedTrajectoryScratch::default);
         }
         let stride = band_rows.checked_mul(self.width8)?;
         let grids = TrajectoryGrids {
@@ -301,7 +294,7 @@ impl TrajectoryState {
             width8: self.width8,
             height8: self.height8,
         };
-        Some((grids, self.scratch.get_mut(..slots)?))
+        Some((grids, &mut self.scratch))
     }
 
     /// The whole field as one band whose position scratch persists across calls.
@@ -310,9 +303,8 @@ impl TrajectoryState {
         let cells = self.width8.checked_mul(self.height8)?;
         let reference_count = self.reference_count;
         let height8 = self.height8;
-        let fresh = self.scratch.is_empty();
-        let (mut grids, scratch) = self.grids(height8, 1)?;
-        let scratch = scratch.first_mut()?;
+        let fresh = self.scratch.epoch == 0;
+        let (mut grids, scratch) = self.grids(height8)?;
         if fresh {
             scratch.reset(cells, reference_count)?;
         }
@@ -1139,8 +1131,8 @@ mod tests {
     fn band_reset_hides_positions_from_every_earlier_band() {
         let mut state = TrajectoryState::new((2, 2), 1, 1, 8).unwrap();
         for round in 0..600 {
-            let (mut grids, scratch) = state.grids(1, 1).unwrap();
-            let mut band = grids.next_band(&mut scratch[0]).unwrap();
+            let (mut grids, scratch) = state.grids(1).unwrap();
+            let mut band = grids.next_band(scratch).unwrap();
             assert_eq!(band.positions_at(0, (0, 0)), None, "round {round}");
             if round == 0 {
                 band.set_position(0, (0, 0), 1, (0, 0));
@@ -1155,14 +1147,14 @@ mod tests {
         let mut state = TrajectoryState::new((8, 8), 2, 1, 8).unwrap();
         let source_index = temporal_grid_index(state.width8, state.height8, 1, 2).unwrap();
         state.whole_band().unwrap();
-        state.scratch[0].positions[source_index] = TrajectoryPositions {
+        state.scratch.positions[source_index] = TrajectoryPositions {
             phases: [
                 PackedPosition::new((1, 1)).unwrap(),
                 PackedPosition::INVALID,
                 PackedPosition::new((1, 3)).unwrap(),
             ],
             mask: 0b101,
-            epoch: state.scratch[0].epoch,
+            epoch: state.scratch.epoch,
         };
         state.set_trajectory_cell(0, 1, 1, Mv { row: 8, col: 16 });
         state.set_trajectory_cell(0, 1, 3, Mv { row: 24, col: 32 });
