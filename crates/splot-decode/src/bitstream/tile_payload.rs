@@ -64,8 +64,7 @@ pub(crate) use general_intra_block::{
     CflMultiDirection, CflParams, GeneralIntraBlockModeError, GeneralIntraBlockModes,
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
     decode_general_intra_block_modes_with_fsc_context, decode_general_intra_chroma_block_mode,
-    decode_general_intra_luma_block_mode_with_fsc_context, read_general_intra_dip_mode_info,
-    read_general_intra_palette_y_mode, read_lossless_luma_tx_size, read_lossless_tx_size,
+    read_lossless_luma_tx_size, read_lossless_tx_size,
 };
 #[cfg(test)]
 pub(crate) use general_intra_residual::reconstruct_general_intra_chroma_cctx_pair_with_predictions;

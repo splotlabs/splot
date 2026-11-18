@@ -202,6 +202,7 @@ struct LeafResidualFacts<'a> {
     luma_tx_partition_context: Option<LumaTransformPartitionContext>,
 }
 
+#[inline(never)]
 pub(crate) fn decode_one_general_intra_block(
     leaf: &mut GeneralIntraLeafParse<'_, '_>,
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
@@ -293,71 +294,28 @@ pub(crate) fn decode_one_general_intra_block(
         return Ok((GeneralIntraLeafMode::chroma(chroma.uv_bits()), command));
     }
 
-    let luma_only = frontier.is_luma_part() || !frontier.has_chroma;
-    let use_neighbor_fsc_context = tools.frame_is_intra || !frontier.is_mixed_region();
-    let bit_depth_bits = u32::from(leaf.bit_depth.bits());
-    let modes = if luma_only {
-        let luma =
-            crate::bitstream::tile_payload::decode_general_intra_luma_block_mode_with_fsc_context(
-                leaf.work_unit,
-                leaf.symbols,
-                chroma_tools,
-                intra_neighbours,
-                use_neighbor_fsc_context,
-                frontier.b_size,
-                n4w,
-                n4h,
-            )
-            .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
-        let palette_y = crate::bitstream::tile_payload::read_general_intra_palette_y_mode(
-            leaf.work_unit,
-            leaf.symbols,
-            chroma_tools,
-            edges,
-            luma.y_mode,
-            frontier.b_size.index(),
-            frontier.r,
-            frontier.c,
-            n4w,
-            n4h,
-            bit_depth_bits,
-        )
-        .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
-        let (use_dip_value, dip_transpose, dip_mode) =
-            crate::bitstream::tile_payload::read_general_intra_dip_mode_info(
-                leaf.work_unit,
-                leaf.symbols,
-                chroma_tools,
-                intra_neighbours,
-                luma.y_mode,
-                palette_y,
-                n4w,
-                n4h,
-            )
-            .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
-        GeneralIntraBlockModes::luma_only(luma.with_dip(use_dip_value, dip_transpose, dip_mode))
-            .with_palette_y(palette_y)
+    let chroma_mode_geometry = if frontier.is_luma_part() {
+        None
     } else {
-        let (chroma_n4w, chroma_n4h) = chroma_mode_geometry.unwrap_or((n4w, n4h));
-        crate::bitstream::tile_payload::decode_general_intra_block_modes_with_fsc_context(
-            leaf.work_unit,
-            leaf.symbols,
-            chroma_tools,
-            edges,
-            intra_neighbours,
-            use_neighbor_fsc_context,
-            uv_edges.cfl_ctx(),
-            frontier.b_size,
-            frontier.r,
-            frontier.c,
-            n4w,
-            n4h,
-            chroma_n4w,
-            chroma_n4h,
-            bit_depth_bits,
-        )
-        .map_err(|error| general_intra_block_mode_error(error, tile_offset))?
+        chroma_mode_geometry
     };
+    let modes = crate::bitstream::tile_payload::decode_general_intra_block_modes_with_fsc_context(
+        leaf.work_unit,
+        leaf.symbols,
+        chroma_tools,
+        edges,
+        intra_neighbours,
+        tools.frame_is_intra || !frontier.is_mixed_region(),
+        uv_edges.cfl_ctx(),
+        frontier.b_size,
+        frontier.r,
+        frontier.c,
+        n4w,
+        n4h,
+        chroma_mode_geometry,
+        u32::from(leaf.bit_depth.bits()),
+    )
+    .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
     let luma_lossless_tx_size = if lossless && modes.uses_active_fsc() {
         Some(
             read_lossless_luma_tx_size(leaf.work_unit, leaf.symbols, frontier.b_size, true, true)
