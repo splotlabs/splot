@@ -711,6 +711,7 @@ impl ParsedResidualPlane {
                         context: "residual transform unit range",
                     });
                 };
+                let sb_mask = block_decoded.sb_size4().saturating_sub(1);
                 for unit in units {
                     let plan = plane.transform_unit_plan(frame, &unit.block)?;
                     let palette_color_map = super::palette::take_stored_palette_map(
@@ -729,14 +730,10 @@ impl ParsedResidualPlane {
                         luma_context,
                     )?;
                     super::palette::recycle_palette_map(palette_color_map);
-                    let (sub_x, sub_y) = frame.chroma().subsampling(plan.plane_id);
-                    let sb_mask = block_decoded.sb_size4().saturating_sub(1);
-                    let row4 = ((unit.block.y as usize >> 2) << sub_y) & sb_mask;
-                    let col4 = ((unit.block.x as usize >> 2) << sub_x) & sb_mask;
                     block_decoded.set_block(
                         plan.plane_id.index(),
-                        row4,
-                        col4,
+                        plan.rect.row4() & sb_mask,
+                        plan.rect.col4() & sb_mask,
                         plan.tx.width4(),
                         plan.tx.height4(),
                     );
