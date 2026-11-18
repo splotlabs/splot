@@ -10,6 +10,7 @@
 
 use splot_core::headers::frame::{
     GlobalMotionRef, SavedGlobalMotionOrderHints, SavedGlobalMotionParams, SlotFrameFilterTaps,
+    WienerNsFrameFilterBank,
 };
 use splot_core::headers::sequence::MAX_REF_FRAMES;
 use splot_core::tile::InlineVec;
@@ -74,7 +75,13 @@ impl Slot {
         output_done: false,
     };
 
-    fn refresh(&mut self, frame_index: usize, update: &FrameRefUpdate, valid: bool, counter: u32) {
+    fn refresh(
+        &mut self,
+        frame_index: usize,
+        update: &FrameRefUpdate<'_>,
+        valid: bool,
+        counter: u32,
+    ) {
         *self = Self {
             valid,
             order_hint: update.order_hint,
@@ -101,7 +108,7 @@ impl Slot {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct FrameRefUpdate {
+pub(crate) struct FrameRefUpdate<'a> {
     pub(crate) refresh_frame_flags: u32,
     pub(crate) order_hint: u32,
     pub(crate) order_hint_lsb: u32,
@@ -117,7 +124,7 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) saved_order_hints: SavedGlobalMotionOrderHints,
     pub(crate) saved_gm_params: SavedGlobalMotionParams,
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
-    pub(crate) lr_frame_filter_taps: SlotFrameFilterTaps,
+    pub(crate) lr_banks: [Option<&'a WienerNsFrameFilterBank>; 3],
     pub(crate) long_term_id: Option<u32>,
     pub(crate) embedded_layer_id: EmbeddedLayerId,
 }
@@ -171,7 +178,7 @@ impl RuntimeReferenceBuffer {
         &mut self,
         obu_type: ObuType,
         first_picture_in_tu: bool,
-        update: &FrameRefUpdate,
+        update: &FrameRefUpdate<'_>,
         ref_long_term_ids: &[u32],
     ) {
         if obu_type == ObuType::OpenLoopKey {
@@ -207,7 +214,7 @@ impl RuntimeReferenceBuffer {
     pub(crate) fn update(
         &mut self,
         frame_index: usize,
-        update: &FrameRefUpdate,
+        update: &FrameRefUpdate<'_>,
         is_key_or_switch: bool,
     ) {
         self.advance_frame_counter();
@@ -224,7 +231,17 @@ impl RuntimeReferenceBuffer {
                 .lr_frame_filter_taps
                 .as_deref()
                 .and_then(|taps| taps.get(i));
-            if *saved.unwrap_or(&NO_LR_FRAME_FILTER_TAPS) != update.lr_frame_filter_taps {
+            let changed = saved
+                .unwrap_or(&NO_LR_FRAME_FILTER_TAPS)
+                .iter()
+                .zip(update.lr_banks)
+                .any(|(saved, bank)| match bank {
+                    Some(bank) => saved
+                        .iter()
+                        .ne(bank.classes.iter().map(|class| &class.coeffs)),
+                    None => !saved.is_empty(),
+                });
+            if changed {
                 set_lr_frame_filter_taps(
                     &mut self.lr_frame_filter_taps,
                     &mut self.lr_frame_filter_spares,
@@ -387,7 +404,7 @@ fn set_lr_frame_filter_taps(
     spares: &mut Vec<Arc<[SlotFrameFilterTaps]>>,
     slot_count: usize,
     slot: usize,
-    update: &FrameRefUpdate,
+    update: &FrameRefUpdate<'_>,
 ) {
     let table = table
         .get_or_insert_with(|| core::iter::repeat_n(NO_LR_FRAME_FILTER_TAPS, slot_count).collect());
@@ -407,7 +424,12 @@ fn set_lr_frame_filter_taps(
         spares.push(core::mem::replace(table, fresh));
     }
     if let Some(taps) = Arc::get_mut(table).and_then(|taps| taps.get_mut(slot)) {
-        *taps = update.lr_frame_filter_taps;
+        for (plane, bank) in taps.iter_mut().zip(update.lr_banks) {
+            plane.truncate(0);
+            if let Some(bank) = bank {
+                plane.extend_within(bank.classes.iter().map(|class| class.coeffs));
+            }
+        }
     }
 }
 

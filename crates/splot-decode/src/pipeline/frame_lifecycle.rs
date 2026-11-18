@@ -477,7 +477,7 @@ pub(crate) fn frame_ref_update_from_core(
     core: &FrameHeaderCore,
     offset: ByteOffset,
     embedded_layer_id: splot_core::types::EmbeddedLayerId,
-) -> Result<reference_buffer::FrameRefUpdate> {
+) -> Result<reference_buffer::FrameRefUpdate<'_>> {
     let refresh_frame_flags = core.refresh_frame_flags.ok_or_else(|| {
         unsupported_at(
             "missing_refresh_frame_flags",
@@ -515,6 +515,20 @@ pub(crate) fn frame_ref_update_from_core(
         )
     })?;
     let (num_total_refs, saved_order_hints, saved_gm_params) = core.saved_global_motion_state();
+    let mut lr_frame_filter_class_counts = [0; 3];
+    let mut lr_banks = [None; 3];
+    if let Some(lr) = &core.lr_params {
+        for (plane, params) in lr.planes.iter().enumerate() {
+            if params.frame_filters_on {
+                let bank = params.frame_filter_bank.as_ref();
+                lr_banks[plane] = bank;
+                lr_frame_filter_class_counts[plane] = bank.map_or_else(
+                    || params.num_filter_classes.unwrap_or(1),
+                    |bank| bank.classes.len() as u8,
+                );
+            }
+        }
+    }
     Ok(reference_buffer::FrameRefUpdate {
         refresh_frame_flags,
         order_hint,
@@ -532,46 +546,9 @@ pub(crate) fn frame_ref_update_from_core(
         saved_gm_params,
         long_term_id: core.long_term_id.and_then(|id| u32::try_from(id).ok()),
         embedded_layer_id,
-        lr_frame_filter_class_counts: lr_frame_filter_class_counts(core),
-        lr_frame_filter_taps: lr_frame_filter_taps(core),
+        lr_frame_filter_class_counts,
+        lr_banks,
     })
-}
-
-fn lr_frame_filter_taps(core: &FrameHeaderCore) -> splot_core::headers::frame::SlotFrameFilterTaps {
-    let mut taps = splot_core::headers::frame::SlotFrameFilterTaps::default();
-    let Some(lr) = core.lr_params.as_ref() else {
-        return taps;
-    };
-    for (plane, params) in lr.planes.iter().enumerate().take(3) {
-        if !params.frame_filters_on {
-            continue;
-        }
-        let Some(bank) = params.frame_filter_bank.as_ref() else {
-            continue;
-        };
-        taps[plane].extend_within(bank.classes.iter().map(|class| class.coeffs));
-    }
-    taps
-}
-
-fn lr_frame_filter_class_counts(core: &FrameHeaderCore) -> [u8; 3] {
-    let mut counts = [0u8; 3];
-    let Some(lr) = core.lr_params.as_ref() else {
-        return counts;
-    };
-    for (plane, params) in lr.planes.iter().enumerate().take(3) {
-        if !params.frame_filters_on {
-            continue;
-        }
-        let classes = params
-            .frame_filter_bank
-            .as_ref()
-            .map(|bank| bank.classes.len())
-            .or_else(|| params.num_filter_classes.map(usize::from))
-            .unwrap_or(1);
-        counts[plane] = u8::try_from(classes).unwrap_or(u8::MAX);
-    }
-    counts
 }
 
 pub(super) fn ensure_intra_header_complete(

@@ -9,7 +9,7 @@ use crate::test_support::decoded_frame;
 use splot_recon::SharedFrame;
 use std::sync::Arc;
 
-fn key_update() -> FrameRefUpdate {
+fn key_update() -> FrameRefUpdate<'static> {
     FrameRefUpdate {
         refresh_frame_flags: 0xFF,
         order_hint: 0,
@@ -26,13 +26,13 @@ fn key_update() -> FrameRefUpdate {
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [1, 0, 0],
-        lr_frame_filter_taps: Default::default(),
+        lr_banks: [None; 3],
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
 }
 
-fn inter_update() -> FrameRefUpdate {
+fn inter_update() -> FrameRefUpdate<'static> {
     FrameRefUpdate {
         refresh_frame_flags: 1 << 1,
         order_hint: 1,
@@ -49,7 +49,7 @@ fn inter_update() -> FrameRefUpdate {
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [0, 0, 0],
-        lr_frame_filter_taps: Default::default(),
+        lr_banks: [None; 3],
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
@@ -523,8 +523,17 @@ fn a_held_snapshot_keeps_its_frame_filter_taps_across_a_refresh() {
     buf.update(0, &key_update(), true);
     assert!(buf.lr_frame_filter_taps.is_none());
     let coeffs = |tap: i16| InlineVec::from_iter_checked([tap]).unwrap();
+    let banks = [5, 9, 7].map(|tap| WienerNsFrameFilterBank {
+        classes: InlineVec::from_iter_checked([
+            splot_core::headers::frame::WienerNsFrameFilterClass {
+                coeffs: coeffs(tap),
+                ..Default::default()
+            },
+        ])
+        .unwrap(),
+    });
     let mut update = inter_update();
-    update.lr_frame_filter_taps[0].push(coeffs(5)).unwrap();
+    update.lr_banks[0] = Some(&banks[0]);
     buf.update(1, &update, false);
     let frames = || {
         (0..4)
@@ -534,7 +543,7 @@ fn a_held_snapshot_keeps_its_frame_filter_taps_across_a_refresh() {
     };
     let held = buf.state::<u8>(&frames()).unwrap();
 
-    update.lr_frame_filter_taps[0][0] = coeffs(9);
+    update.lr_banks[0] = Some(&banks[1]);
     buf.update(2, &update, false);
     let fresh = buf.state::<u8>(&frames()).unwrap();
 
@@ -546,10 +555,16 @@ fn a_held_snapshot_keeps_its_frame_filter_taps_across_a_refresh() {
     assert!(taps(&fresh, 0)[0].is_empty());
 
     drop(held);
-    update.lr_frame_filter_taps[0][0] = coeffs(7);
+    update.lr_banks[0] = Some(&banks[2]);
     buf.update(3, &update, false);
     let reused = buf.state::<u8>(&frames()).unwrap();
     assert_eq!(taps(&fresh, 1)[0][0], coeffs(9));
     assert_eq!(taps(&reused, 1)[0][0], coeffs(7));
     assert_eq!(buf.lr_frame_filter_spares.len(), 1);
+
+    update.lr_banks[0] = None;
+    buf.update(4, &update, false);
+    let cleared = buf.state::<u8>(&frames()).unwrap();
+    assert!(taps(&cleared, 1)[0].is_empty());
+    assert_eq!(taps(&reused, 1)[0][0], coeffs(7));
 }
