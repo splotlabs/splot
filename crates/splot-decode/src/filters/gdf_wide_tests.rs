@@ -102,12 +102,13 @@ fn filter_both_ways<const W: usize, const WIN: usize>(
 }
 
 /// Class patterns of eight class blocks: each class alone, then mixes.
-fn class_patterns() -> [[u8; 8]; 6] {
+fn class_patterns() -> [[u8; 8]; 7] {
     [
         [0; 8],
         [1; 8],
         [2; 8],
         [3; 8],
+        [0, 2, 0, 2, 2, 0, 2, 0],
         [0, 1, 2, 3, 3, 2, 1, 0],
         [3, 0, 2, 1, 1, 3, 0, 2],
     ]

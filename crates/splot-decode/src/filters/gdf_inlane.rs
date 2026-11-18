@@ -427,7 +427,14 @@ type Masks<S> = (u16x16<S>, u16x16<S>);
 /// is itself and its mirror is `T`).
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn paired_combs<S: Simd, W: WindowRows, const K: usize, const T: usize, const ROW: usize>(
+fn paired_combs<
+    S: Simd,
+    W: WindowRows,
+    const K: usize,
+    const T: usize,
+    const ROW: usize,
+    const SWAP: bool,
+>(
     simd: S,
     window: &W,
     centers: Centers<S>,
@@ -436,8 +443,16 @@ fn paired_combs<S: Simd, W: WindowRows, const K: usize, const T: usize, const RO
 ) -> [i16x16<S>; 2] {
     let (above, below) = tap_diffs::<S, W, K, ROW>(simd, window, centers);
     let (t_above, t_below) = tap_diffs::<S, W, T, ROW>(simd, window, centers);
-    let (above, t_above) = swap(above, t_above, select);
-    let (below, t_below) = swap(below, t_below, select);
+    let (above, t_above) = if SWAP {
+        swap(above, t_above, select)
+    } else {
+        (above, t_above)
+    };
+    let (below, t_below) = if SWAP {
+        swap(below, t_below, select)
+    } else {
+        (below, t_below)
+    };
     [
         clipped_sum(simd, above, below, &params.slot.bounds[K]),
         clipped_sum(simd, t_above, t_below, &params.slot.bounds[T]),
@@ -457,6 +472,7 @@ fn cycle_combs<
     const C: usize,
     const D: usize,
     const ROW: usize,
+    const SWAP_TRANSPOSE: bool,
 >(
     simd: S,
     window: &W,
@@ -470,9 +486,13 @@ fn cycle_combs<
     let (d_above, d_below) = tap_diffs::<S, W, D, ROW>(simd, window, centers);
     let select4 = |a: u16x16<S>, b: u16x16<S>, c: u16x16<S>, d: u16x16<S>| {
         let ((ab0, ab1), (cd0, cd1)) = (swap(a, b, mirrored), swap(c, d, mirrored));
-        let ((first, third), (second, fourth)) =
-            (swap(ab0, cd0, transposed), swap(ab1, cd1, transposed));
-        [first, second, third, fourth]
+        if SWAP_TRANSPOSE {
+            let ((first, third), (second, fourth)) =
+                (swap(ab0, cd0, transposed), swap(ab1, cd1, transposed));
+            [first, second, third, fourth]
+        } else {
+            [ab0, ab1, cd0, cd1]
+        }
     };
     let above = select4(a_above, b_above, c_above, d_above);
     let below = select4(a_below, b_below, c_below, d_below);
@@ -509,7 +529,7 @@ fn error_index(simd: Avx2, sums: Sums, params: &GdfSymParams) -> [u16; 16] {
 /// the combs instead of each diff. Out of line, so that the rows share no
 /// loads that would spill.
 #[inline(never)]
-fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool>(
+fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool, const SWAP_TRANSPOSE: bool>(
     simd: Avx2,
     window: &W,
     masks: &Masks<Avx2>,
@@ -521,16 +541,14 @@ fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool>(
     let center2 = centers.0 + centers.1;
     let (transposed, mirrored) = *masks;
     macro_rules! pair {
-        ($k:literal, $t:literal, $select:expr) => {
+        ($k:literal, $t:literal, $select:expr, $swap:expr) => {
             if LINEAR {
-                let (k, t) = swap(
-                    linear_comb::<Avx2, W, $k, ROW>(simd, window, center2),
-                    linear_comb::<Avx2, W, $t, ROW>(simd, window, center2),
-                    $select,
-                );
+                let k = linear_comb::<Avx2, W, $k, ROW>(simd, window, center2);
+                let t = linear_comb::<Avx2, W, $t, ROW>(simd, window, center2);
+                let (k, t) = if $swap { swap(k, t, $select) } else { (k, t) };
                 [k.bitcast(), t.bitcast()]
             } else {
-                paired_combs::<Avx2, W, $k, $t, ROW>(simd, window, centers, $select, params)
+                paired_combs::<Avx2, W, $k, $t, ROW, $swap>(simd, window, centers, $select, params)
             }
         };
     }
@@ -538,12 +556,12 @@ fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool>(
     let mut add = |slot: usize, a: i16x16<Avx2>, b: i16x16<Avx2>| {
         accumulate(simd, &mut sums, (slot, unpack_pairs(simd, a, b)), params);
     };
-    let [tap0, tap12] = pair!(0, 12, transposed);
-    let [tap1, tap13] = pair!(1, 13, transposed);
+    let [tap0, tap12] = pair!(0, 12, transposed, SWAP_TRANSPOSE);
+    let [tap1, tap13] = pair!(1, 13, transposed, SWAP_TRANSPOSE);
     add(0, tap0, tap1);
     add(1, tap12, tap13);
-    let [tap2, tap14] = pair!(2, 14, transposed);
-    let [tap3, tap15] = pair!(3, 15, transposed);
+    let [tap2, tap14] = pair!(2, 14, transposed, SWAP_TRANSPOSE);
+    let [tap3, tap15] = pair!(3, 15, transposed, SWAP_TRANSPOSE);
     add(2, tap2, tap3);
     add(3, tap14, tap15);
     add(4, tap3, tap15);
@@ -562,15 +580,17 @@ fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool>(
         let ((first, third), (second, fourth)) = (swap(a, c, transposed), swap(b, d, transposed));
         [comb(first), comb(second), comb(third), comb(fourth)]
     } else {
-        cycle_combs::<Avx2, W, 4, 6, 7, 11, ROW>(simd, window, centers, *masks, params)
+        cycle_combs::<Avx2, W, 4, 6, 7, 11, ROW, SWAP_TRANSPOSE>(
+            simd, window, centers, *masks, params,
+        )
     };
     add(5, tap4, tap6);
     add(6, tap7, tap11);
-    let [tap8, tap10] = pair!(8, 10, mirrored);
+    let [tap8, tap10] = pair!(8, 10, mirrored, true);
     add(7, tap8, tap10);
-    let [tap9, tap17] = pair!(9, 17, transposed);
+    let [tap9, tap17] = pair!(9, 17, transposed, SWAP_TRANSPOSE);
     add(8, tap9, tap17);
-    let [tap5, tap16] = pair!(5, 16, transposed);
+    let [tap5, tap16] = pair!(5, 16, transposed, SWAP_TRANSPOSE);
     add(9, tap5, tap16);
     error_index(simd, sums, params)
 }
@@ -618,17 +638,21 @@ fn slot_rows_with<W: WindowRows, R: RowSink>(
     let zero = u16x16::splat(simd, 0);
     let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
     macro_rules! rows {
-        ($linear:literal) => {{
-            let pos = row_index::<W, 0, $linear>(simd, window, &masks, &init, params);
+        ($linear:literal, $swap_transpose:literal) => {{
+            let pos =
+                row_index::<W, 0, $linear, $swap_transpose>(simd, window, &masks, &init, params);
             sink.row(simd, 0, &pos, block);
-            let pos = row_index::<W, 1, $linear>(simd, window, &masks, &init, params);
+            let pos =
+                row_index::<W, 1, $linear, $swap_transpose>(simd, window, &masks, &init, params);
             sink.row(simd, 1, &pos, block);
         }};
     }
     if range != ROUGH {
-        rows!(true);
+        rows!(true, true);
+    } else if masks.0.simd_eq(zero).all_true() {
+        rows!(false, false);
     } else {
-        rows!(false);
+        rows!(false, true);
     }
 }
 
