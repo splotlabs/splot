@@ -843,6 +843,8 @@ impl TrajectoryBand<'_> {
     /// record in the TMVP unit row of the trajectories it holds, and the caller
     /// passes an end record in the scanned cell's unit row, so only the column
     /// is tested against a trajectory's window.
+    /// A vector that moves less than one 8x8 cell on both axes keeps the
+    /// trajectory's stored sample position.
     #[allow(clippy::inline_always, reason = "measured trajectory scan walk")]
     #[inline(always)]
     pub(super) fn extend_trajectories(
@@ -878,6 +880,12 @@ impl TrajectoryBand<'_> {
                 continue;
             };
             let to_mv = self.set_field_at(to, traj_index, add_mv(from_mv, delta));
+            if to_mv.row.unsigned_abs().max(to_mv.col.unsigned_abs()) < 64 {
+                if let Some(slot) = self.position_slot(to, traj_index) {
+                    self.set_position_slot(slot, phase, trajectory);
+                }
+                continue;
+            }
             if let Some(position) = self
                 .sampled_position(trajectory.0, trajectory.1, to_mv)
                 .filter(|&position| Self::position_allowed(position, bounds))
