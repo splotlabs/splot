@@ -436,6 +436,33 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
 }
 
 #[test]
+fn post_ccso_fringes_follow_internal_tile_row_boundaries() {
+    let mut core = switchable_core();
+    core.tile_info.as_mut().unwrap().mi_row_starts =
+        splot_core::tile::TileStarts::from_iter_checked([0, 16, 32]).unwrap();
+    let core = Arc::new(core);
+    for disabled in [false, true] {
+        let setup = final_filter_sink_10bit()
+            .into_owned_filter_setup(Arc::clone(&core), disabled, None)
+            .unwrap();
+        let fringes: Vec<_> = setup
+            .stripe_ranges()
+            .iter()
+            .map(|&range| setup.tile_row_fringes(range))
+            .collect();
+        assert_eq!(
+            fringes,
+            [
+                [false, false],
+                [false, !disabled],
+                [!disabled, false],
+                [false, false]
+            ]
+        );
+    }
+}
+
+#[test]
 fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously() {
     let mut core = switchable_core();
     core.deblocking_filter_params = None;
