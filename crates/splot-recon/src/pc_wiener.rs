@@ -186,6 +186,7 @@ pub struct PcWienerClassifyScratch {
     /// The two most recent subclass tables, each composed with
     /// `Pc_Wiener_Lut_To_Class`; a frame uses at most two.
     luts: [SubclassLut; 2],
+    recent_lut: bool,
 }
 
 impl Default for PcWienerClassifyScratch {
@@ -196,6 +197,7 @@ impl Default for PcWienerClassifyScratch {
             qval_cache_key: None,
             qval_offsets: [[0; PC_WIENER_NUM_FEATURES]; QVAL_CACHE_LEN],
             luts: [(None, [0; PC_WIENER_LUT_INPUTS]); 2],
+            recent_lut: false,
         }
     }
 }
@@ -457,10 +459,11 @@ where
     FT: FnMut(PcWienerTxSkipRun) -> Result<&'g [u8]>,
 {
     let cached = |lut: &SubclassLut| lut.0.is_some_and(|key| core::ptr::eq(key, subclasses));
-    if !cached(&scratch.luts[0]) {
-        scratch.luts.swap(0, 1);
-        if !cached(&scratch.luts[0]) {
-            let (key, lut) = &mut scratch.luts[0];
+    if !cached(&scratch.luts[usize::from(scratch.recent_lut)]) {
+        scratch.recent_lut = !scratch.recent_lut;
+        let slot = &mut scratch.luts[usize::from(scratch.recent_lut)];
+        if !cached(slot) {
+            let (key, lut) = slot;
             for (entry, &class) in lut.iter_mut().zip(&PC_WIENER_LUT_TO_CLASS) {
                 *entry = subclasses[usize::from(class)];
             }
@@ -477,7 +480,7 @@ where
         &mut scratch.skip_sums,
         &mut scratch.qval_cache_key,
         &mut scratch.qval_offsets,
-        &scratch.luts[0].1,
+        &scratch.luts[usize::from(scratch.recent_lut)].1,
         output,
         true,
     )
@@ -761,7 +764,7 @@ where
 
     let plan = PooledPlan::new(geo.feature_width / 2, pooled_feature_columns(geo)?);
     let plane_width = 16 * (cell_cols.div_ceil(8) + 1);
-    let row_count = 12 * plane_width;
+    let row_count = 9 * plane_width;
     feature_rows
         .try_reserve_exact(row_count.saturating_sub(feature_rows.len()))
         .map_err(|_| ReconError::WorkspaceAllocationFailed {
@@ -787,19 +790,16 @@ where
         let (anti_diag, diag) = rest.split_at_mut(plane_width);
         pooled_feature_row(rows, [vertical, anti_diag, diag], &plan).ok_or_else(rows_missing)
     };
-    let mut slots = [0, 1, 2];
     build_row(feature_rows, 0, 0)?;
     for (cell_row, (cells, row_sums)) in output
         .chunks_mut(cell_cols)
         .zip(skip_sums.chunks(skip_stride))
         .enumerate()
     {
-        build_row(feature_rows, slots[1], 2 * cell_row + 1)?;
-        build_row(feature_rows, slots[2], 2 * cell_row + 2)?;
-        let (ring, window) = feature_rows.split_at_mut(9 * plane_width);
-        crate::lr_madd::lr_simd!(simd => window_rows(simd, ring, slots, window))
-            .ok_or_else(rows_missing)?;
-        slots = [slots[2], slots[0], slots[1]];
+        build_row(feature_rows, 2, 2 * cell_row + 1)?;
+        build_row(feature_rows, (cell_row + 1) & 1, 2 * cell_row + 2)?;
+        let (outer, window) = feature_rows.split_at_mut(6 * plane_width);
+        crate::lr_madd::lr_simd!(simd => window_rows(simd, outer, window));
         crate::lr_madd::lr_simd!(simd => classify_cells(
             simd,
             window,
@@ -813,33 +813,22 @@ where
     Ok(())
 }
 
-/// Sums the three pooled ring rows `slots`, each holding every feature, into
-/// `window`: the 6x6 window rows of one cell row.
+/// Adds both outer pooled rows into the middle row. The last outer row
+/// becomes the first outer row of the next 6x6 window.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn window_rows<S: Simd>(
-    simd: S,
-    ring: &[u16],
-    slots: [usize; 3],
-    window: &mut [u16],
-) -> Option<()> {
-    let len = window.len();
-    let row = |slot: usize| ring.get(slot * len..)?.get(..len);
-    let (Some(a), Some(b), Some(c)) = (row(slots[0]), row(slots[1]), row(slots[2])) else {
-        return None;
-    };
-    for (((out, a), b), c) in window
+fn window_rows<S: Simd>(simd: S, outer: &[u16], window: &mut [u16]) {
+    let (a, b) = outer.split_at(outer.len() / 2);
+    for ((out, a), b) in window
         .as_chunks_mut::<16>()
         .0
         .iter_mut()
         .zip(a.as_chunks::<16>().0)
         .zip(b.as_chunks::<16>().0)
-        .zip(c.as_chunks::<16>().0)
     {
         let sum = u16x16::from_slice(simd, a) + u16x16::from_slice(simd, b);
-        (sum + u16x16::from_slice(simd, c)).store_array(out);
+        (sum + u16x16::from_slice(simd, out)).store_array(out);
     }
-    Some(())
 }
 
 /// Finishes the cells of a grid row from its window rows `window`, one per
