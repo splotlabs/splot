@@ -1253,12 +1253,11 @@ fn decode_block(
         tile_offset,
         ..
     } = *sink;
-    let mut store = |leaf, state| {
+    let mut store = |state| {
         entries.push(tile::ReconRowEntry::new(
             DecodedLeafPublication::from_frontier(frontier, sb_mask),
             state,
         ));
-        leaf
     };
     let (avail_up, avail_left) = tile_neighbour_availability(
         frontier.r,
@@ -1493,28 +1492,26 @@ fn decode_block(
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
-            return Ok(store(
-                GeneralIntraLeafMode::no_luma_mode().mark_intrabc(),
-                pending_intrabc_leaf(
-                    slots,
-                    PendingIntrabcBlock {
-                        frontier: *frontier,
-                        n4w,
-                        n4h,
-                        mi_rows: params.mi_rows,
-                        mi_cols: params.mi_cols,
-                        info,
-                        residual,
-                        segment_id,
-                        qindex: block_qindex,
-                        luma_use_tcq: params.luma_use_tcq,
-                        bit_depth: params.bit_depth,
-                        subsampling: (u32::from(sub_x), u32::from(sub_y)),
-                        avail_up,
-                        avail_left,
-                    },
-                ),
+            store(pending_intrabc_leaf(
+                slots,
+                PendingIntrabcBlock {
+                    frontier: *frontier,
+                    n4w,
+                    n4h,
+                    mi_rows: params.mi_rows,
+                    mi_cols: params.mi_cols,
+                    info,
+                    residual,
+                    segment_id,
+                    qindex: block_qindex,
+                    luma_use_tcq: params.luma_use_tcq,
+                    bit_depth: params.bit_depth,
+                    subsampling: (u32::from(sub_x), u32::from(sub_y)),
+                    avail_up,
+                    avail_left,
+                },
             ));
+            return Ok(GeneralIntraLeafMode::no_luma_mode().mark_intrabc());
         }
         let block_qindex = segment_block_qindex(
             sequence,
@@ -1556,7 +1553,8 @@ fn decode_block(
                 intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             }
         }
-        return Ok(store(leaf, EntryState::Intra(command)));
+        store(EntryState::Intra(command));
+        return Ok(leaf);
     }
     let Some(neighbour_ctx) = neighbour_ctx else {
         return Err(crate::DecodeHeaderStateError::InvalidInterPartitionState.into());
@@ -1619,7 +1617,7 @@ fn decode_block(
         delta_q_state.qindex_u32(),
     );
     if skip_mode == 1 {
-        return compound_path::decode_skip_mode_inter_block(
+        let index = compound_path::decode_skip_mode_inter_block(
             work_unit,
             symbols,
             sink,
@@ -1627,13 +1625,9 @@ fn decode_block(
             &mut block_ctx,
             &neighbour_ctx,
             (skip, segment_id, block_qindex),
-        )
-        .map(|index| {
-            store(
-                GeneralIntraLeafMode::no_luma_mode(),
-                EntryState::Slot(index),
-            )
-        });
+        )?;
+        store(EntryState::Slot(index));
+        return Ok(GeneralIntraLeafMode::no_luma_mode());
     }
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let tip_frame_mode = params.tip_frame_mode;
@@ -1660,7 +1654,7 @@ fn decode_block(
         false
     };
     if uses_compound {
-        return compound_path::decode_compound_inter_block(
+        let index = compound_path::decode_compound_inter_block(
             work_unit,
             symbols,
             sink,
@@ -1670,13 +1664,9 @@ fn decode_block(
             (skip, segment_id, block_qindex),
             n4w,
             n4h,
-        )
-        .map(|index| {
-            store(
-                GeneralIntraLeafMode::no_luma_mode(),
-                EntryState::Slot(index),
-            )
-        });
+        )?;
+        store(EntryState::Slot(index));
+        return Ok(GeneralIntraLeafMode::no_luma_mode());
     }
 
     let ref_frame0: i8 = if segment_forces_globalmv {
@@ -1758,7 +1748,7 @@ fn decode_block(
         } else {
             None
         };
-        return finish_inter_leaf(
+        let index = finish_inter_leaf(
             work_unit,
             symbols,
             sink,
@@ -1788,13 +1778,9 @@ fn decode_block(
             None,
             (n4w, n4h),
             (skip, segment_id, block_qindex),
-        )
-        .map(|index| {
-            store(
-                GeneralIntraLeafMode::no_luma_mode(),
-                EntryState::Slot(index),
-            )
-        });
+        )?;
+        store(EntryState::Slot(index));
+        return Ok(GeneralIntraLeafMode::no_luma_mode());
     }
 
     let single_mode = if segment_forces_globalmv {
@@ -1929,7 +1915,7 @@ fn decode_block(
                 .as_ref()
                 .is_some_and(|tools| tools.enable_tip_refinemv),
         );
-    finish_inter_leaf(
+    let index = finish_inter_leaf(
         work_unit,
         symbols,
         sink,
@@ -1960,13 +1946,9 @@ fn decode_block(
         )),
         (n4w, n4h),
         (skip, segment_id, block_qindex),
-    )
-    .map(|index| {
-        store(
-            GeneralIntraLeafMode::no_luma_mode(),
-            EntryState::Slot(index),
-        )
-    })
+    )?;
+    store(EntryState::Slot(index));
+    Ok(GeneralIntraLeafMode::no_luma_mode())
 }
 
 /// An encoder candidate's block before § 7.12 resolution writes its motion.
