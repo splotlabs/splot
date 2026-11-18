@@ -90,15 +90,15 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             let superblock_entries = entries
                 .get_mut(superblock.entries.clone())
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-            let superblock_needs_decoded =
+            let last_decoded_reader =
                 superblock_entries
                     .iter()
-                    .any(|entry| match entry.command(&slots) {
+                    .rposition(|entry| match entry.command(&slots) {
                         Some(ReconCommandRef::GeneralIntra) => true,
                         Some(ReconCommandRef::Inter(c)) => c.reads_current_frame(),
                         Some(ReconCommandRef::Intrabc) | None => false,
                     });
-            if superblock_needs_decoded {
+            if last_decoded_reader.is_some() {
                 let [r, c] = superblock.origin;
                 block_decoded.clear_superblock(r, c);
             }
@@ -157,7 +157,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                         ),
                     }?;
                 }
-                if superblock_needs_decoded {
+                if offset < last_decoded_reader.unwrap_or(0) {
                     entry
                         .publication
                         .publish_block_decoded(block_decoded)

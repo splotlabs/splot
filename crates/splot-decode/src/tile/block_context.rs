@@ -177,8 +177,8 @@ impl PlaneBlock {
 pub(crate) struct NeighbourAvailability {
     has_above: bool,
     has_left: bool,
-    num_above_right: usize,
-    num_below_left: usize,
+    num_above_right: u16,
+    num_below_left: u16,
 }
 
 impl NeighbourAvailability {
@@ -199,8 +199,8 @@ impl NeighbourAvailability {
         Self {
             has_above,
             has_left,
-            num_above_right,
-            num_below_left,
+            num_above_right: num_above_right as u16,
+            num_below_left: num_below_left as u16,
         }
     }
 
@@ -213,11 +213,11 @@ impl NeighbourAvailability {
     }
 
     pub(crate) const fn num_above_right(self) -> usize {
-        self.num_above_right
+        self.num_above_right as usize
     }
 
     pub(crate) const fn num_below_left(self) -> usize {
-        self.num_below_left
+        self.num_below_left as usize
     }
 }
 
