@@ -472,7 +472,7 @@ fn filter_run_tiles<T: ReconSample>(
         ..*run
     };
     let tiles = run.width.div_ceil(simd::TILE_COLS);
-    let rows = GdfSource::window_size(run)?.1;
+    let rows = window_size(run)?.1;
     let area = rows
         .checked_mul(simd::TILE_STRIDE)
         .ok_or_else(gdf_state_error)?;
@@ -494,23 +494,19 @@ fn filter_run_tiles<T: ReconSample>(
                 .source
                 .get_mut(buffer(staged))
                 .ok_or_else(gdf_state_error)?;
-            GdfSource::fill_tile::<T, T>(samples, layout(staged), bounds, run, rows)?;
+            fill_tile::<T, T>(samples, layout(staged), bounds, run, rows)?;
         }
         let samples = scratch
             .source
             .get(buffer(index))
             .ok_or_else(gdf_state_error)?;
         let tile = tile(index);
-        let source = GdfSource::tile(samples, &tile)?;
-        let origin = source
-            .relative_position(tile.x, tile.y)
-            .ok_or_else(gdf_state_error)?;
         let scratch = &mut scratch.class_scratch;
-        let samples = post_lr_luma.samples_mut();
-        if let Some(samples) = T::u8_slice_mut(samples) {
-            simd::filter_run(&source, origin, &tile, samples, scratch)
-        } else if let Some(samples) = T::u16_slice_mut(samples) {
-            simd::filter_run(&source, origin, &tile, samples, scratch)
+        let output = post_lr_luma.samples_mut();
+        if let Some(output) = T::u8_slice_mut(output) {
+            simd::filter_run(samples, &tile, output, scratch)
+        } else if let Some(output) = T::u16_slice_mut(output) {
+            simd::filter_run(samples, &tile, output, scratch)
         } else {
             None
         }
@@ -841,6 +837,7 @@ fn resize_overwrite_scratch<T: Clone + Default>(buffer: &mut Vec<T>, len: usize)
     Ok(())
 }
 
+#[cfg(test)]
 struct GdfSource<'a> {
     /// Luma samples; 8-bit samples are scaled to 10 bits so taps need no shift.
     samples: &'a [u16],
@@ -889,8 +886,8 @@ fn stripe_rows<'b, T: ReconSample>(
     }
 }
 
+#[cfg(test)]
 impl<'a> GdfSource<'a> {
-    #[cfg(test)]
     fn materialize<T: ReconSample>(
         samples: &'a mut Vec<u16>,
         curr_luma: &[u16],
@@ -912,19 +909,17 @@ impl<'a> GdfSource<'a> {
         })
     }
 
-    #[cfg(test)]
     fn materialize_rows<'b, S: ReconSample, T: ReconSample>(
         samples: &'a mut Vec<u16>,
         bounds: &LoopRestorationPlaneBounds,
         block: &GdfBlock,
         source_row: impl Fn(LoopRestorationSource, usize) -> Option<GdfSourceRow<'b, S>>,
     ) -> Result<Self> {
-        let (width, height) = Self::window_size(block)?;
+        let (width, height) = window_size(block)?;
         let sample_count = width.checked_mul(height).ok_or_else(gdf_state_error)?;
         resize_overwrite_scratch(samples, sample_count)?;
         let layout = (width, block.width.max(1), 0);
-        let (origin_x, origin_y) =
-            Self::fill_tile::<S, T>(samples, layout, bounds, block, source_row)?;
+        let (origin_x, origin_y) = fill_tile::<S, T>(samples, layout, bounds, block, source_row)?;
         Ok(Self {
             samples: samples.as_slice(),
             stride: width,
@@ -933,79 +928,7 @@ impl<'a> GdfSource<'a> {
         })
     }
 
-    /// The columns and rows of `block`'s source window: the block and the
-    /// reach of the GDF taps around it.
-    fn window_size(block: &GdfBlock) -> Result<(usize, usize)> {
-        let width = block.width.checked_add(TAP_REACH * 2);
-        let height = block.height.checked_add(TAP_REACH * 2);
-        width.zip(height).ok_or_else(gdf_state_error)
-    }
-
-    /// Writes the source window of column tile `tile` of `block`, the
-    /// `tile_cols` columns from `block.x + tile * tile_cols`, into `samples`,
-    /// rows `stride` apart, and returns its top-left frame position. Each row
-    /// is the § 7.20.2 source row; a row that § 7.20.2 clips to the row above
-    /// copies that row, and the columns it clips repeat the row's edge sample.
-    #[inline(never)]
-    fn fill_tile<'b, S: ReconSample, T: ReconSample>(
-        samples: &mut [u16],
-        (stride, tile_cols, tile): (usize, usize, usize),
-        bounds: &LoopRestorationPlaneBounds,
-        block: &GdfBlock,
-        source_row: impl Fn(LoopRestorationSource, usize) -> Option<GdfSourceRow<'b, S>>,
-    ) -> Result<(isize, isize)> {
-        let skipped = tile.checked_mul(tile_cols).ok_or_else(gdf_state_error)?;
-        let cols = block.width.saturating_sub(skipped).min(tile_cols);
-        let (width, height) = (cols + 2 * TAP_REACH, Self::window_size(block)?.1);
-        let x = isize::try_from(block.x + skipped).map_err(|_| gdf_state_error())?;
-        let y = isize::try_from(block.y).map_err(|_| gdf_state_error())?;
-        let (origin_x, origin_y) = (x - TAP_REACH as isize, y - TAP_REACH as isize);
-        let left = bounds.sample(isize::MIN, y).x;
-        let right = bounds.sample(isize::MAX, y).x;
-        let pre = usize::try_from(left as isize - origin_x)
-            .unwrap_or(0)
-            .min(width);
-        let post = usize::try_from(origin_x + width as isize - 1 - right as isize)
-            .unwrap_or(0)
-            .min(width - pre);
-        let mid = width - pre - post;
-        let mid_start = usize::try_from(origin_x + pre as isize).map_err(|_| gdf_state_error())?;
-        if cols == 0
-            || mid == 0
-            || right >= block.frame_width
-            || stride < width
-            || samples.len() < (height - 1) * stride + width
-        {
-            return Err(gdf_state_error());
-        }
-        let shift = u32::from(10 - block.bit_depth.bits().min(10));
-        let mut previous = None;
-        for (row, y) in (origin_y..).take(height).enumerate() {
-            let start = row * stride;
-            let at = bounds.sample(left as isize, y);
-            if previous == Some((at.source, at.y)) {
-                samples.copy_within(start - stride..start - stride + width, start);
-                continue;
-            }
-            previous = Some((at.source, at.y));
-            let source_row = source_row(at.source, at.y)
-                .filter(|row| row.len() == block.frame_width)
-                .ok_or_else(gdf_state_error)?;
-            let dst = samples
-                .get_mut(start..start + width)
-                .ok_or_else(gdf_state_error)?;
-            let (pads, rest) = dst.split_at_mut(pre);
-            let (copied, posts) = rest.split_at_mut(mid);
-            source_row
-                .copy_range_as::<T>(mid_start, copied, shift)
-                .ok_or_else(gdf_state_error)?;
-            pads.fill(copied[0]);
-            posts.fill(copied[mid - 1]);
-        }
-        Ok((origin_x, origin_y))
-    }
-
-    /// The source window [`GdfSource::fill_tile`] wrote into `samples` at
+    /// The source window [`fill_tile`] wrote into `samples` at
     /// [`simd::TILE_STRIDE`] for the column tile `block`.
     fn tile(samples: &'a [u16], block: &GdfBlock) -> Result<Self> {
         let radius = isize::try_from(TAP_REACH).map_err(|_| gdf_state_error())?;
@@ -1018,7 +941,6 @@ impl<'a> GdfSource<'a> {
         })
     }
 
-    #[cfg(test)]
     fn get(&self, x: isize, y: isize) -> i32 {
         let Some((col, row)) = self.relative_position_signed(x, y) else {
             return 0;
@@ -1039,13 +961,84 @@ impl<'a> GdfSource<'a> {
         Some((col, row))
     }
 
-    #[cfg(test)]
     fn get_at(&self, col: usize, row: usize) -> i32 {
         debug_assert!(col < self.stride);
         self.samples
             .get(row * self.stride + col)
             .map_or(0, |&sample| i32::from(sample))
     }
+}
+
+/// The columns and rows of `block`'s source window: the block and the
+/// reach of the GDF taps around it.
+fn window_size(block: &GdfBlock) -> Result<(usize, usize)> {
+    let width = block.width.checked_add(TAP_REACH * 2);
+    let height = block.height.checked_add(TAP_REACH * 2);
+    width.zip(height).ok_or_else(gdf_state_error)
+}
+
+/// Writes the source window of column tile `tile` of `block`, the
+/// `tile_cols` columns from `block.x + tile * tile_cols`, into `samples`,
+/// rows `stride` apart, and returns its top-left frame position. Each row
+/// is the § 7.20.2 source row; a row that § 7.20.2 clips to the row above
+/// copies that row, and the columns it clips repeat the row's edge sample.
+#[inline(never)]
+fn fill_tile<'b, S: ReconSample, T: ReconSample>(
+    samples: &mut [u16],
+    (stride, tile_cols, tile): (usize, usize, usize),
+    bounds: &LoopRestorationPlaneBounds,
+    block: &GdfBlock,
+    source_row: impl Fn(LoopRestorationSource, usize) -> Option<GdfSourceRow<'b, S>>,
+) -> Result<(isize, isize)> {
+    let skipped = tile.checked_mul(tile_cols).ok_or_else(gdf_state_error)?;
+    let cols = block.width.saturating_sub(skipped).min(tile_cols);
+    let (width, height) = (cols + 2 * TAP_REACH, window_size(block)?.1);
+    let x = isize::try_from(block.x + skipped).map_err(|_| gdf_state_error())?;
+    let y = isize::try_from(block.y).map_err(|_| gdf_state_error())?;
+    let (origin_x, origin_y) = (x - TAP_REACH as isize, y - TAP_REACH as isize);
+    let left = bounds.sample(isize::MIN, y).x;
+    let right = bounds.sample(isize::MAX, y).x;
+    let pre = usize::try_from(left as isize - origin_x)
+        .unwrap_or(0)
+        .min(width);
+    let post = usize::try_from(origin_x + width as isize - 1 - right as isize)
+        .unwrap_or(0)
+        .min(width - pre);
+    let mid = width - pre - post;
+    let mid_start = usize::try_from(origin_x + pre as isize).map_err(|_| gdf_state_error())?;
+    if cols == 0
+        || mid == 0
+        || right >= block.frame_width
+        || stride < width
+        || samples.len() < (height - 1) * stride + width
+    {
+        return Err(gdf_state_error());
+    }
+    let shift = u32::from(10 - block.bit_depth.bits().min(10));
+    let mut previous = None;
+    for (row, y) in (origin_y..).take(height).enumerate() {
+        let start = row * stride;
+        let at = bounds.sample(left as isize, y);
+        if previous == Some((at.source, at.y)) {
+            samples.copy_within(start - stride..start - stride + width, start);
+            continue;
+        }
+        previous = Some((at.source, at.y));
+        let source_row = source_row(at.source, at.y)
+            .filter(|row| row.len() == block.frame_width)
+            .ok_or_else(gdf_state_error)?;
+        let dst = samples
+            .get_mut(start..start + width)
+            .ok_or_else(gdf_state_error)?;
+        let (pads, rest) = dst.split_at_mut(pre);
+        let (copied, posts) = rest.split_at_mut(mid);
+        source_row
+            .copy_range_as::<T>(mid_start, copied, shift)
+            .ok_or_else(gdf_state_error)?;
+        pads.fill(copied[0]);
+        posts.fill(copied[mid - 1]);
+    }
+    Ok((origin_x, origin_y))
 }
 
 #[cfg(test)]
@@ -1215,6 +1208,7 @@ fn gdf_tap_offsets(stride: usize) -> Result<[usize; GDF_COORDS.len()]> {
     Ok(offsets)
 }
 
+#[cfg(test)]
 fn exact_slice<T>(samples: &[T], start: usize, len: usize) -> Option<&[T]> {
     samples.get(start..)?.get(..len)
 }
@@ -1401,9 +1395,9 @@ mod tests {
         ClassScratch, GDF_COORDS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
         GdfReferenceContext, GdfSource, GdfSourceRow, LoopRestorationSource, RESTRICTED_ORDER_HINT,
         TAP_REACH, band_classes, band_classes_from_source, band_gradients, compute_enabled_segment,
-        gdf_band_segment, gdf_band_segments, gdf_inter_ref_dst_idx,
+        fill_tile, gdf_band_segment, gdf_band_segments, gdf_inter_ref_dst_idx,
         gdf_inter_ref_dst_idx_from_max_dist, gdf_stripe_end_for_tile, gdf_stripe_row_for_tile_end,
-        grad_sum, lossless_spans, resize_overwrite_scratch, simd, tile_axis_bounds,
+        grad_sum, lossless_spans, resize_overwrite_scratch, simd, tile_axis_bounds, window_size,
     };
     use crate::error::{DecodeError, DecodeHeaderStateError};
     use crate::filters::deblock::DeblockBlock;
@@ -1692,11 +1686,11 @@ mod tests {
                     .map(GdfSourceRow)
             };
             let shift = 10 - u32::from(bit_depth.bits());
-            let area = GdfSource::window_size(&run).expect("window").1 * simd::TILE_STRIDE;
+            let area = window_size(&run).expect("window").1 * simd::TILE_STRIDE;
             for index in 0..run.width.div_ceil(simd::TILE_COLS) {
                 let mut samples = vec![u16::MAX; area];
                 let layout = (simd::TILE_STRIDE, simd::TILE_COLS, index);
-                GdfSource::fill_tile::<S, S>(&mut samples, layout, &plane, &run, rows)
+                fill_tile::<S, S>(&mut samples, layout, &plane, &run, rows)
                     .expect("valid tile window");
                 let tile = GdfBlock {
                     x: run.x + index * simd::TILE_COLS,
