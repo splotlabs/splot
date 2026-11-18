@@ -15,6 +15,7 @@ use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 
 mod wienerns;
 
+pub(crate) use wienerns::MAX_WIENER_DICTIONARY_SLOTS;
 use wienerns::parse_frame_wiener_ns_filter;
 pub use wienerns::{
     MAX_WIENER_NS_CLASSES, WienerNsCoeffs, WienerNsFrameFilterBank, WienerNsFrameFilterClass,

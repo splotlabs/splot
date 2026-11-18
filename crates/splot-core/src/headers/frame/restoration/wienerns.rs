@@ -499,8 +499,14 @@ fn read_match_indices(
     Ok(match_indices)
 }
 
+pub(crate) const MAX_WIENER_DICTIONARY_SLOTS: usize = 64;
+
 fn num_dictionary_slots(nopcw: bool) -> usize {
-    if nopcw { 16 } else { 64 }
+    if nopcw {
+        16
+    } else {
+        MAX_WIENER_DICTIONARY_SLOTS
+    }
 }
 
 fn max_num_base_filters(num_classes: usize, nopcw: bool) -> usize {
