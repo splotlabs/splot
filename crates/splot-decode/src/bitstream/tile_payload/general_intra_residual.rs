@@ -776,13 +776,11 @@ pub(crate) fn read_luma_transform_partition_records(
     start_x: usize,
     start_y: usize,
     fsc_mode: bool,
-) -> Result<LumaTransformPartitionUnits<LumaTransformPartitionRecord>, GeneralIntraResidualError> {
+) -> Result<LumaTransformPartitionUnits, GeneralIntraResidualError> {
     let mi_size = context.block_size().index();
     let tx_size = context.max_tx_size();
     let Some((allow_horz, allow_vert)) = luma_tx_partition_allows(context)? else {
-        return Ok(LumaTransformPartitionUnits::one(luma_transform_record(
-            start_x, start_y, tx_size,
-        )));
+        return LumaTransformPartitionUnits::new(start_x, start_y, tx_size, LumaTxPartition::None);
     };
     let reduced_tx_part_set = work_unit.coeff_frame_facts().reduced_tx_part_set();
     let tx_partition = read_luma_tx_partition_type(
@@ -816,8 +814,8 @@ pub(crate) fn luma_tx_partition_allows(
         return Ok(None);
     }
     let (tx_width, tx_height) = tx_size_dimensions(context.max_tx_size())?;
-    let allow_horz = tx_size_from_dimensions(tx_width, tx_height >> 1).is_some();
-    let allow_vert = tx_size_from_dimensions(tx_width >> 1, tx_height).is_some();
+    let allow_horz = tx_height > MI_SIZE;
+    let allow_vert = tx_width > MI_SIZE;
     Ok((allow_horz || allow_vert).then_some((allow_horz, allow_vert)))
 }
 
@@ -918,114 +916,13 @@ pub(crate) fn luma_transform_records_for_partition(
     start_y: usize,
     tx_size: usize,
     tx_partition: LumaTxPartition,
-) -> Result<LumaTransformPartitionUnits<LumaTransformPartitionRecord>, GeneralIntraResidualError> {
-    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
-    let mut w4 = tx_width / MI_SIZE;
-    let mut h4 = tx_height / MI_SIZE;
-    let col4 = start_x / MI_SIZE;
-    let row4 = start_y / MI_SIZE;
-    match tx_partition {
-        LumaTxPartition::None => Ok(LumaTransformPartitionUnits::one(luma_transform_record(
-            col4 * MI_SIZE,
-            row4 * MI_SIZE,
-            tx_size,
-        ))),
-        LumaTxPartition::Horz => {
-            h4 >>= 1;
-            Ok(LumaTransformPartitionUnits::two([
-                luma_transform_record_from_4x4(row4, col4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4 + h4, col4, h4, w4, false)?,
-            ]))
-        }
-        LumaTxPartition::Vert => {
-            w4 >>= 1;
-            Ok(LumaTransformPartitionUnits::two([
-                luma_transform_record_from_4x4(row4, col4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4, col4 + w4, h4, w4, false)?,
-            ]))
-        }
-        LumaTxPartition::Horz4 => {
-            h4 >>= 2;
-            Ok(LumaTransformPartitionUnits::four([
-                luma_transform_record_from_4x4(row4, col4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4 + h4, col4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4 + h4 * 2, col4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4 + h4 * 3, col4, h4, w4, false)?,
-            ]))
-        }
-        LumaTxPartition::Vert4 => {
-            w4 >>= 2;
-            Ok(LumaTransformPartitionUnits::four([
-                luma_transform_record_from_4x4(row4, col4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4, col4 + w4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4, col4 + w4 * 2, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4, col4 + w4 * 3, h4, w4, false)?,
-            ]))
-        }
-        LumaTxPartition::Horz5 => {
-            h4 >>= 2;
-            w4 >>= 1;
-            Ok(LumaTransformPartitionUnits::five([
-                luma_transform_record_from_4x4(row4, col4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4, col4 + w4, h4, w4, true)?,
-                luma_transform_record_from_4x4(row4 + h4, col4, h4 << 1, w4 << 1, true)?,
-                luma_transform_record_from_4x4(row4 + h4 * 3, col4, h4, w4, true)?,
-                luma_transform_record_from_4x4(row4 + h4 * 3, col4 + w4, h4, w4, true)?,
-            ]))
-        }
-        LumaTxPartition::Vert5 => {
-            h4 >>= 1;
-            w4 >>= 2;
-            Ok(LumaTransformPartitionUnits::five([
-                luma_transform_record_from_4x4(row4, col4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4 + h4, col4, h4, w4, true)?,
-                luma_transform_record_from_4x4(row4, col4 + w4, h4 << 1, w4 << 1, true)?,
-                luma_transform_record_from_4x4(row4, col4 + w4 * 3, h4, w4, true)?,
-                luma_transform_record_from_4x4(row4 + h4, col4 + w4 * 3, h4, w4, true)?,
-            ]))
-        }
-        LumaTxPartition::Split => {
-            w4 >>= 1;
-            h4 >>= 1;
-            Ok(LumaTransformPartitionUnits::four([
-                luma_transform_record_from_4x4(row4, col4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4, col4 + w4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4 + h4, col4, h4, w4, false)?,
-                luma_transform_record_from_4x4(row4 + h4, col4 + w4, h4, w4, false)?,
-            ]))
-        }
-    }
-}
-
-fn luma_transform_record_from_4x4(
-    row4: usize,
-    col4: usize,
-    h4: usize,
-    w4: usize,
-    middle: bool,
-) -> Result<LumaTransformPartitionRecord, GeneralIntraResidualError> {
-    let width = w4 * MI_SIZE;
-    let height = h4 * MI_SIZE;
-    let Some(tx_size) = tx_size_from_dimensions(width, height) else {
-        return Err(
-            GeneralIntraResidualError::InvalidTransformPartitionDimensions { width, height },
-        );
-    };
-    Ok(LumaTransformPartitionRecord {
-        x: col4 * MI_SIZE,
-        y: row4 * MI_SIZE,
+) -> Result<LumaTransformPartitionUnits, GeneralIntraResidualError> {
+    LumaTransformPartitionUnits::new(
+        start_x & !(MI_SIZE - 1),
+        start_y & !(MI_SIZE - 1),
         tx_size,
-        middle,
-    })
-}
-
-const fn luma_transform_record(x: usize, y: usize, tx_size: usize) -> LumaTransformPartitionRecord {
-    LumaTransformPartitionRecord {
-        x,
-        y,
-        tx_size,
-        middle: false,
-    }
+        tx_partition,
+    )
 }
 
 pub(crate) fn block_size_table_usize(
@@ -1926,7 +1823,8 @@ fn tx_size_dimensions(tx_size: usize) -> Result<(usize, usize), GeneralIntraResi
     ))
 }
 
-fn tx_size_from_dimensions(width: usize, height: usize) -> Option<usize> {
+#[cfg(test)]
+pub(crate) fn tx_size_from_dimensions(width: usize, height: usize) -> Option<usize> {
     if !width.is_power_of_two() || !height.is_power_of_two() {
         return None;
     }

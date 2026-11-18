@@ -104,10 +104,8 @@ fn ccso_tile_merge_copies_only_the_owned_region() {
 
 #[test]
 fn first_sb_block_16x64_horz4_partition_matches_avm_tx_16x16() {
-    use super::super::{
-        MI_SIZE, SelectableLumaTxGrid, TX_PARTITION_HORZ, TX_PARTITION_HORZ4, apply_tx_partition,
-        table_usize, tx_size_from_dimensions,
-    };
+    use super::super::{Block4x4Extent, MI_SIZE, inter_luma_tx_records, table_usize};
+    use crate::bitstream::tile_payload::{LumaTxPartition, tx_size_from_dimensions};
     use splot_core::tables::conversion::MAX_TX_SIZE_RECT;
 
     const TX_16X64: usize = 17;
@@ -118,9 +116,17 @@ fn first_sb_block_16x64_horz4_partition_matches_avm_tx_16x16() {
         table_usize("Max_Tx_Size_Rect", &MAX_TX_SIZE_RECT, 23).unwrap(),
         TX_16X64
     );
-    let mut grid = SelectableLumaTxGrid::new(16, 4).unwrap();
-    apply_tx_partition(&mut grid, 0, 0, TX_16X64, TX_PARTITION_HORZ4).unwrap();
-    let records = grid.records_for_region(0, 0, 16, 4).unwrap();
+    let mut records = Vec::new();
+    let extent = Block4x4Extent { rows: 16, cols: 4 };
+    inter_luma_tx_records(
+        (0, 0),
+        extent,
+        (16, 4),
+        TX_16X64,
+        LumaTxPartition::Horz4,
+        &mut records,
+    )
+    .unwrap();
     assert_eq!(records.len(), 4);
     for record in &records {
         assert_eq!((record.rows, record.cols), (4, 4));
@@ -129,8 +135,15 @@ fn first_sb_block_16x64_horz4_partition_matches_avm_tx_16x16() {
             Some(TX_16X16)
         );
     }
-    let mut wrong = SelectableLumaTxGrid::new(16, 4).unwrap();
-    apply_tx_partition(&mut wrong, 0, 0, TX_16X64, TX_PARTITION_HORZ).unwrap();
-    assert_eq!(wrong.records_for_region(0, 0, 16, 4).unwrap().len(), 2);
+    inter_luma_tx_records(
+        (0, 0),
+        extent,
+        (16, 4),
+        TX_16X64,
+        LumaTxPartition::Horz,
+        &mut records,
+    )
+    .unwrap();
+    assert_eq!(records.len(), 2);
     assert_eq!(tx_size_from_dimensions(16, 32), Some(TX_16X32));
 }

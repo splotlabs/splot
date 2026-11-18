@@ -327,7 +327,7 @@ fn split_luma_transform_partition_records_follow_raster_order() {
     let records =
         luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Split).unwrap();
     let coords: Vec<(usize, usize, usize)> = records
-        .iter()
+        .clone()
         .map(|record| (record.x, record.y, record.tx_size))
         .collect();
 
@@ -347,7 +347,7 @@ fn five_way_luma_transform_partition_fills_bounded_storage() {
     let records =
         luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Horz5).unwrap();
     let geometry: Vec<_> = records
-        .iter()
+        .clone()
         .map(|record| (record.x, record.y, record.middle))
         .collect();
 
@@ -429,7 +429,7 @@ fn every_transform_partition_has_spec_geometry_order_and_middle_flags() {
     for &(partition, expected) in cases {
         let records = luma_transform_records_for_partition(64, 32, TX_16X16, partition).unwrap();
         let actual: Vec<_> = records
-            .iter()
+            .clone()
             .map(|record| {
                 let (width, height) = tx_size_dimensions(record.tx_size).unwrap();
                 (record.x, record.y, width, height, record.middle)
@@ -441,20 +441,19 @@ fn every_transform_partition_has_spec_geometry_order_and_middle_flags() {
 
 #[test]
 fn luma_transform_partition_storage_has_only_syntax_cardinalities() {
-    for (units, expected) in [
-        (LumaTransformPartitionUnits::one(0), vec![0]),
-        (LumaTransformPartitionUnits::two([0, 1]), vec![0, 1]),
-        (
-            LumaTransformPartitionUnits::four([0, 1, 2, 3]),
-            vec![0, 1, 2, 3],
-        ),
-        (
-            LumaTransformPartitionUnits::five([0, 1, 2, 3, 4]),
-            vec![0, 1, 2, 3, 4],
-        ),
+    for (partition, count) in [
+        (LumaTxPartition::None, 1),
+        (LumaTxPartition::Split, 4),
+        (LumaTxPartition::Horz, 2),
+        (LumaTxPartition::Vert, 2),
+        (LumaTxPartition::Horz4, 4),
+        (LumaTxPartition::Vert4, 4),
+        (LumaTxPartition::Horz5, 5),
+        (LumaTxPartition::Vert5, 5),
     ] {
-        assert_eq!(units.len(), expected.len());
-        assert!(units.iter().copied().eq(expected));
+        let units = luma_transform_records_for_partition(0, 0, TX_16X16, partition).unwrap();
+        assert_eq!(units.len(), count);
+        assert_eq!(units.count(), count);
     }
 }
 
@@ -655,7 +654,7 @@ fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
     assert!(!luma_partition_record_fills_block(
         true,
         records.len(),
-        *records.iter().next().unwrap(),
+        records.clone().next().unwrap(),
         64,
         32
     ));
@@ -683,7 +682,7 @@ fn partitioned_luma_transform_records_skip_units_starting_outside_frame() {
         luma_transform_records_for_partition(320, 64, TX_64X64, LumaTxPartition::Split).unwrap();
     assert_eq!(records.len(), 4);
     let visible: Vec<(usize, usize)> = records
-        .iter()
+        .clone()
         .filter(|record| luma_transform_record_starts_in_frame(record, 352, 288))
         .map(|record| (record.x, record.y))
         .collect();

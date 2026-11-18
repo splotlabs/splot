@@ -68,6 +68,8 @@ pub(crate) use general_intra_block::{
 };
 #[cfg(test)]
 pub(crate) use general_intra_residual::reconstruct_general_intra_chroma_cctx_pair_with_predictions;
+#[cfg(test)]
+pub(crate) use general_intra_residual::tx_size_from_dimensions;
 pub(crate) use general_intra_residual::{
     CoeffBlock, FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope,
     FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope,
