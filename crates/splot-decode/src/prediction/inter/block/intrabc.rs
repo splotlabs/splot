@@ -170,7 +170,7 @@ impl IntrabcReconCommand {
                 scaling,
             )?,
             IntrabcLumaSource::Copy(source) => {
-                mc::intrabc_copy_plane_into(workspace, PlaneId::Y, source, prediction.luma_target)?
+                mc::intrabc_copy_plane_into(workspace, PlaneId::Y, source, prediction.luma_target)?;
             }
         }
         if let Some(mv) = prediction.morph_mv {

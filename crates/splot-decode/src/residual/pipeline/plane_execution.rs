@@ -22,8 +22,7 @@ use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
 use super::transform_units::tx_size_log2;
 use super::{
-    DCT_DCT, DeblockRecorder, RectChromaPlan, RectLumaPlan, ResidualPlanError, ResidualPlanePlan,
-    chroma_pair,
+    DCT_DCT, DeblockRecorder, ResidualPlanError, ResidualPlanInput, ResidualPlanePlan, chroma_pair,
 };
 use crate::tile::block_context::{BlockCtx, ChromaSampling, FrameTileCtx};
 
@@ -120,20 +119,6 @@ pub(super) enum CctxRole {
     PairV,
 }
 
-pub(crate) enum ResidualPlanInput {
-    Rect {
-        luma_plan: RectLumaPlan,
-        chroma_plan: Option<RectChromaPlan>,
-        luma_fsc_mode: bool,
-        luma_lossless_tx_size: Option<usize>,
-        lossless: bool,
-    },
-    Chroma {
-        chroma_plan: RectChromaPlan,
-        lossless_luma_fsc: bool,
-    },
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ResidualParseError {
     #[error(transparent)]
@@ -217,27 +202,7 @@ impl ResidualPlaneArena {
             planes.push(parsed);
             Ok(())
         };
-        match input {
-            ResidualPlanInput::Rect {
-                luma_plan,
-                chroma_plan,
-                luma_fsc_mode,
-                luma_lossless_tx_size,
-                lossless,
-            } => super::plan::plan_rect(
-                &mut parse,
-                block_ctx,
-                luma_plan,
-                chroma_plan,
-                luma_fsc_mode,
-                luma_lossless_tx_size,
-                lossless,
-            )?,
-            ResidualPlanInput::Chroma {
-                chroma_plan,
-                lossless_luma_fsc,
-            } => super::plan::plan_chroma(&mut parse, block_ctx, chroma_plan, lossless_luma_fsc)?,
-        }
+        input.for_each_plane(block_ctx, &mut parse)?;
         Ok(ParsedGeneralIntraResidual {
             planes: start..self.plane_count()?,
         })

@@ -21,6 +21,50 @@ const MAX_RESIDUAL_CHUNKS: usize = MAX_RESIDUAL_CHUNKS_PER_AXIS * MAX_RESIDUAL_C
 pub(super) const MAX_DEFERRED_CHROMA_PLANES: usize = MAX_RESIDUAL_CHUNKS * CHROMA_PLANES.len();
 pub(super) const MAX_RESIDUAL_PLANES: usize = MAX_RESIDUAL_CHUNKS + MAX_DEFERRED_CHROMA_PLANES;
 
+pub(crate) enum ResidualPlanInput {
+    Rect {
+        luma_plan: RectLumaPlan,
+        chroma_plan: Option<RectChromaPlan>,
+        luma_fsc_mode: bool,
+        luma_lossless_tx_size: Option<usize>,
+        lossless: bool,
+    },
+    Chroma {
+        chroma_plan: RectChromaPlan,
+        lossless_luma_fsc: bool,
+    },
+}
+
+impl ResidualPlanInput {
+    pub(super) fn for_each_plane<E: From<ResidualPlanError>>(
+        self,
+        block_ctx: BlockCtx,
+        sink: &mut impl FnMut(ResidualPlanePlan) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self {
+            Self::Rect {
+                luma_plan,
+                chroma_plan,
+                luma_fsc_mode,
+                luma_lossless_tx_size,
+                lossless,
+            } => plan_rect(
+                sink,
+                block_ctx,
+                luma_plan,
+                chroma_plan,
+                luma_fsc_mode,
+                luma_lossless_tx_size,
+                lossless,
+            ),
+            Self::Chroma {
+                chroma_plan,
+                lossless_luma_fsc,
+            } => plan_chroma(sink, block_ctx, chroma_plan, lossless_luma_fsc),
+        }
+    }
+}
+
 impl GeneralIntraResidualPlan {
     pub(super) fn take(
         capacity: usize,
@@ -39,21 +83,16 @@ impl GeneralIntraResidualPlan {
         luma_lossless_tx_size: Option<usize>,
         lossless: bool,
     ) -> core::result::Result<Self, ResidualPlanError> {
-        let mut plan = Self::take(MAX_RESIDUAL_PLANES, block_ctx.frame())
-            .map_err(|_| ResidualPlanError::Allocation { plane: PlaneId::Y })?;
-        plan_rect(
-            &mut |plane| {
-                plan.planes.push(plane);
-                Ok::<(), ResidualPlanError>(())
-            },
+        Self::collect(
             block_ctx,
-            luma_plan,
-            chroma_plan,
-            luma_fsc_mode,
-            luma_lossless_tx_size,
-            lossless,
-        )?;
-        Ok(plan)
+            ResidualPlanInput::Rect {
+                luma_plan,
+                chroma_plan,
+                luma_fsc_mode,
+                luma_lossless_tx_size,
+                lossless,
+            },
+        )
     }
 
     pub(crate) fn chroma(
@@ -61,17 +100,28 @@ impl GeneralIntraResidualPlan {
         chroma_plan: RectChromaPlan,
         lossless_luma_fsc: bool,
     ) -> core::result::Result<Self, ResidualPlanError> {
-        let mut plan = Self::take(MAX_RESIDUAL_PLANES, block_ctx.frame())
-            .map_err(|_| ResidualPlanError::Allocation { plane: PlaneId::U })?;
-        plan_chroma(
-            &mut |plane| {
-                plan.planes.push(plane);
-                Ok::<(), ResidualPlanError>(())
-            },
+        Self::collect(
             block_ctx,
-            chroma_plan,
-            lossless_luma_fsc,
-        )?;
+            ResidualPlanInput::Chroma {
+                chroma_plan,
+                lossless_luma_fsc,
+            },
+        )
+    }
+
+    fn collect(block_ctx: BlockCtx, input: ResidualPlanInput) -> Result<Self, ResidualPlanError> {
+        let mut plan = Self::take(MAX_RESIDUAL_PLANES, block_ctx.frame()).map_err(|_| {
+            ResidualPlanError::Allocation {
+                plane: match input {
+                    ResidualPlanInput::Rect { .. } => PlaneId::Y,
+                    ResidualPlanInput::Chroma { .. } => PlaneId::U,
+                },
+            }
+        })?;
+        input.for_each_plane(block_ctx, &mut |plane| {
+            plan.planes.push(plane);
+            Ok::<(), ResidualPlanError>(())
+        })?;
         Ok(plan)
     }
 
@@ -93,7 +143,7 @@ impl GeneralIntraResidualPlan {
 }
 
 /// [`GeneralIntraResidualPlan::chroma`] into `sink`, in syntax order.
-pub(super) fn plan_chroma<E: From<ResidualPlanError>>(
+fn plan_chroma<E: From<ResidualPlanError>>(
     sink: &mut impl FnMut(ResidualPlanePlan) -> Result<(), E>,
     block_ctx: BlockCtx,
     chroma_plan: RectChromaPlan,
@@ -187,7 +237,7 @@ impl ResidualPlanePlan {
 }
 
 /// [`GeneralIntraResidualPlan::rect`] into `planes`, in syntax order.
-pub(super) fn plan_rect<E: From<ResidualPlanError>>(
+fn plan_rect<E: From<ResidualPlanError>>(
     planes: &mut impl FnMut(ResidualPlanePlan) -> Result<(), E>,
     block_ctx: BlockCtx,
     luma_plan: RectLumaPlan,
