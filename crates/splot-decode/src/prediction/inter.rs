@@ -31,7 +31,6 @@ use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStag
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
 use crate::reference::buffer::RefSlots;
-use crate::reference::buffer::ReferenceMetadata;
 use crate::{DecodeIvfFrameContext, DecodeOptions, DecodePlannedObu, DecodeSourceIssue, Result};
 
 macro_rules! inter_allocation {
@@ -1239,7 +1238,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) ref_frame_height: RefSlots<u32>,
     pub(crate) ref_base_q_idx: RefSlots<u32>,
     pub(crate) ref_counter: RefSlots<u32>,
-    ref_chroma_ac_deltas: RefSlots<[i32; 2]>,
+    pub(crate) ref_chroma_ac_deltas: RefSlots<[i32; 2]>,
     pub(crate) ref_is_inter: RefSlots<bool>,
     pub(crate) ref_long_term_id: RefSlots<Option<u32>>,
     pub(crate) ref_num_total_refs: RefSlots<u32>,
@@ -1250,7 +1249,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Option<Arc<[SlotFrameFilterTaps]>>,
     pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
-    pub(crate) ref_ccso_params: RefSlots<Option<splot_core::headers::frame::CcsoParams>>,
+    pub(crate) ref_ccso_params: RefSlots<Option<Arc<splot_core::headers::frame::CcsoParams>>>,
     pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
     pub(crate) ref_segment_ids: RefSlots<Option<SegmentIdMapHandle>>,
     pub(crate) ref_motion_fields: RefSlots<Option<MotionFieldHandle>>,
@@ -1273,10 +1272,7 @@ impl<T: ReconSample> InterReferenceState<T> {
     /// Returns [`splot_recon::ReconError`] when the minimal store capacity is
     /// rejected.
     pub(crate) fn empty() -> splot_recon::Result<Self> {
-        Ok(Self::from_metadata(
-            ReferenceFrameStore::with_capacity(1)?,
-            ReferenceMetadata::default(),
-        ))
+        Self::with_slot_count(1)
     }
 
     /// Shares the selected reference slots' published § 7.9 motion fields.
@@ -1318,39 +1314,32 @@ impl<T: ReconSample> InterReferenceState<T> {
         Ok(resolved)
     }
 
-    pub(crate) fn from_metadata(
-        store: ReferenceFrameStore<RefFrameSlot<T>>,
-        mut metadata: ReferenceMetadata,
-    ) -> Self {
-        Self {
-            store,
-            ref_valid: core::mem::take(&mut metadata.ref_valid),
-            ref_order_hint: core::mem::take(&mut metadata.ref_order_hint),
-            ref_order_hint_lsbs: core::mem::take(&mut metadata.ref_order_hint_lsbs),
-            ref_implicit_output_frame: core::mem::take(&mut metadata.ref_implicit_output_frame),
-            ref_immediate_output_frame: core::mem::take(&mut metadata.ref_immediate_output_frame),
-            ref_frame_width: core::mem::take(&mut metadata.ref_frame_width),
-            ref_frame_height: core::mem::take(&mut metadata.ref_frame_height),
-            ref_base_q_idx: core::mem::take(&mut metadata.ref_base_q_idx),
-            ref_counter: core::mem::take(&mut metadata.ref_counter),
-            ref_chroma_ac_deltas: core::mem::take(&mut metadata.ref_chroma_ac_deltas),
-            ref_is_inter: core::mem::take(&mut metadata.ref_is_inter),
-            ref_long_term_id: core::mem::take(&mut metadata.ref_long_term_id),
-            ref_num_total_refs: core::mem::take(&mut metadata.ref_num_total_refs),
-            saved_global_motion_order_hints: core::mem::take(
-                &mut metadata.saved_global_motion_order_hints,
-            ),
-            saved_global_motion_params: core::mem::take(&mut metadata.saved_global_motion_params),
-            lr_frame_filter_class_counts: core::mem::take(
-                &mut metadata.lr_frame_filter_class_counts,
-            ),
-            lr_frame_filter_taps: core::mem::take(&mut metadata.lr_frame_filter_taps),
-            ref_frame_cdfs: core::mem::take(&mut metadata.ref_frame_cdfs),
-            ref_ccso_params: core::mem::take(&mut metadata.ref_ccso_params),
-            ref_ccso_unit_grids: core::mem::take(&mut metadata.ref_ccso_unit_grids),
-            ref_segment_ids: core::mem::take(&mut metadata.ref_segment_ids),
-            ref_motion_fields: core::mem::take(&mut metadata.ref_motion_fields),
-        }
+    pub(crate) fn with_slot_count(num: usize) -> splot_recon::Result<Self> {
+        Ok(Self {
+            store: ReferenceFrameStore::with_capacity(num)?,
+            ref_valid: RefSlots::default(),
+            ref_order_hint: RefSlots::default(),
+            ref_order_hint_lsbs: RefSlots::default(),
+            ref_implicit_output_frame: RefSlots::default(),
+            ref_immediate_output_frame: RefSlots::default(),
+            ref_frame_width: RefSlots::default(),
+            ref_frame_height: RefSlots::default(),
+            ref_base_q_idx: RefSlots::default(),
+            ref_counter: RefSlots::default(),
+            ref_chroma_ac_deltas: RefSlots::default(),
+            ref_is_inter: RefSlots::default(),
+            ref_long_term_id: RefSlots::default(),
+            ref_num_total_refs: RefSlots::default(),
+            saved_global_motion_order_hints: RefSlots::default(),
+            saved_global_motion_params: RefSlots::default(),
+            lr_frame_filter_class_counts: RefSlots::default(),
+            lr_frame_filter_taps: None,
+            ref_frame_cdfs: RefSlots::default(),
+            ref_ccso_params: RefSlots::default(),
+            ref_ccso_unit_grids: RefSlots::default(),
+            ref_segment_ids: RefSlots::default(),
+            ref_motion_fields: RefSlots::default(),
+        })
     }
 }
 
@@ -1495,7 +1484,7 @@ impl<T: ReconSample> InterReferenceState<T> {
         let slot = usize::try_from(slot).unwrap_or(usize::MAX);
         self.ref_ccso_params
             .get(slot)
-            .and_then(Option::as_ref)
+            .and_then(Option::as_deref)
             .ok_or(DecodeReferenceStateError::MissingCcsoParams { slot }.into())
     }
 

@@ -340,8 +340,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         .expect("fixture carries the inter frame record");
     let (prefix, inter_envelope) =
         crate::pipeline::ivf_inter_envelope(&inter_frame.obus, record, inter_candidate)?;
-    let (store, meta) = reference.build_store::<u8>(&frames.into())?;
-    let inter_state = std::sync::Arc::new(super::InterReferenceState::from_metadata(store, meta));
+    let inter_state = std::sync::Arc::new(reference.state::<u8>(&frames.into())?);
     let first_picture_in_tu = prefix
         .iter()
         .any(|obu| obu.header.obu_type == splot_core::types::ObuType::TemporalDelimiter);
@@ -436,8 +435,7 @@ fn parse_inter_core_for_validation_inner(
         .expect("fixture carries the inter frame record");
     let (prefix, inter_envelope) =
         crate::pipeline::ivf_inter_envelope(&inter_frame.obus, record, inter_candidate)?;
-    let (store, meta) = reference.build_store::<u8>(&frames.into())?;
-    let inter_state = super::InterReferenceState::from_metadata(store, meta);
+    let inter_state = reference.state::<u8>(&frames.into())?;
     let first_picture_in_tu = prefix
         .iter()
         .any(|obu| obu.header.obu_type == splot_core::types::ObuType::TemporalDelimiter);

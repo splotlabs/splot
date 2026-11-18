@@ -567,7 +567,7 @@ fn decode_key_frame_with_effects(
             output_effects,
             frame_cdfs: products.frame_cdfs,
             motion_field,
-            ccso_params: core.ccso_params.clone(),
+            ccso_params: core.ccso_params.clone().map(Arc::new),
             ccso_grid: products.ccso_grid,
             segment_ids: products.segment_ids,
             frame_rate_numerator: frame_rate.numerator,
@@ -590,7 +590,7 @@ fn decode_key_frame_with_effects(
                 T::BIT_DEPTH,
                 &mut product_writers,
             )?;
-            let ccso_params = walk.core.ccso_params.clone();
+            let ccso_params = walk.core.ccso_params.clone().map(Arc::new);
             let frame = inflight::settle_walk_stage(
                 walk.stage,
                 T::erase,
@@ -918,7 +918,7 @@ fn decode_frames_in_order(
                     output_effects: key_output_effects,
                     frame_cdfs: products.frame_cdfs,
                     motion_field,
-                    ccso_params: core.ccso_params.clone(),
+                    ccso_params: core.ccso_params.clone().map(Arc::new),
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
                     frame_rate_numerator: rate.numerator,
@@ -939,7 +939,7 @@ fn decode_frames_in_order(
                     T::BIT_DEPTH,
                     &mut product_writers,
                 )?;
-                let ccso_params = walk.core.ccso_params.clone();
+                let ccso_params = walk.core.ccso_params.clone().map(Arc::new);
                 let frame = inflight::settle_walk_stage(
                     walk.stage,
                     T::erase,
@@ -1484,7 +1484,7 @@ fn decode_frames_in_order(
                     output_effects: inter_output_effects,
                     frame_cdfs: products.frame_cdfs,
                     motion_field,
-                    ccso_params: inter_core.ccso_params.clone(),
+                    ccso_params: inter_core.ccso_params.clone().map(Arc::new),
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
                     frame_rate_numerator: inter_frame_rate.numerator,

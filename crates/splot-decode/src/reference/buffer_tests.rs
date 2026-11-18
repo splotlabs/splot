@@ -203,7 +203,7 @@ fn reference_refresh_preserves_full_and_lsb_order_hints() {
     assert_eq!(buf.slots[1].order_hint, 136);
     assert_eq!(buf.slots[1].order_hint_lsb, 8);
     let frames = vec![Some(pipeline_frame(64, 64)), Some(pipeline_frame(64, 64))];
-    let metadata = buf.build_store::<u8>(&frames.into()).unwrap().1;
+    let metadata = buf.state::<u8>(&frames.into()).unwrap();
     assert_eq!(metadata.ref_order_hint[1], 136);
     assert_eq!(metadata.ref_order_hint_lsbs[1], 8);
     assert!(metadata.ref_implicit_output_frame[1]);
@@ -220,7 +220,7 @@ fn reference_refresh_preserves_global_motion_predictor_state() {
     buf.update(1, &update, false);
 
     let frames = vec![Some(pipeline_frame(64, 64)), Some(pipeline_frame(64, 64))];
-    let metadata = buf.build_store::<u8>(&frames.into()).unwrap().1;
+    let metadata = buf.state::<u8>(&frames.into()).unwrap();
     assert_eq!(metadata.ref_num_total_refs[1], 2);
     assert_eq!(metadata.saved_global_motion_order_hints[1][..2], [7, 11]);
     assert_eq!(
@@ -251,7 +251,8 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
         },
     )
     .unwrap();
-    frame.ccso_params = Some(ccso_params.clone());
+    let ccso_params = Arc::new(ccso_params);
+    frame.ccso_params = Some(Arc::clone(&ccso_params));
 
     let ccso_grid = Arc::new(
         crate::filters::ccso::CcsoUnitGrid::new(
@@ -277,14 +278,17 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
     let motion_field = Arc::clone(frame.motion_field.field().unwrap());
 
     let frames = vec![Some(frame)];
-    let metadata = buf.build_store::<u8>(&frames.into()).unwrap().1;
+    let metadata = buf.state::<u8>(&frames.into()).unwrap();
 
     let stored_cdfs = metadata.ref_frame_cdfs[2]
         .as_ref()
         .and_then(crate::prediction::inter::FrameCdfHandle::product)
         .unwrap();
     assert!(Arc::ptr_eq(stored_cdfs, &frame_cdfs));
-    assert_eq!(metadata.ref_ccso_params[2].as_ref(), Some(&ccso_params));
+    assert!(Arc::ptr_eq(
+        metadata.ref_ccso_params[2].as_ref().unwrap(),
+        &ccso_params
+    ));
     let stored_grid = metadata.ref_ccso_unit_grids[2]
         .as_ref()
         .and_then(crate::prediction::inter::CcsoGridHandle::product)
@@ -373,7 +377,7 @@ fn valid_slot_without_frame_index_is_reference_state_error() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     buf.slots[0].valid = true;
 
-    let Err(error) = buf.build_store::<u8>(&Vec::new().into()) else {
+    let Err(error) = buf.state::<u8>(&Vec::new().into()) else {
         panic!("missing decoded-frame index must be rejected");
     };
 
@@ -391,7 +395,7 @@ fn valid_slot_with_out_of_range_frame_index_is_reference_state_error() {
     buf.slots[0].valid = true;
     buf.slots[0].frame_index = Some(3);
 
-    let Err(error) = buf.build_store::<u8>(&Vec::new().into()) else {
+    let Err(error) = buf.state::<u8>(&Vec::new().into()) else {
         panic!("out-of-range decoded-frame index must be rejected");
     };
 
@@ -412,7 +416,7 @@ fn valid_slot_with_missing_retained_frame_is_reference_state_error() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     buf.update(0, &key_update(), true);
 
-    let Err(error) = buf.build_store::<u8>(&vec![None].into()) else {
+    let Err(error) = buf.state::<u8>(&vec![None].into()) else {
         panic!("missing retained frame must be rejected");
     };
 
@@ -430,7 +434,7 @@ fn valid_slot_with_mismatched_storage_depth_keeps_its_diagnostic() {
     buf.update(0, &key_update(), true);
     let frames = vec![Some(pipeline_frame(64, 64))];
 
-    let Err(error) = buf.build_store::<u16>(&frames.into()) else {
+    let Err(error) = buf.state::<u16>(&frames.into()) else {
         panic!("8-bit retained frame must not enter a 10-bit reference store");
     };
 
@@ -447,7 +451,7 @@ fn valid_slot_with_mismatched_frame_size_is_reference_state_error() {
     buf.update(0, &key_update(), true);
     let frames = vec![Some(pipeline_frame(32, 64))];
 
-    let Err(error) = buf.build_store::<u8>(&frames.into()) else {
+    let Err(error) = buf.state::<u8>(&frames.into()) else {
         panic!("mismatched retained-frame size must be rejected");
     };
 
@@ -528,14 +532,15 @@ fn a_held_snapshot_keeps_its_frame_filter_taps_across_a_refresh() {
             .collect::<Vec<_>>()
             .into()
     };
-    let held = buf.build_store::<u8>(&frames()).unwrap().1;
+    let held = buf.state::<u8>(&frames()).unwrap();
 
     update.lr_frame_filter_taps[0][0] = coeffs(9);
     buf.update(2, &update, false);
-    let fresh = buf.build_store::<u8>(&frames()).unwrap().1;
+    let fresh = buf.state::<u8>(&frames()).unwrap();
 
-    let taps =
-        |meta: &ReferenceMetadata, slot: usize| meta.lr_frame_filter_taps.as_ref().unwrap()[slot];
+    let taps = |meta: &InterReferenceState<u8>, slot: usize| {
+        meta.lr_frame_filter_taps.as_ref().unwrap()[slot]
+    };
     assert_eq!(taps(&held, 1)[0][0], coeffs(5));
     assert_eq!(taps(&fresh, 1)[0][0], coeffs(9));
     assert!(taps(&fresh, 0)[0].is_empty());
@@ -543,7 +548,7 @@ fn a_held_snapshot_keeps_its_frame_filter_taps_across_a_refresh() {
     drop(held);
     update.lr_frame_filter_taps[0][0] = coeffs(7);
     buf.update(3, &update, false);
-    let reused = buf.build_store::<u8>(&frames()).unwrap().1;
+    let reused = buf.state::<u8>(&frames()).unwrap();
     assert_eq!(taps(&fresh, 1)[0][0], coeffs(9));
     assert_eq!(taps(&reused, 1)[0][0], coeffs(7));
     assert_eq!(buf.lr_frame_filter_spares.len(), 1);

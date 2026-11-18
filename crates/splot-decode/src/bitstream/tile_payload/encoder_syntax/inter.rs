@@ -285,8 +285,8 @@ fn settled_state(
     buffer: &RuntimeReferenceBuffer,
     frames: &[Option<SettledFrame>],
 ) -> Result<InterReferenceState<u16>> {
-    let (store, mut meta) = buffer
-        .build_store_from(|slot, index| {
+    let mut state = buffer
+        .state_from(|slot, index| {
             let (frame, ..) = frames
                 .get(index)
                 .and_then(Option::as_ref)
@@ -294,10 +294,10 @@ fn settled_state(
             Ok((RefFrameSlot::completed(frame.share()), None))
         })
         .map_err(rule("reference state"))?;
-    for (slot, (cdfs, motion)) in meta
+    for (slot, (cdfs, motion)) in state
         .ref_frame_cdfs
         .iter_mut()
-        .zip(meta.ref_motion_fields.iter_mut())
+        .zip(state.ref_motion_fields.iter_mut())
         .enumerate()
     {
         if let Some((_, saved, field)) = buffer
@@ -309,7 +309,7 @@ fn settled_state(
             motion.clone_from(field);
         }
     }
-    Ok(InterReferenceState::from_metadata(store, meta))
+    Ok(state)
 }
 
 /// A motion vector in `1/8` luma samples (§ 7.12).
