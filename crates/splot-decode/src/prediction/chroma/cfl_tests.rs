@@ -1158,6 +1158,66 @@ fn cfl_420_u8_gathered_edges_match_per_sample_q3() {
     }
 }
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[test]
+fn cfl_420_u8_f2_narrow_strips_match_per_sample_q3() {
+    if luma_token().is_none() {
+        return;
+    }
+    let mut frame = workspace_sized(PixelFormat::Yuv420, 96, 96);
+    let mut state = 37;
+    for y in 0..96 {
+        for x in 0..96 {
+            let sample = (lcg(&mut state) % 256) as u8;
+            frame
+                .set_reconstructed_sample(PlaneId::Y, x, y, sample)
+                .unwrap();
+        }
+    }
+    let samples = frame.plane(PlaneId::Y).unwrap().samples();
+    let luma = CflLuma::<u8, 2>::new(&frame, samples, 2).unwrap();
+    let x = 32;
+    for width in [1, 2] {
+        for (y, has_above) in [(31, false), (31, true), (32, true)] {
+            let min_y = cfl_above_min_luma_ref_y(y, 16, PixelFormat::Yuv420);
+            let above = has_above
+                .then(|| [3, 2, 1].map(|dy| (2 * y as isize - dy).max(min_y.unwrap_or(0))));
+            let prefix = usize::from(has_above);
+            let mut left = [0; 3];
+            let mut actual = vec![0; width * (left.len() + prefix)];
+            assert!(luma.block_luma_420(
+                x,
+                y,
+                width,
+                [true; 3],
+                above,
+                &mut Some(&mut left),
+                &mut actual,
+            ));
+            for (row, actual) in actual.chunks_exact(width).enumerate() {
+                let rows = if row < prefix {
+                    luma.row(y - 1, false, min_y)
+                } else {
+                    let chroma_y = y + row - prefix;
+                    luma.row(chroma_y, chroma_y == y || chroma_y.is_multiple_of(32), None)
+                }
+                .unwrap();
+                for (col, &sample) in actual.iter().enumerate() {
+                    assert_eq!(
+                        i32::from(sample),
+                        luma.q3(&rows, x + col, col == 0),
+                        "width={width} y={y} {above:?} row={row} col={col}"
+                    );
+                }
+            }
+            for (row, sample) in left.into_iter().enumerate() {
+                let rows = luma.row(y + row, row == 0, None).unwrap();
+                assert_eq!(i32::from(sample), luma.q3(&rows, x - 1, false));
+            }
+        }
+    }
+}
+
 #[test]
 fn cfl_420_u8_block_luma_matches_per_sample_q3() {
     let mut state = 23;
