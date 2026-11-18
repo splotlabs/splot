@@ -375,20 +375,22 @@ mod avx2 {
         written
     }
 
-    /// The filters of output columns `0, 1 | 4, 5` and `2, 3 | 6, 7` of a
-    /// pass whose column-0 [`key`] is `first` and whose columns step by
-    /// `step`: the column keys in one vector, their rows in two gathers.
-    /// Loading the rows one by one costs a general-register key, a load and
-    /// a lane insert per column, more uops than the gathers.
+    /// The phase keys of output columns `0, 1 | 4, 5` and `2, 3 | 6, 7`,
+    /// advanced as a vector from row to row.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn filters(table: &[[u8; 8]; 512], first: u32, step: u32) -> (__m256i, __m256i) {
+    fn column_keys(first: u32, step: i32) -> __m256i {
         let columns = _mm256_mullo_epi32(
-            _mm256_set1_epi32(step as i32),
+            _mm256_set1_epi32(step),
             _mm256_setr_epi32(0, 1, 4, 5, 2, 3, 6, 7),
         );
-        let rows =
-            _mm256_srli_epi32::<23>(_mm256_add_epi32(_mm256_set1_epi32(first as i32), columns));
+        _mm256_add_epi32(_mm256_set1_epi32(first as i32), columns)
+    }
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn filters(table: &[[u8; 8]; 512], keys: __m256i) -> (__m256i, __m256i) {
+        let rows = _mm256_srli_epi32::<23>(keys);
         (
             rows_u64(table, _mm256_castsi256_si128(rows)),
             rows_u64(table, _mm256_extracti128_si256::<1>(rows)),
@@ -409,13 +411,14 @@ mod avx2 {
         let shuffle_a: __m256i = u8x32::load_array(t, SHUFFLE_A).into();
         let shuffle_b: __m256i = u8x32::load_array(t, SHUFFLE_B).into();
         let (scale, bias) = (_mm256_set1_epi16(1 << 13), _mm256_set1_epi32(1 << 15));
-        let step = |shear: i32| (shear << (23 - WARPEDDIFF_PREC_BITS)) as u32;
-        let mut first = key(sx4.wrapping_sub(7 * beta).wrapping_sub(4 * alpha));
-        let (column_step, row_step) = (step(alpha), step(beta));
+        let step = |shear: i32| shear << (23 - WARPEDDIFF_PREC_BITS);
+        let first = key(sx4.wrapping_sub(7 * beta).wrapping_sub(4 * alpha));
+        let mut keys = column_keys(first, step(alpha));
+        let row_step = _mm256_set1_epi32(step(beta));
         let mut source_at = window.column;
         core::array::from_fn(|_| {
-            let (taps_a, taps_b) = filters(&EVEN_ODD, first, column_step);
-            first = first.wrapping_add(row_step);
+            let (taps_a, taps_b) = filters(&EVEN_ODD, keys);
+            keys = _mm256_add_epi32(keys, row_step);
             let source = window
                 .rows
                 .get(source_at..)
@@ -445,7 +448,7 @@ mod avx2 {
         sy4: i32,
         round1: u32,
     ) -> [__m256i; 8] {
-        let step = |shear: i32| (shear << (23 - WARPEDDIFF_PREC_BITS)) as u32;
+        let step = |shear: i32| shear << (23 - WARPEDDIFF_PREC_BITS);
         let pairs: [__m256i; 14] = core::array::from_fn(|row| {
             _mm256_blend_epi16::<0xaa>(
                 _mm256_srli_epi32::<16>(horizontal[row]),
@@ -454,11 +457,12 @@ mod avx2 {
         });
         let round = _mm256_set1_epi32(1 << (round1 + 7));
         let zero = _mm256_setzero_si256();
-        let mut first = key(sy4.wrapping_sub(4 * delta).wrapping_sub(4 * gamma));
-        let (column_step, row_step) = (step(gamma), step(delta));
+        let first = key(sy4.wrapping_sub(4 * delta).wrapping_sub(4 * gamma));
+        let mut keys = column_keys(first, step(gamma));
+        let row_step = _mm256_set1_epi32(step(delta));
         core::array::from_fn(|row| {
-            let (near, far) = filters(&NATURAL, first, column_step);
-            first = first.wrapping_add(row_step);
+            let (near, far) = filters(&NATURAL, keys);
+            keys = _mm256_add_epi32(keys, row_step);
             let low = _mm256_unpacklo_epi16(near, far);
             let high = _mm256_unpackhi_epi16(near, far);
             let near = _mm256_unpacklo_epi16(low, high);
