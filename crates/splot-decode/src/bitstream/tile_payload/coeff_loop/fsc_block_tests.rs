@@ -229,7 +229,7 @@ fn fsc_block_overlong_remainder_fails_and_leaves_the_grid_and_context_clean() {
     assert!(matches!(
         result,
         Err(CoeffFscBranchError::ReadQuant(
-            CoeffReadQuantError::OverlongGolombPrefix { .. }
+            CoeffReadQuantError::OverlongGolombPrefix { index: 0 }
         ))
     ));
     assert_eq!(state, before);
