@@ -1206,7 +1206,7 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     /// The surface source the tile's units draw their reconstruction
     /// rectangles from, kept whole so its handle outlives the tile.
     surface_source: Option<std::sync::Arc<admission::SurfaceSource<T>>>,
-    ordered: deferred_recon::InterReconScratch<T>,
+    ordered: Box<deferred_recon::InterReconScratch<T>>,
     workers: InterReconScratchPool<T>,
     /// The ordinary walk's parsed rows waiting for their replay.
     pending_rows: Vec<ReconRow>,
@@ -1217,7 +1217,7 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
 }
 
 impl<T: ReconSample> TileDecodeScratch<T> {
-    fn from_scheduled(ordered: deferred_recon::InterReconScratch<T>) -> Self {
+    fn from_scheduled(ordered: Box<deferred_recon::InterReconScratch<T>>) -> Self {
         Self {
             parse: TileParseState::default(),
             surface_source: None,
@@ -2245,14 +2245,14 @@ pub(super) fn decode_tiles<T: ReconSample>(
         };
         let rects = source.reset(info, workers.spare_surfaces());
         rects.clear();
-        let commit = TileCommit::direct(
+        let mut commit = TileCommit::direct(
             ordered,
             workspace,
             commit_block_decoded,
             decoded_any,
             core::mem::take(frame_filter_records),
         );
-        let commit = admission::run_ordinary_tile(
+        admission::run_ordinary_tile(
             &mut parser,
             tile,
             &mut resolve_state,
@@ -2265,7 +2265,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &row_buffers,
             &motion,
             &mut pending_rows,
-            commit,
+            &mut commit,
         )?;
         let (next_ordered, next_workspace, next_decoded, next_records, spent_block_decoded) =
             commit.finish_direct();

@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 
 /// What a direct tile hands back to the decoder when its commit spine ends.
 pub(super) type FinishedDirectTile<T> = (
-    deferred_recon::InterReconScratch<T>,
+    Box<deferred_recon::InterReconScratch<T>>,
     CurrentFrameWorkspace<T>,
     bool,
     crate::filters::wienerns_lr::FrameFilterRecords,
@@ -31,7 +31,7 @@ pub(super) struct TileCommit<T: ReconSample> {
     sealed_rows: usize,
     /// Frontier links whose superblock rows are complete.
     closed_rows: usize,
-    ordered: deferred_recon::InterReconScratch<T>,
+    ordered: Box<deferred_recon::InterReconScratch<T>>,
     workspace: CurrentFrameWorkspace<T>,
     block_decoded: TileBlockDecodedState,
     current_block_decoded_superblock: Option<[usize; 2]>,
@@ -46,7 +46,7 @@ pub(super) struct TileCommit<T: ReconSample> {
 
 impl<T: ReconSample> TileCommit<T> {
     pub(super) fn direct(
-        ordered: deferred_recon::InterReconScratch<T>,
+        ordered: Box<deferred_recon::InterReconScratch<T>>,
         workspace: CurrentFrameWorkspace<T>,
         block_decoded: TileBlockDecodedState,
         decoded_any: bool,
@@ -732,8 +732,8 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     row_buffers: &ReconRowBufferPool,
     motion: &MotionFieldUnits,
     pending: &mut Vec<ReconRow>,
-    mut commit: TileCommit<T>,
-) -> Result<TileCommit<T>> {
+    commit: &mut TileCommit<T>,
+) -> Result<()> {
     row_gate.wait()?;
     pending.clear();
     let mut parsed = 0;
@@ -779,7 +779,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     if !reached_last {
         return Err(invalid_inter_tile_scheduling_state());
     }
-    Ok(commit)
+    Ok(())
 }
 
 impl<T: ReconSample> ScheduledTileRecon<T> {
