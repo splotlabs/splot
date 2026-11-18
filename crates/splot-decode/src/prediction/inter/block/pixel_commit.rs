@@ -177,35 +177,20 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                 if let Some(clear) = temporal_clear {
                     folded.push(clear);
                 }
-                let temporal_records = entry.temporal();
-                let prederived_motion = match entry.command_mut(&mut slots) {
-                    Some(command) => {
-                        let prederived = matches!(
-                            &command,
-                            ReconCommandMut::Inter(inter) if inter.has_derived_motion()
-                        );
-                        reconstruct_command(
-                            command,
-                            scratch,
-                            workspace,
-                            block_decoded,
-                            &mut folded,
-                            &mut LeafResiduals {
-                                planes: &mut residual_planes,
-                                coefficients: &residual_coeffs,
-                                blocks: &residual_blocks,
-                            },
-                            &shared,
-                        )?;
-                        prederived
-                    }
-                    None => true,
-                };
-                if prederived_motion && motion_owed {
-                    let records = temporal
-                        .get(temporal_records)
-                        .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-                    folded.extend_from_slice(records);
+                if let Some(command) = entry.command_mut(&mut slots) {
+                    reconstruct_command(
+                        command,
+                        scratch,
+                        workspace,
+                        block_decoded,
+                        &mut folded,
+                        &mut LeafResiduals {
+                            planes: &mut residual_planes,
+                            coefficients: &residual_coeffs,
+                            blocks: &residual_blocks,
+                        },
+                        &shared,
+                    )?;
                 }
                 if superblock_needs_decoded {
                     entry
@@ -214,6 +199,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                         .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
                 }
             }
+        }
+        if let Some((_, error)) = precompute_error {
+            return Err(error);
         }
         if has_intra {
             crate::pipeline::general_intra::swap_general_intra_scratch(

@@ -707,7 +707,6 @@ pub(super) struct ReconRowEntry {
     state: EntryState,
     /// Whether the resolve pass still owes this leaf its [`LeafReset`].
     reset_pending: bool,
-    temporal: [u32; 2],
 }
 
 /// What one leaf's parse hands its reconstruction entry. A general-intra
@@ -774,16 +773,6 @@ impl ReconRowEntry {
             n4w: usize::from(n4w),
             n4h: usize::from(n4h),
         })
-    }
-
-    /// The entry's § 7.22 records in its row's temporal list.
-    pub(super) fn temporal(&self) -> Range<usize> {
-        self.temporal[0] as usize..self.temporal[1] as usize
-    }
-
-    /// Row temporal lists hold a few records per leaf, far below `u32::MAX`.
-    pub(super) fn set_temporal(&mut self, records: Range<usize>) {
-        self.temporal = [records.start as u32, records.end as u32];
     }
 
     /// The final command, for a pass that consumes it in place.
@@ -863,7 +852,6 @@ pub(super) fn push_leaf_entry(
             publication,
             state,
             reset_pending: true,
-            temporal: [0, 0],
         },
     );
 }
@@ -902,9 +890,8 @@ pub(super) struct ReconRow {
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     /// The unit's deblock and tx-skip records, published by its resolve.
     pub(super) filter_records: TileFilterRecords,
-    /// Whether the prepass derived this unit's motion records into `temporal`,
-    /// which it does for a unit it reconstructed in full; the in-order commit
-    /// folds them, so it is the band's one writer.
+    /// Whether the prepass derived the entire unit's motion list into
+    /// `temporal` for the in-order commit to fold.
     pub(super) motion_folded: bool,
     failure: ReconRowFailure,
 }
@@ -1392,15 +1379,10 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                             &mut row.temporal,
                             &shared,
                         );
-                        match result {
-                            Ok(()) => {
-                                entry.set_temporal(start..row.temporal.len());
-                            }
-                            Err(error) => {
-                                row.temporal.truncate(start);
-                                row.record_precompute_error(entry_start + offset, error);
-                                break 'superblocks;
-                            }
+                        if let Err(error) = result {
+                            row.temporal.truncate(start);
+                            row.record_precompute_error(entry_start + offset, error);
+                            break 'superblocks;
                         }
                     }
                     _ => {
@@ -1410,9 +1392,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                             mi_cols,
                             current_order_hint,
                         ) {
-                            let start = row.temporal.len();
                             row.temporal.push(clear);
-                            entry.set_temporal(start..row.temporal.len());
                         }
                     }
                 }
@@ -1436,15 +1416,10 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 )
             };
             entry.drop_command(&mut row.slots);
-            match result {
-                Ok(()) => {
-                    entry.set_temporal(start..row.temporal.len());
-                }
-                Err(error) => {
-                    row.temporal.truncate(start);
-                    row.record_precompute_error(entry_start + offset, error);
-                    break 'superblocks;
-                }
+            if let Err(error) = result {
+                row.temporal.truncate(start);
+                row.record_precompute_error(entry_start + offset, error);
+                break 'superblocks;
             }
         }
     }

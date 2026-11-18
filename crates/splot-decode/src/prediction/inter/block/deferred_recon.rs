@@ -111,10 +111,6 @@ impl InterReconCommand {
         }
     }
 
-    pub(super) const fn has_derived_motion(&self) -> bool {
-        self.motion_derived
-    }
-
     /// The placed block this command reconstructs.
     pub(super) const fn placed(&self) -> &PlacedInterBlock {
         &self.placed
