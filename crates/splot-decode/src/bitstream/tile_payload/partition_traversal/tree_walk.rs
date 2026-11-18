@@ -210,7 +210,16 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let tile_cols = work_unit.mi_col_range().start as usize
             ..(work_unit.mi_col_range().end as usize).min(frame.mi_cols);
         let sb_size4 = frame.sb_size.num_4x4_wide()?.max(1);
-        let intra_facts = TileIntraFactsState::new_for_tile(tile_rows, tile_cols, sb_size4)?;
+        let has_sdp = if frame.frame_is_intra {
+            frame.enable_sdp
+        } else {
+            frame.enable_extended_sdp
+        };
+        let intra_facts = if has_sdp || tile_rows.is_empty() || tile_cols.is_empty() {
+            TileIntraFactsState::new_for_tile(tile_rows, tile_cols, sb_size4)?
+        } else {
+            TileIntraFactsState::disabled()
+        };
         let next_sb_row = work_unit.mi_row_range().start as usize;
         let step_max = limits
             .threshold(DecodeLimitName::MaxTilePartitionSteps)
@@ -350,8 +359,8 @@ where
         return Ok(());
     }
     let chroma_ref = call.chroma_ref(walker.chroma_ref);
-    let (call, sub_size, chroma_offset) = if call.is_extended_sdp_chroma_block() {
-        (call, call.b_size, false)
+    let (call, chroma_offset) = if call.is_extended_sdp_chroma_block() {
+        (call, false)
     } else {
         if is_intra_sdp_shared_root(frame, call) {
             let luma = call.with_tree_type(PartitionTreeType::LumaPart);
@@ -376,9 +385,9 @@ where
             hooks.mi_size_state,
             hooks.work_unit.cdf_mut().tile_cdfs_mut(),
         )?;
-        let sub_size = valid_subsize(partition, call.b_size)?;
-        let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
         if partition != PartitionType::None {
+            let sub_size = valid_subsize(partition, call.b_size)?;
+            let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
             let using_extended_sdp = read_extended_sdp_region_type(
                 frame,
                 &mut call,
@@ -411,8 +420,10 @@ where
                 None => Ok(()),
             };
         }
-        (call, sub_size, chroma_offset)
+        let chroma_offset = updated_chroma_offset(call, PartitionType::None, call.b_size, frame)?;
+        (call, chroma_offset)
     };
+    let sub_size = call.b_size;
     let part = decode_block_part(call, &walker.intra_facts)?;
     let frontier = decode_block_frontier(call, chroma_ref, frame, sub_size, chroma_offset, part)
         .with_bru_active(ACTIVE);
@@ -727,6 +738,7 @@ mod row_cursor_tests {
             let mut cursor =
                 GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT, storage)
                     .unwrap();
+            assert!(cursor.walker.intra_facts.grid_mut().cell(0, 0).is_none());
             loop {
                 let superblock = cursor
                     .decode_next_superblock_with_publication(

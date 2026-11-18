@@ -68,6 +68,14 @@ const PARTITION_SUBSIZE_U8: [[u8; 32]; PARTITION_SUBSIZE.len()] = {
 };
 const H_PARTITION_MIDSIZE_U8: [u8; 32] = padded_u8_table(&H_PARTITION_MIDSIZE);
 
+const _: () = {
+    let mut size = 0;
+    while size < BLOCK_SIZES {
+        assert!(PARTITION_SUBSIZE[PartitionType::None.index()][size] == size as i32);
+        size += 1;
+    }
+};
+
 /// A valid `bSize`: every constructor checks the index is below
 /// `BLOCK_SIZES`, so the table reads below cannot fail.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
