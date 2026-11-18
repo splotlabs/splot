@@ -445,11 +445,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let progress = writer.as_ref().map(FrameSlotWriter::progress_handle);
         let setup =
             self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress)?;
-        let mut frontier = OwnedFilterFrontier::start(setup, deblock_quant_deltas, None)?;
-        while let Some(job) = frontier.advance()? {
-            job.run()?;
-        }
-        let (frame, _shell) = frontier.finish()?.finish(writer);
+        let frontier = OwnedFilterFrontier::start(setup, deblock_quant_deltas, None)?;
+        let (frame, _shell) = frontier.run_inline()?.finish(writer);
         frame
     }
 }
@@ -550,6 +547,13 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
                 .ok_or_else(lr_pipeline_state_error)?;
         self.next += 1;
         Ok(Some(job))
+    }
+
+    pub(crate) fn run_inline(mut self) -> Result<OwnedFilterFinish<T>> {
+        while let Some(job) = self.advance()? {
+            job.run()?;
+        }
+        self.finish()
     }
 
     /// Hands the deblock records back and transfers the setup to the freeze,

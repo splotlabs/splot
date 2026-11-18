@@ -1446,6 +1446,7 @@ pub(crate) struct SamplePools<T: SplitSample> {
     tip: WorkPool<TipFrame<T>>,
     tip_spares: Arc<inter::TipSpares>,
     finish: WorkPool<FinishFrame<T>>,
+    inline_filter_shell: Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>,
 }
 
 impl<T: SplitSample> SamplePools<T> {
@@ -1458,6 +1459,7 @@ impl<T: SplitSample> SamplePools<T> {
             tip: WorkPool::default(),
             tip_spares: Arc::default(),
             finish: WorkPool::default(),
+            inline_filter_shell: None,
         }
     }
 
@@ -1548,12 +1550,22 @@ impl RowPools {
         finish: PendingFinish<T>,
         walked: super::frame_engine::finish::WalkedFrame<T>,
     ) -> Result<()> {
-        let pool = &mut T::pools(self).finish;
-        let index = pool.reserve(
-            || FinishFrame::new(rows.map_or_else(RowWake::detached, RowScheduler::wake)),
-            FinishFrame::reset,
-        );
-        pool.push_slot(rows, index, |work| work.arm(finish, walked))
+        let pools = T::pools(self);
+        let Some(rows) = rows else {
+            let frontier =
+                walked.into_frontier(finish.progress_handle(), pools.inline_filter_shell.take());
+            match frontier.and_then(|frontier| frontier.run_inline()) {
+                Ok(filter) => pools.inline_filter_shell = Some(finish.run_owned_finish(filter)),
+                Err(error) => finish.fail(error),
+            }
+            return Ok(());
+        };
+        let index = pools
+            .finish
+            .reserve(|| FinishFrame::new(rows.wake()), FinishFrame::reset);
+        pools
+            .finish
+            .push_slot(Some(rows), index, |work| work.arm(finish, walked))
     }
 
     /// Waits for every work in every pool to finish.
