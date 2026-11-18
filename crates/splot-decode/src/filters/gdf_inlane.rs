@@ -574,15 +574,6 @@ fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool, const SWAP_TRA
     let mut add = |slot: usize, a: i16x16<Avx2>, b: i16x16<Avx2>| {
         accumulate(simd, &mut sums, (slot, unpack_pairs(simd, a, b)), params);
     };
-    let [tap0, tap12] = pair!(0, 12, transposed, SWAP_TRANSPOSE);
-    let [tap1, tap13] = pair!(1, 13, transposed, SWAP_TRANSPOSE);
-    add(0, tap0, tap1);
-    add(1, tap12, tap13);
-    let [tap2, tap14] = pair!(2, 14, transposed, SWAP_TRANSPOSE);
-    let [tap3, tap15] = pair!(3, 15, transposed, SWAP_TRANSPOSE);
-    add(2, tap2, tap3);
-    add(3, tap14, tap15);
-    add(4, tap3, tap15);
     let [tap4, tap6, tap7, tap11] = if LINEAR {
         let comb = |tap: u16x16<Avx2>| tap.bitcast::<i16x16<Avx2>>();
         let (a, b) = swap(
@@ -604,6 +595,15 @@ fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool, const SWAP_TRA
     };
     add(5, tap4, tap6);
     add(6, tap7, tap11);
+    let [tap0, tap12] = pair!(0, 12, transposed, SWAP_TRANSPOSE);
+    let [tap1, tap13] = pair!(1, 13, transposed, SWAP_TRANSPOSE);
+    add(0, tap0, tap1);
+    add(1, tap12, tap13);
+    let [tap2, tap14] = pair!(2, 14, transposed, SWAP_TRANSPOSE);
+    let [tap3, tap15] = pair!(3, 15, transposed, SWAP_TRANSPOSE);
+    add(2, tap2, tap3);
+    add(3, tap14, tap15);
+    add(4, tap3, tap15);
     let [tap8, tap10] = pair!(8, 10, mirrored, true);
     add(7, tap8, tap10);
     let [tap9, tap17] = pair!(9, 17, transposed, SWAP_TRANSPOSE);
