@@ -9,7 +9,9 @@ use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, load_lanes, store_lanes, validate_intra_edge_samples,
     validate_output_shape, validate_sample_type,
 };
-use fearless_simd::{Bytes as _, Simd, SimdBase, i16x16, i32x8, u8x32, u16x8, u16x16, u32x8};
+use fearless_simd::{
+    Bytes as _, Simd, SimdBase, i16x16, i32x8, u8x16, u8x32, u16x8, u16x16, u32x8,
+};
 
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
@@ -167,18 +169,18 @@ struct DipBlock {
 fn predict_dip_samples<S: Simd, P: IntraLaneSample>(
     simd: S,
     block: DipBlock,
-    features: &[i32; DIP_FEATURE_COUNT],
+    features: &[u32; DIP_FEATURE_PAIRS],
     rows: &[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE],
     left: &[P],
     above: &[P],
     output: &mut [P],
 ) -> Option<()> {
     let inputs = (features, rows, left, above);
-    match block.size.width() {
-        4 => dip_bands::<S, P, 4, 1>(simd, block, inputs, output),
-        8 => dip_bands::<S, P, 8, 1>(simd, block, inputs, output),
-        16 => dip_bands::<S, P, 16, 1>(simd, block, inputs, output),
-        32 => dip_bands::<S, P, 32, 2>(simd, block, inputs, output),
+    match block.size.log2_width() {
+        2 => dip_bands::<S, P, 4, 1>(simd, block, inputs, output),
+        3 => dip_bands::<S, P, 8, 1>(simd, block, inputs, output),
+        4 => dip_bands::<S, P, 16, 1>(simd, block, inputs, output),
+        5 => dip_bands::<S, P, 32, 2>(simd, block, inputs, output),
         _ => dip_bands::<S, P, 64, 4>(simd, block, inputs, output),
     }
 }
@@ -213,30 +215,26 @@ fn dip_features<T: ReconSample>(
     size: IntraRectBlockSize,
     edges: IntraDipEdges<'_, T>,
     dip_transpose: bool,
-) -> [i32; DIP_FEATURE_COUNT] {
-    let mut features = [0i32; DIP_FEATURE_COUNT];
-    features[0] = i32::from(edges.top_left.to_u16());
-
+) -> [u32; DIP_FEATURE_PAIRS] {
     let above = dip_averages(edges.above, size.width(), size.log2_width());
     let left = dip_averages(edges.left, size.height(), size.log2_height());
-    for index in 0..4 {
-        features[index + 1] = if dip_transpose {
-            left[index]
-        } else {
-            above[index]
-        };
-        features[index + 5] = if dip_transpose {
-            above[index]
-        } else {
-            left[index]
-        };
-    }
-    features[9] = if dip_transpose { left[4] } else { above[4] };
-    features[10] = if dip_transpose { above[4] } else { left[4] };
-    features
+    let (x, y) = if dip_transpose {
+        (left, above)
+    } else {
+        (above, left)
+    };
+    let pack = |low, high| u32::from(low) | (u32::from(high) << 16);
+    [
+        pack(edges.top_left.to_u16(), x[0]),
+        pack(x[1], x[2]),
+        pack(x[3], y[0]),
+        pack(y[1], y[2]),
+        pack(y[3], x[4]),
+        u32::from(y[4]),
+    ]
 }
 
-fn dip_averages<T: ReconSample>(samples: &[T], block_len: usize, log2_len: u8) -> [i32; 5] {
+fn dip_averages<T: ReconSample>(samples: &[T], block_len: usize, log2_len: u8) -> [u16; 5] {
     /// The sums of the first five `N`-sample groups of `samples`, which
     /// holds four to five groups; the samples it lacks repeat its last.
     #[inline]
@@ -265,7 +263,7 @@ fn dip_averages<T: ReconSample>(samples: &[T], block_len: usize, log2_len: u8) -
     };
     let group_log2 = log2_len - 2;
     let round = (block_len >> 3) as i32;
-    sums.map(|sum| (sum + round) >> group_log2)
+    sums.map(|sum| ((sum + round) >> group_log2) as u16)
 }
 
 /// `DIP_WEIGHTS[mode][index]` of one grid row, interleaved for a pairwise
@@ -316,7 +314,7 @@ const fn dip_row_weights() -> [[[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE];
 }
 
 type DipInputs<'a, P> = (
-    &'a [i32; DIP_FEATURE_COUNT],
+    &'a [u32; DIP_FEATURE_PAIRS],
     &'a [[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE],
     &'a [P],
     &'a [P],
@@ -337,18 +335,12 @@ fn dip_bands<S: Simd, P: IntraLaneSample, const W: usize, const C: usize>(
     output: &mut [P],
 ) -> Option<()> {
     let height = size.height();
-    let up_x = u32::from(size.log2_width().max(3) - 3);
+    let up_x = W.trailing_zeros().saturating_sub(3);
     let up_y = u32::from(size.log2_height().max(3) - 3);
     let step = 1usize << up_y;
-    let pairs: [i16x16<S>; DIP_FEATURE_PAIRS] = core::array::from_fn(|k| {
-        let low = u32::from(features[2 * k] as u16);
-        let high = features.get(2 * k + 1).map_or(0, |&f| u32::from(f as u16));
-        u32x8::splat(simd, low | high << 16).bitcast()
-    });
-    let index = DIP_POINT_INDEX.get(W.trailing_zeros() as usize - 2)?;
-    let [w0, w1] = DIP_LERP_WEIGHTS
-        .get(up_x as usize)?
-        .map(|w| u16x16::from_slice(simd, &w));
+    let pairs: [i16x16<S>; DIP_FEATURE_PAIRS] =
+        features.map(|pair| u32x8::splat(simd, pair).bitcast());
+    let [w0, w1] = DIP_LERP_WEIGHTS[up_x as usize].map(|w| u16x16::from_slice(simd, &w));
     let mut row_start = 0;
     let mut before = if step > 1 {
         load_lanes::<S, P, W, C>(simd, above.first_chunk::<W>()?)?
@@ -364,21 +356,34 @@ fn dip_bands<S: Simd, P: IntraLaneSample, const W: usize, const C: usize>(
         }
         let (low, high) = simd.split_u32x8((sum >> 10).max(0).min(max).bitcast());
         let grid = simd.relaxed_narrow_u32x4(low, high);
-        let edge = u16x8::splat(simd, left.get((band + 1) * step - 1)?.to_u16());
-        let near = simd.slide_u16x8::<7>(edge, grid);
-        let (near, far) = (
-            simd.combine_u16x8(near, near),
-            simd.combine_u16x8(grid, grid),
-        );
-        let sampled: [u16x16<S>; C] = core::array::from_fn(|k| {
-            let index = u8x32::from_slice(simd, &index[k]);
-            let far = simd.swizzle_dyn_within_blocks_u16x16(far, index);
-            if W <= 8 {
-                return far;
+        let sampled = if W <= 8 {
+            let grid = if W == 4 {
+                let even =
+                    u8x16::load_array(simd, [0, 1, 4, 5, 8, 9, 12, 13, 0, 1, 4, 5, 8, 9, 12, 13]);
+                simd.swizzle_dyn_u8x16(grid.bitcast(), even).bitcast()
+            } else {
+                grid
+            };
+            [simd.combine_u16x8(grid, grid); C]
+        } else {
+            let edge = u16x8::splat(simd, left.get((band + 1) * step - 1)?.to_u16());
+            let near = simd.slide_u16x8::<7>(edge, grid);
+            if W == 16 {
+                let middle = (near + grid) >> 1;
+                let (low, high) = simd.interleave_u16x8(middle, grid);
+                [simd.combine_u16x8(low, high); C]
+            } else {
+                let near = simd.combine_u16x8(near, near);
+                let far = simd.combine_u16x8(grid, grid);
+                let indices = &DIP_POINT_INDEX[up_x as usize - 2];
+                core::array::from_fn(|k| {
+                    let index = u8x32::from_slice(simd, &indices[k]);
+                    let near = simd.swizzle_dyn_within_blocks_u16x16(near, index);
+                    let far = simd.swizzle_dyn_within_blocks_u16x16(far, index);
+                    (near * w0 + far * w1) >> up_x
+                })
             }
-            let near = simd.swizzle_dyn_within_blocks_u16x16(near, index);
-            (near * w0 + far * w1) >> up_x
-        });
+        };
         if step > 1 {
             let delta: [u16x16<S>; C] = core::array::from_fn(|k| sampled[k] - before[k]);
             let mut lerp = before.map(|a| a << up_y);
@@ -417,23 +422,19 @@ static DIP_LERP_WEIGHTS: [[[u16; 16]; 2]; 4] = {
     table
 };
 
-/// `DIP_POINT_INDEX[log2(w) - 2][k]` holds, for samples `16 * k..16 * k + 16`
+/// `DIP_POINT_INDEX[log2(w) - 5][k]` holds, for samples `16 * k..16 * k + 16`
 /// of a sampled row, the byte indices of the point before each sample in
 /// `[left, grid[0..7]]`, which are those of the point after it in `grid`.
-static DIP_POINT_INDEX: [[[u8; 32]; 4]; 5] = {
-    let mut table = [[[0u8; 32]; 4]; 5];
+static DIP_POINT_INDEX: [[[u8; 32]; 4]; 2] = {
+    let mut table = [[[0u8; 32]; 4]; 2];
     let mut class = 0;
-    while class < 5 {
+    while class < 2 {
         let mut k = 0;
         while k < 4 {
             let mut byte = 0;
             while byte < 32 {
                 let x = 16 * k + (byte % 16) / 2 + 8 * (byte / 16);
-                let point = match class {
-                    0 => 2 * x,
-                    1 => x,
-                    _ => x >> (class - 1),
-                } % 8;
+                let point = (x >> (class + 2)) % 8;
                 table[class][k][byte] = (2 * point + byte % 2) as u8;
                 byte += 1;
             }
