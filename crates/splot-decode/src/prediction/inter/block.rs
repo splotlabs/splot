@@ -241,28 +241,7 @@ impl<T: ReconSample> InterDecodeScratch<T> {
     }
 }
 
-enum ReconCommand {
-    Intrabc(intrabc::IntrabcReconCommand),
-    Inter(deferred_recon::InterReconCommand),
-}
-
-impl ReconCommand {
-    const fn as_view(&self) -> ReconCommandRef<'_> {
-        match self {
-            Self::Intrabc(_) => ReconCommandRef::Intrabc,
-            Self::Inter(command) => ReconCommandRef::Inter(command),
-        }
-    }
-
-    const fn as_view_mut(&mut self) -> ReconCommandMut<'_> {
-        match self {
-            Self::Intrabc(command) => ReconCommandMut::Intrabc(command),
-            Self::Inter(command) => ReconCommandMut::Inter(command),
-        }
-    }
-}
-
-/// A [`ReconCommand`] a row entry holds inline or in its row's slot list.
+/// A reconstruction command a row entry holds inline or in its row's slot list.
 enum ReconCommandRef<'a> {
     GeneralIntra,
     Intrabc,
@@ -1801,9 +1780,10 @@ fn decode_block(
                 tip_size_16x16: false,
                 blend: mc::CompoundBlend::default(),
             },
-            InterBlock {
+            deferred_recon::ParsedInterBlock {
+                ref_frame0,
                 interintra: warp_interintra_mode,
-                ..parsed_inter_block(ref_frame0, None, ReconInterpolationFilter::EightTap)
+                ..Default::default()
             },
             None,
             (n4w, n4h),
@@ -1969,10 +1949,11 @@ fn decode_block(
             tip_size_16x16: tip_ref && tip_uses_16x16_units,
             blend: mc::CompoundBlend::default(),
         },
-        InterBlock {
+        deferred_recon::ParsedInterBlock {
+            ref_frame0,
             bawp,
             interintra,
-            ..parsed_inter_block(ref_frame0, None, interp)
+            ..Default::default()
         },
         tip_ref.then_some(crate::filters::deblock::DeblockSubPuSize::square(
             if tip_uses_16x16_units { 16 } else { 8 },
@@ -1988,8 +1969,7 @@ fn decode_block(
     })
 }
 
-/// An inter leaf's block as the parse leaves it, before § 7.12 resolution
-/// writes its motion.
+/// An encoder candidate's block before § 7.12 resolution writes its motion.
 const fn parsed_inter_block(
     ref_frame0: i8,
     ref_frame1: Option<i8>,
@@ -2029,7 +2009,7 @@ fn finish_inter_leaf(
     sink: &mut InterLeafSink<'_>,
     frontier: &DecodeBlockFrontier,
     syntax: InterBlockSyntax,
-    mut block: InterBlock,
+    mut block: deferred_recon::ParsedInterBlock,
     sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
     (n4w, n4h): (usize, usize),
     (skip, segment_id, block_qindex): (u8, u8, u32),
@@ -2116,13 +2096,13 @@ fn finish_inter_leaf(
     let leaf = mv_grid.record_flags(frontier.r, frontier.c, n4w, n4h, flags);
     let index = slots.len() as u32;
     slots.extend(core::iter::once_with(|| {
-        tile::LeafSlot::Command(ReconCommand::Inter(deferred_recon::InterReconCommand::new(
+        tile::LeafSlot::PendingInter(deferred_recon::PendingInterCommand {
             placed,
             syntax,
             segment_id,
-            block_qindex,
+            qindex: block_qindex,
             leaf,
-        )))
+        })
     }));
     Ok(index)
 }

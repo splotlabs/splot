@@ -679,14 +679,8 @@ impl EncoderInterTile {
             }
             _ => None,
         };
-        let wedge = match syntax.motion {
-            InterMotionSyntax::Compound(compound)
-                if matches!(syntax.blend, mc::CompoundBlend::Wedge { .. }) =>
-            {
-                Some(compound)
-            }
-            _ => None,
-        };
+        let wedge = matches!(syntax.motion, InterMotionSyntax::Compound(_))
+            && matches!(syntax.blend, mc::CompoundBlend::Wedge { .. });
         if is_tip(motion) {
             let placed = self.placed(frontier, &syntax, parsed, &resolved)?;
             let mut records = core::mem::take(&mut self.tip_records);
@@ -704,32 +698,21 @@ impl EncoderInterTile {
                 let mut units = core::mem::take(&mut self.refined);
                 let derived = self
                     .predict_refined(&placed, refine, workspace, &mut units, false)
-                    .and_then(|()| {
-                        self.append_compound_records(
-                            (&placed, &block),
-                            compound,
-                            &resolved,
-                            Some(&units),
-                        )
-                    });
+                    .and_then(|()| self.append_compound_records(&placed, Some(&units)));
                 self.refined = units;
                 derived?;
             }
-        } else if let Some(compound) = wedge {
+        } else if wedge {
             let placed = self.placed(frontier, &syntax, parsed, &resolved)?;
-            self.append_compound_records((&placed, &block), compound, &resolved, None)?;
+            self.append_compound_records(&placed, None)?;
         }
         Ok(resolved.mv)
     }
 
-    /// Appends the § 7.19 temporal records of the compound block `placed`
-    /// of `block` as 8x8 units, as the decoder records a refined or wedge
-    /// block.
+    /// Appends the § 7.19 temporal records of a refined or wedge compound block.
     fn append_compound_records(
         &mut self,
-        (placed, block): (&PlacedInterBlock, &MvBlockContext),
-        compound: CompoundMotionSyntax,
-        resolved: &ResolvedInterBlock,
+        placed: &PlacedInterBlock,
         motion: Option<&mc::RefinedUnits>,
     ) -> Result<()> {
         super::compound_path::append_compound_temporal_motion(
@@ -737,15 +720,6 @@ impl EncoderInterTile {
             &self.reference,
             &self.ref_frame_idx,
             placed,
-            super::super::compound::CompoundBlockSyntax {
-                y_mode: compound.y_mode,
-                use_optflow: compound.use_optflow,
-                ref_frame0: block.ref_frame0,
-                ref_frame1: compound.ref_frame1,
-                mv0: resolved.mv[0],
-                mv1: resolved.mv[1],
-            },
-            resolved.warp_params,
             motion,
             self.mi_rows,
             self.mi_cols,

@@ -10,7 +10,7 @@ use splot_recon::InterpolationFilter as ReconInterpolationFilter;
 use super::super::find_mv_stack::BlockPrecisionRecord;
 use super::super::read_mv::MV_PRECISION_ONE_PEL;
 use super::resolve::{InterBlockSyntax, InterMotionSyntax};
-use super::{BlockDecodeContext, finish_inter_leaf, parsed_inter_block, tile};
+use super::{BlockDecodeContext, finish_inter_leaf, tile};
 use crate::bitstream::tile_payload::{
     DecodeBlockFrontier, DecodeTileWorkUnit, DecodedLeafPublication, GeneralIntraLeafMode,
 };
@@ -77,7 +77,10 @@ pub(super) fn decode_bru_leaf(
             tip_size_16x16: false,
             blend: super::mc::CompoundBlend::default(),
         },
-        parsed_inter_block(bru_ref, None, interp),
+        super::deferred_recon::ParsedInterBlock {
+            ref_frame0: bru_ref,
+            ..Default::default()
+        },
         None,
         (n4w, n4h),
         (1, 0, block_qindex),

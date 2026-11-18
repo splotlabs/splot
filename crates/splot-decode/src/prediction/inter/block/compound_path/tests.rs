@@ -1291,8 +1291,6 @@ fn compound_temporal_motion_merges_records_only_for_uniform_blocks() {
             &reference,
             &[0, 1],
             &placed,
-            compound,
-            warp_params,
             None,
             64,
             64,

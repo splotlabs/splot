@@ -10,11 +10,13 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_recon::{BitDepth, DecodedFrameInfo, PlaneId, ReconSample};
 
-use super::super::compound::CompoundBlockSyntax;
 use super::super::find_mv_stack::{MvBlockContext, NeighbourFlagSyntax};
 use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
 use super::super::mc::{self, WorkspaceSink};
-use super::super::{InterReferenceState, InterResidualBlock, PlacedInterBlock};
+use super::super::{
+    BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
+    InterResidualBlock, PlacedInterBlock,
+};
 use super::compound_path::{FrameRefFacts, append_compound_temporal_motion};
 use super::resolve::{
     InterBlockSyntax, InterMotionSyntax, MvResolutionState, SingleMotionSyntax,
@@ -25,17 +27,41 @@ use super::tip::{self, TipReconstructScratch};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQmSegmentScope, TileBlockDecodedState};
 
-/// One inter leaf from parse to reconstruction: the parse writes it into its
-/// row slot, the resolve pass fills its motion in place, reconstruction reads it.
+#[derive(Default)]
+pub(super) struct ParsedInterBlock {
+    pub(super) ref_frame0: i8,
+    pub(super) bawp: BawpSyntax,
+    pub(super) interintra: Option<InterIntraPrediction>,
+    pub(super) optflow_distances: Option<[i32; 2]>,
+    pub(super) residual: Option<InterResidual>,
+}
+
+pub(super) struct PendingInterCommand {
+    pub(super) placed: PlacedInterBlock<ParsedInterBlock>,
+    pub(super) syntax: InterBlockSyntax,
+    pub(super) segment_id: u8,
+    pub(super) qindex: u32,
+    /// The leaf's record in the grid the resolve pass publishes into.
+    pub(super) leaf: u32,
+}
+
 pub(super) struct InterReconCommand {
     placed: PlacedInterBlock,
-    /// The parsed syntax § 7.12 resolution reads.
-    syntax: InterBlockSyntax,
     segment_id: u8,
     qindex: u32,
     motion_derived: bool,
-    /// The leaf's record in the grid the resolve pass publishes into.
-    pub(super) leaf: u32,
+    kind: InterReconKind,
+}
+
+enum InterReconKind {
+    Single,
+    Tip {
+        use_16x16_units: bool,
+    },
+    Compound {
+        use_refinemv: bool,
+        refinemv_switchable: bool,
+    },
 }
 
 #[derive(Default)]
@@ -87,72 +113,92 @@ impl<T: ReconSample> ReconShared<'_, T> {
     }
 }
 
-impl InterReconCommand {
-    /// One parsed leaf's command. `segment_id` is the § 7.14 quantizer-matrix
-    /// segment, below `MAX_SEGMENTS`, in force while the leaf was parsed,
-    /// captured there because the resolve pass runs after the leaf's segment
-    /// scope has been dropped.
-    pub(super) const fn new(
-        placed: PlacedInterBlock,
-        syntax: InterBlockSyntax,
-        segment_id: u8,
-        qindex: u32,
-        leaf: u32,
-    ) -> Self {
-        Self {
-            placed,
-            syntax,
-            segment_id,
-            qindex,
-            motion_derived: false,
-            leaf,
-        }
-    }
-
-    /// The placed block this command reconstructs.
-    pub(super) const fn placed(&self) -> &PlacedInterBlock {
-        &self.placed
-    }
-
-    /// Whether § 7.13.3.2 TIP synthesis reconstructs this command, which reads
-    /// its reference frames through the TIP motion field rather than through
-    /// the block's own motion vectors.
-    pub(super) const fn is_tip(&self) -> bool {
-        matches!(
-            self.syntax.motion,
-            InterMotionSyntax::Single(SingleMotionSyntax { tip_ref: true, .. })
-        )
-    }
-
-    pub(super) const fn tip_unit_size(&self) -> usize {
-        if self.syntax.tip_size_16x16 { 16 } else { 8 }
-    }
-
+impl PendingInterCommand {
     /// The neighbour flags the parser published for this leaf.
     pub(super) fn flag_syntax(&self) -> NeighbourFlagSyntax {
         self.syntax.flag_syntax(self.placed.block.ref_frame0)
     }
 
-    /// Resolves the leaf's § 7.12 motion into its block. A warp block of a
+    /// Resolves the leaf's § 7.12 motion. A warp block of a
     /// `force_integer_mv` frame keeps its stored warp model but predicts by
     /// translation (`useWarp = 0`, § 7.13.3.14).
-    pub(super) fn resolve(&mut self, state: &mut MvResolutionState<'_>) -> Result<()> {
+    pub(super) fn resolve(&self, state: &mut MvResolutionState<'_>) -> Result<InterReconCommand> {
         let placed = &self.placed;
+        let parsed = &placed.block;
+        let (ref_frame1, kind) = match self.syntax.motion {
+            InterMotionSyntax::Single(SingleMotionSyntax { tip_ref: true, .. }) => (
+                None,
+                InterReconKind::Tip {
+                    use_16x16_units: self.syntax.tip_size_16x16,
+                },
+            ),
+            InterMotionSyntax::Compound(ref compound) => (
+                Some(compound.ref_frame1),
+                InterReconKind::Compound {
+                    use_refinemv: compound.use_refinemv,
+                    refinemv_switchable: compound.refinemv_switchable,
+                },
+            ),
+            _ => (None, InterReconKind::Single),
+        };
         let block = MvBlockContext {
             mi_row: placed.luma_y() / 4,
             mi_col: placed.luma_x() / 4,
             bw4: placed.luma_w() / 4,
             bh4: placed.luma_h() / 4,
             sb_h4: state.sb_h4,
-            ref_frame0: placed.block.ref_frame0,
-            ref_frame1: placed.block.ref_frame1,
+            ref_frame0: parsed.ref_frame0,
+            ref_frame1,
             mi_rows: state.mi_rows,
             mi_cols: state.mi_cols,
         };
         let mut resolved = resolve_inter_block(&block, &self.syntax, self.leaf, state)?;
         predict_by_translation_under_integer_mv(&self.syntax, state.core, &mut resolved);
-        resolved.apply(&mut self.placed.block);
-        Ok(())
+        let placed = placed.with_block(InterBlock {
+            ref_frame0: parsed.ref_frame0,
+            ref_frame1,
+            mv: resolved.mv[0],
+            mv1: resolved.mv[1],
+            interp: self.syntax.interp,
+            warp_params: resolved.warp_params,
+            bawp: parsed.bawp,
+            interintra: parsed.interintra,
+            compound_blend: resolved.blend,
+            optflow_distances: parsed.optflow_distances,
+            residual: parsed.residual.clone(),
+        });
+        Ok(InterReconCommand {
+            placed,
+            segment_id: self.segment_id,
+            qindex: self.qindex,
+            motion_derived: false,
+            kind,
+        })
+    }
+}
+
+impl InterReconCommand {
+    /// The placed block this command reconstructs.
+    pub(super) const fn placed(&self) -> &PlacedInterBlock {
+        &self.placed
+    }
+
+    /// Whether § 7.13.3.2 TIP synthesis reconstructs this command.
+    pub(super) const fn is_tip(&self) -> bool {
+        matches!(self.kind, InterReconKind::Tip { .. })
+    }
+
+    pub(super) const fn tip_unit_size(&self) -> usize {
+        if matches!(
+            self.kind,
+            InterReconKind::Tip {
+                use_16x16_units: true
+            }
+        ) {
+            16
+        } else {
+            8
+        }
     }
 
     pub(super) fn reads_current_frame(&self) -> bool {
@@ -285,11 +331,12 @@ impl InterReconCommand {
     /// its motion by § 7.13.3.3 refine-MV or § 7.13.3.8 optical flow, which
     /// [`super::prediction::predict_refined_inter_block`] predicts.
     fn refined(&self) -> Option<(bool, bool)> {
-        match &self.syntax.motion {
-            InterMotionSyntax::Compound(compound)
-                if compound.use_refinemv || self.placed.block.optflow_distances.is_some() =>
-            {
-                Some((compound.use_refinemv, compound.refinemv_switchable))
+        match self.kind {
+            InterReconKind::Compound {
+                use_refinemv,
+                refinemv_switchable,
+            } if use_refinemv || self.placed.block.optflow_distances.is_some() => {
+                Some((use_refinemv, refinemv_switchable))
             }
             _ => None,
         }
@@ -303,25 +350,11 @@ impl InterReconCommand {
         shared: &ReconShared<'_, T>,
         motion: Option<&mc::RefinedUnits>,
     ) -> Result<()> {
-        let InterMotionSyntax::Compound(compound) = &self.syntax.motion else {
-            return Err(crate::DecodeHeaderStateError::InvalidInterBlockModeState.into());
-        };
-        let block = &self.placed.block;
-        let syntax = CompoundBlockSyntax {
-            y_mode: compound.y_mode,
-            use_optflow: compound.use_optflow,
-            ref_frame0: block.ref_frame0,
-            ref_frame1: compound.ref_frame1,
-            mv0: block.mv,
-            mv1: block.mv1,
-        };
         append_compound_temporal_motion(
             temporal_records,
             shared.reference,
             shared.ref_frame_idx,
             &self.placed,
-            syntax,
-            block.warp_params,
             motion,
             shared.mi_rows,
             shared.mi_cols,
@@ -371,7 +404,7 @@ impl InterReconCommand {
                 |units| self.compound_records(temporal_records, shared, Some(units)),
             );
         }
-        if let InterMotionSyntax::Compound(_) = self.syntax.motion {
+        if let InterReconKind::Compound { .. } = self.kind {
             return self.compound_records(temporal_records, shared, None);
         }
         temporal_records.push(self.single_temporal_record(
@@ -665,8 +698,8 @@ mod tests {
     }
 
     fn command(x: usize, y: usize, width: usize, height: usize) -> InterReconCommand {
-        InterReconCommand::new(
-            PlacedInterBlock {
+        InterReconCommand {
+            placed: PlacedInterBlock {
                 luma: [x, y, width, height].map(|v| v as u32),
                 chroma_luma: [x, y, width, height].map(|v| v as u32),
                 predict_chroma: false,
@@ -689,25 +722,11 @@ mod tests {
                     residual: None,
                 },
             },
-            super::InterBlockSyntax {
-                motion: super::InterMotionSyntax::Single(super::SingleMotionSyntax {
-                    mode: crate::prediction::inter::SINGLE_MODE_NEARMV,
-                    tip_ref: false,
-                    ref_mv_idx: 0,
-                    mvd: Mv::ZERO,
-                    use_temporal_first: false,
-                }),
-                interp: InterpolationFilter::EightTap,
-                precision: crate::prediction::inter::find_mv_stack::BlockPrecisionRecord::default(),
-                skip: false,
-                use_amvd: false,
-                tip_size_16x16: false,
-                blend: mc::CompoundBlend::default(),
-            },
-            0,
-            0,
-            0,
-        )
+            segment_id: 0,
+            qindex: 0,
+            motion_derived: false,
+            kind: super::InterReconKind::Single,
+        }
     }
 
     fn residual(

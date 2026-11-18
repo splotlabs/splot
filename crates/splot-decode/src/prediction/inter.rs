@@ -1159,17 +1159,29 @@ pub(crate) type InterDecodeOutput<T> = (
 );
 
 #[derive(Clone, Debug)]
-pub(crate) struct PlacedInterBlock {
+pub(crate) struct PlacedInterBlock<B = InterBlock> {
     pub(crate) luma: [u32; 4],
     pub(crate) chroma_luma: [u32; 4],
     pub(crate) predict_chroma: bool,
     pub(crate) sub8x8_chroma: bool,
     pub(crate) interintra_chroma: bool,
     pub(crate) interintra_edges: [crate::pipeline::reconstruct::IntraEdgeAvailability; 2],
-    pub(crate) block: InterBlock,
+    pub(crate) block: B,
 }
 
-impl PlacedInterBlock {
+impl<B> PlacedInterBlock<B> {
+    pub(in crate::prediction::inter) fn with_block<U>(&self, block: U) -> PlacedInterBlock<U> {
+        PlacedInterBlock {
+            luma: self.luma,
+            chroma_luma: self.chroma_luma,
+            predict_chroma: self.predict_chroma,
+            sub8x8_chroma: self.sub8x8_chroma,
+            interintra_chroma: self.interintra_chroma,
+            interintra_edges: self.interintra_edges,
+            block,
+        }
+    }
+
     pub(crate) const fn luma_x(&self) -> usize {
         self.luma[0] as usize
     }

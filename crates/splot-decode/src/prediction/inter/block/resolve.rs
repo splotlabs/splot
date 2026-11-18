@@ -36,11 +36,11 @@ impl LeafSlot {
     /// The neighbour flags the parser published for this leaf.
     pub(super) fn flag_syntax(&self, frame_precision: u8) -> NeighbourFlagSyntax {
         match self {
-            Self::Command(ReconCommand::Inter(command)) => command.flag_syntax(),
-            Self::Intrabc(block) => {
+            Self::PendingInter(command) => command.flag_syntax(),
+            Self::PendingIntrabc(block) => {
                 non_inter_flag_syntax(Some(block.residual.is_none()), frame_precision)
             }
-            Self::Command(ReconCommand::Intrabc(_)) | Self::Spent => {
+            Self::Inter(_) | Self::Intrabc(_) | Self::Spent => {
                 non_inter_flag_syntax(None, frame_precision)
             }
         }
@@ -76,7 +76,7 @@ pub(super) fn pending_intrabc_leaf(
     slots: &mut Vec<LeafSlot>,
     pending: PendingIntrabcBlock,
 ) -> EntryState {
-    push_slot(slots, LeafSlot::Intrabc(pending))
+    push_slot(slots, LeafSlot::PendingIntrabc(pending))
 }
 
 /// Replays one parse unit's queued § 7.12 work in leaf order.
@@ -115,19 +115,20 @@ pub(super) fn resolve_parsed_leaves(
                 }
                 continue;
             }
-            match entry.slot_mut(&mut row.slots) {
-                Some(LeafSlot::Command(ReconCommand::Inter(command))) => command.resolve(state)?,
-                Some(slot @ LeafSlot::Intrabc(_)) => {
-                    let LeafSlot::Intrabc(block) = core::mem::replace(slot, LeafSlot::Spent) else {
+            let Some(slot) = entry.slot_mut(&mut row.slots) else {
+                continue;
+            };
+            match slot {
+                LeafSlot::PendingInter(command) => *slot = LeafSlot::Inter(command.resolve(state)?),
+                LeafSlot::PendingIntrabc(_) => {
+                    let LeafSlot::PendingIntrabc(block) = core::mem::replace(slot, LeafSlot::Spent)
+                    else {
                         return Err(invalid_inter_tile_scheduling_state());
                     };
-                    *slot = LeafSlot::Command(ReconCommand::Intrabc(resolve_pending_intrabc(
-                        block,
-                        state,
-                        intrabc_sb_h4,
-                    )?));
+                    *slot =
+                        LeafSlot::Intrabc(resolve_pending_intrabc(block, state, intrabc_sb_h4)?);
                 }
-                Some(LeafSlot::Command(ReconCommand::Intrabc(_)) | LeafSlot::Spent) | None => {}
+                LeafSlot::Inter(_) | LeafSlot::Intrabc(_) | LeafSlot::Spent => {}
             }
         }
     }

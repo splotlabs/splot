@@ -714,15 +714,16 @@ pub(super) enum EntryState {
     Spent,
 }
 
-/// A non-intra leaf's record: an inter leaf's command from its parse on, an
-/// IntraBC leaf's parse output until the resolve pass turns it into its command.
+/// A non-intra leaf's parse output or its resolved reconstruction command.
 #[allow(
     clippy::large_enum_variant,
     reason = "nearly every slot is an inter command; boxing it costs an allocation per leaf"
 )]
 pub(super) enum LeafSlot {
-    Intrabc(PendingIntrabcBlock),
-    Command(ReconCommand),
+    PendingInter(deferred_recon::PendingInterCommand),
+    PendingIntrabc(PendingIntrabcBlock),
+    Inter(deferred_recon::InterReconCommand),
+    Intrabc(intrabc::IntrabcReconCommand),
     Spent,
 }
 
@@ -750,8 +751,9 @@ impl ReconRowEntry {
             return Some(ReconCommandRef::GeneralIntra);
         }
         match self.slot(slots)? {
-            LeafSlot::Command(command) => Some(command.as_view()),
-            LeafSlot::Intrabc(_) | LeafSlot::Spent => None,
+            LeafSlot::Inter(command) => Some(ReconCommandRef::Inter(command)),
+            LeafSlot::Intrabc(_) => Some(ReconCommandRef::Intrabc),
+            LeafSlot::PendingInter(_) | LeafSlot::PendingIntrabc(_) | LeafSlot::Spent => None,
         }
     }
 
@@ -765,8 +767,9 @@ impl ReconRowEntry {
             return Some(ReconCommandMut::GeneralIntra(command));
         }
         match slot? {
-            LeafSlot::Command(command) => Some(command.as_view_mut()),
-            LeafSlot::Intrabc(_) | LeafSlot::Spent => None,
+            LeafSlot::Inter(command) => Some(ReconCommandMut::Inter(command)),
+            LeafSlot::Intrabc(command) => Some(ReconCommandMut::Intrabc(command)),
+            LeafSlot::PendingInter(_) | LeafSlot::PendingIntrabc(_) | LeafSlot::Spent => None,
         }
     }
 
@@ -867,18 +870,14 @@ impl ReconRow {
                 };
                 let slot = entry.slot_mut(&mut self.slots);
                 let syntax = match (&slot, &entry.state) {
-                    (
-                        Some(
-                            slot @ (LeafSlot::Command(ReconCommand::Inter(_))
-                            | LeafSlot::Intrabc(_)),
-                        ),
-                        _,
-                    ) => slot.flag_syntax(frame_precision),
+                    (Some(slot @ (LeafSlot::PendingInter(_) | LeafSlot::PendingIntrabc(_))), _) => {
+                        slot.flag_syntax(frame_precision)
+                    }
                     (None, EntryState::Intra(_)) => non_inter_flag_syntax(None, frame_precision),
                     _ => continue,
                 };
                 let leaf = grid.record_flags(r, c, n4w, n4h, syntax);
-                if let Some(LeafSlot::Command(ReconCommand::Inter(command))) = slot {
+                if let Some(LeafSlot::PendingInter(command)) = slot {
                     command.leaf = leaf;
                 }
             }
