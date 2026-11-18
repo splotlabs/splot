@@ -320,11 +320,21 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
         self.bit_depth
     }
 
+    /// Keeps reference opening out of the repeated optical-flow cache check.
+    #[inline(never)]
+    fn fetch_view(
+        samples: ReferenceSamples<'a, T>,
+        last_row: i32,
+        offset: ByteOffset,
+    ) -> Result<ReferencePlaneView<'a, T>> {
+        samples.plane_view(PlaneId::Y, last_row, offset)
+    }
+
     /// The luma view, published down to `last_row`: the last fetched view
     /// when its published rows reach that row, else a new one (with the same
     /// errors as fetching it per unit).
     fn view(&mut self, last_row: i32) -> Result<&ReferencePlaneView<'a, T>> {
-        let fetch = || self.samples.plane_view(PlaneId::Y, last_row, self.offset);
+        let fetch = || Self::fetch_view(self.samples, last_row, self.offset);
         match &mut self.view {
             Some(view) => {
                 let row = (last_row.max(0) as usize).min(view.height() - 1);
