@@ -719,19 +719,19 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     unit_count: usize,
     context: &TileDecodeContext<'_, T>,
     temporal: &TemporalMvContext,
-    row_gate: &RowReferenceGate<'_, T>,
-    row_buffers: &ReconRowBufferPool,
+    references: &crate::prediction::inter::PixelReferenceGate<'_, T>,
+    row_buffers: &mut Vec<ReconRowBuffers>,
     motion: &MotionFieldUnits,
     pending: &mut Vec<ReconRow>,
     commit: &mut TileCommit<T>,
 ) -> Result<()> {
-    row_gate.wait()?;
+    references.wait()?;
     pending.clear();
     let mut parsed = 0;
     let mut reached_last = false;
     while !reached_last && parsed < unit_count {
         while !reached_last && parsed < unit_count && pending.len() < PARSE_AHEAD_ROWS {
-            let step = parser.next_unit(tile, context, Some(row_buffers.take()), true);
+            let step = parser.next_unit(tile, context, row_buffers.pop(), true);
             let step = resolve_parser_step(step, |row| {
                 resolve.resolve_unit(&mut parser.mv_grid, context, temporal, row, tile_offset)?;
                 #[cfg(test)]
@@ -763,7 +763,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 bounds: super::row_gate::RowReferenceBounds::default(),
             };
             let buffers = commit.replay(ready, motion, temporal, context)?;
-            row_buffers.recycle(buffers);
+            row_buffers.push(buffers);
         }
     }
     if !reached_last {
@@ -1602,12 +1602,9 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let mut rows = core::mem::take(&mut reusable.rows);
     reset_row_slots(&mut rows, unit_count)?;
     let TileDecodeScratch {
-        parse: _,
         ordered,
-        workers: _,
         scheduled_rows,
-        buffers: _,
-        pending_rows: _,
+        ..
     } = scratch;
     let mut surface_source = reusable.surfaces.take().unwrap_or_else(|| {
         Arc::new(SurfaceSource::new(

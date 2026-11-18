@@ -158,20 +158,7 @@ fn recon_entries_keep_contiguous_superblock_order() {
 }
 
 #[test]
-fn reconstruction_pools_reuse_owned_storage() {
-    let rows = {
-        let mut pool = ReconRowBufferPool::default();
-        pool.reset(0);
-        pool
-    };
-    let mut buffers = ReconRowBuffers::default();
-    buffers.temporal.reserve(8);
-    let pointer = buffers.temporal.as_ptr();
-    rows.recycle(buffers);
-    let reused = rows.take();
-    assert_eq!(reused.temporal.capacity(), 8);
-    assert!(core::ptr::eq(reused.temporal.as_ptr(), pointer));
-
+fn reconstruction_worker_reuses_owned_scratch() {
     let workers = InterReconScratchPool::<u8>::new(1);
     let first = workers
         .with_scratch(0, core::ptr::from_mut)
@@ -412,13 +399,6 @@ fn frame_geometry_waits_for_readers_then_reuses_hidden_backing() {
     assert_eq!(Arc::as_ptr(&reused), identity);
     assert_eq!(reused.tiles[0].tile_offset, ByteOffset::new(9));
     assert_eq!(reused.unit_count, 4);
-}
-
-#[test]
-fn a_tile_row_pool_without_a_decode_still_hands_out_buffers() {
-    let mut pool = super::ReconRowBufferPool::default();
-    pool.reset(2);
-    assert_eq!(pool.take().residual_coeffs.capacity(), 0);
 }
 
 #[test]

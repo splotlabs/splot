@@ -36,23 +36,17 @@ pub(super) struct TileDecodeOutput {
 }
 
 /// Folds one tile's walk-parsed filter grids into the frame-level state.
-#[allow(clippy::too_many_arguments)]
 fn merge_tile_filter_state(
     cdef_state: &mut CdefState,
     gdf_state: &mut GdfState,
     ccso_state: &mut CcsoState,
-    segment_ids: Option<&mut FrameSegmentIdMap>,
     tile: &TileParserOutput,
     mi_rows: Range<usize>,
     mi_cols: Range<usize>,
 ) -> Result<()> {
     cdef_state.merge_tile(&tile.cdef_state, mi_rows.clone(), mi_cols.clone())?;
     gdf_state.merge_tile(&tile.gdf_state, mi_rows.clone(), mi_cols.clone())?;
-    ccso_state.merge_tile(&tile.ccso_state, mi_rows, mi_cols)?;
-    if let Some(segment_ids) = segment_ids {
-        segment_ids.merge_tile(&tile.segment_id_state);
-    }
-    Ok(())
+    ccso_state.merge_tile(&tile.ccso_state, mi_rows, mi_cols)
 }
 
 fn append_lr_records(
@@ -68,6 +62,12 @@ fn append_lr_records(
         {
             return Err(crate::DecodeHeaderStateError::InvalidLoopRestorationFilterState.into());
         }
+    }
+
+    if blocks.is_empty() && filters.is_empty() {
+        core::mem::swap(blocks, tile_blocks);
+        core::mem::swap(filters, tile_filters);
+        return Ok(());
     }
 
     blocks
@@ -610,7 +610,6 @@ impl<'payload> TileParser<'payload> {
                 coeff_ctx: self.coeff_ctx,
                 residual_scratch: self.residual_scratch,
                 intrabc_state: self.intrabc_state,
-                row_buffers: ReconRowBufferPool::default(),
                 traversal: crate::bitstream::tile_payload::TileTraversalStorage::default(),
                 commit_block_decoded: TileBlockDecodedState::default(),
                 spent_filters: None,
@@ -1085,32 +1084,6 @@ fn superblock_coefficient_capacity(sb_h4: usize, chroma: ChromaFormatIdc) -> Res
         .ok_or_else(|| crate::DecodeHeaderStateError::InvalidBlockGeometry.into())
 }
 
-#[derive(Default)]
-struct ReconRowBufferPool {
-    available: Mutex<Vec<ReconRowBuffers>>,
-}
-
-impl ReconRowBufferPool {
-    /// Tops this tile's set up to `slots`, keeping what the last tile left.
-    ///
-    /// The decoder holds one of these for the life of the stream, so the sets
-    /// stay here between tiles instead of going back to the retained list.
-    fn reset(&mut self, slots: usize) {
-        let available = self.available.get_mut();
-        if available.len() < slots {
-            available.resize_with(slots, ReconRowBuffers::default);
-        }
-    }
-
-    fn take(&self) -> ReconRowBuffers {
-        self.available.lock().pop().unwrap_or_default()
-    }
-
-    fn recycle(&self, buffers: ReconRowBuffers) {
-        self.available.lock().push(buffers);
-    }
-}
-
 struct ReadyReconRow<T: ReconSample> {
     row: ReconRow,
     surface: Option<splot_recon::OwnedFrameRect<T>>,
@@ -1184,8 +1157,6 @@ pub(crate) struct TileParseState {
     coeff_ctx: TileCoeffContextState,
     /// The partition stack and loop-restoration record lists this tile fills.
     traversal: crate::bitstream::tile_payload::TileTraversalStorage,
-    /// The row buffer sets this tile's units are parsed and replayed through.
-    row_buffers: ReconRowBufferPool,
     /// The block-decoded grid the commit spine reads.
     commit_block_decoded: TileBlockDecodedState,
     /// The CDEF, GDF and CCSO tile states the last tile merged, whose grids
@@ -1200,6 +1171,7 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     workers: InterReconScratchPool<T>,
     /// The ordinary walk's parsed rows waiting for their replay.
     pending_rows: Vec<ReconRow>,
+    row_buffers: Vec<ReconRowBuffers>,
     scheduled_rows: admission::ScheduledRowSlots<T>,
     /// The decode's reusable storage, for the row sets.
     pub(in crate::prediction::inter) buffers:
@@ -1213,6 +1185,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             ordered,
             workers: InterReconScratchPool::default(),
             pending_rows: Vec::new(),
+            row_buffers: Vec::new(),
             scheduled_rows: admission::ScheduledRowSlots::default(),
             buffers: None,
         }
@@ -1488,7 +1461,6 @@ impl ParsedTile {
             cdef,
             gdf,
             ccso,
-            None,
             &output,
             tile.mi_row_range().start as usize..tile.mi_row_range().end as usize,
             tile.mi_col_range().start as usize..tile.mi_col_range().end as usize,
@@ -2140,6 +2112,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         mut ordered,
         workers,
         mut pending_rows,
+        mut row_buffers,
         scheduled_rows,
         buffers,
     } = scratch;
@@ -2153,13 +2126,9 @@ pub(super) fn decode_tiles<T: ReconSample>(
     frame_filter_records.clear();
     let motion = MotionFieldUnits::new(motion_field);
     let mut decoded_any = false;
-    let row_gate = row_gate::RowReferenceGate::new(
-        reference,
-        core,
-        ref_frame_idx,
-        workspace.info(),
-        temporal_context,
-    );
+    let single_tile = work_units.len() == 1;
+    let references =
+        reference.pixel_reference_gate(super::super::named_pixel_reference_slots(core));
     for tile in work_units.iter_mut() {
         let source = if tile.payload_index() == 0 {
             Some(payload)
@@ -2183,13 +2152,19 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let unit_count = tile_unit_capacity(&rows, &cols, mi_rows, mi_cols, sb_h4);
         let tile_mi_rows = rows;
         let tile_mi_cols = cols;
-        parse_state.row_buffers.reset(admission::PARSE_AHEAD_ROWS);
-        let row_buffers = core::mem::take(&mut parse_state.row_buffers);
-        let (tile_cdef, tile_gdf, tile_ccso) = tile_filter_states(
-            (&cdef_state, &gdf_state, &ccso_state),
-            tile,
-            parse_state.spent_filters.take(),
-        )?;
+        let frame_filters;
+        let (tile_cdef, tile_gdf, tile_ccso) = if single_tile {
+            frame_filters = None;
+            (cdef_state, gdf_state, ccso_state)
+        } else {
+            let states = tile_filter_states(
+                (&cdef_state, &gdf_state, &ccso_state),
+                tile,
+                parse_state.spent_filters.take(),
+            )?;
+            frame_filters = Some((cdef_state, gdf_state, ccso_state));
+            states
+        };
         let mut parser = TileParser::new(
             tile,
             tile_bytes,
@@ -2215,8 +2190,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
             unit_count,
             &context,
             temporal_context,
-            &row_gate,
-            &row_buffers,
+            &references,
+            &mut row_buffers,
             &motion,
             &mut pending_rows,
             &mut commit,
@@ -2234,17 +2209,23 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &mut parse_state.filter_records,
         );
         parse_state.commit_block_decoded = spent_block_decoded;
-        parse_state.row_buffers = row_buffers;
-        merge_tile_filter_state(
-            &mut cdef_state,
-            &mut gdf_state,
-            &mut ccso_state,
-            segment_ids.as_deref_mut(),
-            &output,
-            tile_mi_rows,
-            tile_mi_cols,
-        )?;
         let mut output = output;
+        if let Some((mut cdef, mut gdf, mut ccso)) = frame_filters {
+            merge_tile_filter_state(
+                &mut cdef,
+                &mut gdf,
+                &mut ccso,
+                &output,
+                tile_mi_rows,
+                tile_mi_cols,
+            )?;
+            parse_state.spent_filters =
+                Some((output.cdef_state, output.gdf_state, output.ccso_state));
+            (output.cdef_state, output.gdf_state, output.ccso_state) = (cdef, gdf, ccso);
+        }
+        if let Some(map) = segment_ids.as_deref_mut() {
+            map.merge_tile(&output.segment_id_state);
+        }
         append_lr_records(
             &mut frame_filter_records.lr_source_blocks,
             &mut frame_filter_records.lr_unit_filters,
@@ -2252,7 +2233,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &mut output.traversal.unit_filters,
         )?;
         parse_state.traversal = core::mem::take(&mut output.traversal);
-        parse_state.spent_filters = Some((output.cdef_state, output.gdf_state, output.ccso_state));
+        (cdef_state, gdf_state, ccso_state) =
+            (output.cdef_state, output.gdf_state, output.ccso_state);
     }
     if !decoded_any {
         return Err(no_decoded_block_error());
@@ -2265,6 +2247,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             ordered,
             workers,
             pending_rows,
+            row_buffers,
             scheduled_rows,
         },
         workspace,
