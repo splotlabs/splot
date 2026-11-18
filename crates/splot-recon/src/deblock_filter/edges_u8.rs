@@ -241,9 +241,35 @@ kernel!(
 /// (`$rows[REACH + j]` holds `s[j]` of every line) for edges whose widest
 /// `maxWidthPos` is at most `$class`: reads the § 7.17.7.2 `s[-n..n]`, `n =
 /// Clip3(3, 8, $class + 1)`, and changes `s[-$class..$class]`. Evaluates to
-/// whether any sample may have changed.
+/// whether any sample may have changed. The raw delta is four times the
+/// inner term in § 7.17.7.1. Its magnitude rounds to zero through the ramp
+/// for up to 8 at any width or up to 12 at width 1.
 macro_rules! filter_chunk {
     ($token:ident, $rows:ident, $low:expr, $high:expr, $class:literal) => {{
+        let (p1, p0, q0, q1) = (
+            $rows[REACH - 2],
+            $rows[REACH - 1],
+            $rows[REACH],
+            $rows[REACH + 1],
+        );
+        let taps = _mm256_set1_epi16(0x040c);
+        let raw_delta = |outer, inner| {
+            _mm256_sub_epi16(
+                _mm256_maddubs_epi16(outer, taps),
+                _mm256_maddubs_epi16(inner, taps),
+            )
+        };
+        let raw_low = raw_delta(_mm256_unpacklo_epi8(q0, p1), _mm256_unpacklo_epi8(p0, q1));
+        let raw_high = raw_delta(_mm256_unpackhi_epi8(q0, p1), _mm256_unpackhi_epi8(p0, q1));
+        let motion = _mm256_max_epi16(_mm256_abs_epi16(raw_low), _mm256_abs_epi16(raw_high));
+        let moves = _mm256_cmpgt_epi16(motion, _mm256_set1_epi16(if $class == 1 { 12 } else { 8 }));
+        _mm256_testz_si256(moves, moves) == 0
+            && apply_chunk!($token, $rows, $low, $high, [raw_low, raw_high], $class)
+    }};
+}
+
+macro_rules! apply_chunk {
+    ($token:ident, $rows:ident, $low:expr, $high:expr, $raw:expr, $class:literal) => {{
         let token = $token;
         let (low, high): (__m256i, __m256i) = ($low, $high);
         let pick =
@@ -356,33 +382,15 @@ macro_rules! filter_chunk {
                 );
                 (pos, neg, clamp)
             };
-            let (p1, p0, q0, q1) = (
-                $rows[REACH - 2],
-                $rows[REACH - 1],
-                $rows[REACH],
-                $rows[REACH + 1],
-            );
-            let taps = splat(0x040c);
-            let delta = |clamp, outer: __m256i, inner: __m256i| {
-                let delta = _mm256_sub_epi16(
-                    _mm256_maddubs_epi16(outer, taps),
-                    _mm256_maddubs_epi16(inner, taps),
-                );
+            let [raw_low, raw_high] = $raw;
+            let clamp_delta = |clamp, delta| {
                 _mm256_min_epi16(
                     _mm256_max_epi16(delta, _mm256_sub_epi16(zero, clamp)),
                     clamp,
                 )
             };
-            let low_delta = delta(
-                pick(clamp, &LOW_LINES),
-                _mm256_unpacklo_epi8(q0, p1),
-                _mm256_unpacklo_epi8(p0, q1),
-            );
-            let high_delta = delta(
-                pick(clamp, &HIGH_LINES),
-                _mm256_unpackhi_epi8(q0, p1),
-                _mm256_unpackhi_epi8(p0, q1),
-            );
+            let low_delta = clamp_delta(pick(clamp, &LOW_LINES), raw_low);
+            let high_delta = clamp_delta(pick(clamp, &HIGH_LINES), raw_high);
             let (pos_low, pos_high) = (pick(pos, &LOW_LINES), pick(pos, &HIGH_LINES));
             let (neg_low, neg_high) = (pick(neg, &LOW_LINES), pick(neg, &HIGH_LINES));
             let mut moved = true;
