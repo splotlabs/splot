@@ -89,13 +89,14 @@ fn_params_excessive_bools = "allow"
 wildcard_imports = "allow"
 if_not_else = "allow"
 
-# Keep unwind enabled: output/raw.rs converts output-task panics into typed errors.
 # Thin LTO with one codegen unit per crate: decode speed level with fat LTO,
 # a faster build, and code generation independent of unrelated edits.
 [profile.release]
 overflow-checks = false
 lto = "thin"
 codegen-units = 1
+strip = true
+panic = "abort"
 
 [profile.dev]
 overflow-checks = true
