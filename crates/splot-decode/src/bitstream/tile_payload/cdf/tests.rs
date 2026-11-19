@@ -1346,6 +1346,10 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
     tile.rows.block.coeff.idtx_sign[2][3] = [20_000, 9 + (20 << 7), 0];
     tile.rows.mrl_index[1] = [20_000, 21_000, 22_000, 23 + (20 << 7), 0];
     tile.rows.mrl_sec_index[2] = [20_000, 21 + (20 << 7), 0];
+    tile.rows.seg_id_ext_flag[0] = [20_000, 32 << CDF_COUNT_SHIFT, 0];
+    tile.rows.segment_id[2][7] = 32 << CDF_COUNT_SHIFT;
+    tile.rows.segment_id_ext[1][7] = 20 << CDF_COUNT_SHIFT;
+    tile.rows.segment_id_predicted[0] = [21_000, 20 << CDF_COUNT_SHIFT, 0];
     tile.rows.block.cctx_type = [
         20_000,
         21_000,
@@ -1371,6 +1375,16 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
     );
     let frame = FrameCdfSubset::frame_end_updated(&frame, saved);
 
+    assert_eq!(
+        frame.rows.seg_id_ext_flag[0],
+        [20_000, 24 << CDF_COUNT_SHIFT, 0]
+    );
+    assert_eq!(frame.rows.segment_id[2][7], 24 << CDF_COUNT_SHIFT);
+    assert_eq!(frame.rows.segment_id_ext[1][7], 15 << CDF_COUNT_SHIFT);
+    assert_eq!(
+        frame.rows.segment_id_predicted[0],
+        [21_000, 15 << CDF_COUNT_SHIFT, 0]
+    );
     assert_eq!(frame.rows.do_split[0][0], [20_000, 7 + (15 << 7), 0]);
     assert_eq!(frame.rows.do_ext_partition[0][4], [22_000, 5 + (6 << 7), 0]);
     assert_eq!(frame.rows.do_square_split[0][0], [21_000, 6 + (1 << 7), 0]);

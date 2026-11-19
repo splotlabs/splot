@@ -471,9 +471,23 @@ COVERAGE = [
     ("syn-olk-fwdkf-same-tu-64x64-q160", "testsrc=size=64x64:rate=1:duration=12", "yuv420p", "--i420",
      ["--limit=12", "--enable-fwd-kf=1", "--kf-max-dist=5", "--quiet", "--disable-warning-prompt"],
      "6", "160"),
+    ("syn-segment-cdf-inheritance-96x96-q140",
+     "nullsrc=s=96x96:r=30:d=0.16,"
+     "geq=lum='65+mod(X*3+Y*2+mod(floor(X/8)+floor(Y/8),2)*(12+N*6)+N*12,132)':cb=128:cr=128",
+     "yuv420p", "--i420",
+     ["--limit=5", "--lag-in-frames=4", "--passes=1", "--kf-min-dist=120", "--kf-max-dist=120",
+      "--max-partition-size=8", "--aq-mode=1", "--deltaq-mode=0", "--enable-ext-seg=0"],
+     "6", "140"),
 ]
 
 PINNED_RECIPE_HASHES = {
+    "syn-segment-cdf-inheritance-96x96-q140": {
+        "avm_revision": "1cfda4fa4879ef2da411b02fe2f51597daab3451",
+        "source_sha256": "397cce3e7108e9417ba7d18b87f3cce8d01910f61f091ed480aa1afbac185f82",
+        "ivf_sha256": "03a99188da3b2d911b7b21f803a06e0c917c58f6dd7857ca7dcea6013d228cb9",
+        "avm_i420_raw_sha256": "7a15bb376f0277797ce267a49391486de1bdbde5e3e06a57387ddb57a8556090",
+        "reproducibility_runs": 2,
+    },
     'syn-2frame-interintra-column-422-128x32-8bit-q180': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
                         '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
                         '-DCONFIG_TENSORFLOW_LITE=0',

@@ -2665,3 +2665,9 @@ id = "syn-olk-fwdkf-same-tu-64x64-q160"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.key_open_loop", "frame.leading", "frame.multi_frame", "frame.reference_refresh", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "8e4fdfa133d10b9aed60ce74d8780460c9d9cb94bc5d53386c07ba7f77556923"
 avm_raw_sha256 = "64c9a0086c53bf8425a2fe6c04de56141a068c32d60089990514a6cba836a191"
+
+[[fixture]]
+id = "syn-segment-cdf-inheritance-96x96-q140"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.segmentation", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "03a99188da3b2d911b7b21f803a06e0c917c58f6dd7857ca7dcea6013d228cb9"
+avm_raw_sha256 = "7a15bb376f0277797ce267a49391486de1bdbde5e3e06a57387ddb57a8556090"

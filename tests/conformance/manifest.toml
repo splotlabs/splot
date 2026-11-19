@@ -2653,3 +2653,8 @@ expect = "clean"
 path = "vectors/valid/syn-olk-fwdkf-same-tu-64x64-q160.ivf"
 description = "AVM-encoded 12-frame 64x64 8-bit 4:2:0 forward-keyframe stream (--enable-fwd-kf=1 --kf-max-dist=5 --cpu-used=6 --qp=160, reproducing dav2d MR !1112 olk_fwdkf_testsrc): carries a closed-loop key, two open-loop keys each followed in the same temporal unit by a regular tile group (exercising § 5.18.1 AllowedFrames implicit reference restriction), eight leading tile groups, and a trailing regular tile group. avmdec decodes all 12 frames (73,728 bytes) cleanly to raw SHA-256 64c9a0086c53bf8425a2fe6c04de56141a068c32d60089990514a6cba836a191; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-segment-cdf-inheritance-96x96-q140.ivf"
+description = "AVM-encoded five-frame 96x96 8-bit 4:2:0 stream from the synthetic variance-AQ recipe in tools/decoder-fixtures/generate.py. The inter tile at OBU 8 desynchronizes if inherited segmentation CDF counts are not scaled at frame end (§ 7.5)."
+expect = "clean"

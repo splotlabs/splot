@@ -15,7 +15,7 @@ macro_rules! flat_cdf_rows_mut {
     ($e:expr, $f:ident $(, $rest:ident)*) => { flat_cdf_rows_mut!($e.as_flattened_mut() $(, $rest)*) };
 }
 
-macro_rules! tile_cdf_common_count_rows {
+macro_rules! tile_cdf_saved_rows {
     ($row:ident, $rows:ident) => {
         $rows!(do_split.flatten());
         $rows!(do_ext_partition.flatten());
@@ -47,12 +47,6 @@ macro_rules! tile_cdf_common_count_rows {
         $rows!(mrl_index);
         $rows!(mrl_sec_index);
         $rows!(region_type);
-    };
-}
-
-macro_rules! tile_cdf_saved_rows {
-    ($row:ident, $rows:ident) => {
-        tile_cdf_common_count_rows!($row, $rows);
         $rows!(seg_id_ext_flag);
         $rows!(segment_id);
         $rows!(segment_id_ext);
