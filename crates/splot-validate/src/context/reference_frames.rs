@@ -50,21 +50,12 @@ impl ValidatorContext {
                 );
                 self.reference_state_checks(obu, first_picture_in_tu, report);
                 let update = self.derive_ref_update(obu, first_picture_in_tu);
-                self.pending_ref_update = Some((
-                    obu.header.extended_layer_id,
-                    obu.header.obu_type,
-                    first_picture_in_tu,
-                    update,
-                ));
+                self.pending_ref_update = Some((obu.header, first_picture_in_tu, update));
             }
             FrameBoundary::Ambiguous => {
                 self.commit_pending_ref_update();
-                self.pending_ref_update = Some((
-                    obu.header.extended_layer_id,
-                    obu.header.obu_type,
-                    first_picture_in_tu,
-                    FrameRefUpdate::PoisonAll,
-                ));
+                self.pending_ref_update =
+                    Some((obu.header, first_picture_in_tu, FrameRefUpdate::PoisonAll));
             }
         }
     }
@@ -73,18 +64,18 @@ impl ValidatorContext {
     /// at each frame boundary that closes the previous coded frame and at the
     /// end-of-bitstream flush (the final frame has no following delimiter).
     pub(super) fn commit_pending_ref_update(&mut self) {
-        if let Some((xlayer, obu_type, first_picture_in_tu, update)) =
-            self.pending_ref_update.take()
-        {
-            self.reference_state.apply(xlayer, &update);
+        if let Some((header, first_picture_in_tu, update)) = self.pending_ref_update.take() {
+            self.reference_state
+                .apply(header.extended_layer_id, &update);
             if let FrameRefUpdate::Refresh {
                 refresh_frame_flags,
                 ..
             } = update
             {
                 self.reference_state.note_frame(
-                    xlayer,
-                    obu_type,
+                    header.extended_layer_id,
+                    header.embedded_layer_id,
+                    header.obu_type,
                     first_picture_in_tu,
                     refresh_frame_flags,
                 );

@@ -15,7 +15,8 @@ use splot_core::headers::frame::{
     FrameReferenceStateView, FrameType, GlobalMotionRef, REFS_PER_FRAME,
     SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
 };
-use splot_core::types::{ExtendedLayerId, ObuType};
+use splot_core::headers::sequence::MAX_NUM_MLAYERS;
+use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, ObuType};
 
 use std::collections::BTreeMap;
 
@@ -93,7 +94,8 @@ struct LayerReferenceState {
     /// `NumRefFrames` of the last CLK reset: the § 5.18 reference loops read only slots
     /// below it. [`NUM_REF_FRAMES`] until a CLK reset is seen.
     num_ref_frames: usize,
-    open_loop_refresh: Option<u32>,
+    /// § 5.18.2 `OlkRefresh` per embedded layer; `None` means no pending OLK.
+    open_loop_refresh: Option<[u32; MAX_NUM_MLAYERS]>,
     allowed_frames: Option<u32>,
 }
 
@@ -167,13 +169,19 @@ impl LayerReferenceState {
         } else if first_picture_in_tu && obu_type.is_regular_frame() {
             self.finish_open_loop();
         }
-        self.allowed_frames = self.open_loop_refresh.filter(|_| {
-            !first_picture_in_tu && obu_type.is_regular_frame() && obu_type != ObuType::OpenLoopKey
-        });
+        self.allowed_frames = if !first_picture_in_tu
+            && obu_type.is_regular_frame()
+            && obu_type != ObuType::OpenLoopKey
+        {
+            self.open_loop_refresh_mask()
+        } else {
+            None
+        };
     }
 
     fn note_frame(
         &mut self,
+        mlayer: EmbeddedLayerId,
         obu_type: ObuType,
         first_picture_in_tu: bool,
         refresh_frame_flags: u32,
@@ -181,19 +189,27 @@ impl LayerReferenceState {
         if obu_type == ObuType::ClosedLoopKey {
             self.open_loop_refresh = None;
         } else if obu_type == ObuType::OpenLoopKey {
-            self.open_loop_refresh = Some(refresh_frame_flags);
+            self.open_loop_refresh.get_or_insert([0; MAX_NUM_MLAYERS])[usize::from(mlayer.get())] =
+                refresh_frame_flags;
         } else if !first_picture_in_tu
             && obu_type.is_regular_frame()
             && let Some(refreshed) = self.open_loop_refresh.as_mut()
         {
-            *refreshed |= refresh_frame_flags;
+            refreshed[usize::from(mlayer.get())] |= refresh_frame_flags;
         }
     }
 
+    fn open_loop_refresh_mask(&self) -> Option<u32> {
+        self.open_loop_refresh
+            .as_ref()
+            .map(|masks| masks.iter().fold(0, |combined, mask| combined | mask))
+    }
+
     fn finish_open_loop(&mut self) {
-        let Some(refreshed) = self.open_loop_refresh.take() else {
+        let Some(refreshed) = self.open_loop_refresh_mask() else {
             return;
         };
+        self.open_loop_refresh = None;
         let bound = self.num_ref_frames.min(NUM_REF_FRAMES);
         for (index, slot) in self.slots[..bound].iter_mut().enumerate() {
             if (refreshed >> index) & 1 == 0
@@ -342,12 +358,13 @@ impl ReferenceStateTracker {
     pub(crate) fn note_frame(
         &mut self,
         xlayer: ExtendedLayerId,
+        mlayer: EmbeddedLayerId,
         obu_type: ObuType,
         first_picture_in_tu: bool,
         refresh_frame_flags: u32,
     ) {
         if let Some(layer) = self.layers.get_mut(&xlayer) {
-            layer.note_frame(obu_type, first_picture_in_tu, refresh_frame_flags);
+            layer.note_frame(mlayer, obu_type, first_picture_in_tu, refresh_frame_flags);
         }
     }
 
@@ -514,6 +531,7 @@ mod tests {
     use proptest::prelude::*;
 
     const XL: ExtendedLayerId = ExtendedLayerId::from_bits(0);
+    const ML: EmbeddedLayerId = EmbeddedLayerId::from_bits(0);
 
     fn facts(order_hint: u32) -> SlotFacts {
         SlotFacts {
@@ -875,7 +893,7 @@ mod tests {
                 facts: facts(3),
             },
         );
-        tracker.note_frame(XL, ObuType::OpenLoopKey, true, 1 << 1);
+        tracker.note_frame(XL, ML, ObuType::OpenLoopKey, true, 1 << 1);
 
         tracker.prepare_for_frame(XL, ObuType::RegularTileGroup, false);
         let mut scratch = ReferenceStateScratch::default();
@@ -891,7 +909,7 @@ mod tests {
                 facts: facts(4),
             },
         );
-        tracker.note_frame(XL, ObuType::RegularTileGroup, false, 1 << 4);
+        tracker.note_frame(XL, ML, ObuType::RegularTileGroup, false, 1 << 4);
 
         tracker.prepare_for_frame(XL, ObuType::RegularTileGroup, false);
         assert_eq!(
@@ -944,7 +962,7 @@ mod tests {
                 facts: facts(2),
             },
         );
-        tracker.note_frame(XL, ObuType::OpenLoopKey, true, 1 << 1);
+        tracker.note_frame(XL, ML, ObuType::OpenLoopKey, true, 1 << 1);
 
         tracker.prepare_for_frame(XL, ObuType::RegularTileGroup, false);
         let mut scratch = ReferenceStateScratch::default();
