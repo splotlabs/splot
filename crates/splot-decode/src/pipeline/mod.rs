@@ -231,7 +231,7 @@ fn reclaim_unowned_frames(
 /// error stands once nothing is in flight and every pool work has finished.
 #[allow(clippy::too_many_arguments)]
 fn admit_within_reference_store(
-    check: &mut dyn FnMut(u64) -> Result<()>,
+    mut check: impl FnMut(u64) -> Result<()>,
     options: &DecodeOptions,
     rows: Option<&splot_parallel::RowScheduler>,
     pools: &mut frame_tasks::RowPools,
@@ -1342,7 +1342,7 @@ fn decode_frames_in_order(
                         ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
                     }
                     admit_within_reference_store(
-                        &mut |retained| {
+                        |retained| {
                             ensure_retained_frame_byte_limits_for_core(
                                 options.limits(),
                                 retained,
@@ -1695,7 +1695,7 @@ fn decode_frames_in_order(
                     .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
                 let key_output_effects = output_effect_state.finish_frame();
                 admit_within_reference_store(
-                    &mut |retained| {
+                    |retained| {
                         ensure_retained_frame_byte_limits_for_core(
                             options.limits(),
                             retained,
