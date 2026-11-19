@@ -475,7 +475,7 @@ pub(crate) struct ValidatorContext {
     /// (and its extended layer) is committed when the segmenter reports the next frame
     /// `OpensNewUnit` for that layer, or at the end-of-bitstream flush (no trailing
     /// delimiter). `None` between a commit and the next frame's parse.
-    pending_ref_update: Option<(ExtendedLayerId, FrameRefUpdate)>,
+    pending_ref_update: Option<(ExtendedLayerId, ObuType, bool, FrameRefUpdate)>,
 }
 
 impl ValidatorContext {

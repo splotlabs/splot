@@ -302,6 +302,21 @@ impl ObuType {
         matches!(self, Self::LeadingSef | Self::RegularSef)
     }
 
+    /// `IsRegular` per AV2 v1.0.0 § 5.18.1 (`docs/spec/av2/1.0.0/05-syntax-structures.md`).
+    #[must_use]
+    pub const fn is_regular_frame(self) -> bool {
+        matches!(
+            self,
+            Self::OpenLoopKey
+                | Self::RegularTileGroup
+                | Self::RegularTip
+                | Self::RegularSef
+                | Self::Switch
+                | Self::RasFrame
+                | Self::BridgeFrame
+        )
+    }
+
     /// `true` if `obu_xlayer_id` must equal [`GLOBAL_XLAYER_ID`] for this type
     /// (AV2 v1.0.0 § 5.2.2 / § 6.2.2: `OBU_MSDO`, `OBU_TEMPORAL_DELIMITER`).
     #[must_use]

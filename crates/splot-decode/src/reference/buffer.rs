@@ -172,9 +172,7 @@ impl RuntimeReferenceBuffer {
     pub(crate) fn prepare_for_frame(&mut self, obu_type: ObuType, first_picture_in_tu: bool) {
         if obu_type == ObuType::ClosedLoopKey {
             self.open_loop = None;
-        } else if first_picture_in_tu
-            && (obu_type == ObuType::OpenLoopKey || is_regular_non_olk(obu_type))
-        {
+        } else if first_picture_in_tu && obu_type.is_regular_frame() {
             self.finish_open_loop();
         }
         self.allowed_frames = self
@@ -440,15 +438,7 @@ fn set_lr_frame_filter_taps(
 }
 
 fn is_regular_non_olk(obu_type: ObuType) -> bool {
-    matches!(
-        obu_type,
-        ObuType::RegularSef
-            | ObuType::RegularTip
-            | ObuType::Switch
-            | ObuType::RasFrame
-            | ObuType::BridgeFrame
-            | ObuType::RegularTileGroup
-    )
+    obu_type.is_regular_frame() && obu_type != ObuType::OpenLoopKey
 }
 
 fn ensure_slot_matches_frame(

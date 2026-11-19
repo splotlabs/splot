@@ -277,7 +277,7 @@ impl OutputScheduler {
         obu_type: ObuType,
         first_picture_in_tu: bool,
     ) -> Vec<usize> {
-        if !self.open_loop_active || !first_picture_in_tu || !is_regular_frame_obu(obu_type) {
+        if !self.open_loop_active || !first_picture_in_tu || !obu_type.is_regular_frame() {
             return Vec::new();
         }
         self.open_loop_active = false;
@@ -310,7 +310,7 @@ impl OutputScheduler {
             self.open_loop_active = true;
             self.open_loop_order_hint = implicit.then_some(order_hint);
         } else if self.open_loop_active
-            && is_regular_frame_obu(obu_type)
+            && obu_type.is_regular_frame()
             && !first_picture_in_tu
             && (immediate || implicit)
         {
@@ -345,19 +345,6 @@ impl OutputScheduler {
         self.open_loop_order_hint = None;
         newly
     }
-}
-
-const fn is_regular_frame_obu(obu_type: ObuType) -> bool {
-    matches!(
-        obu_type,
-        ObuType::OpenLoopKey
-            | ObuType::RegularTileGroup
-            | ObuType::RegularTip
-            | ObuType::RegularSef
-            | ObuType::Switch
-            | ObuType::RasFrame
-            | ObuType::BridgeFrame
-    )
 }
 
 pub(super) fn ensure_output_frame_count_limit(
