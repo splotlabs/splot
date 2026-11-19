@@ -193,19 +193,22 @@ impl PartitionNode {
 
 /// The § 5.20.3.2 partitions a node allows and the one its position implies.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PartitionOptions(PartitionDecisionFacts);
+pub struct PartitionOptions {
+    facts: PartitionDecisionFacts,
+    implied: Option<Partition>,
+}
 
 impl PartitionOptions {
     /// Whether `partition` is in the allowed set.
     #[must_use]
     pub fn allows(self, partition: Partition) -> bool {
-        self.0.allowed().contains(partition)
+        self.facts.allowed().contains(partition)
     }
 
     /// The `partition_implied` result, before the allowed-set check.
     #[must_use]
     pub const fn implied(self) -> Option<Partition> {
-        self.0.implied()
+        self.implied
     }
 }
 
@@ -856,7 +859,7 @@ impl IntraTileSyntax {
         let input =
             partition_allowed_input(node.0, &self.frame, forced).map_err(rule("partition"))?;
         partition_decision_facts(input)
-            .map(PartitionOptions)
+            .map(|(facts, implied)| PartitionOptions { facts, implied })
             .map_err(rule("partition"))
     }
 
@@ -886,7 +889,7 @@ impl IntraTileSyntax {
             partition_context_inputs(node.0, self.bounds, &self.mi_sizes)
                 .map_err(rule("partition context"))?;
         let input = options
-            .0
+            .facts
             .read_partition_decision_input(partition_context, square_context);
         let mut writer = PartitionWriter {
             target: partition,

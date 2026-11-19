@@ -27,8 +27,8 @@ use splot_recon::{
 
 use super::find_mv_stack::{
     BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, INTRABC_REF_FRAME,
-    MotionMode, MvBlockContext, NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourMvGrid,
-    TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
+    MotionMode, MvBlockContext, NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourGridMode,
+    NeighbourMvGrid, TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
     TemporalProjectionConfig, TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
     find_compound_mv_stack_upto, find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_upto,
     new_mv_ctx_from_neighbours, ref_count_ctx, warp_ctx_from_neighbours, warp_predicted_mv,
@@ -60,8 +60,7 @@ use crate::filters::wienerns_lr::intrabc_records::{
     read_intrabc_use_and_skip, read_pending_intrabc_info,
 };
 use crate::filters::wienerns_lr::tx_records::{
-    CdefState, DeltaQState, SelectableLumaTxRecord, ccso::CcsoState,
-    derive_inter_luma_tx_records_for_block, gdf::GdfState,
+    CdefState, DeltaQState, ccso::CcsoState, gdf::GdfState,
 };
 use crate::pipeline::effective_allow_screen_content_tools;
 use crate::{DecodeHeaderStateError, DecodeOptions, DecodeReferenceStateError, Result};
@@ -242,28 +241,7 @@ impl<T: ReconSample> InterDecodeScratch<T> {
     }
 }
 
-enum ReconCommand {
-    Intrabc(intrabc::IntrabcReconCommand),
-    Inter(deferred_recon::InterReconCommand),
-}
-
-impl ReconCommand {
-    const fn as_view(&self) -> ReconCommandRef<'_> {
-        match self {
-            Self::Intrabc(_) => ReconCommandRef::Intrabc,
-            Self::Inter(command) => ReconCommandRef::Inter(command),
-        }
-    }
-
-    const fn as_view_mut(&mut self) -> ReconCommandMut<'_> {
-        match self {
-            Self::Intrabc(command) => ReconCommandMut::Intrabc(command),
-            Self::Inter(command) => ReconCommandMut::Inter(command),
-        }
-    }
-}
-
-/// A [`ReconCommand`] a row entry holds inline or in its row's slot list.
+/// A reconstruction command a row entry holds inline or in its row's slot list.
 enum ReconCommandRef<'a> {
     GeneralIntra,
     Intrabc,
@@ -433,6 +411,7 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
     let frame_is_switch = core.frame_type == Some(FrameType::Switch);
 
     let params = tile::TileWalkParams {
+        filter_record_needs: crate::filters::wienerns_lr::FilterRecordNeeds::from_frame(core),
         limits: options.limits(),
         mi_rows,
         mi_cols,
@@ -464,6 +443,11 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         intra_tools: crate::pipeline::general_intra::GeneralIntraFrameTools::new(sequence, core),
         segment_skip: segment_feature_mask(core, SEG_LVL_SKIP),
         segment_globalmv: segment_feature_mask(core, SEG_LVL_GLOBALMV),
+        skip_segment_ref: skip_segment_reference(
+            current_order_hint,
+            ref_frame_idx,
+            &reference.ref_order_hint,
+        ),
         seg_pre_skip: core
             .segmentation_params
             .as_ref()
@@ -517,19 +501,26 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
 /// subset, which the entropy pass alone settles.
 fn finish_frame_cdfs(
     initial: &Arc<FrameCdfSubset>,
-    work_units: &[DecodeTileWorkUnit],
+    work_units: &mut [DecodeTileWorkUnit],
     products: &mut super::FrameProductWriters,
 ) -> Result<Arc<FrameCdfSubset>> {
-    products.frame_cdfs()?.fold_frame_end(
-        initial,
-        work_units.iter().map(|tile| {
-            (
-                tile.tile_num(),
-                tile.cdf().tile_cdfs(),
-                tile.cdf().save_policy(),
-            )
-        }),
-    );
+    let output = products.frame_cdfs()?;
+    if !work_units
+        .iter_mut()
+        .rev()
+        .any(|tile| output.transfer_saved_tile(tile.cdf_mut()))
+    {
+        output.fold_frame_end(
+            initial,
+            work_units.iter().map(|tile| {
+                (
+                    tile.tile_num(),
+                    tile.cdf().tile_cdfs(),
+                    tile.cdf().save_policy(),
+                )
+            }),
+        );
+    }
     products.cdf_output()
 }
 
@@ -1204,16 +1195,14 @@ fn frame_temporal_first<T: ReconSample>(
 /// The tile parse state and frame facts every [`decode_block`] call of a
 /// superblock row reads or updates, borrowed once for the row so a leaf call
 /// passes one pointer instead of each piece.
-pub(super) struct BlockDecodeContext<'a, T: ReconSample> {
+pub(super) struct BlockDecodeContext<'a> {
     pub(super) sink: InterLeafSink<'a>,
-    pub(super) ref_frame_idx: &'a [u32],
-    pub(super) reference: &'a InterReferenceState<T>,
+    pub(super) previous_segment_ids: Option<&'a FrameSegmentIdMap>,
     pub(super) gdf_state: &'a mut GdfState,
     pub(super) cdef_state: &'a mut CdefState,
     pub(super) ccso_state: &'a mut CcsoState,
     pub(super) delta_q_state: &'a mut DeltaQState,
     pub(super) segment_id_state: &'a mut TileSegmentIdState,
-    superblocks: &'a mut Vec<tile::ReconSuperblock>,
     entries: &'a mut Vec<tile::ReconRowEntry>,
     sb_mask: usize,
     pub(super) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
@@ -1227,7 +1216,7 @@ pub(super) struct InterLeafSink<'a> {
     pub(super) params: &'a tile::TileWalkParams,
     pub(super) tile_offset: ByteOffset,
     pub(super) coeff_ctx: &'a mut TileCoeffContextState,
-    pub(super) residual_scratch: &'a mut InterResidualParseScratch,
+    pub(super) luma_tx_types: &'a mut InterLumaTxTypeMap,
     pub(super) residual_blocks: &'a mut Vec<InterResidualBlock>,
     pub(super) residual_arena: &'a mut Vec<i32>,
     pub(super) intrabc_state: &'a mut TileIntrabcPreludeState,
@@ -1238,23 +1227,21 @@ pub(super) struct InterLeafSink<'a> {
 
 /// Decodes one leaf and stores its record as the row's next entry.
 #[allow(clippy::too_many_arguments)]
-fn decode_block<T: ReconSample>(
+fn decode_block(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
-    context: &mut BlockDecodeContext<'_, T>,
+    context: &mut BlockDecodeContext<'_>,
     neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
 ) -> Result<GeneralIntraLeafMode> {
     let BlockDecodeContext {
         ref mut sink,
-        ref_frame_idx,
-        reference,
+        previous_segment_ids,
         ref mut gdf_state,
         ref mut cdef_state,
         ref mut ccso_state,
         ref mut delta_q_state,
         ref mut segment_id_state,
-        ref mut superblocks,
         ref mut entries,
         sb_mask,
         ref mut arena,
@@ -1267,12 +1254,10 @@ fn decode_block<T: ReconSample>(
         ..
     } = *sink;
     let mut store = |leaf, state| {
-        tile::push_leaf_entry(
-            superblocks,
-            entries,
+        entries.push(tile::ReconRowEntry::new(
             DecodedLeafPublication::from_frontier(frontier, sb_mask),
             state,
-        );
+        ));
         leaf
     };
     let (avail_up, avail_left) = tile_neighbour_availability(
@@ -1311,9 +1296,6 @@ fn decode_block<T: ReconSample>(
     );
     let neighbour_ctx = (!general_intra).then(|| block_neighbour_ctx(sink.mv_grid, &block_ctx));
     let seg_pre_skip = params.seg_pre_skip;
-    let previous_segment_ids =
-        super::previous_segment_ids(core, reference, params.mi_rows, params.mi_cols)
-            .map(Arc::as_ref);
     let mut segment_id = if frontier.is_chroma_part() {
         segment_id_state.cell(frontier.r, frontier.c).unwrap_or(0)
     } else {
@@ -1371,7 +1353,7 @@ fn decode_block<T: ReconSample>(
     if is_inter == 0 {
         let InterLeafSink {
             ref mut coeff_ctx,
-            ref mut residual_scratch,
+            ref mut luma_tx_types,
             ref mut residual_blocks,
             ref mut residual_arena,
             ref mut intrabc_state,
@@ -1480,7 +1462,7 @@ fn decode_block<T: ReconSample>(
                     work_unit,
                     symbols,
                     coeff_ctx,
-                    residual_scratch,
+                    luma_tx_types,
                     residual_blocks,
                     residual_arena,
                     sequence,
@@ -1497,7 +1479,6 @@ fn decode_block<T: ReconSample>(
             };
             filter_records.defer_inter_leaf(
                 frontier,
-                (n4w, n4h),
                 residual.as_ref(),
                 None,
                 block_qindex,
@@ -1546,6 +1527,7 @@ fn decode_block<T: ReconSample>(
                 work_unit,
                 symbols,
                 coeff_ctx,
+                filter_record_needs: filter_records.needs,
                 deblock_blocks: &mut filter_records.deblock_blocks,
                 chroma_deblock_blocks: &mut filter_records.chroma_deblock_blocks,
                 tx_skip_records: &mut filter_records.tx_skip_records,
@@ -1555,9 +1537,6 @@ fn decode_block<T: ReconSample>(
                 segment_id,
                 luma_use_tcq: params.luma_use_tcq,
                 policy: params.residual_tool_policy,
-                mi_cols: params.mi_cols,
-                mi_rows: params.mi_rows,
-                bit_depth: params.bit_depth,
                 tile_offset,
             },
             frontier,
@@ -1577,13 +1556,7 @@ fn decode_block<T: ReconSample>(
                 intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             }
         }
-        return Ok(store(
-            leaf,
-            EntryState::Intra {
-                command,
-                size4: luma_tree.then_some([n4w as u8, n4h as u8]),
-            },
-        ));
+        return Ok(store(leaf, EntryState::Intra(command)));
     }
     let Some(neighbour_ctx) = neighbour_ctx else {
         return Err(crate::DecodeHeaderStateError::InvalidInterPartitionState.into());
@@ -1707,11 +1680,7 @@ fn decode_block<T: ReconSample>(
     }
 
     let ref_frame0: i8 = if segment_forces_globalmv {
-        skip_segment_reference(
-            params.current_order_hint,
-            ref_frame_idx,
-            &reference.ref_order_hint,
-        )
+        params.skip_segment_ref
     } else if tip_ref {
         TIP_REF_FRAME
     } else if params.num_total_refs >= 2 {
@@ -1811,9 +1780,10 @@ fn decode_block<T: ReconSample>(
                 tip_size_16x16: false,
                 blend: mc::CompoundBlend::default(),
             },
-            InterBlock {
+            deferred_recon::ParsedInterBlock {
+                ref_frame0,
                 interintra: warp_interintra_mode,
-                ..parsed_inter_block(ref_frame0, None, ReconInterpolationFilter::EightTap)
+                ..Default::default()
             },
             None,
             (n4w, n4h),
@@ -1979,10 +1949,11 @@ fn decode_block<T: ReconSample>(
             tip_size_16x16: tip_ref && tip_uses_16x16_units,
             blend: mc::CompoundBlend::default(),
         },
-        InterBlock {
+        deferred_recon::ParsedInterBlock {
+            ref_frame0,
             bawp,
             interintra,
-            ..parsed_inter_block(ref_frame0, None, interp)
+            ..Default::default()
         },
         tip_ref.then_some(crate::filters::deblock::DeblockSubPuSize::square(
             if tip_uses_16x16_units { 16 } else { 8 },
@@ -1998,8 +1969,7 @@ fn decode_block<T: ReconSample>(
     })
 }
 
-/// An inter leaf's block as the parse leaves it, before § 7.12 resolution
-/// writes its motion.
+/// An encoder candidate's block before § 7.12 resolution writes its motion.
 const fn parsed_inter_block(
     ref_frame0: i8,
     ref_frame1: Option<i8>,
@@ -2039,7 +2009,7 @@ fn finish_inter_leaf(
     sink: &mut InterLeafSink<'_>,
     frontier: &DecodeBlockFrontier,
     syntax: InterBlockSyntax,
-    mut block: InterBlock,
+    mut block: deferred_recon::ParsedInterBlock,
     sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
     (n4w, n4h): (usize, usize),
     (skip, segment_id, block_qindex): (u8, u8, u32),
@@ -2050,7 +2020,7 @@ fn finish_inter_leaf(
         params,
         tile_offset,
         ref mut coeff_ctx,
-        ref mut residual_scratch,
+        ref mut luma_tx_types,
         ref mut residual_blocks,
         ref mut residual_arena,
         ref mut intrabc_state,
@@ -2067,7 +2037,7 @@ fn finish_inter_leaf(
             work_unit,
             symbols,
             coeff_ctx,
-            residual_scratch,
+            luma_tx_types,
             residual_blocks,
             residual_arena,
             sequence,
@@ -2093,7 +2063,6 @@ fn finish_inter_leaf(
     };
     filter_records.defer_inter_leaf(
         frontier,
-        (n4w, n4h),
         residual.as_ref(),
         sub_pu_size,
         block_qindex,
@@ -2127,14 +2096,13 @@ fn finish_inter_leaf(
     let leaf = mv_grid.record_flags(frontier.r, frontier.c, n4w, n4h, flags);
     let index = slots.len() as u32;
     slots.extend(core::iter::once_with(|| {
-        tile::LeafSlot::Command(ReconCommand::Inter(deferred_recon::InterReconCommand::new(
+        tile::LeafSlot::PendingInter(deferred_recon::PendingInterCommand {
             placed,
             syntax,
             segment_id,
-            block_qindex,
-            tile_offset,
+            qindex: block_qindex,
             leaf,
-        )))
+        })
     }));
     Ok(index)
 }
@@ -2216,8 +2184,8 @@ use self::interintra::predict_interintra_planes;
 use self::prediction::placed_inter_block_at;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
-    LeafReset, MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax, WarpDeltaSyntax,
-    WarpModelSource, WarpMotionSyntax, pending_intrabc_leaf, resolve_parsed_leaves,
+    MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax, WarpDeltaSyntax, WarpModelSource,
+    WarpMotionSyntax, pending_intrabc_leaf, resolve_parsed_leaves,
 };
 use self::syntax::{
     effective_force_integer_mv, interp_filter_symbol, lowered_pred_mv,
@@ -2236,9 +2204,7 @@ use self::warp::{
     read_warp_newmv_motion_mode_syntax, read_warpmv_delta_syntax, read_wedge_mode_syntax,
 };
 
-use self::residual::{
-    InterResidualParseScratch, read_inter_residual, reset_inter_skip_coeff_contexts,
-};
+use self::residual::{InterLumaTxTypeMap, read_inter_residual, reset_inter_skip_coeff_contexts};
 
 fn read_inter_intra_syntax(
     cdfs: &mut TileCdfSubset,

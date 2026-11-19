@@ -14,24 +14,23 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::span::ByteOffset;
-use splot_core::tables::conversion::TX_WIDTH_LOG2;
 use splot_core::types::ObuType;
 use splot_recon::{
-    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
+    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter, IntraRectBlockSize,
     PlaneId as ReconPlaneId, QuantizerDeltas, ReconSample, ReferenceFrameStore, ReferenceSlot,
 };
 
 use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::tile_payload::{
-    FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap, GeneralIntraResidualError,
-    add_cctx_pair_residual_in_place,
+    CoeffBlock, FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap,
+    GeneralIntraResidualError, ResidualScratch, add_cctx_pair_residual_in_place,
+    reconstruct_inter_coeff_block_residual_rect_into, with_residual_scratch,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateError};
 use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
 use crate::reference::buffer::RefSlots;
-use crate::reference::buffer::ReferenceMetadata;
 use crate::{DecodeIvfFrameContext, DecodeOptions, DecodePlannedObu, DecodeSourceIssue, Result};
 
 macro_rules! inter_allocation {
@@ -450,7 +449,14 @@ fn resolve_initial_frame_cdfs_reusing(
             ));
         }
         ResolvedCdfLoad::Default => None,
-        ResolvedCdfLoad::LoadSlot { primary, .. } => Some(reference.cdfs_for_slot(primary)?),
+        ResolvedCdfLoad::LoadSlot {
+            primary,
+            blend: None,
+        } => return reference.cdfs_for_slot(primary),
+        ResolvedCdfLoad::LoadSlot {
+            primary,
+            blend: Some(_),
+        } => Some(reference.cdfs_for_slot(primary)?),
     };
     if storage.is_none() {
         *storage = Some(Arc::new(FrameCdfSubset::from_defaults()));
@@ -948,48 +954,58 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
     let blocks = residual
         .blocks(residual_blocks)
         .ok_or(DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
-    for (index, block) in blocks.iter().enumerate() {
-        if block.cctx_pair_delta < 0 {
-            continue;
-        }
-        let cctx_type = block.coeffs.cctx_type().unwrap_or(0);
-        if block.plane == ReconPlaneId::U && cctx_type != 0 {
-            let v_block = inter_residual_chroma_pair(blocks, index, block)
-                .ok_or(DecodeHeaderStateError::MissingInterResidualCctxPair)?;
-            reconstruct_inter_residual_chroma_cctx_pair(
+    if blocks.is_empty() {
+        return Ok(());
+    }
+    let sample_depth = sink.info().bit_depth();
+    with_residual_scratch(|scratch| {
+        for (index, block) in blocks.iter().enumerate() {
+            if block.cctx_pair_delta < 0 {
+                continue;
+            }
+            if block.plane == ReconPlaneId::U
+                && let Some(cctx_type) = block.coeffs.cctx_type().filter(|&kind| kind != 0)
+            {
+                let v_block = inter_residual_chroma_pair(blocks, index, block)
+                    .ok_or(DecodeHeaderStateError::MissingInterResidualCctxPair)?;
+                reconstruct_inter_residual_chroma_cctx_pair(
+                    sink,
+                    scratch,
+                    [block, v_block],
+                    residual_coeffs,
+                    qindex,
+                    cctx_type,
+                    use_ddt,
+                    bit_depth,
+                )
+                .map_err(inter_residual_reconstruction_error)?;
+                continue;
+            }
+            let (log2_width, log2_height) = inter_residual_log2(block)
+                .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
+            if block.coeffs.eob == 0 {
+                continue;
+            }
+            let coeffs = CoeffBlock::new(&block.coeffs, residual_coeffs)
+                .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
+            let block_size = IntraRectBlockSize::new(log2_width as u8, log2_height as u8)?;
+            reconstruct_inter_coeff_block_residual_rect_into(
                 sink,
-                [block, v_block],
-                residual_coeffs,
+                scratch,
+                coeffs,
+                block.plane,
+                usize::from(block.x),
+                usize::from(block.y),
+                block_size,
                 qindex,
-                cctx_type,
+                block.plane == ReconPlaneId::Y && luma_use_tcq,
                 use_ddt,
-                bit_depth,
+                sample_depth,
             )
             .map_err(inter_residual_reconstruction_error)?;
-            continue;
         }
-        let use_tcq = block.plane == ReconPlaneId::Y && luma_use_tcq;
-        let (log2_width, log2_height) = inter_residual_log2(block)
-            .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
-        if block.coeffs.eob == 0 {
-            continue;
-        }
-        crate::pipeline::reconstruct::reconstruct_inter_block_residual_rect_into(
-            sink,
-            crate::bitstream::tile_payload::CoeffBlock::new(&block.coeffs, residual_coeffs)
-                .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?,
-            block.plane,
-            block.x,
-            block.y,
-            log2_width,
-            log2_height,
-            qindex,
-            use_tcq,
-            use_ddt,
-        )
-        .map_err(inter_residual_reconstruction_error)?;
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn inter_residual_reconstruction_error(error: GeneralIntraResidualError) -> DecodeError {
@@ -1044,6 +1060,7 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 #[inline(never)]
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    scratch: &mut ResidualScratch,
     [u, v]: [&InterResidualBlock; 2],
     residual_coeffs: &[i32],
     qindex: u32,
@@ -1054,7 +1071,7 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     let (log2_width, log2_height) = inter_residual_log2(u).map_err(|table| {
         GeneralIntraResidualError::TransformPartitionGeometry {
             table,
-            index: u.tx_size,
+            index: usize::from(u.tx_size),
         }
     })?;
     let size = splot_recon::IntraRectBlockSize::new(
@@ -1064,11 +1081,12 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     let coeffs = crate::bitstream::tile_payload::CoeffBlock::new;
     add_cctx_pair_residual_in_place(
         sink,
+        scratch,
         [
             coeffs(&u.coeffs, residual_coeffs)?,
             coeffs(&v.coeffs, residual_coeffs)?,
         ],
-        (u.x, u.y, size),
+        (usize::from(u.x), usize::from(u.y), size),
         qindex,
         cctx_type,
         use_ddt,
@@ -1079,10 +1097,9 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
 fn inter_residual_log2(
     block: &InterResidualBlock,
 ) -> core::result::Result<(u32, u32), &'static str> {
-    if block.tx_size >= TX_WIDTH_LOG2.len() {
-        return Err("Tx_Width_Log2");
-    }
-    Ok((u32::from(block.log2_width), u32::from(block.log2_height)))
+    let shape = crate::tile::block_context::TxShape::from_tx_size(usize::from(block.tx_size))
+        .ok_or("Tx_Width_Log2")?;
+    Ok((shape.width_log2(), shape.height_log2()))
 }
 #[derive(Clone, Debug)]
 pub(crate) struct InterBlock {
@@ -1142,17 +1159,29 @@ pub(crate) type InterDecodeOutput<T> = (
 );
 
 #[derive(Clone, Debug)]
-pub(crate) struct PlacedInterBlock {
+pub(crate) struct PlacedInterBlock<B = InterBlock> {
     pub(crate) luma: [u32; 4],
     pub(crate) chroma_luma: [u32; 4],
     pub(crate) predict_chroma: bool,
     pub(crate) sub8x8_chroma: bool,
     pub(crate) interintra_chroma: bool,
     pub(crate) interintra_edges: [crate::pipeline::reconstruct::IntraEdgeAvailability; 2],
-    pub(crate) block: InterBlock,
+    pub(crate) block: B,
 }
 
-impl PlacedInterBlock {
+impl<B> PlacedInterBlock<B> {
+    pub(in crate::prediction::inter) fn with_block<U>(&self, block: U) -> PlacedInterBlock<U> {
+        PlacedInterBlock {
+            luma: self.luma,
+            chroma_luma: self.chroma_luma,
+            predict_chroma: self.predict_chroma,
+            sub8x8_chroma: self.sub8x8_chroma,
+            interintra_chroma: self.interintra_chroma,
+            interintra_edges: self.interintra_edges,
+            block,
+        }
+    }
+
     pub(crate) const fn luma_x(&self) -> usize {
         self.luma[0] as usize
     }
@@ -1213,11 +1242,9 @@ impl InterResidual {
 #[derive(Clone, Debug)]
 pub(crate) struct InterResidualBlock {
     pub(crate) plane: ReconPlaneId,
-    pub(crate) x: usize,
-    pub(crate) y: usize,
-    pub(crate) tx_size: usize,
-    log2_width: u8,
-    log2_height: u8,
+    pub(crate) x: u16,
+    pub(crate) y: u16,
+    pub(crate) tx_size: u8,
     pub(crate) cctx_pair_delta: i16,
     pub(crate) coeffs: crate::bitstream::tile_payload::LumaCoeffBlock,
 }
@@ -1232,7 +1259,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) ref_frame_height: RefSlots<u32>,
     pub(crate) ref_base_q_idx: RefSlots<u32>,
     pub(crate) ref_counter: RefSlots<u32>,
-    ref_chroma_ac_deltas: RefSlots<[i32; 2]>,
+    pub(crate) ref_chroma_ac_deltas: RefSlots<[i32; 2]>,
     pub(crate) ref_is_inter: RefSlots<bool>,
     pub(crate) ref_long_term_id: RefSlots<Option<u32>>,
     pub(crate) ref_num_total_refs: RefSlots<u32>,
@@ -1243,7 +1270,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Option<Arc<[SlotFrameFilterTaps]>>,
     pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
-    pub(crate) ref_ccso_params: RefSlots<Option<splot_core::headers::frame::CcsoParams>>,
+    pub(crate) ref_ccso_headers: RefSlots<Option<Arc<FrameHeaderCore>>>,
     pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
     pub(crate) ref_segment_ids: RefSlots<Option<SegmentIdMapHandle>>,
     pub(crate) ref_motion_fields: RefSlots<Option<MotionFieldHandle>>,
@@ -1254,7 +1281,7 @@ impl<T: ReconSample> InterReferenceState<T> {
         self.store.clear();
         self.lr_frame_filter_taps = None;
         self.ref_frame_cdfs = RefSlots::default();
-        self.ref_ccso_params = RefSlots::default();
+        self.ref_ccso_headers = RefSlots::default();
         self.ref_ccso_unit_grids = RefSlots::default();
         self.ref_segment_ids = RefSlots::default();
         self.ref_motion_fields = RefSlots::default();
@@ -1266,10 +1293,7 @@ impl<T: ReconSample> InterReferenceState<T> {
     /// Returns [`splot_recon::ReconError`] when the minimal store capacity is
     /// rejected.
     pub(crate) fn empty() -> splot_recon::Result<Self> {
-        Ok(Self::from_metadata(
-            ReferenceFrameStore::with_capacity(1)?,
-            ReferenceMetadata::default(),
-        ))
+        Self::with_slot_count(1)
     }
 
     /// Shares the selected reference slots' published § 7.9 motion fields.
@@ -1311,39 +1335,32 @@ impl<T: ReconSample> InterReferenceState<T> {
         Ok(resolved)
     }
 
-    pub(crate) fn from_metadata(
-        store: ReferenceFrameStore<RefFrameSlot<T>>,
-        mut metadata: ReferenceMetadata,
-    ) -> Self {
-        Self {
-            store,
-            ref_valid: core::mem::take(&mut metadata.ref_valid),
-            ref_order_hint: core::mem::take(&mut metadata.ref_order_hint),
-            ref_order_hint_lsbs: core::mem::take(&mut metadata.ref_order_hint_lsbs),
-            ref_implicit_output_frame: core::mem::take(&mut metadata.ref_implicit_output_frame),
-            ref_immediate_output_frame: core::mem::take(&mut metadata.ref_immediate_output_frame),
-            ref_frame_width: core::mem::take(&mut metadata.ref_frame_width),
-            ref_frame_height: core::mem::take(&mut metadata.ref_frame_height),
-            ref_base_q_idx: core::mem::take(&mut metadata.ref_base_q_idx),
-            ref_counter: core::mem::take(&mut metadata.ref_counter),
-            ref_chroma_ac_deltas: core::mem::take(&mut metadata.ref_chroma_ac_deltas),
-            ref_is_inter: core::mem::take(&mut metadata.ref_is_inter),
-            ref_long_term_id: core::mem::take(&mut metadata.ref_long_term_id),
-            ref_num_total_refs: core::mem::take(&mut metadata.ref_num_total_refs),
-            saved_global_motion_order_hints: core::mem::take(
-                &mut metadata.saved_global_motion_order_hints,
-            ),
-            saved_global_motion_params: core::mem::take(&mut metadata.saved_global_motion_params),
-            lr_frame_filter_class_counts: core::mem::take(
-                &mut metadata.lr_frame_filter_class_counts,
-            ),
-            lr_frame_filter_taps: core::mem::take(&mut metadata.lr_frame_filter_taps),
-            ref_frame_cdfs: core::mem::take(&mut metadata.ref_frame_cdfs),
-            ref_ccso_params: core::mem::take(&mut metadata.ref_ccso_params),
-            ref_ccso_unit_grids: core::mem::take(&mut metadata.ref_ccso_unit_grids),
-            ref_segment_ids: core::mem::take(&mut metadata.ref_segment_ids),
-            ref_motion_fields: core::mem::take(&mut metadata.ref_motion_fields),
-        }
+    pub(crate) fn with_slot_count(num: usize) -> splot_recon::Result<Self> {
+        Ok(Self {
+            store: ReferenceFrameStore::with_capacity(num)?,
+            ref_valid: RefSlots::default(),
+            ref_order_hint: RefSlots::default(),
+            ref_order_hint_lsbs: RefSlots::default(),
+            ref_implicit_output_frame: RefSlots::default(),
+            ref_immediate_output_frame: RefSlots::default(),
+            ref_frame_width: RefSlots::default(),
+            ref_frame_height: RefSlots::default(),
+            ref_base_q_idx: RefSlots::default(),
+            ref_counter: RefSlots::default(),
+            ref_chroma_ac_deltas: RefSlots::default(),
+            ref_is_inter: RefSlots::default(),
+            ref_long_term_id: RefSlots::default(),
+            ref_num_total_refs: RefSlots::default(),
+            saved_global_motion_order_hints: RefSlots::default(),
+            saved_global_motion_params: RefSlots::default(),
+            lr_frame_filter_class_counts: RefSlots::default(),
+            lr_frame_filter_taps: None,
+            ref_frame_cdfs: RefSlots::default(),
+            ref_ccso_headers: RefSlots::default(),
+            ref_ccso_unit_grids: RefSlots::default(),
+            ref_segment_ids: RefSlots::default(),
+            ref_motion_fields: RefSlots::default(),
+        })
     }
 }
 
@@ -1354,7 +1371,7 @@ impl<T: ReconSample> InterReferenceState<T> {
 /// reads samples, and blocks on [`Self::wait`] when it is about to read them on
 /// the driver thread itself.
 pub(crate) struct PixelReferenceGate<'a, T: ReconSample> {
-    slots: [Option<&'a RefFrameSlot<T>>; ReferenceSlot::MAX_SLOTS],
+    slots: RefSlots<Option<&'a RefFrameSlot<T>>>,
 }
 
 /// The reference slots a parsed frame header names for pixel prediction.
@@ -1412,28 +1429,30 @@ impl<T: ReconSample> PixelReferenceGate<'_, T> {
     }
 }
 
+fn distinct_reference_slots(
+    named: impl IntoIterator<Item = u32>,
+) -> impl Iterator<Item = ReferenceSlot> {
+    let mut seen = 0u16;
+    named.into_iter().filter_map(move |slot| {
+        let bit = 1u16.checked_shl(slot)?;
+        if seen & bit != 0 {
+            return None;
+        }
+        seen |= bit;
+        ReferenceSlot::new(slot as usize).ok()
+    })
+}
+
 impl<T: ReconSample> InterReferenceState<T> {
     /// Shares each distinct motion-field product named by a reference map.
     pub(crate) fn motion_dependencies(
         &self,
         ref_frame_idx: &[u32],
     ) -> RefSlots<Option<MotionFieldHandle>> {
-        let mut seen = 0u16;
         let mut dependencies = RefSlots::default();
         dependencies.extend_within(
-            ref_frame_idx
-                .iter()
-                .filter_map(|&slot| {
-                    let index = usize::try_from(slot).ok()?;
-                    let dependency = self.ref_motion_fields.get(index)?;
-                    let slot = ReferenceSlot::new(index).ok()?;
-                    let bit = 1u16.checked_shl(u32::try_from(slot.index()).ok()?)?;
-                    if seen & bit != 0 {
-                        return None;
-                    }
-                    seen |= bit;
-                    dependency.as_ref()
-                })
+            distinct_reference_slots(ref_frame_idx.iter().copied())
+                .filter_map(|slot| self.ref_motion_fields.get(slot.index())?.as_ref())
                 .cloned()
                 .map(Some),
         );
@@ -1448,24 +1467,12 @@ impl<T: ReconSample> InterReferenceState<T> {
         &self,
         named: impl IntoIterator<Item = u32>,
     ) -> PixelReferenceGate<'_, T> {
-        let mut slots: [Option<&RefFrameSlot<T>>; ReferenceSlot::MAX_SLOTS] =
-            [None; ReferenceSlot::MAX_SLOTS];
-        for slot in named {
-            let Ok(index) = ReferenceSlot::new(slot as usize) else {
-                continue;
-            };
-            let Ok(Some(frame)) = self.store.get(index) else {
-                continue;
-            };
-            if !slots
-                .iter()
-                .flatten()
-                .any(|held| core::ptr::eq(*held, frame))
-                && let Some(entry) = slots.iter_mut().find(|entry| entry.is_none())
-            {
-                *entry = Some(frame);
-            }
-        }
+        let mut slots = RefSlots::default();
+        slots.extend_within(
+            distinct_reference_slots(named)
+                .filter_map(|slot| self.store.get(slot).ok().flatten())
+                .map(Some),
+        );
         PixelReferenceGate { slots }
     }
 
@@ -1486,9 +1493,10 @@ impl<T: ReconSample> InterReferenceState<T> {
 
     fn ccso_params_for_slot(&self, slot: u32) -> Result<&splot_core::headers::frame::CcsoParams> {
         let slot = usize::try_from(slot).unwrap_or(usize::MAX);
-        self.ref_ccso_params
+        self.ref_ccso_headers
             .get(slot)
-            .and_then(Option::as_ref)
+            .and_then(Option::as_deref)
+            .and_then(|header| header.ccso_params.as_ref())
             .ok_or(DecodeReferenceStateError::MissingCcsoParams { slot }.into())
     }
 

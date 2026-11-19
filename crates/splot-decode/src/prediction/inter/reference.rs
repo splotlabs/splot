@@ -54,8 +54,7 @@ const WARP_ROW_REACH: i64 = 7;
 /// vector; see [`compound_last_row`] for the derivation.
 const COMPOUND_REFINE_REACH: i32 = 8;
 
-/// How far down a partially published frame its samples are final, in
-/// `u32` so that [`ReferenceSamples`] stays five words.
+/// How far down each plane of a partially published frame its samples are final.
 #[derive(Clone, Copy, Debug)]
 struct PublishedRows {
     luma: u32,
@@ -87,14 +86,15 @@ impl PublishedRows {
 enum SampleSource<'a, T: ReconSample> {
     /// The frame has settled into its slot.
     Frozen(&'a DecodedFrame<T>),
-    Publishing(PublishedStorage<'a, T>),
+    Publishing(PublishedStorage<'a, T>, PublishedRows),
+    #[cfg(test)]
+    ForcedBand(&'a DecodedFrame<T>, PublishedRows),
 }
 
 /// One reference frame's samples as one block's prediction reads them.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ReferenceSamples<'a, T: ReconSample> {
     source: SampleSource<'a, T>,
-    published: Option<PublishedRows>,
     /// The per-frame [`PlaneScaling::of_reference_planes`] of this reference.
     scalings: &'a [PlaneScaling; 2],
 }
@@ -102,15 +102,11 @@ pub(crate) struct ReferenceSamples<'a, T: ReconSample> {
 impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     /// Reads a settled reference frame, every row of which is final.
     fn settled_with(frame: &'a DecodedFrame<T>, scalings: &'a [PlaneScaling; 2]) -> Self {
+        let source = SampleSource::Frozen(frame);
         #[cfg(test)]
-        let published = forced_band(frame);
-        #[cfg(not(test))]
-        let published = None;
-        Self {
-            source: SampleSource::Frozen(frame),
-            published,
-            scalings,
-        }
+        let source =
+            forced_band(frame).map_or(source, |rows| SampleSource::ForcedBand(frame, rows));
+        Self { source, scalings }
     }
 
     /// Reads a settled reference frame against a current frame of its own
@@ -125,11 +121,10 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     /// Reads the published prefix of a still-filtering reference frame.
     fn publishing_with(published: &PublishedFrame<'a, T>, scalings: &'a [PlaneScaling; 2]) -> Self {
         Self {
-            source: SampleSource::Publishing(published.storage()),
-            published: Some(PublishedRows::new(
-                published.luma_rows(),
-                published.chroma_rows(),
-            )),
+            source: SampleSource::Publishing(
+                published.storage(),
+                PublishedRows::new(published.luma_rows(), published.chroma_rows()),
+            ),
             scalings,
         }
     }
@@ -159,7 +154,9 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     pub(crate) fn info(self) -> DecodedFrameInfo {
         match self.source {
             SampleSource::Frozen(frame) => frame.info(),
-            SampleSource::Publishing(storage) => storage.info(),
+            SampleSource::Publishing(storage, _) => storage.info(),
+            #[cfg(test)]
+            SampleSource::ForcedBand(frame, _) => frame.info(),
         }
     }
 
@@ -190,84 +187,68 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     /// `None` for a publishing reference or a missing plane.
     #[inline]
     pub(crate) fn settled_plane_view(self, plane: PlaneId) -> Option<ReferencePlaneView<'a, T>> {
-        match (self.source, self.published) {
-            (SampleSource::Frozen(frame), None) => {
-                ReferencePlaneView::of_plane(frame.plane(plane)?)
-            }
-            _ => None,
-        }
+        let SampleSource::Frozen(frame) = self.source else {
+            return None;
+        };
+        ReferencePlaneView::of_plane(frame.plane(plane)?)
     }
 
     /// [`Self::plane_view`] through the published-row check.
-    fn banded_plane_view(
+    pub(super) fn banded_plane_view(
         self,
         plane: PlaneId,
         last_row: i32,
         offset: ByteOffset,
     ) -> Result<ReferencePlaneView<'a, T>> {
-        let Some((samples, stride, size, readable_rows)) = self.plane_storage(plane) else {
-            return Err(missing_plane(offset));
-        };
-        self.ensure_published(plane, last_row, size, offset)?;
-        let view = match readable_rows {
-            Some(rows) => ReferencePlaneView::from_published_strided(
-                samples,
-                stride,
-                size.width(),
-                size.height(),
-                rows,
-            ),
-            None => ReferencePlaneView::from_strided(samples, stride, size.width(), size.height()),
-        }
-        .map_err(|_| plane_geometry(offset))?;
-        Ok(view)
-    }
-
-    /// Refuses a read whose rows a still-filtering reference has not published.
-    fn ensure_published(
-        self,
-        plane: PlaneId,
-        last_row: i32,
-        size: PlaneSize,
-        offset: ByteOffset,
-    ) -> Result<()> {
-        let Some(published) = self.published else {
-            return Ok(());
-        };
-        let published = published.of(plane);
-        let needed = (last_row.max(0) as usize)
-            .saturating_add(1)
-            .min(size.height());
-        if needed <= published {
-            return Ok(());
-        }
-        Err(unpublished_rows(offset))
-    }
-
-    /// Borrows one plane's backing samples, stride, and reconstruction size.
-    fn plane_storage(self, plane: PlaneId) -> Option<(&'a [T], usize, PlaneSize, Option<usize>)> {
-        match self.source {
-            SampleSource::Frozen(frame) => frame.plane(plane).map(|plane| {
-                (
-                    plane.samples(),
-                    plane.stride_samples(),
-                    plane.storage_size(),
-                    None,
+        let (frame, forced_rows) = match self.source {
+            SampleSource::Publishing(storage, rows) => {
+                let rows = rows.of(plane);
+                let backing = storage
+                    .plane(plane, rows)
+                    .ok_or_else(|| missing_plane(offset))?;
+                let readable_rows = backing.samples.len() / backing.stride;
+                ensure_published(rows, last_row, backing.size, offset)?;
+                return ReferencePlaneView::from_published_strided(
+                    backing.samples,
+                    backing.stride,
+                    backing.size.width(),
+                    backing.size.height(),
+                    readable_rows,
                 )
-            }),
-            SampleSource::Publishing(storage) => {
-                let rows = self.published.map(|rows| rows.of(plane))?;
-                storage.plane(plane, rows).map(|plane| {
-                    (
-                        plane.samples,
-                        plane.stride,
-                        plane.size,
-                        Some(plane.samples.len() / plane.stride),
-                    )
-                })
+                .map_err(|_| plane_geometry(offset));
             }
+            SampleSource::Frozen(frame) => (frame, None),
+            #[cfg(test)]
+            SampleSource::ForcedBand(frame, rows) => (frame, Some(rows.of(plane))),
+        };
+        let backing = frame.plane(plane).ok_or_else(|| missing_plane(offset))?;
+        let size = backing.storage_size();
+        if let Some(rows) = forced_rows {
+            ensure_published(rows, last_row, size, offset)?;
         }
+        ReferencePlaneView::from_strided(
+            backing.samples(),
+            backing.stride_samples(),
+            size.width(),
+            size.height(),
+        )
+        .map_err(|_| plane_geometry(offset))
     }
+}
+
+fn ensure_published(
+    published: usize,
+    last_row: i32,
+    size: PlaneSize,
+    offset: ByteOffset,
+) -> Result<()> {
+    let needed = (last_row.max(0) as usize)
+        .saturating_add(1)
+        .min(size.height());
+    if needed <= published {
+        return Ok(());
+    }
+    Err(unpublished_rows(offset))
 }
 
 /// The last reference row § 7.13.3.18 subpel prediction reads for `params`.

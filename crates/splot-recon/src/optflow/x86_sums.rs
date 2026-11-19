@@ -33,10 +33,15 @@ pub(super) fn unit_8x8<S: Simd>(
 ) -> Result<Option<[[i32; 2]; 2]>> {
     let [first, second] = rows.each_ref().map(|rows| byte_rows(simd, rows));
     let difference: [i16x16<S>; 4] = core::array::from_fn(|pair| first[pair] - second[pair]);
-    let sad = difference
-        .iter()
-        .fold(i16x16::splat(simd, 0), |sum, pair| sum + pair.abs());
-    if u32::from(sad.reduce_sum().unsigned_abs()) < sad_threshold {
+    let sad = if let Some(avx2) = simd.level().as_avx2() {
+        sad_8x8(avx2, rows)
+    } else {
+        let lanes = difference
+            .iter()
+            .fold(i16x16::splat(simd, 0), |sum, pair| sum + pair.abs());
+        u32::from(lanes.reduce_sum().unsigned_abs())
+    };
+    if sad < sad_threshold {
         return Ok(None);
     }
     if distances == [0; 2] {
@@ -46,6 +51,35 @@ pub(super) fn unit_8x8<S: Simd>(
     let weighted = core::array::from_fn(|pair| first[pair] * near - second[pair] * far);
     solve_sums(whole_8x8(sums(simd, weighted, difference)), distances).map(Some)
 }
+
+fearless_simd::kernel!(
+    /// The 64 byte differences reduced directly by two four-row SADs.
+    #[inline]
+    fn sad_8x8(simd: Avx2, rows: &[[u64; 8]; 2]) -> u32 {
+        use core::arch::x86_64::{
+            _mm_add_epi64, _mm_cvtsi128_si64, _mm_unpackhi_epi64, _mm256_add_epi64,
+            _mm256_castsi256_si128, _mm256_extracti128_si256, _mm256_sad_epu8,
+        };
+
+        let [first, second] = rows;
+        let ([first0, first1], [second0, second1]) =
+            (first.as_chunks::<4>().0, second.as_chunks::<4>().0)
+        else {
+            return 0;
+        };
+        let sad = |first: &[u64; 4], second: &[u64; 4]| {
+            let [first, second] =
+                [first, second].map(|samples| u64x4::load_array_ref(simd, samples).into());
+            _mm256_sad_epu8(first, second)
+        };
+        let sum = _mm256_add_epi64(sad(first0, second0), sad(first1, second1));
+        let halves = _mm_add_epi64(
+            _mm256_castsi256_si128(sum),
+            _mm256_extracti128_si256::<1>(sum),
+        );
+        _mm_cvtsi128_si64(_mm_add_epi64(halves, _mm_unpackhi_epi64(halves, halves))) as u32
+    }
+);
 
 /// The lane sums of the top and bottom halves of an 8x8 unit of rows in
 /// lanes, paired first.

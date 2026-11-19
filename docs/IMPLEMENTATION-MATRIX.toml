@@ -18984,7 +18984,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pas
 change_id = "coeff-ordinary-pass-compose"
 owner = "decoder"
 risk = "medium"
-notes = "apply_staged_nonzero_coeff_ordinary_branch_from_lossless composes geometry derivation, ordinary level/sign/quantization reads and context commit."
+notes = "decode_ordinary_transform_block composes geometry derivation, ordinary level/sign/quantization reads and context commit."
 
 [feature.status]
 mapped = "done"
@@ -19214,7 +19214,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pas
 change_id = "coeff-ordinary-branch-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "apply_staged_nonzero_coeff_ordinary_branch_from_lossless is the ordinary nonzero coefficient entry point, including geometry preflight and context commit."
+notes = "decode_ordinary_transform_block is the ordinary nonzero coefficient entry point, including geometry preflight and context commit."
 
 [feature.status]
 mapped = "done"

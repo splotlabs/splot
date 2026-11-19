@@ -38,6 +38,13 @@ fn low_frequency_positions_are_a_scan_prefix() {
     check::<2, false>(TransformClass::Vertical);
 }
 
+fn geometry(width: usize, height: usize) -> &'static TxGeometry {
+    super::super::TX_GEOMETRY
+        .iter()
+        .find(|tx| usize::from(tx.width) == width && usize::from(tx.height) == height)
+        .unwrap()
+}
+
 #[test]
 fn grid_scans_hold_each_shape_scan_with_its_grid_index() {
     for (class, recon_class) in [
@@ -48,10 +55,11 @@ fn grid_scans_hold_each_shape_scan_with_its_grid_index() {
         for width in [4, 8, 16, 32] {
             for height in [4, 8, 16, 32] {
                 let scan = splot_recon::coefficient_scan_slice(width, height, recon_class).unwrap();
-                let grid = grid_scan(class, width, height, scan.len()).unwrap();
-                for (&pos, &entry) in scan.iter().zip(grid) {
+                let grid = grid_scan(class, geometry(width, height), scan.len()).unwrap();
+                for (i, (&pos, &entry)) in scan.iter().zip(grid).enumerate() {
                     let pos = usize::from(pos);
-                    assert_eq!(entry >> 16, pos as u32);
+                    assert_eq!(entry_pos(entry), pos);
+                    assert_eq!(entry >> 22, i as u32);
                     let expected = (pos / width) * LEVEL_STRIDE + pos % width;
                     assert_eq!(entry_grid(entry), expected);
                 }
@@ -71,32 +79,27 @@ fn scan_extent_bounds_every_scan_prefix() {
             for height in [4, 8, 16, 32] {
                 let scan = splot_recon::coefficient_scan_slice(width, height, recon_class).unwrap();
                 let mut extent = 0;
-                let log2 = (
-                    width.trailing_zeros() as usize,
-                    height.trailing_zeros() as usize,
-                );
+                let tx = geometry(width, height);
                 for (eob, &pos) in (1..).zip(scan) {
                     extent = extent.max(usize::from(pos) + 1);
-                    assert_eq!(scan_extent(class, log2, eob), extent);
+                    assert_eq!(scan_extent(class, tx, eob), extent);
                 }
             }
         }
     }
     let class = CoeffTransformClass::TwoD;
-    assert_eq!(scan_extent(class, (2, 2), 0), 16);
-    assert_eq!(scan_extent(class, (2, 2), 17), 16);
-    assert_eq!(scan_extent(class, (6, 6), 1), 1);
-    assert_eq!(scan_extent(class, (6, 6), 1025), 1024);
+    assert_eq!(scan_extent(class, geometry(4, 4), 0), 16);
+    assert_eq!(scan_extent(class, geometry(4, 4), 17), 16);
+    assert_eq!(scan_extent(class, geometry(32, 32), 1), 1);
+    assert_eq!(scan_extent(class, geometry(32, 32), 1025), 1024);
 }
 
 #[test]
-fn grid_scan_rejects_bad_shapes_and_eobs() {
+fn grid_scan_rejects_bad_eobs() {
     let class = CoeffTransformClass::TwoD;
-    assert!(grid_scan(class, 12, 4, 1).is_err());
-    assert!(grid_scan(class, 4, 64, 1).is_err());
-    assert!(grid_scan(class, 4, 4, 0).is_err());
-    assert!(grid_scan(class, 4, 4, 17).is_err());
-    assert_eq!(grid_scan(class, 4, 4, 16).unwrap().len(), 16);
+    assert!(grid_scan(class, geometry(4, 4), 0).is_err());
+    assert!(grid_scan(class, geometry(4, 4), 17).is_err());
+    assert_eq!(grid_scan(class, geometry(4, 4), 16).unwrap().len(), 16);
 }
 
 #[test]
@@ -104,9 +107,9 @@ fn scan_entry_context_classes_give_the_luma_2d_base_contexts() {
     for width in [4, 8, 16, 32] {
         for height in [4, 8, 16, 32] {
             let len = width * height;
-            let scan = grid_scan(CoeffTransformClass::TwoD, width, height, len).unwrap();
+            let scan = grid_scan(CoeffTransformClass::TwoD, geometry(width, height), len).unwrap();
             for (scan_index, &entry) in scan.iter().enumerate().skip(1) {
-                let pos = (entry >> 16) as usize;
+                let pos = entry_pos(entry);
                 let diagonal = pos / width + pos % width;
                 let class = ctx_class_of(entry);
                 let (hf, lf) = (&CTX_2D[0][class], &CTX_2D[1][class]);

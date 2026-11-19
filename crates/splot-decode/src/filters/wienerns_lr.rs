@@ -27,6 +27,79 @@ pub(crate) fn recon_final_filter_sink<T: splot_recon::ReconSample>(
 }
 pub(crate) use self::tx_records::WienerNsLrTxSkipTransformRecord;
 
+#[derive(Clone, Copy)]
+pub(crate) struct FilterRecordNeeds {
+    pub(crate) deblock: bool,
+    pub(crate) tx_skip: bool,
+}
+
+impl FilterRecordNeeds {
+    pub(crate) const ALL: Self = Self {
+        deblock: true,
+        tx_skip: true,
+    };
+
+    pub(crate) fn from_frame(core: &splot_core::headers::frame::FrameHeaderCore) -> Self {
+        Self {
+            deblock: core
+                .deblocking_filter_params
+                .as_ref()
+                .is_some_and(|filter| filter.apply_deblocking_filter != [false; 4])
+                || core
+                    .lossless_info
+                    .as_ref()
+                    .is_some_and(|info| info.has_lossless_segment),
+            tx_skip: cdef_uses_tx_skip(core) || lr_uses_tx_skip(core),
+        }
+    }
+
+    pub(crate) const fn any(self) -> bool {
+        self.deblock || self.tx_skip
+    }
+
+    pub(crate) fn record_luma(
+        self,
+        blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
+        skips: &mut Vec<WienerNsLrTxSkipTransformRecord>,
+        block: crate::filters::deblock::DeblockBlock,
+        eob: usize,
+    ) {
+        if self.tx_skip {
+            skips.push(WienerNsLrTxSkipTransformRecord::from_luma(&block, eob));
+        }
+        if self.deblock {
+            blocks.push(block);
+        }
+    }
+}
+
+impl Default for FilterRecordNeeds {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
+fn cdef_uses_tx_skip(core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
+    core.cdef_params
+        .as_ref()
+        .is_some_and(|cdef| cdef.cdef_on_skip_txfm_frame_enable == Some(false))
+}
+
+fn lr_uses_tx_skip(core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
+    use splot_core::headers::frame::FrameRestorationType;
+    core.lr_params
+        .as_ref()
+        .and_then(|lr| lr.planes.first())
+        .is_some_and(|plane| {
+            matches!(
+                plane.restoration_type,
+                FrameRestorationType::PcWiener | FrameRestorationType::Switchable
+            ) || (plane.restoration_type == FrameRestorationType::WienerNonsep
+                && plane.frame_filters_on
+                && plane.num_filter_classes.unwrap_or(1) > 1)
+        })
+}
+
 #[derive(Default)]
 pub(crate) struct FrameFilterRecords {
     pub(crate) deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,
@@ -257,7 +330,7 @@ pub(crate) fn derive_wienerns_lr_tx_skip_grid_reusing(
     values: Vec<u8>,
 ) -> ReconResult<WienerNsLrTxSkipGrid> {
     derive_wienerns_lr_skip_grid(rows, cols, records, values, |record| {
-        record.skip_flag || record.eob == 0
+        record.skip_flag || record.empty
     })
 }
 
@@ -275,7 +348,7 @@ fn derive_wienerns_lr_skip_grid(
     cols: usize,
     records: &[WienerNsLrTxSkipTransformRecord],
     mut values: Vec<u8>,
-    value_of: impl Fn(&WienerNsLrTxSkipTransformRecord) -> bool,
+    value_of: impl Fn(WienerNsLrTxSkipTransformRecord) -> bool,
 ) -> ReconResult<WienerNsLrTxSkipGrid> {
     let expected = wienerns_lr_tx_skip_grid_len(rows, cols)?;
     values.clear();
@@ -287,7 +360,7 @@ fn derive_wienerns_lr_skip_grid(
         })?;
     values.resize(expected, WIENERNS_LR_TX_SKIP_UNWRITTEN);
     let mut populated = 0usize;
-    for record in records {
+    for &record in records {
         let value = u8::from(value_of(record));
         write_wienerns_lr_tx_skip_record(rows, cols, record, value, &mut values, &mut populated)?;
     }
@@ -305,29 +378,35 @@ fn derive_wienerns_lr_skip_grid(
 fn write_wienerns_lr_tx_skip_record(
     rows: usize,
     cols: usize,
-    record: &WienerNsLrTxSkipTransformRecord,
+    record: WienerNsLrTxSkipTransformRecord,
     value: u8,
     values: &mut [u8],
     populated: &mut usize,
 ) -> ReconResult<()> {
     let (start, end_row, width) = wienerns_lr_tx_skip_record_span(rows, cols, record)?;
-    let run = (start, cols, end_row - record.row);
+    let run = (start, cols, end_row - usize::from(record.row));
     match width {
         1 => write_tx_skip_rows::<1>(values, run, value, populated),
         2 => write_tx_skip_rows::<2>(values, run, value, populated),
         4 => write_tx_skip_rows::<4>(values, run, value, populated),
         8 => write_tx_skip_rows::<8>(values, run, value, populated),
         16 => write_tx_skip_rows::<16>(values, run, value, populated),
-        _ => for_each_wienerns_lr_tx_skip_record_row(rows, cols, record, |cells| {
-            let actual = values.len();
-            let slots = values
-                .get_mut(cells.clone())
-                .ok_or(ReconError::BufferLengthMismatch {
-                    expected: cells.start.max(actual).saturating_add(1),
-                    actual,
-                })?;
-            write_tx_skip_slots(slots, value, populated)
-        }),
+        _ => {
+            let mut at = start;
+            for _ in 0..run.2 {
+                let actual = values.len();
+                let slots =
+                    values
+                        .get_mut(at..at + width)
+                        .ok_or(ReconError::BufferLengthMismatch {
+                            expected: at.max(actual).saturating_add(1),
+                            actual,
+                        })?;
+                write_tx_skip_slots(slots, value, populated)?;
+                at += cols;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -399,55 +478,27 @@ fn mi_run_is(run: &[u8], value: u8) -> bool {
     }
 }
 
-/// Visits the clipped grid index range of each `record` row.
-fn for_each_wienerns_lr_tx_skip_record_row(
-    rows: usize,
-    cols: usize,
-    record: &WienerNsLrTxSkipTransformRecord,
-    mut visit: impl FnMut(core::ops::Range<usize>) -> ReconResult<()>,
-) -> ReconResult<()> {
-    let (mut start, end_row, width) = wienerns_lr_tx_skip_record_span(rows, cols, record)?;
-    for _ in record.row..end_row {
-        visit(start..start + width)?;
-        start += cols;
-    }
-    Ok(())
-}
-
 /// The first grid index, the clipped end row and the clipped width of
 /// `record`.
 fn wienerns_lr_tx_skip_record_span(
     rows: usize,
     cols: usize,
-    record: &WienerNsLrTxSkipTransformRecord,
+    record: WienerNsLrTxSkipTransformRecord,
 ) -> ReconResult<(usize, usize, usize)> {
     if record.rows == 0 || record.cols == 0 {
         return Err(ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip transform record dimensions",
         });
     }
-    let nominal_end_row =
-        record
-            .row
-            .checked_add(record.rows)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "LrTxSkip transform record row extent",
-            })?;
-    let nominal_end_col =
-        record
-            .col
-            .checked_add(record.cols)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "LrTxSkip transform record column extent",
-            })?;
-    if record.row >= rows || record.col >= cols {
+    let (row, col) = (usize::from(record.row), usize::from(record.col));
+    if row >= rows || col >= cols {
         return Err(ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip transform record bounds",
         });
     }
-    let end_row = nominal_end_row.min(rows);
-    let width = nominal_end_col.min(cols) - record.col;
-    let start = wienerns_lr_tx_skip_grid_index(record.row, record.col, cols)?;
+    let end_row = (row + usize::from(record.rows)).min(rows);
+    let width = usize::from(record.cols).min(cols - col);
+    let start = wienerns_lr_tx_skip_grid_index(row, col, cols)?;
     Ok((start, end_row, width))
 }
 

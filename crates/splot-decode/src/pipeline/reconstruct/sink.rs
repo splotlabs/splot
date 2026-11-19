@@ -18,7 +18,6 @@ use crate::bitstream::tile_payload::{
     add_general_intra_coeff_block_residual_in_place,
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
-    reconstruct_inter_coeff_block_residual_rect_into,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -204,6 +203,7 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
     sink: &mut crate::prediction::inter::mc::WorkspaceSink<'_, '_, T>,
@@ -225,9 +225,11 @@ pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
     if block.eob == 0 {
         return Ok(());
     }
-    reconstruct_inter_coeff_block_residual_rect_into(
-        sink, block, plane_id, x, y, block_size, qindex, use_tcq, use_ddt, bit_depth,
-    )
+    crate::bitstream::tile_payload::with_residual_scratch(|scratch| {
+        crate::bitstream::tile_payload::reconstruct_inter_coeff_block_residual_rect_into(
+            sink, scratch, block, plane_id, x, y, block_size, qindex, use_tcq, use_ddt, bit_depth,
+        )
+    })
 }
 
 pub(super) const fn invalid_directional_edge_state() -> GeneralIntraResidualError {

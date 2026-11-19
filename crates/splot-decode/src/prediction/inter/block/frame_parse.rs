@@ -198,7 +198,7 @@ impl<'payload> InterFrameParser<'payload> {
 
     pub(crate) fn finish<T: ReconSample>(
         self,
-        work_units: &[crate::bitstream::tile_payload::DecodeTileWorkUnit],
+        work_units: &mut [crate::bitstream::tile_payload::DecodeTileWorkUnit],
         mut records: crate::filters::wienerns_lr::FrameFilterRecords,
         core: &FrameHeaderCore,
         reference: &InterReferenceState<T>,

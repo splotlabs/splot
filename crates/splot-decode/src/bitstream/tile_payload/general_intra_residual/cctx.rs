@@ -9,7 +9,7 @@ use splot_recon::{
     inverse_transform_2d_outer_with_scratch, reconstruct_add_residual,
 };
 
-use super::reconstruct::{dequantize_coeff_block, reconstruct_block_setup};
+use super::reconstruct::{ReconstructBlockSetup, dequantize_coeff_block, reconstruct_block_setup};
 use super::{CoeffBlock, GeneralIntraResidualError, with_residual_scratch};
 
 const CCTX_PREC_BITS: u32 = 8;
@@ -105,21 +105,22 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
     u_out.resize(u_setup.samples, T::default());
     v_out.resize(v_setup.samples, T::default());
     with_residual_scratch(|scratch| {
-        let u_dequant = &mut scratch.dequant[..u_setup.adjusted];
-        let v_dequant = &mut scratch.dequant_pair[..v_setup.adjusted];
-        let u_coded = dequantize_coeff_block(u_block, &u_setup.params, u_dequant)?;
-        let v_coded = dequantize_coeff_block(v_block, &v_setup.params, v_dequant)?;
-        apply_cross_chroma_transform(cctx_type, bit_depth, u_dequant, v_dequant)?;
-        let coded = u_coded.max(v_coded);
+        let [u_dequant, v_dequant] = dequantize_cctx_pair(
+            [u_block, v_block],
+            [&u_setup, &v_setup],
+            [&mut scratch.dequant, &mut scratch.dequant_pair],
+            cctx_type,
+            bit_depth,
+        )?;
         let pairs = [
-            (&u_setup, &*u_dequant, u_prediction, &mut *u_out),
-            (&v_setup, &*v_dequant, v_prediction, &mut *v_out),
+            (&u_setup, u_dequant, u_prediction, &mut *u_out),
+            (&v_setup, v_dequant, v_prediction, &mut *v_out),
         ];
         for (setup, dequant, prediction, out) in pairs {
             if let Some(fused) = setup.fused()
                 && fused.add_onto(
                     prediction,
-                    &dequant[..coded],
+                    dequant,
                     (None, bit_depth),
                     out,
                     1 << log2_width,
@@ -145,6 +146,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn add_cctx_pair_residual_in_place<T: ReconSample>(
     surface: &mut CurrentFrameSurface<'_, '_, T>,
+    scratch: &mut super::ResidualScratch,
     [u_block, v_block]: [CoeffBlock<'_>; 2],
     (x, y, size): (usize, usize, IntraRectBlockSize),
     qindex: u32,
@@ -174,41 +176,59 @@ pub(crate) fn add_cctx_pair_residual_in_place<T: ReconSample>(
             context: "CCTX paired transform geometry",
         });
     }
-    with_residual_scratch(|scratch| {
-        let u_dequant = &mut scratch.dequant[..u_setup.adjusted];
-        let v_dequant = &mut scratch.dequant_pair[..v_setup.adjusted];
-        let u_coded = dequantize_coeff_block(u_block, &u_setup.params, u_dequant)?;
-        let v_coded = dequantize_coeff_block(v_block, &v_setup.params, v_dequant)?;
-        apply_cross_chroma_transform(cctx_type, bit_depth, u_dequant, v_dequant)?;
-        let coded = u_coded.max(v_coded);
-        let pairs = [
-            (PlaneId::U, &u_setup, &*u_dequant),
-            (PlaneId::V, &v_setup, &*v_dequant),
-        ];
-        for (plane, setup, dequant) in pairs {
-            if let Some(fused) = setup.fused()
-                && let Some((dst, stride)) = surface.residual_rect_mut(plane, x, y, size)?
-                && fused.add(
-                    &dequant[..coded],
-                    (None, bit_depth),
-                    dst,
-                    stride,
-                    &mut scratch.transform,
-                )
-            {
-                continue;
-            }
-            let residual = &mut scratch.residual[..setup.samples];
-            inverse_transform_2d_outer_with_scratch(
-                &setup.transform()?,
+    let [u_dequant, v_dequant] = dequantize_cctx_pair(
+        [u_block, v_block],
+        [&u_setup, &v_setup],
+        [&mut scratch.dequant, &mut scratch.dequant_pair],
+        cctx_type,
+        bit_depth,
+    )?;
+    let pairs = [
+        (PlaneId::U, &u_setup, u_dequant),
+        (PlaneId::V, &v_setup, v_dequant),
+    ];
+    for (plane, setup, dequant) in pairs {
+        if let Some(fused) = setup.fused()
+            && let Some((dst, stride)) = surface.residual_rect_mut(plane, x, y, size)?
+            && fused.add(
                 dequant,
-                residual,
+                (None, bit_depth),
+                dst,
+                stride,
                 &mut scratch.transform,
-            )?;
-            surface.add_residual_rect_block(plane, x, y, size, residual)?;
+            )
+        {
+            continue;
         }
-        Ok(())
-    })
+        let residual = &mut scratch.residual[..setup.samples];
+        inverse_transform_2d_outer_with_scratch(
+            &setup.transform()?,
+            dequant,
+            residual,
+            &mut scratch.transform,
+        )?;
+        surface.add_residual_rect_block(plane, x, y, size, residual)?;
+    }
+    Ok(())
+}
+
+/// Dequantizes and rotates the common whole-row prefix. Missing coefficients
+/// in the shorter plane are zero, as are both planes' omitted rows.
+fn dequantize_cctx_pair<'a>(
+    [u, v]: [CoeffBlock<'_>; 2],
+    [u_setup, v_setup]: [&ReconstructBlockSetup; 2],
+    [u_out, v_out]: [&'a mut [i32]; 2],
+    cctx_type: usize,
+    bit_depth: BitDepth,
+) -> Result<[&'a [i32]; 2], GeneralIntraResidualError> {
+    let u_written = dequantize_coeff_block(u, &u_setup.params, &mut u_out[..u_setup.adjusted])?;
+    let v_written = dequantize_coeff_block(v, &v_setup.params, &mut v_out[..v_setup.adjusted])?;
+    let coded = u_written.max(v_written);
+    let (u, v) = (&mut u_out[..coded], &mut v_out[..coded]);
+    u[u_written..].fill(0);
+    v[v_written..].fill(0);
+    apply_cross_chroma_transform(cctx_type, bit_depth, u, v)?;
+    Ok([u, v])
 }
 
 pub(super) fn apply_cross_chroma_transform(
@@ -242,4 +262,57 @@ pub(super) fn apply_cross_chroma_transform(
         *v = next_v;
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::super::{DCT_DCT, LumaCoeffBlock};
+    use super::*;
+
+    #[test]
+    fn cctx_rotation_writes_only_the_common_coded_prefix() {
+        let quant = [3, -7, 5, 2, -2, 5, 11, 9, 1];
+        for depth in [BitDepth::Eight, BitDepth::Ten] {
+            let [u_setup, v_setup] = [PlaneId::U, PlaneId::V].map(|plane| {
+                reconstruct_block_setup(
+                    64, 99, plane, 3, 3, DCT_DCT, false, false, false, None, depth,
+                )
+                .unwrap()
+            });
+            for (u_len, v_len) in [(0, 0), (0, 9), (9, 0), (9, 4), (4, 9), (9, 9)] {
+                let [u_block, v_block] = [u_len, v_len].map(|len| LumaCoeffBlock {
+                    eob: u16::from(len != 0),
+                    quant_start: 0,
+                    quant_len: len as u16,
+                    zero_tail: (64 - len) as u16,
+                    intra_ist: None,
+                    cctx_type: None,
+                    plane_tx_type: DCT_DCT as u8,
+                    use_tcq: false,
+                    lossless: false,
+                });
+                let u = u_block.view(&quant[..u_len]);
+                let v = v_block.view(&quant[..v_len]);
+                let (mut want_u, mut want_v) = ([0; 64], [0; 64]);
+                dequantize_coeff_block(u, &u_setup.params, &mut want_u).unwrap();
+                dequantize_coeff_block(v, &v_setup.params, &mut want_v).unwrap();
+                apply_cross_chroma_transform(5, depth, &mut want_u, &mut want_v).unwrap();
+
+                let (mut actual_u, mut actual_v) = ([i32::MAX; 64], [i32::MIN; 64]);
+                let got = dequantize_cctx_pair(
+                    [u, v],
+                    [&u_setup, &v_setup],
+                    [&mut actual_u, &mut actual_v],
+                    5,
+                    depth,
+                )
+                .unwrap();
+                let coded = u_len.max(v_len).next_multiple_of(8);
+                assert_eq!(got, [&want_u[..coded], &want_v[..coded]]);
+                assert!(actual_u[coded..].iter().all(|&v| v == i32::MAX));
+                assert!(actual_v[coded..].iter().all(|&v| v == i32::MIN));
+            }
+        }
+    }
 }

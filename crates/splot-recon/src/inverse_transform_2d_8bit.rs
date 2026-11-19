@@ -888,14 +888,13 @@ fn transform<S: Simd, O: Output + ?Sized>(
         return;
     }
     row_dispatch(simd, row, pass.w, rows, &mut scratch[..]);
-    if pass.h < 32 {
-        let chunks = scratch.as_chunks_mut::<8>().0.iter_mut();
-        for chunk in chunks
-            .take(pass.h * pass.w / 8)
-            .skip((rows.coded * pass.w).div_ceil(8))
-        {
-            *chunk = [0; 8];
-        }
+    let input_rows = col_input_rows(pass.h, rows.coded);
+    let chunks = scratch.as_chunks_mut::<8>().0.iter_mut();
+    for chunk in chunks
+        .take(input_rows * pass.w / 8)
+        .skip((rows.coded * pass.w).div_ceil(8))
+    {
+        *chunk = [0; 8];
     }
     let pass = (pass, rows.coded);
     if pass.0.w == 4 {
@@ -1286,9 +1285,19 @@ impl<S: Simd> Lanes<S> for i32x8<S> {
     }
 }
 
+fn col_input_rows(height: usize, coded: usize) -> usize {
+    if height == 32 {
+        coded.min(height)
+    } else if height >= 8 && coded <= height / 2 {
+        height / 2
+    } else {
+        height
+    }
+}
+
 /// The kernel column pass of `col` over the first `coded` rows of
-/// `scratch`, the rows below them zero up to a height below 32. Identity
-/// columns run inside the row pass instead ([`IdentityCol`]).
+/// `scratch`, with any padding up to the selected input height zeroed.
+/// Identity columns run inside the row pass instead ([`IdentityCol`]).
 #[allow(
     clippy::inline_always,
     reason = "measured § 7.15.4.1 column-pass hot path"
@@ -1332,8 +1341,8 @@ fn col_dispatch<S: Simd, V: Lanes<S>, O: Output + ?Sized>(
 
 /// The column pass of an `M`-tall block over the `V` column lanes of the
 /// first `coded` rows of `scratch`, four outputs at a time: each output lane
-/// takes one multiply-add per row, every row for `M < 32` (a fixed count
-/// beats a data-dependent one there). `SPLIT` and `REV` are as in
+/// takes one multiply-add per input row. Below 32, the input height is fixed
+/// at `M`, or `M / 2` if every coded row fits. `SPLIT` and `REV` are as in
 /// [`row_pass`], over the rows.
 #[allow(
     clippy::inline_always,
@@ -1359,7 +1368,7 @@ fn col_pass<
     ): (ColPass, usize),
     residual: &mut O,
 ) {
-    let rows = if M < 32 { M } else { coded.min(M) };
+    let rows = col_input_rows(M, coded);
     let zero = V::splat(simd, 0);
     let outputs = if SPLIT { M / 2 } else { M };
     let clip = |v: V| clip_lanes(simd, v, shift, bound, !O::ADDS);

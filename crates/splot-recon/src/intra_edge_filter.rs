@@ -5,7 +5,7 @@
 //!
 //! Feature tracking: `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION`.
 
-use fearless_simd::{Simd, SimdBase, u16x16};
+use fearless_simd::{Bytes, Simd, SimdBase, SimdMask, u16x16, u32x8};
 
 use crate::intra_dc_math::IntraLaneSample;
 use crate::{ReconError, ReconSample, Result};
@@ -39,9 +39,7 @@ pub(crate) const INTRA_EDGE_KERNEL: [[i32; INTRA_EDGE_TAPS]; INTRA_EDGE_KERNELS]
 ///
 /// # Errors
 /// Returns [`ReconError::ArithmeticOverflow`] when `sz` exceeds `edge.len()`, or
-/// a filtered sample falls outside the representable range (the `(s + 8) >> 4`
-/// average of in-range samples is always representable, so this cannot fire for
-/// valid edges, but the conversion is checked rather than truncating).
+/// `strength` is outside `0..=3` for a nonempty edge.
 pub fn apply_intra_edge_filter<T: ReconSample>(
     edge: &mut [T],
     sz: usize,
@@ -60,103 +58,114 @@ pub fn apply_intra_edge_filter<T: ReconSample>(
             context: "intra edge filter strength out of range",
         });
     };
-    if filter_intra_edge_lanes(edge, sz, kernel) {
+    if sz < 2 {
         return Ok(());
     }
-    let last = sz - 1;
-    let [tap_m2, tap_m1, tap_0, tap_p1, tap_p2] = *kernel;
-    let mut two_back = edge[0].to_u16();
-    let mut one_back = two_back;
-    for i in 1..sz {
-        let current = edge[i].to_u16();
-        let one_ahead = edge[i.saturating_add(1).min(last)].to_u16();
-        let two_ahead = edge[i.saturating_add(2).min(last)].to_u16();
-        let s = tap_m2 * i32::from(two_back)
-            + tap_m1 * i32::from(one_back)
-            + tap_0 * i32::from(current)
-            + tap_p1 * i32::from(one_ahead)
-            + tap_p2 * i32::from(two_ahead);
-        let value = (s + 8) >> 4;
-        let value = u16::try_from(value).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "intra edge filter output out of range",
-        })?;
-        edge[i] = T::try_from_u16(value)?;
-        two_back = one_back;
-        one_back = current;
+    let edge = &mut edge[..sz];
+    if let Some(samples) = T::u8_slice_mut(edge) {
+        baseline_simd!(simd => filter_rolling::<_, _, false>(simd, samples, kernel));
+    } else if let Some(samples) = T::u16_slice_mut(edge) {
+        baseline_simd!(simd => {
+            if fits_narrow_sum(simd, samples) {
+                filter_rolling::<_, _, false>(simd, samples, kernel);
+            } else {
+                filter_rolling::<_, _, true>(simd, samples, kernel);
+            }
+        });
     }
     Ok(())
 }
 
-/// Widest edge [`filter_intra_edge_lanes`] filters.
-const MAX_LANE_EDGE: usize = 256;
-/// Largest 12-bit sample, whose weighted sums fit the `u16` lanes.
-const MAX_LANE_SAMPLE: u16 = 4095;
-/// Clamped samples before the edge in the lane copy.
-const PAD: usize = 2;
-
-/// [`apply_intra_edge_filter`] in 16 `u16` lanes over a clamped copy of the
-/// edge, for `u8`/`u16` storage of samples up to 12 bits. The taps are
-/// non-negative and sum to 16, so each output is a weighted average of stored
-/// samples: it fits `u16` lanes (`16 * 4095 + 8`) and needs no range check.
-fn filter_intra_edge_lanes<T: ReconSample>(
-    edge: &mut [T],
-    sz: usize,
-    kernel: &[i32; INTRA_EDGE_TAPS],
-) -> bool {
-    if sz < 2 || sz + 2 * PAD + 16 > MAX_LANE_EDGE || sz > edge.len() {
-        return false;
-    }
-    if let Some(samples) = T::u8_slice_mut(&mut edge[..sz]) {
-        let source = clamped_copy(samples);
-        baseline_simd!(simd => filter_lanes(simd, &source, kernel, &mut samples[1..]));
-        return true;
-    }
-    let Some(samples) = T::u16_slice_mut(&mut edge[..sz]) else {
-        return false;
-    };
-    if samples.iter().any(|&sample| sample > MAX_LANE_SAMPLE) {
-        return false;
-    }
-    let source = clamped_copy(samples);
-    baseline_simd!(simd => filter_lanes(simd, &source, kernel, &mut samples[1..]));
-    true
-}
-
-/// `samples` after [`PAD`] copies of its first sample, then its last sample to
-/// the end.
-fn clamped_copy<P: Copy + Default>(samples: &[P]) -> [P; MAX_LANE_EDGE] {
-    let (Some(&first), Some(&last)) = (samples.first(), samples.last()) else {
-        return [P::default(); MAX_LANE_EDGE];
-    };
-    let mut source = [last; MAX_LANE_EDGE];
-    source[PAD..PAD + samples.len()].copy_from_slice(samples); // splot-copy-ok: clamped edge copy the filter reads
-    source[..PAD].fill(first);
-    source
-}
-
-/// Filters `out[j] = edge[j + 1]` from the clamped copy `source`.
 #[inline]
-fn filter_lanes<S: Simd, P: IntraLaneSample>(
+fn load_clamped<S: Simd, P: IntraLaneSample>(simd: S, samples: &[P], last: P) -> u16x16<S> {
+    if let Some(full) = samples.first_chunk::<16>() {
+        P::load16(simd, full)
+    } else if samples.is_empty() {
+        u16x16::splat(simd, last.to_u16())
+    } else {
+        let mut padded = [last; 16];
+        padded[..samples.len()].copy_from_slice(samples); // splot-copy-ok: clamp the final SIMD input lanes
+        P::load16(simd, &padded)
+    }
+}
+
+#[inline]
+fn fits_narrow_sum<S: Simd>(simd: S, samples: &[u16]) -> bool {
+    const MAX_NARROW_SAMPLE: u16 = (u16::MAX - 8) / 16;
+    let (full, tail) = samples.as_chunks::<16>();
+    let high = full.iter().fold(u16x16::splat(simd, 0), |high, input| {
+        high.max(u16x16::from_slice(simd, input))
+    });
+    let high = high.max(load_clamped(simd, tail, 0));
+    high.simd_le(u16x16::splat(simd, MAX_NARROW_SAMPLE))
+        .all_true()
+}
+
+/// Keeps the previous and current source vectors until their last use.
+#[inline]
+fn filter_rolling<S: Simd, P: IntraLaneSample, const WIDE: bool>(
     simd: S,
-    source: &[P; MAX_LANE_EDGE],
+    samples: &mut [P],
     kernel: &[i32; INTRA_EDGE_TAPS],
-    out: &mut [P],
 ) {
-    for at in (0..out.len()).step_by(16) {
-        let mut sum = u16x16::splat(simd, 8);
-        for (k, &tap) in kernel.iter().enumerate() {
-            if let Some(window) = source[at + 1 + k..].first_chunk::<16>() {
-                sum += P::load16(simd, window) * tap as u16;
-            }
+    let (Some(&first), Some(&last)) = (samples.first(), samples.last()) else {
+        return;
+    };
+    let mut remaining = &mut samples[1..];
+    let mut previous = u16x16::splat(simd, first.to_u16());
+    let mut current = load_clamped(simd, remaining, last);
+    let [outer, inner, center, _, _] = *kernel;
+    loop {
+        let next = load_clamped(simd, remaining.get(16..).unwrap_or_default(), last);
+        let left1 = simd
+            .slide_i16x16::<15>(previous.bitcast(), current.bitcast())
+            .bitcast();
+        let right1 = simd
+            .slide_i16x16::<1>(current.bitcast(), next.bitcast())
+            .bitcast();
+        let left2 = simd
+            .slide_i16x16::<14>(previous.bitcast(), current.bitcast())
+            .bitcast();
+        let right2 = simd
+            .slide_i16x16::<2>(current.bitcast(), next.bitcast())
+            .bitcast();
+        let value = if WIDE {
+            let [(lb2, hb2), (lb1, hb1), (lc, hc), (la1, ha1), (la2, ha2)] =
+                [left2, left1, current, right1, right2].map(|v| simd.widen_u16x16(v));
+            let combine = |left2: u32x8<S>, left1, middle, right1, right2| {
+                ((left2 + right2) * outer as u32
+                    + (left1 + right1) * inner as u32
+                    + middle * center as u32
+                    + 8)
+                    >> 4
+            };
+            simd.relaxed_narrow_u32x8(
+                combine(lb2, lb1, lc, la1, la2),
+                combine(hb2, hb1, hc, ha1, ha2),
+            )
+        } else {
+            ((left2 + right2) * outer as u16
+                + (left1 + right1) * inner as u16
+                + current * center as u16
+                + 8)
+                >> 4
+        };
+        if remaining.len() < 16 {
+            let mut tail = [last; 16];
+            P::store16(simd, value, &mut tail);
+            remaining.copy_from_slice(&tail[..remaining.len()]); // splot-copy-ok: store only the valid SIMD output lanes
+            break;
         }
-        if let Some(out) = out.get_mut(at..).and_then(<[P]>::first_chunk_mut::<16>) {
-            P::store16(simd, sum >> 4, out);
-            continue;
+        let Some((out, rest)) = remaining.split_first_chunk_mut::<16>() else {
+            break;
+        };
+        P::store16(simd, value, out);
+        if rest.is_empty() {
+            break;
         }
-        let mut values = [P::default(); 16];
-        P::store16(simd, sum >> 4, &mut values);
-        let count = (out.len() - at).min(16);
-        out[at..at + count].copy_from_slice(&values[..count]); // splot-copy-ok: publish the filtered edge
+        remaining = rest;
+        previous = current;
+        current = next;
     }
 }
 

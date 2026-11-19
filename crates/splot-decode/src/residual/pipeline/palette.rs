@@ -3,6 +3,8 @@
 
 //! Palette color-map symbol decoding.
 
+use core::num::NonZeroU32;
+
 use splot_core::symbol::SymbolDecoder;
 
 use crate::bitstream::tile_payload::{
@@ -50,11 +52,13 @@ pub(super) fn recycle_palette_map(map: Option<Vec<u8>>) {
     }
 }
 
-/// Moves `map` into the row's `maps` and gives its index there. A row holds
-/// far fewer than `u32::MAX` maps.
-pub(super) fn store_palette_map(maps: &mut Vec<Vec<u8>>, map: Option<Vec<u8>>) -> Option<u32> {
+/// Moves `map` into the row's `maps` and returns its one-based index.
+pub(super) fn store_palette_map(
+    maps: &mut Vec<Vec<u8>>,
+    map: Option<Vec<u8>>,
+) -> Option<NonZeroU32> {
     let map = map?;
-    let index = maps.len() as u32;
+    let index = NonZeroU32::new(u32::try_from(maps.len()).ok()?.checked_add(1)?)?;
     maps.push(map);
     Some(index)
 }
@@ -62,12 +66,12 @@ pub(super) fn store_palette_map(maps: &mut Vec<Vec<u8>>, map: Option<Vec<u8>>) -
 /// Takes the map that [`store_palette_map`] stored at `index` out of `maps`.
 pub(super) fn take_stored_palette_map(
     maps: &mut [Vec<u8>],
-    index: Option<u32>,
+    index: Option<NonZeroU32>,
 ) -> core::result::Result<Option<Vec<u8>>, GeneralIntraResidualError> {
     let Some(index) = index else {
         return Ok(None);
     };
-    maps.get_mut(index as usize)
+    maps.get_mut(index.get() as usize - 1)
         .map(|map| Some(core::mem::take(map)))
         .ok_or(GeneralIntraResidualError::InvalidReconstructionState {
             context: "palette color map index",
@@ -92,15 +96,15 @@ impl ResidualPlanePlan {
                 actual: parent_map.len(),
             });
         }
-        let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
+        let (log2_width, log2_height) = tx_size_log2(usize::from(block.tx_size))?;
         let unit_width = 1usize << log2_width;
         let unit_height = 1usize << log2_height;
-        let Some(local_x) = block.x.checked_sub(self.x as usize) else {
+        let Some(local_x) = (block.x as usize).checked_sub(self.x as usize) else {
             return Err(GeneralIntraResidualError::InvalidReconstructionState {
                 context: "palette transform X origin",
             });
         };
-        let Some(local_y) = block.y.checked_sub(self.y as usize) else {
+        let Some(local_y) = (block.y as usize).checked_sub(self.y as usize) else {
             return Err(GeneralIntraResidualError::InvalidReconstructionState {
                 context: "palette transform Y origin",
             });

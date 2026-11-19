@@ -448,7 +448,7 @@ pub(crate) enum GeneralIntraBlockModeError {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
+fn decode_general_intra_luma_block_mode_with_fsc_context(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
@@ -546,8 +546,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     block_c: usize,
     block_n4w: usize,
     block_n4h: usize,
-    chroma_n4w: usize,
-    chroma_n4h: usize,
+    chroma_mode_geometry: Option<(usize, usize)>,
     bit_depth_bits: u32,
 ) -> Result<GeneralIntraBlockModes, GeneralIntraBlockModeError> {
     let luma = decode_general_intra_luma_block_mode_with_fsc_context(
@@ -560,16 +559,20 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
         block_n4w,
         block_n4h,
     )?;
-    let uv_mode = decode_general_intra_chroma_block_mode(
-        work_unit,
-        symbols,
-        chroma_tools,
-        GeneralIntraChromaModeContext::shared_or_non_sdp(is_cfl_ctx),
-        luma.y_mode,
-        luma_block_size,
-        chroma_n4w,
-        chroma_n4h,
-    )?;
+    let chroma = if let Some((n4w, n4h)) = chroma_mode_geometry {
+        Some(decode_general_intra_chroma_block_mode(
+            work_unit,
+            symbols,
+            chroma_tools,
+            GeneralIntraChromaModeContext::shared_or_non_sdp(is_cfl_ctx),
+            luma.y_mode,
+            luma_block_size,
+            n4w,
+            n4h,
+        )?)
+    } else {
+        None
+    };
     let palette_y = read_general_intra_palette_y_mode(
         work_unit,
         symbols,
@@ -595,13 +598,15 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     )?;
     let luma = luma.with_dip(use_dip_value, dip_transpose, dip_mode);
 
-    Ok(GeneralIntraBlockModes::from_luma_chroma_palette(
-        luma, uv_mode, palette_y,
-    ))
+    Ok(GeneralIntraBlockModes {
+        chroma,
+        palette_y,
+        ..GeneralIntraBlockModes::luma_only(luma)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn read_general_intra_palette_y_mode(
+fn read_general_intra_palette_y_mode(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
@@ -650,7 +655,7 @@ pub(crate) fn read_general_intra_palette_y_mode(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn read_general_intra_dip_mode_info(
+fn read_general_intra_dip_mode_info(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,

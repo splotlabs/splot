@@ -487,9 +487,11 @@ fn reset_grid_planes(
 ) -> Result<(), std::collections::TryReserveError> {
     // A grid the split path builds per frame starts empty, so its storage comes
     // from the spare set a retired grid left rather than up a growth ladder.
-    take_spare_plane(&mut planes.cells, cells);
-    take_spare_plane(&mut planes.leaves, tile_cells);
-    take_spare_plane(&mut planes.models, tile_cells);
+    if cells != 0 {
+        take_spare_plane(&mut planes.cells, cells);
+        take_spare_plane(&mut planes.leaves, tile_cells);
+        take_spare_plane(&mut planes.models, tile_cells);
+    }
     planes.cells.clear();
     planes.leaves.clear();
     planes.models.clear();
@@ -550,11 +552,18 @@ pub(crate) struct NeighbourMvGrid {
     /// Whether only the edge lines are kept: a resolve pass rebuilds the
     /// plane on its own grid from the parsed leaves.
     edges_only: bool,
-    /// With [`Self::track_edges`], the last leaf on each tile column and row
+    /// With edge tracking, the last leaf on each tile column and row
     /// (see `TileMiSizeState`), and `above` as the superblock row began.
     above: Vec<NeighbourFlags>,
     sb_above: Vec<NeighbourFlags>,
     left: Vec<NeighbourFlags>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum NeighbourGridMode {
+    Motion,
+    Edges,
+    MotionAndEdges,
 }
 
 impl NeighbourMvGrid {
@@ -564,7 +573,12 @@ impl NeighbourMvGrid {
         mi_cols: core::ops::Range<usize>,
     ) -> Result<Self, TileGridConstructionError> {
         let mut grid = Self::default();
-        grid.reset_for_tile(mi_rows, mi_cols, SbRowWindow::WHOLE_TILE_SB_H4)?;
+        grid.reset_for_tile(
+            mi_rows,
+            mi_cols,
+            SbRowWindow::WHOLE_TILE_SB_H4,
+            NeighbourGridMode::Motion,
+        )?;
         Ok(grid)
     }
 
@@ -577,6 +591,7 @@ impl NeighbourMvGrid {
         mi_rows: core::ops::Range<usize>,
         mi_cols: core::ops::Range<usize>,
         sb_h4: usize,
+        mode: NeighbourGridMode,
     ) -> Result<(), TileGridConstructionError> {
         let (rows, cols, tile_cells) = tile_grid_dimensions(&mi_rows, &mi_cols)?;
         self.origin_row = mi_rows.start;
@@ -586,24 +601,18 @@ impl NeighbourMvGrid {
         self.window = SbRowWindow::new(rows, sb_h4);
         self.readable = self.window.readable_rows();
         self.sb_row_end = 0;
-        reset_grid_planes(
-            &mut self.planes,
-            self.window.plane_rows() * cols,
-            tile_cells,
-        )
-        .map_err(|_| TileGridConstructionError::Allocation)?;
-        self.edges_only = false;
-        self.above.clear();
-        Ok(())
-    }
-
-    /// Publishes only the edge lines from now on.
-    pub(crate) const fn keep_edges_only(&mut self) {
-        self.edges_only = true;
-    }
-
-    /// Keeps the edge lines that the parse's probes read.
-    pub(crate) fn track_edges(&mut self) -> Result<(), TileGridConstructionError> {
+        self.edges_only = mode == NeighbourGridMode::Edges;
+        let cells = if self.edges_only {
+            0
+        } else {
+            self.window.plane_rows() * cols
+        };
+        reset_grid_planes(&mut self.planes, cells, tile_cells)
+            .map_err(|_| TileGridConstructionError::Allocation)?;
+        if mode == NeighbourGridMode::Motion {
+            self.above.clear();
+            return Ok(());
+        }
         for (line, len) in [
             (&mut self.above, self.mi_cols),
             (&mut self.sb_above, self.mi_cols),
@@ -1275,7 +1284,9 @@ impl NeighbourMvGrid {
             .saturating_add(sb_h4)
             .saturating_add(self.origin_row);
         self.readable = self.window.readable_rows();
-        if let Some(slide) = slide {
+        if let Some(slide) = slide
+            && !self.edges_only
+        {
             slide.apply(&mut self.planes.cells, self.mi_cols, None);
         }
         self.sb_above.clone_from(&self.above);

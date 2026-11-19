@@ -11,9 +11,9 @@
 //! coefficient sums of the 12 pairs, so with both at most 128 it is exact in
 //! `i16` lanes, and so is every `pmaddubsw` pair whose weights' magnitudes
 //! sum to at most 128. The groups meet as in the Wiener NS byte kernel: a
-//! floor average with biases `32768 + 64` and `32768`, `>> 6`, and the
-//! center widened with a `0xfe` high byte give `m + Round2(S, 7)`, which
-//! `packuswb` clips to 8 bits. Classes outside these bounds take the
+//! rounding unsigned average with biases `32768 + 64` and `32767`, then
+//! a sign-bit flip, signed shift by 6 and addition of the widened center
+//! give `m + Round2(S, 7)`, which `packuswb` clips to 8 bits. Classes outside these bounds take the
 //! `pmaddwd` kernel.
 //!
 //! Adjacent taps of a row weigh even and odd outputs from two byte loads;
@@ -254,20 +254,21 @@ fearless_simd::kernel!(
             odd,
             add(madd(ld!(1, 4), w.pairs[10]), madd(ld!(0, 4), w.pairs[11])),
         );
-        let lower = group(i16::MIN, even, odd, ld!(2, 1), ld!(1, 2), 1);
+        let lower = group(i16::MAX, even, odd, ld!(2, 1), ld!(1, 2), 1);
 
         let center = ld!(3, 3);
-        let offset = _mm256_set1_epi8(0xfe_u8 as i8);
+        let zero = _mm256_setzero_si256();
+        let bias = _mm256_set1_epi16(i16::MIN);
         let value = |upper: __m256i, lower: __m256i, center: __m256i| {
-            let average = _mm256_add_epi16(
-                _mm256_and_si256(upper, lower),
-                _mm256_srli_epi16::<1>(_mm256_xor_si256(upper, lower)),
-            );
-            add(_mm256_srli_epi16::<6>(average), center)
+            let average = _mm256_avg_epu16(upper, lower);
+            add(
+                _mm256_srai_epi16::<6>(_mm256_xor_si256(average, bias)),
+                center,
+            )
         };
         _mm256_packus_epi16(
-            value(upper.0, lower.0, _mm256_unpacklo_epi8(center, offset)),
-            value(upper.1, lower.1, _mm256_unpackhi_epi8(center, offset)),
+            value(upper.0, lower.0, _mm256_unpacklo_epi8(center, zero)),
+            value(upper.1, lower.1, _mm256_unpackhi_epi8(center, zero)),
         )
     }
 );

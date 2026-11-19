@@ -54,7 +54,7 @@ use crate::pipeline::general_intra::{
 };
 use crate::prediction::intra_edge::IntraEdgeCtx;
 use crate::residual::pipeline::GeneralIntraResidualPlan;
-use crate::tile::block_context::BlockCtx;
+use crate::tile::block_context::{BlockCtx, ChromaSampling, FrameTileCtx};
 
 /// `CFL_ALPHABET_SIZE` (§ 3): the largest `|CflAlphaU|` and `|CflAlphaV|`.
 pub const MAX_CFL_ALPHA: i8 = 8;
@@ -1191,13 +1191,15 @@ impl IntraTileSyntax {
     }
 
     pub(super) fn block_ctx(&self, leaf: &LeafBlock) -> (BlockCtx, Option<(usize, usize)>) {
-        general_intra_block_ctx(
-            &leaf.frontier,
-            self.chroma,
-            (self.tile.0.start, self.tile.1.clone()),
-            self.mi_dimensions(),
+        let (mi_rows, mi_cols) = self.mi_dimensions();
+        let frame = FrameTileCtx::new(
+            mi_cols,
+            mi_rows,
             self.tools.bit_depth,
+            ChromaSampling::from_chroma_format_idc(self.chroma),
         )
+        .with_tile_bounds(self.tile.0.start, self.tile.1.start, self.tile.1.end);
+        general_intra_block_ctx(&leaf.frontier, frame)
     }
 
     pub(super) fn put(

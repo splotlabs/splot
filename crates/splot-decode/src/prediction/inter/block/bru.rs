@@ -5,12 +5,12 @@
 
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
-use splot_recon::{InterpolationFilter as ReconInterpolationFilter, ReconSample};
+use splot_recon::InterpolationFilter as ReconInterpolationFilter;
 
 use super::super::find_mv_stack::BlockPrecisionRecord;
 use super::super::read_mv::MV_PRECISION_ONE_PEL;
 use super::resolve::{InterBlockSyntax, InterMotionSyntax};
-use super::{BlockDecodeContext, finish_inter_leaf, parsed_inter_block, tile};
+use super::{BlockDecodeContext, finish_inter_leaf, tile};
 use crate::bitstream::tile_payload::{
     DecodeBlockFrontier, DecodeTileWorkUnit, DecodedLeafPublication, GeneralIntraLeafMode,
 };
@@ -22,11 +22,11 @@ use crate::error::Result;
 /// `CurrentQIndex` to `base_q_idx`, and reads only `read_gdf()` and
 /// `read_ccso()`.
 #[inline(never)]
-pub(super) fn decode_bru_leaf<T: ReconSample>(
+pub(super) fn decode_bru_leaf(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
-    context: &mut BlockDecodeContext<'_, T>,
+    context: &mut BlockDecodeContext<'_>,
 ) -> Result<GeneralIntraLeafMode> {
     let (Ok(n4w), Ok(n4h)) = (
         frontier.b_size.num_4x4_wide(),
@@ -77,16 +77,17 @@ pub(super) fn decode_bru_leaf<T: ReconSample>(
             tip_size_16x16: false,
             blend: super::mc::CompoundBlend::default(),
         },
-        parsed_inter_block(bru_ref, None, interp),
+        super::deferred_recon::ParsedInterBlock {
+            ref_frame0: bru_ref,
+            ..Default::default()
+        },
         None,
         (n4w, n4h),
         (1, 0, block_qindex),
     )?;
-    tile::push_leaf_entry(
-        context.superblocks,
-        context.entries,
+    context.entries.push(tile::ReconRowEntry::new(
         DecodedLeafPublication::from_frontier(frontier, context.sb_mask),
         tile::EntryState::Slot(index),
-    );
+    ));
     Ok(GeneralIntraLeafMode::no_luma_mode())
 }

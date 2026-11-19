@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use crate::bitstream::tile_payload::{LumaTransformPartitionUnits, TileBlockDecodedState};
+use crate::bitstream::tile_payload::TileBlockDecodedState;
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
 use splot_core::symbol::Symbol;
 use splot_core::tables::conversion::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, TX_HEIGHT_LOG2};
@@ -126,6 +126,7 @@ fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
     let mut chroma_blocks = crate::filters::deblock::ChromaDeblockRecords::default();
     let mut tx_skip_records = Vec::new();
     let mut recorder = DeblockRecorder {
+        needs: crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
         blocks: &mut blocks,
         chroma_blocks: &mut chroma_blocks,
         tx_skip_records: &mut tx_skip_records,
@@ -331,9 +332,9 @@ fn cfl_chroma_keeps_read_order_and_defers_reconstruction() {
         .transform_unit_plan(
             plan.frame,
             &PositionedLumaCoeffBlock {
-                x: chroma.x as usize,
-                y: chroma.y as usize,
-                tx_size: TX_4X4,
+                x: chroma.x,
+                y: chroma.y,
+                tx_size: TX_4X4 as u8,
                 middle: false,
                 coeffs: empty_luma_coeffs(),
             },
@@ -674,9 +675,9 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
         }
         ParsedTransformUnit {
             block: PositionedLumaCoeffBlock {
-                x: plane.x as usize,
-                y: plane.y as usize,
-                tx_size: usize::from(plane.tx_size),
+                x: plane.x,
+                y: plane.y,
+                tx_size: plane.tx_size,
                 middle: false,
                 coeffs,
             },
@@ -689,8 +690,8 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
         cctx_role: CctxRole::None,
     };
 
-    assert!(!parsed(1..3).u_nonzero(&[None, Some(unit(false)), Some(unit(true))]));
-    assert!(parsed(1..3).u_nonzero(&[None, Some(unit(true)), Some(unit(false))]));
+    assert!(!parsed(1..3).u_nonzero(&[unit(true), unit(false), unit(true)]));
+    assert!(parsed(1..3).u_nonzero(&[unit(false), unit(true), unit(false)]));
 }
 
 #[test]
@@ -824,9 +825,9 @@ fn palette_map_is_sliced_for_each_partitioned_transform_size() {
         let local_x = if width == parent_width { 0 } else { 4 };
         let local_y = if height == parent_height { 0 } else { 8 };
         let coeff = PositionedLumaCoeffBlock {
-            x: plane.x as usize + local_x,
-            y: plane.y as usize + local_y,
-            tx_size,
+            x: plane.x + local_x as u32,
+            y: plane.y + local_y as u32,
+            tx_size: tx_size as u8,
             middle: false,
             coeffs: empty_luma_coeffs(),
         };
@@ -880,8 +881,8 @@ fn invalid_palette_unit_geometry_is_reconstruction_state() {
         (px + parent_width, py, "palette transform extent"),
     ] {
         let block = PositionedLumaCoeffBlock {
-            x,
-            y,
+            x: x as u32,
+            y: y as u32,
             tx_size: 0,
             middle: false,
             coeffs: empty_luma_coeffs(),
@@ -916,7 +917,7 @@ fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
             &PositionedLumaCoeffBlock {
                 x: 0,
                 y: 0,
-                tx_size: TX_4X4,
+                tx_size: TX_4X4 as u8,
                 middle: false,
                 coeffs: empty_luma_coeffs(),
             },
@@ -959,21 +960,15 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
     let unit = |x, y| PositionedLumaCoeffBlock {
         x,
         y,
-        tx_size: tx_32x32,
+        tx_size: tx_32x32 as u8,
         middle: false,
         coeffs: empty_luma_coeffs(),
     };
-    let partition =
-        LumaTransformPartitionUnits::four([unit(32, 32), unit(64, 32), unit(32, 64), unit(64, 64)]);
-    let original_count = partition.len();
-    let Ok(visible) =
-        partition.try_filter_map::<_, !>(|unit| Ok((unit.x < 64 && unit.y < 64).then_some(unit)));
-    assert_eq!(original_count, 4);
-    assert_eq!(visible.len(), 1);
     let mut deblock_blocks = Vec::new();
     let mut chroma_blocks = Vec::new();
     let mut tx_skip_records = Vec::new();
     let mut deblock = DeblockRecorder {
+        needs: crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
         blocks: &mut deblock_blocks,
         chroma_blocks: &mut chroma_blocks,
         tx_skip_records: &mut tx_skip_records,
@@ -985,18 +980,17 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
     };
 
     let mut units = Vec::new();
-    let mut parsed = ParsedResidualPlane {
+    for block in [unit(32, 32), unit(64, 32), unit(32, 64), unit(64, 64)] {
+        if block.x < 64 && block.y < 64 {
+            plane
+                .retain_luma_unit(block, None, &mut deblock, &mut units, &mut Vec::new())
+                .expect("visible transform unit has valid geometry");
+        }
+    }
+    assert_eq!(units.len(), 1);
+    let parsed = ParsedResidualPlane {
         plane,
-        kind: plane
-            .retain_partitioned_luma(
-                block_ctx.frame(),
-                visible,
-                None,
-                &mut deblock,
-                &mut units,
-                &mut Vec::new(),
-            )
-            .expect("visible transform unit has valid geometry"),
+        kind: ParsedResidualPlaneKind::PartitionedLuma(0..1),
         cctx_role: CctxRole::None,
     };
     assert_eq!(deblock_blocks.len(), 1);
@@ -1065,11 +1059,10 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
                 chroma_left_smooth: false,
             },
             LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::Dc, 0),
-            &mut units,
+            &units,
             &mut [],
         )
         .expect("visible transform unit reconstructs");
-    assert!(units.iter().all(Option::is_none));
 
     assert_eq!(block_decoded, expected_decoded);
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 32, 32), Ok(128));
@@ -1096,7 +1089,7 @@ fn first_partition_handoff_rejects_invalid_transform_geometry() {
     let invalid = PositionedLumaCoeffBlock {
         x: 4,
         y: 4,
-        tx_size: usize::MAX,
+        tx_size: u8::MAX,
         middle: false,
         coeffs: empty_luma_coeffs(),
     };
@@ -1105,8 +1098,8 @@ fn first_partition_handoff_rejects_invalid_transform_geometry() {
         plane.transform_unit_plan(plan.frame, &invalid),
         Err(GeneralIntraResidualError::TransformPartitionGeometry {
             table: "Tx_Width_Log2",
-            index: usize::MAX,
-        })
+            index,
+        }) if index == usize::from(u8::MAX)
     ));
 }
 
@@ -1142,9 +1135,9 @@ fn chroma_directional_plan_uses_transform_unit_wide_angle_mapping() {
         .transform_unit_plan(
             plan.frame,
             &PositionedLumaCoeffBlock {
-                x: plane.x as usize,
-                y: plane.y as usize,
-                tx_size: TX_4X4,
+                x: plane.x,
+                y: plane.y,
+                tx_size: TX_4X4 as u8,
                 middle: false,
                 coeffs: empty_luma_coeffs(),
             },
@@ -1258,7 +1251,7 @@ fn interior_middle_mrl_unit_uses_local_above_line() {
             &PositionedLumaCoeffBlock {
                 x: 0,
                 y: 16,
-                tx_size: splot_recon::tx_size_index(4, 4).expect("16x16 transform size"),
+                tx_size: splot_recon::tx_size_index(4, 4).expect("16x16 transform size") as u8,
                 middle: false,
                 coeffs: empty_luma_coeffs(),
             },
@@ -1325,12 +1318,6 @@ fn assert_case(case: Case) {
     assert_eq!(
         plane.tx.height_log2(),
         case.expected_tx_log2.1,
-        "{}",
-        case.label
-    );
-    assert_eq!(
-        usize::from(plane.coeff_plane),
-        coeff_plane(case.plane),
         "{}",
         case.label
     );
@@ -1504,5 +1491,5 @@ fn residual_plane_record_fits_its_budget() {
 #[test]
 fn row_arena_lists_clear_without_an_element_walk() {
     assert!(!core::mem::needs_drop::<ParsedResidualPlane>());
-    assert!(!core::mem::needs_drop::<Option<ParsedTransformUnit>>());
+    assert!(!core::mem::needs_drop::<ParsedTransformUnit>());
 }

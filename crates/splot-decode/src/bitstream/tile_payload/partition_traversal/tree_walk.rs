@@ -127,6 +127,7 @@ struct TreeWalker<'payload> {
     tile_bounds: TilePartitionBounds,
     intra_facts: TileIntraFactsState,
     sb_mask: usize,
+    sb_inside_frame: bool,
     limits: DecodeLimits,
     step_count: u64,
     step_max: u64,
@@ -164,7 +165,10 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         self.next_sb_col == self.walker.tile_bounds.mi_col_start
     }
 
-    /// The superblock mask the walk publishes its leaves under.
+    pub(crate) const fn next_origin(&self) -> [usize; 2] {
+        [self.next_sb_row, self.next_sb_col]
+    }
+
     /// The § 5.20.2.1 `bru_mode` of the last superblock the walk decoded.
     pub(crate) const fn bru_mode(&self) -> u8 {
         self.walker.bru_mode
@@ -210,7 +214,16 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let tile_cols = work_unit.mi_col_range().start as usize
             ..(work_unit.mi_col_range().end as usize).min(frame.mi_cols);
         let sb_size4 = frame.sb_size.num_4x4_wide()?.max(1);
-        let intra_facts = TileIntraFactsState::new_for_tile(tile_rows, tile_cols, sb_size4)?;
+        let has_sdp = if frame.frame_is_intra {
+            frame.enable_sdp
+        } else {
+            frame.enable_extended_sdp
+        };
+        let intra_facts = if has_sdp || tile_rows.is_empty() || tile_cols.is_empty() {
+            TileIntraFactsState::new_for_tile(tile_rows, tile_cols, sb_size4)?
+        } else {
+            TileIntraFactsState::disabled()
+        };
         let next_sb_row = work_unit.mi_row_range().start as usize;
         let step_max = limits
             .threshold(DecodeLimitName::MaxTilePartitionSteps)
@@ -224,6 +237,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                 tile_bounds,
                 intra_facts,
                 sb_mask: sb_size4.saturating_sub(1),
+                sb_inside_frame: false,
                 limits,
                 step_count: 0,
                 step_max,
@@ -276,6 +290,9 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             self.walker.bru_mode = superblock_bru_mode(hooks.work_unit, &mut self.walker.symbols)
                 .map_err(GeneralIntraTreeWalkError::Traversal)?;
         }
+        let [sb_height, sb_width] = self.frame.sb_size.num_4x4();
+        self.walker.sb_inside_frame = sb_height <= self.frame.mi_rows.saturating_sub(sb_row)
+            && sb_width <= self.frame.mi_cols.saturating_sub(sb_col);
         let root = TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, ROOT_HAS_CHROMA);
         if self.walker.bru_mode == BRU_ACTIVE {
             walk_call::<_, _, _, _, true>(&self.frame, &mut self.walker, &mut hooks, root)
@@ -346,12 +363,12 @@ where
             .ensure(DecodeLimitName::MaxTilePartitionSteps, walker.step_count)
             .map_err(TilePartitionTraversalError::from)?;
     }
-    if !call_in_frame(frame, call) {
+    if !walker.sb_inside_frame && !call_in_frame(frame, call) {
         return Ok(());
     }
     let chroma_ref = call.chroma_ref(walker.chroma_ref);
-    let (call, sub_size, chroma_offset) = if call.is_extended_sdp_chroma_block() {
-        (call, call.b_size, false)
+    let (call, chroma_offset) = if call.is_extended_sdp_chroma_block() {
+        (call, false)
     } else {
         if is_intra_sdp_shared_root(frame, call) {
             let luma = call.with_tree_type(PartitionTreeType::LumaPart);
@@ -376,9 +393,9 @@ where
             hooks.mi_size_state,
             hooks.work_unit.cdf_mut().tile_cdfs_mut(),
         )?;
-        let sub_size = valid_subsize(partition, call.b_size)?;
-        let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
         if partition != PartitionType::None {
+            let sub_size = valid_subsize(partition, call.b_size)?;
+            let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
             let using_extended_sdp = read_extended_sdp_region_type(
                 frame,
                 &mut call,
@@ -411,8 +428,10 @@ where
                 None => Ok(()),
             };
         }
-        (call, sub_size, chroma_offset)
+        let chroma_offset = updated_chroma_offset(call, PartitionType::None, call.b_size, frame)?;
+        (call, chroma_offset)
     };
+    let sub_size = call.b_size;
     let part = decode_block_part(call, &walker.intra_facts)?;
     let frontier = decode_block_frontier(call, chroma_ref, frame, sub_size, chroma_offset, part)
         .with_bru_active(ACTIVE);
@@ -512,7 +531,8 @@ impl TreeWalker<'_> {
                 node.b_size,
                 node.tree_type,
                 usize::from(node.flags),
-                [frame.mi_rows - node.r(), frame.mi_cols - node.c()],
+                (!self.sb_inside_frame)
+                    .then(|| [frame.mi_rows - node.r(), frame.mi_cols - node.c()]),
                 || partition_allowed_input(node, frame, None),
             )?,
             forced => {
@@ -727,6 +747,7 @@ mod row_cursor_tests {
             let mut cursor =
                 GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT, storage)
                     .unwrap();
+            assert!(cursor.walker.intra_facts.grid_mut().cell(0, 0).is_none());
             loop {
                 let superblock = cursor
                     .decode_next_superblock_with_publication(
@@ -930,6 +951,42 @@ mod row_cursor_tests {
             decode_block_part(call, &intra_facts),
             Err(TilePartitionTraversalError::MissingSdpLumaModeState { r: 7, c: 11 })
         ));
+    }
+
+    #[test]
+    fn partition_children_stay_within_their_parent() {
+        for [sub_x, sub_y] in [[false, false], [false, true], [true, false], [true, true]] {
+            let frame = TilePartitionFrameFacts {
+                subsampling_x: sub_x,
+                subsampling_y: sub_y,
+                enable_extended_sdp: true,
+                ..sdp_frame()
+            };
+            for index in 0..splot_core::tables::conversion::NUM_4X4_BLOCKS_WIDE.len() {
+                let size = BlockSize::new(index).unwrap();
+                let [height, width] = size.num_4x4();
+                let call = TilePartitionCall::root(0, 0, size, ROOT_HAS_CHROMA);
+                for partition in PartitionType::ALL {
+                    let Ok(subsize) = valid_subsize(partition, size) else {
+                        continue;
+                    };
+                    let mut sink = |child: TilePartitionCall, _| {
+                        let [h, w] = child.b_size.num_4x4();
+                        assert!(child.r() + h <= height && child.c() + w <= width);
+                        Ok::<_, TilePartitionTraversalError>(())
+                    };
+                    let _ = child_calls_into(
+                        &mut sink,
+                        call,
+                        call.own_chroma_ref(),
+                        partition,
+                        subsize,
+                        &frame,
+                        false,
+                    );
+                }
+            }
+        }
     }
 
     #[test]

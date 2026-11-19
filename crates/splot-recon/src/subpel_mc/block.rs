@@ -198,9 +198,8 @@ impl Sink<'_> {
     }
 }
 
-/// One pass's active taps from tap `start`, as `count` pairs: the halved
-/// taps as `i8` bytes of one little-endian word, halved and full `i16`
-/// pairs.
+/// Active tap pairs from `start`, with halved byte weights and both
+/// halved and full word weights.
 #[derive(Clone, Copy)]
 pub(super) struct Taps {
     pub(super) start: usize,
@@ -209,7 +208,7 @@ pub(super) struct Taps {
         not(any(target_arch = "aarch64", target_arch = "x86_64")),
         allow(dead_code, reason = "read by the NEON and AVX2 kernels")
     )]
-    pub(super) dot: u64,
+    pub(super) dot: [u8; NUM_TAPS],
     #[cfg_attr(
         not(any(target_arch = "aarch64", target_arch = "x86_64")),
         allow(dead_code, reason = "read by the NEON and AVX2 kernels")
@@ -252,12 +251,12 @@ pub(super) static TAPS: [[Option<Taps>; NUM_PHASES]; NUM_FILTER_TYPES] = {
         while phase < NUM_PHASES {
             let row = &SUBPEL_FILTERS[filter][phase];
             let (start, taps) = even_tap_span(row);
-            let (mut words, mut full, mut dot) = ([0; 4], [0; 4], 0);
+            let (mut words, mut full, mut dot) = ([0; 4], [0; 4], [0; NUM_TAPS]);
             let mut pair = 0;
             while pair < taps / 2 {
                 let (a, b) = (row[start + 2 * pair], row[start + 2 * pair + 1]);
-                let bytes = u16::from_le_bytes([(a / 2) as u8, (b / 2) as u8]);
-                dot |= (bytes as u64) << (16 * pair);
+                dot[2 * pair] = (a / 2) as u8;
+                dot[2 * pair + 1] = (b / 2) as u8;
                 words[pair] = ((a / 2) & 0xffff) | ((b / 2) << 16);
                 full[pair] = (a & 0xffff) | (b << 16);
                 pair += 1;

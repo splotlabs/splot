@@ -102,12 +102,13 @@ fn filter_both_ways<const W: usize, const WIN: usize>(
 }
 
 /// Class patterns of eight class blocks: each class alone, then mixes.
-fn class_patterns() -> [[u8; 8]; 6] {
+fn class_patterns() -> [[u8; 8]; 7] {
     [
         [0; 8],
         [1; 8],
         [2; 8],
         [3; 8],
+        [0, 2, 0, 2, 2, 0, 2, 0],
         [0, 1, 2, 3, 3, 2, 1, 0],
         [3, 0, 2, 1, 1, 3, 0, 2],
     ]
@@ -330,6 +331,7 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
     for (width, height, bit_depth) in [
         (38, 4, BitDepth::Eight),
         (48, 4, BitDepth::Eight),
+        (simd::TILE_COLS, 2, BitDepth::Eight),
         (64, 6, BitDepth::Ten),
         (6, 2, BitDepth::Ten),
     ] {
@@ -378,40 +380,30 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
             }
         }
         let mut bytes: Vec<u8> = base.iter().map(|&sample| sample as u8).collect();
-        let mut tiled_samples = vec![0; simd::TILE_STRIDE * (height + GDF_READ_RADIUS * 2)];
+        let halo_cols = width + 2 * TAP_REACH;
+        let halo_rows = height + 2 * TAP_REACH;
+        let inset = GDF_READ_RADIUS - TAP_REACH;
+        let mut tiled_samples = vec![u16::MAX; simd::TILE_STRIDE * halo_rows];
         for (tiled, row) in tiled_samples
             .chunks_exact_mut(simd::TILE_STRIDE)
-            .zip(samples.chunks_exact(stride))
+            .zip(samples.chunks_exact(stride).skip(inset))
         {
-            tiled[..stride].copy_from_slice(row);
+            tiled[..halo_cols].copy_from_slice(&row[inset..inset + halo_cols]);
         }
-        let tiled = GdfSource {
-            samples: &tiled_samples,
-            stride: simd::TILE_STRIDE,
-            ..source
-        };
         scratch.errors = vec![0; 2 * simd::ClassScratch::error_row(width)];
-        let mut tiled_actual = base.clone();
+        let mut tiled_actual = base;
         assert!(
-            simd::filter_run(&tiled, ORIGIN, &block, &mut tiled_actual, &mut scratch).is_some()
+            simd::filter_run(&tiled_samples, &block, &mut tiled_actual, &mut scratch).is_some()
         );
         assert_eq!(
             tiled_actual, expected,
             "tiled, width {width}, height {height}"
         );
-        let mut actual = base;
-        assert!(simd::filter_run(&source, ORIGIN, &block, &mut actual, &mut scratch).is_some());
-        assert_eq!(actual, expected, "width {width}, height {height}");
         if bit_depth == BitDepth::Eight {
-            let mut tiled_bytes = bytes.clone();
-            assert!(simd::filter_run(&source, ORIGIN, &block, &mut bytes, &mut scratch).is_some());
-            assert!(
-                simd::filter_run(&tiled, ORIGIN, &block, &mut tiled_bytes, &mut scratch).is_some()
-            );
-            for (bytes, label) in [(bytes, "u8 rows"), (tiled_bytes, "tiled u8 rows")] {
-                let bytes: Vec<u16> = bytes.into_iter().map(u16::from).collect();
-                assert_eq!(bytes, expected, "{label}, width {width}, height {height}");
-            }
+            assert!(simd::filter_run(&tiled_samples, &block, &mut bytes, &mut scratch).is_some());
+            let label = "tiled u8 rows";
+            let bytes: Vec<u16> = bytes.into_iter().map(u16::from).collect();
+            assert_eq!(bytes, expected, "{label}, width {width}, height {height}");
         }
     }
 }

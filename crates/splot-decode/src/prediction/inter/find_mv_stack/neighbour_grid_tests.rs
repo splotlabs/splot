@@ -8,8 +8,8 @@
 use super::super::MvBlockContext;
 use super::{CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, Mv, warp_sub_mv_at};
 use super::{
-    NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid,
-    ZERO_NEIGHBOUR_MOTION_VALUES,
+    NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourGridMode, NeighbourMotionValues,
+    NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES,
 };
 use crate::prediction::TileGridConstructionError;
 
@@ -167,7 +167,8 @@ fn motion_resolves_only_its_own_leaf_and_keeps_per_list_models() {
 #[test]
 fn the_window_drops_superblock_rows_two_above_the_current_one() {
     let mut grid = NeighbourMvGrid::default();
-    grid.reset_for_tile(0..12, 0..2, 4).unwrap();
+    grid.reset_for_tile(0..12, 0..2, 4, NeighbourGridMode::Motion)
+        .unwrap();
     let inter = NeighbourFlagSyntax {
         is_inter: true,
         ref_frame0: 0,
@@ -314,7 +315,8 @@ fn an_edge_imports_its_cells_leaves_and_models_into_another_grid() {
 #[test]
 fn the_direct_index_matches_the_window_row_mapping() {
     let mut grid = NeighbourMvGrid::default();
-    grid.reset_for_tile(8..40, 4..9, 8).unwrap();
+    grid.reset_for_tile(8..40, 4..9, 8, NeighbourGridMode::Motion)
+        .unwrap();
     for sb_row in [8, 16, 24, 32] {
         grid.enter_sb_row(sb_row);
         for r in -2..44 {
@@ -337,11 +339,14 @@ fn the_direct_index_matches_the_window_row_mapping() {
 #[test]
 fn edge_lines_read_the_probes_of_the_plane() {
     let mut plane = NeighbourMvGrid::default();
-    plane.reset_for_tile(0..16, 0..16, 8).unwrap();
+    plane
+        .reset_for_tile(0..16, 0..16, 8, NeighbourGridMode::Motion)
+        .unwrap();
     let mut edges = NeighbourMvGrid::default();
-    edges.reset_for_tile(0..16, 0..16, 8).unwrap();
-    edges.track_edges().unwrap();
-    edges.keep_edges_only();
+    edges
+        .reset_for_tile(0..16, 0..16, 8, NeighbourGridMode::Edges)
+        .unwrap();
+    assert!(edges.planes.cells.is_empty());
     let leaves = [
         (0, 0, 4, 4),
         (0, 4, 4, 4),
@@ -450,11 +455,14 @@ fn neighbour_grid_reads_the_intrabc_prelude_neighbours() {
     )
     .unwrap();
     let mut edges = NeighbourMvGrid::default();
-    edges.reset_for_tile(0..rows, 0..cols, sb4).unwrap();
-    edges.track_edges().unwrap();
-    edges.keep_edges_only();
+    edges
+        .reset_for_tile(0..rows, 0..cols, sb4, NeighbourGridMode::Edges)
+        .unwrap();
+    assert!(edges.planes.cells.is_empty());
     let mut plane = NeighbourMvGrid::default();
-    plane.reset_for_tile(0..rows, 0..cols, sb4).unwrap();
+    plane
+        .reset_for_tile(0..rows, 0..cols, sb4, NeighbourGridMode::Motion)
+        .unwrap();
     let mut seed = 7;
     for (sb_r, sb_c) in (0..rows / sb4).flat_map(|r| (0..cols / sb4).map(move |c| (r, c))) {
         let mut leaves = Vec::new();

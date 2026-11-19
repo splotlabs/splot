@@ -27,6 +27,7 @@ const TX_SIZES: usize = 25;
 /// and the EOB symbol size (§ 5.20.7.27).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TxGeometry {
+    pub(crate) scan_offset: u16,
     pub(crate) w4: u8,
     pub(crate) h4: u8,
     pub(crate) width: u8,
@@ -40,6 +41,7 @@ pub(crate) struct TxGeometry {
 /// [`TxGeometry`] by `TxSize`.
 pub(crate) static TX_GEOMETRY: [TxGeometry; TX_SIZES] = {
     let mut out = [TxGeometry {
+        scan_offset: 0,
         w4: 0,
         h4: 0,
         width: 0,
@@ -54,6 +56,10 @@ pub(crate) static TX_GEOMETRY: [TxGeometry; TX_SIZES] = {
         let adjusted = ADJUSTED_TX_SIZE[tx_size] as usize;
         let (width_log2, height_log2) = (TX_WIDTH_LOG2[adjusted], TX_HEIGHT_LOG2[adjusted]);
         out[tx_size] = TxGeometry {
+            scan_offset: transform_block::scan_shape_offset(
+                width_log2 as usize - 2,
+                height_log2 as usize - 2,
+            ) as u16,
             w4: (TX_WIDTH[tx_size] >> 2) as u8,
             h4: (TX_HEIGHT[tx_size] >> 2) as u8,
             width: TX_WIDTH[adjusted] as u8,
@@ -177,8 +183,6 @@ pub(crate) enum CoeffLoopContextError {
     ScanWalkEobOutOfRange { eob: usize, scan_len: usize },
     #[error("coefficient FSC scan walk EOB {eob} exceeds segment EOB {seg_eob}")]
     FscScanWalkEobOutOfRange { eob: usize, seg_eob: usize },
-    #[error("coefficient scan walk block width {width} is not a power of two")]
-    ScanWalkWidthNotPowerOfTwo { width: usize },
 }
 
 pub(crate) fn read_nonzero_coeff_eob(

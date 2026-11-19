@@ -572,7 +572,7 @@ fn decode_key_frame_with_effects(
             output_effects,
             frame_cdfs: products.frame_cdfs,
             motion_field,
-            ccso_params: core.ccso_params.clone(),
+            ccso_header: Some(core),
             ccso_grid: products.ccso_grid,
             segment_ids: products.segment_ids,
             frame_rate_numerator: frame_rate.numerator,
@@ -581,7 +581,7 @@ fn decode_key_frame_with_effects(
         });
     }
     let mut product_writers = frames.reserve_products()?;
-    let (frame, frame_cdfs, ccso_params, ccso_grid, segment_ids, motion_field) =
+    let (frame, frame_cdfs, ccso_header, ccso_grid, segment_ids, motion_field) =
         with_sample!(sequence, T, {
             let walk = frame_engine::walk_frame::<T>(
                 &mut T::pools(pools).scratch,
@@ -595,7 +595,7 @@ fn decode_key_frame_with_effects(
                 T::BIT_DEPTH,
                 &mut product_writers,
             )?;
-            let ccso_params = walk.core.ccso_params.clone();
+            let ccso_header = Some(walk.core);
             let frame = inflight::settle_walk_stage(
                 walk.stage,
                 T::erase,
@@ -608,7 +608,7 @@ fn decode_key_frame_with_effects(
             (
                 frame,
                 walk.frame_cdfs,
-                ccso_params,
+                ccso_header,
                 walk.ccso_grid,
                 walk.segment_ids,
                 walk.motion_field,
@@ -624,7 +624,7 @@ fn decode_key_frame_with_effects(
         output_effects,
         frame_cdfs,
         motion_field: frames.settle_motion(motion_field)?,
-        ccso_params,
+        ccso_header,
         ccso_grid,
         segment_ids,
         frame_rate_numerator: frame_rate.numerator,
@@ -923,7 +923,7 @@ fn decode_frames_in_order(
                     output_effects: key_output_effects,
                     frame_cdfs: products.frame_cdfs,
                     motion_field,
-                    ccso_params: core.ccso_params.clone(),
+                    ccso_header: Some(core),
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
                     frame_rate_numerator: rate.numerator,
@@ -944,7 +944,7 @@ fn decode_frames_in_order(
                     T::BIT_DEPTH,
                     &mut product_writers,
                 )?;
-                let ccso_params = walk.core.ccso_params.clone();
+                let ccso_header = Some(walk.core);
                 let frame = inflight::settle_walk_stage(
                     walk.stage,
                     T::erase,
@@ -964,7 +964,7 @@ fn decode_frames_in_order(
                     output_effects: key_output_effects,
                     frame_cdfs,
                     motion_field: frames.settle_motion(walk.motion_field)?,
-                    ccso_params,
+                    ccso_header,
                     ccso_grid,
                     segment_ids,
                     frame_rate_numerator: rate.numerator,
@@ -1182,7 +1182,7 @@ fn decode_frames_in_order(
                     output_effects,
                     frame_cdfs: source.frame_cdfs.clone(),
                     motion_field: source.motion_field.clone(),
-                    ccso_params: source.ccso_params.clone(),
+                    ccso_header: source.ccso_header.clone(),
                     ccso_grid: source.ccso_grid.clone(),
                     segment_ids: source.segment_ids.clone(),
                     frame_rate_numerator: output_rate.numerator,
@@ -1489,7 +1489,7 @@ fn decode_frames_in_order(
                     output_effects: inter_output_effects,
                     frame_cdfs: products.frame_cdfs,
                     motion_field,
-                    ccso_params: inter_core.ccso_params.clone(),
+                    ccso_header: Some(Arc::clone(&inter_core)),
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
                     frame_rate_numerator: inter_frame_rate.numerator,

@@ -340,8 +340,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         .expect("fixture carries the inter frame record");
     let (prefix, inter_envelope) =
         crate::pipeline::ivf_inter_envelope(&inter_frame.obus, record, inter_candidate)?;
-    let (store, meta) = reference.build_store::<u8>(&frames.into())?;
-    let inter_state = std::sync::Arc::new(super::InterReferenceState::from_metadata(store, meta));
+    let inter_state = std::sync::Arc::new(reference.state::<u8>(&frames.into())?);
     let first_picture_in_tu = prefix
         .iter()
         .any(|obu| obu.header.obu_type == splot_core::types::ObuType::TemporalDelimiter);
@@ -436,8 +435,7 @@ fn parse_inter_core_for_validation_inner(
         .expect("fixture carries the inter frame record");
     let (prefix, inter_envelope) =
         crate::pipeline::ivf_inter_envelope(&inter_frame.obus, record, inter_candidate)?;
-    let (store, meta) = reference.build_store::<u8>(&frames.into())?;
-    let inter_state = super::InterReferenceState::from_metadata(store, meta);
+    let inter_state = reference.state::<u8>(&frames.into())?;
     let first_picture_in_tu = prefix
         .iter()
         .any(|obu| obu.header.obu_type == splot_core::types::ObuType::TemporalDelimiter);
@@ -534,8 +532,6 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
             x: 0,
             y: 0,
             tx_size: 6,
-            log2_width: 3,
-            log2_height: 2,
             cctx_pair_delta: 2,
             coeffs: u_coeffs,
         },
@@ -544,8 +540,6 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
             x: 0,
             y: 0,
             tx_size: 0,
-            log2_width: 2,
-            log2_height: 2,
             cctx_pair_delta: 0,
             coeffs: all_zero_inter_coeff_block(),
         },
@@ -554,8 +548,6 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
             x: 0,
             y: 0,
             tx_size: 6,
-            log2_width: 3,
-            log2_height: 2,
             cctx_pair_delta: -2,
             coeffs: v_coeffs,
         },
@@ -620,8 +612,6 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
         x: 0,
         y: 0,
         tx_size: 2,
-        log2_width: 4,
-        log2_height: 4,
         cctx_pair_delta: 0,
         coeffs,
     }];

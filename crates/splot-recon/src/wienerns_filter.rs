@@ -130,7 +130,6 @@ pub struct WienerNsLumaFilter<'a> {
 /// Reusable working storage for padded luma Wiener NS filtering.
 #[derive(Debug, Default)]
 pub struct WienerNsLumaScratch {
-    clean_rows: Vec<bool>,
     prepared_classes: Vec<PreparedLumaClass>,
     eight_bit: eight_bit::EightBitLuma,
 }
@@ -387,7 +386,6 @@ fn prepare_luma_padded<T: ReconSample>(
     subclasses: LumaSubclassLayout<'_>,
     scratch: &mut WienerNsLumaScratch,
 ) -> Result<PreparedLumaFilter> {
-    scratch.clean_rows.clear();
     scratch.prepared_classes.clear();
     validate_sample_type::<T>(params.bit_depth)?;
     let sample_count = validate_luma_params(output_len, params)?;
@@ -397,13 +395,6 @@ fn prepare_luma_padded<T: ReconSample>(
     let max_sample = params.bit_depth.max_sample();
     let padded_width = params.width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
     let padded_rows = params.height + 2 * WIENER_NS_LUMA_TAP_RADIUS;
-    scratch
-        .clean_rows
-        .try_reserve_exact(padded_rows)
-        .map_err(|_| ReconError::WorkspaceAllocationFailed {
-            plane: PlaneId::Y,
-            context: "Wiener NS clean-row scratch",
-        })?;
     scratch
         .prepared_classes
         .try_reserve_exact(params.coeffs_by_class.len())
@@ -418,38 +409,30 @@ fn prepare_luma_padded<T: ReconSample>(
             .map_err(|_| ReconError::WienerNsFilterCenterScaleOutOfRange { center_scale })?;
         scratch.prepared_classes.push((coeffs, center));
     }
-    let staged = params.bit_depth == BitDepth::Eight
+    let eight_bit = params.bit_depth == BitDepth::Eight
+        && scratch
+            .eight_bit
+            .prepare(params.width, params.coeffs_by_class, subclasses)
         && scratch.eight_bit.stage(
             |index| padded_row(source.rows, index, padded_width).ok(),
             params.width,
             params.height,
         );
-    if staged {
-        scratch.clean_rows.resize(padded_rows, true);
-    } else {
-        for row_index in 0..padded_rows {
-            let row = padded_row(source.rows, row_index, padded_width)?;
-            scratch.clean_rows.push(
-                T::u16_slice(row).is_none_or(|samples| !u16_samples_exceed(samples, max_sample)),
-            );
-        }
-    }
-
-    if !scratch.clean_rows.iter().all(|&clean| clean) {
-        for r in 0..params.height {
-            let window_in_range = scratch
-                .clean_rows
-                .get(r..r + LUMA_WINDOW_ROWS)
-                .is_some_and(|rows| rows.iter().all(|&clean| clean));
-            if !window_in_range {
-                first_out_of_range_read(source.rows, r, params.width, max_sample)?;
+    if !eight_bit && T::MAX_VALUE > max_sample {
+        let mut checked_until = 0;
+        for index in 0..padded_rows {
+            let row = padded_row(source.rows, index, padded_width)?;
+            if T::u16_slice(row).is_some_and(|row| u16_samples_exceed(row, max_sample)) {
+                let first = index
+                    .saturating_sub(LUMA_WINDOW_ROWS - 1)
+                    .max(checked_until);
+                checked_until = (index + 1).min(params.height);
+                for r in first..checked_until {
+                    first_out_of_range_read(source.rows, r, params.width, max_sample)?;
+                }
             }
         }
     }
-    let eight_bit = staged
-        && scratch
-            .eight_bit
-            .prepare(params.width, params.coeffs_by_class, subclasses);
     Ok(PreparedLumaFilter {
         max_sample,
         eight_bit,
@@ -760,10 +743,10 @@ fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput
 /// weights; returns the columns done. Sample-subclass layouts are left to
 /// the segment filter.
 #[allow(clippy::too_many_arguments)]
-fn filter_luma_cell_groups<'a, T: LumaSimdSource, O: LumaSimdOutput>(
+fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
     output: &mut [O],
     output_stride: usize,
-    source: &[&'a [T]; LUMA_WINDOW_ROWS + 3],
+    window: &[&[T]; LUMA_WINDOW_ROWS + 3],
     (first, end, origin): (usize, usize, usize),
     (mut x, width): (usize, usize),
     prepared_classes: &[PreparedLumaClass],
@@ -777,13 +760,6 @@ fn filter_luma_cell_groups<'a, T: LumaSimdSource, O: LumaSimdOutput>(
         }
         LumaSubclassLayout::Samples(_) => return Ok(x),
     };
-    let padded = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
-    let rows = end - first + 2 * WIENER_NS_LUMA_TAP_RADIUS;
-    let span = |row: &&'a [T]| row.get(..padded).ok_or_else(|| luma_segment_error(width));
-    let mut window = [span(&source[0])?; LUMA_WINDOW_ROWS + 3];
-    for (slot, row) in window.iter_mut().zip(source).take(rows) {
-        *slot = span(row)?;
-    }
     while x + 16 <= width {
         if let Some(value) = flat.chunk_value(x / 32) {
             let value = O::from_u16(value.min(max_sample));
@@ -837,7 +813,7 @@ fn filter_luma_cell_groups<'a, T: LumaSimdSource, O: LumaSimdOutput>(
             return Err(luma_segment_error(width));
         };
         if !lr_madd::filter_run::<LumaTaps, T, O, LUMA_WINDOW_ROWS, CELL_REACH>(
-            &window,
+            window,
             end - first,
             (x, run_end),
             classes,

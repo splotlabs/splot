@@ -199,10 +199,8 @@ pub(crate) fn parse_inter_shared_tail(
     } else {
         num_total_refs
     };
-    let lr_reference_filter_counts =
-        lr_reference_filter_counts(reference_state, &control.ref_frame_idx, lr_num_total_refs);
-    let lr_reference_filter_taps =
-        lr_reference_filter_entries(reference_state, &control.ref_frame_idx, lr_num_total_refs);
+    let (lr_reference_filter_counts, lr_reference_filter_taps) =
+        lr_reference_filters(reference_state, &control.ref_frame_idx, lr_num_total_refs);
     let lr_params = match parse_lr_params_for_inter(
         reader,
         coded_lossless,
@@ -296,39 +294,22 @@ fn derived_primary_is_none(
     Some(true)
 }
 
-/// Builds the § 5.18 `search_frame_filters` ordered reference-filter entries
-/// per plane: for every valid reference in `ref_frame_idx` order, luma takes
-/// one entry per retained reference class, and each chroma plane takes the
-/// same-plane entry then the opposite-plane entry (05:17790-17817). The list
-/// order MUST match [`lr_reference_filter_counts`] — the match index selects
-/// by position.
-/// One plane's ordered § 5.18 reference-filter entries.
-///
-/// Luma takes one per retained class of every valid reference, so the list is
-/// bounded by the sequence's sixteen reference slots (AV2 § 5.5.2) times the
-/// sixteen classes a bank holds; chroma takes two per reference.
-pub(super) type LrReferenceFilterEntries<'a> = crate::tile::InlineVec<
-    Option<&'a [i16]>,
-    {
-        crate::headers::sequence::MAX_REF_FRAMES
-            * crate::headers::frame::restoration::MAX_WIENER_NS_CLASSES
-    },
->;
+type FilterTaps<'a> = [Vec<Option<&'a [i16]>>; 3];
 
-pub(super) fn lr_reference_filter_entries<'a>(
+/// Ordered § 5.20.10.6 reference counts and retained taps, including missing
+/// classes so that a signaled match keeps its position.
+pub(super) fn lr_reference_filters<'a>(
     reference_state: &FrameReferenceStateView<'a>,
     ref_frame_idx: &[u32],
     num_total_refs: u32,
-) -> [LrReferenceFilterEntries<'a>; 3] {
-    let mut entries: [LrReferenceFilterEntries<'a>; 3] = Default::default();
-    let (Some(slot_taps), Some(slot_counts)) = (
-        reference_state.lr_frame_filter_taps,
-        reference_state.lr_frame_filter_class_counts,
-    ) else {
-        return entries;
+) -> ([usize; 3], FilterTaps<'a>) {
+    let mut counts = [0usize; 3];
+    let mut entries: FilterTaps<'_> = Default::default();
+    let Some(slot_counts) = reference_state.lr_frame_filter_class_counts else {
+        return (counts, entries);
     };
-    for slot in ref_frame_idx.iter().take(num_total_refs as usize) {
-        let slot = *slot as usize;
+    for &slot in ref_frame_idx.iter().take(num_total_refs as usize) {
+        let slot = slot as usize;
         if reference_state
             .ref_valid
             .and_then(|valid| valid.get(slot).copied())
@@ -336,49 +317,32 @@ pub(super) fn lr_reference_filter_entries<'a>(
         {
             continue;
         }
-        let (Some(planes), Some(counts)) = (slot_taps.get(slot), slot_counts.get(slot)) else {
+        let Some(classes) = slot_counts.get(slot) else {
             continue;
         };
-        for class in 0..usize::from(counts[0]) {
-            let _ = entries[0].push(planes[0].get(class).map(|coeffs| &**coeffs));
-        }
+        counts[0] = counts[0].saturating_add(usize::from(classes[0]));
+        counts[1] = counts[1].saturating_add(usize::from(classes[1]) + usize::from(classes[2]));
+        let Some(planes) = reference_state
+            .lr_frame_filter_taps
+            .and_then(|taps| taps.get(slot))
+        else {
+            continue;
+        };
+        let remaining = super::restoration::MAX_WIENER_DICTIONARY_SLOTS - entries[0].len();
+        entries[0].extend(
+            (0..usize::from(classes[0]).min(remaining))
+                .map(|class| planes[0].get(class).map(AsRef::as_ref)),
+        );
         for (plane, checks) in [(1usize, [1usize, 2usize]), (2, [2, 1])] {
             for check in checks {
-                if counts[check] > 0 {
-                    let _ = entries[plane].push(planes[check].first().map(|coeffs| &**coeffs));
+                if classes[check] > 0 {
+                    entries[plane].push(planes[check].first().map(AsRef::as_ref));
                 }
             }
         }
     }
-    entries
-}
-
-pub(super) fn lr_reference_filter_counts(
-    reference_state: &FrameReferenceStateView<'_>,
-    ref_frame_idx: &[u32],
-    num_total_refs: u32,
-) -> [usize; 3] {
-    let Some(slot_counts) = reference_state.lr_frame_filter_class_counts else {
-        return [0; 3];
-    };
-    let mut counts = [0usize; 3];
-    for slot in ref_frame_idx.iter().take(num_total_refs as usize) {
-        let slot = *slot as usize;
-        if reference_state
-            .ref_valid
-            .and_then(|valid| valid.get(slot).copied())
-            == Some(false)
-        {
-            continue;
-        }
-        let Some(planes) = slot_counts.get(slot) else {
-            continue;
-        };
-        counts[0] = counts[0].saturating_add(usize::from(planes[0]));
-        counts[1] = counts[1].saturating_add(usize::from(planes[1]) + usize::from(planes[2]));
-        counts[2] = counts[2].saturating_add(usize::from(planes[2]) + usize::from(planes[1]));
-    }
-    counts
+    counts[2] = counts[1];
+    (counts, entries)
 }
 
 /// Parses the § 5.18.2 inter tail after `ccso_params()` (mirror :5307-5341) and sets the
@@ -568,10 +532,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reference_filter_entries_follow_reference_and_chroma_plane_order() {
+        let counts = [[2, 1, 1], [4, 1, 1], [1, 0, 1]];
+        let mut taps: [SlotFrameFilterTaps; 3] = Default::default();
+        for (slot, plane, sample) in [(0, 0, 1), (0, 1, 2), (0, 2, 3), (2, 2, 4)] {
+            let mut class = super::super::restoration::WienerNsCoeffs::default();
+            assert!(class.push(sample).is_some());
+            assert!(taps[slot][plane].push(class).is_some());
+        }
+        let state = FrameReferenceStateView::from_slots_with_base_q_idx(
+            &[true, false, true],
+            &[0; 3],
+            &[64; 3],
+            &[64; 3],
+            &[100; 3],
+        )
+        .with_lr_frame_filter_class_counts(&counts)
+        .with_lr_frame_filter_taps(&taps);
+        let (counts, entries) = lr_reference_filters(&state, &[2, 1, 0, 0], 3);
+        assert_eq!(counts, [3, 3, 3]);
+        let samples = entries.map(|plane| {
+            plane
+                .into_iter()
+                .map(|taps| taps.map(|v| v[0]))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(samples[0], [None, Some(1), None]);
+        assert_eq!(samples[1], [Some(4), Some(2), Some(3)]);
+        assert_eq!(samples[2], [Some(4), Some(3), Some(2)]);
+    }
+
     /// A reference slot with a non-zero class count but no retained taps (a
     /// `frame_filters_on` plane whose bank is absent, stored as `None`) must
     /// still contribute a count-sized `None` placeholder so the entry list
-    /// stays positionally aligned with `lr_reference_filter_counts`.
+    /// stays positionally aligned with the reference filter count.
     #[test]
     fn reference_filter_entries_keep_placeholder_for_none_taps() {
         let valid = [true];
@@ -587,8 +582,7 @@ mod tests {
         .with_lr_frame_filter_taps(&taps);
         let refs = [0u32];
 
-        let counts = lr_reference_filter_counts(&state, &refs, 1);
-        let entries = lr_reference_filter_entries(&state, &refs, 1);
+        let (counts, entries) = lr_reference_filters(&state, &refs, 1);
 
         assert_eq!(counts[0], 1);
         assert_eq!(entries[0].len(), 1);

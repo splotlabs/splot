@@ -142,10 +142,21 @@ fn no_decoded_block_error_is_typed_and_has_no_diagnostic() {
 
 #[test]
 fn recon_entries_keep_contiguous_superblock_order() {
+    use crate::bitstream::tile_payload::{BlockSize, TilePartitionCall};
+    let size = BlockSize::new(0).expect("4x4 block");
     let mut superblocks = Vec::new();
     let mut entries = Vec::new();
-    for (origin, entry) in [([0, 0], 0), ([0, 0], 1), ([0, 16], 2), ([0, 0], 3)] {
-        push_recon_entry(&mut superblocks, &mut entries, origin, entry);
+    for columns in [&[0, 1][..], &[16], &[], &[0]] {
+        let first = entries.len();
+        for &col in columns {
+            let call = TilePartitionCall::root(0, col, size, true);
+            entries.push(ReconRowEntry::new(
+                DecodedLeafPublication::new(call, size, 15),
+                EntryState::Spent,
+            ));
+        }
+        let col = columns.first().copied().unwrap_or_default();
+        superblocks.extend(ReconSuperblock::new([0, col & !15], first..entries.len()));
     }
 
     assert_eq!(
@@ -158,20 +169,7 @@ fn recon_entries_keep_contiguous_superblock_order() {
 }
 
 #[test]
-fn reconstruction_pools_reuse_owned_storage() {
-    let rows = {
-        let mut pool = ReconRowBufferPool::default();
-        pool.reset(0);
-        pool
-    };
-    let mut buffers = ReconRowBuffers::default();
-    buffers.temporal.reserve(8);
-    let pointer = buffers.temporal.as_ptr();
-    rows.recycle(buffers);
-    let reused = rows.take();
-    assert_eq!(reused.temporal.capacity(), 8);
-    assert!(core::ptr::eq(reused.temporal.as_ptr(), pointer));
-
+fn reconstruction_worker_reuses_owned_scratch() {
     let workers = InterReconScratchPool::<u8>::new(1);
     let first = workers
         .with_scratch(0, core::ptr::from_mut)
@@ -415,13 +413,6 @@ fn frame_geometry_waits_for_readers_then_reuses_hidden_backing() {
 }
 
 #[test]
-fn a_tile_row_pool_without_a_decode_still_hands_out_buffers() {
-    let mut pool = super::ReconRowBufferPool::default();
-    pool.reset(2);
-    assert_eq!(pool.take().residual_coeffs.capacity(), 0);
-}
-
-#[test]
 fn each_worker_reuses_its_own_reconstruction_scratch() {
     let workers = InterReconScratchPool::<u16>::new(12);
     let held: Vec<_> = (0..12)
@@ -487,7 +478,7 @@ fn resolved_record_publication_keeps_the_unit_capacity() {
                 rows: 1,
                 cols: 1,
                 skip_flag: false,
-                eob: 1,
+                empty: false,
             },
         );
         progress.reserve(1).expect("parsed rows");
@@ -526,7 +517,9 @@ fn resolved_record_publication_keeps_the_unit_capacity() {
 fn row_slots_clear_without_an_element_walk() {
     assert!(!core::mem::needs_drop::<LeafSlot>());
     assert!(
-        size_of::<PendingIntrabcBlock>() <= size_of::<ReconCommand>(),
+        size_of::<PendingIntrabcBlock>()
+            <= size_of::<deferred_recon::InterReconCommand>()
+                .max(size_of::<intrabc::IntrabcReconCommand>()),
         "an inline IntraBC block must not grow the row slot"
     );
 }

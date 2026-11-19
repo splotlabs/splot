@@ -744,7 +744,10 @@ mod sdot {
 #[inline]
 #[target_feature(enable = "neon")]
 fn dot_taps(_: Neon, taps: Option<&Taps>) -> int8x16_t {
-    vcombine_s8(vcreate_s8(taps.map_or(0, |taps| taps.dot)), vdup_n_s8(0))
+    vcombine_s8(
+        vcreate_s8(taps.map_or(0, |taps| u64::from_le_bytes(taps.dot))),
+        vdup_n_s8(0),
+    )
 }
 
 /// The clamping [`Reads`] of a cell read in place, which only a clamped

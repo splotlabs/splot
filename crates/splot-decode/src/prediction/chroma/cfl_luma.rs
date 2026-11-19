@@ -211,35 +211,125 @@ pub(super) fn luma_420<const F: usize>(
             (block.luma_y + 2).next_multiple_of(64) < block.luma_y + 2 * height
         });
     let stride = block.stride;
-    let first_mid = tap_rows(&block, 0)[1];
-    let paired = !top_taps
-        && lane_left
-        && stride >= 64
-        && block.above.is_none_or(|[_, mid, bottom]| {
-            mid + 2 * stride == block.origin && bottom == mid + stride
-        });
-    let pairs = first_mid
-        .checked_sub(17)
-        .and_then(|start| luma.get(start..))
-        .filter(|rows| paired && rows.len() >= 2 * stride * (out.len() >> width.trailing_zeros()));
-    match (F, pairs, left.as_deref_mut().filter(|_| lane_left)) {
-        (0, Some(rows), Some(left)) => {
-            luma_420_pairs_f0(token, clamp_groups, rows, block, left, out);
+    'rows: {
+        #[cfg(target_arch = "x86_64")]
+        if F == 2
+            && width <= 8
+            && !lane_left
+            && stride >= 17
+            && let Some(source) =
+                narrow_f2_source(luma, &block, tap_rows(&block, 0), out.len() / width)
+        {
+            luma_420_narrow_f2(token, clamp_groups & 1 != 0, source, block, out);
+            break 'rows;
         }
-        (1, Some(rows), Some(left)) => {
-            luma_420_pairs_f1(token, clamp_groups, rows, block, left, out);
+
+        if !top_taps
+            && lane_left
+            && stride >= 64
+            && block.above.is_none_or(|[_, mid, bottom]| {
+                mid + 2 * stride == block.origin && bottom == mid + stride
+            })
+            && let Some(start) = tap_rows(&block, 0)[1].checked_sub(17)
+            && let Some(rows) = luma.get(start..)
+            && rows.len() >= 2 * stride * (out.len() >> width.trailing_zeros())
+            && let Some(left) = left.as_deref_mut()
+        {
+            if F == 0 {
+                luma_420_pairs_f0(token, clamp_groups, rows, block, left, out);
+            } else {
+                luma_420_pairs_f1(token, clamp_groups, rows, block, left, out);
+            }
+            break 'rows;
         }
-        (_, _, lane_out) => match F {
+
+        let lane_out = left.as_deref_mut().filter(|_| lane_left);
+        match F {
             0 => luma_420_rows_f0(token, clamp_groups, luma, block, lane_out, out),
             1 => luma_420_rows_f1(token, clamp_groups, luma, block, lane_out, out),
             _ => luma_420_rows_f2(token, clamp_groups, luma, block, lane_out, out),
-        },
+        }
     }
     if let Some(left) = left.filter(|_| !lane_left) {
         left_420(luma, &block, weights, left);
     }
     true
 }
+
+#[cfg(target_arch = "x86_64")]
+fn narrow_f2_source<'a>(
+    luma: &'a [u8],
+    block: &Luma420Block,
+    [top, mid, bottom]: [usize; 3],
+    rows: usize,
+) -> Option<(&'a [u8; 16], &'a [u8])> {
+    let stride = block.stride;
+    if block.above.is_some() && (mid + 2 * stride != block.origin || bottom != mid + stride) {
+        return None;
+    }
+    let start = mid.checked_sub(1)?;
+    let top = luma.get(top..)?.first_chunk()?;
+    let body = luma.get(start..start + 2 * stride * rows)?;
+    Some((top, body))
+}
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    /// Consecutive narrow output rows share the bottom and top tap row.
+    #[inline]
+    fn luma_420_narrow_f2(
+        token: Avx2,
+        clamp_first: bool,
+        source: (&[u8; 16], &[u8]),
+        block: Luma420Block,
+        out: &mut [i16],
+    ) {
+        use core::arch::x86_64::{__m128i, _mm_add_epi16, _mm_maddubs_epi16, _mm_set1_epi16};
+        use fearless_simd::{SimdBase as _, i16x8, u8x16};
+        let [mid_centre, mid_left] = [
+            &LANE_TAPS[2][usize::from(clamp_first)][0][1],
+            &LANE_TAPS[2][usize::from(clamp_first)][1][1],
+        ]
+        .map(|weights| -> __m128i { i16x8::from_slice(token, &weights[..8]).into() });
+        let vertical = |row: __m128i| _mm_maddubs_epi16(row, _mm_set1_epi16(1));
+        let (top, rows) = source;
+        let mut top = vertical(u8x16::from_slice(token, top).into());
+        let stride = block.stride;
+        let skip = usize::from(block.above.is_some());
+        let mut y = block.luma_y;
+        for (r, (rows, out)) in rows
+            .chunks_exact(2 * stride)
+            .zip(out.chunks_exact_mut(block.width))
+            .enumerate()
+        {
+            let (mid, bottom) = rows.split_at(stride);
+            let (Some(mid), Some(bottom)) = (
+                mid.first_chunk::<17>(),
+                bottom.get(1..).and_then(<[u8]>::first_chunk::<16>),
+            ) else {
+                return;
+            };
+            let left_rd = u8x16::from_slice(token, &mid[..16]).into();
+            let right_rd = u8x16::from_slice(token, &mid[1..]).into();
+            let side = _mm_add_epi16(
+                _mm_maddubs_epi16(left_rd, mid_left),
+                _mm_maddubs_epi16(right_rd, mid_centre),
+            );
+            if r >= skip {
+                if r != 0
+                    && (r == skip && block.clamp_row0 || block.periodic && y.is_multiple_of(64))
+                {
+                    top = vertical(right_rd);
+                }
+                y += 2;
+            }
+            let bottom = vertical(u8x16::from_slice(token, bottom).into());
+            let result = _mm_add_epi16(_mm_add_epi16(top, bottom), side);
+            top = bottom;
+            store_row8(token, result, out);
+        }
+    }
+);
 
 /// The downsampled luma left of each block row into `left`: each row's taps
 /// (clamped only on the block's first row) gathered, then summed in lanes.

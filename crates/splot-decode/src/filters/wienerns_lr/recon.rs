@@ -445,11 +445,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let progress = writer.as_ref().map(FrameSlotWriter::progress_handle);
         let setup =
             self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress)?;
-        let mut frontier = OwnedFilterFrontier::start(setup, deblock_quant_deltas, None)?;
-        while let Some(job) = frontier.advance()? {
-            job.run()?;
-        }
-        let (frame, _shell) = frontier.finish()?.finish(writer);
+        let frontier = OwnedFilterFrontier::start(setup, deblock_quant_deltas, None)?;
+        let (frame, _shell) = frontier.run_inline()?.finish(writer);
         frame
     }
 }
@@ -552,6 +549,13 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
         Ok(Some(job))
     }
 
+    pub(crate) fn run_inline(mut self) -> Result<OwnedFilterFinish<T>> {
+        while let Some(job) = self.advance()? {
+            job.run()?;
+        }
+        self.finish()
+    }
+
     /// Hands the deblock records back and transfers the setup to the freeze,
     /// once every stripe job ran.
     ///
@@ -620,6 +624,21 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             .tile_info
             .as_ref()
             .is_none_or(|tile| tile.mi_row_starts.len() <= 2)
+    }
+
+    /// A stripe cut short by an internal tile row can read post-CCSO rows
+    /// across that boundary when § 7.20.1 permits filtering across tiles.
+    fn tile_row_fringes(&self, (start, end): (usize, usize)) -> [bool; 2] {
+        let Some(tile) = self.core.tile_info.as_ref() else {
+            return [false; 2];
+        };
+        if self.disable_loopfilters_across_tiles || tile.mi_row_starts.len() <= 2 {
+            return [false; 2];
+        }
+        let starts = &tile.mi_row_starts[1..tile.mi_row_starts.len() - 1];
+        [start, end].map(|y| {
+            y.is_multiple_of(MI_SIZE) && starts.binary_search(&((y / MI_SIZE) as u32)).is_ok()
+        })
     }
 
     /// The plane rows a stripe's window holds past each end of the stripe.
@@ -704,7 +723,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         let in_place = self.stripe_in_place(range, active_lr);
         let [all, chroma, luma] = in_place;
         let skip = [all || luma, chroma, chroma];
-        let edges = self.edge_planes(active_lr, skip);
+        let edges = self.edge_planes(range, active_lr, skip);
         let margin = self.window_margin();
         let mut window = self.take_window();
         let reads = self.window_reads;
@@ -718,22 +737,28 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     }
 
     /// The planes whose window holds only the rows the first and the last
-    /// CDEF block row of the stripe read: one tile row, and loop restoration
+    /// CDEF block row of the stripe read: no cross-tile fringe, and loop restoration
     /// filters the plane in the stripe, so CDEF reads the deblocked rows
     /// inside the stripe from its target before loop restoration writes it,
     /// with the CDEF output in the samples it does not filter. CDEF reads U
     /// and V at one offset, so both chroma planes or neither. A frame with a
     /// lossless segment keeps the full window: loop restoration copies its
     /// lossless samples from the deblocked rows inside the stripe.
-    fn edge_planes(&self, active_lr: [bool; 3], in_place: [bool; 3]) -> [bool; 3] {
+    fn edge_planes(
+        &self,
+        range: (usize, usize),
+        active_lr: [bool; 3],
+        in_place: [bool; 3],
+    ) -> [bool; 3] {
         let lossless = self
             .core
             .lossless_info
             .as_ref()
             .is_some_and(|lossless| lossless.has_lossless_segment);
-        let [luma, u, v] = core::array::from_fn(|index| {
-            self.one_tile_row() && !lossless && active_lr[index] && !in_place[index]
-        });
+        if lossless || self.tile_row_fringes(range).contains(&true) {
+            return [false; 3];
+        }
+        let [luma, u, v] = core::array::from_fn(|index| active_lr[index] && !in_place[index]);
         [luma, u && v, u && v]
     }
 
@@ -935,11 +960,6 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     /// the stripe already holds are resolved from it first, so any overlap
     /// between the two is redundant rather than wrong. `GDF_READ_RADIUS` is the
     /// widest of the stripe-crossing readers, so one fringe serves them all.
-    ///
-    /// `mi_row_starts` carries an end sentinel, so a single tile row is two
-    /// entries. With one tile row § 7.20.1's clip never crosses a tile, the
-    /// stripe already holds every row § 7.20.2 asks for, and rebuilding the
-    /// fringes would be pure waste.
     fn cdef_overlap_planes(
         &self,
         deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
@@ -949,7 +969,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     ) -> Result<final_filters::CdefOverlap<T>> {
         const CDEF_START_ALIGN: usize = 8;
         let mut overlap = final_filters::CdefOverlap::default();
-        if self.one_tile_row() {
+        let [above, below] = self.tile_row_fringes((start, end));
+        if !above && !below {
             return Ok(overlap);
         }
         let frame_height = self.ranges.last().map_or(0, |&(_, last_end)| last_end);
@@ -967,7 +988,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         let back_start = start.saturating_sub(crate::filters::gdf::GDF_READ_RADIUS)
             / CDEF_START_ALIGN
             * CDEF_START_ALIGN;
-        if back_start < start {
+        if above && back_start < start {
             push_range(&mut overlap, back_start, start)?;
         }
         let forward_start = end / CDEF_START_ALIGN * CDEF_START_ALIGN;
@@ -975,7 +996,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             .saturating_add(crate::filters::gdf::GDF_READ_RADIUS)
             .next_multiple_of(CDEF_START_ALIGN)
             .min(frame_height);
-        if forward_end > end && forward_start < forward_end {
+        if below && forward_end > end && forward_start < forward_end {
             push_range(&mut overlap, forward_start, forward_end)?;
         }
         Ok(overlap)
@@ -1451,22 +1472,12 @@ impl StripeChain<'_> {
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     fn needs_lr_tx_skip_grid(&self, core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
-        core.lr_params.as_ref().is_some_and(|lr| {
-            lr.planes.get(PlaneId::Y.index()).is_some_and(|plane| {
-                matches!(
-                    plane.restoration_type,
-                    splot_core::headers::frame::FrameRestorationType::PcWiener
-                        | splot_core::headers::frame::FrameRestorationType::Switchable
-                ) || (plane.restoration_type
-                    == splot_core::headers::frame::FrameRestorationType::WienerNonsep
-                    && plane.frame_filters_on
-                    && plane.num_filter_classes.unwrap_or(1) > 1)
-            })
-        }) && self
-            .filter_records
-            .lr_source_blocks
-            .iter()
-            .any(|block| block.plane == PlaneId::Y.index())
+        super::lr_uses_tx_skip(core)
+            && self
+                .filter_records
+                .lr_source_blocks
+                .iter()
+                .any(|block| block.plane == PlaneId::Y.index())
     }
 
     fn ensure_tx_skip_grid(&mut self, mi_rows: usize, mi_cols: usize) -> Result<()> {

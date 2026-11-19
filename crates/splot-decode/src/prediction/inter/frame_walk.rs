@@ -554,8 +554,9 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
     /// Finalizes entropy products after the last parsed unit.
     pub(crate) fn finish(mut self) -> Result<DeferredInterWalk<T>> {
         let _quantizer_scopes = self.quantizer.install_frame();
+        let (_, _, work_units) = self.tile_plan.payloads_and_work_units_mut();
         let parse = match self.parser.finish(
-            self.tile_plan.work_units(),
+            work_units,
             self.records,
             &self.core,
             &self.reference,
@@ -715,7 +716,7 @@ impl<T: ReconSample> TileParseJobs<T> {
         }
         parser.merge_tiles(&work_units, &self.parse_progress, &mut records)?;
         let parse = parser.finish(
-            &work_units,
+            &mut work_units,
             records,
             &self.core,
             &self.reference,
