@@ -129,11 +129,10 @@ pub(crate) struct FrameRefUpdate<'a> {
     pub(crate) embedded_layer_id: EmbeddedLayerId,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct OpenLoopState {
     refresh_frame_flags: u32,
     co_vcl_refresh_frame_flags: u32,
-    ref_long_term_ids: Vec<u32>,
 }
 
 pub(crate) struct RuntimeReferenceBuffer {
@@ -171,7 +170,10 @@ impl RuntimeReferenceBuffer {
     }
 
     pub(crate) fn prepare_for_frame(&mut self, obu_type: ObuType, first_picture_in_tu: bool) {
-        if first_picture_in_tu && (obu_type == ObuType::OpenLoopKey || is_regular_non_olk(obu_type))
+        if obu_type == ObuType::ClosedLoopKey {
+            self.open_loop = None;
+        } else if first_picture_in_tu
+            && (obu_type == ObuType::OpenLoopKey || is_regular_non_olk(obu_type))
         {
             self.finish_open_loop();
         }
@@ -187,13 +189,11 @@ impl RuntimeReferenceBuffer {
         obu_type: ObuType,
         first_picture_in_tu: bool,
         update: &FrameRefUpdate<'_>,
-        ref_long_term_ids: &[u32],
     ) {
         if obu_type == ObuType::OpenLoopKey {
             self.open_loop = Some(OpenLoopState {
                 refresh_frame_flags: update.refresh_frame_flags,
                 co_vcl_refresh_frame_flags: 0,
-                ref_long_term_ids: ref_long_term_ids.to_vec(),
             });
         } else if !first_picture_in_tu
             && is_regular_non_olk(obu_type)
@@ -210,10 +210,7 @@ impl RuntimeReferenceBuffer {
         let refreshed = open_loop.refresh_frame_flags | open_loop.co_vcl_refresh_frame_flags;
         for (index, slot) in self.slots.iter_mut().enumerate() {
             let retained_by_refresh = (refreshed >> index) & 1 != 0;
-            let retained_long_term = slot
-                .long_term_id
-                .is_some_and(|id| open_loop.ref_long_term_ids.contains(&id));
-            if !retained_by_refresh && !retained_long_term {
+            if !retained_by_refresh && slot.long_term_id.is_none() {
                 slot.valid = false;
             }
         }
