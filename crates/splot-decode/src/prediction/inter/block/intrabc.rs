@@ -15,11 +15,17 @@ use crate::prediction::inter::{InterResidual, InterResidualBlock, Mv, mc};
 use crate::{Result, prediction::inter::add_inter_residual_to_workspace};
 
 pub(super) struct IntrabcReconPrediction {
-    luma: IntrabcPredictionGeometry,
+    luma_target: PlaneRect,
+    luma_source: IntrabcLumaSource,
     chroma: Option<IntrabcChromaPrediction>,
     morph_mv: Option<Mv>,
     /// § 7.13.3.25 `AvailU` / `AvailL`, which `is_inside` scopes to the current tile.
     morph_avail: (bool, bool),
+}
+
+enum IntrabcLumaSource {
+    Copy(PlaneRect),
+    Subpel(PlaneScaling),
 }
 
 #[derive(Clone, Copy)]
@@ -56,7 +62,12 @@ impl IntrabcReconPrediction {
             col: info.block_mv.col,
         });
         Ok(Self {
-            luma,
+            luma_target: luma.target,
+            luma_source: if luma.fractional {
+                IntrabcLumaSource::Subpel(luma.scaling)
+            } else {
+                IntrabcLumaSource::Copy(luma.source)
+            },
             chroma,
             morph_mv,
             morph_avail,
@@ -151,25 +162,21 @@ impl IntrabcReconCommand {
     ) -> Result<()> {
         let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
         let prediction = &self.prediction;
-        if prediction.luma.fractional {
-            mc::intrabc_predict_subpel_plane_into(
+        match prediction.luma_source {
+            IntrabcLumaSource::Subpel(scaling) => mc::intrabc_predict_subpel_plane_into(
                 workspace,
                 PlaneId::Y,
-                prediction.luma.target,
-                prediction.luma.scaling,
-            )?;
-        } else {
-            mc::intrabc_copy_plane_into(
-                workspace,
-                PlaneId::Y,
-                prediction.luma.source,
-                prediction.luma.target,
-            )?;
+                prediction.luma_target,
+                scaling,
+            )?,
+            IntrabcLumaSource::Copy(source) => {
+                mc::intrabc_copy_plane_into(workspace, PlaneId::Y, source, prediction.luma_target)?;
+            }
         }
         if let Some(mv) = prediction.morph_mv {
             crate::prediction::inter::bawp::apply_intrabc_morph_pred(
                 workspace,
-                prediction.luma.target,
+                prediction.luma_target,
                 prediction.morph_avail,
                 mv,
             )?;

@@ -930,10 +930,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         mi_rows: usize,
         mi_cols: usize,
     ) -> Result<Option<CdefSkipGrid>> {
-        let Some(cdef) = core.cdef_params.as_ref() else {
-            return Ok(None);
-        };
-        if cdef.cdef_on_skip_txfm_frame_enable != Some(false) {
+        if !crate::filters::wienerns_lr::cdef_uses_tx_skip(core) {
             return Ok(None);
         }
         let skip_grid = crate::filters::wienerns_lr::derive_cdef_skip_grid(

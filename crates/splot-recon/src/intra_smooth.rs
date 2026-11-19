@@ -150,12 +150,19 @@ const ROW_INDEX_8: [u8; 32] = row_index(8);
 /// The § 7.13.2.13 weights of position `j` along an `n = 4 << k` side, for
 /// every lane `j` of a table: `FAR[k][j] = n - 1 - j'` and `NEAR[k][j] = j' +
 /// 1` with `j' = j mod n`, so sides narrower than the lanes repeat.
-static FAR: [[u16; LANE_LEN]; 5] = side_table(true);
-static NEAR: [[u16; LANE_LEN]; 5] = side_table(false);
+static FAR: [[u16; LANE_LEN]; 5] = side_table(true, 0);
+static NEAR: [[u16; LANE_LEN]; 5] = side_table(false, 0);
 
 /// `BLEND[scale][k][j]` is the `sLeft`/`sTop` blend weight of position `j mod
 /// n` at the block's `scale`.
-static BLEND: [[[u16; LANE_LEN]; 5]; 3] = {
+static BLEND: [[[u16; LANE_LEN]; 5]; 3] = blend_table(0);
+
+#[cfg(target_arch = "x86_64")]
+static MULHRS_FAR: [[u16; LANE_LEN]; 5] = side_table(true, 13);
+#[cfg(target_arch = "x86_64")]
+static MULHRS_BLEND: [[[u16; LANE_LEN]; 5]; 3] = blend_table(9);
+
+const fn blend_table(fractional_bits: u32) -> [[[u16; LANE_LEN]; 5]; 3] {
     let mut table = [[[0u16; LANE_LEN]; 5]; 3];
     let mut scale = 0;
     while scale < 3 {
@@ -164,7 +171,8 @@ static BLEND: [[[u16; LANE_LEN]; 5]; 3] = {
             let mut j = 0;
             while j < LANE_LEN {
                 let shift = ((j % (4 << k)) << 1) >> scale;
-                table[scale][k][j] = (BLEND_WEIGHT_MAX >> if shift < 6 { shift } else { 6 }) as u16;
+                let weight = (BLEND_WEIGHT_MAX >> if shift < 6 { shift } else { 6 }) as u16;
+                table[scale][k][j] = weight << fractional_bits;
                 j += 1;
             }
             k += 1;
@@ -172,16 +180,17 @@ static BLEND: [[[u16; LANE_LEN]; 5]; 3] = {
         scale += 1;
     }
     table
-};
+}
 
-const fn side_table(far: bool) -> [[u16; LANE_LEN]; 5] {
+const fn side_table(far: bool, fractional_bits: usize) -> [[u16; LANE_LEN]; 5] {
     let mut table = [[0u16; LANE_LEN]; 5];
     let mut k = 0;
     while k < 5 {
         let mut j = 0;
         while j < LANE_LEN {
             let n = 4 << k;
-            table[k][j] = (if far { n - 1 - j % n } else { j % n + 1 }) as u16;
+            let weight = (if far { n - 1 - j % n } else { j % n + 1 }) as u16;
+            table[k][j] = weight << fractional_bits.saturating_sub(k);
             j += 1;
         }
         k += 1;
@@ -193,30 +202,38 @@ const fn side_table(far: bool) -> [[u16; LANE_LEN]; 5] {
 type SmoothTables = [[&'static [u16; LANE_LEN]; 3]; 2];
 
 /// [`smooth_tables`] of every block size, indexed `[log2(w) - 2][log2(h) - 2]`.
-static SMOOTH_TABLES: [[SmoothTables; 5]; 5] = {
-    let mut tables = [[[[&FAR[0]; 3]; 2]; 5]; 5];
+static SMOOTH_TABLES: [[SmoothTables; 5]; 5] = shape_tables(&FAR, &BLEND);
+
+#[cfg(target_arch = "x86_64")]
+static MULHRS_TABLES: [[SmoothTables; 5]; 5] = shape_tables(&MULHRS_FAR, &MULHRS_BLEND);
+
+const fn shape_tables(
+    far: &'static [[u16; LANE_LEN]; 5],
+    blend: &'static [[[u16; LANE_LEN]; 5]; 3],
+) -> [[SmoothTables; 5]; 5] {
+    let mut tables = [[[[&far[0]; 3]; 2]; 5]; 5];
     let mut kw = 0;
     while kw < 5 {
         let mut kh = 0;
         while kh < 5 {
             let scale = (kw + kh + 2) >> 2;
             tables[kw][kh] = [
-                [&FAR[kw], &NEAR[kw], &BLEND[scale][kw]],
-                [&FAR[kh], &NEAR[kh], &BLEND[scale][kh]],
+                [&far[kw], &NEAR[kw], &blend[scale][kw]],
+                [&far[kh], &NEAR[kh], &blend[scale][kh]],
             ];
             kh += 1;
         }
         kw += 1;
     }
     tables
-};
+}
 
 /// The block's weight tables: `[FAR, NEAR, BLEND]` of its width, then of its
 /// height, with the blend `scale = Round2(log2(w) + log2(h) - 4, 2)`.
 #[inline]
-fn smooth_tables(size: IntraRectBlockSize) -> SmoothTables {
+fn smooth_tables(size: IntraRectBlockSize, tables: &[[SmoothTables; 5]; 5]) -> SmoothTables {
     let k = |log2: u8| usize::from(log2 - 2).min(4);
-    SMOOTH_TABLES[k(size.log2_width())][k(size.log2_height())]
+    tables[k(size.log2_width())][k(size.log2_height())]
 }
 
 /// One § 7.13.2.13 block predicted in place from the frame, with the § 7.13.2.1
@@ -429,7 +446,7 @@ fn smooth_lanes<S: Simd, P: IntraLaneSample>(
 ) {
     let (width, height) = (size.width(), size.height());
     let (log2_width, log2_height) = (u32::from(size.log2_width()), u32::from(size.log2_height()));
-    let [[h_far, h_near, h_blend], [v_far, v_near, v_blend]] = smooth_tables(size);
+    let [[h_far, h_near, h_blend], [v_far, v_near, v_blend]] = smooth_tables(size, &SMOOTH_TABLES);
     let rows_per_group = (16 / width).max(1);
     let index = match width {
         4 => Some(u8x32::from_slice(simd, &ROW_INDEX_4)),
@@ -547,11 +564,10 @@ fearless_simd::kernel!(
         stride: usize,
     ) {
         use core::arch::x86_64::{
-            __m256i, _mm_cvtepu8_epi16, _mm_cvtsi32_si128, _mm_packus_epi16, _mm_set1_epi32,
-            _mm_set1_epi64x, _mm256_add_epi16, _mm256_avg_epu16, _mm256_broadcastsi128_si256,
+            __m256i, _mm_cvtepu8_epi16, _mm_packus_epi16, _mm_set1_epi32, _mm_set1_epi64x,
+            _mm256_add_epi16, _mm256_avg_epu16, _mm256_broadcastsi128_si256,
             _mm256_castsi256_si128, _mm256_cvtepu8_epi16, _mm256_extracti128_si256,
-            _mm256_mulhrs_epi16, _mm256_set1_epi16, _mm256_shuffle_epi8, _mm256_sll_epi16,
-            _mm256_slli_epi16, _mm256_sub_epi16,
+            _mm256_mulhrs_epi16, _mm256_set1_epi16, _mm256_shuffle_epi8, _mm256_sub_epi16,
         };
         use fearless_simd::{SimdFrom, u16x8};
         let SmoothBlockU8 {
@@ -562,9 +578,7 @@ fearless_simd::kernel!(
         let width = size.width();
         // At most 64 rows, so every row-term read below stays inside its table.
         let height = size.height().min(MAX_SMOOTH_SIDE);
-        let [[h_far, _, h_blend], [v_far, _, v_blend]] = smooth_tables(size);
-        let h_shift = _mm_cvtsi32_si128(15 - i32::from(size.log2_width()));
-        let v_shift = _mm_cvtsi32_si128(15 - i32::from(size.log2_height()));
+        let [[h_far, _, h_blend], [v_far, _, v_blend]] = smooth_tables(size, &MULHRS_TABLES);
         let right = _mm256_set1_epi16(i16::from(corners[0]));
         let bottom = _mm256_set1_epi16(i16::from(corners[1]));
         macro_rules! columns {
@@ -576,15 +590,13 @@ fearless_simd::kernel!(
         macro_rules! vertical {
             ($top:expr, $v_far:expr, $v_blend:expr) => {{
                 let top = $top;
-                let v_far = _mm256_sll_epi16($v_far, v_shift);
                 let pred = _mm256_add_epi16(
                     bottom,
-                    _mm256_mulhrs_epi16(_mm256_sub_epi16(top, bottom), v_far),
+                    _mm256_mulhrs_epi16(_mm256_sub_epi16(top, bottom), $v_far),
                 );
-                let s_top = _mm256_slli_epi16::<9>($v_blend);
                 _mm256_add_epi16(
                     pred,
-                    _mm256_mulhrs_epi16(_mm256_sub_epi16(top, pred), s_top),
+                    _mm256_mulhrs_epi16(_mm256_sub_epi16(top, pred), $v_blend),
                 )
             }};
         }
@@ -618,8 +630,8 @@ fearless_simd::kernel!(
                 let top = _mm256_cvtepu8_epi16(
                     u8x16::from_slice(token, &above[chunk..chunk + 16]).into(),
                 );
-                let far = _mm256_sll_epi16(columns!(h_far, chunk), h_shift);
-                let s_left = _mm256_slli_epi16::<9>(columns!(h_blend, chunk));
+                let far = columns!(h_far, chunk);
+                let s_left = columns!(h_blend, chunk);
                 macro_rules! run {
                     ($value:expr) => {
                         for row in 0..height {
@@ -659,8 +671,8 @@ fearless_simd::kernel!(
         };
         let index: __m256i = u8x32::from_slice(token, index).into();
         let top = _mm256_cvtepu8_epi16(top);
-        let far = _mm256_sll_epi16(columns!(h_far, 0), h_shift);
-        let s_left = _mm256_slli_epi16::<9>(columns!(h_blend, 0));
+        let far = columns!(h_far, 0);
+        let s_left = columns!(h_blend, 0);
         let rows_per_group = 16 >> size.log2_width();
         macro_rules! rows {
             ($terms:expr, $row:expr) => {

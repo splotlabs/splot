@@ -1555,6 +1555,17 @@ fn work_unit_boundary_applies_saved_and_frame_updates_transactionally() {
         [20_000, 21_000, 22_000, 9 + (15 << 7), 0]
     );
     assert_eq!(frame_cdfs.rows, expected_frame.rows);
+
+    let mut output = FrameCdfSubset::from_defaults();
+    let output_rows = std::ptr::from_ref(output.rows.as_ref());
+    let tile_rows = std::ptr::from_ref(boundary.tile_cdfs().rows.as_ref());
+    assert!(output.transfer_saved_tile(&mut boundary));
+    assert_eq!(output, updated);
+    assert_eq!(std::ptr::from_ref(output.rows.as_ref()), tile_rows);
+    assert_eq!(
+        std::ptr::from_ref(boundary.tile_cdfs().rows.as_ref()),
+        output_rows
+    );
 }
 
 #[test]

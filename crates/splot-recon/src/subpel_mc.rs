@@ -429,6 +429,11 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
         self.height
     }
 
+    /// Returns the number of rows in the published prefix.
+    pub const fn readable_rows(&self) -> usize {
+        self.readable_rows
+    }
+
     /// Reads `ref[plane][row][col]`. The convolution clips the requested indices
     /// to the caller-supplied `[firstX, lastX] x [firstY, lastY]` region; this
     /// read additionally clamps to the view's own width and readable row prefix

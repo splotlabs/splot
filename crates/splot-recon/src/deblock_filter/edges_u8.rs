@@ -35,18 +35,15 @@ const fn words(low: [u8; 8], high: [u8; 8]) -> [u8; 32] {
 }
 
 const ZERO: u8 = 0x80;
-/// The first lines of a lane's four segments, then their last lines.
-const SIDES: [u8; 32] = words([0, 4, 8, 12, 3, 7, 11, 15], [ZERO; 8]);
-/// The edge fields over both lines of each segment, from the packed words.
-const Q_THR: [u8; 32] = words([0, 4, 8, 12, 0, 4, 8, 12], [1, 5, 9, 13, 1, 5, 9, 13]);
-const SIDE: [u8; 32] = words([2, 6, 10, 14, 2, 6, 10, 14], [3, 7, 11, 15, 3, 7, 11, 15]);
-const MAX_POS: [u8; 32] = words([0, 4, 8, 12, 0, 4, 8, 12], [ZERO; 8]);
-const MAX_NEG: [u8; 32] = words([1, 5, 9, 13, 1, 5, 9, 13], [ZERO; 8]);
-const FLAGS: [u8; 32] = words([2, 6, 10, 14, 2, 6, 10, 14], [ZERO; 8]);
+/// Adjacent words hold each segment's first and last lines so a multiply-add
+/// can sum their derivatives into the low word of the segment's dword.
+/// The unrounded sum exceeds twice the threshold exactly when its rounded
+/// mean exceeds the threshold.
+const SIDES: [u8; 32] = words([0, 3, 4, 7, 8, 11, 12, 15], [ZERO; 8]);
 /// A segment word over the lines of the low and high halves of a widened
 /// row: lines `0..8` and `8..16` of each lane's 16.
-const LOW_LINES: [u8; 32] = words([0, 0, 0, 0, 2, 2, 2, 2], [1, 1, 1, 1, 3, 3, 3, 3]);
-const HIGH_LINES: [u8; 32] = words([4, 4, 4, 4, 6, 6, 6, 6], [5, 5, 5, 5, 7, 7, 7, 7]);
+const LOW_LINES: [u8; 32] = words([0, 0, 0, 0, 4, 4, 4, 4], [1, 1, 1, 1, 5, 5, 5, 5]);
+const HIGH_LINES: [u8; 32] = words([8, 8, 8, 8, 12, 12, 12, 12], [9, 9, 9, 9, 13, 13, 13, 13]);
 
 /// [`RAMP`] scaled for a rounding high multiply, then [`CLAMP`], over both
 /// lanes.
@@ -244,33 +241,69 @@ kernel!(
 /// (`$rows[REACH + j]` holds `s[j]` of every line) for edges whose widest
 /// `maxWidthPos` is at most `$class`: reads the § 7.17.7.2 `s[-n..n]`, `n =
 /// Clip3(3, 8, $class + 1)`, and changes `s[-$class..$class]`. Evaluates to
-/// whether any sample may have changed.
+/// whether any sample may have changed. The raw delta is four times the
+/// inner term in § 7.17.7.1. Its magnitude rounds to zero through the ramp
+/// for up to 8 at any width or up to 12 at width 1.
 macro_rules! filter_chunk {
     ($token:ident, $rows:ident, $low:expr, $high:expr, $class:literal) => {{
+        let (p1, p0, q0, q1) = (
+            $rows[REACH - 2],
+            $rows[REACH - 1],
+            $rows[REACH],
+            $rows[REACH + 1],
+        );
+        let taps = _mm256_set1_epi16(0x040c);
+        let raw_delta = |outer, inner| {
+            _mm256_sub_epi16(
+                _mm256_maddubs_epi16(outer, taps),
+                _mm256_maddubs_epi16(inner, taps),
+            )
+        };
+        let raw_low = raw_delta(_mm256_unpacklo_epi8(q0, p1), _mm256_unpacklo_epi8(p0, q1));
+        let raw_high = raw_delta(_mm256_unpackhi_epi8(q0, p1), _mm256_unpackhi_epi8(p0, q1));
+        let motion = _mm256_max_epi16(_mm256_abs_epi16(raw_low), _mm256_abs_epi16(raw_high));
+        let moves = _mm256_cmpgt_epi16(motion, _mm256_set1_epi16(if $class == 1 { 12 } else { 8 }));
+        _mm256_testz_si256(moves, moves) == 0
+            && apply_chunk!($token, $rows, $low, $high, [raw_low, raw_high], $class)
+    }};
+}
+
+macro_rules! apply_chunk {
+    ($token:ident, $rows:ident, $low:expr, $high:expr, $raw:expr, $class:literal) => {{
         let token = $token;
         let (low, high): (__m256i, __m256i) = ($low, $high);
         let pick =
             |x: __m256i, pattern: &[u8; 32]| _mm256_shuffle_epi8(x, constant(token, pattern));
-        let (q, side) = (pick(low, &Q_THR), pick(low, &SIDE));
-        let (max_pos, max_neg) = (pick(high, &MAX_POS), pick(high, &MAX_NEG));
         let zero = _mm256_setzero_si256();
         let splat = |value: i16| _mm256_set1_epi16(value);
+        let field = |x, mask: i32| _mm256_and_si256(x, _mm256_set1_epi32(mask));
+        let q = field(low, 0xffff);
+        let side = _mm256_srli_epi32::<16>(low);
+        let max_pos = field(high, 0xff);
+        let max_neg = field(_mm256_srli_epi32::<8>(high), 0xff);
         let gt = |a, b| _mm256_cmpgt_epi16(a, b);
         let e = |j: isize| pick($rows[(REACH as isize + j) as usize], &SIDES);
-        let mean = |x| _mm256_avg_epu16(x, _mm256_shuffle_epi32::<0x4e>(x));
-        let second = |a, b, c| {
-            let sum = _mm256_sub_epi16(_mm256_add_epi16(a, c), _mm256_add_epi16(b, b));
-            mean(_mm256_abs_epi16(sum))
-        };
-        let (em2, em1, e0, e1) = (e(-2), e(-1), e(0), e(1));
-        let high_deriv = _mm256_max_epi16(second(e(-3), em2, em1), second(e0, e1, e(2)));
+        let sub = |a, b| _mm256_sub_epi16(a, b);
+        let sum_abs = |x| _mm256_madd_epi16(_mm256_abs_epi16(x), splat(1));
+        let (em1, e0) = (e(-1), e(0));
+        let (em2, e1) = (e(-2), e(1));
+        let p = sub(em1, em2);
+        let q_diff = sub(e0, e1);
+        let high_deriv = _mm256_max_epi16(
+            sum_abs(sub(p, sub(em2, e(-3)))),
+            sum_abs(sub(q_diff, sub(e1, e(2)))),
+        );
+        let exceeds = |sum, threshold| gt(sum, _mm256_slli_epi16::<1>(threshold));
         let valid = gt(_mm256_min_epi16(q, side), zero);
-        let one = _mm256_andnot_si256(gt(high_deriv, side), valid);
+        let one = _mm256_andnot_si256(exceeds(high_deriv, side), valid);
         let mut index = _mm256_sub_epi16(zero, one);
         if $class > 1 {
-            let transition = _mm256_add_epi16(second(em2, em1, e0), second(em1, e0, e1));
+            let cross = sub(e0, em1);
+            let mean = |x| _mm256_avg_epu16(sum_abs(x), zero);
+            let transition =
+                _mm256_add_epi16(mean(sub(cross, p)), mean(_mm256_add_epi16(cross, q_diff)));
             let fails = |side_shift: __m256i, q_limit| {
-                _mm256_or_si256(gt(high_deriv, side_shift), gt(transition, q_limit))
+                _mm256_or_si256(exceeds(high_deriv, side_shift), gt(transition, q_limit))
             };
             let two = _mm256_andnot_si256(
                 fails(_mm256_srai_epi16::<2>(side), _mm256_slli_epi16::<2>(q)),
@@ -283,20 +316,15 @@ macro_rules! filter_chunk {
                 ),
                 two,
             );
-            let toward = |edge, inner, outer, n: i16| {
-                let step = _mm256_mullo_epi16(_mm256_sub_epi16(edge, inner), splat(n));
-                mean(_mm256_abs_epi16(_mm256_sub_epi16(
-                    _mm256_sub_epi16(edge, outer),
-                    step,
-                )))
-            };
             let ends = |dist: i16, end| {
                 let reach = dist as isize;
-                let neg = _mm256_and_si256(
-                    gt(max_neg, splat(dist - 1)),
-                    gt(toward(em1, em2, e(-reach - 1), dist), end),
-                );
-                _mm256_or_si256(neg, gt(toward(e0, e1, e(reach), dist), end))
+                let toward = |edge, delta, outer| {
+                    let anchor = sub(edge, _mm256_mullo_epi16(delta, splat(dist)));
+                    exceeds(sum_abs(sub(anchor, outer)), end)
+                };
+                let neg =
+                    _mm256_and_si256(gt(max_neg, splat(dist - 1)), toward(em1, p, e(-reach - 1)));
+                _mm256_or_si256(neg, toward(e0, q_diff, e(reach)))
             };
             let end = _mm256_srai_epi16::<4>(_mm256_mullo_epi16(side, splat(3)));
             let three = _mm256_andnot_si256(ends(3, end), three);
@@ -327,57 +355,55 @@ macro_rules! filter_chunk {
         if _mm256_testz_si256(index, index) != 0 {
             false
         } else {
-            let flags = pick(high, &FLAGS);
+            let flags = _mm256_srli_epi32::<16>(high);
             let keep = |bit| _mm256_cmpeq_epi16(_mm256_and_si256(flags, splat(bit)), zero);
-            let neg_width = _mm256_add_epi16(
-                max_neg,
-                _mm256_add_epi16(gt(max_neg, splat(4)), gt(max_neg, splat(6))),
-            );
-            let bytes =
-                |index| _mm256_add_epi16(_mm256_mullo_epi16(index, splat(0x0202)), splat(0x0100));
-            let pos = bytes(_mm256_and_si256(index, keep(2)));
-            let neg = bytes(_mm256_and_si256(
-                _mm256_min_epi16(index, neg_width),
-                keep(1),
-            ));
-            let clamp = _mm256_mullo_epi16(
-                q,
-                _mm256_shuffle_epi8(words16(token, &CLAMP_LANES), bytes(index)),
-            );
-            let (p1, p0, q0, q1) = (
-                $rows[REACH - 2],
-                $rows[REACH - 1],
-                $rows[REACH],
-                $rows[REACH + 1],
-            );
-            let taps = splat(0x040c);
-            let delta = |clamp, outer: __m256i, inner: __m256i| {
-                let delta = _mm256_sub_epi16(
-                    _mm256_maddubs_epi16(outer, taps),
-                    _mm256_maddubs_epi16(inner, taps),
+            let (pos, neg, clamp) = if $class == 1 {
+                (
+                    _mm256_and_si256(one, keep(2)),
+                    _mm256_and_si256(one, keep(1)),
+                    _mm256_and_si256(one, _mm256_mullo_epi16(q, splat(CLAMP[1]))),
+                )
+            } else {
+                let neg_width = _mm256_add_epi16(
+                    max_neg,
+                    _mm256_add_epi16(gt(max_neg, splat(4)), gt(max_neg, splat(6))),
                 );
+                let bytes = |index| {
+                    _mm256_add_epi16(_mm256_mullo_epi16(index, splat(0x0202)), splat(0x0100))
+                };
+                let pos = bytes(_mm256_and_si256(index, keep(2)));
+                let neg = bytes(_mm256_and_si256(
+                    _mm256_min_epi16(index, neg_width),
+                    keep(1),
+                ));
+                let clamp = _mm256_mullo_epi16(
+                    q,
+                    _mm256_shuffle_epi8(words16(token, &CLAMP_LANES), bytes(index)),
+                );
+                (pos, neg, clamp)
+            };
+            let [raw_low, raw_high] = $raw;
+            let clamp_delta = |clamp, delta| {
                 _mm256_min_epi16(
                     _mm256_max_epi16(delta, _mm256_sub_epi16(zero, clamp)),
                     clamp,
                 )
             };
-            let low_delta = delta(
-                pick(clamp, &LOW_LINES),
-                _mm256_unpacklo_epi8(q0, p1),
-                _mm256_unpacklo_epi8(p0, q1),
-            );
-            let high_delta = delta(
-                pick(clamp, &HIGH_LINES),
-                _mm256_unpackhi_epi8(q0, p1),
-                _mm256_unpackhi_epi8(p0, q1),
-            );
+            let low_delta = clamp_delta(pick(clamp, &LOW_LINES), raw_low);
+            let high_delta = clamp_delta(pick(clamp, &HIGH_LINES), raw_high);
             let (pos_low, pos_high) = (pick(pos, &LOW_LINES), pick(pos, &HIGH_LINES));
             let (neg_low, neg_high) = (pick(neg, &LOW_LINES), pick(neg, &HIGH_LINES));
             let mut moved = true;
             for j in 0..$class {
                 let ramp = words16(token, &RAMP_LANES[j]);
-                let diff =
-                    |delta, index| _mm256_mulhrs_epi16(delta, _mm256_shuffle_epi8(ramp, index));
+                let diff = |delta, index| {
+                    if $class == 1 {
+                        let scaled = _mm256_mulhrs_epi16(delta, splat(RAMP_LANES[0][1]));
+                        _mm256_and_si256(scaled, index)
+                    } else {
+                        _mm256_mulhrs_epi16(delta, _mm256_shuffle_epi8(ramp, index))
+                    }
+                };
                 let (curr_low, curr_high) = (diff(low_delta, pos_low), diff(high_delta, pos_high));
                 let (prev_low, prev_high) = (diff(low_delta, neg_low), diff(high_delta, neg_high));
                 if j == 0 {
@@ -552,6 +578,23 @@ kernel!(
                         &mut block[$i * stride..$i * stride + 2 * REACH]
                     };
                 }
+                macro_rules! restore_narrow {
+                    ($rows:ident) => {{
+                        let mut v = core::array::from_fn(|i| $rows[REACH / 2 + i]);
+                        for _ in 0..3 {
+                            narrow_round(token, &mut v);
+                        }
+                        let mut put = |i: usize, word: i64| {
+                            line!(i)[REACH / 2..REACH / 2 + 8].copy_from_slice(&word.to_le_bytes()); // splot-copy-ok: one 8-byte store
+                        };
+                        each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
+                            put(2 * I, _mm256_extract_epi64::<0>(v[I]));
+                            put(2 * I + 1, _mm256_extract_epi64::<1>(v[I]));
+                            put(16 + 2 * I, _mm256_extract_epi64::<2>(v[I]));
+                            put(17 + 2 * I, _mm256_extract_epi64::<3>(v[I]));
+                        });
+                    }};
+                }
                 macro_rules! narrow {
                     ($class:literal) => {{
                         let mut word = |i: usize| {
@@ -575,21 +618,23 @@ kernel!(
                             rows[REACH / 2 + I] = v[I];
                         });
                         if filter_chunk!(token, rows, low, high, $class) {
-                            each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
-                                v[I] = rows[REACH / 2 + I];
-                            });
-                            for _ in 0..3 {
-                                narrow_round(token, &mut v);
+                            if $class == 1 {
+                                let p = rows[REACH - 1];
+                                let q = rows[REACH];
+                                let lo = _mm256_unpacklo_epi8(p, q);
+                                let hi = _mm256_unpackhi_epi8(p, q);
+                                let mut put = |i: usize, word: i32| {
+                                    line!(i)[REACH - 1..REACH + 1].copy_from_slice(&(word as u16).to_le_bytes()); // splot-copy-ok: one 2-byte store
+                                };
+                                each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
+                                    put(I, _mm256_extract_epi16::<{ I as i32 }>(lo));
+                                    put(I + 8, _mm256_extract_epi16::<{ I as i32 }>(hi));
+                                    put(I + 16, _mm256_extract_epi16::<{ I as i32 + 8 }>(lo));
+                                    put(I + 24, _mm256_extract_epi16::<{ I as i32 + 8 }>(hi));
+                                });
+                            } else {
+                                restore_narrow!(rows);
                             }
-                            let mut put = |i: usize, word: i64| {
-                                line!(i)[REACH / 2..REACH / 2 + 8].copy_from_slice(&word.to_le_bytes()); // splot-copy-ok: one 8-byte store
-                            };
-                            each!(I in [0, 1, 2, 3, 4, 5, 6, 7] {
-                                put(2 * I, _mm256_extract_epi64::<0>(v[I]));
-                                put(2 * I + 1, _mm256_extract_epi64::<1>(v[I]));
-                                put(16 + 2 * I, _mm256_extract_epi64::<2>(v[I]));
-                                put(17 + 2 * I, _mm256_extract_epi64::<3>(v[I]));
-                            });
                         }
                     }};
                 }
@@ -604,16 +649,20 @@ kernel!(
                             wide_round(token, &mut v);
                         }
                         if filter_chunk!(token, v, low, high, $class) {
-                            for _ in 0..4 {
-                                wide_round(token, &mut v);
+                            if $class == 4 {
+                                restore_narrow!(v);
+                            } else {
+                                for _ in 0..4 {
+                                    wide_round(token, &mut v);
+                                }
+                                let mut put = |i: usize, value: __m128i| {
+                                    u8x16::simd_from(token, value).store_slice(line!(i));
+                                };
+                                each!(I in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] {
+                                    put(I, _mm256_castsi256_si128(v[I]));
+                                    put(I + 16, _mm256_extracti128_si256::<1>(v[I]));
+                                });
                             }
-                            let mut put = |i: usize, value: __m128i| {
-                                u8x16::simd_from(token, value).store_slice(line!(i));
-                            };
-                            each!(I in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] {
-                                put(I, _mm256_castsi256_si128(v[I]));
-                                put(I + 16, _mm256_extracti128_si256::<1>(v[I]));
-                            });
                         }
                     }};
                 }

@@ -1038,7 +1038,7 @@ fn intra_edge_filter_kernels_match_spec_verbatim() {
 
 #[test]
 fn intra_edge_filter_matches_owned_reference_for_all_sizes_and_strengths() {
-    for sz in 1..=129 {
+    for sz in 1..=257 {
         for strength in 1..=3 {
             let wide = (0..sz + 3)
                 .map(|i| ((i * 40_503 + sz * 7_919) ^ (i << 7)) as u16)

@@ -109,9 +109,15 @@ impl<T: ReconSample> PlaneBuf<T> {
     /// Resizes to `len` samples, filling new ones with `value`.
     pub fn resize(&mut self, len: usize, value: T) {
         let old = self.len;
+        let initialized = self.blocks.len() * Self::SAMPLES_PER_BLOCK;
         self.grow_to(len);
-        if len > old {
-            self[old..].fill(value);
+        let end = if value.to_u16() == 0 {
+            len.min(initialized)
+        } else {
+            len
+        };
+        if end > old {
+            self[old..end].fill(value);
         }
     }
 
@@ -317,6 +323,21 @@ mod tests {
             assert_eq!(ten.as_ptr() as usize % PLANE_ALIGNMENT, 0);
         }
         assert_eq!(plane_buf_from(&[1u8, 2, 3]).as_slice(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn zero_resize_clears_reused_samples_and_keeps_the_prefix() {
+        fn check<T: ReconSample + core::fmt::Debug + PartialEq>(fill: T) {
+            let mut samples = plane_buf();
+            samples.resize(PLANE_ALIGNMENT, fill);
+            samples.truncate(7);
+            samples.resize(3 * PLANE_ALIGNMENT, T::default());
+            assert_eq!(&samples[..7], &[fill; 7]);
+            assert!(samples[7..].iter().all(|&sample| sample == T::default()));
+        }
+
+        check(73u8);
+        check(733u16);
     }
 
     #[test]

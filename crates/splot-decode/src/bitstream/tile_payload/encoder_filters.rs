@@ -310,6 +310,7 @@ impl FilterRecorder {
             ));
         }
         let mut recorder = crate::residual::pipeline::DeblockRecorder {
+            needs: crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
             blocks: &mut self.deblock_blocks,
             chroma_blocks: &mut self.chroma_blocks,
             tx_skip_records: &mut self.tx_skip,

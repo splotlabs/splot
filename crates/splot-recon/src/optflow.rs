@@ -709,7 +709,8 @@ fn edge_round<S: Simd>(magnitude: u16x16<S>, edges: u64) -> u16x16<S> {
 }
 
 /// Solves the § 7.13.3.9 least-squares system from one unit's
-/// `[su2, sv2, suv, suw, svw]` sums.
+/// `[su2, sv2, suv, suw, svw]` sums. Each covers at most 64 normalized
+/// samples with gradient magnitude at most 564.
 fn solve_sums(sums: [i32; 5], distances: [i32; 2]) -> Result<[[i32; 2]; 2]> {
     let [mut su2, mut sv2, mut suv, mut suw, mut svw] = sums;
     let max_product_bits = (1 + msb(su2 as u32)) + (1 + msb(sv2 as u32));
@@ -719,11 +720,10 @@ fn solve_sums(sums: [i32; 5], distances: [i32; 2]) -> Result<[[i32; 2]; 2]> {
         .max((1 + msb(su2 as u32)) + (1 + msb(svw.unsigned_abs())))
         .max((1 + msb(suv.unsigned_abs())) + (1 + msb(suw.unsigned_abs())));
     let reduction = max_product_bits.saturating_sub(MAX_LS_BITS - 3) >> 1;
-    su2 = round2_signed_i32(su2, reduction);
-    sv2 = round2_signed_i32(sv2, reduction);
-    suv = round2_signed_i32(suv, reduction);
-    suw = round2_signed_i32(suw, reduction);
-    svw = round2_signed_i32(svw, reduction);
+    if reduction != 0 {
+        let bias = 1 << (reduction - 1);
+        [su2, sv2, suv, suw, svw] = sums.map(|value| (value + (value >> 31) + bias) >> reduction);
+    }
 
     let determinant = su2 * sv2 - suv * suv;
     if determinant <= 0 {

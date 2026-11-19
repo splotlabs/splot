@@ -9,7 +9,7 @@ use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
-use splot_core::tables::conversion::MAX_TX_SIZE_RECT;
+use splot_core::tables::conversion::{MAX_TX_SIZE_RECT, TX_WIDTH_LOG2};
 
 use super::*;
 use crate::bitstream::tile_payload::TileCoeffFrameFacts;
@@ -327,7 +327,7 @@ fn split_luma_transform_partition_records_follow_raster_order() {
     let records =
         luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Split).unwrap();
     let coords: Vec<(usize, usize, usize)> = records
-        .iter()
+        .clone()
         .map(|record| (record.x, record.y, record.tx_size))
         .collect();
 
@@ -347,7 +347,7 @@ fn five_way_luma_transform_partition_fills_bounded_storage() {
     let records =
         luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Horz5).unwrap();
     let geometry: Vec<_> = records
-        .iter()
+        .clone()
         .map(|record| (record.x, record.y, record.middle))
         .collect();
 
@@ -429,7 +429,7 @@ fn every_transform_partition_has_spec_geometry_order_and_middle_flags() {
     for &(partition, expected) in cases {
         let records = luma_transform_records_for_partition(64, 32, TX_16X16, partition).unwrap();
         let actual: Vec<_> = records
-            .iter()
+            .clone()
             .map(|record| {
                 let (width, height) = tx_size_dimensions(record.tx_size).unwrap();
                 (record.x, record.y, width, height, record.middle)
@@ -441,20 +441,19 @@ fn every_transform_partition_has_spec_geometry_order_and_middle_flags() {
 
 #[test]
 fn luma_transform_partition_storage_has_only_syntax_cardinalities() {
-    for (units, expected) in [
-        (LumaTransformPartitionUnits::one(0), vec![0]),
-        (LumaTransformPartitionUnits::two([0, 1]), vec![0, 1]),
-        (
-            LumaTransformPartitionUnits::four([0, 1, 2, 3]),
-            vec![0, 1, 2, 3],
-        ),
-        (
-            LumaTransformPartitionUnits::five([0, 1, 2, 3, 4]),
-            vec![0, 1, 2, 3, 4],
-        ),
+    for (partition, count) in [
+        (LumaTxPartition::None, 1),
+        (LumaTxPartition::Split, 4),
+        (LumaTxPartition::Horz, 2),
+        (LumaTxPartition::Vert, 2),
+        (LumaTxPartition::Horz4, 4),
+        (LumaTxPartition::Vert4, 4),
+        (LumaTxPartition::Horz5, 5),
+        (LumaTxPartition::Vert5, 5),
     ] {
-        assert_eq!(units.len(), expected.len());
-        assert!(units.iter().copied().eq(expected));
+        let units = luma_transform_records_for_partition(0, 0, TX_16X16, partition).unwrap();
+        assert_eq!(units.len(), count);
+        assert_eq!(units.count(), count);
     }
 }
 
@@ -649,32 +648,13 @@ fn writer_produced_narrow_four_and_five_way_partitions_are_nonconforming() {
 }
 
 #[test]
-fn sparse_partition_filter_keeps_record_order_and_original_count() {
-    let records =
-        luma_transform_records_for_partition(320, 64, TX_64X64, LumaTxPartition::Split).unwrap();
-    let record_count = records.len();
-    let Ok(visible) = records.try_filter_map::<_, !>(|record| {
-        Ok(luma_transform_record_starts_in_frame(&record, 352, 288).then_some(record))
-    });
-
-    assert_eq!(record_count, 4);
-    assert_eq!(visible.len(), 2);
-    assert!(
-        visible
-            .iter()
-            .map(|record| (record.x, record.y))
-            .eq([(320, 64), (320, 96),])
-    );
-}
-
-#[test]
 fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
     let records =
         luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Split).unwrap();
     assert!(!luma_partition_record_fills_block(
         true,
         records.len(),
-        *records.iter().next().unwrap(),
+        records.clone().next().unwrap(),
         64,
         32
     ));
@@ -700,8 +680,9 @@ fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
 fn partitioned_luma_transform_records_skip_units_starting_outside_frame() {
     let records =
         luma_transform_records_for_partition(320, 64, TX_64X64, LumaTxPartition::Split).unwrap();
+    assert_eq!(records.len(), 4);
     let visible: Vec<(usize, usize)> = records
-        .iter()
+        .clone()
         .filter(|record| luma_transform_record_starts_in_frame(record, 352, 288))
         .map(|record| (record.x, record.y))
         .collect();
@@ -786,7 +767,7 @@ fn assert_missing_luma_context_is_atomic(
             frame_facts: &facts,
             plane: 0,
             tx_size,
-            tx_set: transform_set(facts, 0, tx_size, false).unwrap_or(0),
+            tx_set: transform_set(&facts, 0, tx_size, false).unwrap_or(0),
             is_inter: false,
             lossless: false,
             fsc_mode: false,
@@ -847,7 +828,7 @@ fn ensure_with_test_payload_fsc_and_policy(
             frame_facts: &facts,
             plane,
             tx_size,
-            tx_set: transform_set(facts, plane, tx_size, is_inter).unwrap_or(0),
+            tx_set: transform_set(&facts, plane, tx_size, is_inter).unwrap_or(0),
             is_inter,
             lossless: facts
                 .lossless_for_segment(current_frame_qm_segment_id())
@@ -1150,6 +1131,39 @@ fn inter_tx_set_ctx_for_frontier_block_is_zero() {
 }
 
 #[test]
+fn inter_transform_context_uses_adjusted_geometry() {
+    for ((tx_size, (width, height)), width_log2) in TX_WIDTH
+        .into_iter()
+        .zip(TX_HEIGHT)
+        .enumerate()
+        .zip(TX_WIDTH_LOG2)
+    {
+        let max_diag = (width.min(32) + height.min(32) - 4) as usize;
+        let width = width.min(32) as usize;
+        let height = height.min(32) as usize;
+        for eob in 1..=width * height {
+            let y = (eob - 1) >> width_log2.min(5);
+            let x = (eob - 1) % width;
+            let diag = x + y;
+            assert_eq!(
+                inter_tx_type_long_ctx(tx_size, eob).unwrap(),
+                if diag < 2 {
+                    1
+                } else if diag > max_diag {
+                    2
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                inter_ist_can_read_sec_tx(tx_size, eob).unwrap(),
+                width >= 16 && height >= 16 && eob <= ist_eob_limit(tx_size, DCT_DCT).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
 fn inter_set1_index_branch_inverts_via_tx_type_inter_inv_set1() {
     let tx_size_sqr = TX_SIZE_SQR[INTER_SET_TX_SIZE] as usize;
     let tx_type = read_inter_tx_type_from_symbols(
@@ -1412,7 +1426,7 @@ fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
     let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
 
     let config = staged_transform_tool_lossless_base_config(
-        frame_facts(false, false, false),
+        &frame_facts(false, false, false),
         0,
         0,
         0,
@@ -1435,7 +1449,7 @@ fn lossless_fsc_staged_plane_tx_type_remains_idtx() {
         tx_size: TX_8X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(
-        lossless_frame_facts(),
+        &lossless_frame_facts(),
         0,
         0,
         0,
@@ -1460,7 +1474,7 @@ fn lossless_inter_staged_plane_tx_type_remains_idtx() {
         tx_size: TX_4X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(
-        lossless_frame_facts(),
+        &lossless_frame_facts(),
         0,
         0,
         0,
@@ -1485,7 +1499,7 @@ fn lossless_inter_chroma_staged_plane_tx_type_uses_colocated_luma_tx_type() {
         tx_size: TX_4X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(
-        lossless_frame_facts(),
+        &lossless_frame_facts(),
         1,
         0,
         0,
@@ -1508,7 +1522,7 @@ fn luma_txtype_residual_staged_base_config_derives_coeff_tool_flags() {
         (V_DCT, true, false),
     ] {
         let config = staged_transform_tool_lossless_base_config(
-            frame_facts_with_coeff_tools(true, true),
+            &frame_facts_with_coeff_tools(true, true),
             0,
             0,
             0,
@@ -1575,7 +1589,7 @@ fn chroma_transform_handoff_skips_cctx_read_when_geometry_disallows() {
                     frame_facts: &facts,
                     plane: 1,
                     tx_size: TX_32X32,
-                    tx_set: transform_set(facts, 1, TX_32X32, is_inter).unwrap_or(0),
+                    tx_set: transform_set(&facts, 1, TX_32X32, is_inter).unwrap_or(0),
                     is_inter,
                     lossless: false,
                     fsc_mode: false,

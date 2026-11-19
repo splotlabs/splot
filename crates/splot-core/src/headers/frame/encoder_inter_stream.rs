@@ -20,9 +20,7 @@ use crate::headers::frame::encoder_stream::{
 use crate::headers::frame::global_motion::{REFS_PER_FRAME, default_base_prediction};
 use crate::headers::frame::info::build_inter_seq_view;
 use crate::headers::frame::inter::tip_weight_coded;
-use crate::headers::frame::inter_shared_tail::{
-    lr_reference_filter_counts, lr_reference_filter_entries,
-};
+use crate::headers::frame::inter_shared_tail::lr_reference_filters;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore, FrameHeaderParseStatus,
@@ -190,8 +188,7 @@ fn parse_inter_frame_header(
     map: (Option<u32>, u32),
     ref_frame_idx: &[u32],
 ) -> Result<EncodedFrameHeader, EncoderHeaderError> {
-    let counts = lr_reference_filter_counts(refs, ref_frame_idx, map.1);
-    let entries = lr_reference_filter_entries(refs, ref_frame_idx, map.1);
+    let (counts, entries) = lr_reference_filters(refs, ref_frame_idx, map.1);
     let lr_refs = LrReferenceFilters {
         num_ref_frames: map.1,
         counts,

@@ -13,12 +13,11 @@
 //! The 33 taps form two groups, the upper half of the diamond plus both
 //! `c3` taps and the lower half. A group's difference sum lies in
 //! `±255 * max(P, N)` for its positive and negative coefficient sums, so with
-//! both at most 128 each group is exact in `i16` lanes, and so is every
-//! `pmaddubsw` pair whose weights' magnitudes sum to at most 128. The groups
-//! meet in a floor average with biases `32768 + 64` and `32768`, which gives
-//! `((S + 64) >> 1) + 32768` without overflow; `>> 6` then leaves
-//! `Round2(S, 7) + 512`, and adding the center widened with a `0xfe` high byte
-//! (`m - 512`) gives the filtered value, which `packuswb` clips to 8 bits.
+//! both at most 128 each group and every tap pair in it fit `i16`. The groups
+//! meet in a rounding unsigned average with biases `32768 + 64` and `32767`,
+//! which gives `((S + 64) >> 1) + 32768`. Flipping its sign bit subtracts
+//! 32768 before the signed shift by 6. Adding the widened center gives
+//! the filtered value, which `packuswb` clips to 8 bits.
 //! Classes outside these bounds, which the § 5.20.2.1 tap ranges allow, take
 //! the general kernel.
 //!
@@ -86,9 +85,15 @@ type UnitWeights = [[i8; 2]; UNITS];
 #[cfg(target_arch = "x86_64")]
 pub(super) fn unit_weights(coeffs: &[i16; WIENER_NS_LUMA_COEFFS]) -> Option<UnitWeights> {
     let coeffs = coeffs.map(i32::from);
-    let sum: i32 = coeffs.iter().sum();
-    let upper = -(sum + coeffs[3]);
-    let lower = -(sum - coeffs[3]);
+    let (positive, negative) = coeffs
+        .iter()
+        .chain([&coeffs[3]])
+        .fold((0, 0), |(p, n), &c| (p + c.max(0), n - c.min(0)));
+    if positive.max(negative) > 128 {
+        return None;
+    }
+    let upper = negative - positive;
+    let lower = upper + 2 * coeffs[3];
     let mut weights = [[0i8; 2]; UNITS];
     for (slot, pair) in weights.iter_mut().zip(UNIT_WEIGHTS) {
         let values = pair.map(|weight| match weight {
@@ -96,22 +101,9 @@ pub(super) fn unit_weights(coeffs: &[i16; WIENER_NS_LUMA_COEFFS]) -> Option<Unit
             UpperCenter => upper,
             LowerCenter => lower,
         });
-        if values[0].abs() + values[1].abs() > 128 {
-            return None;
-        }
         *slot = [i8::try_from(values[0]).ok()?, i8::try_from(values[1]).ok()?];
     }
-    let bounded = |skip: Option<usize>, extra: i32| {
-        let taps = coeffs
-            .iter()
-            .enumerate()
-            .filter(|&(j, _)| Some(j) != skip)
-            .map(|(_, &c)| c)
-            .chain([extra]);
-        let (positive, negative) = taps.fold((0, 0), |(p, n), c| (p + c.max(0), n - c.min(0)));
-        positive.max(negative) <= 128
-    };
-    (bounded(None, coeffs[3]) && bounded(Some(3), 0)).then_some(weights)
+    Some(weights)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -159,12 +151,11 @@ pub(super) fn pair_weights(coeffs: &[i16; WIENER_NS_LUMA_COEFFS]) -> Option<Pair
 pub(super) struct EightBitLuma {
     staged: Vec<[u8; STAGE_STRIDE]>,
     classes: Vec<ClassWeights>,
-    /// The coefficients `classes` and `tables` were prepared from, when they all fit.
+    /// The last bank examined. An empty `classes` marks an ineligible bank.
     prepared: Vec<[i16; WIENER_NS_LUMA_COEFFS]>,
-    /// Per unit, each class's first and second weight byte.
+    /// Each dword holds the byte weight pairs of two consecutive classes.
     #[cfg(target_arch = "x86_64")]
-    tables: [[[u8; MAX_CLASSES]; 2]; UNITS],
-    ready: bool,
+    tables: [[u8; 2 * MAX_CLASSES]; UNITS],
 }
 
 impl EightBitLuma {
@@ -176,7 +167,6 @@ impl EightBitLuma {
         width: usize,
         height: usize,
     ) -> bool {
-        self.ready = false;
         let padded_width = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
         let padded_rows = height + 2 * WIENER_NS_LUMA_TAP_RADIUS;
         let len = padded_rows + GROUP_ROWS;
@@ -210,7 +200,6 @@ impl EightBitLuma {
         coeffs_by_class: &[[i16; WIENER_NS_LUMA_COEFFS]],
         layout: LumaSubclassLayout<'_>,
     ) -> bool {
-        self.ready = false;
         if !kernel_available()
             || width < MIN_WIDTH
             || coeffs_by_class.len() > MAX_CLASSES
@@ -219,10 +208,10 @@ impl EightBitLuma {
             return false;
         }
         if self.prepared == coeffs_by_class {
-            self.ready = true;
-            return true;
+            return !self.classes.is_empty();
         }
         self.prepared.clear();
+        self.prepared.extend_from_slice(coeffs_by_class); // splot-copy-ok: weight-cache key, not samples
         self.classes.clear();
         for coeffs in coeffs_by_class {
             let Some(weights) = class_weights(coeffs) else {
@@ -233,16 +222,14 @@ impl EightBitLuma {
         }
         #[cfg(target_arch = "x86_64")]
         {
-            self.tables = [[[0; MAX_CLASSES]; 2]; UNITS];
             for (class, weights) in self.classes.iter().enumerate() {
                 for (unit, pair) in weights.iter().enumerate() {
-                    self.tables[unit][0][class] = pair[0] as u8;
-                    self.tables[unit][1][class] = pair[1] as u8;
+                    let [first, second] = pair.map(|w| w as u8);
+                    self.tables[unit][2 * class] = first;
+                    self.tables[unit][2 * class + 1] = second;
                 }
             }
         }
-        self.prepared.extend_from_slice(coeffs_by_class); // splot-copy-ok: weight-cache key, not samples
-        self.ready = true;
         true
     }
 
@@ -260,9 +247,6 @@ impl EightBitLuma {
         layout: LumaSubclassLayout<'_>,
         flat: &FlatChunks<WIENER_NS_LUMA_TAP_RADIUS>,
     ) -> usize {
-        if !self.ready {
-            return 0;
-        }
         #[cfg(target_arch = "x86_64")]
         if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
             return avx2::filter_cell_rows(
@@ -450,15 +434,21 @@ mod tests {
         for case in 0..60 {
             let width = [16, 32, 48, 64, 80, 40, 128][case % 7];
             let height = 1 + next(12) as usize;
-            let coeffs: Vec<[i16; WIENER_NS_LUMA_COEFFS]> = (0..=next(16))
-                .map(|_| {
-                    let style = next(4);
-                    core::array::from_fn(|j| {
-                        let span = 1u64 << K[j];
-                        MIN[j] + [0, span - 1, next(span), next(span)][style as usize] as i16
+            let coeffs: Vec<[i16; WIENER_NS_LUMA_COEFFS]> = if case == 1 {
+                (0..16)
+                    .map(|class| [39, 39, 17, 0, class, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                    .collect()
+            } else {
+                (0..=next(16))
+                    .map(|_| {
+                        let style = next(4);
+                        core::array::from_fn(|j| {
+                            let span = 1u64 << K[j];
+                            MIN[j] + [0, span - 1, next(span), next(span)][style as usize] as i16
+                        })
                     })
-                })
-                .collect();
+                    .collect()
+            };
             let rows: Vec<Vec<u16>> = (0..height + 2 * r)
                 .map(|_| {
                     let style = next(3);
@@ -486,6 +476,9 @@ mod tests {
             let prepared = luma.prepare(width, &coeffs, layout);
             #[cfg(target_arch = "aarch64")]
             assert!(prepared, "case {case}");
+            if case == 1 && kernel_available() {
+                assert!(prepared);
+            }
             if !prepared {
                 continue;
             }
@@ -502,6 +495,9 @@ mod tests {
                 );
                 #[cfg(target_arch = "aarch64")]
                 assert_eq!(done, width / 16 * 16, "case {case}");
+                if case == 1 {
+                    assert_eq!(done, width);
+                }
                 filled += done;
                 for y in first..end {
                     for x in 0..done {
@@ -538,7 +534,7 @@ mod tests {
 mod avx2 {
     use core::arch::x86_64::*;
 
-    use fearless_simd::{Avx2, SimdBase, SimdInto, u8x16, u8x32};
+    use fearless_simd::{Avx2, SimdBase, SimdInto, u8x32};
 
     use super::{
         ByteLaneOutput, EightBitLuma, FlatChunks, GROUP_ROWS, LANES, LumaSubclassLayout,
@@ -559,30 +555,6 @@ mod avx2 {
         low: [__m256i; INTERLEAVED],
         high: [__m256i; INTERLEAVED],
     }
-
-    /// Byte `j` of the class-index vectors: the cell of the word lane holding
-    /// it, for adjacent pairs (even and odd outputs share a cell) and for the
-    /// low and high unpack halves, which cover columns `0..8, 16..24` and
-    /// `8..16, 24..32`.
-    const fn cell_patterns() -> [[u8; LANES]; 6] {
-        let mut patterns = [[0x80u8; LANES]; 6];
-        let mut j = 0;
-        while j < LANES {
-            let lane = j / 16;
-            let word = (j % 16) / 2;
-            let pair_cell = (lane * 8 + word) / 2;
-            let low_cell = lane * 4 + word / 4;
-            let high_cell = 2 + lane * 4 + word / 4;
-            let slot = j % 2;
-            patterns[slot][j] = pair_cell as u8;
-            patterns[2 + slot][j] = low_cell as u8;
-            patterns[4 + slot][j] = high_cell as u8;
-            j += 1;
-        }
-        patterns
-    }
-
-    const CELL_PATTERNS: [[u8; LANES]; 6] = cell_patterns();
 
     #[inline]
     fn at<const O: usize>(row: &Row, x: usize) -> &[u8; LANES] {
@@ -609,23 +581,36 @@ mod avx2 {
 
     fearless_simd::kernel!(
         #[inline]
-        fn mixed_weights(t: Avx2, tables: &[[[u8; 16]; 2]; UNITS], cells: &[u8; 8]) -> Weights {
-            let classes = _mm256_set1_epi64x(i64::from_le_bytes(*cells));
-            let index: [__m256i; 6] = core::array::from_fn(|pattern| {
-                let pattern: __m256i = u8x32::load_array_ref(t, &CELL_PATTERNS[pattern]).into();
-                _mm256_or_si256(
-                    _mm256_shuffle_epi8(classes, pattern),
-                    _mm256_and_si256(pattern, _mm256_set1_epi8(i8::MIN)),
+        fn mixed_weights(t: Avx2, tables: &[[u8; 32]; UNITS], cells: &[u8; 8]) -> Weights {
+            let classes = _mm256_cvtepu8_epi32(_mm_cvtsi64_si128(i64::from_le_bytes(*cells)));
+            let patterns = [
+                classes,
+                _mm256_shuffle_epi32::<0x50>(classes),
+                _mm256_shuffle_epi32::<0xfa>(classes),
+            ];
+            let selectors = patterns.map(|pattern| {
+                let odd = _mm256_and_si256(pattern, _mm256_set1_epi32(1));
+                let high = _mm256_sub_epi32(_mm256_setzero_si256(), odd);
+                let offset = _mm256_and_si256(high, _mm256_set1_epi8(2));
+                let bytes = _mm256_setr_epi32(
+                    0x0100_0100,
+                    0x0504_0504,
+                    0x0908_0908,
+                    0x0d0c_0d0c,
+                    0x0100_0100,
+                    0x0504_0504,
+                    0x0908_0908,
+                    0x0d0c_0d0c,
+                );
+                (
+                    _mm256_srli_epi32::<1>(pattern),
+                    _mm256_or_si256(bytes, offset),
                 )
             });
-            let table = |unit: usize, byte: usize| {
-                _mm256_broadcastsi128_si256(u8x16::load_array_ref(t, &tables[unit][byte]).into())
-            };
             let weights = |unit: usize, set: usize| {
-                _mm256_or_si256(
-                    _mm256_shuffle_epi8(table(unit, 0), index[2 * set]),
-                    _mm256_shuffle_epi8(table(unit, 1), index[2 * set + 1]),
-                )
+                let table: __m256i = u8x32::load_array_ref(t, &tables[unit]).into();
+                let (dwords, bytes) = selectors[set];
+                _mm256_shuffle_epi8(_mm256_permutevar8x32_epi32(table, dwords), bytes)
             };
             Weights {
                 pairs: core::array::from_fn(|unit| weights(unit, 0)),
@@ -700,7 +685,7 @@ mod avx2 {
             );
             let odd = add(odd, madd(ld!(4, 5), w.pairs[9]));
             let lower = finish(
-                i16::MIN,
+                i16::MAX,
                 even,
                 odd,
                 &[
@@ -711,17 +696,18 @@ mod avx2 {
             );
 
             let center = ld!(4, 4);
-            let offset = _mm256_set1_epi8(0xfe_u8 as i8);
+            let zero = _mm256_setzero_si256();
+            let bias = _mm256_set1_epi16(i16::MIN);
             let value = |upper: __m256i, lower: __m256i, center: __m256i| {
-                let average = _mm256_add_epi16(
-                    _mm256_and_si256(upper, lower),
-                    _mm256_srli_epi16::<1>(_mm256_xor_si256(upper, lower)),
-                );
-                add(_mm256_srli_epi16::<6>(average), center)
+                let average = _mm256_avg_epu16(upper, lower);
+                add(
+                    _mm256_srai_epi16::<6>(_mm256_xor_si256(average, bias)),
+                    center,
+                )
             };
             _mm256_packus_epi16(
-                value(upper.0, lower.0, _mm256_unpacklo_epi8(center, offset)),
-                value(upper.1, lower.1, _mm256_unpackhi_epi8(center, offset)),
+                value(upper.0, lower.0, _mm256_unpacklo_epi8(center, zero)),
+                value(upper.1, lower.1, _mm256_unpackhi_epi8(center, zero)),
             )
         }
     );
@@ -737,20 +723,12 @@ mod avx2 {
         layout: LumaSubclassLayout<'_>,
         flat: &FlatChunks<WIENER_NS_LUMA_TAP_RADIUS>,
     ) -> usize {
-        let classes = luma.classes.len();
         let Some(group) = luma
             .staged
             .get(first..)
             .and_then(<[Row]>::first_chunk::<GROUP_ROWS>)
         else {
             return 0;
-        };
-        let known = match layout {
-            LumaSubclassLayout::Cells { values, cols } => values
-                .get((first / 4) * cols..)
-                .and_then(|row| row.get(..cols))
-                .is_some_and(|row| usize::from(row.iter().fold(0, |m, &c| m.max(c))) < classes),
-            _ => false,
         };
         let mut x = 0;
         while x + LANES <= width && x + REACH <= STAGE_STRIDE {
@@ -780,11 +758,11 @@ mod avx2 {
                     else {
                         break;
                     };
-                    if !known && cells.iter().any(|&class| usize::from(class) >= classes) {
-                        break;
-                    }
                     if *cells == [cells[0]; 8] {
-                        uniform_weights(t, &luma.classes[usize::from(cells[0])])
+                        let Some(class) = luma.classes.get(usize::from(cells[0])) else {
+                            break;
+                        };
+                        uniform_weights(t, class)
                     } else {
                         mixed_weights(t, &luma.tables, cells)
                     }

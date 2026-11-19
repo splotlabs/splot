@@ -12,18 +12,6 @@ use super::quant_state::next_tcq_state;
 
 const PHTHRESH: usize = 4;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CoeffBaseDerivedLevelPassConfig {
-    pub(crate) tx_size_ctx: usize,
-    pub(crate) tx_width_log2: u32,
-    pub(crate) tx_width: usize,
-    pub(crate) tx_height: usize,
-    pub(crate) plane: usize,
-    pub(crate) tx_class: CoeffTransformClass,
-    pub(crate) parity_hiding: bool,
-    pub(crate) use_tcq: bool,
-}
-
 /// The base pass's cross-coefficient state packed into one register-sized
 /// value: bits 0-2 `tcqState`, bit 3 the `sumAbs1` parity, bits 4-7 the
 /// nonzero count capped below `is_hidden`'s threshold decision.

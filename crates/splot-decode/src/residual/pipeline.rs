@@ -25,14 +25,15 @@ use crate::bitstream::tile_payload::{
 };
 pub(crate) use deblock_recorder::DeblockRecorder;
 #[cfg(test)]
-use plan::{MAX_RESIDUAL_PLANES, coeff_plane};
+use plan::MAX_RESIDUAL_PLANES;
+pub(crate) use plan::ResidualPlanInput;
 #[cfg(test)]
 use plane_execution::{
     CctxRole, ParsedResidualPlane, ParsedResidualPlaneKind, ParsedTransformUnit,
     chroma_angle_delta_uv,
 };
 pub(crate) use plane_execution::{
-    ParsedGeneralIntraResidual, PlannedGeneralIntraResidual, ResidualPlaneArena,
+    ParsedGeneralIntraResidual, ResidualParseError, ResidualPlaneArena,
 };
 #[cfg(test)]
 use splot_core::tables::conversion::TX_WIDTH_LOG2;
@@ -71,31 +72,31 @@ pub(crate) enum RectLumaPlan {
     },
     MiddleMrl {
         p_angle: u16,
-        mrl_index: usize,
-        above_mrl_index: usize,
+        mrl_index: u8,
+        above_mrl_index: u8,
         is_sb_boundary: bool,
         secondary_mrl: bool,
         use_tcq: bool,
     },
     OneSidedAboveMrl {
         p_angle: u16,
-        mrl_index: usize,
-        above_mrl_index: usize,
+        mrl_index: u8,
+        above_mrl_index: u8,
         secondary_mrl: bool,
         use_tcq: bool,
     },
     OneSidedLeftMrl {
         p_angle: u16,
-        mrl_index: usize,
-        above_mrl_index: usize,
+        mrl_index: u8,
+        above_mrl_index: u8,
         is_sb_boundary: bool,
         secondary_mrl: bool,
         use_tcq: bool,
     },
     CardinalMrl {
         direction: IntraCardinalDirection,
-        mrl_index: usize,
-        above_mrl_index: usize,
+        mrl_index: u8,
+        above_mrl_index: u8,
         secondary_mrl: bool,
         use_tcq: bool,
     },
@@ -147,7 +148,6 @@ pub(crate) enum ResidualPlanError {
 struct ResidualPlanePlan {
     plane_id: PlaneId,
     rect: BlockRect,
-    coeff_plane: u8,
     tx_size: u8,
     x: u32,
     y: u32,
@@ -179,7 +179,7 @@ enum ResidualReconstructionPlan {
     ChromaCfl {
         params: CflParams,
         cfl_ds_filter_index: u8,
-        sb_mib: usize,
+        sb_mib: u8,
     },
     Rect {
         use_tcq: bool,

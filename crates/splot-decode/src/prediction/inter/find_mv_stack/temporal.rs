@@ -11,7 +11,7 @@ use super::{
 };
 use band::BandCells;
 pub(crate) use band::TemporalMotionBand;
-use scan::{ProjectionTarget, project_temporal_motion_field};
+use scan::{ChunkLanes, ProjectionTarget, project_component, project_temporal_motion_field};
 use selection::projection_queue;
 use tip_field::prepare_tip_field;
 #[cfg(test)]
@@ -557,15 +557,10 @@ fn temporal_block_cells8(
     width8: usize,
     height8: usize,
 ) -> Option<(Range<usize>, Range<usize>)> {
-    let row_end = block.mi_row.checked_add(block.n4h)?.min(block.mi_rows);
-    let col_end = block.mi_col.checked_add(block.n4w)?.min(block.mi_cols);
-    if row_end <= block.mi_row || col_end <= block.mi_col {
-        return None;
-    }
     let row8_start = block.mi_row >> 1;
     let col8_start = block.mi_col >> 1;
-    let row8_end = (row8_start + (row_end - block.mi_row).div_ceil(2)).min(height8);
-    let col8_end = (col8_start + (col_end - block.mi_col).div_ceil(2)).min(width8);
+    let row8_end = block.row8_end.min(height8);
+    let col8_end = block.col8_end.min(width8);
     (row8_start < row8_end && col8_start < col8_end)
         .then_some((row8_start..row8_end, col8_start..col8_end))
 }
@@ -693,10 +688,8 @@ impl BlockRefs {
 pub(crate) struct TemporalMotionBlock {
     mi_row: usize,
     mi_col: usize,
-    n4w: usize,
-    n4h: usize,
-    mi_rows: usize,
-    mi_cols: usize,
+    col8_end: usize,
+    row8_end: usize,
     current_order_hint: u32,
     ref_order_hints: [Option<u32>; 2],
     motion: TemporalBlockMotion,
@@ -729,13 +722,12 @@ impl TemporalMotionBlock {
             && self.motion == next.motion
             && self.ref_order_hints == next.ref_order_hints
             && self.current_order_hint == next.current_order_hint
-            && (self.mi_row, self.n4h, self.mi_rows, self.mi_cols)
-                == (next.mi_row, next.n4h, next.mi_rows, next.mi_cols)
-            && self.mi_col.is_multiple_of(2)
-            && self.n4w.is_multiple_of(2)
-            && self.mi_col + self.n4w == next.mi_col;
+            && self.mi_row == next.mi_row
+            && self.row8_end == next.row8_end
+            && next.mi_col.is_multiple_of(2)
+            && self.col8_end == next.mi_col >> 1;
         if fits {
-            self.n4w += next.n4w;
+            self.col8_end = next.col8_end;
         }
         fits
     }
@@ -753,13 +745,17 @@ impl TemporalMotionBlock {
         mvs: [Mv; 2],
         warp_params: [Option<[i32; 6]>; 2],
     ) -> Self {
+        let cell_end = |start: usize, len: usize, limit: usize| {
+            let extent = start
+                .checked_add(len)
+                .map_or(0, |end| end.min(limit).saturating_sub(start));
+            (start >> 1) + extent.div_ceil(2)
+        };
         Self {
             mi_row,
             mi_col,
-            n4w,
-            n4h,
-            mi_rows,
-            mi_cols,
+            col8_end: cell_end(mi_col, n4w, mi_cols),
+            row8_end: cell_end(mi_row, n4h, mi_rows),
             current_order_hint,
             ref_order_hints,
             motion: TemporalBlockMotion::new(mvs, warp_params),
@@ -885,9 +881,9 @@ impl ProjectedTemporalMotionField {
                     context: "inter projected temporal motion field",
                 })
             })?;
+        self.cells.clear();
         self.cells
             .resize(cells, ProjectedTemporalMotionCell::default());
-        self.cells.fill(ProjectedTemporalMotionCell::default());
         Ok(())
     }
 
@@ -1131,7 +1127,7 @@ impl TemporalBandPlan {
         } else {
             None
         };
-        for projection in self.projections.iter().flatten() {
+        for (pass, projection) in self.projections.iter().flatten().enumerate() {
             if index >= projection.source_layout.band_count() {
                 continue;
             }
@@ -1144,12 +1140,12 @@ impl TemporalBandPlan {
             }
             let mut trajectory = trajectories.as_mut().map(OwnedTrajectoryBand::as_band);
             project_temporal_motion_field(
+                &mut scratch.lanes,
                 &projection.source,
                 source,
                 rows.clone(),
-                self.config.step,
-                self.config.unit_size8,
-                trajectory.as_mut(),
+                (self.config.step, self.config.unit_size8),
+                trajectory.as_mut().map(|band| (band, pass != 0)),
                 &mut output,
             );
         }
@@ -1197,6 +1193,7 @@ impl TemporalBandPlan {
 #[derive(Debug, Default)]
 struct TemporalMvScratch {
     trajectory: OwnedTrajectoryScratch,
+    lanes: Box<ChunkLanes>,
 }
 
 #[derive(Clone, Copy)]
@@ -1886,57 +1883,61 @@ fn fill_temporal_sampling_gaps(
     debug_assert!(tmvp_unit_size8.max(1).is_power_of_two());
     let unit_shift = tmvp_unit_size8.max(1).trailing_zeros();
     let (width8, height8) = (field.width8, field.height8);
-    let next_in_unit =
-        |a: usize, end: usize| a + 2 < end && (a + 2) >> unit_shift == a >> unit_shift;
+    let next_in_unit = |a: usize| (a + 2) >> unit_shift == a >> unit_shift;
     let Some(mut rest) = field.cells.get_mut(..width8 * height8) else {
         return;
     };
     for y8 in (0..height8).step_by(2) {
-        let down = next_in_unit(y8, height8);
         let split = (2 * width8).min(rest.len());
         let (pair, below) = core::mem::take(&mut rest).split_at_mut(split);
         let (row, next_row) = pair.split_at_mut(width8.min(pair.len()));
+        let down = if next_in_unit(y8) {
+            below.get(..width8).unwrap_or_default()
+        } else {
+            &[]
+        };
         for x8 in (0..width8).step_by(2) {
-            let Some(anchor) = row.get(x8).copied().filter(|cell| cell.valid) else {
+            let anchor = row[x8];
+            if !anchor.valid {
                 continue;
-            };
-            let right = next_in_unit(x8, width8);
+            }
+            let right = next_in_unit(x8);
             let projected = |source: Option<&ProjectedTemporalMotionCell>| {
-                let source = source.filter(|cell| cell.valid)?;
-                let mv = project_mv(source.mv(), anchor.ref_offset(), source.ref_offset());
-                Some(Mv {
-                    row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                    col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                })
+                let Some(source) = source.filter(|cell| cell.valid) else {
+                    return (0, 0, 0);
+                };
+                let factor = clamped_tmvp_factor(anchor.ref_offset(), source.ref_offset());
+                let scale = |value: i16| {
+                    project_component(i32::from(value), factor).clamp(-REFMVS_LIMIT, REFMVS_LIMIT)
+                };
+                (scale(source.mv[0]), scale(source.mv[1]), 1)
             };
-            let right_mv = projected(row.get(x8 + 2).filter(|_| right));
-            let down_mv = projected(below.get(x8).filter(|_| down));
-            let corner_mv = projected(below.get(x8 + 2).filter(|_| right && down));
-            let fill = |cell: Option<&mut ProjectedTemporalMotionCell>, sources: &[Option<Mv>]| {
-                let Some(cell) = cell else {
-                    return;
-                };
-                let (mut sum, mut count) = (anchor.mv(), 1);
-                for mv in sources.iter().flatten() {
-                    sum.row += mv.row;
-                    sum.col += mv.col;
-                    count += 1;
-                }
-                let average = |value: i32| match count {
-                    1 => value,
-                    2 => round2_signed_i32(value, 1),
-                    3 => round2_signed_i32(value * 85, 8),
-                    _ => round2_signed_i32(value, 2),
-                };
+            let (right_r, right_c, right_count) = projected(row.get(x8 + 2).filter(|_| right));
+            let (down_r, down_c, down_count) = projected(down.get(x8));
+            let (corner_r, corner_c, corner_count) = projected(down.get(x8 + 2).filter(|_| right));
+            let filled = |r, c, neighbours| {
+                let weight = [256, 128, 85, 64][neighbours];
+                let average =
+                    |base: i16, delta| round2_signed_i32((i32::from(base) + delta) * weight, 8);
                 let mv = Mv {
-                    row: average(sum.row),
-                    col: average(sum.col),
+                    row: average(anchor.mv[0], r),
+                    col: average(anchor.mv[1], c),
                 };
-                *cell = ProjectedTemporalMotionCell::new(true, mv, anchor.ref_offset());
+                ProjectedTemporalMotionCell::new(true, mv, anchor.ref_offset())
             };
-            fill(row.get_mut(x8 + 1), &[right_mv]);
-            fill(next_row.get_mut(x8), &[down_mv]);
-            fill(next_row.get_mut(x8 + 1), &[right_mv, down_mv, corner_mv]);
+            if let Some(cell) = row.get_mut(x8 + 1) {
+                *cell = filled(right_r, right_c, right_count);
+            }
+            if let Some(cell) = next_row.get_mut(x8) {
+                *cell = filled(down_r, down_c, down_count);
+            }
+            if let Some(cell) = next_row.get_mut(x8 + 1) {
+                *cell = filled(
+                    right_r + down_r + corner_r,
+                    right_c + down_c + corner_c,
+                    right_count + down_count + corner_count,
+                );
+            }
         }
         rest = below;
     }
@@ -1963,8 +1964,7 @@ fn projection_band_rows(height8: usize, config: TemporalProjectionConfig) -> usi
 ///
 /// Bands partition the writes, and each band replays the queue in its original
 /// order, so the result matches the whole-field scan whatever order the bands
-/// run in. An installed pool runs the same band tasks at every worker count;
-/// direct callers outside the owned pool replay those bands in place.
+/// run in.
 fn run_band_projections(
     prepared: &[Option<PreparedTemporalProjection<'_>>],
     config: TemporalProjectionConfig,
@@ -1972,63 +1972,33 @@ fn run_band_projections(
     field: &mut ProjectedTemporalMotionField,
 ) -> crate::Result<()> {
     let band_rows = projection_band_rows(field.height8, config);
-    let run = |band: &mut ProjectedFieldBand<'_>, mut rows: Option<&mut TrajectoryBand<'_>>| {
+    let mut lanes = None;
+    let mut trajectory = trajectories.and_then(|state| state.grids(band_rows));
+    for mut band in field.bands(band_rows) {
+        let mut rows = match trajectory.as_mut() {
+            Some((grids, scratch)) => Some(grids.next_band(scratch).ok_or(
+                splot_recon::ReconError::WorkspaceAllocationFailed {
+                    plane: splot_recon::PlaneId::Y,
+                    context: "inter trajectory band scratch",
+                },
+            )?),
+            None => None,
+        };
         let rows8 = band.row_base..band.row_base + band_rows;
-        for prepared in prepared.iter().flatten() {
+        for (pass, prepared) in prepared.iter().flatten().enumerate() {
             project_temporal_motion_field(
+                lanes.get_or_insert_default(),
                 &prepared.source,
                 prepared.field,
                 rows8.clone(),
-                config.step,
-                config.unit_size8,
-                rows.as_deref_mut(),
-                band,
+                (config.step, config.unit_size8),
+                rows.as_mut().map(|band| (band, pass != 0)),
+                &mut band,
             );
         }
-    };
-    let width = 1;
-    let mut trajectory = trajectories.and_then(|state| state.grids(band_rows, width));
-    let mut field_bands = field.bands(band_rows);
-    loop {
-        let mut slots: [BandSlot<'_, '_>; BAND_FAN_OUT] = core::array::from_fn(|_| None);
-        let mut filled = 0;
-        let mut rounds = trajectory
-            .as_mut()
-            .map(|(grids, scratch)| (grids, scratch.iter_mut()));
-        for (slot, band) in slots.iter_mut().take(width).zip(&mut field_bands) {
-            let rows = match rounds.as_mut() {
-                Some((grids, scratch)) => Some(
-                    scratch
-                        .next()
-                        .and_then(|scratch| grids.next_band(scratch))
-                        .ok_or_else(|| {
-                            crate::DecodeError::from(
-                                splot_recon::ReconError::WorkspaceAllocationFailed {
-                                    plane: splot_recon::PlaneId::Y,
-                                    context: "inter trajectory band scratch",
-                                },
-                            )
-                        })?,
-                ),
-                None => None,
-            };
-            *slot = Some((band, rows));
-            filled += 1;
-        }
-        if filled == 0 {
-            return Ok(());
-        }
-        for (band, rows) in slots[..filled].iter_mut().flatten() {
-            run(band, rows.as_mut());
-        }
     }
+    Ok(())
 }
-
-/// Most bands fanned out per round; each round runs one band per pool worker,
-/// so the trajectory position scratch is sized by the pool, not the frame.
-const BAND_FAN_OUT: usize = 32;
-
-type BandSlot<'f, 't> = Option<(ProjectedFieldBand<'f>, Option<TrajectoryBand<'t>>)>;
 
 /// One unit-aligned row band of a projected motion field.
 struct ProjectedFieldBand<'a> {

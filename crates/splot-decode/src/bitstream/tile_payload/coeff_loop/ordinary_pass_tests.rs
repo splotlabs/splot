@@ -11,11 +11,10 @@ use splot_core::symbol_encoder::SymbolEncoder;
 use super::super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 use super::super::super::coeff_state::{CoeffBlockLines, TileCoeffContextState};
 use super::super::branch::NonZeroCoeffBlockStart;
+use super::super::max_level::CoeffTransformClass;
+use super::super::transform_block::{CoeffTransformBlockInput, decode_ordinary_transform_block};
 use super::super::{TX_GEOMETRY, read_nonzero_coeff_block_start};
-use super::geometry::{
-    CoeffOrdinaryBranchTxSetBaseConfig, CoeffOrdinaryStagedLosslessNonZeroInput,
-    apply_staged_nonzero_coeff_ordinary_branch_from_lossless,
-};
+use super::geometry::CoeffOrdinaryBranchTxSetBaseConfig;
 
 const TX_4X4: usize = 0;
 
@@ -67,12 +66,12 @@ fn staged_input(
     start: NonZeroCoeffBlockStart,
     lossless: bool,
     base_config: CoeffOrdinaryBranchTxSetBaseConfig,
-) -> CoeffOrdinaryStagedLosslessNonZeroInput<'_> {
-    CoeffOrdinaryStagedLosslessNonZeroInput {
+) -> CoeffTransformBlockInput<'_> {
+    CoeffTransformBlockInput {
         plane: 0,
         start,
         lines,
-        plane_tx_type: base_config.luma_tx_type,
+        tx_class: CoeffTransformClass::from_plane_tx_type(base_config.luma_tx_type),
         parity_hiding: base_config.parity_hiding,
         use_tcq: base_config.use_tcq,
         lossless,
@@ -195,7 +194,7 @@ fn staged_ordinary_live_path_reads_base_br_sign_quant_and_commits() {
 
     let mut quant = [0; 16];
     let lines = state.block_lines(0, [1, 1, 1, 1]).unwrap();
-    let end = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+    let end = decode_ordinary_transform_block(
         &mut state,
         &mut tile,
         &mut symbols,
@@ -227,7 +226,7 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
 
     let mut quant = [0; 16];
     let lines = state.block_lines(0, [1, 1, 1, 1]).unwrap();
-    let end = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+    let end = decode_ordinary_transform_block(
         &mut state,
         &mut tile,
         &mut symbols,
@@ -285,7 +284,7 @@ fn staged_ordinary_preflights_plane_and_bounds_without_consumption() {
         let state_before = state.clone();
         let lines = state.block_lines(plane, [1, 1, 1, 1]).unwrap();
 
-        let result = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+        let result = decode_ordinary_transform_block(
             &mut state,
             &mut tile,
             &mut symbols,

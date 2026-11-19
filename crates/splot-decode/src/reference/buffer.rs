@@ -9,8 +9,8 @@
 //! Feature tracking: `DECODE-INTER-MULTIREF-RUNTIME`.
 
 use splot_core::headers::frame::{
-    CcsoParams, GlobalMotionRef, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
-    SlotFrameFilterTaps,
+    GlobalMotionRef, SavedGlobalMotionOrderHints, SavedGlobalMotionParams, SlotFrameFilterTaps,
+    WienerNsFrameFilterBank,
 };
 use splot_core::headers::sequence::MAX_REF_FRAMES;
 use splot_core::tile::InlineVec;
@@ -23,9 +23,7 @@ use crate::pipeline::PipelineFrame;
 use crate::pipeline::frame_store::FrameStore;
 use crate::pipeline::frame_tasks::SplitSample;
 use crate::pipeline::inflight::RefFrameSlot;
-use crate::prediction::inter::{
-    CcsoGridHandle, FrameCdfHandle, InterReferenceState, MotionFieldHandle, SegmentIdMapHandle,
-};
+use crate::prediction::inter::InterReferenceState;
 
 const NO_LR_FRAME_FILTER_TAPS: SlotFrameFilterTaps = [InlineVec::empty(InlineVec::empty(0)); 3];
 
@@ -77,7 +75,13 @@ impl Slot {
         output_done: false,
     };
 
-    fn refresh(&mut self, frame_index: usize, update: &FrameRefUpdate, valid: bool, counter: u32) {
+    fn refresh(
+        &mut self,
+        frame_index: usize,
+        update: &FrameRefUpdate<'_>,
+        valid: bool,
+        counter: u32,
+    ) {
         *self = Self {
             valid,
             order_hint: update.order_hint,
@@ -104,7 +108,7 @@ impl Slot {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct FrameRefUpdate {
+pub(crate) struct FrameRefUpdate<'a> {
     pub(crate) refresh_frame_flags: u32,
     pub(crate) order_hint: u32,
     pub(crate) order_hint_lsb: u32,
@@ -120,7 +124,7 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) saved_order_hints: SavedGlobalMotionOrderHints,
     pub(crate) saved_gm_params: SavedGlobalMotionParams,
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
-    pub(crate) lr_frame_filter_taps: SlotFrameFilterTaps,
+    pub(crate) lr_banks: [Option<&'a WienerNsFrameFilterBank>; 3],
     pub(crate) long_term_id: Option<u32>,
     pub(crate) embedded_layer_id: EmbeddedLayerId,
 }
@@ -174,7 +178,7 @@ impl RuntimeReferenceBuffer {
         &mut self,
         obu_type: ObuType,
         first_picture_in_tu: bool,
-        update: &FrameRefUpdate,
+        update: &FrameRefUpdate<'_>,
         ref_long_term_ids: &[u32],
     ) {
         if obu_type == ObuType::OpenLoopKey {
@@ -210,7 +214,7 @@ impl RuntimeReferenceBuffer {
     pub(crate) fn update(
         &mut self,
         frame_index: usize,
-        update: &FrameRefUpdate,
+        update: &FrameRefUpdate<'_>,
         is_key_or_switch: bool,
     ) {
         self.advance_frame_counter();
@@ -227,7 +231,17 @@ impl RuntimeReferenceBuffer {
                 .lr_frame_filter_taps
                 .as_deref()
                 .and_then(|taps| taps.get(i));
-            if *saved.unwrap_or(&NO_LR_FRAME_FILTER_TAPS) != update.lr_frame_filter_taps {
+            let changed = saved
+                .unwrap_or(&NO_LR_FRAME_FILTER_TAPS)
+                .iter()
+                .zip(update.lr_banks)
+                .any(|(saved, bank)| match bank {
+                    Some(bank) => saved
+                        .iter()
+                        .ne(bank.classes.iter().map(|class| &class.coeffs)),
+                    None => !saved.is_empty(),
+                });
+            if changed {
                 set_lr_frame_filter_taps(
                     &mut self.lr_frame_filter_taps,
                     &mut self.lr_frame_filter_spares,
@@ -285,15 +299,7 @@ impl RuntimeReferenceBuffer {
         &self,
         frames: &FrameStore,
     ) -> Result<InterReferenceState<T>> {
-        let (store, meta) = self.build_store::<T>(frames)?;
-        Ok(InterReferenceState::from_metadata(store, meta))
-    }
-
-    pub(crate) fn build_store<T: SplitSample>(
-        &self,
-        frames: &FrameStore,
-    ) -> Result<(ReferenceFrameStore<RefFrameSlot<T>>, ReferenceMetadata)> {
-        self.build_store_from(|slot, frame_index| {
+        self.state_from(|slot, frame_index| {
             if frame_index >= frames.len() {
                 return Err(DecodeReferenceStateError::FrameIndexOutOfRange {
                     slot,
@@ -309,20 +315,19 @@ impl RuntimeReferenceBuffer {
         })
     }
 
-    /// [`Self::build_store`] over frames that `lookup(slot, frame_index)` returns.
-    pub(crate) fn build_store_from<'a, T: ReconSample>(
+    /// [`Self::state`] over frames that `lookup(slot, frame_index)` returns.
+    pub(crate) fn state_from<'a, T: ReconSample>(
         &self,
         mut lookup: impl FnMut(usize, usize) -> Result<(RefFrameSlot<T>, Option<&'a PipelineFrame>)>,
-    ) -> Result<(ReferenceFrameStore<RefFrameSlot<T>>, ReferenceMetadata)> {
+    ) -> Result<InterReferenceState<T>> {
         let num = self.slots.len();
-        let mut store: ReferenceFrameStore<RefFrameSlot<T>> =
-            ReferenceFrameStore::with_capacity(num)?;
-        let mut meta = ReferenceMetadata::with_capacity(num)?;
-        meta.lr_frame_filter_taps
+        let mut state = InterReferenceState::with_slot_count(num)?;
+        state
+            .lr_frame_filter_taps
             .clone_from(&self.lr_frame_filter_taps);
         for (i, slot) in self.slots.iter().enumerate() {
             if !slot.valid {
-                meta.push_slot(slot, None);
+                state.push_slot(slot, None);
                 continue;
             }
             let frame_index = slot
@@ -331,10 +336,10 @@ impl RuntimeReferenceBuffer {
             let (reference_frame, frame) = lookup(i, frame_index)?;
             let reference_slot = ReferenceSlot::new(i)?;
             ensure_slot_matches_frame(i, slot, frame_index, reference_frame.info())?;
-            meta.push_slot(slot, frame);
-            store.put(reference_slot, reference_frame)?;
+            state.push_slot(slot, frame);
+            state.store.put(reference_slot, reference_frame)?;
         }
-        Ok((store, meta))
+        Ok(state)
     }
 
     pub(crate) fn retains(&self, frame_index: usize) -> bool {
@@ -399,7 +404,7 @@ fn set_lr_frame_filter_taps(
     spares: &mut Vec<Arc<[SlotFrameFilterTaps]>>,
     slot_count: usize,
     slot: usize,
-    update: &FrameRefUpdate,
+    update: &FrameRefUpdate<'_>,
 ) {
     let table = table
         .get_or_insert_with(|| core::iter::repeat_n(NO_LR_FRAME_FILTER_TAPS, slot_count).collect());
@@ -419,7 +424,12 @@ fn set_lr_frame_filter_taps(
         spares.push(core::mem::replace(table, fresh));
     }
     if let Some(taps) = Arc::get_mut(table).and_then(|taps| taps.get_mut(slot)) {
-        *taps = update.lr_frame_filter_taps;
+        for (plane, bank) in taps.iter_mut().zip(update.lr_banks) {
+            plane.truncate(0);
+            if let Some(bank) = bank {
+                plane.extend_within(bank.classes.iter().map(|class| class.coeffs));
+            }
+        }
     }
 }
 
@@ -468,41 +478,7 @@ fn ensure_slot_matches_frame(
 /// allocation of its own.
 pub(crate) type RefSlots<T> = splot_core::tile::InlineVec<T, MAX_REF_FRAMES>;
 
-#[allow(clippy::struct_field_names)]
-#[derive(Default)]
-pub(crate) struct ReferenceMetadata {
-    pub(crate) ref_valid: RefSlots<bool>,
-    pub(crate) ref_order_hint: RefSlots<u32>,
-    pub(crate) ref_order_hint_lsbs: RefSlots<u32>,
-    pub(crate) ref_implicit_output_frame: RefSlots<bool>,
-    pub(crate) ref_immediate_output_frame: RefSlots<bool>,
-    pub(crate) ref_frame_width: RefSlots<u32>,
-    pub(crate) ref_frame_height: RefSlots<u32>,
-    pub(crate) ref_base_q_idx: RefSlots<u32>,
-    pub(crate) ref_counter: RefSlots<u32>,
-    pub(crate) ref_chroma_ac_deltas: RefSlots<[i32; 2]>,
-    pub(crate) ref_is_inter: RefSlots<bool>,
-    pub(crate) ref_long_term_id: RefSlots<Option<u32>>,
-    pub(crate) ref_num_total_refs: RefSlots<u32>,
-    pub(crate) saved_global_motion_order_hints: RefSlots<SavedGlobalMotionOrderHints>,
-    pub(crate) saved_global_motion_params: RefSlots<SavedGlobalMotionParams>,
-    pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
-    pub(crate) lr_frame_filter_taps: Option<Arc<[SlotFrameFilterTaps]>>,
-    pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
-    pub(crate) ref_ccso_params: RefSlots<Option<CcsoParams>>,
-    pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
-    pub(crate) ref_segment_ids: RefSlots<Option<SegmentIdMapHandle>>,
-    pub(crate) ref_motion_fields: RefSlots<Option<MotionFieldHandle>>,
-}
-
-impl ReferenceMetadata {
-    fn with_capacity(num: usize) -> Result<Self> {
-        if num > MAX_REF_FRAMES {
-            return Err(DecodeReferenceStateError::TooManyReferenceFrames { slots: num }.into());
-        }
-        Ok(Self::default())
-    }
-
+impl<T: ReconSample> InterReferenceState<T> {
     fn push_slot(&mut self, slot: &Slot, frame: Option<&PipelineFrame>) {
         self.ref_valid.push(slot.valid);
         self.ref_order_hint.push(slot.order_hint);
@@ -527,8 +503,8 @@ impl ReferenceMetadata {
             .push(slot.lr_frame_filter_class_counts);
         self.ref_frame_cdfs
             .push(frame.map(|frame| frame.frame_cdfs.clone()));
-        self.ref_ccso_params
-            .push(frame.and_then(|frame| frame.ccso_params.clone()));
+        self.ref_ccso_headers
+            .push(frame.and_then(|frame| frame.ccso_header.clone()));
         self.ref_ccso_unit_grids
             .push(frame.map(|frame| frame.ccso_grid.clone()));
         self.ref_segment_ids

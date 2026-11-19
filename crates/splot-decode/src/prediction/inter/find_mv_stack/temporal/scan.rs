@@ -80,8 +80,8 @@ const LANE_SPAN: usize = (INT_ROWS - 1) * CHUNK + 1;
 
 /// The order-free values of up to [`CHUNK`] sampled cells of one source row,
 /// reused chunk after chunk; lanes past a chunk's end keep stale values.
-#[derive(Default)]
-struct ChunkLanes {
+#[derive(Debug, Default)]
+pub(super) struct ChunkLanes {
     window: Window,
     refs: Grid<u8>,
     /// One row per integer value, so one lane reads every value at a fixed
@@ -243,6 +243,7 @@ struct LaneGeometry {
     height8: u32,
     output: BandLanes,
     track: TrackLanes,
+    track_history: bool,
 }
 
 impl LaneGeometry {
@@ -252,6 +253,7 @@ impl LaneGeometry {
         unit_size8: usize,
         output: &ProjectedFieldBand<'_>,
         band: Option<BandGeometry>,
+        track_history: bool,
     ) -> Option<Self> {
         let step = step.clamp(1, 2);
         let unit_size8 = unit_size8.max(1);
@@ -272,6 +274,7 @@ impl LaneGeometry {
             height8: u32::try_from(i32::try_from(output.height8).ok()?).ok()?,
             output: BandLanes::new(output.row_base, output.width8)?,
             track: TrackLanes::new(band)?,
+            track_history,
         })
     }
 }
@@ -288,21 +291,33 @@ impl LaneGeometry {
 /// Each row is scanned in chunks: the arithmetic every cell needs is computed
 /// lane-parallel first, then only cells with an order-dependent effect are
 /// walked, in raster order.
+///
+/// The trajectory flag admits extension from earlier scans. At the first
+/// scan of a fresh band each source slot is visited before it is recorded,
+/// and every end record made by this scan already has a source vector.
 pub(super) fn project_temporal_motion_field(
+    lanes: &mut ChunkLanes,
     prepared: &TemporalProjectionSource,
     source: &impl TemporalMotionRows,
     rows: Range<usize>,
-    projection_step: usize,
-    tmvp_unit_size8: usize,
-    trajectories: Option<&mut TrajectoryBand<'_>>,
+    (projection_step, tmvp_unit_size8): (usize, usize),
+    trajectories: Option<(&mut TrajectoryBand<'_>, bool)>,
     output: &mut ProjectedFieldBand<'_>,
 ) {
     debug_assert_eq!(
         (prepared.source_width8, prepared.source_height8),
         source.dimensions8()
     );
+    let (trajectories, track_history) =
+        trajectories.map_or((None, false), |(band, history)| (Some(band), history));
     let band = trajectories.as_deref().map(TrajectoryBand::geometry);
-    let Some(geometry) = LaneGeometry::new(projection_step, tmvp_unit_size8, output, band) else {
+    let Some(geometry) = LaneGeometry::new(
+        projection_step,
+        tmvp_unit_size8,
+        output,
+        band,
+        track_history,
+    ) else {
         return;
     };
     let refs = band.map_or(0, |band| band.reference_count);
@@ -311,7 +326,7 @@ pub(super) fn project_temporal_motion_field(
     if let Some(simd) = Level::baseline().as_avx2() {
         let tables = TargetTables::new(simd, prepared, refs);
         return project_rows(
-            &tables,
+            (&tables, lanes),
             prepared,
             source,
             rows,
@@ -322,13 +337,13 @@ pub(super) fn project_temporal_motion_field(
     }
     crate::baseline_simd!(simd => {
         let tables = TargetTables::new(simd, prepared, refs);
-        project_rows(&tables, prepared, source, rows, geometry, trajectories, output);
+        project_rows((&tables, lanes), prepared, source, rows, geometry, trajectories, output);
     });
 }
 
 /// [`project_temporal_motion_field`] with the SIMD token bound.
 fn project_rows<S: Simd>(
-    tables: &TargetTables<S>,
+    (tables, lanes): (&TargetTables<S>, &mut ChunkLanes),
     prepared: &TemporalProjectionSource,
     source: &impl TemporalMotionRows,
     rows: Range<usize>,
@@ -338,7 +353,6 @@ fn project_rows<S: Simd>(
 ) {
     let step = geometry.step;
     let side = prepared.side & 1;
-    let mut lanes = ChunkLanes::default();
     for y8 in rows.step_by(step) {
         let Some(row) = source.row(y8) else {
             continue;
@@ -347,22 +361,23 @@ fn project_rows<S: Simd>(
             let x_base = chunk_index * CHUNK * step;
             if let Some(trajectories) = trajectories.as_deref_mut() {
                 let Some(walk) =
-                    chunk_lanes::<S, true>(&mut lanes, chunk, side, tables, y8, x_base, geometry)
+                    chunk_lanes::<S, true>(lanes, chunk, side, tables, y8, x_base, geometry)
                 else {
                     return;
                 };
-                ChunkWalk::new(&lanes, walk, y8, x_base, step).project_tracked(
-                    prepared,
-                    trajectories,
-                    output,
-                );
+                let chunk = ChunkWalk::new(lanes, walk, y8, x_base, step);
+                if geometry.track_history {
+                    chunk.project_tracked::<true>(prepared, trajectories, output);
+                } else {
+                    chunk.project_tracked::<false>(prepared, trajectories, output);
+                }
             } else {
                 let Some(walk) =
-                    chunk_lanes::<S, false>(&mut lanes, chunk, side, tables, y8, x_base, geometry)
+                    chunk_lanes::<S, false>(lanes, chunk, side, tables, y8, x_base, geometry)
                 else {
                     return;
                 };
-                ChunkWalk::new(&lanes, walk, y8, x_base, step).project(prepared, output);
+                ChunkWalk::new(lanes, walk, y8, x_base, step).project(prepared, output);
             }
         }
     }
@@ -407,7 +422,7 @@ impl<'a> ChunkWalk<'a> {
     /// The walk with trajectories: every intersecting lane runs the § 7.9.8
     /// intersection check, then every projecting lane observes and writes.
     #[inline(never)]
-    fn project_tracked(
+    fn project_tracked<const EXTEND: bool>(
         &self,
         prepared: &TemporalProjectionSource,
         trajectories: &mut TrajectoryBand<'_>,
@@ -430,8 +445,10 @@ impl<'a> ChunkWalk<'a> {
             let end_slot = match target.end_ref {
                 Some(end) if bits & INTERSECT != 0 => {
                     let end_slot = trajectories.slot(end, ints.cell(END_CELL));
-                    trajectories.extend_trajectories(source, end, source_slot, None, mv);
-                    if bits & REVERSE != 0 {
+                    if EXTEND {
+                        trajectories.extend_trajectories(source, end, source_slot, None, mv);
+                    }
+                    if EXTEND && bits & REVERSE != 0 {
                         let back = Mv {
                             row: -mv.row,
                             col: -mv.col,
@@ -511,7 +528,9 @@ fn write_projection(
 
 /// Reads the sampled cells of one chunk and computes, for each, its
 /// decompressed vector, its projection, its sampled position and its band
-/// cell; a `TRACKED` scan also places the § 7.9.8 trajectory end. The lane
+/// cell; a `TRACKED` scan also places the § 7.9.8 trajectory end. A group
+/// of sub-cell projection and end offsets keeps its scanned positions, so
+/// its output and trajectory indices share one row base per band. The lane
 /// window only needs the scanned list's `count * step` cells: a step-1 group
 /// spans one six-byte list per cell and a step-2 group skips every other
 /// cell, so lanes past that read stale bytes that the walk mask drops.
@@ -537,10 +556,24 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
     window[..copied].copy_from_slice(&stored[..copied]);
     let track = geometry.track;
     let lane_x = Lanes::from_fn(simd, |lane| (lane * geometry.step) as i32);
-    let y = Lanes::splat(simd, i32::try_from(y8).ok()?);
+    let row = i32::try_from(y8).ok()?;
+    let y = Lanes::splat(simd, row);
+    let row_index = |band: BandLanes| {
+        let row = row.wrapping_sub(band.row_base);
+        (row.wrapping_mul(band.width8), row >> 31)
+    };
+    let (out_base, out_pad) = row_index(geometry.output);
+    let (track_base, track_pad) = row_index(track.band);
+    let frame_row = simd.splat_mask32x16((row as u32) < geometry.height8);
+    let aligned = (x_base | y8) & geometry.step_mask as usize == 0;
     let y_unit = y & !geometry.unit_mask;
     let y_track_unit = y & !track.unit_mask;
     let row_inside = simd.splat_mask32x16(u32::try_from(y8).is_ok_and(|y8| y8 < track.height8));
+    let walk_flags = if geometry.track_history {
+        PROJECT | INTERSECT
+    } else {
+        PROJECT
+    };
     let mut walk = 0;
     for group in 0..count.div_ceil(LANES) {
         let first = i32::try_from(x_base + group * LANES * geometry.step).ok()?;
@@ -549,15 +582,48 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
             deinterleave(simd, &lanes.window, group, geometry.step)?;
         lanes.refs[group] = refs.into();
         let (allow, factor) = tables.lookup(refs);
+        let motion = [saved_rows, saved_cols].map(|saved| decompress(widen_i8(simd, saved)));
+        let projection = motion.map(|mv| project(mv, factor));
+        for (axis, (mv, projected)) in motion.into_iter().zip(projection).enumerate() {
+            lanes.ints[MV + axis][group] = mv.into();
+            lanes.ints[PROJECTED + axis][group] = projected.into();
+        }
+        let same_cell = TRACKED
+            && aligned
+            && ((motion[0].abs() | motion[1].abs()) | (projection[0].abs() | projection[1].abs()))
+                .simd_lt(64)
+                .to_bitmask()
+                == u64::from(u16::MAX);
+        if same_cell {
+            lanes.ints[POSITION][group] = y.into();
+            lanes.ints[POSITION + 1][group] = x.into();
+            lanes.ints[OUTPUT_CELL][group] = ((x + out_base) | out_pad).into();
+            let end = (x + track_base) | track_pad;
+            let index = end.into();
+            lanes.ints[TRAJECTORY_CELL][group] = index;
+            lanes.ints[END_CELL][group] = index;
+
+            let source_x = x.bitcast::<u32x16<S>>();
+            let within = frame_row & source_x.simd_lt(geometry.width8);
+            let in_band = within & end.bitcast::<u32x16<S>>().simd_lt(track.cells);
+            let track_source = row_inside & source_x.simd_lt(track.width8);
+            let zero = Lanes::splat(simd, 0);
+            let bit =
+                |mask: mask32x16<S>, bit: u8| mask.select(Lanes::splat(simd, bit.into()), zero);
+            let bits = bit(within, PROJECT)
+                | bit(track_source, INTERSECT)
+                | bit(within & track_source, OBSERVE)
+                | bit(in_band, REVERSE | END_WRITE);
+            let bits = narrow_bytes(simd, bits) & allow;
+            lanes.bits[group] = bits.into();
+            walk |= (bits & walk_flags).simd_ne(0).to_bitmask() << (group * LANES);
+            continue;
+        }
         let (mut sampled, mut ended) = (simd.splat_mask32x16(true), simd.splat_mask32x16(true));
         let mut base = [Lanes::splat(simd, 0); 2];
         let mut position = [Lanes::splat(simd, 0); 2];
         let mut end = [Lanes::splat(simd, 0); 2];
-        for (component, saved) in [saved_rows, saved_cols].into_iter().enumerate() {
-            let mv = decompress(widen_i8(simd, saved));
-            lanes.ints[MV + component][group] = mv.into();
-            let projected = project(mv, factor);
-            lanes.ints[PROJECTED + component][group] = projected.into();
+        for (component, (mv, projected)) in motion.into_iter().zip(projection).enumerate() {
             let (origin, limit) = if component == 0 {
                 (y, geometry.height8)
             } else {
@@ -605,13 +671,14 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
         if TRACKED {
             lanes.bits[group] = bits.into();
         }
-        walk |= (bits & (PROJECT | INTERSECT)).simd_ne(0).to_bitmask() << (group * LANES);
+        walk |= (bits & walk_flags).simd_ne(0).to_bitmask() << (group * LANES);
     }
     let live = u64::MAX >> (CHUNK - count.max(1));
     Some(walk & live)
 }
 
 /// A chunk's stored cells from the scanned list's first byte on.
+#[derive(Debug)]
 struct Window([u8; WINDOW]);
 
 impl Default for Window {
@@ -729,7 +796,7 @@ fn project<S: Simd>(component: Lanes<S>, factor: Lanes<S>) -> Lanes<S> {
 }
 
 /// [`project`] for one component.
-fn project_component(component: i32, factor: i32) -> i32 {
+pub(super) fn project_component(component: i32, factor: i32) -> i32 {
     let scaled = component * factor;
     (scaled + (scaled >> 31) + (1 << 13)) >> 14
 }
@@ -768,6 +835,69 @@ mod tests {
             chunk_lanes_match_scalar(simd);
         }
         baseline_simd!(simd => chunk_lanes_match_scalar(simd));
+    }
+
+    #[test]
+    fn fresh_band_skips_only_redundant_trajectory_extensions() {
+        use super::super::{
+            ProjectedTemporalMotionField, TemporalMotionCell, TemporalMotionField, TrajectoryState,
+        };
+
+        let mut rng = 0x34ee_7854_734a_35b1u64;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        for case in 0..160 {
+            let (height8, width8) = ((next() % 16 + 2) as usize, (next() % 132 + 2) as usize);
+            let (mi_rows, mi_cols) = (height8 * 2, width8 * 2);
+            let (step, unit) = (1 + case % 2, 1 << ((case / 2) % 4 + 1));
+            let mut source = TemporalMotionField::new(mi_rows, mi_cols).unwrap();
+            source.set_reference_metadata(
+                true,
+                (width8 * 8, height8 * 8),
+                &[Some(3), Some(6), Some(12), Some(9)],
+            );
+            for y in 0..height8 {
+                for x in 0..width8 {
+                    let ref_indices = [(); 2].map(|()| (next() % 6) as u8);
+                    let mvs = [(); 2].map(|()| CompressedTemporalMv {
+                        row: (next() % 175) as i16 as i8,
+                        col: (next() % 180) as i16 as i8,
+                    });
+                    source.set_cell(y, x, TemporalMotionCell { ref_indices, mvs });
+                }
+            }
+            let prepared = TemporalProjectionSource::new(
+                &source.metadata(),
+                source.layout(),
+                9,
+                7,
+                0,
+                (case / 8) % 2,
+                Some(1),
+                &[Some(9), Some(3), Some(12), Some(6)],
+            )
+            .unwrap();
+            let project = |history| {
+                let mut output = ProjectedTemporalMotionField::new(mi_rows, mi_cols).unwrap();
+                let mut trajectories =
+                    TrajectoryState::new((mi_rows, mi_cols), 4, step, unit).unwrap();
+                project_temporal_motion_field(
+                    &mut ChunkLanes::default(),
+                    &prepared,
+                    &source,
+                    0..height8,
+                    (step, unit),
+                    Some((&mut trajectories.whole_band().unwrap(), history)),
+                    &mut output.bands(height8).next().unwrap(),
+                );
+                (output, trajectories)
+            };
+            assert_eq!(project(false), project(true), "case {case}");
+        }
     }
 
     fn lane_projection_matches_scalar<S: Simd>(simd: S) {
@@ -896,7 +1026,7 @@ mod tests {
                 height8,
                 row_base: output_base,
             };
-            let geometry = LaneGeometry::new(step, unit, &output, Some(band)).unwrap();
+            let geometry = LaneGeometry::new(step, unit, &output, Some(band), true).unwrap();
             let stored: Vec<StoredTemporalCell> = cells.iter().map(|cell| cell.store()).collect();
             let walk = chunk_lanes::<S, true>(
                 &mut lanes,

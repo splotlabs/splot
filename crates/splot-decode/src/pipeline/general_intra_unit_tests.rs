@@ -11,6 +11,7 @@ use crate::bitstream::tile_payload::{
 };
 use crate::{DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeSourceIssueKind};
 use splot_core::symbol::SymbolDecoder;
+use splot_recon::BitDepth;
 
 #[test]
 fn invalid_uv_mode_is_malformed_tile_syntax() {

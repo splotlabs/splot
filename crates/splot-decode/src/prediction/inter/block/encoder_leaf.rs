@@ -17,7 +17,7 @@ use super::super::find_mv_stack::{
 };
 use splot_core::headers::sequence::{SequencePartitionConfig, SuperblockSize};
 
-use super::filter_records::record_inter_deblock_geometry;
+use super::filter_records::InterDeblockLeaf;
 use super::residual::{InterLumaTxTypeMap, push_inter_residual_block};
 use super::resolve::{
     InterBlockSyntax, InterMotionSyntax, MvResolutionState, ResolvedInterBlock, compound_motion,
@@ -270,7 +270,7 @@ impl EncoderInterTile {
             (size.width as usize).div_ceil(8) * 2,
         );
         let tile_start = (rows.start, cols.start);
-        grid.reset_for_tile(rows, cols, sb_h4)
+        grid.reset_for_tile(rows, cols, sb_h4, NeighbourGridMode::Motion)
             .map_err(|_| "neighbour grid size")?;
         let current_order_hint = core.display_order_hint().unwrap_or(0);
         let order_hints = reference_order_hints(
@@ -679,14 +679,8 @@ impl EncoderInterTile {
             }
             _ => None,
         };
-        let wedge = match syntax.motion {
-            InterMotionSyntax::Compound(compound)
-                if matches!(syntax.blend, mc::CompoundBlend::Wedge { .. }) =>
-            {
-                Some(compound)
-            }
-            _ => None,
-        };
+        let wedge = matches!(syntax.motion, InterMotionSyntax::Compound(_))
+            && matches!(syntax.blend, mc::CompoundBlend::Wedge { .. });
         if is_tip(motion) {
             let placed = self.placed(frontier, &syntax, parsed, &resolved)?;
             let mut records = core::mem::take(&mut self.tip_records);
@@ -704,32 +698,21 @@ impl EncoderInterTile {
                 let mut units = core::mem::take(&mut self.refined);
                 let derived = self
                     .predict_refined(&placed, refine, workspace, &mut units, false)
-                    .and_then(|()| {
-                        self.append_compound_records(
-                            (&placed, &block),
-                            compound,
-                            &resolved,
-                            Some(&units),
-                        )
-                    });
+                    .and_then(|()| self.append_compound_records(&placed, Some(&units)));
                 self.refined = units;
                 derived?;
             }
-        } else if let Some(compound) = wedge {
+        } else if wedge {
             let placed = self.placed(frontier, &syntax, parsed, &resolved)?;
-            self.append_compound_records((&placed, &block), compound, &resolved, None)?;
+            self.append_compound_records(&placed, None)?;
         }
         Ok(resolved.mv)
     }
 
-    /// Appends the § 7.19 temporal records of the compound block `placed`
-    /// of `block` as 8x8 units, as the decoder records a refined or wedge
-    /// block.
+    /// Appends the § 7.19 temporal records of a refined or wedge compound block.
     fn append_compound_records(
         &mut self,
-        (placed, block): (&PlacedInterBlock, &MvBlockContext),
-        compound: CompoundMotionSyntax,
-        resolved: &ResolvedInterBlock,
+        placed: &PlacedInterBlock,
         motion: Option<&mc::RefinedUnits>,
     ) -> Result<()> {
         super::compound_path::append_compound_temporal_motion(
@@ -737,15 +720,6 @@ impl EncoderInterTile {
             &self.reference,
             &self.ref_frame_idx,
             placed,
-            super::super::compound::CompoundBlockSyntax {
-                y_mode: compound.y_mode,
-                use_optflow: compound.use_optflow,
-                ref_frame0: block.ref_frame0,
-                ref_frame1: compound.ref_frame1,
-                mv0: resolved.mv[0],
-                mv1: resolved.mv[1],
-            },
-            resolved.warp_params,
             motion,
             self.mi_rows,
             self.mi_cols,
@@ -1114,19 +1088,15 @@ impl EncoderInterTile {
                 )
             }
         };
-        record_inter_deblock_geometry(
-            deblock,
-            chroma,
-            tx_skip,
-            frontier,
-            (n4w, n4h),
-            self.chroma,
-            range.as_ref(),
-            blocks,
-            sub_pu_size,
-            self.qindex,
-            false,
-        )
+        InterDeblockLeaf::new(frontier, range.as_ref(), sub_pu_size, self.qindex, false)
+            .record_into(
+                deblock,
+                chroma,
+                tx_skip,
+                crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
+                self.chroma,
+                blocks,
+            )
     }
 
     /// Clears the coefficient contexts a skipped leaf covers (§ 5.20.4).
@@ -1329,7 +1299,6 @@ impl EncoderInterResidual {
             .rposition(|&q| q != 0)
             .map_or(0, |last| last + 1);
         let start = self.coeffs.len();
-        self.coeffs.extend_from_slice(&levels[..nonzero]);
         let coeffs = LumaCoeffBlock {
             eob: eob as u16,
             quant_start: start as u32,
@@ -1346,8 +1315,9 @@ impl EncoderInterResidual {
             y / MI_SIZE,
             tx_size,
             coeffs,
-        )
-        .map(drop)
+        )?;
+        self.coeffs.extend_from_slice(&levels[..nonzero]);
+        Ok(())
     }
 
     fn range(&self) -> InterResidual {

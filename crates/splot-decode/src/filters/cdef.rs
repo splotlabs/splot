@@ -905,9 +905,19 @@ fn flat_window<S: ReconSample, const W: usize, const H: usize>(
     end: (usize, usize),
 ) -> Option<u16> {
     let (left, top) = reach_origin(plane, origin, (W, H), start, end)?;
-    let value = plane.row(top)?.get(left)?.to_u16();
-    for row in top..top + H + 2 * CDEF_TAP_REACH {
-        let samples = plane.row(row)?.get(left..)?.get(..W + 2 * CDEF_TAP_REACH)?;
+    let stride = plane.stride();
+    let width = W + 2 * CDEF_TAP_REACH;
+    let first = (top - plane.origin_y())
+        .checked_mul(stride)?
+        .checked_add(left)?;
+    let end = (H + 2 * CDEF_TAP_REACH - 1)
+        .checked_mul(stride)?
+        .checked_add(first)?
+        .checked_add(width)?;
+    let window = plane.samples().get(first..end)?;
+    let value = window.first()?.to_u16();
+    for row in window.chunks(stride) {
+        let samples = row.get(..width)?;
         if holds_value(samples, value) != Some(true) {
             return None;
         }
@@ -1117,6 +1127,10 @@ fn cdef_segment<S: ReconSample>(
     let Some(Some(unit)) = lookup.units.get(strength_index) else {
         return Ok(false);
     };
+    let blocks = lookup.segment_planes(r, c)?;
+    if blocks.iter().all(|block| !block.luma && !block.chroma) {
+        return Ok(true);
+    }
     let luma_bytes = unit.luma_bytes_suffice();
     if luma_used {
         let (width, stride) = (y_plane.width(), y_plane.stride());
@@ -1138,6 +1152,9 @@ fn cdef_segment<S: ReconSample>(
             S::u8_slice(v),
         ) {
             (Some(u), Some(v), _, _) => scratch.pair.gather(u, v, width, stride, origin),
+            (_, _, Some(u), Some(v)) if unit.chroma_bytes_suffice() => {
+                scratch.pair.gather_bytes(u, v, width, stride, origin)
+            }
             (_, _, Some(u), Some(v)) => scratch.pair.gather(u, v, width, stride, origin),
             _ => false,
         };
@@ -1151,17 +1168,16 @@ fn cdef_segment<S: ReconSample>(
         discarded = [S::default(); 8 * 8 * CDEF_SEGMENT_BLOCKS];
         (&mut discarded[..], width)
     } else {
-        plane_rows(&mut frame.filtered_y, (x0, y0), (width, 8))?
+        plane_rows(&mut frame.filtered_y, (x0, y0), width)?
     };
     let chroma_rows = match (chroma, frame.filtered_u.as_mut(), frame.filtered_v.as_mut()) {
         (Some(_), Some(u), Some(v)) => Some([
-            plane_rows(u, (x0 >> 1, y0 >> 1), (width / 2, 4))?,
-            plane_rows(v, (x0 >> 1, y0 >> 1), (width / 2, 4))?,
+            plane_rows(u, (x0 >> 1, y0 >> 1), width / 2)?,
+            plane_rows(v, (x0 >> 1, y0 >> 1), width / 2)?,
         ]),
         (Some(_), _, _) => return Err(CdefError::Workspace),
         _ => None,
     };
-    let blocks = lookup.segment_planes(r, c)?;
     let chroma = chroma_rows.map(|planes| (&scratch.pair, planes));
     if !cdef_filter_segment(
         &scratch.luma,
@@ -1175,15 +1191,27 @@ fn cdef_segment<S: ReconSample>(
     Ok(true)
 }
 
-/// The rows of the `w`x`h` rectangle at `(x, y)` of `plane`, from its first
-/// sample on, and their stride.
+/// Output samples from `(x, y)` on. [`cdef_filter_segment`] checks their
+/// vertical extent before writing.
 fn plane_rows<T: ReconSample>(
     plane: &mut StripePlane<T>,
     (x, y): (usize, usize),
-    (w, h): (usize, usize),
+    width: usize,
 ) -> Result<(&mut [T], usize), CdefError> {
-    let rect = PlaneRect::new(x, y, w, h).map_err(|_| CdefError::Geometry)?;
-    plane.rect_mut(rect).ok_or(CdefError::Workspace)
+    let stride = plane.stride();
+    if x.checked_add(width).is_none_or(|end| end > plane.width()) {
+        return Err(CdefError::Workspace);
+    }
+    let start = y
+        .checked_sub(plane.origin_y())
+        .and_then(|row| row.checked_mul(stride))
+        .and_then(|row| row.checked_add(x))
+        .ok_or(CdefError::Workspace)?;
+    let rows = plane
+        .samples_mut()
+        .get_mut(start..)
+        .ok_or(CdefError::Workspace)?;
+    Ok((rows, stride))
 }
 
 /// The § 7.18.1 luma and chroma filters of the block at `ctx`, given its

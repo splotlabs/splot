@@ -8,7 +8,8 @@
 #[cfg(test)]
 use super::SavedCdfSubset;
 use super::{
-    FrameCdfSubset, TileCdfRows, TileCdfSavePolicy, TileCdfSubset, scale_cdf_count, scale_cdf_rows,
+    FrameCdfSubset, TileCdfRows, TileCdfSavePolicy, TileCdfSubset, TileCdfWorkUnitBoundary,
+    scale_cdf_count, scale_cdf_rows,
 };
 
 impl FrameCdfSubset {
@@ -30,6 +31,17 @@ impl FrameCdfSubset {
         self.rows.clone_from(&frame.rows);
     }
 
+    /// Exchanges storage when the completed tile supplies the saved CDFs
+    /// outright. The caller retires the tile after this transfer.
+    pub(crate) fn transfer_saved_tile(&mut self, tile: &mut TileCdfWorkUnitBoundary) -> bool {
+        if !tile.save_policy().copy_cdf {
+            return false;
+        }
+        core::mem::swap(&mut self.rows, &mut tile.tile_cdfs_mut().rows);
+        self.scale_saved_counts();
+        true
+    }
+
     /// Sets `self` to the saved CDFs at the end of a frame that started from
     /// `frame`: each tile's final CDFs folded under its save policy in tile
     /// order, then the frame-end count scaling (§ 7.23).
@@ -42,12 +54,10 @@ impl FrameCdfSubset {
         for (tile_num, tile, policy) in tiles {
             self.reset_saved_from_tile(frame, tile_num, tile, policy, &mut saved);
         }
-        self.finish_saved(frame, saved);
-        #[cfg(any(debug_assertions, fuzzing))]
-        assert!(
-            self.rows.rows_valid(),
-            "a saved CDF row left the § 8.2.6 invariants"
-        );
+        if !saved {
+            self.rows.clone_from(&frame.rows);
+        }
+        self.scale_saved_counts();
     }
 
     fn reset_saved_from_tile(
@@ -71,11 +81,13 @@ impl FrameCdfSubset {
         }
     }
 
-    fn finish_saved(&mut self, frame: &Self, saved: bool) {
-        if !saved {
-            self.rows.clone_from(&frame.rows);
-        }
+    fn scale_saved_counts(&mut self) {
         self.rows.scale_counts_for_frame_end_update();
+        #[cfg(any(debug_assertions, fuzzing))]
+        assert!(
+            self.rows.rows_valid(),
+            "a saved CDF row left the § 8.2.6 invariants"
+        );
     }
 }
 

@@ -8,7 +8,6 @@ use super::{CurrentFramePlane, CurrentFrameWorkspace, checked_sample_block_rect}
 use crate::intra_smooth::publish_rows;
 use crate::{IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result};
 use fearless_simd::{Simd, i32x4, i32x8, i32x16, prelude::*, u8x16, u16x8};
-use std::sync::OnceLock;
 
 /// AV2 § 7.13.3.29 `Ii_Weights_1d[128]` smooth-interintra blending weights.
 const II_WEIGHTS_1D: [u8; 128] = [
@@ -175,23 +174,37 @@ fn wedge_boundary_index(luma_width: usize, luma_height: usize) -> usize {
 }
 
 /// The § 7.13.3.27 `MasterMask[boundary][direction][n][m]` (AVM values).
-fn master_weight(boundary: usize, direction: usize, m: usize, n: usize) -> u16 {
-    let centered = |v: usize| 2 * v as i32 + 1 - MASK_MASTER_SIZE as i32;
-    let d = centered(m) * WEDGE_COS_LUT_ALL[boundary][direction]
-        + centered(n) * WEDGE_SIN_LUT_ALL[boundary][direction];
-    let d = d.clamp(-127, 127);
+const fn master_weight(boundary: usize, direction: usize, column: usize, row: usize) -> u16 {
+    let x = 2 * column as i32 + 1 - MASK_MASTER_SIZE as i32;
+    let y = 2 * row as i32 + 1 - MASK_MASTER_SIZE as i32;
+    let d = x * WEDGE_COS_LUT_ALL[boundary][direction] + y * WEDGE_SIN_LUT_ALL[boundary][direction];
     let weight = if d >= 0 {
-        POS_DIST_2_BLD_WEIGHT[d as usize]
+        POS_DIST_2_BLD_WEIGHT[if d < 127 { d as usize } else { 127 }]
     } else {
-        NEG_DIST_2_BLD_WEIGHT[d.unsigned_abs() as usize]
+        NEG_DIST_2_BLD_WEIGHT[if d > -127 { (-d) as usize } else { 127 }]
     };
     weight << 2
 }
 
-/// The § 7.13.3.27 `MasterMask` of each boundary and angle, 16 KiB each,
-/// built at first use.
-static MASTER_MASKS: [OnceLock<Box<[u8]>>; 2 * WEDGE_ANGLES] =
-    [const { OnceLock::new() }; 2 * WEDGE_ANGLES];
+static MASTER_MASKS: [[[u8; MASK_MASTER_SIZE * MASK_MASTER_SIZE]; WEDGE_ANGLES]; 2] = {
+    let mut masks = [[[0; MASK_MASTER_SIZE * MASK_MASTER_SIZE]; WEDGE_ANGLES]; 2];
+    let mut boundary = 0;
+    while boundary < masks.len() {
+        let mut angle = 0;
+        while angle < WEDGE_ANGLES {
+            let mut i = 0;
+            while i < MASK_MASTER_SIZE * MASK_MASTER_SIZE {
+                masks[boundary][angle][i] =
+                    master_weight(boundary, angle, i % MASK_MASTER_SIZE, i / MASK_MASTER_SIZE)
+                        as u8;
+                i += 1;
+            }
+            angle += 1;
+        }
+        boundary += 1;
+    }
+    masks
+};
 
 /// The § 7.13.3.27 `WedgeMasks[MiSize][sign][wedge_index]` of a luma block:
 /// its rows start `MASK_MASTER_SIZE` apart in one master mask. The inverse
@@ -217,11 +230,7 @@ fn wedge_mask_window(
             .ok_or(overflow("wedge mask block size"))
     };
     let start = start(y_offset, luma_height)? * MASK_MASTER_SIZE + start(x_offset, luma_width)?;
-    let master = MASTER_MASKS[boundary * WEDGE_ANGLES + direction].get_or_init(|| {
-        let side = MASK_MASTER_SIZE;
-        let weight = |i| master_weight(boundary, direction, i % side, i / side) as u8;
-        (0..side * side).map(weight).collect()
-    });
+    let master = &MASTER_MASKS[boundary][direction];
     let len = luma_height.saturating_sub(1) * MASK_MASTER_SIZE + luma_width;
     Ok(master.get(start..start + len).unwrap_or_default())
 }

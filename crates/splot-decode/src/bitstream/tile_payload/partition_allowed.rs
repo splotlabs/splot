@@ -156,14 +156,13 @@ impl PartitionAllowedInput {
     }
 }
 
-/// The § 5.20.3.2 allowed set, implied partition and implied `rectType` of a
-/// block, packed as allowed bits 0..10, implied partition 10..14 (10 for
-/// none) and rect type 14..16 (0 none, 1 horizontal, 2 vertical). Nonzero,
-/// because at least one partition is always allowed.
+/// The § 5.20.3.2 allowed set (bits 0..10), partition requiring no symbol
+/// read (10..14, or 10 for none) and implied rectangle direction (14..16).
+/// A nonempty allowed set keeps valid memo entries distinct from zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PartitionDecisionFacts(u16);
 
-const IMPLIED_SHIFT: u16 = 10;
+const UNREAD_SHIFT: u16 = 10;
 const RECT_SHIFT: u16 = 14;
 
 impl PartitionDecisionFacts {
@@ -172,21 +171,25 @@ impl PartitionDecisionFacts {
         allowed: AllowedPartitions,
         rect_type: Option<RectPartitionType>,
     ) -> Self {
-        let implied = implied_partition.map_or(PartitionType::ALL.len(), PartitionType::index);
+        let unread = match implied_partition {
+            Some(partition) if allowed.contains(partition) => partition.index(),
+            _ if allowed.bits().is_power_of_two() => allowed.bits().trailing_zeros() as usize,
+            _ => PartitionType::ALL.len(),
+        };
         let rect = match rect_type {
             None => 0,
             Some(RectPartitionType::Horz) => 1,
             Some(RectPartitionType::Vert) => 2,
         };
-        Self(allowed.bits() | (implied as u16) << IMPLIED_SHIFT | rect << RECT_SHIFT)
+        Self(allowed.bits() | (unread as u16) << UNREAD_SHIFT | rect << RECT_SHIFT)
     }
 
     pub(crate) const fn allowed(self) -> AllowedPartitions {
         AllowedPartitions::from_bits(self.0)
     }
 
-    pub(crate) const fn implied(self) -> Option<PartitionType> {
-        let index = (self.0 >> IMPLIED_SHIFT & 15) as usize;
+    pub(crate) const fn unread_partition(self) -> Option<PartitionType> {
+        let index = (self.0 >> UNREAD_SHIFT & 15) as usize;
         if index < PartitionType::ALL.len() {
             Some(PartitionType::ALL[index])
         } else {
@@ -200,21 +203,6 @@ impl PartitionDecisionFacts {
             2 => Some(RectPartitionType::Vert),
             _ => None,
         }
-    }
-
-    /// The partition `read_partition_decision` returns without a symbol read.
-    #[inline]
-    pub(crate) fn unread_partition(self) -> Option<PartitionType> {
-        let allowed = self.allowed().bits();
-        let implied = u32::from(self.0 >> IMPLIED_SHIFT & 15);
-        let index = if allowed >> implied & 1 != 0 {
-            implied
-        } else if allowed.is_power_of_two() {
-            allowed.trailing_zeros()
-        } else {
-            return None;
-        };
-        PartitionType::ALL.get(index as usize).copied()
     }
 
     pub(crate) const fn read_partition_decision_input(
@@ -250,12 +238,14 @@ pub(crate) enum PartitionAllowedError {
 
 pub(crate) fn partition_decision_facts(
     input: PartitionAllowedInput,
-) -> Result<PartitionDecisionFacts, PartitionAllowedError> {
-    Ok(PartitionDecisionFacts::new(
-        partition_implied(input)?,
+) -> Result<(PartitionDecisionFacts, Option<PartitionType>), PartitionAllowedError> {
+    let implied = partition_implied(input)?;
+    let facts = PartitionDecisionFacts::new(
+        implied,
         init_allowed_partitions(input)?,
         rect_type_implied_by_bsize(input.b_size, input.tree_type),
-    ))
+    );
+    Ok((facts, implied))
 }
 
 /// `bSize` (5 bits), tree type (2 bits) and the four flag bits.
@@ -308,32 +298,35 @@ impl PartitionDecisionMemo {
             input.b_size,
             input.tree_type,
             flags,
-            [rows_left, cols_left],
+            Some([rows_left, cols_left]),
             || Ok(input),
         )
     }
 
     /// The facts of a `b_size` block of `tree_type` whose `flags` bits 0..4
-    /// are `chromaOffset`, `HasChroma`, intra region and has parent,
-    /// `[rows, cols]` 4x4 units from the bottom / right frame edge, deriving
-    /// them from `input` on a miss, so a hit never builds the input.
+    /// are `chromaOffset`, `HasChroma`, intra region and has parent.
+    /// Calls wholly inside the frame need no distances from its edges.
     #[inline]
     pub(crate) fn facts_at<E: From<PartitionAllowedError>>(
         &mut self,
         b_size: BlockSize,
         tree_type: PartitionTreeType,
         flags: usize,
-        [rows, cols]: [usize; 2],
+        edge_distance: Option<[usize; 2]>,
         input: impl FnOnce() -> Result<PartitionAllowedInput, E>,
     ) -> Result<PartitionDecisionFacts, E> {
         let slot = b_size.index() << 6 | (tree_type as usize) << 4 | flags & 15;
-        let [high, wide] = b_size.num_4x4();
-        let entry = if rows >= high && cols >= wide {
-            self.slots.get_mut(slot & (MEMO_SLOTS - 1))
-        } else if rows == 0 || cols == 0 {
-            None
+        let entry = if let Some([rows, cols]) = edge_distance
+            && let [high, wide] = b_size.num_4x4()
+            && (rows < high || cols < wide)
+        {
+            if rows == 0 || cols == 0 {
+                None
+            } else {
+                self.edge_slot((slot | rows.min(high) << 11 | cols.min(wide) << 18) as u32)
+            }
         } else {
-            self.edge_slot((slot | rows.min(high) << 11 | cols.min(wide) << 18) as u32)
+            self.slots.get_mut(slot & (MEMO_SLOTS - 1))
         };
         match entry {
             Some(entry) if *entry != 0 => Ok(PartitionDecisionFacts(*entry)),
@@ -363,7 +356,7 @@ pub(crate) fn derive_memo_facts<E: From<PartitionAllowedError>>(
     slot: Option<&mut u16>,
     input: impl FnOnce() -> Result<PartitionAllowedInput, E>,
 ) -> Result<PartitionDecisionFacts, E> {
-    let facts = partition_decision_facts(input()?)?;
+    let (facts, _) = partition_decision_facts(input()?)?;
     if let Some(slot) = slot {
         *slot = facts.0;
     }
@@ -860,7 +853,7 @@ mod memo_tests {
                     ..far
                 };
                 for input in [far, tight, outside, overflow] {
-                    let direct = partition_decision_facts(input).ok();
+                    let direct = partition_decision_facts(input).ok().map(|(facts, _)| facts);
                     assert_eq!(memo.facts(input).ok(), direct, "{input:?}");
                 }
             }
@@ -881,7 +874,8 @@ mod memo_tests {
                                 c: far.mi_cols - cols,
                                 ..far
                             };
-                            let direct = partition_decision_facts(input).ok();
+                            let direct =
+                                partition_decision_facts(input).ok().map(|(facts, _)| facts);
                             assert_eq!(memo.facts(input).ok(), direct, "{pass} {input:?}");
                         }
                     }
@@ -903,8 +897,10 @@ mod memo_tests {
         let mut memo = PartitionDecisionMemo::default();
         let inside = memo.facts(interior).unwrap();
         let at_edge = memo.facts(edge).unwrap();
-        assert_eq!(at_edge, partition_decision_facts(edge).unwrap());
-        assert_eq!(at_edge.implied(), Some(PartitionType::Horz));
+        assert_eq!(
+            partition_decision_facts(edge).unwrap(),
+            (at_edge, Some(PartitionType::Horz))
+        );
         assert_ne!(at_edge, inside);
 
         let chroma = PartitionAllowedInput {
@@ -915,10 +911,13 @@ mod memo_tests {
             known_chroma_luma_partition: Some(PartitionType::Vert),
             ..chroma
         };
-        assert_eq!(memo.facts(chroma).unwrap().implied(), None);
         assert_eq!(
-            memo.facts(forced).unwrap().implied(),
-            Some(PartitionType::Vert)
+            partition_decision_facts(chroma).unwrap(),
+            (memo.facts(chroma).unwrap(), None)
+        );
+        assert_eq!(
+            partition_decision_facts(forced).unwrap(),
+            (memo.facts(forced).unwrap(), Some(PartitionType::Vert))
         );
     }
 }

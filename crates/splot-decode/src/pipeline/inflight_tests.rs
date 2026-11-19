@@ -195,7 +195,7 @@ fn pixel_reference_wait_drains_later_slots_after_the_first_failure() {
         .store
         .put(ReferenceSlot::new(1).expect("second slot"), late.share())
         .expect("store late slot");
-    let gate = references.pixel_reference_gate([0, 1]);
+    let gate = references.pixel_reference_gate([u32::MAX, 0, 0, 7, 1, 1]);
 
     let late_progress = late.progress().expect("late progress");
     let publisher = Arc::clone(&late_writer.progress);

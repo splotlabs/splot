@@ -190,8 +190,7 @@ fn decode_general_intra_block_modes(
         block_c,
         block_n4w,
         block_n4h,
-        block_n4w,
-        block_n4h,
+        Some((block_n4w, block_n4h)),
         bit_depth_bits,
     )
 }
@@ -635,8 +634,7 @@ fn active_dip_mode_info_reads_flag_transpose_and_mode_after_palette() {
         8,
         4,
         4,
-        4,
-        4,
+        Some((4, 4)),
         8,
     )
     .unwrap();
@@ -647,6 +645,41 @@ fn active_dip_mode_info_reads_flag_transpose_and_mode_after_palette() {
     assert_eq!(modes.dip_mode, 5);
     assert_eq!(symbols.symbol_count(), 6);
     assert_eq!(symbols.finish().unwrap().symbol_count, 6);
+}
+
+#[test]
+fn luma_only_mode_sequence_skips_chroma_before_dip() {
+    let payload = encode_symbol_sequence(&[
+        (TileCdfSelector::YModeSet, 0),
+        (TileCdfSelector::YModeIndex { ctx: 0 }, 0),
+        (TileCdfSelector::UseDip { ctx: 0 }, 0),
+    ]);
+    let mut work_unit = make_work_unit(&payload);
+    let mut symbols = symbol_decoder(&payload);
+    let facts = empty_edges();
+
+    let modes = decode_general_intra_block_modes_with_fsc_context(
+        &mut work_unit,
+        &mut symbols,
+        GeneralIntraChromaToolConfig::disabled().with_enable_dip(true),
+        &facts,
+        facts.intra_neighbours(0, 0, 4, 4),
+        true,
+        0,
+        block_size(BLOCK_16X16),
+        0,
+        0,
+        4,
+        4,
+        None,
+        8,
+    )
+    .unwrap();
+
+    assert_eq!(modes.y_mode, IntraYMode::Dc);
+    assert_eq!(modes.chroma(), None);
+    assert!(!modes.uses_active_dip());
+    assert_eq!(symbols.finish().unwrap().symbol_count, 3);
 }
 
 #[test]
@@ -813,8 +846,7 @@ fn shared_chroma_mhccp_dir_uses_luma_syntax_block_size() {
         15,
         1,
         4,
-        8,
-        4,
+        Some((8, 4)),
         8,
     )
     .unwrap();

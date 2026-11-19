@@ -769,9 +769,8 @@ fn padded_into_reuses_maximum_restoration_stripe_scratch() {
         .unwrap();
 
     assert!(output.iter().all(|&sample| sample == 91));
-    assert!(scratch.clean_rows.capacity() >= height + 2 * WIENER_NS_LUMA_TAP_RADIUS);
     assert!(scratch.prepared_classes.capacity() >= coeffs.len());
-    let clean_rows_capacity = scratch.clean_rows.capacity();
+    let capacity = scratch.prepared_classes.capacity();
 
     let width = 2;
     let height = 2;
@@ -784,7 +783,7 @@ fn padded_into_reuses_maximum_restoration_stripe_scratch() {
     wiener_ns_filter_luma_block_padded_into(&mut output, &params, &source, &mut scratch).unwrap();
 
     assert_eq!(output, [37; 4]);
-    assert_eq!(scratch.clean_rows.capacity(), clean_rows_capacity);
+    assert_eq!(scratch.prepared_classes.capacity(), capacity);
 }
 
 #[test]

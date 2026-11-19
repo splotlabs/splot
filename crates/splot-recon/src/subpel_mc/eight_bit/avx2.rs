@@ -441,8 +441,9 @@ impl<O: LaneOut> LaneOut for Cols<'_, O> {
 #[inline]
 #[target_feature(enable = "avx2")]
 fn weights<const P: usize>(taps: Option<&Taps>) -> ([__m256i; 4], [__m256i; 4]) {
-    let (dot, words) = taps.map_or((0, [0; 4]), |taps| (taps.dot, taps.words));
-    let bytes = core::array::from_fn(|pair| _mm256_set1_epi16((dot >> (16 * pair)) as i16));
+    let (dot, words) = taps.map_or(([0; 8], [0; 4]), |taps| (taps.dot, taps.words));
+    let bytes = dot.as_chunks::<2>().0;
+    let bytes = core::array::from_fn(|pair| _mm256_set1_epi16(i16::from_le_bytes(bytes[pair])));
     let words = core::array::from_fn(|pair| _mm256_set1_epi32(words[pair.min(P.max(1) - 1)]));
     (bytes, words)
 }
@@ -892,7 +893,7 @@ fn load16(t: Avx2, bytes: &[u8; 16]) -> __m128i {
 static SKIPPED: Taps = Taps {
     start: 0,
     count: 0,
-    dot: 0,
+    dot: [0; 8],
     words: [0; 4],
     full: [0; 4],
 };
@@ -916,7 +917,8 @@ impl Horizontal {
                 u8x32::load_array_ref(t, &patterns[pair.min(P.max(1) - 1)]).into()
             }),
             weights: core::array::from_fn(|pair| {
-                _mm256_set1_epi16((taps.dot >> (16 * pair.min(P.max(1) - 1))) as i16)
+                let bytes = taps.dot.as_chunks::<2>().0[pair.min(P.max(1) - 1)];
+                _mm256_set1_epi16(i16::from_le_bytes(bytes))
             }),
         }
     }

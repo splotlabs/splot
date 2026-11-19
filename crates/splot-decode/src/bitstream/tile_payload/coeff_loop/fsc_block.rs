@@ -14,7 +14,7 @@ use super::super::cdf::TileCdfSubset;
 use super::super::cdf::block_read::row_at;
 use super::super::cdf::coeff_context::coeff_base_bob_ctx;
 use super::super::coeff_state::{
-    CoeffBlockLines, LEVEL_STRIDE, LEVEL_WORDS_MASK, TileCoeffContextState, TileCoeffStateError,
+    CoeffBlockLines, LEVEL_STRIDE, TileCoeffContextState, TileCoeffStateError,
 };
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::{COEFF_BASE_RANGE, CoeffTransformClass, NUM_BASE_LEVELS};
@@ -26,7 +26,7 @@ use super::read_quant::{
     CoeffReadQuantConfig, CoeffReadQuantError, CoeffReadQuantInput, CoeffReadQuantState,
 };
 use super::scan_walk::CoeffScanEntry;
-use super::transform_block::{LEVEL_WORD, entry_grid, grid_scan};
+use super::transform_block::{LEVEL_WORD, entry_grid, entry_pos, grid_scan};
 
 const FSC_MAX_LEVEL: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
 /// Grid-word fields counting the decoded positive and negative signs, above
@@ -59,12 +59,7 @@ pub(crate) fn decode_fsc_transform_block(
 ) -> Result<usize, CoeffFscBranchError> {
     let tx = start.tx();
     let seg_eob = start.coeff_count();
-    let scan = grid_scan(
-        CoeffTransformClass::TwoD,
-        usize::from(tx.width),
-        usize::from(tx.height),
-        seg_eob,
-    )?;
+    let scan = grid_scan(CoeffTransformClass::TwoD, tx, seg_eob)?;
     let eob = start.eob_read();
     let bob = seg_eob.checked_sub(eob).ok_or_else(|| {
         CoeffOrdinaryPassError::from(super::CoeffLoopContextError::FscScanWalkEobOutOfRange {
@@ -87,30 +82,13 @@ pub(crate) fn decode_fsc_transform_block(
     } else {
         block.decode::<false>(cdfs, symbols, grids, quant)
     };
-    for &index in nonzero.get(..nonzero_len).unwrap_or_default() {
-        if let Some(&entry) = entries.get(index as usize) {
-            levels[grid(entry)] = 0;
-        }
+    for &entry in nonzero.get(..nonzero_len).unwrap_or_default() {
+        levels[entry_grid(entry) + LEVEL_STRIDE + 1] = 0;
     }
     *symbols = owned;
     let (quant_end, summary) = result?;
     state.commit_block(lines, summary.cul_level(), summary.dc_category());
     Ok(quant_end)
-}
-
-/// The grid word of a scan entry, one row and column past its ordinary
-/// position.
-#[allow(clippy::inline_always, reason = "per-coefficient index")]
-#[inline(always)]
-const fn grid(entry: u32) -> usize {
-    (entry_grid(entry) + LEVEL_STRIDE + 1) & LEVEL_WORDS_MASK
-}
-
-/// The grid word `back` words before `at`.
-#[allow(clippy::inline_always, reason = "per-coefficient index")]
-#[inline(always)]
-const fn before(at: usize, back: usize) -> usize {
-    at.wrapping_sub(back) & LEVEL_WORDS_MASK
 }
 
 struct Block<'s> {
@@ -176,8 +154,8 @@ impl Block<'_> {
         let br = row_at(&mut rows.coeff_br_idtx, self.size_ctx);
         let mut carried = (usize::MAX, 0);
         for (index, &entry) in self.entries.iter().enumerate() {
-            let at = grid(entry);
-            let near = levels[before(at, 1)] + levels[before(at, LEVEL_STRIDE)];
+            let grid = entry_grid(entry);
+            let near = levels[grid + LEVEL_STRIDE] + levels[grid + 1];
             let mut level = if index == 0 {
                 first
             } else {
@@ -191,8 +169,8 @@ impl Block<'_> {
                 let ctx = (((near >> 8) & 0xff) as usize).min(6);
                 level += symbols.read_trusted::<5, UPD>(row_at(br, ctx));
             }
-            levels[at] = LEVEL_WORD[level as usize & 15];
-            nonzero[*nonzero_len & (nonzero.len() - 1)] = index as u32;
+            levels[grid + LEVEL_STRIDE + 1] = LEVEL_WORD[level as usize & 15];
+            nonzero[*nonzero_len & (nonzero.len() - 1)] = entry;
             *nonzero_len += usize::from(level != 0);
         }
 
@@ -209,17 +187,13 @@ impl Block<'_> {
             lossless: false,
         });
         let mut end = 0;
-        for &index in nonzero.get(..*nonzero_len).unwrap_or_default() {
-            let index = index as usize;
-            let Some(&entry) = self.entries.get(index) else {
-                continue;
-            };
-            let at = grid(entry);
+        let mut level_sum = 0u32;
+        for &entry in nonzero.get(..*nonzero_len).unwrap_or_default() {
+            let grid = entry_grid(entry);
+            let at = grid + LEVEL_STRIDE + 1;
             let word = levels[at];
             let level = (word >> 16) & 0xff;
-            let near = levels[before(at, 1)]
-                + levels[before(at, LEVEL_STRIDE)]
-                + levels[before(at, LEVEL_STRIDE + 1)];
+            let near = levels[grid + LEVEL_STRIDE] + levels[grid + 1] + levels[grid];
             let signc =
                 ((near >> POSITIVE_SHIFT) & 7) as i32 - ((near >> NEGATIVE_SHIFT) & 7) as i32;
             let ctx = match signc {
@@ -237,14 +211,16 @@ impl Block<'_> {
                 };
             let sign = symbols.read_trusted::<3, UPD>(row_at(signs, ctx)) != 0;
             levels[at] = word | 1 << if sign { NEGATIVE_SHIFT } else { POSITIVE_SHIFT };
-            let pos = (entry >> 16) as usize;
-            let value = if level < FSC_MAX_LEVEL {
+            let pos = entry_pos(entry);
+            let magnitude = if level < FSC_MAX_LEVEL {
                 level
             } else {
+                let scan_index = (entry >> 22) as usize;
+                let index = scan_index - self.bob;
                 let column = (1 << self.width_log2) - 1;
                 let input = CoeffReadQuantInput {
                     entry: CoeffScanEntry::new(
-                        self.bob + index,
+                        scan_index,
                         pos,
                         pos >> self.width_log2,
                         pos & column,
@@ -252,12 +228,14 @@ impl Block<'_> {
                     level,
                     max_level: FSC_MAX_LEVEL,
                 };
-                read_quant.read_one(symbols, index, input)?.quant
+                let value = read_quant.read_one(symbols, index, input)?.quant;
+                summary.ac_magnitude(index, value, false)?
             };
             if pos == 0 {
                 summary.set_dc_sign(sign);
             }
-            let magnitude = summary.ac_magnitude(index, value, false)? as i32;
+            level_sum += magnitude;
+            let magnitude = magnitude as i32;
             if let Some(slot) = quant.get_mut(pos) {
                 *slot = if sign { -magnitude } else { magnitude };
                 end = end.max(pos + 1);
@@ -265,7 +243,9 @@ impl Block<'_> {
         }
         Ok((
             end,
-            super::quant_state::NonZeroCoeffQuantState::from_accumulator(summary),
+            super::quant_state::NonZeroCoeffQuantState::from_accumulator(
+                summary.with_cul_level(level_sum),
+            ),
         ))
     }
 }

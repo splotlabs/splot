@@ -42,7 +42,7 @@ pub(crate) const LEVEL_WORDS_MASK: usize = 2047;
 /// [`LEVEL_STRIDE`], zero outside a block while no block is being decoded,
 /// with room past every masked position for the largest neighbour offset.
 pub(crate) type CoeffLevelWords = [u32; LEVEL_WORDS_MASK + 1 + 256];
-/// The scan indices above 0 of one block's nonzero levels, in decode order.
+/// Packed scan entries for one block's nonzero AC levels, in decode order.
 pub(crate) type CoeffNonzeroList = [u32; 1024];
 const LEVEL_WORDS: usize = core::mem::size_of::<CoeffLevelWords>() / 4;
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];

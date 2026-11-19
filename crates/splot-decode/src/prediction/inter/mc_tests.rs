@@ -1246,6 +1246,67 @@ fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
     assert!(y[4 * 16..].iter().all(|&sample| sample == 0));
 }
 
+#[test]
+fn extended_warp_units_share_only_their_own_reference_box() {
+    let frame = PlaneSize::new(48, 32).expect("frame size");
+    let rect = McBlockRect::from_luma_rect(8, 8, 24, 16);
+    for (plane, sub_x, sub_y) in mc_planes(PixelFormat::Yuv420) {
+        let (x, y, w, h) = rect.plane_rect(plane, sub_x, sub_y);
+        let scaling = derive_plane_scaling(x as i32, y as i32, 0, 0, sub_x, sub_y, 48, 32, 48, 32);
+        let params = WarpPredictBlockParams {
+            warp_params: [154_344, -132_240, 50_000, 22_000, -16_000, 78_000],
+            block_x: x as i32,
+            block_y: y as i32,
+            subsampling_x: sub_x as u8,
+            subsampling_y: sub_y as u8,
+            reference_scale_x: scaling.scale_x,
+            reference_scale_y: scaling.scale_y,
+            first_x: 0,
+            first_y: 0,
+            last_x: scaling.last_x,
+            last_y: scaling.last_y,
+            bit_depth: BitDepth::Eight,
+        };
+        let mut seen = vec![false; (w / 4) * (h / 4)];
+        ext_warp_units(
+            params,
+            rect,
+            plane,
+            [w, h],
+            frame,
+            scaling,
+            |bounded, i4, j4| {
+                let expected = ext_warp_unit_bounds(
+                    rect,
+                    plane,
+                    params.warp_params,
+                    (x + (j4 & !1) * 4) as i32,
+                    (y + (i4 & !1) * 4) as i32,
+                    w.min(8) as i32,
+                    h.min(8) as i32,
+                    sub_x,
+                    sub_y,
+                    frame,
+                    scaling,
+                );
+                assert_eq!(
+                    (
+                        bounded.first_x,
+                        bounded.first_y,
+                        bounded.last_x,
+                        bounded.last_y
+                    ),
+                    expected
+                );
+                assert!(!core::mem::replace(&mut seen[i4 * (w / 4) + j4], true));
+                Ok::<_, core::convert::Infallible>(())
+            },
+        )
+        .expect("visit every extended warp unit");
+        assert!(seen.iter().all(|&unit| unit));
+    }
+}
+
 fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
     workspace_with_format(PixelFormat::Yuv420, width, height)
 }

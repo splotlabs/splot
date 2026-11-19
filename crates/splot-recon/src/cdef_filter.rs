@@ -34,7 +34,7 @@
 //! Feature tracking: `RECON-CDEF-FILTER`.
 
 #[cfg(target_arch = "x86_64")]
-use fearless_simd::{Avx2, Level, SimdInto, i32x8};
+use fearless_simd::{Avx2, Level, SimdInto};
 use fearless_simd::{
     Bytes, Select as _, Simd as SimdToken, SimdBase, SimdInt as _, i8x16, i16x8, i16x16, i32x4,
     u8x16, u16x8, u16x16,
@@ -149,26 +149,12 @@ fn cdef_direction_strided<const STRIDE: usize, const AREA: usize>(
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = Level::baseline().as_avx2() {
         let rows = cdef_direction_input::<_, STRIDE, AREA>(avx2, pad, coeff_shift);
-        return cdef_best_direction(cdef_direction_costs_avx2(avx2, rows));
+        return cdef_direction_avx2(avx2, rows);
     }
     baseline_simd!( simd => cdef_direction_rows(
         simd,
         cdef_direction_input::<_, STRIDE, AREA>(simd, pad, coeff_shift),
     ))
-}
-
-/// The § 7.18.2 `yDir` and `var` of the eight direction costs: costs are
-/// never negative, so the scan, which keeps a direction only when its cost
-/// beats the best so far (from 0), ends on the first direction that holds
-/// the largest cost.
-#[cfg(target_arch = "x86_64")]
-fn cdef_best_direction(cost: [i32; 8]) -> (usize, i32) {
-    let best_cost = cost.into_iter().max().unwrap_or(0);
-    let ties = (0..8).fold(0u32, |ties, dir| {
-        ties | (u32::from(cost[dir] == best_cost) << dir)
-    });
-    let y_dir = (ties.trailing_zeros() & 7) as usize;
-    (y_dir, (best_cost - cost[(y_dir + 4) & 7]) >> 10)
 }
 
 /// A 16-lane partial-sum accumulator held as its low and high halves.
@@ -304,13 +290,15 @@ fearless_simd::kernel!(
     /// mirror in one multiply-add.
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn cdef_direction_costs_avx2(t: Avx2, rows: [i16x8<Avx2>; 8]) -> [i32; 8] {
+    fn cdef_direction_avx2(_t: Avx2, rows: [i16x8<Avx2>; 8]) -> (usize, i32) {
         use core::arch::x86_64::{
-            __m256i, _mm_add_epi16, _mm_hadd_epi16, _mm256_add_epi16, _mm256_add_epi32,
-            _mm256_bslli_epi128, _mm256_bsrli_epi128, _mm256_castsi256_si128,
+            __m256i, _mm_add_epi16, _mm_cvtsi128_si32, _mm_hadd_epi16, _mm_max_epi32,
+            _mm_shuffle_epi32, _mm256_add_epi16, _mm256_add_epi32, _mm256_bslli_epi128,
+            _mm256_bsrli_epi128, _mm256_castsi256_ps, _mm256_castsi256_si128, _mm256_cmpeq_epi32,
             _mm256_extracti128_si256, _mm256_hadd_epi16, _mm256_hadd_epi32, _mm256_madd_epi16,
-            _mm256_mullo_epi32, _mm256_set_m128i, _mm256_set1_epi32, _mm256_setr_epi8,
-            _mm256_setr_epi32, _mm256_shuffle_epi8, _mm256_unpackhi_epi16, _mm256_unpacklo_epi16,
+            _mm256_movemask_ps, _mm256_mullo_epi32, _mm256_permutevar8x32_epi32, _mm256_set_m128i,
+            _mm256_set1_epi32, _mm256_setr_epi8, _mm256_setr_epi32, _mm256_shuffle_epi8,
+            _mm256_unpackhi_epi16, _mm256_unpacklo_epi16,
         };
         let r: [__m256i; 8] =
             core::array::from_fn(|k| _mm256_set_m128i(rows[7 - k].into(), rows[k].into()));
@@ -377,8 +365,19 @@ fearless_simd::kernel!(
             _mm256_hadd_epi32(diagonals, pair_costs),
             _mm256_hadd_epi32(column_costs, lines),
         );
-        let sums = SimdInto::<i32x8<Avx2>, Avx2>::simd_into(sums, t).to_array();
-        [0, 1, 7, 5, 4, 6, 3, 2].map(|lane| sums[lane])
+        let costs = _mm256_permutevar8x32_epi32(sums, _mm256_setr_epi32(0, 1, 7, 5, 4, 6, 3, 2));
+        let max = _mm_max_epi32(
+            _mm256_castsi256_si128(costs),
+            _mm256_extracti128_si256::<1>(costs),
+        );
+        let max = _mm_max_epi32(max, _mm_shuffle_epi32::<0x4e>(max));
+        let max = _mm_max_epi32(max, _mm_shuffle_epi32::<0xb1>(max));
+        let max = _mm_cvtsi128_si32(max);
+        let ties = _mm256_cmpeq_epi32(costs, _mm256_set1_epi32(max));
+        let best = (_mm256_movemask_ps(_mm256_castsi256_ps(ties)) as u32).trailing_zeros() & 7;
+        let opposite = _mm256_permutevar8x32_epi32(costs, _mm256_set1_epi32((best ^ 4) as i32));
+        let variance = (max - _mm_cvtsi128_si32(_mm256_castsi256_si128(opposite))) >> 10;
+        (best as usize, variance)
     }
 );
 

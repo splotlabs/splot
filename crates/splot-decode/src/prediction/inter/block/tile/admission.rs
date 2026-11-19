@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 
 /// What a direct tile hands back to the decoder when its commit spine ends.
 pub(super) type FinishedDirectTile<T> = (
-    deferred_recon::InterReconScratch<T>,
+    Box<deferred_recon::InterReconScratch<T>>,
     CurrentFrameWorkspace<T>,
     bool,
     crate::filters::wienerns_lr::FrameFilterRecords,
@@ -31,10 +31,9 @@ pub(super) struct TileCommit<T: ReconSample> {
     sealed_rows: usize,
     /// Frontier links whose superblock rows are complete.
     closed_rows: usize,
-    ordered: deferred_recon::InterReconScratch<T>,
+    ordered: Box<deferred_recon::InterReconScratch<T>>,
     workspace: CurrentFrameWorkspace<T>,
     block_decoded: TileBlockDecodedState,
-    current_block_decoded_superblock: Option<[usize; 2]>,
     /// The tile `block_decoded` is laid out for, on the scheduled spine.
     block_decoded_tile: Option<usize>,
     decoded_any: bool,
@@ -46,7 +45,7 @@ pub(super) struct TileCommit<T: ReconSample> {
 
 impl<T: ReconSample> TileCommit<T> {
     pub(super) fn direct(
-        ordered: deferred_recon::InterReconScratch<T>,
+        ordered: Box<deferred_recon::InterReconScratch<T>>,
         workspace: CurrentFrameWorkspace<T>,
         block_decoded: TileBlockDecodedState,
         decoded_any: bool,
@@ -60,7 +59,6 @@ impl<T: ReconSample> TileCommit<T> {
             ordered,
             workspace,
             block_decoded,
-            current_block_decoded_superblock: None,
             block_decoded_tile: None,
             decoded_any,
             frame_filter_records,
@@ -71,7 +69,6 @@ impl<T: ReconSample> TileCommit<T> {
     pub(super) fn replay(
         &mut self,
         mut ready: ReadyReconRow<T>,
-        quantizer: &FrameQuantizerSnapshot,
         motion: &MotionFieldUnits,
         temporal: &TemporalMvContext,
         context: &TileDecodeContext<'_, T>,
@@ -83,13 +80,12 @@ impl<T: ReconSample> TileCommit<T> {
         self.ordered.with_installed(|scratch| {
             pixel_commit::replay_recon_row(
                 ready.row,
+                ready.tile_offset,
                 &mut self.next,
                 &mut self.decoded_any,
-                quantizer,
                 scratch,
                 &mut self.workspace,
                 &mut self.block_decoded,
-                &mut self.current_block_decoded_superblock,
                 motion,
                 temporal,
                 context.reference,
@@ -578,22 +574,21 @@ impl<T: ReconSample> TileRecon<T> {
         }
         let batch = self.workers.with_scratch(worker, |scratch| {
             let _quantizer_scopes = self.quantizer.install_frame();
-            ready
-                .into_iter()
-                .map(|mut ready| {
-                    if ready.surface.is_none() && !ready.row.superblocks.is_empty() {
-                        ready.surface = surfaces
-                            .take(ready.row.ordinal, worker)
-                            .transpose()
-                            .ok()
-                            .flatten();
-                    }
-                    scratch.with_installed(|scratch| {
+            scratch.with_installed(|scratch| {
+                ready
+                    .into_iter()
+                    .map(|mut ready| {
+                        if ready.surface.is_none() && !ready.row.superblocks.is_empty() {
+                            ready.surface = surfaces
+                                .take(ready.row.ordinal, worker)
+                                .transpose()
+                                .ok()
+                                .flatten();
+                        }
                         precompute_recon_row(
                             ready,
                             scratch,
                             &self.prepass_block_decoded,
-                            &self.quantizer,
                             &self.temporal,
                             &self.reference,
                             (self.ref_frame_idx.as_slice(), &self.params.ref_facts),
@@ -608,8 +603,8 @@ impl<T: ReconSample> TileRecon<T> {
                             self.params.bit_depth,
                         )
                     })
-                })
-                .collect()
+                    .collect()
+            })
         })?;
         let mut prepared = self.slots.prepared.lock();
         let Some(slot) = prepared.get_mut(index) else {
@@ -645,6 +640,7 @@ impl<T: ReconSample> TileRecon<T> {
             self.ref_frame_idx.as_slice(),
         );
         let mut batch = batch;
+        let _quantizer_scopes = self.quantizer.install_frame();
         for mut ready in batch.drain(..) {
             if commit.block_decoded_tile != Some(ready.row.tile) {
                 let tile = self
@@ -658,20 +654,13 @@ impl<T: ReconSample> TileRecon<T> {
                     tile.mi_cols.end,
                     tile.mi_rows.end,
                 )?;
-                commit.current_block_decoded_superblock = None;
                 commit.block_decoded_tile = Some(ready.row.tile);
             }
             if let Some(surface) = ready.surface.take() {
                 surface.publish_into(&mut commit.workspace)?;
                 surfaces.give(surface, worker);
             }
-            let spent = commit.replay(
-                ready,
-                &self.quantizer,
-                &self.motion,
-                &self.temporal,
-                &context,
-            )?;
+            let spent = commit.replay(ready, &self.motion, &self.temporal, &context)?;
             parse_progress.return_row_buffers(spent);
         }
         *self
@@ -699,7 +688,6 @@ impl<T: ReconSample> TileRecon<T> {
 
     fn finish_commit(&self, commit: TileCommit<T>) -> CurrentFrameWorkspace<T> {
         let mut scratch = TileDecodeScratch::from_scheduled(commit.ordered);
-        scratch.parse.commit_block_decoded = commit.block_decoded;
         scratch.scheduled_rows = self.slots.retire();
         scratch.buffers.clone_from(&self.buffers);
         *self.scratch.lock() = Some(scratch);
@@ -727,28 +715,26 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     unit_count: usize,
     context: &TileDecodeContext<'_, T>,
     temporal: &TemporalMvContext,
-    quantizer: &FrameQuantizerSnapshot,
-    row_gate: &RowReferenceGate<'_, T>,
-    row_buffers: &ReconRowBufferPool,
+    references: &crate::prediction::inter::PixelReferenceGate<'_, T>,
+    row_buffers: &mut Vec<ReconRowBuffers>,
     motion: &MotionFieldUnits,
     pending: &mut Vec<ReconRow>,
-    mut commit: TileCommit<T>,
-) -> Result<TileCommit<T>> {
-    row_gate.wait()?;
+    commit: &mut TileCommit<T>,
+) -> Result<()> {
+    references.wait()?;
     pending.clear();
     let mut parsed = 0;
     let mut reached_last = false;
     while !reached_last && parsed < unit_count {
         while !reached_last && parsed < unit_count && pending.len() < PARSE_AHEAD_ROWS {
-            let _quantizer_scopes = quantizer.install_frame();
-            let step = parser.next_unit(tile, context, Some(row_buffers.take()), true);
+            let step = parser.next_unit(tile, context, row_buffers.pop(), true);
             let step = resolve_parser_step(step, |row| {
                 resolve.resolve_unit(&mut parser.mv_grid, context, temporal, row, tile_offset)?;
                 #[cfg(test)]
                 crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_resolved_unit(
                     &parser.mv_grid,
                 );
-                let records = &mut parser.filter_records;
+                let records = &mut commit.frame_filter_records;
                 row.filter_records.publish_into(
                     &mut records.deblock_blocks,
                     &mut records.chroma_deblock_blocks,
@@ -769,17 +755,18 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         for row in pending.drain(..) {
             let ready = ReadyReconRow {
                 row,
+                tile_offset,
                 surface: None,
                 bounds: super::row_gate::RowReferenceBounds::default(),
             };
-            let buffers = commit.replay(ready, quantizer, motion, temporal, context)?;
-            row_buffers.recycle(buffers);
+            let buffers = commit.replay(ready, motion, temporal, context)?;
+            row_buffers.push(buffers);
         }
     }
     if !reached_last {
         return Err(invalid_inter_tile_scheduling_state());
     }
-    Ok(commit)
+    Ok(())
 }
 
 impl<T: ReconSample> ScheduledTileRecon<T> {
@@ -899,7 +886,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     pub(crate) fn resolve(&self, index: usize) -> Result<(core::ops::Range<usize>, Option<usize>)> {
-        self.project(index)?;
         let projected_rows = self.temporal_plan.rows8(index);
         let final_band = index.saturating_add(1) == self.temporal_plan.len();
         let context = self.recon.params.context(
@@ -960,7 +946,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             ) else {
                 return Err(invalid_inter_tile_scheduling_state());
             };
-            row.replay_flags(grid, frame_mv_precision(context.core)?);
+            row.replay_flags(grid, frame_mv_precision(context.core)?)?;
             row.return_terminal_error()?;
             state.resolve_unit(
                 grid,
@@ -975,6 +961,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 next,
                 ReadyReconRow {
                     row,
+                    tile_offset: tile.tile_offset,
                     surface,
                     bounds,
                 },
@@ -1531,8 +1518,13 @@ fn prepare_scheduled_motion(
         .map_err(|_| inter_allocation!("inter admission MV grids"))?;
     grids.resize_with(tiles.len(), NeighbourMvGrid::default);
     for (grid, tile) in grids.iter_mut().zip(tiles) {
-        grid.reset_for_tile(tile.mi_rows.clone(), tile.mi_cols.clone(), sb_h4)
-            .map_err(|error| inter_tile_grid_error(&error, "inter admission MV grid"))?;
+        grid.reset_for_tile(
+            tile.mi_rows.clone(),
+            tile.mi_cols.clone(),
+            sb_h4,
+            NeighbourGridMode::Motion,
+        )
+        .map_err(|error| inter_tile_grid_error(&error, "inter admission MV grid"))?;
     }
     let motion = if let Some(mut motion) = reusable.motion.take() {
         motion.reset_publishing(motion_field, units, units_per_row, motion_handle)?;
@@ -1597,11 +1589,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         geometry.mi_rows.end,
     )?;
     let prepass_block_decoded = core::mem::take(&mut reusable.prepass_block_decoded);
-    scratch
-        .parse
-        .commit_block_decoded
-        .clone_from(&prepass_block_decoded);
-    let block_decoded = core::mem::take(&mut scratch.parse.commit_block_decoded);
+    let block_decoded = prepass_block_decoded.clone();
     let mut batches = core::mem::take(&mut reusable.batches);
     superblock_row_batches_into(
         unit_count,
@@ -1613,13 +1601,9 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let mut rows = core::mem::take(&mut reusable.rows);
     reset_row_slots(&mut rows, unit_count)?;
     let TileDecodeScratch {
-        parse: _,
-        surface_source: _,
         ordered,
-        workers: _,
         scheduled_rows,
-        buffers: _,
-        pending_rows: _,
+        ..
     } = scratch;
     let mut surface_source = reusable.surfaces.take().unwrap_or_else(|| {
         Arc::new(SurfaceSource::new(
@@ -1685,7 +1669,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
                 ordered,
                 workspace,
                 block_decoded,
-                current_block_decoded_superblock: None,
                 block_decoded_tile: None,
                 decoded_any: false,
                 frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),

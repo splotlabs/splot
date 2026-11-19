@@ -98,6 +98,10 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
             .map_err(GeneralIntraMultiblockError::Walk)
     }
 
+    pub(crate) const fn next_origin(&self) -> [usize; 2] {
+        self.tree.next_origin()
+    }
+
     pub(crate) const fn sb_mask(&self) -> usize {
         self.tree.sb_mask()
     }

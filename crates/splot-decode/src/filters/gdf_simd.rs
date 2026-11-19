@@ -12,16 +12,17 @@ use splot_core::tables::loop_restoration::{
 use splot_recon::BitDepth;
 use splot_recon::math::round2_signed_i32;
 
+#[cfg(test)]
 use crate::Result;
 
 #[cfg(target_arch = "x86_64")]
 #[path = "gdf_inlane.rs"]
 mod inlane;
 
-use super::{
-    GDF_BIAS, GDF_COORDS, GDF_INTRA_REF_DST, GDF_READ_RADIUS, GdfBlock, GdfClass, GdfSource,
-    exact_slice, gdf_state_error,
-};
+use super::{GDF_BIAS, GDF_COORDS, GDF_INTRA_REF_DST, GDF_READ_RADIUS, GdfBlock, GdfClass};
+
+#[cfg(test)]
+use super::{GdfSource, exact_slice, gdf_state_error};
 
 pub(super) const TAP_REACH: usize = GDF_READ_RADIUS - 1;
 /// Source rows a row pair reads: `TAP_REACH` above the pair to `TAP_REACH` below it.
@@ -29,6 +30,7 @@ pub(super) const WINDOW_ROWS: usize = 2 * TAP_REACH + 2;
 
 /// The source rows a row pair reads, each `len` samples from column `origin.0 - TAP_REACH`.
 /// Inlined so callers see that every row has length `len`.
+#[cfg(test)]
 #[allow(clippy::inline_always)]
 #[inline(always)]
 pub(super) fn source_rows<'a>(
@@ -53,6 +55,7 @@ pub(super) fn source_rows<'a>(
 }
 
 /// The `WIN` samples of every row in `rows` from column `x`.
+#[cfg(test)]
 #[inline]
 pub(super) fn window_at<'a, const WIN: usize>(
     rows: &[&'a [u16]; WINDOW_ROWS],
@@ -75,7 +78,7 @@ type Window<'a> = [&'a [u16; 28]; WINDOW_ROWS];
 /// The most columns of one column tile of a run, whose source rows sit
 /// [`TILE_STRIDE`] apart: the tile's rows of a row pair window stay in L1, and
 /// every window row is a constant offset from the window's first sample.
-pub(super) const TILE_COLS: usize = 1024;
+pub(super) const TILE_COLS: usize = 256;
 pub(super) const TILE_STRIDE: usize = TILE_COLS + 32;
 const TILE_SPAN: usize = (WINDOW_ROWS - 1) * TILE_STRIDE + 28;
 const _: () =
@@ -312,7 +315,7 @@ impl GdfSymParams {
             bias,
             scale,
             #[cfg(target_arch = "x86_64")]
-            slot: inlane::SlotParams::new(block),
+            slot: inlane::SlotParams::new(block, scale),
             keeps_flat: round2_signed_i32(i32::from(flat_error) * block.pix_scale, rounding) == 0,
         }
     }
@@ -896,11 +899,10 @@ pub(super) struct ClassScratch {
 }
 
 impl ClassScratch {
-    /// The chunks of one gradient row pair for a run of `class_cols` class
-    /// columns: those its `2 * class_cols + 2` columns cover, plus one that a
-    /// class chunk reads past them.
+    /// One gradient chunk per eight class columns, plus the next chunk
+    /// for the last class chunk's two-column lookahead.
     pub(super) fn chunks(class_cols: usize) -> usize {
-        (2 * class_cols + 2).div_ceil(16) + 1
+        class_cols.div_ceil(8) + 1
     }
 
     /// The `err` bytes of one row of a run `run` samples wide.
@@ -932,18 +934,13 @@ fn gradients<S: Simd>(simd: S, rows: [&[u16; 18]; 3]) -> [i16x16<S>; 4] {
 /// Fills `out` with the gradients of the gradient row pair between the four
 /// source rows, summed over its two rows, for the columns from column 1 of
 /// each row; a chunk that reads past the rows reads zeros there.
+#[cfg(test)]
 fn gradient_row<S: Simd>(simd: S, rows: &[&[u16]; 4], out: &mut [GradChunk]) -> Option<()> {
-    let len = rows[0].len();
-    if rows.iter().any(|row| row.len() != len) {
-        return None;
-    }
     for (chunk, out) in out.iter_mut().enumerate() {
         let start = 16 * chunk;
         let chunks = rows.map(|row| row.get(start..).and_then(<[u16]>::first_chunk::<18>));
-        if start + 18 <= len
-            && let [Some(a), Some(b), Some(c), Some(d)] = chunks
-        {
-            pair_gradients(simd, [a, b, c, d], out);
+        if let [Some(a), Some(b), Some(c), Some(d)] = chunks {
+            store_gradients(pair_gradients(simd, [a, b, c, d]), out);
         } else {
             padded_gradients(simd, rows, start, out)?;
         }
@@ -953,6 +950,7 @@ fn gradient_row<S: Simd>(simd: S, rows: &[&[u16]; 4], out: &mut [GradChunk]) -> 
 
 /// [`gradient_row`] for one chunk whose rows end before its reach, on
 /// zero-padded copies; out of line, so that the padding is only built here.
+#[cfg(test)]
 #[inline(never)]
 fn padded_gradients<S: Simd>(
     simd: S,
@@ -966,28 +964,82 @@ fn padded_gradients<S: Simd>(
         let tail = tail.get(..tail.len().min(18))?;
         padded.get_mut(..tail.len())?.copy_from_slice(tail);
     }
-    pair_gradients(simd, padded.each_ref(), out);
+    store_gradients(pair_gradients(simd, padded.each_ref()), out);
     Some(())
 }
 
-/// The gradients of one chunk of a gradient row pair, summed over its rows.
+/// For the final gradient chunk only the lanes within the staged tap
+/// halo are used. The fixed stride leaves room to load the whole chunk.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn pair_gradients<S: Simd>(simd: S, chunks: [&[u16; 18]; 4], out: &mut GradChunk) {
-    let first = gradients(simd, [chunks[0], chunks[1], chunks[2]]);
-    let second = gradients(simd, [chunks[1], chunks[2], chunks[3]]);
-    for ((out, first), second) in out.iter_mut().zip(first).zip(second) {
-        (first + second).bitcast::<u16x16<S>>().store_array(out);
+fn tiled_gradient_sources(rows: &[[u16; TILE_STRIDE]; 4]) -> impl Iterator<Item = [&[u16; 18]; 4]> {
+    const START: usize = TAP_REACH - 2;
+    const _: () = assert!(START + TILE_COLS + 18 <= TILE_STRIDE);
+    let [a, b, c, d] = rows
+        .each_ref()
+        .map(|row| row[START..].array_windows::<18>().step_by(16));
+    a.zip(b.zip(c.zip(d))).map(|(a, (b, (c, d)))| [a, b, c, d])
+}
+
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn pair_gradients<S: Simd>(simd: S, chunks: [&[u16; 18]; 4]) -> [i16x16<S>; 4] {
+    let [a, b, c, d] = chunks;
+    let first = gradients(simd, [a, b, c]);
+    let second = gradients(simd, [b, c, d]);
+    core::array::from_fn(|i| first[i] + second[i])
+}
+
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn store_gradients<S: Simd>(grad: [i16x16<S>; 4], out: &mut GradChunk) {
+    for (dir, out) in grad.into_iter().zip(out) {
+        dir.bitcast::<u16x16<S>>().store_array(out);
     }
 }
 
-/// The direction gradients of a chunk summed over two gradient row pairs.
+#[cfg(test)]
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn pair_sum<S: Simd>(simd: S, current: &GradChunk, previous: &GradChunk) -> [i16x16<S>; 4] {
     core::array::from_fn(|d| {
         (u16x16::from_slice(simd, &current[d]) + u16x16::from_slice(simd, &previous[d])).bitcast()
     })
+}
+
+#[inline(never)]
+fn classify_tiled_gradient_row<S: Simd>(
+    simd: S,
+    rows: &[[u16; TILE_STRIDE]; 4],
+    current: &mut [GradChunk],
+    previous: &[GradChunk],
+    classes: &mut [[i32; 8]],
+    tables: &[[i16; 16]; 4],
+) -> Option<()> {
+    let scan = |chunk: usize, out: &mut GradChunk, previous: &GradChunk| {
+        let start = TAP_REACH - 2 + 16 * chunk;
+        let rows = rows.each_ref().map(|row| {
+            row.get(start..)
+                .and_then(<[u16]>::first_chunk::<18>)
+                .unwrap_or(&[0; 18])
+        });
+        let grad = pair_gradients(simd, rows);
+        store_gradients(grad, out);
+        core::array::from_fn(|d| {
+            grad[d] + u16x16::from_slice(simd, &previous[d]).bitcast::<i16x16<S>>()
+        })
+    };
+    let (first, current) = current.split_first_mut()?;
+    let (prior, previous) = previous.split_first()?;
+    let mut sum = scan(0, first, prior);
+    for (i, ((classes, current), previous)) in
+        classes.iter_mut().zip(current).zip(previous).enumerate()
+    {
+        let next = scan(i + 1, current, previous);
+        *classes = classify_chunk(simd, sum, next, tables).to_array();
+        sum = next;
+    }
+    Some(())
 }
 
 /// The classes and gradient biases of the 8 class columns of a chunk from
@@ -1027,6 +1079,7 @@ fn classify_chunk<S: Simd>(
 
 /// The four source rows of gradient row pair `row_pair` of the run of
 /// `class_cols` class columns whose top-left sample sits at `origin`.
+#[cfg(test)]
 fn gradient_source_rows<'a>(
     source: &GdfSource<'a>,
     origin: (usize, usize),
@@ -1061,23 +1114,21 @@ fn class_tables(block: &GdfBlock) -> [[i16; 16]; 4] {
     })
 }
 
-/// Filters in place the run `block` of the stripe rows `output` (rows
-/// `block.base_stride` apart, the run at column `block.x`) whose top-left
-/// source sample sits at `origin`: per row pair it fills the next gradient
-/// row pair, then classifies and filters each 16-column chunk in one pass.
+/// Filters a staged column tile in place in `output`. The source rows have
+/// `TAP_REACH` samples of halo on each side and `TILE_STRIDE` samples of
+/// storage per row.
 #[inline(never)]
 pub(super) fn filter_run<O: GdfSample>(
-    source: &GdfSource<'_>,
-    origin: (usize, usize),
+    source: &[u16],
     block: &GdfBlock,
     output: &mut [O],
     scratch: &mut ClassScratch,
 ) -> Option<()> {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = fearless_simd::Level::baseline().as_avx2() {
-        return filter_run_with(avx2, inlane::InLane, source, origin, block, output, scratch);
+        return filter_run_with(avx2, inlane::InLane, source, block, output, scratch);
     }
-    crate::baseline_simd!(simd => filter_run_with(simd, Rough, source, origin, block, output, scratch))
+    crate::baseline_simd!(simd => filter_run_with(simd, Rough, source, block, output, scratch))
 }
 
 #[allow(clippy::inline_always)]
@@ -1085,21 +1136,25 @@ pub(super) fn filter_run<O: GdfSample>(
 fn filter_run_with<S: Simd, P: RowPairs<S>, O: GdfSample>(
     simd: S,
     pairs: P,
-    source: &GdfSource<'_>,
-    origin: (usize, usize),
+    source: &[u16],
     block: &GdfBlock,
     output: &mut [O],
     scratch: &mut ClassScratch,
 ) -> Option<()> {
-    let (run, class_cols) = (block.width, block.width >> 1);
-    if run == 0 || !run.is_multiple_of(2) || !block.height.is_multiple_of(2) {
+    let run = block.width;
+    if run == 0 || run > TILE_COLS || !run.is_multiple_of(2) || !block.height.is_multiple_of(2) {
         return None;
     }
-    let chunks = ClassScratch::chunks(class_cols);
+    let source = source.as_chunks::<TILE_STRIDE>().0;
+    let source = source.get(..block.height.checked_add(2 * TAP_REACH)?)?;
+    let chunks = ClassScratch::chunks(run >> 1);
     let (first, second) = scratch.grads.get_mut(..2 * chunks)?.split_at_mut(chunks);
-    let buffers = [first, second];
+    let mut buffers = [first, second];
     let error_row = ClassScratch::error_row(run);
-    let mut errors = scratch.errors.get_mut(..2 * error_row);
+    let (top_errors, bottom_errors) = scratch
+        .errors
+        .get_mut(..2 * error_row)?
+        .split_at_mut(error_row);
     let tables = class_tables(block);
     let params = GdfSymParams::new(block);
     let key = (
@@ -1122,95 +1177,65 @@ fn filter_run_with<S: Simd, P: RowPairs<S>, O: GdfSample>(
         scratch.table_key = Some(key);
     }
     let table = scratch.table.first_chunk()?;
-    let grad_rows = |row_pair: usize| gradient_source_rows(source, origin, class_cols, row_pair);
-    gradient_row(simd, &grad_rows(0)?, buffers[0])?;
+    let rows = source.get(TAP_REACH - 2..)?.first_chunk()?;
+    for (source, out) in tiled_gradient_sources(rows).zip(&mut *buffers[0]) {
+        store_gradients(pair_gradients(simd, source), out);
+    }
     let mut chunk_classes = [[0; 8]; TILE_COLS / 16];
     let chunk_classes = chunk_classes.get_mut(..run.div_ceil(16))?;
-    for row_pair in 0..block.height / 2 {
-        let (current, previous) = ((row_pair + 1) & 1, row_pair & 1);
-        gradient_row(simd, &grad_rows(row_pair + 1)?, buffers[current])?;
-        let (current, previous) = (&*buffers[current], &*buffers[previous]);
-        let window_rows = || {
-            source_rows(
-                source,
-                (origin.0, origin.1 + 2 * row_pair),
-                run + 2 * TAP_REACH,
-            )
-            .ok()
+    let full = run / 16 * 16;
+    for (row_pair, rows) in source.array_windows::<WINDOW_ROWS>().step_by(2).enumerate() {
+        let [first, second] = &mut buffers;
+        let (current, previous) = if row_pair & 1 == 0 {
+            (second, first)
+        } else {
+            (first, second)
         };
-        let tiled_base = (origin.1 + 2 * row_pair)
-            .checked_sub(TAP_REACH)
-            .zip(origin.0.checked_sub(TAP_REACH))
-            .filter(|_| source.stride == TILE_STRIDE)
-            .map(|(row, col)| row * TILE_STRIDE + col);
+        classify_tiled_gradient_row(
+            simd,
+            rows[TAP_REACH..].first_chunk()?,
+            current,
+            previous,
+            chunk_classes,
+            &tables,
+        )?;
+        let windows = rows.as_flattened().array_windows::<TILE_SPAN>().step_by(16);
+        let errors = top_errors[..full]
+            .as_chunks_mut::<16>()
+            .0
+            .iter_mut()
+            .zip(bottom_errors[..full].as_chunks_mut::<16>().0);
+        for ((window, classes), (top, bottom)) in windows.zip(&*chunk_classes).zip(errors) {
+            let (window, classes) = (TiledWindow(window), i32x8::from_slice(simd, classes));
+            pairs.rows(
+                simd,
+                &window,
+                ErrorRows([top, bottom], table),
+                classes,
+                (block, &params),
+            );
+        }
         let start = (2 * row_pair * block.base_stride).checked_add(block.x)?;
         let (top, bottom) = output
             .get_mut(start..)?
             .split_at_mut_checked(block.base_stride)?;
         let (top, bottom) = (top.get_mut(..run)?, bottom.get_mut(..run)?);
-        let mut next = pair_sum(simd, current.first()?, previous.first()?);
-        let grads = current.iter().zip(previous).skip(1);
-        for (classes, (current, previous)) in chunk_classes.iter_mut().zip(grads) {
-            let sums = next;
-            next = pair_sum(simd, current, previous);
-            *classes = classify_chunk(simd, sums, next, &tables).to_array();
-        }
-        let mut deferred = errors
-            .as_deref_mut()
-            .map(|errors| errors.split_at_mut(error_row));
-        let mut done = 0;
-        if let (Some(base), Some((top_errors, bottom_errors))) = (tiled_base, deferred.as_mut()) {
-            let span = source.samples.get(base..).unwrap_or_default();
-            let (top_errors, _) = top_errors.as_chunks_mut::<16>();
-            let (bottom_errors, _) = bottom_errors.as_chunks_mut::<16>();
-            let errors = top_errors.iter_mut().zip(bottom_errors);
-            for (classes, (top, bottom)) in chunk_classes.iter().take(run / 16).zip(errors) {
-                let Some(window) = span
-                    .get(16 * done..)
-                    .and_then(<[u16]>::first_chunk::<TILE_SPAN>)
-                else {
-                    break;
-                };
-                let (window, classes) = (TiledWindow(window), i32x8::from_slice(simd, classes));
-                let sink = ErrorRows([top, bottom], table);
-                pairs.rows(simd, &window, sink, classes, (block, &params));
-                done += 1;
-            }
-        }
-        for (x, classes) in (16 * done..run).step_by(16).zip(&chunk_classes[done..]) {
-            let classes = i32x8::from_slice(simd, classes);
-            let width = (run - x).min(16);
-            let tiled = tiled_base
-                .and_then(|base| source.samples.get(base + x..))
-                .and_then(<[u16]>::first_chunk::<TILE_SPAN>);
-            if width == 16
-                && let Some(span) = tiled
-            {
-                let top = top.get_mut(x..)?.first_chunk_mut::<16>()?;
-                let bottom = bottom.get_mut(x..)?.first_chunk_mut::<16>()?;
-                let window = TiledWindow(span);
-                pairs.rows(simd, &window, [top, bottom], classes, (block, &params));
-            } else if width == 16
-                && let Some(window) = window_at::<28>(&window_rows()?, x)
-            {
-                let top = top.get_mut(x..)?.first_chunk_mut::<16>()?;
-                let bottom = bottom.get_mut(x..)?.first_chunk_mut::<16>()?;
-                pairs.rows(simd, &window, [top, bottom], classes, (block, &params));
-            } else {
-                let classes = classes.to_array().map(GdfClass);
-                let output = [&mut top[x..], &mut bottom[x..]];
-                sym_rows_narrow(&window_rows()?, x, width, output, &classes, block, &params)?;
-            }
-        }
-        if let Some((top_errors, bottom_errors)) = deferred {
-            let end = 16 * done;
-            O::add_residuals(simd, top_errors.get(..end)?, top.get_mut(..end)?, block);
-            O::add_residuals(
-                simd,
-                bottom_errors.get(..end)?,
-                bottom.get_mut(..end)?,
+        let (top, top_tail) = top.split_at_mut(full);
+        let (bottom, bottom_tail) = bottom.split_at_mut(full);
+        O::add_residuals(simd, &top_errors[..full], top, block);
+        O::add_residuals(simd, &bottom_errors[..full], bottom, block);
+        if full != run {
+            let classes = chunk_classes.last()?.map(GdfClass);
+            let rows = rows.each_ref().map(<[u16; TILE_STRIDE]>::as_slice);
+            sym_rows_narrow(
+                &rows,
+                full,
+                run - full,
+                [top_tail, bottom_tail],
+                &classes,
                 block,
-            );
+                &params,
+            )?;
         }
     }
     Some(())

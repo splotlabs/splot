@@ -22,17 +22,14 @@ use super::super::coeff_state::{
     CoeffBlockLines, CoeffLevelWords, CoeffNonzeroList, LEVEL_STRIDE, LEVEL_WORDS_MASK,
     TileCoeffContextState, TileCoeffStateError,
 };
-use super::CoeffLoopContextError;
-use super::base_level_pass::{
-    CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError, tx_class_index,
-};
+use super::base_level_pass::{CoeffBaseDerivedLevelPassError, tx_class_index};
 use super::base_symbol::CoeffBaseSymbolReadError;
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::{
     COEFF_BASE_RANGE, CoeffMaxLevelConfig, CoeffTransformClass, LF_NUM_BASE_LEVELS,
     NUM_BASE_LEVELS, derive_coeff_max_level, visible_max_level,
 };
-use super::ordinary_pass::CoeffOrdinaryPassError;
+use super::ordinary_pass::{CoeffOrdinaryBranchError, CoeffOrdinaryPassError};
 use super::quant_pass::CoeffQuantPassError;
 use super::quant_state::{
     CoeffQuantStateAccumulator, CoeffQuantStateConfig, NonZeroCoeffQuantState, next_tcq_state,
@@ -43,6 +40,7 @@ use super::sign_symbol::{
     CoeffSignReadSymbol, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_input,
     read_preflighted_nonzero_coeff_sign,
 };
+use super::{CoeffLoopContextError, TxGeometry};
 
 const PHTHRESH: u32 = 4;
 
@@ -168,7 +166,7 @@ const SCAN_DIMS: usize = 4;
 const GRID_SCAN_LEN: usize = 3600;
 
 /// Where the `4 << wi` by `4 << hi` shape starts in [`GRID_SCANS`].
-const fn scan_shape_offset(wi: usize, hi: usize) -> usize {
+pub(super) const fn scan_shape_offset(wi: usize, hi: usize) -> usize {
     let (mut offset, mut w, mut h) = (0, 0, 0);
     while w < wi || (w == wi && h < hi) {
         offset += (4 << w) * (4 << h);
@@ -180,20 +178,11 @@ const fn scan_shape_offset(wi: usize, hi: usize) -> usize {
     offset
 }
 
-/// [`scan_shape_offset`] by `[wi][hi]`.
-static SCAN_SHAPE_OFFSETS: [[usize; SCAN_DIMS]; SCAN_DIMS] = {
-    let mut out = [[0; SCAN_DIMS]; SCAN_DIMS];
-    let mut i = 0;
-    while i < SCAN_DIMS * SCAN_DIMS {
-        out[i / SCAN_DIMS][i % SCAN_DIMS] = scan_shape_offset(i / SCAN_DIMS, i % SCAN_DIMS);
-        i += 1;
-    }
-    out
-};
-
 /// The § 5.20.7.30 scan of every block shape per transform class, each
-/// position as its level-grid index, its context class at
-/// [`CTX_CLASS_SHIFT`] and the position itself above bit 16.
+/// entry holds the grid index in bits 0..11, context class in 11..13,
+/// raster position divided by four in 13..21 and scan index in 22..32.
+/// Both the raster stride and `LEVEL_STRIDE` are multiples of four, so
+/// the two low raster bits already occur in the grid index.
 static GRID_SCANS: [[u32; GRID_SCAN_LEN]; 3] = {
     let classes = [
         TransformClass::TwoD,
@@ -215,7 +204,7 @@ static GRID_SCANS: [[u32; GRID_SCAN_LEN]; 3] = {
                     let (row, col) = (pos >> width_log2, pos & ((1 << width_log2) - 1));
                     let grid = row * LEVEL_STRIDE + col;
                     let context = ctx_class(row, col) << CTX_CLASS_SHIFT;
-                    out[class][base + c] = (grid | context | (pos << 16)) as u32;
+                    out[class][base + c] = (grid | context | ((pos >> 2) << 13) | (c << 22)) as u32;
                     c += 1;
                 }
                 hi += 1;
@@ -240,7 +229,7 @@ static GRID_EXTENTS: [[u16; GRID_SCAN_LEN]; 3] = {
                 let base = scan_shape_offset(wi, hi);
                 let (mut c, mut extent) = (0, 0);
                 while c < (4 << wi) * (4 << hi) {
-                    let pos = (GRID_SCANS[class][base + c] >> 16) as u16;
+                    let pos = entry_pos(GRID_SCANS[class][base + c]) as u16;
                     if pos >= extent {
                         extent = pos + 1;
                     }
@@ -256,54 +245,36 @@ static GRID_EXTENTS: [[u16; GRID_SCAN_LEN]; 3] = {
     out
 };
 
-/// One past the largest raster position of the first `eob` scan positions
-/// of a block of `class` whose sides are `2^width_log2` and `2^height_log2`
-/// (each at most 32 after the § 7.13.3 adjustment): the coefficients of the
-/// block that can be nonzero lie below it. The whole block for an invalid
-/// shape or `eob`.
+/// One past the largest raster position the scan can reach at this EOB.
 #[allow(
     clippy::inline_always,
     reason = "measured: out of line it costs 30 instructions per block"
 )]
 #[inline(always)]
-pub(crate) fn scan_extent(
-    class: CoeffTransformClass,
-    (width_log2, height_log2): (usize, usize),
-    eob: usize,
-) -> usize {
-    let (wi, hi) = (width_log2.clamp(2, 5) - 2, height_log2.clamp(2, 5) - 2);
-    let len = 16 << (wi + hi);
+pub(crate) fn scan_extent(class: CoeffTransformClass, tx: &TxGeometry, eob: usize) -> usize {
+    let len = usize::from(tx.width) * usize::from(tx.height);
     if eob == 0 || eob > len {
         return len;
     }
-    let offset = SCAN_SHAPE_OFFSETS[wi.min(3)][hi.min(3)];
     GRID_EXTENTS[tx_class_index(class)]
-        .get(offset + eob - 1)
+        .get(usize::from(tx.scan_offset) + eob - 1)
         .map_or(len, |&extent| usize::from(extent))
 }
 
-/// The scan of a `width` by `height` block of `class` up to `eob`.
+/// The transform's coefficient scan through its EOB.
 pub(super) fn grid_scan(
     class: CoeffTransformClass,
-    width: usize,
-    height: usize,
+    tx: &TxGeometry,
     eob: usize,
 ) -> Result<&'static [u32], CoeffOrdinaryPassError> {
-    let dim = |extent: usize| {
-        (extent.is_power_of_two() && (4..=32).contains(&extent))
-            .then(|| extent.trailing_zeros() as usize - 2)
-    };
-    let (Some(wi), Some(hi)) = (dim(width), dim(height)) else {
-        return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width }.into());
-    };
-    let len = width * height;
+    let len = usize::from(tx.width) * usize::from(tx.height);
     if eob == 0 {
         return Err(CoeffLoopContextError::InvalidScanWalkEob { eob }.into());
     }
     if eob > len {
         return Err(CoeffLoopContextError::ScanWalkEobOutOfRange { eob, scan_len: len }.into());
     }
-    let start = SCAN_SHAPE_OFFSETS[wi][hi];
+    let start = usize::from(tx.scan_offset);
     let scans = &GRID_SCANS[tx_class_index(class)];
     Ok(scans.get(start..start + eob).unwrap_or_default())
 }
@@ -334,7 +305,10 @@ pub(crate) const fn lf_scan_end<const CLASS: usize, const LUMA: bool>(
 #[derive(Clone, Copy)]
 pub(crate) struct CoeffTransformBlockInput<'l> {
     pub(crate) start: NonZeroCoeffBlockStart,
-    pub(crate) config: CoeffBaseDerivedLevelPassConfig,
+    pub(crate) plane: usize,
+    pub(crate) tx_class: CoeffTransformClass,
+    pub(crate) parity_hiding: bool,
+    pub(crate) use_tcq: bool,
     pub(crate) lines: &'l CoeffBlockLines,
     pub(crate) lossless: bool,
 }
@@ -347,39 +321,37 @@ pub(crate) fn decode_ordinary_transform_block(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    input: CoeffTransformBlockInput<'_>,
+    mut input: CoeffTransformBlockInput<'_>,
     quant: &mut [i32],
-) -> Result<usize, CoeffOrdinaryPassError> {
+) -> Result<usize, CoeffOrdinaryBranchError> {
+    input.parity_hiding &= !input.lossless;
+    input.use_tcq &= !input.lossless;
     preflight(&input, quant.len())?;
     let run = if symbols.cdf_update_mode() == CdfUpdateMode::Enabled {
-        dispatch::<true>(input.config)
+        dispatch::<true>(&input)
     } else {
-        dispatch::<false>(input.config)
+        dispatch::<false>(&input)
     };
-    run(state, cdfs, symbols, &input, quant)
+    Ok(run(state, cdfs, symbols, &input, quant)?)
 }
 
 fn preflight(
     input: &CoeffTransformBlockInput<'_>,
     quant_len: usize,
 ) -> Result<(), CoeffOrdinaryPassError> {
-    let config = input.config;
-    if config.parity_hiding && config.use_tcq {
+    if input.parity_hiding && input.use_tcq {
         return Err(CoeffBaseDerivedLevelPassError::InconsistentParityAndTcq.into());
     }
-    if (config.plane > 0 && (config.parity_hiding || config.use_tcq))
-        || (config.use_tcq && config.tx_class != CoeffTransformClass::TwoD)
+    if (input.plane > 0 && (input.parity_hiding || input.use_tcq))
+        || (input.use_tcq && input.tx_class != CoeffTransformClass::TwoD)
     {
         return Err(CoeffBaseDerivedLevelPassError::UnsupportedToolClass.into());
     }
-    if input.lines.plane != config.plane {
+    if input.lines.plane != input.plane {
         return Err(TileCoeffStateError::InvalidPlane {
             plane: input.lines.plane,
         }
         .into());
-    }
-    if input.lossless && config.use_tcq {
-        return Err(CoeffQuantPassError::InconsistentTcqConfig.into());
     }
     let coeff_count = input.start.coeff_count();
     if quant_len > coeff_count {
@@ -395,7 +367,7 @@ fn preflight(
 struct Block<'a> {
     /// The scan up to the EOB, see [`GRID_SCANS`].
     scan: &'static [u32],
-    config: CoeffBaseDerivedLevelPassConfig,
+    width_log2: u32,
     dc: CoeffSignSourceDeriveConfig<'a>,
     lossless: bool,
 }
@@ -407,13 +379,13 @@ struct BlockSummary {
 
 #[allow(clippy::inline_always, reason = "measured: one body per tool set")]
 #[inline(always)]
-fn dispatch<const UPD: bool>(config: CoeffBaseDerivedLevelPassConfig) -> RunFn {
+fn dispatch<const UPD: bool>(input: &CoeffTransformBlockInput<'_>) -> RunFn {
     use CoeffTransformClass::{Horizontal, TwoD, Vertical};
     match (
-        config.tx_class,
-        config.plane == 0,
-        config.use_tcq,
-        config.parity_hiding,
+        input.tx_class,
+        input.plane == 0,
+        input.use_tcq,
+        input.parity_hiding,
     ) {
         (TwoD, true, true, _) => run::<0, true, true, false, UPD>,
         (TwoD, true, false, true) => run::<0, true, false, true, UPD>,
@@ -446,21 +418,22 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
     input: &CoeffTransformBlockInput<'_>,
     quant: &mut [i32],
 ) -> Result<usize, CoeffOrdinaryPassError> {
-    let config = input.config;
+    let tx = input.start.tx();
+    let width_log2 = u32::from(tx.width_log2);
     let tx_class = [
         CoeffTransformClass::TwoD,
         CoeffTransformClass::Horizontal,
         CoeffTransformClass::Vertical,
     ][CLASS];
     let eob = input.start.eob_read();
-    let scan = grid_scan(tx_class, config.tx_width, config.tx_height, eob)?;
+    let scan = grid_scan(tx_class, tx, eob)?;
     let lines = input.lines;
-    let (above_dc, left_dc, levels, nonzero) = state.dc_lines_and_levels(config.plane)?;
+    let (above_dc, left_dc, levels, nonzero) = state.dc_lines_and_levels(input.plane)?;
     let block = Block {
         scan,
-        config,
+        width_log2,
         dc: CoeffSignSourceDeriveConfig {
-            plane: config.plane,
+            plane: input.plane,
             plane_type: usize::from(!LUMA),
             tx_class,
             is_hidden: false,
@@ -477,20 +450,20 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
     let Some(&eob_entry) = scan.last() else {
         return Err(CoeffLoopContextError::InvalidScanWalkEob { eob: 0 }.into());
     };
-    let lf_end = lf_scan_end::<CLASS, LUMA>(config.tx_width, config.tx_height).max(1);
+    let lf_end = lf_scan_end::<CLASS, LUMA>(usize::from(tx.width), usize::from(tx.height)).max(1);
     let eob_index = scan.len() - 1;
     let mut rows = cdfs
         .coeff_rows_mut()
-        .level_rows(config.tx_size_ctx)
+        .level_rows(usize::from(tx.size_ctx))
         .map_err(|error| CoeffBaseSymbolReadError::from(BlockSymbolTraceReadError::from(error)))
         .map_err(CoeffBaseDerivedLevelPassError::from)?;
-    let eob_ctx = coeff_base_eob_ctx(eob_index, config.tx_width_log2, config.tx_height);
+    let eob_ctx = coeff_base_eob_ctx(eob_index, width_log2, usize::from(tx.height));
     let eob_level = read_eob_base::<LUMA, UPD>(symbols, &mut rows, eob_ctx, eob_index < lf_end) + 1;
     let mut pass = LevelPass::<UPD> {
         symbols: symbols.clone(),
         levels: &mut *levels,
-        width_log2: config.tx_width_log2,
-        plane: config.plane,
+        width_log2,
+        plane: input.plane,
         tcq: 0,
         tcq_q0: 0,
         ph: 0,
@@ -547,6 +520,11 @@ pub(super) const fn entry_grid(entry: u32) -> usize {
     entry as usize & LEVEL_WORDS_MASK
 }
 
+#[inline]
+pub(super) const fn entry_pos(entry: u32) -> usize {
+    (((entry >> 11) & 0x3fc) | (entry & 3)) as usize
+}
+
 #[allow(clippy::inline_always, reason = "measured: per-coefficient index")]
 #[inline(always)]
 const fn ctx_class_of(entry: u32) -> usize {
@@ -568,7 +546,7 @@ struct LevelPass<'a, 'r, const UPD: bool> {
     tcq_q0: usize,
     /// Bit 0 the `sumAbs1` parity, the bits above the nonzero count.
     ph: u32,
-    /// The scan indices above 0 of the nonzero levels so far, in decode
+    /// The packed scan entries of the nonzero AC levels so far, in decode
     /// order, as its first `nonzero_len` entries.
     nonzero: &'r mut CoeffNonzeroList,
     nonzero_len: usize,
@@ -685,7 +663,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         rows: &mut CoeffLevelRows<'_>,
         entry: u32,
     ) -> u32 {
-        let (grid, pos) = (entry_grid(entry), (entry >> 16) as usize);
+        let (grid, pos) = (entry_grid(entry), entry_pos(entry));
         let mag = if CLASS == 0 {
             self.base_mag::<CLASS, LUMA, true, true>(grid)
         } else {
@@ -750,24 +728,19 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     /// Records a decoded level and advances the TCQ and parity state.
     #[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
     #[inline(always)]
-    fn finish<const TCQ: bool, const PH: bool>(
-        &mut self,
-        scan_index: usize,
-        grid: usize,
-        level: u32,
-    ) {
+    fn finish<const TCQ: bool, const PH: bool>(&mut self, entry: u32, level: u32, ac: bool) {
         let nonzero = level != 0;
         let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
-        self.levels[grid & LEVEL_WORDS_MASK] = LEVEL_WORD[(q0 << 4) | (level as usize & 15)];
-        if scan_index > 0 {
-            self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = scan_index as u32;
+        self.levels[entry_grid(entry)] = LEVEL_WORD[(q0 << 4) | (level as usize & 15)];
+        if ac {
+            self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = entry;
             self.nonzero_len += usize::from(nonzero);
         }
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;
             self.tcq = next_tcq_state(self.tcq, level);
         }
-        if PH && scan_index > 0 {
+        if PH && ac {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
             self.ph = (self.ph ^ (clipped & 1)) + (u32::from(level != 0) << 1);
         }
@@ -780,13 +753,12 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         &mut self,
         mut rows: CoeffLevelRows<'_>,
         hf: &[u32],
-        lf_end: usize,
     ) {
-        for (offset, &entry) in hf.iter().enumerate().rev() {
+        for &entry in hf.iter().rev() {
             let grid = entry_grid(entry);
             let level = self.read_hf_base::<CLASS, LUMA>(&mut rows, entry);
             let level = self.add_range::<CLASS, LUMA, false>(&mut rows, grid, false, level);
-            self.finish::<TCQ, PH>(lf_end + offset, grid, level);
+            self.finish::<TCQ, PH>(entry, level, true);
         }
     }
 
@@ -798,11 +770,11 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         mut rows: CoeffLevelRows<'_>,
         lf: &[u32],
     ) {
-        for (offset, &entry) in lf.iter().enumerate().rev() {
+        for &entry in lf.iter().rev() {
             let grid = entry_grid(entry);
             let level = self.read_lf_base::<CLASS, LUMA, false>(&mut rows, entry);
             let level = self.add_range::<CLASS, LUMA, true>(&mut rows, grid, false, level);
-            self.finish::<TCQ, PH>(1 + offset, grid, level);
+            self.finish::<TCQ, PH>(entry, level, true);
         }
     }
 
@@ -827,17 +799,17 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         } else {
             self.add_range::<CLASS, LUMA, false>(rows, eob_grid, false, eob_level)
         };
-        self.finish::<TCQ, PH>(eob_index, eob_grid, eob_level);
+        self.finish::<TCQ, PH>(eob_entry, eob_level, eob_index != 0);
         if eob_index == 0 {
             return;
         }
-        self.hf_pass::<CLASS, LUMA, TCQ, PH>(
-            rows.reborrow(),
-            scan.get(lf_end..eob_index).unwrap_or_default(),
-            lf_end,
-        );
-        let lf = scan.get(1..lf_end.min(eob_index)).unwrap_or_default();
-        self.lf_pass::<CLASS, LUMA, TCQ, PH>(rows.reborrow(), lf);
+        if lf_end < eob_index {
+            self.hf_pass::<CLASS, LUMA, TCQ, PH>(rows.reborrow(), &scan[lf_end..eob_index]);
+        }
+        let end = lf_end.min(eob_index);
+        if end > 1 {
+            self.lf_pass::<CLASS, LUMA, TCQ, PH>(rows.reborrow(), &scan[1..end]);
+        }
         let dc_grid = entry_grid(scan[0]);
         let level = if PH && (self.ph >> 1) >= PHTHRESH {
             let mag = self.base_mag::<CLASS, LUMA, false, false>(dc_grid);
@@ -847,7 +819,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
             let level = self.read_lf_base::<CLASS, LUMA, true>(rows, scan[0]);
             self.add_range::<CLASS, LUMA, true>(rows, dc_grid, true, level)
         };
-        self.finish::<TCQ, PH>(0, dc_grid, level);
+        self.finish::<TCQ, PH>(scan[0], level, false);
     }
 }
 
@@ -878,10 +850,10 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         CoeffTransformClass::Horizontal,
         CoeffTransformClass::Vertical,
     ][CLASS];
-    let plane = if LUMA { 0 } else { block.config.plane.max(1) };
+    let plane = if LUMA { 0 } else { block.dc.plane.max(1) };
     let scan = block.scan;
     let eob = scan.len();
-    let wl = block.config.tx_width_log2;
+    let wl = block.width_log2;
     let col_mask = (1usize << wl) - 1;
     let mut read_quant = CoeffReadQuantState::new(CoeffReadQuantConfig {
         is_hidden: facts.is_hidden,
@@ -909,16 +881,13 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     let mut run = symbols.bypass_run();
     let mut level_sum = 0u32;
     let lf_end = facts.lf_end.min(eob);
-    for &scan_index in nonzero {
-        let scan_index = scan_index as usize;
+    for &scan_entry in nonzero {
+        let scan_index = (scan_entry >> 22) as usize;
         let max_level = if scan_index < lf_end { max_lf } else { max_hf };
-        let Some(&scan_entry) = scan.get(scan_index) else {
-            continue;
-        };
         let grid = entry_grid(scan_entry);
         let word = levels[grid];
         levels[grid] = 0;
-        let pos = (scan_entry >> 16) as usize;
+        let pos = entry_pos(scan_entry);
         let (level, tcq_q0) = ((word >> 16) & 0xff, word >> Q0_BIT != 0);
         let entry = CoeffScanEntry::new(scan_index, pos, pos >> wl, pos & col_mask);
         let axis_cdf = LUMA
@@ -971,7 +940,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     symbols.end_bypass_run(run);
     let mut quant_state = quant_state.with_cul_level(level_sum);
 
-    let (pos, grid) = ((scan[0] >> 16) as usize, entry_grid(scan[0]));
+    let (pos, grid) = (entry_pos(scan[0]), entry_grid(scan[0]));
     let word = levels[grid];
     levels[grid] = 0;
     let level = (word >> 16) & 0xff;

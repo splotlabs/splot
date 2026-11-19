@@ -134,8 +134,6 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
             x: 0,
             y: 0,
             tx_size: 0,
-            log2_width: 2,
-            log2_height: 2,
             cctx_pair_delta: 1,
             coeffs: u_coeffs,
         },
@@ -144,8 +142,6 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
             x: 4,
             y: 0,
             tx_size: 0,
-            log2_width: 2,
-            log2_height: 2,
             cctx_pair_delta: -1,
             coeffs: all_zero_inter_coeff_block(),
         },
@@ -217,9 +213,7 @@ fn invalid_inter_residual_tx_size_is_reconstruction_state() {
         plane: PlaneId::Y,
         x: 0,
         y: 0,
-        tx_size: usize::MAX,
-        log2_width: 0,
-        log2_height: 0,
+        tx_size: u8::MAX,
         cctx_pair_delta: 0,
         coeffs: all_zero_inter_coeff_block(),
     }];
@@ -261,9 +255,7 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
             plane: PlaneId::U,
             x: 0,
             y: 0,
-            tx_size: usize::MAX,
-            log2_width: 0,
-            log2_height: 0,
+            tx_size: u8::MAX,
             cctx_pair_delta: 1,
             coeffs: u_coeffs,
         },
@@ -271,9 +263,7 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
             plane: PlaneId::V,
             x: 0,
             y: 0,
-            tx_size: usize::MAX,
-            log2_width: 0,
-            log2_height: 0,
+            tx_size: u8::MAX,
             cctx_pair_delta: -1,
             coeffs: all_zero_inter_coeff_block(),
         },
@@ -650,7 +640,7 @@ fn missing_reference_cdf_context_is_a_typed_reference_state_error() {
 #[test]
 fn missing_reference_ccso_params_is_a_typed_reference_state_error() {
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_ccso_params = RefSlots::from_iter_checked([None]).expect("reference slots fit");
+    reference.ref_ccso_headers = RefSlots::from_iter_checked([None]).expect("reference slots fit");
 
     for slot in [0, 1] {
         let error = reference
@@ -707,8 +697,11 @@ fn missing_reference_ccso_plane_is_a_malformed_source_diagnostic() {
         let plane = &mut core.ccso_params.as_mut().expect("CCSO state").planes[0];
         plane.reuse_ccso = reuse_ccso;
         plane.sb_reuse_ccso = sb_reuse_ccso;
-        reference.ref_ccso_params =
-            RefSlots::from_iter_checked([Some(saved)]).expect("reference slots fit");
+        let mut saved_header = core.clone();
+        saved_header.ccso_params = Some(saved);
+        reference.ref_ccso_headers =
+            RefSlots::from_iter_checked([Some(std::sync::Arc::new(saved_header))])
+                .expect("reference slots fit");
         let error =
             super::super::resolve_ccso_reference_reuse(&mut core, &reference, offset, Some(2))
                 .expect_err("missing or disabled saved CCSO plane");

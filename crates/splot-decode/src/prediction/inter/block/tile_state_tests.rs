@@ -142,8 +142,18 @@ fn inter_tile_constructor_allocation_errors_stay_reconstruction_failures() {
 
 #[test]
 fn loop_restoration_records_rebase_each_tile_once_in_append_order() {
-    let mut blocks = vec![lr_source_block(Some(0), 0)];
-    let mut filters = vec![lr_unit_filter(0)];
+    let mut first_blocks = vec![lr_source_block(Some(0), 0)];
+    let mut first_filters = vec![lr_unit_filter(0)];
+    let first = (first_blocks.as_ptr(), first_filters.as_ptr());
+    let (mut blocks, mut filters) = (Vec::new(), Vec::new());
+    append_lr_records(
+        &mut blocks,
+        &mut filters,
+        &mut first_blocks,
+        &mut first_filters,
+    )
+    .unwrap();
+    assert_eq!((blocks.as_ptr(), filters.as_ptr()), first);
 
     append_lr_records(
         &mut blocks,

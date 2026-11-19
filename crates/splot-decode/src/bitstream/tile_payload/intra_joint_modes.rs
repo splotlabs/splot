@@ -29,6 +29,19 @@ pub(crate) struct MiGrid<T> {
 }
 
 impl<T: Copy> MiGrid<T> {
+    fn empty(default: T) -> Self {
+        Self {
+            origin_row: 0,
+            origin_col: 0,
+            rows: 0,
+            cols: 0,
+            window: SbRowWindow::new(0, SbRowWindow::WHOLE_TILE_SB_H4),
+            readable: (0, 0, 0),
+            default,
+            cells: Vec::new(),
+        }
+    }
+
     pub(crate) fn into_cells(self) -> Vec<T> {
         self.cells
     }
@@ -414,6 +427,13 @@ impl TileIntraFactsState {
         Ok(Self { grid })
     }
 
+    /// The tile cannot publish collocated SDP luma facts.
+    pub(crate) fn disabled() -> Self {
+        Self {
+            grid: MiGrid::empty(IntraFacts::NONE),
+        }
+    }
+
     pub(crate) fn y_mode_facts_at(&self, r: usize, c: usize) -> Option<TileIntraYModeFacts> {
         self.grid.cell(r, c).and_then(IntraFacts::y_mode_facts)
     }
@@ -482,19 +502,9 @@ impl TileSegmentIdState {
     /// With segmentation off every segment id is zero, so the grids hold no
     /// cells: reads fall outside them and records are dropped.
     pub(crate) fn disabled() -> Self {
-        let grid = || MiGrid {
-            origin_row: 0,
-            origin_col: 0,
-            rows: 0,
-            cols: 0,
-            window: SbRowWindow::new(0, SbRowWindow::WHOLE_TILE_SB_H4),
-            readable: (0, 0, 0),
-            default: 0,
-            cells: Vec::new(),
-        };
         Self {
-            grid: grid(),
-            predicted: grid(),
+            grid: MiGrid::empty(0),
+            predicted: MiGrid::empty(0),
         }
     }
 

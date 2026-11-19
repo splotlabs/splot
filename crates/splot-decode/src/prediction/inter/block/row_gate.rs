@@ -55,7 +55,6 @@ use super::super::{
 };
 use super::deferred_recon::InterReconCommand;
 use super::tile::ReconRow;
-use crate::Result;
 use crate::pipeline::inflight::RefFrameSlot;
 
 /// Reference lists a frame header can name: `REFS_PER_FRAME` (AV2 § 3) plus the
@@ -157,16 +156,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
     /// Whether every named reference frame has settled, which admits every row.
     pub(super) fn is_ready(&self) -> bool {
         self.settle.is_ready()
-    }
-
-    /// Blocks the calling driver thread until every named reference frame has
-    /// settled, which admits every row.
-    ///
-    /// # Errors
-    ///
-    /// Returns the referenced frame's own filter-phase diagnostic.
-    pub(super) fn wait(&self) -> Result<()> {
-        self.settle.wait()
     }
 
     /// The per-list reference-row requirement of one parsed row.

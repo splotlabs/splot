@@ -11,11 +11,9 @@ use super::{
     TilePartitionTraversalError, plane_range_for_tree_type,
 };
 
-/// Mode-info positions are below `MiRows`/`MiCols`, which a `u32` frame size
-/// bounds, and a position inside a superblock is below 64.
+/// Leaf position in the superblock, measured in 4×4 cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DecodedLeafPublication {
-    superblock_origin: [u32; 2],
     sub_block_origin: [u8; 2],
     block_size: BlockSize,
     tree_type: PartitionTreeType,
@@ -46,18 +44,10 @@ impl DecodedLeafPublication {
     ) -> Self {
         let sub = [r & sb_mask, c & sb_mask];
         Self {
-            superblock_origin: [(r - sub[0]) as u32, (c - sub[1]) as u32],
             sub_block_origin: [sub[0] as u8, sub[1] as u8],
             block_size,
             tree_type,
         }
-    }
-
-    pub(crate) const fn superblock_origin(self) -> [usize; 2] {
-        [
-            self.superblock_origin[0] as usize,
-            self.superblock_origin[1] as usize,
-        ]
     }
 
     const fn sub_block_origin(self) -> [usize; 2] {
@@ -67,37 +57,22 @@ impl DecodedLeafPublication {
         ]
     }
 
-    pub(crate) const fn block_origin(self) -> [usize; 2] {
-        let ([r, c], [sr, sc]) = (self.superblock_origin(), self.sub_block_origin());
-        [r + sr, c + sc]
-    }
-
     /// The leaf's position and size in 4x4 units when it codes the luma plane —
     /// § 5.20.4.1 invokes the § 7.22 motion-field storage only for those leaves.
-    pub(crate) fn luma_tree_block(self) -> Option<(usize, usize, usize, usize)> {
+    pub(crate) fn luma_tree_block(
+        self,
+        [r, c]: [usize; 2],
+    ) -> Option<(usize, usize, usize, usize)> {
         if matches!(self.tree_type, PartitionTreeType::ChromaPart) {
             return None;
         }
-        let [mi_row, mi_col] = self.block_origin();
+        let [sr, sc] = self.sub_block_origin();
         Some((
-            mi_row,
-            mi_col,
+            r + sr,
+            c + sc,
             self.block_size.num_4x4_wide().ok()?,
             self.block_size.num_4x4_high().ok()?,
         ))
-    }
-
-    pub(crate) fn prepare_block_decoded(
-        self,
-        block_decoded: &mut TileBlockDecodedState,
-        current_superblock: &mut Option<[usize; 2]>,
-    ) {
-        let origin = self.superblock_origin();
-        if *current_superblock == Some(origin) {
-            return;
-        }
-        block_decoded.clear_superblock(origin[0], origin[1]);
-        *current_superblock = Some(origin);
     }
 
     pub(crate) fn publish_block_decoded(
@@ -185,32 +160,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn block_decoded_publication_clears_after_skipped_different_origin() {
-        let mut state = TileBlockDecodedState::new(3, 1, 1, 16, 32, 32).unwrap();
-        let mut current_superblock = None;
-        let first = DecodedLeafPublication {
-            superblock_origin: [0, 0],
-            sub_block_origin: [0, 0],
-            block_size: BlockSize::new(6).unwrap(),
-            tree_type: PartitionTreeType::Shared,
-        };
-
-        first.prepare_block_decoded(&mut state, &mut current_superblock);
-        first.publish_block_decoded(&mut state).unwrap();
-        assert_eq!(state.count_top_right_avail(0, 1, 1, 1), 1);
-        assert_eq!(state.count_top_right_avail(1, 1, 1, 1), 0);
-
-        let skipped_precomputed = DecodedLeafPublication {
-            superblock_origin: [0, 16],
-            ..first
-        };
-        assert_eq!(skipped_precomputed.superblock_origin(), [0, 16]);
-        let second = DecodedLeafPublication {
-            superblock_origin: [16, 0],
-            ..first
-        };
-        second.prepare_block_decoded(&mut state, &mut current_superblock);
-        assert_eq!(state.count_top_right_avail(0, 1, 1, 1), 0);
-        assert_eq!(current_superblock, Some([16, 0]));
+    fn leaf_publication_uses_the_owning_superblock_origin() {
+        let size = BlockSize::new(6).unwrap();
+        let publication = DecodedLeafPublication::at(21, 33, 15, size, PartitionTreeType::Shared);
+        let mut state = TileBlockDecodedState::new(3, 1, 1, 16, 64, 64).unwrap();
+        let origin = [16, 32];
+        let (r, c, _, _) = publication.luma_tree_block(origin).unwrap();
+        assert_eq!([r, c], [21, 33]);
+        state.clear_superblock(origin[0], origin[1]);
+        publication.publish_block_decoded(&mut state).unwrap();
+        assert_eq!(state.count_top_right_avail(0, 0, 6, 1), 1);
+        assert_eq!(state.count_top_right_avail(0, 0, 5, 1), 0);
     }
 }

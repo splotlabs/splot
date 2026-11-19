@@ -26,13 +26,13 @@ fn is_thin_4xn_nx4_block(size: BlockSize) -> bool {
 
 /// `block` placed at its leaf in a tile that starts at 4x4 position `(row, col)`.
 #[inline]
-pub(super) fn placed_inter_block_at(
+pub(super) fn placed_inter_block_at<B>(
     frontier: &DecodeBlockFrontier,
     (tile_row_start, tile_col_start): (usize, usize),
     (n4w, n4h): (usize, usize),
     chroma_planes: bool,
-    block: InterBlock,
-) -> Result<PlacedInterBlock> {
+    block: B,
+) -> Result<PlacedInterBlock<B>> {
     let luma_x = frontier.c * 4;
     let luma_y = frontier.r * 4;
     let luma_w = n4w * 4;

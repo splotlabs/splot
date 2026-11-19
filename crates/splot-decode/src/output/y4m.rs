@@ -16,12 +16,12 @@ use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::output::film_grain::{GrainPlanes, write_display};
 use crate::pipeline::PipelineDecodedFrame;
 
-pub(crate) fn write_y4m_stream_to_writer<W: Write + Send>(
+pub(crate) fn write_y4m_stream_to_writer(
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
-    output: W,
-) -> Result<W> {
+    output: &mut (dyn Write + Send),
+) -> Result<()> {
     let mut target = Some(output);
     let mut writer = None;
     let mut sample_bit_depth = None;
@@ -62,7 +62,7 @@ pub(crate) fn write_y4m_stream_to_writer<W: Write + Send>(
         )
     })?;
     writer.flush().map_err(map_y4m_writer_error)?;
-    Ok(writer.into_inner())
+    Ok(())
 }
 
 fn ensure_y4m_sample_bit_depth(expected: &mut Option<BitDepth>, actual: BitDepth) -> Result<()> {
@@ -80,9 +80,9 @@ fn ensure_y4m_sample_bit_depth(expected: &mut Option<BitDepth>, actual: BitDepth
     }
 }
 
-fn write_y4m_frame<T: ReconSample, W: Write>(
-    writer: &mut Option<Y4mWriter<W>>,
-    output: &mut Option<W>,
+fn write_y4m_frame<'w, T: ReconSample>(
+    writer: &mut Option<Y4mWriter<&'w mut (dyn Write + Send)>>,
+    output: &mut Option<&'w mut (dyn Write + Send)>,
     frame: &DecodedFrame<T>,
     frame_rate: impl FnOnce() -> std::result::Result<Y4mFrameRate, Y4mError>,
 ) -> Result<()> {

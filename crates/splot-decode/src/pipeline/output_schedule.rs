@@ -46,7 +46,7 @@ impl EmissionQueue {
     fn drain_settled(
         &mut self,
         frames: &FrameStore,
-        emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
+        emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
     ) -> Result<()> {
         self.drain(frames, emit, false)
     }
@@ -55,7 +55,7 @@ impl EmissionQueue {
     pub(super) fn flush(
         &mut self,
         frames: &FrameStore,
-        emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
+        emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
     ) -> Result<()> {
         self.drain(frames, emit, true)
     }
@@ -63,7 +63,7 @@ impl EmissionQueue {
     fn drain(
         &mut self,
         frames: &FrameStore,
-        emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
+        emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
         wait: bool,
     ) -> Result<()> {
         while let Some(&frame_index) = self.pending.front() {
@@ -104,7 +104,7 @@ pub(super) fn charge_emitted_outputs(
     scheduler: &OutputScheduler,
     queue: &mut EmissionQueue,
     newly: &[usize],
-    emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
+    emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<()> {
     if !newly.is_empty() {
         let requested = options
@@ -515,7 +515,7 @@ mod tests {
             motion_field: MotionFieldHandle::pending_with_layout(
                 MotionFieldLayout::new(1, 1, 16).ok_or("valid motion-field layout")?,
             ),
-            ccso_params: None,
+            ccso_header: None,
             ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
             segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
                 crate::bitstream::tile_payload::FrameSegmentIdMap::new(1, width.div_ceil(4))

@@ -607,10 +607,10 @@ pub(super) fn decode_compound_inter_block(
             tip_size_16x16: false,
             blend: compound_blend,
         },
-        InterBlock {
-            compound_blend,
+        super::deferred_recon::ParsedInterBlock {
+            ref_frame0: compound.ref_frame0,
             optflow_distances,
-            ..super::parsed_inter_block(compound.ref_frame0, Some(compound.ref_frame1), interp)
+            ..Default::default()
         },
         compound_deblock_sub_pu_size(
             motion.use_optflow,
@@ -878,17 +878,19 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     placed: &PlacedInterBlock,
-    compound: super::super::compound::CompoundBlockSyntax,
-    warp_params: [Option<[i32; 6]>; 2],
     motion: Option<&mc::RefinedUnits>,
     mi_rows: usize,
     mi_cols: usize,
     current_order_hint: u32,
 ) -> Result<()> {
+    let block = &placed.block;
+    let Some(ref_frame1) = block.ref_frame1 else {
+        return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
+    };
     let (mi_row, mi_col) = (placed.luma_y() / 4, placed.luma_x() / 4);
     let uniform = motion.is_none()
-        && warp_params == [None, None]
-        && !matches!(placed.block.compound_blend, mc::CompoundBlend::Wedge { .. });
+        && block.warp_params == [None, None]
+        && !matches!(block.compound_blend, mc::CompoundBlend::Wedge { .. });
     let (step_w, step_h) = if uniform {
         (placed.luma_w().max(8), placed.luma_h().max(8))
     } else {
@@ -912,21 +914,21 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
                     })
                 };
                 [
-                    unit_mv(warp_params[0], compound.mv0),
-                    unit_mv(warp_params[1], compound.mv1),
+                    unit_mv(block.warp_params[0], block.mv),
+                    unit_mv(block.warp_params[1], block.mv1),
                 ]
             };
             let allowed = wedge_temporal_allowed_lists(
-                placed.block.compound_blend,
+                block.compound_blend,
                 placed.luma_w(),
                 placed.luma_h(),
                 x,
                 y,
             )?;
             let (ref_frame0, ref_frame1, mvs) = match allowed {
-                [true, false] => (compound.ref_frame0, None, [mvs[0], Mv::ZERO]),
-                [false, true] => (compound.ref_frame1, None, [mvs[1], Mv::ZERO]),
-                _ => (compound.ref_frame0, Some(compound.ref_frame1), mvs),
+                [true, false] => (block.ref_frame0, None, [mvs[0], Mv::ZERO]),
+                [false, true] => (ref_frame1, None, [mvs[1], Mv::ZERO]),
+                _ => (block.ref_frame0, Some(ref_frame1), mvs),
             };
             let record = temporal_motion_block(
                 reference,
@@ -1061,13 +1063,9 @@ pub(super) fn decode_skip_mode_inter_block(
             tip_size_16x16: false,
             blend,
         },
-        InterBlock {
-            compound_blend: blend,
-            ..super::parsed_inter_block(
-                ref_frame0,
-                Some(ref_frame1),
-                ReconInterpolationFilter::EightTapSharp,
-            )
+        super::deferred_recon::ParsedInterBlock {
+            ref_frame0,
+            ..Default::default()
         },
         None,
         (block_ctx.bw4, block_ctx.bh4),
