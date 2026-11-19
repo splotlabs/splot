@@ -137,7 +137,7 @@ fn inter_refresh_adds_a_second_valid_slot() {
 }
 
 #[test]
-fn first_regular_frame_after_olk_keeps_only_olk_and_listed_long_term_slots() {
+fn first_regular_frame_after_olk_keeps_only_olk_and_long_term_slots() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     let mut old = key_update();
     old.refresh_frame_flags = 1;
@@ -151,12 +151,12 @@ fn first_regular_frame_after_olk_keeps_only_olk_and_listed_long_term_slots() {
     let mut olk = key_update();
     olk.refresh_frame_flags = 1 << 1;
     buf.update(2, &olk, true);
-    buf.note_frame(ObuType::OpenLoopKey, true, &olk, &[7]);
+    buf.note_frame(ObuType::OpenLoopKey, true, &olk);
 
     let mut leading = inter_update();
     leading.refresh_frame_flags = 1 << 2;
     buf.update(3, &leading, false);
-    buf.note_frame(ObuType::LeadingTileGroup, false, &leading, &[]);
+    buf.note_frame(ObuType::LeadingTileGroup, false, &leading);
 
     buf.prepare_for_frame(ObuType::RegularTileGroup, true);
 
@@ -172,23 +172,74 @@ fn olk_co_vcl_refresh_in_same_tu_survives_first_regular_tu() {
     let mut olk = key_update();
     olk.refresh_frame_flags = 1 << 1;
     buf.update(0, &olk, true);
-    buf.note_frame(ObuType::OpenLoopKey, true, &olk, &[]);
+    buf.note_frame(ObuType::OpenLoopKey, true, &olk);
 
     let mut co_vcl = inter_update();
     co_vcl.refresh_frame_flags = 1 << 4;
     buf.update(1, &co_vcl, false);
-    buf.note_frame(ObuType::RegularTileGroup, false, &co_vcl, &[]);
+    buf.note_frame(ObuType::RegularTileGroup, false, &co_vcl);
 
     let mut leading = inter_update();
     leading.refresh_frame_flags = 1 << 2;
     buf.update(2, &leading, false);
-    buf.note_frame(ObuType::LeadingTileGroup, false, &leading, &[]);
+    buf.note_frame(ObuType::LeadingTileGroup, false, &leading);
 
     buf.prepare_for_frame(ObuType::RegularTileGroup, true);
 
     assert!(buf.slots[1].valid);
     assert!(!buf.slots[2].valid);
     assert!(buf.slots[4].valid);
+}
+
+#[test]
+fn regular_frames_after_olk_in_its_tu_allow_only_tu_refreshed_slots() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    let mut olk = key_update();
+    olk.refresh_frame_flags = 1 << 1;
+    buf.prepare_for_frame(ObuType::OpenLoopKey, true);
+    assert_eq!(buf.allowed_frames, None);
+    buf.update(0, &olk, true);
+    buf.note_frame(ObuType::OpenLoopKey, true, &olk);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, false);
+    assert_eq!(buf.allowed_frames, Some(1 << 1));
+    let mut co_vcl = inter_update();
+    co_vcl.refresh_frame_flags = 1 << 4;
+    buf.update(1, &co_vcl, false);
+    buf.note_frame(ObuType::RegularTileGroup, false, &co_vcl);
+
+    buf.prepare_for_frame(ObuType::RegularSef, false);
+    assert_eq!(buf.allowed_frames, Some((1 << 1) | (1 << 4)));
+    buf.prepare_for_frame(ObuType::LeadingTileGroup, false);
+    assert_eq!(buf.allowed_frames, None);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, true);
+    assert_eq!(buf.allowed_frames, None);
+}
+
+#[test]
+fn closed_loop_key_clears_open_loop_state_and_allowed_frames() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    let mut old = key_update();
+    old.refresh_frame_flags = 1;
+    buf.update(0, &old, true);
+
+    let mut olk = key_update();
+    olk.refresh_frame_flags = 1 << 1;
+    buf.update(1, &olk, true);
+    buf.note_frame(ObuType::OpenLoopKey, true, &olk);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, false);
+    assert_eq!(buf.allowed_frames, Some(1 << 1));
+
+    buf.prepare_for_frame(ObuType::ClosedLoopKey, true);
+    assert_eq!(buf.allowed_frames, None);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, false);
+    assert_eq!(buf.allowed_frames, None);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, true);
+    assert!(buf.slots[0].valid);
 }
 
 #[test]

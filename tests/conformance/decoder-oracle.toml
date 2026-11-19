@@ -2659,3 +2659,9 @@ id = "syn-level31-wide-intra-8320x64-q200"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "01f429d0b3e7f0606f17c14aa445d47e6f8e878578056429b36840e477918ba8"
 avm_raw_sha256 = "ec021532bcb679d371412925825a9c883856fb5f09315b5d22f78ec957e4980b"
+
+[[fixture]]
+id = "syn-olk-fwdkf-same-tu-64x64-q160"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.key_open_loop", "frame.leading", "frame.multi_frame", "frame.reference_refresh", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "8e4fdfa133d10b9aed60ce74d8780460c9d9cb94bc5d53386c07ba7f77556923"
+avm_raw_sha256 = "64c9a0086c53bf8425a2fe6c04de56141a068c32d60089990514a6cba836a191"

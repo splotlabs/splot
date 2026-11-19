@@ -115,6 +115,10 @@ pub struct FrameReferenceStateView<'a> {
     /// the bit-exact index parse with unresolved reference tap values (a caller
     /// that never consumes the resolved bank, like the validator, may omit them).
     pub lr_frame_filter_taps: Option<&'a [SlotFrameFilterTaps]>,
+    /// § 5.18.1 `AllowedFrames` for the § 7.7 implicit reference map: the slots
+    /// refreshed by the open-loop key temporal unit, for a regular frame after the
+    /// OLK in that temporal unit. `None` is the spec's `-1` (every slot allowed).
+    pub allowed_frames: Option<u32>,
 }
 
 impl<'a> FrameReferenceStateView<'a> {
@@ -136,6 +140,7 @@ impl<'a> FrameReferenceStateView<'a> {
         saved_global_motion_params: None,
         lr_frame_filter_class_counts: None,
         lr_frame_filter_taps: None,
+        allowed_frames: None,
     };
 
     /// A fully-unknown reference state (passed when the caller models no reference
@@ -210,6 +215,13 @@ impl<'a> FrameReferenceStateView<'a> {
     ) -> Self {
         self.ref_counter = Some(ref_counter);
         self.ref_frame_is_inter = Some(ref_frame_is_inter);
+        self
+    }
+
+    /// Attaches the § 5.18.1 `AllowedFrames` mask; `None` allows every slot.
+    #[must_use]
+    pub const fn with_allowed_frames(mut self, allowed_frames: Option<u32>) -> Self {
+        self.allowed_frames = allowed_frames;
         self
     }
 

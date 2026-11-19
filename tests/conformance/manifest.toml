@@ -2648,3 +2648,8 @@ expect = { diagnostics = ["lcr/global-lcr-unavailable"] }
 path = "vectors/valid/syn-level31-wide-intra-8320x64-q200.ivf"
 description = "AVM-encoded 1-frame 8320x64 8-bit 4:2:0 single-tile intra stream at seq_level_idx = 31 (reproducing dav2d MR !1028 level31-wide-frame.obu). avmdec decodes cleanly to raw SHA-256 ec021532bcb679d371412925825a9c883856fb5f09315b5d22f78ec957e4980b; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-olk-fwdkf-same-tu-64x64-q160.ivf"
+description = "AVM-encoded 12-frame 64x64 8-bit 4:2:0 forward-keyframe stream (--enable-fwd-kf=1 --kf-max-dist=5 --cpu-used=6 --qp=160, reproducing dav2d MR !1112 olk_fwdkf_testsrc): carries a closed-loop key, two open-loop keys each followed in the same temporal unit by a regular tile group (exercising § 5.18.1 AllowedFrames implicit reference restriction), eight leading tile groups, and a trailing regular tile group. avmdec decodes all 12 frames (73,728 bytes) cleanly to raw SHA-256 64c9a0086c53bf8425a2fe6c04de56141a068c32d60089990514a6cba836a191; validates clean."
+expect = "clean"

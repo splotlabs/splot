@@ -161,8 +161,7 @@ impl EncoderReferences {
         }
         self.frames[index] = Some((SharedFrame::new(frame), cdfs, motion));
         self.buffer.update(index, &update, is_key_or_switch(core));
-        self.buffer
-            .note_frame(core.obu_type, true, &update, &core.ref_long_term_ids);
+        self.buffer.note_frame(core.obu_type, true, &update);
         for (index, frame) in self.frames.iter_mut().enumerate() {
             if !self.buffer.retains(index) {
                 *frame = None;

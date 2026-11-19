@@ -1021,12 +1021,7 @@ fn decode_frames_in_order(
         emit,
     )?;
     reference.update(0, &key_update, is_key_or_switch(&key_core));
-    reference.note_frame(
-        key_envelope.header.obu_type,
-        true,
-        &key_update,
-        &key_core.ref_long_term_ids,
-    );
+    reference.note_frame(key_envelope.header.obu_type, true, &key_update);
     in_band_long_term_prelude.note_frame(&key_core, 0);
     scheduler.note_frame(
         key_envelope.header.obu_type,
@@ -1527,7 +1522,6 @@ fn decode_frames_in_order(
                     next_candidate.obu_type(),
                     first_picture_in_tu,
                     &inter_update,
-                    &inter_core.ref_long_term_ids,
                 );
                 scheduler.note_frame(
                     next_candidate.obu_type(),
@@ -1766,12 +1760,7 @@ fn decode_frames_in_order(
                     emit,
                 )?;
                 reference.update(frame_index, &key_update, is_key_or_switch(&key_core));
-                reference.note_frame(
-                    next_candidate.obu_type(),
-                    first_picture_in_tu,
-                    &key_update,
-                    &key_core.ref_long_term_ids,
-                );
+                reference.note_frame(next_candidate.obu_type(), first_picture_in_tu, &key_update);
                 in_band_long_term_prelude.note_frame(&key_core, frame_index);
                 scheduler.note_frame(
                     next_candidate.obu_type(),

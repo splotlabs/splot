@@ -129,11 +129,10 @@ pub(crate) struct FrameRefUpdate<'a> {
     pub(crate) embedded_layer_id: EmbeddedLayerId,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct OpenLoopState {
     refresh_frame_flags: u32,
     co_vcl_refresh_frame_flags: u32,
-    ref_long_term_ids: Vec<u32>,
 }
 
 pub(crate) struct RuntimeReferenceBuffer {
@@ -148,6 +147,8 @@ pub(crate) struct RuntimeReferenceBuffer {
     frame_counter: u32,
     started: bool,
     open_loop: Option<OpenLoopState>,
+    /// § 5.18.1 `AllowedFrames` of the frame being prepared; `None` is `-1`.
+    allowed_frames: Option<u32>,
 }
 
 impl RuntimeReferenceBuffer {
@@ -160,6 +161,7 @@ impl RuntimeReferenceBuffer {
             frame_counter: 0,
             started: false,
             open_loop: None,
+            allowed_frames: None,
         })
     }
 
@@ -168,10 +170,16 @@ impl RuntimeReferenceBuffer {
     }
 
     pub(crate) fn prepare_for_frame(&mut self, obu_type: ObuType, first_picture_in_tu: bool) {
-        if first_picture_in_tu && (obu_type == ObuType::OpenLoopKey || is_regular_non_olk(obu_type))
-        {
+        if obu_type == ObuType::ClosedLoopKey {
+            self.open_loop = None;
+        } else if first_picture_in_tu && obu_type.is_regular_frame() {
             self.finish_open_loop();
         }
+        self.allowed_frames = self
+            .open_loop
+            .as_ref()
+            .filter(|_| !first_picture_in_tu && is_regular_non_olk(obu_type))
+            .map(|open_loop| open_loop.refresh_frame_flags | open_loop.co_vcl_refresh_frame_flags);
     }
 
     pub(crate) fn note_frame(
@@ -179,13 +187,11 @@ impl RuntimeReferenceBuffer {
         obu_type: ObuType,
         first_picture_in_tu: bool,
         update: &FrameRefUpdate<'_>,
-        ref_long_term_ids: &[u32],
     ) {
         if obu_type == ObuType::OpenLoopKey {
             self.open_loop = Some(OpenLoopState {
                 refresh_frame_flags: update.refresh_frame_flags,
                 co_vcl_refresh_frame_flags: 0,
-                ref_long_term_ids: ref_long_term_ids.to_vec(),
             });
         } else if !first_picture_in_tu
             && is_regular_non_olk(obu_type)
@@ -202,10 +208,7 @@ impl RuntimeReferenceBuffer {
         let refreshed = open_loop.refresh_frame_flags | open_loop.co_vcl_refresh_frame_flags;
         for (index, slot) in self.slots.iter_mut().enumerate() {
             let retained_by_refresh = (refreshed >> index) & 1 != 0;
-            let retained_long_term = slot
-                .long_term_id
-                .is_some_and(|id| open_loop.ref_long_term_ids.contains(&id));
-            if !retained_by_refresh && !retained_long_term {
+            if !retained_by_refresh && slot.long_term_id.is_none() {
                 slot.valid = false;
             }
         }
@@ -325,6 +328,7 @@ impl RuntimeReferenceBuffer {
         state
             .lr_frame_filter_taps
             .clone_from(&self.lr_frame_filter_taps);
+        state.allowed_frames = self.allowed_frames;
         for (i, slot) in self.slots.iter().enumerate() {
             if !slot.valid {
                 state.push_slot(slot, None);
@@ -434,15 +438,7 @@ fn set_lr_frame_filter_taps(
 }
 
 fn is_regular_non_olk(obu_type: ObuType) -> bool {
-    matches!(
-        obu_type,
-        ObuType::RegularSef
-            | ObuType::RegularTip
-            | ObuType::Switch
-            | ObuType::RasFrame
-            | ObuType::BridgeFrame
-            | ObuType::RegularTileGroup
-    )
+    obu_type.is_regular_frame() && obu_type != ObuType::OpenLoopKey
 }
 
 fn ensure_slot_matches_frame(

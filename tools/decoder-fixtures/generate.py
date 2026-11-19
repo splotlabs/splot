@@ -468,6 +468,9 @@ COVERAGE = [
       "--quiet", "--disable-warning-prompt", "--enable-lcr=1"], "8", "160"),
     ("syn-level31-wide-intra-8320x64-q200", "color=c=gray:size=8320x64:rate=1:duration=1", "yuv420p", "--i420",
      ["--limit=1", "--lag-in-frames=0", "--passes=1", "--quiet", "--disable-warning-prompt"], "9", "200"),
+    ("syn-olk-fwdkf-same-tu-64x64-q160", "testsrc=size=64x64:rate=1:duration=12", "yuv420p", "--i420",
+     ["--limit=12", "--enable-fwd-kf=1", "--kf-max-dist=5", "--quiet", "--disable-warning-prompt"],
+     "6", "160"),
 ]
 
 PINNED_RECIPE_HASHES = {
