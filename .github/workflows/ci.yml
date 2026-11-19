@@ -308,22 +308,25 @@ jobs:
         run: cargo xtask seed-fuzz-corpus
 
       # Force GNU: AddressSanitizer cannot link the static musl default.
-      # Build and run use the same flags, else `fuzz run` builds again.
+      # RUSTFLAGS restores `.cargo/config.toml`'s x86-64-v3 baseline (which `cargo-fuzz` overrides).
+      # Build and run use the same flags and `RUSTFLAGS`, else `fuzz run` builds again.
       - name: Build the targets of this group
         env:
           FEATURES: ${{ matrix.features }}
-        run: cargo +nightly fuzz build --no-default-features --features "$FEATURES" --codegen-units 16 --target x86_64-unknown-linux-gnu
+          RUSTFLAGS: -C target-cpu=x86-64-v3 --cfg disable_dispatch_avx512
+        run: cargo +nightly fuzz build --no-default-features --features "$FEATURES" --codegen-units 16 --disable-branch-folding=false --target x86_64-unknown-linux-gnu
 
       # Every target runs, so that one crash does not hide another.
       - name: Fuzz each target of this group (per-target smoke)
         env:
           FEATURES: ${{ matrix.features }}
           TARGETS: ${{ matrix.targets }}
+          RUSTFLAGS: -C target-cpu=x86-64-v3 --cfg disable_dispatch_avx512
         run: |
           failed=""
           for target in $TARGETS; do
             echo "=== fuzz $target ==="
-            cargo +nightly fuzz run "$target" --no-default-features --features "$FEATURES" --codegen-units 16 --target x86_64-unknown-linux-gnu -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 || failed="$failed $target"
+            cargo +nightly fuzz run "$target" --no-default-features --features "$FEATURES" --codegen-units 16 --disable-branch-folding=false --target x86_64-unknown-linux-gnu -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 || failed="$failed $target"
           done
           if [ -n "$failed" ]; then
             echo "::error::Fuzz targets failed:$failed"
@@ -444,11 +447,10 @@ jobs:
 
       - name: Verify upstream AVM corpus hashes (dav2d test data)
         env:
-          DAV2D_TEST_DATA_REV: ca31004227c1f6eaad79c380edf33d1e509d7ff8
           TEST_DATA_DIR: ${{ runner.temp }}/dav2d-test-data
         run: |
-          git clone --no-checkout https://code.videolan.org/videolan/dav2d-test-data.git "$TEST_DATA_DIR"
-          git -C "$TEST_DATA_DIR" checkout --detach "$DAV2D_TEST_DATA_REV"
+          git clone --depth 1 https://code.videolan.org/videolan/dav2d-test-data.git "$TEST_DATA_DIR"
+          echo "dav2d-test-data HEAD: $(git -C "$TEST_DATA_DIR" rev-parse HEAD)"
           python3 scripts/check-external-vectors.py dav2d "$TEST_DATA_DIR"
 
       - name: Cache DynamoRIO release
