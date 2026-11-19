@@ -192,6 +192,32 @@ fn olk_co_vcl_refresh_in_same_tu_survives_first_regular_tu() {
 }
 
 #[test]
+fn regular_frames_after_olk_in_its_tu_allow_only_tu_refreshed_slots() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    let mut olk = key_update();
+    olk.refresh_frame_flags = 1 << 1;
+    buf.prepare_for_frame(ObuType::OpenLoopKey, true);
+    assert_eq!(buf.allowed_frames, None);
+    buf.update(0, &olk, true);
+    buf.note_frame(ObuType::OpenLoopKey, true, &olk, &[]);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, false);
+    assert_eq!(buf.allowed_frames, Some(1 << 1));
+    let mut co_vcl = inter_update();
+    co_vcl.refresh_frame_flags = 1 << 4;
+    buf.update(1, &co_vcl, false);
+    buf.note_frame(ObuType::RegularTileGroup, false, &co_vcl, &[]);
+
+    buf.prepare_for_frame(ObuType::RegularSef, false);
+    assert_eq!(buf.allowed_frames, Some((1 << 1) | (1 << 4)));
+    buf.prepare_for_frame(ObuType::LeadingTileGroup, false);
+    assert_eq!(buf.allowed_frames, None);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, true);
+    assert_eq!(buf.allowed_frames, None);
+}
+
+#[test]
 fn reference_refresh_preserves_full_and_lsb_order_hints() {
     let mut update = inter_update();
     update.order_hint = 136;

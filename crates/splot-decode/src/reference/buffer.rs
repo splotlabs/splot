@@ -148,6 +148,8 @@ pub(crate) struct RuntimeReferenceBuffer {
     frame_counter: u32,
     started: bool,
     open_loop: Option<OpenLoopState>,
+    /// § 5.18.1 `AllowedFrames` of the frame being prepared; `None` is `-1`.
+    allowed_frames: Option<u32>,
 }
 
 impl RuntimeReferenceBuffer {
@@ -160,6 +162,7 @@ impl RuntimeReferenceBuffer {
             frame_counter: 0,
             started: false,
             open_loop: None,
+            allowed_frames: None,
         })
     }
 
@@ -172,6 +175,11 @@ impl RuntimeReferenceBuffer {
         {
             self.finish_open_loop();
         }
+        self.allowed_frames = self
+            .open_loop
+            .as_ref()
+            .filter(|_| !first_picture_in_tu && is_regular_non_olk(obu_type))
+            .map(|open_loop| open_loop.refresh_frame_flags | open_loop.co_vcl_refresh_frame_flags);
     }
 
     pub(crate) fn note_frame(
@@ -325,6 +333,7 @@ impl RuntimeReferenceBuffer {
         state
             .lr_frame_filter_taps
             .clone_from(&self.lr_frame_filter_taps);
+        state.allowed_frames = self.allowed_frames;
         for (i, slot) in self.slots.iter().enumerate() {
             if !slot.valid {
                 state.push_slot(slot, None);

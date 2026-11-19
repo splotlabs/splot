@@ -1269,6 +1269,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
         RefSlots<splot_core::headers::frame::SavedGlobalMotionParams>,
     pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Option<Arc<[SlotFrameFilterTaps]>>,
+    pub(crate) allowed_frames: Option<u32>,
     pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
     pub(crate) ref_ccso_headers: RefSlots<Option<Arc<FrameHeaderCore>>>,
     pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
@@ -1355,6 +1356,7 @@ impl<T: ReconSample> InterReferenceState<T> {
             saved_global_motion_params: RefSlots::default(),
             lr_frame_filter_class_counts: RefSlots::default(),
             lr_frame_filter_taps: None,
+            allowed_frames: None,
             ref_frame_cdfs: RefSlots::default(),
             ref_ccso_headers: RefSlots::default(),
             ref_ccso_unit_grids: RefSlots::default(),
@@ -1523,6 +1525,7 @@ impl<T: ReconSample> InterReferenceState<T> {
         )
         .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
         .with_lr_frame_filter_taps(self.lr_frame_filter_taps.as_deref().unwrap_or_default())
+        .with_allowed_frames(self.allowed_frames)
     }
 }
 pub(crate) fn parse_inter_frame_activation(

@@ -1021,7 +1021,8 @@ fn derive_implicit_ref_map(
         order_hint: i32::try_from(current_order_hint).unwrap_or(i32::MAX),
         obu_mlayer_id: 0,
         obu_tlayer_id: 0,
-        allowed_frames: ctx.ras_long_term_ref_mask.map_or(-1, |mask| mask as i32),
+        allowed_frames: (ctx.ras_long_term_ref_mask.unwrap_or(u32::MAX)
+            & reference_state.allowed_frames.unwrap_or(u32::MAX)) as i32,
         is_bridge: false,
         bridge_frame_ref_idx: 0,
         frame_width,
