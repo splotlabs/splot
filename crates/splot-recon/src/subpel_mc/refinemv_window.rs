@@ -75,8 +75,10 @@ impl WindowSample for u16 {
 /// Returns the search offset `(dx, dy)`: the centre when `allow_center` and
 /// its biased SAD is below the threshold, else the strictly best of the 24
 /// `Refinemv_Neighbors`, each SAD over every other row of the area two
-/// samples in, shifted down by `BitDepth - 8`. Both windows are complete,
-/// except that when the centre of `u16` windows ends the search only their
+/// samples in, shifted down by `BitDepth - 8`. Both windows are written but
+/// for their last row, which neither the SAD (rows up to `h - 2`) nor the
+/// optical flow of the unit at `(4 + dx, 4 + dy)` (rows up to `h - 3`)
+/// reads; when the centre of `u16` windows ends the search only their
 /// `(w - 4) x (h - 4)` centre at `(2, 2)` is written: all that the SAD and
 /// the optical flow of a `(0, 0)` result read. An unclamped byte window
 /// takes the tuned fixed-pattern kernel and every other window the planned
@@ -531,7 +533,7 @@ pub(super) mod generic {
         let width = 8 * groups;
         let mut source = plan.first_row();
         let mut top = horizontal(source);
-        for row in 0..h {
+        for row in 0..h - 1 {
             let next = plan.next_row(source, row + 1);
             let bottom = if next == source {
                 top
@@ -649,7 +651,7 @@ mod avx2 {
         let lines = output.as_chunks_mut::<W>().0;
         let mut source_row = plan.first_row();
         let mut top = horizontal(source_row);
-        for (row, line) in lines.iter_mut().enumerate() {
+        for (row, line) in lines.iter_mut().enumerate().take(H - 1) {
             let next = plan.next_row(source_row, row + 1);
             let bottom = if next == source_row {
                 top
@@ -757,7 +759,7 @@ mod avx2 {
         let lines = output.as_chunks_mut::<W>().0;
         let mut source_row = plan.first_row();
         let mut top = horizontal(source_row);
-        for (row, line) in lines.iter_mut().enumerate() {
+        for (row, line) in lines.iter_mut().enumerate().take(H - 1) {
             let next = plan.next_row(source_row, row + 1);
             let bottom = if next == source_row {
                 top

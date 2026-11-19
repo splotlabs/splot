@@ -8,8 +8,9 @@
 use super::*;
 
 /// Predicts the `w x h` bilinear refine-MV search window of `params` (`w`
-/// and `h` each 16 or 24) into `output` at stride `w` as bytes, or returns
-/// `false` without writing for any other block. Its clip bounds are its
+/// and `h` each 16 or 24) but its last row, which no search reads, into
+/// `output` at stride `w` as bytes, or returns `false` without writing for
+/// any other block. Its clip bounds are its
 /// inner `w - 1` columns and `h - 1` rows, so the outer column and row read
 /// their inner neighbour twice.
 #[must_use]
@@ -366,7 +367,6 @@ pub(super) mod avx2 {
             write(row, top, bottom);
             top = bottom;
         }
-        write(H - 1, top, top);
         Some(())
     }
 
@@ -487,8 +487,10 @@ pub(super) mod avx2 {
 
     /// [`search`] of 16-wide windows of `AREA` bytes and `SAD_H`-row areas:
     /// two rows per `ymm`, read once per vertical offset and moved to each
-    /// horizontal one by a `pshufb`; the five SADs of a vertical offset
-    /// packed as `u16` lanes, the first least one found by `phminposuw`.
+    /// horizontal one by a `pshufb`; the 24 neighbour SADs packed as `u16`
+    /// lanes in `Refinemv_Neighbors` order, eight per `xmm` (each below
+    /// `12 * 10 * 255`), and the first least one found by one `phminposuw`
+    /// per eight.
     #[inline]
     #[target_feature(enable = "avx2")]
     fn search16<const SAD_H: usize, const AREA: usize>(
@@ -533,31 +535,43 @@ pub(super) mod avx2 {
                 return (0, 0);
             }
         }
-        let pad = _mm_set_epi64x(-1 << 16, 0);
+        let mut quarters = [_mm256_setzero_si256(); 6];
+        macro_rules! row {
+            ($dy:literal: $(($dx:literal, $quarter:literal, $shift:literal)),*) => {{
+                let [a, b] = if $dy == 0 {
+                    centre
+                } else {
+                    [rows(first, $dy), rows(second, -$dy)]
+                };
+                $(
+                    let field = _mm256_slli_epi64::<$shift>(sad(&a, &b, $dx));
+                    quarters[$quarter] = _mm256_add_epi64(quarters[$quarter], field);
+                )*
+            }};
+        }
+        row!(-2: (-2, 0, 0), (-1, 0, 16), (0, 0, 32), (1, 0, 48), (2, 1, 0));
+        row!(-1: (-2, 1, 16), (-1, 1, 32), (0, 1, 48), (1, 2, 0), (2, 2, 16));
+        row!(0: (-2, 2, 32), (-1, 2, 48), (1, 3, 0), (2, 3, 16));
+        row!(1: (-2, 3, 32), (-1, 3, 48), (0, 4, 0), (1, 4, 16), (2, 4, 32));
+        row!(2: (-2, 4, 48), (-1, 5, 0), (0, 5, 16), (1, 5, 32), (2, 5, 48));
         let mut best = None;
-        for dy in -2..=2 {
-            let [a, b] = if dy == 0 {
-                centre
-            } else {
-                [rows(first, dy), rows(second, -dy)]
-            };
-            let s: [__m256i; 5] = core::array::from_fn(|dx| sad(&a, &b, dx as i32 - 2));
-            let low = _mm256_add_epi64(
-                _mm256_add_epi64(s[0], _mm256_slli_epi64::<16>(s[1])),
-                _mm256_add_epi64(_mm256_slli_epi64::<32>(s[2]), _mm256_slli_epi64::<48>(s[3])),
+        for (group, pair) in quarters.as_chunks::<2>().0.iter().enumerate() {
+            let sums = _mm256_add_epi64(
+                _mm256_unpacklo_epi64(pair[0], pair[1]),
+                _mm256_unpackhi_epi64(pair[0], pair[1]),
             );
-            let mut fields = _mm_or_si128(_mm_unpacklo_epi64(fold(low), fold(s[4])), pad);
-            if dy == 0 {
-                fields = _mm_or_si128(fields, _mm_set_epi64x(0, 0xffff << 32));
-            }
-            let min = _mm_cvtsi128_si32(_mm_minpos_epu16(fields));
-            let (sad, index) = (min as u32 & 0xffff, min >> 16 & 7);
-            if sad < best_sad {
-                best_sad = sad;
-                best = Some((index - 2, dy));
+            let fields = _mm_add_epi64(
+                _mm256_castsi256_si128(sums),
+                _mm256_extracti128_si256::<1>(sums),
+            );
+            let min = _mm_cvtsi128_si32(_mm_minpos_epu16(fields)) as u32;
+            if min & 0xffff < best_sad {
+                best_sad = min & 0xffff;
+                best = Some(8 * group + (min >> 16 & 7) as usize);
             }
         }
-        best.unwrap_or((0, 0))
+        best.and_then(|index| super::REFINEMV_NEIGHBORS.get(index))
+            .map_or((0, 0), |&(dy, dx)| (dx, dy))
     }
 
     /// [`search`] of 24-wide windows and `SAD_H`-row areas, each read as one
@@ -711,7 +725,7 @@ pub(super) mod generic {
         );
         let tables = TAPS.map(|pair| pair.map(|taps| u8x16::load_array(simd, taps)));
         if [h_phase, v_phase] == [0, 0] {
-            for row in 0..height {
+            for row in 0..height - 1 {
                 let at = origin + (row.max(1) - 1) * stride;
                 let Some(line) = output.get_mut(row * width..(row + 1) * width) else {
                     return;
@@ -771,7 +785,6 @@ pub(super) mod generic {
             write(row, top, bottom);
             top = bottom;
         }
-        write(height - 1, top, top);
     }
 
     /// The bilinear `w x h` block, `w` a multiple of 8, of the rows of
@@ -1012,7 +1025,7 @@ pub(super) mod neon {
             Some(())
         };
         if [h_phase, v_phase] == [0, 0] {
-            for row in 0..H {
+            for row in 0..H - 1 {
                 let bytes = bytes(row.max(1) - 1)?;
                 store(row, 0, vqtbl1q_u8(lanes(bytes, 0)?, taps[0]))?;
                 if W == 24 {
@@ -1073,7 +1086,7 @@ pub(super) mod neon {
             write(row + 1, middle, lower)?;
             upper = lower;
         }
-        write(H - 1, upper, upper)
+        Some(())
     }
 
     fearless_simd::kernel!(
