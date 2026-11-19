@@ -132,7 +132,7 @@ impl TileCdfRows {
             };
         }
 
-        tile_cdf_common_count_rows!(scale_row, scale_rows);
+        tile_cdf_saved_rows!(scale_row, scale_rows);
         self.block.scale_counts_for_frame_end_update();
     }
 }
