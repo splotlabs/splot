@@ -1064,6 +1064,14 @@ impl<'a> SymbolDecoder<'a> {
         self.read_trusted_len(cdf, UPDATE).unwrap_or(0)
     }
 
+    /// [`Self::read_trusted`] in the decoder's configured update mode.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    pub fn read_trusted_configured<const L: usize>(&mut self, cdf: &mut [u16; L]) -> u32 {
+        self.read_trusted_len(cdf, self.config.cdf_update == CdfUpdateMode::Enabled)
+            .unwrap_or(0)
+    }
+
     /// [`Self::read_trusted`] of a row of three to five symbols, from its
     /// first entries as `carried`, the word the previous read of the same
     /// row returned, or from memory when `None`. Returns the symbol and the

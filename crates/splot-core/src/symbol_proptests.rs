@@ -136,10 +136,9 @@ proptest! {
         prop_assert_eq!(validated.checkpoint(), trusted.checkpoint());
     }
 
-    /// `read_trusted` and, in trusted validation mode, `read_trusted_row` must
-    /// decode, adapt and advance exactly like the checked read on well-formed
-    /// rows of every arity, in both update modes, over a run of reads that
-    /// keeps adapting the same row.
+    /// The trusted APIs must decode, adapt and advance like the checked read
+    /// for every arity in both update modes, and in both validation modes
+    /// when the caller supplies a typed row.
     #[test]
     fn read_trusted_matches_checked_reads(
         n in MIN_SYMBOLS..=MAX_SYMBOLS,
@@ -147,6 +146,7 @@ proptest! {
         rate_index in 0u16..PARA_ADJUSTMENT_LIST.len() as u16,
         count in 0u16..=MAX_CDF_COUNT as u16,
         update in any::<bool>(),
+        validated in any::<bool>(),
         data in proptest::collection::vec(any::<u8>(), 2..24),
     ) {
         let mut row = [0u16; MAX_SYMBOLS + 1];
@@ -159,8 +159,9 @@ proptest! {
         let mode = if update { CdfUpdateMode::Enabled } else { CdfUpdateMode::Disabled };
         let config = SymbolDecoderConfig::new().with_cdf_update_mode(mode);
         let mut checked = SymbolDecoder::with_config(&data, config).unwrap();
-        let mut trusted = SymbolDecoder::with_config(&data, config).unwrap();
         let row_config = config.with_cdf_validation_mode(CdfValidationMode::Trusted);
+        let typed_config = if validated { config } else { row_config };
+        let mut trusted = SymbolDecoder::with_config(&data, typed_config).unwrap();
         let mut row_reader = SymbolDecoder::with_config(&data, row_config).unwrap();
         let (mut checked_row, mut trusted_row, mut sliced_row) = (row, row, row);
         prop_assert_eq!(checked.read_trusted_row(&mut sliced_row[..=n]), None);
@@ -336,7 +337,16 @@ fn trusted_read<const L: usize, const UPDATE: bool>(
     let Some(prefix) = row.first_chunk_mut::<L>() else {
         return u32::MAX;
     };
-    decoder.read_trusted::<L, UPDATE>(prefix)
+    let mut configured = decoder.clone();
+    let mut configured_row = *prefix;
+    let symbol = decoder.read_trusted::<L, UPDATE>(prefix);
+    assert_eq!(
+        configured.read_trusted_configured(&mut configured_row),
+        symbol
+    );
+    assert_eq!(configured_row, *prefix);
+    assert_eq!(configured.checkpoint(), decoder.checkpoint());
+    symbol
 }
 
 /// One read of an `N`-ary row through the word path and one through the lane
