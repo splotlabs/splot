@@ -16,6 +16,7 @@ use std::collections::VecDeque;
 
 use splot_recon::{BitDepth, max_quantizer_index, quantizer_value};
 
+use crate::config::RateControlMode;
 use crate::error::{Error, Result};
 use crate::stats::FrameStats;
 
@@ -502,6 +503,105 @@ impl RateController for Cbr {
 
     fn update_show_existing(&mut self, bits: u64) {
         self.vbr.update_show_existing(bits);
+    }
+}
+
+/// `log2(x)` in Q8, linear between powers of two; `0` for `x <= 1`.
+fn log2_q8(x: u64) -> i64 {
+    let k = x.max(1).ilog2();
+    let mantissa = if k >= 8 { x >> (k - 8) } else { x << (8 - k) };
+    i64::from(k) * 256 + (mantissa & 0xff) as i64
+}
+
+/// Codings of one frame past the first that [`DecoderBuffer::coarser`] may ask for.
+pub(crate) const MAX_RECODES: usize = 3;
+
+/// The decoder buffer of [`RateControlMode::CappedCrf`] and
+/// [`RateControlMode::Cbr`], kept as the encoder level (the buffer size less
+/// the decoder level): each temporal unit adds its bits, then one frame
+/// period at the bitrate drains, and a full decoder buffer takes no more. A
+/// unit that would take the level past the size underflows the decoder.
+#[derive(Debug, Clone)]
+pub(crate) struct DecoderBuffer {
+    size: u64,
+    drain: u64,
+    level: u64,
+}
+
+impl DecoderBuffer {
+    /// The buffer of `config`, or `None` for a mode without one.
+    pub(crate) fn new(config: &crate::Config) -> Option<Self> {
+        let (kbps, (buffer_ms, initial_ms)) = match config.rate_control {
+            RateControlMode::CappedCrf {
+                max_bitrate_kbps,
+                buffer_ms,
+                initial_ms,
+                ..
+            } => (max_bitrate_kbps, (buffer_ms, initial_ms)),
+            RateControlMode::Cbr {
+                bitrate_kbps,
+                buffer_ms,
+                initial_ms,
+            } => (bitrate_kbps, (buffer_ms, initial_ms)),
+            _ => return None,
+        };
+        let size = u64::from(kbps) * u64::from(buffer_ms);
+        Some(Self {
+            size,
+            drain: frame_bits(kbps, config.frame_rate),
+            level: size.saturating_sub(u64::from(kbps) * u64::from(initial_ms)),
+        })
+    }
+
+    /// The qindex to code a frame again at after `tries`, its `(qindex,
+    /// bits)` so far, or `None` when the last fits or is at `MaxQ`. A frame
+    /// coded before `later` hidden and shown frames of its unit leaves them
+    /// one frame period per hidden (reference) frame and a quarter period
+    /// per shown frame, at most half the room. The first retry takes the step
+    /// that fits when bits scale as `1 / step`; later ones move `log2(bits)`
+    /// linearly in qindex through the last two.
+    pub(crate) fn coarser(
+        &self,
+        tries: &[(u16, u64)],
+        (hidden, shown): (u64, u64),
+        bit_depth: BitDepth,
+    ) -> Option<u16> {
+        let &(qindex, bits) = tries.last()?;
+        let room = self.size.saturating_sub(self.level);
+        let reserve = hidden.saturating_mul(self.drain) + shown.saturating_mul(self.drain / 4);
+        let room = (room - reserve.min(room / 2)).max(1);
+        let max = max_qindex(bit_depth);
+        if bits <= room || qindex >= max {
+            return None;
+        }
+        let secant = match *tries {
+            [.., (before, more), _] if before < qindex => {
+                Some((qindex - before, log2_q8(more) - log2_q8(bits)))
+            }
+            _ => None,
+        };
+        let next = if let Some((apart, slope)) = secant.filter(|&(_, slope)| slope > 0) {
+            let need = log2_q8(bits) - log2_q8(room);
+            let rise = (i64::from(apart) * need + slope - 1) / slope;
+            u16::try_from(i64::from(qindex) + rise).unwrap_or(max)
+        } else {
+            let target = u128::from(step(qindex, bit_depth)) * u128::from(bits) / u128::from(room);
+            (qindex + 1..max)
+                .find(|&next| u128::from(step(next, bit_depth)) >= target)
+                .unwrap_or(max)
+        };
+        Some(next.clamp(qindex + 1, max))
+    }
+
+    /// Adds the bits of a coded or show-existing frame.
+    pub(crate) fn add(&mut self, bits: u64) {
+        self.level = self.level.saturating_add(bits);
+    }
+
+    /// Ends a temporal unit: an underflow empties the decoder buffer, then
+    /// one frame period arrives.
+    pub(crate) fn drain(&mut self) {
+        self.level = self.level.min(self.size).saturating_sub(self.drain);
     }
 }
 

@@ -20,7 +20,8 @@ use crate::intra_frame::IntraFrameCoder;
 use crate::lookahead::Lookahead;
 use crate::preset::{FrameKind, PresetContext, ResolutionClass};
 use crate::rate_control::{
-    Cbr, ConstantQp, Crf, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
+    Cbr, ConstantQp, Crf, DecoderBuffer, FramePlanInfo, FrameType, MAX_RECODES, RateController,
+    Vbr, max_qindex,
 };
 use crate::stats::{FrameStats, psnr, ssim};
 use crate::tpl;
@@ -135,6 +136,8 @@ pub struct Encoder {
     temporal_filter: [(u8, u8); 2],
     /// The last frame qindex, which estimates the next ones.
     last_qindex: Option<u16>,
+    /// The decoder buffer of [`RateControlMode::CappedCrf`] and [`RateControlMode::Cbr`].
+    buffer: Option<DecoderBuffer>,
     ready: VecDeque<Packet>,
     state: State,
 }
@@ -219,6 +222,7 @@ impl Encoder {
                 (params.tf_frames.at(context), params.tf_strength.at(context))
             }),
             last_qindex: None,
+            buffer: DecoderBuffer::new(&config),
             resized: config.resize_denominator.map(|_| config.coded()),
             config,
             coder,
@@ -408,6 +412,7 @@ impl Encoder {
         let mut frame_types = vec![FrameType::Inter; frames.len()];
         let (mut data, mut stats) = (Vec::new(), Vec::new());
         let steps = self.planner.plan(frames.len())?;
+        let mut position = 0;
         for wave in gop::waves(&steps) {
             let mut planned = Vec::new();
             for step in wave {
@@ -426,12 +431,16 @@ impl Encoder {
             }
             let mut coded = jobs.iter().zip(self.coder.encode_wave(&jobs)?);
             for step in wave {
+                position += 1;
                 match *step {
                     GopStep::Code(_) => {
-                        let (&(_, plan, qp), mut coded) =
+                        let (&(coded_source, plan, qp), coded) =
                             coded.next().ok_or(Error::Unsupported {
                                 what: "a wave with fewer coded frames than planned",
                             })?;
+                        let later = frames_later_in_unit(steps.get(position - 1..).unwrap_or(&[]));
+                        let (qp, mut coded) =
+                            self.fit_buffer((coded_source, plan, qp), coded, later)?;
                         let frame = source(plan.display_index)?;
                         stats.push(self.commit(frame, &plan, qp, &mut coded)?);
                         frame_types[(plan.display_index - first) as usize] = coded.frame_type;
@@ -439,12 +448,18 @@ impl Encoder {
                     }
                     GopStep::ShowExisting { slot, .. } => {
                         let unit = self.coder.show_existing_frame(slot)?;
+                        if let Some(buffer) = &mut self.buffer {
+                            buffer.add(unit.len() as u64 * 8);
+                        }
                         self.rate_control
                             .update_show_existing(unit.len() as u64 * 8);
                         data.extend(unit);
                     }
                 }
                 if let Some(display_index) = step.output() {
+                    if let Some(buffer) = &mut self.buffer {
+                        buffer.drain();
+                    }
                     self.ready.push_back(Packet {
                         data: core::mem::take(&mut data),
                         pts: source(display_index)?.pts(),
@@ -458,6 +473,42 @@ impl Encoder {
             .retain_from(self.planner.next_display().saturating_sub(1));
         self.last_coded = frames.into_iter().last();
         Ok(())
+    }
+
+    /// `coded`, the frame `plan` coded from `source` at `qp`, with its qindex;
+    /// while its unit would underflow the [`DecoderBuffer`], up to
+    /// [`MAX_RECODES`] times, the frame coded again at a coarser qindex. A
+    /// new coding reruns the frame coder only (mode decision, loop filters
+    /// and entropy coding) with the lookahead motion, TPL and filtered source
+    /// of the first.
+    fn fit_buffer(
+        &mut self,
+        (source, plan, mut qp): (&SourceFrame, GopFrame, u16),
+        mut coded: CodedFrame,
+        later: (u64, u64),
+    ) -> Result<(u16, CodedFrame)> {
+        let Some(buffer) = &self.buffer else {
+            return Ok((qp, coded));
+        };
+        let mut tries = Vec::new();
+        for _ in 0..MAX_RECODES {
+            tries.push((qp, coded.temporal_unit.len() as u64 * 8));
+            let Some(coarser) = buffer.coarser(&tries, later, self.config.bit_depth) else {
+                break;
+            };
+            qp = coarser;
+            coded =
+                self.coder
+                    .encode_wave(&[(source, plan, qp)])?
+                    .pop()
+                    .ok_or(Error::Unsupported {
+                        what: "a frame coded again without its result",
+                    })?;
+        }
+        if let Some(buffer) = &mut self.buffer {
+            buffer.add(coded.temporal_unit.len() as u64 * 8);
+        }
+        Ok((qp, coded))
     }
 
     /// The temporally filtered source of each `(plan, qp)` of a wave of the
@@ -526,7 +577,9 @@ impl Encoder {
     fn qindex_estimate(&self) -> u16 {
         self.last_qindex.unwrap_or(match self.config.rate_control {
             RateControlMode::ConstantQp { qp } => qp,
-            RateControlMode::Crf { crf } => Crf { crf }.base_qindex(self.config.bit_depth),
+            RateControlMode::Crf { crf } | RateControlMode::CappedCrf { crf, .. } => {
+                Crf { crf }.base_qindex(self.config.bit_depth)
+            }
             _ => max_qindex(self.config.bit_depth) / 2,
         })
     }
@@ -571,7 +624,9 @@ impl Encoder {
 fn rate_controller(config: &Config) -> Result<Box<dyn RateController + Send>> {
     Ok(match config.rate_control {
         RateControlMode::ConstantQp { qp } => Box::new(ConstantQp { qp }),
-        RateControlMode::Crf { crf } => Box::new(Crf { crf }),
+        RateControlMode::Crf { crf } | RateControlMode::CappedCrf { crf, .. } => {
+            Box::new(Crf { crf })
+        }
         RateControlMode::Vbr { bitrate_kbps } => {
             Box::new(Vbr::new(bitrate_kbps, config.frame_rate)?.with_first_pass(&config.first_pass))
         }
@@ -585,6 +640,31 @@ fn rate_controller(config: &Config) -> Result<Box<dyn RateController + Send>> {
             config.frame_rate,
         )?),
     })
+}
+
+/// The hidden and the shown frames coded after `steps[0]` in its temporal
+/// unit.
+fn frames_later_in_unit(steps: &[GopStep]) -> (u64, u64) {
+    let mut later = (0, 0);
+    let Some((first, rest)) = steps.split_first() else {
+        return later;
+    };
+    if first.output().is_some() {
+        return later;
+    }
+    for step in rest {
+        if let GopStep::Code(frame) = step {
+            if frame.show_frame {
+                later.1 += 1;
+            } else {
+                later.0 += 1;
+            }
+        }
+        if step.output().is_some() {
+            break;
+        }
+    }
+    later
 }
 
 fn frame_coder(config: &Config) -> Result<Box<dyn FrameCoder + Send>> {
