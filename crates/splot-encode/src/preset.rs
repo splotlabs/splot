@@ -228,7 +228,13 @@ pub struct PresetParams {
     /// Two-pass partition decision: an inter-frame superblock with
     /// lookahead motion takes first-pass levels from the open-loop motion
     /// alone, and searches a block only within this many binary partition
-    /// levels of them; `255` searches every partition.
+    /// levels of them; `255` searches every partition. Frames of at most
+    /// 480p search 1 level on mid frames and 2 on base and leaf frames from
+    /// p6, with `mds0_budgets` 2,1,1 on inter frames and leaf `motion_range`
+    /// 24, `intra_modes` 2 and `leaf_reuse` 2 (2026-11-20, CRF p6 against
+    /// main): paris f30 -1.42% BD-rate at 0.767x instructions, park_joy f10
+    /// -0.85% at 0.797x. 720p keeps the old cells: niklas f10 lost +2.76%
+    /// at 0.924x with mid 1, and the rest without it +0.43% at 0.926x.
     pub pd_window: Levels<u8>,
     /// The first pass charges each square this many bits besides its
     /// open-loop SAD.
@@ -560,6 +566,22 @@ const fn frames<T: Copy>(rows: [[T; 11]; 4]) -> [Levels<T>; 11] {
     out
 }
 
+/// [`frames`] of `rows`, with the [`ResolutionClass::Sd`] contexts from
+/// `sd` instead. In the table, the `sd` cells that differ search less on
+/// inter frames from p6 (see `pd_window`); 720p loses with them.
+const fn frames_sd<T: Copy>(rows: [[T; 11]; 4], sd: [[T; 11]; 4]) -> [Levels<T>; 11] {
+    let (mut out, sd) = (frames(rows), frames(sd));
+    let mut i = 0;
+    while i < 11 * 36 {
+        let (preset, cell) = (i / 36, i % 36);
+        if cell % 9 / 3 == ResolutionClass::Sd as usize {
+            out[preset].0[cell] = sd[preset].0[cell];
+        }
+        i += 1;
+    }
+    out
+}
+
 /// A preset field override that [`PresetParams::set`] rejects.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PresetError {
@@ -837,30 +859,42 @@ preset_table! {
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4]]),
-        leaf_reuse:            frames([
+        leaf_reuse:            frames_sd([
                                [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
                                [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
                                [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
-                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1]]),
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1]], [
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+                               [    1,     1,     1,     1,     1,     1,     2,     2,     2,     2,     2]]),
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        pd_window:             frames([
+        pd_window:             frames_sd([
                                [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
                                [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
                                [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
-                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2]]),
+                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2]], [
+                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
+                               [  255,   255,   255,   255,   255,   255,     2,     2,     2,     2,     2],
+                               [  255,   255,   255,   255,   255,   255,     1,     1,     1,     1,     1],
+                               [  255,   255,   255,   255,   255,   255,     2,     2,     2,     2,     2]]),
         pd0_leaf_bits:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         ref_intra_margin:      [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         ref_intra_refresh:     [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
     }
     intra {
-        intra_modes:           frames([
+        intra_modes:           frames_sd([
                                [   13,    12,    12,    10,     9,     8,     6,     5,     4,     3,     2],
                                [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2],
                                [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2],
-                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2]]),
+                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2]], [
+                               [   13,    12,    12,    10,     9,     8,     6,     5,     4,     3,     2],
+                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2],
+                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2],
+                               [   13,    12,    12,    10,     9,     8,     2,     2,     2,     2,     2]]),
         mrl_trials:            [    2,     2,     2,     2,     2,     2,     2,     0,     0,     0,     0],
         cfl_filter:            [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
@@ -887,11 +921,15 @@ preset_table! {
         inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     inter {
-        motion_range:          frames([
+        motion_range:          frames_sd([
                                [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
                                [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
                                [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
-                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16]]),
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16]], [
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
+                               [  256,   192,   128,    96,    64,    64,    24,    24,    24,    16,    16]]),
         hme_range:             [   16,    16,    16,    12,    12,     8,     8,     8,     8,     8,     8],
         me_range:              [   16,    16,    16,    12,    12,     8,     8,     8,     6,     4,     4],
         me_seeds:              [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
@@ -948,11 +986,15 @@ preset_table! {
     }
     mode_decision {
         psy_rd:                [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        mds0_budgets:          frames([
+        mds0_budgets:          frames_sd([
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
-                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]]]),
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]]], [
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1]]]),
     }
     threading {
         wavefront:             [false, false, false, false, false, false, false,  true,  true,  true,  true],
@@ -1277,6 +1319,13 @@ mod tests {
         };
         assert_eq!(levels.at(context), 2 * 9 + 2 * 3);
         assert_eq!(Levels::by_frame([1, 2, 3, 4]).at(context), 3);
+        let split = frames_sd([[1; 11]; 4], [[2; 11]; 4])[5];
+        assert_eq!(split.at(context), 1);
+        let sd = PresetContext {
+            resolution: ResolutionClass::Sd,
+            ..context
+        };
+        assert_eq!(split.at(sd), 2);
     }
 
     #[test]

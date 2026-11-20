@@ -93,6 +93,8 @@ thread_local! {
     pub(crate) static MDS1_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Chroma pairs that the final write coded with CCTX on this thread.
     pub(crate) static CCTX_RECORDED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// Leaves on this thread that coded a reused intra choice.
+    pub(crate) static REUSED_INTRA: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 /// The compound shortlist prices the syntax of this many times as many of
 /// its lowest-SATD candidates as it keeps.
@@ -1482,7 +1484,11 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         if let Some(choice) = seen.filter(|choice| reuse > 1 || choice.inter.is_some()) {
             let start = self.save(node, None)?;
             match self.code_leaf(node, choice) {
-                Ok(cost) => return Ok((cost, choice)),
+                Ok(cost) => {
+                    #[cfg(test)]
+                    REUSED_INTRA.set(REUSED_INTRA.get() + usize::from(choice.inter.is_none()));
+                    return Ok((cost, choice));
+                }
                 Err(
                     TileWriterError::Unsupported(_)
                     | TileWriterError::Syntax(EncoderSyntaxError::Unsupported(_)),

@@ -42,6 +42,43 @@ fn long_mini_gops_decode_to_the_encoder_recon_on_any_thread_count() {
     assert_eq!(vbr.bases, pairs);
 }
 
+/// [`pan_frame`] whose right half is a luma ramp that turns and moves each
+/// frame, so leaf frames code intra leaves there.
+fn ramp_frame(config: &Config, index: u32) -> SourceFrame {
+    let mut planes = pan_frame(config, index).planes().clone();
+    let width = config.width as usize;
+    for (i, sample) in planes[0].iter_mut().enumerate() {
+        let (x, y) = ((i % width) as u32, (i / width) as u32);
+        if x >= config.width / 2 {
+            let along = if index.is_multiple_of(2) { x } else { y };
+            *sample = (20 + along * (2 + index % 3) + index * 9) as u16 % 236;
+        }
+    }
+    SourceFrame::new(config, u64::from(index), planes).unwrap()
+}
+
+/// p6 leaf frames reuse intra choices too (`leaf_reuse` 2), and a p6
+/// mini-GOP of 8 still decodes to the encoder recon with the same bytes on
+/// 1, 2 and 8 threads.
+#[test]
+fn p6_leaf_frames_reuse_intra_choices_and_decode_to_the_recon() {
+    use crate::preset::{FrameKind, PresetContext};
+    let config = config(160, 64, BitDepth::Eight, 6, 160);
+    let leaf = PresetContext {
+        frame: FrameKind::Leaf,
+        ..PresetContext::default()
+    };
+    assert_eq!(config.preset.params().leaf_reuse.at(leaf), 2);
+    let stream = |threads| tf_stream_of(config.clone(), &[], (threads, 9), false, &ramp_frame);
+    crate::mode_decision::REUSED_INTRA.set(0);
+    let one = stream(1);
+    assert!(crate::mode_decision::REUSED_INTRA.get() > 0);
+    assert_same_samples(&decode(&one.units.concat()), &one.recon, "p6");
+    for threads in [2, 8] {
+        assert!(stream(threads).units == one.units, "{threads} threads");
+    }
+}
+
 /// AVM decodes a stream with a 32-frame mini-GOP to the encoder recon.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
