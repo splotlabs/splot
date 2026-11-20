@@ -106,7 +106,6 @@ pub(super) fn sse_row_scalar(a: &[u16], b: &[u16]) -> u64 {
 #[inline]
 fn row_abs_diff<S: Simd>(simd: S, a: &[u16], b: &[u16], mut f: impl FnMut(u32x8<S>)) {
     if a.len() <= 8 && b.len() <= 8 {
-        // Fixed-size copies for the 8- and 4-wide rows: a variable one calls `memmove`.
         let pad = |row: &[u16]| {
             let mut lanes = [0; 8];
             match row.len() {
