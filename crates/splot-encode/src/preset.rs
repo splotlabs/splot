@@ -125,6 +125,8 @@ pub struct PresetParams {
     pub bitrate_mini_gop_size: u8,
     /// Frames the lookahead analyses before the next mini-GOP is coded, at
     /// least `mini_gop_size`; scene cuts and the temporal model see this far.
+    /// 8 from p4 (2026-11-20, f10 vs p4 with 16): niklas -2.09% BD-rate at
+    /// 0.985x instructions, paris +0.02% at 0.980x; it put p4 above p5.
     pub lookahead_frames: u8,
     /// Strength in percent of the block-level temporal model: each
     /// superblock's qindex and lambda move with the importance of its
@@ -880,7 +882,7 @@ preset_table! {
     gop {
         mini_gop_size:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         bitrate_mini_gop_size: [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
-        lookahead_frames:      [   16,    16,    16,    16,    16,     8,     8,     8,     8,     8,     8],
+        lookahead_frames:      [   16,    16,    16,    16,     8,     8,     8,     8,     8,     8,     8],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         ssim_aq:               [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tf_frames:             frames([

@@ -5382,7 +5382,7 @@ spec_sections = []
 sources = []
 crate = "splot-encode"
 module = "crates/splot-encode/src/preset.rs"
-change_id = "enc-preset-levels"
+change_id = "enc-ladder-p4-p5"
 owner = "encoder"
 risk = "medium"
 notes = "Preset accepts 0..=10 (default 6) and maps to one column of the PRESETS table, one named line per PresetParams field. Every field is monotone from slow to fast. The same table generates PresetParams::set: Config::preset_overrides (CLI --preset-set FIELD=VALUE) sets any field by name after the preset and its screen-content switch; an unknown name, a value outside the field type, or a row outside the ranges of PresetParams::validate is a typed PresetError. B6 part 1 (2026-10-31): a field may be a Levels<T>, one value per PresetContext (frame kind key/base/mid/leaf x resolution class <=480p/<=1080p/>1080p by luma area x coefficient level low/normal/high from the frame qindex, split at 128 and 192), read with Levels::at; the frame coder builds the context of each frame. intra_modes (with the old mds_inter_frame_intra as its base, mid and leaf values), tcq (the old TcqFrames), tf_frames and tf_strength (the old tf_key_* and tf_base_* fields) are per frame kind, byte-identical; --preset-set takes one value or four (key, base, mid, leaf) for them; one value (intra_modes=N) sets all four frame kinds, and the old names and tcq=Off|Base|All are gone (use tcq=1,1,0,0)."
