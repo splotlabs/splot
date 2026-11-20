@@ -9,8 +9,8 @@
 //! mask is scored from the per-sample terms `d·e` and `e²` without blending.
 
 use fearless_simd::{
-    Level, Simd, SimdBase, SimdIntWiden as _, SimdNarrow as _, SimdWiden as _, dispatch, i32x8,
-    i64x4, u16x8,
+    Bytes as _, Level, Simd, SimdBase, SimdCombine as _, SimdIntWiden as _, SimdNarrow as _,
+    SimdWiden as _, dispatch, i32x8, i64x4, u8x16, u16x8,
 };
 
 use super::load_u16_as_i32;
@@ -115,7 +115,7 @@ pub(crate) fn mask_moments_scalar(mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 
     mask_moments_tail(mask, de, ee)
 }
 
-/// [`mask_moments_scalar`] in eight lanes. Every product is of two values
+/// [`mask_moments_scalar`] in eight lanes, sixteen mask samples per load. Every product is of two values
 /// that fit `i32` (`m·m` is below `2^16`), so it is one widening multiply.
 pub(crate) fn mask_moments_simd(mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 3] {
     dispatch!(Level::baseline(), simd => mask_moments_kernel(simd, mask, de, ee))
@@ -126,18 +126,22 @@ fn mask_moments_kernel<S: Simd>(simd: S, mask: &[u8], de: &[i32], ee: &[i32]) ->
     let len = mask.len().min(de.len()).min(ee.len());
     let mut acc = [i64x4::splat(simd, 0); 3];
     let mut i = 0;
-    while i + LANES <= len {
-        let m = i32x8::from_fn(simd, |k| i32::from(mask[i + k]));
-        let d = i32x8::from_slice(simd, &de[i..i + LANES]);
-        let e = i32x8::from_slice(simd, &ee[i..i + LANES]);
-        for (acc, (lo, hi)) in acc.iter_mut().zip([
-            m.widening_mul(d),
-            m.widening_mul(e),
-            (m * m).widening_mul(e),
-        ]) {
-            *acc += lo + hi;
+    while i + 2 * LANES <= len {
+        let (lo, hi) = u8x16::from_slice(simd, &mask[i..i + 2 * LANES]).widen();
+        for (at, m) in [(i, lo), (i + LANES, hi)] {
+            let (a, b) = m.widen();
+            let m = a.combine(b).bitcast::<i32x8<S>>();
+            let d = i32x8::from_slice(simd, &de[at..at + LANES]);
+            let e = i32x8::from_slice(simd, &ee[at..at + LANES]);
+            for (acc, (lo, hi)) in acc.iter_mut().zip([
+                m.widening_mul(d),
+                m.widening_mul(e),
+                (m * m).widening_mul(e),
+            ]) {
+                *acc += lo + hi;
+            }
         }
-        i += LANES;
+        i += 2 * LANES;
     }
     let tail = mask_moments_tail(&mask[i..len], &de[i..len], &ee[i..len]);
     let sums = acc.map(SimdBase::reduce_sum);
