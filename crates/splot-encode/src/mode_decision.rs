@@ -295,9 +295,9 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
 
     /// The DIP prediction of `leaf` with the lowest SATD, when it beats the
     /// best angular SATD `angular`.
-    fn dip_candidate(&mut self, leaf: &LeafBlock, angular: u64) -> Result<Option<LeafChoice>> {
+    fn dip_candidate(&mut self, leaf: &LeafBlock, angular: u64) -> Result<Vec<LeafChoice>> {
         if !self.syntax.dip_allowed(leaf, IntraModes::DC) {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let candidates: Vec<IntraModes> = (0..self.syntax.dip_modes()?)
             .flat_map(|mode| {
@@ -309,11 +309,24 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             .collect();
         let mut ranked = Vec::new();
         self.rank(leaf, candidates, LUMA, &mut ranked)?;
+        let k: usize = std::env::var("SPLOT_DIP_K").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        if k > 0 {
+            let margin: u64 = std::env::var("SPLOT_DIP_M").ok().and_then(|v| v.parse().ok()).unwrap_or(1000);
+            ranked.sort_by_key(|&(satd, _)| satd);
+            return Ok(ranked
+                .into_iter()
+                .take(k)
+                .filter(|&(satd, _)| satd * 100 < angular * margin)
+                .map(|(_, modes)| LeafChoice::largest(modes))
+                .collect());
+        }
         Ok(ranked
             .into_iter()
             .min_by_key(|&(satd, _)| satd)
             .filter(|&(satd, _)| satd < angular)
-            .map(|(_, modes)| LeafChoice::largest(modes)))
+            .map(|(_, modes)| LeafChoice::largest(modes))
+            .into_iter()
+            .collect())
     }
 
     /// The candidate with the lowest `D + lambda * R` over `planes`; each
