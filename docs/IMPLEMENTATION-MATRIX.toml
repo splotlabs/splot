@@ -6876,6 +6876,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-NONE-BREAKOUT"
+name = "Encoder partition breakout after a cheap NONE leaf"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/rd/partition.rs"
+change_id = "enc-none-breakout"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::none_breakout (Levels, per frame kind; 0 off): after the NONE trial a block tries no other partition (no SPLIT, rectangular or extended shape) when the NONE leaf codes no nonzero coefficient in any plane (Walk::coded of the leaf's final trial, PartitionSearch::leaf_coded), or when the exact distortion of that trial per luma sample is at most (level * sqrt(lambda) / 16)^2 (Lambda::qp_scaled) and its rate per luma sample at most level / 256 bits. Level 1 at p0-p6 and 4 at p7-p10 in every frame kind; SCREEN_PRESETS keep it off (not measured on screen content, where it ends blocks before their IntraBC leaves). Measured against main fab1875ad (ENC-PARTITION-BUDGET in both numbers), 10 frames unless stated: p6 level 1 paris f30 -1.85% at 0.697x instructions, paris -0.32% at 0.748x, park_joy +0.85% at 0.827x, niklas +0.39% at 0.804x; p0 paris -0.15% at 0.465x; p3 paris -0.42% at 0.695x; p8 level 4 paris +0.19% at 0.785x; p10 level 4 paris f30 -1.17% at 0.698x, niklas +1.06% at 0.758x. Per frame kind at p6: 4 measured niklas +1.87% at 0.746x, 1,1,1,4 paris f30 -1.85% at 0.697x and niklas +0.59% at 0.793x, 1,1,1,8 niklas +1.51% at 0.762x, 4,4,4,8 niklas +2.65% at 0.715x, all below the p6 ladder against level 1; at p10 1,1,1,4 measured niklas +0.54% at 0.816x and paris f30 -0.58% at 0.702x, so p7-p10 take 4. Levels from 8 up lose more than the ladder buys (paris p10 8: +1.55%, 16: +6.86%)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "partial"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/rd/partition_tests.rs::breakout_ends_a_node_whose_none_leaf_codes_no_coefficient", "crates/splot-encode/src/rd/partition_tests.rs::breakout_ends_a_none_leaf_under_the_thresholds", "crates/splot-encode/src/intra_frame_mds_tests.rs::leaf_coded_follows_the_last_coded_leaf", "crates/splot-encode/src/rd/partition_tests.rs::sdp_chroma_searches_under_the_budget_the_luma_tree_leaves", "crates/splot-encode/src/intra_frame_mds_tests.rs::two_pass_streams_decode_on_any_thread_count", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode partition_tests --locked", "cargo test -p splot-encode two_pass --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-TEMPORAL-FILTER"
 name = "Encoder temporal filtering of key and base frames"
 category = "encoder"
