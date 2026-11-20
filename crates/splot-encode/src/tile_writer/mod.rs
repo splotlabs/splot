@@ -202,6 +202,7 @@ impl KeyFrameTileWriter {
                 syntax: &mut self.syntax,
                 sink: &mut self.symbols,
                 filters: Some(&mut self.filters),
+                coded: false,
             }
             .write_node(root, &decision.tree, coder)?;
         } else {
@@ -333,6 +334,8 @@ pub(crate) struct Walk<'a, S> {
     pub(crate) syntax: &'a mut IntraTileSyntax,
     pub(crate) sink: &'a mut S,
     filters: Option<&'a mut filters::TileFilters>,
+    /// Whether the walk has written a nonzero coefficient.
+    pub(crate) coded: bool,
 }
 
 impl<'a, S: SymbolSink> Walk<'a, S> {
@@ -342,6 +345,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             syntax,
             sink,
             filters: None,
+            coded: false,
         }
     }
 
@@ -644,6 +648,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             if tx.plane == 1 {
                 eob_u = *eob;
             }
+            self.coded |= *eob > 0;
         }
         Ok(eobs)
     }
