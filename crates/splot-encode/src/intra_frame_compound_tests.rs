@@ -153,6 +153,7 @@ fn searched_stream(
         compound_types: 2,
         pd_window: Levels::all(u8::MAX),
         tcq_type_trellis: false,
+        partition_early_exit: Levels::all(true),
         ..*Preset::new(6).unwrap().params()
     }));
     let mut config = config(136, 72, BitDepth::Ten, 6, qp);
