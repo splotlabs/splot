@@ -20,29 +20,33 @@ use splot_encode::{
 
 /// Arguments for `splot encode`.
 #[derive(Args, Debug)]
+#[command(group(clap::ArgGroup::new("buffered").multiple(true).args(["rc", "max_bitrate"])))]
 pub(crate) struct EncodeArgs {
     /// Input Y4M file, or `-` for standard input.
     input: PathBuf,
     /// Output IVF file.
     #[arg(short = 'o', long)]
     output: PathBuf,
-    /// Constant quantizer (`base_q_idx`): 1..=255 at 8 bits, 1..=303 at 10 bits; the default mode, at 80.
+    /// Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits.
     #[arg(long, conflicts_with_all = ["crf", "bitrate"])]
     qp: Option<u16>,
-    /// Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller.
+    /// Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller; the default mode, at 20.
     #[arg(long, conflicts_with = "bitrate")]
     crf: Option<u8>,
+    /// Maximum bitrate of constant quality (`--crf` or the default) in kilobits per second: a frame that would underflow the decoder buffer of `--buffer` is coded again more coarsely.
+    #[arg(long, value_name = "KBPS", conflicts_with_all = ["qp", "bitrate"])]
+    max_bitrate: Option<u32>,
     /// Target bitrate in kilobits per second.
     #[arg(long)]
     bitrate: Option<u32>,
     /// Bitrate mode for `--bitrate`: `vbr` (default) or `cbr` (decoder buffer of `--buffer`).
     #[arg(long, value_enum, requires = "bitrate")]
     rc: Option<RcMode>,
-    /// CBR decoder buffer in milliseconds at the bitrate [default: 1000].
-    #[arg(long, value_name = "MS", requires = "rc")]
+    /// Decoder buffer of `--rc cbr` and `--max-bitrate`, in milliseconds at the bitrate [default: 1000].
+    #[arg(long, value_name = "MS", requires = "buffered")]
     buffer: Option<u32>,
-    /// CBR decoder buffer level before the first frame, in milliseconds at the bitrate [default: half of `--buffer`].
-    #[arg(long, value_name = "MS", requires = "rc")]
+    /// Decoder buffer level before the first frame, in milliseconds at the bitrate [default: half of `--buffer`].
+    #[arg(long, value_name = "MS", requires = "buffered")]
     initial_buffer: Option<u32>,
     /// Two-pass VBR: a first pass at half size and constant qindex reads the input once more and sets each frame's share of the budget. Needs a file input.
     #[arg(long, requires = "bitrate")]
@@ -152,25 +156,38 @@ const LOW_DELAY: [(&str, &str); 3] = [
     ("lookahead_frames", "1"),
 ];
 
-/// Buffer of `--rc cbr`, in milliseconds.
+/// Default decoder buffer of `--rc cbr` and `--max-bitrate`, in milliseconds.
 const CBR_BUFFER_MS: u32 = 1000;
 
 impl EncodeArgs {
+    /// `--buffer` and `--initial-buffer` with their defaults.
+    fn buffer_ms(&self) -> (u32, u32) {
+        let buffer_ms = self.buffer.unwrap_or(CBR_BUFFER_MS);
+        (buffer_ms, self.initial_buffer.unwrap_or(buffer_ms / 2))
+    }
+
     fn rate_control(&self) -> RateControlMode {
+        let (buffer_ms, initial_ms) = self.buffer_ms();
         match (self.qp, self.crf, self.bitrate) {
-            (_, Some(crf), _) => RateControlMode::Crf { crf },
-            (_, _, Some(bitrate_kbps)) if self.rc == Some(RcMode::Cbr) => {
-                let buffer_ms = self.buffer.unwrap_or(CBR_BUFFER_MS);
-                RateControlMode::Cbr {
-                    bitrate_kbps,
-                    buffer_ms,
-                    initial_ms: self.initial_buffer.unwrap_or(buffer_ms / 2),
+            (_, _, Some(bitrate_kbps)) if self.rc == Some(RcMode::Cbr) => RateControlMode::Cbr {
+                bitrate_kbps,
+                buffer_ms,
+                initial_ms,
+            },
+            (_, _, Some(bitrate_kbps)) => RateControlMode::Vbr { bitrate_kbps },
+            (Some(qp), None, None) => RateControlMode::ConstantQp { qp },
+            (_, crf, None) => {
+                let crf = crf.unwrap_or(Config::DEFAULT_CRF);
+                match self.max_bitrate {
+                    Some(max_bitrate_kbps) => RateControlMode::CappedCrf {
+                        crf,
+                        max_bitrate_kbps,
+                        buffer_ms,
+                        initial_ms,
+                    },
+                    None => RateControlMode::Crf { crf },
                 }
             }
-            (_, _, Some(bitrate_kbps)) => RateControlMode::Vbr { bitrate_kbps },
-            (qp, None, None) => RateControlMode::ConstantQp {
-                qp: qp.unwrap_or(Config::DEFAULT_QP),
-            },
         }
     }
 }
@@ -181,8 +198,11 @@ impl EncodeArgs {
 /// Returns an error for unreadable or malformed input, an unsupported input
 /// format or setting, an encoder failure, or an output write failure.
 pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
-    if args.rc != Some(RcMode::Cbr) && (args.buffer.is_some() || args.initial_buffer.is_some()) {
-        bail!("--buffer and --initial-buffer need --rc cbr");
+    if args.rc != Some(RcMode::Cbr)
+        && args.max_bitrate.is_none()
+        && (args.buffer.is_some() || args.initial_buffer.is_some())
+    {
+        bail!("--buffer and --initial-buffer need --rc cbr or --max-bitrate");
     }
     let input: Box<dyn Read> = if args.input.as_os_str() == "-" {
         Box::new(io::stdin().lock())

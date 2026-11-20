@@ -122,6 +122,8 @@ pub(crate) struct TrialCoder<'a, 'b> {
     /// The intra cells of the primary reference: a leaf that can code inter
     /// and has none near skips the intra search.
     pub(crate) reference_intra: Option<&'a IntraCells>,
+    /// Whether the last trial coded a nonzero coefficient.
+    coded: bool,
 }
 
 impl<'a, 'b> TrialCoder<'a, 'b> {
@@ -143,6 +145,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             scored: Vec::new(),
             samples: Vec::new(),
             reference_intra: None,
+            coded: true,
         }
     }
 
@@ -154,12 +157,9 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         planes: Range<usize>,
     ) -> Result<RdCost> {
         let mut sink = RateSink::adapting();
-        let blocks = Walk::trial(self.syntax, &mut sink).write_leaf(
-            leaf,
-            choice,
-            self.coder,
-            planes.clone(),
-        )?;
+        let mut walk = Walk::trial(self.syntax, &mut sink);
+        let blocks = walk.write_leaf(leaf, choice, self.coder, planes.clone())?;
+        self.coded = walk.coded;
         let mut distortion = 0;
         for tx in blocks.iter().filter(|tx| planes.contains(&tx.plane)) {
             self.syntax.reconstruction_into(tx, &mut self.samples)?;
@@ -1531,6 +1531,10 @@ impl PartitionSearch for TrialCoder<'_, '_> {
 
     fn restore(&mut self, saved: &SyntaxSnapshot) -> Result<()> {
         Ok(self.syntax.restore(saved)?)
+    }
+
+    fn leaf_coded(&self) -> bool {
+        self.coded
     }
 }
 

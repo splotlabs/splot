@@ -37,6 +37,16 @@ pub struct PresetParams {
     /// exits on leaf frames only: paris f10 +0.84% BD-rate at 0.80x the p0
     /// instructions, half of the p0 to p2 BD step (p2 exits everywhere).
     pub partition_early_exit: Levels<bool>,
+    /// After its `NONE` trial, a block tries no other partition when the
+    /// `NONE` leaf codes no coefficient, or when its distortion per sample
+    /// is at most `(level * sqrt(lambda) / 16)^2` and its rate per sample at
+    /// most `level / 256` bits, per frame kind; `0` is off. `1` at p0-p6,
+    /// `4` at p7-p10, against the search with neither the breakout nor the
+    /// RD budget: p6 paris f30 -1.85% BD-rate at 0.70x instructions, niklas
+    /// f10 +0.39% at 0.80x (`4`: +1.87% at 0.75x, so p6 keeps `1`); p10
+    /// niklas `4` +1.06% at 0.76x (`1,1,1,4`: +0.54% at 0.82x), paris f30
+    /// -1.17% at 0.70x. Levels from 8 up lose more than the ladder buys.
+    pub none_breakout: Levels<u8>,
     /// Rate-distortion optimized quantization. On in every row: off at p7-p10
     /// lost 8-9% BD-rate on paris f10 at the same instruction count.
     pub rdoq: bool,
@@ -125,6 +135,8 @@ pub struct PresetParams {
     pub bitrate_mini_gop_size: u8,
     /// Frames the lookahead analyses before the next mini-GOP is coded, at
     /// least `mini_gop_size`; scene cuts and the temporal model see this far.
+    /// 8 from p4 (2026-11-20, f10 vs p4 with 16): niklas -2.09% BD-rate at
+    /// 0.985x instructions, paris +0.02% at 0.980x; it put p4 above p5.
     pub lookahead_frames: u8,
     /// Strength in percent of the block-level temporal model: each
     /// superblock's qindex and lambda move with the importance of its
@@ -797,6 +809,11 @@ preset_table! {
                                [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
                                [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
                                [false,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true]]),
+        none_breakout:         frames([
+                               [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
+                               [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
+                               [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
+                               [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4]]),
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -880,7 +897,7 @@ preset_table! {
     gop {
         mini_gop_size:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         bitrate_mini_gop_size: [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
-        lookahead_frames:      [   16,    16,    16,    16,    16,     8,     8,     8,     8,     8,     8],
+        lookahead_frames:      [   16,    16,    16,    16,     8,     8,     8,     8,     8,     8,     8],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         ssim_aq:               [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tf_frames:             frames([
@@ -901,7 +918,8 @@ preset_table! {
 /// [`PRESETS`] with the screen-content tools on and SDP off, for a sequence
 /// whose first frame looks like screen content. SDP off: desktop_credits p6
 /// measured Y +0.34% intra and +2.30% inter with it (screendata -0.24% and
-/// -0.91%, 2026-10-26).
+/// -0.91%, 2026-10-26). `none_breakout` off: it is not measured on screen
+/// content, where it ends blocks before their IntraBC leaves.
 pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
     let mut rows = PRESETS;
     let mut i = 0;
@@ -912,6 +930,7 @@ pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
             intrabc: true,
             integer_mv: true,
             sdp: false,
+            none_breakout: Levels::all(0),
             ..rows[i]
         };
         i += 1;
@@ -992,6 +1011,7 @@ mod tests {
                 &slow.partition_early_exit,
                 &fast.partition_early_exit
             ));
+            assert!(at_most(&slow.none_breakout, &fast.none_breakout));
             assert!(fast.sdp <= slow.sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);

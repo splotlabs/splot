@@ -21,6 +21,10 @@ struct Synthetic<F> {
     coded: Vec<Rect>,
     leaf_evaluations: usize,
     evaluated: std::collections::HashMap<Rect, usize>,
+    /// The leaves that code no coefficient.
+    uncoded: Vec<Rect>,
+    /// An SDP node and its luma and chroma roots.
+    sdp: Option<(Rect, Rect, Rect)>,
 }
 
 impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
@@ -31,6 +35,8 @@ impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
             coded: Vec::new(),
             leaf_evaluations: 0,
             evaluated: std::collections::HashMap::new(),
+            uncoded: Vec::new(),
+            sdp: None,
         }
     }
 }
@@ -44,8 +50,10 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         x < self.size && y < self.size
     }
 
-    fn sdp_roots(&self, _: Rect) -> Option<(Rect, Rect)> {
-        None
+    fn sdp_roots(&self, node: Rect) -> Option<(Rect, Rect)> {
+        self.sdp
+            .filter(|&(sdp, ..)| sdp == node)
+            .map(|(_, luma, chroma)| (luma, chroma))
     }
 
     fn follow_luma(&mut self, _: Option<(Rect, &PartitionTree)>) -> Result<(), Self::Error> {
@@ -128,6 +136,12 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         Ok((self.leaf_cost)(node))
     }
 
+    fn leaf_coded(&self) -> bool {
+        self.coded
+            .last()
+            .is_none_or(|leaf| !self.uncoded.contains(leaf))
+    }
+
     fn partition_rate(&mut self, _: Rect, partition: Partition) -> Result<Bits, Self::Error> {
         Ok(Bits::whole(if partition == Partition::None {
             1
@@ -158,6 +172,7 @@ fn full_search() -> PresetParams {
         min_block_log2: crate::preset::Levels::all(2),
         max_block_log2: 7,
         partition_early_exit: crate::preset::Levels::all(false),
+        none_breakout: crate::preset::Levels::all(0),
         ext_three_way_margin: u8::MAX,
         ext_four_way_margin: u8::MAX,
         ..PRESETS[0]
@@ -586,4 +601,238 @@ fn a_forced_partition_outside_the_window_still_codes() {
         ),
         "{tree:?}"
     );
+}
+
+/// With a cheap unsplit root, `SPLIT` stops at its first quadrant once the
+/// quadrants cost more than `NONE`: the last quadrant is never coded.
+#[test]
+fn split_stops_at_the_budget_of_the_best_shape() {
+    let cost = |(x, y, w, h): Rect| RdCost {
+        distortion: if (x, y, w, h) == (0, 0, 4, 4) {
+            1 << 10
+        } else {
+            1 << 20
+        },
+        rate: Bits::whole(1),
+    };
+    let mut coder = Synthetic::new(16, cost);
+    let root = (0, 0, 4, 4);
+    let (tree, found) = search_partition(&mut coder, root, &full_search(), unit_lambda()).unwrap();
+    assert!(matches!(tree, PartitionTree::Leaf(_)), "{tree:?}");
+    assert_eq!(
+        found.cost(unit_lambda()),
+        optimum(&coder, root, unit_lambda())
+    );
+    assert!(coder.evaluated.contains_key(&(0, 0, 3, 3)));
+    assert!(
+        !coder.evaluated.contains_key(&(8, 8, 3, 3)),
+        "the last quadrant was coded"
+    );
+}
+
+/// A visit that finds no tree under its budget keeps the budget as a bound:
+/// a later visit under a lower budget codes nothing, and a visit without a
+/// budget searches again, codes the `NONE` choice found before, and finds
+/// the optimum.
+#[test]
+fn a_bound_skips_lower_budgets_and_searches_larger_ones() {
+    use crate::rd::partition::search_visits;
+    let busy = |(.., w, h): Rect| RdCost {
+        distortion: 1 << (2 * (w + h)),
+        rate: Bits::whole(1),
+    };
+    let coder = Synthetic::new(16, busy);
+    let root = (0, 0, 4, 4);
+    let best = optimum(&coder, root, unit_lambda());
+    let preset = full_search();
+    let budgets = [Some(best - 1), Some(best / 2), None];
+    let mut visits = Vec::new();
+    for count in 1..=budgets.len() {
+        let mut coder = Synthetic::new(16, busy);
+        let found =
+            search_visits(&mut coder, root, &preset, unit_lambda(), &budgets[..count]).unwrap();
+        visits.push((
+            found,
+            coder.leaf_evaluations,
+            coder.coded.len(),
+            coder.evaluated,
+        ));
+    }
+    assert_eq!(visits[0].0, [None]);
+    assert_eq!(visits[1].0, [None, None]);
+    assert_eq!(
+        (visits[1].1, visits[1].2),
+        (visits[0].1, visits[0].2),
+        "the lower budget coded again"
+    );
+    let found = visits[2].0[2].map(|cost| cost.cost(unit_lambda()));
+    assert_eq!(found, Some(best));
+    assert_eq!(visits[2].3.get(&root), Some(&1), "NONE was searched again");
+}
+
+/// The `J` of the search with the early exit by plain recursion, without
+/// budgets: `NONE`, `SPLIT`, then the rest, and once `NONE` costs no more
+/// than the best other shape, only the extended shapes.
+fn early_exit_optimum<F: Fn(Rect) -> RdCost>(
+    coder: &Synthetic<F>,
+    node: Rect,
+    lambda: Lambda,
+    extended: bool,
+) -> u128 {
+    if !coder.in_frame(node) {
+        return 0;
+    }
+    let is_extended = |p: Partition| matches!(p, Partition::Horz3 | Partition::Horz4A);
+    let mut partitions = coder.partitions(node).unwrap();
+    partitions.retain(|&p| extended || !is_extended(p));
+    partitions.sort_by_key(|&p| match p {
+        Partition::None => 0,
+        Partition::Split => 1,
+        _ => 2,
+    });
+    let (mut best, mut unsplit, mut split, mut exited) = (u128::MAX, None, u128::MAX, false);
+    for partition in partitions {
+        if exited && !is_extended(partition) {
+            continue;
+        }
+        let rate = RdCost {
+            distortion: 0,
+            rate: Bits::whole(if partition == Partition::None { 1 } else { 2 }),
+        };
+        let j = rate.cost(lambda)
+            + if partition == Partition::None {
+                (coder.leaf_cost)(node).cost(lambda)
+            } else {
+                let nested = extended && !is_extended(partition);
+                let children = coder.children(node, partition).unwrap();
+                children
+                    .into_iter()
+                    .map(|child| early_exit_optimum(coder, child, lambda, nested))
+                    .sum()
+            };
+        best = best.min(j);
+        if partition == Partition::None {
+            unsplit = Some(j);
+            continue;
+        }
+        split = split.min(j);
+        exited |= unsplit.is_some_and(|none| none <= split);
+    }
+    best
+}
+
+proptest! {
+    /// Budgets do not change what the early exit finds: the shape that
+    /// decides the exit searches under the best cost alone.
+    #[test]
+    fn budgets_keep_the_early_exit_result(seed in any::<u64>()) {
+        let cost = move |(x, y, w, h): Rect| {
+            let hash = (u64::from(x) << 40 | u64::from(y) << 20 | u64::from(w) << 8 | u64::from(h))
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                ^ seed;
+            RdCost {
+                distortion: (hash >> 40) % (64 << (w + h)),
+                rate: Bits(hash % (64 << 8)),
+            }
+        };
+        let preset = PresetParams {
+            partition_early_exit: crate::preset::Levels::all(true),
+            ..full_search()
+        };
+        let mut coder = Synthetic::new(32, cost);
+        let root = (0, 0, 5, 5);
+        let (_, found) = search_partition(&mut coder, root, &preset, unit_lambda()).unwrap();
+        prop_assert_eq!(
+            found.cost(unit_lambda()),
+            early_exit_optimum(&coder, root, unit_lambda(), true)
+        );
+    }
+}
+
+fn breakout(level: u8) -> PresetParams {
+    PresetParams {
+        none_breakout: crate::preset::Levels::all(level),
+        ..full_search()
+    }
+}
+
+/// A root whose `NONE` leaf codes no coefficient ends there with the
+/// breakout on, though splitting costs less; with it off the search splits.
+#[test]
+fn breakout_ends_a_node_whose_none_leaf_codes_no_coefficient() {
+    let busy = |(.., w, h): Rect| RdCost {
+        distortion: 1 << (2 * (w + h)),
+        rate: Bits::whole(1),
+    };
+    let root = (0, 0, 5, 5);
+    for (level, leaf) in [(0, false), (1, true)] {
+        let mut coder = Synthetic::new(32, busy);
+        coder.uncoded.push(root);
+        let (tree, _) =
+            search_partition(&mut coder, root, &breakout(level), unit_lambda()).unwrap();
+        assert_eq!(
+            matches!(tree, PartitionTree::Leaf(_)),
+            leaf,
+            "level {level}: {tree:?}"
+        );
+        assert_eq!(coder.evaluated.contains_key(&(0, 0, 4, 4)), !leaf);
+    }
+}
+
+/// A coded `NONE` leaf ends the node only under the level's thresholds: the
+/// root's distortion of half a unit lambda per sample passes level 16 and
+/// fails level 4, which leave the cheaper split to the search.
+#[test]
+fn breakout_ends_a_none_leaf_under_the_thresholds() {
+    let cost = |node: Rect| RdCost {
+        distortion: if node == (0, 0, 5, 5) { 512 } else { 0 },
+        rate: Bits::whole(1),
+    };
+    let root = (0, 0, 5, 5);
+    for (level, leaf) in [(0, false), (4, false), (16, true)] {
+        let mut coder = Synthetic::new(32, cost);
+        let (tree, _) =
+            search_partition(&mut coder, root, &breakout(level), unit_lambda()).unwrap();
+        assert_eq!(
+            matches!(tree, PartitionTree::Leaf(_)),
+            leaf,
+            "level {level}: {tree:?}"
+        );
+        assert_eq!(coder.evaluated.contains_key(&(0, 0, 4, 4)), !leaf);
+    }
+}
+
+/// An SDP node searches its luma root under its budget and its chroma root
+/// under what the luma tree leaves: a budget the luma tree uses up codes no
+/// chroma, and the chroma tree fails a budget its optimum reaches.
+#[test]
+fn sdp_chroma_searches_under_the_budget_the_luma_tree_leaves() {
+    use crate::rd::partition::search_visits;
+    let busy = |(x, _, w, h): Rect| RdCost {
+        distortion: (1 << (2 * (w + h))) + u64::from(x),
+        rate: Bits::whole(1),
+    };
+    let (node, luma, chroma) = ((128, 0, 5, 5), (0, 0, 5, 5), (64, 0, 5, 5));
+    let sdp_coder = || {
+        let mut coder = Synthetic::new(256, busy);
+        coder.sdp = Some((node, luma, chroma));
+        coder
+    };
+    let plain = sdp_coder();
+    let (l, c) = (
+        optimum(&plain, luma, unit_lambda()),
+        optimum(&plain, chroma, unit_lambda()),
+    );
+    let visit = |budget| {
+        let mut coder = sdp_coder();
+        let found = search_visits(&mut coder, node, &full_search(), unit_lambda(), &[budget]);
+        let chroma_coded = coder.evaluated.keys().any(|&(x, ..)| x >= 64);
+        (
+            found.unwrap()[0].map(|cost| cost.cost(unit_lambda())),
+            chroma_coded,
+        )
+    };
+    assert_eq!(visit(Some(l)), (None, false));
+    assert_eq!(visit(Some(l + c)), (None, true));
+    assert_eq!(visit(Some(l + c + 1)), (Some(l + c), true));
 }

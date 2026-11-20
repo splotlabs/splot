@@ -9,6 +9,7 @@ use crate::mode_decision::{
     CHAINED_REFERENCES, INTRA_SKIPPED, MDS0_PRUNED, MDS1_PRUNED, PD0_PASSES,
 };
 use crate::preset::{FrameKind, Levels, PresetContext, PresetParams};
+use crate::rd::partition::BREAKOUTS;
 
 /// Preset 6 searched in one pass, with MDS0 `budgets` and an inter-frame
 /// intra shortlist of `intra`.
@@ -78,11 +79,12 @@ const P5_GOLDEN: (usize, u64) = (3028, 0xb309_6d3f_f798_d7c8);
 
 /// The p5 row, whose MDS0 budgets are open and whose inter-frame intra
 /// shortlist is `intra_modes`, codes the stream of the unstaged search
-/// without the reference intra skip.
+/// without the reference intra skip and the `NONE` breakout.
 #[test]
 fn open_budgets_code_the_unstaged_stream() {
     let p5: &'static PresetParams = Box::leak(Box::new(PresetParams {
         ref_intra_margin: u8::MAX,
+        none_breakout: Levels::all(0),
         ..*Preset::new(5).unwrap().params()
     }));
     assert_eq!(p5.mds0_budgets, [u8::MAX; 3]);
@@ -150,14 +152,16 @@ fn mds1_streams_decode_on_any_thread_count() {
 /// `full_trials: true`.
 const FULL_GOLDEN: (usize, u64) = (2963, 0x19dd_6acc_4a12_1993);
 
-/// `full_trials` 255 gives every candidate a full trial: it codes the
-/// stream of the old `full_trials: true`, and MDS1 drops nothing.
+/// `full_trials` 255 gives every candidate a full trial: without the `NONE`
+/// breakout it codes the stream of the old `full_trials: true`, and MDS1
+/// drops nothing.
 #[test]
 fn full_trials_255_code_the_old_full_trial_stream() {
     let preset = Box::leak(Box::new(PresetParams {
         full_trials: u8::MAX,
         pd_window: u8::MAX,
         ref_intra_margin: u8::MAX,
+        none_breakout: Levels::all(0),
         ..*Preset::new(6).unwrap().params()
     }));
     MDS1_PRUNED.set(0);
@@ -177,7 +181,7 @@ fn fnv(bytes: &[u8]) -> u64 {
 /// encoder, whose lookahead gives the open-loop motion, on `threads`
 /// threads: the units, the recon and the first-pass superblocks (counted on
 /// one thread).
-fn two_pass_stream(preset: u8, threads: usize) -> (Vec<u8>, Vec<u8>, usize) {
+fn two_pass_stream(preset: u8, threads: usize) -> (Vec<u8>, Vec<u8>, usize, usize) {
     let mut config = config(136, 72, BitDepth::Ten, preset, 200);
     config.tiles = TileLayout {
         cols_log2: 1,
@@ -185,19 +189,22 @@ fn two_pass_stream(preset: u8, threads: usize) -> (Vec<u8>, Vec<u8>, usize) {
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
     PD0_PASSES.set(0);
+    BREAKOUTS.set(0);
     let frames = (0..9).map(|index| super::compound::noisy_panning_frame(&config, index));
     let (units, recon) = super::encode_frames(&config, frames);
-    (units.concat(), recon, PD0_PASSES.get())
+    (units.concat(), recon, PD0_PASSES.get(), BREAKOUTS.get())
 }
 
 /// The two-pass partition decision of preset 6 takes first-pass levels from
-/// the lookahead motion in inter-frame superblocks; the stream decodes to
-/// the encoder recon and codes the same bytes on 1, 2 and 8 threads.
+/// the lookahead motion in inter-frame superblocks, and its `NONE` breakout
+/// ends nodes; the stream decodes to the encoder recon and codes the same
+/// bytes on 1, 2 and 8 threads.
 #[test]
 fn two_pass_streams_decode_on_any_thread_count() {
     assert!(Preset::new(6).unwrap().params().pd_window != u8::MAX);
-    let (one, expected, passes) = two_pass_stream(6, 1);
+    let (one, expected, passes, breakouts) = two_pass_stream(6, 1);
     assert!(passes > 0, "no first pass ran");
+    assert!(breakouts > 0, "no NONE breakout ended a node");
     assert_same_samples(&decode(&one), &expected, "two-pass partition");
     for threads in [2, 8] {
         assert!(two_pass_stream(6, threads).0 == one, "{threads} threads");
@@ -211,7 +218,7 @@ fn avm_decodes_two_pass_streams_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let (units, _, passes) = two_pass_stream(6, 1);
+    let (units, _, passes, _) = two_pass_stream(6, 1);
     assert!(passes > 0);
     let avm = avm_decode(
         &avmdec,
@@ -323,4 +330,76 @@ fn avm_decodes_reference_intra_skip_streams_like_splot() {
         "reference-intra",
     );
     assert!(avm == decode(&units), "AVM output differs");
+}
+
+/// The breakout reads the coefficient flag of the leaf coded last: a flat
+/// 8x16 leaf codes none, the noisy leaf after it codes some, and the flat
+/// leaf coded again from the saved state codes none again.
+#[test]
+fn leaf_coded_follows_the_last_coded_leaf() {
+    use crate::rd::partition::PartitionSearch;
+    use crate::tile_writer::{LeafChoice, Partition};
+    let config = config(64, 64, BitDepth::Eight, 3, 90);
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
+        let (width, height) = (size.width(), size.height());
+        (0..width * height)
+            .map(|at| {
+                let (x, y) = (at % width, at / width);
+                let noisy = plane == 0 && y < 8 && (8..16).contains(&x);
+                if noisy {
+                    ((x * 37 + y * 101) % 200 + 20) as u16
+                } else {
+                    128
+                }
+            })
+            .collect()
+    });
+    let source = SourceFrame::new(&config, 0, planes).unwrap();
+    let frame = IntraFrameCoder::new(&config).unwrap();
+    let tx = tx_choice::key_frame_tx_params(&frame.preset);
+    let header = FrameFilterParams::default();
+    let core =
+        build_key_frame_header(&frame.view, 90, 0, &header, tx, UniformTiles::default()).unwrap();
+    let mut writer =
+        KeyFrameTileWriter::new(&frame.sequence, &core, &refs_for(&frame.sequence), 0).unwrap();
+    let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
+    let sb = writer.syntax().superblock_size4() * 4;
+    let padded = PaddedSource::new(&source, frame.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
+    let lambda = Lambda::from_qindex(90, config.bit_depth).unwrap();
+    let mut coder = SourceResidualCoder::new(&padded, 90, config.bit_depth, &frame.preset, lambda);
+    let flags = writer
+        .search_superblock(|syntax, root| {
+            let mut trial = TrialCoder::new(syntax, &mut coder, &frame.preset, lambda, None);
+            let mut node = trial.sdp_roots(root).map_or(root, |(luma, _)| luma);
+            while trial.block_log2(node)? != (4, 4) {
+                let (w, h) = trial.block_log2(node)?;
+                let kind = if w > h {
+                    Partition::Vert
+                } else {
+                    Partition::Horz
+                };
+                let kind = [Partition::Split, kind]
+                    .into_iter()
+                    .find(|p| trial.partitions(node).is_ok_and(|all| all.contains(p)))
+                    .unwrap();
+                node = trial.children(node, kind)?[0];
+            }
+            let quarters = trial.children(node, Partition::Vert)?;
+            let start = trial.save(node, None)?;
+            let mut flags = Vec::new();
+            for leaf in [quarters[0], quarters[1]] {
+                trial.code_leaf(leaf, LeafChoice::DC)?;
+                flags.push(trial.leaf_coded());
+            }
+            trial.restore(&start)?;
+            trial.code_leaf(quarters[0], LeafChoice::DC)?;
+            flags.push(trial.leaf_coded());
+            Ok(flags)
+        })
+        .unwrap();
+    assert_eq!(flags, [false, true, false]);
 }
