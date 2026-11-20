@@ -152,6 +152,7 @@ fn searched_stream(
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         compound_types: 2,
         pd_window: Levels::all(u8::MAX),
+        tcq_type_trellis: false,
         ..*Preset::new(6).unwrap().params()
     }));
     let mut config = config(136, 72, BitDepth::Ten, 6, qp);
@@ -221,6 +222,7 @@ fn searched_compound_types_decode_on_any_thread_count() {
 fn interintra_streams_decode_on_any_thread_count() {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         interintra: true,
+        tcq_type_trellis: false,
         ..*Preset::new(6).unwrap().params()
     }));
     let stream = |threads: usize| {
