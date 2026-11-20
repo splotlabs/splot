@@ -34,7 +34,11 @@ pub(super) fn in_first_inter_frame<R>(
         .encode_frame(&panning_frame(config, 0), &key, 110)
         .unwrap();
     let plan = crate::gop::plan(1, config.keyint);
-    let tools = crate::gop::frame_tools(&coder.preset, coder.tiles, 110);
+    let tools = crate::gop::frame_tools(
+        (&coder.preset, crate::preset::PresetContext::default()),
+        coder.tiles,
+        110,
+    );
     let core = plan
         .header(
             &coder.view,
@@ -268,7 +272,11 @@ fn large_leaves_are_128x128_128x64_or_64x128() {
         .encode_frame(&panning_frame(&config, 0), &key, 110)
         .unwrap();
     let plan = crate::gop::plan(1, config.keyint);
-    let tools = crate::gop::frame_tools(&coder.preset, coder.tiles, 110);
+    let tools = crate::gop::frame_tools(
+        (&coder.preset, crate::preset::PresetContext::default()),
+        coder.tiles,
+        110,
+    );
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, 110, &filters, tools)

@@ -182,7 +182,7 @@ pub(super) fn zooming_stream(
 
 /// Asserts that a frame codes warp leaves into a reference slot and a later
 /// frame takes temporal vectors over that slot, so the decoder reads the warp
-/// frame's § 7.19 motion records.
+/// frame's § 7.22 motion records.
 pub(super) fn assert_warp_records_consumed(
     frames: &[(FrameHeaderCore, (usize, usize))],
     case: &str,
@@ -338,7 +338,11 @@ fn warp_search_keeps_the_cheapest_models_under_the_bar() {
             &coder.references,
             90,
             &FrameFilterParams::default(),
-            crate::gop::frame_tools(&coder.preset, coder.tiles, 90),
+            crate::gop::frame_tools(
+                (&coder.preset, crate::preset::PresetContext::default()),
+                coder.tiles,
+                90,
+            ),
         )
         .unwrap();
     let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
@@ -347,9 +351,15 @@ fn warp_search_keeps_the_cheapest_models_under_the_bar() {
     let source = zooming_frame(&config, 1);
     let padded = PaddedSource::new(&source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(90, config.bit_depth).unwrap();
-    let motion = MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda, Vec::new())
-        .unwrap()
-        .unwrap();
+    let motion = MotionSearch::new(
+        writer.syntax(),
+        &padded,
+        (&coder.preset, crate::preset::PresetContext::default()),
+        lambda,
+        Vec::new(),
+    )
+    .unwrap()
+    .unwrap();
     let mut residual =
         SourceResidualCoder::new(&padded, 90, config.bit_depth, &coder.preset, lambda);
     residual.context = coder.preset_context(&plan, 90);

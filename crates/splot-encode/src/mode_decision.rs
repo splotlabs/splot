@@ -69,6 +69,10 @@ thread_local! {
     /// this thread.
     pub(crate) static FORCE_INTERINTRA: core::cell::Cell<bool> =
         const { core::cell::Cell::new(false) };
+    /// Makes the `GLOBAL_GLOBALMV` candidate of a leaf's first reference
+    /// pair its only compound candidate on this thread.
+    pub(crate) static FORCE_GLOBAL_GLOBAL: core::cell::Cell<bool> =
+        const { core::cell::Cell::new(false) };
 }
 #[cfg(test)]
 thread_local! {
@@ -936,6 +940,10 @@ impl TrialCoder<'_, '_> {
                         None => continue,
                     },
                 };
+                #[cfg(test)]
+                if trial.mode == CompoundMode::GlobalGlobal && FORCE_GLOBAL_GLOBAL.get() {
+                    return Ok(vec![LeafChoice::inter(InterPrediction::Compound(trial))]);
+                }
                 if ranked
                     .iter()
                     .any(|(_, seen, other)| *seen == mvs && other.refs == refs)
@@ -1131,7 +1139,7 @@ impl TrialCoder<'_, '_> {
     /// by their side.
     fn mds0(&mut self, leaf: &LeafBlock, candidates: Vec<LeafChoice>) -> Result<Vec<LeafChoice>> {
         let limits = StageLimits {
-            budgets: self.preset.mds0_budgets,
+            budgets: self.preset.mds0_budgets.at(self.coder.context),
         };
         let Some(motion) = self.motion.filter(|_| !limits.keeps_all()) else {
             return Ok(candidates);
@@ -1242,7 +1250,7 @@ impl TrialCoder<'_, '_> {
             });
             choice = self.best(leaf, vec![choice, fsc], LUMA, start)?;
         }
-        if self.preset.tx_partition_search {
+        if self.preset.tx_partition_search.at(self.coder.context) {
             let partitions = self.syntax.luma_tx_partitions(leaf)?;
             let candidates = partitions
                 .into_iter()
@@ -1311,7 +1319,7 @@ pub(crate) fn two_pass_partition(
     (root, reference_intra): (PartitionNode, Option<&IntraCells>),
 ) -> Result<PartitionTree> {
     let levels = motion
-        .filter(|_| preset.pd_window != u8::MAX)
+        .filter(|_| preset.pd_window.at(coder.context) != u8::MAX)
         .and_then(|_| {
             let (w, _) = root.dimensions().ok()?;
             let depth = u32::from(coder.bit_depth.bits()) - 8;
@@ -1319,7 +1327,7 @@ pub(crate) fn two_pass_partition(
                 open_loop,
                 (root.col4() * 4, root.row4() * 4, w),
                 (lambda, depth),
-                preset,
+                (preset, coder.context),
             )
         });
     #[cfg(test)]
@@ -1327,17 +1335,6 @@ pub(crate) fn two_pass_partition(
     let mut trial = TrialCoder::new(syntax, coder, preset, lambda, motion);
     trial.reference_intra = reference_intra;
     Ok(search_guided(&mut trial, root, preset, lambda, levels.as_ref())?.0)
-}
-
-/// The `leaf_reuse` level of `context`. shortcut: 0 while `global_motion` is
-/// on, where a reused `GLOBALMV` leaf decodes unlike the encoder recon (open
-/// defect, `the_encoder_estimates_and_codes_global_motion` fails); lift it once
-/// that defect is fixed.
-fn reuse_level(preset: &PresetParams, context: crate::preset::PresetContext) -> u8 {
-    match preset.global_motion {
-        0 => preset.leaf_reuse.at(context),
-        _ => 0,
-    }
 }
 
 /// The luma rectangle `(x, y, width, height)` of `leaf`.
@@ -1475,7 +1472,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     /// codes here, else searches it.
     fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
         let leaf = self.syntax.leaf(node)?;
-        let reuse = reuse_level(self.preset, self.coder.context);
+        let reuse = self.preset.leaf_reuse.at(self.coder.context);
         let key = (leaf.row4(), leaf.col4(), leaf.block_size());
         let seen = self.leaves.get(&key).and_then(|seen| {
             seen.iter()
