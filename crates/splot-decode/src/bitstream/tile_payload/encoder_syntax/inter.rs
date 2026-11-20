@@ -75,7 +75,7 @@ pub const INTERP_FILTERS: [InterpolationFilter; 3] = [
 ];
 
 /// The decoder's § 7.23 reference buffer, filled with the encoder's filtered
-/// reconstructions, saved CDFs and § 7.19 motion fields in coding order.
+/// reconstructions, saved CDFs and § 7.22 motion fields in coding order.
 pub struct EncoderReferences {
     sequence: SequenceHeader,
     buffer: RuntimeReferenceBuffer,

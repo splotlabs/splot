@@ -55,8 +55,7 @@ pub struct PresetParams {
     /// intra choices carry the loss: paris and park_joy p6 f10 lost +0.39%
     /// and +1.21% at 0.80x and 0.77x instructions with `2` in every frame,
     /// +0.24% and +0.97% with `2` in key frames alone, -0.09% and +0.17%
-    /// at 0.83x with `1`. Off while `global_motion` is on: a reused
-    /// `GLOBALMV` leaf there gave a recon that the decoder does not match.
+    /// at 0.83x with `1`.
     pub leaf_reuse: Levels<u8>,
     /// Rate-distortion optimized quantization. On in every row: off at p7-p10
     /// lost 8-9% BD-rate on paris f10 at the same instruction count.

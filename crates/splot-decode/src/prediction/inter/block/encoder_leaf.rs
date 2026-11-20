@@ -709,7 +709,7 @@ impl EncoderInterTile {
         Ok(resolved.mv)
     }
 
-    /// Appends the § 7.19 temporal records of a refined or wedge compound block.
+    /// Appends the § 7.22 temporal records of a refined or wedge compound block.
     fn append_compound_records(
         &mut self,
         placed: &PlacedInterBlock,
@@ -1242,7 +1242,7 @@ pub(crate) fn encoder_temporal_context(
     Ok(Some(Arc::new(context)))
 }
 
-/// The § 7.19 motion field the decoder stores for frame `core` of `sequence`,
+/// The § 7.22 motion field the decoder stores for frame `core` of `sequence`,
 /// coded over `reference`, whose tiles published `records`.
 pub(crate) fn encoder_motion_field<'a>(
     sequence: &SequenceHeader,

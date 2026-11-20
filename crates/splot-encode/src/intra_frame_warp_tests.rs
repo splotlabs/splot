@@ -182,7 +182,7 @@ pub(super) fn zooming_stream(
 
 /// Asserts that a frame codes warp leaves into a reference slot and a later
 /// frame takes temporal vectors over that slot, so the decoder reads the warp
-/// frame's § 7.19 motion records.
+/// frame's § 7.22 motion records.
 pub(super) fn assert_warp_records_consumed(
     frames: &[(FrameHeaderCore, (usize, usize))],
     case: &str,

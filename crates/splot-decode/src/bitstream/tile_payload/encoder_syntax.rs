@@ -677,7 +677,7 @@ pub struct FrameStart {
     temporal: Option<std::sync::Arc<crate::prediction::inter::TemporalMvContext>>,
 }
 
-/// The CDFs and § 7.19 motion records of a coded tile after its last leaf,
+/// The CDFs and § 7.22 motion records of a coded tile after its last leaf,
 /// which [`EncoderReferences::update`] folds into the saved state of the frame.
 pub struct TileEnd {
     cdfs: TileCdfSubset,
