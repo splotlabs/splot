@@ -6,7 +6,6 @@
 #![allow(clippy::unwrap_used)]
 
 use std::sync::atomic::AtomicUsize;
-use std::time::Duration;
 
 use super::*;
 use crate::{BitDepth, Config, Encoder, Preset, SourceFrame, ThreadCount};
@@ -114,24 +113,33 @@ fn a_cancel_while_flushing_stops_the_last_mini_gop() {
 }
 
 /// Another thread cancels while `receive_packet` searches blocks on the
-/// worker pool; the call returns and the encoder drops.
+/// worker pool; the call returns and the encoder drops. The other thread
+/// waits for the key frame's statistics, so the cancel lands in the call
+/// that codes the 8 frames after it.
 #[test]
 fn a_cancel_from_another_thread_stops_a_running_call() {
     for bit_depth in DEPTHS {
         let mut config = config(bit_depth, 4);
-        (config.width, config.height) = (512, 384);
-        config.preset = Preset::new(2).unwrap();
+        (config.width, config.height) = (192, 128);
         let mut encoder = fed(&config, 9);
         let token = encoder.cancel_token();
-        let callers = splot_parallel::WorkerPool::new(ThreadCount::from_count_or_auto(2)).unwrap();
-        callers.scope(|scope| {
-            scope.spawn(|_| {
-                std::thread::sleep(Duration::from_millis(30));
-                token.cancel();
-            });
-            let (_, error) = drain(&mut encoder);
-            assert!(matches!(error, Some(Error::Cancelled)), "{error:?}");
-        });
+        let coded = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&coded);
+        encoder.set_stats_sink(Box::new(move |_| {
+            coded.fetch_add(1, Ordering::Relaxed);
+        }));
+        let waiting = Arc::clone(&seen);
+        let canceller = splot_parallel::spawn_thread("canceller", move || {
+            while waiting.load(Ordering::Relaxed) == 0 {
+                std::thread::yield_now();
+            }
+            token.cancel();
+        })
+        .unwrap();
+        let (_, error) = drain(&mut encoder);
+        assert!(matches!(error, Some(Error::Cancelled)), "{error:?}");
+        canceller.join().unwrap();
+        assert_eq!(seen.load(Ordering::Relaxed), 1, "{bit_depth:?}");
         assert_stopped(&mut encoder, &config);
     }
 }
