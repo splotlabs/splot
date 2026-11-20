@@ -584,7 +584,7 @@ impl IntraFrameCoder {
         };
         let qindex = u32::from(qp);
         let context = self.preset_context(plan, qindex);
-        let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
+        let mut tools = gop::frame_tools((&self.preset, context), self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.at(context);
         #[cfg(test)]
         {
@@ -661,7 +661,7 @@ impl IntraFrameCoder {
         let motion = MotionSearch::new(
             first.syntax(),
             &padded,
-            &self.preset,
+            (&self.preset, context),
             lambda,
             open_loop.clone(),
         )

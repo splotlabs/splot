@@ -27,7 +27,7 @@ use crate::hme::FrameMotion;
 use crate::intra_frame::PaddedSource;
 use crate::kernels::motion::Motion;
 use crate::kernels::{BlockDims, kernels};
-use crate::preset::PresetParams;
+use crate::preset::{PresetContext, PresetParams};
 use crate::rd::{Bits, Lambda, log2_q8};
 use crate::tile_writer::{Result, TileWriterError};
 
@@ -177,7 +177,7 @@ impl MotionSearch {
     pub(crate) fn new(
         syntax: &IntraTileSyntax,
         source: &PaddedSource,
-        preset: &PresetParams,
+        (preset, context): (&PresetParams, PresetContext),
         lambda: Lambda,
         open_loop: Vec<Option<Arc<FrameMotion>>>,
     ) -> Result<Option<Self>> {
@@ -204,7 +204,7 @@ impl MotionSearch {
         Ok(Some(Self {
             references,
             source,
-            range: i32::from(preset.motion_range),
+            range: i32::from(preset.motion_range.at(context)),
             subpel_depth: preset.subpel_depth.min(3 - mv_step.ilog2().min(3) as u8),
             mv_step,
             sad_lambda_q8: lambda.sse_per_bit_q16().isqrt(),

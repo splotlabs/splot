@@ -118,7 +118,11 @@ fn a_frame_without_a_tip_pair_codes_tip_disabled() {
         order_hint: 0,
         ..middle
     };
-    let tools = crate::gop::frame_tools(&coder.preset, coder.tiles, 110);
+    let tools = crate::gop::frame_tools(
+        (&coder.preset, crate::preset::PresetContext::default()),
+        coder.tiles,
+        110,
+    );
     let core = past_less
         .header(
             &coder.view,
@@ -176,7 +180,11 @@ fn the_tip_weight_search_follows_the_nearer_content() {
         units.push(coded.temporal_unit);
     }
     let middle = plans.next().unwrap();
-    let tools = crate::gop::frame_tools(&coder.preset, coder.tiles, 110);
+    let tools = crate::gop::frame_tools(
+        (&coder.preset, crate::preset::PresetContext::default()),
+        coder.tiles,
+        110,
+    );
     let core = middle
         .header(
             &coder.view,

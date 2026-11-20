@@ -531,7 +531,7 @@ fn field(sad: impl Fn(usize, usize, usize) -> u32) -> std::sync::Arc<crate::hme:
 fn first_pass_levels_split_where_the_quadrants_cost_less() {
     use crate::rd::partition::first_pass_levels;
     let preset = PresetParams {
-        pd_window: 2,
+        pd_window: crate::preset::Levels::all(2),
         pd0_leaf_bits: 8,
         ..PRESETS[6]
     };
@@ -549,7 +549,13 @@ fn first_pass_levels_split_where_the_quadrants_cost_less() {
             _ => 200,
         }
     }))];
-    let levels = first_pass_levels(&fields, (0, 0, 64), (unit_lambda(), 0), &preset).unwrap();
+    let levels = first_pass_levels(
+        &fields,
+        (0, 0, 64),
+        (unit_lambda(), 0),
+        (&preset, crate::preset::PresetContext::default()),
+    )
+    .unwrap();
     assert_eq!(
         (levels.origin, levels.stride, levels.window),
         ((0, 0), 8, 2)
@@ -562,8 +568,24 @@ fn first_pass_levels_split_where_the_quadrants_cost_less() {
     let missing = [Some(field(
         |size, _, _| if size == 0 { u32::MAX } else { 50 },
     ))];
-    assert!(first_pass_levels(&missing, (0, 0, 64), (unit_lambda(), 0), &preset).is_none());
-    assert!(first_pass_levels(&[None], (0, 0, 64), (unit_lambda(), 0), &preset).is_none());
+    assert!(
+        first_pass_levels(
+            &missing,
+            (0, 0, 64),
+            (unit_lambda(), 0),
+            (&preset, crate::preset::PresetContext::default())
+        )
+        .is_none()
+    );
+    assert!(
+        first_pass_levels(
+            &[None],
+            (0, 0, 64),
+            (unit_lambda(), 0),
+            (&preset, crate::preset::PresetContext::default())
+        )
+        .is_none()
+    );
 }
 
 /// A block whose only partition falls outside the window still codes it:

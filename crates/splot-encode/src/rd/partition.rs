@@ -545,7 +545,7 @@ pub(crate) fn first_pass_levels(
     fields: &[Option<Arc<FrameMotion>>],
     (left, top, side): (usize, usize, usize),
     (lambda, depth): (Lambda, u32),
-    preset: &PresetParams,
+    (preset, context): (&PresetParams, PresetContext),
 ) -> Option<Levels> {
     let fields: Vec<&FrameMotion> = fields.iter().flatten().map(AsRef::as_ref).collect();
     if fields.is_empty() {
@@ -557,7 +557,7 @@ pub(crate) fn first_pass_levels(
         origin: (left, top),
         stride,
         cells: vec![0; stride * stride],
-        window: preset.pd_window,
+        window: preset.pd_window.at(context),
     };
     let quarter = side.min(64);
     for y in (top..top + side).step_by(quarter) {

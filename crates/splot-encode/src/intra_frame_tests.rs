@@ -341,7 +341,8 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         config.chroma = chroma;
         let source = synthetic_frame(&config, 5);
         let frame = IntraFrameCoder::new(&config).unwrap();
-        let tx = tx_choice::key_frame_tx_params(&frame.preset);
+        let tx =
+            tx_choice::key_frame_tx_params(&frame.preset, crate::preset::PresetContext::default());
         let header = FrameFilterParams::default();
         let core = build_key_frame_header(&frame.view, 90, 0, &header, tx, UniformTiles::default())
             .unwrap();
@@ -1094,7 +1095,11 @@ fn inter_stream_of(
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let mut tools = crate::gop::frame_tools(&coder.preset, coder.tiles, qindex);
+    let mut tools = crate::gop::frame_tools(
+        (&coder.preset, crate::preset::PresetContext::default()),
+        coder.tiles,
+        qindex,
+    );
     (tools.1, tools.2.2) = (true, true);
     tools.2.7 = gm::random_models(seed);
     let filters = FrameFilterParams::default();
@@ -1287,7 +1292,11 @@ fn search_frame_counting(
             &coder.references,
             90,
             &FrameFilterParams::default(),
-            crate::gop::frame_tools(&coder.preset, coder.tiles, 90),
+            crate::gop::frame_tools(
+                (&coder.preset, crate::preset::PresetContext::default()),
+                coder.tiles,
+                90,
+            ),
         )
         .unwrap();
     let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
@@ -1295,8 +1304,14 @@ fn search_frame_counting(
     let sb = writer.syntax().superblock_size4() * 4;
     let padded = PaddedSource::new(source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
-    let motion =
-        MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda, Vec::new()).unwrap();
+    let motion = MotionSearch::new(
+        writer.syntax(),
+        &padded,
+        (&coder.preset, crate::preset::PresetContext::default()),
+        lambda,
+        Vec::new(),
+    )
+    .unwrap();
     let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, &coder.preset, lambda);
     residual.context = coder.preset_context(plan, 90);
     let (luma, stride, width, height) = padded.luma();

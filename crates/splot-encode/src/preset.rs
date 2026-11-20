@@ -95,11 +95,11 @@ pub struct PresetParams {
     /// block with its largest transform (`TX_MODE_LARGEST`). Off from p8
     /// (paris p6 f10: +2.99% BD-rate at 0.77x CPU), so p6, p7 and p8 step
     /// more evenly.
-    pub tx_partition_search: bool,
+    pub tx_partition_search: Levels<bool>,
     /// Full-pel motion search radius in luma samples. The search clamps it
     /// to 32 samples at its coarsest (quarter) level, so values from 128 up
     /// search alike.
-    pub motion_range: u16,
+    pub motion_range: Levels<u16>,
     /// Open-loop motion estimation of the lookahead: the radius of the
     /// quarter-resolution search against the adjacent frame, in quarter
     /// samples; the radius doubles for references two or more frames away.
@@ -223,7 +223,7 @@ pub struct PresetParams {
     /// lookahead motion takes first-pass levels from the open-loop motion
     /// alone, and searches a block only within this many binary partition
     /// levels of them; `255` searches every partition.
-    pub pd_window: u8,
+    pub pd_window: Levels<u8>,
     /// The first pass charges each square this many bits besides its
     /// open-loop SAD.
     pub pd0_leaf_bits: u8,
@@ -399,7 +399,7 @@ pub struct PresetParams {
     /// Staged mode decision: the inter candidates of a leaf that each class
     /// (`[MVP, NEWMV, compound]`) keeps for the all-plane trials, lowest
     /// luma prediction SATD plus mode rate first. `255` keeps every one.
-    pub mds0_budgets: [u8; 3],
+    pub mds0_budgets: Levels<[u8; 3]>,
     /// Psychovisual RD in percent: the trial distortion of a luma block adds
     /// its AC-energy loss (`PaddedSource::ac_loss`). `0` in every row;
     /// `Tune::Vq` sets 50 (alone it costs SSIM: paris p6 SSIM-BD +0.11% at
@@ -624,7 +624,7 @@ impl PresetParams {
         for &modes in self.intra_modes.values() {
             check("intra_modes", modes, 1, u8::MAX, "")?;
         }
-        for budget in self.mds0_budgets {
+        for &budget in self.mds0_budgets.values().as_flattened() {
             check("mds0_budgets", budget, 1, u8::MAX, " per class")?;
         }
         check("subpel_depth", self.subpel_depth, 0, 3, "")?;
@@ -727,11 +727,17 @@ impl FieldValue for [u8; 3] {
 }
 
 impl<T: FieldValue + Copy> FieldValue for Levels<T> {
-    const EXPECTED: &'static str = "one value for every frame, or four comma-separated values for key, base, mid and leaf frames";
+    const EXPECTED: &'static str = "one value for every frame, or four values for key, base, mid and leaf frames, separated by commas (by slashes for mds0_budgets)";
     fn parse(value: &str) -> Option<Self> {
-        let values: Vec<T> = value.split(',').map(T::parse).collect::<Option<_>>()?;
+        if let Some(all) = T::parse(value) {
+            return Some(Self::all(all));
+        }
+        let separator = if value.contains('/') { '/' } else { ',' };
+        let values: Vec<T> = value
+            .split(separator)
+            .map(T::parse)
+            .collect::<Option<_>>()?;
         match values[..] {
-            [all] => Some(Self::all(all)),
             [key, base, mid, leaf] => Some(Self::by_frame([key, base, mid, leaf])),
             _ => None,
         }
@@ -786,8 +792,8 @@ macro_rules! preset_table {
             /// type range, `0`, `1`, `false` or `true` for a flag, one value
             /// or four comma-separated values (key, base, mid, leaf frames)
             /// for a [`Levels`] field, three comma-separated flags for
-            /// `mvd_tools`, and three comma-separated integers for
-            /// `mds0_budgets`.
+            /// `mvd_tools`, and three comma-separated integers, or four such
+            /// triples separated by `/`, for `mds0_budgets`.
             ///
             /// # Errors
             /// Returns [`PresetError::UnknownField`] when no field has this
@@ -833,7 +839,11 @@ preset_table! {
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        pd_window:             [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
+        pd_window:             frames([
+                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
+                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
+                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
+                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2]]),
         pd0_leaf_bits:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         ref_intra_margin:      [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         ref_intra_refresh:     [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
@@ -859,7 +869,11 @@ preset_table! {
         tcq_search_trellis:    [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         tcq_type_trellis:      [ true,  true,  true,  true, false, false, false, false, false, false, false],
         tx_type_depth:         [    3,     3,     3,     2,     2,     2,     1,     1,     1,     0,     0],
-        tx_partition_search:   [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
+        tx_partition_search:   frames([
+                               [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
+                               [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
+                               [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
+                               [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false]]),
         inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
         ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cctx:                  [false, false, false, false, false, false, false, false, false, false, false],
@@ -867,7 +881,11 @@ preset_table! {
         inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     inter {
-        motion_range:          [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
+        motion_range:          frames([
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16]]),
         hme_range:             [   16,    16,    16,    12,    12,     8,     8,     8,     8,     8,     8],
         me_range:              [   16,    16,    16,    12,    12,     8,     8,     8,     6,     4,     4],
         me_seeds:              [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
@@ -924,7 +942,11 @@ preset_table! {
     }
     mode_decision {
         psy_rd:                [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        mds0_budgets:          [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
+        mds0_budgets:          frames([
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]]]),
     }
     threading {
         wavefront:             [false, false, false, false, false, false, false,  true,  true,  true,  true],
@@ -1042,8 +1064,11 @@ mod tests {
             assert!(fast.rdoq || !fast.rdoq_every_type);
             assert!(fast.full_trials <= slow.full_trials);
             assert!(fast.tx_type_depth <= slow.tx_type_depth);
-            assert!(fast.tx_partition_search <= slow.tx_partition_search);
-            assert!(fast.motion_range <= slow.motion_range);
+            assert!(at_most(
+                &fast.tx_partition_search,
+                &slow.tx_partition_search
+            ));
+            assert!(at_most(&fast.motion_range, &slow.motion_range));
             assert!(fast.hme_range <= slow.hme_range && fast.me_range <= slow.me_range);
             assert!(slow.me_seeds == 0 || fast.me_seeds >= slow.me_seeds);
             assert!(
@@ -1073,7 +1098,7 @@ mod tests {
             assert!(fast.ext_partitions <= slow.ext_partitions);
             assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
-            assert!(fast.pd_window <= slow.pd_window);
+            assert!(at_most(&fast.pd_window, &slow.pd_window));
             assert!(fast.pd0_leaf_bits >= slow.pd0_leaf_bits);
             assert!(fast.ref_intra_margin <= slow.ref_intra_margin);
             assert!(fast.ref_intra_refresh >= slow.ref_intra_refresh);
@@ -1108,9 +1133,11 @@ mod tests {
             assert!(fast.wavefront >= slow.wavefront);
             assert!(
                 fast.mds0_budgets
+                    .values()
+                    .as_flattened()
                     .iter()
-                    .zip(slow.mds0_budgets)
-                    .all(|(&f, s)| f <= s)
+                    .zip(slow.mds0_budgets.values().as_flattened())
+                    .all(|(f, s)| f <= s)
             );
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
@@ -1160,12 +1187,18 @@ mod tests {
         params.set("tcq", "true")?;
         params.set("intra_modes", "5,4,3,2")?;
         params.set("mvd_tools", "1,0,true")?;
+        params.set("motion_range", "48,48,32,24")?;
+        params.set("mds0_budgets", "4,2,2/4,2,2/2,1,1/2,1,1")?;
+        params.set("pd_window", "3")?;
         let expected = PresetParams {
             gdf_candidates: 4,
             rdoq: false,
             tcq: Levels::all(true),
             intra_modes: Levels::by_frame([5, 4, 3, 2]),
             mvd_tools: [true, false, true],
+            motion_range: Levels::by_frame([48, 48, 32, 24]),
+            mds0_budgets: Levels::by_frame([[4, 2, 2], [4, 2, 2], [2, 1, 1], [2, 1, 1]]),
+            pd_window: Levels::all(3),
             ..PRESETS[6]
         };
         assert_eq!(params, expected);
@@ -1195,6 +1228,9 @@ mod tests {
             ("intra_modes", "1,2,3,4,5"),
             ("mvd_tools", "1,0"),
             ("mvd_tools", "1,0,1,1"),
+            ("mds0_budgets", "4,2,2/2,1,1"),
+            ("mds0_budgets", "4,2,2,1"),
+            ("motion_range", "48,32"),
         ] {
             assert!(
                 matches!(

@@ -1131,7 +1131,7 @@ impl TrialCoder<'_, '_> {
     /// by their side.
     fn mds0(&mut self, leaf: &LeafBlock, candidates: Vec<LeafChoice>) -> Result<Vec<LeafChoice>> {
         let limits = StageLimits {
-            budgets: self.preset.mds0_budgets,
+            budgets: self.preset.mds0_budgets.at(self.coder.context),
         };
         let Some(motion) = self.motion.filter(|_| !limits.keeps_all()) else {
             return Ok(candidates);
@@ -1242,7 +1242,7 @@ impl TrialCoder<'_, '_> {
             });
             choice = self.best(leaf, vec![choice, fsc], LUMA, start)?;
         }
-        if self.preset.tx_partition_search {
+        if self.preset.tx_partition_search.at(self.coder.context) {
             let partitions = self.syntax.luma_tx_partitions(leaf)?;
             let candidates = partitions
                 .into_iter()
@@ -1311,7 +1311,7 @@ pub(crate) fn two_pass_partition(
     (root, reference_intra): (PartitionNode, Option<&IntraCells>),
 ) -> Result<PartitionTree> {
     let levels = motion
-        .filter(|_| preset.pd_window != u8::MAX)
+        .filter(|_| preset.pd_window.at(coder.context) != u8::MAX)
         .and_then(|_| {
             let (w, _) = root.dimensions().ok()?;
             let depth = u32::from(coder.bit_depth.bits()) - 8;
@@ -1319,7 +1319,7 @@ pub(crate) fn two_pass_partition(
                 open_loop,
                 (root.col4() * 4, root.row4() * 4, w),
                 (lambda, depth),
-                preset,
+                (preset, coder.context),
             )
         });
     #[cfg(test)]

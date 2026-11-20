@@ -17,9 +17,9 @@ fn staged(budgets: [u8; 3], intra: u8) -> &'static PresetParams {
     let p6 = Preset::new(6).unwrap().params();
     let key = p6.intra_modes.at(PresetContext::default());
     Box::leak(Box::new(PresetParams {
-        mds0_budgets: budgets,
+        mds0_budgets: Levels::all(budgets),
         intra_modes: Levels::by_frame([key, intra, intra, intra]),
-        pd_window: u8::MAX,
+        pd_window: Levels::all(u8::MAX),
         ..*p6
     }))
 }
@@ -87,7 +87,7 @@ fn open_budgets_code_the_unstaged_stream() {
         none_breakout: Levels::all(0),
         ..*Preset::new(5).unwrap().params()
     }));
-    assert_eq!(p5.mds0_budgets, [u8::MAX; 3]);
+    assert_eq!(p5.mds0_budgets, Levels::all([u8::MAX; 3]));
     let inter = PresetContext {
         frame: FrameKind::Leaf,
         ..PresetContext::default()
@@ -159,7 +159,7 @@ const FULL_GOLDEN: (usize, u64) = (2963, 0x19dd_6acc_4a12_1993);
 fn full_trials_255_code_the_old_full_trial_stream() {
     let preset = Box::leak(Box::new(PresetParams {
         full_trials: u8::MAX,
-        pd_window: u8::MAX,
+        pd_window: Levels::all(u8::MAX),
         ref_intra_margin: u8::MAX,
         none_breakout: Levels::all(0),
         leaf_reuse: Levels::all(0),
@@ -203,7 +203,15 @@ fn two_pass_stream(preset: u8, threads: usize) -> (Vec<u8>, Vec<u8>, usize, usiz
 /// bytes on 1, 2 and 8 threads.
 #[test]
 fn two_pass_streams_decode_on_any_thread_count() {
-    assert!(Preset::new(6).unwrap().params().pd_window != u8::MAX);
+    assert!(
+        Preset::new(6)
+            .unwrap()
+            .params()
+            .pd_window
+            .values()
+            .iter()
+            .all(|&w| w != u8::MAX)
+    );
     let (one, expected, passes, breakouts) = two_pass_stream(6, 1);
     assert!(passes > 0, "no first pass ran");
     assert!(breakouts > 0, "no NONE breakout ended a node");
@@ -242,7 +250,7 @@ fn avm_decodes_staged_streams_like_splot() {
     MDS1_PRUNED.set(0);
     let (units, _, _, pruned) = staged_stream(
         Box::leak(Box::new(PresetParams {
-            mds0_budgets: [1, 1, 1],
+            mds0_budgets: Levels::all([1, 1, 1]),
             ..*full_staged()
         })),
         200,
@@ -264,7 +272,7 @@ fn avm_decodes_staged_streams_like_splot() {
 fn reference_intra() -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         ref_intra_margin: 1,
-        pd_window: u8::MAX,
+        pd_window: Levels::all(u8::MAX),
         ..*Preset::new(6).unwrap().params()
     }))
 }
@@ -362,7 +370,7 @@ fn leaf_coded_follows_the_last_coded_leaf() {
     });
     let source = SourceFrame::new(&config, 0, planes).unwrap();
     let frame = IntraFrameCoder::new(&config).unwrap();
-    let tx = tx_choice::key_frame_tx_params(&frame.preset);
+    let tx = tx_choice::key_frame_tx_params(&frame.preset, crate::preset::PresetContext::default());
     let header = FrameFilterParams::default();
     let core =
         build_key_frame_header(&frame.view, 90, 0, &header, tx, UniformTiles::default()).unwrap();
