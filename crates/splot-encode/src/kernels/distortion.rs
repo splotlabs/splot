@@ -108,7 +108,11 @@ fn row_abs_diff<S: Simd>(simd: S, a: &[u16], b: &[u16], mut f: impl FnMut(u32x8<
     if a.len() <= 8 && b.len() <= 8 {
         let pad = |row: &[u16]| {
             let mut lanes = [0; 8];
-            lanes[..row.len()].copy_from_slice(row);
+            match row.len() {
+                8 => lanes.copy_from_slice(row),
+                4 => lanes[..4].copy_from_slice(row),
+                n => lanes[..n].copy_from_slice(row),
+            }
             u16x8::simd_from(simd, lanes)
         };
         let (a, b) = (pad(a), pad(b));
