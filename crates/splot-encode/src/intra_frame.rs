@@ -646,7 +646,9 @@ impl IntraFrameCoder {
         let (mi_rows, mi_cols) = first.syntax().mi_dimensions();
         let sb = first.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(source, self.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
-        let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
+        let lambda = Lambda::from_qindex(qindex, self.bit_depth)
+            .map_err(coding("lambda"))?
+            .with_scale(self.preset.lambda_scale.at(context));
         let open_loop = match &core.inter {
             Some(inter) if !self.open_loop.is_empty() => reference_pairs(plan, &inter.order_hints)
                 .map(|pair| pair.and_then(|pair| self.open_loop.get(&pair).cloned()))

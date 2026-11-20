@@ -412,6 +412,16 @@ fn lambda_scaling_follows_powers_of_two() {
     }
 }
 
+/// `with_scale(100)` keeps the multiplier; a larger percent gives a larger one.
+#[test]
+fn lambda_with_scale_is_a_percent() {
+    let lambda = Lambda::from_qindex(120, BitDepth::Eight).unwrap();
+    assert_eq!(lambda.with_scale(100), lambda);
+    let rate = |percent| lambda.with_scale(percent).sse_per_bit_q16();
+    assert!(rate(70) < rate(100) && rate(100) < rate(115) && rate(115) < rate(200));
+    assert!(rate(150).abs_diff(rate(100) * 3 / 2) <= 1);
+}
+
 /// The level-pass symbols of the reference per-position walk: each position
 /// asks the facade for its row in turn, as the writer did before the walk
 /// moved into the facade.

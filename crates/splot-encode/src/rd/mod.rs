@@ -187,6 +187,15 @@ impl Lambda {
         })
     }
 
+    /// The multiplier times `percent / 100`; `100` keeps it.
+    #[must_use]
+    pub(crate) const fn with_scale(self, percent: u8) -> Self {
+        Self {
+            scale_q16: self.scale_q16 * percent as u32 / 100,
+            ..self
+        }
+    }
+
     /// The multiplier times `2^(log2_q8 / 256)`, with the fraction from
     /// `1 + 0.6565 f + 0.3435 f^2`, exact at both ends of `[0, 1)`.
     #[must_use]

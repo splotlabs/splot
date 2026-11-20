@@ -160,6 +160,9 @@ pub struct PresetParams {
     /// weight decay, so larger values keep more of the neighbours. `0` is
     /// off.
     pub tf_strength: Levels<u8>,
+    /// The RD lambda of a frame in percent of the high-rate slope, per
+    /// context; `100` in every row. The loop-filter search keeps its own.
+    pub lambda_scale: Levels<u8>,
     /// `delta_q_res` of a frame with superblock qindex offsets: the qindex
     /// moves in steps of `1 << delta_q_res`, `0..=3`. `1` in every row:
     /// `2` lost 0.8% on park_joy p6 and gained 0.5% on paris.
@@ -630,6 +633,9 @@ impl PresetParams {
         for &frames in self.tf_frames.values() {
             check("tf_frames", frames, 0, 8, "")?;
         }
+        for &scale in self.lambda_scale.values() {
+            check("lambda_scale", scale, 1, 200, "")?;
+        }
         check("delta_q_res", self.delta_q_res, 0, 3, "")?;
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
@@ -889,6 +895,7 @@ preset_table! {
                                [4; 11],
                                [0; 11], [0; 11], [0; 11]]),
         tf_strength:           frames([[100; 11], [25; 11], [25; 11], [25; 11]]),
+        lambda_scale:          [Levels::all(100); 11],
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
     mode_decision {
@@ -1227,6 +1234,8 @@ mod tests {
             (&[("mds0_budgets", "4,0,2")], "mds0_budgets"),
             (&[("intra_modes", "3,3,0,3")], "intra_modes"),
             (&[("tf_frames", "9")], "tf_frames"),
+            (&[("lambda_scale", "0")], "lambda_scale"),
+            (&[("lambda_scale", "100,100,201,100")], "lambda_scale"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
             (&[("ssim_aq", "201")], "ssim_aq"),
             (&[("psy_rd", "201")], "psy_rd"),
