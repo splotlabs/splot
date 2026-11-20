@@ -849,11 +849,12 @@ impl EncoderInterTile {
             .reset_for_leaf(&self.grid, block.mi_row, block.mi_col, self.sb_h4);
     }
 
-    /// The § 7.19 motion records of the published leaves, in coding order,
+    /// The § 7.22 motion records of the published leaves, in coding order,
     /// which the decoder stores into the frame's motion field. A
     /// single-reference block stores a warp model only as a warp block, and
     /// a warp block of a `force_integer_mv` frame stores its translation
-    /// (§ 7.13.3.14).
+    /// (§ 7.13.3.14). A global list of a compound block stores the global
+    /// model, as `is_global_mv_cand` does for each list (§ 7.22).
     pub(crate) fn temporal_records(&self) -> Vec<TemporalMotionBlock> {
         if self.intrabc.is_some() {
             return Vec::new();
@@ -905,6 +906,8 @@ impl EncoderInterTile {
                             None,
                         ],
                         (None, _) if integer_mv => [None, None],
+                        (Some(ref_frame1), [true, _] | [_, true]) => [ref_frame0, ref_frame1]
+                            .map(|r| global_motion_warp(&self.core, r, integer_mv, n4w, n4h)),
                         _ => splat,
                     },
                 )

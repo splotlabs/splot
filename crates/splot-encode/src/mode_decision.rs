@@ -69,6 +69,10 @@ thread_local! {
     /// this thread.
     pub(crate) static FORCE_INTERINTRA: core::cell::Cell<bool> =
         const { core::cell::Cell::new(false) };
+    /// Makes the `GLOBAL_GLOBALMV` candidate of a leaf's first reference
+    /// pair its only compound candidate on this thread.
+    pub(crate) static FORCE_GLOBAL_GLOBAL: core::cell::Cell<bool> =
+        const { core::cell::Cell::new(false) };
 }
 #[cfg(test)]
 thread_local! {
@@ -936,6 +940,10 @@ impl TrialCoder<'_, '_> {
                         None => continue,
                     },
                 };
+                #[cfg(test)]
+                if trial.mode == CompoundMode::GlobalGlobal && FORCE_GLOBAL_GLOBAL.get() {
+                    return Ok(vec![LeafChoice::inter(InterPrediction::Compound(trial))]);
+                }
                 if ranked
                     .iter()
                     .any(|(_, seen, other)| *seen == mvs && other.refs == refs)
