@@ -199,3 +199,45 @@ fn simd_matches_scalar_at_the_zero_bound() {
         }
     }
 }
+
+/// Every tail length after zero, one and two full vectors, with asymmetric
+/// values that reach the `Clip3` bound and the `i32` range.
+#[test]
+fn simd_matches_scalar_at_every_tail_length() {
+    for (bd, dc, ac) in [
+        (BitDepth::Eight, 40, 41),
+        (BitDepth::Eight, 1600, 1336),
+        (BitDepth::Ten, 57, 245_760),
+        (BitDepth::Ten, 4_000, 3_000),
+    ] {
+        let bound = 1i32 << (7 + bd.bits());
+        let values = [
+            bound,
+            -bound - 1,
+            bound - 1,
+            -3,
+            i32::MAX,
+            7,
+            i32::MIN,
+            -bound + 2,
+            ac as i32 / 8 + 1,
+            0,
+            -(dc as i32) / 3,
+        ];
+        for (denom, rounding) in [(1, 128), (2, 0), (4, 77)] {
+            let q = Quantizer::new(dc, ac, denom, bd, rounding).unwrap();
+            for len in 1..=23 {
+                for shift in 0..values.len() {
+                    let coeffs: Vec<i32> = (0..len)
+                        .map(|i| values[(i * 5 + shift) % values.len()])
+                        .collect();
+                    assert_eq!(
+                        run(&SimdKernels, &q, &coeffs),
+                        run(&ScalarKernels, &q, &coeffs),
+                        "{dc} {ac} {denom} {rounding} len={len}"
+                    );
+                }
+            }
+        }
+    }
+}
