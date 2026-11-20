@@ -169,7 +169,8 @@ impl FrameCoder for ToolRecording {
 }
 
 /// Nine frames of a texture that pans every second frame, at constant
-/// quality with the block-level temporal model at `strength` percent on
+/// quality (CRF 50 when `config` asks for qp 0, else its constant qp) with
+/// the block-level temporal model at `strength` percent on
 /// `threads` threads, through the [`Encoder`]: the units, the encoder recon
 /// in display order, and the coded tools of each frame.
 fn tpl_stream(
@@ -187,7 +188,9 @@ fn tpl_stream_of(
     threads: usize,
     frame: fn(&Config, u32) -> SourceFrame,
 ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<[bool; 6]>) {
-    config.rate_control = RateControlMode::Crf { crf: 50 };
+    if config.rate_control == (RateControlMode::ConstantQp { qp: 0 }) {
+        config.rate_control = RateControlMode::Crf { crf: 50 };
+    }
     config.threads = splot_parallel::ThreadCount::from(threads);
     config
         .preset_overrides
@@ -223,21 +226,21 @@ fn tpl_stream_of(
 }
 
 /// The temporal model's superblock qindex and lambda change the stream, which
-/// decodes to the encoder recon in mini-GOPs at both superblock sizes and
-/// every chroma format, with the same bytes on 1, 2 and 8 threads. Some
+/// decodes to the encoder recon in mini-GOPs at both superblock sizes, every
+/// chroma format and both centrings, with the same bytes on 1, 2 and 8 threads. Some
 /// frames code `delta_q_present` and some do not, and every loop filter
 /// codes in some frame.
 #[test]
 fn tpl_delta_q_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (index, (preset, bit_depth)) in [
-        (6, BitDepth::Eight),
-        (9, BitDepth::Ten),
-        (8, BitDepth::Eight),
+    for (index, (preset, bit_depth, qp)) in [
+        (6, BitDepth::Eight, 0),
+        (9, BitDepth::Ten, 0),
+        (8, BitDepth::Eight, 200),
     ]
     .into_iter()
     .enumerate()
     {
-        let mut config = config(200, 136, bit_depth, preset, 0);
+        let mut config = config(200, 136, bit_depth, preset, qp);
         config.chroma = CHROMAS[index];
         let name = format!("preset {preset} {bit_depth:?} {:?}", config.chroma);
         let (units, recon, tools) = tpl_stream(config.clone(), 100, 1);
@@ -338,10 +341,11 @@ fn offsets_that_snap_to_zero_code_no_delta_q() {
         coder.set_block_importance(crate::tpl::BlockImportance {
             grid,
             strength,
+            centred: false,
             frames: [(plan.display_index, costs.clone())].into(),
         });
         let quant = coder.superblock_quant(&plan, &synthetic_frame(&config, 1));
-        let model = crate::tpl::superblock_quant(&costs, grid, (4, 3, 64), strength);
+        let model = crate::tpl::superblock_quant(&costs, grid, (4, 3, 64), (strength, false));
         let snaps_to_zero = model.iter().all(|&(offset, _)| offset.abs() <= 1);
         assert_eq!(quant.is_empty(), snaps_to_zero, "{strength}: {model:?}");
         (empty, coded) = (empty || snaps_to_zero, coded || !snaps_to_zero);
