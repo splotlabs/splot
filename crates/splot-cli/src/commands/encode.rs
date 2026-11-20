@@ -27,14 +27,14 @@ pub(crate) struct EncodeArgs {
     /// Output IVF file.
     #[arg(short = 'o', long)]
     output: PathBuf,
-    /// Constant quantizer (`base_q_idx`): 1..=255 at 8 bits, 1..=303 at 10 bits; the default mode, at 80.
+    /// Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits.
     #[arg(long, conflicts_with_all = ["crf", "bitrate"])]
     qp: Option<u16>,
-    /// Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller.
+    /// Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller; the default mode, at 20.
     #[arg(long, conflicts_with = "bitrate")]
     crf: Option<u8>,
-    /// Maximum bitrate for `--crf` in kilobits per second: a frame that would underflow the decoder buffer of `--buffer` is coded again more coarsely.
-    #[arg(long, value_name = "KBPS", requires = "crf", conflicts_with = "qp")]
+    /// Maximum bitrate of constant quality (`--crf` or the default) in kilobits per second: a frame that would underflow the decoder buffer of `--buffer` is coded again more coarsely.
+    #[arg(long, value_name = "KBPS", conflicts_with_all = ["qp", "bitrate"])]
     max_bitrate: Option<u32>,
     /// Target bitrate in kilobits per second.
     #[arg(long)]
@@ -169,24 +169,25 @@ impl EncodeArgs {
     fn rate_control(&self) -> RateControlMode {
         let (buffer_ms, initial_ms) = self.buffer_ms();
         match (self.qp, self.crf, self.bitrate) {
-            (_, Some(crf), _) => match self.max_bitrate {
-                Some(max_bitrate_kbps) => RateControlMode::CappedCrf {
-                    crf,
-                    max_bitrate_kbps,
-                    buffer_ms,
-                    initial_ms,
-                },
-                None => RateControlMode::Crf { crf },
-            },
             (_, _, Some(bitrate_kbps)) if self.rc == Some(RcMode::Cbr) => RateControlMode::Cbr {
                 bitrate_kbps,
                 buffer_ms,
                 initial_ms,
             },
             (_, _, Some(bitrate_kbps)) => RateControlMode::Vbr { bitrate_kbps },
-            (qp, None, None) => RateControlMode::ConstantQp {
-                qp: qp.unwrap_or(Config::DEFAULT_QP),
-            },
+            (Some(qp), None, None) => RateControlMode::ConstantQp { qp },
+            (_, crf, None) => {
+                let crf = crf.unwrap_or(Config::DEFAULT_CRF);
+                match self.max_bitrate {
+                    Some(max_bitrate_kbps) => RateControlMode::CappedCrf {
+                        crf,
+                        max_bitrate_kbps,
+                        buffer_ms,
+                        initial_ms,
+                    },
+                    None => RateControlMode::Crf { crf },
+                }
+            }
         }
     }
 }

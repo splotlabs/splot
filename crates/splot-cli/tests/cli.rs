@@ -758,7 +758,10 @@ fn encode_rejects_conflicting_rate_control_flags() {
             "initial buffer 600 ms is above the buffer of 500 ms",
         ),
         (&["--crf", "64"], "crf 64 is outside 1..=63"),
-        (&["--max-bitrate", "100"], "--crf <CRF>"),
+        (
+            &["--bitrate", "100", "--max-bitrate", "100"],
+            "cannot be used with",
+        ),
         (
             &["--qp", "80", "--max-bitrate", "100"],
             "cannot be used with",

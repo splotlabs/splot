@@ -197,6 +197,35 @@ fn low_delay_clips_code_every_frame_in_input_order() {
     let _ = std::fs::remove_file(input);
 }
 
+/// Without a rate-control flag `splot encode` codes `--crf 20`, not the flat
+/// `--qp 80`, and `--max-bitrate` alone caps that CRF.
+#[test]
+fn the_default_rate_control_is_crf_20() {
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let encode = |flags: &[&str]| {
+        let ivf = temp_output("ivf");
+        let mut args = vec!["encode", input.to_str().unwrap(), "-o"];
+        args.push(ivf.to_str().unwrap());
+        args.extend(flags);
+        let out = splot(&args);
+        assert!(out.status.success(), "{out:?}");
+        let bytes = std::fs::read(&ivf).unwrap();
+        let _ = std::fs::remove_file(ivf);
+        bytes
+    };
+    let default = encode(&[]);
+    assert_eq!(default, encode(&["--crf", "20"]));
+    assert_ne!(default, encode(&["--qp", "80"]));
+    let capped = encode(&["--max-bitrate", "50", "--buffer", "500"]);
+    assert_eq!(
+        capped,
+        encode(&["--crf", "20", "--max-bitrate", "50", "--buffer", "500"])
+    );
+    assert_ne!(capped, default, "the cap does not bind");
+    let _ = std::fs::remove_file(input);
+}
+
 /// `--resize-denominator 16` codes the 72x24 clip at 36x12: the IVF header,
 /// the validated stream and its decode have the coded size.
 #[test]

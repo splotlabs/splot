@@ -246,7 +246,8 @@ pub(crate) fn synthetic_y4m(width: usize, height: usize, frames: usize) -> Vec<u
     out
 }
 
-/// The `splot encode` arguments at `preset`.
+/// The `splot encode` arguments at `preset` and the flat `--qp 80` the
+/// baseline rows hold.
 fn encode_args(preset: u8, input: &Path, output: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "encode".into(),
@@ -254,6 +255,8 @@ fn encode_args(preset: u8, input: &Path, output: &Path) -> Vec<OsString> {
         "1".into(),
         "--preset".into(),
         preset.to_string().into(),
+        "--qp".into(),
+        "80".into(),
     ];
     args.extend([input.into(), "-o".into(), output.into()]);
     args

@@ -5129,7 +5129,7 @@ module = "crates/splot-encode/src/rate_control.rs"
 change_id = "encoder-m4-rate-control"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-LOOKAHEAD-TPL offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its underspend to 8 frame budgets and its overspend to 32, predicts flat frames by their mean coded size, and repays the whole drift over the last window of the input (ENC-RATE-CONTROL-V2); CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q."
+notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-LOOKAHEAD-TPL offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its underspend to 8 frame budgets and its overspend to 32, predicts flat frames by their mean coded size, and repays the whole drift over the last window of the input (ENC-RATE-CONTROL-V2); CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q. CLI default (enc-crf-default, 2026-11-20): splot encode without --qp, --crf or --bitrate codes Crf { crf: Config::DEFAULT_CRF = 20 }, whose 8-bit base qindex is the old flat default Config::DEFAULT_QP = 80; --qp 80 codes the old default stream byte for byte. Config::new keeps ConstantQp { qp: 80 } for library callers. --max-bitrate without --crf caps that default CRF (ENC-CAPPED-CRF)."
 
 [feature.status]
 mapped = "done"
@@ -5144,7 +5144,7 @@ avm_diff = "done"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/rate_control_tests.rs::bitrate_controllers_meet_a_simulated_target", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats", "crates/splot-cli/tests/cli.rs::encode_rejects_conflicting_rate_control_flags"]
+tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::the_default_rate_control_is_crf_20", "crates/splot-encode/src/rate_control_tests.rs::bitrate_controllers_meet_a_simulated_target", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats", "crates/splot-cli/tests/cli.rs::encode_rejects_conflicting_rate_control_flags"]
 commands = ["cargo test -p splot-encode rate_control --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
@@ -7219,7 +7219,7 @@ encode = "done"
 decode_check = "done"
 tests = "done"
 avm_diff = "done"
-perf = "done"
+perf = "not-applicable"
 
 [feature.proof]
 tests = ["crates/splot-encode/src/rate_control_tests.rs::capped_crf_with_a_loose_cap_is_the_crf_stream", "crates/splot-encode/src/rate_control_tests.rs::capped_crf_keeps_the_decoder_buffer_and_decodes_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::cbr_codes_a_frame_again_instead_of_underflowing_a_small_buffer", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_do_not_depend_on_the_thread_count", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot", "crates/splot-encode/src/config.rs::tests::rejects_unsupported_settings", "crates/splot-cli/tests/cli.rs::encode_rejects_conflicting_rate_control_flags", "crates/splot-cli/tests/encode_decode_roundtrip.rs::crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats"]

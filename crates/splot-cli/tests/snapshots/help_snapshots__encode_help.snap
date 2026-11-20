@@ -11,9 +11,9 @@ Arguments:
 
 Options:
   -o, --output <OUTPUT>           Output IVF file
-      --qp <QP>                   Constant quantizer (`base_q_idx`): 1..=255 at 8 bits, 1..=303 at 10 bits; the default mode, at 80
-      --crf <CRF>                 Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller
-      --max-bitrate <KBPS>        Maximum bitrate for `--crf` in kilobits per second: a frame that would underflow the decoder buffer of `--buffer` is coded again more coarsely
+      --qp <QP>                   Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits
+      --crf <CRF>                 Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller; the default mode, at 20
+      --max-bitrate <KBPS>        Maximum bitrate of constant quality (`--crf` or the default) in kilobits per second: a frame that would underflow the decoder buffer of `--buffer` is coded again more coarsely
       --bitrate <BITRATE>         Target bitrate in kilobits per second
       --rc <RC>                   Bitrate mode for `--bitrate`: `vbr` (default) or `cbr` (decoder buffer of `--buffer`) [possible values: vbr, cbr]
       --buffer <MS>               Decoder buffer of `--rc cbr` and `--max-bitrate`, in milliseconds at the bitrate [default: 1000]
