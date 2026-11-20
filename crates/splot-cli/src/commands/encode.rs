@@ -26,10 +26,10 @@ pub(crate) struct EncodeArgs {
     /// Output IVF file.
     #[arg(short = 'o', long)]
     output: PathBuf,
-    /// Constant quantizer (`base_q_idx`): 1..=255 at 8 bits, 1..=303 at 10 bits; the default mode, at 80.
+    /// Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits.
     #[arg(long, conflicts_with_all = ["crf", "bitrate"])]
     qp: Option<u16>,
-    /// Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller.
+    /// Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller; the default mode, at 20.
     #[arg(long, conflicts_with = "bitrate")]
     crf: Option<u8>,
     /// Target bitrate in kilobits per second.
@@ -168,8 +168,9 @@ impl EncodeArgs {
                 }
             }
             (_, _, Some(bitrate_kbps)) => RateControlMode::Vbr { bitrate_kbps },
-            (qp, None, None) => RateControlMode::ConstantQp {
-                qp: qp.unwrap_or(Config::DEFAULT_QP),
+            (Some(qp), None, None) => RateControlMode::ConstantQp { qp },
+            (None, None, None) => RateControlMode::Crf {
+                crf: Config::DEFAULT_CRF,
             },
         }
     }

@@ -5,6 +5,9 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 
 ## Unreleased
 
+- `splot encode` without `--qp`, `--crf` or `--bitrate` codes `--crf 20`
+  (8-bit base qindex 80); `--qp 80` keeps the old flat default.
+
 ### Encoder 4:2:2 and 4:4:4
 
 - `splot encode` codes 4:2:2 and 4:4:4 Y4M input (`C422`, `C444`, `p10`

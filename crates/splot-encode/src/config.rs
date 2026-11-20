@@ -147,6 +147,11 @@ pub struct Config {
 impl Config {
     /// Default `base_q_idx` for [`RateControlMode::ConstantQp`].
     pub const DEFAULT_QP: u16 = 80;
+
+    /// Default rate factor for [`RateControlMode::Crf`], the mode of
+    /// `splot encode` without a rate-control flag: its 8-bit base qindex is
+    /// [`Self::DEFAULT_QP`].
+    pub const DEFAULT_CRF: u8 = 20;
     /// Default key-frame interval.
     pub const DEFAULT_KEYINT: NonZeroU32 = match NonZeroU32::new(120) {
         Some(keyint) => keyint,
