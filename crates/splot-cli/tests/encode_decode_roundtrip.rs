@@ -240,6 +240,11 @@ fn crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats() {
         &[&["--bitrate", "200", "--rc", "cbr"][..], &small].concat(),
     );
     round_trip(8, YUV420, &["--bitrate", "200", "--two-pass"]);
+    round_trip(
+        8,
+        YUV420,
+        &["--crf", "20", "--max-bitrate", "100", "--buffer", "500"],
+    );
 }
 
 /// Ten frames at presets 6 and 7 code a key frame, two mini-GOPs of 4 with

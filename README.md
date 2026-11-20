@@ -66,7 +66,7 @@ You choose the trade-off:
 
 | You want                | Use                                |
 | ----------------------- | ---------------------------------- |
-| Constant quality        | `--crf 30` (1–63, higher is smaller) |
+| Constant quality        | `--crf 30` (1–63, higher is smaller), `--max-bitrate 4000` (kbps) caps it |
 | A target bitrate        | `--bitrate 2000` (kbps), `--rc cbr` for streaming |
 | A fixed quantizer       | `--qp 80` (the default)            |
 | More speed              | `--preset 10` (0 is best, 10 is fastest, 6 is the default) |

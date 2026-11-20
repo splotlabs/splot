@@ -91,11 +91,13 @@ struct Recording {
     coder: IntraFrameCoder,
     bit_depth: BitDepth,
     recons: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
+    codings: Arc<Mutex<usize>>,
 }
 
 impl FrameCoder for Recording {
     fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
         let coded = self.coder.encode_wave(wave)?;
+        *self.codings.lock().unwrap() += coded.len();
         for ((_, plan, _), frame) in wave.iter().zip(&coded) {
             let recon = raw_bytes(frame.recon.iter().map(Vec::as_slice), self.bit_depth);
             self.recons
@@ -116,12 +118,14 @@ impl FrameCoder for Recording {
 }
 
 /// A coded stream: its temporal units, the encoder reconstruction in display
-/// order, each packet's frame type, and the stats of each coded frame.
+/// order, each packet's frame type, the stats of each coded frame, and the
+/// codings past the first of a frame.
 struct Stream {
     units: Vec<Vec<u8>>,
     expected: Vec<u8>,
     types: Vec<FrameType>,
     stats: Vec<FrameStats>,
+    recodes: usize,
 }
 
 impl Stream {
@@ -141,11 +145,12 @@ fn encode(rate_control: RateControlMode, black_first: bool) -> Stream {
     let mut config = Config::new(SIZE.0, SIZE.1);
     config.preset = Preset::new(9).unwrap();
     config.rate_control = rate_control;
-    let recons = Arc::default();
+    let (recons, codings) = (Arc::default(), Arc::default());
     let coder = Recording {
         coder: IntraFrameCoder::new(&config).unwrap(),
         bit_depth: config.bit_depth,
         recons: Arc::clone(&recons),
+        codings: Arc::clone(&codings),
     };
     let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
     let mut packets = Vec::new();
@@ -166,9 +171,11 @@ fn encode(rate_control: RateControlMode, black_first: bool) -> Stream {
         }
     }
     let expected = recons.lock().unwrap().values().flatten().copied().collect();
+    let stats: Vec<FrameStats> = packets.iter().flat_map(|p| p.stats.clone()).collect();
     Stream {
         types: packets.iter().map(|packet| packet.frame_type).collect(),
-        stats: packets.iter().flat_map(|p| p.stats.clone()).collect(),
+        recodes: *codings.lock().unwrap() - stats.len(),
+        stats,
         units: packets.into_iter().map(|packet| packet.data).collect(),
         expected,
     }
@@ -226,11 +233,24 @@ fn rate_controlled_streams_meet_targets_and_decode_to_the_recon() {
     );
 }
 
-/// CRF and VBR streams of 24 panning frames in two tiles are the same bytes
-/// at 1, 2 and 8 threads.
+/// CRF, VBR, capped CRF with a cap that codes frames again, and CBR with a
+/// 250 ms buffer: streams of 24 panning frames in two tiles are the same
+/// bytes at 1, 2 and 8 threads.
 #[test]
 fn rate_controlled_streams_do_not_depend_on_the_thread_count() {
-    for mode in &cases()[..2] {
+    let small_cbr = RateControlMode::Cbr {
+        bitrate_kbps: 150,
+        buffer_ms: 250,
+        initial_ms: 125,
+    };
+    let modes = [
+        cases()[0],
+        cases()[1],
+        capped(30, 100, (500, 250)),
+        small_cbr,
+    ];
+    let mut streams = Vec::new();
+    for mode in &modes {
         let stream = |threads: usize| {
             let mut config = Config::new(144, 32);
             config.preset = Preset::new(9).unwrap();
@@ -257,7 +277,9 @@ fn rate_controlled_streams_do_not_depend_on_the_thread_count() {
         for threads in [2, 8] {
             assert!(stream(threads) == one, "{mode:?} at {threads} threads");
         }
+        streams.push(one);
     }
+    assert!(streams[2] != streams[0], "the cap does not bind");
 }
 
 /// VBR meets three targets within 3% over 60 frames of a 96x64 pan, key
@@ -300,7 +322,15 @@ fn avm_decodes_rate_controlled_streams_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    for (index, mode) in cases().into_iter().enumerate() {
+    let small_cbr = RateControlMode::Cbr {
+        bitrate_kbps: 60,
+        buffer_ms: 250,
+        initial_ms: 125,
+    };
+    let modes = cases()
+        .into_iter()
+        .chain([capped(20, 40, (500, 250)), small_cbr]);
+    for (index, mode) in modes.enumerate() {
         let stream = encode(mode, false);
         let name = format!("rc{index}");
         let avm = avm_decode(&avmdec, &stream.units, SIZE, BitDepth::Eight, &name);
@@ -584,4 +614,73 @@ fn two_pass_vbr_follows_the_first_pass() {
         share(&two),
         share(&one)
     );
+}
+
+fn capped(crf: u8, max_bitrate_kbps: u32, (buffer_ms, initial_ms): (u32, u32)) -> RateControlMode {
+    RateControlMode::CappedCrf {
+        crf,
+        max_bitrate_kbps,
+        buffer_ms,
+        initial_ms,
+    }
+}
+
+/// The units of `units` that underflow a decoder buffer of `buffer_ms` at
+/// `kbps` that holds `initial_ms` first: each unit leaves, then one frame
+/// period at 30 fps arrives, up to the buffer size.
+fn underflows(units: &[Vec<u8>], kbps: u64, (buffer_ms, initial_ms): (u64, u64)) -> Vec<usize> {
+    let (size, period) = (kbps * buffer_ms, kbps * 1000 / 30);
+    let mut level = kbps * initial_ms;
+    let mut late = Vec::new();
+    for (index, unit) in units.iter().enumerate() {
+        let bits = unit.len() as u64 * 8;
+        if bits > level {
+            late.push(index);
+        }
+        level = (level.saturating_sub(bits) + period).min(size);
+    }
+    late
+}
+
+/// A cap above every unit codes the CRF stream byte for byte, with no frame
+/// coded twice.
+#[test]
+fn capped_crf_with_a_loose_cap_is_the_crf_stream() {
+    let plain = encode(RateControlMode::Crf { crf: 20 }, false);
+    let loose = encode(capped(20, MAX_BITRATE_KBPS, (1000, 500)), false);
+    assert_eq!(loose.units, plain.units);
+    assert_eq!((plain.recodes, loose.recodes), (0, 0));
+}
+
+/// A cap at 60% of the CRF rate underflows the CRF stream; capped CRF codes
+/// frames again until no unit underflows, spends less, and still decodes to
+/// the encoder recon.
+#[test]
+fn capped_crf_keeps_the_decoder_buffer_and_decodes_to_the_recon() {
+    let plain = encode(RateControlMode::Crf { crf: 20 }, false);
+    let cap = plain.kbps() * 6 / 10;
+    let buffer = (500, 250);
+    assert!(!underflows(&plain.units, cap, buffer).is_empty());
+    let mode = capped(20, cap as u32, (500, 250));
+    let stream = encode(mode, false);
+    assert_eq!(underflows(&stream.units, cap, buffer), [] as [usize; 0]);
+    assert!(stream.recodes > 0);
+    assert!(stream.kbps() < plain.kbps());
+    assert_same_samples(&decode(&stream.units.concat()), &stream.expected, "capped");
+}
+
+/// A 250 ms CBR buffer that starts half full: the planned qindex of a frame
+/// can still overflow it, and the frame is coded again so that no unit
+/// underflows the decoder buffer.
+#[test]
+fn cbr_codes_a_frame_again_instead_of_underflowing_a_small_buffer() {
+    let mode = RateControlMode::Cbr {
+        bitrate_kbps: 60,
+        buffer_ms: 250,
+        initial_ms: 125,
+    };
+    let stream = encode(mode, false);
+    assert_eq!(underflows(&stream.units, 60, (250, 125)), [] as [usize; 0]);
+    assert!(stream.recodes > 0);
+    assert_same_samples(&decode(&stream.units.concat()), &stream.expected, "cbr");
 }

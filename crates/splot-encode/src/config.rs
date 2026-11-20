@@ -58,6 +58,20 @@ pub enum RateControlMode {
         /// The rate factor, `1..=63`; higher means fewer bits.
         crf: u8,
     },
+    /// [`Self::Crf`] under a maximum bitrate: a decoder buffer that fills at
+    /// `max_bitrate_kbps`, and a frame that would underflow it is coded
+    /// again at a coarser quantizer before it is committed.
+    CappedCrf {
+        /// The rate factor, `1..=63`; higher means fewer bits.
+        crf: u8,
+        /// The bitrate the decoder buffer fills at, in kilobits per second.
+        max_bitrate_kbps: u32,
+        /// The buffer size in milliseconds at `max_bitrate_kbps`.
+        buffer_ms: u32,
+        /// The decoder buffer level before the first frame, in milliseconds
+        /// at `max_bitrate_kbps`, `0..=buffer_ms`.
+        initial_ms: u32,
+    },
     /// Variable bitrate around a target average.
     Vbr {
         /// The target bitrate in kilobits per second.
@@ -231,7 +245,9 @@ impl Config {
                     max: max_qindex(self.bit_depth),
                 })
             }
-            RateControlMode::Crf { crf } if crf == 0 || crf > Crf::MAX => {
+            RateControlMode::Crf { crf } | RateControlMode::CappedCrf { crf, .. }
+                if crf == 0 || crf > Crf::MAX =>
+            {
                 Err(Error::InvalidCrf { crf })
             }
             RateControlMode::Vbr { bitrate_kbps } => {
@@ -241,6 +257,12 @@ impl Config {
                 bitrate_kbps,
                 buffer_ms,
                 initial_ms,
+            }
+            | RateControlMode::CappedCrf {
+                max_bitrate_kbps: bitrate_kbps,
+                buffer_ms,
+                initial_ms,
+                ..
             } => check_cbr(bitrate_kbps, (buffer_ms, initial_ms), self.frame_rate),
             _ => Ok(()),
         }
@@ -467,6 +489,36 @@ mod tests {
                 buffer_ms: 500,
             })
         ));
+        let capped = |crf, max_bitrate_kbps, (buffer_ms, initial_ms)| RateControlMode::CappedCrf {
+            crf,
+            max_bitrate_kbps,
+            buffer_ms,
+            initial_ms,
+        };
+        for (mode, what) in [
+            (capped(30, 0, (500, 0)), "bitrate_kbps"),
+            (capped(30, 100, (0, 0)), "buffer_ms"),
+        ] {
+            config.rate_control = mode;
+            assert!(
+                matches!(config.validate(), Err(Error::InvalidBitrate { what: w, .. }) if w == what)
+            );
+        }
+        config.rate_control = capped(0, 100, (500, 250));
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidCrf { crf: 0 })
+        ));
+        config.rate_control = capped(30, 100, (500, 501));
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidInitialBuffer {
+                initial_ms: 501,
+                ..
+            })
+        ));
+        config.rate_control = capped(30, 100, (500, 500));
+        assert!(config.validate().is_ok());
         config.rate_control = RateControlMode::Crf { crf: 63 };
         assert!(config.validate().is_ok());
     }
