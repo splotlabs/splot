@@ -129,8 +129,8 @@ fn mask_moments_kernel<S: Simd>(simd: S, mask: &[u8], de: &[i32], ee: &[i32]) ->
     while i + 2 * LANES <= len {
         let (lo, hi) = u8x16::from_slice(simd, &mask[i..i + 2 * LANES]).widen();
         for (at, m) in [(i, lo), (i + LANES, hi)] {
-            let (a, b) = m.widen();
-            let m = a.combine(b).bitcast::<i32x8<S>>();
+            let (low, high) = m.widen();
+            let m = low.combine(high).bitcast::<i32x8<S>>();
             let d = i32x8::from_slice(simd, &de[at..at + LANES]);
             let e = i32x8::from_slice(simd, &ee[at..at + LANES]);
             for (acc, (lo, hi)) in acc.iter_mut().zip([
