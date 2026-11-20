@@ -440,7 +440,12 @@ impl IntraFrameCoder {
         let mut quant = costs.map_or_else(
             || vec![(0, 0); grid.0 * grid.1],
             |costs| {
-                tpl::superblock_quant(costs, self.importance.grid, grid, self.importance.strength)
+                tpl::superblock_quant(
+                    costs,
+                    self.importance.grid,
+                    grid,
+                    (self.importance.strength, self.importance.centred),
+                )
             },
         );
         if self.preset.ssim_aq > 0 {
