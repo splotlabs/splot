@@ -15,7 +15,8 @@
 //!
 //! `--coverage` samples a longer release encode (`sample` on macOS, `perf` on
 //! Linux) and prints the share of kernel samples that land in `std::simd`
-//! kernels, over the allow-listed kernel symbols in [`KERNELS`].
+//! kernels, over the allow-listed kernel symbols in [`KERNELS`]. It needs
+//! symbols: run it with `CARGO_PROFILE_RELEASE_STRIP=false`.
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -100,16 +101,19 @@ enum Kind {
 /// and v0 mangling both write (`17forward_transform12forward_simd`). The set
 /// is the sample kernels a preset-6 encode spends time in: encoder distortion,
 /// transform and quantizer kernels, and the `splot-recon` / prediction kernels
-/// the encoder reconstructs with. RD logic (RDOQ walk, rate models) is not a
+/// the encoder reconstructs with, and the `SimdKernels` methods that LTO
+/// inlines the encoder kernels into. RD logic (RDOQ walk, rate models) is not a
 /// kernel.
 const KERNELS: &[(&str, Kind)] = &[
+    ("SimdKernels", Kind::Simd),
     ("distortion::sad_simd", Kind::Simd),
-    ("distortion::sad_lanes", Kind::Simd),
+    ("distortion::sad_kernel", Kind::Simd),
+    ("distortion::sad_row_kernel", Kind::Simd),
     ("distortion::sse_simd", Kind::Simd),
-    ("distortion::sse_lanes", Kind::Simd),
+    ("distortion::sse_row_kernel", Kind::Simd),
     ("distortion::satd_simd", Kind::Simd),
+    ("distortion::satd_kernel", Kind::Simd),
     ("distortion::residual_simd", Kind::Simd),
-    ("distortion::residual_lanes", Kind::Simd),
     ("distortion::", Kind::Scalar),
     ("forward_transform::forward_simd", Kind::Simd),
     ("forward_transform::forward_lanes", Kind::Simd),
@@ -119,13 +123,12 @@ const KERNELS: &[(&str, Kind)] = &[
     ("quantize::quantize_simd", Kind::Simd),
     ("quantize::", Kind::Scalar),
     ("inverse_transform::inverse_transform_1d", Kind::Simd),
+    ("inverse_transform_2d_8bit::", Kind::Simd),
     ("inverse_transform::", Kind::Scalar),
     ("subpel_mc::", Kind::Simd),
     ("dequant_process::dequantize_block", Kind::Simd),
-    ("cfl::fill_cfl_luma_ac_420_u16", Kind::Simd),
-    ("cfl::cfl_q3_lanes_u16", Kind::Simd),
-    ("cfl::cfl_420_column_sum_u16", Kind::Simd),
-    ("cfl::cfl_predict_lanes_u16", Kind::Simd),
+    ("cfl::reconstruct_cfl_planes", Kind::Simd),
+    ("cfl::cfl_predict_rows", Kind::Simd),
     ("sample_range::u16_samples_exceed", Kind::Simd),
     ("cfl::", Kind::Scalar),
     (
@@ -136,15 +139,27 @@ const KERNELS: &[(&str, Kind)] = &[
         "intra_directional_angle::predict_intra_directional_angle_rect_one_sided_idif_into",
         Kind::Simd,
     ),
-    ("intra_directional_angle::write_middle_idif_run", Kind::Simd),
-    ("intra_directional_angle::write_bilinear_lanes", Kind::Simd),
-    ("intra_directional_angle::write_middle_lanes", Kind::Simd),
-    ("intra_directional_angle::write_bilinear_line", Kind::Simd),
+    ("intra_directional_angle::write_bilinear_lines", Kind::Simd),
+    (
+        "intra_directional_angle::write_middle_bilinear_lines",
+        Kind::Simd,
+    ),
+    (
+        "intra_directional_angle::write_one_sided_idif_lines",
+        Kind::Simd,
+    ),
+    (
+        "intra_directional_angle::write_middle_idif_lines",
+        Kind::Simd,
+    ),
+    ("intra_directional_angle::lines::", Kind::Simd),
+    ("LineSample", Kind::Simd),
     ("intra_directional_angle::", Kind::Scalar),
     ("intra_directional::", Kind::Scalar),
     ("intra_ibp_angular::blend_rows_lanes", Kind::Simd),
     ("intra_ibp_angular::", Kind::Scalar),
-    ("intra_smooth::predict_smooth_rect_u16", Kind::Simd),
+    ("intra_smooth::predict_smooth_u8", Kind::Simd),
+    ("intra_smooth::smooth_lanes", Kind::Simd),
     ("intra_ibp_dc::", Kind::Scalar),
     (
         "smooth::predict_intra_smooth_over_available_edges_into",
@@ -153,13 +168,32 @@ const KERNELS: &[(&str, Kind)] = &[
     ("reconstruct::add_residual_u16", Kind::Simd),
 ];
 
-/// Whether `symbol` (demangled or mangled) names the allow-listed `key`.
+/// Whether `symbol` (demangled or mangled) names the allow-listed `key`. A
+/// module key (a trailing `::`) matches a mangled name only when a nested
+/// name follows it, so a function of that name (`...8quantize`) does not.
 fn kernel_matches(symbol: &str, key: &str) -> bool {
     let mut mangled = String::new();
     for segment in key.split("::").filter(|segment| !segment.is_empty()) {
         let _ = write!(mangled, "{}{segment}", segment.len());
     }
-    symbol.contains(key) || symbol.contains(&mangled)
+    if symbol.contains(key) {
+        return true;
+    }
+    symbol.match_indices(&mangled).any(|(at, found)| {
+        let rest = &symbol[at + found.len()..];
+        !key.ends_with("::")
+            || (rest.starts_with(|c: char| c.is_ascii_digit()) && !is_legacy_hash(rest))
+    })
+}
+
+/// Whether `rest` starts with the hash that legacy mangling appends to every
+/// name, `17h` and 16 hex digits then `E`: it ends the name.
+fn is_legacy_hash(rest: &str) -> bool {
+    rest.strip_prefix("17h").is_some_and(|hash| {
+        hash.len() > 16
+            && hash.as_bytes()[..16].iter().all(u8::is_ascii_hexdigit)
+            && hash.as_bytes()[16] == b'E'
+    })
 }
 
 /// The `tests/perf/encode-baseline.toml` document.
@@ -397,7 +431,10 @@ fn run_coverage(splot: &Path, work: &Path) -> Result<()> {
     }
     let kernel = simd + scalar;
     if kernel == 0.0 {
-        bail!("no allow-listed kernel symbol in the profile");
+        bail!(
+            "no allow-listed kernel symbol in the profile; the release profile strips \
+             symbols, so run with CARGO_PROFILE_RELEASE_STRIP=false"
+        );
     }
     println!(
         "kernel samples {:.1}% of all; SIMD share {:.1}% of kernel samples",
@@ -497,6 +534,17 @@ mod tests {
             "_RNvCs1_11splot_recon23intra_directional_angle",
             "intra_directional::"
         ));
+        let quantize = "_RNvNtNtCs1_12splot_encode7kernels8quantize13quantize_simd";
+        assert!(kernel_matches(quantize, "quantize::"));
+        let legacy = "_ZN12splot_encode7kernels8quantize13quantize_simd17h0123456789abcdefE";
+        assert!(kernel_matches(legacy, "quantize::"));
+        for function in [
+            "_RNvMs5_NtCs1_12splot_encode11intra_frameNtB5_19SourceResidualCoder8quantize",
+            "_RNvXs_NtCs1_12splot_encode7kernelsNtB4_11SimdKernelsNtB4_14EncoderKernels8quantize",
+            "_ZN12splot_encode11intra_frame19SourceResidualCoder8quantize17h0123456789abcdefE",
+        ] {
+            assert!(!kernel_matches(function, "quantize::"), "{function}");
+        }
     }
 
     #[test]
