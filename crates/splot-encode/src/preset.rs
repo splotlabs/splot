@@ -18,7 +18,9 @@ pub struct PresetParams {
     /// kind. p9 searches 16x16 and up on mid and leaf frames, so the p9 and
     /// p10 steps split the old p9 to p10 step (paris f10: p9 +6.10% BD-rate
     /// at 0.79x instructions, p10 +22.49% at 0.51x, both against the old
-    /// p9).
+    /// p9). Key frames search 4xN from p0 to p6 and 8xN from p7 to p10
+    /// (2026-11-20, keyint 30): p6 CRF -0.56% BD-rate at 1.03x (flat qp
+    /// -0.11%), p10 CRF -3.28% at 1.06x (flat qp -2.22%); p7 to p9 lose.
     pub min_block_log2: Levels<u8>,
     /// log2 of the largest square block size searched (7 = 128x128); `8`
     /// also codes 256x256 superblocks in frames at least `sb256_min_height`
@@ -807,7 +809,7 @@ preset_table! {
     preset:                    [   p0,    p1,    p2,    p3,    p4,    p5,    p6,    p7,    p8,    p9,   p10],
     partition {
         min_block_log2:        frames([
-                               [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
+                               [    2,     2,     2,     2,     2,     2,     2,     3,     3,     3,     3],
                                [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
                                [    2,     2,     2,     2,     2,     2,     3,     3,     3,     4,     4],
                                [    2,     2,     2,     2,     2,     2,     3,     3,     3,     4,     4]]),
