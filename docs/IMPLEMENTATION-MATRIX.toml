@@ -7291,6 +7291,38 @@ commands = ["cargo test -p splot-encode inter_tx --locked"]
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-VECTOR-MASK-LOADS"
+name = "Vector loads in the compound-mask and SAD kernels"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/kernels/compound.rs"
+change_id = "enc-cheaper-trials"
+owner = "encoder"
+risk = "low"
+notes = "Speed, byte-identical output. mask_moments (the wedge and difference-weighted compound costs) loaded each u8 mask sample into an i32 lane one at a time, with a bounds check per lane; it now loads 16 mask samples as one u8x16 vector and widens them. The SAD and SSE kernels padded every row of 4 or 8 samples through a variable-length copy, which calls memmove; the copy is now of a fixed size for both widths. Profile of main 1e670dd5d, paris p6 f10 qp 140: mask_moments 6.7% and the SAD-row memmove 2.3% of encoder samples. Measured 2026-11-20 vs 1e670dd5d (paris p6 f10 qp 140, keyint 30, 1 thread): 241.8G to 228.1G instructions (0.943x). Byte identity: park_joy 8-bit and 10-bit, paris, niklas at p0/p6/p10 inter and intra, p8 at 1/2/8 threads."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "done"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/kernels/compound.rs::tests::mask_moments_simd_matches_scalar_over_every_value", "crates/splot-encode/src/kernels/distortion.rs::tests::simd_matches_scalar"]
+commands = ["cargo test -p splot-encode kernels:: --locked"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------
