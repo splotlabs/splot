@@ -6,12 +6,15 @@
 import argparse
 import concurrent.futures
 import hashlib
+import json
 import pathlib
 import re
 import subprocess
 import tempfile
 import tomllib
 import urllib.request
+
+TWELVE_BIT_NAME_RE = re.compile(r"(?:^|[._-])12bit(?:[._-]|$)")
 
 
 def verify_input(source, expected):
@@ -21,17 +24,57 @@ def verify_input(source, expected):
         raise SystemExit(f"{source.name}: input SHA-256 differs: {actual}.")
 
 
+def verify_non_normative_12bit_rejection(splot, source, width, output):
+    result = subprocess.run(
+        [str(splot), "decode", "--json", f"--threads={width}",
+         "--output-format=raw", f"--output={output}", source],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode == 0:
+        raise SystemExit(
+            f"{source.name}, {width} threads: expected non-normative 12-bit rejection, but decode succeeded."
+        )
+    try:
+        diagnostic = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"{source.name}, {width} threads: failed to parse rejection JSON (exit {result.returncode}): "
+            f"{exc}; stdout={result.stdout!r}, stderr={result.stderr!r}"
+        ) from exc
+    if (
+        not isinstance(diagnostic, dict)
+        or diagnostic.get("rule_id") != "decode/malformed-source"
+        or diagnostic.get("source_issue_kind") != "sequence_header_parse_error"
+        or "bit_depth_idc must be less than or equal to 1" not in diagnostic.get("parser_message", "")
+    ):
+        raise SystemExit(
+            f"{source.name}, {width} threads: expected bit_depth_idc rejection, got {diagnostic!r}."
+        )
+    if output.exists():
+        raise SystemExit(f"{source.name}, {width} threads: rejected decode unexpectedly created output.")
+    print(f"{source.name}, {width} threads: rejected (non-normative 12-bit)", flush=True)
+
+
 def check(corpus, root, splot, thread_override=None, fetch=None):
     if corpus == "dav2d":
         entries = [
             (name, f"{suite.parent.name}/{path}", digest)
             for suite in sorted(root.glob("avm*/meson.build"))
             for name, path, digest in re.findall(
-                r"\['([^']+)',\s*files\('([^']+)'\),\s*'([0-9a-f]{32})'\]",
+                r"\['([^']+)',\s*files\('([^']+)'\),\s*'([0-9a-f]{32})'(?:,\s*\[[^\]]*\])?,?\s*\]",
                 suite.read_text(),
             )
         ]
-        streams = [dict(path=path, digest=digest) for _, path, digest in entries]
+        streams = [
+            dict(
+                path=path,
+                digest=digest,
+                expect_12bit_rejection=bool(TWELVE_BIT_NAME_RE.search(pathlib.Path(path).name)),
+            )
+            for _, path, digest in entries
+        ]
         names = [name for name, _, _ in entries]
         if len(names) != len(set(names)):
             raise SystemExit("The upstream AVM manifest contains duplicate test names.")
@@ -85,12 +128,20 @@ def check(corpus, root, splot, thread_override=None, fetch=None):
     if missing or unlisted:
         raise SystemExit(f"The corpus files differ from the manifest: missing={missing}, unlisted={unlisted}.")
 
+    verified = 0
+    rejected = 0
     with tempfile.TemporaryDirectory() as temp:
         output = pathlib.Path(temp) / "decoded.raw"
         for stream in sorted(streams, key=lambda stream: stream["path"]):
             source = root / stream["path"]
             if "input_sha256" in stream:
                 verify_input(source, stream["input_sha256"])
+            if stream.get("expect_12bit_rejection"):
+                for width in threads:
+                    output.unlink(missing_ok=True)
+                    verify_non_normative_12bit_rejection(splot, source, width, output)
+                rejected += 1
+                continue
             for width in threads:
                 output.unlink(missing_ok=True)
                 subprocess.run(
@@ -108,7 +159,11 @@ def check(corpus, root, splot, thread_override=None, fetch=None):
                 if "raw_bytes" in stream and output.stat().st_size != stream["raw_bytes"]:
                     raise SystemExit(f"{source.name}: decoded output size differs.")
                 print(f"{source.name}, {width} threads: {actual}", flush=True)
-    print(f"Verified all {len(streams)} {corpus} streams.")
+            verified += 1
+    if rejected:
+        print(f"Verified {verified} {corpus} streams; rejected {rejected} non-normative 12-bit streams.")
+    else:
+        print(f"Verified all {verified} {corpus} streams.")
 
 
 if __name__ == "__main__":
