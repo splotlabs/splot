@@ -231,6 +231,65 @@ fn an_uneven_split_leaf_ends_as_a_second_trial_of_its_choice() {
     assert_eq!(first, second);
 }
 
+/// A block that a second partition path reaches codes the choice its first
+/// search found, at the cost of one final trial of that choice; a recorded
+/// choice the block cannot code (a reference the frame lacks) gives way to a
+/// full search, which finds what a fresh search finds.
+#[test]
+fn a_repeat_leaf_codes_its_searched_choice_or_searches_again() {
+    use crate::rd::partition::PartitionSearch;
+    let config = config(136, 136, BitDepth::Eight, 6, 110);
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        leaf_reuse: crate::preset::Levels::all(2),
+        ..*preset6(true)
+    }));
+    let lambda = Lambda::from_qindex(110, config.bit_depth).unwrap();
+    in_first_inter_frame(&config, preset, |syntax, root, residual| {
+        let quarter = top_left(syntax, root, 64);
+        let via_horz = syntax.children(
+            syntax.children(quarter, Partition::Horz)?[0],
+            Partition::Vert,
+        )?[0];
+        let via_vert = syntax.children(
+            syntax.children(quarter, Partition::Vert)?[0],
+            Partition::Horz,
+        )?[0];
+        let (first, second) = (syntax.leaf(via_horz)?, syntax.leaf(via_vert)?);
+        assert!(first.same_block(&second));
+        assert!(!first.same_block(&syntax.leaf(top_left(syntax, root, 16))?));
+        let motion = MotionSearch::new(syntax, residual.source, preset, lambda, Vec::new())?;
+        let start = syntax.snapshot(via_horz)?;
+        let mut trial = TrialCoder::new(syntax, residual, preset, lambda, motion.as_ref());
+        let (_, searched) = trial.evaluate_leaf(via_horz)?;
+        trial.restore(&start)?;
+        let (cost, reused) = trial.evaluate_leaf(via_vert)?;
+        assert_eq!(reused, searched);
+        let coded = trial.leaf_coded();
+        trial.restore(&start)?;
+        let mut fresh = TrialCoder::new(syntax, residual, preset, lambda, motion.as_ref());
+        assert_eq!(fresh.code_leaf(via_vert, searched)?, cost);
+        assert_eq!(fresh.leaf_coded(), coded);
+        fresh.restore(&start)?;
+        let (fresh_cost, fresh_choice) = fresh.evaluate_leaf(via_vert)?;
+        fresh.restore(&start)?;
+        let missing = LeafChoice::inter(InterPrediction::Single(InterModes {
+            ref_frame: 99,
+            mode: InterMode::Global,
+            drl: 0,
+            mv: MotionVector::default(),
+            filter: splot_recon::InterpolationFilter::EightTap,
+            precision: None,
+            amvd: false,
+            interintra: None,
+            bawp: None,
+        }));
+        let mut stale = TrialCoder::new(syntax, residual, preset, lambda, motion.as_ref());
+        stale.remember_leaf(first, missing);
+        assert_eq!(stale.evaluate_leaf(via_vert)?, (fresh_cost, fresh_choice));
+        Ok(())
+    });
+}
+
 /// The quadrant errors of the SIMD `sse` kernel equal a scalar sum over
 /// asymmetric random samples, for square, wide and tall blocks.
 #[test]

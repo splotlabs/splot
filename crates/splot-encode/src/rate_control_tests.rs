@@ -142,9 +142,22 @@ const FRAMES: u64 = 30;
 /// texture from frame 17, coded at preset 9 (mini-GOPs of 2); the first frame
 /// is black when `black_first` is set.
 fn encode(rate_control: RateControlMode, black_first: bool) -> Stream {
+    encode_with(rate_control, black_first, &[])
+}
+
+/// [`encode`] with the preset fields `overrides`.
+fn encode_with(
+    rate_control: RateControlMode,
+    black_first: bool,
+    overrides: &[(&str, &str)],
+) -> Stream {
     let mut config = Config::new(SIZE.0, SIZE.1);
     config.preset = Preset::new(9).unwrap();
     config.rate_control = rate_control;
+    config.preset_overrides = overrides
+        .iter()
+        .map(|&(field, value)| (field.to_owned(), value.to_owned()))
+        .collect();
     let (recons, codings) = (Arc::default(), Arc::default());
     let coder = Recording {
         coder: IntraFrameCoder::new(&config).unwrap(),
@@ -654,9 +667,12 @@ fn capped_crf_with_a_loose_cap_is_the_crf_stream() {
 
 /// A cap at 60% of the CRF rate underflows the CRF stream; capped CRF codes
 /// frames again until no unit underflows, spends less, and still decodes to
-/// the encoder recon.
+/// the encoder recon. Pinned to `leaf_reuse` 0: with it, unit 9 still
+/// underflows after `MAX_RECODES` codings, a limit of the rate control.
 #[test]
 fn capped_crf_keeps_the_decoder_buffer_and_decodes_to_the_recon() {
+    let pinned = [("leaf_reuse", "0")];
+    let encode = |mode, black_first| encode_with(mode, black_first, &pinned);
     let plain = encode(RateControlMode::Crf { crf: 20 }, false);
     let cap = plain.kbps() * 6 / 10;
     let buffer = (500, 250);

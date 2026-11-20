@@ -7323,6 +7323,38 @@ commands = ["cargo test -p splot-encode kernels:: --locked"]
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-LEAF-REUSE"
+name = "One search per block across partition paths"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/mode_decision.rs"
+change_id = "enc-leaf-memo"
+owner = "encoder"
+risk = "medium"
+notes = "Speed. The partition memo keys a node by its block and its partition-call context, so a block reached by two partition paths (HORZ then VERT, VERT then HORZ) was searched in full twice: 29-33% of the leaf evaluations at paris p3/p6 and niklas p6 (census of main 96f5c4659). TrialCoder keeps the choice of each searched block, keyed by position and block size and matched with LeafBlock::same_block (the same decode_block call: position, size, chroma reference, tree part, region). A later visit codes that choice with one final trial when the preset field leaf_reuse keeps it: 1 = inter choices (every row), 2 = every choice, 0 = search again. A choice the new context cannot code (a facade or writer Unsupported error) is rolled back and the block is searched. Reusing intra choices carries the loss (inter frames: paris/park_joy p6 f10 +0.39%/+1.21% with 2, -0.09%/+0.17% with 1; key frames with 2 cost +0.24%/+0.97% through the references), so no row reuses them. Measured 2026-11-20 vs main 58d6f1424 content (flat qp 85-190, keyint 30, f10): p6 paris -0.09% at 0.828x instructions, park_joy +0.17% at 0.826x, niklas +0.35% at 0.848x; paris p0 -0.17% at 0.829x, p3 +0.20% at 0.872x, p8 +0.04% at 0.859x, p10 +0.19% at 0.831x; paris f30 p6 +0.72% at 0.808x; CRF 16-40 p6 f10 paris -0.88% at 0.834x, park_joy +0.69% at 0.844x, niklas +0.19% at 0.864x. Re-ranking the kept choice against the new context's GLOBALMV/NEARMV candidates lost more (paris f30 +0.91% at 0.842x). Off while global_motion is on: a reused GLOBALMV leaf there decodes unlike the encoder recon (open defect). Encoder recon equals splot decode and avmdec (park_joy 8- and 10-bit p6); streams are identical at 1/2/8 threads at p6/p8/p10."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "done"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_inter_tx_tests.rs::a_repeat_leaf_codes_its_searched_choice_or_searches_again", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode a_repeat_leaf --locked"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------

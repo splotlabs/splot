@@ -124,6 +124,10 @@ pub(crate) struct TrialCoder<'a, 'b> {
     pub(crate) reference_intra: Option<&'a IntraCells>,
     /// Whether the last trial coded a nonzero coefficient.
     coded: bool,
+    /// The choice of each leaf searched so far, by position and block size:
+    /// a partition path that reaches the same block again may code it
+    /// (`preset.leaf_reuse`).
+    leaves: HashMap<(usize, usize, usize), Vec<(LeafBlock, LeafChoice)>>,
 }
 
 impl<'a, 'b> TrialCoder<'a, 'b> {
@@ -146,6 +150,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             samples: Vec::new(),
             reference_intra: None,
             coded: true,
+            leaves: HashMap::new(),
         }
     }
 
@@ -1324,6 +1329,17 @@ pub(crate) fn two_pass_partition(
     Ok(search_guided(&mut trial, root, preset, lambda, levels.as_ref())?.0)
 }
 
+/// The `leaf_reuse` level of `context`. shortcut: 0 while `global_motion` is
+/// on, where a reused `GLOBALMV` leaf decodes unlike the encoder recon (open
+/// defect, `the_encoder_estimates_and_codes_global_motion` fails); lift it once
+/// that defect is fixed.
+fn reuse_level(preset: &PresetParams, context: crate::preset::PresetContext) -> u8 {
+    match preset.global_motion {
+        0 => preset.leaf_reuse.at(context),
+        _ => 0,
+    }
+}
+
 /// The luma rectangle `(x, y, width, height)` of `leaf`.
 pub(crate) fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
     let (w, h) = leaf.dimensions()?;
@@ -1454,9 +1470,80 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         (node.col4() * 4, node.row4() * 4)
     }
 
+    /// Codes a leaf that an earlier partition path searched with the
+    /// choice it found when `preset.leaf_reuse` keeps that choice and it
+    /// codes here, else searches it.
+    fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
+        let leaf = self.syntax.leaf(node)?;
+        let reuse = reuse_level(self.preset, self.coder.context);
+        let key = (leaf.row4(), leaf.col4(), leaf.block_size());
+        let seen = self.leaves.get(&key).and_then(|seen| {
+            seen.iter()
+                .find(|(block, _)| block.same_block(&leaf))
+                .map(|&(_, choice)| choice)
+        });
+        if let Some(choice) = seen.filter(|choice| reuse > 1 || choice.inter.is_some()) {
+            let start = self.save(node, None)?;
+            match self.code_leaf(node, choice) {
+                Ok(cost) => return Ok((cost, choice)),
+                Err(
+                    TileWriterError::Unsupported(_)
+                    | TileWriterError::Syntax(EncoderSyntaxError::Unsupported(_)),
+                ) => {
+                    self.restore(&start)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let found = self.search_leaf(node)?;
+        if reuse > 0 {
+            let seen = self.leaves.entry(key).or_default();
+            match seen.iter_mut().find(|(block, _)| block.same_block(&leaf)) {
+                Some(entry) => entry.1 = found.1,
+                None => seen.push((leaf, found.1)),
+            }
+        }
+        Ok(found)
+    }
+
+    fn code_leaf(&mut self, node: PartitionNode, choice: LeafChoice) -> Result<RdCost> {
+        let leaf = self.syntax.leaf(node)?;
+        self.coder.scalar = !self.preset.tcq_search_trellis;
+        let cost = self.trial(&leaf, choice, ALL);
+        self.coder.scalar = false;
+        cost
+    }
+
+    fn partition_rate(&mut self, node: PartitionNode, partition: Partition) -> Result<Bits> {
+        let mut sink = RateSink::adapting();
+        Walk::trial(self.syntax, &mut sink).write_partition(node, partition)?;
+        Ok(sink.bits)
+    }
+
+    fn save(
+        &mut self,
+        node: PartitionNode,
+        start: Option<&SyntaxSnapshot>,
+    ) -> Result<SyntaxSnapshot> {
+        Ok(match start {
+            Some(start) => self.syntax.snapshot_since(start, node)?,
+            None => self.syntax.snapshot(node)?,
+        })
+    }
+
+    fn restore(&mut self, saved: &SyntaxSnapshot) -> Result<()> {
+        Ok(self.syntax.restore(saved)?)
+    }
+
+    fn leaf_coded(&self) -> bool {
+        self.coded
+    }
+}
+
+impl TrialCoder<'_, '_> {
     /// RD-chooses the intra choice of the leaf, then compares it with the
     /// inter candidates over all planes, then codes the whole leaf.
-    fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
+    fn search_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
         let leaf = self.syntax.leaf(node)?;
         let start = self.save(node, None)?;
         if leaf.is_chroma_part() {
@@ -1503,38 +1590,14 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         let choice = self.uneven_split(&leaf, choice, &start)?;
         Ok((self.code_leaf(node, choice)?, choice))
     }
+}
 
-    fn code_leaf(&mut self, node: PartitionNode, choice: LeafChoice) -> Result<RdCost> {
-        let leaf = self.syntax.leaf(node)?;
-        self.coder.scalar = !self.preset.tcq_search_trellis;
-        let cost = self.trial(&leaf, choice, ALL);
-        self.coder.scalar = false;
-        cost
-    }
-
-    fn partition_rate(&mut self, node: PartitionNode, partition: Partition) -> Result<Bits> {
-        let mut sink = RateSink::adapting();
-        Walk::trial(self.syntax, &mut sink).write_partition(node, partition)?;
-        Ok(sink.bits)
-    }
-
-    fn save(
-        &mut self,
-        node: PartitionNode,
-        start: Option<&SyntaxSnapshot>,
-    ) -> Result<SyntaxSnapshot> {
-        Ok(match start {
-            Some(start) => self.syntax.snapshot_since(start, node)?,
-            None => self.syntax.snapshot(node)?,
-        })
-    }
-
-    fn restore(&mut self, saved: &SyntaxSnapshot) -> Result<()> {
-        Ok(self.syntax.restore(saved)?)
-    }
-
-    fn leaf_coded(&self) -> bool {
-        self.coded
+#[cfg(test)]
+impl TrialCoder<'_, '_> {
+    /// Records `choice` as the searched choice of `leaf`.
+    pub(crate) fn remember_leaf(&mut self, leaf: LeafBlock, choice: LeafChoice) {
+        let key = (leaf.row4(), leaf.col4(), leaf.block_size());
+        self.leaves.entry(key).or_default().push((leaf, choice));
     }
 }
 

@@ -308,6 +308,14 @@ impl LeafBlock {
     pub fn dimensions(&self) -> Result<(usize, usize)> {
         PartitionNode(self.call, self.frontier.chroma_ref_geometry()).dimensions()
     }
+
+    /// Whether `other` is the same § 5.20.4.1 `decode_block` call: the same
+    /// position, size, chroma reference, tree part and region, whatever
+    /// partition path reached it.
+    #[must_use]
+    pub fn same_block(&self, other: &Self) -> bool {
+        self.frontier == other.frontier
+    }
 }
 
 /// One § 5.20.7.24 transform block, in plane samples.
