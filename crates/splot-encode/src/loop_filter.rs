@@ -398,6 +398,7 @@ pub(crate) fn finish_frame(
     header: HeaderBuilder<'_>,
     preset: &PresetParams,
     (source, refs, pool): (&SourceFrame, &EncoderReferences, Option<&WorkerPool>),
+    cancel: &crate::cancel::CancelToken,
     pass: FirstPass,
 ) -> Result<FilteredFrame> {
     let MergedTiles {
@@ -427,8 +428,10 @@ pub(crate) fn finish_frame(
         start: &pass.start,
         refs,
         pool,
+        cancel,
     };
     let (params, syntax) = search.run(preset)?;
+    cancel.check()?;
     if params == FrameFilterParams::default() {
         return Ok(FilteredFrame {
             core: pass.core,
@@ -510,6 +513,7 @@ struct Search<'a> {
     start: &'a FrameStart,
     refs: &'a EncoderReferences,
     pool: Option<&'a WorkerPool>,
+    cancel: &'a crate::cancel::CancelToken,
 }
 
 impl Search<'_> {
@@ -587,6 +591,7 @@ impl Search<'_> {
         frame: &DecodedFrame<u16>,
         lr_on: &[(LrUnit, LrUnitType)],
     ) -> Result<DecodedFrame<u16>> {
+        self.cancel.check()?;
         let core = self.header(params)?;
         let (rows, cols) = self.cdef_grid();
         apply_loop_filters(

@@ -1473,6 +1473,13 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     /// choice it found when `preset.leaf_reuse` keeps that choice and it
     /// codes here, else searches it.
     fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
+        if self
+            .coder
+            .cancel
+            .is_some_and(crate::cancel::CancelToken::is_cancelled)
+        {
+            return Err(TileWriterError::Cancelled);
+        }
         let leaf = self.syntax.leaf(node)?;
         let reuse = self.preset.leaf_reuse.at(self.coder.context);
         let key = (leaf.row4(), leaf.col4(), leaf.block_size());

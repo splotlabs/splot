@@ -100,6 +100,8 @@ pub(crate) struct IntraFrameCoder {
     warp_gate: crate::warp::WarpGate,
     /// The intra superblocks of the frame in each reference slot.
     slot_intra: [Option<Arc<IntraCells>>; 8],
+    /// Stops the frames of a cancelled encoder.
+    pub(crate) cancel: crate::cancel::CancelToken,
 }
 
 /// One flag per 8x8 luma cell of a frame, in raster order: whether an
@@ -303,6 +305,7 @@ impl IntraFrameCoder {
             grain_active: false,
             warp_gate: crate::warp::WarpGate::default(),
             slot_intra: Default::default(),
+            cancel: crate::cancel::CancelToken::default(),
         })
     }
 }
@@ -578,6 +581,7 @@ impl IntraFrameCoder {
         qp: u16,
         sb_quant: &[(i16, i16)],
     ) -> Result<CodedFrame> {
+        self.cancel.check()?;
         let plan = &GopFrame {
             primary_slot: plan.primary_slot.filter(|_| self.preset.cdf_carry),
             ..*plan
@@ -696,6 +700,7 @@ impl IntraFrameCoder {
         let intra = std::sync::Mutex::new(Vec::new());
         let wavefront = self.preset.wavefront && bv_search.is_none() && !self.preset.palette;
         let search = |writer: &mut KeyFrameTileWriter, coder: &mut SourceResidualCoder| {
+            self.cancel.check()?;
             let root = writer.next_superblock_root().ok_or(Error::Unsupported {
                 what: "a search past its tile",
             })?;
@@ -753,6 +758,7 @@ impl IntraFrameCoder {
             let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
             coder.intrabc = bv_search;
             coder.context = context;
+            coder.cancel = Some(&self.cancel);
             coder
         };
         let writers = writers.into_iter().enumerate().collect();
@@ -815,6 +821,7 @@ impl IntraFrameCoder {
             &header,
             &self.preset,
             (source, &self.references, self.pool.as_ref()),
+            &self.cancel,
             FirstPass {
                 core,
                 start: initial.clone(),
@@ -1179,6 +1186,8 @@ pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) intrabc: Option<&'a BvSearch>,
     /// The context of the frame's [`crate::preset::Levels`] fields.
     pub(crate) context: PresetContext,
+    /// Stops the block search of a cancelled encoder.
+    pub(crate) cancel: Option<&'a crate::cancel::CancelToken>,
 }
 
 impl<'a> SourceResidualCoder<'a> {
@@ -1211,6 +1220,7 @@ impl<'a> SourceResidualCoder<'a> {
             palette: PaletteSearch::default(),
             intrabc: None,
             context: PresetContext::default(),
+            cancel: None,
         }
     }
 }

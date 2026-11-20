@@ -69,6 +69,8 @@ pub(crate) enum TileWriterError {
     LevelOutOfRange(i32),
     #[error("all superblocks are already written")]
     TileComplete,
+    #[error("the encoder was cancelled")]
+    Cancelled,
     #[error("{written} of {total} superblocks written")]
     TileIncomplete { written: usize, total: usize },
     #[error(transparent)]

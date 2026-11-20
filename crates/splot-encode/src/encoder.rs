@@ -12,6 +12,7 @@ use splot_core::headers::frame::FrameHeaderCore;
 use splot_decode::encoder_syntax::{FrameStart, TileEnd};
 use splot_recon::DecodedFrame;
 
+use crate::cancel::CancelToken;
 use crate::config::{Config, RateControlMode};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
@@ -139,6 +140,7 @@ pub struct Encoder {
     buffer: Option<DecoderBuffer>,
     ready: VecDeque<Packet>,
     state: State,
+    cancel: CancelToken,
 }
 
 impl fmt::Debug for Encoder {
@@ -178,22 +180,26 @@ impl Encoder {
         rate_control: Box<dyn RateController + Send>,
     ) -> Result<Self> {
         config.validate()?;
-        let coder = frame_coder(&config.coded())?;
-        Self::with_parts(config, coder, rate_control)
+        let cancel = CancelToken::default();
+        let coder = frame_coder(&config.coded(), cancel.clone())?;
+        Self::with_parts(config, coder, rate_control, cancel)
     }
 
     #[cfg(test)]
     pub(crate) fn with_coder(config: Config, coder: Box<dyn FrameCoder + Send>) -> Result<Self> {
         let rate_control = rate_controller(&config)?;
-        Self::with_parts(config, coder, rate_control)
+        Self::with_parts(config, coder, rate_control, CancelToken::default())
     }
 
     fn with_parts(
         config: Config,
         coder: Box<dyn FrameCoder + Send>,
         rate_control: Box<dyn RateController + Send>,
+        cancel: CancelToken,
     ) -> Result<Self> {
         let params = config.override_preset(config.preset.params())?;
+        let mut lookahead = Lookahead::new(&config.coded(), &params, coder.pool());
+        lookahead.cancel = cancel.clone();
         let mini_gop_size = match config.rate_control {
             RateControlMode::Vbr { .. } | RateControlMode::Cbr { .. } => {
                 params.bitrate_mini_gop_size
@@ -207,7 +213,7 @@ impl Encoder {
             pending: VecDeque::new(),
             last_coded: None,
             planner,
-            lookahead: Lookahead::new(&config.coded(), &params, coder.pool()),
+            lookahead,
             lookahead_frames: usize::from(params.lookahead_frames),
             window: Vec::new(),
             tpl_delta_q: params.tpl_delta_q,
@@ -227,6 +233,7 @@ impl Encoder {
             coder,
             ready: VecDeque::new(),
             state: State::Accepting,
+            cancel,
         })
     }
 
@@ -234,6 +241,13 @@ impl Encoder {
     #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// The token that stops this encoder from another thread; see
+    /// [`CancelToken`].
+    #[must_use]
+    pub fn cancel_token(&self) -> CancelToken {
+        self.cancel.clone()
     }
 
     /// Calls `sink` with the statistics of every frame coded from now on.
@@ -247,11 +261,13 @@ impl Encoder {
     /// [`Self::receive_packet`] codes it.
     ///
     /// # Errors
-    /// Returns [`Error::SendAfterFlush`] after [`Self::flush`],
+    /// Returns [`Error::Cancelled`] after [`CancelToken::cancel`],
+    /// [`Error::SendAfterFlush`] after [`Self::flush`],
     /// [`Error::Failed`] after an earlier coding error, or
     /// [`Error::FrameConfigMismatch`] when the frame was built for another
     /// configuration.
     pub fn send_frame(&mut self, frame: SourceFrame) -> Result<()> {
+        self.cancel.check()?;
         match self.state {
             State::Accepting => {}
             State::Flushed => return Err(Error::SendAfterFlush),
@@ -271,14 +287,16 @@ impl Encoder {
             self.planner.force_key(display_index);
         }
         self.pending.push_back(frame);
-        Ok(())
+        self.cancel.check()
     }
 
     /// Signals the end of input. Queued frames are still coded.
     ///
     /// # Errors
-    /// Returns [`Error::Failed`] after an earlier coding error.
+    /// Returns [`Error::Cancelled`] after [`CancelToken::cancel`], or
+    /// [`Error::Failed`] after an earlier coding error.
     pub fn flush(&mut self) -> Result<()> {
+        self.cancel.check()?;
         if self.state == State::Failed {
             return Err(Error::Failed);
         }
@@ -292,9 +310,11 @@ impl Encoder {
     /// [`Self::flush`] the stream is complete.
     ///
     /// # Errors
-    /// Returns the coding error, after which the encoder stays failed, or
-    /// [`Error::Failed`] after an earlier coding error.
+    /// Returns [`Error::Cancelled`] when [`CancelToken::cancel`] was called
+    /// before or during the call, the coding error, after which the encoder
+    /// stays failed, or [`Error::Failed`] after an earlier coding error.
     pub fn receive_packet(&mut self) -> Result<Option<Packet>> {
+        self.cancel.check()?;
         if self.state == State::Failed {
             return Err(Error::Failed);
         }
@@ -306,6 +326,7 @@ impl Encoder {
             && let Err(error) = self.code_mini_gop(len)
         {
             self.state = State::Failed;
+            self.cancel.check()?;
             return Err(error);
         }
         Ok(self.ready.pop_front())
@@ -349,6 +370,7 @@ impl Encoder {
             None => last_coded.as_ref().filter(|_| display + 1 == next),
         };
         let model = tpl::analyze(&mut self.lookahead, &plan, coded_before, blocks, &sources);
+        self.cancel.check()?;
         if let Some(fields) = self.lookahead.fields() {
             self.coder.set_open_loop_motion(fields);
         }
@@ -356,6 +378,7 @@ impl Encoder {
             let models =
                 crate::global_motion::estimate(&mut self.lookahead, &plan, coded_before, &sources);
             self.coder.set_global_motion(models);
+            self.cancel.check()?;
         }
         let mut costs = std::collections::BTreeMap::new();
         self.window = plan
@@ -421,6 +444,7 @@ impl Encoder {
                 }
             }
             let filtered = self.temporal_filter(&planned, &frames, first);
+            self.cancel.check()?;
             let mut jobs = Vec::new();
             for (&(plan, qp), filtered) in planned.iter().zip(&filtered) {
                 let frame = match filtered {
@@ -664,8 +688,10 @@ fn frames_later_in_unit(steps: &[GopStep]) -> (u64, u64) {
     later
 }
 
-fn frame_coder(config: &Config) -> Result<Box<dyn FrameCoder + Send>> {
-    Ok(Box::new(IntraFrameCoder::new(config)?))
+fn frame_coder(config: &Config, cancel: CancelToken) -> Result<Box<dyn FrameCoder + Send>> {
+    let mut coder = IntraFrameCoder::new(config)?;
+    coder.cancel = cancel;
+    Ok(Box::new(coder))
 }
 
 #[cfg(test)]

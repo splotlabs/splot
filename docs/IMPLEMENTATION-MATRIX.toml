@@ -4428,7 +4428,7 @@ module = "crates/splot-encode/src/encoder.rs"
 change_id = "encoder-context-state-machine"
 owner = "encoder"
 risk = "medium"
-notes = "Non-normative encoder API lifecycle. Encoder has accepting, flushed and failed states: send_frame queues owned SourceFrames checked against Config, receive_packet codes the next mini-GOP through the crate-private FrameCoder seam once the lookahead window is full (or after flush) and returns one Packet per temporal unit, flush ends input, and a coding error is terminal. Encoder::new builds the frame coder for the Config; unit tests also drive the state machine through a test-double coder."
+notes = "Non-normative encoder API lifecycle. Encoder has accepting, flushed and failed states: send_frame queues owned SourceFrames checked against Config, receive_packet codes the next mini-GOP through the crate-private FrameCoder seam once the lookahead window is full (or after flush) and returns one Packet per temporal unit, flush ends input, and a coding error is terminal. Encoder::cancel_token returns a CancelToken that any thread can cancel: a running send_frame or receive_packet stops at its next check (per lookahead search, frame, superblock, searched leaf and filter candidate) and returns Error::Cancelled, as does every later call; the encoder can then only be dropped, and a token that is never cancelled changes no byte. Encoder::new builds the frame coder for the Config; unit tests also drive the state machine through a test-double coder."
 
 [feature.status]
 mapped = "done"
@@ -4443,8 +4443,8 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/encoder.rs::tests"]
-commands = ["cargo test -p splot-encode encoder --locked"]
+tests = ["crates/splot-encode/src/encoder.rs::tests", "crates/splot-encode/src/cancel_tests.rs"]
+commands = ["cargo test -p splot-encode encoder --locked", "cargo test -p splot-encode cancel --locked"]
 fixtures = []
 diagnostics = []
 [[feature]]

@@ -5,7 +5,8 @@
 //!
 //! [`Encoder`] takes owned [`SourceFrame`]s built for a validated [`Config`]
 //! and returns one [`Packet`] (an AV2 Annex B temporal unit) per frame, with
-//! [`FrameStats`]. [`y4m::Y4mReader`] reads input and [`ivf::IvfWriter`] writes
+//! [`FrameStats`]; a [`CancelToken`] stops it from another thread.
+//! [`y4m::Y4mReader`] reads input and [`ivf::IvfWriter`] writes
 //! output. Speed presets are rows of [`PRESETS`]; rate control goes through
 //! [`RateController`], fed by a lookahead that detects scene cuts and models
 //! how much later frames reuse each frame. The key-frame tile writer takes CDF rows, contexts and
@@ -15,6 +16,7 @@
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
+pub mod cancel;
 mod cfl_filter;
 pub mod config;
 pub mod encoder;
@@ -49,6 +51,7 @@ mod warp;
 mod wavefront;
 pub mod y4m;
 
+pub use cancel::CancelToken;
 pub use config::{Config, MAX_FRAME_DIMENSION, RateControlMode, TileLayout, Tune};
 pub use encoder::{Encoder, Packet, StatsSink};
 pub use error::{Error, Result};

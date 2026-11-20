@@ -149,6 +149,10 @@ pub enum Error {
     #[error("the encoder stopped after an earlier error")]
     Failed,
 
+    /// [`crate::CancelToken::cancel`] stopped the encoder.
+    #[error("the encoder was cancelled")]
+    Cancelled,
+
     /// A frame coder returned reconstruction planes of the wrong size.
     #[error("the frame coder returned reconstruction planes of the wrong size")]
     ReconSizeMismatch,
